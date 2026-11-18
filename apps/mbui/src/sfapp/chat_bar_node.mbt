@@ -199,8 +199,14 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
     let must_expand_sig : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
     let can_toggle_sig : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
     let can_toggle = fn() { can_toggle_sig.get() }
+    // ⌘F's bar open in this chat (opened from its sheet's 在对话中查找, chat_info_node): in the row in place of its
+    // title and keys, its second row shut meanwhile
+    // (the find's chat alone, not the chat's view: a change of the chat runs none of what reads it; it opens only
+    // where the chat has a thread)
+    let find_key = @sfpages.chat_key(r)
+    let finding = fn() { @sfpages.find_chat() == find_key }
     let expanded = fn() {
-      must_expand_sig.get() || (can_toggle_sig.get() && state.manual_expanded.get())
+      !finding() && (must_expand_sig.get() || (can_toggle_sig.get() && state.manual_expanded.get()))
     }
     g.reacts(metrics, fn(m) {
       must_expand_sig.set(m.0)
@@ -239,23 +245,74 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       .min_height(By(fn() { Some(status_top_now(row.window().0) + bar_h) }))
       .lines_up(Is(Some(Middle)))
       |> ignore
-      // back (Chat.kt BarFrame: 40 round, its chevron 22 in the accent's ink)
+      // (the find closed, what it marked in the list let go: back, the bar's or the system's, while it is open)
+      let find_close = fn() {
+        (@sfpages.chat_find_list(r).forget)()
+        @sfpages.find_close()
+      }
+      // back (Chat.kt BarFrame: 40 round, its chevron 22 in the accent's ink): the find closed first while it is open
       @sf.round_key_node(
         row,
         "chevron-left",
         fn() { tr("common.back") },
-        fn() { @sfbase.go_back() |> ignore },
+        fn() {
+          if @signals.untracked(finding) {
+            find_close()
+          } else {
+            @sfbase.go_back() |> ignore
+          }
+        },
         side=40.0,
         icon_size=22.0,
         ink=fn() { @sf.theme().p.accent_text },
       )
-      // (what moves in the row as 归档 or the services' key comes or goes: laid out at once where the change has them,
-      // the people left out of it then or not at that moment alone, what is beside them drawn from where it was to there
-      // on archive_tween; what an answer tells at once. The row's own, not the window's: bar_slides)
-      let slides = bar_slides(row, fn() { bar_keys_shown(src, r, view) })
-      // the title and what follows it, in one row
-      bar_middle_node(row, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides)
-      row.show(read, at_once=true, fn(end) { bar_end_node(end, src, r, view, slides) })
+      // the title and what follows it, in one row; ⌘F's bar in their place while the find is open and, once it
+      // closes, while it fades out as it was (sfdesk's chat_bar_wide_node: the pick's `leave_of`, its way out its
+      // own), then they come back faded in over as long
+      let back_in = Ref(false)
+      row.pick(
+        leave_of=fn(was, now) { if was && !now { @sfpages.find_in_ms } else { 0.0 } },
+        fn() { finding() },
+        fn(e, open) {
+          e
+          .row(Is(true))
+          .grow(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .lines_up(Is(Some(Middle)))
+          |> ignore
+          if open {
+            back_in.val = true
+            // (the system's back closes the find, not the chat)
+            e.takes_back(find_close) |> ignore
+            @sfpages.find_bar_node(
+              e,
+              src,
+              r,
+              fn() { view().bind(fn(v) { v.thread }) },
+              @sfpages.chat_find_list(r),
+              @sf.window_tips(),
+            )
+            .grow(Is(1.0))
+            .basis(Is(Some(0.0)))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+          } else {
+            if back_in.val {
+              back_in.val = false
+              e.alpha(By(@motion.presence_in(e, @motion.tween(@sfpages.find_in_ms, ease=Out)))) |> ignore
+            }
+            // (what moves in the row as 归档 or the services' key comes or goes: laid out at once where the change has
+            // them, the people left out of it then or not at that moment alone, what is beside them drawn from where it
+            // was to there on archive_tween; what an answer tells at once. The row's own, not the window's: bar_slides)
+            let slides = bar_slides(e, fn() { bar_keys_shown(src, r, view) })
+            bar_middle_node(e, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides)
+            e.show(read, at_once=true, fn(end) { bar_end_node(end, src, r, view, slides) })
+          }
+        },
+      )
     })
     |> ignore
     g.show(fn() { expanded() || state.open_way.shown(g) > 0.0 }, fn(row2_host) {

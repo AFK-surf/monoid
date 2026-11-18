@@ -231,10 +231,24 @@ let strict_known : Map[String, (String, String)] = Map([
     ),
   ),
   (
+    "history",
+    (
+      "its motion at rest at 2905.648681640625 ms, 16.43701171875 ms after the run's next step (2889.211669921875 ms; its timeline 46.770751953125 ms later from its first step); said since the last step that acted: ",
+      "traced (libs/sf-ui/src/sheet_node.mbt:1282, SheetRise @ui.move_ms(d)): the chat's sheet (ⓘ) at rest 16.4 ms after the run's next step (its first row's chevron), nothing said since the last step that acted (a frame later since chat_info_node holds what is done in the chat and the stations' files: its sheet taller than when the trace was recorded)",
+    ),
+  ),
+  (
     "settings-add-station",
     (
       "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: ",
       "untraced: a motion at rest 16.6 ms after the run's next step, nothing said since the last step that acted (the list's ＋ a node's press since the stations' list was made once: sfpages' stations_list.mbt, page_add_node)",
+    ),
+  ),
+  (
+    "settings-run-settings",
+    (
+      "its motion at rest at 2903.987060546875 ms, 16.14208984375 ms after the run's next step (2887.844970703125 ms; its timeline 91.26513671875 ms later from its first step); said since the last step that acted: ",
+      "traced (libs/sf-ui/src/sheet_node.mbt:1282, SheetRise @ui.move_ms(d)): as history's, the chat's sheet (ⓘ) at rest 16.1 ms after the run's next step (its first row's chevron), nothing said since the last step that acted (a frame later since chat_info_node holds what is done in the chat and the stations' files: its sheet taller than when the trace was recorded)",
     ),
   ),
   (
@@ -249,6 +263,13 @@ let strict_known : Map[String, (String, String)] = Map([
     (
       "its motion at rest at 2817.304931640625 ms, 66.697021484375 ms after the run's next step (2750.60791015625 ms; its timeline 37.575927734375 ms later from its first step); said since the last step that acted: ",
       "untraced: a motion at rest 66.7 ms after the run's next step, nothing said since the last step that acted (50 ms later since #5953: the add panel's note a line longer, its sheet taller)",
+    ),
+  ),
+  (
+    "sheets-sinking",
+    (
+      "its motion at rest at 3420.119873046875 ms, 16.410888671875 ms after the run's next step (3403.708984375 ms; its timeline 55.970947265625 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3275.2762317156703 ms) | bar/ball-x to 28, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3177.116067317097 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3275.2762317156703 ms)",
+      "traced (libs/sf-ui/src/sheet_node.mbt:1282, SheetRise @ui.move_ms(d)): as history's, the chat's sheet (ⓘ) at rest 16.4 ms after the run's next step (its scrim tapped), the bar's springs said before at rest long before it (a frame later since chat_info_node holds what is done in the chat and the stations' files: its sheet taller than when the trace was recorded)",
     ),
   ),
   (

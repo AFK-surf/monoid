@@ -126,7 +126,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone chat-feedback": (802, 512, 59),
   "phone chat-image-coming": (802, 512, 59),
   "phone chat-file-links": (802, 512, 59),
-  "phone chat-find": (802, 512, 59),
+  "phone chat-find": (731, 466, 53),
   "phone chat-flash": (802, 512, 59),
   "phone chat-flash-mine": (802, 512, 59),
   "phone chat-flash-notice": (802, 512, 59),

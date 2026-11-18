@@ -508,3 +508,175 @@ test "小屏: the chat's 任务 on to a job: a page of the same sheet sliding in
   t.run_for(@sf.presented_rest() - t.time())
   steps_in_one_sheet(t, "盯 CI")
 }
+
+///|
+/// The words of the chat's sheet's rows of what is done in it (chat_info_node's card of them): 在对话中查找, 对话目录, 远程.
+fn info_tool_rows() -> Array[String] {
+  [@sf.t("web-main.keymap.chat.find"), @sf.t("web-main.outline.title"), @sf.t("web-pages.remote.title")]
+}
+
+///|
+test "小屏: the chat's sheet with nothing in its thread holds what is done in it, a card of its own (在对话中查找, 对话目录, 远程 an agent drives), and its station's files; no room under its last card" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-info-bare")
+  t.run_for(@sf.presented_rest() - t.time())
+  let rows = info_tool_rows()
+  rows.push(@sf.t("web-pages.chat.screenAgent"))
+  rows.push(@sf.t("web-pages.chat.files"))
+  for row in rows {
+    assert_true(t.find(row) is Some(_), msg="\{row}: \{Repr(t.words().map(fn(w) { w.0 }))}")
+  }
+  // (nothing said in it besides words, no pull request: no row of them)
+  assert_true(t.find(@sf.t("web-main.things.title")) is None)
+  // its last row's words over the sheet's foot, no more than a row's room and a card's under them
+  let (sx, sy, sw, sh) = t.get(@ui.Role::Dialog).rect
+  let foot = @sf.sheet_panel_foot + nav_foot()
+  let inside = t
+    .words_said()
+    .filter(fn(w) { w.0 != "" && w.5 > 0.0 && w.1 >= sx && w.1 < sx + sw && w.2 >= sy && w.2 + w.4 <= sy + sh - foot })
+  let mut last = inside[0]
+  for w in inside {
+    if w.2 + w.4 > last.2 + last.4 {
+      last = w
+    }
+  }
+  assert_eq(last.0, @sf.t("web-pages.chat.files"))
+  let under = sy + sh - (last.2 + last.4)
+  assert_true(under >= foot && under < foot + 40.0, msg="\{under} under its last row (its foot \{foot})")
+}
+
+///|
+test "小屏: the chat's sheet's Station 文件 opens its station's files, the sheet closed for them" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-info-bare")
+  t.run_for(@sf.presented_rest() - t.time())
+  t.tap_text(@sf.t("web-pages.chat.files"))
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenter_visible())
+  assert_true(
+    match app.nav.top() {
+      Drive(at) => at.station == "ws1/st1" && at.root is None && at.path == ""
+      _ => false
+    },
+    msg="not its station's files",
+  )
+}
+
+///|
+test "小屏: the chat's sheet's 对话目录 opens the chat's outline in its place, one sheet all along; 远程 its station's menu as a level of it" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-info-bare")
+  t.run_for(@sf.presented_rest() - t.time())
+  t.tap_text(@sf.t("web-main.outline.title"))
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sf.presenter_visible(), msg="对话目录: nothing put up")
+  assert_eq(sheet_tops(t).length(), 1)
+  assert_true(t.find(@sf.t("web-pages.chat.files")) is None, msg="对话目录: the chat's sheet still shows")
+  assert_true(named(calls, "chat.bring").length() > 0, msg="对话目录: the rest of the chat not read onto the device")
+  // (back to the chat's sheet, then its 远程)
+  t.back()
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-pages.chat.files")) is Some(_), msg="back: not the chat's sheet")
+  t.tap_text(@sf.t("web-pages.remote.title"))
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sf.presenter_visible(), msg="远程: nothing put up")
+  assert_eq(sheet_tops(t).length(), 1)
+  assert_true(t.find("Willow 的桌面") is Some(_), msg="远程: \{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(t.find(@sf.t("web-pages.chat.files")) is None, msg="远程: the chat's sheet still shows")
+}
+
+///|
+test "小屏: the chat's sheet's 在对话中查找 closes it and opens the find's bar in the chat's bar; its back key and the system's back close the find, not the chat" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-info-bare")
+  let key = @sfpages.chat_key({ station: "ws1/st1", session: "s-c1", title: "", station_name: "" })
+  t.run_for(@sf.presented_rest() - t.time())
+  for back_key in [true, false] {
+    if !@sf.presenter_visible() {
+      t.click(Button, label=@sf.t("android-chat.info.title"))
+      t.run_for(@sf.presented_rest() - t.time())
+    }
+    t.tap_text(@sf.t("web-main.keymap.chat.find"))
+    t.run_for(@sf.presented_rest() - t.time())
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sf.presenter_visible(), msg="the sheet still up")
+    assert_eq(@sfpages.find_chat(), key)
+    assert_true(t.query(Button, label=@sf.t("web-main.find.close")) is Some(_), msg="no find's bar")
+    // (its field takes what is typed: it took the keyboard as it opened)
+    t.type_text("截图")
+    t.draw()
+    assert_eq(@sfpages.find_query(), "截图")
+    if back_key {
+      t.click(Button, label=@sf.t("common.back"))
+    } else {
+      t.back()
+    }
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfpages.find_chat(), "", msg="back (its key \{back_key}): the find still open")
+    assert_true(app.nav.top() is Chat(_), msg="back (its key \{back_key}): out of the chat")
+    assert_true(t.query(Button, label=@sf.t("web-main.find.close")) is None, msg="back: the find's bar still there")
+    assert_true(t.query(Button, label=@sf.t("android-chat.info.title")) is Some(_), msg="back: the chat's keys not back")
+  }
+  // (the find closed: back leaves the chat)
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_false(app.nav.top() is Chat(_))
+}
+
+///|
+/// The chat's sheet (chat-letters-info) on 小屏, over a core that says what is in the chat (`chatThings`) only once
+/// `late` says so.
+fn info_late_things(late : @signals.Signal[Bool]) -> @ui.Tester {
+  new_run()
+  let base = fixture("chat-letters-info")
+  let src : Source = {
+    ..base,
+    call: fn(_, _, done) { done(Ok(Json::object({}))) },
+    topic_read: fn(name, params) {
+      if name == "chatThings" && late.get() {
+        { value: None, error: None, version: 0 }
+      } else {
+        base.topic(name, params).get().snapshot()
+      }
+    },
+  }
+  open_fixture_over("chat-letters-info", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "小屏: what is in the chat told after its sheet came up: the sheet grows from as tall as it was to its new height over the frames after, never at once" {
+  let late = @signals.signal(true)
+  let t = info_late_things(late)
+  t.run_for(@sf.presented_rest() - t.time())
+  assert_true(t.find(@sf.t("web-main.things.title")) is None, msg="what was said in it before the core said it")
+  assert_true(t.find(@sf.t("web-main.letters.title")) is Some(_))
+  let top0 = sheet_tops(t)
+  assert_eq(top0.length(), 1)
+  late.set(false)
+  let tops : Array[Double] = []
+  let till = t.time() + @ui.move_most_ms
+  while t.time() < till {
+    t.run_for(@ui.frame_period_default)
+    let now = sheet_tops(t)
+    assert_eq(now.length(), 1, msg="\{Repr(now)}")
+    tops.push(now[0])
+  }
+  t.run_for(@sf.presented_rest())
+  let top1 = sheet_tops(t)[0]
+  assert_true(t.find(@sf.t("web-main.things.title")) is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(top1 < top0[0] - 40.0, msg="not grown: \{top0[0]} → \{top1}")
+  // (from where it was, on its way: not at its new height in the frame the answer came in, never back down)
+  assert_true(tops[0] > top1 + 1.0, msg="at once: \{Repr(tops)} (to \{top1})")
+  let mut was = top0[0]
+  for y in tops {
+    assert_true(y <= was + 0.01, msg="back down on its way: \{Repr(tops)}")
+    was = y
+  }
+}

@@ -182,7 +182,8 @@ pub fn open_fixture(mode : String) -> Unit {
 fn open_decide_panels(mode : String, src : Source) -> Unit {
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   match mode {
-    "chat-info" | "chat-letters-info" | "chat-info-pulls" | "chat-opener-info" | "chat-opened-info" => open_info(src, r)
+    "chat-info" | "chat-info-bare" | "chat-letters-info" | "chat-info-pulls" | "chat-opener-info" | "chat-opened-info" =>
+      open_info(src, r)
     // what is done with it, from its "…": the menu a row of the list has, the page's own among it
     "chat-actions" => {
       // (before the app says its words as it starts: the menu's are said here)

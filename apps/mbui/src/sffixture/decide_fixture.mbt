@@ -2,7 +2,8 @@
 // MBUI_FIXTURE: "history" (an agent's steps, a few opened), "history-reading" (the
 // steps not read yet: their bones), "history-failed" (their first read failed: why, over the bones), "history-older"
 // (pages before them, being read), "history-older-failed" (their read failed: why, at its top), "history-details", the chat
-// with a sheet open over it: "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid" (an agent's card that knows
+// with a sheet open over it: "chat-info", "chat-info-bare" (the chat's sheet with nothing in its thread, its station's
+// screen an agent drives and its browser), "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid" (an agent's card that knows
 // no figure of it, as a station from before tells none of an agent at rest), "chat-peek" (its station's card), "chat-jobs",
 // "chat-job"; "chat-letters-many" (their sheet, more chats written with than it holds at its share: its list
 // scrolling in it); "chat-letters-info" (the chat's sheet with its row for what its agents and other chats' wrote each
@@ -33,7 +34,7 @@ pub fn decide_mode(mode : String) -> Bool {
     "history", "history-reading", "history-failed", "history-older", "history-older-failed", "history-details",
     "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
     "chat-letters-info", "chat-letters", "chat-letters-many", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-jobs-pop",
-    "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls",
+    "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls", "chat-info-bare",
     "chat-jobs-side", "chat-history-side", "chat-history-side-working", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
     "chat-station-tag", "home-attention", "home-syncing", "home-foot", "home-foot-many", "home-shared", "home-shared-bell",
   ].contains(mode)
@@ -369,6 +370,8 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
       } else if session == "s-c1" && (f.mode == "chat-station-tag" || f.mode == "chat-actions") {
         // no agent in it yet: its station's tag in its bar (pressed by the film's step: its card beside it)
         Some(base.map(fn(b) { fix_no_agent(fix_detailed_chat(b)) }))
+      } else if session == "s-c1" && f.mode == "chat-info-bare" {
+        Some(base.map(fn(b) { with_chat_remote(fix_detailed_chat(b), false, f.test_channel) }))
       } else if session == "s-c1" && f.mode == "chat-history-side-working" {
         Some(base.map(fn(b) { with_working(fix_detailed_chat(b)) }))
       } else if session == "s-c1" {
@@ -377,6 +380,8 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
         Some(base)
       }
     }
+    // (nothing said in it besides words, no pull request)
+    "chatThings" if f.mode == "chat-info-bare" => Some(Some({ "counts": {}, "pulls": [] }))
     "chatLetters" =>
       if f.mode == "chat-letters-many" {
         Some(Some(fix_letters_many()))

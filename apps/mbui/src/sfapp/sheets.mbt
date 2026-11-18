@@ -165,8 +165,10 @@ fn agent_tiles_known(card : Json?) -> Bool {
 /// with it is the "…"'s menu, a row of the list's. As tall as what it shows; a row that opens something closes the
 /// panel (`close`) first.
 fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> Unit {
-  let chat = fn() { src.topic("chat", chat_params(r)).get().value }
-  let view = fn() { view_of_chat(src, r).0 }
+  // (the chat's head alone, as sfdesk's chat_info_node reads it: told as it changes, not as a word streams into a
+  // message, none of its messages read again)
+  let chat = fn() { @sfbase.chat_head_json(src, r) }
+  let view = fn() { @sfbase.chat_head(src, r).0 }
   // archived or offline it is only read: no name to change
   let open = fn() {
     match view() {
@@ -175,6 +177,45 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     }
   }
   let thread = fn() { field(chat(), "thread") }
+  let thread_id = fn() { opt_number(thread(), "id") }
+  // its cards, each there while it has a row to show (agents', the chats its agents made, what is done in the chat,
+  // what is in it): 16 between two of them, none under the last
+  let agents = fn() { items(chat(), "agents") }
+  let opened_any = fn() {
+    match view() {
+      Some({ opened: [_, ..], .. }) => true
+      _ => false
+    }
+  }
+  let finds = fn() { thread_id() is Some(_) }
+  // (an outline only where it may be asked for: not in a replay of a run from before, whose app had none)
+  let outlines = fn() { finds() && (src.asks_outline)() }
+  let remote = fn() {
+    match view() {
+      Some(cv) => chat_has_remote(cv)
+      None => false
+    }
+  }
+  let tools = fn() { finds() || remote() }
+  let holds = @signals.computed(fn(_) { info_holds_said(src, r, chat()) })
+  let pulls = fn() { holds.get().pulls }
+  // (a card come or gone, or a row of one, a later answer's (what is in it told after the sheet came up): the sheet
+  // goes on from as tall as it is seen then to its new height, @sf.panel_reshaped_node; said before what it shows is
+  // made anew)
+  v.reacts(
+    at_start=false,
+    fn() {
+      let h = holds.get()
+      (
+        agents().length(),
+        opened_any(),
+        (finds(), outlines(), remote()),
+        (h.pulls.length(), h.said, h.files, h.letters),
+      )
+    },
+    fn(_) { @sf.panel_reshaped_node(v) },
+  )
+  |> ignore
   // (one column, its parts as close as they are laid out: not the panel's own gap between them)
   v.box(fn(col) {
     @sf.style_node(col, fn() { title_row_whole })
@@ -239,7 +280,6 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // its agents, each a row of a card: its mark, its name, how it is and its allowance, a tap to its card
     // (the card there while it has any; its agents kept by their session's key once, each row reading its own, told
     // only as that one changes: an agent come or gone makes or lets go its row alone)
-    let agents = fn() { items(chat(), "agents") }
     let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
     col.show(fn() { agents().length() > 0 }, fn(p) {
       info_list_node(p, fn(k) {
@@ -252,7 +292,6 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
           })
         })
       })
-      p.box(fn(g) { @sf.style_node(g, fn() { info_lists_gap }) }) |> ignore
     })
     // the chats its agent made (after who works in it): one row, 创建了 N 个对话, each of them in the menu it opens
     col.pick(
@@ -265,6 +304,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       },
       fn(p, made) {
         guard made is Some((_, words)) else { return }
+        info_gap_node(p, fn() { agents().length() > 0 })
         let opened = fn() {
           match view() {
             Some(cv) => cv.opened
@@ -295,22 +335,80 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
             ),
           )
         })
-        p.box(fn(g) { @sf.style_node(g, fn() { info_lists_gap }) }) |> ignore
       },
     )
+    // what is done in it, a card of its own (sfdesk's: its bar's 查找, its outline, the remote ways of its station),
+    // each row there while it may be done
+    col.show(tools, fn(p) {
+      info_gap_node(p, fn() { agents().length() > 0 || opened_any() })
+      info_list_node(p, fn(k) {
+        // ⌘F's bar, in the chat's bar (chat_bar_node's)
+        k.show(finds, fn(m) {
+          info_more_row_node(m, "search", fn() { tr("web-main.keymap.chat.find") }, fn() { "" }, fn() {
+            close()
+            @sfpages.find_open(@sfpages.chat_key(r))
+          })
+          |> ignore
+        })
+        // its outline, at the message the reader is at (read before the sheet closes for it)
+        k.show(outlines, fn(m) {
+          info_more_row_node(m, "list", fn() { tr("web-main.outline.title") }, fn() { "" }, fn() {
+            match (@signals.untracked(view), @signals.untracked(thread_id)) {
+              (Some(cv), Some(th)) => {
+                let current = @sfpages.outline_reading_at(src, r, cv)
+                close()
+                @sfpages.open_outline(src, r, th, current, from=Unanchored)
+              }
+              _ => ()
+            }
+          })
+          |> ignore
+        })
+        // its station's screens, browser and terminals, as its bar's way to them says (chat_screens.mbt): one screen
+        // alone opened at once, else their menu, a level of this sheet
+        k.show(remote, fn(m) {
+          let at : Ref[@view.View?] = Ref(None)
+          at.val = Some(
+            info_more_row_node(
+              m,
+              "monitor",
+              fn() {
+                match view() {
+                  Some(cv) =>
+                    if cv.can_browser() || (cv.can_terminal() && (@sfbase.terminals_capable_fn.val)()) {
+                      tr("web-pages.remote.title")
+                    } else {
+                      tr("web-pages.chat.screen")
+                    }
+                  None => ""
+                }
+              },
+              fn() {
+                match view() {
+                  Some(cv) if chat_screens_driven(cv.screens) => tr("web-pages.chat.screenAgent")
+                  _ => ""
+                }
+              },
+              fn() {
+                match (@signals.untracked(view), at.val) {
+                  (Some(cv), Some(from)) => {
+                    close()
+                    chat_remote_open(src, r, cv, from=Node(from))
+                  }
+                  _ => ()
+                }
+              },
+            ),
+          )
+        })
+      })
+    })
     // then what is in it, one card (the user, 2026-10-30: who works in it before what it made, what it holds apart from
-    // what is done with it): its pull requests, what else was said, what its agents and other chats' wrote
-    // (told only as it changes; the card there while it holds anything, each of its rows by what it shows: a thing come
-    // or gone makes again only the row it changes)
-    let holds = @signals.computed(fn(_) { info_holds_said(src, r, chat()) })
-    let pulls = fn() {
-      match holds.get() {
-        Some((_, p, _, _)) => p
-        None => []
-      }
-    }
-    col.pick(fn() { holds.get().map(fn(h) { h.0 }) }, fn(p, th) {
-      guard th is Some(th) else { return }
+    // what is done with it): its pull requests, what else was said, the stations' files, what its agents and other
+    // chats' wrote (told only as it changes; the card there while it holds anything, each of its rows by what it shows:
+    // a thing come or gone makes again only the row it changes)
+    col.show(fn() { holds.get().any() }, fn(p) {
+      info_gap_node(p, fn() { agents().length() > 0 || opened_any() || tools() })
       info_list_node(p, fn(k) {
         // the pull requests linked in it, the latest 3 (the user, 2026-10-29: most chats have one or two, seen at a
         // look), 全部 N 个 to the rest; tapped, one opens in the browser
@@ -322,30 +420,56 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
           fn(pull) { text(Some(pull), "url") },
           fn(row, pull) { info_pull_row_node(row, src, r, fn() { Some(pull.get()) }, close) },
         )
-        k.pick(fn() { if pulls().length() > info_pulls_most { pulls().length() } else { 0 } }, fn(m, n) {
-          guard n > 0 else { return }
-          let words = fill("web-main.things.pullsAll", [("n", n.to_string())])
-          info_more_row_node(m, "list", words, "", fn() {
+        k.show(fn() { pulls().length() > info_pulls_most }, fn(m) {
+          info_more_row_node(m, "list", fn() { fill("web-main.things.pullsAll", [("n", pulls().length().to_string())]) }, fn() {
+            ""
+          }, fn() {
+            guard @signals.untracked(fn() { holds.get().thread }) is Some(th) else { return }
             close()
             @sfpages.things_choose(r, "pulls")
             open_things(src, r, th)
           })
+          |> ignore
         })
         // what was said in it besides words: a sheet of their own (sfpages things.mbt)
-        k.pick(fn() { holds.get().map_or(0, fn(h) { h.2 }) }, fn(m, said) {
-          guard said > 0 else { return }
-          info_more_row_node(m, "photo", tr("web-main.things.title"), said.to_string(), fn() {
+        k.show(fn() { holds.get().said > 0 }, fn(m) {
+          info_more_row_node(m, "photo", fn() { tr("web-main.things.title") }, fn() { holds.get().said.to_string() }, fn() {
+            guard @signals.untracked(fn() { holds.get().thread }) is Some(th) else { return }
             close()
             open_things(src, r, th)
           })
+          |> ignore
+        })
+        // the files of the workspace's stations: this chat's station's drive where it lends one, else the files'
+        // page of them all
+        k.show(fn() { holds.get().files }, fn(m) {
+          info_more_row_node(m, "folder", fn() { tr("web-pages.chat.files") }, fn() { "" }, fn() {
+            let here = @signals.untracked(fn() {
+              dv_stations(src, @sfbase.workspace_of(r.station)).0.unwrap_or([]).iter().any(fn(s) { s.station == r.station && s.drive })
+            })
+            close()
+            if here {
+              open_page(Drive({ station: r.station, root: None, path: "" }))
+            } else {
+              open_page(Files)
+            }
+          })
+          |> ignore
         })
         // what its agents and other chats' wrote each other, not in the chat: their own sheet
-        k.pick(fn() { holds.get().map_or(0, fn(h) { h.3 }) }, fn(m, letters) {
-          guard letters > 0 else { return }
-          info_more_row_node(m, "chats", tr("web-main.letters.title"), fill("web-main.letters.count", [("n", letters.to_string())]), fn() {
-            close()
-            open_letters(src, r, th)
-          })
+        k.show(fn() { holds.get().letters > 0 }, fn(m) {
+          info_more_row_node(
+            m,
+            "chats",
+            fn() { tr("web-main.letters.title") },
+            fn() { fill("web-main.letters.count", [("n", holds.get().letters.to_string())]) },
+            fn() {
+              guard @signals.untracked(fn() { holds.get().thread }) is Some(th) else { return }
+              close()
+              open_letters(src, r, th)
+            },
+          )
+          |> ignore
         })
       })
     })
@@ -403,34 +527,88 @@ fn info_facts_said(chat : Json?, view : ChatView?) -> String {
 
 ///|
 /// What the card of what is in the chat is made of (chat_info_node's last): its thread, its pull requests, how much
-/// else was said in it and how many letters; none where it holds none of them.
-fn info_holds_said(src : Source, r : ChatRef, chat : Json?) -> (Double, Array[Json], Int, Int)? {
-  let thread = field(chat, "thread")
-  guard opt_number(thread, "id") is Some(th) else { return None }
-  let (said, pulls) = @sfpages.things_now(src, r.station, th)
-  let letters = number(chat, "letters").to_int()
-  guard pulls.length() > 0 || said > 0 || letters > 0 else { return None }
-  Some((th, pulls, said, letters))
+/// else was said in it, whether the workspace's stations lend their files, and how many letters.
+#derive(Eq)
+priv struct InfoHolds {
+  thread : Double?
+  pulls : Array[Json]
+  said : Int
+  files : Bool
+  letters : Int
 }
 
 ///|
-/// A row of the card of what is in the chat in `k`: its icon, its words, what there is of it muted, its chevron;
-/// pressed, `press`.
-fn info_more_row_node(k : @view.View, icon : String, words : String, end : String, press : () -> Unit) -> Unit {
-  info_row_node(k, fn() { words }, press~, fn(row) {
-    @sf.icon_node(row, icon, info_icon, By(fn() { @sf.theme().p.text })) |> ignore
-    row.box(fn(w) {
-      @sf.style_node(w, fn() { info_fill }, in_row=true)
-      @sf.words_node(w, fn() { words }, fn() { info_words }) |> ignore
+/// Whether it holds anything to show (else the card is not there).
+fn InfoHolds::any(self : InfoHolds) -> Bool {
+  self.pulls.length() > 0 || self.said > 0 || self.files || self.letters > 0
+}
+
+///|
+/// What is in chat `r` as its head `chat` says it (InfoHolds): what is in its thread (none before it has one), and the
+/// files of its workspace's stations (their rows, read as every list reads them: sfbase's dv_stations).
+fn info_holds_said(src : Source, r : ChatRef, chat : Json?) -> InfoHolds {
+  let thread = opt_number(field(chat, "thread"), "id")
+  let (said, pulls) = match thread {
+    Some(th) => @sfpages.things_now(src, r.station, th)
+    None => (0, [])
+  }
+  let letters = if thread is Some(_) { number(chat, "letters").to_int() } else { 0 }
+  let files = dv_stations(src, @sfbase.workspace_of(r.station)).0.unwrap_or([]).iter().any(fn(s) { s.drive })
+  { thread, pulls, said, files, letters }
+}
+
+///|
+/// The room between two of the info's cards in `p`, over the card after it, while one is over it (`over`).
+fn info_gap_node(p : @view.View, over : () -> Bool) -> Unit {
+  p.show(over, fn(g) { @sf.style_node(g, fn() { info_lists_gap }) })
+}
+
+///|
+/// A row of a card of the chat's info in `k`: its icon, its words, what there is of it muted (`end`, while it says
+/// something: under its words where the line has not the room, their words whole), its chevron, the icon and the
+/// chevron on its words' first line; pressed, `press`. Its node.
+fn info_more_row_node(
+  k : @view.View,
+  icon : String,
+  words : () -> String,
+  end : () -> String,
+  press : () -> Unit,
+) -> @view.View {
+  info_row_node(k, words, press~, fn(row) {
+    // (one line on the row's middle; more, the icon and the chevron on the first of them)
+    row.box(fn(line) {
+      @sf.style_node(line, fn() { info_more_line }, in_row=true)
+      line.box(fn(i) {
+        agent_first_line(i)
+        @sf.icon_node(i, icon, info_icon, By(fn() { @sf.theme().p.text })) |> ignore
+      })
+      |> ignore
+      line.box(fn(w) {
+        @sf.style_node(w, fn() { info_more_flow }, in_row=true)
+        w.wraps(Is(Some(0.0))) |> ignore
+        @sf.words_node(w, words, fn() { info_words }) |> ignore
+        w.show(at_once=true, fn() { end() != "" }, fn(e) { @sf.words_node(e, end, fn() { info_meta }) |> ignore })
+      })
+      |> ignore
+      line.box(fn(c) {
+        agent_first_line(c)
+        chevron_node(c)
+      })
+      |> ignore
     })
     |> ignore
-    if end != "" {
-      @sf.words_node(row, fn() { end }, fn() { info_meta }) |> ignore
-    }
-    chevron_node(row)
   })
-  |> ignore
 }
+
+///|
+/// A row of a card of the info, what it holds on its top: its icon and chevron on its words' first line, 12 apart.
+// kept across runs: a value (no field of it changes)
+let info_more_line : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
+
+///|
+/// An info row's words and what is at its end: the end at the line's end, under the words where it has not the room.
+// kept across runs: a value (no field of it changes)
+let info_more_flow : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S3, align=ACenter, justify=JBetween)
 
 ///|
 /// A pull request linked in the chat, its row in the card in `k`: its mark, its title cut to the line, its number at
