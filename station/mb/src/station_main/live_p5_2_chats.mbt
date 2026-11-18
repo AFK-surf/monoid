@@ -1645,16 +1645,22 @@ async fn P52::tools_call(
       }
     // (agents.ts `meshList`, `revoke`, `enroll`: the mesh directory's, P5-1's on the bus)
     "relays.meshList" => rv_of((self.bus.cloud_call.val)("meshList", { "workspace": json_of_rv(a(0)) }))
+    // (where no mesh answers them, a program with no P5-1's: refused as agents.ts refuses them with no directory)
     "relays.revoke" =>
-      rv_of((self.bus.cloud_call.val)("meshRevoke", { "workspace": json_of_rv(a(0)), "node": json_of_rv(a(1)) }))
+      match (self.bus.cloud_call.val)("meshRevoke", { "workspace": json_of_rv(a(0)), "node": json_of_rv(a(1)) }) {
+        Null => fail("native mesh relay control is not available on this station")
+        said => rv_of(said)
+      }
     "relays.enroll" =>
-      rv_of(
+      match
         (self.bus.cloud_call.val)("meshEnroll", {
           "workspace": json_of_rv(a(0)),
           "name": json_of_rv(a(1)),
           "by": json_of_rv(a(2)),
-        }),
-      )
+        }) {
+        Null => fail("native mesh relay enrollment is not available on this station")
+        said => rv_of(said)
+      }
     "relays.by" => {
       let row = self.store("getSession", [jstr(s(0))]) catch { _ => Json::null() }
       rjs(@session_hub.agent_name(jtext(row, "title"), s(0)))

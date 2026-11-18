@@ -119,10 +119,10 @@ fn P51::mesh_scopes(
       "meshRevoke" =>
         match m.scopes {
           Some(sync) => sync.revoke(ws, @mesh_scopes.text(@mesh_scopes.field(arg, "node")).unwrap_or(""))
-          None => fail("native mesh relay control is not available")
+          None => fail("native mesh relay control is not available on this station")
         }
       "meshEnroll" => {
-        guard m.scopes is Some(_) else { fail("native mesh relay enrollment is not available") }
+        guard m.scopes is Some(_) else { fail("native mesh relay enrollment is not available on this station") }
         guard (plane.ways.cloud.origin)() is Some(origin) && (plane.ways.cloud.membership)(ws) is Some(_) else {
           fail("this station is not in the relay's workspace")
         }
