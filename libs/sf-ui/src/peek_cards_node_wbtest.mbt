@@ -29,16 +29,14 @@ fn peek_rig(make : (@view.View) -> Unit) -> @ui.Tester {
 ///|
 /// What `t.audit()` finds of these cards but what their looks had as the app's pages drew them, before they were
 /// moved here unchanged (each the app's screens' bars count, corners_wbtest's): a state's pill 6 in at its glyph's
-/// side and 8 at its end; a size's green on the hover's ground (3.6:1); the marked line's ground meeting the lines
-/// beside it, its number's room at its edge; a link card's mark in the middle of its capsule, not on its title's line.
+/// side and 8 at its end; the marked line's ground meeting the lines beside it, its number's room at its edge; a link
+/// card's mark in the middle of its capsule, not on its title's line.
 fn peek_faults(t : @ui.Tester) -> Array[String] {
   t
   .audit()
   .filter(fn(f) {
     !(
       (f.has_prefix("rule 4: what 「state.") && f.contains("6 in from its left, 8 from its right")) ||
-      (f.has_prefix("rule 4: what 「检查通过」") && f.contains("6 in from its left, 8 from its right")) ||
-      (f.has_prefix("words \"+12\"") && f.contains("under 4.5")) ||
       f.contains("「2   println(1)」") ||
       (f.has_prefix("first line: a box in 「Willow 的屏幕") && f.contains("236×52"))
     )
@@ -75,6 +73,58 @@ test "a page's tile: its title over where it goes, its address to copy saying so
 }
 
 ///|
+/// The smallest ground drawn round `r` (x, y, w, h) in `t`'s last frame, as drawn_rects has it.
+fn peek_ground_round(t : @ui.Tester, r : (Double, Double, Double, Double)) -> (Double, Double, Double, Double)? {
+  let mut best : (Double, Double, Double, Double)? = None
+  for d in t.drawn_rects() {
+    if d.0 <= r.0 && d.0 + d.2 >= r.0 + r.2 && d.1 <= r.1 && d.1 + d.3 >= r.1 + r.3 {
+      match best {
+        Some(b) if b.2 <= d.2 => ()
+        _ => best = Some((d.0, d.1, d.2, d.3))
+      }
+    }
+  }
+  best
+}
+
+///|
+test "a page's tile with its picture: the picture in the card's top corners, the thumb at its title's first line" {
+  for scale in [1.0, 1.3] {
+    for title in ["一个网页的标题", "一个网页的标题很长很长，长到在卡片里要折成两行才放得下它的全部文字"] {
+      let t = peek_rig(fn(card) {
+        card.box(fn(b) {
+          style_node(b, fn() { peek_card_part })
+          peek_page_tile_node(b, fn() { title }, fn() { "example.com/a/page" }, fn() { "" }, fn() { false }, fn() {
+            "mem:peek-picture"
+          }, fn(f) { peek_copy_node(f, fn() { "https://example.com/a/page" }, "common.link.copy", Map([])) })
+        })
+        |> ignore
+      })
+      t.set_font_scale(scale)
+      t.draw()
+      let said = "\{scale} \{title}"
+      assert_eq(peek_faults(t), [], msg=said)
+      let rects = t.drawn_rects()
+      // (the rig's card: 40 in, 308 wide, its words 10 in; the picture's ground out past them as far as the card's
+      // corner has it, as far from its top as from its sides)
+      let picture = rects.filter(fn(d) { d.2 == peek_picture_w && d.3 == peek_picture_h })
+      assert_eq(picture.length(), 1, msg=said)
+      let (px, py, pw, ph, _) = picture[0]
+      let side = px - 40.0
+      assert_eq(side, 10.0 + peek_thumb_out, msg=said)
+      assert_eq(py - 40.0, side, msg=said)
+      assert_eq(40.0 + 308.0 - (px + pw), side, msg=said)
+      // (the thumb under it beside the title's first line: its top at the title's, its start at the picture's)
+      let thumb = rects.filter(fn(d) { d.2 == d.3 && d.2 >= 30.0 && d.1 > py + ph })
+      assert_eq(thumb.length(), 1, msg=said)
+      let words = t.rect_of("一个网页的标题").unwrap()
+      assert_true((thumb[0].1 - words.1).abs() < 0.5, msg="\{said}: thumb \{thumb[0].1}, title \{words.1}")
+      assert_eq(thumb[0].0, px, msg=said)
+    }
+  }
+}
+
+///|
 test "a pull request's card: its state's pill, where it is, its title and its facts; its state as it changes" {
   let state = @signals.signal("open")
   let t = peek_rig(fn(card) {
@@ -94,6 +144,11 @@ test "a pull request's card: its state's pill, where it is, its title and its fa
     assert_true(t.find(w) is Some(_), msg=w)
   }
   assert_eq(peek_faults(t), [])
+  // (its checks' pill, no glyph: its words as far in from both its ends)
+  let w = t.rect_of("检查通过").unwrap()
+  let pill = peek_ground_round(t, w).unwrap()
+  let ends = (w.0 - pill.0, pill.0 + pill.2 - (w.0 + w.2))
+  assert_true((ends.0 - 8.0).abs() < 0.5 && (ends.1 - 8.0).abs() < 0.5, msg="checks' pill: \{ends.0} and \{ends.1} in")
   state.set("merged")
   t.draw()
   assert_true(t.find("state.merged") is Some(_))
