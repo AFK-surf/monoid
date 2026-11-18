@@ -2011,6 +2011,8 @@ web-pages.experimental.farviewNative.title
 web-pages.experimental.farviewNative.description
 web-pages.experimental.board.title
 web-pages.experimental.board.description
+web-pages.experimental.boardClarify.title
+web-pages.experimental.boardClarify.description
 core-views.move.why.offline
 core-views.move.why.stable
 android-misc.bar.place.remote

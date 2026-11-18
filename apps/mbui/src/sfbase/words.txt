@@ -2980,12 +2980,6 @@ web-main.board.clarify.clarify
 web-main.board.clarify.organizing
 web-main.board.clarify.said
 web-main.board.clarify.task
-web-main.board.clarify.title
-web-main.board.clarify.goal
-web-main.board.clarify.scope
-web-main.board.clarify.accept
-web-main.board.clarify.ask
-web-main.board.clarify.empty
 web-main.board.clarify.add
 web-main.board.clarify.dispatch_one
 web-main.board.clarify.remove_one
@@ -2995,3 +2989,14 @@ web-main.board.clarify.as_is
 web-main.board.clarify.back
 web-main.board.clarify.none
 web-main.board.clarify.failed
+web-main.board.clarify.line
+web-main.board.clarify.original
+web-main.board.clarify.wait_for
+web-main.board.clarify.waits
+web-main.board.clarify.waits_more
+web-main.board.clarify.wait_gone
+web-main.board.clarify.wait_failed
+web-main.board.clarify.auto_failed
+web-main.board.clarify.auto_failed_unknown
+web-main.board.clarify.start_anyway
+web-main.board.clarify.drop_wait

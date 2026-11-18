@@ -611,12 +611,13 @@ pub fn open_mode(mode : String) -> Unit {
   if mode == "settings-connect-borrow" {
     @sffixture.new_fix.borrow = true
   }
-  // (a 待派发 draft being split by 先理清: its tasks being made, or come; board-clarify alone, the board before it)
-  if mode == "board-clarify-organizing" || mode == "board-clarify-split" {
+  // (a 待派发 draft being split by 先理清: its tasks being made, or come (-split, and -auto, whose chats are done with
+  // after a while); board-clarify alone, the board before it)
+  if mode == "board-clarify-organizing" || mode == "board-clarify-split" || mode == "board-clarify-auto" {
     let clarify = @sfbase.clarify
     clarify.draft.set(@sffixture.fix_clarify_id)
     clarify.words.set(@sffixture.fix_clarify_words)
-    if mode == "board-clarify-split" {
+    if mode != "board-clarify-organizing" {
       @sfbase.clarify_fill(@sffixture.fix_clarify_tasks())
     }
   }

@@ -1977,6 +1977,10 @@ export const SHAPES: Record<string, Shape> = {
     ["id", "String"],
     ["name", "String"],
   ], { doc: "A queued task's file, named by its composer id; its bytes stay in the device's draft store." }),
+  BoardAfter: struct([
+    ["id", "String"],
+    ["title", "String"],
+  ], { doc: "A draft another waits for: its key and its words as they were, said where it is gone." }),
   BoardDraft: struct([
     ["id", "String"],
     ["title", "String"],
@@ -1984,6 +1988,7 @@ export const SHAPES: Record<string, Shape> = {
     ["stationName", "String"],
     ["files", opt(vec("BoardFile"))],
     ["group", opt("String"), { doc: "The words of the task it was split from by 先理清, the same on each of that split's tasks; absent for a task written whole." }],
+    ["after", opt(vec("BoardAfter")), { doc: "The drafts of its split it waits for (先理清's 「等 X」): started by itself once each one's chat is in 待收口." }],
   ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
   KeptTabs: struct([

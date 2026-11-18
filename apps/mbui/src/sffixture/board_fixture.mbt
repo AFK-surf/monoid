@@ -8,7 +8,8 @@
 // is at work again; a draft started, its chat made under its key (`newChat.create`: a pending row, as the core's) and
 // its words sent into it (`chat.send`: at work at once, the station's row keeping the key it was made under).
 // board-clarify…: a third draft first, one paragraph of three things, to be split by 先理清 (`board.clarify`: its
-// tasks after fix_clarify_ms; board-clarify-organizing never answered, -split shown answered, sfapp's open_mode).
+// tasks after fix_clarify_ms; board-clarify-organizing never answered, -split shown answered, sfapp's open_mode; -auto
+// each chat started done with fix_clarify_settle_ms after; -gone and -failed a draft waiting for one gone or errored).
 
 ///|
 /// Whether `mode` is one of the board's.
@@ -44,6 +45,36 @@ pub fn board_prefs_seed(mode : String) -> Unit {
   guard board_mode(mode) && mode != "board-list" else { return }
   if mode != "board-off" {
     board_prefs["boardViews"]["ws1"] = Json::string("board")
+  }
+  // (the third task of a split, waiting for the second: gone, or its chat gone wrong)
+  if mode == "board-clarify-gone" || mode == "board-clarify-failed" {
+    if mode == "board-clarify-failed" {
+      board_started_rows.push(
+        row("cb-failed", "在设置页加上导入对话记录，认得导出的格式", "ws1/st1", "5 分钟前", {
+          "state": "failed",
+          "tone": "alert",
+          "stage": "wait",
+          "stateText": "出错：测试机连接中断",
+          "stateLead": "",
+          "stateRest": "出错：测试机连接中断",
+          "clientKey": Json::string(fix_clarify_pred_id),
+          "agents": [agent("anthropic", "claude")],
+          "people": [me],
+        }),
+      )
+    }
+    board_prefs["boardDrafts"]["ws1"] = [
+      {
+        "id": Json::string(fix_clarify_waiting_id),
+        "title": "给导出和导入补上测试，覆盖格式错误和空记录",
+        "station": "ws1/st1",
+        "stationName": "Willow",
+        "group": Json::string(fix_clarify_words),
+        "after": [{ "id": Json::string(fix_clarify_pred_id), "title": "在设置页加上导入对话记录，认得导出的格式" }],
+      },
+      { "id": "new:board-seed-1", "title": "给导出加上按月份筛选", "station": "ws1/st1", "stationName": "Willow" },
+    ]
+    return
   }
   let clarified : Array[Json] = if mode.has_prefix("board-clarify") {
     [{ "id": Json::string(fix_clarify_id), "title": Json::string(fix_clarify_words), "station": "ws1/st1", "stationName": "Willow" }]
@@ -498,7 +529,7 @@ pub fn fixture_board_call(f : Fixture, name : String, params : Json) -> Result[J
       board_started_rows.retain(fn(r) { text(Some(r), "clientKey") != key })
       board_started_rows.insert(
         0,
-        row("cb\{n}", text(p, "text"), station, "刚刚", {
+        row("cb\{n}", text(p, "text").split("\n").next().map(fn(l) { l.to_owned() }).unwrap_or(""), station, "刚刚", {
           "state": "run",
           "stage": "run",
           "tone": "busy",
@@ -511,6 +542,10 @@ pub fn fixture_board_call(f : Fixture, name : String, params : Json) -> Result[J
         }),
       )
       f.changed()
+      // (its agent done with it after a while: what waits for it starts by itself)
+      if f.mode == "board-clarify-auto" {
+        fix_later(fix_clarify_settle_ms, fn() { board_fix_settle(f, key) })
+      }
       Some(Ok(Json::object({})))
     }
     _ => None
@@ -578,27 +613,46 @@ pub let fix_clarify_ms : Double = 1200.0
 pub fn fix_clarify_tasks() -> Json {
   {
     "tasks": [
-      {
-        "title": "设置页导出对话记录",
-        "goal": "在设置页把对话记录导出成 Markdown 文件，便于归档。",
-        "scope": "设置 › 数据 新增「导出对话记录」；可选时间范围；只导出当前 workspace。",
-        "accept": "1. 能导出并打开 .md\n2. 按对话分节，带时间和发言人",
-        "ask": "附件要不要一起打包？",
-      },
-      {
-        "title": "导入对话记录",
-        "goal": "把导出的 Markdown 再导入回来，恢复成对话记录。",
-        "scope": "设置 › 数据 新增「导入对话记录」；只认本应用导出的格式。",
-        "accept": "1. 导出再导入，内容一致\n2. 格式不对时说明原因",
-        "ask": "重复导入时覆盖还是跳过？",
-      },
-      {
-        "title": "补导出导入的测试",
-        "goal": "给导出和导入补上自动化测试。",
-        "scope": "导出格式、导入还原、空记录和格式错误。",
-        "accept": "测试覆盖以上四种情况并在 CI 通过",
-        "ask": "",
-      },
+      { "text": "在设置页加上导出对话记录，导出成 Markdown 文件" },
+      { "text": "在设置页加上导入对话记录，认得导出的格式" },
+      { "text": "给导出和导入补上测试，覆盖格式错误和空记录", "after": [0, 1] },
     ],
   }
 }
+
+///|
+/// How long after its words were sent the made-up agent is done with a chat started from the board in
+/// board-clarify-auto (its row in 待收口): what waited for it then starts by itself.
+pub let fix_clarify_settle_ms : Double = 3000.0
+
+///|
+/// The started chat made under key `key` done with (待收口), or gone wrong (`failed`), as its station would say.
+pub fn board_fix_settle(f : Fixture, key : String, failed? : Bool = false) -> Unit {
+  guard board_started_rows.search_by(fn(r) { text(Some(r), "clientKey") == key }) is Some(at) else { return }
+  let r = board_started_rows[at]
+  let more : Map[String, Json] = if failed {
+    {
+      "state": "failed",
+      "tone": "alert",
+      "stage": "wait",
+      "stateText": "出错：测试机连接中断",
+      "stateLead": "",
+      "stateRest": "出错：测试机连接中断",
+    }
+  } else {
+    { "tone": "done", "stateText": "做完了：改好了，已合进 main", "stateLead": "done", "stateRest": "改好了，已合进 main" }
+  }
+  more["clientKey"] = Json::string(key)
+  more["agents"] = [agent("anthropic", "claude")]
+  more["people"] = [me]
+  board_started_rows[at] = row(text(Some(r), "id"), text(Some(r), "title"), text(Some(r), "station"), "刚刚", more)
+  f.changed()
+}
+
+///|
+/// A draft of board-clarify-gone and -failed: the third task of the split, waiting for the second (gone: no draft nor
+/// chat of it; failed: its chat gone wrong).
+pub let fix_clarify_waiting_id : String = "new:board-clarify-3"
+
+///|
+pub let fix_clarify_pred_id : String = "new:board-clarify-2"

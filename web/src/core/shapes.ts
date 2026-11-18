@@ -1491,6 +1491,12 @@ export interface BoardFile {
 	name: string;
 }
 
+/** A draft another waits for: its key and its words as they were, said where it is gone. */
+export interface BoardAfter {
+	id: string;
+	title: string;
+}
+
 /** An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name. */
 export interface BoardDraft {
 	id: string;
@@ -1500,6 +1506,8 @@ export interface BoardDraft {
 	files?: BoardFile[];
 	/** The words of the task it was split from by 先理清, the same on each of that split's tasks; absent for a task written whole. */
 	group?: string;
+	/** The drafts of its split it waits for (先理清's 「等 X」): started by itself once each one's chat is in 待收口. */
+	after?: BoardAfter[];
 }
 
 /** What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档). */

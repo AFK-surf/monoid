@@ -75,6 +75,13 @@ test("a_workspaces_drafts_are_kept_whole_the_newest_200_none_left_as_an_empty_li
   apply(host, values);
   assert.deepEqual(v(values, 1).boardDrafts.w1, split);
   assert.equal((await ask(host, core, ui, 22, "prefs.set", { boardDrafts: { w1: [draft(6, { group: 7 })] } })).error.code, "invalid_params");
+  // (one of them waits for another of its split (先理清's 「等 X」): kept by key and words; itself, or not a list, refused)
+  const waits = [draft(7, { group: "从一段话拆出" }), draft(8, { group: "从一段话拆出", after: [{ id: draft(7).id, title: draft(7).title }] })];
+  await ask(host, core, ui, 23, "prefs.set", { boardDrafts: { w1: waits } });
+  apply(host, values);
+  assert.deepEqual(v(values, 1).boardDrafts.w1, waits);
+  assert.equal((await ask(host, core, ui, 24, "prefs.set", { boardDrafts: { w1: [draft(9, { after: [{ id: draft(9).id, title: "" }] })] } })).error.code, "invalid_params");
+  assert.equal((await ask(host, core, ui, 25, "prefs.set", { boardDrafts: { w1: [draft(9, { after: "x" })] } })).error.code, "invalid_params");
   // (newest first: the 200 newest kept)
   const many = Array.from({ length: 230 }, (_, i) => draft(230 - i));
   await ask(host, core, ui, 3, "prefs.set", { boardDrafts: { w1: many } });

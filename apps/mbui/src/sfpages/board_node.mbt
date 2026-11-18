@@ -459,6 +459,15 @@ pub fn board_node(
       None => None
     }
   })
+  // (a draft whose predecessors are all in 待收口 started by itself, once, as the board shows: sfbase's board_after.mbt)
+  v.reacts(fn() { @sfbase.board_after_due(drafts(), items(), @sfbase.board_listed_of(src, ws())).map(fn(d) { d.id }) }, fn(due) {
+    for id in due {
+      match @signals.untracked(fn() { drafts_map.get().get(id) }) {
+        Some(d) => @sfbase.board_after_start(src, @signals.untracked(ws), d)
+        None => ()
+      }
+    }
+  })
   // The frame passes its new action here while Home is the board; the person's keymap still chooses its keys.
   v.on_action("chat.new", fn(_) {
     board_new(own)
@@ -1389,6 +1398,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       station_name: name,
       files: attached,
       group: "",
+      after: [],
     }
     own.start_from = from.map(fn(r) { (st + "/" + @sfbase.board_key_of(draft), r) })
     @sfbase.board_start(own.src, ws, draft)
@@ -1859,7 +1869,7 @@ fn draft_card(
       Some(d) => {
         // (its chat's card is of the key it is made under: its row's all along)
         own.start_from = Some((d.station + "/" + @sfbase.board_key_of(d), from))
-        @sfbase.board_start(src, @signals.untracked(own.ws), d)
+        @sfbase.board_after_now_start(src, @signals.untracked(own.ws), d)
       }
       None => ()
     }
@@ -1896,7 +1906,12 @@ fn draft_card(
     @sf.menu(
       [
         Some(@sf.menu_item_of(board_words("start-now"), start, icon="play")),
-        Some(@sf.menu_item_of(board_words("clarify"), clarify, icon="sparks")),
+        // (先理清 an experimental feature of its own: boardClarify)
+        if @sfbase.feature_on(src, "boardClarify") {
+          Some(@sf.menu_item_of(board_words("clarify"), clarify, icon="sparks"))
+        } else {
+          None
+        },
         Some(@sf.menu_item_of(board_words("delete"), delete, icon="trash", danger=true)),
       ],
       from~,
@@ -1979,6 +1994,8 @@ fn draft_card(
     card.show(fn() { d().map(fn(d) { d.group != "" }).unwrap_or(false) }, fn(g) {
       draft_group_tag(g, fn() { d().map(fn(d) { d.group }).unwrap_or("") })
     })
+    // (what it waits for: 「等 X」, or that it is gone or errored, with what to do then)
+    draft_wait_node(card, src, own, id, start)
     board_files_node(card, src, fn() { @sfbase.board_file_key((own.ws)(), id) }, fn() {
       d().map(fn(d) { d.files }).unwrap_or([])
     })
@@ -2060,25 +2077,30 @@ fn draft_clarify_card(
   let ready = fn() { clarify.step.get() == Ready }
   let has_words = fn() { clarify.tasks.get().iter().any(fn(t) { @sfbase.clarify_task_text(t) != "" }) }
   let place = fn() {
-    let texts = @sfbase.clarify_texts()
-    guard !texts.is_empty() else { return }
+    let parts = @sfbase.clarify_parts(id)
+    guard !parts.is_empty() else { return }
     let group = clarify.words.untracked()
     @sfbase.clarify_reset()
-    @sfbase.board_drafts_split(src, ws(), id, texts, group) |> ignore
+    @sfbase.board_drafts_split(src, ws(), id, parts, group) |> ignore
   }
+  // (each task a draft of the group; those that wait for none started, the others waiting in 待派发)
   let start_all = fn() {
-    let texts = @sfbase.clarify_texts()
-    guard !texts.is_empty() else { return }
+    let parts = @sfbase.clarify_parts(id)
+    guard !parts.is_empty() else { return }
     let group = clarify.words.untracked()
     @sfbase.clarify_reset()
-    for d in @sfbase.board_drafts_split(src, ws(), id, texts, group) {
-      @sfbase.board_start(src, ws(), d)
+    for d in @sfbase.board_drafts_split(src, ws(), id, parts, group) {
+      if d.after.is_empty() {
+        @sfbase.board_start(src, ws(), d)
+      }
     }
   }
   let start_one = fn(t : @sfbase.ClarifyTask) {
     match @sfbase.board_draft_after(src, ws(), id, @sfbase.clarify_task_text(t), clarify.words.untracked()) {
       Some(d) => {
-        @sfbase.clarify_remove(t.id)
+        // (what waits for it waits for its draft, started)
+        clarify.started[t.id] = { id: d.id, title: d.title }
+        @sfbase.clarify_remove_started(t.id)
         // (the last of its tasks gone to work: the draft it was split from is done with)
         if clarify.tasks.untracked().is_empty() {
           @sfbase.clarify_reset()
@@ -2185,32 +2207,31 @@ fn draft_clarify_card(
 
 
 ///|
-/// The tasks of a split being made, in `parent`: three bones breathing, each of three bars (a task's head, its title,
-/// a line of its brief), each a little shorter than the one before's.
+/// The tasks of a split being made, in `parent`: three bones breathing, each a line as long as a task's, each a little
+/// shorter than the one before's.
 fn clarify_bones_node(parent : @view.View) -> Unit {
   for n in [0, 1, 2] {
     parent.box(fn(bone) {
       bone.gap(Is(6.0)) |> ignore
       @sf.breathe_node(bone)
-      for share in [0.5, 0.9, 0.7] {
-        bone.box(fn(bar) {
-          bar
-          .height(Is(Some(10.0)))
-          .max_width(Is(Some(share * 300.0 - n.to_double() * 20.0)))
-          .radius(Is(5.0))
-          .ground(By(fn() { @sf.theme().p.hover }))
-          |> ignore
-        })
+      bone.box(fn(bar) {
+        bar
+        .height(Is(Some(14.0)))
+        .max_width(Is(Some(280.0 - n.to_double() * 40.0)))
+        .radius(Is(7.0))
+        .ground(By(fn() { @sf.theme().p.hover }))
         |> ignore
-      }
+      })
+      |> ignore
     })
     |> ignore
   }
 }
 
 ///|
-/// Task `t` of a split in `slot`: a line over it, 任务 n (`n`) with 派发这项 (`start`) and 删除这项 (`remove`) at its
-/// head's end, its title, then each of its parts under its name, each to edit.
+/// Task `t` of a split in `slot`: its line to edit (`n`, its place, said to a screen reader), with 等… (which tasks of
+/// the split it waits for: a menu of the others, each checked where it does, one that waits for it not offered),
+/// 派发这项 (`start`) and 删除这项 (`remove`) at its end; under it, a 「等 X」 mark for each task it waits for.
 fn clarify_task_node(
   slot : @view.View,
   tips : @sf.TipLayer,
@@ -2219,41 +2240,139 @@ fn clarify_task_node(
   start : () -> Unit,
   remove : () -> Unit,
 ) -> Unit {
+  let wait_key : Ref[@view.View?] = Ref(None)
+  let waits_menu = fn() {
+    let others = @sfbase.clarify.tasks.untracked().filter(fn(o) { o.id != t.id })
+    let from = match wait_key.val {
+      Some(k) if k.alive() => {
+        let (x, y, w, h) = k.placed_window_now()
+        @sf.Beside::At(x, y, w, h)
+      }
+      _ => At(0.0, 0.0, 0.0, 0.0)
+    }
+    let after = t.after.untracked()
+    @sf.menu(
+      others.map(fn(o) {
+        let on = after.contains(o.id)
+        let words = @sfbase.board_after_short(@sfbase.clarify_task_text(o), n=16)
+        Some(
+          @sf.menu_item_of(
+            @sf.t("web-main.board.clarify.waits", args=[("task", if words == "" { "…" } else { words })]),
+            fn() { @sfbase.clarify_toggle_wait(t, o.id) },
+            checked=on,
+            disabled=!on && !@sfbase.clarify_may_wait(t, o.id),
+          ),
+        )
+      }),
+      from~,
+      title=@sf.t("web-main.board.clarify.wait_for"),
+    )
+  }
   slot.box(fn(task) {
-    task.gap(Is(8.0)) |> ignore
-    task.box(fn(line) { line.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore }) |> ignore
-    task.box(fn(head) {
-      head.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))) |> ignore
-      @sf.words_node(head, fn() { @sf.t("web-main.board.clarify.task", args=[("n", n().to_string())]) }, fn() {
-        clarify_task_look
+    task.gap(Is(6.0)) |> ignore
+    task.box(fn(line) {
+      line.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))) |> ignore
+      line.box(fn(f) {
+        f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+        @sf.input_node(
+          f,
+          t.text,
+          placeholder=@sf.t("web-main.board.clarify.line"),
+          label=@sf.t("web-main.board.clarify.task", args=[("n", n().to_string())]),
+          small=true,
+        )
+        |> ignore
       })
-      .grow(Is(1.0))
       |> ignore
-      @sf.icon_button_node(head, "play", fn() { @sf.t("web-main.board.clarify.dispatch_one") }, start, tips~, size=card_key, icon_size=14.0)
+      wait_key.val = Some(
+        @sf.icon_button_node(line, "wait", fn() { @sf.t("web-main.board.clarify.wait_for") }, waits_menu, tips~, size=card_key, icon_size=14.0, on=fn() {
+          !t.after.get().is_empty()
+        }),
+      )
+      @sf.icon_button_node(line, "play", fn() { @sf.t("web-main.board.clarify.dispatch_one") }, start, tips~, size=card_key, icon_size=14.0)
       |> ignore
-      @sf.icon_button_node(head, "trash", fn() { @sf.t("web-main.board.clarify.remove_one") }, remove, tips~, size=card_key, icon_size=14.0)
+      @sf.icon_button_node(line, "trash", fn() { @sf.t("web-main.board.clarify.remove_one") }, remove, tips~, size=card_key, icon_size=14.0)
       |> ignore
     })
     |> ignore
-    @sf.input_node(task, t.title, placeholder=@sf.t("web-main.board.clarify.title"), label=@sf.t("web-main.board.clarify.title"), small=true)
-    |> ignore
-    let parts = [
-      ("web-main.board.clarify.goal", t.goal, 2),
-      ("web-main.board.clarify.scope", t.scope, 2),
-      ("web-main.board.clarify.accept", t.accept, 2),
-      ("web-main.board.clarify.ask", t.ask, 1),
-    ]
-    for part in parts {
-      let (key, field, rows) = part
-      task.box(fn(p) {
-        p.gap(Is(4.0)) |> ignore
-        @sf.words_node(p, fn() { @sf.t(key) }, fn() { card_meta_look }) |> ignore
-        @sf.textarea_node(p, field, rows~, most=8, placeholder=@sf.t("web-main.board.clarify.empty"), label=@sf.t(key)) |> ignore
+    // (what it waits for, each its mark)
+    task.show(fn() { !t.after.get().is_empty() }, fn(marks) {
+      marks.box(fn(row) {
+        row.gap(Is(4.0)) |> ignore
+        row.each(fn() { @sfbase.clarify_waits_of(t) }, fn(w) { w.0 }, fn(m, w) {
+          wait_mark_node(m, fn() {
+            @sf.t("web-main.board.clarify.waits", args=[("task", @sfbase.board_after_short(w.get().1))])
+          }, false)
+        })
       })
       |> ignore
-    }
+    })
   })
   |> ignore
+}
+
+///|
+/// A 「等 X」 mark in `parent`: the wait's icon and its words (`words`), cut short on its one line, on the accent's ground
+/// (or the danger's, `broken`: what it waits for gone or errored).
+fn wait_mark_node(parent : @view.View, words : () -> String, broken : Bool) -> Unit {
+  parent.box(fn(row) {
+    row.row(Is(true)).lines_up(Is(Some(Start))).min_width(Is(Some(0.0))) |> ignore
+    row.box(fn(tag) {
+      tag
+      .row(Is(true))
+      .gap(Is(4.0))
+      .lines_up(Is(Some(Middle)))
+      .padding(Is((2.0, 8.0, 2.0, 6.0)))
+      .radius(Is(10.0))
+      .ground(By(fn() { if broken { @sf.theme().p.red_bg } else { @sf.theme().p.accent_bg } }))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      |> ignore
+      let ink = fn() { if broken { @sf.theme().p.red } else { @sf.theme().p.accent_text } }
+      @sf.icon_node(tag, "wait", 12.0, By(ink)) |> ignore
+      @sf.words_node(tag, words, fn() { if broken { group_tag_danger_look } else { group_tag_look } }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// What draft `id`'s card says of what it waits for (sfbase's board_after.mbt), in `card`: nothing where it waits for
+/// nothing; 「等 X」 while it waits; gone, errored or its start by itself failed, that, and 立即派发 (`start`) and, where
+/// what it waited for is gone or errored, 去掉这个依赖 (what is left waited for).
+fn draft_wait_node(card : @view.View, src : Source, own : BoardOwn, id : String, start : () -> Unit) -> Unit {
+  let wait = fn() {
+    match (own.drafts_by)().get(id) {
+      Some(d) if !d.after.is_empty() || @sfbase.board_wait_of(d, [], [], false) is Unstarted(_) =>
+        @sfbase.board_wait_of(d, @sfbase.board_drafts_of(src, (own.ws)()), (own.items)(), @sfbase.board_listed_of(src, (own.ws)()))
+      _ => Free
+    }
+  }
+  card.pick(fn() { wait() }, at_once=true, fn(w, now) {
+    match now {
+      Free | Ready => ()
+      Waits(_) => wait_mark_node(w, fn() { @sfbase.board_wait_words(wait()) }, false)
+      Gone(_) | Failed(_) | Unstarted(_) =>
+        w.box(fn(b) {
+          b.gap(Is(6.0)) |> ignore
+          wait_mark_node(b, fn() { @sfbase.board_wait_words(wait()) }, true)
+          b.box(fn(keys) {
+            keys.row(Is(true)).gap(Is(6.0)) |> ignore
+            @sf.button_node(keys, fn() { @sf.t("web-main.board.clarify.start_anyway") }, start, tone=Ghost, icon="play") |> ignore
+            if !(now is Unstarted(_)) {
+              @sf.button_node(keys, fn() { @sf.t("web-main.board.clarify.drop_wait") }, fn() {
+                let ws = @signals.untracked(own.ws)
+                @sfbase.board_after_drop(src, ws, id, @signals.untracked(own.items), @signals.untracked(fn() { @sfbase.board_listed_of(src, ws) }))
+              }, tone=Ghost)
+              |> ignore
+            }
+          })
+          |> ignore
+        })
+        |> ignore
+    }
+  })
 }
 
 ///|
@@ -3024,10 +3143,11 @@ fn board_shared(own : BoardOwn, lane : String, id : String) -> String {
 let group_tag_look : @ui.TextStyle = @ui.text_style(size=Meta, color=AccentText, wrap=false, w=Cut)
 
 ///|
-/// The words a split was asked of, as written; a task's head (任务 n).
+/// The words a split was asked of, as written.
 // kept across runs: a value (no field of it changes)
 let clarify_said_look : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, wrap=true, max_lines=3)
 
 ///|
+/// A 「等 X」 mark's words where what it waits for is gone or errored: the danger's, one line, cut short.
 // kept across runs: a value (no field of it changes)
-let clarify_task_look : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false)
+let group_tag_danger_look : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false, w=Cut)

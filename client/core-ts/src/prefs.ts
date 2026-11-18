@@ -32,7 +32,7 @@ function boardDraftsOf(v: unknown): Map_[] | null {
   const out: Map_[] = [];
   for (const d of v) {
     if (!isObject(d)) return null;
-    const { id, title, station, stationName, files, group } = d;
+    const { id, title, station, stationName, files, group, after } = d;
     if (typeof id !== "string" || id === "" || id.length > 120) return null;
     const attached: Map_[] = [];
     if (files !== undefined) {
@@ -46,7 +46,22 @@ function boardDraftsOf(v: unknown): Map_[] | null {
     if (typeof station !== "string" || station === "" || station.length > 200) return null;
     if (typeof stationName !== "string" || stationName.length > 200) return null;
     if (group !== undefined && (typeof group !== "string" || group.length > 4000)) return null;
-    out.push({ id, title, station, stationName, ...(attached.length ? { files: attached } : {}), ...(group ? { group } : {}) });
+    // (the drafts of its split it waits for, each by its key and its words: at most a split's six)
+    const waits: Map_[] = [];
+    if (after !== undefined) {
+      if (!Array.isArray(after) || after.length > 6) return null;
+      for (const a of after) {
+        if (!isObject(a) || typeof a.id !== "string" || !a.id || a.id.length > 120 || a.id === id) return null;
+        if (typeof a.title !== "string" || a.title.length > 4000) return null;
+        waits.push({ id: a.id, title: a.title });
+      }
+    }
+    out.push({
+      id, title, station, stationName,
+      ...(attached.length ? { files: attached } : {}),
+      ...(group ? { group } : {}),
+      ...(waits.length ? { after: waits } : {}),
+    });
   }
   return out.slice(0, BOARD_DRAFTS_KEPT);
 }

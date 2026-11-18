@@ -26,6 +26,7 @@ export const FEATURES = {
   composerNodes: { stage: "experimental", betaOnly: true },
   farviewNative: { stage: "experimental", betaOnly: true },
   board: { stage: "experimental" },
+  boardClarify: { stage: "experimental" },
   terminal: { stage: "beta", station: true },
   stationMove: { stage: "beta", station: true },
 } as const satisfies Record<string, FeatureSpec>;

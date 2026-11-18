@@ -2023,6 +2023,7 @@ let fixture_experimental_features : Array[(String, Bool)] = [
   ("composerNodes", true),
   ("farviewNative", true),
   ("board", false),
+  ("boardClarify", false),
 ]
 
 ///|
@@ -2063,7 +2064,9 @@ fn fixture_experimental_items_json(test_channel : Bool, on : Map[String, Bool]) 
 /// The experimental switches a fixture of `mode` begins with on: the board's in the board's modes (a test's of the
 /// board sees it), Farview's own tabs in `farview` (a film of a Farview tab, MBUI_WINDOW its screen).
 fn fixture_experimental(mode : String) -> Map[String, Bool] {
-  if board_mode(mode) {
+  if mode.has_prefix("board-clarify") {
+    { "board": true, "boardClarify": true }
+  } else if board_mode(mode) {
     { "board": true }
   } else if mode == "farview" {
     { "farviewNative": true }
