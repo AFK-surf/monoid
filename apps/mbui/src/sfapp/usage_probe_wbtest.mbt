@@ -307,3 +307,50 @@ test "usage probe: on a device's pixels" {
     uprobe_at(t, "F\{platform}\{mode} back down 400")
   }
 }
+
+///|
+test "usage probe: answered empty while reading first" {
+  for mode in ["empty", "emptywait"] {
+    new_run()
+    let pending = @signals.signal(false, same=fn(a, b) { a == b })
+    let base = fixture("home")
+    let src = { ..base, topic_read: fn(name, params) {
+      let answer = base.topic(name, params).get().snapshot()
+      if name == "usage" && params.get("only") is Some(_) && pending.get() {
+        match answer.value {
+          Some(Object(o)) => {
+            let m = o.copy()
+            m["empty"] = Json::boolean(true)
+            m["lists"] = Json::array([])
+            if mode == "emptywait" {
+              m["wait"] = { "reading": Json::boolean(true), "failing": [], "empty": Json::boolean(true) }
+            }
+            { ..answer, value: Some(Json::object(m)) }
+          }
+          _ => answer
+        }
+      } else {
+        answer
+      }
+    } }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=1, scale=3.0)
+    t.set_rows_on_pixels(true)
+    bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(kept_switch_over_ms)
+    kept_go(t, "usage", true)
+    t.run_for(kept_switch_over_ms)
+    uprobe_tap(t, "人")
+    t.run_for(kept_switch_over_ms)
+    pending.set(true)
+    uprobe_tap(t, "林")
+    t.run_for(150.0)
+    uprobe_at(t, "G\{mode} pending")
+    pending.set(false)
+    t.run_for(kept_switch_over_ms)
+    match (t.rect_of("只看 林"), t.rect_of("花费明细")) {
+      (Some(c), Some(h)) => println("empty \{mode}: chip→head \{h.1 - c.1}")
+      (c, h) => println("empty \{mode}: chip \{c is Some(_)} head \{h is Some(_)}")
+    }
+    uprobe_end(t, "G\{mode}")
+  }
+}
