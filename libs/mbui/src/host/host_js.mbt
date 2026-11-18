@@ -1338,9 +1338,11 @@ fn window_snap_state() -> Int {
 }
 
 ///|
-/// A window of the app's own (see host_native.mbt): a browser's page opens none.
+/// A window of the app's own (see host_native.mbt): a browser's page opens one beside it, a popup of its origin, in
+/// this run (web/host.js H.windows: windows), where the browser lets it open popups and the run is not one to a
+/// declared moment; never as another run (window_open).
 fn window_opens() -> Bool {
-  false
+  js_windows(0, 0, "") != 0
 }
 
 ///|
@@ -1356,13 +1358,15 @@ fn window_front(what : String) -> Bool {
 }
 
 ///|
-/// The windows of this run (see host_native.mbt): a browser's page has its one.
+/// The windows of this run (see host_native.mbt): the page's, and the popups it opened beside it (web/host.js
+/// H.windows: 0 whether it opens them, 1 open one, 2 to the front, 3 close, 4 the window handled now, 5 its title).
 fn windows(op : Int, wid : Int, what : String) -> Int {
-  ignore(op)
-  ignore(wid)
-  ignore(what)
-  0
+  js_windows(op, wid, what)
 }
+
+///|
+extern "js" fn js_windows(op : Int, wid : Int, what : String) -> Int =
+  #|(op, wid, what) => { const h = globalThis.__mbhost; return h && h.windows ? (h.windows(op, wid, what) | 0) : 0 }
 
 ///|
 /// The pointer's shape (see host_native.mbt): the canvas's CSS cursor.

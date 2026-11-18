@@ -21,8 +21,16 @@
   let cb = null;
   let modifiersSaid = 0;
   let canvas, gl, prog, post, vao, instBuf, atlasTex, ta;
-  const U = {}, PU = {};
+  let U = {}, PU = {};
   let cssW = 0, cssH = 0, dpr = 1;
+  // the document and window of the window drawn or handled now (winUse: the page's own, but while a window opened beside
+  // it is in place)
+  let doc = typeof document !== 'undefined' ? document : null, hostWin = window;
+  // The windows of the run (H.windows, ---- windows ---- below): 0 the page, 1..15 windows opened beside it; winActive
+  // the one whose frame or input is handled now; winsOpen how many beside the page are open.
+  const MB_WINS = 16;
+  const wins = new Array(MB_WINS).fill(null);
+  let winActive = 0, winsOpen = 0;
   let sizeDirty = true, sizeObserver = null;
   // the numbers of an instance (src/ui/scene.mbt)
   const INST = 60;
@@ -50,7 +58,7 @@
     inFrame = true;
     const t = shotAt >= 0 ? clock : performance.now();
     // (what it waits for said again by the frame, if it still does: H.wakeAfter, from its time)
-    wakeFor = -1;
+    wakes0.at = -1;
     buildingFor = t;
     // the soft keyboard over the canvas's foot: the app laid out above it, the canvas keeping its size (as the phones'
     // apps keep their drawables', ios_app.m's drawFor)
@@ -76,18 +84,21 @@
   }
   // (no frame before the host knows what it decodes: H.run)
   let known = false;
+  // (and one of each window open beside the page, at that window's own display frame: tickSlot)
   H.requestFrame = () => {
-    if (!pending && cb && known && window.__done === undefined && window.__shot === undefined) {
+    if (!cb || !known || window.__done !== undefined || window.__shot !== undefined) return;
+    if (!pending) {
       pending = true;
       pendingRaf = requestAnimationFrame(tick);
     }
+    if (winsOpen) slotFrames();
   };
   // The frame a touch asked for, drawn while the browser still handles that touch rather than at the display's next:
   // iOS brings its soft keyboard up for a field focused (setIme's focus) only while a person's gesture is handled, and
   // a requestAnimationFrame later is out of it, so a field tapped took the focus with no keyboard, which came up only on
   // a second tap (its pointerdown's focus, setupInput). The display's frame asked for is called off: drawn once.
   function frameInGesture() {
-    if (!pending || !pendingRaf || shotAt >= 0) return;
+    if (!pending || !pendingRaf || shotAt >= 0 || winActive !== 0) return;
     cancelAnimationFrame(pendingRaf);
     tick();
   }
@@ -99,31 +110,40 @@
   // The frame `ms` after the one being built (its time), else after now: drawn at the first of the display's frames at
   // or past it, the ones before drawing nothing (not the one after a timer happens to fire: a step a frame or two
   // late by as much as that falls, a resident cycle's steps unevenly apart), the timer two frames before it.
-  let wakeFor = -1, buildingFor = -1;
+  // Each window waits for its own (the page's wakes0, one beside it its slot's wake: the window H.wakeAfter is said in),
+  // drawn at its own display's frame.
+  const wakes0 = { at: -1 };
+  let buildingFor = -1;
   // the display's frame (ms), as two of its frames come apart while a wait is due (60 a second until one has)
   let displayFrame = 1000 / 60, lastDue = -1;
   H.wakeAfter = (ms) => {
     if (shotAt >= 0) return;
+    const wid = winActive, slot = wid === 0 ? null : wins[wid];
+    const wake = slot ? slot.wake : wakes0;
+    const raf = slot ? (f) => { if (!slot.closed) slot.win.requestAnimationFrame(f); } : requestAnimationFrame;
     const at = (buildingFor >= 0 ? buildingFor : performance.now()) + ms;
-    if (wakeFor >= 0 && wakeFor <= at) return;
-    wakeFor = at;
+    if (wake.at >= 0 && wake.at <= at) return;
+    wake.at = at;
     const due = (ts) => {
       if (lastDue >= 0 && ts - lastDue > 0 && ts - lastDue < 100) displayFrame = ts - lastDue;
       lastDue = ts;
-      if (wakeFor !== at) return;
+      if (wake.at !== at) return;
       if (performance.now() < at - 0.5) {
-        requestAnimationFrame(due);
+        raf(due);
         return;
       }
-      wakeFor = -1;
+      wake.at = -1;
       lastDue = -1;
-      if (!pending && cb && known && window.__done === undefined && window.__shot === undefined) {
+      if (!cb || !known || window.__done !== undefined || window.__shot !== undefined) return;
+      if (slot) {
+        if (!slot.closed && !slot.pending) tickSlot(slot);
+      } else if (!pending) {
         pending = true;
         tick();
       }
     };
     const lead = Math.max(0, at - performance.now() - 2 * displayFrame);
-    setTimeout(() => requestAnimationFrame(due), lead);
+    setTimeout(() => raf(due), lead);
   };
   H.now = () => (shotAt >= 0 ? clock : performance.now());
   H.ownClock = () => shotAt >= 0;
@@ -367,7 +387,7 @@
     queueMicrotask(() => outside(kind, id, state));
   }
   function resize() {
-    const scale = window.devicePixelRatio || 1;
+    const scale = hostWin.devicePixelRatio || 1;
     if (scale !== dpr) {
       dpr = scale;
       // Glyph pictures in the atlas were rasterized at the old scale. The UI keeps their boxes and atlas places until
@@ -388,7 +408,7 @@
       canvas.height = h;
     }
     // (the system's bars as the page's size changes: a phone turned, a window moved)
-    if (barsSetUp) barsNow();
+    if (barsSetUp && winActive === 0) barsNow();
   }
 
   // ---- WebGL2 renderer ----
@@ -1602,14 +1622,16 @@
       }
       // a stream's picture (STREAM_TEX + its id): nothing until a frame of its own shows; a hole's image is its
       // view's (src/hostapi/host.mbt view_tex_base + its id), the element under the canvas here
+      // (in a window beside the page, its own texture of each: slotTex)
       const im = h ? null : tid > STREAM_TEX ? streams.get(tid - STREAM_TEX) : tid ? images.get(tid) : null;
-      if (!h && tid > STREAM_TEX && !(im && im.tex)) {
+      const tex = !im || !im.tex ? null : winActive === 0 ? im.tex : slotTex(wins[winActive], tid, im);
+      if (!h && tid > STREAM_TEX && !tex) {
         start = end;
         continue;
       }
-      if (!h && tid > 0 && tid <= STREAM_TEX && !(im && im.tex)) drewMissing = true;
+      if (!h && tid > 0 && tid <= STREAM_TEX && !tex) drewMissing = true;
       gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, im && im.tex ? im.tex : atlasTex);
+      gl.bindTexture(gl.TEXTURE_2D, tex || atlasTex);
       for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, start * INST * 4 + i * 16);
       if (h) gl.disable(gl.BLEND);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, end - start);
@@ -1630,10 +1652,10 @@
   let nextView = 0, viewLayer = null;
   function layer() {
     if (!viewLayer) {
-      viewLayer = document.createElement('div');
+      viewLayer = doc.createElement('div');
       // over the page's own ground, under the canvas (both positioned: the body's ground would cover a layer below 0)
       viewLayer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:0';
-      document.body.insertBefore(viewLayer, document.body.firstChild);
+      doc.body.insertBefore(viewLayer, doc.body.firstChild);
       canvas.style.zIndex = '1';
     }
     return viewLayer;
@@ -1647,8 +1669,9 @@
     for (const js of v.scripts) v.el.contentWindow.postMessage({ mbuiScript: js }, '*');
     v.scripts = [];
   };
-  // what a page's frame says, from that frame only (no other window may speak for it)
-  window.addEventListener('message', (e) => {
+  // what a page's frame says, from that frame only (no other window may speak for it); heard on the page and on each
+  // window beside it, whose frames say it to their own (slotPage)
+  const pageSaid = (e) => {
     if (!e.data || typeof e.data.mbuiSaid !== 'string') return;
     for (const v of views.values()) {
       if (v.kind !== 2 || e.source !== v.el.contentWindow) continue;
@@ -1657,7 +1680,8 @@
       runScripts(v);
       H.requestFrame();
     }
-  });
+  };
+  window.addEventListener('message', pageSaid);
   // ---- a site's frame ----
   // (the messages a site's frame and this host trade: `<the app's site name>-preview-…`, @hostapi.set_site_name)
   const preview = (name) => `${H.siteName || 'mbui'}-preview-${name}`;
@@ -1684,7 +1708,7 @@
   };
   const sitePost = (v, m, transfer) => { if (v.port) v.port.postMessage(m, transfer || []); };
   const siteNav = (v, action, path) => { if (v.el.contentWindow) v.el.contentWindow.postMessage({ type: preview('nav'), action, path }, v.origin); };
-  window.addEventListener('message', (e) => {
+  const siteSaid = (e) => {
     if (typeof e.data?.type !== 'string' || !fromFrame(e.data.type)) return;
     for (const v of views.values()) {
       if (v.kind !== 3 || e.source !== v.el.contentWindow || e.origin !== v.origin || e.data.nonce !== v.nonce) continue;
@@ -1700,36 +1724,40 @@
         H.requestFrame();
       }
     }
-  });
+  };
+  window.addEventListener('message', siteSaid);
   // Where a press goes: the canvas lies over every view, so while a site is seen it takes none: they go to what is under
   // it (`under`, behind the views: every press where no view takes it, and every press's capture, as it stays) and,
   // over it, to one box for each rect the app says takes a press over a site (view_tell 4). Not by the canvas cut away
   // (clip-path) where a site is: a press goes through that, Chromium's scrolling does not (a finger or a wheel on the
   // site moves nothing); `pointer-events` both go by.
+  // (each window's own, of the sites it shows: winSave; placeSitePresses for the window in place, siteFor another's)
   let under = null;
-  const coverBoxes = [];
+  let coverBoxes = [];
   const siteTakes = (v) => v.kind === 3 && v.seen && v.touch !== 'through';
   const placeSitePresses = () => {
-    const sites = [...views.values()].filter(siteTakes);
+    const sites = [...views.values()].filter((v) => (v.wid || 0) === winActive && siteTakes(v));
     canvas.style.pointerEvents = sites.length ? 'none' : '';
     if (sites.length && !under) {
-      under = document.createElement('div');
+      under = doc.createElement('div');
       under.style.cssText = 'position:fixed;inset:0;z-index:0;touch-action:none';
-      document.body.insertBefore(under, viewLayer);
+      doc.body.insertBefore(under, layer());
       takePresses(under);
     }
     const covers = sites.flatMap((v) => v.covers);
     while (coverBoxes.length > covers.length) coverBoxes.pop().remove();
     covers.forEach(([x0, y0, x1, y1], i) => {
       if (!coverBoxes[i]) {
-        coverBoxes[i] = document.createElement('div');
+        coverBoxes[i] = doc.createElement('div');
         coverBoxes[i].style.cssText = 'position:fixed;z-index:2;touch-action:none';
-        document.body.appendChild(coverBoxes[i]);
+        doc.body.appendChild(coverBoxes[i]);
         takePresses(coverBoxes[i]);
       }
       Object.assign(coverBoxes[i].style, { left: x0 + 'px', top: y0 + 'px', width: x1 - x0 + 'px', height: y1 - y0 + 'px' });
     });
   };
+  // the presses round the sites of window `wid` placed again (where it is open)
+  const siteFor = (wid) => { if (wid === 0 || liveSlot(wid)) inWin(wid, placeSitePresses); };
   H.viewSiteNext = (id) => {
     const v = views.get(id);
     return v && v.said && v.said.length ? v.said.shift() : '';
@@ -1776,13 +1804,13 @@
       if (what === 2) {
         v.touch = text.split(' ')[0];
         v.el.style.pointerEvents = v.touch === 'through' ? 'none' : 'auto';
-        placeSitePresses();
+        siteFor(v.wid || 0);
       }
       else if (what === 4) {
         const n = text ? text.split(' ').map(Number) : [];
         v.covers = [];
         for (let i = 0; i + 3 < n.length; i += 4) v.covers.push(n.slice(i, i + 4));
-        placeSitePresses();
+        siteFor(v.wid || 0);
       } else if (what === 7) {
         // what a socket did, on to the frame (NativeView::tell_frame): [sid, what, …]
         const [sid, kind, a, b, c] = JSON.parse(text);
@@ -1805,12 +1833,14 @@
   H.viewOpen = (kind, arg) => {
     if (kind !== 1 && kind !== 2 && !(kind === 3 && H.siteFrame)) return 0;
     const id = ++nextView;
-    const clip = document.createElement('div');
+    // (in the window in place: its own document's, under its canvas)
+    const mk = (tag) => (doc || document).createElement(tag);
+    const clip = mk('div');
     clip.style.cssText = 'position:absolute;overflow:hidden;display:none;background:' + (kind === 1 ? '#000' : '#fff');
-    const v = { kind, clip, state: 0, reads: [], waiting: new Map(), nextRead: 0, parts: [], have: 0, total: -1 };
+    const v = { kind, clip, wid: winActive, state: 0, reads: [], waiting: new Map(), nextRead: 0, parts: [], have: 0, total: -1 };
     info(v);
     if (kind === 1) {
-      const el = document.createElement('video');
+      const el = mk('video');
       el.playsInline = true;
       el.style.cssText = 'position:absolute;object-fit:fill';
       el.addEventListener('loadedmetadata', () => {
@@ -1855,7 +1885,7 @@
       };
       v.ask(0);
     } else if (kind === 3) {
-      const el = document.createElement('iframe');
+      const el = mk('iframe');
       el.style.cssText = 'position:absolute;border:0;background:#fff;pointer-events:auto;transform-origin:0 0';
       const frame = new URL(H.siteFrame, location.href);
       v.origin = frame.origin;
@@ -1872,7 +1902,7 @@
       el.addEventListener('error', () => { v.state = -1; ready(id, v, -1); stood(id); });
       v.el = el;
     } else {
-      const el = document.createElement('iframe');
+      const el = mk('iframe');
       el.setAttribute('sandbox', 'allow-scripts');
       el.style.cssText = 'position:absolute;border:0;background:#fff';
       // loaded: what a screenshot shows of it is the page itself (in the page's own picture)
@@ -1889,13 +1919,38 @@
     }
     clip.appendChild(v.el);
     clip.style.zIndex = String(++nextZ);
-    layer().appendChild(clip);
+    // (the layer and document it is in: viewPlace moves it where another window places it)
+    v.layer = layer();
+    v.doc = doc;
+    v.layer.appendChild(clip);
     views.set(id, v);
     return id;
   };
   H.viewPlace = (id, x, y, w, h, cx0, cy0, cx1, cy1, shown, r0 = 0, r1 = 0, r2 = 0, r3 = 0) => {
     const v = views.get(id);
     if (!v) return;
+    // Placed in another window than it was (a view the app keeps, taken from one window to another: ui's native.mbt):
+    // moved to this one's layer. Into another document its frame loads again: a site's from where it was (its port
+    // made again as it says it is ready), a page's scripts run again once it is there.
+    const here = layer();
+    if (v.layer !== here) {
+      const from = v.wid || 0;
+      v.wid = winActive;
+      v.layer = here;
+      if (v.doc !== doc) {
+        v.doc = doc;
+        if (v.kind === 3) {
+          if (v.port) { v.port.close(); v.port = null; }
+          try {
+            const u = new URL(v.el.src, location.href);
+            u.searchParams.set('path', (v.at && v.at.path) || '/');
+            v.el.src = u.href;
+          } catch (e) { /* its address as it was */ }
+        } else if (v.kind === 2) v.there = false;
+      }
+      here.appendChild(v.clip);
+      if (from !== winActive) siteFor(from);
+    }
     Object.assign(v.clip.style, { left: cx0 + 'px', top: cy0 + 'px', width: Math.max(0, cx1 - cx0) + 'px',
       height: Math.max(0, cy1 - cy0) + 'px', display: shown ? 'block' : 'none' });
     // (its corners round, each its own (top left, then round it), as the hole the app paints for it: the element cut
@@ -1913,12 +1968,12 @@
     }
     // where it is now, in device pixels, as the page laid it out (scripts/host_contract.sh web views: against VIEWTOLD)
     if (shown && H.log) {
-      const d = window.devicePixelRatio || 1, r = v.el.getBoundingClientRect(), k = v.clip.getBoundingClientRect();
-      const cv = (H.canvas || document.querySelector('canvas'));
+      const d = dpr || 1, r = v.el.getBoundingClientRect(), k = v.clip.getBoundingClientRect();
+      const cv = canvas || (doc || document).querySelector('canvas');
       const o = cv ? cv.getBoundingClientRect() : { left: 0, top: 0 };
       const f = (n) => n.toFixed(4);
       // (its corners as the page has them, each)
-      const cs = getComputedStyle(v.el);
+      const cs = (hostWin.getComputedStyle ? hostWin : window).getComputedStyle(v.el);
       const said = ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomRightRadius', 'borderBottomLeftRadius']
         .map((k) => parseFloat(cs[k]) || 0);
       H.log(`VIEWAT ${id} ${f((r.left - o.left) * d)} ${f((r.top - o.top) * d)} ${f(r.width * d)} ${f(r.height * d)} ` +
@@ -1933,7 +1988,7 @@
     if (v.kind === 1) { v.el.pause(); if (v.url) URL.revokeObjectURL(v.url); }
     if (v.kind === 3 && v.port) v.port.close();
     v.clip.remove();
-    placeSitePresses();
+    siteFor(v.wid || 0);
   };
   H.viewControl = (id, op, value) => {
     const v = views.get(id);
@@ -2046,6 +2101,8 @@
         bmp = small;
       }
       if (!images.has(id)) return bmp.close();
+      // (the page's canvas's: a window beside it takes a copy of its own as it first draws it, slotTex)
+      const gl = mainGl();
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
@@ -2097,6 +2154,7 @@
   H.imagePixels = (id, out) => {
     const im = images.get(id);
     if (!im || im.state !== 1 || !im.tex || out.length < im.w * im.h * 4) return 0;
+    const gl = mainGl();
     const was = gl.getParameter(gl.FRAMEBUFFER_BINDING);
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
@@ -2113,8 +2171,9 @@
   };
   H.imageFree = (id) => {
     const im = images.get(id);
-    if (im && im.tex) gl.deleteTexture(im.tex);
+    if (im && im.tex) mainGl().deleteTexture(im.tex);
     images.delete(id);
+    slotsForget(id);
   };
 
   // ---- streams (src/hostapi/stream.mbt) ----
@@ -2237,6 +2296,7 @@
   // The last shown frame stays until replaced or closed, so a lost GL texture can be made again even if the sender
   // has stopped sending frames. This is one ImageBitmap or VideoFrame per open stream.
   function uploadStream(s) {
+    const gl = mainGl();
     if (!s.shown || gl.isContextLost()) return;
     if (!s.tex) {
       s.tex = gl.createTexture();
@@ -2263,6 +2323,8 @@
     });
     if (s.shown) s.shown.close();
     s.shown = f.frame;
+    // (what a window beside the page holds of it uploaded again as it next draws it: slotTex)
+    s.shownGen = (s.shownGen || 0) + 1;
     uploadStream(s);
   };
   H.streamClose = (id) => {
@@ -2273,8 +2335,9 @@
     for (const f of s.decoded) f.frame.close();
     s.decoded = [];
     if (s.shown) s.shown.close();
-    if (s.tex) gl.deleteTexture(s.tex);
+    if (s.tex) mainGl().deleteTexture(s.tex);
     streams.delete(id);
+    slotsForget(STREAM_TEX + id);
   };
 
   // ---- text ----
@@ -2651,14 +2714,28 @@
   };
 
   // the glyph drawn last put in the atlas, its top left at x, y
-  H.glyphPut = (key, x, y) => {
-    if (!held || held.key !== key) return;
-    gl.bindTexture(gl.TEXTURE_2D, atlasTex);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, held.pw, held.ph, gl.RGBA, gl.UNSIGNED_BYTE, held.img);
+  // (the atlas is the run's, one for every window: put in each open window's texture of it, and how far it is filled
+  // kept, for a window opened later to copy that much of the page's: slotAtlas)
+  let atlasUsedW = 0, atlasUsedH = 0;
+  const putGlyph = (g, tex, x, y) => {
+    g.bindTexture(g.TEXTURE_2D, tex);
+    g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    g.texSubImage2D(g.TEXTURE_2D, 0, x, y, held.pw, held.ph, g.RGBA, g.UNSIGNED_BYTE, held.img);
     // (back as every other upload takes it: left on, it premultiplies the shapes' pieces too, segsUpload's floats
     // each times its four's last, and every icon after the first glyph drawn came out torn)
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  };
+  H.glyphPut = (key, x, y) => {
+    if (!held || held.key !== key) return;
+    putGlyph(gl, atlasTex, x, y);
+    if (winsOpen) {
+      for (let i = 0; i < MB_WINS; i++) {
+        const s = wins[i];
+        if (i !== winActive && s && !s.closed && s.gl) putGlyph(s.gl, s.atlasTex, x, y);
+      }
+    }
+    atlasUsedW = Math.min(ATLAS, Math.max(atlasUsedW, x + held.pw));
+    atlasUsedH = Math.min(ATLAS, Math.max(atlasUsedH, y + held.ph));
     held = null;
   };
 
@@ -2734,8 +2811,8 @@
       if (ta.selectionStart !== s || ta.selectionEnd !== e) ta.setSelectionRange(s, e);
       taHad = text;
     }
-    if (active && document.activeElement !== ta) ta.focus({ preventScroll: true });
-    if (!active && document.activeElement === ta) ta.blur();
+    if (active && doc.activeElement !== ta) ta.focus({ preventScroll: true });
+    if (!active && doc.activeElement === ta) ta.blur();
   };
 
   // The input method's keyboard for the field about to type (@hostapi.ime_action, said before setIme: 0 none, 1 a
@@ -2763,7 +2840,7 @@
       if (want[name]) ta.setAttribute(name, want[name]);
       else ta.removeAttribute(name);
     }
-    if (document.activeElement === ta) {
+    if (doc.activeElement === ta) {
       imeRefocus = true;
       ta.blur();
       imeRefocus = false;
@@ -2802,7 +2879,10 @@
   }
 
   let takePresses = null;
-  function setupInput() {
+  // The input of a window (the page's, or one opened beside it: `win`, its id `wid`, its canvas and textarea in place
+  // as it is set up): each event handled as that window's (inWin).
+  function setupInput(win = window, wid = 0) {
+    const on = (target, name, f, opts) => target.addEventListener(name, (e) => inWin(wid, () => f(e)), opts);
     // (a touch screen's fingers each by its pointerId, as they come: kinds 10 down, 11 moved, 12 up, 13 called off, what
     // they come to the app's to work out, touches.mbt)
     const touch = (e) => e.pointerType === 'touch';
@@ -2811,8 +2891,8 @@
       if (force || mods !== modifiersSaid) cb.key(0, mods);
     };
     // (the canvas's, and what takes them in its place while a site is seen)
-    takePresses = (el) => {
-      el.addEventListener('pointerdown', (e) => {
+    const presses = (el) => {
+      on(el, 'pointerdown', (e) => {
         e.preventDefault();
         // A key may have been held before the browser gained focus.
         tellModifiers(modsOf(e));
@@ -2824,21 +2904,21 @@
         // keep the keyboard on the textarea while an editor has focus
         if (imeActive) ta.focus({ preventScroll: true });
       });
-      el.addEventListener('pointermove', (e) => (touch(e) ? ptr(11, e, e.pointerId) : ptr(1, e, 0)));
-      el.addEventListener('pointerup', (e) => {
+      on(el, 'pointermove', (e) => (touch(e) ? ptr(11, e, e.pointerId) : ptr(1, e, 0)));
+      on(el, 'pointerup', (e) => {
         if (touch(e)) { ptr(12, e, e.pointerId); frameInGesture(); }
         else ptr(2, e, e.button === 2 ? 2 : 0);
       });
-      el.addEventListener('pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
+      on(el, 'pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
       // a site or the outside is: nothing of the app is hovered there.
-      el.addEventListener('pointerleave', (e) => {
+      on(el, 'pointerleave', (e) => {
         const to = e.relatedTarget;
         const appInput = to === canvas || (to != null && (to === under || coverBoxes.includes(to)));
         if (e.pointerType === 'mouse' && !appInput) cb.pointer(7, -1, -1, 0);
       });
-      el.addEventListener('contextmenu', (e) => e.preventDefault());
-      el.addEventListener('wheel', (e) => {
+      on(el, 'contextmenu', (e) => e.preventDefault());
+      on(el, 'wheel', (e) => {
         const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? cssH : 1;
         const [x, y] = pos(e);
         // lines (a mouse wheel's notches, as Firefox says them): eased in by the app (phase 4)
@@ -2851,16 +2931,17 @@
         if (!e.ctrlKey || H.wheelKept) e.preventDefault();
       }, { passive: false });
     };
-    takePresses(canvas);
+    takePresses = presses;
+    presses(canvas);
     const keymap = { Backspace: 1, Delete: 2, ArrowLeft: 3, ArrowRight: 4, ArrowUp: 5, ArrowDown: 6, Enter: 7, Home: 8, End: 9, PageUp: 15, PageDown: 16, Escape: 17, Tab: 18 };
     // the browser's own shortcuts left to it (reload, close, a new tab or window, the address bar, quit, zoom)
     const browsers = new Set(['r', 'w', 't', 'n', 'l', 'q', 'v']);
     // Modifier-only keys are input too. Other keys keep their normal path, including browser shortcuts.
     const modifiers = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS']);
     const modifierKey = (e) => { if (modifiers.has(e.key)) tellModifiers(modsOf(e), true); };
-    window.addEventListener('keydown', modifierKey, true);
-    window.addEventListener('keyup', modifierKey, true);
-    window.addEventListener('blur', () => tellModifiers(0, true));
+    on(win, 'keydown', modifierKey, true);
+    on(win, 'keyup', modifierKey, true);
+    on(win, 'blur', () => tellModifiers(0, true));
     const command = (e) => keysCmd() === 8 ? e.metaKey : e.ctrlKey;
     const browserKey = (e, c) => command(e) && (browsers.has(c) ||
       (!e.altKey && !(e.ctrlKey && e.metaKey) && ['+', '=', '-', '0'].includes(c)));
@@ -2874,7 +2955,7 @@
       return ({ a: 24, b: 3, d: 2, e: 25, f: 4, h: 1, k: 35, n: 6, p: 5, v: 16,
         ArrowLeft: 22, ArrowRight: 23, ArrowUp: 15, ArrowDown: 16 })[c] || 0;
     };
-    ta.addEventListener('keydown', (e) => {
+    on(ta, 'keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
       const mods = modsOf(e);
       // a key catcher's focus (device, below): Alt too makes a shortcut; select all, copy, cut are its keys
@@ -2900,7 +2981,7 @@
       if (code) { cb.key(code, mods); e.preventDefault(); }
     });
     // with no field focused, the keys are the app's (its shortcuts, Escape, the arrows; a character as 1000 + it)
-    window.addEventListener('keydown', (e) => {
+    on(win, 'keydown', (e) => {
       if (e.target === ta || imeActive || e.isComposing) return;
       if (e.altKey && e.key === 'ArrowLeft') return; // back (below)
       const mods = modsOf(e);
@@ -2919,7 +3000,7 @@
     // the next over it; another's keyboard may delete it key by key and type the next), corrections and suggestions
     // replace a word, each an event whose data is only the new words. (The textarea is given the field's words again
     // as the app says them, setIme.)
-    ta.addEventListener('input', (e) => {
+    on(ta, 'input', (e) => {
       if (e.isComposing || composing) return;
       const was = taHad, now = ta.value;
       taHad = now;
@@ -2932,8 +3013,8 @@
     // The keyboard put away by the person (Safari's Done over it), not by the app: the field lets go of the focus, as
     // the phones' apps' do (or setIme would take the focus back and the keyboard come up again). (The page sent behind
     // blurs the textarea too, and leaves it the focused element.)
-    ta.addEventListener('blur', () => {
-      if (!imeRefocus && imeActive && keyboardOver() > 0 && document.activeElement !== ta) {
+    on(ta, 'blur', () => {
+      if (!imeRefocus && imeActive && keyboardOver() > 0 && doc.activeElement !== ta) {
         cb.text(7, '', 0, 0);
         H.requestFrame();
       }
@@ -2953,33 +3034,36 @@
       }
       e.preventDefault();
     };
-    ta.addEventListener('paste', pasted);
+    on(ta, 'paste', pasted);
     // (with no field focused, what is pasted goes to the page: a chat's ⌘V of a picture with the composer not focused)
-    window.addEventListener('paste', (e) => { if (e.target !== ta) pasted(e); });
-    ta.addEventListener('compositionstart', () => { composing = true; });
-    ta.addEventListener('compositionupdate', (e) => cb.text(1, e.data || '', (e.data || '').length, 0));
-    ta.addEventListener('compositionend', (e) => {
+    on(win, 'paste', (e) => { if (e.target !== ta) pasted(e); });
+    on(ta, 'compositionstart', () => { composing = true; });
+    on(ta, 'compositionupdate', (e) => cb.text(1, e.data || '', (e.data || '').length, 0));
+    on(ta, 'compositionend', (e) => {
       composing = false;
       taHad = ta.value;
       cb.text(1, '', 0, 0);
       if (e.data) cb.text(0, e.data, 0, 0);
     });
-    const sizeChanged = () => { sizeDirty = true; H.requestFrame(); };
-    window.addEventListener('resize', sizeChanged);
+    const sizeChanged = () => inWin(wid, () => { sizeDirty = true; H.requestFrame(); });
+    on(win, 'resize', sizeChanged);
     // (the soft keyboard coming or going changes no size of the page's: keyboardOver)
-    window.visualViewport?.addEventListener('resize', H.requestFrame);
-    window.visualViewport?.addEventListener('scroll', H.requestFrame);
-    if (typeof ResizeObserver !== 'undefined') {
-      sizeObserver = new ResizeObserver(sizeChanged);
+    if (win.visualViewport) {
+      on(win.visualViewport, 'resize', H.requestFrame);
+      on(win.visualViewport, 'scroll', H.requestFrame);
+    }
+    const Observer = win.ResizeObserver || (typeof ResizeObserver !== 'undefined' ? ResizeObserver : undefined);
+    if (Observer) {
+      sizeObserver = new Observer(sizeChanged);
       sizeObserver.observe(canvas);
     }
     // A window can move between displays with different scales without changing its CSS size (and so without a
     // resize event). Watch the current resolution, then subscribe to the new one when it changes.
-    if (window.matchMedia) {
+    if (win.matchMedia) {
       let resolution;
       const watch = () => {
         if (resolution) resolution.removeEventListener('change', changed);
-        resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+        resolution = win.matchMedia(`(resolution: ${win.devicePixelRatio || 1}dppx)`);
         resolution.addEventListener('change', changed);
       };
       const changed = () => {
@@ -2993,7 +3077,7 @@
   // the pointer's shape (@hostapi.set_cursor)
   const cursors = ['default', 'pointer', 'text', 'ew-resize', 'ns-resize', 'grab', 'grabbing', 'crosshair', 'not-allowed', 'nwse-resize', 'nesw-resize'];
   // (the page's, which all that takes presses inherits)
-  H.setCursor = (k) => { document.body.style.cursor = cursors[k] || 'default'; };
+  H.setCursor = (k) => { doc.body.style.cursor = cursors[k] || 'default'; };
   H.clipboardSet = (s) => { navigator.clipboard?.writeText(s).catch(() => {}); };
   // The floating text menu over words picked by a finger (@hostapi.text_menu: a field's, or the page's words a finger
   // held, as Android's ActionMode and iOS's edit menu): a small bar of the page's own over the rectangle given (under
@@ -3703,10 +3787,20 @@
     canvas = document.getElementById('c');
     ta = document.getElementById('ime');
     canvas.addEventListener('webglcontextlost', contextLost);
-    canvas.addEventListener('webglcontextrestored', contextRestored);
+    canvas.addEventListener('webglcontextrestored', () => inWin(0, contextRestored));
     setupGL();
     setupInput();
     setupPage();
+    // (the page's window, 0: what it keeps is put here as another's frame or input is handled, winUse)
+    wins[0] = { wid: 0, win: window, closed: false, closing: false, wake: wakes0, texs: new Map(), under: null,
+      coverBoxes: [], takePresses: null };
+    // the windows opened beside the page go with it
+    window.addEventListener('pagehide', () => {
+      for (let i = 1; i < MB_WINS; i++) {
+        const s = wins[i];
+        if (s && !s.closed) { slotGone(s, false); try { s.win.close(); } catch (e) { /* gone already */ } }
+      }
+    });
     // Remember what every key told the app, including one received with a modifier already held.
     modifiersSaid = 0;
     cb = { frame, pointer, wheel, key: (code, mods) => { modifiersSaid = mods; key(code, mods); }, text };
@@ -3717,6 +3811,363 @@
       known = true;
       H.requestFrame();
     });
+  };
+
+  // ---- windows (@hostapi.windows_in_process, window_open_id …; host_js.mbt's windows) ----
+  // A window of the run beside the page is a popup of the same origin, opened by the page itself (window.open of
+  // about:blank), so it is the same program, core and memory as the page: its own canvas, WebGL 2 context, textarea and
+  // input, drawn and handled as the page is, each frame and event of it handed to the app with it in place (winUse:
+  // the globals of the drawing and the input above are that window's while it is, the page's put back after;
+  // H.windows(4) says which, as window_slots.mbt's in_host_window reads it). A WebGL texture is its context's alone:
+  // the glyph atlas, the run's, is put in every window's texture of it as a glyph is drawn (H.glyphPut), and a window
+  // opened later copies as much of the page's as is filled; a picture decoded or a stream's frame shown is the page's
+  // texture, copied into a window's own as that window first draws it (slotTex). A window the person closes (its
+  // pagehide) is let go of and the app told (outside OUTSIDE_WINDOW, -1), between its events; one the app closes
+  // (H.windows(3)) is not told again. Its id is not given to another till that is told.
+  // Ops: 0 whether windows open here (1, or 0: a run to a declared moment, one rendering, a page that cannot open one),
+  // 1 open one (`what`: JSON {role, title, w, h, minW, minH}, each optional; its id, 0 if none opened), 2 bring `wid` to
+  // the front (1, 0 gone), 3 close `wid`, 4 the window handled now, 5 set `wid`'s title (-1: the window handled now).
+  const OUTSIDE_WINDOW = 17;
+  // (where a window of a role was as it last closed, in this run: the next of that role opens there)
+  const rolesKept = new Map();
+  function winSave(s) {
+    Object.assign(s, {
+      canvas, gl, prog, post, vao, instBuf, atlasTex, ta, U, PU, cssW, cssH, dpr, sizeDirty, sizeObserver,
+      lv, lvW, lvH, bdTex, rTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
+      under, coverBoxes, takePresses, doc, hostWin,
+    });
+  }
+  function winLoad(s) {
+    ({
+      canvas, gl, prog, post, vao, instBuf, atlasTex, ta, U, PU, cssW, cssH, dpr, sizeDirty, sizeObserver,
+      lv, lvW, lvH, bdTex, rTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
+      under, coverBoxes, takePresses, doc, hostWin,
+    } = s);
+  }
+  // window `wid` put in place; false where it is gone (nothing of it is handled)
+  function winUse(wid) {
+    if (wid === winActive) return true;
+    const to = wins[wid], from = wins[winActive];
+    if (!to || !from || (wid !== 0 && to.closed)) return false;
+    winSave(from);
+    winLoad(to);
+    winActive = wid;
+    return true;
+  }
+  // `f` done as window `wid`, the one in place before put back after
+  function inWin(wid, f) {
+    if (wid === winActive) return f();
+    const back = winActive;
+    if (!winUse(wid)) return undefined;
+    try { return f(); } finally { winUse(back); }
+  }
+  const mainGl = () => (winActive === 0 || !wins[0] ? gl : wins[0].gl);
+  const liveSlot = (wid) => {
+    const s = wid > 0 && wid < MB_WINS ? wins[wid] : null;
+    return s && !s.closed && !s.closing ? s : null;
+  };
+  const windowsHere = () => shotAt < 0 && !globalThis.__mbrender && typeof window !== 'undefined' &&
+    typeof window.open === 'function';
+
+  // A texture of `g`'s read back (premultiplied RGBA, its first row first), or null.
+  function texPixels(g, tex, w, h) {
+    if (!g || !tex || w <= 0 || h <= 0 || g.isContextLost()) return null;
+    const was = g.getParameter(g.FRAMEBUFFER_BINDING);
+    const fb = g.createFramebuffer();
+    g.bindFramebuffer(g.FRAMEBUFFER, fb);
+    g.framebufferTexture2D(g.FRAMEBUFFER, g.COLOR_ATTACHMENT0, g.TEXTURE_2D, tex, 0);
+    let px = null;
+    if (g.checkFramebufferStatus(g.FRAMEBUFFER) === g.FRAMEBUFFER_COMPLETE) {
+      px = new Uint8Array(w * h * 4);
+      g.readPixels(0, 0, w, h, g.RGBA, g.UNSIGNED_BYTE, px);
+    }
+    g.bindFramebuffer(g.FRAMEBUFFER, was);
+    g.deleteFramebuffer(fb);
+    return px;
+  }
+  function newTex() {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  }
+  // The texture of picture or stream `tid` (`im`: images' or streams' entry, its page's texture ready) in window `s`,
+  // in place now: made of the page's as it first draws it, a stream's again at each frame shown since. (On texture
+  // unit 1, which drawFrame binds it to next: the others hold the atlas, the capture and the shapes' pieces.)
+  function slotTex(s, tid, im) {
+    if (!s || !gl) return null;
+    let e = s.texs.get(tid);
+    if (tid > STREAM_TEX) {
+      if (!im.shown) return null;
+      const gen = im.shownGen || 0;
+      if (e && e.gen === gen) return e.tex;
+      gl.activeTexture(gl.TEXTURE1);
+      if (!e) { e = { tex: newTex(), gen: -1 }; s.texs.set(tid, e); }
+      gl.bindTexture(gl.TEXTURE_2D, e.tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im.shown);
+      e.gen = gen;
+      return e.tex;
+    }
+    if (e) return e.tex;
+    const px = texPixels(wins[0].gl, im.tex, im.w, im.h);
+    if (!px) return null;
+    gl.activeTexture(gl.TEXTURE1);
+    const tex = newTex();
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, im.w, im.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    s.texs.set(tid, { tex, gen: 0 });
+    return tex;
+  }
+  // a picture or stream let go: each window's texture of it too
+  function slotsForget(tid) {
+    if (!winsOpen) return;
+    for (let i = 1; i < MB_WINS; i++) {
+      const s = wins[i], e = s && s.texs.get(tid);
+      if (!e) continue;
+      s.texs.delete(tid);
+      try { (i === winActive ? gl : s.gl).deleteTexture(e.tex); } catch (err) { /* its context gone */ }
+    }
+  }
+  // The atlas of the window in place (just made, or given back after its context was lost) made what the page's
+  // holds: as much of it as is filled copied.
+  function slotAtlas() {
+    if (!atlasUsedW || !atlasUsedH || !wins[0]) return;
+    const px = texPixels(wins[0].gl, wins[0].atlasTex, atlasUsedW, atlasUsedH);
+    if (!px) return;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, atlasTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, atlasUsedW, atlasUsedH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  }
+
+  // window `s` let go of (the person closed it, or the app, or the page goes), the page in place; told to the app
+  // (`tell`) between events, its id kept from another window till then
+  function slotGone(s, tellApp) {
+    if (s.closed) return;
+    if (winActive === s.wid) winUse(0);
+    s.closed = true;
+    winsOpen--;
+    try {
+      const w = s.win.innerWidth, h = s.win.innerHeight;
+      if (s.role && w > 0 && h > 0) rolesKept.set(s.role, { w, h, left: s.win.screenX, top: s.win.screenY });
+    } catch (e) { /* gone already */ }
+    try { if (s.raf) s.win.cancelAnimationFrame(s.raf); } catch (e) { /* gone already */ }
+    s.raf = 0;
+    try { if (s.sizeObserver) s.sizeObserver.disconnect(); } catch (e) { /* gone already */ }
+    for (const e of s.texs.values()) { try { s.gl.deleteTexture(e.tex); } catch (err) { /* its context gone */ } }
+    s.texs.clear();
+    // (the views it showed, the app's still where it keeps them: out of its document, placed again where it next shows
+    // one, H.viewPlace)
+    for (const v of views.values()) {
+      if (v.wid !== s.wid) continue;
+      v.clip.remove();
+      v.layer = null;
+      v.seen = null;
+      if (v.kind === 3 && v.port) { v.port.close(); v.port = null; }
+    }
+    if (!tellApp) {
+      if (wins[s.wid] === s) wins[s.wid] = null;
+      return;
+    }
+    queueMicrotask(() => {
+      if (wins[s.wid] === s) wins[s.wid] = null;
+      if (outside) outside(OUTSIDE_WINDOW, s.wid, -1);
+      H.requestFrame();
+    });
+  }
+
+  // a frame of each window beside the page that has none asked for yet, at its own display's next
+  function slotFrames() {
+    for (let i = 1; i < MB_WINS; i++) {
+      const s = wins[i];
+      if (!s || s.closed || s.closing || s.pending) continue;
+      if (s.win.closed) { slotGone(s, true); continue; }
+      s.pending = true;
+      s.raf = s.win.requestAnimationFrame(() => tickSlot(s));
+    }
+  }
+  function tickSlot(s) {
+    s.pending = false;
+    s.raf = 0;
+    if (s.closed || s.closing) return;
+    if (s.win.closed) { slotGone(s, true); return; }
+    if (!cb || window.__done !== undefined) return;
+    inWin(s.wid, () => {
+      resize();
+      inFrame = true;
+      const t = performance.now();
+      s.wake.at = -1;
+      buildingFor = t;
+      try {
+        cb.frame(cssW, Math.max(1, cssH), dpr, t);
+      } finally {
+        buildingFor = -1;
+        inFrame = false;
+      }
+    });
+  }
+
+  // A window opened beside the page for `what` (op 1): its id, 0 where the browser opened none (its popups blocked),
+  // gave one of another origin or no WebGL 2 there.
+  function windowOpen(what) {
+    if (!windowsHere() || !wins[0] || !cb) return 0;
+    let wid = 1;
+    while (wid < MB_WINS && wins[wid]) wid++;
+    if (wid >= MB_WINS) return 0;
+    let spec = {};
+    if (what.startsWith('{')) {
+      try {
+        const v = JSON.parse(what);
+        if (v && typeof v === 'object') spec = v;
+      } catch (e) { /* not JSON: what it shows, said to the app alone */ }
+    }
+    const num = (v) => (typeof v === 'number' && v > 0 && Number.isFinite(v) ? Math.round(v) : 0);
+    const role = typeof spec.role === 'string' ? spec.role : '';
+    const kept = role ? rolesKept.get(role) : null;
+    const w = kept ? kept.w : num(spec.w) || Math.round(cssW || 900);
+    const h = kept ? kept.h : num(spec.h) || Math.round(cssH || 700);
+    const minW = num(spec.minW), minH = num(spec.minH);
+    let left = kept ? kept.left : null, top = kept ? kept.top : null;
+    // (one of the same role open: the new one a step down and right of it)
+    for (let i = 1; i < MB_WINS; i++) {
+      const s = liveSlot(i);
+      if (!s || !role || s.role !== role) continue;
+      try { left = s.win.screenX + 28; top = s.win.screenY + 28; } catch (e) { /* gone already */ }
+    }
+    const place = left === null || top === null ? '' : `,left=${Math.round(left)},top=${Math.round(top)}`;
+    let child = null;
+    try { child = window.open('about:blank', '', `popup=yes,width=${w},height=${h}${place}`); } catch (e) { child = null; }
+    if (!child) return 0;
+    let cdoc = null;
+    try { cdoc = child.document; } catch (e) { cdoc = null; }
+    if (!cdoc || !cdoc.body) {
+      try { child.close(); } catch (e) { /* gone already */ }
+      return 0;
+    }
+    // the page as the app's own page is (web/index.html): its ground, a canvas over all of it, the textarea at the caret
+    const page = wins[0], pageDoc = document;
+    let ground = '';
+    try { ground = window.getComputedStyle(pageDoc.body).backgroundColor || ''; } catch (e) { ground = ''; }
+    cdoc.title = String(spec.title || pageDoc.title || '');
+    const style = cdoc.createElement('style');
+    style.textContent = `html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;background:${ground || '#F5F5F7'}}` +
+      'canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none;display:block;user-select:none;' +
+      '-webkit-user-select:none;-webkit-touch-callout:none;z-index:1}' +
+      'textarea{position:fixed;left:0;top:0;width:2px;height:20px;opacity:0;padding:0;border:0;resize:none;' +
+      'overflow:hidden;font-size:16px;caret-color:transparent;color:transparent;background:transparent;outline:none}';
+    (cdoc.head || cdoc.documentElement).appendChild(style);
+    const ccanvas = cdoc.createElement('canvas'), cta = cdoc.createElement('textarea');
+    const pageTa = winActive === 0 ? ta : page.ta;
+    for (const a of pageTa && pageTa.attributes ? [...pageTa.attributes] : []) {
+      if (a.name !== 'id' && a.name !== 'style') cta.setAttribute(a.name, a.value);
+    }
+    cdoc.body.appendChild(ccanvas);
+    cdoc.body.appendChild(cta);
+    const s = {
+      wid, win: child, role, minW, minH, closed: false, closing: false, pending: false, raf: 0, wake: { at: -1 },
+      texs: new Map(),
+      canvas: ccanvas, gl: null, prog: null, post: null, vao: null, instBuf: null, atlasTex: null, ta: cta,
+      U: {}, PU: {}, cssW: 0, cssH: 0, dpr: child.devicePixelRatio || 1, sizeDirty: true, sizeObserver: null,
+      lv: null, lvW: 0, lvH: 0, bdTex: null, rTex: null, cv: null, cvOk: false, target: null, dirty: [],
+      dirtyWhole: false, dirtyTold: false, missing: false, drewMissing: false, cutOn: false, segsTex: null,
+      segsRows: 0, segsHad: null, segsHadRows: 0, uploadedFor: -1, imeActive: false, composing: false, taHad: '',
+      imeKind: 0, viewLayer: null, under: null, coverBoxes: [], takePresses: null, doc: cdoc, hostWin: child,
+    };
+    wins[wid] = s;
+    winsOpen++;
+    let made = false;
+    inWin(wid, () => {
+      try {
+        setupGL();
+        slotAtlas();
+        setupInput(child, wid);
+        slotPage(s);
+        made = true;
+      } catch (e) {
+        H.log('window ' + wid + ': ' + e);
+      }
+    });
+    if (!made) {
+      slotGone(s, false);
+      try { child.close(); } catch (e) { /* gone already */ }
+      return 0;
+    }
+    H.requestFrame();
+    return wid;
+  }
+  // What a window beside the page answers of its own: the keys held, Escape kept from the browser, its least size, its
+  // context lost and given back, its closing.
+  function slotPage(s) {
+    const win = s.win, wid = s.wid;
+    const held = (e) => { modsNow = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); };
+    for (const name of ['pointerdown', 'pointermove', 'pointerup', 'keydown', 'keyup', 'wheel']) {
+      win.addEventListener(name, held, { capture: true, passive: true });
+    }
+    win.addEventListener('blur', () => { modsNow = 0; });
+    win.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229) e.preventDefault();
+    }, { capture: true });
+    // (no smaller than the app said: a popup the page opened is one it may size)
+    if (s.minW || s.minH) {
+      win.addEventListener('resize', () => {
+        const dw = Math.max(0, s.minW - win.innerWidth), dh = Math.max(0, s.minH - win.innerHeight);
+        if (dw || dh) { try { win.resizeBy(dw, dh); } catch (e) { /* the browser's to refuse */ } }
+      });
+    }
+    s.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); });
+    s.canvas.addEventListener('webglcontextrestored', () => inWin(wid, () => {
+      setupGL();
+      lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
+      segsTex = null; segsRows = 0; segsHad = null; segsHadRows = 0;
+      uploadedFor = -1;
+      s.texs.clear();
+      slotAtlas();
+      H.requestFrame();
+    }));
+    // (what the frames in it say goes to it, their parent)
+    win.addEventListener('message', pageSaid);
+    win.addEventListener('message', siteSaid);
+    const gone = () => { if (!s.closed) slotGone(s, true); };
+    win.addEventListener('pagehide', gone);
+    win.addEventListener('unload', gone);
+  }
+
+  H.windows = (op, wid, what) => {
+    if (op === 0) return windowsHere() ? 1 : 0;
+    if (op === 1) return windowOpen(String(what || ''));
+    if (op === 2) {
+      if (wid === 0) { try { window.focus(); } catch (e) { /* the browser's to refuse */ } return 1; }
+      const s = liveSlot(wid);
+      if (!s) return 0;
+      if (s.win.closed) { slotGone(s, true); return 0; }
+      try { s.win.focus(); } catch (e) { /* the browser's to refuse */ }
+      return 1;
+    }
+    if (op === 3) {
+      const s = liveSlot(wid);
+      if (!s) return 0;
+      // (not in the middle of what is handled now, which may be that window's own frame: once it is over)
+      s.closing = true;
+      queueMicrotask(() => {
+        slotGone(s, false);
+        try { s.win.close(); } catch (e) { /* gone already */ }
+      });
+      return 1;
+    }
+    if (op === 4) return winActive;
+    if (op === 5) {
+      const to = wid < 0 ? winActive : wid;
+      const title = String(what || '');
+      if (to === 0) { document.title = title; return 1; }
+      const s = liveSlot(to);
+      if (!s) return 0;
+      try { s.doc.title = title; } catch (e) { return 0; }
+      return 1;
+    }
+    return 0;
   };
 
   // ---- the page round the app: the keys held, the system's bars, its title and colour, its history ----
@@ -3834,6 +4285,8 @@
   // the page is pinched in (less of it shown, with no keyboard), nor for less than a point (a browser zoomed to a
   // fraction rounds the two apart).
   function keyboardOver() {
+    // (a window beside the page is a desktop's: no soft keyboard over it)
+    if (winActive !== 0) return 0;
     const v = window.visualViewport;
     if (!v || Math.abs(v.scale - 1) > 0.001) return 0;
     const over = cssH - v.height - v.offsetTop;

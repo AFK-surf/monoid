@@ -166,6 +166,11 @@ pub fn side_ask(src : Source, r : ChatRef, action : String, tab : String?) -> Un
 /// there already (the same file, what it said of itself then aside: view_tab_file's same_file), that one brought to the
 /// front, never a second: the tab put in front.
 pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
+  // (that file in a window of its own: the window to the front, the panel left as it is: sfbase's tab_window_front)
+  match @sfbase.tab_window_front(r, tab) {
+    Some(there) => return there
+    None => ()
+  }
   let open = match @sfbase.view_tab_file(tab) {
     Some(f) =>
       side_now(src, r).0
@@ -202,6 +207,10 @@ pub fn side_toggle(src : Source, r : ChatRef, tab : String) -> Unit {
 /// others what they read as they are first drawn (side_tab_asks), through press_wait (sfbase's open_answered:
 /// open_hold_ms at most, given up as the chat is left); one there already, brought to the front at once.
 pub fn side_tab_open(src : Source, r : ChatRef, tab : String) -> Unit {
+  // (in a window of its own: that window to the front instead, sfbase's tab_window_front)
+  if @sfbase.tab_window_front(r, tab) is Some(_) {
+    return
+  }
   let open = fn() { side_change(src, r, "open", Some(tab)) }
   if side_history_tab(tab) {
     history_side_open(src, r, tab, open)

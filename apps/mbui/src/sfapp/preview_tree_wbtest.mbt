@@ -1864,7 +1864,7 @@ test "viewer on the tree, a wide window, the bar across the top the same coming 
       // (where a page's bar's last stands, the window so: clear of its own buttons where they are the app's, else at
       // its corner)
       let want = if @ui.window_keys_own() {
-        @sf.window_keys_room_at(1280.0) + @sf.viewer_bar_in
+        @sf.window_keys_room() + @sf.viewer_bar_in
       } else {
         @sf.window_end_in(@sf.viewer_bar_in)
       }
@@ -2093,7 +2093,7 @@ test "viewer on the tree, the bar across the top, a name far longer than its mid
           let short = wide_bar_room("image", w, platform, fs, hold)
           let long = wide_bar_room("long", w, platform, fs, hold)
           let end_in = if platform == 3 {
-            @sf.window_keys_room_at(w) + @sf.viewer_bar_in
+            @sf.window_keys_room() + @sf.viewer_bar_in
           } else {
             @sf.window_end_in(@sf.viewer_bar_in)
           }

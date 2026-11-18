@@ -474,9 +474,14 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
     window_shown.val = true
     @hostapi.window_show()
   }
-  // the window's own buttons where they are the app's (Windows'), over all of it as a title bar's are
+  // the window's own buttons where they are the app's (Windows'), over all of it as a title bar's are: on the bar's
+  // line of a page over all the window (a window of its own, a chat's tab or a file over the whole window) at any
+  // width, as in a window's whole
   if @ui.window_keys_own() {
-    c.layer(fn() { @sf.window_keys(c) }) |> ignore
+    let whole = shell_is(src, c.window_size().0) is Lone ||
+      @sfbase.tab_full.untracked() is Some(_) ||
+      @sfbase.preview_open()
+    c.layer(fn() { @sf.window_keys(c, whole~) }) |> ignore
   }
 }
 
@@ -538,7 +543,7 @@ fn shown_now(src : Source, width : Double) -> @sfbase.Shown {
       match shell_is(src, width) {
         Stacked | Taped | Paned => @sfbase.Shown::Shows(app.nav.top())
         Lone =>
-          match @sfbase.lone_page.val {
+          match @sfbase.first_lone_page() {
             Some(p) => @sfbase.Shown::Shows(p)
             None => @sfbase.Shown::Starting
           }
@@ -803,7 +808,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
 ///|
 /// A window of its own (sfbase's window.mbt) in node `v` (shell_is's Lone): on the window's ground, its top dragging it
 /// where its buttons are in the app's top row (under all of it), its page alone over all of it (a station's screen,
-/// sfpages' screen_node: closing it closes the window), the library's presenters and the toasts over that, taking a finger
+/// sfpages' screen_node: closing it closes the window; a terminal; a chat's tab, sfdesk's tab_window_node), the library's presenters and the toasts over that, taking a finger
 /// only where they draw something.
 fn lone_tree(v : @view.View, src : Source) -> Unit {
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
@@ -820,6 +825,15 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   // (the window's own, as what started it put it: lone_page, the run's own for a run of its own)
   let shown = @sfbase.lone_shown.val
   shown.set(@sfbase.lone_page.val)
+  // (its title the page's, said again as another is put in its place; this window's by its id, taken as it is made, as
+  // what tells it may come while another window's runtime is in place: a tab's own, as its name comes, sfdesk's)
+  let wid = @ui.current_window_id()
+  v.reacts(fn() { shown.get() }, fn(p) {
+    match p {
+      Some((Screen(_) | Terminal(_)) as p) if wid > 0 => @ui.set_window_title_of(wid, @sfbase.window_title(p))
+      _ => ()
+    }
+  })
   v.pick(
     at_once=true,
     fn() {
@@ -827,41 +841,59 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
       match shown.get() {
         Some(Screen(at)) => Some((@sfbase.Page::Screen(at), native && @sfpages.farview_screen(at.screen)))
         Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), false))
+        Some(SideTab(f)) => Some((@sfbase.Page::SideTab(f), false))
         _ => None
       }
     },
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some((Screen(at), true)) => {
-          // (padding's order: left, top, right, bottom)
-          q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
+        // (each page's one bar the window's top row, a bar's height at its top, clear of the window's buttons (a Mac's at
+        // its left, Windows' and Linux's at its right) and moving the window where nothing of it takes the press; no way
+        // back, the window's own close (⌘W) closing it)
+        Some((Screen(at), true)) =>
           @sfpages.farview_pane_node(
             q,
             src,
             at.station,
             at.screen,
             title=at.title,
-            on_back=fn() { lone_closed(q) },
             on_switch=@sfbase.lone_page_replace,
             on_close=fn() { lone_closed(q) },
+            bar_pads=fn() {
+              (
+                if @ui.window_keys_left_now() { lone_bar_buttons_in } else { lone_bar_in },
+                @sf.window_end_in(lone_bar_in, roots=@ui.tree_corner_roots_now()),
+              )
+            },
           )
-        }
         Some((Screen(at), false)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          @sfpages.screen_node(q, src, at, fn() { system_frame() }, on_close=fn() { lone_closed(q) })
+          // (its frame the window's top, no band over it at any width: the band is a phone's laid out Small, never a
+          // window of its own's)
+          @sfpages.screen_node(
+            q,
+            src,
+            at,
+            fn() { { back: None, top: @ui.system_bars().top, foot: nav_foot(), named: false } },
+            on_close=fn() { lone_closed(q) },
+          )
         }
         Some((Terminal(at), _)) =>
           @sfpages.terminal_pane_node(
             q,
             src,
             at,
-            back=fn() { @sf.t("common.close") },
+            back=fn() { "" },
             on_back=fn() { lone_closed(q) },
-            top=window_band_now,
+            top=fn() { @ui.system_bars().top },
             width=fn() { q.window().0 },
             on_switch_page=@sfbase.lone_page_replace,
           )
+        // (a chat's tab: drawn as over the whole window, its bar the window's top row, clear of the window's buttons as
+        // that bar keeps itself (sf's viewer_bar_node), its 移到侧边 putting it back beside the chat and closing the
+        // window: sfdesk's tab_window_node)
+        Some((SideTab(f), _)) => @sfdesk.tab_window_node(q, src, f, top=fn() { 0.0 }, on_close=fn() { lone_closed(q) })
         Some(_) => ()
         None => ()
       }
@@ -908,6 +940,20 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     |> ignore
     @ui.set_tree_theme(@sf.ui_theme_now)
     root.sides(By(fn() { sides_room() })) |> ignore
+    // ⌘W (a Mac's, the web's there) or Ctrl+W closes it, nothing presented over its page: what its own close button
+    // does, the tab or the screen it shows let go of as it closes (sfbase's window_here_gone); a Mac's menu bar's ⌘W
+    // the same, Windows', Linux's and a browser's window having none of it to
+    root.on_key(fn(k) {
+      let primary = match @ui.keys_system() {
+        0 | 1 => @ui.mod_cmd
+        _ => @ui.mod_ctrl
+      }
+      guard wid > 0 && k.code == @ui.key_of_char('w') && k.mods == primary else { return false }
+      guard !@signals.untracked(@sf.presenting) else { return false }
+      lone_closed(root)
+      true
+    })
+    |> ignore
     root.box(fn(v) {
       v.grow(Is(1.0)) |> ignore
       lone_tree(v, src)
@@ -917,6 +963,14 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
   }
 }
+
+///|
+/// How far in from the window's sides a window of its own's one bar stands (lone_tree's Farview tab): at its corner
+/// alone, after a Mac's own buttons at its left.
+let lone_bar_in : Double = 12.0
+
+///|
+let lone_bar_buttons_in : Double = 84.0
 
 ///|
 /// The old frame round window `wid`'s old views (lone_window_tree's): still.fail's theme as the first window's frame has
@@ -929,6 +983,11 @@ pub fn lone_view(c : @ui.Ctx, src : Source) -> Unit {
   c.with_theme(@sf.ui_theme(), fn() {
     entry_said()
     @ui.old_views_here(c)
+    // the window's own buttons where they are the app's (Windows', Linux's), over all of it as a title bar's are, on
+    // its page's bar's line: its page alone over all of it (window_keys' whole)
+    if @ui.window_keys_own() {
+      c.layer(fn() { @sf.window_keys(c, whole=true) }) |> ignore
+    }
   })
 }
 
@@ -1024,6 +1083,8 @@ fn page_view(
         Screen(_) => ()
         // (made once: narrow_shell.mbt's terminal_node)
         Terminal(_) => ()
+        // (a window of its own's alone: lone_tree)
+        SideTab(_) => ()
       }
       // the page runs under the status bar; it keeps the paper behind its icons, moving with it (App.kt: the list, a
       // place's top page with the bar and a chat have frosted bars there instead; a book and a film their own)

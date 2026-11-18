@@ -70,6 +70,14 @@ pub fn viewer_bar_node(
       b.moves_window(By(@ui.window_inset_now)) |> ignore
       // (its ground on under the status bar where the system's bars are over the window: a tablet's)
       b.box(fn(s) { s.height(By(fn() { Some(top()) })) |> ignore }) |> ignore
+      // (what the window's buttons take of each side, the system's at its left (a Mac's), the app's at its right
+      // (Windows', Linux's): the way back's and the tools' sides given what the other side has more, so the name
+      // stands in the window's middle whichever side they are on; short of room, that given first)
+      let left_edge = fn() {
+        bar_start_in() +
+        (if @ui.window_keys_left_now() { viewer_buttons_w + @ui.Space::px(S4) } else { 0.0 })
+      }
+      let right_edge = fn() { bar_end_in(width(), capsule_end || capsule_now()) }
       b.box(fn(row) {
         row
         .row(Is(true))
@@ -86,9 +94,11 @@ pub fn viewer_bar_node(
           start
           .row(Is(true))
           .lines_up(Is(Some(Middle)))
-          .basis(By(fn() { if held() { None } else { Some(0.0) } }))
+          .basis(By(fn() { if held() { None } else { Some(dmax(0.0, right_edge() - left_edge())) } }))
           .grow(By(fn() { if held() { 0.0 } else { 1.0 } }))
-          .shrink(Is(1.0))
+          // (short of room, what it was given for the other side's buttons given back first, before the name is cut;
+          // a way back in it gives way as the name does)
+          .shrink(By(fn() { if held() || back() != "" { 1.0 } else { viewer_side_gives } }))
           .min_width(Is(Some(0.0)))
           |> ignore
           // (no way back where there is nowhere to go back to: a page alone in a window of its own, whose window's own
@@ -109,7 +119,9 @@ pub fn viewer_bar_node(
               let middle = slot.box(fn(m) {
                 m
                 .lines_up(Is(Some(Middle)))
-                .max_width(By(fn() { Some(dmax(viewer_none, width() - viewer_bar_sides())) }))
+                .max_width(By(fn() {
+                  Some(dmax(viewer_none, width() - (left_edge() + right_edge() + 2.0 * @ui.Space::px(S4))))
+                }))
                 .shrink(Is(1.0))
                 .min_width(Is(Some(0.0)))
                 |> ignore
@@ -117,6 +129,9 @@ pub fn viewer_bar_node(
                   n
                   .words(By(name))
                   .words_look(By(fn() { bar_words(Ui, L6, 600) }))
+                  .cuts(Is(true))
+                  .allow_ellipsis(Is(true))
+                  .min_width(Is(Some(0.0)))
                   .ink(By(fn() { ink().ink }))
                   .says(By(fn() { Some(@view.said(Text, label=name())) }))
                   |> ignore
@@ -126,6 +141,9 @@ pub fn viewer_bar_node(
                   l
                   .words(By(meta))
                   .words_look(By(fn() { bar_words(Caption, L4, 400) }))
+                  .cuts(Is(true))
+                  .allow_ellipsis(Is(true))
+                  .min_width(Is(Some(0.0)))
                   .ink(By(fn() { ink().muted }))
                   .says(By(fn() { Some(@view.said(Text, label=meta())) }))
                   |> ignore
@@ -138,17 +156,24 @@ pub fn viewer_bar_node(
         })
         // (short of room, the tools kept whole: the way back and the name give way)
         row.box(fn(end) {
-          // (its tools kept whole, the way back and the name giving way first: viewer_bar's keep)
-          end.row(Is(true)).lines_up(Is(Some(Middle))).basis(Is(Some(0.0))).grow(Is(1.0)).keeps_held(Is(true)) |> ignore
-          // (at its end, nothing before them but what is left: viewer_bar_end's justify end, no gap of their own)
-          end.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-          end.box(fn(r) {
-            r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(keys_apart())) |> ignore
-            // (one hover ground for its tools, going from the one the hand left to the next: RovingHover)
-            r.lends(rove_lent, RovingHover::new()) |> ignore
-            tools(r, bar_tool_corner())
-          })
+          // (its tools kept whole, the way back and the name giving way first: viewer_bar's keep; what of them may leave
+          // (View::drops: a file's keys in a window of its own at its least) leaving into their ⋯ before that, the rest
+          // kept whole: View::fits)
+          end
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .gap(Is(keys_apart()))
+          .basis(By(fn() { Some(dmax(0.0, left_edge() - right_edge())) }))
+          .grow(Is(1.0))
+          .shrink(Is(viewer_side_gives))
+          .fits(Is(true))
+          .keeps_held(Is(true))
           |> ignore
+          // (one hover ground for its tools, going from the one the hand left to the next: RovingHover)
+          end.lends(rove_lent, RovingHover::new()) |> ignore
+          // (at its end, nothing before them but what is left: viewer_bar_end's justify end)
+          end.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+          tools(end, bar_tool_corner())
         })
         |> ignore
       })
@@ -161,13 +186,21 @@ pub fn viewer_bar_node(
 }
 
 ///|
+/// How much more readily the way back's and the tools' sides give way than the name, short of room
+/// (viewer_bar_node's): what each was given for the window's buttons on the other side goes before a letter of the
+/// name is cut.
+let viewer_side_gives : Double = 10000.0
+
+///|
 /// How far in from the window's side the bar's last tool stands, the window `w` wide (viewer_bar's end): clear of the
-/// window's buttons where they are the app's; else at the window's corner as a page's bar's last is (window_end_in), as
+/// window's buttons where they are the app's, as they stand on its line (window_keys' whole); else at the window's corner as a page's bar's last is (window_end_in), as
 /// the window's corner is now for the window's tree, followed.
 fn bar_end_in(w : Double, capsule : Bool) -> Double {
+  ignore(w)
   let roots = @ui.tree_corner_roots_now()
   if @ui.window_keys_own_now() {
-    window_keys_room_at(w) + viewer_bar_in
+    // (they stand on its line, over all the window: window_keys' whole)
+    window_keys_room(roots~) + viewer_bar_in
   } else if capsule {
     // (a capsule of words at its end, past the window's corner: viewer_bar's capsule_end, window_clear_in)
     window_corner_past(viewer_bar_in, roots~)

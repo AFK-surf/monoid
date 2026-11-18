@@ -399,6 +399,7 @@ pub fn Tester::new(
   before? : () -> Unit,
   begun? : () -> Unit,
   keeps_sources? : Bool = true,
+  windows_beside? : Bool = false,
   theme? : () -> Theme,
   loc~ : SourceLoc,
 ) -> Tester {
@@ -441,6 +442,7 @@ pub fn Tester::new(
     before?,
     begun?,
     keeps_sources~,
+    windows_beside~,
     loc~,
   )
 }
@@ -482,6 +484,7 @@ pub fn Tester::tree(
   before? : () -> Unit,
   begun? : () -> Unit,
   keeps_sources? : Bool = true,
+  windows_beside? : Bool = false,
   theme? : () -> Theme,
   loc~ : SourceLoc,
 ) -> Tester {
@@ -520,6 +523,7 @@ pub fn Tester::tree(
     before?,
     begun?,
     keeps_sources~,
+    windows_beside~,
     loc~,
   )
 }
@@ -562,6 +566,7 @@ fn tester_make(
   before? : () -> Unit,
   begun? : () -> Unit,
   keeps_sources~ : Bool,
+  windows_beside~ : Bool,
   loc~ : SourceLoc,
 ) -> Tester {
   host_settings_given.val = ""
@@ -660,6 +665,10 @@ fn tester_make(
     window_ids: 0,
     window_at: 0,
     window_sizes: {},
+    window_insets: {},
+    window_zooms: {},
+    window_snaps: {},
+    window_acts_by: {},
     window_ids_fronted: [],
     window_ids_closed: [],
     opened: [],
@@ -839,6 +848,12 @@ fn tester_make(
   // (the run begun: what the test sets for it, before its first frame is made or drawn)
   if begun is Some(set) {
     set()
+  }
+  // (windows of the run beside the first, open to it from its first frame, before its tree is made: what reads
+  // whether one opens as it is made, a bar's key to one, reads it so: Tester::set_window_opens, set_windows_in_process)
+  if windows_beside {
+    f.window_opens = true
+    f.windows_in_process = true
   }
   // (the window a tree made once: `tree`, the view under test the old frame around its old views; else the view its
   // one old view: view_host.mbt)

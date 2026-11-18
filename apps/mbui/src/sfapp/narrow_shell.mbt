@@ -39,8 +39,9 @@ fn shell_is(src : Source, width : Double) -> ShellIs {
   if width <= 0.0 {
     return Unsized
   }
-  // (a window of its own: its page alone, the window's tree's frame round it: lone_tree)
-  if @sfbase.lone_page.val is Some(_) {
+  // (a window of its own: its page alone, the window's tree's frame round it: lone_tree; the first window's, as this
+  // binding may run while another window's runtime is in place: sfbase's first_lone_page)
+  if @sfbase.first_lone_page() is Some(_) {
     return Lone
   }
   // (no workspace yet, every account answered with none: the landing's nodes, entry_tree.mbt)

@@ -3,7 +3,7 @@
 
 ///|
 /// Their stories, after the others: `tips` the layer an icon button's name is shown in.
-fn stories_u13(_tips : @sf.TipLayer) -> Array[Story] {
+fn stories_u13(tips : @sf.TipLayer) -> Array[Story] {
   [
     {
       key: "quiet-card",
@@ -131,7 +131,7 @@ fn stories_u13(_tips : @sf.TipLayer) -> Array[Story] {
         ),
       ],
     },
-  ]
+  ] + stories_u18(tips)
 }
 
 ///|

@@ -1121,7 +1121,7 @@ fn view_told_as_built(c : Ctx) -> Unit {
   // made to fill the screen or back (Ctx::set_full_screen) and its corner and buttons with it, the pixels its list's
   // rows are put on)
   @signals.untracked(fn() {
-    inset_said.arrive()
+    inset_said.val.arrive()
     tree_theme_said.val.set(Some(c.theme_for(c.window_w)))
     tree_window_corner.val.set(window_corner())
     tree_inset_said.val.set(Some(window_inset()))

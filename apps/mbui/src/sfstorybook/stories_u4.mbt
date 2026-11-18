@@ -242,5 +242,5 @@ fn stories_u4(tips : @sf.TipLayer) -> Array[Story] {
         ),
       ],
     },
-  ]
+  ] + stories_u15(tips)
 }

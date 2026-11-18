@@ -40,6 +40,9 @@ pub(all) enum Page {
   Screen(ScreenAt)
   /// one of a station's terminals (src/sfpages terminal_view_node.mbt), over the whole window as a screen is
   Terminal(TerminalAt)
+  /// a tab of a chat's side panel (a file in the viewer, a mini-program, a web service, a visualization: tab_full.mbt)
+  /// in a window of its own (window.mbt), its third place; never on the stack of the app's window
+  SideTab(TabFull)
 }
 
 ///|
@@ -1144,6 +1147,7 @@ pub fn page_kind(p : Page) -> String {
     Setting(r) => "Setting " + setting_kind(r)
     Screen(_) => "Screen"
     Terminal(_) => "Terminal"
+    SideTab(_) => "SideTab"
   }
 }
 
@@ -1631,10 +1635,12 @@ pub fn reset() -> Unit {
   tab_full_reset()
   // the page shown alone in a window of its own (window.mbt) and remote workbench tabs (remote_tabs.mbt)
   lone_page.val = None
+  first_lone.val = None
   lone_shown.val = @signals.signal(None)
   remote_tabs_reset()
   windows_open.clear()
   windows_here_show.clear()
+  tab_windows.clear()
 }
 
 ///|

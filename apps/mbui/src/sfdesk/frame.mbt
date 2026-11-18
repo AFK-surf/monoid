@@ -1155,6 +1155,8 @@ fn main_page(
     // a station's screen, a drive's text read, a film played are over the whole window (sfapp's signed_in), not in
     // the pane
     Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_) => ()
+    // a chat's tab in a window of its own: that window's alone (sfapp's lone_tree), never on this stack
+    SideTab(_) => ()
     // 已归档, none of its chats open beside the list: what it is, made once as nodes (pane_made, tape_made)
     Archived => ()
   }

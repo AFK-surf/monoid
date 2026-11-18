@@ -39,6 +39,11 @@ let held_beside : @sf.LiveMap[String, Int] = @sf.LiveMap::new()
 let held_full : @sf.LiveMap[String, Int] = @sf.LiveMap::new()
 
 ///|
+/// How many nodes of a window of its own draw each tab there (tab_window_node), as held_beside.
+// kept across runs: as held_beside
+let held_window : @sf.LiveMap[String, Int] = @sf.LiveMap::new()
+
+///|
 fn tab_hold_key(r : ChatRef, tab : String) -> String {
   tabs_key(r) + "\n" + tab
 }
@@ -69,14 +74,19 @@ pub fn service_tab_held(station : String, job : String) -> Bool {
       None => false
     }
   }
-  held_beside.keys().any(drawn) || held_full.keys().any(drawn)
+  held_beside.keys().any(drawn) || held_full.keys().any(drawn) || held_window.keys().any(drawn)
 }
 
 ///|
 /// `front`, one chat `r`'s panel shows in front, as the panel's tab picks it: tab_full_mark while it is over the whole
-/// window, or the whole window's layer still draws it (it comes back to the panel as that goes), followed.
+/// window or in a window of its own, or the whole window's layer or that window still draws it (it comes back to the
+/// panel as that goes: 移到侧边 in the window), followed.
 fn full_elsewhere(r : ChatRef, front : String) -> String {
-  if @sfbase.tab_full_is(r.station, r.session, front) || held_full.contains(tab_hold_key(r, front)) {
+  let key = tab_hold_key(r, front)
+  if @sfbase.tab_full_is(r.station, r.session, front) ||
+    held_full.contains(key) ||
+    @sfbase.window_has_tab(r.station, r.session, front) ||
+    held_window.contains(key) {
     tab_full_mark
   } else {
     front
@@ -93,8 +103,14 @@ fn tab_held_beside(n : @view.View, r : ChatRef, tab : String) -> Unit {
 
 ///|
 /// 全屏 in a panel's bar, in `e`: chat `r`'s tab in front (`front()`, as it is at the press) over the whole window.
-fn tab_full_key_node(e : @view.View, r : ChatRef, front : () -> String, tips : @sf.TipLayer) -> Unit {
-  @sf.icon_button_node(e, "expand", fn() { @sf.t("web-main.preview.fullWindow") }, fn() { @sfbase.tab_full_open(r, front()) }, tips~)
+fn tab_full_key_node(
+  e : @view.View,
+  r : ChatRef,
+  front : () -> String,
+  tips : @sf.TipLayer,
+  linked~ : () -> @ui.CornerOf?,
+) -> Unit {
+  @sf.icon_button_node(e, "expand", fn() { @sf.t("web-main.preview.fullWindow") }, fn() { @sfbase.tab_full_open(r, front()) }, tips~, linked~)
   |> ignore
 }
 
@@ -237,6 +253,18 @@ fn tab_full_node(n : @view.View, src : Source, f : @sfbase.TabFull) -> Unit {
         if @sfbase.view_tab_file(tab) is Some(_) && !mini {
           @sfbase.viewer_tab_bar_tools(row, corner, src, tabs_key(r), tab, tips)
         }
+        // (在新窗口打开 where a window of its own can show it: the tab there, this put away as it goes: tab_window_open)
+        row.show(at_once=true, fn() { tab_window_offered(r, tab) }, fn(w) {
+          @sf.tool_node(
+            w,
+            fn() { { icon: "external", label: @sf.t("web-pages.screen.window"), on: false, disabled: false } },
+            ink,
+            corner,
+            fn() { tab_window_open(src, r, tab) |> ignore },
+            tip=tips,
+          )
+          |> ignore
+        })
         @sf.tool_node(
           row,
           fn() { { icon: "panel-open", label: @sf.t("web-main.preview.moveBeside"), on: false, disabled: false } },
@@ -253,5 +281,208 @@ fn tab_full_node(n : @view.View, src : Source, f : @sfbase.TabFull) -> Unit {
     |> ignore
   })
   |> ignore
+  tips_at.val = Some(n.box(fn(l) { l.over(Is(true)) |> ignore }))
+}
+
+// A tab of a chat's side panel in a window of its own, its third place (sfbase's window.mbt: a window of this run beside
+// the first): 在新窗口打开 in the panel's bar or over the whole window's bar sends it there, the tab leaving the panel as
+// a station's screen does (what it holds, a file's viewer, a service's page and its site view, the run's, handed over:
+// never let go of as it leaves, tab_let_go), drawn there by the nodes that draw it beside the chat under the bar a file
+// opened over a wide window has. 移到侧边 there puts it back in the panel, in front, and closes the window; the window
+// closed otherwise (its own close button, ⌘W) lets the tab go as its tab closed beside the chat would.
+
+///|
+/// The core each tab in a window of its own was sent there from, by tab_hold_key: what lets it go as the window closes
+/// (tab_window_left).
+// kept across runs: put back by sv_reset, each taken out as its window closes or gives the tab back
+let tab_window_srcs : Map[String, Source] = Map([])
+
+///|
+fn init {
+  @sfbase.window_tab_left.val = tab_window_left
+}
+
+///|
+/// The window of its own showing tab `f` closed by the person (sfbase's window_tab_left): the tab let go of, as its tab
+/// closed beside the chat would be.
+fn tab_window_left(f : @sfbase.TabFull) -> Unit {
+  let key = tab_hold_key(f.chat, f.tab)
+  match tab_window_srcs.get(key) {
+    Some(src) => {
+      tab_window_srcs.remove(key)
+      tab_let_go(src, f.chat, f.tab)
+    }
+    None => ()
+  }
+}
+
+///|
+/// Whether tab `tab` of chat `r` can go to a window of its own here (sfbase's window_opens_for), followed as the panel's
+/// front changes.
+fn tab_window_offered(r : ChatRef, tab : String) -> Bool {
+  full_offered(tab) && @sfbase.window_opens_for(SideTab({ chat: r, tab }))
+}
+
+///|
+/// Tab `tab` of chat `r` sent to a window of its own (在新窗口打开): whether it went. The window brought to the front
+/// where one shows it already; over the whole window, that put away; the tab off the panel, what it holds that window's.
+pub fn tab_window_open(src : Source, r : ChatRef, tab : String) -> Bool {
+  let f : @sfbase.TabFull = { chat: r, tab }
+  guard tab_window_offered(r, tab) else { return false }
+  let key = tab_hold_key(r, tab)
+  let had = tab_window_srcs.get(key)
+  tab_window_srcs[key] = src
+  if !@sfbase.open_window(SideTab(f)) {
+    match had {
+      Some(s) => tab_window_srcs[key] = s
+      None => tab_window_srcs.remove(key)
+    }
+    return false
+  }
+  if @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, tab) }) {
+    @sfbase.tab_full_close()
+  }
+  side_change(src, r, "close", Some(tab))
+  true
+}
+
+///|
+/// Tab `f` of the window of its own this is back in its chat's panel, in front (移到侧边): the window gives it back
+/// first (sfbase's window_gives_back: nothing let go of as it closes), the caller closing it after.
+fn tab_window_back(src : Source, f : @sfbase.TabFull) -> Unit {
+  @sfbase.window_gives_back(@ui.current_window_id())
+  tab_window_srcs.remove(tab_hold_key(f.chat, f.tab))
+  side_change(src, f.chat, "open", Some(f.tab))
+  // (the first window to the front, where its chat's panel shows the tab: put away by the person, brought back)
+  @hostapi.window_front_id(0) |> ignore
+}
+
+///|
+/// Tab `f` in a window of its own, in node `n` (sfapp's lone_tree): drawn once neither the panel nor the whole window's
+/// layer draws it still (what it holds, a service's address, is one editor's: tab_held), its bar `top` under the
+/// window's top (the window's top row itself where the bar keeps clear of its buttons, as over the whole window), it
+/// under that as the panel draws it. `on_close`: what closes the window.
+pub fn tab_window_node(
+  n : @view.View,
+  src : Source,
+  f : @sfbase.TabFull,
+  top~ : () -> Double,
+  on_close~ : () -> Unit,
+) -> Unit {
+  let key = tab_hold_key(f.chat, f.tab)
+  n.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+  n.pick(at_once=true, fn() { !held_beside.contains(key) && !held_full.contains(key) }, fn(m, free) {
+    if free {
+      tab_window_body_node(m, src, f, top, on_close)
+    }
+  })
+}
+
+///|
+/// Tab `f` in a window of its own, in `n` (tab_window_node's, once it is that window's alone).
+fn tab_window_body_node(
+  n : @view.View,
+  src : Source,
+  f : @sfbase.TabFull,
+  top : () -> Double,
+  on_close : () -> Unit,
+) -> Unit {
+  let r = f.chat
+  let tab = f.tab
+  tab_held(n, held_window, r, tab)
+  // (the tab given back through the core as the app holds it, not this window's: what it asks there is answered after
+  // this window's nodes are let go of)
+  let app_src = src
+  let src = src.owned_by(n)
+  n.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+  let back = fn() {
+    tab_window_back(app_src, f)
+    on_close()
+  }
+  let tips_at : Ref[@view.View?] = Ref(None)
+  let tips = @sf.TipLayer::new(fn() { tips_at.val })
+  let width = fn() { n.window().0 }
+  let mini = match @sfbase.view_tab_file(tab) {
+    Some(v) => @sfbase.is_mbui_viz(v.file.name)
+    None => false
+  }
+  // the tab's name, its bar's and the window's own as it comes (a service's job named as the core answers): the window's
+  // by its id, taken as it is made, as what tells it may come between frames, the first window's runtime in place
+  let title_now = fn() {
+    match @sfbase.viewer_tab_title(src, tabs_key(r), tab) {
+      (name, _) if name != "" && !mini => name
+      _ => side_tab_names(src, r, @sfbase.chat_view_now(src, r), tab).0
+    }
+  }
+  let wid = @ui.current_window_id()
+  n.reacts(title_now, fn(t) { if t != "" { @ui.set_window_title_of(wid, t) } })
+  // its bar across the top, over `host`: no way back (the window's own close, ⌘W, closes it, as a screen's window
+  // alone: sf's viewer_bar_node), the tab's name, a file's keys, 移到侧边
+  let bar_over = fn(host : @view.View) {
+    host.box(fn(b) {
+      b.over(Is(true)) |> ignore
+      let ink = full_ink
+      @sf.viewer_bar_node(
+        b,
+        fn() { "" },
+        title_now,
+        fn() { if mini { "" } else { @sfbase.viewer_tab_title(src, tabs_key(r), tab).1 } },
+        fn() { "" },
+        fn() { false },
+        fn(_) { 1.0 },
+        top,
+        width,
+        ink,
+        fn(row, corner) {
+          if @sfbase.view_tab_file(tab) is Some(_) && !mini {
+            @sfbase.viewer_tab_bar_tools(row, corner, src, tabs_key(r), tab, tips)
+          }
+          @sf.tool_node(
+            row,
+            fn() { { icon: "panel-open", label: @sf.t("web-main.preview.moveBeside"), on: false, disabled: false } },
+            ink,
+            corner,
+            back,
+            tip=tips,
+          )
+          |> ignore
+        },
+        on_close,
+        tips,
+      )
+      |> ignore
+    })
+    |> ignore
+  }
+  match (tab_service(tab), tab_file(tab)) {
+    // a web service, a visualization: its page's own bar the window's one bar, its 移到侧边 at its end; while it is
+    // not up (connecting, stopped, not found, unreadable), the bar above over what is said in its place
+    (Some(job), _) if @sfbase.view_tab_file(tab) is None =>
+      n.box(fn(body) {
+        body.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        service_tab_node(body, src, r, job, None, None, None, tips, beside=Some(back), bar=Some(bar_over))
+      })
+      |> ignore
+    (_, Some((session, path, name))) if @sfbase.view_tab_file(tab) is None =>
+      n.box(fn(body) {
+        body.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        file_tab_node(body, src, r, session, path, name, None, tips, beside=Some(back), bar=Some(bar_over))
+      })
+      |> ignore
+    // a file in the viewer: under the bar as over the whole window
+    _ => {
+      n.box(fn(page) {
+        page.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        page.box(fn(t) { t.height(By(fn() { Some(top() + @sf.viewer_bar_h) })).shrink(Is(0.0)) |> ignore }) |> ignore
+        page.box(fn(body) {
+          body.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+          side_view_node(body, src, r, tab, fn(b) { b.window().0 }, None, tools=false)
+        })
+        |> ignore
+      })
+      |> ignore
+      bar_over(n)
+    }
+  }
   tips_at.val = Some(n.box(fn(l) { l.over(Is(true)) |> ignore }))
 }

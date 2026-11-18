@@ -313,9 +313,10 @@ fn lock_note_node(parent : @view.View, words : () -> String, turning? : Bool = f
 
 ///|
 /// The trusted devices a step is about (`list()`, the core's LockApprover rows) on a quiet card under its action;
-/// nothing where the list is empty. A device to a row: its mark (a phone, a computer) and which machine (the user,
-/// #4213, 2026-11-10: fewer words, and under the buttons, which matter more and are never pushed out by it). `in_card`
-/// (设置 › 安全's): its rows alone, from where the card's words start.
+/// nothing where the list is empty. A device to a row (@sf.icon_point_row_node's Listed): its mark (a phone, a
+/// computer) on the first line of which machine (the user, #4213, 2026-11-10: fewer words, and under the buttons, which
+/// matter more and are never pushed out by it). `in_card` (设置 › 安全's): its rows alone, from where the card's words
+/// start.
 fn lock_devices_node(parent : @view.View, list : () -> Array[Json], in_card : Bool) -> Unit {
   parent.show(fn() { list().length() > 0 }, fn(room) {
     @sf.style_node(room, fn() { if in_card { lock_devices_carded } else { lock_devices } })
@@ -326,14 +327,8 @@ fn lock_devices_node(parent : @view.View, list : () -> Array[Json], in_card : Bo
       card.each(fn() { indexed(list()) }, fn(e) { e.0 }, fn(row, e) {
         let d = fn() { Some(e.get().1) }
         let kind = fn() { lock_device_icon(d()) }
-        @sf.style_node(row, fn() { lock_device })
-        @sf.icon_node(row, @signals.untracked(kind), lock_device_glyph, By(fn() { @sf.theme().p.muted }), name_now=kind) |> ignore
-        row.box(fn(name) {
-          // (as wide as its words, giving way where the card has not the room: they go on in another line)
-          name.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-          @sf.words_node(name, fn() { text(d(), "nameText") }, fn() { lock_device_name }) |> ignore
-        })
-        |> ignore
+        // (its mark on its name's first line: a long name goes on in another line under it)
+        @sf.icon_point_row_node(row, @signals.untracked(kind), fn() { text(d(), "nameText") }, icon_now=kind, look=@sf.PointLook::Listed)
       })
     })
     |> ignore
@@ -397,15 +392,6 @@ let lock_devices : @ui.Style = @ui.css("w=Full align=ACenter")
 let lock_devices_card : @ui.Style = @ui.css("px=S4 py=S3 gap=S3 radius=Xl bg=Tint").then(@ui.style(max_w=Fixed(lock_devices_most)))
 ///|
 let lock_devices_most : Double = 412.0
-///|
-/// A device's row: its mark, 12, which machine it is, from the card's start.
-// kept across runs: a value (no field of it changes)
-let lock_device : @ui.Style = @ui.css("row gap=S3 align=ACenter")
-///|
-// kept across runs: a value (no field of it changes)
-let lock_device_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
-///|
-let lock_device_glyph : Double = 18.0
 ///|
 /// A device's mark by what the core says it is (LockApprover `kind`): a phone, else a computer.
 fn lock_device_icon(d : Json?) -> String {

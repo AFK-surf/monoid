@@ -69,3 +69,48 @@ fn Tester::frames_beside(self : Tester, now : Double, shown : Double) -> Unit {
     self.fake.window_at = back
   }
 }
+
+///|
+/// The title window `wid` of the run has as the host was last told it (as it was opened, @ui.set_window_title; "":
+/// none).
+pub fn Tester::window_title(self : Tester, wid? : Int = 0) -> String {
+  ignore(self)
+  fake_window_titles.get(wid).unwrap_or("")
+}
+
+///|
+/// The role window `wid` beside the first was opened as (@ui.WindowSpec's `role`; "": none).
+pub fn Tester::window_role(self : Tester, wid : Int) -> String {
+  ignore(self)
+  fake_window_roles.get(wid).unwrap_or("")
+}
+
+///|
+/// What the app asked of window `wid`'s own buttons, oldest first (@hostapi.window_act: 1 minimize, 2 maximize or back,
+/// 3 close; 0 the first window's, Tester::window_acts).
+pub fn Tester::window_acts_of(self : Tester, wid? : Int = 0) -> Array[Int] {
+  self.fake.window_acts_by.get(wid).map(fn(a) { a.copy() }).unwrap_or([])
+}
+
+///|
+/// Window `wid`'s buttons in its top row or not (0 the first: Tester::set_window_inset), from its next frame on: one
+/// window in full screen beside another that is not.
+pub fn Tester::set_window_inset_of(self : Tester, wid : Int, on : Bool) -> Unit {
+  if wid <= 0 {
+    self.set_window_inset(on)
+  } else {
+    self.fake.window_insets[wid] = on
+    self.fake.wants = true
+  }
+}
+
+///|
+/// Window `wid` maximized or not (0 the first: Tester::set_window_zoomed), from its next frame on.
+pub fn Tester::set_window_zoomed_of(self : Tester, wid : Int, on : Bool) -> Unit {
+  if wid <= 0 {
+    self.set_window_zoomed(on)
+  } else {
+    self.fake.window_zooms[wid] = on
+    self.fake.wants = true
+  }
+}

@@ -2627,9 +2627,9 @@ pub let window_in : Double
 
 pub fn window_key_in(Double, roots? : @paint.CornerRoots) -> Double
 
-pub fn window_keys(@ui.Ctx) -> Unit
+pub fn window_keys(@ui.Ctx, whole? : Bool) -> Unit
 
-pub fn window_keys_at(Double) -> (Double, Double)
+pub fn window_keys_at(Double, whole? : Bool) -> (Double, Double)
 
 pub let window_keys_band : Double
 

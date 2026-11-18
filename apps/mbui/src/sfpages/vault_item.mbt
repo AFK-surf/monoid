@@ -233,7 +233,7 @@ fn item_block_node(
             }
             fact(fs, "web-pages.vault.how", fn(r) { @sf.words_node(r, fn() { text(rv(), "howText") }, fn() { vi_fact_value }) |> ignore })
             fs.show(fn() { text(rv(), "env") != "" }, fn(e) {
-              fact(e, "web-pages.vault.editor.env", fn(r) { vi_mono_node(r, fn() { text(rv(), "env") }, vi_fact_value) })
+              fact(e, "web-pages.vault.editor.env", fn(r) { @sf.mono_words_node(r, fn() { text(rv(), "env") }, vi_fact_value) })
             })
             fact(fs, "web-pages.vault.editor.lasts", fn(r) { @sf.words_node(r, fn() { text(rv(), "lastsText") }, fn() { vi_fact_value }) |> ignore })
           })
@@ -265,20 +265,10 @@ fn item_block_node(
 }
 
 ///|
-/// Words in the code face (`words` as they are now) in `parent`, of `style`.
-fn vi_mono_node(parent : @view.View, words : () -> String, style : @ui.TextStyle) -> Unit {
-  parent.box(fn(w) {
-    w.words_runs(By(fn() { [@ui.span(words(), mono=true)] }), look=@ui.style_words(style)).ink(By(fn() { @ui.style_ink(style) })) |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// When agents used an item (`uses`, as they are now) in `b`, each: its chat (opening it), how, when (on its chat's
 /// line, at its end).
 fn item_uses_node(b : @view.View, core : Core, ws : () -> String, uses : () -> Array[Json]) -> Unit {
-  b.box(fn(l) {
-    @sf.style_node(l, fn() { vi_uses })
+  @sf.record_rows_node(b, fn(l) {
     l.each(fn() { uses().mapi(fn(i, _) { i }) }, fn(i) { i }, fn(row, i) {
       let uv = fn() { uses().get(i.get()) }
       let chat = fn() {
@@ -287,14 +277,9 @@ fn item_uses_node(b : @view.View, core : Core, ws : () -> String, uses : () -> A
           _ => text(uv(), "session")
         }
       }
-      @sf.style_node(row, fn() { vi_use })
-      row.box(fn(t) {
-        @sf.style_node(t, fn() { vi_use_text }, in_row=true)
-        t.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        t.box(fn(n) {
-          // (as wide as its column: its chat's words cut short there, what follows them kept)
-          @sf.style_node(n, fn() { pf_name_line.then(vi_use_name) })
-          n.min_width(Is(Some(0.0))) |> ignore
+      @sf.record_row_node(
+        row,
+        fn(n) {
           n.pick(fn() { text(uv(), "station") != "" }, fn(p, goes) {
             p.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             if goes {
@@ -325,31 +310,17 @@ fn item_uses_node(b : @view.View, core : Core, ws : () -> String, uses : () -> A
             }
           })
           n.show(fn() { flag(uv(), "denied") }, fn(d) { @sf.pill_node(d, fn() { @sf.t("web-pages.vault.uses.denied") }, tone=Red) |> ignore })
-        })
-        |> ignore
-        t.pick(fn() { opt_text(uv(), "command") is Some(_) }, fn(p, command) {
-          if command {
-            vi_mono_node(p, fn() { text(uv(), "howText") }, desk_note)
-          } else {
-            @sf.words_node(p, fn() { text(uv(), "howText") }, fn() { desk_note }) |> ignore
-          }
-        })
-      })
-      |> ignore
-      // (when, on its chat's line)
-      @sf.first_line_node(row, Ui, leading=L6, fn(w) {
-        @sf.words_node(w, fn() {
+        },
+        fn(t) { @sf.record_how_node(t, fn() { text(uv(), "howText") }, fn() { opt_text(uv(), "command") is Some(_) }) },
+        fn() {
           match text(field(uv(), "at"), "full") {
             "" => text(field(uv(), "at"), "ago")
             x => x
           }
-        }, fn() { vi_use_time })
-        |> ignore
-      })
-      |> ignore
+        },
+      )
     })
   })
-  |> ignore
 }
 
 ///|
@@ -383,82 +354,44 @@ fn uses_sample() -> Array[Json] {
 fn secret_field_node(row : @view.View, key : String, fv : () -> Json?) -> Unit {
   let secret = fn() { flag(fv(), "secret") }
   let shown = fn() { !secret() || vi_shown.get(key).unwrap_or(false) }
-  @sf.style_node(row, fn() { vi_secret })
-  @sf.words_node(row, fn() { text(fv(), "label") }, fn() { vi_label }) |> ignore
-  row.box(fn(l) {
-    @sf.style_node(l, fn() { vi_secret_line })
-    l.box(fn(w) {
-      w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-      let value = fn() { text(fv(), "value") }
-      w
-      .words_runs(By(fn() {
-        let words = if shown() { value() } else { "•".repeat(@cmp.minimum(@cmp.maximum(value().length(), 8), 20)) }
-        [@ui.span(words, mono=flag(fv(), "mono"))]
-      }), look=@ui.style_words(vi_value_lines))
-      .ink(By(fn() { @ui.style_ink(vi_value) }))
-      |> ignore
-    })
-    |> ignore
+  @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, shown~, mono=fn() { flag(fv(), "mono") }, fn(l) {
     l.show(secret, fn(e) {
-      @sf.icon_button_node(
+      @sf.secret_key_node(
         e,
         "eye",
         fn() { if shown() { @sf.t("web-pages.vault.hide") } else { @sf.t("web-pages.vault.show") } },
         fn() { vi_shown.set(key, !@signals.untracked(shown)) },
-        size=vi_key_side, linked=vi_key_corner,
         icon_now=fn() { if shown() { "eye-off" } else { "eye" } },
       )
       |> ignore
     })
-    @sf.icon_button_node(l, "copy", fn() { @sf.t("common.copy") }, fn() {
-      let v = text(@signals.untracked(fv), "value")
-      if @signals.untracked(secret) {
-        @ui.clipboard_secret(v, clear_ms=vi_copied_life)
-      } else {
-        @ui.clipboard_set(v)
-      }
-    }, size=vi_key_side, linked=vi_key_corner)
-    |> ignore
+    @sf.secret_copy_node(l, fn() { text(fv(), "value") }, secret) |> ignore
   })
-  |> ignore
 }
 
 ///|
 /// A field of an item not opened yet (`fv`, as it is now) in `row`: its name over its value as the core masks it, its
 /// eye (opening the item, `open`, this field then shown), a spinner in its place while it opens.
 fn shut_field_node(row : @view.View, item : String, fk : String, fv : () -> Json?, open : ((Json) -> Unit) -> Unit) -> Unit {
-  @sf.style_node(row, fn() { vi_secret })
-  @sf.words_node(row, fn() { text(fv(), "label") }, fn() { vi_label }) |> ignore
-  row.box(fn(l) {
-    @sf.style_node(l, fn() { vi_secret_line })
-    l.box(fn(w) {
-      w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-      vi_mono_node(w, fn() { text(fv(), "value") }, vi_value)
-    })
-    |> ignore
+  @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, mono=fn() { true }, one_line=true, fn(l) {
     l.pick(fn() { @settings.item_opening(item) }, fn(p, opening) {
       // (the spinner in the eye's room while it opens: the line no lower for it)
-      p.width(Is(Some(vi_key_side))).height(Is(Some(vi_key_side))).lies_along(Is(Middle)).lines_up(Is(Some(Middle))) |> ignore
+      p.width(Is(Some(@sf.secret_key_side))).height(Is(Some(@sf.secret_key_side))).lies_along(Is(Middle)).lines_up(Is(Some(Middle))) |> ignore
       if opening {
         @sf.spinner_node(p, size=pf_spin) |> ignore
       } else {
-        @sf.icon_button_node(p, "eye", fn() { @sf.t("web-pages.vault.show") }, fn() {
+        @sf.secret_key_node(p, "eye", fn() { @sf.t("web-pages.vault.show") }, fn() {
           vi_reveal.set(item, fk)
           vi_shown.set(item + "/" + fk, true)
           open(fn(_) { vi_reveal.remove(item) })
-        }, size=vi_key_side, linked=vi_key_corner)
+        })
         |> ignore
       }
     })
   })
-  |> ignore
 }
 
 // ── styles ───────────────────────────────────────────────
-
-///|
-/// How long a secret copied stays on the clipboard (copySecret: 30 s).
-let vi_copied_life : Double = 30000.0
 
 ///|
 let vi_mark_glyph : Double = 24.0
@@ -468,17 +401,6 @@ let vi_mark_glyph : Double = 24.0
 let vi_mark_small : Double = 18.0
 
 ///|
-/// A field's buttons (show, copy) at its end, as a small icon button is (icon_button_side's 32).
-let vi_key_side : Double = 32.0
-
-///|
-/// Their corner: the ladder's small block's (10), concentric with the card's where one stands in its corner
-/// (@sf.card_end_out).
-fn vi_key_corner() -> @ui.CornerOf? {
-  Some(Own(@sf.small_corner))
-}
-
-///|
 // kept across runs: a value (no field of it changes)
 let vi_risk_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Semibold, color=WarnInk, w=Full)
 
@@ -486,26 +408,6 @@ let vi_risk_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=S
 /// Its fields (fields: 14 apart; a field its name over its line, 4 apart).
 // kept across runs: a value (no field of it changes)
 let vi_fields : @ui.Style = @ui.css("w=Full gap=S3_5").then(@sf.card_foot_out)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_secret : @ui.Style = @ui.css("w=Full gap=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_label : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Muted, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_secret_line : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter").then(@sf.card_end_out)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_value : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, wrap=false, w=@sf.grow, max_lines=1)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_value_lines : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=@sf.grow)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -533,29 +435,7 @@ let vi_term : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted,
 let vi_fact_value : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=@sf.grow)
 
 ///|
-/// Its uses (uses: 14 apart; a use its chat and how, its time at its end).
-// kept across runs: a value (no field of it changes)
-let vi_uses : @ui.Style = @ui.css("w=Full gap=S3_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_use : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_use_text : @ui.Style = @ui.style(w=@sf.grow, gap=S0_5)
-
-///|
 // kept across runs: a value (no field of it changes)
 let vi_chat : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, wrap=false, w=Cut)
-
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_use_name : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vi_use_time : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
 
 

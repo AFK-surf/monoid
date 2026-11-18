@@ -42,7 +42,7 @@ static double wake_at = -1;  // mb_now_ms() of the earliest wake_after, or -1
 // and the renderer's frame kept, linux_render.c mb_render_use) and the first put back after: what the app asks of the
 // window then (its size, its scale, a frame, its input method, a drag) is that window's, and the app is told which it
 // is (mb_host_windows' 4). Closed by the person, the app is told (an outside event, MB_OUTSIDE_WINDOW) and the run goes
-// on; the first put away, they close with it.
+// on; the first put away (hidden), the windows beside it stay, their context kept for the first's again (canvas_context).
 typedef struct WinSlot {
   // the window, its canvas, the native views' GtkFixed under it (NULL win: no window of that number)
   GtkWidget *win, *area, *under;
@@ -67,6 +67,12 @@ typedef struct WinSlot {
   // the last press that moved the window: when and where, for the second of a double click there
   guint32 drag_time;
   double drag_x, drag_y;
+  // what the app opened it as (mb_host_windows' 1, its spec; the first's, window_setup): its role (its size kept under
+  // it as it closes), when it opened, its least size (points) and whether its top row is the app's (an inset window)
+  char role[64];
+  int opened;
+  double min_w, min_h;
+  int inset;
 } WinSlot;
 static WinSlot win_slots[MB_WINS] = {{.scale = 1}};
 static WinSlot *ws = &win_slots[0];
@@ -414,7 +420,7 @@ static void canvas_init(Canvas *c) { c->texs = g_ptr_array_new(); }
 
 static void device_tell(mb_outside_fn tell);  // linux_device.h: the clipboard's reads done
 static void pick_tell(mb_outside_fn tell);    // the files picked
-static void drop_start(void);                 // what is let go on the window taken
+static void drop_start(void);                 // what is let go on the window in place taken
 static int drop_drive(const char *text);      // a scripted run's drop
 static void update_tell(mb_outside_fn tell);  // linux_update.h: how an update goes
 void mb_host_set_cursor(int32_t kind);
@@ -422,10 +428,13 @@ void mb_host_set_cursor(int32_t kind);
 // The area's context made current again for what is drawn: once WebKit is in the process (linux_views.c), its own GL
 // can leave another context current, or none, behind GDK's back, and GDK's make_current, which goes by the one it made
 // current last, would do nothing.
+static GtkWidget *area_with_context(int but);
 static void gl_current(void) {
   if (!mb_views_webkit()) return;
   gdk_gl_context_clear_current();
-  gtk_gl_area_make_current(GTK_GL_AREA(win_slots[0].area));
+  // (the window in place's: every window's canvas has the one context, the first's realized or not)
+  GtkWidget *a = ws->area && gtk_widget_get_realized(ws->area) ? ws->area : area_with_context(-1);
+  if (a) gtk_gl_area_make_current(GTK_GL_AREA(a));
 }
 
 static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
@@ -475,17 +484,24 @@ static void canvas_resized(int pw, int ph) {
   schedule();
 }
 
+static int context_kept;  // the first's canvas given the context the windows beside it kept (canvas_context)
 static void on_realize(GtkWidget *w, gpointer data) {
   (void)data;
+  // (the first's canvas, whichever window is in place as it is realized: shown again from a window beside it)
+  int back = win_active;
+  win_use(0);
   gtk_gl_area_make_current(GTK_GL_AREA(w));
   GError *e = gtk_gl_area_get_error(GTK_GL_AREA(w));
   if (e) {
     fprintf(stderr, "mbui: no OpenGL ES 3 context: %s\n", e->message);
     exit(1);
   }
-  mb_render_setup();
+  // (the first's canvas realized again on the context the windows beside it kept: what was made in it stands)
+  if (!context_kept) mb_render_setup();
+  context_kept = 0;
   if (context_asked) context_asked = 0, context_new = 1;
   schedule();
+  win_put_back(back);
 }
 
 // maximized or back, full screen or back: the app's top row and its buttons as it now is
@@ -874,7 +890,10 @@ static void on_focus_out(GtkEventControllerFocus *f, gpointer data) {
 static void app_state(void) {
   GtkWidget *first = win_slots[0].win;
   if (!state_cb || !first) return;
-  int shown = gtk_widget_get_mapped(first);
+  // (shown: any window of the run's, the first put away and another open among them)
+  int shown = 0;
+  for (int k = 0; k < MB_WINS && !shown; k++)
+    if (win_slots[k].win && gtk_widget_get_mapped(win_slots[k].win)) shown = 1;
   // (in front: any window of the run's, a window beside the first among them)
   int front = 0;
   for (int k = 0; k < MB_WINS && shown; k++)
@@ -1043,16 +1062,28 @@ static void run_loop(void) {
 // The window in place's parts (its GtkWindow made): an inset window's title bar of nothing, its canvas (the first's
 // GL context its, every window's: canvas_context), its input method and events (their data its number), its native
 // views' GtkFixed under the canvas.
+// A realized canvas of the run's but window `but`'s (-1: any), whose context is the run's one: NULL where none is.
+static GtkWidget *area_with_context(int but) {
+  for (int k = 0; k < MB_WINS; k++)
+    if (k != but && win_slots[k].area && gtk_widget_get_realized(win_slots[k].area) &&
+        gtk_gl_area_get_context(GTK_GL_AREA(win_slots[k].area)))
+      return win_slots[k].area;
+  return NULL;
+}
+// The context a canvas is made with: the run's one, any realized canvas's (the first's, or, the first hidden and
+// realized again, that of a window beside it: what drawing made in it stands, context_kept); none, GTK's own made.
 static GdkGLContext *canvas_context(GtkGLArea *a, gpointer data) {
-  (void)a, (void)data;
-  GdkGLContext *c = gtk_gl_area_get_context(GTK_GL_AREA(win_slots[0].area));
+  (void)data;
+  GtkWidget *with = area_with_context(win_of_area(GTK_WIDGET(a)));
+  GdkGLContext *c = with ? gtk_gl_area_get_context(GTK_GL_AREA(with)) : NULL;
+  if (c && GTK_WIDGET(a) == win_slots[0].area) context_kept = 1;
   return c ? g_object_ref(c) : NULL;
 }
 static void win_parts(void) {
   gpointer wid = GINT_TO_POINTER(win_active);
   // an inset window: its decorations GTK's own (its shadow and the edges it is resized by), a title bar of nothing,
   // the app's top row its title bar and its buttons the app's (@ui.window_keys_own), as Windows' is
-  if (setup_inset) {
+  if (ws->inset) {
     GtkWidget *none = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_visible(none, FALSE);
     gtk_window_set_titlebar(GTK_WINDOW(ws->win), none);
@@ -1060,7 +1091,7 @@ static void win_parts(void) {
   g_signal_connect(ws->win, "notify::maximized", G_CALLBACK(on_window_state), wid);
   g_signal_connect(ws->win, "notify::fullscreened", G_CALLBACK(on_window_state), wid);
   ws->area = g_object_new(canvas_get_type(), NULL);
-  if (win_active > 0) g_signal_connect(ws->area, "create-context", G_CALLBACK(canvas_context), NULL);
+  g_signal_connect(ws->area, "create-context", G_CALLBACK(canvas_context), NULL);
   gtk_gl_area_set_allowed_apis(GTK_GL_AREA(ws->area), GDK_GL_API_GLES);
   gtk_gl_area_set_required_version(GTK_GL_AREA(ws->area), 3, 0);
   gtk_gl_area_set_auto_render(GTK_GL_AREA(ws->area), FALSE);
@@ -1069,8 +1100,8 @@ static void win_parts(void) {
   gtk_widget_set_focusable(ws->area, TRUE);
   gtk_widget_set_hexpand(ws->area, TRUE);
   gtk_widget_set_vexpand(ws->area, TRUE);
-  if (setup_min_w > 0 || setup_min_h > 0)
-    gtk_widget_set_size_request(ws->area, (int)lround(setup_min_w), (int)lround(setup_min_h));
+  if (ws->min_w > 0 || ws->min_h > 0)
+    gtk_widget_set_size_request(ws->area, (int)lround(ws->min_w), (int)lround(ws->min_h));
 
   ws->im = gtk_im_multicontext_new();
   gtk_im_context_set_client_widget(ws->im, ws->area);
@@ -1121,6 +1152,9 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   }
   settings_watch();
 
+  ws->inset = setup_inset;
+  ws->min_w = setup_min_w;
+  ws->min_h = setup_min_h;
   ws->win = gtk_window_new();
   window_front_listen();
   char *t = utf8(title);
@@ -1177,7 +1211,47 @@ static gboolean held_frame(gpointer data) {
 // app closed itself it knows of already).
 static gboolean win_closed_told(gpointer data) {
   if (outside_cb) outside_cb(MB_OUTSIDE_WINDOW, GPOINTER_TO_INT(data), -1);
+  // (a run whose first was hidden as it closed, with no icon to put it away to, ends as the last window beside it
+  // closes: none is left to be seen)
+  int beside = 0;
+  for (int k = 1; k < MB_WINS; k++)
+    if (win_slots[k].win) beside = 1;
+  if (first_hidden_bare && !beside && !gtk_widget_get_visible(win_slots[0].win)) exit(0);
+  app_state();
   return G_SOURCE_REMOVE;
+}
+
+// How large each role's window last was as it closed (its default size, which GTK keeps as the person resizes it),
+// for the next of the role (win_open): the run's, the most recent kept.
+#define ROLES_KEPT 16
+static struct {
+  char role[64];
+  int w, h;
+  gint64 at;
+} roles_kept[ROLES_KEPT];
+static void role_keep(const WinSlot *o) {
+  if (!o->role[0] || !o->win) return;
+  int w = 0, h = 0;
+  gtk_window_get_default_size(GTK_WINDOW(o->win), &w, &h);
+  if (w <= 0 || h <= 0) return;
+  int at = 0;
+  for (int i = 0; i < ROLES_KEPT; i++) {
+    if (!strcmp(roles_kept[i].role, o->role)) {
+      at = i;
+      break;
+    }
+    if (roles_kept[i].at < roles_kept[at].at) at = i;
+  }
+  snprintf(roles_kept[at].role, sizeof roles_kept[at].role, "%s", o->role);
+  roles_kept[at].w = w, roles_kept[at].h = h;
+  roles_kept[at].at = g_get_monotonic_time() | 1;
+}
+static void role_kept(const char *role, int *w, int *h) {
+  for (int i = 0; i < ROLES_KEPT; i++)
+    if (role[0] && roles_kept[i].at && !strcmp(roles_kept[i].role, role)) {
+      *w = roles_kept[i].w, *h = roles_kept[i].h;
+      return;
+    }
 }
 static void win_closed(GtkWidget *w, gpointer data) {
   (void)w;
@@ -1186,8 +1260,13 @@ static void win_closed(GtkWidget *w, gpointer data) {
   if (win_active == wid) win_use(0);
   mb_views_forget(wid);
   WinSlot *o = &win_slots[wid];
-  if (win_slots[0].area && gtk_widget_get_realized(win_slots[0].area)) {
-    gtk_gl_area_make_current(GTK_GL_AREA(win_slots[0].area));
+  role_keep(o);
+  // (in the run's context: the first's canvas, or, the first hidden, another window's, else its own yet)
+  GtkWidget *with = area_with_context(wid);
+  if (!with && o->area && gtk_widget_get_realized(o->area) && gtk_gl_area_get_context(GTK_GL_AREA(o->area)))
+    with = o->area;
+  if (with) {
+    gtk_gl_area_make_current(GTK_GL_AREA(with));
     mb_render_forget(wid);
   }
   g_free(o->ime_words);
@@ -1197,18 +1276,16 @@ static void win_closed(GtkWidget *w, gpointer data) {
   g_idle_add(win_closed_told, GINT_TO_POINTER(wid));
 }
 
-// The windows beside the first closed (the first put away: linux_life.h put_away), as the person closes them.
-static void wins_close_beside(void) {
-  for (int k = 1; k < MB_WINS; k++)
-    if (win_slots[k].win) gtk_window_destroy(GTK_WINDOW(win_slots[k].win));
-}
-
-// A window of this run (@hostapi.window_open_id): its id, 0 where none. As large as the first is now, its title the
-// first's, its top row the app's as the first's; its first picture on the screen its first frame (canvas_snapshot,
-// drawn in the snapshot of the window's first frame).
-static int win_open(void) {
+// A window of this run (@hostapi.window_open_id): its id, 0 where none. `what` a spec (a JSON object: role, title, w,
+// h, minW, minH, inset, each left out as the first's), else the app's words for what it shows. As large as the first
+// is now, its title the first's, its top row the app's as the first's, but for what the spec says; one of a role as
+// large as the last of the role was as it closed (roles_kept: GTK 4 places no window itself, the desktop places it, so
+// a second of a role is set where the desktop sets it, not down and to the right of the one before). Its first
+// picture on the screen its first frame (canvas_snapshot, drawn in the snapshot of the window's first frame).
+static int win_open(moonbit_string_t what) {
   WinSlot *first = &win_slots[0];
-  if (!first->win || !first->area || !gtk_widget_get_realized(first->area)) return 0;
+  // (the run's context made: the first's canvas realized, or, the first hidden, another window's)
+  if (!first->win || !area_with_context(-1)) return 0;
   int wid = 0;
   for (int k = 1; k < MB_WINS; k++)
     if (!win_slots[k].win) {
@@ -1216,19 +1293,46 @@ static int win_open(void) {
       break;
     }
   if (!wid) return 0;
+  // (its spec, where `what` is one)
+  char *u = what ? utf8(what) : NULL;
+  jv spec;
+  memset(&spec, 0, sizeof spec);
+  const char *at = u;
+  if (u && u[0] == '{' && !jparse(&at, &spec, 0)) {
+    jv_free(&spec);
+    memset(&spec, 0, sizeof spec);
+  }
+  const jv *inset_v = jget(&spec, "inset");
   int back = win_active;
   WinSlot *o = &win_slots[wid];
   memset(o, 0, sizeof *o);
   o->scale = first->scale;
+  snprintf(o->role, sizeof o->role, "%s", jtext(&spec, "role"));
+  o->min_w = jnum(&spec, "minW", 0) > 0 ? jnum(&spec, "minW", 0) : setup_min_w;
+  o->min_h = jnum(&spec, "minH", 0) > 0 ? jnum(&spec, "minH", 0) : setup_min_h;
+  o->inset = inset_v && (inset_v->kind == 't' || inset_v->kind == 'f') ? inset_v->kind == 't' : setup_inset;
+  static int opened;
+  o->opened = ++opened;
   o->win = gtk_window_new();
   win_use(wid);
-  gtk_window_set_title(GTK_WINDOW(o->win), gtk_window_get_title(GTK_WINDOW(first->win)));
+  const char *title = jtext(&spec, "title");
+  gtk_window_set_title(GTK_WINDOW(o->win), *title ? title : gtk_window_get_title(GTK_WINDOW(first->win)));
   int w = gtk_widget_get_width(first->win), h = gtk_widget_get_height(first->win);
-  gtk_window_set_default_size(GTK_WINDOW(o->win), w > 0 ? w : held_w, h > 0 ? h : held_h);
+  if (w <= 0) w = held_w;
+  if (h <= 0) h = held_h;
+  double spec_w = jnum(&spec, "w", 0), spec_h = jnum(&spec, "h", 0);
+  if (spec_w > 0) w = (int)lround(spec_w);
+  if (spec_h > 0) h = (int)lround(spec_h);
+  role_kept(o->role, &w, &h);
+  gtk_window_set_default_size(GTK_WINDOW(o->win), w, h);
+  jv_free(&spec);
+  g_free(u);
   if (life_app) gtk_window_set_application(GTK_WINDOW(o->win), life_app);
   g_signal_connect(o->win, "notify::is-active", G_CALLBACK(on_active), NULL);
+  g_signal_connect(o->win, "notify::visible", G_CALLBACK(on_active), NULL);
   g_signal_connect(o->win, "destroy", G_CALLBACK(win_closed), GINT_TO_POINTER(wid));
   win_parts();
+  drop_start();
   gtk_window_present(GTK_WINDOW(o->win));
   gtk_widget_grab_focus(o->area);
   schedule();
@@ -1237,19 +1341,25 @@ static int win_open(void) {
 }
 
 // The windows of this run (host_native.mbt's `windows`): 0 whether they open in it (yes, but in a window that is a run
-// of its own, MBUI_WINDOW), 1 one opened, 2 one to the front, 3 one closed by the app, 4 the window in place now.
+// of its own, MBUI_WINDOW), 1 one opened, 2 one to the front, 3 one closed by the app, 4 the window in place now, 5 a
+// window's title set to `what` (`wid` -1: the window in place's). 2 with `wid` 0 brings the first back (put away or
+// hidden: bring_back).
 static gboolean win_close_later(gpointer data) {
   int wid = GPOINTER_TO_INT(data);
   if (wid > 0 && wid < MB_WINS && win_slots[wid].win) gtk_window_destroy(GTK_WINDOW(win_slots[wid].win));
   return G_SOURCE_REMOVE;
 }
 int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
-  (void)what;
   GtkWidget *w = wid > 0 && wid < MB_WINS ? win_slots[wid].win : NULL;
   switch (op) {
     case 0: return !window_run();
-    case 1: return win_open();
+    case 1: return win_open(what);
     case 2:
+      if (wid == 0) {
+        if (!win_slots[0].win) return 0;
+        bring_back();
+        return 1;
+      }
       if (!w) return 0;
       gtk_window_unminimize(GTK_WINDOW(w));
       gtk_window_present(GTK_WINDOW(w));
@@ -1259,6 +1369,15 @@ int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
       if (w) g_idle_add(win_close_later, GINT_TO_POINTER(wid));
       return 0;
     case 4: return win_active;
+    case 5: {
+      int target = wid < 0 ? win_active : wid;
+      GtkWidget *t = target >= 0 && target < MB_WINS ? win_slots[target].win : NULL;
+      if (!t) return 0;
+      char *title = utf8(what);
+      gtk_window_set_title(GTK_WINDOW(t), title);
+      g_free(title);
+      return 1;
+    }
     default: return 0;
   }
 }
@@ -1602,12 +1721,15 @@ void mb_host_window_setup(double min_w, double min_h, double w, double h, int32_
   setup_inset = inset != 0;
   setup_min_w = min_w;
   setup_min_h = min_h;
+  win_slots[0].inset = setup_inset;
+  win_slots[0].min_w = min_w;
+  win_slots[0].min_h = min_h;
   setup_w = w;
   setup_h = h;
 }
 
-// Whether the window's buttons are in the app's top row now: an inset window, not full screen.
-int32_t mb_host_window_inset(void) { return setup_inset && !(ws->win && gtk_window_is_fullscreen(GTK_WINDOW(ws->win))); }
+// Whether the window in place's buttons are in the app's top row now: an inset window, not full screen.
+int32_t mb_host_window_inset(void) { return ws->inset && !(ws->win && gtk_window_is_fullscreen(GTK_WINDOW(ws->win))); }
 
 // A window filling the screen (@hostapi.full_screen).
 int32_t mb_host_full_screen(void) { return ws->win && gtk_window_is_fullscreen(GTK_WINDOW(ws->win)) ? 1 : 0; }
@@ -1965,11 +2087,25 @@ static int32_t drop_pick(GPtrArray *files) {
   return id;
 }
 
-// files let go at (x, y) of the canvas: where each is said, their pick made, the window brought to the front
-static void drop_files_at(GPtrArray *files, double x, double y) {
+// a drop's end with nothing let go, said of window `wid`
+static void drop_left(int wid) {
+  char b[48];
+  int n = snprintf(b, sizeof b, "{\"type\":\"left\",\"wid\":%d}", wid);
+  drop_post(b, (size_t)n);
+}
+
+// window `wid` brought to the front, its canvas given the keys (the first where it has closed meanwhile)
+static void drop_front(int wid) {
+  WinSlot *o = &win_slots[wid >= 0 && wid < MB_WINS && win_slots[wid].win ? wid : 0];
+  if (o->win) gtk_window_present(GTK_WINDOW(o->win));
+  if (o->area) gtk_widget_grab_focus(o->area);
+}
+
+// files let go at (x, y) of window `wid`'s canvas: where each is said, their pick made, that window brought to the front
+static void drop_files_at(int wid, GPtrArray *files, double x, double y) {
   if (!files->len) {
     g_ptr_array_unref(files);
-    drop_post("{\"type\":\"left\"}", 16);
+    drop_left(wid);
     return;
   }
   GString *paths = g_string_new("");
@@ -1989,12 +2125,12 @@ static void drop_files_at(GPtrArray *files, double x, double y) {
   }
   int id = drop_pick(files);
   GString *m = g_string_new("");
-  g_string_printf(m, "{\"type\":\"drop\",\"x\":%.1f,\"y\":%.1f,\"pick\":%d,\"paths\":[%s]}", x, y, id, paths->str);
+  g_string_printf(m, "{\"type\":\"drop\",\"x\":%.1f,\"y\":%.1f,\"pick\":%d,\"paths\":[%s],\"wid\":%d}", x, y, id,
+                  paths->str, wid);
   drop_post(m->str, m->len);
   g_string_free(m, TRUE);
   g_string_free(paths, TRUE);
-  gtk_window_present(GTK_WINDOW(ws->win));
-  gtk_widget_grab_focus(ws->area);
+  drop_front(wid);
 }
 
 static int drag_has_files(GtkDropTarget *t) {
@@ -2002,52 +2138,52 @@ static int drag_has_files(GtkDropTarget *t) {
   return d && gdk_content_formats_contain_gtype(gdk_drop_get_formats(d), GDK_TYPE_FILE_LIST);
 }
 
+// (each window's target its own: data, the window's number, said with what it posts)
 static GdkDragAction on_drag_over(GtkDropTarget *t, double x, double y, gpointer data) {
-  (void)data;
   // (words: nothing said till they are let go, no files held over the window)
   if (!drag_has_files(t)) return GDK_ACTION_COPY;
-  char b[96];
-  int n = snprintf(b, sizeof b, "{\"type\":\"over\",\"x\":%.1f,\"y\":%.1f}", x, y);
+  char b[128];
+  int n = snprintf(b, sizeof b, "{\"type\":\"over\",\"x\":%.1f,\"y\":%.1f,\"wid\":%d}", x, y, GPOINTER_TO_INT(data));
   drop_post(b, (size_t)n);
   return GDK_ACTION_COPY;
 }
 
 static void on_drag_left(GtkDropTarget *t, gpointer data) {
-  (void)data;
-  if (drag_has_files(t)) drop_post("{\"type\":\"left\"}", 16);
+  if (drag_has_files(t)) drop_left(GPOINTER_TO_INT(data));
 }
 
 static gboolean on_dropped(GtkDropTarget *t, const GValue *v, double x, double y, gpointer data) {
-  (void)t, (void)data;
+  (void)t;
+  int wid = GPOINTER_TO_INT(data);
   if (G_VALUE_HOLDS(v, GDK_TYPE_FILE_LIST)) {
     GPtrArray *files = g_ptr_array_new_with_free_func(g_object_unref);
     for (GSList *l = gdk_file_list_get_files(g_value_get_boxed(v)); l; l = l->next)
       if (g_file_is_native(l->data)) g_ptr_array_add(files, g_object_ref(l->data));
-    drop_files_at(files, x, y);
+    drop_files_at(wid, files, x, y);
     return TRUE;
   }
   const char *words = G_VALUE_HOLDS_STRING(v) ? g_value_get_string(v) : NULL;
   if (!words || !*words) return FALSE;
   GString *m = g_string_new("");
-  g_string_printf(m, "{\"type\":\"words\",\"x\":%.1f,\"y\":%.1f,\"text\":\"", x, y);
+  g_string_printf(m, "{\"type\":\"words\",\"x\":%.1f,\"y\":%.1f,\"wid\":%d,\"text\":\"", x, y, wid);
   json_put(m, words);
   g_string_append(m, "\"}");
   drop_post(m->str, m->len);
   g_string_free(m, TRUE);
-  gtk_window_present(GTK_WINDOW(ws->win));
-  gtk_widget_grab_focus(ws->area);
+  drop_front(wid);
   return TRUE;
 }
 
-// the canvas takes what is let go on it: files first, else words
+// the canvas of the window in place takes what is let go on it: files first, else words
 static void drop_start(void) {
+  gpointer wid = GINT_TO_POINTER(win_active);
   GtkDropTarget *t = gtk_drop_target_new(G_TYPE_INVALID, GDK_ACTION_COPY);
   GType types[2] = {GDK_TYPE_FILE_LIST, G_TYPE_STRING};
   gtk_drop_target_set_gtypes(t, types, 2);
-  g_signal_connect(t, "enter", G_CALLBACK(on_drag_over), NULL);
-  g_signal_connect(t, "motion", G_CALLBACK(on_drag_over), NULL);
-  g_signal_connect(t, "leave", G_CALLBACK(on_drag_left), NULL);
-  g_signal_connect(t, "drop", G_CALLBACK(on_dropped), NULL);
+  g_signal_connect(t, "enter", G_CALLBACK(on_drag_over), wid);
+  g_signal_connect(t, "motion", G_CALLBACK(on_drag_over), wid);
+  g_signal_connect(t, "leave", G_CALLBACK(on_drag_left), wid);
+  g_signal_connect(t, "drop", G_CALLBACK(on_dropped), wid);
   gtk_widget_add_controller(ws->area, GTK_EVENT_CONTROLLER(t));
 }
 
@@ -2061,7 +2197,7 @@ static int drop_drive(const char *text) {
   for (int i = 0; paths[i]; i++)
     if (*paths[i]) g_ptr_array_add(files, g_file_new_for_path(paths[i]));
   g_strfreev(paths);
-  drop_files_at(files, x, y);
+  drop_files_at(win_active, files, x, y);
   return 1;
 }
 

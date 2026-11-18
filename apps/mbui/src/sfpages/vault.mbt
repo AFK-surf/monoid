@@ -570,9 +570,8 @@ let vt_find : @ui.Style = @ui.css("w=Full pb=S2_5")
 let vt_requests : @ui.Style = @ui.css("w=Full gap=S2_5 pb=S2_5")
 
 ///|
-/// An item agents are told of (listed): a green dot 6 round at its row's end.
-// kept across runs: a value (no field of it changes)
-let vt_listed : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Positive")
+/// An item agents are told of (listed): a green dot 6 round at its row's end (@sf.state_dot_node's, up).
+let vt_listed_side : Double = 6.0
 
 ///|
 /// The recovery words (Words): three to a row, 10 apart; each its number (the code face 12, subtle, 24 wide at its
@@ -810,10 +809,10 @@ fn vault_words_node(b : @view.View, ws : () -> String) -> Unit {
                 s.row(Is(true)).gap(Is(vt_word_gap)).lines_up(Is(Some(End))) |> ignore
                 s.box(fn(n) {
                   @sf.style_node(n, fn() { vt_word_number })
-                  vt_mono_node(n, fn() { (at() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
+                  @sf.mono_line_node(n, fn() { (at() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
                 })
                 |> ignore
-                vt_mono_node(s, fn() { words().get(at()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
+                @sf.mono_line_node(s, fn() { words().get(at()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
               })
             })
             |> ignore
@@ -837,25 +836,6 @@ fn vault_words_node(b : @view.View, ws : () -> String) -> Unit {
       |> ignore
     })
   })
-}
-
-///|
-/// Words in the code face on one line (mono's, as a node) in `parent`, `words` as they are now, `size` (the theme's as
-/// the node is made), in `ink`.
-fn vt_mono_node(parent : @view.View, words : () -> String, size : @ui.TextSize, ink : () -> Int64) -> Unit {
-  parent.box(fn(w) {
-    // (its size as the theme's is now: followed, the system's size of words changed)
-    let look = fn() -> @view.WordsLook {
-      let (px, line) = @ui.tree_theme().text_size(size)
-      { size: px, weight: 400, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-    }
-    w
-    .words_runs(By(fn() { [@ui.span(words(), mono=true)] }), look=@signals.untracked(look))
-    .words_look(By(look))
-    .ink(By(ink))
-    |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -1338,7 +1318,7 @@ fn named_rows_node(g : @view.View, list : () -> Array[Json]) -> Unit {
       fn() {  },
       note=fn() { text(iv(), "agentText") },
       goes=false,
-      tail=fn(e) { e.box(fn(d) { @sf.style_node(d, fn() { vt_listed }) }) |> ignore },
+      tail=fn(e) { @sf.state_dot_node(e, fn() { "up" }, size=vt_listed_side) },
       tail_shown=fn() { flag(iv(), "listed") },
     )
   })

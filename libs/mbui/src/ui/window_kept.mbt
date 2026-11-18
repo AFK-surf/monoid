@@ -120,6 +120,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(modifiers_said, fn() { @signals.signal(0) }),
     kept_ref(g_view, fn() { fn(_c) { () } }),
     kept_ref(frame_afters, fn() { [] }),
+    kept_ref(window_title_said, fn() { "" }),
     kept_ref(building, fn() { false }),
     kept_ref(wheel_went, fn() { 0 }),
     kept_ref(wheel_old_target, fn() { 0 }),
@@ -146,6 +147,9 @@ fn window_kept_ui_0() -> Array[WindowKept] {
 }) }),
     kept_ref(tree_inset_said, fn() { @signals.signal(None, same=fn(a, b) { a == b }) }),
     kept_ref(glass_forced_said, fn() { @signals.signal(-1, same=fn(a, b) { a == b }) }),
+    kept_ref(inset_said, inset_said_new),
+    kept_ref(zoomed_said, zoomed_said_new),
+    kept_ref(snap_said, snap_said_new),
     kept_by_node(tree_links),
     kept_map(corner_scale_at),
     kept_set(tree_pictures),
@@ -435,8 +439,17 @@ fn window_kept_ui_5() -> Array[WindowKept] {
     kept_set(layer_retired_ids),
     kept_array(row_keep, fn() { [] }),
     kept_ref(row_targets_again, fn() { None }),
-    kept_struct(fn() { let kept = { ..rows_steady }; fn() { rows_steady.window_put(kept) } }, fn() {
-      let (held, file) = (rows_steady.held, rows_steady.file)
+    // (when the hand last did something is the person's, one hand for every window: put back, a window keeps the later
+    // of its own and what was done in the one before it; made anew, it starts from it)
+    kept_struct(fn() {
+      let kept = { ..rows_steady }
+      fn() {
+        let hand = dmax(rows_steady.hand, kept.hand)
+        rows_steady.window_put(kept)
+        rows_steady.hand = hand
+      }
+    }, fn() {
+      let (held, file, hand) = (rows_steady.held, rows_steady.file, rows_steady.hand)
       rows_steady.window_put({
   held: true,
   file: "",
@@ -455,6 +468,7 @@ fn window_kept_ui_5() -> Array[WindowKept] {
 })
       rows_steady.held = held
       rows_steady.file = file
+      rows_steady.hand = hand
     }),
     kept_array(hits_before, fn() { [] }),
     kept_map(bars_hand),

@@ -56,8 +56,12 @@ pub fn window_keys_w() -> Double {
 /// window's. In a window's whole (Large) on its bars' line (bar_keys_top), the last at the window's corner as a bar's
 /// last key stands there (following it where it can, else alone); on the tape (Medium) on its panels' line, concentric
 /// with the top right corner of the panel at the window's edge as its bar's last key is (tape_line, line_end_in);
-/// laid out Small, in the band over the page.
-pub fn window_keys_at(width : Double) -> (Double, Double) {
+/// laid out Small, in the band over the page. Over a page alone over all the window (`whole`: a window of its own, a
+/// file over the whole window), on its bar's line at any width, as in a window's whole: no tape round it, no band over it.
+pub fn window_keys_at(width : Double, whole? : Bool = false) -> (Double, Double) {
+  if whole {
+    return (bar_keys_top(), window_keys_side())
+  }
   match layout(width) {
     Small => ((window_keys_band - bar_key_side) / 2.0, window_key_in(window_keys_in))
     Medium => (window_in + tape_line, window_keys_side_tape())
@@ -118,13 +122,14 @@ pub fn window_keys_room_tape(roots? : @ui.CornerRoots = @ui.corner_roots()) -> D
 
 ///|
 /// The window's buttons over all the app shows, where they are the app's to draw: pressed, what they do
-/// (@ui.window_act); the maximize one's place told the host each frame (@ui.window_snap).
-pub fn window_keys(c : @ui.Ctx) -> Unit {
+/// (@ui.window_act); the maximize one's place told the host each frame (@ui.window_snap). `whole`: over a page alone
+/// over all the window (window_keys_at's).
+pub fn window_keys(c : @ui.Ctx, whole? : Bool = false) -> Unit {
   if !@ui.window_keys_own() {
     return
   }
   let p = theme().p
-  let (top, side) = window_keys_at(c.width)
+  let (top, side) = window_keys_at(c.width, whole~)
   let zoomed = @ui.window_zoomed()
   let snap = @ui.window_snap_state()
   // (its corner a bar's last key's at the window's corner, the others' the same: one corner for the row)
