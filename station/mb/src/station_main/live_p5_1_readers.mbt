@@ -137,6 +137,8 @@ priv struct Slot {
   proc : MbProc
   mut held : Asked?
   mut idle_since : Int64
+  /// The model catalog's version this reader was last given (read/pool.ts `Slot.catalogVersion`).
+  mut catalog_version : Double
 }
 
 ///|
@@ -163,6 +165,9 @@ priv struct Readers {
   /// What only the hub knows, given to every read (its processes' states, its clients' keys).
   mut processes : async () -> Json
   mut client_keys : async () -> Json
+  /// The model catalog now ({ version, models }), given to a reader with a read when it changed: its prices are the
+  /// usage page's (readops `price`).
+  mut catalog : () -> Json
   builders : Map[String, Requested]
   mut checkpointing : Bool
   mut again : Bool
@@ -294,6 +299,7 @@ fn Readers::new(host : @host.Host, program : String, data : String) -> Readers {
     names: {},
     processes: async fn() { Json::array([]) },
     client_keys: async fn() { Json::array([]) },
+    catalog: () => { "version": Json::number(0.0), "models": Json::object({}) },
     builders: {},
     checkpointing: false,
     again: false,
@@ -311,7 +317,7 @@ fn Readers::start(self : Readers, line : Line) -> Slot? {
       return None
     }
   }
-  let slot : Slot = { proc, held: None, idle_since: @host.now() }
+  let slot : Slot = { proc, held: None, idle_since: @host.now(), catalog_version: 0.0 }
   line.slots.push(slot)
   ignore(
     self.host.rt.fork(name="reader", async fn() {
@@ -389,11 +395,24 @@ fn Readers::pump(self : Readers, line : Line) -> Unit {
     guard free is Some(slot) else { break }
     let asked = line.waiting.remove(at)
     slot.held = Some(asked)
-    if !slot.proc.post(asked.ask) {
+    if !slot.proc.post(self.with_catalog(slot, asked.ask)) {
       slot.held = None
       ignore(asked.answer.succeed(Err((500, "the reader stopped"))))
     }
   }
+}
+
+///|
+/// `ask` with the model catalog where it changed since this reader was last given it (read/pool.ts `give`).
+fn Readers::with_catalog(self : Readers, slot : Slot, ask : Json) -> Json {
+  guard (self.catalog)() is { "version": Number(version, ..), "models": models, .. } && version != slot.catalog_version &&
+    ask is Object(fields) else {
+    return ask
+  }
+  slot.catalog_version = version
+  let given = fields.copy()
+  given["catalog"] = models
+  Json::object(given)
 }
 
 ///|
@@ -691,6 +710,11 @@ fn Requested::run(self : Requested) -> Unit {
             }
           }
         }
+        // (the station stopping while it answered: `close` already told everyone waiting and emptied the queue, so
+        // what it said last, a done or not, is nobody's)
+        if self.readers.closed || self.waiting.length() == 0 {
+          return
+        }
         self.last = @host.now()
         match result {
           { "done": True, .. } | { "complete": True, .. } | { "id": _, "error": Null, .. } => {
@@ -774,6 +798,43 @@ fn Requested::close(self : Requested) -> Unit {
     Some(p) => p.stop()
     None => ()
   }
+}
+
+///|
+/// The readers closed while a builder's process is on an item (the harness's `requestedCloseInFlight`): `program` is
+/// run as the builder `said`, asked one item, and the readers closed the moment that ask is written, so what the
+/// process says after (its `take`, then `said` once its stdin is closed) comes to a builder whose queue `close`
+/// emptied. What the ask was answered, and whether the builder came to its end with nothing left waiting.
+async fn p51_requested_close_in_flight(host : @host.Host, data : String, program : String, said : String) -> Json {
+  let readers = Readers::new(host, program, data)
+  let asked : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let b = readers.builder(
+    "close-in-flight",
+    k => {
+      ignore(asked.succeed(()))
+      { "session": k }
+    },
+    program=said,
+  )
+  let answered : @effect.Deferred[String] = @effect.Deferred::new()
+  ignore(
+    host.rt.fork(name="close-in-flight ask", async fn() {
+      let what = b.ready([Json::string("s1")]) catch { e => "\{e}" } noraise { _ => "ready" }
+      ignore(answered.succeed(what))
+    }),
+  )
+  asked.wait()
+  readers.close()
+  let answer = answered.wait()
+  // (the builder's process ends once it said its last; the builder's fiber is let run to its end after)
+  match b.proc {
+    Some(p) => p.ended.wait()
+    None => ()
+  }
+  while b.running {
+    @effect.pause()
+  }
+  { "answer": Json::string(answer), "waiting": Json::number(b.waiting.length().to_double()) }
 }
 
 ///|
@@ -912,6 +973,7 @@ fn P51::readers_live(self : P51) -> Readers {
   let bus = self.bus
   let r = Readers::new(self.host, bus.argv0, bus.data)
   r.previous_gone.val = bus.previous_gone
+  r.catalog = () => (bus.model_catalog.val)()
   r.processes = async fn() {
     match (bus.hub_ask.val)("processes", Json::null()) {
       Array(_) as a => a

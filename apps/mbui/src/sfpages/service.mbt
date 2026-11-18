@@ -532,21 +532,20 @@ fn custom_turn_node(parent : @view.View, p : ServicePage, key : String) -> Unit 
     }
   }
   let label = fn() { @sf.t("web-main.viewport.turn") }
-  parent.box(fn(k) {
+  let turn = fn(k : @view.View) {
+    match p.viewport.get() {
+      Some({ width, height: Some(h) }) => {
+        let size : Viewport = { width: h, height: Some(width) }
+        p.view.fit_now(at=k.cause_at())
+        p.viewport.set(Some(size))
+        keep_size(key, Some(size))
+      }
+      _ => ()
+    }
+  }
+  @sf.action_box_node(parent, label, turn, disabled=fn() { !turnable() }, fn(k) {
     @sf.style_node(k, fn() { custom_turn })
     k.alpha(By(fn() { if turnable() { 1.0 } else { @ui.Opacity::O35.value() } })) |> ignore
-    @sf.presses_node(k, on=turnable, fn() {
-      match p.viewport.get() {
-        Some({ width, height: Some(h) }) => {
-          let size : Viewport = { width: h, height: Some(width) }
-          p.view.fit_now(at=k.cause_at())
-          p.viewport.set(Some(size))
-          keep_size(key, Some(size))
-        }
-        _ => ()
-      }
-    })
-    k.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
     @sf.icon_node(k, "landscape", custom_turn_icon, By(fn() { @sf.theme().p.text })) |> ignore
     @sf.panel_tip_node(k, label)
   })

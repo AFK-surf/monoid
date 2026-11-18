@@ -693,6 +693,102 @@ cat "$STILLFAIL_DATA/next-build" > "$STILLFAIL_DATA/app/BUILD"
     assert.ok(!existsSync(join(dir, "run", "update.started")), "what it followed is let go of");
   });
 
+  // The station's own line was 未安装 until every runtime's version had been read: on a Windows station whose runtime's
+  // `--version` never ended, for good, and the page said 正在检查版本 meanwhile (2026-11-18).
+  test("the station is there with its version as it is made, before anything is read", async (t) => {
+    const updates = installed(temp(), "1300", null);
+    t.after(() => updates.close());
+    const line = station(updates);
+    assert.deepEqual([line.installed, line.version, line.note, line.updatable, line.channel], [true, "0.1.1300", undefined, true, "stable"]);
+    assert.equal(line.latest, undefined);
+    assert.equal(line.newer, false);
+    const elsewhere = temp();
+    mkdirSync(join(elsewhere, "x"));
+    writeFileSync(join(elsewhere, "x", "BUILD"), "1300");
+    const other = new Updates({ app: join(elsewhere, "x"), data: elsewhere, config: new ConfigFile(elsewhere), origin: () => null, env: { PATH: "/nowhere" }, stationOnly: true });
+    t.after(() => other.close());
+    assert.deepEqual([station(other).installed, station(other).version, station(other).note], [true, "0.1.1300", "并非通过安装脚本安装，无法在此更新"]);
+  });
+
+  // A runtime whose version is slow to come (here Codex's check of its host, which never answers) held back the station's
+  // release with it: read, but not shown, nor updated to, until every runtime had been read.
+  test("the station's latest is shown and updated to as soon as it is read, while a runtime is still being read", shInstaller, async (t) => {
+    const dir = temp();
+    const [origin, server, , finish, installer] = await cloudWithRelease("0.1.1310", "1310", true);
+    t.after(() => server.close());
+    const bin = join(dir, "bin");
+    script(join(bin, "codex"), "#!/bin/sh\necho codex-cli 0.46.0\n");
+    let probed = 0;
+    // Codex's check of its host answers only once the test lets it.
+    let answer = () => {};
+    const answered = new Promise<null>((r) => (answer = () => r(null)));
+    const updates = installed(dir, "1300", null, { origin: () => origin, env: { PATH: withSystem(bin) }, codexHostProbe: () => ((probed += 1), answered) }, installer);
+    new ConfigFile(dir).update((raw) => (raw.autoUpdate = true));
+    let read = false;
+    const reading = updates.check().then(() => (read = true));
+    await until("the station's latest read", () => station(updates).latest === "0.1.1310", t.signal);
+    assert.equal(station(updates).newer, true);
+    // Updating itself to it, though Codex's reading has not ended.
+    await until("updating", () => station(updates).state === "updating", t.signal);
+    assert.equal(probed, 1);
+    assert.equal(read, false, "the runtimes' reading goes on");
+    finish();
+    await until("the installer ended", () => existsSync(join(dir, "run", "update.exit")), t.signal);
+    answer();
+    await reading;
+    await updates.close();
+  });
+
+  test("a runtime whose reading fails keeps what it was, and the others and the station are read", { skip: WINDOWS && "a shell script as codex" }, async (t) => {
+    const dir = temp();
+    const bin = join(dir, "bin");
+    script(join(bin, "codex"), "#!/bin/sh\necho codex-cli 0.46.0\n");
+    let probed = 0;
+    const updates = installed(dir, "1300", null, { env: { PATH: withSystem(bin) }, codexHostProbe: () => ((probed += 1), Promise.reject(new Error("the probe broke"))) });
+    t.after(() => updates.close());
+    // (it threw out of the whole reading before: nothing read was taken)
+    await updates.check();
+    assert.equal(probed, 1);
+    const codex = updates.get("en").find((l) => l.id === "codex")!;
+    assert.equal(codex.installed, false, "as it was before (never read)");
+    assert.ok(station(updates).checkedAt !== undefined);
+    assert.equal(station(updates).installed, true);
+  });
+
+  // A first reading that failed was tried again only `every` (6 h) later, and then of the runtimes alone: the station's
+  // release was never read, the page waiting on it for good.
+  test("a first reading that failed is tried again within a minute, the station's release with it", async (t) => {
+    const dir = temp();
+    const [origin, server] = await cloudWithRelease("0.1.1310", "1310");
+    t.after(() => server.close());
+    const time = testClock();
+    const updates = installed(dir, "1300", null, { origin: () => origin, stationOnly: true, clock: time.clock });
+    t.after(() => updates.close());
+    const own = updates as unknown as { readStation: (channel: string) => Promise<unknown> };
+    const readStation = own.readStation.bind(updates);
+    let tries = 0;
+    own.readStation = (channel) => ((tries += 1), tries === 1 ? Promise.reject(new Error("the network is away")) : readStation(channel));
+    updates.start();
+    // (its first look is due at once on its clock)
+    while (tries === 0) {
+      t.signal.throwIfAborted();
+      await time.adjust(0);
+      await sleep(10, undefined, { signal: t.signal });
+    }
+    // Its clock on a second at a time: the reading again starts within the minute (its feed then read for real).
+    let waited = 0;
+    while (tries === 1) {
+      t.signal.throwIfAborted();
+      assert.ok(waited < 60_000, `not read again within ${waited} ms`);
+      await time.adjust(1_000);
+      waited += 1_000;
+      await sleep(10, undefined, { signal: t.signal });
+    }
+    await until("the station's release read", () => station(updates).latest === "0.1.1310", t.signal);
+    assert.equal(tries, 2);
+    assert.equal(station(updates).newer, true);
+  });
+
   test("a station not installed by the installer, or not in a workspace, is not updated here", async (t) => {
     const dir = temp();
     const app = join(dir, "elsewhere");
@@ -1289,10 +1385,10 @@ describe("going back to a release before the one the station runs", { skip: WIND
   const builtAs = (build: number) => ({ sha256: shaOf(archiveOf(build)), size: archiveOf(build).length });
   const kept = (build: number) => `station/archive/stable/${build}-${shaOf(archiveOf(build))}-${here}.tar.gz`;
 
-  /// A station on 1300 (updating by itself when `auto`), the stable feed's latest 1310 naming before it `earlier`
+  /// A station on 1300 (updating by itself when `auto`), the stable feed's latest (`latest`, 1310) naming before it `earlier`
   /// (default: 1300, 1290, 1280 signed by a key no station takes, 1270 with no build for this machine), each archive
   /// under its own name (`archive`: what the cloud answers for it instead); the installer puts `to`'s BUILD in place.
-  async function backCase(t: { after: (f: () => unknown) => void; signal: AbortSignal }, o: { auto?: boolean; to?: string; earlier?: object[]; archive?: (build: number) => Said } = {}) {
+  async function backCase(t: { after: (f: () => unknown) => void; signal: AbortSignal }, o: { auto?: boolean; latest?: string; to?: string; earlier?: object[]; archive?: (build: number) => Said } = {}) {
     const dir = temp();
     const tmp = join(dir, "tmp");
     mkdirSync(tmp);
@@ -1303,7 +1399,8 @@ describe("going back to a release before the one the station runs", { skip: WIND
     const earlier = o.earlier ?? [feedOf(1300, builtAs(1300)), feedOf(1290, builtAs(1290)), feedOf(1280, builtAs(1280), OTHER), { ...feedOf(1270), ...signedFor(1270, "no-such-machine") }];
     const files: Record<string, () => Said> = {};
     for (const b of [1300, 1290, 1280, 1270]) files[kept(b)] = () => (o.archive ? o.archive(b) : { type: "application/gzip", body: archiveOf(b) });
-    const [origin, server, asked, , installer] = await cloudWithRelease("0.1.1310", (o.to ?? "0.1.1290").split(".").at(-1)!, false, withEarlier(feedOf(1310), earlier), files);
+    const latest = o.latest ?? "0.1.1310";
+    const [origin, server, asked, , installer] = await cloudWithRelease(latest, (o.to ?? "0.1.1290").split(".").at(-1)!, false, withEarlier(feedOf(Number(latest.split(".").at(-1))), earlier), files);
     t.after(() => server.close());
     const updates = installed(data, "1300", "stable\n", { origin: () => origin, env: { PATH: "/usr/bin:/bin" } }, installer);
     t.after(() => updates.close());
@@ -1339,10 +1436,13 @@ describe("going back to a release before the one the station runs", { skip: WIND
   });
 
   test("gone back to: its archive downloaded and checked here, handed to the installer, updating by itself off until a release newer than the one left", shInstaller, async (t) => {
-    const c = await backCase(t, { auto: true });
+    // (the release it left the latest: one newer out would turn updating by itself on again as the station reads what is
+    // out after going back, and update it to that)
+    const c = await backCase(t, { auto: true, latest: "0.1.1300" });
     await c.check();
     await c.updates.update("station", "zh", "0.1.1290");
     await until("ended", () => station(c.updates).state !== "updating", t.signal);
+    await until("read after going back", () => station(c.updates).version === "0.1.1290", t.signal);
     const [, saw] = readFileSync(join(c.data, "installer-saw"), "utf8").trim().split("\n");
     assert.equal(saw!.split(" ")[1], shaOf(archiveOf(1290)), "told the signed hash of the release gone back to");
     assert.ok(readFileSync(join(c.data, "handed")).equals(archiveOf(1290)), "handed its archive");

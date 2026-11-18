@@ -48,19 +48,20 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
     })
     |> ignore
   })
-  let things = @signals.computed(fn(_) { info_things_said(src, r, chat(), view()) })
-  v.show(fn() { things.get().holds() }, fn(g) { info_things_node(g, src, r, fn() { things.get() }, done) })
+  // (what is in it as every screen's info reads it: sfpages' chat_holds_said; beside the system's tabs, its rows fewer)
+  let things = @signals.computed(fn(_) { (@sfpages.chat_holds_said(src, r, chat()), @sf.native_on()) })
+  v.show(fn() { things.get().0.any() }, fn(g) { info_things_node(g, src, r, fn() { things.get() }, done) })
 }
 
 ///|
 /// What the info's facts are made of (info_facts_node's): whether the chat's view is read, where it came from (its
-/// place, its thread's surface, Feishu's), its thread, who opened it, its people, and whether the system's bars are on.
+/// place, and through what: sfpages' chat_through), its thread, who opened it, its people, and whether the system's
+/// bars are on.
 #derive(Eq)
 priv struct InfoFacts {
   known : Bool
   place : String
-  surface : String
-  feishu : Bool
+  through : @sfpages.ChatThrough?
   thread : Json?
   opener : @sfbase.Opener?
   people : Array[Person]
@@ -71,7 +72,6 @@ priv struct InfoFacts {
 /// The info's facts (info_facts_node's) as the chat's head `chat` and its view `view` say them.
 fn info_facts_said(chat : Json?, view : ChatView?) -> InfoFacts {
   let thread = field(chat, "thread")
-  let surface = text(thread, "surface")
   let (opener, people) = match view {
     Some(cv) => (cv.opener, cv.people)
     None => (None, [])
@@ -79,8 +79,7 @@ fn info_facts_said(chat : Json?, view : ChatView?) -> InfoFacts {
   {
     known: view is Some(_),
     place: text(chat, "place"),
-    surface,
-    feishu: surface.has_prefix("feishu:") || text(chat, "feishuUrl") != "",
+    through: @sfpages.chat_through(chat),
     thread,
     opener,
     people,
@@ -102,14 +101,9 @@ fn info_facts_node(
   let thread = fn() { facts().thread }
   let labels = ["from", "started", "people", "created", "lastMessage"].map(fn(k) { @sf.t("web-pages.chat.info." + k) })
   // (a Comma Task's: in no place, Comma alone, as the old view's chat_info said it)
-  let comma = fn() { facts().surface.has_prefix("comma:") }
+  let comma = fn() { facts().through is Some(@sfpages.ChatThrough::Comma) }
   let in_thread = fn() { opt_number(thread(), "id") is Some(_) }
-  let creator = fn() {
-    match text(field(field(thread(), "creator"), "shown"), "display") {
-      "" => text(field(thread(), "creator"), "name")
-      d => d
-    }
-  }
+  let creator = fn() { @sfpages.chat_creator_said(thread()) }
   // (its first fact's words as far under the panel's top as a menu's first item's: the fact's row taller than its
   // line, centred in it; its labels in a column 80 wide, or as wide as the widest of them in this language)
   let over = fn() { @sf.menu_row_over - (@sf.fact_row_h - @sf.theme().t.ui_line) / 2.0 }
@@ -119,10 +113,10 @@ fn info_facts_node(
       @sf.fact_row_node(list, label, value, show=when)
     }
     // where it came from, only when that is not here (a still.fail chat's says nothing)
-    fact(fn() { facts().place != "" || comma() }, labels[0], fn(row) {
+    fact(fn() { facts().through is Some(_) }, labels[0], fn(row) {
       row.box(fn(i) {
         @sf.style_node(i, fn() { info_inline }, in_row=true)
-        i.pick(at_once=true, fn() { if comma() { 0 } else if facts().feishu { 1 } else { 2 } }, fn(m, through) {
+        i.pick(at_once=true, fn() { if comma() { 0 } else if facts().through is Some(@sfpages.ChatThrough::Feishu) { 1 } else { 2 } }, fn(m, through) {
           match through {
             0 => @sf.drawable_node(m, @sf.origin_mark_name("comma"), 13.0, tint=fn() { Some(@sf.theme().p.text) }) |> ignore
             1 => @sf.drawable_node(m, "feishu", 13.0) |> ignore
@@ -130,7 +124,7 @@ fn info_facts_node(
           }
         })
         @sf.words_node(i, fn() {
-          let through = if comma() { "Comma" } else if facts().feishu { @sf.t("web-pages.connect.feishu.name") } else { "Slack" }
+          let through = if comma() { "Comma" } else if facts().through is Some(@sfpages.ChatThrough::Feishu) { @sf.t("web-pages.connect.feishu.name") } else { "Slack" }
           match facts().place {
             "" => through
             place => through + " · " + place
@@ -287,48 +281,22 @@ fn info_agents_node(a : @view.View, agents : () -> Array[Json]) -> Unit {
 }
 
 ///|
-/// What is in the chat as the info names it (info_things_node's): its pull requests, how much else was said in it,
-/// whether its stations lend their files beside it, how many letters, and whether the system's bars are on.
-#derive(Eq)
-priv struct InfoThings {
-  pulls : Array[Json]
-  said : Int
-  files : Bool
-  letters : Int
-  native : Bool
-}
-
-///|
-/// Whether there is anything in it to say (else the part is not there).
-fn InfoThings::holds(self : InfoThings) -> Bool {
-  self.pulls.length() > 0 || self.said > 0 || self.files || self.letters > 0
-}
-
-///|
-/// What is in chat `r` as its head `chat` and its view `view` say it (InfoThings).
-fn info_things_said(src : Source, r : ChatRef, chat : Json?, view : ChatView?) -> InfoThings {
-  let (said, pulls) = match opt_number(field(chat, "thread"), "id") {
-    Some(id) => @sfpages.things_now(src, r.station, id)
-    None => (0, [])
-  }
-  let files = dv_stations(src, scope_of(r.station)).0.unwrap_or([]).iter().any(fn(s) { s.drive })
-  let letters = match view {
-    Some(v) => v.letters
-    None => 0
-  }
-  { pulls, said, files, letters, native: @sf.native_on() }
-}
-
-///|
-/// What is in it (chat_info's last group) in `g`, as `said` says it now: the pull requests linked in it, the latest 3
+/// What is in it (chat_info's last group) in `g`, as `holds` says it now (and whether the system's bars are on): the pull requests linked in it, the latest 3
 /// (the user, 2026-10-29: most chats have one or two, seen at a look), each a row by its link, 全部 N 个 to the rest
 /// beside the chat, pressed, one opens in the browser; what else was said in it besides words, the stations' files
 /// beside it, what its agents and other chats' wrote each other: each row there while it has something to say.
-fn info_things_node(g : @view.View, src : Source, r : ChatRef, said : () -> InfoThings, done : () -> Unit) -> Unit {
+fn info_things_node(
+  g : @view.View,
+  src : Source,
+  r : ChatRef,
+  holds : () -> (@sfpages.ChatHolds, Bool),
+  done : () -> Unit,
+) -> Unit {
+  let said = fn() { holds().0 }
   g.box(fn(t) {
     @sf.style_node(t, fn() { info_tools(true) })
     // (beside the system's tabs, a phone's room: none of them by itself, 全部 N 个 alone, the user 2026-11-01)
-    let named = fn() { if said().native { 0 } else { info_pulls_most } }
+    let named = fn() { if holds().1 { 0 } else { info_pulls_most } }
     let pulls = fn() {
       let all = said().pulls
       if all.length() > named() {

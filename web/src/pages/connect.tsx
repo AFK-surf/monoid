@@ -13,7 +13,10 @@ import enPages from "../../../client/i18n/catalog/en/web-pages.json" with { type
 import { core } from "../core/react.ts";
 import { NAME } from "../channel.ts";
 import { accounts, signInHere, takeSignedIn } from "./core.ts";
-import * as css from "../login/login.css.ts";
+import { Button, ButtonLink } from "@stillfail/ui/button.tsx";
+import { ErrorLine, RadioChoices, TextInput } from "@stillfail/ui/fields.tsx";
+import { Field } from "@stillfail/ui/parts.tsx";
+import { StandActions, StandPage } from "@stillfail/ui/standPage.tsx";
 import * as own from "./connect.css.ts";
 
 addWords({ zh: zhPages as Words, en: enPages as Words });
@@ -88,11 +91,7 @@ function Connect() {
   }, [signedIn]);
 
   const page = (title: string, lead: string, action?: [string, string]) => (
-    <main className={css.page}>
-      <h1 className={css.title}>{title}</h1>
-      {lead && <p className={css.lead}>{lead}</p>}
-      {action && <div className={css.actions}><a className={css.button} href={action[1]}>{action[0]}</a></div>}
-    </main>
+    <StandPage title={title} lead={lead} actions={action && <ButtonLink href={action[1]}>{action[0]}</ButtonLink>} />
   );
   const home: [string, string] = [t("web-pages.cloud.backTo", { name: NAME }), "/"];
 
@@ -119,38 +118,27 @@ function Connect() {
     }
   };
   return (
-    <main className={css.page}>
-      <h1 className={css.title}>{t("web-pages.cloud.connect.title")}</h1>
-      <p className={css.lead}>{t("web-pages.cloud.connect.lead", { host: consoleHost, machine: asked || t("web-pages.cloud.connect.aMachine") })}</p>
+    <StandPage title={t("web-pages.cloud.connect.title")} lead={t("web-pages.cloud.connect.lead", { host: consoleHost, machine: asked || t("web-pages.cloud.connect.aMachine") })}>
       <form className={own.form} onSubmit={join}>
-        <span className={own.label}>{t("web-pages.cloud.connect.workspace")}</span>
-        <fieldset className={own.choices} disabled={busy !== null}>
-          {listed.managed.map((w) => (
-            <label key={w.id} className={own.choice}>
-              <input className={own.radio} type="radio" name="workspace" value={w.id} checked={workspace === w.id} onChange={() => setWorkspace(w.id)} />
-              <span className={own.choiceText}>
-                <span className={own.choiceName}>{w.name}</span>
-                {several && <span className={own.choiceMeta}>{w.email}</span>}
-              </span>
-            </label>
-          ))}
-        </fieldset>
-        <label className={own.form}>
-          <span className={own.label}>{t("web-pages.cloud.connect.name")}</span>
-          <input className={own.field} value={name} maxLength={64} disabled={busy !== null} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
-        </label>
+        <Field label={t("web-pages.cloud.connect.workspace")}>
+          <RadioChoices name="workspace" label={t("web-pages.cloud.connect.workspace")} value={workspace} onChange={setWorkspace} disabled={busy !== null}
+            options={listed.managed.map((w) => ({ value: w.id, label: w.name, ...(several ? { meta: w.email } : {}) }))} />
+        </Field>
+        <Field label={t("web-pages.cloud.connect.name")} htmlFor="connect-name">
+          <TextInput id="connect-name" value={name} maxLength={64} disabled={busy !== null} onInput={(e) => setName(e.currentTarget.value)} />
+        </Field>
         <p className={own.note}>{t("web-pages.cloud.connect.note", { host: consoleHost })}</p>
-        {error && <p className={own.error}>{t("web-pages.cloud.connect.failed", { error })}</p>}
-        <div className={css.actions}>
-          <button type="button" className={css.button} disabled={busy !== null} onClick={() => { setBusy("handing"); postBack(back, { state, error: "access_denied" }); }}>
+        {error && <ErrorLine>{t("web-pages.cloud.connect.failed", { error })}</ErrorLine>}
+        <StandActions>
+          <Button disabled={busy !== null} onClick={() => { setBusy("handing"); postBack(back, { state, error: "access_denied" }); }}>
             {t("web-pages.cloud.connect.cancel")}
-          </button>
-          <button type="submit" className={`${css.button} ${css.primary}`} aria-busy={busy === "adding"} disabled={!workspace || !name.trim() || busy !== null}>
+          </Button>
+          <Button type="submit" variant="primary" busy={busy === "adding"} disabled={!workspace || !name.trim() || busy !== null}>
             {busy === "adding" ? t("web-pages.cloud.connect.adding") : t("web-pages.cloud.connect.add")}
-          </button>
-        </div>
+          </Button>
+        </StandActions>
       </form>
-    </main>
+    </StandPage>
   );
 }
 

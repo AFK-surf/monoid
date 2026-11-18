@@ -23,7 +23,7 @@ import { Cause, Clock, Deferred, Effect, Exit, Fiber, Semaphore } from "effect";
 import { CoreError, asCoreError, failedIn } from "./error.ts";
 import type { BaseHost, Pull } from "./host-of.ts";
 import { t } from "./lang.ts";
-import type { CloseReason, Iroh, IrohConnection, IrohEndpoint, IrohStream } from "./iroh.ts";
+import type { CloseReason, Iroh, IrohConnection, IrohEndpoint, IrohPath, IrohStream } from "./iroh.ts";
 import { laterSleep, type Runner } from "./runtime.ts";
 import { Kind, type SpanContext, type Tracer } from "./trace.ts";
 import { fromUtf8, hex, localDay, parseJson, sha256, toJsonBytes, utf8 } from "./util.ts";
@@ -662,39 +662,59 @@ export class Link {
     this.conn.close(0, "closed");
   }
 
+  /// The way it goes by now: the one iroh chose; where a host marks none while the link carries on (iroh keeps one
+  /// chosen way an endpoint to another, which two links of one endpoint to the same station, or a way moved between a
+  /// machine's interfaces, leaves unmarked: Windows to Windows), the way its packets go, a direct one before a relay's
+  /// and the busiest first; with none sent yet, the only way, or the first where the link is pinned to one kind of
+  /// direct way (`LAN`, `TAILNET`) or every way is direct. None only where it may still be a relay's.
+  #chosen(paths: IrohPath[] = this.conn.paths()): IrohPath | undefined {
+    const selected = paths.find((p) => p.selected);
+    if (selected !== undefined || paths.length === 0) return selected;
+    let busiest: IrohPath | undefined;
+    for (const p of paths) {
+      if (p.txPackets <= 0) continue;
+      const direct = p.relay === null;
+      if (busiest === undefined || (direct && busiest.relay !== null) || (direct === (busiest.relay === null) && p.txPackets > busiest.txPackets)) busiest = p;
+    }
+    if (busiest !== undefined) return busiest;
+    return paths.length === 1 || this.pinned === LAN || this.pinned === TAILNET || paths.every((p) => p.relay === null) ? paths[0] : undefined;
+  }
+
   path(): string | null {
-    const p = this.conn.paths().find((x) => x.selected);
+    const p = this.#chosen();
     return p === undefined ? null : p.relay !== null ? "relay" : "direct";
   }
 
   via(): string | null {
-    return this.conn.paths().find((x) => x.selected)?.relay ?? null;
+    return this.#chosen()?.relay ?? null;
   }
 
   /// Every way iroh has for it, as a span says them: `*` the one chosen, then where it goes (a relay's host, or a direct
   /// way's address), its round trip, the packets sent and lost on it. What a phone's direct way was, and how it went,
   /// as requests moved off it (2026-10-17: gone 20–30 s after it was taken, on a phone alone).
   paths(): string {
-    return this.conn
-      .paths()
-      .map((p) => `${p.selected ? "*" : ""}${p.relay !== null ? relayHost(p.relay) : (p.ip ?? "direct")} ${p.rttMs === null ? "?" : `${Math.round(p.rttMs)}ms`} ${p.txPackets}/${p.lostPackets}`)
+    const paths = this.conn.paths();
+    const chosen = this.#chosen(paths);
+    return paths
+      .map((p) => `${p === chosen ? "*" : ""}${p.relay !== null ? relayHost(p.relay) : (p.ip ?? "direct")} ${p.rttMs === null ? "?" : `${Math.round(p.rttMs)}ms`} ${p.txPackets}/${p.lostPackets}`)
       .join("; ");
   }
 
   /// Which ways iroh has for it, where each goes and the one chosen, without their counts: what changes as one opens, goes
   /// or is chosen.
   pathShape(): string {
-    return this.conn
-      .paths()
-      .map((p) => `${p.selected ? "*" : ""}${p.id}@${p.relay ?? p.ip ?? "direct"}`)
-      .join(",");
+    const paths = this.conn.paths();
+    const chosen = this.#chosen(paths);
+    return paths.map((p) => `${p === chosen ? "*" : ""}${p.id}@${p.relay ?? p.ip ?? "direct"}`).join(",");
   }
 
   net(): LinkNet {
-    const selected = this.conn.paths().find((p) => p.selected);
+    const selected = this.#chosen();
     const stats = this.conn.stats();
+    // A link pinned to a direct way goes by none other, whatever its host marks.
+    const pinnedPath = this.pinned === TAILNET ? TAILNET : this.pinned === LAN ? "direct" : null;
     return {
-      path: selected === undefined ? null : selected.relay !== null ? "relay" : this.pinned === TAILNET ? TAILNET : "direct",
+      path: selected === undefined ? pinnedPath : selected.relay !== null ? "relay" : this.pinned === TAILNET ? TAILNET : "direct",
       relay: selected?.relay ? relayHost(selected.relay) : null,
       rttMs: selected !== undefined ? selected.rttMs : null,
       measured: null,

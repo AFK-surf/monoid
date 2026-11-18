@@ -60,6 +60,15 @@ export function chatKeptId(station: string, key: string, name: string): string {
   return `chat\n${station}\n${key}\n${name}`;
 }
 
+/// A chat's image's preview (station.file `preview`: at most 2048 across, made by its station), among those kept: kept
+/// as a file of a drive is, let go of as they are (`preview` first: no station's is so).
+export function previewKeptId(station: string, key: string, name: string): string {
+  return `preview\n${station}\n${key}\n${name}`;
+}
+
+/// An image this small or smaller is read whole in the viewer at once: its station makes no preview of it.
+export const PREVIEW_SMALL = 300 * 1024;
+
 /// A file sent up from here, among those kept: its station, and the name the station keeps it under (unique there, and
 /// kept as it moves the file into the chat's uploads), whichever chat it is in (`sent` first: no station's is so).
 export function sentKeptId(station: string, name: string): string {

@@ -1201,6 +1201,34 @@ test("a_new_chat_is_made_under_the_key_its_page_had_before_it_was_made_and_its_p
   core.close();
 });
 
+// A board draft's model is its own control's (`board:<id>`): as a new chat there runs till picked for it, then kept for
+// it alone, the chat made of it with it, and let go of with it.
+test("a_board_drafts_model_is_picked_for_it_alone_and_its_chat_is_made_with_it", async () => {
+  const { host, core } = await choosing();
+  const ui = core.connect();
+  const board = "board:new:board-1-1";
+  subscribe(core, ui, 1, { topic: "pick", station: "ws/st", of: "new" });
+  subscribe(core, ui, 2, { topic: "pick", station: "ws/st", of: board });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  await ask(host, core, ui, 3, "pick.save", { station: "ws/st", of: "new", model: "claude-sonnet-5", runtime: "claude" });
+  apply(host, values);
+  assert.equal(v(values, 2).value.model, "claude-sonnet-5", "as a new chat there runs, till picked for it");
+  await ask(host, core, ui, 4, "pick.save", { station: "ws/st", of: board, model: "gpt-6-astra", runtime: "codex", effort: "medium" });
+  apply(host, values);
+  assert.deepEqual([v(values, 2).value.model, v(values, 2).value.runtime, v(values, 2).value.effort], ["gpt-6-astra", "codex", "medium"]);
+  assert.equal(v(values, 1).value.model, "claude-sonnet-5", "the new chat's own pick is not changed by the draft's");
+  const made = await ask(host, core, ui, 5, "newChat.create", { station: "ws/st", key: "new:board-1-1", of: board });
+  assert.deepEqual([made.model, made.runtime, made.effort], ["gpt-6-astra", "codex", "medium"]);
+  apply(host, values);
+  assert.equal(v(values, 2).value.model, "claude-sonnet-5", "its chat made, what was picked for it let go of");
+  const plain = await ask(host, core, ui, 6, "newChat.create", { station: "ws/st" });
+  assert.equal(plain.model, "claude-sonnet-5");
+  await assert.rejects(ask(host, core, ui, 7, "newChat.create", { station: "ws/st", of: "session:k1" }));
+  core.close();
+});
+
 // (the combinations, how hard it thinks and how fast are the core's own value's: its page is sent its model control's, `pick`)
 test("new_chat_combos_are_local_to_a_workspace_persist_and_pick_model_and_depth_together", async () => {
   const { host, core } = await choosing();

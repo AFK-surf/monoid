@@ -18,8 +18,24 @@ export function nOf(entry: unknown): number | null {
 }
 
 /// The messages of a run of entries, in thread order (`seq` is the message's n). `source`, when supplied, hears each
-/// message and each edit changing its words; the last entry it hears for a message supplied its current words.
+/// message and each edit changing its words; the last entry it hears for a message supplied its current words. Where
+/// nothing hears them, the same entries (each the object it was, data.ts) give back the very list they gave the last
+/// time it was asked of that list: a chat is made again on each change while its reply streams, its entries the same,
+/// and those who read the list never write on it. (By what the list holds, not by the list alone: a list a page holds
+/// may be the one it held, put together again in place.)
 export function merge(entries: unknown[], source?: (seq: number, entry: object) => void): Record<string, unknown>[] {
+  if (source !== undefined) return mergeNow(entries, source);
+  const was = mergedOf.get(entries);
+  if (was !== undefined && was.of.length === entries.length && was.of.every((e, i) => e === entries[i])) return was.out;
+  const out = mergeNow(entries);
+  mergedOf.set(entries, { of: [...entries], out });
+  return out;
+}
+
+/// What `merge` made of a list of entries, by the list: the entries it held then, and the messages.
+const mergedOf = new WeakMap<object, { of: unknown[]; out: Record<string, unknown>[] }>();
+
+function mergeNow(entries: unknown[], source?: (seq: number, entry: object) => void): Record<string, unknown>[] {
   // Each message's entry and the edits put on it after it, in order.
   const runs = new Map<number, { entry: Record<string, unknown>; edits: Record<string, unknown>[] }>();
   for (const entry of entries) {

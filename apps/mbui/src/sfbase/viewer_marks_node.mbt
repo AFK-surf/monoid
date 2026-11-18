@@ -175,22 +175,25 @@ fn marks_tools_node(col : @view.View, tips : @sf.TipLayer) -> Unit {
     }
     gap_node(row)
     // the colour, its palette asked for or put away
-    @sf.action_box_node(
-      row,
-      fn() { pv("android-chat.marks.color") },
-      fn(_) {
-        marking.palette = !marking.palette
-        marks_changed()
-      },
-      fn(b) {
-        b.width(Is(Some(32.0))).height(Is(Some(32.0))).radius(Is(picture_key)).lines_up(Is(Some(Middle))) |> ignore
-        @sf.color_swatch_node(b, fn() {
-          marks_said()
-          marks_shown_color()
-        })
-        @sf.tip_node(tips, b, fn() { pv("android-chat.marks.color") }) |> ignore
-      },
-    )
+    @sf.action_box_node(row, fn() { pv("android-chat.marks.color") }, fn(_) {
+      marking.palette = !marking.palette
+      marks_changed()
+    }, expanded=fn() {
+      marks_said()
+      marking.palette
+    }, fn(b) {
+      b
+      .width(Is(Some(32.0)))
+      .height(Is(Some(32.0)))
+      .radius(Is(picture_key))
+      .lines_up(Is(Some(Middle)))
+      |> ignore
+      @sf.color_swatch_node(b, fn() {
+        marks_said()
+        marks_shown_color()
+      })
+      @sf.tip_node(tips, b, fn() { pv("android-chat.marks.color") }) |> ignore
+    })
     |> ignore
     row.show(
       fn() {

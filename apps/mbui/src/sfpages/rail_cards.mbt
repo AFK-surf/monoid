@@ -74,20 +74,16 @@ pub fn rail_card_node(
         @sf.words_node(line, fn() { text(Some(r.get()), "value") }, fn() { rc_end }) |> ignore
       })
     })
-    b.show(fn() { flag(card(), "share") }, fn(k) {
+    b.show(fn() { flag(card(), "share") }, fn(o) {
       let label = fn() { @sf.t("web-main.stations.shareCard") }
-      @sf.style_node(k, fn() { rc_share })
-      k
-      .presses(Is(true))
-      .focusable(Is(true))
-      .focus_ring_theme()
-      .says(By(fn() { Some(@view.said(Button, label=label())) }))
-      .on_press(fn() {
+      @sf.action_box_node(o, label, fn(_) {
         match @signals.untracked(ws) {
           Some(w) => share_card_open(src, w)
           None => ()
         }
-      })
+      }, fn(k) {
+      @sf.style_node(k, fn() { rc_share })
+      k
       // (its ground the hover's over its base tint as the hand is on it; its corner concentric with the card's)
       .ground(By(fn() { @sf.alpha(@sf.theme().p.text, 0.05) }))
       .radius(By(fn() { rc_stat_corner() }))
@@ -95,6 +91,8 @@ pub fn rail_card_node(
       @sf.hover_ground_node(k)
       @sf.icon_node(k, "share", 16.0, By(fn() { @sf.theme().p.text })) |> ignore
       @sf.words_node(k, label, fn() { rc_share_words }) |> ignore
+      })
+      |> ignore
     })
   })
   |> ignore

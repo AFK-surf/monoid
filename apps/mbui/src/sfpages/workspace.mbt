@@ -218,6 +218,13 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
   // (down the panel's column: making its way in as a workspace comes into view, closing it as none is)
   v.show(fn() { in_view().0 is Some(_) }, fn(foot) {
     @sf.style_node(foot, fn() { ws_foot })
+    // (a line between the list and what follows it, where the list's rows' grounds reach: there is always the one in
+    // use over it and these under it, so it is never one of two side by side nor at an end)
+    foot.box(fn(r) {
+      @sf.style_node(r, fn() { ws_row_in.then(@sf.panel_card_out_node(r)) })
+      @sf.panel_rule_node(r)
+    })
+    |> ignore
     workspace_row_node(
       foot,
       fn() { @sf.t("android-misc.workspace.addAccount") },
@@ -285,7 +292,8 @@ fn ws_label_node(parent : @view.View, label : () -> String) -> Unit {
 ///|
 /// A row in `parent`: what (`label`), a line under it (`sub`, none where ""), a check on the one in use (`checked`);
 /// before it a workspace's mark or its letter (`lead`) or an icon; after it what a workspace has waiting (`mark`: its
-/// marks), each as it is now. `press` done as it is pressed, rippling as Workspaces.kt's row does (clip(Smooth(
+/// marks), each as it is now, each on the first line of its words, never across both (its line under it besides).
+/// `press` done as it is pressed, rippling as Workspaces.kt's row does (clip(Smooth(
 /// LIST_ROW_CORNER)).clickable); read out a button named `label`. `on_card`: the one in use's, on its card.
 fn workspace_row_node(
   parent : @view.View,
@@ -304,21 +312,32 @@ fn workspace_row_node(
     @sf.style_node(o, fn() { if on_card { ws_row_on_card } else { ws_row_in.then(@sf.panel_card_out_node(o)) } })
     o.box(fn(r) {
       @sf.style_node(r, fn() { if on_card { ws_row_card } else { ws_row } })
+      // (what stands beside its words on their first line, under a line under it as well: from its top, each on that
+      // line (@sf.first_line_node); a row of one line in its middle, its least height's)
+      r.lines_up(By(fn() { Some(if sub() != "" { Start } else { Middle }) })) |> ignore
       @sf.rippled_node(r, press, if on_card { @sf.row_corner } else { @sf.card_corner }, label)
       match lead {
         Some(w) =>
-          r.box(fn(l) {
-            @sf.style_node(l, fn() { ws_row_lead }, in_row=true)
-            ws_mark_node(l, w)
+          @sf.first_line_node(r, Ui, fn(f) {
+            f.box(fn(l) {
+              @sf.style_node(l, fn() { ws_row_lead })
+              l.shrink(Is(0.0)) |> ignore
+              ws_mark_node(l, w)
+            })
+            |> ignore
           })
           |> ignore
         None => ()
       }
       // (an icon in the same square a mark stands in: the rows' words on one line, a workspace's or an action's)
       if icon != "" {
-        r.box(fn(l) {
-          @sf.style_node(l, fn() { ws_row_lead }, in_row=true)
-          @sf.icon_node(l, icon, ws_row_icon, By(fn() { @sf.theme().p.text })) |> ignore
+        @sf.first_line_node(r, Ui, fn(f) {
+          f.box(fn(l) {
+            @sf.style_node(l, fn() { ws_row_lead })
+            l.shrink(Is(0.0)) |> ignore
+            @sf.icon_node(l, icon, ws_row_icon, By(fn() { @sf.theme().p.text })) |> ignore
+          })
+          |> ignore
         })
         |> ignore
       }
@@ -335,7 +354,10 @@ fn workspace_row_node(
       |> ignore
       ws_mark_counts_node(r, mark)
       if checked {
-        @sf.icon_node(r, "check", ws_row_check, By(fn() { @sf.theme().p.accent })) |> ignore
+        @sf.first_line_node(r, Ui, fn(c) {
+          @sf.icon_node(c, "check", ws_row_check, By(fn() { @sf.theme().p.accent })) |> ignore
+        })
+        |> ignore
       }
     })
     |> ignore
@@ -366,6 +388,12 @@ fn ws_mark_counts_node(parent : @view.View, mark : () -> Json) -> Unit {
   let m = fn() { Some(mark()) }
   parent.show(fn() { text(m(), "tone") != "" }, fn(box) {
     @sf.style_node(box, fn() { ws_counts }, in_row=true)
+    // (as tall as the row's first line, its marks across its middle: on that line, whatever is under it)
+    box.height(By(fn() {
+      box.words_redone() |> ignore
+      Some(@sf.node_sp(box, @ui.tree_theme().text_size(Ui).1))
+    }))
+    |> ignore
     box.says(By(fn() { Some(@view.said(Text, label=text(m(), "label"))) })) |> ignore
     for k in [("alert", ["alert"]), ("done", ["wait", "unread"])] {
       let n = fn() { k.1.fold(init=0, fn(n, x) { n + @sfbase.count(m(), x) }) }
@@ -379,9 +407,10 @@ fn ws_mark_counts_node(parent : @view.View, mark : () -> Json) -> Unit {
 }
 
 ///|
-/// The list: the room it scrolls in, 24 over its foot.
+/// The list: the room it scrolls in, down to the line over its foot (what it holds past that faded out towards it,
+/// @sf.panel_list_node: a row there half shown says there is more).
 // kept across runs: a value (no field of it changes)
-let ws_list : @ui.Style = @ui.css("w=Full h=Full pb=S6")
+let ws_list : @ui.Style = @ui.css("w=Full h=Full")
 
 ///|
 /// A row of the list, across it.
@@ -390,7 +419,7 @@ let ws_list_row : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let ws_list_compact : @ui.Style = @ui.css("w=Full pb=S3")
+let ws_list_compact : @ui.Style = @ui.css("w=Full pb=S1")
 
 ///|
 /// The one in use: on a card 12 in from the sides, 4 under its label, 16 over what follows.
@@ -403,9 +432,10 @@ let ws_current : @ui.Style = @ui.css("w=Full pt=S1 pb=S4")
 let ws_card : @ui.Style = @ui.style(w=Full, p=@sf.room_of(@sf.corner_inset), radius=@sf.card_radius, clip=true)
 
 ///|
-/// Signing in another account and a new one: 8 under the list, 16 over the foot.
+/// Signing in another account and a new one: under a line from the list (@sf.panel_rule_node: its own room over and under
+/// it), 8 over the foot.
 // kept across runs: a value (no field of it changes)
-let ws_foot : @ui.Style = @ui.css("w=Full pt=S2 pb=S4")
+let ws_foot : @ui.Style = @ui.css("w=Full pb=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -425,15 +455,17 @@ let ws_row_in : @ui.Style = @ui.css("w=Full")
 let ws_row_on_card : @ui.Style = @ui.css("w=Full")
 
 ///|
+/// A row: 12 over and under its words, 48 at least (a row of one line as tall as one beside its mark), its mark, words,
+/// marks and check 12 apart, each by its words' first line (workspace_row_node).
 // kept across runs: a value (no field of it changes)
-let ws_row : @ui.Style = @ui.css("row w=Full py=S3 gap=S3 align=ACenter").then(@ui.style(px=@sf.room_of(@sf.panel_words - @sf.panel_card_in)))
+let ws_row : @ui.Style = @ui.css("row w=Full min_h=S12 py=S3 gap=S3").then(@ui.style(px=@sf.room_of(@sf.panel_words - @sf.panel_card_in)))
 
 ///|
 /// On the card (the one in use, among the rows of the others): its mark and words where the other rows' are, on the
 /// panel's words' line; the card `panel_card_in` from the panel's sides and `corner_inset` in already, as far as the
 /// rows' grounds reach, the rest of the way here (2026-11-07: a row's room more put its mark 16 past the others').
 // kept across runs: a value (no field of it changes)
-let ws_row_card : @ui.Style = @ui.css("row w=Full py=S3 gap=S3 align=ACenter").then(@ui.style(px=@sf.room_of(@sf.panel_words - @sf.panel_card_in - @sf.corner_inset)))
+let ws_row_card : @ui.Style = @ui.css("row w=Full min_h=S12 py=S3 gap=S3").then(@ui.style(px=@sf.room_of(@sf.panel_words - @sf.panel_card_in - @sf.corner_inset)))
 
 ///|
 /// A workspace's mark or its letter in a square 24 across: the mark 22, the letter 15 semibold, muted; an icon 20 in

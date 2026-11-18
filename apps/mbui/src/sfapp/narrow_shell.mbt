@@ -392,6 +392,13 @@ fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
       }
     },
     fn(said) {
+      // (while a new device's code is shown here to be read off this one, the screen stays on: gone dark as the person
+      // types it there, this device could not ask them as the code comes back, not in front)
+      let pairing = match said {
+        Some((_, prompts, _, _)) => !@settings.items(prompts, "pairing").is_empty()
+        None => false
+      }
+      @sfbase.keep_awake_by("lock-pair", pairing)
       match (said, workspace_in_view(src).0) {
         (Some((_, _, free, _)), Some(w)) => {
           let core = settings_core(src, w)

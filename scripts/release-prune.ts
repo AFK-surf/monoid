@@ -17,7 +17,8 @@
 // scripts/release.sh, read by scripts/crash-symbols.ts) once older than 30 days by the time the bucket says it was put
 // (its listing's last_modified; the owner, 2026-11-11): one whose time cannot be read stays. The stations' own names,
 // Node and the feeds are never touched.
-// CI runs it after `put` (.github/workflows/pipeline.yml).
+// CI runs it after `put` (.github/workflows/pipeline.yml). An old file it could not delete stays for the next run's
+// prune: a release already put and told never goes red for it (as scripts/native.ts's prune).
 //   node scripts/release-prune.ts [--dry-run]
 // Needs CLOUDFLARE_API_TOKEN (and CLOUDFLARE_ACCOUNT_ID, else the token's first account).
 
@@ -173,20 +174,72 @@ export function doomedOf(keys: string[], feeds: Record<string, string>, webNamed
   });
 }
 
+/** An object's key as the path of R2's REST API takes it: each segment escaped, its slashes kept. */
+export const encodeObjectKey = (key: string) => key.split("/").map(encodeURIComponent).join("/");
+
+/** How long to wait after a 429: its Retry-After in seconds, held to 1..15 s; none read, 5 s. */
+export const retryAfterMs = (response: Response): number => {
+  const header = response.headers.get("retry-after");
+  const seconds = header === null ? NaN : Number(header);
+  return Number.isFinite(seconds) ? Math.min(15_000, Math.max(1_000, seconds * 1000)) : 5_000;
+};
+
+export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+export type Sleep = (ms: number) => Promise<void>;
+
+/**
+ * Cloudflare's REST API asked up to three times: a connection reset or a request past its 30 s (thrown), a 429 (after
+ * its Retry-After) or another answer neither 2xx nor 404 is asked again; the third answer is returned as it is, the
+ * third throw thrown.
+ */
+export async function apiWithRetry(fetchFn: Fetch, sleep: Sleep, token: string, path: string, init: RequestInit = {}): Promise<Response> {
+  for (let attempt = 1; ; attempt++) {
+    let response: Response;
+    try {
+      response = await fetchFn(`https://api.cloudflare.com/client/v4${path}`, {
+        ...init, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      if (attempt === 3) throw error;
+      await sleep(5_000);
+      continue;
+    }
+    if (response.ok || response.status === 404 || attempt === 3) return response;
+    // (the body read and dropped, so that the connection goes back to the pool)
+    await response.arrayBuffer().catch(() => {});
+    await sleep(response.status === 429 ? retryAfterMs(response) : 5_000);
+  }
+}
+
+/**
+ * The doomed keys deleted 8 at a time. One that will not go (its last answer neither 2xx nor 404, or thrown) is said and
+ * left for the next prune, which finds it again: old files left a run longer never fail a release that was put.
+ */
+export async function deleteDoomed(doomed: string[], del: (key: string) => Promise<Response>, log: (line: string) => void = console.error): Promise<{ deleted: number; left: number }> {
+  let left = 0;
+  for (let i = 0; i < doomed.length; i += 8) {
+    await Promise.all(doomed.slice(i, i + 8).map(async (key) => {
+      try {
+        const response = await del(key);
+        if (response.ok || response.status === 404) return;
+        left++;
+        log(`deleting ${key} failed (${response.status}): the next prune deletes it`);
+      } catch (error) {
+        left++;
+        log(`deleting ${key} failed (${error instanceof Error ? error.message : String(error)}): the next prune deletes it`);
+      }
+    }));
+  }
+  return { deleted: doomed.length - left, left };
+}
+
 if (import.meta.main) {
   const dryRun = process.argv.includes("--dry-run");
   const token = process.env.CLOUDFLARE_API_TOKEN;
   if (!token) throw new Error("CLOUDFLARE_API_TOKEN is not set");
 
-  const api = async (path: string, init: RequestInit = {}): Promise<Response> => {
-    for (let attempt = 1; ; attempt++) {
-      const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
-        ...init, headers: { Authorization: `Bearer ${token}` },
-      });
-      if (response.ok || response.status === 404 || attempt === 3) return response;
-      await new Promise((r) => setTimeout(r, 5000));
-    }
-  };
+  const api = (path: string, init: RequestInit = {}) =>
+    apiWithRetry(fetch, (ms) => new Promise((r) => setTimeout(r, ms)), token, path, init);
   const json = async (path: string): Promise<any> => {
     const response = await api(path);
     if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`);
@@ -213,13 +266,13 @@ if (import.meta.main) {
 
   const feeds: Record<string, string> = {};
   for (const feed of FEEDS) {
-    const response = await api(`${objects}/${feed}`);
+    const response = await api(`${objects}/${encodeObjectKey(feed)}`);
     if (response.status === 404) continue;
     if (!response.ok) throw new Error(`${feed}: ${response.status}`);
     feeds[feed] = await response.text();
   }
   // The web archives: the build the feed names (none: the feed is not out yet, and nothing goes).
-  const webFeed = await api(`${objects}/${WEB_FEED}`);
+  const webFeed = await api(`${objects}/${encodeObjectKey(WEB_FEED)}`);
   if (!webFeed.ok && webFeed.status !== 404) throw new Error(`${WEB_FEED}: ${webFeed.status}`);
   const webNamed = webFeed.ok ? Number((await webFeed.json()).build) : null;
 
@@ -229,13 +282,6 @@ if (import.meta.main) {
   console.log(`${keys.length} files, ${doomed.length} old installers, deltas, blockmaps, archives, staged files and symbols to delete`);
   for (const key of doomed) console.log(`  ${key}`);
   if (dryRun) process.exit(0);
-  let failed = 0;
-  for (let i = 0; i < doomed.length; i += 8) {
-    await Promise.all(doomed.slice(i, i + 8).map(async (key) => {
-      const response = await api(`${objects}/${key}`, { method: "DELETE" });
-      if (!response.ok && response.status !== 404) { failed++; console.error(`deleting ${key}: ${response.status}`); }
-    }));
-  }
-  console.log(`deleted ${doomed.length - failed}`);
-  if (failed) process.exit(1);
+  const { deleted, left } = await deleteDoomed(doomed, (key) => api(`${objects}/${encodeObjectKey(key)}`, { method: "DELETE" }));
+  console.log(`deleted ${deleted} (${left} left for next prune)`);
 }

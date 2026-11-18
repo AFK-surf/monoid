@@ -244,7 +244,8 @@ let agent_card_head_round : @ui.Style = @ui.style(radius=@sf.row_radius)
 
 ///|
 /// Its mark (agent_mark's, 28): its model's maker on a tile of the neutral ground, round as a block within its head's
-/// corner (InnerOr: the ladder's small block's), its badge at its corner ringed in the panel's ground.
+/// corner (InnerOr: the ladder's small block's), its badge at its corner ringed in the panel's ground (agent_badge_node's,
+/// as a chat's bar and its info draw it).
 fn agent_card_mark_node(p : @view.View, a : () -> Json?, s : () -> Json?) -> Unit {
   let side = agent_card_mark
   p.box(fn(t) {
@@ -263,7 +264,7 @@ fn agent_card_mark_node(p : @view.View, a : () -> Json?, s : () -> Json?) -> Uni
     // (over the tile, as large as it: the badge at its corner)
     t.pick(fn() { text(a(), "badge") }, fn(b, badge) {
       b.over(Is(true)).width(Is(Some(side))).height(Is(Some(side))) |> ignore
-      agent_badge_ground_node(b, badge, side, fn() { @sf.panel_ground() })
+      agent_badge_node(b, badge, side, ground=fn() { @sf.panel_ground() })
     })
   })
   |> ignore
@@ -273,47 +274,6 @@ fn agent_card_mark_node(p : @view.View, a : () -> Json?, s : () -> Json?) -> Uni
 /// Its mark's tile: 28 across, round as the ladder's small block.
 // kept across runs: a value (no field of it changes)
 let agent_card_mark_tile : @ui.Style = @ui.style(w=Fixed(agent_card_mark), h=Fixed(agent_card_mark), radius=@sf.small_radius)
-
-///|
-/// The badge at the corner of an agent's mark `side` across (agent_badge's, as nodes) in `v`, ringed in `ground`: a dot
-/// blue waiting on a person, red failed; yellow spokes at work; none else.
-fn agent_badge_ground_node(v : @view.View, badge : String, side : Double, ground : () -> Int64) -> Unit {
-  let k = dmin(side / agent_badge_full, 1.0)
-  match badge {
-    "block" | "failed" => {
-      let d = agent_badge_d * k
-      let at = side - d + agent_badge_past * k
-      let ring = agent_badge_ring * k
-      v.box(fn(r) {
-        r
-        .over(Is(true))
-        .width(Is(Some(d)))
-        .height(Is(Some(d)))
-        .offset(Is((at, at)))
-        .radius(Is(d / 2.0))
-        .padding(Is((ring, ring, ring, ring)))
-        .ground(By(ground))
-        |> ignore
-        r.box(fn(dot) {
-          let ink = if badge == "block" { @sf.mark_blue } else { @sf.mark_red }
-          dot.grow(Is(1.0)).radius(Is(d / 2.0)).ground(By(fn() { @ui.tree_theme().color(ink) })) |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    }
-    "run" => {
-      let d = agent_spokes * k
-      let at = side - d + agent_spokes_past * k
-      v.box(fn(r) {
-        r.over(Is(true)).width(Is(Some(d))).height(Is(Some(d))).offset(Is((at, at))) |> ignore
-        @sf.spokes_node(r, d, fn() { @sf.mark_yellow }) |> ignore
-      })
-      |> ignore
-    }
-    _ => ()
-  }
-}
 
 ///|
 /// Where it stands in `p` (agent_card's): a dot in its tone, its words and for how long (agent_waited's, each whole

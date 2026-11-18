@@ -83,22 +83,7 @@ fn looks_compare(
   // where it shows, kept in its group, cut by its header's clip: view_ride.mbt's inst_cut_to))
   let (alone, n) = looks_seen(alone, n)
   let (whole, m) = looks_seen(c.inst, c.ninst)
-  let mut first = -1
-  let mut slot = -1
-  for q in 0..<(if n < m { n } else { m }) {
-    let b = q * inst_size
-    for j in 0..<inst_size {
-      let x = alone[b + j]
-      let y = whole[b + j]
-      if first < 0 && !drawn_same(x, y) {
-        first = q
-        slot = j
-      }
-    }
-  }
-  if first < 0 && n != m {
-    first = if n < m { n } else { m }
-  }
+  let (first, slot) = drawn_parted(alone, n, whole, m)
   if first >= 0 {
     let inst = fn(a : FixedArray[Double], q : Int, k : Int) {
       if q >= k {
@@ -275,12 +260,43 @@ fn drawn_same(x : Double, y : Double) -> Bool {
 
 
 ///|
+/// Where the instances `a` (`n` of them) and `b` (`m`) first part: the first instance one of whose numbers does not
+/// draw the same (drawn_same), and that number's slot; past the last of the fewer, slot -1, where one has more; (-1,
+/// -1) where they draw the same.
+fn drawn_parted(a : FixedArray[Double], n : Int, b : FixedArray[Double], m : Int) -> (Int, Int) {
+  for q in 0..<(if n < m { n } else { m }) {
+    let at = q * inst_size
+    for j in 0..<inst_size {
+      if !drawn_same(a[at + j], b[at + j]) {
+        return (q, j)
+      }
+    }
+  }
+  if n != m {
+    (if n < m { n } else { m }, -1)
+  } else {
+    (-1, -1)
+  }
+}
+
+///|
+/// The nodes of the frame `c` laid out, as looks_node_moved compares them: where each was laid out, its words and id,
+/// how far it was moved and how opaque.
+fn looks_nodes_of(c : Ctx) -> Array[(Double, Double, Double, Double, String, Int, Double, Double, Double)] {
+  let out = []
+  for i in 0..<c.count {
+    let nd = c.nodes[i]
+    out.push((nd.x, nd.y, nd.fw, nd.fh, nd.text, nd.id, nd.tx, nd.ty, nd.opacity))
+  }
+  out
+}
+
+///|
 /// The nodes of the frame `c` painted last, as looks_compare says where one moved: kept as each frame painted ends.
 fn looks_nodes_kept(c : Ctx) -> Unit {
   looks_nodes.clear()
-  for i in 0..<c.count {
-    let nd = c.nodes[i]
-    looks_nodes.push((nd.x, nd.y, nd.fw, nd.fh, nd.text, nd.id, nd.tx, nd.ty, nd.opacity))
+  for n in looks_nodes_of(c) {
+    looks_nodes.push(n)
   }
 }
 

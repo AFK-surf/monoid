@@ -168,14 +168,15 @@ export const CHAT_READS = {
     of: (c: ChatKeys): ReadKey[] => (listed(c) && c.clientKey !== null ? [[c.station, c.clientKey]] : []),
   } satisfies ChatRead<{ station: string; key: string }>,
   /// The chat a link names (its id, else its agent's session), listed before archived, by its id before its session;
-  /// with its title and whether it is the viewer's own (`mine`).
+  /// with its title, whether it is the viewer's own (`mine`), its thread and whether its record is marked archived
+  /// (`archived_mark`: a row of the archive's list without the mark is one gone).
   named: {
     name: "$chat-named", bound: "one", records: true,
     // (by its id, listed or archived, through the primary key, and by its session through `chat_session`: the two found
     // apart, so that neither walks the station's rows; one found both ways is the same first either way)
-    sql: `SELECT station, archived, id, title, mine FROM (
-        SELECT station, archived, id, title, mine, ord FROM chat WHERE station = ? AND archived IN (0, 1) AND id = ?
-        UNION ALL SELECT station, archived, id, title, mine, ord FROM chat WHERE station = ? AND session = ?)
+    sql: `SELECT station, archived, id, title, mine, thread, archived_mark FROM (
+        SELECT station, archived, id, title, mine, thread, archived_mark, ord FROM chat WHERE station = ? AND archived IN (0, 1) AND id = ?
+        UNION ALL SELECT station, archived, id, title, mine, thread, archived_mark, ord FROM chat WHERE station = ? AND session = ?)
       ORDER BY archived, id IS NOT ?, ord, id LIMIT 1`,
     params: (p: { station: string; id: string }) => [p.station, p.id, p.station, p.id, p.id],
     keys: (p: { station: string; id: string }): ReadKey[] => [[p.station, p.id]],

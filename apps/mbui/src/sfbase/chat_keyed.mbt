@@ -38,6 +38,14 @@ pub fn ChatMessages::get(self : ChatMessages, k : String) -> Message? {
 }
 
 ///|
+/// Message `k`'s item as the core keeps it, its JSON (none where it is not there), not read as a Message: what reads it
+/// is told as that message changes, comes or goes. For what is worked out of a field or two of every message the list
+/// holds (which rows each is shown in), so that only those that show are read whole (get).
+pub fn ChatMessages::raw(self : ChatMessages, k : String) -> Json? {
+  self.list.get(k)
+}
+
+///|
 /// Message `k` as it stands, read by nothing.
 pub fn ChatMessages::peek(self : ChatMessages, k : String) -> Message? {
   match self.list.peek(k) {

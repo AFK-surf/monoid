@@ -403,9 +403,9 @@ fn TipFade::shown(self : TipFade, t : @view.View) -> Double {
 /// A tip's node `t` as tip_look draws it (tip_ground, tip_edge, tip_words), beside `anchor` on `side`, saying `label`,
 /// then the keys of action `shortcut` where there are any as it is shown, each a cap of its own at its end (key_caps,
 /// tip_cap_node): its look and its words set as the window's theme says, as that changes; in and out as `fade` says.
-/// With keys it stands `tip_key_in` over and under them, as tall as one without (its words' line, tip_cap_over over and
-/// under it), and `tip_key_side` from them at its end as from its words at its start (what a box holds as far in from
-/// either side: the padding rule), its corner's room: what stands in its corners would be held concentric with them.
+/// With keys it stands `tip_key_in` over, under and after them, as tall as one without (its words' line, tip_cap_over
+/// over and under it), its last cap concentric with its corners at its end (tip_cap_round), its words as far from its
+/// start as a tip of words alone has them.
 #callsite(autofill(loc))
 fn tip_look_node(
   t : @view.View,
@@ -427,14 +427,26 @@ fn tip_look_node(
   let keys = @signals.untracked(fn() { key_caps(shortcut_keys(shortcut)) })
   t
   .beside(anchor, side~, along=Middle, offset=gap, at_pointer~)
-  .padding(Is(if keys.is_empty() { (px, py, px, py) } else { (tip_key_side, tip_key_in, tip_key_side, tip_key_in) }))
+  // (with keys: its words as far from its start as a tip of words alone, its last cap tip_key_in from its top, end and
+  // foot, concentric with its corners there)
+  .padding(
+    Is(
+      if keys.is_empty() {
+        (px, py, px, py)
+      } else if @signals.untracked(fn() { label() }) == "" {
+        (tip_key_in, tip_key_in, tip_key_in, tip_key_in)
+      } else {
+        (px, tip_key_in, tip_key_in, tip_key_in)
+      },
+    ),
+  )
   .max_width(Is(Some(tip_widest)))
   .radius(Is(tip_round))
   .ground(By(fn() { tip_ground() }))
   .edge(By(fn() { tip_edge() }))
   .shadow(By(fn() {
-    let (blur, dy) = @ui.Shadow::blur_y(Md)
-    (blur, dy, if library_theme().dark { float_shadow_ink() } else { theme().shadow })
+    let (blur, dy) = @ui.Shadow::blur_y(Sm)
+    (blur, dy, if library_theme().dark { tip_dark_shadow } else { theme().shadow })
   }))
   // (its ground in first, its words after, as kit's tip_in and pop_out have them (ground_first): the ground the first
   // half of the way in, the words the second; going, the other way round)
@@ -526,7 +538,6 @@ fn tip_cap_node(parent : @view.View, cap : String, loc~ : SourceLoc) -> Unit {
     .min_width(By(fn() { Some(side()) }))
     .radius(Is(tip_cap_round))
     .ground(By(fn() { mix(tip_words(), tip_cap_ground, tip_ground()) }))
-    .edge(By(fn() { (1.0, mix(tip_words(), tip_cap_line, tip_ground())) }))
     |> ignore
     k.box(fn(w) {
       w
@@ -537,7 +548,7 @@ fn tip_cap_node(parent : @view.View, cap : String, loc~ : SourceLoc) -> Unit {
           { size, weight: 500, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
         }),
       )
-      .ink(By(fn() { tip_words() }))
+      .ink(By(fn() { mix(tip_words(), tip_cap_ink, tip_ground()) }))
       |> ignore
     })
     |> ignore
@@ -597,12 +608,12 @@ pub fn tip_ground() -> Int64 {
 }
 
 ///|
-/// A tip's line (how wide, its colour): in the dark what floats has (panel_edge), cutting it off a dark ground; none in
-/// light, its dark ground off the light page by itself.
+/// A tip's line (how wide, its colour): in the dark a faint one, its words' ink at `tip_edge_seen`, cutting it off a dark
+/// ground; none in light, its dark ground off the light page by itself.
 pub fn tip_edge() -> (Double, Int64) {
   let t = theme()
   if t.dark {
-    (1.0, panel_edge())
+    (1.0, alpha(t.p.text, tip_edge_seen))
   } else {
     (0.0, 0L)
   }
@@ -623,28 +634,34 @@ pub fn tip_words() -> Int64 {
 let tip_lift : Double = 0.05
 
 ///|
+let tip_edge_seen : Double = 0.09
+
+///|
+/// A tip's shadow in the dark: the theme's small one (Sm, as tip_look's) in black at 28%: a tip is over its control,
+/// not lifted far.
+let tip_dark_shadow : Int64 = alpha(0x000000FFL, 0.28)
+
+///|
 /// A tip's caps: how far over and under its words' line they reach (so the tip, tip_key_in round them, is as tall as one
-/// of words alone, 5 round them), how round, how far in from them the tip stands (concentric: tip_round less it), and
-/// how much of the tip's words their ground and line are.
+/// of words alone, 5 round them), how round the tip is (the library's small corner), how far in from them the tip
+/// stands over, under and after them (concentric: tip_round less it), and how much of the tip's words their ground and
+/// words are (opaque, no line round them).
 let tip_cap_over : Double = 1.0
 
 ///|
-let tip_round : Double = 8.0
+let tip_round : Double = small_corner
 
 ///|
 let tip_key_in : Double = 4.0
 
 ///|
-let tip_key_side : Double = 8.0
-
-///|
 let tip_cap_round : Double = @ui.concentric(tip_round, tip_key_in)
 
 ///|
-let tip_cap_ground : Double = 0.1
+let tip_cap_ground : Double = 0.12
 
 ///|
-let tip_cap_line : Double = 0.2
+let tip_cap_ink : Double = 0.88
 
 ///|
 // kept across runs: a value (no field of it changes)

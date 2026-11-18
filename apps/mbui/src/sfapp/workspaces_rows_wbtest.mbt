@@ -320,3 +320,177 @@ test "the workspaces on each screen: 当前使用 over the card of the one in us
     assert_true(cy < oy, msg=at)
   }
 }
+
+///|
+/// The others of ws_many, in their order, after 星火工作室 in use.
+let ws_many_others : Array[String] = ["设计系统", "云端基建", "客户端研发", "算法实验组", "开源社区"]
+
+///|
+/// The fixture's core (home's) telling six workspaces: 星火工作室 in use, then ws_many_others.
+fn ws_many() -> Source {
+  let base = fixture("home")
+  {
+    ..base,
+    topic_read: fn(name, params) {
+      let t = (base.topic_read)(name, params)
+      guard name == "workspaces" && t.value is Some(Array(a)) else { return t }
+      let ws : Array[Json] = [{ "id": "ws1", "name": "星火工作室", "stations": 2, "members": 3 }]
+      for i, n in ws_many_others {
+        ws.push({ "id": "ws\{i + 2}", "name": Json::string(n), "stations": 1, "members": 1 })
+      }
+      { ..t, value: Some(Json::array(a.map(fn(e) { with_fields(e, [("workspaces", Json::array(ws))]) }))) }
+    },
+  }
+}
+
+///|
+/// Home over ws_many on a window `w` by `h` with the input `platform` (`wide`: made 1200 by 800 first; `lang`: the
+/// device's language; `scale`: its words'), the workspaces opened from a point at its top, at rest.
+fn ws_many_over(
+  w : Double,
+  h : Double,
+  platform~ : Int,
+  wide? : Bool = false,
+  lang? : String = "zh",
+  scale? : Double = 1.0,
+) -> @ui.Tester {
+  new_run()
+  let src = ws_many()
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, env=[("MBUI_LOCALE", lang)])
+  if scale != 1.0 {
+    t.set_font_scale(scale)
+  }
+  if wide {
+    t.resize(1200.0, 800.0)
+  }
+  t.run_for(@ui.move_most_ms)
+  @sfpages.open_workspaces(src, At(32.0, 16.0, 150.0, 38.0))
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// A fling's glide and a finger's pull past an end come back, all over by then.
+let ws_flung_ms : Double = 3000.0
+
+///|
+/// How far what the workspaces' panel draws fades out towards its top and its foot, at most of all it draws there.
+fn ws_softs(t : @ui.Tester) -> (Double, Double) {
+  guard ws_panel(t) is Some(p) else { return (0.0, 0.0) }
+  let (_, sy, _, sh) = p.rect
+  let mut top = 0.0
+  let mut foot = 0.0
+  for f in t.drawn_fades() {
+    if f.1 >= sy && f.1 < sy + sh {
+      if f.4 > top {
+        top = f.4
+      }
+      if f.6 > foot {
+        foot = f.6
+      }
+    }
+  }
+  (top, foot)
+}
+
+///|
+/// The lines 1 high drawn across the workspaces' panel: their tops.
+fn ws_rules(t : @ui.Tester) -> Array[Double] {
+  guard ws_panel(t) is Some(p) else { return [] }
+  let (sx, sy, sw, sh) = p.rect
+  t
+  .drawn_rects()
+  .filter(fn(r) { r.3 == 1.0 && r.2 > sw / 2.0 && r.0 >= sx && r.0 < sx + sw && r.1 >= sy && r.1 < sy + sh })
+  .map(fn(r) { r.1 })
+}
+
+///|
+/// Drags the workspaces' list up by `by` from its middle, slowly, and lets it come to rest.
+fn ws_dragged(t : @ui.Tester, by : Double) -> Unit raise {
+  let (x, y) = ws_at(t, "云端基建", "dragged")
+  t.drag(x, y, x, y - by, steps=30)
+  t.run_for(ws_flung_ms)
+}
+
+///|
+test "the workspaces, six on a phone: the fourth other half shown over a line at the list's foot, faded towards it; scrolled, faded at both ends; at its end, the last whole" {
+  for win in [(390.0, 844.0), (393.0, 852.0)] {
+    let at = "\{win.0}x\{win.1}"
+    let t = ws_many_over(win.0, win.1, platform=2)
+    // one line, between the list and 登录其他账号
+    let rules = ws_rules(t)
+    assert_eq(rules.length(), 1, msg="\{at}: lines \{Repr(rules)}")
+    let rule = rules[0]
+    let (_, add) = ws_at(t, "登录其他账号", at)
+    assert_true(rule < add, msg="\{at}: line \{rule}, 登录其他账号 \{add}")
+    // the fourth other's words and mark show over it: there is more
+    let (_, fourth) = ws_at(t, ws_many_others[3], at)
+    assert_true(fourth < rule, msg="\{at}: \{ws_many_others[3]} at \{fourth}, the line at \{rule}")
+    let mark = t.boxes_held().filter(fn(b) { b.w == 24.0 && b.h == 24.0 && (b.y - fourth).abs() < 24.0 })
+    assert_true(mark.length() == 1 && mark[0].y < rule, msg="\{at}: its mark \{Repr(mark.map(fn(b) { b.y }))}")
+    assert_eq(ws_softs(t), (0.0, 24.0), msg="\{at}: at its top")
+    assert_eq(t.audit(), [], msg="\{at}: at its top")
+    // in its middle: faded at both ends
+    ws_dragged(t, 80.0)
+    let (top, foot) = ws_softs(t)
+    assert_true(top > 0.0 && foot > 0.0, msg="\{at}: in its middle \{top} \{foot}")
+    // at its end: the last whole over the line, faded at its top alone
+    ws_dragged(t, 600.0)
+    assert_eq(ws_softs(t), (24.0, 0.0), msg="\{at}: at its end")
+    let (_, last) = ws_at(t, ws_many_others[4], at)
+    assert_true(last < rule - 24.0, msg="\{at}: \{ws_many_others[4]} at \{last}, the line at \{rule}")
+    assert_eq(ws_rules(t), [rule], msg="\{at}: at its end")
+  }
+}
+
+///|
+/// Fails where the square before `words` in the workspaces' panel (its mark or icon, 24 across) does not stand on their
+/// line, its middle on theirs (`at`: which screen).
+fn ws_on_first_line(t : @ui.Tester, words : String, at : String) -> Unit raise {
+  guard ws_panel(t) is Some(p) else { fail("\{at}: no panel") }
+  let (sx, sy, sw, sh) = p.rect
+  guard t.words().iter().find_first(fn(w) { w.0 == words && w.1 >= sx && w.1 <= sx + sw && w.2 >= sy && w.2 <= sy + sh })
+    is Some(w) else {
+    fail("\{at}: no \{words} in the panel")
+  }
+  let line = w.2 + w.4 / 2.0
+  let lead = t
+    .boxes_held()
+    .filter(fn(b) { b.w == 24.0 && b.h == 24.0 && b.x < w.1 && b.x > w.1 - 60.0 && (b.y + 12.0 - line).abs() < 24.0 })
+  assert_eq(lead.length(), 1, msg="\{at}: the square before \{words}: \{Repr(lead.map(fn(b) { (b.x, b.y) }))}")
+  let off = lead[0].y + 12.0 - line
+  assert_true(off.abs() <= 1.5, msg="\{at}: the square before \{words} \{off} off its line's middle")
+}
+
+///|
+/// Fails where the workspaces' panel of `t` breaks a rule or cuts words short, or lacks one of them (`at`: which screen).
+fn ws_kept(t : @ui.Tester, at : String) -> Unit raise {
+  let faults = t.audit()
+  assert_true(faults.is_empty(), msg="\{at}: \{faults.join("\n")}")
+  guard ws_panel(t) is Some(p) else { fail("\{at}: no panel") }
+  let (sx, sy, sw, sh) = p.rect
+  for w in t.words() {
+    if w.1 >= sx && w.1 <= sx + sw && w.2 >= sy && w.2 <= sy + sh && w.5 > 0.0 {
+      assert_true(!w.0.contains("…"), msg="\{at}: \{w.0} cut short")
+    }
+  }
+  assert_true(ws_in_panel(t, ws_many_others[0]) is Some(_), msg=at)
+  assert_eq(ws_rules(t).length(), 1, msg="\{at}: lines")
+  // (beside a name and the line under it, its mark or icon on the name's line)
+  ws_on_first_line(t, "星火工作室", at)
+  ws_on_first_line(t, @sf.t("android-misc.workspace.addAccount"), at)
+}
+
+///|
+test "the workspaces, six: on each screen, narrow, in large words and in English, every rule kept and no words cut short" {
+  // (the app's run started before its words are read: each screen's own again, ws_many_over)
+  new_run()
+  for screen in ws_screens {
+    let (platform, wide) = screen
+    ws_kept(ws_many_over(390.0, 844.0, platform~, wide~), "platform \{platform} wide \{wide}")
+  }
+  ws_kept(ws_many_over(320.0, 680.0, platform=2), "320x680")
+  ws_kept(ws_many_over(390.0, 844.0, platform=2, scale=1.3), "words at 1.3")
+  ws_kept(ws_many_over(390.0, 844.0, platform=2, lang="en"), "English")
+}

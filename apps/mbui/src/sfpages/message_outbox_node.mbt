@@ -274,13 +274,11 @@ fn unsent_button_node(
   failed : () -> String?,
   press : () -> Unit,
 ) -> Unit {
-  v.box(fn(b) {
+  @sf.action_box_node(v, fn() { label }, disabled=fn() { !enabled() }, fn(_) { if @signals.untracked(enabled) { press() } }, fn(b) {
     let hot = fn() { enabled() && @sf.hovered_node(b) }
     @sf.style_node(b, fn() { if hot() { unsent_button_hot } else { unsent_button_box } })
     // (unsent_button_off's 55%: a style's opacity is a node's alpha)
     b.alpha(By(fn() { if enabled() { 1.0 } else { unsent_off_alpha } })) |> ignore
-    b.says(By(fn() { Some(@view.said(Button, label~)) })) |> ignore
-    @sf.presses_node(b, fn() { if @signals.untracked(enabled) { press() } }, on=enabled)
     b.pick(
       fn() {
         if busy() {

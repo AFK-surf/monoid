@@ -85,11 +85,9 @@ fn jobs_pop_node(
     p.box(fn(foot) {
       @sf.style_node(foot, fn() { jobs_foot })
       let words = fn() { text(view(), "allText") + " · " + @sf.t("web-main.jobs.inPanel") }
-      foot.box(fn(b) {
+      @sf.action_box_node(foot, words, fn(_) { tab("") }, fn(b) {
         @sf.style_node(b, fn() { jobs_all.then(jobs_pop_round) }, in_row=true)
         @sf.hover_ground_node(b)
-        b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
-        @sf.presses_node(b, fn() { tab("") })
         @sf.words_node(b, words, fn() { if @sf.lit_node(b) { jobs_all_hot } else { jobs_all_words } }) |> ignore
       })
       |> ignore
@@ -112,18 +110,24 @@ fn jobs_pop_head(g : @view.View, name : String, note : () -> String) -> Unit {
 
 ///|
 /// A job's row in the popover (job_row's, inset): its dot, its name, what it is up to, `end`'s icon at its end; picked
-/// while `open` (the ground the pointer's), on the ground of the fold it heads then; `press` as it is pressed.
-fn jobs_pop_row(row : @view.View, job : () -> Json?, end : () -> String, open : () -> Bool, press : () -> Unit) -> Unit {
-  row.box(fn(b) {
+/// while `open` (the ground the pointer's), on the ground of the fold it heads then; `press` as it is pressed. A fold's
+/// head (`fold`, open while it says so) is read out as what opens and shuts it; else a button.
+fn jobs_pop_row(
+  row : @view.View,
+  job : () -> Json?,
+  end : () -> String,
+  open : () -> Bool,
+  press : () -> Unit,
+  fold? : () -> Bool,
+) -> Unit {
+  @sf.action_box_node(row, fn() { text(job(), "name") }, fn(_) { press() }, expanded?=fold, fn(b) {
     @sf.style_node(b, fn() { (if open() { job_row_static_inset } else { job_row_inset }).then(jobs_pop_round) })
     @sf.hover_ground_node(b, on=fn() { !open() })
-    b.says(By(fn() { Some(@view.said(Button, label=text(job(), "name"))) })) |> ignore
-    @sf.presses_node(b, press)
     b.box(fn(on) {
       @sf.style_node(on, fn() { job_row_on }, in_row=true)
       on.box(fn(d) {
         @sf.style_node(d, fn() { job_dot_room }, in_row=true)
-        jobs_pop_dot(d, fn() { text(job(), "tone") })
+        @sf.state_dot_node(d, size=@sfpages.job_dot_across, breathes=true, fn() { @sfpages.job_dot_tone(text(job(), "tone")) })
       })
       |> ignore
       on.box(fn(w) {
@@ -147,21 +151,11 @@ fn jobs_pop_row(row : @view.View, job : () -> Json?, end : () -> String, open : 
 }
 
 ///|
-/// A job's status (job_dot's) in `d`: a small dot, its tone's colour (@sf.state_dot_node: alive breathing slowly round
-/// it, restarting breathing to .35 and back, on the resident clock's steps, as the old view's cycles were), a tone it
-/// does not know the strong line's grey.
+/// A job's status (job_dot's) in `d`, as the panel bar's tab of a job draws it (panel_bar_node.mbt): @sf.state_dot_node
+/// in a job's tone (@sfpages.job_dot_tone), as the rows of every list of jobs draw theirs.
 fn jobs_pop_dot(d : @view.View, tone : () -> String) -> Unit {
-  @sf.state_dot_node(d, size=job_dot_across, breathes=true, fn() {
-    match tone() {
-      "up" | "live" | "restart" | "fail" => tone()
-      _ => "off"
-    }
-  })
+  @sf.state_dot_node(d, size=@sfpages.job_dot_across, breathes=true, fn() { @sfpages.job_dot_tone(tone()) })
 }
-
-///|
-/// A job's dot (jobDot): 8 across.
-let job_dot_across : Double = 8.0
 
 ///|
 /// The line under a job's name (job_meta's) in `w`: its state's word in its dot's colour's ink, what it said in the
@@ -210,12 +204,12 @@ fn jobs_pop_fold(
   let open = fn() { jobs_own.open.get() == id }
   row.box(fn(f) {
     @sf.style_node(f, fn() { if open() { jobs_fold_open.then(jobs_pop_round) } else { jobs_fold } })
-    jobs_pop_row(f, job, fn() { if open() { "chevron-down" } else { "chevron-right" } }, open, fn() {
+    jobs_pop_row(f, job, fn() { if open() { "chevron-down" } else { "chevron-right" } }, open, fold=open, fn() {
       jobs_own.open.set(if jobs_own.open.get() == id { "" } else { id })
     })
     f.show(open, fn(body) {
       @sf.style_node(body, fn() { jobs_fold_body })
-      jobs_pop_notices(body, job)
+      @sfpages.job_notices_node(body, job)
       jobs_pop_last(body, src, station, job)
       body.box(fn(acts) {
         @sf.style_node(acts, fn() { job_actions })
@@ -239,63 +233,6 @@ fn jobs_pop_fold(
     })
   })
   |> ignore
-}
-
-///|
-/// What a job said, newest first, each with how long ago (job_notices', 3 at most): none said, how a job says
-/// something.
-fn jobs_pop_notices(body : @view.View, job : () -> Json?) -> Unit {
-  let notices = fn() {
-    let all = items(job(), "notices")
-    if all.length() > 3 {
-      all[:3].to_owned()
-    } else {
-      all
-    }
-  }
-  body.pick(fn() { notices().length() == 0 }, fn(p, none) {
-    if none {
-      p.box(fn(w) {
-        w
-        .words_runs(Is([
-          @ui.span(@sf.t("web-main.jobs.noNotices.before")),
-          @ui.span("stillfail-job notify", mono=true),
-          @ui.span(@sf.t("web-main.jobs.noNotices.after")),
-        ]))
-        .words_look(By(fn() { @ui.style_words(job_quiet_words) }))
-        .ink(By(fn() { @ui.style_ink(job_quiet_words) }))
-        |> ignore
-      })
-      |> ignore
-      return
-    }
-    p.box(fn(list) {
-      @sf.style_node(list, fn() { job_notices_box })
-      list.each(fn() { Array::makei(notices().length(), fn(i) { i }) }, fn(i) { i }, fn(n, at) {
-        let i = at.untracked()
-        let nv = fn() { notices().get(i) }
-        n.box(fn(line) {
-          @sf.style_node(line, fn() { job_notice })
-          line.box(fn(a) {
-            @sf.style_node(a, fn() { job_notice_ago }, in_row=true)
-            // (64 at least, as wide as its words where they are wider: at the system's words set to 1.3 「10 分钟前」 is
-            // 70, cut in the old view's 64 column; at the default size the same 64)
-            a.width(Is(None)).min_width(Is(Some(job_notice_ago_w))).shrink(Is(0.0)) |> ignore
-            @sf.words_node(a, fn() { text(nv(), "ago") }, fn() { job_notice_time }) |> ignore
-          })
-          |> ignore
-          // (taking what the line leaves it, wrapped in it: job_notice_words' grow)
-          @sf.words_node(line, fn() { text(nv(), "text") }, fn() { job_notice_words })
-          .grow(Is(1.0))
-          .basis(Is(Some(0.0)))
-          .min_width(Is(Some(0.0)))
-          |> ignore
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-  })
 }
 
 ///|
@@ -328,21 +265,14 @@ fn jobs_pop_last(body : @view.View, src : Source, station : String, job : () -> 
 /// A small action of a job's (job_action's) in `parent`: its mark (`mark`) and `words`, 26 high, the pointer's ground on
 /// it and the words' ink; `press` while `on` says so.
 fn jobs_pop_action(parent : @view.View, words : String, on : () -> Bool, mark : (@view.View) -> Unit, press : () -> Unit) -> Unit {
-  parent.box(fn(b) {
+  @sf.action_box_node(parent, fn() { words }, fn(_) { press() }, disabled=fn() { !on() }, fn(b) {
     @sf.style_node(b, fn() { job_action_style }, in_row=true)
     @sf.hover_ground_node(b, on~)
-    b.says(Is(Some(@view.said(Button, label=words)))) |> ignore
-    @sf.presses_node(b, press, on~)
     mark(b)
     @sf.words_node(b, fn() { words }, fn() { if on() && @sf.lit_node(b) { job_action_hot } else { job_action_words } }) |> ignore
   })
   |> ignore
 }
-
-///|
-/// How wide a notice's time is at least (job_notice_ago's S16).
-// kept across runs: a value
-let job_notice_ago_w : Double = 64.0
 
 ///|
 // kept across runs: a value (no field of it changes)

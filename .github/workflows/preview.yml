@@ -471,8 +471,10 @@ jobs:
           path: |
             apps/mbui/out/ios-device/_build
             !apps/mbui/out/ios-device/_build/**/*.mbc
-          key: mbui-ios-moon-${{ github.sha }}
-          restore-keys: mbui-ios-moon-
+          key: mbui-ios-moon-${{ env.IMG }}-${{ github.sha }}
+          restore-keys: |
+            mbui-ios-moon-${{ env.IMG }}-
+            mbui-ios-moon-
       - run: bash apps/mbui/scripts/moon-mtimes.sh
       - id: start
         run: touch "$RUNNER_TEMP/start"
@@ -493,7 +495,8 @@ jobs:
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
       # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
-      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 30 s before the job is: the upload,
+      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 40 s before the job is, moon's
+      # build saved after the store too: the upload,
       # the key and both saves after a whole build took 14 s (43981912517), ~21 s on a slower runner, and the post steps
       # ~6 s; the stop, the key and the save after a cut 7.5 s (43981921907, cut 35 s before with its link done and only
       # the .ipa's zip left). The .ipa: the app moved
@@ -505,7 +508,7 @@ jobs:
           # cut: a step stopped leaves its children running, and they wrote the store as the cache's tar read it)
           echo "$$-$(date +%s)-$RANDOM" > "$RUNNER_TEMP/build-tree"
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 30)) bash -ec '
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 40)) bash -ec '
             bash apps/mbui/scripts/ios.sh build
             cd apps/mbui/out/ios-device && rm -rf Payload *.ipa && mkdir Payload && mv MBUI.app Payload/
             zip -1qry stillfail-mbui.ipa Payload && mv Payload/MBUI.app . && rm -rf Payload && ls -la stillfail-mbui.ipa'
@@ -551,13 +554,27 @@ jobs:
             .ci/mbc-store
             .ci/hbc
           key: ${{ env.STORE_KEY }}
-      - if: github.ref == 'refs/heads/main' && steps.moon.outputs.cache-hit != 'true'
+      # (moon's build kept once moonc has made the app's C (stillfail.c), a cut build's too, as the linux job's moon-room:
+      # saved only of a build that went through, every run cut in its -O2 C did moonc's ~90-120 s again and was cut again
+      # (44334978946, 2026-11-18). Keyed by that C: one the same is not saved again; mbc's units are the store's.)
+      - id: moon-room
+        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
+        run: |
+          c=apps/mbui/out/ios-device/_build/native/release/build/stillfail/stillfail/stillfail.c
+          left=$(( JOB_END - $(date +%s) ))
+          if [ -s "$c" ] && [ "$left" -gt 20 ]; then
+            find apps/mbui/out/ios-device/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
+            echo "key=mbui-ios-moon-${{ env.IMG }}-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          else
+            echo "moon's build not saved: stillfail.c=${c} (${left} s left)"
+          fi
+      - if: always() && steps.moon-room.outputs.key != '' && steps.moon-room.outputs.key != steps.moon.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: |
             apps/mbui/out/ios-device/_build
             !apps/mbui/out/ios-device/_build/**/*.mbc
-          key: mbui-ios-moon-${{ github.sha }}
+          key: ${{ steps.moon-room.outputs.key }}
 
   windows:
     needs: what

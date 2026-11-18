@@ -510,8 +510,7 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   // dur_ms once it is here
   let asked = key == "" && !going_up
   let breath = @motion.told(c, "msg-breath/" + thumb, if asked { 1.0 } else { 0.0 }, spec=@motion.tween(@sf.dur_ms, ease=Out))
-  let rimmed = image_rimmed(key, letterbox, corner)
-  let b = c.box(style=image_box_style(w, h, key != "!" || letterbox, corner, rimmed~), id=open, fn() {
+  let b = c.box(style=image_box_style(w, h, key != "!" || letterbox, corner), id=open, fn() {
     if key == "!" {
       media_content(c, p, w, h, fit, 0.0)
     } else {
@@ -643,10 +642,8 @@ let file_lift_scale : Double = 1.04
 ///|
 /// An image's box (msgImage): `w` by `h`, rounded as a message's files are, the neutral ground while it waits (none
 /// once it shows, nor round a letterboxed one: `shown`).
-fn image_box_style(w : Double, h : Double, shown : Bool, corner : Double, rimmed? : Bool = false) -> @ui.Style {
-  (if rimmed { image_frame_rimmed } else if shown { image_frame } else { image_frame_waiting })
-  .then(@ui.style(w=Fixed(w), h=Fixed(h)))
-  .then(frame_corner(corner))
+fn image_box_style(w : Double, h : Double, shown : Bool, corner : Double) -> @ui.Style {
+  (if shown { image_frame } else { image_frame_waiting }).then(@ui.style(w=Fixed(w), h=Fixed(h))).then(frame_corner(corner))
 }
 
 ///|
@@ -1059,19 +1056,6 @@ let files_row : @ui.Style = @ui.css("row gap=S1_5 align=AStart")
 /// that one); the neutral ground while it waits.
 // kept across runs: a value (no field of it changes)
 let image_frame : @ui.Style = @ui.style(radius=InnerOr(@sf.message_file_radius), clip=true)
-
-///|
-/// A message's own picture shown whole in its box (image_rimmed): the line drawn over it as round as it, so a light
-/// screenshot stands off a light chat and a dark one off a dark one.
-// kept across runs: a value (no field of it changes)
-let image_frame_rimmed : @ui.Style = image_frame.then(@ui.css("border=B1 border_color=Line"))
-
-///|
-/// Whether a picture's box has its rim (image_frame_rimmed): its picture is here (`key`: neither coming, "", nor none,
-/// "!"), filling its box (not letterboxed in it) and a message's own (`corner` a message's file's, not a quote's).
-fn image_rimmed(key : String, letterbox : Bool, corner : Double) -> Bool {
-  key != "" && key != "!" && !letterbox && corner == @sf.message_file_corner
-}
 
 ///|
 /// A picture's box rounded `corner` (a message's file's, its frames' own; a quote's picture's, concentric with its

@@ -325,8 +325,8 @@ pub fn View::on_reused(self : View, f : () -> Unit) -> Unit {
 ///|
 /// What it does by itself, and the hand on it, stopped where they are, nothing told as scrolled (its bar).
 fn Scroll::rebind_still(self : Scroll) -> Unit {
-  (self.settle_off)()
-  self.settle_off = fn() {  }
+  (self.settle_off.val)()
+  self.settle_off.val = fn() {  }
   self.edge.set(None)
   self.notch.set(None)
   self.fling.set(None)

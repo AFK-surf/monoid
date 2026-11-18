@@ -172,10 +172,7 @@ pub fn way_in_button_node(
     // (what it holds in its middle: the old one's justify=JCenter)
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     v.show(fn() { busy() || open.shown(v) > 0.0 }, fn(room) {
-      room
-      .width(By(fn() { Some((button_icon + sign_in_spin_gap) * dmax(open.shown(v), 0.0)) }))
-      .height(Is(Some(button_icon)))
-      |> ignore
+      spin_room_node(room, fn() { sign_in_spin_gap }, fn() { open.shown(v) })
       // (in the library's palette's ink and accent, as the old one's spinner is: way_in_button's p.bg, p.text)
       let spun_ink = fn() {
         let p = library_theme().p
@@ -185,13 +182,15 @@ pub fn way_in_button_node(
           p.text
         }
       }
-      let s = spinner_node(
+      spinner_shown_node(
         room,
-        size=button_icon,
-        ring=fn() { alpha(spun_ink(), 0.3) },
-        arc=fn() { if solid { spun_ink() } else { library_theme().p.accent } },
+        fn() { alpha(spun_ink(), 0.3) },
+        fn() { if solid { spun_ink() } else { library_theme().p.accent } },
+        fn() { turning.shown(v) },
+        fn() { open.shown(v) },
+        At(0.0, 0.5),
       )
-      s.alpha(By(fn() { turning.shown(v) * seen_at(open.shown(v)) })).scale(By(fn() { dmax(open.shown(v), 0.0) }), about=At(0.0, 0.5)) |> ignore
+      |> ignore
     })
     let words = v.box(fn(w) {
       w.words(By(label), look=way_in_words(Title, 600, Some(Font), false)).ink(By(ink)) |> ignore
@@ -203,20 +202,6 @@ pub fn way_in_button_node(
     // (its words changed, 登录或注册 to 正在登录: gone to their new place, not at once)
     @motion.moves_for(v, label, spec=button_reshape).moves_with(words)
   })
-}
-
-///|
-/// What a way-in page offers last, quietly, in `body` (way_in_link's: 切换账号): a button of words alone, the page's ink,
-/// a ground under the pointer. The node.
-#callsite(autofill(loc))
-pub fn way_in_link_node(
-  body : @view.View,
-  label : () -> String,
-  press : () -> Unit,
-  busy? : () -> Bool = fn() { false },
-  loc~ : SourceLoc,
-) -> @view.View {
-  button_node(loc~, body, label, press, tone=Ghost, busy~)
 }
 
 ///|

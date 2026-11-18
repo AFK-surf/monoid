@@ -90,6 +90,72 @@ fn chat_body_parts_by(kept : ChatBodyKept, m : Message, unread : Double?, first 
 }
 
 ///|
+/// The keys of the rows a message is shown in (chat_body_parts_by's, in its order) worked out of what it says of itself:
+/// its `seq`, `ts` and `outgoing`, the pieces its words are drawn in (`pieces`), the keys of what went elsewhere after
+/// it (`elsewhere`); the unread line over it where `unread` is at it.
+fn chat_said_keys(
+  kept : ChatBodyKept,
+  unread : Double?,
+  seq : Double,
+  ts : String,
+  outgoing : String,
+  pieces : Array[@sf.MdPiece]?,
+  elsewhere : Array[String],
+) -> Array[String] {
+  let keys : Array[String] = []
+  if unread == Some(seq) {
+    keys.push("line")
+  }
+  if outgoing != "" {
+    kept.sent[seq] = outgoing
+  }
+  // (chat_body_key's of Entry::Said: the outbox entry it was sent from here as, else its own; what was sent from here
+  // as where that took it over)
+  let core_key = match kept.sent.get(seq) {
+    Some(o) => "o:" + o
+    None => "m:" + ts
+  }
+  let k = kept.sent_as.get(core_key).unwrap_or(core_key)
+  match pieces {
+    Some(ps) => for b in 0..<ps.length() { keys.push(chat_piece_key(k, b)) }
+    None => keys.push(k)
+  }
+  for e in elsewhere {
+    // (Entry::Sent's id)
+    keys.push("s:" + e)
+  }
+  keys
+}
+
+///|
+/// The keys of the rows message JSON `j` is shown in (chat_body_parts_by's of it read as a Message), read of the few
+/// fields that say them alone: what a message's place among the list's keys costs, never the message read whole.
+fn chat_said_keys_raw(kept : ChatBodyKept, unread : Double?, j : Json) -> Array[String] {
+  let s = Some(j)
+  let author_kind = text(s, "authorKind")
+  // (chat_body_pieces': an agent's words, but where a card is drawn in their place: message_cards_node's in_place_of)
+  let in_place = match field(s, "card") {
+    Some(Object(_)) as c =>
+      ["vaultAsk", "phoneAsk", "signinAsk", "rigAsk"].iter().any(fn(n) { field(c, n) is Some(Object(_)) })
+    _ => false
+  }
+  let pieces = if !flag(s, "mine") && !flag(s, "system") && author_kind != "person" && !in_place {
+    @sf.markdown_pieces(text(s, "text"), field(s, "md"))
+  } else {
+    None
+  }
+  chat_said_keys(
+    kept,
+    unread,
+    number(s, "seq"),
+    text(s, "ts"),
+    text(s, "outgoing"),
+    pieces,
+    items(s, "elsewhere").map(fn(e) { text(Some(e), "key") }),
+  )
+}
+
+///|
 /// The rows of a chat's head `v` over its messages and under them, as chat_entries and chat_body_rows have them: the
 /// page before, the chat empty, what went elsewhere before its messages; what is newer, then what is on its way: the outbox, then what
 /// was sent from here the core has not taken over yet (`still`, its row before it followed where it goes close under
@@ -285,7 +351,9 @@ fn chat_body_keyed(
       let v = head()
       guard still.get(0) is Some(l) && l.row.joined && !v.newer && v.outbox.is_empty() else { return None }
       let keys = msgs.keys()
-      guard keys.last() is Some(k) && msgs.get(k) is Some(m) && m.elsewhere.is_empty() else { return None }
+      guard keys.last() is Some(k) && msgs.raw(k) is Some(j) && items(Some(j), "elsewhere").is_empty() else {
+        return None
+      }
       Some(k)
     },
     same=fn(a, b) { a == b },
@@ -357,13 +425,37 @@ fn chat_body_keyed(
   // (whose each row is: a message's key, or "" for the head's; each message's written as its rows' keys change, the
   // head's as the keys are made, so a message come or gone writes its own alone)
   let owner : Map[String, String] = Map([])
+  // (each message's rows' keys, worked out of its JSON's few fields that say them (chat_said_keys_raw), never of its
+  // rows: so the list's keys read no message whole, and a message is read as a Message (parts_of, ChatMessages::get)
+  // only as a row of it is asked, as it comes to show; told only as its keys change, not as a word comes into it)
   let keys_of = fn(mk : String) -> @signals.Computed[Array[String]] {
     match part_keys.get(mk) {
       Some(p) => p
       None => {
         let p = @signals.computed(
           fn(was : Array[String]?) {
-            let now = parts_of(mk).get().keys
+            let (unread_at, _, _, card_mk, _, _) = marks.get()
+            let own = msgs.raw(mk)
+            // (the card the words sent from here answer: as parts_of has it, the same keys as its own)
+            let answered = if card_mk == Some(mk) {
+              @signals.untracked(card).map(fn(c) { c.1 })
+            } else {
+              None
+            }
+            let now = match (answered, own) {
+              (Some(m), _) =>
+                chat_said_keys(
+                  kept,
+                  unread_at,
+                  m.seq,
+                  m.ts,
+                  m.outgoing,
+                  chat_body_pieces(Entry::Said(m)),
+                  m.elsewhere.map(fn(e) { e.key }),
+                )
+              (None, Some(j)) => chat_said_keys_raw(kept, unread_at, j)
+              (None, None) => []
+            }
             match was {
               Some(w) => for k in w { if owner.get(k) == Some(mk) { owner.remove(k) } }
               None => ()
@@ -408,13 +500,14 @@ fn chat_body_keyed(
         owner[k] = ""
         out.push(k)
       }
-      // (a message gone: its rows' computeds let go)
-      if parts.length() > order.length() {
+      // (a message gone: its rows' computeds let go; its keys' made for every message, its rows' for those a row of
+      // which was asked)
+      if part_keys.length() > order.length() || parts.length() > order.length() {
         let here : Map[String, Bool] = Map([])
         for mk in order {
           here[mk] = true
         }
-        let gone = parts.keys().filter(fn(mk) { !here.contains(mk) }).collect()
+        let gone = part_keys.keys().filter(fn(mk) { !here.contains(mk) }).collect()
         for mk in gone {
           // (its rows' keys read once more, none now: what it owned let go)
           match part_keys.get(mk) {
@@ -423,6 +516,9 @@ fn chat_body_keyed(
           }
           parts.remove(mk)
           part_keys.remove(mk)
+        }
+        for mk in parts.keys().filter(fn(mk) { !here.contains(mk) }).collect() {
+          parts.remove(mk)
         }
       }
       out

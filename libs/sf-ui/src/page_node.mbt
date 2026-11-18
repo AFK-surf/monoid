@@ -1770,13 +1770,6 @@ pub fn row_lead_mark_node(parent : @view.View, name : String, color? : () -> Int
 let link_row_spin : Double = 14.0
 
 ///|
-/// A red dot (status_dot's "error", as a node: state_dot_node's, in `d` itself): something there is not right though
-/// nothing is wrong to say.
-pub fn status_dot_node(d : @view.View) -> Unit {
-  state_dot_node(d, fn() { "error" }, in_node=true)
-}
-
-///|
 /// A switch (switch's, as a node: @kit.switch's look in the web's, switch_look_for), `on()` as it is, named `label`
 /// for a screen reader; turned by a tap, a press held however long and let go on it, Space or Enter, a screen reader's
 /// press: `turn` told what it is to be (the caller says it so: `on` follows it), a light tick felt under a finger. Its
@@ -2101,16 +2094,7 @@ pub fn page_note_node(
 /// for is said (pg_lead_box: 12 in, 10 under, the secondary's words); wide, as it is, the UI's muted (up_said's).
 #callsite(autofill(loc))
 pub fn page_none_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
-  parent.box(made_for=loc, fn(n) {
-    match look_node(n) {
-      Narrow => {
-        n.padding(Is((pg_lead_x, 0.0, pg_lead_x, pg_lead_foot))) |> ignore
-        words_node(n, words, fn() { pg_lead }) |> ignore
-      }
-      Wide => words_node(n, words, fn() { desk_muted }) |> ignore
-    }
-  })
-  |> ignore
+  none_said_node(loc~, parent, words, fn() { pg_lead }, pg_lead_x, pg_lead_foot)
 }
 
 ///|
@@ -2385,7 +2369,8 @@ pub fn disc_key_node(
   inside : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.box(made_for=loc, fn(k) {
+  // (the headless button's, its ripple round_key_node's: rippled_look)
+  @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(k, b) {
     k
     .width(Is(Some(side)))
     .height(Is(Some(side)))
@@ -2394,7 +2379,7 @@ pub fn disc_key_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    pressed_node(k, press, Is(side / 2.0), Button, label)
+    rippled_look(loc~, k, Is(side / 2.0), fn() { b.press() })
     inside(k)
   })
   |> ignore

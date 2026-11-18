@@ -59,8 +59,9 @@ pub struct Scroll {
   /// how tall what it holds comes to, where what fills it knows it as it fills it (a page's list: its blocks as they
   /// are counted, its foot's room), not measured again
   priv mut whole : (() -> Double)?
-  /// what ends the fling's settling at its end (View::at_moment's), as it is called off
-  priv mut settle_off : () -> Unit
+  /// what ends the fling's settling at its end (View::at_moment's), as it is called off: one for what scrolls beside it
+  /// (Scroll::beside), whose fling is one, so the hand stopping it on any of them calls off the end said on another
+  priv settle_off : Ref[() -> Unit]
   /// where the hand held on it was last (the window's, down), and how fast it went (points a ms, down the column)
   priv mut hand_y : Double
   priv mut hand_wy : Double
@@ -257,6 +258,7 @@ pub fn Scroll::beside(self : Scroll) -> Scroll {
     hand_on: self.hand_on,
     edge: self.edge,
     notch: self.notch,
+    settle_off: self.settle_off,
     past: self.past,
     // (scrolled by the hand in any of them: the bar of each told, wherever it is)
     peers_scrolled: self.peers_scrolled,
@@ -274,7 +276,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
     fill: fn(_, _, _) {  },
     fill_put: fn() {  },
     whole: None,
-    settle_off: fn() {  },
+    settle_off: Ref(fn() {  }),
     hand_y: 0.0,
     hand_wy: 0.0,
     hand_v: 0.0,
@@ -624,8 +626,8 @@ fn Scroll::stopped(self : Scroll, t : Double) -> Double {
   let x = @signals.untracked(fn() { self.where_at(t) })
   // (brought on past its edge: as far as it came)
   if self.edge.untracked() is Some(e) {
-    (self.settle_off)()
-    self.settle_off = fn() {  }
+    (self.settle_off.val)()
+    self.settle_off.val = fn() {  }
     self.edge.set(None)
     self.x.set(x)
     if !e.parked {
@@ -634,14 +636,14 @@ fn Scroll::stopped(self : Scroll, t : Double) -> Double {
   }
   // (a page's list's notches easing in: as far as they came)
   if self.notch.untracked() is Some(_) {
-    (self.settle_off)()
-    self.settle_off = fn() {  }
+    (self.settle_off.val)()
+    self.settle_off.val = fn() {  }
     self.set_notch_landed(false)
     self.notch.set(None)
   }
   if self.fling.untracked() is Some(f) {
-    (self.settle_off)()
-    self.settle_off = fn() {  }
+    (self.settle_off.val)()
+    self.settle_off.val = fn() {  }
     self.fling.set(None)
     self.x.set(x)
     // (stopped on its way: it scrolled till now, no further: its bar's showing from here)
@@ -899,8 +901,8 @@ fn Scroll::flung(self : Scroll, v : View, t : Double) -> Unit {
   (v.tree.glides)(self.serial, fn() { self.glides_till() })
   // (at rest at its end, said on the timeline: then nothing reads the time for it)
   v.tree.hand_at_end(end_t)
-  self.settle_off = v.at_moment(end_t, fn() {
-    self.settle_off = fn() {  }
+  self.settle_off.val = v.at_moment(end_t, fn() {
+    self.settle_off.val = fn() {  }
     // (scrolled till its end: told so while it still counts as under way, its bar's showing from there)
     self.scrolled_at(end_t)
     self.fling.set(None)
@@ -962,8 +964,8 @@ fn Scroll::edge_due(self : Scroll, v : View, t : Double) -> Unit {
 /// The hand past its edge (`e`, as it was) said on from `x0` at `t` as far as `bound`: its end then said on the
 /// timeline, told what hosts the tree (Tree::on_glides), parked there; there already, parked now.
 fn Scroll::edge_planned(self : Scroll, v : View, e : Edge, x0 : Double, t : Double, bound : Double) -> Unit {
-  (self.settle_off)()
-  self.settle_off = fn() {  }
+  (self.settle_off.val)()
+  self.settle_off.val = fn() {  }
   let end_t = t + dmax(0.0, (bound - x0) / e.v).ceil()
   if end_t <= t {
     // (at its end: nothing moving, nothing reading the time; told so as it is there no more since now)
@@ -978,8 +980,8 @@ fn Scroll::edge_planned(self : Scroll, v : View, e : Edge, x0 : Double, t : Doub
   // (what hosts the tree told it goes on by itself, till when as it is asked: Tree::on_glides)
   (v.tree.glides)(self.serial, fn() { self.glides_till() })
   v.tree.hand_at_end(end_t)
-  self.settle_off = v.at_moment(end_t, fn() {
-    self.settle_off = fn() {  }
+  self.settle_off.val = v.at_moment(end_t, fn() {
+    self.settle_off.val = fn() {  }
     self.scrolled_at(end_t)
     match self.edge.untracked() {
       Some(g) => self.edge.set(Some({ ..g, x0: g.bound, t0: end_t, end_t, parked: true }))
@@ -1470,8 +1472,8 @@ pub fn View::scrolls(
       s.notch.set(None)
       s.x.set(at)
     }
-    (s.settle_off)()
-    s.settle_off = fn() {  }
+    (s.settle_off.val)()
+    s.settle_off.val = fn() {  }
     s.room = fn() { None }
     s.held = false
     s.held_said = fn() {  }

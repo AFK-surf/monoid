@@ -132,6 +132,81 @@ async fn shell_path(host : @host.Host, shell : String, login : Bool, env : Array
 }
 
 ///|
+/// windows.ts `SAVED_ENVIRONMENT`: the environment's string values as the registry keeps them, unexpanded, the
+/// machine's and the user's, as UTF-8 JSON in base64 (a path of other than ASCII comes through whatever the code page).
+let saved_environment_code : String =
+  #|$ErrorActionPreference = 'Stop'
+  #|function Saved($path) {
+  #|  $o = @{}
+  #|  $key = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+  #|  if ($key) { foreach ($n in $key.GetValueNames()) { $v = $key.GetValue($n, $null, 'DoNotExpandEnvironmentNames'); if ($v -is [string]) { $o[$n] = $v } } }
+  #|  $o
+  #|}
+  #|$j = @{ machine = (Saved 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'); user = (Saved 'HKCU:\Environment') } | ConvertTo-Json -Compress -Depth 3
+  #|[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j)))
+
+///|
+/// The string values of an object of what PowerShell said.
+fn saved_strings(j : Json?) -> Array[(String, String)] {
+  match j {
+    Some(Object(m)) => m.to_array().filter_map(kv => if kv.1 is String(v) { Some((kv.0, v)) } else { None })
+    _ => []
+  }
+}
+
+///|
+/// windows.ts `savedPath`: the PATH the registry gives a process started now (`savedPathOf`), none where it cannot be
+/// read in time.
+async fn read_saved_path(host : @host.Host, env : Array[(String, String)]) -> Array[String]? {
+  let args = ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_command(saved_environment_code)]
+  let proc = spawn(host, "powershell.exe", args, stdout=Piped) catch { _ => return None }
+  let over = Ref(false)
+  let killer = host.rt.fork(name="the registry's PATH, its deadline", async fn() {
+    @effect.sleep(shell_probe_ms) // timer: a timeout (PowerShell that never ends)
+    over.val = true
+    ignore(kill(proc.pid, "SIGKILL"))
+  })
+  let (code, _, out, _) = proc.finished()
+  killer.interrupt()
+  if over.val || code != Some(0) || out.length() > shell_output_most {
+    return None
+  }
+  let said = @utf8.decode_lossy(out).trim(chars=" \t\r\n").to_string()
+  let json = @utf8.decode_lossy(@base64.decode(said)) catch { _ => return None }
+  let j : Json = @json.parse(json) catch { _ => return None }
+  let (machine, user) = match j {
+    Object(m) => (saved_strings(m.get("machine")), saved_strings(m.get("user")))
+    _ => ([], [])
+  }
+  Some(@ops_platform.saved_path_of(machine, user, env))
+}
+
+///|
+/// shell-path.ts `kept(["saved"], …)`: what the registry says for `env`, read again only after KEEP_MS.
+async fn saved_path(host : @host.Host, env : Array[(String, String)]) -> Array[String]? {
+  let clean = shell_probe_env(env)
+  clean.sort_by((a, b) => compare(a.0, b.0))
+  let key = Json::array([
+    Json::string("saved"),
+    Json::array(clean.map(kv => Json::array([Json::string(kv.0), Json::string(kv.1)]))),
+  ]).stringify()
+  let now = wall_ms().to_double()
+  match shell_readings.get(key) {
+    Some((at, dirs)) if now - at < shell_keep_ms => return dirs
+    _ => ()
+  }
+  let dirs = read_saved_path(host, clean)
+  if shell_readings.length() >= 32 {
+    match shell_readings.keys().next() {
+      Some(k) => shell_readings.remove(k)
+      None => ()
+    }
+  }
+  shell_readings[key] = (now, dirs)
+  dirs
+}
+
+///|
 fn env_path_put(env : Array[(String, String)], value : String) -> Array[(String, String)] {
   let name = match env.iter().find_first(kv => kv.0 == "PATH" || (is_windows() && kv.0.to_upper() == "PATH")) {
     Some(kv) => kv.0
@@ -161,7 +236,22 @@ async fn with_shell_command(
   if name.contains("/") || name.contains("\\") || find_command(name, env) is Some(_) {
     return env
   }
-  // (Windows' PATH the registry keeps is not read here: a station on Windows finds what its own PATH finds)
+  // The registry's PATH on Windows (what a process started now is given: a runtime installed since the station
+  // started): its new directories go after the given ones, so what the given PATH finds keeps its place.
+  if is_windows() {
+    match saved_path(host, lookup) {
+      Some(dirs) => {
+        let candidate = env.copy()
+        for d in dirs {
+          @ops_platform.win_append_path(candidate, d, ";")
+        }
+        if find_command(name, candidate) is Some(_) {
+          return candidate
+        }
+      }
+      None => ()
+    }
+  }
   let shell = match lookup.iter().find_first(kv => kv.0 == "SHELL") {
     Some(kv) if !is_windows() && kv.1 != "" => kv.1
     _ => return env

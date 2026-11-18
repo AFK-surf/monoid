@@ -910,6 +910,8 @@ fn P53Models::attach(self : P53Models) -> Unit {
       }
     }),
   )
+  // (the readers' prices are the catalog's as well: read/pool.ts `give`)
+  bus.model_catalog.val = () => self.told.snapshot()
   bus.parts.routes([
     {
       meth: "GET",

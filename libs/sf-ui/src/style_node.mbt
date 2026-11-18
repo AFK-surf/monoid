@@ -86,6 +86,7 @@ priv struct StyleSet {
 /// Which properties a style sets (StyleSet's `says`).
 #derive(Eq)
 priv struct StyleSays {
+  row : Bool
   w : Bool
   h : Bool
   grow : Bool
@@ -94,6 +95,10 @@ priv struct StyleSays {
   min_w : Bool
   max_w : Bool
   min_h : Bool
+  padding : Bool
+  gap : Bool
+  lines_up : Bool
+  lies_along : Bool
   margin : Bool
   corner : Bool
   ground : Bool
@@ -106,6 +111,7 @@ priv struct StyleSays {
 /// style says something for the first time).
 fn StyleSays::joined(self : StyleSays, more : StyleSays) -> StyleSays {
   let all : StyleSays = {
+    row: self.row || more.row,
     w: self.w || more.w,
     h: self.h || more.h,
     grow: self.grow || more.grow,
@@ -114,6 +120,10 @@ fn StyleSays::joined(self : StyleSays, more : StyleSays) -> StyleSays {
     min_w: self.min_w || more.min_w,
     max_w: self.max_w || more.max_w,
     min_h: self.min_h || more.min_h,
+    padding: self.padding || more.padding,
+    gap: self.gap || more.gap,
+    lines_up: self.lines_up || more.lines_up,
+    lies_along: self.lies_along || more.lies_along,
     margin: self.margin || more.margin,
     corner: self.corner || more.corner,
     ground: self.ground || more.ground,
@@ -143,6 +153,7 @@ fn style_of(q : @ui.Patch, in_row : Bool, loc : SourceLoc) -> StyleSet {
   let min_h = style_bound(q.min_h, "min_h", loc)
   {
     says: {
+      row: q.row is Some(_),
       w: w is Some(_),
       h: h is Some(_),
       grow: along is Some(Full | Grow(_)),
@@ -151,6 +162,16 @@ fn style_of(q : @ui.Patch, in_row : Bool, loc : SourceLoc) -> StyleSet {
       min_w: q.min_w is Some(_),
       max_w: q.max_w is Some(_),
       min_h: q.min_h is Some(_),
+      padding: q.p is Some(_) ||
+      q.px is Some(_) ||
+      q.py is Some(_) ||
+      q.pl is Some(_) ||
+      q.pt is Some(_) ||
+      q.pr is Some(_) ||
+      q.pb is Some(_),
+      gap: q.gap is Some(_),
+      lines_up: q.align is Some(_),
+      lies_along: q.justify is Some(_),
       margin: q.m is Some(_) ||
       q.mx is Some(_) ||
       q.my is Some(_) ||
@@ -290,7 +311,7 @@ fn style_set(v : @view.View, was : StyleSet?, s : StyleSet, loc : SourceLoc) -> 
     None => s.says
   }
   let now = s.says
-  if new || w.row != s.row {
+  if style_first(new, before.row, now.row) || (before.row && w.row != s.row) {
     v.row(loc~, Is(s.row)) |> ignore
   }
   if style_first(new, before.w, now.w) || (before.w && w.w != s.w) {
@@ -321,16 +342,16 @@ fn style_set(v : @view.View, was : StyleSet?, s : StyleSet, loc : SourceLoc) -> 
   if style_first(new, before.min_h, now.min_h) || (before.min_h && w.min_h != s.min_h) {
     v.min_height(loc~, Is(s.min_h)) |> ignore
   }
-  if new || w.padding != s.padding {
+  if style_first(new, before.padding, now.padding) || (before.padding && w.padding != s.padding) {
     v.padding(loc~, Is(s.padding)) |> ignore
   }
-  if new || w.gap != s.gap {
+  if style_first(new, before.gap, now.gap) || (before.gap && w.gap != s.gap) {
     v.gap(loc~, Is(s.gap)) |> ignore
   }
-  if new || w.lines_up != s.lines_up {
+  if style_first(new, before.lines_up, now.lines_up) || (before.lines_up && w.lines_up != s.lines_up) {
     v.lines_up(loc~, Is(s.lines_up)) |> ignore
   }
-  if new || w.lies_along != s.lies_along {
+  if style_first(new, before.lies_along, now.lies_along) || (before.lies_along && w.lies_along != s.lies_along) {
     v.lies_along(loc~, Is(s.lies_along)) |> ignore
   }
   if style_first(new, before.margin, now.margin) || (before.margin && w.margin != s.margin) {
