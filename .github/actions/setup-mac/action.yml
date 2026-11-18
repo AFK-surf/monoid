@@ -29,12 +29,6 @@ runs:
         # Cloudflare's API and the native artifact store resolved directly by the releases' puts and native.ts;
         # GitHub keeps the machine's usual route.
         echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
-        # The targets kept before (target-*, check-*, linux-*): no job reads them now.
-        find "$HOME/stillfail-ci" -mindepth 1 -maxdepth 1 -type d \( -name 'target*' -o -name 'check-*' -o -name 'linux*' \) -mmin +240 -exec rm -rf {} + 2>/dev/null || true
-        # The station reader's MBC_STORE (station/mb/build.sh): an entry is <store>/<2 of its key>/<key>, said used as
-        # mbc takes or keeps it (mbc.mbt's c_touch); those unused for 3 days go, the store grew without end before
-        # (a write into it failed on Mini1, 44243874638, 2026-11-18).
-        find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mtime +3 -exec rm -rf {} + 2>/dev/null || true
         # Rust's tests a few at a time: three runners share the machine, and the core's timing tests fail under load.
         echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
         # (Not the station's test files a few at a time (STILLFAIL_NODE_TEST_JOBS, scripts/check.sh): three a check
@@ -43,10 +37,12 @@ runs:
         # The Node the station runs on (.node-version), ahead of ~/.local/bin's: what it is checked and built with.
         echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
         sh .github/actions/setup-linux/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"
+        # Disk upkeep (upkeep.sh): once an hour, or at each job start below 15 GiB free.
         upkeep="$HOME/stillfail-ci/.upkeep"
-        if [ -z "$(find "$upkeep" -mmin -60 2>/dev/null)" ]; then
+        free_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+        if [ "${free_kb:-0}" -lt 15728640 ] || [ -z "$(find "$upkeep" -mmin -60 2>/dev/null)" ]; then
           mkdir -p "$HOME/stillfail-ci" && touch "$upkeep"
-          sh .github/actions/setup-mac/upkeep.sh || echo "::warning::macos-ci disk upkeep failed"
+          sh "$GITHUB_WORKSPACE/.github/actions/setup-mac/upkeep.sh" "$GITHUB_WORKSPACE" || echo "::warning::macos-ci disk upkeep failed"
         fi
         # The actions' archives the runners take instead of downloading them (.github/action-archives.sh): those of
         # refs that moved since, once an hour at most; one that cannot be had is downloaded by the runner as before.

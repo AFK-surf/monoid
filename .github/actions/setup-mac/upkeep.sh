@@ -1,8 +1,16 @@
 #!/bin/sh
-# Hourly disk cleanup for persistent self-hosted runners on macos-ci (Mini1).
-# Removes stale MoonBit cache units, old runner logs, timed-out temp directories,
-# and Shutdown iOS Simulator wallpaper caches.
+# Disk cleanup for persistent self-hosted runners on macos-ci (Mini1).
+# Removes stale MoonBit cache units, native cache versions over budget, old runner logs, timed-out temp directories,
+# old Xcode and Homebrew caches, and Shutdown iOS Simulator wallpaper caches.
+# setup-mac and the mbui-moonbit action run it once an hour, or at each job start below 15 GiB free.
+# Mini1 ran out of space in a burst of merges (ENOSPC, 44253499545 and 44252522547, 2026-11-18).
+#   upkeep.sh [checkout]      (default: the current directory; its scripts/native.ts trims the native cache)
 set -u
+checkout=${1:-.}
+echo "disk before upkeep: $(df -h / | awk 'NR==2 {print $4 " free of " $2}')"
+
+# Old Cargo targets (target-*, check-*, linux-*): no job reads them now.
+find "$HOME/stillfail-ci" -mindepth 1 -maxdepth 1 -type d \( -name 'target*' -o -name 'check-*' -o -name 'linux*' \) -mmin +240 -exec rm -rf {} + 2>/dev/null || true
 
 # station/mb/build.sh writes compiled MoonBit units to ~/stillfail-ci/reader-mbc-store.
 # libs/mbui/tools/mbc/mbc.mbt touches each unit directory on use. Delete units unused for 12 hours.
@@ -10,6 +18,33 @@ if [ -d "$HOME/stillfail-ci/reader-mbc-store" ]; then
   find "$HOME/stillfail-ci/reader-mbc-store" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
   find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mmin +720 -exec rm -rf {} + 2>/dev/null || true
 fi
+
+# The native cache (scripts/native.ts). Delete the .tmp-<pid>-* directories of processes that are gone, after 30
+# minutes. Then trim the versions over STILLFAIL_NATIVE_CACHE_MAX_BYTES (native.ts trim: only versions unused for 15
+# minutes or more).
+find "$HOME/Library/Caches/stillfail-native" -mindepth 2 -maxdepth 2 -type d -name '.tmp-*' -mmin +30 2>/dev/null |
+  while IFS= read -r tmp; do
+    pid=$(basename "$tmp" | sed -n 's/^\.tmp-\([0-9][0-9]*\)-.*/\1/p')
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+    rm -rf "$tmp" 2>/dev/null || true
+  done
+if [ -f "$checkout/scripts/native.ts" ]; then
+  node="$(sh "$checkout/scripts/node-here.sh" 2>/dev/null)/node"
+  if [ -x "$node" ]; then
+    STILLFAIL_NATIVE_CACHE_MAX_BYTES=${STILLFAIL_NATIVE_CACHE_MAX_BYTES:-5368709120} "$node" "$checkout/scripts/native.ts" trim || true
+  fi
+fi
+
+# Delete Xcode builds, Homebrew downloads and simulator logs untouched for a day. Delete a directory only when nothing
+# in it changed in the last hour: a build keeps its directory's mtime while files under it change.
+for top in "$HOME/Library/Developer/Xcode/DerivedData" "$HOME/Library/Caches/Homebrew/downloads" "$HOME/Library/Logs/CoreSimulator"; do
+  [ -d "$top" ] || continue
+  find "$top" -mindepth 1 -maxdepth 1 -mtime +1 2>/dev/null |
+    while IFS= read -r old; do
+      [ -z "$(find "$old" -mmin -60 -print 2>/dev/null | head -n 1)" ] || continue
+      rm -rf "$old" 2>/dev/null || true
+    done
+done
 
 # Delete closed Worker_*.log files after 1 day and older runner diagnostic logs after 3 days.
 for diag in "$HOME"/actions-runner*/_diag; do
@@ -56,3 +91,5 @@ if mkdir "$lock" 2>/dev/null; then
     done
   )
 fi
+
+echo "disk after upkeep: $(df -h / | awk 'NR==2 {print $4 " free of " $2}')"
