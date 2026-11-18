@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f31a0714a](https://github.com/AFK-surf/monoid/commit/f31a0714a7f9bf052625e46de28226f42f3f0ab9) ci: say failed tests in annotations, wait on CI by | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.61 | 63.66 | 96.93 | 115.11 |
 | [73221ce56](https://github.com/AFK-surf/monoid/commit/73221ce5626770fd1d3b9e4ea0f835b91c608cee) refactor(sf-ui): share facts lists, step circles,  | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 122.22 |
 | [67b858b04](https://github.com/AFK-surf/monoid/commit/67b858b044a40f7bf29ba899194293c609b59e78) fix(lock): vault gate, refused statements and adb  | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 122.22 |
 | [2e7b5df70](https://github.com/AFK-surf/monoid/commit/2e7b5df7029d1b3564d404ab5d1b69d4301ffbcb) perf(mbui): the composer's placeholder fades by it | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 115.44 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fee058d70](https://github.com/AFK-surf/monoid/commit/fee058d70bc98ff76618b35e38dbb6dc14a8177d) fix(mbc): keep framework units at -O2 in light sfa | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.75 | 117.45 |
 | [1104afa35](https://github.com/AFK-surf/monoid/commit/1104afa35e5423f3d9cd9a5752dea86bf43fd679) fix(cloud): a push says what was said as plain wor | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.75 | 117.45 |
 | [33815598f](https://github.com/AFK-surf/monoid/commit/33815598fcddcaa323fa0367afb4e3849a636178) mbui app: a chat's composer made as nodes, whole ( | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.54 | 117.45 |
-| [7c3c797b7](https://github.com/AFK-surf/monoid/commit/7c3c797b72fdc40941ae12bec151b4d7cc83d199) fix(mbui): pick a preset's model on the composer's | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.52 | 63.46 | 96.77 | 117.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f31a0714a](https://github.com/AFK-surf/monoid/commit/f31a0714a7f9bf052625e46de28226f42f3f0ab9) ci: say failed tests in annotations, wait on CI by | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 54.02 |
 | [73221ce56](https://github.com/AFK-surf/monoid/commit/73221ce5626770fd1d3b9e4ea0f835b91c608cee) refactor(sf-ui): share facts lists, step circles,  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 54.02 |
 | [67b858b04](https://github.com/AFK-surf/monoid/commit/67b858b044a40f7bf29ba899194293c609b59e78) fix(lock): vault gate, refused statements and adb  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 53.92 |
 | [2e7b5df70](https://github.com/AFK-surf/monoid/commit/2e7b5df7029d1b3564d404ab5d1b69d4301ffbcb) perf(mbui): the composer's placeholder fades by it | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 53.92 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fee058d70](https://github.com/AFK-surf/monoid/commit/fee058d70bc98ff76618b35e38dbb6dc14a8177d) fix(mbc): keep framework units at -O2 in light sfa | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.45 |
 | [1104afa35](https://github.com/AFK-surf/monoid/commit/1104afa35e5423f3d9cd9a5752dea86bf43fd679) fix(cloud): a push says what was said as plain wor | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
 | [33815598f](https://github.com/AFK-surf/monoid/commit/33815598fcddcaa323fa0367afb4e3849a636178) mbui app: a chat's composer made as nodes, whole ( | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
-| [7c3c797b7](https://github.com/AFK-surf/monoid/commit/7c3c797b72fdc40941ae12bec151b4d7cc83d199) fix(mbui): pick a preset's model on the composer's | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
