@@ -5,6 +5,7 @@ import type { Mailer } from "./mail";
 import type { RelayLoad } from "./relay-load";
 import type { ServiceStatus } from "./status";
 import type { Relay } from "./relay-worker";
+import type { RelayBudget } from "./relay";
 import type { Station } from "./station";
 import type { TelemetryLimiter } from "./tracing";
 
@@ -70,6 +71,8 @@ export interface Env {
   STATUS_REPO_ID?: string;
   /** still.fail's own relay process, in the relay's Worker (relay-worker.ts): its counters, read by the cron. Unset: not read. */
   RELAY?: DurableObjectNamespace<Relay>;
+  /** Its budget (relay.ts), the day's traffic as it counts it: what says the day ran out once the process is stopped. Unset: not read. */
+  RELAY_BUDGET?: DurableObjectNamespace<RelayBudget>;
   /** The OAuth client people sign in through: Google's, or OIDC_ISSUER's. Unset: only with an email (EMAIL). */
   GOOGLE_CLIENT_ID: string;
   /** Its secret; another provider's public client (PKCE alone) has none. */
