@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dc4fa2f8b](https://github.com/AFK-surf/monoid/commit/dc4fa2f8bc81320b09dedb45692081a287aa5ca1) ui: pick, offers and 前往文件夹 over @headless.combobox | 2.55 | 3.43 | 14.03 | 36 | 53.96 | 31.56 | 63.51 | 96.72 | 120.01 |
 | [b5ef8a1f2](https://github.com/AFK-surf/monoid/commit/b5ef8a1f2f835766f18eead01a594e2eb8710f39) fix(station): retry unreachable mesh directory pee | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.56 | 63.51 | 96.72 | 96.78 |
 | [1a1ec718e](https://github.com/AFK-surf/monoid/commit/1a1ec718ef17b3553793058626bac94a494753d7) fix(mbui): a board card that moves to another colu | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.56 | 63.51 | 96.72 | 96.78 |
 | [869829a2c](https://github.com/AFK-surf/monoid/commit/869829a2cec7570fc8bb5f1bf05902771c24ccd4) fix(core): a new device approved face to face is i | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.56 | 63.51 | 96.72 | 96.78 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c8401bba3](https://github.com/AFK-surf/monoid/commit/c8401bba37ffa2bd7704e9449c472a53817f780a) fix(core): open visited chats at their latest page | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.73 | 117.45 |
 | [78d07191c](https://github.com/AFK-surf/monoid/commit/78d07191c23e61450c732d005c57cc38ccb40787) fix(station): the MoonBit station's file ops, inst | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.62 | 123.09 |
 | [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.81 | 123.09 |
-| [6122dc262](https://github.com/AFK-surf/monoid/commit/6122dc2629ec4ca2f73e5673f582c4667ccf61d4) fix(mbui): add LiquidBottomTabs shadows to the bot | 2.54 | 3.42 | 13.99 | 35.92 | 53.81 | 31.49 | 63.36 | 96.95 | 123.09 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dc4fa2f8b](https://github.com/AFK-surf/monoid/commit/dc4fa2f8bc81320b09dedb45692081a287aa5ca1) ui: pick, offers and 前往文件夹 over @headless.combobox | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
 | [b5ef8a1f2](https://github.com/AFK-surf/monoid/commit/b5ef8a1f2f835766f18eead01a594e2eb8710f39) fix(station): retry unreachable mesh directory pee | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
 | [1a1ec718e](https://github.com/AFK-surf/monoid/commit/1a1ec718ef17b3553793058626bac94a494753d7) fix(mbui): a board card that moves to another colu | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.2 |
 | [869829a2c](https://github.com/AFK-surf/monoid/commit/869829a2cec7570fc8bb5f1bf05902771c24ccd4) fix(core): a new device approved face to face is i | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.87 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c8401bba3](https://github.com/AFK-surf/monoid/commit/c8401bba37ffa2bd7704e9449c472a53817f780a) fix(core): open visited chats at their latest page | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [78d07191c](https://github.com/AFK-surf/monoid/commit/78d07191c23e61450c732d005c57cc38ccb40787) fix(station): the MoonBit station's file ops, inst | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
-| [6122dc262](https://github.com/AFK-surf/monoid/commit/6122dc2629ec4ca2f73e5673f582c4667ccf61d4) fix(mbui): add LiquidBottomTabs shadows to the bot | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.25 |
