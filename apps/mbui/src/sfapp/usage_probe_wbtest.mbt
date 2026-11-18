@@ -503,3 +503,33 @@ test "usage probe: scrolled while the pick is read" {
     uprobe_at(t, "S\{platform}/\{how} back to its top")
   }
 }
+
+///|
+test "usage probe: the core's client answering late" {
+  for case in [(2, 0.0), (2, 100.0), (2, 400.0), (1, 400.0)] {
+    let (platform, ms) = case
+    new_run()
+    let src = @sffixture.round_trip_again(fixture("home"), 0.0, late=fn(name, params) {
+      if name == "usage" && params.get("only") is Some(_) { ms } else { 0.0 }
+    })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform~, scale=3.0)
+    t.set_rows_on_pixels(true)
+    bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(kept_switch_over_ms)
+    kept_go(t, "usage", true)
+    t.run_for(kept_switch_over_ms)
+    uprobe_tap(t, "人")
+    t.run_for(kept_switch_over_ms)
+    for _ in 0..<3 {
+      t.drag(180.0, 650.0, 180.0, 250.0, steps=20)
+      t.run_for(kept_glide_over_ms)
+    }
+    uprobe_tap(t, "陈")
+    t.run_for(kept_glide_over_ms)
+    let ws = t.words().filter(fn(w) { w.1 >= 0.0 && w.2 > -30.0 && w.2 < 900.0 }).map(fn(w) { "\{w.0}@\{w.2.to_int()}" })
+    println("R\{platform}/\{ms} picked: \{ws.join(" / ")}")
+    uprobe_end(t, "R\{platform}/\{ms}")
+    let ws = t.words().filter(fn(w) { w.1 >= 0.0 && w.2 > -30.0 && w.2 < 900.0 }).map(fn(w) { "\{w.0}@\{w.2.to_int()}" })
+    println("R\{platform}/\{ms} at end: \{ws.join(" / ")}")
+  }
+}
