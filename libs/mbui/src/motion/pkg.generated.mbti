@@ -396,6 +396,18 @@ pub fn PushWay::target(Self) -> Double
 #callsite(autofill(loc))
 pub fn PushWay::under_pushed(Self, @view.View, loc~ : SourceLoc) -> Unit
 
+pub struct ShakeWay {
+  amplitude : Double
+  duration_ms : Double
+  cycles : Double
+  // private fields
+}
+pub fn ShakeWay::active_at(Self, Double, reduced_motion? : Bool) -> Bool
+pub fn ShakeWay::new(amplitude? : Double, duration_ms? : Double, cycles? : Double) -> Self
+pub fn ShakeWay::offset_at(Self, Double, reduced_motion? : Bool) -> Double
+#callsite(autofill(loc))
+pub fn ShakeWay::shake(Self, at~ : Double, loc~ : SourceLoc) -> Unit
+
 pub struct SheetWay {
   // private fields
 }

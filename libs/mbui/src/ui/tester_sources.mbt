@@ -133,7 +133,7 @@ fn tree_source_said(id : @view.NodeId, paren? : Bool = false) -> String {
 ///|
 /// Every rule the screen as it is now is held to, at once: a press's room (the old view's and the window's tree's),
 /// what is squeezed, the spacing, the corners, what is pressed side by side one height, a mark on the first line beside
-/// several, where lines under a marked line start, the contrast, words a box with its height said does not hold (each
+/// several, where lines under a marked line start, the contrast, what takes a press where nothing of it is seen, words a box with its height said does not hold (each
 /// check's own lines, its rule first, what it names said with where the source made it). For the agent that changed a screen to run after the change, in the place of
 /// judging a picture by eye: none, and the screen keeps them all. Contrast draws a frame of its own and then the
 /// screen back, both at the last frame's moment (Tester::contrast_faults): what is read right after it (the words, the
@@ -151,5 +151,6 @@ pub fn Tester::audit(self : Tester) -> Array[String] {
   self.first_line_faults() +
   self.line_start_faults() +
   self.contrast_faults() +
+  self.unseen_press_faults() +
   self.fixed_outgrown()
 }
