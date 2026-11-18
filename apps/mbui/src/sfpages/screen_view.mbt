@@ -114,8 +114,8 @@ priv struct ScreenUi {
   /// the files' panel over the stage's foot and the mouse's floating buttons, as last made
   mut drops_card : @view.View?
   mut mouse_pair : @view.View?
-  /// shown over the stage's foot when the person presses on the picture while another operates it
-  held_hint : @signals.Signal[Bool]
+  /// bumped when the person presses on the picture while another operates it, shaking the 接管 capsule
+  held_nudge : @signals.Signal[Int]
 }
 
 ///|
@@ -173,7 +173,7 @@ fn screen_ui(key : String) -> ScreenUi {
         stage_node: None,
         drops_card: None,
         mouse_pair: None,
-        held_hint: @signals.signal(false, same=fn(a, b) { a == b }),
+        held_nudge: @signals.signal(0),
       }
       screen_uis[key] = u
       u
