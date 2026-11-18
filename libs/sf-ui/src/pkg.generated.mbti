@@ -335,6 +335,10 @@ pub fn code_ink_node(@view.View, () -> String, () -> String) -> () -> String??
 
 pub fn code_ink_told(String, String) -> String??
 
+pub fn color_swatch_node(@view.View, () -> Int64, loc~ : SourceLoc) -> Unit
+
+pub fn color_swatches_node(@view.View, () -> String, Array[(Int64, String)], () -> Int64, (Int64) -> Unit, loc~ : SourceLoc) -> Unit
+
 pub let columns : Columns
 
 pub fn combo_node(@view.View, () -> String, () -> Array[String], @signals.Signal[Int32], (Int32, Bool) -> Unit, (@view.View) -> Unit, (String) -> String, (@view.View, String, () -> Bool) -> Unit, list? : (@view.View) -> Unit, foot? : (@view.View) -> Unit) -> @view.View
@@ -581,6 +585,8 @@ pub fn empty(@ui.Ctx, () -> Unit) -> Unit
 pub let empty_in : @ui.Space
 
 pub fn empty_node(@view.View, (@view.View) -> Unit) -> Unit
+
+pub fn empty_words_node(@view.View, () -> String, more? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let ended_max : @ui.Len
 
@@ -934,6 +940,8 @@ pub fn keys_rows_node(@view.View, (@view.View) -> Unit) -> Unit
 pub fn kind_icon(String) -> String
 
 
+pub fn labeled_rule_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
+
 pub let lacking : @ui.TextStyle
 
 pub fn language() -> String
@@ -1008,6 +1016,10 @@ pub fn list_card_node(@view.View, (@view.View) -> Unit) -> Unit
 
 pub let list_card_radius : @ui.Radius
 
+pub fn list_coming_node(@view.View, () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn list_failed_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
+
 pub fn list_foot_in(ListAt) -> Double
 
 pub fn list_heading_in(ListAt) -> @ui.Style
@@ -1019,6 +1031,8 @@ pub fn list_line(ListAt) -> @ui.Style
 pub fn list_line_in(ListAt) -> Double
 
 pub fn list_more(ListAt) -> @ui.Style
+
+pub fn list_none_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
 pub let list_pad : Double
 
@@ -1331,6 +1345,12 @@ pub fn neg(Double) -> Double
 
 pub fn new_media(String) -> @kit.Media
 
+pub let news_card_line : @ui.TextStyle
+
+pub fn news_card_node(@view.View, String, () -> String, () -> String, () -> Unit, (@view.View) -> Unit, close? : (TipLayer, () -> String, () -> Unit), loc~ : SourceLoc) -> @view.View
+
+pub let news_card_note : @ui.TextStyle
+
 pub fn next_in(String, Array[String]) -> String?
 
 pub let no_facts : FileFacts
@@ -1350,6 +1370,10 @@ pub fn node_sp_of(@view.View, Double) -> Double
 pub let note : @ui.TextStyle
 
 pub fn note_link_node(@view.View, () -> String, () -> String, () -> Unit, inline? : Bool) -> Unit
+
+pub fn notice_end_action_node(@view.View, () -> String, () -> Bool, () -> Bool, () -> Unit, strut? : () -> Double, loc~ : SourceLoc) -> @view.View
+
+pub fn notice_pill_node(@view.View, () -> String, () -> Bool, () -> Bool, () -> Int, () -> Unit, (@view.View) -> Unit, md_led? : () -> Bool, end? : (@view.View, () -> Double) -> Unit, detailed? : () -> Bool, detail? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn offers_bindings() -> Array[@view.Binding]
 
@@ -2625,6 +2649,8 @@ pub fn with_ground(@ui.Ctx, Int64, () -> Unit) -> Unit
 pub fn with_look(Look, () -> Unit) -> Unit
 
 pub fn within_room(@ui.Ctx, @kit.PopState, () -> Unit, inner? : @ui.Style, most? : Double) -> Unit
+
+pub fn words_button_node(@view.View, () -> String, () -> @ui.TextStyle, () -> Unit, shown? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn words_may_link(String) -> Bool
 

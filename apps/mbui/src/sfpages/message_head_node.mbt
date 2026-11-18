@@ -207,13 +207,12 @@ fn message_time_node(v : @view.View, tips : @sf.TipLayer, time : () -> Stamp?) -
       None => ""
     }
   }
-  v.show(fn() { time() is Some(_) }, fn(b) {
-    @sf.presses_node(b, fn() { absolute_times.set(!absolute_times.get()) })
-    b.says(By(fn() { Some(@view.said(Button, label=said(false))) })) |> ignore
-    // (its words its own, no box of theirs in it: a node a message's head the fewer)
-    @sf.styled_words(b, fn() { said(false) }, fn() { msg_time }) |> ignore
-    @sf.tip_node(tips, b, fn() { said(true) }) |> ignore
+  // (the button's own words, no box of theirs in it; none and nothing to press while there is no time: no structure of
+  // its own, a node a message's head the fewer than a show and its box)
+  let b = @sf.words_button_node(v, fn() { said(false) }, fn() { msg_time }, shown=fn() { time() is Some(_) }, fn() {
+    absolute_times.set(!absolute_times.get())
   })
+  @sf.tip_node(tips, b, fn() { said(true) }) |> ignore
 }
 
 ///|

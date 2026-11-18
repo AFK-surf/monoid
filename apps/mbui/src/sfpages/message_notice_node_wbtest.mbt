@@ -306,7 +306,12 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
     ("act", fn(f) { room(f, ["安装", "上报", "取消", "重试", "重新分配账号"], "message_notice_node.mbt") }, act),
     (
       "dot",
-      fn(f) { f.has_prefix("words \"·\"") && f.contains("stillfail/src/sfpages/message_notice_node.mbt") && f.contains(":1, under 4.5") },
+      // (the dot is the library's notice_end_action_node's, asked for by the notice's page)
+      fn(f) {
+        f.has_prefix("words \"·\"") &&
+        f.contains("stillfail/sf/src/chat_notice_pill_node.mbt") &&
+        f.contains(":1, under 4.5")
+      },
       dot,
     ),
   ]

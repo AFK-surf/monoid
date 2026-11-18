@@ -114,48 +114,34 @@ fn notice_pill_node(
 ) -> Unit {
   let failed = fn() { m().notice_failed }
   let ink = fn() -> @ui.Color { if failed() { Danger } else { Fg } }
-  // (saying whether it is open: pressed, it stays where it was pressed as it opens or closes, the framework's
-  // press_stays)
-  @sf.action_box_node(v, fn() { notice_label(m()) }, expanded=open, fn(_) {
-    let ts = @signals.untracked(m).ts
-    opened[ts] = !opened.get(ts).unwrap_or(false)
-  }, fn(p) {
-    @sf.style_node(p, fn() { notice_pill_of(failed(), open()) }, in_row=true)
-    p.box(fn(line) {
-      @sf.style_node(line, fn() { if open() { notice_line_open } else { notice_line } })
-      line.box(fn(room) {
-        @sf.style_node(room, fn() { notice_words_room }, in_row=true)
-        // (giving way along the line to what it ends in, its words cut short in it: an old view's box's)
-        room.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, how) })
-      })
-      |> ignore
-      // (what follows its words held to the foot of their first line: notice_end_strut)
-      let strut = fn() {
-        match notice_words_of(m(), false) {
-          Md(_) => notice_end_strut(@ui.tree_theme().leading(notice_leading).unwrap_or(0.0), line.words_scale())
-          _ => 0.0
+  let end = fn() {
+    let now = m()
+    match now.install {
+      Some(i) if i.action != "" => Install
+      _ =>
+        if notice_after(now) is Some(_) {
+          Act
+        } else if now.reportable {
+          Report
+        } else {
+          NoEnd
         }
-      }
-      // (how many it folds, after its words, never cut short with them: system_notice's)
-      line.show(fn() { m().notice_count > 1 }, along_row=true, fn(n) {
-        @sf.style_node(n, fn() { notice_count_room.then(@ui.style(min_h=Fixed(strut()))) }, in_row=true)
-        @sf.words_node(n, fn() { "×\{m().notice_count}" }, fn() { notice_count_words.then(@ui.text_style(color=ink())) }) |> ignore
-      })
-      let end = fn() {
-        let now = m()
-        match now.install {
-          Some(i) if i.action != "" => Install
-          _ =>
-            if notice_after(now) is Some(_) {
-              Act
-            } else if now.reportable {
-              Report
-            } else {
-              NoEnd
-            }
-        }
-      }
+    }
+  }
+  @sf.notice_pill_node(
+    v,
+    fn() { notice_label(m()) },
+    open,
+    failed,
+    fn() { m().notice_count },
+    fn() {
+      let ts = @signals.untracked(m).ts
+      opened[ts] = !opened.get(ts).unwrap_or(false)
+    },
+    fn(room) { room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, how) }) },
+    // (what follows its words held to the foot of their first line where they are Markdown)
+    md_led=fn() { notice_words_of(m(), false) is Md(_) },
+    end=fn(line, strut) {
       line.pick(end, fn(e, which) {
         match which {
           Install => {
@@ -195,11 +181,10 @@ fn notice_pill_node(
           NoEnd => ()
         }
       })
-    })
-    |> ignore
-    // (what failed said of it, as it said it: open only)
-    p.show(fn() { open() && m().notice_detail != "" }, fn(d) {
-      @sf.style_node(d, fn() { notice_detail_room })
+    },
+    // (what failed said of it, as it said it)
+    detailed=fn() { m().notice_detail != "" },
+    detail=fn(d) {
       d.box(fn(w) {
         w
         .words_runs(By(fn() { [@ui.span(m().notice_detail, mono=true)] }))
@@ -209,8 +194,8 @@ fn notice_pill_node(
       })
       |> ignore
       notice_copy_node(d, m, ink, copied)
-    })
-  })
+    },
+  )
   |> ignore
 }
 
@@ -354,34 +339,7 @@ fn notice_action_node(
   strut? : () -> Double = fn() { 0.0 },
   run : () -> Unit,
 ) -> Unit {
-  v.box(fn(e) {
-    @sf.style_node(e, fn() { notice_end.then(@ui.style(min_h=Fixed(strut()))) }, in_row=true)
-    e.box(fn(d) {
-      @sf.style_node(d, fn() { notice_dot_room }, in_row=true)
-      @sf.words_node(d, fn() { "·" }, fn() { if ink() == Danger { notice_dot_failed } else { notice_dot } }) |> ignore
-    })
-    |> ignore
-    @sf.action_box_node(e, fn() { action() }, fn(_) { run() }, disabled=fn() { busy() }, fn(b) {
-      let look = fn() {
-        match (ink() == Danger, busy()) {
-          (false, false) => notice_act
-          (false, true) => notice_act_busy
-          (true, false) => notice_act_failed
-          (true, true) => notice_act_failed_busy
-        }
-      }
-      b.box(fn(w) {
-        w
-        .words_runs(By(fn() { [@ui.span(action(), underline=true)] }))
-        .words_look(By(fn() { @ui.style_words(look()) }))
-        .ink(By(fn() { @ui.style_ink(look()) }))
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
+  @sf.notice_end_action_node(v, action, fn() { ink() == Danger }, busy, run, strut~) |> ignore
 }
 
 ///|

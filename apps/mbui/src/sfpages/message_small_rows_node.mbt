@@ -8,12 +8,7 @@
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn unread_line_node(parent : @view.View) -> @view.View {
-  parent.box(fn(r) {
-    @sf.style_node(r, fn() { unread_row })
-    r.box(fn(x) { @sf.style_node(x, fn() { unread_rule }, in_row=true) }) |> ignore
-    @sf.words_node(r, fn() { @sf.t("web-main.chat.unreadLine") }, fn() { unread_words }) |> ignore
-    r.box(fn(x) { @sf.style_node(x, fn() { unread_rule }, in_row=true) }) |> ignore
-  })
+  @sf.labeled_rule_node(parent, fn() { @sf.t("web-main.chat.unreadLine") })
 }
 
 ///|
@@ -21,10 +16,7 @@ fn unread_line_node(parent : @view.View) -> @view.View {
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn pages_coming_node(parent : @view.View, older : () -> Bool) -> @view.View {
-  parent.box(fn(r) {
-    @sf.style_node(r, fn() { if older() { older_row } else { newer_row } })
-    @sf.spinner_node(r) |> ignore
-  })
+  @sf.list_coming_node(parent, older)
 }
 
 ///|
@@ -32,11 +24,7 @@ fn pages_coming_node(parent : @view.View, older : () -> Bool) -> @view.View {
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn older_failed_node(parent : @view.View, why : () -> String) -> @view.View {
-  parent.box(fn(r) {
-    @sf.style_node(r, fn() { older_row })
-    @sf.words_node(r, fn() { @sf.t("web-main.chat.olderFailed", args=[("why", why())]) }, fn() { older_failed_words })
-    |> ignore
-  })
+  @sf.list_failed_node(parent, fn() { @sf.t("web-main.chat.olderFailed", args=[("why", why())]) })
 }
 
 ///|
@@ -44,10 +32,7 @@ fn older_failed_node(parent : @view.View, why : () -> String) -> @view.View {
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn chat_empty_node(parent : @view.View) -> @view.View {
-  parent.box(fn(r) {
-    @sf.style_node(r, fn() { empty_row })
-    @sf.words_node(r, fn() { @sf.t("web-main.chat.empty") }, fn() { chat_empty_words }) |> ignore
-  })
+  @sf.list_none_node(parent, fn() { @sf.t("web-main.chat.empty") })
 }
 
 ///|
@@ -183,20 +168,20 @@ fn blocked_line_node(
   let busy = fn() { install_busy(src, station(), b()) }
   let can = fn() { b().action != "" && !busy() }
   let words = fn() { if stuck() { blocked_words_stuck } else { blocked_words } }
-  parent.box(fn(line) {
+  let label = fn() {
+    let i = b()
+    if i.action != "" {
+      i.title + " · " + i.action
+    } else {
+      i.title
+    }
+  }
+  // (a button, pressed while it can install; read out as one while it says how, taking no press nor the focus while
+  // that is under way or it says none)
+  @sf.action_box_node(parent, label, fn(_) { if can() { install_runtime(src, station(), b()) } }, disabled=fn() { !can() }, fn(line) {
     @sf.style_node(line, fn() { blocked_row })
     // (blocked_row_busy's 60%)
     line.alpha(By(fn() { if busy() { 0.6 } else { 1.0 } })) |> ignore
-    @sf.presses_node(line, fn() { if can() { install_runtime(src, station(), b()) } }, on=can)
-    line.says(By(fn() {
-      let i = b()
-      if i.action != "" {
-        Some(@view.said(Button, label=i.title + " · " + i.action))
-      } else {
-        Some(@view.said(Text, label=i.title))
-      }
-    }))
-    |> ignore
     line.pick(fn() { if b().state == "installing" { 1 } else if stuck() { 2 } else { 0 } }, fn(k, which) {
       match which {
         1 => @sf.spinner_node(k, size=waiting_spin) |> ignore
