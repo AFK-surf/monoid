@@ -16,16 +16,39 @@ inputs:
 runs:
   using: composite
   steps:
+    # What the kept .debs were fetched for: the runner's image (ImageOS, ImageVersion) and the packages asked. Where the
+    # cache matched it, they are what apt would install again, so they are installed from the cache with nothing asked
+    # of any mirror: apt-get update alone, of every list the image names (GitHub's third parties' among them), took 74 s
+    # of preview's linux (x64) build with every .deb in the cache (run 44340331135, cancelled at its time, exit 124).
+    - shell: bash
+      run: |
+        echo "APT_SPEC=$(printf '%s\n' "${ImageOS:-linux}-${ImageVersion:-0}" "${{ inputs.packages }}" | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
     - uses: actions/cache/restore@v4
       id: debs
       with:
         path: .ci/apt
-        key: apt-${{ inputs.name }}-${{ github.sha }}
-        restore-keys: apt-${{ inputs.name }}-
+        key: apt-${{ inputs.name }}-${{ env.APT_SPEC }}-${{ github.sha }}
+        restore-keys: |
+          apt-${{ inputs.name }}-${{ env.APT_SPEC }}-
+          apt-${{ inputs.name }}-
     - shell: bash
       run: |
         d="$GITHUB_WORKSPACE/.ci/apt"
         mkdir -p "$d/partial"
+        matched="${{ steps.debs.outputs.cache-matched-key }}"
+        # The cache kept for this image and these packages: installed as it is, no mirror asked. Where dpkg refuses it
+        # (a package the image updated since), apt is asked as below.
+        case "$matched" in
+          "apt-${{ inputs.name }}-$APT_SPEC-"*)
+            if ls "$d"/*.deb > /dev/null 2>&1 &&
+              sudo dpkg --install --force-depends --skip-same-version "$d"/*.deb &&
+              sudo dpkg --configure --pending; then
+              echo "apt: installed the .debs kept for $APT_SPEC"
+              echo "APT_KEY=$matched" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "apt: the .debs kept for $APT_SPEC did not install; asking apt" ;;
+        esac
         # The lists are given a minute and what is to be fetched two: apt waits 20 s on a mirror that does not answer
         # for every list and every .deb before it takes the next (its Acquire timeouts did not shorten that), and where
         # there is no next (arm64's ports.ubuntu.com) again and again. 2026-11-11, an hour and more: Ubuntu's mirrors
@@ -45,18 +68,27 @@ runs:
           curl -fsS -m 5 -o /dev/null "${mirror%/}/dists/$(. /etc/os-release && echo "$VERSION_CODENAME")/InRelease" && echo "apt: $mirror answers" ||
             { echo "apt: $mirror did not answer in 5 s"; return 1; }
         }
-        if { answers || ! ls "$d"/*.deb > /dev/null 2>&1; } &&
-          sudo timeout 60 apt-get update -q -o APT::Update::Error-Mode=any &&
-          sudo timeout 120 apt-get install -y -q --no-install-recommends -o Dir::Cache::Archives="$d" ${{ inputs.packages }}; then
+        # Only Ubuntu's own lists where the image names them apart (the packages are all Ubuntu's): the third parties'
+        # lists the image adds are most of update's time. Where that fails, every list as before.
+        update() {
+          u=/etc/apt/sources.list.d/ubuntu.sources
+          if [ -f "$u" ] && sudo timeout 60 apt-get update -q -o APT::Update::Error-Mode=any \
+            -o Dir::Etc::sourcelist="$u" -o Dir::Etc::sourceparts=-; then
+            return 0
+          fi
+          sudo timeout 60 apt-get update -q -o APT::Update::Error-Mode=any
+        }
+        if { answers || ! ls "$d"/*.deb > /dev/null 2>&1; } && update &&
+          sudo timeout 120 apt-get install -f -y -q --no-install-recommends -o Dir::Cache::Archives="$d" ${{ inputs.packages }}; then
           sudo apt-get autoclean -q -o Dir::Cache::Archives="$d"
           sudo chown -R "$(id -u)" "$d"
-          echo "APT_KEY=apt-${{ inputs.name }}-$(cd "$d" && ls *.deb | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+          echo "APT_KEY=apt-${{ inputs.name }}-$APT_SPEC-$(cd "$d" && ls *.deb | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
         else
           echo "::warning::apt: Ubuntu's mirrors did not answer in time; the .debs kept in the cache are installed as they are"
           ls "$d"/*.deb > /dev/null
           sudo dpkg --install --force-depends --skip-same-version "$d"/*.deb
           sudo dpkg --configure --pending
-          echo "APT_KEY=${{ steps.debs.outputs.cache-matched-key }}" >> "$GITHUB_ENV"
+          echo "APT_KEY=$matched" >> "$GITHUB_ENV"
         fi
     - if: github.ref == 'refs/heads/main' && env.APT_KEY != steps.debs.outputs.cache-matched-key
       uses: actions/cache/save@v4
