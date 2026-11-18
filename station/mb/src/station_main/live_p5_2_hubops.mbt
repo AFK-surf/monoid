@@ -52,6 +52,9 @@ fn undef_json() -> Json {
 fn routes_thrown(e : Error) -> Error {
   match e {
     @api_routes.Thrown(_, _) | @api_routes.Refused(_, _) => e
+    // (regenerate-title.ts `TitleError`: what went wrong is its `problem`, the route's words chosen by it)
+    @session_chats.Thrown("TitleError", m) =>
+      @api_routes.Thrown("TitleError", jv_of_json({ "message": Json::string(m), "problem": Json::string(m) }))
     @session_chats.Thrown(kind, m) =>
       @api_routes.Thrown(if kind == "" { "Error" } else { kind }, jv_of_json({ "message": Json::string(m) }))
     @session_storage.Thrown(kind, said) =>

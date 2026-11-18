@@ -588,12 +588,26 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       guard self.drivers.get(runtime) is Some(driver) else {
         return Json::null()
       }
-      let profile = self.run_on(key, true, false)
+      // (the account its runtime session ran on, else the one it runs on now: hub.ts `takeUp`,
+      // `accounts.profile(ranOn) ?? accounts.runOn(row.key)`)
+      let ran_on = match jtext(args, "ranOn") {
+        Some(id) if id != "" =>
+          match (try { Ok((self.bus.jobs_ask.val)("accounts.profile", { "id": jstr(id) })) } catch { e => Err(e) }) {
+            Ok(Object(_) as p) => Some(p)
+            _ => None
+          }
+        _ => None
+      }
+      let profile = match ran_on {
+        Some(p) => p
+        None => self.run_on(key, true, false)
+      }
       // Its runtime session as the row keeps it, for what a crash's output read again does not name (an ACP process
       // whose `session/new` or `session/load` came before the acknowledged offset: agy's turns went to session "" and
-      // each failed "Session not found", 0.1.9984). Codex's threads are taken up as before: by the snapshot, else resumed.
+      // each failed "Session not found", 0.1.9984). A Codex thread with no snapshot (a crash) is taken up by it too:
+      // its driver resumes only a thread named so (codex.mbt `adopt`); one with a snapshot goes by the snapshot's.
       let options = match (self.open_options(row, profile, self.link_skills(row)), jtext(row, "runtimeSessionId")) {
-        (Object(m), Some(id)) if runtime != "codex" && id != "" && !m.contains("resume") => {
+        (Object(m), Some(id)) if id != "" && !m.contains("resume") => {
           let c = m.copy()
           c["resume"] = jstr(id)
           Json::object(c)
@@ -909,10 +923,28 @@ async fn P52::peer_local(
           },
         ),
       )
-    _ => {
-      let hub = self.the_hub()
-      @session_hub.hub_call(hub, "fromPeer", [jstr(peer), request, jopt(ws)])
-    }
+    // (a turn of a chat a session here opened there ended: opened.ts `noticeForPeer`)
+    "notice" =>
+      p52_json_of_jv(
+        @session_chats.notice_for_peer(
+          w,
+          peer,
+          jv_of(request),
+          match ws {
+            Some(x) => j_s(x)
+            None => J::Null
+          },
+        ),
+      ) catch {
+        @session_chats.Thrown(_, m) => raise @gate.PeerRefused(m)
+        e => raise e
+      }
+    // (a message to a session here: messages.ts `fromPeer`)
+    _ =>
+      p52_json_of_jv(@session_chats.from_peer(w, peer, jv_of(request), ws)) catch {
+        @session_chats.Thrown(_, m) => raise @gate.PeerRefused(m)
+        e => raise e
+      }
   }
 }
 
@@ -1036,8 +1068,11 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       hub.profile_gone(jtext(arg, "profile").unwrap_or(""))
       Json::null()
     }
+    // (a message another workspace's station sent a chat shared with it: xshare's inbox, messages.ts `fromPeer`)
     "inbox" =>
-      @session_hub.hub_call(hub, "fromPeer", [jfield(arg, "station"), jfield(arg, "request"), Json::null()])
+      p52_json_of_jv(
+        @session_chats.from_peer(self.chats_world(), jtext(arg, "station").unwrap_or(""), jv_of(jfield(arg, "request")), None),
+      )
     "codex.renewRunning" | "codex.rateLimits" =>
       match self.drivers.get("codex") {
         Some(d) =>

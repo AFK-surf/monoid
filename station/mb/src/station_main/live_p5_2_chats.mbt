@@ -44,6 +44,25 @@ priv struct ChatState {
   mut next_cb : Int32
   refs : Map[String, J]
   mut next_ref : Int32
+  /// The `peers` function's callback, made once (`peers_callback`).
+  mut peers_cb : Int32?
+  /// The runtime sessions the conversations opened themselves (`driver.open`), by the number their handle names.
+  sides : Map[Int32, SideAgent]
+  mut next_side : Int32
+}
+
+///|
+/// A runtime session a conversation opened itself (`side_open`): its events kept as the driver tells them, each given
+/// the conversation's callback as it waits for them (`agent.waitEvents`), since a driver tells them as they come and
+/// the callback is the conversation's own, to be awaited.
+priv struct SideAgent {
+  agent : Agent
+  told : Array[J]
+  wake : Ref[@effect.Deferred[Unit]]
+  /// The conversation's callback (`{"$fn": id}`) its events are given.
+  events : Int32
+  /// When it is given up waiting (wall ms): regenerate-title.ts `TIMEOUT_MS` after it was opened.
+  until : Double
 }
 
 ///|
@@ -56,16 +75,22 @@ let chat_state : ChatState = {
   next_cb: 0,
   refs: Map([]),
   next_ref: 0,
+  peers_cb: None,
+  sides: Map([]),
+  next_side: 0,
 }
 
 ///|
 /// The conversations' world (session_chats `World`).
 fn P52::chats_world(self : P52) -> @session_chats.World {
   let lang = Ref(self.lang())
+  // (what the last call threw besides its words, read by the conversations as they tell a kind's fields apart:
+  // a busy database's `errcode`, a file's `code`, the sessions a `CcSessionsUnavailable` names)
+  let thrown : Ref[J] = Ref(Null)
   {
     call: async fn(name, args) {
       lang.val = self.lang()
-      self.chats_call(name, args)
+      self.chats_call(name, args, thrown)
     },
     callback: f => {
       chat_state.next_cb += 1
@@ -75,7 +100,7 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
     },
     words: self.cwords,
     lang,
-    thrown: Ref(Null),
+    thrown,
   }
 }
 
@@ -105,6 +130,30 @@ fn P52::store_subscribe(self : P52, listener : J) -> J {
     Null
   }
   Obj([(@jsjson.units("$fn"), Num(stop_id.to_double()))])
+}
+
+///|
+/// The one function the conversations call to carry a request to another station (hub.ts `peers()`, agents.ts
+/// `onPeer`): `[station, request]`, the request's workspace and method its own, carried as `peers.call` carries a
+/// session's.
+fn P52::peers_callback(self : P52) -> J {
+  let id = match chat_state.peers_cb {
+    Some(id) => id
+    None => {
+      chat_state.next_cb += 1
+      let id = chat_state.next_cb
+      chat_state.callbacks[id] = async fn(given) {
+        let station = match given.get(0) {
+          Some(Str(u)) => @jsjson.text(u)
+          _ => ""
+        }
+        jv_of(self.storage_call("peers.call", [jstr(station), p52_json_of_jv(given.get(1).unwrap_or(Null))]))
+      }
+      chat_state.peers_cb = Some(id)
+      id
+    }
+  }
+  Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
 }
 
 ///|
@@ -176,27 +225,49 @@ async fn P52::storage_call(
 }
 
 ///|
-fn thrown_of(e : Error) -> Error {
+/// What the conversations are given of an error the station's parts threw: a kind they tell apart by its name, and
+/// what it carries besides its words in `thrown` (World.thrown: the TypeScript's error's own fields).
+fn thrown_of(e : Error, thrown : Ref[J]) -> Error {
+  thrown.val = Null
   match e {
-    @session_chats.Thrown(_, _) => e
+    @session_chats.Thrown(code, _) => {
+      if code != "" {
+        thrown.val = jv_of({ "code": Json::string(code) })
+      }
+      e
+    }
+    _ if @sql.busy(e) => {
+      // (node:sqlite's SQLITE_BUSY: conversations.mbt `state_write` takes it for StateWriteBusy)
+      thrown.val = jv_of({ "errcode": Json::number(5.0) })
+      @session_chats.Thrown("SqliteError", said_of(e))
+    }
+    @drive.FsError(f) => {
+      thrown.val = jv_of({ "code": Json::string(f.code) })
+      @session_chats.Thrown(f.code, f.message)
+    }
+    @store_threads.MessageWriteBusy => @session_chats.Thrown("MessageWriteBusy", "message write is busy")
+    @store_threads.CcSessionsUnavailable(ss) => {
+      thrown.val = jv_of({ "sessions": Json::array(ss.map(Json::string)) })
+      @session_chats.Thrown("CcSessionsUnavailable", "cc sessions unavailable")
+    }
+    @store_threads.DecisionSessionsUnavailable =>
+      @session_chats.Thrown("DecisionSessionsUnavailable", "decision sessions unavailable")
+    @store_threads.SessionChatUnavailable => @session_chats.Thrown("SessionChatUnavailable", "session chat unavailable")
     @session_hub.Refused(m) => @session_chats.Thrown("Refused", m)
-    @session_storage.Thrown(kind, said) =>
-      @session_chats.Thrown(
-        kind,
-        jtext(said, "message").unwrap_or(said.stringify()),
-      )
+    @session_storage.Thrown(kind, said) => @session_chats.Thrown(kind, jtext(said, "message").unwrap_or(said.stringify()))
     other => @session_chats.Thrown("", said_of(other))
   }
 }
 
 ///|
 /// One of the names the conversations ask (session_chats `World.call`).
-async fn P52::chats_call(self : P52, name : String, args : Array[J]) -> J {
+async fn P52::chats_call(self : P52, name : String, args : Array[J], thrown : Ref[J]) -> J {
   let given = args.map(x => p52_json_of_jv(x))
+  thrown.val = Null
   let r = Ok(self.chats_answer(name, args, given)) catch { e => Err(e) }
   match r {
     Ok(v) => v
-    Err(e) => raise thrown_of(e)
+    Err(e) => raise thrown_of(e, thrown)
   }
 }
 
@@ -227,7 +298,7 @@ async fn P52::chats_answer(
         "has" => {
           let readers = [
             "historyMessages", "latestMessages", "statePendingCard", "stateQuestion",
-            "reviewPendingCard", "historyPendingCard", "openedChatSaid",
+            "reviewPendingCard", "historyPendingCard", "openedChatSaid", "forkReview",
           ]
           J::Bool(readers.contains(s(0)))
         }
@@ -321,15 +392,28 @@ async fn P52::chats_answer(
         "nextTs" => j_s(self.the_hub().next_ts())
         "now" => J::Num(wall_ms().to_double())
         "config" => jv_of(self.config)
-        "peers" => J::Arr([])
+        // (hub.ts `peers()`: how a message for a chat moved to another station is carried there, messages.ts
+        // `fromPeer`; one function kept, as the TypeScript's hook is one)
+        "peers" => if self.bound() { self.peers_callback() } else { Null }
         "fetchedFor" => {
           let (text, files) = self
             .the_hub()
             .fetched(s(0), s(1), s(2), args[3:].to_owned())
           J::Arr([j_s(text), J::Arr(files.map(jv_of))])
         }
-        // (hub.ts `fork(effect)`: the conversations give a stand-in, `<effect>`, for the review the TypeScript forked
-        // there (review.mbt `suggest_archive`), nothing to run here; refused, it failed every all_done state)
+        // (hub.ts `fork(effect)` of review.ts `suggestArchive`: the review of a chat that ended all_done, run in the
+        // background on the hub's runtime, a failure of it the review's own)
+        "forkReview" => {
+          let key = s(0)
+          ignore(
+            self.host.rt.fork(name="archive review", async fn() {
+              @session_chats.review(self.chats_world(), key) catch {
+                _ => ()
+              }
+            }),
+          )
+          Null
+        }
         "fork" => Null
         _ => jv_of(@session_hub.hub_call(self.the_hub(), meth, args))
       }
@@ -549,7 +633,11 @@ async fn P52::chats_answer(
       }
     "repoIndex" => jv_of(self.repo_index_answer(meth, args))
     "net" => jv_of(self.net_fetch(meth, args))
-    "agent" | "driver" =>
+    // (a runtime session of its own a conversation opens, apart from any actor's: regenerate_title.mbt's, a chat's
+    // new title asked of one of its agents' runtimes, regenerate-title.ts `driver.open`)
+    "driver" if meth == "open" => self.side_open(s(0), a(1), raw.get(2).unwrap_or(Null))
+    "agent" => self.side_agent(meth, a(0), s(1))
+    "driver" =>
       raise LiveError(
         "a conversation asked a runtime session directly (\{name}): opened through its actor here",
       )
@@ -557,6 +645,72 @@ async fn P52::chats_answer(
       raise LiveError(
         "the conversations asked the station for \{name}, which it does not know",
       )
+  }
+}
+
+///|
+/// `driver.open` of a runtime session of the conversations' own: the driver of `runtime` opens it with `options`, its
+/// events kept for `events` (a callback of theirs) as they come. A handle of it is answered (`{"$side": n}`).
+async fn P52::side_open(self : P52, runtime : String, options : Json, events : J) -> J {
+  guard self.drivers.get(runtime) is Some(driver) else { raise LiveError("no driver for \{runtime}") }
+  let callback = jnum_of(Json::object({ "f": jfield(p52_json_of_jv(events), "$fn") }), "f").unwrap_or(-1.0).to_int()
+  let told : Array[J] = []
+  let wake : Ref[@effect.Deferred[Unit]] = Ref(@effect.Deferred::new())
+  let agent = (driver.open)(options, event => {
+    told.push(event)
+    ignore(wake.val.succeed(()))
+  })
+  chat_state.next_side += 1
+  let n = chat_state.next_side
+  chat_state.sides[n] = { agent, told, wake, events: callback, until: wall_ms().to_double() + @session_chats.title_timeout_ms }
+  Obj([(@jsjson.units("$side"), Num(n.to_double()))])
+}
+
+///|
+/// What a conversation asks of a runtime session it opened (`agent.<meth>`, its handle `handle`).
+async fn P52::side_agent(_self : P52, meth : String, handle : Json, text : String) -> J {
+  let n = jnum_of(Json::object({ "n": jfield(handle, "$side") }), "n").unwrap_or(-1.0).to_int()
+  guard chat_state.sides.get(n) is Some(side) else { raise LiveError("no runtime session \{n} opened here") }
+  match meth {
+    "prompt" => {
+      (side.agent.prompt)(text)
+      Null
+    }
+    // (what it told since it was last asked, given the conversation's callback in order; none yet: waited for until
+    // it tells some, or until its time is up, which ends the request as regenerate-title.ts's timeout does)
+    "waitEvents" => {
+      if side.told.length() == 0 {
+        let left = side.until - wall_ms().to_double()
+        let woke = if left <= 0.0 {
+          None
+        } else {
+          @effect.timeout(left.to_int(), async fn() { side.wake.val.wait() })
+        }
+        if woke is None {
+          raise @session_chats.Thrown("TitleError", "timeout")
+        }
+      }
+      let given = side.told.copy()
+      side.told.clear()
+      side.wake.val = @effect.Deferred::new()
+      match chat_state.callbacks.get(side.events) {
+        Some(f) => for event in given { f([event]) |> ignore }
+        None => ()
+      }
+      Null
+    }
+    "busy" => J::Bool((side.agent.busy)())
+    "abort" => {
+      (side.agent.abort)()
+      Null
+    }
+    "dispose" => {
+      chat_state.sides.remove(n)
+      chat_state.callbacks.remove(side.events)
+      (side.agent.dispose)()
+      Null
+    }
+    _ => raise LiveError("a runtime session opened here answers no \{meth}")
   }
 }
 
@@ -1357,7 +1511,7 @@ async fn P52::tools_call(
       let key = s(1)
       ignore(
         self.host.rt.fork(name="suggest archive", async fn() {
-          @session_chats.suggest_archive(w, key) catch {
+          @session_chats.review(w, key) catch {
             _ => ()
           }
         }),
@@ -1489,6 +1643,9 @@ async fn P52::tools_call(
             None => Null
           }
       }
+    // (agents.ts `meshList`: the relays the mesh directory registered in the workspace, none where there is no
+    // directory, as here)
+    "relays.meshList" => @api_routes.jarr([])
     "relays.by" => {
       let row = self.store("getSession", [jstr(s(0))]) catch { _ => Json::null() }
       rjs(@session_hub.agent_name(jtext(row, "title"), s(0)))
@@ -1731,7 +1888,10 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
       None => []
     },
     ..@mcp_tools.forward_tools(c),
-    ..@mcp_tools.relay_tools(c),
+    // (`list` says the mesh's relays as agents.ts's `meshList` does; enrolling and revoking one are the mesh
+    // directory's (mesh/scope-sync.ts, enrollment-door.ts), which this program does not run: refused, as agents.ts
+    // refuses them where the native mesh has no directory)
+    ..@mcp_tools.relay_tools(c, mesh_list=true),
     ..@mcp_tools.search_tools(c),
     // (feedback/module.ts: offered only where its part is live)
     ..match self.feedback {

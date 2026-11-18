@@ -6,8 +6,9 @@
 // tools that fit its budget and `station_tool` for the rest. A handover carries a session to the next process, which
 // takes it up and serves on; a drain answers idle once no turn runs; nothing of the runners or programs is left.
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createSocket } from "node:dgram";
 import { type Server, createServer } from "node:net";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -187,13 +188,13 @@ after(() => {
   for (const s of ports) s.close();
 });
 
-async function launch(data: string, app: string, path: string, out: string, sockets?: [Server, Server]): Promise<Launched & { sockets: [Server, Server] }> {
+async function launch(data: string, app: string, path: string, out: string, sockets?: [Server, Server], more: Record<string, string> = {}): Promise<Launched & { sockets: [Server, Server] }> {
   const [mcp, loop] = sockets ?? [await listener(), await listener()];
   const fd = (s: Server) => (s as any)._handle.fd as number;
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
     stdio: ["ignore", "pipe", "pipe", fd(mcp), fd(loop), "pipe"],
     // (no Node: the PATH the fakes are on, and nothing else)
-    env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "" },
+    env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "", ...more },
   });
   children.push(child);
   // (the launcher's copies let go: the station alone accepts on them)
@@ -239,10 +240,10 @@ function mcp(port: number, body: unknown, token?: string): Promise<{ status: num
 }
 
 /// Looked at until `ok` (real processes: every 50 ms), or failing with `what` at 60 s.
-async function until<T>(what: string, look: () => T | null | undefined | false, detail: () => string = () => ""): Promise<T> {
+async function until<T>(what: string, look: () => T | null | undefined | false | Promise<T | null | undefined | false>, detail: () => string = () => ""): Promise<T> {
   const end = Date.now() + 60_000;
   for (;;) {
-    const v = look();
+    const v = await look();
     if (v) return v;
     if (Date.now() > end) throw new Error(`never: ${what}; ${detail()}`);
     await new Promise((r) => setTimeout(r, 50));
@@ -432,6 +433,171 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
     }
     return true;
   });
+});
+
+/// An HTTP request of the agents' door (the admin API under `/admin-api/` with STILLFAIL_LOCAL_ADMIN).
+function ask(port: number, path: string, method = "GET", body?: unknown): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path, method, headers: { "content-type": "application/json" } }, (res) => {
+      let text = "";
+      res.on("data", (d) => (text += d));
+      res.on("end", () => {
+        let json: any = text;
+        try { json = JSON.parse(text); } catch {}
+        resolve({ status: res.statusCode!, json });
+      });
+    });
+    req.on("error", reject);
+    req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+}
+
+/// A tool's call through the door as session `token`'s agent: its text and whether it is an error.
+async function tool(port: number, token: string, name: string, args: unknown): Promise<{ text: string; error: boolean }> {
+  const said = await mcp(port, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, token);
+  assert.equal(said.status, 200, JSON.stringify(said.json));
+  assert.equal(said.json.error, undefined, JSON.stringify(said.json));
+  return { text: said.json.result.content[0].text, error: said.json.result.isError === true };
+}
+
+test("the conversations' own parts: a title asked of a runtime session of their own, the archive review of an all_done, the mesh's relays listed", { skip }, async () => {
+  const data = fresh("e");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+    maxNudges: 1,
+    // (the archive review of a chat that ended all_done, on a model no profile has: it records that it could not ask)
+    automaticDecisions: { completion: { enabled: true, model: "no-profile-has-it" } },
+  }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out, undefined, { STILLFAIL_LOCAL_ADMIN: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    const t0 = session(store, data, "chat:c-from", "claude", "t0", "1790000000.000001");
+    const t1 = session(store, data, "chat:c-to", "claude", "t1", "1790000000.000002");
+
+    // A turn that ends all_done sets the archive's review going (review.ts `suggestArchive`, hub.fork): its decision
+    // recorded, here that the model it names is no profile's.
+    const sent = await tool(door, "t0", "session_send", { to: "chat:c-to", text: "please answer" });
+    assert.equal(sent.error, false, `${sent.text}\n${a.err()}`);
+    await until("the turn ended all_done", () => store.listTurns("chat:c-to").some((t) => t.summary.ending === "all_done" && t.summary.endedAt != null), () => a.err());
+    const checks = () => (store.db.prepare("SELECT session, result FROM decision_checks WHERE session = ?").all("chat:c-to") as { result: string }[]).map((r) => JSON.parse(r.result));
+    const reviewed = await until("the archive review recorded its decision", () => checks().length > 0 && checks(), () => a.err());
+    assert.deepEqual([reviewed[0].purpose, reviewed[0].accepted, reviewed[0].error], ["archive", false, "配置的模型在现有 Profile 中暂不可用"]);
+
+    // A new title for the chat, asked of its agent's runtime in a session of its own (regenerate-title.ts
+    // `driver.open`): the fake Claude Code's answer, "posted", is the title.
+    const titled = await ask(door, `/admin-api/threads/${t1.id}/regenerate-title`, "POST", {});
+    assert.equal(titled.status, 200, `${JSON.stringify(titled.json)}\n${a.err()}`);
+    assert.equal((store.db.prepare("SELECT auto_title FROM threads WHERE id = ?").get(t1.id) as { auto_title: string }).auto_title, "posted");
+    // One of a chat with nothing said yet is refused in the words for why (its TitleError's problem).
+    const empty = await ask(door, `/admin-api/threads/${t0.id}/regenerate-title`, "POST", {});
+    assert.equal(empty.status, 400, JSON.stringify(empty.json));
+    assert.doesNotMatch(JSON.stringify(empty.json), /station\.title|undefined/);
+
+    // The relays: the mesh's listed as agents.ts lists them where the native mesh has no directory (none); enrolling
+    // one refused, saying it is not this station's.
+    const listed = await tool(door, "t0", "relays", { action: "list" });
+    assert.equal(listed.error, false, listed.text);
+    assert.deepEqual(JSON.parse(listed.text).mesh, []);
+    const enrolled = await tool(door, "t0", "relays", { action: "enroll", name: "r1" });
+    assert.equal(enrolled.error, true);
+    assert.match(enrolled.text, /not available on this station/);
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
+/// The program's id of a data directory (`stillfail-reader id`): its key made there.
+function stationId(data: string): string {
+  const r = spawnSync(binary!, ["id", "--data", data], { env: { PATH: "/usr/bin:/bin", HOME: data, TMPDIR: tmpdir() }, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim();
+}
+
+/// A UDP port free on 127.0.0.1 (a station's mesh bound there).
+const freeUdpPort = () => new Promise<number>((resolve) => {
+  const s = createSocket("udp4");
+  s.bind(0, "127.0.0.1", () => {
+    const port = s.address().port;
+    s.close(() => resolve(port));
+  });
+});
+
+test("sessions across stations over the mesh: a message to another station's chat, one to a chat moved on to a third, and a chat led there telling its opener here", { skip }, async () => {
+  const app = fresh("a");
+  const bin = fresh("p");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  const names = ["alpha", "beta", "gamma"] as const;
+  const datas = names.map((n) => fresh(n.slice(0, 1)));
+  const outs = names.map((n) => fresh(`o${n.slice(0, 1)}`));
+  const ids = datas.map(stationId);
+  const ports = await Promise.all(names.map(() => freeUdpPort()));
+  const origin = "http://127.0.0.1:9";
+  const peers = names.map((name, i) => ({ id: ids[i], name, ips: [`127.0.0.1:${ports[i]}`] }));
+  for (const data of datas) {
+    mkdirSync(join(data, "homes", "cc"), { recursive: true });
+    writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+    writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  }
+  datas.forEach((data, i) => {
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin, station: ids[i], workspace: "w1", workspace_name: "W", name: names[i], relay_url: "", relay_urls: [], grant_keys: null, peers, revocations: [] }));
+  });
+  const launched = await Promise.all(datas.map((data, i) => launch(data, app, bin, outs[i], undefined, { STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${ports[i]}` })));
+  for (const l of launched) await l.next("ready", (m) => m.ready === true);
+  const door = (await launched[0]!.next("alpha's door", (m) => m.serving === "mcp")).port as number;
+  const stores = datas.map((data) => Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never));
+  const [alpha, beta, gamma] = [stores[0]!, stores[1]!, stores[2]!];
+  const errs = () => launched.map((l, i) => `── ${names[i]}\n${l.err()}`).join("\n");
+  const ended = (store: Store, key: string) => store.listTurns(key).some((t) => t.summary.ending === "all_done" && t.summary.endedAt != null);
+  try {
+    session(alpha, datas[0]!, "chat:c-lead", "claude", "ta", "1790000000.000001");
+    session(beta, datas[1]!, "chat:c-there", "claude", "tb", "1790000000.000002");
+    session(beta, datas[1]!, "chat:c-moved", "claude", "tm", "1790000000.000003");
+    // (gamma handed chat:c-moved on to beta: replica/handover.ts's record of where it went)
+    gamma.db.prepare("INSERT INTO handed_over(session, station, ws, thread, there, at) VALUES (?, ?, NULL, NULL, NULL, ?)").run("chat:c-moved", ids[1]!, Date.now());
+
+    // A message to a chat on beta, by its link: beta's session is told it and its turn runs there (agents.ts `local`,
+    // messages.ts `fromPeer`). (Asked again only while beta is not reached yet over the mesh.)
+    const toBeta = `${origin}/o/w1/${ids[1]}/chat:c-there`;
+    let last = "";
+    const sent = await until("alpha's message taken by beta", async () => {
+      const r = await tool(door, "ta", "session_send", { to: toBeta, text: "from alpha" });
+      last = r.text;
+      return r.error && /not reached|no route|mesh is not up/i.test(r.text) ? null : r;
+    }, () => `${last}\n${errs()}`);
+    assert.equal(sent.error, false, `${sent.text}\n${errs()}`);
+    await until("beta's chat answered the message", () => ended(beta, "chat:c-there"), errs);
+
+    // A message to a chat gamma handed on to beta: gamma carries it there (messages.ts `fromPeer`, hub.ts `peers()`).
+    const moved = await tool(door, "ta", "session_send", { to: `${origin}/o/w1/${ids[2]}/chat:c-moved`, text: "to the moved chat" });
+    assert.equal(moved.error, false, `${moved.text}\n${errs()}`);
+    await until("the moved chat answered on beta", () => ended(beta, "chat:c-moved"), errs);
+
+    // A chat alpha's session opens on beta and leads: its agent ends its turn all_done there, and the opener here is
+    // told so (opened.ts `noticeForPeer`), a turn of its own.
+    assert.equal(alpha.listTurns("chat:c-lead").length, 0, "the opener has had no turn yet");
+    const opened = await tool(door, "ta", "chat_create", { for: "me", station: ids[1], key: "led-1", text: "do the led work", runtime: "claude" });
+    assert.equal(opened.error, false, `${opened.text}\n${errs()}`);
+    await until("the opener on alpha woken by the chat it leads on beta", () => alpha.listTurns("chat:c-lead").some((t) => t.summary.endedAt != null), errs);
+  } finally {
+    for (const s of stores) s.close();
+  }
+  for (const l of launched) l.tell({ op: "stop" });
+  for (const l of launched) assert.equal(await l.ended, 0, l.err());
 });
 
 /// The runners' info files there.

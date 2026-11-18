@@ -38,9 +38,13 @@ pub async fn policy_stamp(w : World, key : String) -> J {
 
 ///|
 /// Starts the review in the background (a fiber of the hub's).
+/// (A station that runs it gives `forkReview`; the harness's TypeScript twin is told the stand-in fork it makes.)
 pub async fn suggest_archive(w : World, key : String) -> Unit {
-  w.hub("fork", [js("<effect>")]) |> ignore
-  ignore(key)
+  if w.has("forkReview") {
+    w.hub("forkReview", [js(key)]) |> ignore
+  } else {
+    w.hub("fork", [js("<effect>")]) |> ignore
+  }
 }
 
 ///|
