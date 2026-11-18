@@ -9,11 +9,12 @@
 // there then lands on what is under it, the row), which leaves the focus as it was: Tab comes to it, and with the focus
 // shown on it (View::focus_shown: by the keyboard) it shows, and Enter or Space presses it.
 //
-// When it shows: the pointer over the host or anything in it (View::pointed, View::pointed_in), over the action
-// itself (where it is outside the host, in a layer), the keyboard's focus shown on the action or on one of `also` (the
-// buttons in it, where the action is the box holding them), or `always` (its caller's: a finger's pointing, where no
-// hover comes, or a narrow screen). Nothing is said of a node that is drawn, laid out or read out: each node keeps its
-// role, its name and its presses as its component said them.
+// When it shows: the pointer over the host or anything in it (View::pointed, View::pointed_in), over the action or
+// anything in it (where it is outside the host, beside it or in a layer: the pointer gone on from the host onto a
+// button the action holds is over that button alone, so the action is asked whether it is in it), the keyboard's
+// focus shown on the action or on one of `also` (the buttons in it, where the action is the box holding them), or
+// `always` (its caller's: a finger's pointing, where no hover comes, or a narrow screen). Nothing is said of a node
+// that is drawn, laid out or read out: each node keeps its role, its name and its presses as its component said them.
 
 ///|
 /// What a look reads of an action shown on hover (`hover_reveal`).
@@ -47,6 +48,7 @@ pub fn hover_reveal(
     host.pointed() ||
     host.pointed_in() ||
     action.pointed() ||
+    action.pointed_in() ||
     targets.iter().any(fn(t) { t.focus_shown() })
   }
   for t in targets {

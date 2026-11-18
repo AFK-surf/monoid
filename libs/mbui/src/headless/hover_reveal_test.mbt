@@ -35,8 +35,13 @@ fn stop(parent : @view.View, name : String) -> Unit {
 ///|
 /// A window pointed at with `pointing`: "前", the row "行" (pressed, counted in `rows`) holding its actions, and "后".
 /// The actions are the button "删除" alone, or (`box_of`) a box holding "复制" and "删除", each counted in `acts` as
-/// pressed; shown by `hover_reveal` (with `always`), the look fading the action out while it does not show.
-fn reveal_case(pointing? : @ui.Pointing = Mouse, box_of? : Bool = false) -> RevealCase raise {
+/// pressed; shown by `hover_reveal` (with `always`), the look fading the action out while it does not show. `outside`:
+/// the box of two is not in the row but under it, beside it in the window (as one in a layer is).
+fn reveal_case(
+  pointing? : @ui.Pointing = Mouse,
+  box_of? : Bool = false,
+  outside? : Bool = false,
+) -> RevealCase raise {
   let rows = Ref(0)
   let acts : Map[String, Int] = Map([])
   let always = @signals.signal(false, same=fn(a : Bool, b : Bool) { a == b })
@@ -46,9 +51,21 @@ fn reveal_case(pointing? : @ui.Pointing = Mouse, box_of? : Bool = false) -> Reve
       v.width(Is(Some(60.0))).height(Is(Some(30.0))) |> ignore
     })
   }
+  let two = fn(parent : @view.View, held : Array[@view.View]) {
+    parent.box(fn(b) {
+      b.row(Is(true)) |> ignore
+      held.push(act(b, "复制"))
+      held.push(act(b, "删除"))
+    })
+  }
+  // (the look: the action faded out while it does not show)
+  let look = fn(action : @view.View, r : @headless.HoverReveal) {
+    action.alpha(By(fn() { if r.shown() { 1.0 } else { 0.0 } })) |> ignore
+    reveal.val = Some(r)
+  }
   let t = window(pointing~, fn(root) {
     stop(root, "前")
-    root.box(fn(row) {
+    let row_node = root.box(fn(row) {
       row
       .width(Is(Some(300.0)))
       .height(Is(Some(40.0)))
@@ -57,24 +74,22 @@ fn reveal_case(pointing? : @ui.Pointing = Mouse, box_of? : Bool = false) -> Reve
       .says(Is(Some(@view.said(Button, label="行"))))
       .on_press(fn() { rows.val += 1 })
       |> ignore
-      let r = if box_of {
+      if outside {
+        ()
+      } else if box_of {
         let held = []
-        let acts_box = row.box(fn(b) {
-          b.row(Is(true)) |> ignore
-          held.push(act(b, "复制"))
-          held.push(act(b, "删除"))
-        })
-        let r = @headless.hover_reveal(row, acts_box, also=held, always=fn() { always.get() })
-        (acts_box, r)
+        let acts_box = two(row, held)
+        look(acts_box, @headless.hover_reveal(row, acts_box, also=held, always=fn() { always.get() }))
       } else {
         let b = act(row, "删除")
-        (b, @headless.hover_reveal(row, b, always=fn() { always.get() }))
+        look(b, @headless.hover_reveal(row, b, always=fn() { always.get() }))
       }
-      // (the look: the action faded out while it does not show)
-      r.0.alpha(By(fn() { if r.1.shown() { 1.0 } else { 0.0 } })) |> ignore
-      reveal.val = Some(r.1)
     })
-    |> ignore
+    if outside {
+      let held = []
+      let acts_box = two(root, held)
+      look(acts_box, @headless.hover_reveal(row_node, acts_box, also=held, always=fn() { always.get() }))
+    }
     stop(root, "后")
   })
   { t, rows, acts, always, reveal }
@@ -211,4 +226,21 @@ test "a box of two actions under the pointer: over the row shown, and a click on
   k.t.move_to(dx, dy)
   k.t.tap(dx, dy)
   assert_eq((shown, k.pressed("复制"), k.pressed("删除"), k.rows.val), (true, 1, 1, 0))
+}
+
+///|
+test "a box of two actions outside the row: over the row shown; gone on from the row onto a button in it, still shown, and a click presses it" {
+  let k = reveal_case(outside=true)
+  k.t.move_to(390.0, 290.0)
+  let away = k.shown()
+  let (rx, ry, _, rh) = k.t.get(Button, label="行").rect
+  k.t.move_to(rx + 250.0, ry + rh / 2.0)
+  let over = k.shown()
+  let (cx, cy) = k.middle("复制")
+  k.t.move_to(cx, cy)
+  let on_it = k.shown()
+  k.t.tap(cx, cy)
+  let pressed = (k.pressed("复制"), k.rows.val)
+  k.t.move_to(390.0, 290.0)
+  assert_eq((away, over, on_it, pressed, k.shown()), (false, true, true, (1, 0), false))
 }
