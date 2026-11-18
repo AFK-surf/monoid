@@ -836,6 +836,15 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
   let all = self.workspaces()
   let home = all.get(0)
   let others = if all.length() > 1 { all[1:].to_array() } else { [] }
+  // The viewer's workspace, whose stations alone a shared profile's view names (Null: all).
+  let viewer_ws = match viewer {
+    Some(v) =>
+      match v.get("workspace") {
+        Some(Str(_) as w) => w
+        _ => Null
+      }
+    None => Null
+  }
   self.read_homes_soon(config.profiles)
   let views = []
   for p in config.profiles {
@@ -978,7 +987,7 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
           (
             "share",
             if self.given.shared {
-              match self.ask("shared.view", [p.raw]) {
+              match self.ask("shared.view", [p.raw, viewer_ws]) {
                 x if is_undef(x) => Null
                 x => x
               }

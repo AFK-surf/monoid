@@ -618,7 +618,7 @@ async fn World::call_share(self : World, st : HStation, asked : String, args : A
       s.quota_reset(need_str(args, 0), need_str(args, 1))
       jnull()
     }
-    "profileView" => s.profile_view(st.profile(need_str(args, 0))).unwrap_or(jnull())
+    "profileView" => s.profile_view(st.profile(need_str(args, 0)), workspace=arg_str(args, 1)).unwrap_or(jnull())
     "skillView" => s.skill_view(need_str(args, 0)).unwrap_or(jnull())
     "borrowedSubscription" => jbool(s.borrowed_subscription(st.profile(need_str(args, 0))))
     "handle" => s.handle(need_str(args, 0), arg(args, 1).unwrap_or(jnull()), workspace=arg_str(args, 2))

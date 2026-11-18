@@ -34,6 +34,7 @@ import { configTokens, connectName, madeApps, makeConnections, slackConnects, sl
 import { modelLabel, modelOf, modelOptions, modelValue, newChatBlocks, newChatView, submittedChat } from "../src/slack/new-chat.ts";
 import { SlackSurface, answerFiles, filesToLookUp, identityOf, messageFiles, messageText, personOf, toEvent, verifySlackTokens } from "../src/slack/surface.ts";
 import { SlackApiError, SlackClient, apiBase, field } from "../src/slack/web.ts";
+import { connectBlocked, zipOne } from "../src/slack/zip.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
@@ -682,6 +683,24 @@ test("the app API with a person's configuration tokens: the one that owns an app
   assert.deepEqual((await mbCall(id, "tokens")).ok, plain(kept));
 });
 
+test("an installer Slack Connect refuses: which names, and its zip of one stored entry, byte for byte", { skip }, async () => {
+  for (const name of ["app.apk", "APP.AAB", "x.Exe", "a.msi", "b.bat", "c.cmd", "d.com", "e.scr", "f.dmg", "g.pkg", "a.b.apk", ".apk", "apk", "a.apk.txt", "log.txt", "dir.apk/x", "", "a."])
+    assert.deepEqual(await mbFn("connectBlocked", name), { ok: connectBlocked(name) }, `connectBlocked ${name}`);
+  const sized = (n: number, seed: number) => Uint8Array.from({ length: n }, (_, i) => (i * 131 + seed * 7 + (i >> 3)) & 0xff);
+  const cases: [string, Uint8Array][] = [
+    ["app.apk", sized(0, 1)],
+    ["app.apk", sized(1, 2)],
+    ["build/out/Setup 安装.exe", sized(4099, 3)],
+    ["C:\\dist\\tool.msi", sized(65_537, 4)],
+    ["dir/", sized(10, 5)],
+    ["x", sized(300_000, 6)],
+  ];
+  for (const [name, bytes] of cases) {
+    const want = Buffer.from(await zipOne(name, bytes)).toString("base64");
+    assert.deepEqual(await mbFn("zipOne", name, Buffer.from(bytes).toString("base64")), { ok: want }, `zipOne ${name} ${bytes.length}`);
+  }
+});
+
 // ── the surface ──
 
 const IDENTITY = { team: "Acme", team_id: "T1", url: "https://acme.slack.com/", user_id: "UB", user: "bot", bot_id: "BB" };
@@ -861,6 +880,16 @@ test("the surface posts: parts, a question's card, a login's, files shared, a ne
   await s.both("post", () => s.surface.post(T, "with a file", att), T, "with a file", att);
   await s.both("post", () => s.surface.post({ channel: "C2", threadTs: "1.0" }, "", att), { channel: "C2", threadTs: "1.0" }, "", att);
   await s.both("post", () => s.surface.post(T, "", []), T, "", []);
+  // an installer: zipped in a channel shared with another organization (CX), as it is in the workspace's own (C1); a
+  // text file beside it goes as it is in both
+  const apk = join(fresh("apk"), "app.apk");
+  writeFileSync(apk, Buffer.from(Array.from({ length: 5000 }, (_, i) => (i * 37) & 0xff)));
+  const installer = [{ name: "app.apk", path: apk, size: 5000 }, ...att];
+  await s.both("post", () => s.surface.post({ channel: "CX", threadTs: "2.0" }, "the build", installer), { channel: "CX", threadTs: "2.0" }, "the build", installer);
+  await s.both("post", () => s.surface.post(T, "the build", installer), T, "the build", installer);
+  s.same("installers zipped where Slack Connect refuses them");
+  const named = s.a.log.filter((r) => r.m === "files.getUploadURLExternal").map((r) => r.p?.[0]?.[1]);
+  assert.ok(named.includes("app.apk.zip") && named.includes("app.apk"), `uploaded as ${named.join(", ")}`);
   await s.both("post", () => s.surface.post(T, "x", [{ name: "gone", path: join(fresh("none"), "gone"), size: 1 }]), T, "x", [{ name: "gone", path: join(fresh("none2"), "gone"), size: 1 }]).catch(() => {});
   await s.both("begin", () => s.surface.begin("C3", long), "C3", long);
   await s.both("edit", () => s.surface.edit(T, "100.000001", "changed"), T, "100.000001", "changed");

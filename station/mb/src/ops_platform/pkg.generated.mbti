@@ -764,6 +764,7 @@ pub struct ConfigFile {
 pub fn ConfigFile::listen(Self, (@json.Json) -> Unit) -> Unit
 pub fn ConfigFile::new(Fs, String, String?, String) -> Self raise
 pub fn ConfigFile::raw(Self) -> @json.Json raise
+pub fn ConfigFile::set_check(Self, (@json.Json, String) -> String?) -> Unit
 pub fn ConfigFile::update(Self, (@json.Json) -> @json.Json) -> @json.Json raise
 
 pub struct ControlReader {
@@ -829,6 +830,7 @@ pub struct LogExport {
 pub fn LogExport::add(Self, LogLine, Bool) -> Unit
 pub fn LogExport::body(Self, Array[LogLine], String, Int32, String, Double) -> String
 pub fn LogExport::close(Self) -> Unit
+pub fn LogExport::configure(Self) -> Unit
 pub fn LogExport::new(String) -> Self
 pub fn LogExport::send_all(Self, Bool, String?, String, Double, (String) -> Double?) -> Array[String]
 

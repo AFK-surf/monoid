@@ -19,7 +19,7 @@ fn option_key(kind : String) -> String {
 
 ///|
 /// What RetireAsks is given (retire-asks.ts `AsksDeps`).
-pub struct AsksDeps {
+pub(all) struct AsksDeps {
   data : String
   here : () -> String?
   roster : (String) -> Array[Member]?

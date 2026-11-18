@@ -285,7 +285,7 @@ class TsWorld {
         case "status": return sh.status(this.profile(s, a(0)));
         case "loginUpdated": return sh.loginUpdated(a(0));
         case "quotaReset": return sh.quotaReset(a(0), a(1));
-        case "profileView": return sh.profileView(this.profile(s, a(0)));
+        case "profileView": return sh.profileView(this.profile(s, a(0)), a(1) ?? null);
         case "skillView": return sh.skillView(a(0));
         case "borrowedSubscription": return sh.borrowedSubscription(this.profile(s, a(0)));
         case "handle": return sh.handle(a(0), args[1], a(2));
@@ -744,6 +744,9 @@ test("profiles shared, narrowed, lent, reset, moved and handed over: the program
   await w.both({ op: "call", station: A, part: "share", method: "shareProfile", args: ["deepseek", true, [B], [B, C], "someone"] });
   await w.both({ op: "settle" });
   await w.both({ op: "call", station: A, part: "share", method: "profileView", args: ["deepseek"] });
+  // Seen from a workspace's member: only this station and that workspace's (C is not in j).
+  await w.both({ op: "call", station: A, part: "share", method: "profileView", args: ["deepseek", "j"] });
+  await w.both({ op: "call", station: A, part: "share", method: "profileView", args: ["deepseek", "w"] });
   // What cannot be shared, said so.
   await w.both({ op: "call", station: A, part: "share", method: "shareProfile", args: ["grok", true, null] });
   await w.both({ op: "call", station: A, part: "share", method: "shareProfile", args: ["nobody", true, null] });
@@ -755,6 +758,7 @@ test("profiles shared, narrowed, lent, reset, moved and handed over: the program
   await w.both({ op: "call", station: B, part: "share", method: "lendClaude", args: [max] });
   await w.both({ op: "call", station: B, part: "share", method: "status", args: [max] });
   await w.both({ op: "call", station: B, part: "share", method: "profileView", args: [max] });
+  await w.both({ op: "call", station: B, part: "share", method: "profileView", args: [max, "j"] });
   await w.both({ op: "call", station: B, part: "share", method: "borrowedSubscription", args: [max] });
   await w.both({ op: "down", station: A });
   await w.both({ op: "call", station: B, part: "share", method: "lendClaude", args: [max] });

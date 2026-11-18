@@ -24,7 +24,7 @@ pub fn listing(runtime : String, agy_budget : Json, claude_loaded : Json) -> Jso
 ///|
 /// What the control plane says of where the station is (cloud/state.ts): whether it is in a workspace (`bound`), the
 /// workspaces it joined (not its home), its home, the first of its memberships, whether it was removed, and a rig due.
-pub struct Place {
+pub(all) struct Place {
   bound : Bool
   joined : Array[String]
   home : String?

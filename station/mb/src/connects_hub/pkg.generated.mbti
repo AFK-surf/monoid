@@ -224,7 +224,7 @@ pub(all) enum Body {
   DataBody(Bytes)
 }
 
-pub struct Bus {
+pub(all) struct Bus {
   ask : async (String, @jsjson.JValue, Body) -> Answer
   on : (String, async (String, @jsjson.JValue, String?, Bytes?) -> Answer) -> Unit
   heard : (((String) -> Unit) -> Unit)?
@@ -247,13 +247,13 @@ pub struct Cards {
   closed_card : async (Double, Double) -> @jsjson.JValue
 }
 
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   sleep : async (Double) -> Unit
 }
 pub fn Clock::live() -> Self
 
-pub struct Config {
+pub(all) struct Config {
   raw : () -> @jsjson.JValue
   update_soon : async ((@jsjson.JValue) -> @jsjson.JValue) -> Unit
   listen : (() -> Unit) -> () -> Unit
@@ -308,7 +308,7 @@ pub async fn ConnectedSurface::user_of(Self, String) -> String?
 pub fn ConnectedSurface::working(Self, @jsjson.JValue, String?, String, String?) -> Unit
 pub fn ConnectedSurface::workspace(Self) -> String?
 
-pub struct Connection {
+pub(all) struct Connection {
   surface : Surface
   start : async (async (@jsjson.JValue) -> Unit) -> Unit
   stop : async () -> Unit
@@ -346,7 +346,7 @@ pub fn Connects::state(Self, @jsjson.JValue) -> @jsjson.JValue?
 pub async fn Connects::stop_all(Self) -> Unit
 pub fn Connects::tell(Self) -> Unit
 
-pub struct ConnectsOptions {
+pub(all) struct ConnectsOptions {
   data : String
   store : ConnectsStore
   config : Config
@@ -358,16 +358,16 @@ pub struct ConnectsOptions {
   log : Log
 }
 
-pub struct ConnectsStore {
+pub(all) struct ConnectsStore {
   live_sessions : () -> Array[String]
   notify : (String) -> Unit
 }
 
-pub struct Endpoints {
+pub(all) struct Endpoints {
   bind : async (@jsjson.JValue) -> MeshEndpoint
 }
 
-pub struct Fs {
+pub(all) struct Fs {
   sep : String
   read_text : async (String) -> String
   read_bytes : async (String) -> Bytes
@@ -412,7 +412,7 @@ pub fn GroupLink::open(Self) -> Bool
 pub async fn GroupLink::ping(Self) -> Unit
 pub async fn GroupLink::stream(Self, String, String) -> Streamed
 
-pub struct GroupOptions {
+pub(all) struct GroupOptions {
   connects : ConnectsOptions
   endpoints : () -> Endpoints
   create : (async (@jsjson.JValue, NameBook, GroupThreads) -> Connection)?
@@ -546,14 +546,14 @@ pub fn Listeners::clear(Self) -> Unit
 pub fn Listeners::new() -> Self
 pub fn Listeners::tell(Self) -> Unit
 
-pub struct Log {
+pub(all) struct Log {
   write : (String, String, String, @jsjson.JValue) -> Unit
 }
 pub fn Log::error(Self, String, String, @jsjson.JValue) -> Unit
 pub fn Log::info(Self, String, String, @jsjson.JValue) -> Unit
 pub fn Log::warn(Self, String, String, @jsjson.JValue) -> Unit
 
-pub struct MeshConn {
+pub(all) struct MeshConn {
   open_bi : async () -> MeshStream
   close : (Int32, String) -> Unit
   is_closed : () -> Bool
@@ -561,14 +561,14 @@ pub struct MeshConn {
   remote_id : () -> String
 }
 
-pub struct MeshEndpoint {
+pub(all) struct MeshEndpoint {
   id : () -> String
   connect : async (@jsjson.JValue, String) -> MeshConn
   accept : async () -> MeshConn?
   close : async () -> Unit
 }
 
-pub struct MeshStream {
+pub(all) struct MeshStream {
   read : async () -> Bytes?
   write : async (Bytes) -> Unit
   finish : async () -> Unit
@@ -613,7 +613,7 @@ pub struct PartDeps {
   log : Log
 }
 
-pub struct Platform {
+pub(all) struct Platform {
   kind : String
   names : String
   connects : (@jsjson.JValue) -> Array[@jsjson.JValue]
@@ -652,7 +652,7 @@ pub struct RemoteSurface {
 pub fn RemoteSurface::new(String, Known, String, @jsjson.JValue, Asker, NameBook?, Fs, Log) -> Self
 pub fn RemoteSurface::surface(Self) -> Surface
 
-pub struct Signer {
+pub(all) struct Signer {
   public_key : (String) -> String?
   sign : (String, Bytes) -> String?
   verify : (String, Bytes, String) -> Bool
@@ -687,7 +687,7 @@ pub(all) struct SpaceKept {
   prev : String
 }
 
-pub struct Speech {
+pub(all) struct Speech {
   words : @session_chats.Words
   lang : @ref.Ref[String]
 }
@@ -724,7 +724,7 @@ pub struct Streamed {
   cancel : () -> Unit
 }
 
-pub struct Surface {
+pub(all) struct Surface {
   has : (String) -> Bool
   get : (String, Array[@jsjson.JValue]) -> @jsjson.JValue
   call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
@@ -778,7 +778,7 @@ pub fn WorkspaceConnects::runs_on(Self, String) -> String?
 pub async fn WorkspaceConnects::settle_moving(Self, peer? : String?) -> Unit
 pub async fn WorkspaceConnects::take_held(Self, String) -> Unit
 
-pub struct WorkspaceDeps {
+pub(all) struct WorkspaceDeps {
   data : String
   hub : WsHub
   store : WsStore
@@ -794,7 +794,7 @@ pub struct WorkspaceDeps {
   uuid : () -> String
 }
 
-pub struct WsHub {
+pub(all) struct WsHub {
   chat_of : async (String) -> Surface?
   config_connects : async () -> Array[@jsjson.JValue]
   receive : async (String, @jsjson.JValue) -> Unit
@@ -804,7 +804,7 @@ pub struct WsHub {
   told_bots : async (String, Array[String]) -> Unit
 }
 
-pub struct WsStore {
+pub(all) struct WsStore {
   drop_connect_thread_station : async (String, String, String) -> Unit
   set_connect_thread_station : async (String, String, String, String) -> Unit
   connect_thread_station : async (String, String, String) -> String?

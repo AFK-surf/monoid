@@ -316,6 +316,14 @@ moonbit_bytes_t sfs_machine(void) {
 }
 
 /// A disk's free and whole size where `path` is, JSON `{free, total}`; empty where it is not read.
+/// Whether `path` is a file that can be run (platform `findCommandSoon`'s check): on Windows, a file at all.
+int32_t sfs_executable(moonbit_bytes_t path) {
+  wchar_t *w = wide((const char *)path);
+  DWORD attrs = w ? GetFileAttributesW(w) : INVALID_FILE_ATTRIBUTES;
+  free(w);
+  return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 moonbit_bytes_t sfs_disk_of(moonbit_bytes_t path) {
   wchar_t *w = wide((const char *)path);
   ULARGE_INTEGER avail, total, free_;
@@ -1000,6 +1008,12 @@ moonbit_bytes_t sfs_machine(void) {
   sb_fmt(&b, ",%.6f", load[1]);
   sb_fmt(&b, ",%.6f]}", load[2]);
   return sb_bytes(&b);
+}
+
+/// Whether `path` is a regular file (links followed) with an execute bit (unix.ts `findCommandSoon`: `mode & 0o111`).
+int32_t sfs_executable(moonbit_bytes_t path) {
+  struct stat st;
+  return stat((const char *)path, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & 0111) != 0;
 }
 
 moonbit_bytes_t sfs_disk_of(moonbit_bytes_t path) {

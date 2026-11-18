@@ -136,6 +136,8 @@ pub(all) struct TerminalDeps {
   /// A chat's folder, if it is one of this station's.
   chat_dir : (String) -> String?
   changed : (String) -> Unit
+  /// What is kept of an open terminal changed (its live folder after `cd`): written again.
+  meta : ((String, TerminalMeta) -> Unit)?
   /// It left the list (ended, and no view is left on it): what was kept of it goes.
   gone : (String) -> Unit
   new_id : () -> String
@@ -173,10 +175,18 @@ priv struct Terminal {
   by : String
   by_email : String?
   at : Double
-  cwd : String
+  mut cwd : String
+  /// An escape the shell's output ended in the middle of, read with what comes next (`oscCwd`'s tail).
+  mut osc_tail : String
   chat : String?
   workspace : String
   mut ended : Ended?
+}
+
+///|
+/// What is kept of it (its meta file).
+fn Terminal::meta(self : Terminal) -> TerminalMeta {
+  { by: self.by, by_email: self.by_email, at: self.at, cwd: self.cwd, chat: self.chat, workspace: self.workspace }
 }
 
 ///|
@@ -274,6 +284,7 @@ pub fn Terminals::keep(
     by_email: meta.by_email,
     at: meta.at,
     cwd: meta.cwd,
+    osc_tail: "",
     chat: meta.chat,
     workspace: meta.workspace,
     ended: None,
@@ -287,6 +298,23 @@ pub fn Terminals::keep(
 ///|
 fn Terminals::add(self : Terminals, t : Terminal) -> Unit {
   self.terminals[t.id] = t
+  // Its folder as the shell says it after each command (OSC 7, OSC 9;9), kept and told.
+  t.link.listen(out => {
+    let (cwd, tail) = osc_cwd(t.osc_tail + utf8_text(out.bytes))
+    t.osc_tail = tail
+    match cwd {
+      Some(c) if c != t.cwd => {
+        t.cwd = c
+        match self.deps.meta {
+          Some(f) => f(t.id, t.meta())
+          None => ()
+        }
+        self.tell_all(t)
+      }
+      _ => ()
+    }
+  })
+  |> ignore
   t.link.ended(e => {
     t.ended = e
     let (code, signal) = match e {
@@ -347,6 +375,7 @@ async fn Terminals::open(self : Terminals, o : Opening) -> Terminal {
     by_email: o.by_email,
     at,
     cwd,
+    osc_tail: "",
     chat,
     workspace: o.workspace,
     ended: None,
@@ -868,4 +897,129 @@ async fn FrameIn::next(self : FrameIn) -> (Int, Bytes)? {
     }
   }
   None
+}
+
+///|
+/// How much of an unfinished escape is carried to the next chunk (terminals.ts OSC_MAX_TAIL).
+const OSC_MAX_TAIL : Int = 2048
+
+///|
+fn osc_end(text : String, at : Int) -> Int? {
+  if at < text.length() && osc_cu(text, at) == 0x07 {
+    Some(at + 1)
+  } else if at + 1 < text.length() && osc_cu(text, at) == 0x1b && osc_cu(text, at + 1) == '\\'.to_int() {
+    Some(at + 2)
+  } else {
+    None
+  }
+}
+
+///|
+/// Where the run of what is neither BEL nor ESC from `at` ends.
+fn osc_run(text : String, at : Int) -> Int {
+  let mut i = at
+  while i < text.length() && osc_cu(text, i) != 0x07 && osc_cu(text, i) != 0x1b {
+    i += 1
+  }
+  i
+}
+
+///|
+/// The live working directory the shell announced (`OSC 7` `file://host/path`, ConPTY's `OSC 9;9;path`), and an
+/// unfinished escape's tail to put before the next chunk (terminals.ts `oscCwd`).
+pub fn osc_cwd(text : String) -> (String?, String) {
+  let mut cwd : String? = None
+  let mut consumed = 0
+  let n = text.length()
+  let mut i = 0
+  while i + 1 < n {
+    if osc_cu(text, i) != 0x1b || osc_cu(text, i + 1) != ']'.to_int() {
+      i += 1
+      continue
+    }
+    let rest = text.unsafe_substring(start=i + 2, end=n)
+    if rest.has_prefix("7;file://") {
+      let host_end = {
+        let mut j = i + 2 + 9
+        while j < n && osc_cu(text, j) != '/'.to_int() && osc_cu(text, j) != 0x07 && osc_cu(text, j) != 0x1b {
+          j += 1
+        }
+        j
+      }
+      if host_end < n && osc_cu(text, host_end) == '/'.to_int() {
+        let path_end = osc_run(text, host_end)
+        match osc_end(text, path_end) {
+          Some(after) => {
+            let raw = text.unsafe_substring(start=host_end, end=path_end)
+            let mut decoded = @api_routes.decode_uri_component(raw).unwrap_or(raw)
+            if decoded.length() >= 4 &&
+              osc_cu(decoded, 0) == '/'.to_int() &&
+              ((osc_cu(decoded, 1) | 0x20) >= 'a'.to_int() && (osc_cu(decoded, 1) | 0x20) <= 'z'.to_int()) &&
+              osc_cu(decoded, 2) == ':'.to_int() &&
+              (osc_cu(decoded, 3) == '\\'.to_int() || osc_cu(decoded, 3) == '/'.to_int()) {
+              decoded = decoded.unsafe_substring(start=1, end=decoded.length())
+            }
+            if decoded != "" && decoded.length() <= 4096 {
+              cwd = Some(decoded)
+            }
+            consumed = after
+            i = after
+            continue
+          }
+          None => ()
+        }
+      }
+    } else if rest.has_prefix("9;9;") {
+      let start = i + 2 + 4
+      let end = osc_run(text, start)
+      if end > start {
+        match osc_end(text, end) {
+          Some(after) => {
+            let raw = text.unsafe_substring(start~, end~)
+            let unquoted = if raw.length() >= 2 && raw.has_prefix("\"") && raw.has_suffix("\"") {
+              raw.unsafe_substring(start=1, end=raw.length() - 1)
+            } else {
+              raw
+            }
+            if unquoted != "" && unquoted.length() <= 4096 {
+              cwd = Some(unquoted)
+            }
+            consumed = after
+            i = after
+            continue
+          }
+          None => ()
+        }
+      }
+    }
+    i += 1
+  }
+  let rest = text.unsafe_substring(start=consumed, end=n)
+  let mut esc = -1
+  for k = rest.length() - 1; k >= 0; k = k - 1 {
+    if osc_cu(rest, k) == 0x1b {
+      esc = k
+      break
+    }
+  }
+  if esc < 0 || rest.length() - esc > OSC_MAX_TAIL {
+    return (cwd, "")
+  }
+  let candidate = rest.unsafe_substring(start=esc, end=rest.length())
+  let body = if candidate.length() >= 2 { candidate.unsafe_substring(start=2, end=candidate.length()) } else { "" }
+  let plain = (s : String) => osc_run(s, 0) == s.length()
+  let partial = candidate == "\u{1b}" ||
+    (candidate.has_prefix("\u{1b}]") &&
+    (body == "" ||
+    body == "7" ||
+    (body.has_prefix("7;") && plain(body)) ||
+    body == "9" ||
+    body == "9;9" ||
+    (body.has_prefix("9;9;") && plain(body))))
+  (cwd, if partial { candidate } else { "" })
+}
+
+///|
+fn osc_cu(s : String, i : Int) -> Int {
+  s.code_unit_at(i).to_int()
 }

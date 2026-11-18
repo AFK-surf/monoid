@@ -564,7 +564,7 @@ pub fn turn_usage(answer : JValue?) -> JValue? {
 
 ///|
 /// What the Antigravity driver is given beside the machine.
-pub struct AgyWorld {
+pub(all) struct AgyWorld {
   raw_env : Env
   has_keychain : Bool
   /// the keychain item `agy` kept a sign-in in before (`agyKeychain.read`)

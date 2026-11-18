@@ -1192,3 +1192,134 @@ fn the_release_s_front_answers_an_ask_it_has_no_operation_for_and_lives_through_
     assert!(station.wait().success());
     until("the front to end with the launcher", || (!alive(front)).then_some(()));
 }
+
+impl Station {
+    /// A release of the MoonBit station alone (scripts/station-bundle.sh): no `node/`, no `station/main.js`, only
+    /// `station/stillfail-reader`, here a stand-in program that is both the front (`--builder mesh …`: fixtures/front.cjs)
+    /// and the station (`run …` and every other command: fixtures/main.js, copied outside the release as a CommonJS
+    /// script, beside no package.json that says otherwise). The launcher is
+    /// given a Node that is not there, so nothing it starts can be run on Node.
+    fn moonbit(name: &str) -> Station {
+        let station = Station::new(name);
+        std::fs::remove_file(station.app.join("station/main.js")).unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let program = station.app.join("station/stillfail-reader");
+        let main = station.dir.join("stand-in.cjs");
+        std::fs::copy(fixtures.join("main.js"), &main).unwrap();
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --builder) exec '{node}' '{front}' \"$@\" ;; esac\nexec '{node}' '{main}' \"$@\"\n",
+                node = node(),
+                front = fixtures.join("front.cjs").display(),
+                main = main.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert!(!station.app.join("node").exists() && !station.app.join("station/main.js").exists());
+        station
+    }
+
+    fn moonbit_command(&self, times: &str) -> Command {
+        let mut command = self.command(times);
+        command.env("STILLFAIL_NODE", self.dir.join("no-node-here"));
+        command
+    }
+
+    fn start_moonbit(&mut self, times: &str) {
+        let child = spawn(self.moonbit_command(times).args(self.run_args()));
+        self.launcher = Some(child);
+    }
+}
+
+#[test]
+fn a_release_of_the_moonbit_station_alone_runs_it_with_the_same_arguments_and_its_front() {
+    let mut station = Station::moonbit("mb-ports");
+    station.start_moonbit("");
+    let said = station.up();
+    assert_eq!(said["pid"], station.pid());
+    assert_eq!(said["version"], "0.1.0");
+    let (mcp, admin) = station.ports();
+    let first = station.started()[0];
+    assert_ne!(first, station.pid());
+    // The release's program itself (exec'd by the stand-in: the same process), told what Node was told.
+    let (app, data) = (station.app.display(), station.data.display());
+    assert_eq!(station.log()[0].2, format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries --launcher-heartbeat"));
+    assert!(station.said(first, "heartbeat asked"));
+    assert_eq!(ask(mcp).unwrap(), format!("{first} mcp"));
+    assert_eq!(ask(admin).unwrap(), format!("{first} admin"));
+    // The same program as its front, the station told it.
+    let socket = station.data.join("run/front.sock");
+    until("the station to say its front", || station.log().into_iter().any(|(_, p, w)| p == first && w.starts_with("front ")).then_some(()));
+    assert!(station.said(first, &format!("front {}", socket.display())), "{:?}", station.log());
+    assert_eq!(station.fronts().len(), 1);
+    assert!(!station.launcher_log().contains("no-node-here"), "{}", station.launcher_log());
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    assert!(station.said(first, "got stop") && station.said(first, "exit"));
+}
+
+#[test]
+fn the_moonbit_station_is_handed_over_on_sigusr2_carrying_what_it_held_and_drains_and_stops_as_node_did() {
+    let mut station = Station::moonbit("mb-handover");
+    station.start_moonbit("");
+    station.up();
+    let old = answered_by(station.mcp());
+    station.conf("version=0.2.0\n");
+    station.signal(libc::SIGUSR2);
+    let after = until("station.json of the new version", || station.station_json().filter(|s| s["version"] == "0.2.0"));
+    assert_eq!(after["pid"], station.pid(), "the pid stays");
+    let new = *station.started().last().unwrap();
+    assert_ne!(new, old);
+    assert_eq!(answered_by(station.mcp()), new);
+    assert_eq!(answered_by(station.admin()), new);
+    assert!(station.said_at(new, "ready") < station.said_at(old, "got handover"));
+    assert!(station.said(old, "exit") && !alive(old));
+    until("what the old one held carried over", || station.said(new, &format!(r#"got carried {{"from":{old}}}"#)).then_some(()));
+    assert!(station.file("handoff-failed").is_none());
+    // One front all along, told to the new one.
+    assert_eq!(station.fronts().len(), 1);
+    assert!(station.said(new, &format!("front {}", station.data.join("run/front.sock").display())));
+    // SIGUSR1: drained; SIGHUP: passed on; SIGTERM: stopped.
+    station.signal(libc::SIGUSR1);
+    until("run/drained", || station.file("drained").filter(|d| d == "idle\n"));
+    assert!(station.said(new, "got drain"));
+    station.signal(libc::SIGHUP);
+    until("hup", || station.said(new, "got hup").then_some(()));
+    assert_eq!(answered_by(station.admin()), new);
+    let fronts = station.fronts();
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    assert!(station.said(new, "got stop"));
+    until("the front to end with the launcher", || (!alive(fronts[0])).then_some(()));
+}
+
+#[test]
+fn the_moonbit_station_s_commands_are_its_own_with_the_same_arguments_and_its_release_is_found_above_the_launcher() {
+    let station = Station::moonbit("mb-exec");
+    let (app, data) = (station.app.to_str().unwrap(), station.data.to_str().unwrap());
+    let run = |command: &mut Command, args: &[&str]| {
+        let child = spawn(command.args(args).stdout(Stdio::piped()));
+        let pid = child.id();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(7), "{args:?}");
+        let said: Value = serde_json::from_slice(&out.stdout).unwrap();
+        // Exec'd: the same process.
+        assert_eq!(said["pid"], pid, "{args:?}");
+        said
+    };
+    for args in [vec!["status", "--app", app, "--data", data], vec!["update", "--beta", "--app", app, "--data", data], vec!["heap", "--app", app, "--data", data], vec!["id", "--app", app, "--data", data]] {
+        let said = run(&mut station.moonbit_command(""), &args);
+        assert_eq!(said["args"], serde_json::json!(args));
+    }
+    // With no --app (bin/stillfail gives none to `status`): the release above the launcher, as an update lays it out.
+    let dir = station.app.join("mesh/target/release");
+    std::fs::create_dir_all(&dir).unwrap();
+    let launcher = dir.join("stillfail-station");
+    std::fs::copy(BUILT, &launcher).unwrap();
+    let mut command = Command::new(&launcher);
+    command.env_remove("STILLFAIL_DATA").env_remove("STILLFAIL_NODE").env_remove("STILLFAIL_MB_READER").stdin(Stdio::null());
+    let said = run(&mut command, &["heap", "--data", data]);
+    assert_eq!(said["args"], serde_json::json!(["heap", "--data", data]));
+}

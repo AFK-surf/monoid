@@ -5,7 +5,7 @@
 ///|
 /// One of the station's workspaces as the cloud said it last (cloud/state.ts `Membership`): its stations (`peers`, each
 /// `{id, name}` as said, nothing of them checked).
-pub struct Membership {
+pub(all) struct Membership {
   workspace : String
   workspace_name : String
   peers : Array[Json]
@@ -15,7 +15,7 @@ pub struct Membership {
 /// What the cloud says of this station and its workspaces (cloud/state.ts `Cloud`): this station's id and name, whether
 /// it only runs tasks (`rig`), whether the rosters are current (`peersCurrent`), its workspaces (the home one first),
 /// whether it was taken out (`removed`), and a listener told each time something of it changes.
-pub struct Cloud {
+pub(all) struct Cloud {
   /// Whether it has any state (`cloud.state !== null`).
   has_state : () -> Bool
   station : () -> String?
@@ -32,7 +32,7 @@ pub struct Cloud {
 ///|
 /// The station's config.json (ops/config.ts `ConfigFile`): as it is now (`raw`, never changed in place), an edit taken
 /// at once and written behind it (`update_soon`: made on a copy, which is then the config), and a listener told of each.
-pub struct Config {
+pub(all) struct Config {
   raw : () -> Json
   update_soon : async ((Json) -> Unit raise) -> Json
   listen : (() -> Unit) -> () -> Unit
@@ -42,7 +42,7 @@ pub struct Config {
 
 ///|
 /// The station's files as the shell reads and writes them (`fs.*`), its paths joined with `sep`.
-pub struct Files {
+pub(all) struct Files {
   host : @host.Host
   sep : String
 }

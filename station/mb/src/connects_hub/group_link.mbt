@@ -33,7 +33,7 @@ pub fn group_refused(message : String, why : String) -> Error {
 
 ///|
 /// A stream of a mesh connection (mesh/endpoint.ts `Stream`).
-pub struct MeshStream {
+pub(all) struct MeshStream {
   read : async () -> Bytes?
   write : async (Bytes) -> Unit
   finish : async () -> Unit
@@ -44,7 +44,7 @@ pub struct MeshStream {
 
 ///|
 /// A mesh connection (mesh/endpoint.ts `Connection`).
-pub struct MeshConn {
+pub(all) struct MeshConn {
   open_bi : async () -> MeshStream
   close : (Int, String) -> Unit
   is_closed : () -> Bool
@@ -56,7 +56,7 @@ pub struct MeshConn {
 
 ///|
 /// An endpoint bound (mesh/endpoint.ts `Endpoint`).
-pub struct MeshEndpoint {
+pub(all) struct MeshEndpoint {
   id : () -> String
   /// Dials `{id, relays, ips?}` for a protocol.
   connect : async (J, String) -> MeshConn
@@ -67,7 +67,7 @@ pub struct MeshEndpoint {
 
 ///|
 /// What binds endpoints (mesh/endpoint.ts `Endpoints`): given `{secretKey (hex), alpns, relayUrls, discovery}`.
-pub struct Endpoints {
+pub(all) struct Endpoints {
   bind : async (J) -> MeshEndpoint
 }
 

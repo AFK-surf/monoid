@@ -2,9 +2,11 @@
 //! station's command line (bin/stillfail, the desktop app and the installer call it).
 //!
 //! `run` is the launcher's own: it holds the data directory's lock, the two listening ports and the pid that
-//! run/station.json names, and runs the station's Node process under it (run.rs), starting a new one beside it on
-//! SIGUSR2 and letting the old one go once the new one is ready. Every other command is Node's: exec'd with the same
-//! arguments. `handoff-version` says 3: a Rust station asked to hand over to this binary does not exec it (it does only
+//! run/station.json names, and runs the station's process under it (run.rs), starting a new one beside it on
+//! SIGUSR2 and letting the old one go once the new one is ready. Every other command is the station's: exec'd with the
+//! same arguments. The station's process is the MoonBit station (`<app>/station/stillfail-reader`) where the release
+//! has no `station/main.js`; where it has one (a release from before, rolled back to) Node running that script, as
+//! before (`station`). `handoff-version` says 3: a Rust station asked to hand over to this binary does not exec it (it does only
 //! for 1); a launcher before this one does, to take its place at a handover (from 3: run.rs `renew`).
 
 mod data;
@@ -31,6 +33,12 @@ const NODE_IN_APP: &str = "node/bin/node";
 #[cfg(windows)]
 const NODE_IN_APP: &str = "node/node.exe";
 const MAIN_IN_APP: &str = "station/main.js";
+/// The MoonBit station in the release: the whole station where there is no `MAIN_IN_APP` (and its front either way,
+/// front.rs).
+#[cfg(unix)]
+const READER_IN_APP: &str = "station/stillfail-reader";
+#[cfg(windows)]
+const READER_IN_APP: &str = "station/stillfail-reader.exe";
 /// Node to run instead of the release's (tests, development).
 const NODE_VAR: &str = "STILLFAIL_NODE";
 /// The handoff this binary reads: none of the Rust station's (which is 1); from 3, a running launcher's (`--resume`).
@@ -46,8 +54,37 @@ pub fn main_js(app: &Path) -> PathBuf {
     app.join(MAIN_IN_APP)
 }
 
+/// What runs the station of the release at `app`: its program and, for Node, the script it is given first.
+pub struct Station {
+    pub program: PathBuf,
+    pub script: Option<PathBuf>,
+}
+
+impl Station {
+    /// The command that runs it, the station's own arguments to follow.
+    pub fn command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(&self.program);
+        if let Some(script) = &self.script {
+            command.arg(script);
+        }
+        command
+    }
+}
+
+/// The MoonBit station where the release has it and no Node script; else Node and the script (a release from
+/// before the MoonBit station, rolled back to, and the tests' stand-in), which needs Node in the release.
+pub fn station(app: &Path) -> Station {
+    let script = main_js(app);
+    let reader = app.join(READER_IN_APP);
+    if !script.is_file() && reader.is_file() {
+        Station { program: reader, script: None }
+    } else {
+        Station { program: node(app), script: Some(script) }
+    }
+}
+
 fn usage() -> ! {
-    eprintln!("usage:\n  stillfail-station run --app DIR [--port N] [--data DIR] [--with-parent]\n  stillfail-station enroll <cloud-origin> <token> [--data DIR]\n  stillfail-station status [--data DIR]\n  stillfail-station id [--data DIR]\n  stillfail-station lock status|reset [--data DIR]\n  stillfail-station channel [stable|beta] [--app DIR] [--data DIR]\n  stillfail-station handoff-version\n\n--data: default ~/.stillfail ($STILLFAIL_DATA).\nrun: --app is the release; --port the loopback port's (default 4760, a free one when it is taken); --with-parent: end when the parent does.\n${NODE_VAR}: the Node to run instead of <app>/{NODE_IN_APP}.");
+    eprintln!("usage:\n  stillfail-station run --app DIR [--port N] [--data DIR] [--with-parent]\n  stillfail-station enroll <cloud-origin> <token> [--data DIR]\n  stillfail-station status [--data DIR]\n  stillfail-station id [--data DIR]\n  stillfail-station lock status|reset [--data DIR]\n  stillfail-station channel [stable|beta] [--app DIR] [--data DIR]\n  stillfail-station update [--beta|--stable] [--app DIR] [--data DIR]\n  stillfail-station heap [--data DIR]\n  stillfail-station handoff-version\n\n--data: default ~/.stillfail ($STILLFAIL_DATA).\nrun: --app is the release; --port the loopback port's (default 4760, a free one when it is taken); --with-parent: end when the parent does.\n${NODE_VAR}: the Node to run instead of <app>/{NODE_IN_APP}, for a release with {MAIN_IN_APP}.");
     std::process::exit(2);
 }
 
@@ -88,22 +125,23 @@ fn main() {
             std::process::exit(run::run(run::Options { data, app: PathBuf::from(app), port, named, with_parent, resume }));
         }
         Some("handoff-version") => println!("{HANDOFF_VERSION}"),
-        Some("enroll" | "status" | "id" | "channel" | "lock") => {
+        Some("enroll" | "status" | "id" | "channel" | "update" | "lock" | "heap") => {
             let app = app.map(PathBuf::from).or_else(app_of_this_binary).unwrap_or_else(|| {
-                eprintln!("the release this binary belongs to (with {MAIN_IN_APP}) was not found; give it as --app DIR");
+                eprintln!("the release this binary belongs to (with {READER_IN_APP} or {MAIN_IN_APP}) was not found; give it as --app DIR");
                 std::process::exit(1);
             });
-            let mut command = std::process::Command::new(node(&app));
-            command.arg(main_js(&app)).args(&given);
+            let station = station(&app);
+            let mut command = station.command();
+            command.args(&given);
             #[cfg(unix)]
             let error = command.exec();
-            // No exec on Windows: Node runs as a child, its code this process's.
+            // No exec on Windows: the station runs as a child, its code this process's.
             #[cfg(windows)]
             let error = match command.status() {
                 Ok(status) => std::process::exit(status.code().unwrap_or(1)),
                 Err(error) => error,
             };
-            eprintln!("{} did not run: {error}", node(&app).display());
+            eprintln!("{} did not run: {error}", station.program.display());
             std::process::exit(1);
         }
         _ => usage(),
@@ -111,14 +149,14 @@ fn main() {
 }
 
 /// The release this binary is in, when not given (`stillfail status` gives none): the nearest directory above it that
-/// has the station's script.
+/// has the station (the MoonBit station's program or, a release from before, Node's script).
 fn app_of_this_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     app_above(&exe)
 }
 
 fn app_above(exe: &Path) -> Option<PathBuf> {
-    exe.ancestors().skip(1).find(|dir| main_js(dir).is_file()).map(Path::to_path_buf)
+    exe.ancestors().skip(1).find(|dir| main_js(dir).is_file() || dir.join(READER_IN_APP).is_file()).map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -132,5 +170,22 @@ mod tests {
         assert_eq!(super::app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(super::app_above(std::path::Path::new("/nowhere/at/all/x")), None);
+    }
+
+    #[test]
+    fn a_release_with_the_moonbit_station_alone_is_found_and_runs_it() {
+        let dir = std::env::temp_dir().join(format!("launcher-app-mb-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("station")).unwrap();
+        std::fs::create_dir_all(dir.join("mesh/target/release")).unwrap();
+        std::fs::write(dir.join(super::READER_IN_APP), "").unwrap();
+        assert_eq!(super::app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
+        let station = super::station(&dir);
+        assert_eq!((station.program, station.script), (dir.join(super::READER_IN_APP), None));
+        // A release from before (rolled back to) has Node's script: Node runs it, as before.
+        std::fs::write(dir.join("station/main.js"), "").unwrap();
+        let station = super::station(&dir);
+        assert_eq!(station.script, Some(dir.join("station/main.js")));
+        assert_ne!(station.program, dir.join(super::READER_IN_APP));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

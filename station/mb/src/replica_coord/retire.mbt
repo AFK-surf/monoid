@@ -260,7 +260,7 @@ fn Taking::of_json(v : J) -> Taking {
 
 ///|
 /// What the chats' copy is to a retirement (copies.ts).
-pub struct RetireCopies {
+pub(all) struct RetireCopies {
   settle_export : async () -> Unit
   bring_to : async (String, String) -> String
   take_over : async (String, String, String, Array[(String, String)], String?) -> Unit
@@ -270,7 +270,7 @@ pub struct RetireCopies {
 
 ///|
 /// The jobs of the station (jobs.ts), as a retirement starts them again.
-pub struct RetireJobs {
+pub(all) struct RetireJobs {
   start : async (String, J) -> J
   running : async (String, String, String) -> Bool
   say : async (String, String) -> Unit
@@ -278,7 +278,7 @@ pub struct RetireJobs {
 
 ///|
 /// What Retire is given (retire.ts `RetireDeps`).
-pub struct RetireDeps {
+pub(all) struct RetireDeps {
   data : String
   here : () -> String?
   home : () -> String?

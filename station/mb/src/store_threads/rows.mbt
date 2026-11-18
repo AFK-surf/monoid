@@ -497,3 +497,29 @@ fn session_of(r : Map[String, Json]) -> Json {
   }
   Json::object(out)
 }
+
+///|
+/// rows.ts `toEntry`: a row of the entries' table as an entry (what the admin API tells of a message it wrote).
+pub fn entry_of(row : Json) -> Json {
+  match row {
+    Object(r) => entry_of_row(r)
+    _ => Json::null()
+  }
+}
+
+///|
+/// rows.ts `cardOfEntry`: an entry's card, else its options as an options card; None where it has neither.
+pub fn card_of_entry(e : Json) -> Json? {
+  match e {
+    Object(m) =>
+      match m.get("card") {
+        Some(c) if !(c is Null) => Some(c)
+        _ =>
+          match m.get("options") {
+            Some(o) => Some(to_json(options_card(of_json(o))))
+            None => None
+          }
+      }
+    _ => None
+  }
+}

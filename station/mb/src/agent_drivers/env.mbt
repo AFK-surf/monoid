@@ -168,7 +168,7 @@ pub fn runner_id(kind : String, key : String) -> String {
 ///|
 /// What the drivers are told of a profile beyond its fields: the variables its runtime is started with (`{route}` still
 /// in them: profiles.ts `profileEnv`), and Codex's overrides of its config (`codexOverrides`, in key order).
-pub struct ProfileSays {
+pub(all) struct ProfileSays {
   env : (JValue, String) -> Array[(String, String)]
   codex_overrides : (JValue) -> Array[(String, String)]
 }

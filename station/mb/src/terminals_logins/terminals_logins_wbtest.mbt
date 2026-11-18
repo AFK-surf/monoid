@@ -153,6 +153,7 @@ test "a new terminal: its screen first, then only what came after it; one typing
       "term-\{n.val}"
     },
     changed: _ => changes.val += 1,
+    meta: None,
     gone: _ => (),
     offered: None,
     now: () => 0.0,
@@ -300,4 +301,18 @@ test "the terminals' part: those of before taken up as their runners and meta sa
   assert_eq(told.length() > 0, true)
   assert_eq(shell_of("windows", Some("/bin/zsh")), ("powershell.exe", ["-NoLogo"]))
   assert_eq(shell_of("linux", Some("")), ("/bin/sh", ["-l"]))
+}
+
+///|
+test "shell OSC 7 and OSC 9;9 keep a terminal's folder, across chunks (terminals.ts oscCwd)" {
+  assert_eq(osc_cwd("\u{1b}]7;file://mac.local/Users/ann/%E6%96%87%E6%A1%A3\u{07}$ "), (Some("/Users/ann/文档"), ""))
+  assert_eq(osc_cwd("\u{1b}]9;9;\"C:\\Users\\ann\\proj\"\u{1b}\\PS> "), (Some("C:\\Users\\ann\\proj"), ""))
+  let (cwd, tail) = osc_cwd("out\u{1b}]7;file:///Users/ann/wo")
+  assert_eq(cwd, None)
+  assert_eq(tail, "\u{1b}]7;file:///Users/ann/wo")
+  assert_eq(osc_cwd(tail + "rk\u{07}$ "), (Some("/Users/ann/work"), ""))
+  assert_eq(osc_cwd("\u{1b}]7;file:///C:/Users/ann\u{07}"), (Some("C:/Users/ann"), ""))
+  assert_eq(osc_cwd("plain\u{1b}[31mred"), (None, ""))
+  assert_eq(osc_cwd("x\u{1b}]9;"), (None, ""))
+  assert_eq(osc_cwd("x\u{1b}]9;9"), (None, "\u{1b}]9;9"))
 }

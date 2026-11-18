@@ -479,6 +479,7 @@ fn terminals_case(c : J) -> J {
       "term-\{n.val}"
     },
     changed: _ => changes.val += 1,
+    meta: None,
     gone: id => gone.push(js(id)),
     offered,
     now: () => now,

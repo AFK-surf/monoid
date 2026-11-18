@@ -31,17 +31,37 @@ let chunk : Int = 64 * 1024
 let steps : Int = 256
 
 ///|
+/// Where a picture's or film's bytes are read from: `size` of them, `read(at, n)` giving what there is of
+/// [at, at + n) (fewer only at its end). Bytes at hand, or a file read a piece at a time (image-size.ts
+/// `shownFactsSoon`: a film's moov box may be anywhere in 50 MB).
+pub(all) struct Src {
+  size : Double
+  read : (Double, Int) -> Bytes
+}
+
+///|
+pub fn Src::of_bytes(b : Bytes) -> Src {
+  {
+    size: b.length().to_double(),
+    read: fn(at, n) {
+      let a = at.to_int()
+      b[a:@cmp.minimum(b.length(), a + n)].to_bytes()
+    },
+  }
+}
+
+///|
 /// [at, at + n) of `b`, None where it is not all there (readSync's `get`).
-fn get_(b : Bytes, at : Double, n : Int) -> BytesView? {
+fn get_(b : Src, at : Double, n : Int) -> BytesView? {
   if at < 0.0 || n < 0 {
     return None
   }
-  if at > b.length().to_double() {
-    return if n == 0 { Some(b[0:0]) } else { None }
+  if at > b.size {
+    return if n == 0 { Some(b""[:]) } else { None }
   }
-  let a = at.to_int()
-  if b.length() - a >= n {
-    Some(b[a:a + n])
+  if b.size - at >= n.to_double() {
+    let got = (b.read)(at, n)
+    if got.length() >= n { Some(got[0:n]) } else { None }
   } else {
     None
   }
@@ -49,12 +69,12 @@ fn get_(b : Bytes, at : Double, n : Int) -> BytesView? {
 
 ///|
 /// What there is from `at` on, up to a chunk (readSync's `rest`).
-fn rest_(b : Bytes, at : Double) -> BytesView {
-  if at < 0.0 || at >= b.length().to_double() {
-    return b[0:0]
+fn rest_(b : Src, at : Double) -> BytesView {
+  if at < 0.0 || at >= b.size {
+    return b""[:]
   }
-  let a = at.to_int()
-  b[a:@cmp.minimum(b.length(), a + chunk)]
+  let n = @cmp.minimum(b.size - at, chunk.to_double()).to_int()
+  (b.read)(at, n)[:]
 }
 
 ///|
@@ -112,6 +132,12 @@ fn ud(u : UInt) -> Double {
 ///|
 /// The size the picture's or film's bytes `b` say it is shown at, with what else a film says.
 pub fn facts_of(b : Bytes) -> Facts? {
+  facts_of_src(Src::of_bytes(b))
+}
+
+///|
+/// The same, of bytes read where `b` says.
+pub fn facts_of_src(b : Src) -> Facts? {
   let head = match get_(b, 0.0, 32) {
     Some(h) => h
     None => rest_(b, 0.0)
@@ -162,7 +188,7 @@ pub fn header_size(b : BytesView) -> Facts? {
 }
 
 ///|
-fn jpeg_size(b : Bytes) -> Facts? {
+fn jpeg_size(b : Src) -> Facts? {
   let mut at = 2.0
   let mut turned = false
   for _step in 0..<steps {
@@ -254,7 +280,7 @@ priv struct Box_ {
 }
 
 ///|
-fn box_at(b : Bytes, at : Double, end : Double) -> Box_? {
+fn box_at(b : Src, at : Double, end : Double) -> Box_? {
   let h = match get_(b, at, 16) {
     Some(h) => h
     None => rest_(b, at)
@@ -286,7 +312,7 @@ fn box_at(b : Bytes, at : Double, end : Double) -> Box_? {
 }
 
 ///|
-fn child(b : Bytes, start : Double, end : Double, kind : String) -> Box_? {
+fn child(b : Src, start : Double, end : Double, kind : String) -> Box_? {
   let mut at = start
   for _step in 0..<steps {
     if !(at < end) {
@@ -302,7 +328,7 @@ fn child(b : Bytes, start : Double, end : Double, kind : String) -> Box_? {
 }
 
 ///|
-fn film_facts(b : Bytes) -> Facts? {
+fn film_facts(b : Src) -> Facts? {
   guard child(b, 0.0, 9007199254740991.0, "moov") is Some(moov) else { return None }
   let mut at = moov.start
   for _step in 0..<steps {
@@ -326,7 +352,7 @@ fn film_facts(b : Bytes) -> Facts? {
 }
 
 ///|
-fn film_time(b : Bytes, moov : Box_, trak : Box_) -> (Double?, Double?) {
+fn film_time(b : Src, moov : Box_, trak : Box_) -> (Double?, Double?) {
   let mdia = child(b, trak.start, trak.end, "mdia")
   let mdhd = match mdia {
     Some(m) => child(b, m.start, m.end, "mdhd")
@@ -379,7 +405,7 @@ fn film_time(b : Bytes, moov : Box_, trak : Box_) -> (Double?, Double?) {
 }
 
 ///|
-fn time_of(b : Bytes, header : Box_) -> Double? {
+fn time_of(b : Src, header : Box_) -> Double? {
   guard get_(b, header.start, 1) is Some(version) else { return None }
   let wide = version[0] == b'\x01'
   guard get_(b, header.start + (if wide { 20.0 } else { 12.0 }), if wide { 12 } else { 8 }) is Some(v) else {
@@ -413,7 +439,7 @@ pub fn js_round(x : Double) -> Double {
 }
 
 ///|
-fn track_size(b : Bytes, tkhd : Box_) -> Facts? {
+fn track_size(b : Src, tkhd : Box_) -> Facts? {
   guard get_(b, tkhd.start, 1) is Some(version) else { return None }
   let matrix = tkhd.start + (if version[0] == b'\x01' { 52.0 } else { 40.0 })
   guard get_(b, matrix, 44) is Some(v) else { return None }

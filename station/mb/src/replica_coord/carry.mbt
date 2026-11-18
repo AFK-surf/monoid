@@ -116,7 +116,7 @@ pub fn own_skills() -> Array[String] {
 ///|
 /// carry.ts's gathering, placing and preview, as a part of the station asks them: station/replica's in this program
 /// unless the station says otherwise (a test's).
-pub struct Work {
+pub(all) struct Work {
   gather : async (String, String, String, Bool, String, String?, Array[String]?) -> J
   place : async (String, String, String, String?, String?, String?, Bool) -> J
   preview : async (String, String, String, Bool) -> J

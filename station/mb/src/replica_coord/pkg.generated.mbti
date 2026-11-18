@@ -285,6 +285,8 @@ pub fn sha256_text(String) -> String
 
 pub fn starts_with(String, String) -> Bool
 
+pub fn station_words(@jsjson.JValue, @jsjson.JValue) -> @session_chats.Words
+
 pub let stillfail_surface : String
 
 pub fn str_at(@jsjson.JValue, String) -> String?
@@ -330,12 +332,12 @@ pub(all) suberror Thrown {
 pub impl Show for Thrown
 
 // Types and methods
-pub struct Answer {
+pub(all) struct Answer {
   value : @jsjson.JValue
   body : Body?
 }
 
-pub struct AsksDeps {
+pub(all) struct AsksDeps {
   data : String
   here : () -> String?
   roster : (String) -> Array[Member]?
@@ -349,7 +351,7 @@ pub struct AsksDeps {
   manages : (@jsjson.JValue) -> Bool
 }
 
-pub enum Body {
+pub(all) enum Body {
   Whole(Bytes)
   File(String, Double, Double)
   Stream(async () -> Bytes?)
@@ -357,7 +359,7 @@ pub enum Body {
 pub fn Body::reader(Self, Fs) -> async () -> Bytes?
 pub async fn Body::whole(Self, Fs, most? : Double) -> Bytes
 
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   after : (Double, () -> Unit) -> () -> Unit
 }
@@ -406,7 +408,7 @@ pub async fn Copies::start(Self) -> Unit
 pub async fn Copies::take_over(Self, String, String, String, Array[(String, String)], String?) -> Unit
 pub fn Copies::told(Self, @jsjson.JValue) -> Unit
 
-pub struct CopiesDeps {
+pub(all) struct CopiesDeps {
   data : String
   here : () -> String?
   places : () -> @jsjson.JValue
@@ -546,7 +548,7 @@ pub async fn Handover::store(Self, String, Array[@jsjson.JValue]) -> @jsjson.JVa
 pub async fn Handover::together(Self, String, reads? : SessionReads?) -> Array[String]
 pub fn Handover::waits_for_turn(Self, String) -> Bool
 
-pub struct HandoverDeps {
+pub(all) struct HandoverDeps {
   data : String
   here : () -> String?
   home : () -> String?
@@ -624,7 +626,7 @@ pub struct MadeGit {
 }
 pub fn MadeGit::to_json(Self) -> @jsjson.JValue
 
-pub struct Member {
+pub(all) struct Member {
   id : String
   name : String
   tasks : Bool
@@ -737,7 +739,7 @@ pub async fn RetireAsks::new(World, AsksDeps, Retire) -> Self
 pub async fn RetireAsks::settle(Self) -> Unit
 pub async fn RetireAsks::tool(Self, String, @jsjson.JValue) -> @jsjson.JValue
 
-pub struct RetireCopies {
+pub(all) struct RetireCopies {
   settle_export : async () -> Unit
   bring_to : async (String, String) -> String
   take_over : async (String, String, String, Array[(String, String)], String?) -> Unit
@@ -745,7 +747,7 @@ pub struct RetireCopies {
   restored : () -> @jsjson.JValue?
 }
 
-pub struct RetireDeps {
+pub(all) struct RetireDeps {
   data : String
   here : () -> String?
   home : () -> String?
@@ -779,7 +781,7 @@ pub struct RetireDeps {
   used : async (String, String, Bool) -> Array[String]
 }
 
-pub struct RetireJobs {
+pub(all) struct RetireJobs {
   start : async (String, @jsjson.JValue) -> @jsjson.JValue
   running : async (String, String, String) -> Bool
   say : async (String, String) -> Unit
@@ -861,21 +863,21 @@ pub struct Told {
 pub fn Told::nothing() -> Self
 pub fn Told::to_json(Self) -> @jsjson.JValue
 
-pub struct ToldSteps {
+pub(all) struct ToldSteps {
   asked : async (String, String, () -> @jsjson.JValue, ((@jsjson.JValue) -> Unit)?) -> @jsjson.JValue
   run : async (String, String, async () -> @jsjson.JValue, (async () -> @jsjson.JValue)?) -> @jsjson.JValue
   let_go : (String, String, String) -> Unit
   settle : async () -> Unit
 }
 
-pub struct Work {
+pub(all) struct Work {
   gather : async (String, String, String, Bool, String, String?, Array[String]?) -> @jsjson.JValue
   place : async (String, String, String, String?, String?, String?, Bool) -> @jsjson.JValue
   preview : async (String, String, String, Bool) -> @jsjson.JValue
   drop : (async (String) -> Unit)?
 }
 
-pub struct World {
+pub(all) struct World {
   host : @host.Host
   fs : Fs
   call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue

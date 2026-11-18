@@ -18,7 +18,7 @@ pub let lobby : String = "lobby"
 ///|
 /// The signing of what the station says and the check of what it hears (the shell's `ed25519.sign` and
 /// `crypto.verify`): a seed's public half, a signature of bytes by a seed (hex), whether one is a device's.
-pub struct Signer {
+pub(all) struct Signer {
   public_key : (String) -> String?
   sign : (String, Bytes) -> String?
   verify : (String, Bytes, String) -> Bool

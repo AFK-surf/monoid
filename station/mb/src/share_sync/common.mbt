@@ -555,7 +555,7 @@ pub fn Tasks::spawn(self : Tasks, f : async () -> Unit) -> Unit {
 ///|
 /// A part's time: now (ms since the epoch) and a callback after a while, called off by what it returns (ops/fibers.ts
 /// `Fibers.now`, `after`).
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   after : (Double, () -> Unit) -> () -> Unit
 }
@@ -576,7 +576,7 @@ pub fn Clock::live(rt : @effect.Runtime) -> Clock {
 
 ///|
 /// What a part says in the station's log (ops/log.ts): its level, its part, its words and what goes with them.
-pub struct Log {
+pub(all) struct Log {
   say : (String, String, String, Json) -> Unit
 }
 

@@ -984,19 +984,44 @@ pub fn Sharing::set_on_hosted(self : Sharing, f : ((String, String) -> Unit)?) -
 // ── the overview ──
 
 ///|
-/// What the overview says of a profile's sharing (None: not shared).
-pub fn Sharing::profile_view(self : Sharing, p : Json) -> Json? {
+/// What the overview says of a profile's sharing (None: not shared). `workspace`: the viewer's; the stations it names
+/// (`users`, `allow`) are this one and those of that workspace only, so a member never sees a station of a workspace of
+/// this station's they are not in, which they could only show by its id (None: all of them).
+pub fn Sharing::profile_view(self : Sharing, p : Json, workspace? : String? = None) -> Json? {
   guard get(Some(p), "share") is Some(Object(sh)) && sh.get("id") is Some(String(id)) else { return None }
+  let me = self.me()
+  let rosters = match workspace {
+    None => None
+    Some(_) => self.rosters()
+  }
+  let seen = fn(station : String) -> Bool {
+    match (rosters, workspace) {
+      (Some(r), Some(ws)) =>
+        Some(station) == me ||
+        (match r.get(station) {
+          Some(wss) => wss.contains(ws)
+          None => false
+        })
+      _ => true
+    }
+  }
+  let seen_of = fn(v : Json) -> Json {
+    match (v, rosters) {
+      (Array(xs), Some(_)) => Json::array(xs.filter(x => x is String(st) && seen(st)))
+      (other, _) => other
+    }
+  }
   if sh.get("borrowed") is Some(True) {
     let host = match sh.get("host") {
       None | Some(Null) => ""
       h => js_string(h)
     }
+    // The allowance is the host's, naming the stations of each of its workspaces: only this one's and the viewer's.
     let allow = match entry_of(self.borrowed(), id) {
       Some(had) =>
         match had.get("allow") {
           None | Some(Null) => jnull()
-          Some(a) => a
+          Some(a) => seen_of(a)
         }
       None => jnull()
     }
@@ -1014,7 +1039,7 @@ pub fn Sharing::profile_view(self : Sharing, p : Json) -> Json? {
   let users = match entry_of(self.hosted(), id) {
     Some(h) =>
       match h.get("told") {
-        Some(Object(told)) => js_keys(told).filter(k => js_num(told.get(k)) >= 0.0)
+        Some(Object(told)) => js_keys(told).filter(k => js_num(told.get(k)) >= 0.0 && seen(k))
         _ => []
       }
     None => []
@@ -1023,8 +1048,8 @@ pub fn Sharing::profile_view(self : Sharing, p : Json) -> Json? {
     jobj([
       ("id", jstr(id)),
       ("role", jstr("host")),
-      ("host", jstr(self.me().unwrap_or(""))),
-      ("allow", allow_of(sh.get("allow"))),
+      ("host", jstr(me.unwrap_or(""))),
+      ("allow", seen_of(allow_of(sh.get("allow")))),
       ("reachable", jnull()),
       ("users", jstrs(users)),
     ]),

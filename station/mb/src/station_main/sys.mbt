@@ -96,6 +96,10 @@ extern "C" fn machine_ffi() -> Bytes = "sfs_machine"
 extern "C" fn disk_of_ffi(path : Bytes) -> Bytes = "sfs_disk_of"
 
 ///|
+#borrow(path)
+extern "C" fn executable_ffi(path : Bytes) -> Int = "sfs_executable"
+
+///|
 extern "C" fn lan_addrs_ffi() -> Bytes = "sfs_lan_addrs"
 
 ///|
@@ -273,6 +277,12 @@ fn parsed(b : Bytes) -> Json? {
 /// footprint}` (the last two this process's).
 pub fn machine() -> Json {
   parsed(machine_ffi()).unwrap_or(Json::object({}))
+}
+
+///|
+/// Whether `path` is a file that can be run (a regular file with an execute bit; on Windows, a file).
+pub fn executable(path : String) -> Bool {
+  executable_ffi(cstr(path)) != 0
 }
 
 ///|
@@ -475,7 +485,7 @@ pub fn spawn(
   let why = FixedArray::make(512, b'\x00')
   let pid = spawn_ffi(
     id,
-    cstr(program),
+    cstr(resolved_program(program, env)),
     nul_joined(args),
     env_bytes,
     cstr(cwd.unwrap_or("")),
@@ -495,6 +505,36 @@ pub fn spawn(
     raise SysError(@utf8.decode_lossy(said))
   }
   { pid, host, id, stdin: out[1], events }
+}
+
+///|
+/// A command named bare (no directory) as the child is started with it: where the PATH it is given (else this
+/// process's) has it, else the system's own directories (/usr/bin, /bin, /usr/sbin, /sbin: a station started with a
+/// PATH of none of them, as a test's with Node kept out, still runs `ps`, `lsof`, `git`); as given where none has it,
+/// or on Windows (CreateProcess's own search).
+fn resolved_program(program : String, env : Array[(String, String)]?) -> String {
+  if is_windows() || program.contains("/") || program == "" {
+    return program
+  }
+  let given = match env {
+    Some(kvs) =>
+      match kvs.iter().find_first(kv => kv.0 == "PATH") {
+        Some(kv) => Some(kv.1)
+        None => None
+      }
+    None => env_get("PATH")
+  }
+  let dirs : Array[String] = match given {
+    Some(p) => p.split(":").map(d => if d.is_empty() { "." } else { d.to_owned() }).collect()
+    None => []
+  }
+  for d in [..dirs, "/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+    let at = d + "/" + program
+    if executable(at) {
+      return at
+    }
+  }
+  program
 }
 
 ///|

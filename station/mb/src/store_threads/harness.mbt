@@ -430,3 +430,17 @@ pub async fn harness(host : @host.Host, db_path : String) -> Unit {
   }
   db.close()
 }
+
+///|
+/// One of the store's calls by its TypeScript name (store.ts), its arguments and answer as JSON: what the station's
+/// own parts ask of it by name (station_main's agents' side), as this harness answers the test.
+pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> Json raise {
+  let h : Harness = { store: self, worker: None, rt: @effect.runtime(), gates: Map([]), held: 0 }
+  h.call(op, args)
+}
+
+///|
+/// Its time now (what its writes are stamped with): the station's clock, set before each use.
+pub fn Store::set_now(self : Store, now : Double) -> Unit {
+  self.now = now
+}

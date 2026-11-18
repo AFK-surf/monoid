@@ -2,7 +2,7 @@
 // What the export is told (export.ts `Told`) and says (`Passed` with `empty`) are as the TypeScript has them.
 
 ///|
-pub struct Runner {
+pub(all) struct Runner {
   places : async (J) -> Unit
   pass : async (J) -> J
   new_generations : async (Double) -> Unit

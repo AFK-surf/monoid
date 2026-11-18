@@ -6,7 +6,7 @@
 
 ///|
 /// What another station is refused with over the transport (mesh/bus.ts Refused).
-pub suberror BusRefused {
+pub(all) suberror BusRefused {
   BusRefused(String)
 }
 

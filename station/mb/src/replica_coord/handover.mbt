@@ -178,7 +178,7 @@ fn took_of(began : J?, end : Double) -> (J, Double) {
 
 ///|
 /// The steps asked of another station that are told back, and those it asks of this one (move/told.ts).
-pub struct ToldSteps {
+pub(all) struct ToldSteps {
   asked : async (String, String, () -> J, ((J) -> Unit)?) -> J
   run : async (String, String, async () -> J, (async () -> J)?) -> J
   let_go : (String, String, String) -> Unit
@@ -196,7 +196,7 @@ pub struct SessionReads {
 ///|
 /// What Handover is given (handover.ts `HandoverDeps`): the store, the hub, the connects, the jobs and the accounts are
 /// the station's parts, asked by name (`store.getSession`, `hub.holdChat`...).
-pub struct HandoverDeps {
+pub(all) struct HandoverDeps {
   data : String
   here : () -> String?
   home : () -> String?

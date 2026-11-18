@@ -7,11 +7,11 @@
 // (`heartbeat`), `stillfail heap`'s requests, and a handover: what it holds carried to the next process (`carry`,
 // run/handover.json) and itself ended; the next, started beside it, `taking` it up once it is gone.
 //
-// What the TypeScript station's parts do beyond these (the hub's actors and their runtimes, the mesh, the control
-// plane's presence, the connects, the jobs, the vault, the drive, the browser, the devices, the copies, the moves)
-// are the MoonBit packages beside this one (session_hub, mesh_runtime, cloud_net, slack, feishu, comma, jobs_host,
-// vault_service, drive, browser, adb_devices, replica_coord, move_coord): each held to its TypeScript by its harness,
-// none put together here yet (station/mb/src/station_main/AGENTS.md says what is and is not).
+// What the TypeScript station's parts do beyond these are put together on the composition bus (live_bus.mbt) by the
+// live slices, started once the store opens: the platform (the control plane and its presence, the mesh, the readers,
+// the events, the admin API, the rigs) is P5-1's (live_p5_1_*.mbt); the hub's actors, the connects, the jobs, the
+// vault, the drive, the browser, the devices, the copies and the moves are the others' (station/mb/src/station_main/
+// AGENTS.md says what is and is not).
 
 ///|
 /// `run`'s exit when another station runs the data directory (ops/held.ts HELD).
@@ -251,6 +251,8 @@ priv struct Station {
   mut mcp_port : Int?
   mut admin_port : Int?
   mcp_token : String
+  /// The composition bus, once the store opened (live_bus.mbt): what the live parts fill in.
+  mut bus : LiveBus?
 }
 
 ///|
@@ -267,9 +269,9 @@ fn Station::say_health(self : Station) -> Unit {
     "pid": Json::number(@drive.pid().to_double()),
     "updatedAt": Json::number(wall_ms().to_double()),
     "heldMaxMs": Json::number(self.held_ms.round()),
-    "front": Json::string("direct"),
-    "presenceOnline": Json::boolean(false),
-    "relayConflict": Json::boolean(false),
+    "front": Json::string(match self.bus { Some(b) => (b.mesh_front_kind.val)(); None => "direct" }),
+    "presenceOnline": Json::boolean(match self.bus { Some(b) => (b.cloud_reached.val)(); None => false }),
+    "relayConflict": Json::boolean(match self.bus { Some(b) => (b.mesh_relay_conflict.val)(); None => false }),
   }
   write_whole(path([self.data, "run", "health.json"]), health.stringify() + "\n")
 }
@@ -305,14 +307,22 @@ fn Station::status(self : Station) -> Json {
       "need": Json::null(),
     } : Json)
   })
-  {
+  let reached = match self.bus {
+    Some(b) => (b.cloud_reached.val)()
+    None => false
+  }
+  let front = match self.bus {
+    Some(b) => (b.mesh_front_kind.val)()
+    None => "direct"
+  }
+  let status : Map[String, Json] = {
     "version": Json::string(self.version),
     "enrolled": Json::boolean(enrolled),
     "origin": text("origin"),
     "workspace": text("workspace"),
     "workspaceName": text("workspace_name"),
     "station": text("station"),
-    "reached": Json::boolean(false),
+    "reached": Json::boolean(reached),
     "agents": {
       "busy": Json::number(running.length().to_double()),
       "warm": Json::number(0.0),
@@ -320,8 +330,24 @@ fn Station::status(self : Station) -> Json {
     },
     "waiting": Json::number(0.0),
     "tasks": Json::array(tasks[:if tasks.length() > 50 { 50 } else { tasks.length() }].to_array()),
-    "health": { "front": Json::string("direct"), "presenceOnline": Json::boolean(false) },
+    "health": { "front": Json::string(front), "presenceOnline": Json::boolean(reached) },
   }
+  // (what the agents' side says of its sessions, where it says it)
+  match self.bus {
+    Some(b) =>
+      match (b.status_agents.val)() {
+        Some(Object(m)) =>
+          for k in ["agents", "waiting", "tasks"] {
+            match m.get(k) {
+              Some(v) => status[k] = v
+              None => ()
+            }
+          }
+        _ => ()
+      }
+    None => ()
+  }
+  Json::object(status)
 }
 
 ///|
@@ -357,6 +383,15 @@ async fn Station::door(self : Station, r : Request, conn : Json) -> Reply? {
 async fn Station::mcp(self : Station, r : Request) -> Reply {
   if r.path() == "/health" {
     return plain(200, "ok")
+  }
+  // (the agents' side's own, where it says it: its auth, listings, what is outward, `station_tool`)
+  match self.bus {
+    Some(b) =>
+      match b.mcp_handle.val {
+        Some(h) => return h(r)
+        None => ()
+      }
+    None => ()
   }
   guard r.meth == "POST" else { return plain(405, "") }
   let asked = attempt(() => @json.parse(@utf8.decode_lossy(r.body))).unwrap_or(Json::null())
@@ -509,8 +544,12 @@ async fn Station::hand_over(self : Station) -> Unit {
   self.handing = true
   // (what the parts carry is gathered first, by part: StationParts `carried`)
   let carried = Json::object(self.parts.carried())
+  let sessions = match self.bus {
+    Some(b) => (b.handover_sessions.val)()
+    None => []
+  }
   let handover : Json = {
-    "sessions": Json::array([]),
+    "sessions": Json::array(sessions),
     "from": Json::number(@drive.pid().to_double()),
     "at": Json::number(wall_ms().to_double()),
   }
@@ -549,10 +588,31 @@ fn Station::told(self : Station, line : String) -> Unit {
     }
     { "op": String("stop"), .. } => self.stop("asked to stop")
     { "op": String("handover"), .. } => ignore(self.host.rt.fork(name="handover", async fn() { self.hand_over() }))
-    { "op": String("drain"), .. } => self.control.say({ "drained": Json::string("idle") })
+    { "op": String("drain"), .. } =>
+      ignore(
+        self.host.rt.fork(name="drain", async fn() {
+          let d = match self.bus {
+            Some(b) => (b.drain_wait.val)()
+            None => "idle"
+          }
+          self.control.say({ "drained": Json::string(d) })
+        }),
+      )
     { "op": String("hup"), .. } => {
       self.lang = station_lang(self.data)
       self.read_place()
+      // (`stillfail update --beta|--stable` asks by SIGHUP, its channel in run/channel-ask: the updates' to answer)
+      match self.bus {
+        Some(b) =>
+          ignore(
+            self.host.rt.fork(name="channel ask", async fn() {
+              ignore((b.coord_ask.val)("updates.hup", Json::null())) catch {
+                _ => ()
+              }
+            }),
+          )
+        None => ()
+      }
     }
     _ => ()
   }
@@ -566,6 +626,9 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     return 2
   }
   let data = data_dir(args)
+  // No child of this process (a runner, a reader, a job) inherits the launcher's channel or anything else it holds:
+  // one that did would keep the launcher's pipes open past a handover.
+  ignore(keep_descriptors())
   let fds = int_list(flag(args, "--launcher-fds"))
   let pipe = flag(args, "--launcher-pipe")
   let handed_fds = match fds {
@@ -640,6 +703,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     mcp_port: None,
     admin_port: None,
     mcp_token: @drive.hex(token_bytes),
+    bus: None,
   }
   s.read_place()
   if control.handed {
@@ -688,7 +752,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     None => ()
   }
   // Its key (made where there is none) and its store, the schema made or brought up.
-  let _key = @cloud_lock.load_key(host, data) catch {
+  let key = @cloud_lock.load_key(host, data) catch {
     e => {
       err_write("the station's key: \{e}\n")
       control.say({ "failed": Json::string("the station's key: \{e}") })
@@ -696,21 +760,77 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     }
   }
   ignore(attempt(() => @drive.mkdir(path([data, "run"]), true)))
+  // The process holding the sessions before this one, looked for before this one writes its own.
+  let previous_pid = held_by_hub(data)
   let db_path = path([data, "stillfail.db"])
+  // A lost station's chats brought here, put in before the store opens (main.ts `beforeStore`).
+  before_store_p5_1(host, data, db_path)
   let opened = try {
     let db = @sql.Db::create(host, db_path, wait=5000)
     @store_schema.open(db, host, db_path, wall_ms())
-    Ok(@store_sessions.Store::open(db, () => wall_ms(), 0L))
+    Ok((db, @store_sessions.Store::open(db, () => wall_ms(), 0L)))
   } catch {
     e => Err(e)
   }
-  match opened {
-    Ok(st) => s.store = Some(st)
+  let (db, st) = match opened {
+    Ok((db, st)) => {
+      s.store = Some(st)
+      (db, st)
+    }
     Err(e) => {
       err_write("the store does not open: \{e}\n")
       control.say({ "failed": Json::string("the store does not open: \{e}") })
       return 1
     }
+  }
+  // The live parts, on the bus (live_bus.mbt), each filling in its own.
+  let bus = LiveBus::new(
+    host,
+    argv0,
+    args,
+    data,
+    app,
+    s.version,
+    key,
+    db,
+    st,
+    s.parts,
+    s.stopped,
+    control.handed,
+    s.mcp_token,
+    previous_pid,
+    v => control.say(v),
+    why => s.stop(why),
+  )
+  s.bus = Some(bus)
+  start_live_p5_1(bus) catch {
+    e => {
+      err_write("the station's platform did not start: \{e}\n")
+      control.say({ "failed": Json::string("the station's platform did not start: \{e}") })
+      return 1
+    }
+  }
+  // How it is said again as the control plane is heard or not (main.ts `sayHealth` on `plane.state.listen`).
+  let online = Ref((bus.cloud_reached.val)())
+  ignore(
+    (bus.cloud_listen.val)(_ => {
+      let now = (bus.cloud_reached.val)()
+      if now != online.val {
+        online.val = now
+        s.say_health()
+      }
+    }),
+  )
+  // A whole station: the hub first, so the jobs' side finds its sessions' program (`program.has`) and runs `#jobs` and
+  // `#remote` there; a station that only runs tasks: its jobs and the devices it reaches, no hub, connects or desktop.
+  if bus.as_rig() {
+    start_live_p5_3(bus)
+    start_live_p5_4(bus, rig=true)
+  } else {
+    start_live_p5_2(bus)
+    start_live_p5_3(bus)
+    start_live_p5_4(bus)
+    start_live_p5_5(bus)
   }
   s.say_health()
   s.up = true
@@ -771,6 +891,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
       }
       write_whole(path([data, "run", "hub.json"]), "{\"pid\":\{@drive.pid()}}\n")
       let handover = path([data, "run", "handover.json"])
+      let handed_over = read_json(handover)
       if read_text(handover) is Some(_) {
         control.say({ "taking": Json::boolean(true) })
         @drive.rm_force(handover)
@@ -801,9 +922,12 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
             None => port
           }
           s.mcp_port = Some(shown)
-          s.parts.door_open("http://127.0.0.1:\{shown}/mcp")
+          let url = "http://127.0.0.1:\{shown}/mcp"
+          s.parts.door_open(url)
           write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")
           control.say({ "serving": Json::string("mcp"), "port": Json::number(port.to_double()) })
+          ignore(bus.door_ready.succeed(url))
+          ignore(host.rt.fork(name="take handover", async fn() { (bus.take_handover.val)(handed_over) }))
           serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
         }
         None => {
@@ -837,6 +961,13 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   ignore(answer_heap_request(data, () => s.heap()))
   let why = s.stopped.wait()
   ignore(why)
+  // (what the live parts started let go of before the process ends: their processes, what they hand over)
+  stop_live_p5_1()
+  // (what the agents' side ends as the station stops, not handing over: its sessions' processes)
+  match s.bus {
+    Some(b) => ignore(@effect.timeout(10_000, async fn() { ignore((b.hub_ask.val)("shutdown", Json::null())) }))
+    None => ()
+  }
   0
 }
 

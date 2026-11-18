@@ -243,3 +243,26 @@ pub async fn gate(
     "\{elsewhere} (the chat holding it runs adb under its agent or from its own directory, \{workspace})",
   )
 }
+
+///|
+/// devices/module.ts `admitFor(session)`: why `holders` may not use a device forwarded to session `key`'s port, or
+/// None (a process under its agent or in one of its jobs, or working in its own directory), as `gate` decides a phone's.
+pub async fn session_gate(w : World, key : String, holders : Array[Int], elsewhere : String) -> String? {
+  let deps : GateDeps = {
+    session: async fn(id) { jo([("workspace", get(w.store("getSession", [js(id)]), "workspace"))]) },
+    table: async fn() { w.ask("platform.processTable", []) },
+    runners: async fn(id) {
+      list_of(Some(w.ask("agents.runners", [js(id)]))).map(x => num_of(Some(x)).unwrap_or(-1.0).to_int())
+    },
+    jobs: async fn() {
+      list_of(Some(w.ask("jobs.watched", []))).map(j => {
+        let session = get(j, "session")
+        (num_of(at(Some(j), "pgid")).unwrap_or(-1.0).to_int(), fn(id : String) -> Bool raise { jeq(session, js(id)) })
+      })
+    },
+    cwds: async fn(pids) { cwds_of(w.ask("platform.cwds", [ja(pids.map(ji))])) },
+    self_pid: num_of(Some(w.ask("process.pid", []))).unwrap_or(-1.0).to_int(),
+    elsewhere: Some(elsewhere),
+  }
+  gate(deps, w, key, holders)
+}

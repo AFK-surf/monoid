@@ -52,7 +52,7 @@ function Uninstall([bool] $purge) {
   # command lines, as install.ps1 ends them before it replaces a release).
   $said = $null
   try { $said = Get-Content (Join-Path $full 'run\station.json') -Raw | ConvertFrom-Json } catch {}
-  $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains($app) -or ($said.pid -and $_.ProcessId -eq [int]$said.pid -and $_.CommandLine.Contains($full))) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe' } }
+  $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains($app) -or ($said.pid -and $_.ProcessId -eq [int]$said.pid -and $_.CommandLine.Contains($full))) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe', 'stillfail-reader.exe' } }
   & $ours | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   $deadline = (Get-Date).AddSeconds(5)
   while ((& $ours) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
@@ -97,15 +97,13 @@ switch ("$($a[0]) $($a[1])".Trim()) {
   { $_ -eq 'lock status' -or $_ -eq 'lock reset' } { Run (@('lock', $a[1]) + $(if ($a.Count -gt 2) { $a[2..($a.Count - 1)] } else { @() }) + @('--data', $data)) }
   { $_ -like 'station enroll*' } { Run (@('enroll') + $a[2..($a.Count)] + @('--data', $data)) }
   { $a[0] -eq 'update' } {
-    # The channel's latest release, verified by this release's Node (the station's `update`: its signature, newer than
-    # this one) and installed by the installer this release carries, told what it must hash to
-    # (scripts/release-sign.ts). Not the cloud's installer: whoever serves it could put anything here. Node only says
-    # what to run: the installer ends what runs from the release, which it is.
+    # The channel's latest release, verified by this release's station (its `update`: its signature, newer than this
+    # one) and installed by the installer this release carries, told what it must hash to (scripts/release-sign.ts).
+    # Not the cloud's installer: whoever serves it could put anything here. The station only says what to run: the
+    # installer ends what runs from the release, which it is.
     if ($a.Count -gt 2 -or ($a.Count -eq 2 -and $a[1] -notin '--beta', '--stable')) { [Console]::Error.WriteLine('usage: stillfail update [--beta|--stable]'); exit 2 }
-    $node = if ($env:STILLFAIL_NODE) { $env:STILLFAIL_NODE } else { Join-Path $here 'node\node.exe' }
-    $main = Join-Path $here 'station\main.js'
-    if (-not (Test-Path -LiteralPath $node) -or -not (Test-Path -LiteralPath $main)) { [Console]::Error.WriteLine("stillfail update: $here is not an installed release (no node\node.exe or station\main.js)"); exit 1 }
-    $plan = & $node $main update @($a[1..($a.Count)] | Where-Object { $_ }) --app $here --data $data
+    if (-not (Test-Path -LiteralPath $station)) { [Console]::Error.WriteLine("stillfail update: $here is not an installed release (no $station)"); exit 1 }
+    $plan = & $station update @($a[1..($a.Count)] | Where-Object { $_ }) --app $here --data $data
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $script = $null
     foreach ($line in @($plan)) {

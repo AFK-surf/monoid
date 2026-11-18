@@ -76,7 +76,7 @@ pub let skipped : Array[String] = ["__pycache__", "node_modules", ".venv", ".git
 ///|
 /// A directory's watch (ops/follow.ts `FollowedTree`, or a file's directory as `fs.watch` follows it): looked at again
 /// (`scan`: why it could not be followed, None when it is), and let go.
-pub struct Watcher {
+pub(all) struct Watcher {
   close : () -> Unit
   scan : async () -> String?
 }
@@ -85,7 +85,7 @@ pub struct Watcher {
 /// How the station follows directories (the machine's own): a tree from `root` (each directory `into` says, `most` at
 /// most; `changed` told what changed, `failed` a watch the system took back), and one directory for one file's name in
 /// it (`changed` told the name that changed, None: something did; None given back where it cannot be watched now).
-pub struct Watching {
+pub(all) struct Watching {
   tree : (String, (String) -> Bool, Int, (String) -> Unit, (String) -> Unit) -> Watcher
   dir : (String, (String?) -> Unit, () -> Unit) -> Watcher?
 }
@@ -101,7 +101,7 @@ pub fn Watching::none() -> Watching {
 
 ///|
 /// What the sharing is given (index.ts `SharingDeps`).
-pub struct SharingDeps {
+pub(all) struct SharingDeps {
   data : String
   config : Config
   cloud : Cloud

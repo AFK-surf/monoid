@@ -237,3 +237,52 @@ test("a Windows download broken on the way or by a gateway is tried again; a ref
   assert.ok(asked.length >= 4, asked.join());
   assert.ok(!existsSync(join(dir, "got")), "nothing left of it");
 });
+
+test("a Windows release with no NODE_VERSION (the MoonBit station) gets no Node: no download, no node.exe, the old ones' cache taken away", () => {
+  const script = windowsInstallScript("https://ember.test", "stable", "en");
+  const from = script.indexOf("$nodeDir = $null\nif (Test-Path -LiteralPath (Join-Path $new 'NODE_VERSION')) {\n");
+  assert.ok(from > 0);
+  const to = script.indexOf("\n}\n", from);
+  const block = script.slice(from, to + 3);
+  // Every Node the installer asks for, and every node.exe it puts in the release, only inside that block.
+  for (const what of ["releases/node/", "node\\node.exe", "Get-Command node.exe"]) {
+    const outside = script.replace(block, "");
+    assert.ok(block.includes(what), what);
+    assert.ok(!outside.includes(what), `${what} outside the block for a release that names its Node`);
+  }
+  // Its cache beside the data: the others' where it runs on one, all of it where it runs on none.
+  assert.match(script, /if \(\$nodeDir\) \{\n  Get-ChildItem \(Join-Path \$data 'node'\) -Directory[^\n]*\n\} else \{\n  Remove-Item -LiteralPath \(Join-Path \$data 'node'\) -Recurse -Force -ErrorAction SilentlyContinue\n\}/);
+  // What runs of a release is ended by its programs' names, the MoonBit station's among them.
+  assert.match(script, /\$_\.Name -in 'node\.exe', 'stillfail-station\.exe', 'stillfail-station-w\.exe', 'stillfail-reader\.exe'/);
+});
+
+test("the Windows installer's Node step, run on a release with no NODE_VERSION, downloads nothing and puts no Node in it", { skip: !powershell && "no PowerShell" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "install-no-node-"));
+  try {
+    const script = windowsInstallScript("https://ember.test", "stable", "en");
+    const from = script.indexOf("$nodeDir = $null\n");
+    const block = script.slice(from, script.indexOf("\n}\n", from) + 3);
+    const file = join(dir, "node-step.ps1");
+    const asked = join(dir, "asked");
+    writeFileSync(file, "﻿" + [
+      "$ErrorActionPreference = 'Stop'",
+      "function Fail([string]$t) { throw $t }",
+      "function Say([string]$t) { }",
+      "function Download { Add-Content -LiteralPath $env:TEST_ASKED -Value ($args -join ' ') }",
+      "$new = Join-Path $env:TEST_DIR 'new'; $data = Join-Path $env:TEST_DIR 'data'; $tmp = Join-Path $env:TEST_DIR 'tmp'; $origin = 'https://ember.test'",
+      "New-Item -ItemType Directory -Force $new, $data, $tmp | Out-Null",
+      block,
+      "if ($nodeDir) { 'node ' + $nodeDir } else { 'no node' }",
+    ].join("\n"));
+    const ran = spawnSync(powershell!, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file], {
+      env: { ...process.env, TEST_DIR: dir, TEST_ASKED: asked }, encoding: "utf8",
+    });
+    assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+    assert.equal(ran.stdout.trim(), "no node");
+    assert.ok(!existsSync(asked), "nothing downloaded");
+    assert.ok(!existsSync(join(dir, "new", "node")), "no node.exe in the release");
+    assert.ok(!existsSync(join(dir, "data", "node")), "no Node kept for it");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

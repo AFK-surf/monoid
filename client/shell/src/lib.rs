@@ -510,10 +510,16 @@ const PIPE_FAILED: u32 = 0xFFFF_FFFD;
 /// A frame no longer than this (the longest a read gives, and what the other side sends).
 const PIPE_MOST: u32 = 1 << 20;
 
+/// A WebSocket frame as `ws.next` gives it and `ws.send` takes it.
+enum WsFrame {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
 #[derive(Clone)]
 enum Handle {
     Response(Arc<tokio::sync::Mutex<reqwest::Response>>),
-    Ws { incoming: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>>>, outgoing: tokio::sync::mpsc::UnboundedSender<String> },
+    Ws { incoming: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<WsFrame, String>>>>, outgoing: tokio::sync::mpsc::UnboundedSender<WsFrame> },
     /// A socket to the device's own port, or a station's session on the phone's adb (`adb.open`).
     Tcp { read: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncRead + Send + Unpin>>>, write: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>> },
     Endpoint(Endpoint, Arc<Kept>),
@@ -2860,14 +2866,18 @@ impl Inner {
                 let Handle::Ws { incoming, .. } = self.handle(id_of(&a)?)? else { return Err("not a socket".into()) };
                 let frame = incoming.lock().await.recv().await;
                 match frame {
-                    Some(Ok(text)) => Ok(Answer::json(json!({ "text": text }))),
+                    Some(Ok(WsFrame::Text(text))) => Ok(Answer::json(json!({ "text": text }))),
+                    // A binary frame (Feishu's long connection speaks protobuf): its bytes, said `binary`.
+                    Some(Ok(WsFrame::Binary(b))) => Ok(Answer::bytes(json!({ "binary": true }), b)),
                     Some(Err(e)) => Err(e),
                     None => Ok(Answer::json(json!({ "end": true }))),
                 }
             }
             "ws.send" => {
                 let Handle::Ws { outgoing, .. } = self.handle(id_of(&a)?)? else { return Err("not a socket".into()) };
-                outgoing.send(str_of(&a, "text")?.to_string()).map_err(|_| "the socket is closed".to_string())?;
+                // Bytes given: a binary frame; else `text`.
+                let frame = match bytes { Some(b) => WsFrame::Binary(b), None => WsFrame::Text(str_of(&a, "text")?.to_string()) };
+                outgoing.send(frame).map_err(|_| "the socket is closed".to_string())?;
                 Ok(Answer::json(json!({})))
             }
             "storage.get" => {
@@ -3689,21 +3699,25 @@ impl Inner {
                 tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector).await.map_err(ws_error)?
             }
         };
+        // `binary`: its binary frames given too (`{binary: true}` and their bytes); else they are let go, as a socket
+        // that speaks only text takes `ws.next`'s other answers for its end.
+        let binary = a.get("binary").and_then(Value::as_bool).unwrap_or(false);
         let (incoming_tx, incoming) = tokio::sync::mpsc::unbounded_channel();
-        let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<WsFrame>();
         // One task owns the socket: reading is also what answers the server's pings; what is to be sent goes between.
         tokio::spawn(async move {
             let mut socket = socket;
             loop {
                 tokio::select! {
                     message = socket.next() => match message {
-                        Some(Ok(Message::Text(text))) => { let _ = incoming_tx.send(Ok(text.as_str().to_owned())); }
+                        Some(Ok(Message::Text(text))) => { let _ = incoming_tx.send(Ok(WsFrame::Text(text.as_str().to_owned()))); }
+                        Some(Ok(Message::Binary(b))) if binary => { let _ = incoming_tx.send(Ok(WsFrame::Binary(b.to_vec()))); }
                         Some(Ok(Message::Close(_))) | Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
                         Some(Ok(_)) => {}
                         Some(Err(e)) => { let _ = incoming_tx.send(Err(ws_error(e))); return; }
                     },
                     text = outgoing_rx.recv() => match text {
-                        Some(text) => { if let Err(e) = socket.send(Message::text(text)).await { let _ = incoming_tx.send(Err(ws_error(e))); return; } }
+                        Some(frame) => { let m = match frame { WsFrame::Text(t) => Message::text(t), WsFrame::Binary(b) => Message::binary(b) }; if let Err(e) = socket.send(m).await { let _ = incoming_tx.send(Err(ws_error(e))); return; } }
                         // The handle went (ws.close): the socket is closed.
                         None => { let _ = socket.close(None).await; return; }
                     },

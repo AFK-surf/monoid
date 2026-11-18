@@ -211,7 +211,7 @@ async fn Files::links_into(self : Files, path : String, dir : String) -> Bool {
 
 ///|
 /// A profile's home: its id, its runtimes, where it is.
-pub struct ProfileHome {
+pub(all) struct ProfileHome {
   id : String
   runtimes : Array[String]
   home : String

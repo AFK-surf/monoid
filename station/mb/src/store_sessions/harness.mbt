@@ -71,7 +71,7 @@ fn page_ops(page : SessionPage, ops : Array[Json]) -> Json raise {
 
 ///|
 /// One call of the store's, by its TypeScript name.
-fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
+pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
   let db = self.db
   match name {
     "sql" =>

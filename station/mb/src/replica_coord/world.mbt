@@ -3,7 +3,7 @@
 ///|
 /// The bytes a request or an answer carries after it (mesh/bus.ts `Bytes`): whole, a file's range read as it goes
 /// (mesh/files.ts `fileBytes`), or made as it is read (a pack, pack.mbt).
-pub enum Body {
+pub(all) enum Body {
   Whole(Bytes)
   File(String, Double, Double)
   Stream(async () -> Bytes?)
@@ -64,14 +64,14 @@ let piece : Double = 1048576.0
 
 ///|
 /// What another station answered: its value, and the bytes after it.
-pub struct Answer {
+pub(all) struct Answer {
   value : J
   body : Body?
 }
 
 ///|
 /// The station's clock and its timers (ops/fibers.ts `Fibers`): `after` sets one, what it gives back calls it off.
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   after : (Double, () -> Unit) -> () -> Unit
 }
@@ -80,7 +80,7 @@ pub struct Clock {
 /// What the station is to these parts. `call` asks a part by name (`store.getSession`, `hub.holdChat`...), its
 /// arguments as the TypeScript gives them; `ask` another station (mesh/bus.ts `ask`, `askItself` with `itself`);
 /// `log` the station's log; `words` what it says; `fork` work let go on (a `void` promise).
-pub struct World {
+pub(all) struct World {
   host : @host.Host
   fs : Fs
   call : async (String, Array[J]) -> J
@@ -228,4 +228,10 @@ pub async fn[T] Later::wait(self : Later[T]) -> T {
 ///|
 pub fn[T] Later::is_done(self : Later[T]) -> Bool {
   self.d.is_done()
+}
+
+///|
+/// The station's words (client/i18n/catalog's station.json, zh and en), as a world says them.
+pub fn station_words(zh : J, en : J) -> @session_chats.Words {
+  @session_chats.Words::new(zh, en)
 }

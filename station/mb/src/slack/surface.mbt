@@ -78,6 +78,9 @@ pub struct SurfaceOptions {
   connect : String?
   /// Keeps names and lets the pages ask without waiting (`known_person`, `known_channel`).
   book : NameBook?
+  /// The connects' names book where the station keeps one for every platform (connects/names.ts `NameBook`, the one
+  /// its connects open: connects_hub's): taken before `book`, so a connect's names are kept once.
+  names : Names?
   ping_ms : Int
   stale_ms : Int
   backoff_ms : Int
@@ -111,6 +114,7 @@ pub fn SurfaceOptions::new(
   read_file : async (String) -> Bytes,
   connect? : String? = None,
   book? : NameBook? = None,
+  names? : Names? = None,
   ping_ms? : Int = 5000,
   stale_ms? : Int = 20000,
   backoff_ms? : Int = 1000,
@@ -125,6 +129,7 @@ pub fn SurfaceOptions::new(
     client,
     connect,
     book,
+    names,
     ping_ms,
     stale_ms,
     backoff_ms,
@@ -728,6 +733,8 @@ async fn SlackSurface::post_message(self : SlackSurface, params : Params) -> J {
 /// Posted as written, in a markdown block; a long message goes out in parts, the first part's ts standing for the
 /// whole. A question (`card`: options or a field), or a login's field for its page's code, is one message with its
 /// buttons. Files (`{path, name}`) are uploaded before anything is posted, then shared into the thread below the text.
+/// In a channel shared with another organization, an installer or executable Slack Connect refuses goes as
+/// `<name>.zip` (zip.mbt).
 pub async fn SlackSurface::post(
   self : SlackSurface,
   channel : String,
@@ -737,8 +744,18 @@ pub async fn SlackSurface::post(
   card? : J? = None,
 ) -> String {
   let uploaded = []
+  let blocked = (f : J) => connect_blocked(text(at(Some(f), "name")))
+  let zipped = files.iter().any(blocked) && self.shared_out(channel)
   for f in files {
-    uploaded.push(self.upload(f))
+    let name = text(at(Some(f), "name"))
+    let bytes = (self.o.read_file)(text(at(Some(f), "path")))
+    uploaded.push(
+      if zipped && blocked(f) {
+        self.upload("\{name}.zip", zip_one(name, bytes))
+      } else {
+        self.upload(name, bytes)
+      },
+    )
   }
   let first : Ref[String?] = Ref(None)
   let send = async fn(said : String, blocks : Array[J], question : Bool) -> Unit {
@@ -1644,9 +1661,7 @@ pub fn SlackSurface::working(
 
 ///|
 /// Sends a file's bytes to Slack (not yet shared anywhere): its file id and title.
-async fn SlackSurface::upload(self : SlackSurface, file : J) -> (String, String) {
-  let name = text(at(Some(file), "name"))
-  let bytes = (self.o.read_file)(text(at(Some(file), "path")))
+async fn SlackSurface::upload(self : SlackSurface, name : String, bytes : Bytes) -> (String, String) {
   let url = self.client.api(
     "files.getUploadURLExternal",
     [("filename", name), ("length", bytes.length().to_string())],
@@ -1764,17 +1779,28 @@ pub async fn SlackSurface::user_of(self : SlackSurface, email : String) -> Strin
 /// A person as far as already known, without waiting; an unknown one is looked up in the background, and so is one
 /// learned before pictures were kept.
 pub fn SlackSurface::known_person(self : SlackSurface, user : String) -> J? {
+  let team = self.workspace().unwrap_or("?")
+  match self.o.names {
+    Some(n) => return (n.person)("u:\{team}:\{user}", async fn() { self.look_up(user) }, (known, _) => at(Some(known), "picture") is None)
+    None => ()
+  }
   let book = match self.o.book {
     Some(b) => b
     None => return None
   }
-  let team = self.workspace().unwrap_or("?")
   book.person("u:\{team}:\{user}", async fn() { self.look_up(user) }, stale=(known, _) => at(Some(known), "picture") is None)
 }
 
 ///|
 /// A channel's name as far as already known (None for DMs or not yet known), without waiting.
 pub fn SlackSurface::known_channel(self : SlackSurface, channel : String) -> String? {
+  match self.o.names {
+    Some(n) => {
+      let team = self.workspace().unwrap_or("?")
+      return (n.channel)("c:\{team}:\{channel}", async fn() { self.channel_name_of(channel) })
+    }
+    None => ()
+  }
   let book = match self.o.book {
     Some(b) => b
     None => return None

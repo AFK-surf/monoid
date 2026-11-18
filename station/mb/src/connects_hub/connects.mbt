@@ -7,7 +7,7 @@
 
 ///|
 /// config.json as these parts read and edit it (ops/config.ts `ConfigFile`).
-pub struct Config {
+pub(all) struct Config {
   /// What it holds now.
   raw : () -> J
   /// Edited by `f` (given what it holds, giving what it is to hold), written soon after: resolves once written.
@@ -20,14 +20,14 @@ pub struct Config {
 
 ///|
 /// The store, as far as a platform's connects use it.
-pub struct ConnectsStore {
+pub(all) struct ConnectsStore {
   /// `liveSessions()`' keys.
   live_sessions : () -> Array[String]
   notify : (String) -> Unit
 }
 
 ///|
-pub struct ConnectsOptions {
+pub(all) struct ConnectsOptions {
   data : String
   store : ConnectsStore
   config : Config
@@ -45,7 +45,7 @@ pub struct ConnectsOptions {
 
 ///|
 /// A platform, as its connects are kept (`Platform`).
-pub struct Platform {
+pub(all) struct Platform {
   /// config.json's `kind` of its connects, what the log calls it.
   kind : String
   /// Its names book, in the data directory.
