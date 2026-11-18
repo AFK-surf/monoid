@@ -7,12 +7,7 @@
 /// How far behind the one in use the page's panel is drawn by what reads it in node `n` (tape_behind's): its ground a
 /// step darker that far, the page's own where it is in use.
 fn tape_page_ground(n : @view.View) -> Int64 {
-  let k = tape_behind_at(Page, tape_drawn_at(n))
-  if k <= 0.0 {
-    @sf.theme().p.bg
-  } else {
-    @sf.behind_ground(k~)
-  }
+  tape_ground(tape_behind_at(Page, tape_drawn_at(n)))
 }
 
 ///|
