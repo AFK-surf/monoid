@@ -972,6 +972,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     Some(b) => ignore(@effect.timeout(10_000, async fn() { ignore((b.hub_ask.val)("shutdown", Json::null())) }))
     None => ()
   }
+  // (the P5-5 parts closed on their own as it stopped: their processes ended before this one, not after)
+  wait_live_p5_5_closed()
   0
 }
 

@@ -924,6 +924,9 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
           continue
         }
       }
+      // (ended however this ends, the station's stop too: interrupted while it waited on the builder's answer, it left
+      // the builder running past the station, writing in its data directory)
+      defer proc.stop()
       let mut i = 0
       while left.length() > 0 && !self.closed {
         let kind = left[i % left.length()]
@@ -951,7 +954,6 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
           _ => i += 1
         }
       }
-      proc.stop()
     }
     // (asked again as the store's threads change: a new message may need its lookup)
     ignore(wake.take())
