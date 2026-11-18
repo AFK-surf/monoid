@@ -1115,6 +1115,7 @@ let en : Map[String, String] = {
   "web-main.shortcuts.searchKeys": "Search by keys",
   "web-main.shortcuts.searchKeysStop": "Stop searching by keys",
   "web-main.shortcuts.searchNone": "No matching shortcuts",
+  "web-main.shortcuts.searchPressing": "Press the keys to find…",
   "web-main.shortcuts.sendNote": "Send {send}, new line {newline}",
   "web-main.shortcuts.sendWith": "{keys} to send",
   "web-main.shortcuts.sending": "Sending messages",

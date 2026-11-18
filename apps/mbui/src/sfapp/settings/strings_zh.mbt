@@ -1090,6 +1090,7 @@ let zh : Map[String, String] = {
   "web-main.shortcuts.searchKeys": "按键搜索",
   "web-main.shortcuts.searchKeysStop": "停止按键搜索",
   "web-main.shortcuts.searchNone": "没有匹配的快捷键",
+  "web-main.shortcuts.searchPressing": "按下要找的快捷键…",
   "web-main.shortcuts.sendNote": "发送 {send}，换行 {newline}",
   "web-main.shortcuts.sendWith": "{keys} 发送",
   "web-main.shortcuts.sending": "发送消息",

@@ -247,7 +247,20 @@ fn shortcuts_search_node(
     page.box(fn(f) {
       // (the row's room but the key's, as narrow as that leaves it)
       f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.search_input_node(f, query, fn() { @sf.t("web-main.shortcuts.search") }, edited=fn(_) { cleared() }) |> ignore
+      // (while the keys pressed are what is looked for, it says so in its own place: the field takes no typing then)
+      @sf.search_input_node(
+        f,
+        query,
+        fn() {
+          if searching() {
+            @sf.t("web-main.shortcuts.searchPressing")
+          } else {
+            @sf.t("web-main.shortcuts.search")
+          }
+        },
+        edited=fn(_) { cleared() },
+      )
+      |> ignore
     })
     |> ignore
     // (its sizes the native input's, the same all the run: read once, as the field's own clear key takes them)
