@@ -118,11 +118,6 @@ for t in $targets; do
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
   done
   export MBC_LIGHT_TESTS="$light"
-  if [[ " $pkgs " = *" -p stillfail/sfapp "* ]]; then
-    export MBC_LIGHT_UNITS="stillfail_sfapp_ stillfail_sfscreens_ stillfail_sffixture_"
-  else
-    unset MBC_LIGHT_UNITS
-  fi
   out=$(mktemp)
   # Built first on its own (TIMES=1, as CI's: each said with how long it took; its errors shown by the run), then run.
   s=$(date +%s)
@@ -510,8 +505,8 @@ for t in $targets; do
           # (chat_drive_parity's four runs on the four since, some 75 s each of one of its cores (gt1's 29-35 s, CI's
           # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
           # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
-          # Use the measured sweep costs after three runs move from the first group to contrast.
-          *) specs="4,4,215,1 3,4,525,1 4,4,440,1 4,4,380,1" ;;
+          # Use the measured sweep costs after both duo_side runs move to contrast.
+          *) specs="4,4,130,1 3,4,540,1 4,4,420,1 4,4,340,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -616,7 +611,8 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      # At the default rate, contrast has three free cores for the wide sweep and two kept-row ranges.
+      # At the default rate, contrast runs the wide real_size sweep, two kept_rows ranges, and both duo_side runs.
+      "src/sfapp/duo_side_wbtest.mbt "*) echo contrast ;;
       "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo contrast ;; *) echo 4 ;; esac ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
@@ -713,7 +709,7 @@ for t in $targets; do
           # second's 714 to 817, the first's 743 to 716)
           # (chat_page_nodes' two on the third at 120 since (app_group_of): the first's other runs preview_tree's 0-54, the
           # second's its 54-121, the third's none but send_steady's moment)
-          [ "${APP_GROUP:-}" = 4/4 ] && [ "${MBUI_TEST_FPS:-}" = 120 ] && [ "${APP_PART#*/}" = 3 ] && specs="4,4,140,1 4,4,180,1 4,4,0,1"
+          [ "${APP_GROUP:-}" = 4/4 ] && [ "${MBUI_TEST_FPS:-}" = 120 ] && [ "${APP_PART#*/}" = 3 ] && specs="4,4,140,1 4,4,320,1 4,4,0,1"
           while read -r g f; do [ "$g" = "${APP_PART%/*}" ] && kept+=("$f"); done < <(page_deal "$specs" "${words[@]:3}")
           [ ${#kept[@]} = 0 ] || mine+=("${words[0]} ${words[1]} ${words[2]} ${kept[*]}")
         else
