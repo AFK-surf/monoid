@@ -466,74 +466,89 @@ pub fn quota_worded_node(
         }
       }
       // (where its windows come in pools, on one line where their marks fit it, else on its lines, each pool's under its
-      // group's name; the lines made only for an allowance that has pools, so a row of any other makes its chips once)
+      // group's name: both made in its one box, which lays out one of them by the room, a row of chips or a column of
+      // lines; an allowance with no pools makes its chips alone, as many nodes as a line of them takes)
       let parts = fn() { quota_parts(windows()) }
       let pooled = fn() { parts().iter().any(fn(p) { p.0 != "" }) }
-      let one = fn() { wide(2) <= given.width() + 0.01 }
-      held.box(fn(r) {
-        style_node(r, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
-        r.laid_nowhere(By(fn() { pooled() && !one() })) |> ignore
-        r.wraps(Is(Some(gap))) |> ignore
-        r.each(fn() { Array::makei(windows().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
-          let k = i.untracked()
-          let w = fn() { windows().get(k) }
-          fill_chip_node(
-            c,
-            fn() { chip_left(w()) },
-            fn() { chip_str(w(), "level") },
-            fn() { quota_worded(w(), form()).0 },
-            fn() { quota_figure(w()) },
-            label_muted=true,
-            refill=fn() { quota_is_refill(w()) },
-            said=fn() { quota_said(w()) },
-            tips?,
-          )
-          |> ignore
-        })
-      })
-      |> ignore
+      let lined = fn() { pooled() && !(wide(2) <= given.width() + 0.01) }
       let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
       let label_w = fn() { nav_quota_label_w(held, parts()) }
-      held.show(pooled, fn(lines) {
-        lines.box(fn(a) {
-          style_node(a, fn() { quota_chips_parts })
-          a.laid_nowhere(By(one)) |> ignore
-          a.each(fn() { Array::makei(parts().length(), fn(k) { k }) }, fn(k) { k }, fn(p, k) {
-            let k = k.untracked()
-            style_node(p, fn() { quota_chips_part.then(@ui.style(gap=room(gap))) })
-            p.show(fn() { part(k).0 != "" }, fn(n) {
-              n.box(fn(l) {
-                l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
-                words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
-              })
+      // (a window's key its place among them; a pool's line's, `lines_from` on from its place among the pools)
+      let lines_from = 1000
+      held.box(fn(r) {
+        r
+        .row(By(fn() { !lined() }))
+        .lines_up(By(fn() { if lined() { Some(Start) } else { Some(Middle) } }))
+        .gap(By(fn() { if lined() { @ui.Space::S1_5.px() } else { gap } }))
+        .wraps(By(fn() { if lined() { None } else { Some(gap) } }))
+        |> ignore
+        r.each(
+          fn() {
+            let ws = Array::makei(windows().length(), fn(i) { i })
+            if pooled() {
+              ws + Array::makei(parts().length(), fn(k) { lines_from + k })
+            } else {
+              ws
+            }
+          },
+          fn(i) { i },
+          fn(c, i) {
+            let i = i.untracked()
+            if i < lines_from {
+              // (a window as a chip of the line, by its name where the line has the room, else by its mark)
+              let w = fn() { windows().get(i) }
+              c.laid_nowhere(By(lined)) |> ignore
+              fill_chip_node(
+                c,
+                fn() { chip_left(w()) },
+                fn() { chip_str(w(), "level") },
+                fn() { quota_worded(w(), form()).0 },
+                fn() { quota_figure(w()) },
+                label_muted=true,
+                refill=fn() { quota_is_refill(w()) },
+                said=fn() { quota_said(w()) },
+                tips?,
+              )
               |> ignore
-            })
-            p.box(fn(r) {
-              style_node(r, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
-              r.grow(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(quota_chips_part_lines))) |> ignore
-              let ws = fn() { part(k).1 }
-              r.each(fn() { Array::makei(ws().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
-                let i = i.untracked()
-                let w = fn() { ws().get(i) }
-                fill_chip_node(
-                  c,
-                  fn() { chip_left(w()) },
-                  fn() { chip_str(w(), "level") },
-                  fn() { quota_line_mark(part(k).0, w()) },
-                  fn() { quota_figure(w()) },
-                  label_muted=true,
-                  refill=fn() { quota_is_refill(w()) },
-                  said=fn() { quota_said(w()) },
-                  tips?,
-                )
+            } else {
+              // (a pool's line: its name in a column as wide as the widest pool's, its short capsules beside it)
+              let k = i - lines_from
+              c.laid_nowhere(By(fn() { !lined() })).width_share(Is(1.0)) |> ignore
+              style_node(c, fn() { quota_chips_part.then(@ui.style(gap=room(gap))) })
+              c.show(fn() { part(k).0 != "" }, fn(n) {
+                n.box(fn(l) {
+                  l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
+                  words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+                })
                 |> ignore
               })
-            })
-            |> ignore
-          })
-        })
-        |> ignore
+              c.box(fn(cs) {
+                style_node(cs, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
+                cs.grow(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(quota_chips_part_lines))) |> ignore
+                let ws = fn() { part(k).1 }
+                cs.each(fn() { Array::makei(ws().length(), fn(j) { j }) }, fn(j) { j }, fn(d, j) {
+                  let j = j.untracked()
+                  let w = fn() { ws().get(j) }
+                  fill_chip_node(
+                    d,
+                    fn() { chip_left(w()) },
+                    fn() { chip_str(w(), "level") },
+                    fn() { quota_line_mark(part(k).0, w()) },
+                    fn() { quota_figure(w()) },
+                    label_muted=true,
+                    refill=fn() { quota_is_refill(w()) },
+                    said=fn() { quota_said(w()) },
+                    tips?,
+                  )
+                  |> ignore
+                })
+              })
+              |> ignore
+            }
+          },
+        )
       })
+      |> ignore
     })
     |> ignore
   })
