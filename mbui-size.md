@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 2.59 | 3.48 | 14.18 | 36.26 | 54.59 | 31.76 | 63.92 | 97.13 | 121.06 |
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 2.58 | 3.47 | 14.17 | 36.24 | 54.53 | 31.76 | 63.92 | 97.13 | 102.26 |
 | [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [240d688cc](https://github.com/AFK-surf/monoid/commit/240d688cc95cfde195c0e647f946ebcb18bb90a8) fix(screens): stop hanging WebAuthn sign-in on vie | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [4c5639bf7](https://github.com/AFK-surf/monoid/commit/4c5639bf72134b3afb12a67e35935cd37a72f31d) fix(ci): keep main's switches, station and build c | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
-| [6a5fa8a4e](https://github.com/AFK-surf/monoid/commit/6a5fa8a4e1477cdef8485a97a859bae82ee6ee3f) fix(mbui): a wide pane off a chat says where it go | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.61 | 63.66 | 96.93 | 117.54 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 54.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [240d688cc](https://github.com/AFK-surf/monoid/commit/240d688cc95cfde195c0e647f946ebcb18bb90a8) fix(screens): stop hanging WebAuthn sign-in on vie | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54 |
 | [4c5639bf7](https://github.com/AFK-surf/monoid/commit/4c5639bf72134b3afb12a67e35935cd37a72f31d) fix(ci): keep main's switches, station and build c | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.13 |
 | [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
-| [6a5fa8a4e](https://github.com/AFK-surf/monoid/commit/6a5fa8a4e1477cdef8485a97a859bae82ee6ee3f) fix(mbui): a wide pane off a chat says where it go | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
