@@ -86,8 +86,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // most of the default rate and 60, 120, 24 and 7, what fell brought down to it: 大屏 again lets go 4 more than before
   // it (905, 130, 871, 124, 1083), the rest fell; before it (1035, 31, 667, 80, 969), (346, 19, 233, 28, 347), (2482,
   // 503, 1922, 217, 2471), (552, 359, 601, 87), (726, 372, 915, 114) scrolling up, its frames (139, 100, 124, 28))
-  "phone cold": (1028, 31, 660, 80, 968),
-  "phone again": (339, 19, 226, 28, 346),
+  // (2 made and 1 laid more on a phone, 2026-11-18: the chat bar's pick between its title and keys and ⌘F's bar, open
+  // from the chat's sheet's 在对话中查找 (chat_bar_node); before it (1028, 31, 660, 80, 968) and (339, 19, 226, 28, 346))
+  "phone cold": (1030, 31, 661, 80, 968),
+  "phone again": (341, 19, 227, 28, 346),
   "wide cold": (2473, 503, 1914, 217, 2470),
   "wide again": (899, 134, 870, 121, 1080),
   "phone up": (551, 358, 593, 87, 0),
