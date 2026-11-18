@@ -2447,6 +2447,12 @@ web-pages.profiles.useThis
 web-pages.profiles.usedBy
 web-pages.profiles.verifiedAdded
 web-pages.profiles.workspaces.lead
+web-pages.rowMenu.copied
+web-pages.rowMenu.copyAddress
+web-pages.rowMenu.copyName
+web-pages.rowMenu.open
+web-pages.rowMenu.openChat
+web-pages.rowMenu.restore
 web-pages.screen.again
 web-pages.screen.linuxSetup
 web-pages.screen.debug.appRunning

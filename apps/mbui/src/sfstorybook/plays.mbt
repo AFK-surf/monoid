@@ -3,7 +3,7 @@
 
 ///|
 /// A Playground: its controls made in the first node, the part as they say in the second, and the call that makes it.
-struct Play {
+priv struct Play {
   controls : (@view.View) -> Unit
   preview : (@view.View) -> Unit
   code : () -> String
@@ -39,7 +39,7 @@ fn control(v : @view.View, label : String, make : (@view.View) -> Unit) -> Unit 
 fn text_control(v : @view.View, label : String, now : @signals.Signal[String]) -> Unit {
   control(v, label, fn(c) {
     c.max_width(Is(Some(420.0))) |> ignore
-    @sf.input_node(c, @ui.Field::new(text=@signals.untracked(fn() { now.get() })), small=true, edited=fn(t) { now.set(t) })
+    @sf.input_node(c, @ui.Field::new(text=@signals.untracked(fn() { now.get() })), placeholder=label, small=true, edited=fn(t) { now.set(t) })
     |> ignore
   })
 }

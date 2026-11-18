@@ -8,7 +8,7 @@
 /// A part, as the list names it and the page shows it: its key (?STORY=), its group, its name, the file it is in under
 /// src/sf, what it is, its functions (their file under src/sf, their name), its Playground, and its states, each what
 /// it is said to show and how it is made in the card given.
-struct Story {
+priv struct Story {
   key : String
   group : String
   name : String
@@ -30,13 +30,33 @@ fn side_shown(w : Double) -> Bool {
 }
 
 ///|
-/// What is shown: the overview of all the parts (-1), or a part, by its place in the list.
-fn stories_tree(root : @view.View) -> Unit {
+/// The old frame round the tree: on 小屏 the library's menus, picks and questions are its, as the app's frame has them.
+pub fn stories_view(c : @ui.Ctx) -> Unit {
+  @ui.old_views_here(c)
+  @sf.presented(c)
+}
+
+///|
+/// The page, opened on the part whose key is `first` (?STORY=; "" or one not known: the overview): what is shown is the
+/// overview of all the parts (-1), or a part, by its place in the list (the foundations first). Made by the browser's
+/// page (src/sfstories) and by the offscreen renderer (MBUI_FIXTURE=stories:<key>, src/sfwasmfilm) alike.
+pub fn stories_tree(first : String) -> (@view.View) -> Unit {
+  fn(root) { stories_made(root, first) }
+}
+
+///|
+fn stories_made(root : @view.View, first : String) -> Unit {
+  // (no core: the real core's answers to the library's pure calls, kept; the faces its avatars draw; MBUI_DARK=1 the
+  // dark theme)
+  @sf.kept_call.val = Some(@sfkept.answer)
+  @sf.give_faces()
+  if @ui.env("MBUI_DARK") == "1" {
+    @sf.set_dark(Some(true))
+  }
   // (the library's words, the app's catalog's: what its parts say themselves, 取消 and the like)
   @sf.set_words(@sfbase.fill)
   @ui.set_tree_theme(@sf.ui_theme_now)
-  let all = stories(@sf.TipLayer::new(fn() { Some(root) }))
-  let first = @ui.env("STORY")
+  let all = foundations() + stories(@sf.TipLayer::new(fn() { Some(root) }))
   let chosen = @signals.signal(all.search_by(fn(s) { s.key == first }).unwrap_or(-1))
   let width = @signals.signal(2)
   let query = @signals.signal("")
@@ -45,13 +65,24 @@ fn stories_tree(root : @view.View) -> Unit {
   // filled segmented) is given that room, not what it holds)
   let side_w = fn() { if wide() { 248.0 } else { 0.0 } }
   let main_w = fn() { Some(@sf.dmax(0.0, root.window().0 - side_w())) }
+  // (the bar's 跳转, what the jump goes beside however it is asked: by its button or by ⌘K / Ctrl+K)
+  let jump : Ref[@view.View?] = Ref(None)
   // (what is drawn under it all: the root's own ground is the host's)
   root.box(fn(page) {
-    page.grow(Is(1.0)).row(Is(true)).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+    page
+    .grow(Is(1.0))
+    .row(Is(true))
+    .ground(By(fn() { @sf.theme().p.bg }))
+    .keymap(Is(jump_keys))
+    .on_action(jump_action, fn(_) {
+      jump_open(all, chosen, jump)
+      true
+    })
+    |> ignore
     page.show(wide, at_once=true, fn(side) { side_node(side, all, chosen, query) })
     page.box(fn(main) {
       main.width(By(main_w)) |> ignore
-      bar_node(main, all, chosen, width, query, wide)
+      bar_node(main, all, chosen, width, query, wide, jump)
       main.box(fn(held) {
         held.grow(Is(1.0)).min_height(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
         held.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
@@ -74,6 +105,17 @@ fn stories_tree(root : @view.View) -> Unit {
   @sf.presented_nodes(root)
   @sfbase.toasts_node(root, fn() { 24.0 }) |> ignore
 }
+
+///|
+/// The jump's action, and its keys: ⌘K, and Ctrl+K where there is no ⌘.
+let jump_action : String = "kit.jump"
+
+///|
+// kept across runs: a value (no field of it changes)
+let jump_keys : @view.Keymap = @view.Keymap::new([
+  { keys: [{ code: @ui.key_of_char('k'), mods: @ui.mod_cmd }], action: jump_action, when: Always },
+  { keys: [{ code: @ui.key_of_char('k'), mods: @ui.mod_ctrl }], action: jump_action, when: Always },
+])
 
 ///|
 /// Whether part `s` is one `query` finds: its name, key, group or file holding it, case aside.
@@ -163,7 +205,13 @@ fn side_node(side : @view.View, all : Array[Story], chosen : @signals.Signal[Int
   side.box(fn(head) {
     head.padding(Is((20.0, 20.0, 20.0, 8.0))).gap(Is(4.0)) |> ignore
     @sf.words_node(head, fn() { "still.fail 组件" }, fn() { @sf.title }) |> ignore
-    @sf.words_node(head, fn() { "apps/mbui/src/sf · \{all.length()} 个" }, fn() { @sf.meta }) |> ignore
+    // (where its parts are, and how many pages: two words side by side, not joined in one line)
+    head.box(fn(r) {
+      r.row(Is(true)).wraps(Is(Some(4.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+      @sf.words_node(r, fn() { "libs/sf-ui/src" }, fn() { @sf.meta }) |> ignore
+      @sf.pill_node(r, fn() { "\{all.length()} 页" }) |> ignore
+    })
+    |> ignore
   })
   |> ignore
   side.box(fn(s) {
@@ -184,7 +232,8 @@ fn side_node(side : @view.View, all : Array[Story], chosen : @signals.Signal[Int
 
 ///|
 /// The bar over what is shown: in a narrow window the button that opens the list; its name and file; the width the
-/// parts are shown at (where the window has the room for it to mean anything); light or dark.
+/// parts are shown at (where the window has the room for it to mean anything); the jump to any page (⌘K); the colour
+/// theme's dots in a panel of their own; light or dark. `jump` says what the jump goes beside, its button.
 fn bar_node(
   main : @view.View,
   all : Array[Story],
@@ -192,12 +241,13 @@ fn bar_node(
   width : @signals.Signal[Int],
   query : @signals.Signal[String],
   wide : () -> Bool,
+  jump : Ref[@view.View?],
 ) -> Unit {
   main.box(fn(bar) {
     bar
     .row(Is(true))
-    .gap(Is(12.0))
-    .padding(By(fn() { if wide() { (24.0, 14.0, 24.0, 14.0) } else { (8.0, 8.0, 12.0, 8.0) } }))
+    .gap(By(fn() { if wide() { 12.0 } else { 4.0 } }))
+    .padding(By(fn() { if wide() { (24.0, 14.0, 24.0, 14.0) } else { (8.0, 8.0, 8.0, 8.0) } }))
     .lines_up(Is(Some(Middle)))
     |> ignore
     bar.show(fn() { !wide() }, at_once=true, fn(b) {
@@ -233,12 +283,12 @@ fn bar_node(
         fn() {
           let i = chosen.get()
           if i < 0 {
-            "\{all.length()} 个部件"
+            "\{all.length()} 页"
           } else {
-            "src/sf/" + all[i].file
+            library_path + all[i].file
           }
         },
-        fn() { @sf.meta },
+        fn() { bar_file },
       )
       |> ignore
     })
@@ -246,6 +296,26 @@ fn bar_node(
     bar.show(wide, at_once=true, fn(w) {
       @sf.seg_node(w, fn() { widths.map(fn(w) { w.0 }) }, fn() { width.get() }, fn(i) { width.set(i) }, said="宽度") |> ignore
     })
+    jump.val = Some(
+      @sf.icon_button_node(bar, "search", fn() { "跳转到页面" }, fn() { jump_open(all, chosen, jump) }, shortcut="⌘K"),
+    )
+    @sf.icon_button_opens_node(bar, "sliders", fn() { "主题色" }, fn(opener) {
+      @sf.panel_nodes(
+        "主题色",
+        fn(body, _) {
+          // (6 in from the panel's own padding: each dot a circle concentric with the panel's corners, 12 in, and the
+          // room a press reaches round it whole)
+          body.box(fn(b) {
+            b.pad(Is(accents_in)) |> ignore
+            accents_node(b)
+          })
+          |> ignore
+        },
+        from=@sf.Anchor::Node(opener),
+        fits=true,
+      )
+    })
+    |> ignore
     @sf.icon_button_node(
       bar,
       "moon",
@@ -257,6 +327,54 @@ fn bar_node(
   })
   |> ignore
   main.box(fn(rule) { rule.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore }) |> ignore
+}
+
+///|
+/// Where the library's files are, as the bar names a part's.
+let library_path : String = "libs/sf-ui/src/"
+
+///|
+/// The bar's file under the part's name: as the page's meta, on one line, cut short where the bar has not the room.
+// kept across runs: a value (no field of it changes)
+let bar_file : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
+
+///|
+/// The colour themes (@sf.accents, and a hue of one's own) as the app's 外观 offers them, its dots in their own colours:
+/// one chosen, every part drawn in it at once.
+fn accents_node(v : @view.View) -> Unit {
+  @sf.accent_pick_node(
+    v,
+    fn() { accent_names },
+    fn() { "自定义" },
+    fn() { "色相" },
+    fn() { @sf.accent_key() },
+    fn(key) { @sf.set_accent(key) },
+  )
+}
+
+///|
+/// How far in the bar's panel holds its dots past its own padding.
+let accents_in : Double = 6.0
+
+///|
+/// The colour themes' names, as @sf.accents has them.
+// kept across runs: a value (no element of it changes)
+let accent_names : Array[String] = ["暖橙", "蓝", "青", "紫", "粉"]
+
+///|
+/// The jump to any page (⌘K, the bar's 跳转): a pick of every page by its name, the foundations and the parts, its
+/// search over them (what is typed finds a page by its name, its group or its file; Enter goes to the first found),
+/// beside the bar's button; chosen, that page.
+fn jump_open(all : Array[Story], chosen : @signals.Signal[Int], jump : Ref[@view.View?]) -> Unit {
+  guard jump.val is Some(at) else { return }
+  let choices = [@sf.choice("-1", "总览", note="\{all.length()} 页")]
+  for i, s in all {
+    choices.push(@sf.choice(i.to_string(), s.name, note=s.group, value=s.file))
+  }
+  @sf.pick("跳转到页面", choices, chosen.untracked().to_string(), fn(k) {
+    let i = @string.parse_int(k[:]) catch { _ => return }
+    chosen.set(i)
+  }, from=Node(at), along=End)
 }
 
 ///|
@@ -277,7 +395,7 @@ fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal
   |> ignore
   @sf.words_node(
     page,
-    fn() { "still.fail 的界面都由这些部件拼成（apps/mbui/src/sf）。每个部件一页：它的各种状态、可调参数的 Playground、示例代码和 API。" },
+    fn() { "still.fail 的界面都由这些部件拼成（libs/sf-ui/src）。最前面是设计基石：色板、字阶、同心圆角、光影与动效；之后每个部件一页：它的各种状态、可调参数的 Playground、示例代码和 API。按 ⌘K 跳到任意一页。" },
     fn() { @sf.lead },
   )
   |> ignore
@@ -309,7 +427,13 @@ fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal
         card.box(fn(foot) {
           foot.padding(Is((16.0, 10.0, 16.0, 12.0))).gap(Is(2.0)) |> ignore
           @sf.words_node(foot, fn() { s.name }, fn() { @sf.desk_strong }) |> ignore
-          @sf.words_node(foot, fn() { s.group + " · " + s.file }, fn() { @sf.meta }) |> ignore
+          // (its group as a tag, its file beside it)
+          foot.box(fn(r) {
+            r.row(Is(true)).wraps(Is(Some(4.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+            @sf.pill_node(r, fn() { s.group }) |> ignore
+            @sf.words_node(r, fn() { s.file }, fn() { @sf.meta }) |> ignore
+          })
+          |> ignore
         })
         |> ignore
       })
@@ -383,7 +507,7 @@ fn story_node(page : @view.View, s : Story, width : () -> Double?) -> Unit {
     }
     None => ()
   }
-  heading_node(page, "示例")
+  heading_node(page, if s.group == foundations_group { "标本" } else { "示例" })
   for c in s.cases {
     let (label, make) = c
     let code = case_code(label)
