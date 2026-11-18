@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ef99af72](https://github.com/AFK-surf/monoid/commit/8ef99af72ee6e3c270ae494b42cc2c6ae979d779) fix(lock): keep pairing codes when verification is | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.14 | 113.6 |
 | [3c955f582](https://github.com/AFK-surf/monoid/commit/3c955f582a66d9dc0d31ae2650debf2e73e00bb9) test(mbui): lower motion bars that main's mbui-che | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.14 | 113.6 |
 | [0cf6f1b56](https://github.com/AFK-surf/monoid/commit/0cf6f1b56da535338e0ab67560de10e74bd04f2e) fix(mbui): make what a hidden page changes at rest | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
 | [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [578a45fe4](https://github.com/AFK-surf/monoid/commit/578a45fe4e650c946d00c0081a40e7b8a6b301a6) feat(mbui): move the wide frame's overlays onto th | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 106 |
 | [0218efe31](https://github.com/AFK-surf/monoid/commit/0218efe3185f5810e93f2d33a36a27a8c3bd464f) fix(station): keep local tools out of profile prox | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 | [fa3b3ddab](https://github.com/AFK-surf/monoid/commit/fa3b3ddabdb92810988264377d53193f28e4764f) perf(mbui): read a popover's fade as it is painted | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
-| [bdb5fa354](https://github.com/AFK-surf/monoid/commit/bdb5fa354a6b60f7c991e88c9e4f941cb9a78a2c) perf(mbui): add View::scrolls_reused and reuse blo | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ef99af72](https://github.com/AFK-surf/monoid/commit/8ef99af72ee6e3c270ae494b42cc2c6ae979d779) fix(lock): keep pairing codes when verification is | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.12 |
 | [3c955f582](https://github.com/AFK-surf/monoid/commit/3c955f582a66d9dc0d31ae2650debf2e73e00bb9) test(mbui): lower motion bars that main's mbui-che | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [0cf6f1b56](https://github.com/AFK-surf/monoid/commit/0cf6f1b56da535338e0ab67560de10e74bd04f2e) fix(mbui): make what a hidden page changes at rest | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.99 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [578a45fe4](https://github.com/AFK-surf/monoid/commit/578a45fe4e650c946d00c0081a40e7b8a6b301a6) feat(mbui): move the wide frame's overlays onto th | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
 | [0218efe31](https://github.com/AFK-surf/monoid/commit/0218efe3185f5810e93f2d33a36a27a8c3bd464f) fix(station): keep local tools out of profile prox | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
 | [fa3b3ddab](https://github.com/AFK-surf/monoid/commit/fa3b3ddabdb92810988264377d53193f28e4764f) perf(mbui): read a popover's fade as it is painted | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.02 |
-| [bdb5fa354](https://github.com/AFK-surf/monoid/commit/bdb5fa354a6b60f7c991e88c9e4f941cb9a78a2c) perf(mbui): add View::scrolls_reused and reuse blo | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
