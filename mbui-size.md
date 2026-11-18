@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5d389fb3e](https://github.com/AFK-surf/monoid/commit/5d389fb3e91367d2b0541a20b989b66096a0f712) fix(station): bind the front's endpoint one ask at | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [240d688cc](https://github.com/AFK-surf/monoid/commit/240d688cc95cfde195c0e647f946ebcb18bb90a8) fix(screens): stop hanging WebAuthn sign-in on vie | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [4c5639bf7](https://github.com/AFK-surf/monoid/commit/4c5639bf72134b3afb12a67e35935cd37a72f31d) fix(ci): keep main's switches, station and build c | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b5c70cdc0](https://github.com/AFK-surf/monoid/commit/b5c70cdc09495a54107ea7d332195db61b15967f) fix(mbui): keep a Windows video's frame shown thro | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.58 | 115.97 |
 | [e31f5a37f](https://github.com/AFK-surf/monoid/commit/e31f5a37f32c446b9035c32514dd3f6b1c924d7f) fix(mbui): a mouse's drag scrolls no table or code | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.58 | 115.97 |
 | [ac966624e](https://github.com/AFK-surf/monoid/commit/ac966624e16dc0445e669ae4abf3aeb967b738b1) feat(base): verify Ed25519 fast on js, add a page' | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.52 | 117.79 |
-| [f27e63953](https://github.com/AFK-surf/monoid/commit/f27e6395317734d5b5ea6e79971a7c5b1a76ffc0) fix(core): a chat whose first message did not go c | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.8 | 107.44 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5d389fb3e](https://github.com/AFK-surf/monoid/commit/5d389fb3e91367d2b0541a20b989b66096a0f712) fix(station): bind the front's endpoint one ask at | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [240d688cc](https://github.com/AFK-surf/monoid/commit/240d688cc95cfde195c0e647f946ebcb18bb90a8) fix(screens): stop hanging WebAuthn sign-in on vie | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54 |
 | [4c5639bf7](https://github.com/AFK-surf/monoid/commit/4c5639bf72134b3afb12a67e35935cd37a72f31d) fix(ci): keep main's switches, station and build c | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.13 |
 | [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b5c70cdc0](https://github.com/AFK-surf/monoid/commit/b5c70cdc09495a54107ea7d332195db61b15967f) fix(mbui): keep a Windows video's frame shown thro | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.66 |
 | [e31f5a37f](https://github.com/AFK-surf/monoid/commit/e31f5a37f32c446b9035c32514dd3f6b1c924d7f) fix(mbui): a mouse's drag scrolls no table or code | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.81 |
 | [ac966624e](https://github.com/AFK-surf/monoid/commit/ac966624e16dc0445e669ae4abf3aeb967b738b1) feat(base): verify Ed25519 fast on js, add a page' | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.61 |
-| [f27e63953](https://github.com/AFK-surf/monoid/commit/f27e6395317734d5b5ea6e79971a7c5b1a76ffc0) fix(core): a chat whose first message did not go c | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.61 |
