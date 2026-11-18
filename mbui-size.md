@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [6a5fa8a4e](https://github.com/AFK-surf/monoid/commit/6a5fa8a4e1477cdef8485a97a859bae82ee6ee3f) fix(mbui): a wide pane off a chat says where it go | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.61 | 63.66 | 96.93 | 117.54 |
 | [0cb26c4a6](https://github.com/AFK-surf/monoid/commit/0cb26c4a6a4dd706a0224bf9a27fbd5636388637) feat(mbui): open an app's Windows window where it  | 2.56 | 3.45 | 14.08 | 36.08 | 54.2 | 31.61 | 63.66 | 96.93 | 126.06 |
 | [e7edaa07a](https://github.com/AFK-surf/monoid/commit/e7edaa07a33f8248bf09289cb18c9a5db21fd5fa) feat(ui): move toasts, menus and the switcher onto | 2.56 | 3.45 | 14.08 | 36.08 | 54.2 | 31.61 | 63.66 | 96.93 | 126.06 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f27e63953](https://github.com/AFK-surf/monoid/commit/f27e6395317734d5b5ea6e79971a7c5b1a76ffc0) fix(core): a chat whose first message did not go c | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.8 | 107.44 |
 | [cd1158577](https://github.com/AFK-surf/monoid/commit/cd11585774d1d8f291d7cc75e45dc8815dc79614) feat(mbui app): write a new 待派发 task in the chat's | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.8 | 107.44 |
 | [fab5e0c17](https://github.com/AFK-surf/monoid/commit/fab5e0c176b47cb65cb966a352dbcc3057780d4d) feat(mbui): add hover_reveal, tooltip glide origin | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.6 | 120.98 |
-| [babed3f66](https://github.com/AFK-surf/monoid/commit/babed3f663c4e1148c4f4975fb26ad576c032056) fix(mbui): open the right soft keyboard on one tap | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.6 | 120.98 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
 | [6a5fa8a4e](https://github.com/AFK-surf/monoid/commit/6a5fa8a4e1477cdef8485a97a859bae82ee6ee3f) fix(mbui): a wide pane off a chat says where it go | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
 | [0cb26c4a6](https://github.com/AFK-surf/monoid/commit/0cb26c4a6a4dd706a0224bf9a27fbd5636388637) feat(mbui): open an app's Windows window where it  | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
 | [e7edaa07a](https://github.com/AFK-surf/monoid/commit/e7edaa07a33f8248bf09289cb18c9a5db21fd5fa) feat(ui): move toasts, menus and the switcher onto | 0.44 | 0.57 | 2.19 | 3.28 | 5.23 | 1.61 | 4.31 | 54.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f27e63953](https://github.com/AFK-surf/monoid/commit/f27e6395317734d5b5ea6e79971a7c5b1a76ffc0) fix(core): a chat whose first message did not go c | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.61 |
 | [cd1158577](https://github.com/AFK-surf/monoid/commit/cd11585774d1d8f291d7cc75e45dc8815dc79614) feat(mbui app): write a new 待派发 task in the chat's | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.54 |
 | [fab5e0c17](https://github.com/AFK-surf/monoid/commit/fab5e0c176b47cb65cb966a352dbcc3057780d4d) feat(mbui): add hover_reveal, tooltip glide origin | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.54 |
-| [babed3f66](https://github.com/AFK-surf/monoid/commit/babed3f663c4e1148c4f4975fb26ad576c032056) fix(mbui): open the right soft keyboard on one tap | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.64 |
