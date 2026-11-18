@@ -1420,7 +1420,15 @@ fn triple_body_node(
         y.box(fn(h) {
           @sf.style_node(h, fn() { triple_scope_head })
           h.box(fn(c) { @sf.style_node(c, fn() { triple_scope_choice }, in_row=true); scope_node(c) }) |> ignore
-          h.show(fn() { options().length() > 8 }, fn(e) { triple_find_node(e, contents) })
+          // (the search the rest of the line, no wider: never past the models' column)
+          h.show(fn() { options().length() > 8 }, fn(e) {
+            e.box(fn(f) {
+              @sf.style_node(f, fn() { triple_scope_find }, in_row=true)
+              f.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              triple_find_node(f, contents)
+            })
+            |> ignore
+          })
         })
         |> ignore
         return
@@ -2927,6 +2935,11 @@ let triple_scope_head : @ui.Style = @ui.css("row w=Full pb=S1_5 gap=S3 align=ACe
 ///|
 // kept across runs: a value (no field of it changes)
 let triple_scope_choice : @ui.Style = @ui.css("row")
+
+///|
+/// The search beside the choice (triple_scope_head's): the rest of its line.
+// kept across runs: a value (no field of it changes)
+let triple_scope_find : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 // kept across runs: a value (no field of it changes)
