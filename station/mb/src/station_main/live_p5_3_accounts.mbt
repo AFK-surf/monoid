@@ -5,8 +5,9 @@
 // catalog the cloud keeps (models/module.ts, `@accounts_oauth.models_live`). What the accounts ask of the rest of the
 // station (`Backend`: its files, its store, config.json, the network, the words, the hub and the drivers, the
 // sign-ins, the shared profiles) is answered here, each by its part: the files and the network by the shell, the store
-// by `bus.store`, config.json by the bus, the hub, the drivers and the agents by `bus.hub_ask` (P5-2's), the sign-ins
-// by `bus.ui_ask` (P5-4's Logins), the shared profiles by this slice's Sharing.
+// by `bus.store`, config.json by the bus, the hub, the drivers and the agents by `bus.hub_ask` (P5-2's), the profiles'
+// sign-ins and the machine's logins by this slice's own (login.ts's LoginManager, machine.ts's MachineLogins:
+// live_p5_3_accounts_io.mbt), the shared profiles by this slice's Sharing.
 
 ///|
 /// A JSON value as the accounts read it (`@accounts_pool.JV`).
@@ -59,6 +60,11 @@ priv struct P53Accounts {
   oauth_io : @accounts_oauth.Io
   /// Claude's logins renewed (oauth.ts `claudeOAuthToken`): one renewal a login at a time.
   claude_auth : @accounts_oauth.ClaudeAuth
+  /// The profiles' sign-ins (accounts/index.ts `logins`: login.ts's LoginManager), not the station's logins to
+  /// command-line tools (P5-4's, `/machine-logins`).
+  logins : @accounts_oauth.LoginManager
+  /// The machine's own logins (accounts/index.ts `machine`: machine.ts), on a whole station.
+  machine : @accounts_oauth.MachineLogins?
 }
 
 ///|
@@ -100,7 +106,10 @@ fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
   let claude_auth = @accounts_oauth.ClaudeAuth::new(oauth_io, p53_claude_store(bus.host), {
     tr: (lang, key, args) => ctx.words.tr(lang, key, args~),
   })
-  let a : P53Accounts = { bus, backend, ctx, accounts: None, sharing: None, sessions: None, oauth_io, claude_auth }
+  let words : @accounts_oauth.Words = { tr: (lang, key, args) => ctx.words.tr(lang, key, args~) }
+  let logins = p53_login_manager(bus, words, oauth_io, ctx.io)
+  let machine = if bus.as_rig() { None } else { Some(p53_machine_logins(bus, words, oauth_io, ctx)) }
+  let a : P53Accounts = { bus, backend, ctx, accounts: None, sharing: None, sessions: None, oauth_io, claude_auth, logins, machine }
   me.val = Some(a)
   a
 }
@@ -117,7 +126,7 @@ fn @accounts_pool.JV::or_obj(self : @accounts_pool.JV, whole : @accounts_pool.JV
 ///|
 /// What the accounts are given (accounts/index.ts's options as `Given` names them): what of the rest this station
 /// answers here.
-fn p53_given() -> Json {
+fn p53_given(machine~ : Bool) -> Json {
   p53_obj([
     ("hub", p53_b(true)),
     ("hubProfileGone", p53_b(true)),
@@ -134,7 +143,7 @@ fn p53_given() -> Json {
     ("quota", p53_s("default")),
     ("resetQuota", p53_s("default")),
     ("discover", p53_s("default")),
-    ("machine", p53_b(false)),
+    ("machine", p53_b(machine)),
     ("checkOnStart", p53_b(true)),
     ("workspaces", p53_b(true)),
     ("reviewUndecided", p53_b(true)),
@@ -181,7 +190,7 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       let made = @accounts_pool.Accounts::new(
         self.backend,
         self.ctx,
-        @accounts_pool.Given::of_jv(p53_jv(p53_given()), bus.data),
+        @accounts_pool.Given::of_jv(p53_jv(p53_given(machine=self.machine is Some(_))), bus.data),
         rt,
         clock,
         p53_jv(raw),
@@ -204,6 +213,21 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       self.sessions = Some(sa)
       made.set_hub_accounts(sa)
       ignore((bus.config_listen.val)(next => made.config_said(p53_jv(next))))
+      // (accounts/index.ts `start`: a sign-in's change, and the machine's logins read again, told the accounts)
+      ignore(self.logins.changes(id => ignore(rt.fork(name="a sign-in changed", async fn() {
+        made.login_changed(id) catch {
+          e => p53_log("warn", "accounts", "a sign-in's change was not taken", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        }
+      }))))
+      match self.machine {
+        Some(m) =>
+          ignore(m.changes(() => ignore(rt.fork(name="the machine's logins changed", async fn() {
+            made.machine_changed() catch {
+              e => p53_log("warn", "accounts", "the machine's logins were not taken", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+            }
+          }))))
+        None => ()
+      }
       made.start()
     }),
   )
@@ -492,9 +516,12 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
           Some(w) => Str(w)
           None => Null
         }
-      // ── the sign-ins (P5-4's Logins) ──
-      _ if name.has_prefix("logins.") || name.has_prefix("console.") =>
-        p53_jv((bus.ui_ask.val)(name, Json::array(args.map(p53_json))))
+      // ── the sign-ins and the machine's logins (accounts/index.ts `logins`, console.ts, `machine`) ──
+      _ if name.has_prefix("logins.") || name.has_prefix("console.") || name.has_prefix("machine.") =>
+        match self.sign_in_answer(name, args.map(p53_json)) {
+          Some(v) => p53_jv(v)
+          None => raise P53Error("no sign-ins' ask \{name}")
+        }
       // ── the hub, the drivers, the agents and the rest of the store (P5-2's) ──
       _ =>
         p53_jv((bus.hub_ask.val)(name, Json::array(args.map(p53_json))))
@@ -540,9 +567,17 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
     }
   }
   try {
-    // ── the sign-ins: P5-4's Logins (accounts.ts `logins`) ──
+    // ── the sign-ins (accounts.ts `logins`: the routes' code, page, its state and cancel) ──
     if m.has_prefix("logins.") {
-      return (self.bus.ui_ask.val)(m, arg)
+      let args = match arg {
+        Array(xs) => xs
+        Null => []
+        v => [v]
+      }
+      match self.sign_in_answer(m, args) {
+        Some(v) => return v
+        None => raise P53Error("no sign-ins' ask \{m}")
+      }
     }
     let sessions = () => match self.sessions {
       Some(sa) => sa

@@ -392,6 +392,9 @@ pub struct Updates {
   priv mut last_check : Double?
   mut running : () -> Double
   mut runtime_changed : (String, Bool, Bool) -> Unit
+  /// updates.ts `launcherInstaller` (launcher.ts `runInstaller`): what starts the installer where this process could
+  /// not, the launcher; none where it offers none.
+  mut launcher_installer : ((String, Env) -> Unit)?
   priv fibers : Fibers
   priv mut closed : Bool
   priv mut started : Bool
@@ -458,6 +461,7 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
     last_check: None,
     running: o.running,
     runtime_changed: (_, _, _) => (),
+    launcher_installer: None,
     fibers: Fibers::new(w, "updates"),
     closed: false,
     started: false,
@@ -498,6 +502,12 @@ pub fn Updates::count_running(self : Updates, f : () -> Double) -> Unit {
 /// What to do when a runtime was installed or updated from here.
 pub fn Updates::on_runtime_changed(self : Updates, f : (String, Bool, Bool) -> Unit) -> Unit {
   self.runtime_changed = f
+}
+
+///|
+/// updates.ts `launcherInstaller`: the launcher's start of the installer, where it offers one (`--launcher-installer`).
+pub fn Updates::on_launcher_installer(self : Updates, f : (String, Env) -> Unit) -> Unit {
+  self.launcher_installer = Some(f)
 }
 
 ///|
@@ -2360,8 +2370,18 @@ async fn Updates::start_planned(self : Updates, plan : Plan, handed : Array[(Str
         fields=jo([("error", js(message_of(e)))]),
       )
   }
-  let ok = !self.closed &&
+  let mut ok = !self.closed &&
     w.call("platform.startInstaller", [js(plan.script), js(run_dir), env_j(env), js(self.app)]) is Bool(true)
+  if !ok && !self.closed && self.launcher_installer is Some(f) {
+    // Not started here: the launcher starts it (its exit and log in run/ as one started here), followed as one.
+    w.warn(
+      "updates",
+      "the station's installer not started here; the launcher starts it",
+      fields=jo([("to", get(Some(plan.release), "version").unwrap_or(Null))]),
+    )
+    f(plan.script, env)
+    ok = true
+  }
   let archive = env_get(handed, "STILLFAIL_ARCHIVE")
   if !ok {
     w.rm_quiet(started_file)

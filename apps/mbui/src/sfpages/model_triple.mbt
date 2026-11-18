@@ -1265,63 +1265,69 @@ fn triple_body_node(
         // (the room between them each row's own: triple_first_gap)
         // (the room past the row at the panel's far end from what opened it taken back: none there, whichever row is
         // there as rows come and go, nothing of any row's said again at once)
-        let back = 1.0
-        let col = scrolled.box(fn(c) {
-          @sf.style_node(c, fn() { triple_first_rows })
-          c.margin(Is(if up { (0.0, -back, 0.0, 0.0) } else { (0.0, 0.0, 0.0, -back) })) |> ignore
-        })
-        // (its combos by key once: each row reads its own, told only as that one changes)
-        let combos_by = col.keyed_by(combos, fn(x) { triple_combo_key(Some(x)) })
-        col.each(first_keys, fn(k) { k }, fn(r, k) {
-          let k = k.untracked()
-          // (each with the room between it and the next in its own, on its side towards the panel's far end from what
-          // opened it, a part of what it holds, so that room opens and closes with it)
-          @sf.style_node(r, fn() { triple_first_rows })
-          let apart = fn() { r.box(fn(g) { @sf.style_node(g, fn() { triple_first_gap }) }) |> ignore }
-          if up {
-            apart()
-          }
-          if k.has_prefix("head/") {
-            triple_column_head_node(r, @sf.t("web-main.combos.label"))
-          } else if k.has_prefix("none/") {
-            r.box(fn(e) {
-              @sf.style_node(e, fn() { triple_empty })
-              @sf.words_node(e, fn() { @sf.t("web-main.model.noneHere") }, fn() { triple_muted_lines }) |> ignore
-            })
-            |> ignore
-          } else if k.has_prefix("apart/") {
-            r.box(fn(a) { @sf.style_node(a, fn() { triple_apart }) }) |> ignore
-          } else if k.has_prefix("model/") {
-            model_row(r, k.exact_view(start=6).to_owned())
-          } else {
-            let combo = fn() {
-              match combos_by.get(k) {
-                Some(x) => Some(x)
-                None => leaving.get().get(k)
-              }
+        // (beside what opened it, this station's models or every station's swapped in the frame of the press, as a
+        // maker's models are (model_rows, kind_rows): rows making their way in and out there were held still part of the
+        // way by the column of how hard it thinks beside them, then pushed the panel on, a second change of one press
+        // (switches_still's newchat-station-models); in a sheet, nothing beside them, its rows make their way as ever)
+        scrolled.pick(at_once=true, fn() { !sheet && flag(v(), "otherStations") }, fn(scrolled, _) {
+          let back = 1.0
+          let col = scrolled.box(fn(c) {
+            @sf.style_node(c, fn() { triple_first_rows })
+            c.margin(Is(if up { (0.0, -back, 0.0, 0.0) } else { (0.0, 0.0, 0.0, -back) })) |> ignore
+          })
+          // (its combos by key once: each row reads its own, told only as that one changes)
+          let combos_by = col.keyed_by(combos, fn(x) { triple_combo_key(Some(x)) })
+          col.each(first_keys, fn(k) { k }, fn(r, k) {
+            let k = k.untracked()
+            // (each with the room between it and the next in its own, on its side towards the panel's far end from what
+            // opened it, a part of what it holds, so that room opens and closes with it)
+            @sf.style_node(r, fn() { triple_first_rows })
+            let apart = fn() { r.box(fn(g) { @sf.style_node(g, fn() { triple_first_gap }) }) |> ignore }
+            if up {
+              apart()
             }
-            let last : Ref[Json] = Ref(@signals.untracked(combo).unwrap_or(Json::null()))
-            let x = fn() {
-              match combo() {
-                Some(c) => {
-                  last.val = c
-                  Some(c)
+            if k.has_prefix("head/") {
+              triple_column_head_node(r, @sf.t("web-main.combos.label"))
+            } else if k.has_prefix("none/") {
+              r.box(fn(e) {
+                @sf.style_node(e, fn() { triple_empty })
+                @sf.words_node(e, fn() { @sf.t("web-main.model.noneHere") }, fn() { triple_muted_lines }) |> ignore
+              })
+              |> ignore
+            } else if k.has_prefix("apart/") {
+              r.box(fn(a) { @sf.style_node(a, fn() { triple_apart }) }) |> ignore
+            } else if k.has_prefix("model/") {
+              model_row(r, k.exact_view(start=6).to_owned())
+            } else {
+              let combo = fn() {
+                match combos_by.get(k) {
+                  Some(x) => Some(x)
+                  None => leaving.get().get(k)
                 }
-                // (taken out, as it leaves: as it was)
-                None => Some(last.val)
               }
+              let last : Ref[Json] = Ref(@signals.untracked(combo).unwrap_or(Json::null()))
+              let x = fn() {
+                match combo() {
+                  Some(c) => {
+                    last.val = c
+                    Some(c)
+                  }
+                  // (taken out, as it leaves: as it was)
+                  None => Some(last.val)
+                }
+              }
+              // (taken out: fading where it is, from the change that took it out, nothing to press there)
+              let gone = fn() { leaving.get().contains(k) }
+              let fade = @motion.Way::new(1.0)
+              r.reacts(at_start=false, gone, fn(g) { if g { fade.go(0.0, @motion.tween(@sf.leave_ms, ease=Out), at=r.cause_at()) } })
+              r.alpha(By(fn() { fade.shown_on(r) })) |> ignore
+              triple_combo_row_node(r, src, station, of, v, x, fn() { model_of(text(x(), "model")) }, names_w, saved, close, able=fn() { !gone() })
+              brought(r, k)
             }
-            // (taken out: fading where it is, from the change that took it out, nothing to press there)
-            let gone = fn() { leaving.get().contains(k) }
-            let fade = @motion.Way::new(1.0)
-            r.reacts(at_start=false, gone, fn(g) { if g { fade.go(0.0, @motion.tween(@sf.leave_ms, ease=Out), at=r.cause_at()) } })
-            r.alpha(By(fn() { fade.shown_on(r) })) |> ignore
-            triple_combo_row_node(r, src, station, of, v, x, fn() { model_of(text(x(), "model")) }, names_w, saved, close, able=fn() { !gone() })
-            brought(r, k)
-          }
-          if !up {
-            apart()
-          }
+            if !up {
+              apart()
+            }
+          })
         })
       })
       room.show(fn() { !flat() }, to_all)
@@ -1589,7 +1595,7 @@ fn triple_body_node(
               })
               |> ignore
               @sf.panel_head_node(col, fn() { h_effort }) |> ignore
-              triple_choices_node(col, all_efforts, effort_now, pick_effort)
+              triple_choices_node(col, h_effort, all_efforts, effort_now, pick_effort)
             })
             |> ignore
           })
@@ -2114,7 +2120,7 @@ fn triple_sidekick_node(
       } else {
         @sf.panel_head_node(col, fn() { h_effort }) |> ignore
       }
-      triple_choices_node(col, efforts, fn() { if active_group().id == "" { "" } else { now() } }, pick_eff)
+      triple_choices_node(col, h_effort, efforts, fn() { if active_group().id == "" { "" } else { now() } }, pick_eff)
     })
     |> ignore
   })
@@ -2475,39 +2481,35 @@ let triple_pick_chevron : Double = 12.0
 
 ///|
 /// How hard it thinks at the panel's right in node `parent` (`choices()`: its value and its words, from the least to the
-/// most; `now()` the one picked): each a row of the panel's under the one before, the one picked lit and checked, read
-/// out a radio; `pick` given the value pressed.
+/// most; `now()` the one picked): each a row of the panel's under the one before, the one picked lit and checked, one
+/// radio group called `label` (one stop of Tab's, ↑ ↓ picking along it); `pick` given the value pressed or come to.
 fn triple_choices_node(
   parent : @view.View,
+  label : String,
   choices : () -> Array[(String, String)],
   now : () -> String,
   pick : (String) -> Unit,
 ) -> Unit {
-  parent.each(choices, fn(ch) { ch.0 }, fn(r, ch) {
-    let value = ch.untracked().0
-    let words = fn() { ch.get().1 }
-    let on = fn() { now() == value }
-    r.box(fn(b) {
-      @sf.style_node(b, fn() { triple_option_look(on() || @sf.lit_node(b)) })
-      b.says(By(fn() { Some(@view.said(Radio, label=words(), check=if on() { On } else { Off })) })) |> ignore
-      @sf.presses_node(b, fn() { pick(value) })
-      b.min_width(Is(Some(0.0))) |> ignore
-      @sf.words_node(b, words, fn() { if on() { triple_picked } else { triple_words } }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-      b.box(fn(e) {
-        @sf.style_node(e, fn() { triple_end }, in_row=true)
-        e.basis(Is(None)).shrink(Is(0.0)) |> ignore
-        e.pick(on, fn(x, checked) {
-          if checked {
-            @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
-          } else {
-            x.box(fn(k) { @sf.style_node(k, fn() { triple_check_room }, in_row=true) }) |> ignore
-          }
-        })
+  // (@sf.radio_rows_node's: one radio group named by its column's head, one stop of Tab's, ↑ ↓ picking along it; its
+  // rows the column's hair apart, triple_effort_column's)
+  @sf.radio_rows_node(parent, fn() { label }, choices, now, pick, gap=@ui.Space::SPx.px(), fn(b, words, row) {
+    @sf.style_node(b, fn() { triple_option_look(row.picked() || row.lit()) })
+    b.min_width(Is(Some(0.0))) |> ignore
+    @sf.words_node(b, words, fn() { if row.picked() { triple_picked } else { triple_words } }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+    b.box(fn(e) {
+      @sf.style_node(e, fn() { triple_end }, in_row=true)
+      e.basis(Is(None)).shrink(Is(0.0)) |> ignore
+      e.pick(fn() { row.picked() }, fn(x, checked) {
+        if checked {
+          @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
+        } else {
+          x.box(fn(k) { @sf.style_node(k, fn() { triple_check_room }, in_row=true) }) |> ignore
+        }
       })
-      |> ignore
     })
     |> ignore
   })
+  |> ignore
 }
 
 ///|

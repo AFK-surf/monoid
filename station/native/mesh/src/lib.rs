@@ -414,16 +414,9 @@ impl Endpoint {
                     }
                     let tx = tx.clone();
                     napi::bindgen_prelude::spawn(async move {
-                        // One whose handshake fails is said, where it came from and how long it took: a device whose
-                        // dials to the station never got through said nothing here, which way its packets came or
-                        // whether any came at all (2026-10-29).
                         let from = incoming.remote_addr();
-                        let started = Instant::now();
-                        match incoming.await {
-                            Ok(conn) => {
-                                let _ = tx.send(conn);
-                            }
-                            Err(error) => crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis())),
+                        if let Some(conn) = handshake(from, incoming, HANDSHAKE_TIMEOUT).await {
+                            let _ = tx.send(conn);
                         }
                     });
                 }
@@ -520,6 +513,37 @@ async fn dial(
         biased;
         conn = handshake => conn,
         () = given_up => Err(anyhow::anyhow!("given up")),
+    }
+}
+
+/// How long a connection coming in may take over its handshake. Unbounded, it was bounded only by the connection's idle
+/// timeout (CONNECTION_IDLE_MS): a device dials every relay at once and lets go of the endpoints it did not choose
+/// (client/core-ts mesh.ts, after CONNECT_TIMEOUT_MS at most), and the station's half of each such handshake went on
+/// sending to it through the relay for ten minutes, which the relay dropped, the device's endpoint gone from it
+/// (2026-11-18: `handshake failed … after 600001 ms: timed out` in the logs, a relay's `send_packets_dropped` 4% to 25%
+/// of what it was sent with nothing queued). Three times the device's own wait, for a handshake of several round trips
+/// across continents.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A connection's handshake as it comes in, given up after `limit`: dropped then, which closes it, so it sends no
+/// more. One that fails or is given up is said, where it came from and how long it took: a device whose dials to the
+/// station never got through said nothing here, which way its packets came or whether any came at all (2026-10-29).
+async fn handshake<C, E: std::fmt::Display>(
+    from: impl std::fmt::Debug,
+    incoming: impl std::future::IntoFuture<Output = Result<C, E>>,
+    limit: Duration,
+) -> Option<C> {
+    let started = tokio::time::Instant::now();
+    match tokio::time::timeout(limit, incoming).await {
+        Ok(Ok(conn)) => Some(conn),
+        Ok(Err(error)) => {
+            crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()));
+            None
+        }
+        Err(_) => {
+            crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: given up, not done in {} s", started.elapsed().as_millis(), limit.as_secs()));
+            None
+        }
     }
 }
 
@@ -888,6 +912,98 @@ mod tests {
         let closing = tokio::time::Instant::now();
         endpoint.close().await;
         assert!(closing.elapsed() < Duration::from_secs(5), "the endpoint's close waited {:?}", closing.elapsed());
+    }
+
+    /// A handshake that never ends (the device gone half way) is given up at its limit and dropped, which closes it;
+    /// one that fails is said, and one that ends is taken. On the test's clock (paused: it moves when nothing else can).
+    #[tokio::test(start_paused = true)]
+    async fn a_handshake_never_done_is_given_up() {
+        use std::sync::atomic::{AtomicBool, Ordering as O};
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, O::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let never = {
+            let dropped = Dropped(dropped.clone());
+            async move {
+                let _held = dropped;
+                std::future::pending::<Result<(), String>>().await
+            }
+        };
+        let started = tokio::time::Instant::now();
+        assert!(handshake("nowhere", never, HANDSHAKE_TIMEOUT).await.is_none());
+        assert_eq!(started.elapsed(), HANDSHAKE_TIMEOUT);
+        assert!(dropped.load(O::SeqCst), "the handshake given up was kept");
+        assert_eq!(handshake::<u8, String>("here", async { Ok(1) }, HANDSHAKE_TIMEOUT).await, Some(1));
+        assert!(handshake::<u8, String>("here", async { Err("refused".into()) }, HANDSHAKE_TIMEOUT).await.is_none());
+    }
+
+    /// What the station sends its device through the way between them (a socket in place of a relay: what the device
+    /// sends goes on to the station until the device is gone, what the station sends back is counted and goes nowhere)
+    /// in the 5 s after a handshake the device let go of half way was given up after `limit`, or, with none, kept.
+    async fn sent_after_half_way(limit: Option<Duration>) -> usize {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as O};
+        let local = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        let station = IrohEndpoint::builder(Minimal).alpns(vec![b"test".to_vec()]).relay_mode(RelayMode::Disabled).transport_config(transport("cubic").unwrap()).bind_addr(local).unwrap().bind().await.unwrap();
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], station.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port()));
+        let between = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let gone = Arc::new(AtomicBool::new(false));
+        let back = Arc::new(AtomicUsize::new(0));
+        let passing = tokio::spawn({
+            let (between, gone, back) = (between.clone(), gone.clone(), back.clone());
+            async move {
+                let mut buf = [0u8; 2048];
+                while let Ok((n, from)) = between.recv_from(&mut buf).await {
+                    if from == at {
+                        back.fetch_add(1, O::SeqCst);
+                    } else if !gone.load(O::SeqCst) {
+                        let _ = between.send_to(&buf[..n], at).await;
+                    }
+                }
+            }
+        });
+        let device = IrohEndpoint::builder(Minimal).relay_mode(RelayMode::Disabled).bind_addr(local).unwrap().bind().await.unwrap();
+        let dialing = tokio::spawn({
+            let device = device.clone();
+            let to = EndpointAddr::new(station.id()).with_ip_addr(between.local_addr().unwrap());
+            async move { device.connect(to, b"test").await }
+        });
+        let incoming = station.accept().await.expect("the device's Initial came in");
+        gone.store(true, O::SeqCst);
+        dialing.abort();
+        let kept = match limit {
+            Some(limit) => {
+                let started = tokio::time::Instant::now();
+                assert!(handshake(incoming.remote_addr(), incoming, limit).await.is_none(), "a handshake with nobody at the other end was done");
+                assert!(started.elapsed() >= limit, "given up after {:?}", started.elapsed());
+                None
+            }
+            None => Some(tokio::spawn(async move { incoming.await.is_ok() })),
+        };
+        // What a close sends, and the station's first answers, then what it sends on.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        back.store(0, O::SeqCst);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let sent = back.load(O::SeqCst);
+        kept.map(|k| k.abort());
+        passing.abort();
+        station.close().await;
+        device.close().await;
+        sent
+    }
+
+    /// A handshake given up sends nothing more, where one kept goes on sending (to the station's idle timeout, ten
+    /// minutes). On real time, the machine's: iroh's timers are not the test's clock (paused, a handshake failed of
+    /// iroh's own idle timeout after 30 s of the machine's while the test's had moved 226 ms).
+    #[tokio::test]
+    #[ignore = "side: real sockets on this machine, and their time"]
+    async fn a_handshake_given_up_sends_no_more() {
+        let kept = sent_after_half_way(None).await;
+        assert!(kept > 0, "a handshake kept sent nothing in 5 s: the window shows nothing");
+        assert_eq!(sent_after_half_way(Some(Duration::from_millis(200))).await, 0, "a handshake given up went on sending");
     }
 
     #[tokio::test]

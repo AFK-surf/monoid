@@ -31,6 +31,8 @@ export { outputAt, tail };
 
 /// A job's log, and what is left of it, kept this long after its job ended (`collect`).
 export const JOB_LOGS_KEPT_MS = 14 * 24 * 3600_000;
+/// How many of its files (or reads of the store) `collect` goes through before it gives the loop back once.
+export const COLLECT_YIELD_EVERY = 32;
 /// A job's files whose job the store no longer has (its session deleted, its record cleared) kept this long.
 export const JOB_FILES_ORPHAN_MS = 3600_000;
 
@@ -584,22 +586,35 @@ export class Jobs {
     const gone = new Set<string>();
     const up = new Set(this.store.jobsUp().map((j) => j.id));
     const looked = new Map<string, JobRow | null>();
+    // (each read of the store is synchronous: so many files, all kept, made no await at all, and 1,043 reads held the
+    // main thread 4.5 s, 2026-11-18; the loop is given back every COLLECT_YIELD_EVERY files or reads)
+    let since = 0;
     const jobOf = (id: string) => {
-      if (!looked.has(id)) looked.set(id, this.store.getJob(id));
+      if (!looked.has(id)) {
+        since++;
+        looked.set(id, this.store.getJob(id));
+      }
       return looked.get(id)!;
     };
     const idOf = (name: string, sub: "logs" | "exit") => (sub === "logs" ? /^(.+?)\.log(\.1(\.tmp)?)?$/.exec(name)?.[1] : /^(.+?)(\.(lost|tmp))?$/.exec(name)?.[1]) ?? null;
+    const isUp = (id: string) => up.has(id) || this.running.has(id);
     for (const sub of ["logs", "exit"] as const) {
       const dir = join(this.dir, sub);
       for (const name of await readdir(dir).catch(() => [] as string[])) {
+        if (++since >= COLLECT_YIELD_EVERY) {
+          since = 0;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
         const id = idOf(name, sub);
-        if (id === null) continue;
+        if (id === null || isUp(id)) continue;
         const job = jobOf(id);
         const file = join(dir, name);
         if (job === null) {
           const st = await lstat(file).catch(() => null);
           if (st === null || now - st.mtimeMs < JOB_FILES_ORPHAN_MS) continue;
-        } else if (up.has(id) || this.running.has(id) || job.state === "running" || job.endedAt === null || now - job.endedAt < JOB_LOGS_KEPT_MS) continue;
+        } else if (job.state === "running" || job.endedAt === null || now - job.endedAt < JOB_LOGS_KEPT_MS) continue;
+        // (started again while the loop was given back)
+        if (isUp(id)) continue;
         await rm(file, { force: true }).catch(() => undefined);
         gone.add(id);
       }

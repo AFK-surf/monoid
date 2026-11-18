@@ -2,7 +2,7 @@
 // GET /host, the events' `host` samples and other stations are told of it (its CPUs noted every 15 s for their recent
 // average, its memory and OS read by the platform's commands, its disk the data directory's, its GPUs Apple's and
 // NVIDIA's), and the event streams (`GET /events`): the store's changes pushed as they happen, what was told taken up
-// from the process before (`events-handover.json`) and handed to the next as this one stops.
+// from the process before (`run/events.json`) and handed to the next as this one stops.
 
 ///|
 /// What a command printed, None where it failed or took longer than `ms`.
@@ -411,14 +411,15 @@ fn P51::seen_store(self : P51) -> @events.SeenStore {
 
 ///|
 /// services.ts Events: the event streams, made on the store's changes, the readers, the machine's samples, what of a
-/// job's log is read, what a viewer sees; taken up from the process before (`events-handover.json`) once it is gone,
+/// job's log is read, what a viewer sees; taken up from the process before (`run/events.json`, events.ts
+/// `eventsHandoverFile`: the same file whichever program wrote it) once it is gone,
 /// handed over as this one stops; the bus's `events_tell` and `overview_changed` from now on.
 fn P51::events_live(self : P51) -> EventsLive {
   let bus = self.bus
   let host = self.host
   let readers = self.readers.unwrap()
   let admin_host = self.admin_host.unwrap()
-  let handover_file = path([bus.data, "run", "events-handover.json"])
+  let handover_file = path([bus.data, "run", "events.json"])
   let fork_after = (ms : Double, f : () -> Unit) => {
     let fiber = host.rt.fork(name="events after", async fn() {
       @effect.sleep(ms.to_int())
@@ -525,24 +526,49 @@ fn P51::events_live(self : P51) -> EventsLive {
   // What the process before told, taken up once it is gone.
   self.fork("events take up", async fn() {
     (bus.previous_gone)()
+    // events.ts `takeUp`: there but not read (not ENOENT) is `unread`; either way what is there is removed, and the
+    // one before's pid (run/hub.json's) is what it must have been written by.
     let text = read_text(handover_file)
-    if text is Some(_) {
+    let unread = text is None &&
+      (try { Some(@drive.stat(handover_file)) } catch { _ => None }) is Some(_)
+    if text is Some(_) || unread {
       @drive.rm_force(handover_file)
     }
-    events.take_up(text)
-  })
-  // Handed over as the station stops: what the next process takes up.
-  self.stops.push(() => {
-    events.hand_over(@drive.pid(), handed => match handed {
-      Written(t) => write_whole(handover_file, t)
-      Removed => @drive.rm_force(handover_file)
-      Nothing => ()
-    })
-    for _, s in e.streams {
-      ignore(s.0.try_offer(None))
+    match bus.previous_pid {
+      Some(pid) => events.take_up(text, unread~, from=pid)
+      None => events.take_up(text, unread~)
     }
   })
+  // Handed over as the station stops: what the next process takes up. A read under way is waited for first (the
+  // events' `idle_waiters`), so the process waits for it before it ends (`live_p5_1_handed`).
+  let handed_now : @effect.Deferred[Unit] = @effect.Deferred::new()
+  p51_events_handed.val = Some(handed_now)
+  self.stops.push(() => {
+    events.hand_over(@drive.pid(), handed => {
+      match handed {
+        Written(t) => write_whole(handover_file, t)
+        Removed => @drive.rm_force(handover_file)
+        Nothing => ()
+      }
+      // (the streams ended once what was handed over is written: a stream that ended before would be no listener)
+      for _, s in e.streams {
+        ignore(s.0.try_offer(None))
+      }
+      ignore(handed_now.succeed(()))
+    })
+  })
   e
+}
+
+///|
+/// Whether this process's events were handed over as it stopped (None where it serves none).
+let p51_events_handed : Ref[@effect.Deferred[Unit]?] = Ref(None)
+
+///|
+/// Waits, as the process ends, for its events to be handed over: a read under way when it stopped ends first.
+pub async fn live_p5_1_handed() -> Unit {
+  guard p51_events_handed.val is Some(d) else { return }
+  ignore(@effect.timeout(5_000, async fn() { d.wait() })) // timer: a deadline to the process's end
 }
 
 ///|

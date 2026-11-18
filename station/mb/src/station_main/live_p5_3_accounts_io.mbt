@@ -553,3 +553,436 @@ async fn p53_codex_account_identity(host : @host.Host, home : String) -> @accoun
     _ => Null
   }
 }
+
+// ── the sign-ins and the machine's logins (accounts/index.ts `logins`, `machine`: login.ts, machine.ts) ──
+
+///|
+/// An environment as agent_runtimes reads one.
+fn p53_fields(env : Map[String, String]) -> @agent_runtimes.Fields {
+  let fields = @agent_runtimes.Fields::new()
+  for k, v in env {
+    fields.set(k, @jsjson.JValue::Str(@jsjson.units(v)))
+  }
+  fields
+}
+
+///|
+/// What agent_runtimes made of an environment, its variables (what is not a string left out).
+fn p53_fields_env(fields : @agent_runtimes.Fields) -> Map[String, String] {
+  let out : Map[String, String] = Map([])
+  match fields.json() {
+    Obj(kvs) =>
+      for kv in kvs {
+        if kv.1 is Str(v) {
+          out[@jsjson.text(kv.0)] = @jsjson.text(v)
+        }
+      }
+    _ => ()
+  }
+  out
+}
+
+///|
+/// What the accounts say a profile's sign-in as (its JSON as login.ts's `LoginJob`).
+fn p53_job(job : @accounts_oauth.LoginJob?) -> Json {
+  match job {
+    Some(j) => j.to_json()
+    None => Json::null()
+  }
+}
+
+///|
+/// The sign-ins' manager (login.ts `LoginManager`, as accounts/index.ts makes it): the runtimes' own login commands run
+/// as children of this process (a pseudo-terminal's where a command needs one, `script` as the platform's
+/// `terminalSoon`), the Console's and Kimi's device grants and Cursor's sign-in followed here.
+fn p53_login_manager(
+  bus : LiveBus,
+  words : @accounts_oauth.Words,
+  oauth_io : @accounts_oauth.Io,
+  pool_io : @accounts_pool.Io,
+) -> @accounts_oauth.LoginManager {
+  let host = bus.host
+  let mac = platform() == "darwin"
+  let cursor : @accounts_pool.CursorUrls = { website: "https://cursor.com", backend: "https://api2.cursor.sh", api: "https://api.cursor.com" }
+  let kimi_base = @accounts_pool.kimi_auth
+  let platform_ : @accounts_oauth.LoginPlatform = {
+    terminal: async fn(program, args, cols, rows) {
+      if is_windows() {
+        return None
+      }
+      let run = "stty cols \{cols} rows \{rows} 2>/dev/null; exec \"$@\""
+      if mac {
+        // (macOS's script refuses a socket for its stdin: a pipe put between, `cat` feeding it, ended with the command)
+        let feed = "exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '\{run}' sh \"$@\" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }"
+        return Some(("/bin/sh", ["-c", feed, "sh", program, ..args]))
+      }
+      for script in ["/usr/bin/script", "/bin/script"] {
+        if (try { Ok(@drive.stat(script)) } catch { e => Err(e) }) is Ok(_) {
+          let inner = ["/bin/sh", "-c", run, "sh", program, ..args].map(p54_quoted)
+          return Some((script, ["-qfec", inner.join(" "), "/dev/null"]))
+        }
+      }
+      None
+    },
+    prepend_path: (env, dir) => {
+      let m = env.copy()
+      let sep_ = if is_windows() { ";" } else { ":" }
+      m["PATH"] = match env.get("PATH") {
+        Some(p) if p != "" => dir + sep_ + p
+        _ => dir
+      }
+      m
+    },
+    // (a command named bare is found on the environment's PATH: sys.mbt `resolved_program`)
+    runnable: async fn(program, args, env) {
+      if program.contains("/") || program.contains("\\") {
+        (program, args)
+      } else {
+        (find_command(program, env.to_array()).unwrap_or(program), args)
+      }
+    },
+    make_command: async fn(p, script) {
+      @drive.write_private(p, script)
+      ignore(host.shell("fs.chmod", { "path": Json::string(p), "mode": Json::number(0o700.to_double()) })) catch {
+        _ => ()
+      }
+      p
+    },
+    with_shell_command: async fn(program, env, lookup) {
+      let given = env.to_array()
+      let found = with_shell_command(host, program, given, lookup=lookup.to_array())
+      if found == given {
+        None
+      } else {
+        Some(Map::from_array(found))
+      }
+    },
+    // (no-keychain.ts `fileCredentialsSoon`: a profile's Claude Code keeps its login in its home, not the keychain)
+    file_credentials: async fn(env) {
+      if mac {
+        let dir = @agent_runtimes.stub_dir_soon(host, tmpdir(), @drive.uid(), "\{@drive.pid()}.\{@drive.random_uuid()}")
+        env["PATH"] = "\{dir}:\{env.get("PATH").unwrap_or(env_get("PATH").unwrap_or(""))}"
+      }
+    },
+    spawn: async fn(program, args, cwd, env, events) {
+      let open_in = Ref(true)
+      let ended = Ref(false)
+      let child = p54_spawn(
+        host,
+        program,
+        args,
+        env=env.to_array(),
+        cwd~,
+        group=true,
+        out=b => (events.output)(@utf8.decode_lossy(b)),
+        err=b => (events.output)(@utf8.decode_lossy(b)),
+        close=(code, signal) => {
+          ended.val = true
+          (events.close)(code, signal)
+        },
+      ) catch {
+        e => raise P53Error("\{program} did not start: \{p53_words(e)}")
+      }
+      let pid = child.proc.pid
+      {
+        pid: Some(pid),
+        writable: () => open_in.val && !ended.val,
+        write: async fn(text) { ignore(child.proc.write(@utf8.encode(text))) },
+        send: text => ignore(child.proc.write(@utf8.encode(text))),
+        kill: () => ignore(kill(pid, "SIGTERM", group=true)),
+      }
+    },
+    descendants: async fn(pid) {
+      let (code, text, _) = p54_run(host, "ps", ["-A", "-o", "pid=,ppid="]) catch { _ => return [] }
+      guard code == Some(0) else { return [] }
+      let children : Map[Int, Array[Int]] = Map([])
+      for line in text.split("\n") {
+        let f = line.trim().split(" ").filter(x => x != "").map(x => x.to_owned()).to_array()
+        if f.length() >= 2 {
+          let c = @string.parse_int(f[0]) catch { _ => continue }
+          let p = @string.parse_int(f[1]) catch { _ => continue }
+          match children.get(p) {
+            Some(a) => a.push(c)
+            None => children[p] = [c]
+          }
+        }
+      }
+      let out = []
+      let next = [pid]
+      while next.pop() is Some(p) {
+        for c in children.get(p).unwrap_or([]) {
+          if !out.contains(c) {
+            out.push(c)
+            next.push(c)
+          }
+        }
+      }
+      out
+    },
+    kill: pid => ignore(kill(pid, "SIGTERM")),
+  }
+  let deps : @accounts_oauth.LoginDeps = {
+    platform: platform_,
+    // (runtime.ts `cleanEnv`: the station's environment without what is the station's own)
+    env: () => p53_fields_env(@agent_runtimes.clean_env(p53_fields(p53_station_env()), [])),
+    // (kimi.ts: the device it signed in on before, or a new one)
+    kimi: async fn(home) {
+      let device_id = match @accounts_pool.read_kimi(pool_io, home) {
+        Some(l) => l.device_id
+        None => @accounts_pool.new_device_id(pool_io)
+      }
+      {
+        start: async fn() {
+          let d = p53_json(@accounts_pool.start_kimi_device(pool_io, kimi_base, device_id))
+          {
+            device_code: p53_text(d, "deviceCode"),
+            user_code: p53_text(d, "userCode"),
+            url: p53_text(d, "url"),
+            expires_in_ms: p53_num(d, "expiresInMs").unwrap_or(600000.0),
+            interval_ms: p53_num(d, "intervalMs").unwrap_or(5000.0),
+          }
+        },
+        ask: async fn(code) {
+          let a = p53_json(@accounts_pool.kimi_device_token(pool_io, kimi_base, code, device_id))
+          match p53_get(a, "token") {
+            Object(_) as t =>
+              Signed({
+                access: p53_text(t, "access"),
+                refresh: p53_text(t, "refresh"),
+                expires_in_ms: p53_num(t, "expiresInMs").unwrap_or(0.0),
+                org: p53_str(t, "org"),
+              })
+            _ =>
+              match p53_str(a, "error") {
+                Some(e) => Refused(e)
+                None => Pending(p53_get(a, "slowDown") is True)
+              }
+          }
+        },
+        keep: async fn(token) {
+          async fn() {
+            @accounts_pool.write_kimi(pool_io, home, {
+              access: token.access,
+              refresh: token.refresh,
+              expires_at: wall_ms().to_double() + token.expires_in_ms,
+              life_ms: token.expires_in_ms,
+              device_id,
+            })
+          }
+        },
+      }
+    },
+    // (cursor.ts `cursorHandshake`: a PKCE verifier, its challenge, and the page that confirms it)
+    cursor_handshake: () => {
+      let verifier = p53_base64url(@drive.random_bytes(32))
+      let challenge = p53_base64url(p53_hex_bytes(@accounts_pool.sha256_hex(verifier)))
+      let uuid = @drive.random_uuid()
+      {
+        "uuid": Json::string(uuid),
+        "verifier": Json::string(verifier),
+        "url": Json::string("\{cursor.website}/loginDeepControl?challenge=\{challenge}&uuid=\{uuid}&mode=login&redirectTarget=cli"),
+      }
+    },
+    poll_cursor: async fn(handshake) {
+      match p53_json(@accounts_pool.poll_cursor(pool_io, cursor, p53_jv(handshake))) {
+        Object(m) as a if !m.contains("pending") => Some(a)
+        _ => None
+      }
+    },
+    mint_cursor_key: async fn(access, name) { p53_json(@accounts_pool.mint_cursor_key(pool_io, cursor, access, name)) },
+    write_cursor: async fn(home, login) {
+      guard @accounts_pool.cursor_in(login.stringify()) is Some(l) else { raise P53Error("Cursor minted no key") }
+      @accounts_pool.write_cursor(pool_io, home, l)
+    },
+    agy_token_ready: (text, enterprise) => @agent_drivers.agy_token_ready(text, enterprise),
+    note_agy_email: async fn(home, text) {
+      ignore((bus.hub_ask.val)("agy.noteEmail", { "home": Json::string(home), "text": Json::string(text) })) catch {
+        _ => ()
+      }
+    },
+    // (command-output.ts `loopbackOf`: a page that comes back to this machine's own port)
+    loopback_of: url => {
+      let rest = if url.has_prefix("http://") { url[7:].to_owned() } else { return false }
+      rest.has_prefix("localhost:") || rest.has_prefix("127.0.0.1:") || rest.has_prefix("[::1]:")
+    },
+    key_name: () => "still.fail · \{hostname()}",
+  }
+  let logins = @accounts_oauth.LoginManager::new(oauth_io, deps, words, bus.data)
+  // (Accounts `login_state_file`, as this has to say it at once: a profile config.json keeps, in its home, none for a
+  // machine's or a borrowed one; else the home of its sign-in under way)
+  logins.set_state_file(id => {
+    for p in jitems(jfield((bus.config_raw.val)(), "profiles")) {
+      if jtext(p, "id") != Some(id) {
+        continue
+      }
+      let profile = @accounts_pool.profile_of(p53_jv(p), bus.data, _ => None)
+      return if profile.machine || @accounts_pool.borrowed(profile.raw) {
+        None
+      } else {
+        Some(@accounts_pool.join_path([profile.home, @accounts_oauth.login_browser_file]))
+      }
+    }
+    logins.job_state_file(id)
+  })
+  logins
+}
+
+///|
+fn p53_base64url(b : Bytes) -> String {
+  @base64.encode(b).replace_all(old="+", new="-").replace_all(old="/", new="_").replace_all(old="=", new="")
+}
+
+///|
+fn p53_hex_bytes(hex : String) -> Bytes {
+  let out = []
+  let digit = (c : Char) => match c {
+    '0'..='9' => c.to_int() - '0'.to_int()
+    'a'..='f' => c.to_int() - 'a'.to_int() + 10
+    'A'..='F' => c.to_int() - 'A'.to_int() + 10
+    _ => 0
+  }
+  let cs = hex.to_array()
+  let mut i = 0
+  while i + 1 < cs.length() {
+    out.push((digit(cs[i]) * 16 + digit(cs[i + 1])).to_byte())
+    i += 2
+  }
+  Bytes::from_array(out)
+}
+
+///|
+/// The machine's own logins (machine.ts `MachineLogins`): `claude auth status` and `codex login status` read, with
+/// what each login's allowance is (quota.ts `machineUsage`).
+fn p53_machine_logins(
+  bus : LiveBus,
+  words : @accounts_oauth.Words,
+  oauth_io : @accounts_oauth.Io,
+  ctx : @accounts_pool.Ctx,
+) -> @accounts_oauth.MachineLogins {
+  let host = bus.host
+  let mac = platform() == "darwin"
+  let deps : @accounts_oauth.MachineDeps = {
+    commands: @accounts_oauth.commands_on(host, posix=!is_windows()),
+    claude_credentials: async fn(env) {
+      match @agent_runtimes.read_claude_credentials(host, p53_fields(env), mac) {
+        Some(t) => Some(p52_json_of_jv(t.json()))
+        None => None
+      }
+    },
+    codex_home: env => @agent_runtimes.codex_home(p53_fields(env), windows=is_windows()),
+    usage: Some(async fn(runtime, _env) {
+      match @accounts_pool.machine_usage(ctx, runtime, (bus.lang.val)()) {
+        Some(q) => p53_json(q)
+        None => Json::null()
+      }
+    }),
+  }
+  @accounts_oauth.MachineLogins::new(oauth_io, deps, words, p53_station_env(), () => (bus.lang.val)())
+}
+
+///|
+/// What the accounts ask of the sign-ins and the machine's logins (`logins.*`, `console.*`, `machine.*`), as
+/// accounts/index.ts calls `this.logins`, console.ts and `this.machine`; None where `name` is none of it.
+async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : Array[Json]) -> Json? {
+  let at = (i : Int) => if i < args.length() { args[i] } else { Json::null() }
+  let s = (i : Int) => match at(i) {
+    String(t) => t
+    _ => ""
+  }
+  let lang = (i : Int) => match at(i) {
+    String(l) => l
+    _ => (self.bus.lang.val)()
+  }
+  let logins = self.logins
+  match name {
+    "logins.start" => {
+      let p = at(0)
+      let profile : @accounts_oauth.LoginProfile = {
+        id: p53_text(p, "id"),
+        runtime: p53_text(p, "runtime"),
+        home: p53_text(p, "home"),
+        email: p53_str(p, "email"),
+        enterprise: p53_get(p, "enterprise") is True,
+      }
+      Some(logins.start(profile, lang(1)).to_json())
+    }
+    "logins.startConsole" => Some(logins.start_console(p53_text(at(0), "id"), p53_text(at(0), "home"), lang(1)).to_json())
+    "logins.startKimi" => Some(logins.start_kimi(p53_text(at(0), "id"), p53_text(at(0), "home"), lang(1)).to_json())
+    "logins.startCursor" => Some(logins.start_cursor(p53_text(at(0), "id"), p53_text(at(0), "home"), lang(1)).to_json())
+    "logins.get" => Some(p53_job(logins.get(s(0))))
+    "logins.cancel" => {
+      logins.cancel(s(0))
+      Some(Json::null())
+    }
+    "logins.close" => {
+      logins.stop_all()
+      Some(Json::null())
+    }
+    "logins.submitCode" => Some(logins.submit_code(s(0), s(1), lang(2)).to_json())
+    "logins.openPage" => Some(Json::string(logins.open_page(s(0), lang(1))))
+    // (console.ts: an OpenCode Console sign-in kept in the profile's home, renewed)
+    "console.read" =>
+      Some(
+        match @accounts_oauth.read_console(self.oauth_io, s(0)) {
+          Some(l) => l.to_json()
+          None => Json::null()
+        },
+      )
+    "console.write" => {
+      guard @accounts_oauth.console_in(at(1).stringify()) is Some(l) else {
+        raise P53Error("not an OpenCode Console sign-in")
+      }
+      @accounts_oauth.write_console(self.oauth_io, s(0), l)
+      Some(Json::null())
+    }
+    "console.renew" =>
+      Some(
+        @accounts_oauth.renew_token(self.oauth_io, s(0), s(1)).to_json() catch {
+          @accounts_oauth.RenewRefused(status, message) =>
+            raise @accounts_pool.Thrown(
+              "RenewRefused",
+              @accounts_pool.jobj([
+                ("message", @accounts_pool.js(message)),
+                (
+                  "status",
+                  match status {
+                    Some(n) => Num(n.to_double())
+                    None => Null
+                  },
+                ),
+              ]),
+            )
+          e => raise e
+        },
+      )
+    "console.in" =>
+      Some(
+        match @accounts_oauth.console_in(s(0)) {
+          Some(l) => l.to_json()
+          None => Json::null()
+        },
+      )
+    // (machine.ts: the machine's own logins; none where the station keeps none, a rig's)
+    "machine.get" =>
+      Some(
+        match self.machine {
+          Some(m) => Json::array(m.get().map(l => l.to_json()))
+          None => Json::array([])
+        },
+      )
+    "machine.refresh" => {
+      match self.machine {
+        Some(m) => m.refresh()
+        None => ()
+      }
+      Some(Json::null())
+    }
+    "machine.linkCodexAuth" => {
+      @agent_runtimes.link_codex_auth_soon(self.bus.host, s(0), p53_fields(p53_station_env())) catch {
+        _ => ()
+      }
+      Some(Json::null())
+    }
+    _ => None
+  }
+}

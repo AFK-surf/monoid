@@ -1132,6 +1132,61 @@ async fn P51::admin_live(self : P51) -> AdminLive {
     }
     (json_of_jv(a.admin.called(id, args.map(jv_of_json))), None)
   })
+  // What a hand-over carries of the messages written under a key (move/live.ts `keptSends`, `keepSends`): those of the
+  // threads `{"threads": [[here, there], …]}` here, each under its thread's id there, and those another station kept,
+  // kept here (`{"sends": [KeptSend, …]}`).
+  bus.on_peer("$admin.keptSends", async fn(_, _, params, _) {
+    let threads : Map[Double, Double] = Map([])
+    for p in jitems(jfield(params, "threads")) {
+      match p {
+        [Number(here, ..), Number(there, ..), ..] => threads[here] = there
+        _ => ()
+      }
+    }
+    let sends = a.admin.kept_sends(threads).map(s => {
+      let headers : Map[String, Json] = Map([])
+      for k, v in s.headers {
+        headers[k] = Json::string(v)
+      }
+      let o : Json = {
+        "viewer": Json::string(s.viewer),
+        "thread": Json::number(s.thread),
+        "key": Json::string(s.key),
+        "at": Json::number(s.at),
+        "status": Json::number(s.status.to_double()),
+        "headers": Json::object(headers),
+        "body": Json::string(s.body),
+      }
+      o
+    })
+    (Json::array(sends), None)
+  })
+  bus.on_peer("$admin.keepSends", async fn(_, _, params, _) {
+    let sends = jitems(jfield(params, "sends")).map(s => {
+      let headers : Map[String, String] = Map([])
+      match jfield(s, "headers") {
+        Object(m) =>
+          for k, v in m {
+            if v is String(t) {
+              headers[k] = t
+            }
+          }
+        _ => ()
+      }
+      let send : @api_routes.KeptSend = {
+        viewer: jtext(s, "viewer").unwrap_or(""),
+        thread: jnum_of(s, "thread").unwrap_or(0.0),
+        key: jtext(s, "key").unwrap_or(""),
+        at: jnum_of(s, "at").unwrap_or(0.0),
+        status: jnum_of(s, "status").unwrap_or(0.0).to_int(),
+        headers,
+        body: jtext(s, "body").unwrap_or(""),
+      }
+      send
+    })
+    a.admin.keep_sends(sends)
+    (Json::null(), None)
+  })
   // GET /overview's value for a viewer, as another part answers with it (a connect moved: connects/workspace.ts's route
   // answers `agents.view`).
   bus.on_peer("$overview", async fn(_, _, params, _) {
@@ -1271,7 +1326,9 @@ async fn P51::local_admin(self : P51, a : AdminLive, r : Request, conn : Json) -
       if !write_on(self.host, conn, @utf8.encode(head.to_string())) {
         return None
       }
-      while !self.bus.stopped.is_done() {
+      // (until its pieces end, not as the station is told to stop: a stream let go of before the events are handed
+      // over would be no listener of them, and the next process would take up none)
+      while true {
         match (try { Ok(next()) } catch { e => Err(e) }) {
           Ok(Some(piece)) => if !write_on(self.host, conn, piece) { break }
           _ => break

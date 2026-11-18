@@ -488,9 +488,10 @@ fn side_node(
 }
 
 ///|
-/// The tabs in `parent`: one groove, each tab an equal share of it, the one shown raised; its folder first, its station
-/// after it, small, a dot of its station's colour before; its close at its left while pointed at. `show`: a tab shown
-/// or closed.
+/// The tabs in `parent` (@sf.tab_bar_node's groove: one tab list, Tab stopping at the one shown, ← → showing each):
+/// each tab as wide as what it shows, the one shown raised; its folder first, its station after it, small, a dot of its
+/// station's colour before; its × at its end, concentric with it, while pointed at (always to a finger), Delete on it
+/// closing it too. `show`: a tab shown or closed.
 fn tab_row_node(
   parent : @view.View,
   stations : () -> Array[DvStation],
@@ -498,70 +499,56 @@ fn tab_row_node(
   pane_at : (FilesTab, Int) -> DriveAt,
   show : (String, String) -> Unit,
 ) -> Unit {
-  @headless.radio_group(
+  // (each tab read by its id, each station's colour by its place among them)
+  let by_id = parent.keyed_by(fn() { tabs().tabs }, fn(t) { t.id })
+  let tones = parent.keyed_by(fn() { stations().mapi(fn(i, s) { (s.station, i) }) }, fn(x) { x.0 })
+  let panes = fn(id : String) {
+    match by_id.get(id) {
+      Some(t) => Array::makei(t.panes.length(), fn(i) { pane_at(t, i) })
+      None => []
+    }
+  }
+  @sf.tab_bar_node(
     parent,
     fn() { @sf.t("web-pages.files.tabs") },
+    fn() { by_id.keys() },
     fn() { tabs().current },
     fn(id) { show("show", id) },
-    kind=Tab,
-    fn(g, rg) {
-      @sf.style_node(g, fn() { tabs_groove })
-      // (each tab read by its id, each station's colour by its place among them)
-      let by_id = g.keyed_by(fn() { tabs().tabs }, fn(t) { t.id })
-      let tones = g.keyed_by(fn() { stations().mapi(fn(i, s) { (s.station, i) }) }, fn(x) { x.0 })
-      g.each(fn() { by_id.keys() }, fn(id) { id }, fn(slot, id) {
-        let id = id.untracked()
-        let x = fn() { by_id.get(id) }
-        let panes = fn() {
-          match x() {
-            Some(t) => Array::makei(t.panes.length(), fn(i) { pane_at(t, i) })
-            None => []
+    fn(id) {
+      panes(id).map(fn(p) {
+        let (folder, station) = pane_parts(p, stations())
+        station + " › " + folder
+      }).join(" | ")
+    },
+    fn(t, id, shown) {
+      t.box(fn(parts) {
+        @sf.style_node(parts, fn() { tab_parts }, in_row=true)
+        parts.each(fn() { Array::makei(panes(id).length(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(pp, k) {
+          let k = k.untracked()
+          let p = fn() {
+            match panes(id).get(k) {
+              Some(p) => p
+              None => pane_at({ id, panes: [], front: 0 }, 0)
+            }
           }
-        }
-        let words = fn() {
-          panes().map(fn(p) {
-            let (folder, station) = pane_parts(p, stations())
-            station + " › " + folder
-          }).join(" | ")
-        }
-        rg.item(slot, fn() { id }, words, fn(t, item) {
-          @sf.style_node(t, fn() { if item.chosen() { tab_on } else { tab_off } }, in_row=true)
-          // (the tab shown raised over the others: its shadow (Sm's) said on the node, which style_node does not set)
-          t.shadow(By(fn() { if item.chosen() { (2.0, 1.0, @ui.tree_theme().shadow) } else { (0.0, 0.0, 0L) } })) |> ignore
-          @sf.hover_ground_node(t, on=fn() { !item.chosen() })
-          // (its ✕ always to a finger, which hovers over nothing; clear while not pointed at: the hand changes no box)
-          let close = t.box(fn(c) {
-            @sf.style_node(c, fn() { tab_close })
-            @sf.presses_node(c, fn() { show("close", id) })
-            c.says(Is(Some(@view.said(Button, label=@sf.t("web-pages.files.closeTab"))))) |> ignore
-            @sf.hover_ground_node(c)
-            @sf.icon_node(c, "close", close_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-          })
-          close.alpha(By(fn() { if @sf.more_held() || @sf.lit_within_node(t) { 1.0 } else { 0.0 } })) |> ignore
-          t.box(fn(parts) {
-            @sf.style_node(parts, fn() { tab_parts }, in_row=true)
-            parts.each(fn() { Array::makei(panes().length(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(pp, k) {
-              let k = k.untracked()
-              let p = fn() { panes().get(k).unwrap_or(pane_at(@signals.untracked(x).unwrap_or({ id, panes: [], front: 0 }), 0)) }
-              pp.row(Is(true)).gap(Is(@ui.Space::px(S1_5))).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
-              pp.box(fn(dot) {
-                @sf.style_node(dot, fn() {
-                  let tone = tones.get(p().station).map(fn(x) { x.1 }).unwrap_or(0) % station_dots.length()
-                  station_dots[tone]
-                })
-              })
-              |> ignore
-              @sf.words_node(pp, fn() { pane_parts(p(), stations()).0 }, fn() { if item.chosen() { tab_folder_on } else { tab_folder } }) |> ignore
-              @sf.words_node(pp, fn() { pane_parts(p(), stations()).1 }, fn() { tab_station }) |> ignore
+          pp.row(Is(true)).gap(Is(@ui.Space::px(S1_5))).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
+          pp.box(fn(dot) {
+            @sf.style_node(dot, fn() {
+              let tone = tones.get(p().station).map(fn(x) { x.1 }).unwrap_or(0) % station_dots.length()
+              station_dots[tone]
             })
           })
           |> ignore
-          // (as wide as its close, so its words are in its middle)
-          t.box(fn(c) { @sf.style_node(c, fn() { tab_close }) }) |> ignore
+          @sf.words_node(pp, fn() { pane_parts(p(), stations()).0 }, fn() { if shown.front() { tab_folder_on } else { tab_folder } }) |> ignore
+          @sf.words_node(pp, fn() { pane_parts(p(), stations()).1 }, fn() { tab_station }) |> ignore
         })
-        |> ignore
       })
+      |> ignore
     },
+    look=Groove,
+    close=fn(id) { show("close", id) },
+    close_label=fn(_) { @sf.t("web-pages.files.closeTab") },
+    close_shows=Lit,
   )
   |> ignore
 }
@@ -769,10 +756,6 @@ fn roots_sample_node(parent : @view.View) -> Unit {
 }
 
 ///|
-/// A tab's close (10).
-let close_icon : Double = 10.0
-
-///|
 // kept across runs: a value (no field of it changes)
 let fs_empty_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)
 
@@ -813,23 +796,6 @@ let tabs_none : @ui.Style = @ui.style(row=true, w=@sf.grow, min_w=S0)
 ///|
 // kept across runs: a value (no field of it changes)
 let bar_apart : @ui.Style = @ui.css("w=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tabs_groove : @ui.Style = @ui.style(row=true, w=@sf.grow, p=S0_5, gap=S0_5, radius=Full, bg=Tint)
-
-///|
-// kept across runs: a value (no field of it changes)
-// (6 in at either end: its × (16, round) as far in as it is under the tab's top, concentric with the tab's round end)
-let tab_off : @ui.Style = @ui.style(row=true, w=@sf.grow, min_w=S0, h=S7, px=S1_5, gap=S1, radius=Full, align=ACenter)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tab_on : @ui.Style = tab_off.then(@ui.css("bg=Bg"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let tab_close : @ui.Style = @ui.css("w=S4 h=S4 radius=Full align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

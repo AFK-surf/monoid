@@ -28,7 +28,15 @@ for fps in ${FPS:-60 120 24 7}; do
   out=$(echo "$out" | grep -av '^MOTION ')
   echo "$fps fps: $(echo "$out" | grep -a '^Total tests' | tail -1)"
   if [ $st != 0 ]; then
-    echo "$out" | grep -a -E 'test .* failed|not built whole|takes no presses|Abort|exited with' | cut -c1-600 | head -40
+    # (what failed, and the words of what stopped the run with them (@halt.saying: its words, then the line said them,
+    # "  at …mbt:…"), whatever they are: a Tester's check stopping a test on its own (sizes not steady) said no more than
+    # the signal it ended on)
+    # (and where none of that is in it, a build that failed or a tool not found: its last lines, as they are)
+    said=$(echo "$out" | awk '
+      /test .* failed|not built whole|takes no presses|Abort|exited with/ { print; prev = ""; next }
+      /^  at [^ ]+\.mbt:[0-9]/ { if (prev != "") print prev; print; prev = ""; next }
+      { prev = $0 }' | cut -c1-600 | head -40)
+    if [ -n "$said" ]; then echo "$said"; else echo "$out" | tail -20 | cut -c1-600; fi
     code=1
   fi
 done

@@ -758,42 +758,6 @@ let browser_tabs_row : @ui.Style = @ui.css("row w=Full h=S11 px=S2 gap=S1 align=
 let browser_tools_row : @ui.Style = @ui.css("row w=Full h=S12 pl=S2 pr=S5 gap=S1 align=ACenter")
 
 ///|
-/// How tall a tab is (browser_tab_box's S9), and ＋ beside them.
-let browser_tab_h : Double = @ui.Space::px(S9)
-
-///|
-/// A tab: a capsule, its words then its ×, the one shown on the ink's tint; at most 224 wide, cut short past that. Its
-/// words as far in as its ×'s mark is from its end (the × concentric with the capsule's end: 11, its words 12).
-// kept across runs: a value (no field of it changes)
-let browser_tab_box : @ui.Style = @ui.css(
-  "row h=S9 max_w=S56 pl=S3 pr=S1 gap=S1 radius=Full align=ACenter hovered{bg=Hover} selected{bg=A(Fg,O10)}",
-)
-
-///|
-/// A tab with no × (a desktop's whole screen, one of its windows): its words as far in at both ends.
-// kept across runs: a value (no field of it changes)
-let browser_tab_box_kept : @ui.Style = @ui.css(
-  "row h=S9 max_w=S56 px=S3_5 radius=Full align=ACenter hovered{bg=Hover} selected{bg=A(Fg,O10)}",
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let browser_tab_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, wrap=false, w=Cut)
-
-///|
-/// A tab's ×: a round 28 at its end.
-// kept across runs: a value (no field of it changes)
-let browser_tab_close_box : @ui.Style = @ui.css("w=S7 h=S7 radius=Full align=ACenter justify=JCenter hovered{bg=Hover}")
-
-///|
-let browser_tab_close_icon : Double = 14.0
-
-///|
-/// The address bar, grown to what the row leaves it.
-// kept across runs: a value (no field of it changes)
-let browser_address_box : @ui.Style = @ui.style(w=@sf.grow)
-
-///|
 /// The tabs' button where the page is narrow: 40 square, holding a rounded square with their count, as a phone's
 /// browser's.
 // kept across runs: a value (no field of it changes)

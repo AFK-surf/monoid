@@ -47,6 +47,27 @@ fn TranscriptHints::listen(self : TranscriptHints, f : (String) -> Unit) -> () -
 }
 
 ///|
+/// read/transcript.ts `rememberCodexRolloutLooking`: the rollout a running Codex thread said, kept under each of its
+/// home's sessions directories as reached and as its links resolve (`dirs`), its path below them `suffix`; the same entry
+/// for both, as transcript.ts keeps it.
+fn remember_said_rollout(id : String, dirs : Array[String], suffix : String) -> Unit {
+  let h = transcript_hints
+  let kept = match h.said.get(id) {
+    Some(m) => m
+    None => {
+      let m : Map[String, SaidRollout] = {}
+      h.said[id] = m
+      m
+    }
+  }
+  let entry : SaidRollout = { suffix, seen: false }
+  for dir in dirs {
+    kept[dir] = entry
+  }
+  h.changed(id)
+}
+
+///|
 /// One batch's hints (transcript.ts `transcriptLocationHints`): what is known for its sources now, whether that still
 /// stands, and what the locator found merged where it does.
 priv struct BatchHints {

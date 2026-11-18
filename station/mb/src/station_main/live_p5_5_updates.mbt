@@ -108,6 +108,22 @@ fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
 }
 
 ///|
+/// One updates' world for what the other slices ask of it (codex-repair.ts `findMissingCodexHost`, the Codex driver's).
+let shared_updates_world : Ref[@updates.World?] = Ref(None)
+
+///|
+fn station_updates_world(bus : LiveBus) -> @updates.World {
+  match shared_updates_world.val {
+    Some(w) => w
+    None => {
+      let w = p5_5_updates_world(bus)
+      shared_updates_world.val = Some(w)
+      w
+    }
+  }
+}
+
+///|
 fn P55::start_features(self : P55) -> Unit raise PartTwice {
   let bus = self.bus
   // (features.ts `stationFeatures`: those on here, by the channel the station is updated on)
@@ -130,21 +146,23 @@ fn lang_arg(arg : Json) -> String {
 }
 
 ///|
-async fn P55::start_updates(self : P55) -> Unit {
+/// `rig`: a station that only runs tasks (rig/main.ts): its own release only, nothing running, none of the pages' or
+/// the agents' hands on it (it serves no device and runs no agent).
+async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   let bus = self.bus
   updates_setup(bus.data, bus.argv0)
   let w = p5_5_updates_world(bus)
   let config = @updates.Config::new(of_core((bus.config_raw.val)()))
   // (the station's own release only, until the agents' part says which runtimes it runs: their versions are its)
-  let station_only = (bus.runtimes_available.val)().is_empty()
-  let running = () => match (bus.status_agents.val)() {
+  let station_only = rig || (bus.runtimes_available.val)().is_empty()
+  let running = () => if rig { 0.0 } else { match (bus.status_agents.val)() {
     Some(s) =>
       match p55_jfield(p55_jfield(s, "agents"), "busy") {
         Number(n, ..) => n
         _ => 0.0
       }
     None => 0.0
-  }
+  } }
   let env : Array[(String, String)] = env_all()
   let u = @updates.Updates::new(w, {
     app: bus.app,
@@ -164,6 +182,10 @@ async fn P55::start_updates(self : P55) -> Unit {
     node_version: "",
   })
   self.updates = Some(u)
+  // (launcher.ts `runInstaller`: the installer started by the launcher where this process could not start it)
+  if bus.run_installer is Some(f) {
+    u.on_launcher_installer((script, env) => f(script, Map::from_array(env)))
+  }
   // The config edited elsewhere (a page, `stillfail channel`, another part): heard as it changes.
   let off = (bus.config_listen.val)(raw => {
     config.raw = of_core(raw)
@@ -191,6 +213,14 @@ async fn P55::start_updates(self : P55) -> Unit {
       }
     }),
   )
+  if rig {
+    // rig/main.ts: `stillfail update --beta|--stable` asks it by SIGHUP too.
+    self.op("updates.hup", async fn(_arg) {
+      u.answer_channel_ask()
+      Json::null()
+    })
+    return
+  }
   bus.parts.overview("updates", async fn(_viewer, lang) { to_core(@jsjson.JValue::Arr(u.get(lang))) })
   bus.parts.routes(updates_routes(u))
   // Its agents' hand on its release (tools/version.ts): updated, or put back to an earlier one.
@@ -437,4 +467,32 @@ async fn version_tool(u : @updates.Updates, args : Json) -> Json {
     }
     _ => raise BusError("action: list, update or back")
   }
+}
+
+///|
+/// rig/main.ts: a station that only runs tasks keeps its own release up to date (read at start and as the cloud says
+/// one is out, updated by itself while nothing runs, its channel asked by SIGHUP), with none of P5-5's other parts.
+/// What the other slices ask on `coord_ask` that it does not answer is answered none, as before it was made.
+pub async fn start_rig_updates(bus : LiveBus) -> Unit {
+  let p : P55 = { bus, ops: Map([]), prefix_ops: [], updates: None, closers: [] }
+  bus.coord_ask.val = async fn(op, arg) {
+    if p.ops.contains(op) {
+      p.ask(op, arg)
+    } else {
+      Json::null()
+    }
+  }
+  p.start_updates(rig=true) catch {
+    e => err_write("station: the updates part is not made: \{p55_said_of(e)}\n")
+  }
+  ignore(
+    bus.host.rt.fork(name="rig updates close", async fn() {
+      ignore(bus.stopped.wait())
+      for c in p.closers.rev() {
+        c() catch {
+          _ => ()
+        }
+      }
+    }),
+  )
 }

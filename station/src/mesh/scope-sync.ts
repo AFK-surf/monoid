@@ -14,6 +14,8 @@ import { exchangeScope, exchangeSignedRecords } from "./scope-exchange.ts";
 import { workspaceScope } from "./enrollment-door.ts";
 import { waysOf, workspaceRelays } from "./ways.ts";
 import { globalRelaysOf } from "./global-relays.ts";
+/// What a front from before its mesh operations (one saying `streams` under 5, launcher front.rs `STREAMS`) answers them.
+const OLD_FRONT = /no operation mesh(?:Configure|Remove)/i;
 export class ScopeSync {
   readonly directory: ScopeDirectory;
   readonly #cloud: Cloud;
@@ -25,20 +27,36 @@ export class ScopeSync {
   #rosterEpoch = 0;
   #rosterWait = 0;
   #rosterRetry?: () => void;
+  readonly #restartFront: (() => void) | undefined;
+  #oldFront = false;
   readonly #off: (() => void)[] = [];
   readonly #workspaces = new Map<string, string>();
   readonly #jobs = new Map<string, { scope: string; workspace: string; peer: string; done: string; running: boolean; wait: number; cancel?: () => void }>();
   readonly #listeners = new Set<(scope: string) => void>();
   #closed = false;
   #active = 0;
-  constructor(endpoint: Endpoint, db: DatabaseSync, cloud: Cloud, signer: { id: string; sign(text: string): string }, call: PeerCall, read: (args: unknown) => Promise<string>, fibers: Pick<Fibers, "after" | "close"> = new Fibers("mesh-directory")) {
-    this.#fibers = fibers;
+  constructor(endpoint: Endpoint, db: DatabaseSync, cloud: Cloud, signer: { id: string; sign(text: string): string }, call: PeerCall, read: (args: unknown) => Promise<string>, fibers: Pick<Fibers, "after" | "close"> = new Fibers("mesh-directory"), restartFront?: () => void) {
+    this.#fibers = fibers; this.#restartFront = restartFront;
     this.#cloud = cloud; this.#call = call; this.#read = read; this.#relayStore = new RelayRecords(db);
     this.directory = new ScopeDirectory(endpoint, new Announcements(db, async (scope, nodes) => JSON.parse(await read({ kind: "announcements", scope, nodes }))), signer, (scope) => this.#changed(scope), (error) => this.#failed(error));
     this.#off.push(cloud.listen(() => this.#roster()), waysOf(cloud).listen(() => this.#roster()));
     this.#roster();
   }
-  #failed(error: unknown) { log.warn("mesh", "mesh directory update failed", { error: String(error) }); }
+  #failed(error: unknown) {
+    if (OLD_FRONT.test(String(error))) return this.#frontTooOld();
+    log.warn("mesh", "mesh directory update failed", { error: String(error) });
+  }
+  // The launcher's front is from before the mesh operations: no retry makes it take them. Its launcher (one that
+  // keeps it) is asked once to start the release's, the Node then handed over to one linked to it; with none, it is
+  // said once, and the directory is tried again only as the roster changes.
+  #frontTooOld() {
+    if (this.#oldFront) return;
+    this.#oldFront = true;
+    if (this.#restartFront) {
+      log.warn("mesh", "the front is from before meshConfigure: asking the launcher to start the release's");
+      this.#restartFront();
+    } else log.warn("mesh", "the front is from before meshConfigure: the mesh directory waits for a front that takes it");
+  }
   async #roster() {
     if (this.#closed || !this.#cloud.peersCurrent || !this.#cloud.state) return;
     const epoch = ++this.#rosterEpoch;
@@ -94,6 +112,7 @@ export class ScopeSync {
   #retryRoster(epoch: number, error: unknown) {
     if (this.#closed || epoch !== this.#rosterEpoch) return;
     this.#failed(error);
+    if (OLD_FRONT.test(String(error))) return;
     this.#rosterWait = Math.min(this.#rosterWait ? this.#rosterWait * 2 : 1000, 60_000);
     this.#rosterRetry = this.#fibers.after(this.#rosterWait, () => this.#roster()); // timer: retry failed native directory application with backoff
   }
@@ -121,6 +140,8 @@ export class ScopeSync {
         if (this.#closed || this.#jobs.get(key) !== job) return;
         if (/unknown.*method|no such method/i.test(String(error))) { job.done = word; return; }
         this.#failed(error);
+        // (a front from before: tried again with the next word, or by the Node a new front is handed)
+        if (OLD_FRONT.test(String(error))) { job.done = word; return; }
         job.wait = Math.min(job.wait ? job.wait * 2 : 1000, 60_000);
         job.cancel = this.#fibers.after(job.wait, () => { // timer: retry after failed directory exchange, with backoff
           job.cancel = undefined; this.#pump();

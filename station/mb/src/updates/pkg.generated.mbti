@@ -595,6 +595,7 @@ pub struct Updates {
   mut tried : String?
   mut running : () -> Double
   mut runtime_changed : (String, Bool, Bool) -> Unit
+  mut launcher_installer : ((String, Array[(String, String)]) -> Unit)?
   kinds : Array[String]
   // private fields
 }
@@ -611,6 +612,7 @@ pub fn Updates::get(Self, String) -> Array[@jsjson.JValue]
 pub async fn Updates::keep_channel(Self, String) -> Unit
 pub fn Updates::missing(Self, String) -> Unit
 pub async fn Updates::new(World, UpdatesOptions) -> Self
+pub fn Updates::on_launcher_installer(Self, (String, Array[(String, String)]) -> Unit) -> Unit
 pub fn Updates::on_runtime_changed(Self, (String, Bool, Bool) -> Unit) -> Unit
 pub fn Updates::poke(Self, String, @jsjson.JValue) -> Unit
 pub async fn Updates::repair_codex(Self, String) -> Unit
