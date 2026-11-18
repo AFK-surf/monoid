@@ -276,6 +276,47 @@ test "editing another station's preset still starts browsing on the composer's s
 }
 
 ///|
+test "editing a preset made on a station no longer up picks its model of the composer's station's models" {
+  new_run()
+  @sffixture.new_fix.station = "st2"
+  @sffixture.new_fix.preset = "p-sf"
+  let calls : Array[Made] = []
+  let base = fixture("newchat")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = base.topic(name, params).get().snapshot()
+      match got.value {
+        Some(Object(m)) if name == "newChat" => {
+          let v = m.copy()
+          v["presetStation"] = "ws1/gone"
+          { ..got, value: Some(Json::object(v)) }
+        }
+        // (as the core: a station it has no overview of offers no pick)
+        Some(_) if name == "pick" && params.get("station") == Some(Json::string("ws1/gone")) => { ..got, value: None }
+        _ => got
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  let t = preset_mode("newchat", src~)
+  press(t, "still.fail 开发")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("编辑「still.fail 开发」")
+  t.run_for(@ui.move_most_ms)
+  press(t, "不限模型")
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows(t, "常用搭配") && shows(t, "思考深度"), msg=runs(t))
+  press(t, "Opus 5.5")
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows_start(t, "Opus 5.5 · "), msg=runs(t))
+  assert_true(calls.iter().all(fn(c) { text(Some(c.params), "station") != "ws1/gone" }), msg="\{Repr(calls.map(fn(c) { c.name }))}")
+}
+
+///|
 /// 浏览文件夹 on a Windows station whose home holds `folders` folders, with four disks, the folders it is asked for kept
 /// in `asked`.
 fn preset_browse_on(asked : Array[String], wide : Bool, folders : Int) -> @ui.Tester raise {
