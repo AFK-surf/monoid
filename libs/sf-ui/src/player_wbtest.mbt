@@ -413,3 +413,18 @@ test "a song's end and its failure on the page's own colours: their cards' butto
   failed.draw()
   assert_true(under(failed, "android-misc.drive.player.retry", theme().p.primary), msg="重试 on the primary")
 }
+
+///|
+test "what it waits on is said in its bar beside its name, a phone's and a desktop's, never over the middle of the film" {
+  let buffering : @kit.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
+  for narrow in [true, false] {
+    let t = player_tester(narrow, "a.mp4", [], [], [], pin=buffering)
+    t.draw()
+    assert_true(t.find("web-pages.drive.player.buffering") is None, msg="narrow \{narrow}: not said before it has waited")
+    t.run_for(playing_for("k").media.times().0)
+    match t.find("web-pages.drive.player.buffering") {
+      Some((_, y)) => assert_true(y < 100.0, msg="narrow \{narrow}: said in its bar along the top, at \{y}")
+      None => fail("narrow \{narrow}: not said once it has waited")
+    }
+  }
+}

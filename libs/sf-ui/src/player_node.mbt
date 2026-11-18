@@ -683,9 +683,53 @@ fn said_words_node(
 }
 
 ///|
+/// Whether it waits (opening, or for more as it plays) and has waited long enough to say so (PlayerNode::follow's
+/// wait_ms).
+fn PlayerNode::waits(self : PlayerNode) -> Bool {
+  let ph = self.phase(self.status())
+  (ph == Opening || ph == Buffering) && self.waited.get()
+}
+
+///|
+/// What it waits on as a line of its own in `parent`: a spinner, then 正在打开 or 正在缓冲 and how fast its bytes come,
+/// at `size` in `ink`, in a room as wide as the widest it says (said anew each second, the line keeps its width). Its
+/// bar's, beside its tools (a phone's bar, the bar across the top); in the middle where it has none. The line's node.
+#callsite(autofill(loc))
+fn player_wait_node(parent : @view.View, pn : PlayerNode, size : @ui.TextSize, ink : () -> Int64, loc~ : SourceLoc) -> @view.View {
+  parent.box(made_for=loc, fn(line) {
+    line.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S2.px())).presses(Is(false)) |> ignore
+    progress_spinner_node(line, fn() { None }, size=player_pill_spinner) |> ignore
+    let what = fn() {
+      t(if pn.phase(pn.status()) == Opening { "common.opening" } else { "web-pages.drive.player.buffering" })
+    }
+    let said = fn() {
+      let r = pn.rate.get()
+      if r >= 0.0 {
+        what() + " · " + file_size(r) + "/s"
+      } else {
+        what()
+      }
+    }
+    said_words_node(line, said, size, ink).min_width(By(fn() {
+      if pn.rate.get() < 0.0 {
+        None
+      } else {
+        let (px, h) = @ui.tree_theme().text_size(size)
+        let look : @view.WordsLook = { size: px, weight: 400, line: h, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+        let most = player_rate_widest.fold(init=0.0, fn(w, r) {
+          dmax(w, @view.words_measure(what() + " · " + r, look, 1.0e9, 1.0).0)
+        })
+        Some(dmax(most, @view.words_measure(said(), look, 1.0e9, 1.0).0))
+      }
+    }))
+    |> ignore
+  })
+}
+
+///|
 /// What lies in the middle of its stage in `parent` (the old player's player_cover, player_waits, player_ask, the phone's
-/// pill): a song's mark and its name; what it waits on once it has waited (how fast its bytes come, in a room as wide
-/// as the widest it says); why it failed (a card on the night, its 重试 where trying again may help); a pill of what a
+/// pill): a song's mark and its name; what it waits on once it has waited, where it has no bar to say it in
+/// (player_wait_node); why it failed (a card on the night, its 重试 where trying again may help); a pill of what a
 /// double tap did, a held finger's 2×, where a finger along it has gone (`pill`, "" none).
 fn middle_node(parent : @view.View, pn : PlayerNode, name : String, pill : () -> String) -> Unit {
   let ink = fn() { media_ink(!pn.audio(pn.status())) }
@@ -715,49 +759,18 @@ fn middle_node(parent : @view.View, pn : PlayerNode, name : String, pill : () ->
     |> ignore
     c.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
   })
-  // what it waits on, once it has waited; why it failed
-  let waits = fn() {
-    let ph = pn.phase(pn.status())
-    (ph == Opening || ph == Buffering) && pn.waited.get()
-  }
-  parent.show(at_once=true, waits, fn(m) {
+  // what it waits on, once it has waited, where it has no bar of its own to say it in (a page's stage, beside the
+  // system's bars): its bar's else (player_wait_node); why it failed
+  parent.show(at_once=true, fn() { (pn.embedded || native_on()) && pn.waits() }, fn(m) {
     m.over(Is(true)).lines_up(Is(Some(Middle))).presses(Is(false)) |> ignore
     m.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
     m.box(fn(pill) {
       pill
-      .row(Is(true))
-      .lines_up(Is(Some(Middle)))
       .padding(Is((@ui.Space::S3.px(), @ui.Space::S1_5.px(), @ui.Space::S3.px(), @ui.Space::S1_5.px())))
-      .gap(Is(@ui.Space::S2.px()))
       .radius(By(fn() { @ui.tree_theme().corner(Xl1_5) }))
       .ground(By(fn() { ink().ground }))
       |> ignore
-      progress_spinner_node(pill, fn() { None }, size=player_pill_spinner) |> ignore
-      let what = fn() {
-        t(if pn.phase(pn.status()) == Opening { "common.opening" } else { "web-pages.drive.player.buffering" })
-      }
-      let said = fn() {
-        let r = pn.rate.get()
-        if r >= 0.0 {
-          what() + " · " + file_size(r) + "/s"
-        } else {
-          what()
-        }
-      }
-      said_words_node(pill, said, Ui, fn() { ink().text }).min_width(By(fn() {
-        // (said anew each second, in a room as wide as the widest it says: the pill keeps its width)
-        if pn.rate.get() < 0.0 {
-          None
-        } else {
-          let (px, line) = @ui.tree_theme().text_size(Ui)
-          let look : @view.WordsLook = { size: px, weight: 400, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-          let most = player_rate_widest.fold(init=0.0, fn(w, r) {
-            dmax(w, @view.words_measure(what() + " · " + r, look, 1.0e9, 1.0).0)
-          })
-          Some(dmax(most, @view.words_measure(said(), look, 1.0e9, 1.0).0))
-        }
-      }))
-      |> ignore
+      player_wait_node(pill, pn, Ui, fn() { ink().text }) |> ignore
     })
     |> ignore
     m.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
@@ -1724,6 +1737,11 @@ fn desk_player_node(
         fn() { stage().0 },
         bar_ink,
         fn(row, corner) {
+          // what it waits on, once it has waited, beside its tools (player_wait_node)
+          row.show(at_once=true, fn() { pn.waits() }, fn(r) {
+            r.row(Is(true)).padding(Is((@ui.Space::S2.px(), 0.0, @ui.Space::S2.px(), 0.0))) |> ignore
+            player_wait_node(r, pn, Meta, fn() { bar_ink().muted }) |> ignore
+          })
           // 选集, where the folder has others
           row.show(at_once=true, fn() { pn.pl.many() }, fn(r) {
             r.row(Is(true)) |> ignore
@@ -2292,6 +2310,11 @@ fn phone_player_node(
             said_words_node(nm, fn() { file.name }, Ui, fn() { ink().text }, weight=600) |> ignore
           })
           |> ignore
+          // what it waits on, once it has waited, after its name (player_wait_node)
+          h.show(at_once=true, fn() { pn.waits() }, fn(w) {
+            w.row(Is(true)).padding(Is((0.0, 0.0, @ui.Space::S1.px(), 0.0))) |> ignore
+            player_wait_node(w, pn, Meta, fn() { ink().muted }) |> ignore
+          })
           h.show(at_once=true, fn() { pn.pl.which() != "" }, fn(w) {
             w.row(Is(true)) |> ignore
             said_words_node(w, fn() { pn.pl.which() }, Meta, fn() { ink().muted }) |> ignore
