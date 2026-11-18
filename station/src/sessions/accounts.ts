@@ -293,9 +293,8 @@ export class Accounts {
   /// for alike that is not, when that loses little (pool.ts `cheapToLeave`): its context was just compacted, or is about
   /// to be, and not while its process has work going in the background (`holding`: commands and subagents, which end
   /// with it). Its own unable to run it and no other able either (every allowance used up), it stays where it is and
-  /// waits there (`refillsAt`); its own unable even to sign in, it moves once to one that signs in. A move off one that
-  /// can no longer run it is told (`moved`, said in its chat) unless `quiet`: a change by hand says its own; one off an
-  /// account that still runs it (to one paid for already, or with room) is the station's choice and says nothing. `across` (before a turn): none of its
+  /// waits there (`refillsAt`); its own unable even to sign in, it moves once to one that signs in. A move is told
+  /// (`moved`, said in its chat) unless `quiet`: a change by hand says its own. `across` (before a turn): none of its
   /// runtime's able to run it now, it goes on on another runtime's that runs its model and can, as `spend` moves it
   /// when a turn ran into the allowance (`takeAcross`), rather than first running a turn into a limit it knows of.
   runOn(key: string, holding = false, quiet = false, across = false): RunOn {
@@ -334,10 +333,6 @@ export class Accounts {
     const fits = (p: Profile) => !strict || serves(p, row.model);
     const keeps = current && (row.profilePinned || (this.can(current.id, row.model) && fits(current)));
     let among = candidates;
-    // Moved off its own while that still runs it (to one paid for already, or one with room): the station's choice, not
-    // a want of its own, so its chat is not told (the user, 2026-11-18: chats waiting on a person had the notice put
-    // under their question, several a day).
-    let unforced = false;
     if (current && keeps) {
       if (row.profilePinned) return withSpelling(current);
       // It moves from one billed per use to one paid for already, and from one nearly full to one paid for alike that is
@@ -348,7 +343,6 @@ export class Accounts {
         p.id !== current.id && fits(p) && this.can(p.id, row.model) && (paid(p) === paid(current) ? crowded(current) && !crowded(p) : paid(p));
       among = candidates.filter(better);
       if (among.length === 0 || holding || !this.cheapToLeave(key)) return withSpelling(current);
-      unforced = true;
     } else {
       // It goes to those that can run it now; none can: to those that at least sign in (it waits for their refill).
       // When its own is as good as any, it stays. The pool, given none that can run, picks the one picked least
@@ -371,7 +365,7 @@ export class Accounts {
       store.setSessionProfile(key, next.id, false, keptProfiles);
       if (next.id !== row.profile) {
         log.info("hub", "session taken on by another profile", { session: key, from: row.profile, to: next.id });
-        if (!quiet && !unforced) this.deps.moved?.(key, row);
+        if (!quiet) this.deps.moved?.(key, row);
       }
     }
     return withSpelling(next);

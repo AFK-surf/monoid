@@ -801,8 +801,6 @@ pub async fn SessionAccounts::run_on(
     None => false
   }
   let mut among = candidates
-  // Moved off its own while that still runs it: the station's choice, not told in its chat (accounts.ts `unforced`).
-  let mut unforced = false
   match current {
     Some(c) if keeps => {
       if row.pinned {
@@ -817,7 +815,6 @@ pub async fn SessionAccounts::run_on(
       if among.length() == 0 || holding || !self.cheap_to_leave(key) {
         return c
       }
-      unforced = true
     }
     _ => {
       let standing = (p : Profile) => if self.can(cfg, p.id, row.model) {
@@ -855,7 +852,7 @@ pub async fn SessionAccounts::run_on(
         "session taken on by another profile",
         jobj([("session", js(key)), ("from", js(row.profile)), ("to", js(next.id))]),
       )
-      if !quiet && !unforced {
+      if !quiet {
         self.moved(key, row)
       }
     }
