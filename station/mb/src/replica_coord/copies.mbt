@@ -579,7 +579,10 @@ fn Copies::reason(self : Copies, peer : String, e : Error) -> String {
   }
   if is_refused(e) {
     let m = message_of(e)
-    return if m.contains("no such replica request") || m.contains("is required") || m.contains("unknown") {
+    return if m.contains("no such replica request") ||
+      m.contains("is required") ||
+      m.contains("are required") ||
+      m.contains("unknown") {
       "old"
     } else {
       "error"

@@ -400,7 +400,8 @@ export class Copies {
   /// Why `error` kept a place from being brought level, as the settings say it.
   #reason(peer: string, error: unknown): Reason {
     if (this.#old.has(peer)) return "old";
-    if (error instanceof Refused) return /no such replica request|is required|unknown/.test(error.message) ? "old" : "error";
+    // (a station from before copies answers `replica.*` as a task's request: "session and task key are required")
+    if (error instanceof Refused) return /no such replica request|is required|are required|unknown/.test(error.message) ? "old" : "error";
     return "offline";
   }
 

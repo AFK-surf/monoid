@@ -898,7 +898,7 @@ test("a keeper from before copies: said old, not warned of or tried again until 
     const o = (await step("overview", () => tsCopies.overview(WS, true), () => p.call("copies", "overview", [WS, true]))).value;
     const keeping = (o: Json, s: string) => o.keepers.find((k: Json) => k.station === s);
     assert.equal(keeping(o, first!).reason, "old");
-    assert.match(keeping(o, first!).error, /is required/);
+    assert.match(keeping(o, first!).error, /are required/);
     assert.equal(keeping(o, third).error, null, "the next one holds it in the old one's place");
     assert.equal(keeping(o, second!).error, null);
     const before = [asked(ts), asked(mb)];

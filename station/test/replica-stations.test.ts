@@ -432,7 +432,7 @@ test("a keeper from before copies is said old, warned of and asked nothing again
     const o = (await a.copies.overview(HOME)) as Json;
     const old = o.keepers.find((k: Json) => k.station === first);
     assert.equal(old.reason, "old");
-    assert.match(old.error, /is required/);
+    assert.match(old.error, /are required/);
     assert.equal(o.keepers.find((k: Json) => k.station === third).error, null);
     const asked = () => [...(mesh.asked.get(first!) ?? new Map()).values()].reduce((x, y) => x + y, 0);
     const before = asked();
