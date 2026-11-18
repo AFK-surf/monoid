@@ -5,8 +5,9 @@
 // of the audit holding in each but what these looks were drawn with before they were the library's (peek_carried).
 
 ///|
-/// A Tester of what `make` makes in a hover card's room (308 wide, its words 10 in), 40 in, 40 down, a mouse's.
-fn peek_rig(make : (@view.View) -> Unit) -> @ui.Tester {
+/// A Tester of what `make` makes in a hover card's room (`wide`, 308 as a card 320 wide has it, its words 10 in), 40 in,
+/// 40 down, a mouse's.
+fn peek_rig(make : (@view.View) -> Unit, wide? : Double = 308.0) -> @ui.Tester {
   set_words(fn(key, _) { key })
   let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=640.0, native=Mouse, pointing=Mouse)
   @ui.set_view_app(fn(root) {
@@ -15,7 +16,7 @@ fn peek_rig(make : (@view.View) -> Unit) -> @ui.Tester {
       col.padding(Is((40.0, 40.0, 0.0, 40.0))) |> ignore
       col.box(fn(card) {
         let p = @ui.Space::px(S2_5)
-        card.width(Is(Some(308.0))).padding(Is((p, p, p, p))).gap(Is(@ui.Space::px(S2))) |> ignore
+        card.width(Is(Some(wide))).padding(Is((p, p, p, p))).gap(Is(@ui.Space::px(S2))) |> ignore
         make(card)
       })
       |> ignore
@@ -89,7 +90,8 @@ fn peek_ground_round(t : @ui.Tester, r : (Double, Double, Double, Double)) -> (D
 
 ///|
 test "a page's tile with its picture: the picture in the card's top corners, the thumb at its title's first line" {
-  for scale in [1.0, 1.3] {
+  for k in [(1.0, 308.0), (1.3, 308.0), (1.0, 260.0)] {
+    let (scale, wide) = k
     for title in ["一个网页的标题", "一个网页的标题很长很长，长到在卡片里要折成两行才放得下它的全部文字"] {
       let t = peek_rig(fn(card) {
         card.box(fn(b) {
@@ -99,21 +101,22 @@ test "a page's tile with its picture: the picture in the card's top corners, the
           }, fn(f) { peek_copy_node(f, fn() { "https://example.com/a/page" }, "common.link.copy", Map([])) })
         })
         |> ignore
-      })
+      }, wide~)
       t.set_font_scale(scale)
       t.draw()
-      let said = "\{scale} \{title}"
+      let said = "\{scale} \{wide} \{title}"
       assert_eq(peek_faults(t), [], msg=said)
       let rects = t.drawn_rects()
-      // (the rig's card: 40 in, 308 wide, its words 10 in; the picture's ground out past them as far as the card's
-      // corner has it, as far from its top as from its sides)
-      let picture = rects.filter(fn(d) { d.2 == peek_picture_w && d.3 == peek_picture_h })
+      // (the rig's card: 40 in, `wide` across, its words 10 in; the picture's ground out past them as far as the card's
+      // corner has it, as far from its top as from its sides, 16:9)
+      let across = wide - 20.0 - 2.0 * peek_thumb_out
+      let picture = rects.filter(fn(d) { (d.2 - across).abs() < 0.01 && (d.3 - across / peek_picture_aspect).abs() < 0.5 })
       assert_eq(picture.length(), 1, msg=said)
       let (px, py, pw, ph, _) = picture[0]
       let side = px - 40.0
       assert_eq(side, 10.0 + peek_thumb_out, msg=said)
       assert_eq(py - 40.0, side, msg=said)
-      assert_eq(40.0 + 308.0 - (px + pw), side, msg=said)
+      assert_eq(40.0 + wide - (px + pw), side, msg=said)
       // (the thumb under it beside the title's first line: its top at the title's, its start at the picture's)
       let thumb = rects.filter(fn(d) { d.2 == d.3 && d.2 >= 30.0 && d.1 > py + ph })
       assert_eq(thumb.length(), 1, msg=said)

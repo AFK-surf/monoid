@@ -79,7 +79,7 @@ pub fn peek_page_tile_node(
       b.box(fn(i) {
         style_node(i, fn() { peek_picture })
         i
-        .height(Is(Some(peek_picture_h)))
+        .aspect(Is(peek_picture_aspect))
         .radius(Is(peek_picture_r))
         .ground(By(fn() { theme().p.hover }))
         .image(By(fn() { Some((picture(), "", peek_image_most)) }))
@@ -820,20 +820,15 @@ let peek_tile_url : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=
 let peek_with_picture : @ui.Style = @ui.css("w=Full gap=S2_5")
 
 ///|
-/// The picture: as wide as the card less as far in from its sides as from its top, out past the card's words to there
-/// as the thumb is (peek_thumb_out), so its corners are concentric with the card's.
+/// The picture: across the card, out past its words on both sides and over them as far as the thumb is in its corner
+/// (peek_thumb_out), so it stands as far in from the card's top as from its sides, its corners concentric with the
+/// card's however wide the card is.
 // kept across runs: a value (no field of it changes)
-let peek_picture : @ui.Style = @ui.style(
-  w=Fixed(peek_picture_w),
-  ml=room_of(peek_thumb_out),
-  mt=room_of(peek_thumb_out),
-)
+let peek_picture : @ui.Style = @ui.style(w=Full, mx=room_of(peek_thumb_out), mt=room_of(peek_thumb_out))
 
 ///|
-let peek_picture_w : Double = hover_card_px - 2.0 * (panel_pad + peek_words_in + peek_thumb_out)
-
-///|
-let peek_picture_h : Double = peek_picture_w * 9.0 / 16.0
+/// Its width for its height: 16:9.
+let peek_picture_aspect : Double = 16.0 / 9.0
 
 ///|
 /// Its corner: in the card's top corners, concentric with the card's there, as the tile's thumb.
