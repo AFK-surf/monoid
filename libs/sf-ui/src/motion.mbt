@@ -88,3 +88,142 @@ pub fn seen_at(scale : Double) -> Double {
     (scale - @ui.row_gone_at) / (1.0 - @ui.row_gone_at)
   }
 }
+
+///|
+/// A control that cannot be pressed answering a press on it all the same (a control answering): shaken across and
+/// back over `refused_ms`, `refused_reach` at most, dying away as it goes (refused_dx), so that a press that found it
+/// disabled is told from one that missed it.
+pub let refused_ms : Double = 260.0
+
+///|
+pub let refused_reach : Double = 3.5
+
+///|
+/// How far across a control refusing a press is drawn off its place `t` of the way through its shake (0 to 1): three
+/// half swings dying away by the square of what is left, sin(3πt)·(1 − t)²·refused_reach; none at its start, none at
+/// its end, nothing stepped between.
+pub fn refused_dx(t : Double) -> Double {
+  if t <= 0.0 || t >= 1.0 {
+    return 0.0
+  }
+  let left = 1.0 - t
+  @dmath.sin(t * 3.0 * @math.PI) * left * left * refused_reach
+}
+
+///|
+/// Control `v` answering a press it does not take while `refuses()` (disabled, not at work: what it is to the hand, the
+/// keyboard and a screen reader unchanged, its press never run): a finger or the pointer gone down on it where it is
+/// drawn (no modal layer over it, nothing drawn over it there taking it) and let go there as a tap (not moved past the
+/// slop), it still where it was (no column scrolled under the hand meanwhile), it is shaken across (refused_dx, set out
+/// at the moment it was let go) where it is drawn alone, nothing laid out again for it; at rest, drawn exactly where it
+/// is laid out, nothing asking a frame. A press that disables it (send, once it is sent) is none of its. Felt as a
+/// refusal under a finger; under reduced motion, felt alone. Nothing of it is made till the first such press: before,
+/// it only follows whether it refuses, and the window's presses and taps only while it does.
+#callsite(autofill(loc))
+pub fn refused_shake(v : @view.View, refuses : () -> Bool, loc~ : SourceLoc) -> Unit {
+  // (where it was drawn as a press went down on it while it refused; none: the press is not one of its)
+  let armed : Ref[(Double, Double)?] = Ref(None)
+  let shake : Ref[@motion.NodeWay?] = Ref(None)
+  // (the window's presses and taps as last followed, untracked: what changed of them told apart)
+  let seen = Ref(@signals.untracked(fn() { (v.window_downs(), v.window_taps()) }))
+  let refused_was = Ref(@signals.untracked(refuses))
+  // (the window's presses gone down and taps let go, followed while it refuses: a press going down arms it where it
+  // lands on it, the tap that lets that press go shakes it; a press moved off as a drag is no tap, and the next press
+  // going down arms it anew or not)
+  v.reacts(
+    fn() {
+      if !refuses() {
+        None
+      } else {
+        Some((v.window_downs(), v.window_taps()))
+      }
+    },
+    at_start=false,
+    fn(k) {
+      guard k is Some((downs, taps)) else {
+        armed.val = None
+        refused_was.val = false
+        return
+      }
+      let (downs_was, taps_was) = seen.val
+      seen.val = (downs, taps)
+      // (come to refuse: what the hand did before is none of its, the press that disabled it too)
+      if !refused_was.val {
+        refused_was.val = true
+        return
+      }
+      if downs != downs_was {
+        let (x, y) = v.window_down_point()
+        armed.val = if refused_here(v, x, y) {
+          let (rx, ry, _, _) = v.rect()
+          Some((rx, ry))
+        } else {
+          None
+        }
+      }
+      if taps == taps_was {
+        return
+      }
+      guard armed.val is Some((rx, ry)) else { return }
+      armed.val = None
+      let (nx, ny, _, _) = v.rect()
+      let slop = @ui.touch_slop()
+      if (nx - rx).abs() > slop || (ny - ry).abs() > slop || !refused_here_now(v) {
+        return
+      }
+      if @ui.pointing() is Finger {
+        @ui.haptic(Reject)
+      }
+      if @ui.reduced_motion() {
+        return
+      }
+      let way = match shake.val {
+        Some(w) => w
+        None => {
+          let w = @motion.NodeWay::new(1.0)
+          shake.val = Some(w)
+          v.offset(By(fn() { (refused_dx(w.shown(v)), 0.0) }), loc~) |> ignore
+          w
+        }
+      }
+      way.go_from(v, 0.0, 1.0, @motion.tween(refused_ms, ease=Linear))
+    },
+  )
+}
+
+///|
+/// Whether a press at (x, y) of the window lands on control `v` while it takes none: within where it is drawn, under no
+/// modal layer, and what takes the press there (it taking none) nothing drawn over it: what holds it (a card's press,
+/// the column it scrolls in), what it is drawn over (the field it stands in), or nothing at all.
+fn refused_here(v : @view.View, x : Double, y : Double) -> Bool {
+  let (rx, ry, rw, rh) = v.rect()
+  if x < rx || y < ry || x >= rx + rw || y >= ry + rh || !refused_here_now(v) {
+    return false
+  }
+  match v.tree.target_at(x, y) {
+    Pressed(id) | Dragged(id) => v.tree.holds(id, v.id()) || drawn_under(v.tree, id, v.id())
+    Nothing => true
+    Hosted(_) | TopRow(_) => false
+  }
+}
+
+///|
+/// Whether node `under` is drawn before node `over` in the scene, so that `over` lies over it where both are drawn (a
+/// composer's field round its send): a press there landed on `over` to the eye, whatever takes it.
+fn drawn_under(tree : @view.Tree, under : @view.NodeId, over : @view.NodeId) -> Bool {
+  let mut seen_under = false
+  for d in tree.drawn() {
+    if d.id == under {
+      seen_under = true
+    } else if d.id == over {
+      return seen_under
+    }
+  }
+  false
+}
+
+///|
+/// Whether control `v` is where a press could reach it now: shown, under no modal layer.
+fn refused_here_now(v : @view.View) -> Bool {
+  !v.shown_nowhere() && v.tree.allows(v.id())
+}

@@ -1925,10 +1925,10 @@ fn View::scrolls_window_ids(
       asked_tree.lists_asked[asked_at] = {
         scroll: s,
         count: fn() { @signals.untracked(keys).length() },
-        bring: fn(i) {
+        bring: fn(i, glide) {
           let ks = @signals.untracked(keys)
           if i >= 0 && i < ks.length() {
-            p.bring(ks[i])
+            p.bring(ks[i], glide~)
           }
         },
         to_end: fn() { p.to_end(glide=false) },
