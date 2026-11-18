@@ -1270,7 +1270,7 @@ fn chat_opening(station : String, v : Json) -> Opening {
     // previewed, the screen across its top. None of still.fail's notices, whose words are read as no post's; none
     // read of a post's words here, every post of the chat each time it opens)
     let kind = text(p, "authorKind")
-    if field(p, "notice") is None && kind != "ember" {
+    if field(p, "notice") is None && !["station", "ember", "stillfail"].contains(kind) {
       let links = links_to_of(field(p, "words"), kind, flag(p, "mine"), text(p, "text"), field(p, "md"), told=true)
       for _, to in links {
         if to.station != "" {
