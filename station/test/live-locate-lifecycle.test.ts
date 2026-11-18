@@ -55,7 +55,7 @@ test("subscribers share a pending location and get the transcript before events 
       assert.ok(got.findIndex((m) => m.type === "timeline") < got.findIndex((m) => m.type === "clear"));
       assert.ok(got.findIndex((m) => m.type === "step") < got.findIndex((m) => m.type === "clear"));
     }
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("unsubscribing during location preserves handover state, while deleting a session discards it", async () => {
@@ -103,7 +103,7 @@ test("unsubscribing during location preserves handover state, while deleting a s
     await settle();
     await hub.idle();
     assert.deepEqual((await hub.carried()).tails, [], "a late answer cannot restore a deleted session's state");
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a newly written transcript is announced even when its location takes longer than the read timer", async () => {
@@ -135,6 +135,6 @@ test("a newly written transcript is announced even when its location takes longe
       const timeline = got.find((m): m is Extract<LiveMessage, { type: "timeline" }> => m.type === "timeline");
       assert.ok(timeline, `the new transcript is announced with reader=${withReader}`);
       assert.equal(timeline.start, 1);
-    } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+    } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
   }
 });

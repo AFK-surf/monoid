@@ -53,7 +53,7 @@ test("a turn ending during a location tells its final transcript before clear", 
     await settle();
     await hub.idle();
     assert.deepEqual(texts(got), ["one", "last old", "last new", "next"], "the cancelled result cannot restore the old path");
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a second move supersedes an unfinished lookup", async () => {
@@ -98,7 +98,7 @@ test("a second move supersedes an unfinished lookup", async () => {
     await settle();
     await hub.idle();
     assert.deepEqual(texts(got), ["0", "1", "2", "3"]);
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a failed background lookup leaves the old transcript readable and can be tried again", async () => {
@@ -131,7 +131,7 @@ test("a failed background lookup leaves the old transcript readable and can be t
     await hub.idle();
     assert.ok(calls >= 2);
     assert.deepEqual(texts(got), ["one", "two"]);
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a read requested during a slow lookup finds the transcript written meanwhile", async () => {
@@ -163,7 +163,7 @@ test("a read requested during a slow lookup finds the transcript written meanwhi
     await hub.idle();
     assert.equal(calls, 2);
     assert.deepEqual(texts(got), ["one", "two"]);
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a missing transcript does not make the live reader poll without another request", async () => {
@@ -191,7 +191,7 @@ test("a missing transcript does not make the live reader poll without another re
     await settle();
     await hub.idle();
     assert.equal(calls, 2);
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a transcript at the same path is reread when its runtime changes", async () => {
@@ -215,5 +215,5 @@ test("a transcript at the same path is reread when its runtime changes", async (
     const timelines = got.filter((m) => m.type === "timeline");
     assert.deepEqual(timelines.at(-1)?.entries.map((entry) => entry.text), ["two"]);
     assert.equal(timelines.at(-1)?.start, 0);
-  } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });

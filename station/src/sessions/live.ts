@@ -76,6 +76,8 @@ export class LiveHub {
   readonly #given: (() => ActorsProgram | null) | null;
   /// The program of its own, where no hub gives one (a test's).
   #own: ActorsProgram | null = null;
+  /// The directory its own program was given (a test's: no hub's), removed as it closes.
+  #ownDir: string | null = null;
   /// The program the shell is said to (once per program).
   #shelled: ActorsProgram | null = null;
   readonly #subs = new Map<number, { key: string; listener: Listener; brief: boolean }>();
@@ -129,7 +131,8 @@ export class LiveHub {
     let p = this.#given !== null ? this.#given() : this.#own;
     if (p === null && this.#given === null) {
       // (a program of its own, made once: a test's live view, no hub's)
-      p = this.#own = ActorsProgram.open(mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "live-")), this.#clock); // sync: once, a test's own
+      this.#ownDir = mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "live-")); // sync: once, a test's own
+      p = this.#own = ActorsProgram.open(this.#ownDir, this.#clock);
     }
     if (p !== null && this.#shelled !== p) {
       this.#shelled = p;
@@ -282,7 +285,12 @@ export class LiveHub {
     this.#watchers.clear();
     const own = this.#own;
     this.#own = null;
-    return Promise.all([own?.close(), this.#reader.close()]).then(() => {});
+    const ownDir = this.#ownDir;
+    this.#ownDir = null;
+    // (the directory its own program was given, gone once the program is)
+    return Promise.all([own?.close(), this.#reader.close()]).then(async () => {
+      if (ownDir !== null) await rm(ownDir, { recursive: true, force: true });
+    });
   }
 
   // ── what the program asks ──────────────────────────────────────────────────────────────────────────────────────

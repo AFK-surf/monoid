@@ -56,7 +56,8 @@ priv struct MbActor {
   mut generation : Int32
   mut closed : Bool
   told : Map[Int32, () -> Unit]
-  records : Map[Int32, (String?, Json, Bool)]
+  /// (words, about, watch, the conversations' `record` callback: mb-actor.ts `#records`)
+  records : Map[Int32, (String?, Json, Bool, Int32?)]
   reads : Map[Int32, @effect.Deferred[Unit]]
   mut routing_outcome : Json?
   mut routing_cleared : Bool
@@ -280,7 +281,18 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
       match d {
         Some(d) =>
           match jtext(said, "error") {
-            Some(e) => ignore(d.fail(LiveError(e)))
+            Some(e) => {
+              // (the station's own error it was told, thrown as it was: its kind is what callers tell apart)
+              let first = match jnum_of(jfield(said, "cause"), "id") {
+                Some(n) => {
+                  let got = actor_errors.get(n.to_int())
+                  actor_errors.remove(n.to_int())
+                  got
+                }
+                None => None
+              }
+              ignore(d.fail(first.unwrap_or(LiveError(e))))
+            }
             None => ignore(d.succeed(jfield(said, "value")))
           }
         None => ()
@@ -358,9 +370,26 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
 }
 
 ///|
+/// The station's errors the program was told, by their number (mb-actor.ts `errors`): the oldest let go past 256.
+let actor_errors : Map[Int32, Error] = Map([])
+
+///|
+let actor_errors_next : Ref[Int32] = Ref(0)
+
+///|
 /// An error of the station's as the program is told it (mb-actor.ts `errorOf`): its words, whether they are the
 /// station's own (`Said`), whether its runtime is not installed.
 fn error_of(e : Error, runtime : String) -> Json {
+  // (kept by its number, given back as it was where the program's call fails with it: mb-actor.ts `errors`)
+  actor_errors_next.val += 1
+  let id = actor_errors_next.val
+  actor_errors[id] = e
+  if actor_errors.length() > 256 {
+    match actor_errors.keys().next() {
+      Some(k) => actor_errors.remove(k)
+      None => ()
+    }
+  }
   let said_own = e is @agent_drivers.Said(_)
   let missing = match e {
     CommandMissing(c) => c == runtime || c.has_suffix("/" + runtime)
@@ -371,7 +400,7 @@ fn error_of(e : Error, runtime : String) -> Json {
     other => said_of(other)
   }
   {
-    "id": ji(0),
+    "id": ji(id),
     "message": jstr(message),
     "said": jb(said_own),
     "missing": jb(missing),
@@ -379,6 +408,8 @@ fn error_of(e : Error, runtime : String) -> Json {
     "kind": jstr(
       match e {
         CommandMissing(_) => "CommandMissing"
+        // (a peer's refusal told apart from a request that did not get through: bus.ts)
+        @gate.PeerRefused(_) => "PeerRefused"
         _ => "Error"
       },
     ),
@@ -787,18 +818,29 @@ async fn MbActor::hub_asked(
       // (id, state, words, about, watch): what records it, kept here by a token the program gives back (`stateWrite`)
       self.next += 1
       let token = self.next
+      // (and how the conversations record it: a callback of theirs, `record`, that rereads what it is about and
+      // writes in one transaction of theirs: conversations.mbt `state_write`; mb-actor.ts `stateForTurn`)
+      let record = jnum_of(Json::object({ "f": jfield(a(5), "$fn") }), "f").map(n => n.to_int())
       self.records[token] = (
         jtext(Json::object({ "w": a(2) }), "w"),
         a(3),
         a(4) is True,
+        record,
       )
+      let done = () => {
+        self.records.remove(token)
+        match record {
+          Some(id) => chat_state.callbacks.remove(id)
+          None => ()
+        }
+      }
       let r = self.call("stateForTurn", [a(0), a(1), ji(token)]) catch {
         e => {
-          self.records.remove(token)
+          done()
           raise e
         }
       }
-      self.records.remove(token)
+      done()
       jb(r is True)
     }
     "snapshot" => {
@@ -1232,30 +1274,52 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       let token = jnum_of(Json::object({ "t": a(2) }), "t")
         .unwrap_or(-1.0)
         .to_int()
-      guard self.records.get(token) is Some((words, about, watch)) else {
+      guard self.records.get(token) is Some((words, about, watch, record)) else {
         return Json::null()
       }
-      match words {
-        Some(w) =>
-          if jtext(state, "kind") == Some("waiting") {
-            ignore(ctx.store("setWaitFor", [id, jstr(w), jb(watch)]))
-          } else {
-            ignore(ctx.store("setNeed", [id, jstr(w)]))
-          }
-        None => ()
+      let write = (current : Json) => {
+        match words {
+          Some(w) =>
+            if jtext(state, "kind") == Some("waiting") {
+              ignore(ctx.store("setWaitFor", [id, jstr(w), jb(watch)]))
+            } else {
+              ignore(ctx.store("setNeed", [id, jstr(w)]))
+            }
+          None => ()
+        }
+        ignore(ctx.store("setAbout", [id, current]))
+        ignore(
+          ctx.store("declareTurn", [
+            id,
+            jfield(state, "kind"),
+            if jtext(state, "kind") == Some("waiting") {
+              jfield(state, "seconds")
+            } else {
+              Json::null()
+            },
+          ]),
+        )
       }
-      ignore(ctx.store("setAbout", [id, about]))
-      ignore(
-        ctx.store("declareTurn", [
-          id,
-          jfield(state, "kind"),
-          if jtext(state, "kind") == Some("waiting") {
-            jfield(state, "seconds")
-          } else {
-            Json::null()
-          },
-        ]),
-      )
+      // (the conversations' record, where they gave one: it rereads what the state is about and calls `write` with it
+      // inside its transaction; its failure (a busy database: StateWriteBusy) goes back to the program as it is)
+      match record.bind(r => chat_state.callbacks.get(r)) {
+        Some(record_fn) => {
+          chat_state.next_cb += 1
+          let write_id = chat_state.next_cb
+          chat_state.callbacks[write_id] = async fn(given) {
+            write(p52_json_of_jv(given.get(0).unwrap_or(Null)))
+            Null
+          }
+          ignore(record_fn([Obj([(@jsjson.units("$fn"), Num(write_id.to_double()))])])) catch {
+            e => {
+              chat_state.callbacks.remove(write_id)
+              raise e
+            }
+          }
+          chat_state.callbacks.remove(write_id)
+        }
+        None => write(about)
+      }
       Json::null()
     }
     "limitAfter" => ctx.limit_after(self.key, a(0))

@@ -1267,6 +1267,12 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
     ignore(self.store(a, "setAbout", [jstr(t.id), [retry_about.value("thread").unwrap_or(Json::null()), retry_about.value("seq").unwrap_or(Json::null()), retry_about.value("ts").unwrap_or(Json::null())]]))
   }
   ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)])) catch {
+    // (its runtime began a turn of its own while this one was begun (the awaits of `begin_turn`, after `busy_of` said
+    // idle): what it is handed is steered into that turn, which the turn begun here takes as its own, never the
+    // process ended and the turn it runs lost with it)
+    e if Asked::message(e) == "a turn is already running" &&
+      truthy(self.agent_do(a, agent, "steer", [jstr(prompt)]) catch { _ => Json::boolean(false) }) =>
+      return self.told(a, told_choices)
     e => {
       self.log(a, "warn", "prompt failed, reopening the runtime", fields={ "error": jstr(e.to_string()) })
       self.set_agent(a, None)

@@ -11,6 +11,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { createSocket } from "node:dgram";
 import { type Server, createServer } from "node:net";
 import { request } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -134,6 +135,20 @@ while IFS= read -r line; do
   to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
   # (a prompt that names no thread, as a resume's: the one it was last asked in, as its conversation would know)
   if [ -n "$to" ]; then printf '%s' "$to" > "$FAKE_OUT/to"; else to=$(/bin/cat "$FAKE_OUT/to" 2>/dev/null); fi
+  # (asked to ask: a card posted with no state, then need_human said with no about, which the card is; told to wait for
+  # a write lock first, it says it is about to and waits for the test's word)
+  case "$line" in *ASK-CARD*)
+    /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+      -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"which one?","card":{"type":"options","options":[{"label":"this"},{"label":"that"}],"assignee":"ada@x.com"}}}}' > "$FAKE_OUT/card-$n.json"
+    case "$line" in *ASK-BUSY*)
+      : > "$FAKE_OUT/stating"
+      while [ ! -f "$FAKE_OUT/state-go" ]; do /bin/sleep 0.05; done ;;
+    esac
+    /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+      -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"chat_state","arguments":{"kind":"need_human","need":"pick one"}}}' > "$FAKE_OUT/ask-$n.json"
+    say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"asked"}'
+    continue ;;
+  esac
   /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > "$FAKE_OUT/list-$n.json"
   /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
@@ -517,6 +532,33 @@ test("the conversations' own parts: a title asked of a runtime session of their 
     const enrolled = await tool(door, "t0", "relays", { action: "enroll", name: "r1" });
     assert.equal(enrolled.error, true);
     assert.match(enrolled.text, /not available on this station/);
+
+    // need_human said with no about after a card: what it is about is the card, as the conversations reread it in
+    // their own transaction (conversations.mbt `state_write`, the actor's `stateWrite` handing it its `record`).
+    const asking = () => (store.db.prepare("SELECT COUNT(*) AS n FROM turns WHERE session_key = 'chat:c-to' AND need = 'pick one' AND ended_at IS NOT NULL").get() as { n: number }).n;
+    const aboutOf = (key: string) => store.db.prepare("SELECT about_n FROM turns WHERE session_key = ? ORDER BY started_at DESC, rowid DESC LIMIT 1").get(key) as { about_n: number | null };
+    const cardN = () => store.messagesBefore(t1.id, null, 50).filter((m) => m.text === "which one?").at(-1)?.n;
+    const asked = await tool(door, "t0", "session_send", { to: "chat:c-to", text: "ASK-CARD please" });
+    assert.equal(asked.error, false, asked.text);
+    await until("its need_human recorded", () => existsSync(join(out, "ask-2.json")) && asking() === 1, () => a.err());
+    assert.notEqual(JSON.parse(readFileSync(join(out, "ask-2.json"), "utf8")).result.isError, true, readFileSync(join(out, "ask-2.json"), "utf8"));
+    assert.equal(aboutOf("chat:c-to").about_n, cardN(), "about the card");
+
+    // The same while another connection holds the write lock: the record is busy (StateWriteBusy, thrown back as it
+    // was through the sessions' program) and tried again until the lock is let go.
+    const other = new DatabaseSync(join(data, "stillfail.db"), { timeout: 0 });
+    const busy = await tool(door, "t0", "session_send", { to: "chat:c-to", text: "ASK-CARD ASK-BUSY please" });
+    assert.equal(busy.error, false, busy.text);
+    await until("the fake about to say its state", () => existsSync(join(out, "stating")), () => a.err());
+    other.exec("BEGIN IMMEDIATE");
+    writeFileSync(join(out, "state-go"), "");
+    // (held a while as it is asked: what it says once let go is what is asserted, whenever it asked)
+    await new Promise((r) => setTimeout(r, 300));
+    other.exec("ROLLBACK");
+    other.close();
+    await until("its need_human recorded after the lock", () => existsSync(join(out, "ask-3.json")) && asking() === 2, () => a.err());
+    assert.notEqual(JSON.parse(readFileSync(join(out, "ask-3.json"), "utf8")).result.isError, true, readFileSync(join(out, "ask-3.json"), "utf8"));
+    assert.equal(aboutOf("chat:c-to").about_n, cardN(), "about the newer card");
   } finally {
     store.close();
   }

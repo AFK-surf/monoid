@@ -80,7 +80,7 @@ test("a watched transcript is read by the readers as it was read here, read afte
   const lines = claudeLines(60, "a");
   const whole = new ChainTail("claude", [a], null, true);
   const views = ways.map((w) => follow(() => paths, w));
-  t.after(() => { for (const v of views) v.hub.close(); });
+  t.after(() => Promise.all(views.map((v) => v.hub.close())));
   for (const v of views) await v.hub.idle();
   const step = async (label: string) => {
     await whole.readSoon();
@@ -123,7 +123,7 @@ test("a watched transcript is read by the readers as it was read here, read afte
     await next.hub.idle();
     await next.hub.turnEnded("s");
     assert.deepEqual(next.told, whole.entries, `taken up, way ${i}`);
-    next.hub.close();
+    await next.hub.close();
   }
   // One put away compressed, read whole.
   const zl = claudeLines(30, "z").join("");
@@ -135,6 +135,6 @@ test("a watched transcript is read by the readers as it was read here, read afte
     await v.hub.idle();
     await v.hub.turnEnded("s");
     assert.deepEqual(v.told, packed.entries, `compressed, way ${i}`);
-    v.hub.close();
+    await v.hub.close();
   }
 });

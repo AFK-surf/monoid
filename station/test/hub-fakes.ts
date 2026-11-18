@@ -180,8 +180,16 @@ export class FakeSession implements AgentSession {
   background() {
     return this.tasks;
   }
+  /// Its runtime begins a turn of its own just as the next prompt is given (Claude Code's after a turn's end): that
+  /// prompt is refused as a running turn's, the turn its own.
+  startsOwnTurn = false;
   async prompt(text: string) {
     if (this.disposed) throw new Error("disposed");
+    if (this.startsOwnTurn) {
+      this.startsOwnTurn = false;
+      this.busyNow = true;
+      throw new Error("a turn is already running");
+    }
     if (this.busyNow) throw new Error("busy");
     this.busyNow = true;
     this.prompts.push(text);

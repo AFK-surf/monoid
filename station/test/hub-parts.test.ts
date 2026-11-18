@@ -248,6 +248,7 @@ test("a watched session's usage is what the counter recorded, told again as it r
   await hub.idle();
   assert.deepEqual(asked, ["s"], "a usage-only line asks the counter to count too");
   assert.equal(got.length, beforeUsageLine, "no empty timeline message before the counter records it");
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -287,7 +288,7 @@ test("a watcher gets what it lacks, the steps in flight, then new entries as the
   await hub.turnEnded("s");
   assert.ok(got.some((m) => m.type === "clear"));
   hub.unsubscribe("s", id);
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -312,7 +313,7 @@ test("a watcher in brief is told the entries in brief, those it lacks and those 
   // Each by what says what it does: the description that came after its long command too.
   assert.deepEqual(told.map((e) => [e.brief, JSON.parse(e.text).description]), [[true, "Step a"], [true, "Step b"]]);
   assert.ok(told.every((e) => Array.from(e.text).length < 400));
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -376,7 +377,7 @@ test("a session at work is followed by the station itself: told from where it en
   await settle();
   await hub.idle();
   assert.equal(told.length, 0, "nothing told of a session let go");
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -430,7 +431,7 @@ test("where the readers keep a session's history the live view reads none of its
   const page = await hub.page("s", Number.MAX_SAFE_INTEGER, 2);
   assert.deepEqual([page!.start, page!.end, page!.entries.map((e) => e.kind)], [2, 4, ["assistant", "tool_call"]]);
   assert.ok(Array.from(page!.entries[1]!.text).length > 600, "whole");
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -510,10 +511,7 @@ test("a session watched again, or by the next station process, reads its transcr
   await settle();
   await lone.idle();
   assert.deepEqual([loneAsked[0], loneGot.map((m) => m.type).includes("timeline")], ["state", true], "asked once it is gone");
-  lone.close();
-  late.close();
-  hub.close();
-  next.close();
+  await Promise.all([lone.close(), late.close(), hub.close(), next.close()]);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -535,7 +533,7 @@ test("what is said while a listener joins is told it after what it lacks", async
   await hub.idle();
   assert.deepEqual(got.map((m) => m.type), ["timeline", "steps", "work", "step", "rate"]);
   assert.deepEqual((got[0] as any).entries.map((e: any) => e.text), ["one", "two"]);
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -546,8 +544,8 @@ test("a listener waiting for history ends with the current rate after queued cha
   const time = testClock();
   await time.adjust(10_000);
   const hub = new LiveHub(() => ({ runtime: "claude", paths: [path] }), time.clock);
-  t.after(() => {
-    hub.close();
+  t.after(async () => {
+    await hub.close();
     rmSync(dir, { recursive: true, force: true });
   });
   let release = () => {};
@@ -584,7 +582,7 @@ test("a watcher can take only the latest entries, and ask for those before", asy
   // Watched: from what is held.
   assert.deepEqual(texts(await hub.before("s", 2, 5)), [0, ["one", "two"]]);
   assert.deepEqual(texts(await hub.before("s", 0, 5)), [0, []]);
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -624,7 +622,7 @@ test("a session gone on in a new runtime session: its history reads on from the 
   const told = () => got.flatMap((m) => (m.type === "timeline" ? m.entries.map((e, i) => `${m.start + i}:${e.text}`) : []));
   assert.deepEqual(told(), ["0:one", "1:two", "2:three", "3:four"]);
   assert.deepEqual((await hub.before("s", 10, 10))![1].map((e) => e.text), ["one", "two", "three", "four"]);
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -830,7 +828,7 @@ test("how fast the model writes is told once half a second of it has come", asyn
   assert.equal(rates().at(-1), 0);
   await hub.idle();
   assert.ok(!got.some((m) => m.type === "step" && m.event.kind === "delta"), "no delta is told");
-  hub.close();
+  await hub.close();
   await settle(1);
 });
 
@@ -863,7 +861,7 @@ test("a live rate is in a new snapshot and clears after output has been quiet", 
   await hub.idle();
   assert.equal(rates().at(-1), 0, "an empty delta does not keep the speed alive");
   assert.deepEqual((await hub.nowOf(["s"])).s!.filter((m) => m.type === "rate"), [{ type: "rate", tokensPerSecond: 0 }], "a new snapshot clears what a client held");
-  hub.close();
+  await hub.close();
 });
 
 test("thinking left out of the stream has a rate too, by the tokens its empty deltas say, over the time each covers", async (t) => {
@@ -907,7 +905,7 @@ test("thinking left out of the stream has a rate too, by the tokens its empty de
   for (const e of claude.feed(frame({ type: "content_block_stop", index: 0 }))) hub.event("s", e);
   await hub.idle();
   assert.equal(rates().at(-1), 0);
-  hub.close();
+  await hub.close();
   await settle(1);
 });
 
@@ -915,7 +913,7 @@ test("a listener joining a thinking step gets its current rate and a stopped ste
   t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const hub = new LiveHub(() => null);
   t.after(async () => {
-    hub.close();
+    await hub.close();
     await settle(1);
   });
   const first: LiveMessage[] = [];
@@ -994,7 +992,7 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
   hub.event("s", { kind: "end", id: "b" });
   await hub.idle();
   assert.equal(rates().at(-1), 0);
-  hub.close();
+  await hub.close();
   await settle(1);
 });
 
@@ -1017,7 +1015,7 @@ test("a call's step carries what says what it runs, whole, however long the comm
   assert.equal(await briefInput("ls -la"), "ls -la", "a runtime's plain input stays as it is");
   assert.equal(await briefInput("x".repeat(400)), "x".repeat(300));
   assert.equal(await briefInput('{"command": "echo hi", "descrip'), '{"command": "echo hi", "descrip', "an input cut short stays cut short");
-  hub.close();
+  await hub.close();
 });
 
 test("what stations before linked into the profile homes (the home workspace's memory and skills) is taken away; anything else is left", async () => {
@@ -1475,7 +1473,7 @@ test("what a session has going in the background and its checklist are told whol
   hub.event("s", { kind: "plan", plan: [{ text: "Survey", status: "pending" }] });
   await hub.idle();
   assert.deepEqual(work().at(-1)!.plan, [{ text: "Survey", status: "pending" }]);
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1493,6 +1491,6 @@ test("a session's checklist is read back from its transcript where the readers k
   await hub.idle();
   const last = got.filter((m): m is Extract<LiveMessage, { type: "work" }> => m.type === "work").at(-1);
   assert.deepEqual(last?.plan, [{ text: "Read", status: "completed" }, { text: "Fix", status: "in_progress" }]);
-  hub.close();
+  await hub.close();
   rmSync(dir, { recursive: true, force: true });
 });

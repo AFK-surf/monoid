@@ -254,7 +254,7 @@ test("a followed transcript growing is read and told off the main thread, its fi
     assert.ok(told.includes("two"), told.join());
     assert.deepEqual(grew, { files: 0, processes: 0, statements: 0 });
   } finally {
-    live.close();
+    await live.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

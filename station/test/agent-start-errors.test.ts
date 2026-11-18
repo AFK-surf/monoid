@@ -109,6 +109,37 @@ test("what Node answered a prompt with, failing, is logged in its words, not as 
   }
 });
 
+test("a turn its runtime began of its own as a prompt was given: the prompt steered into it, its process kept", async () => {
+  const lines: Line[] = [];
+  hearLines((l) => lines.push(l));
+  try {
+    const r = new Rig();
+    const m = message();
+    await r.accept(m);
+    await settle();
+    const first = r.claude.last();
+    await r.call(sessionKey("cl", "C1", m.threadTs), "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+    first.complete();
+    await settle();
+    // Idle as the next message comes; busy with a turn of its own by the time it is prompted.
+    first.startsOwnTurn = true;
+    await r.accept(reply(m, "9999.4", "again"));
+    await settle();
+    assert.ok(!lines.some((l) => l.message === "prompt failed, reopening the runtime"), JSON.stringify(lines.map((l) => l.message)));
+    assert.equal(first.disposed, false);
+    assert.equal(r.claude.last(), first, "no runtime opened again");
+    assert.ok(first.steers.some((t) => t.includes("again")), JSON.stringify(first.steers));
+    // Its own turn ends as the turn begun for the message: the session is idle after it.
+    await r.call(sessionKey("cl", "C1", m.threadTs), "chat_post", { to: `C1/${m.threadTs}`, text: "done again", kind: "final" });
+    first.complete();
+    await settle();
+    assert.equal(r.store.getSession(sessionKey("cl", "C1", m.threadTs))!.running, false);
+    await r.close();
+  } finally {
+    hearLines(() => {});
+  }
+});
+
 /// A turn running as the station stopped with no runner keeping its process (a crash, the machine restarted).
 async function cutOff(declare?: (r: Rig, key: string) => Promise<unknown>) {
   const r = new Rig();

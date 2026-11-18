@@ -32,7 +32,7 @@ async function following(runtime: RuntimeKind, path: string) {
 
 const planOf = async (runtime: RuntimeKind, path: string) => {
   const f = await following(runtime, path);
-  f.close();
+  await f.close();
   return f.plan();
 };
 
@@ -83,7 +83,7 @@ test("Claude Code's task tools change the list an item at a time: an item by the
     await f.readOn();
   }
   assert.deepEqual(f.plan(), whole);
-  f.close();
+  await f.close();
   grown.done();
   t.done();
 });

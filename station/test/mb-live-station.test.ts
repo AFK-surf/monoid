@@ -207,11 +207,13 @@ done
 url=$(printf '%s' "$cfg" | /usr/bin/sed -n 's/.*"url":"\\([^"]*\\)".*/\\1/p')
 say() { printf '%s\\n' "$1"; }
 call() { /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" -d "$1"; }
-say '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
 n=0
 while IFS= read -r line; do
   case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
   n=$((n+1))
+  # (its init as Claude Code says it: once a turn is given it, never before its first message, which the station reads
+  # as a turn begun: said at its start, it can be read before the station's first prompt, refused as a turn running)
+  say '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
   to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
   # (what the station tells it with no thread of a person's, its job's end or its nudge, is answered in the thread it
   # was asked in before, and starts no job: when that comes is the machine's, so nothing it does depends on it)
