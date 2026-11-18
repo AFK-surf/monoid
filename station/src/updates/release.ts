@@ -281,9 +281,10 @@ export function earlierIn(said: any, trusted = trustedKeys()): { releases: Relea
 export const backTo = (earlier: readonly Release[], current: number | null, platform: string | null): Release[] =>
   current === null || platform === null ? [] : earlier.filter((r) => r.build < current && r.builds[platform] !== undefined);
 
-/// Where a release's archive for `platform` is kept under its own name on `channel` (scripts/release-deltas.ts).
-export const archiveUrl = (base: string, channel: Channel, release: Release, platform: string) =>
-  `${base}/releases/station/archive/${channel}/${release.build}-${release.builds[platform]!.sha256}-${platform}${platform.startsWith("win32") ? ".zip" : ".tar.gz"}`;
+/// Where a release's archive for this machine's build `name` is kept under its own name on `channel`
+/// (scripts/release-deltas.ts): Windows' a zip, as its installer takes (handedArchive).
+export const archiveUrl = (base: string, channel: Channel, release: Release, name: string) =>
+  `${base}/releases/station/archive/${channel}/${release.build}-${release.builds[name]!.sha256}-${name}${machine.installerExt === "ps1" ? ".zip" : ".tar.gz"}`;
 
 /// A plan to go back: the installer is handed the archive downloaded (takeArchive), never left to download the latest.
 export type Back = Plan & { archive: { url: string; sha256: string; size: number } };

@@ -633,10 +633,11 @@ pub fn back_to(earlier : Array[J], current : Double?, platform : String?) -> Arr
 }
 
 ///|
-/// `archiveUrl`: where a release's archive for `platform` is kept under its own name on `channel`.
+/// `archiveUrl`: where a release's archive for this machine's build `platform` is kept under its own name on
+/// `channel`: Windows' a zip, as its installer takes.
 pub fn archive_url(base : String, channel : String, release : J, platform : String) -> String {
   let sha = js_string_opt(get(get(get(Some(release), "builds"), platform), "sha256"))
-  let ext = if starts_with(platform, "win32") { ".zip" } else { ".tar.gz" }
+  let ext = if machine.val.installer_ext == "ps1" { ".zip" } else { ".tar.gz" }
   "\{base}/releases/station/archive/\{channel}/\{num_text(release_build(release))}-\{sha}-\{platform}\{ext}"
 }
 
