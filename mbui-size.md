@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e7edaa07a](https://github.com/AFK-surf/monoid/commit/e7edaa07a33f8248bf09289cb18c9a5db21fd5fa) feat(ui): move toasts, menus and the switcher onto | 2.56 | 3.45 | 14.08 | 36.08 | 54.2 | 31.61 | 63.66 | 96.93 | 126.06 |
 | [e5b869434](https://github.com/AFK-surf/monoid/commit/e5b86943475b32984fb6fdcd56389ddaa9886585) fix(profiles): hide the output speed section of a  | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.61 | 63.66 | 96.93 | 115.11 |
 | [2be2fd190](https://github.com/AFK-surf/monoid/commit/2be2fd190b9d0e3bdb586db220c1c8da8b445971) perf(mbui): read a chat's messages once as it open | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.61 | 63.66 | 96.93 | 115.11 |
 | [f31a0714a](https://github.com/AFK-surf/monoid/commit/f31a0714a7f9bf052625e46de28226f42f3f0ab9) ci: say failed tests in annotations, wait on CI by | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.61 | 63.66 | 96.93 | 115.11 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [babed3f66](https://github.com/AFK-surf/monoid/commit/babed3f663c4e1148c4f4975fb26ad576c032056) fix(mbui): open the right soft keyboard on one tap | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.6 | 120.98 |
 | [f03c25025](https://github.com/AFK-surf/monoid/commit/f03c2502589f6146209a3b49d3dff982ea0244e8) test(station): the whole MoonBit station tells a d | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.78 | 117.45 |
 | [a78791d91](https://github.com/AFK-surf/monoid/commit/a78791d9124a36a6dd422ec5f41a80f955be7844) fix(mbui): keep the segmented thumb moving through | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.78 | 117.45 |
-| [fee058d70](https://github.com/AFK-surf/monoid/commit/fee058d70bc98ff76618b35e38dbb6dc14a8177d) fix(mbc): keep framework units at -O2 in light sfa | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.75 | 117.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e7edaa07a](https://github.com/AFK-surf/monoid/commit/e7edaa07a33f8248bf09289cb18c9a5db21fd5fa) feat(ui): move toasts, menus and the switcher onto | 0.44 | 0.57 | 2.19 | 3.28 | 5.23 | 1.61 | 4.31 | 54.04 |
 | [e5b869434](https://github.com/AFK-surf/monoid/commit/e5b86943475b32984fb6fdcd56389ddaa9886585) fix(profiles): hide the output speed section of a  | 0.44 | 0.57 | 2.19 | 3.28 | 5.23 | 1.61 | 4.31 | 54.04 |
 | [2be2fd190](https://github.com/AFK-surf/monoid/commit/2be2fd190b9d0e3bdb586db220c1c8da8b445971) perf(mbui): read a chat's messages once as it open | 0.44 | 0.57 | 2.18 | 3.28 | 5.23 | 1.6 | 4.31 | 54.18 |
 | [f31a0714a](https://github.com/AFK-surf/monoid/commit/f31a0714a7f9bf052625e46de28226f42f3f0ab9) ci: say failed tests in annotations, wait on CI by | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 54.02 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [babed3f66](https://github.com/AFK-surf/monoid/commit/babed3f663c4e1148c4f4975fb26ad576c032056) fix(mbui): open the right soft keyboard on one tap | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.64 |
 | [f03c25025](https://github.com/AFK-surf/monoid/commit/f03c2502589f6146209a3b49d3dff982ea0244e8) test(station): the whole MoonBit station tells a d | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.64 |
 | [a78791d91](https://github.com/AFK-surf/monoid/commit/a78791d9124a36a6dd422ec5f41a80f955be7844) fix(mbui): keep the segmented thumb moving through | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.54 |
-| [fee058d70](https://github.com/AFK-surf/monoid/commit/fee058d70bc98ff76618b35e38dbb6dc14a8177d) fix(mbc): keep framework units at -O2 in light sfa | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.45 |
