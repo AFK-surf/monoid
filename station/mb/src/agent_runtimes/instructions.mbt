@@ -22,7 +22,7 @@ pub let line_most : Int = 1500
 let stillfail_surface : String = "ember"
 
 ///|
-let station_author : String = "ember"
+let station_author : String = "station"
 
 ///|
 fn instructions(project : String, workspace : String, repos_dir : String, memory_path : String, station : String) -> String {

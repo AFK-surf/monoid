@@ -12,7 +12,7 @@ pub let max_batch : Int = 50
 
 ///|
 /// Who wrote a message the station said itself (rows.ts `STATION_AUTHOR`).
-pub let station_author : String = "ember"
+pub let station_author : String = "station"
 
 ///|
 /// A thread's entry as the store tells it changed.

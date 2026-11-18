@@ -4,7 +4,7 @@
 
 ///|
 /// station/store/rows.ts STATION_AUTHOR.
-pub let station_author : String = "ember"
+pub let station_author : String = "station"
 
 ///|
 /// What the bot says there: who said it on still.fail, then their words as they wrote them.

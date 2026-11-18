@@ -567,9 +567,8 @@ async fn P52::post_notice(self : P52, key : String, text : String, profile : Jso
   let message : Map[String, Json] = Map([])
   message["thread"] = jfield(thread, "id")
   message["ts"] = jstr(ts)
-  // The station's own author, as store.ts writes it (rows.ts STATION_AUTHOR): "station" was read as a person's.
-  message["authorKind"] = jstr("ember")
-  message["author"] = jstr("ember")
+  message["authorKind"] = jstr("station")
+  message["author"] = jstr("station")
   message["text"] = jstr(text)
   message["profile"] = profile
   message["runtime"] = runtime
@@ -600,7 +599,7 @@ fn P52::last_station_said(self : P52, key : String) -> Json raise {
   }
   let entries = jitems(self.store("entriesBefore", [jfield(jfield(latest, "thread"), "id"), Json::null(), ji(1)]))
   match entries.last() {
-    Some(last) if jtext(last, "authorKind") is Some("ember" | "station") => jfield(last, "text")
+    Some(last) if jtext(last, "authorKind") is Some("station" | "ember" | "stillfail") => jfield(last, "text")
     _ => Json::null()
   }
 }

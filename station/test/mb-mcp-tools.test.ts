@@ -739,7 +739,7 @@ function baseWorld(): World {
     .on("deviceSessions.status", ([t]) => (t === "CHAT/8" ? { state: "running" } : null))
     .on("ops/version.version", () => "0.1.9200")
     .on("store.getThread", ([id]) => (id === 7 ? { id: 7, channel: "CHAT", threadTs: "1.0" } : null))
-    .on("store.entriesBetween", ([, n]) => (n === 3 ? [{ n: 3, at: 1794883181032, authorKind: "ember", text: "⚠️  The turn failed: rate limited.\nTry again." }] : n === 4 ? [{ n: 4, at: 1, authorKind: "user", text: "⚠️ hi" }] : []))
+    .on("store.entriesBetween", ([, n]) => (n === 3 ? [{ n: 3, at: 1794883181032, authorKind: "station", text: "⚠️  The turn failed: rate limited.\nTry again." }] : n === 4 ? [{ n: 4, at: 1, authorKind: "user", text: "⚠️ hi" }] : []))
     .on("store.threadSessions", () => [{ session: "s1" }, { session: "s0" }])
     .on("store.failedTurnsNear", ([k]) => (k === "s1" ? [{ summary: { outcome: "failed", endedAt: 1794883180000, startedAt: 1794883100000, kind: "prompt", detail: "API Error: 429 rate limited\nmore" } }, { summary: { outcome: "done", endedAt: 1794883181000 } }] : []))
     .on("store.runtimeSessions", () => ["rt-abc"])

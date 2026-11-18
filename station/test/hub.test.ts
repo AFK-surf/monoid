@@ -793,7 +793,7 @@ test("claude auth retries once, then reports the profile and does not loop", asy
   // The notice says whose sign-in failed, for the clients to link that profile's page; another failure is no profile's.
   const thread = r.thread("C1", m.threadTs);
   const last = () => r.store.entriesBefore(thread.id, null, 1).pop()!;
-  assert.deepEqual([last().authorKind, last().profile], ["ember", "cc"]);
+  assert.deepEqual([last().authorKind, last().profile], ["station", "cc"]);
   await r.accept(reply(m, "9999.2", "<@UBOT> again", { addressed: true }));
   await settle();
   r.claude.last().end({ kind: "failed", reason: "exited", message: "exit 1" });
@@ -942,7 +942,7 @@ test("a runtime not installed is said about it, and what waited goes on once it 
   // The notice says which runtime, for the clients to offer installing it; the message waits.
   const thread = r.thread("C1", m.threadTs);
   const last = r.store.entriesBefore(thread.id, null, 1).pop()!;
-  assert.deepEqual([last.authorKind, last.runtime, last.profile], ["ember", "claude", null]);
+  assert.deepEqual([last.authorKind, last.runtime, last.profile], ["station", "claude", null]);
   assert.equal(r.claude.count(), 0);
   // Tried again with nothing said since (a restart gives it what waits): not said again.
   r.hub.installed("claude");
@@ -2160,7 +2160,7 @@ test("another runtime, model, effort or speed is said in the chat with how it ra
   r.edit(withProfile("cc2", "another", ["opus", "sonnet"]));
   r.edit((raw) => raw.profiles.filter((p: any) => p.id === "cc").forEach((p: any) => (p.models = [...(p.models ?? []), "sonnet"])));
   const thread = r.store.latestThread(key)!.thread.id;
-  const notices = () => r.store.entriesAfter(thread, 0).filter((e) => e.authorKind === "ember");
+  const notices = () => r.store.entriesAfter(thread, 0).filter((e) => e.authorKind === "station");
   const before = r.session(key);
   await configure(r.hub, key, { model: "sonnet", effort: "low" });
   const [said] = notices();
@@ -3697,7 +3697,7 @@ test("a session the machine kept goes on in a chat, run in its own directory, wi
   const said = r.said(thread.id);
   // Only a note of where it came from, linking to what was said before: nothing of it is copied into the chat.
   assert.equal(said.length, 1);
-  assert.equal(said[0]!.authorKind, "ember");
+  assert.equal(said[0]!.authorKind, "station");
   assert.ok(said[0]!.text.startsWith("继续本机 Claude Code 在"), said[0]!.text);
   const last = readTimeline("claude", found.path).length - 1;
   assert.ok(said[0]!.text.endsWith(`[查看之前的对话](?history=${key}&entry=${last})`), said[0]!.text);
@@ -3781,7 +3781,7 @@ test("a directory the station may not read is told as that, not left to the agen
     await settle();
     assert.equal(r.claude.count(), 0);
     const notice = r.said(thread.id).at(-1)!;
-    assert.equal(notice.authorKind, "ember");
+    assert.equal(notice.authorKind, "station");
     assert.ok(notice.text.includes("无权读取目录") && notice.text.includes(project), notice.text);
   } finally {
     chmodSync(project, 0o755);

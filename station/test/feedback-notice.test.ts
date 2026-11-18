@@ -29,9 +29,9 @@ test("a failure notice reported: the turn, the agent, versions, variables' names
     store.insertMessage(newMessage(chat.id, "1.2", "person", "ada@x.com", "fix it"));
     store.startTurn("t1", "chat:c-aaa111", "message");
     store.endTurn("t1", "failed", "other: workspace routing discovery timed out", null, null);
-    store.insertMessage(newMessage(chat.id, "1.3", "ember", "ember", "⚠️ 本轮出错：workspace routing discovery timed out\nmore"));
+    store.insertMessage(newMessage(chat.id, "1.3", "station", "station", "⚠️ 本轮出错：workspace routing discovery timed out\nmore"));
     const notice = store.lastEntry(chat.id);
-    store.insertMessage(newMessage(chat.id, "1.4", "ember", "ember", "已停止当前任务"));
+    store.insertMessage(newMessage(chat.id, "1.4", "station", "station", "已停止当前任务"));
     const calm = store.lastEntry(chat.id);
 
     const at = (ms: number) => new Date(Date.now() + ms).toISOString();
@@ -91,7 +91,7 @@ test("a report not taken by still.fail cloud is said so", async () => {
   const store = Store.open(":memory:", null);
   try {
     const chat = store.openThread("ember", "CHAT", "2.1", null, "ada@x.com");
-    store.insertMessage(newMessage(chat.id, "2.2", "ember", "ember", "⚠️ 本轮出错：boom"));
+    store.insertMessage(newMessage(chat.id, "2.2", "station", "station", "⚠️ 本轮出错：boom"));
     const parts = new StationParts();
     const deps = { logTail: async () => null, versions: () => ({}), envNames: () => [], link: () => null, home: "/h" };
     parts.routes(reportRoutes(store, deps, async () => { throw new Error("still.fail cloud answered 429: rate_limited"); }));

@@ -238,7 +238,7 @@ describe("instructions.ts, migrations.ts: every text word for word", { skip }, (
     const nowTs = (c: any[], n: [string, string][], now: number) => I.formatCardChoices(c, new Map(n), now);
     await same("formatCardChoices", [[[], [], 0], [choices, [["a@x", "Ann"]], 1794883188902 + 3_600_000 * 26 + 61_000], [choices, [], 1794883188902 + 59_999], [choices, [], 1794883188902 + 3_600_000 * 2], [choices, [], 1794883188902 - 5]], nowTs);
     await same("formatWidgetModels", [[[]], [[{ path: "/w/a.html", name: "pick", thread: ["CHAT", "1.2"], model: "{\"a\":1}" }, { path: "/w/b", name: "b", thread: null, model: "x" }]]], I.formatWidgetModels);
-    const history = MESSAGES.map((m, i) => ({ ...m, n: i + 1, authorKind: ["person", "agent", "ember", "agent", "person", "person"][i]!, author: ["U1", "chat:me", "ember", "chat:x", "U9", "U1"][i]! }));
+    const history = MESSAGES.map((m, i) => ({ ...m, n: i + 1, authorKind: ["person", "agent", "station", "agent", "person", "person"][i]!, author: ["U1", "chat:me", "ember", "chat:x", "U9", "U1"][i]! }));
     const cards: [number, any][] = [
       [1, { card: { type: "options", options: [{ label: "A" }], placeholder: 3 }, pending: true }],
       [2, { card: { type: "text", placeholder: "sk_", vault: { request: "r1" }, adb: { request: "p1" }, signin: { site: "x.com" }, login: "l1", station: "s" }, pending: false, chose: { by: "Ann", option: "A \"b\"" } }],

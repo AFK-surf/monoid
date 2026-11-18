@@ -671,7 +671,7 @@ pub fn report_routes(
       ).get(0)
       let failure = match entry {
         Some(e) =>
-          e.get("authorKind") is Some(Str("ember")) &&
+          e.get("authorKind") is Some(Str("station")) &&
           (match e.get("text") {
             Some(Str(t)) => t.has_prefix("\u{26A0}\u{FE0F}")
             _ => false

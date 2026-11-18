@@ -9,7 +9,7 @@ let stillfail_surface = "ember"
 let manual = "manual"
 
 ///|
-let station_author = "ember"
+let station_author = "station"
 
 ///|
 let lapsed = "that chat's share with your workspace lapsed, unused for 6 hours: a person of its workspace must share it again (by @-mentioning it in a message to you, or in its chat info)"
