@@ -48,7 +48,7 @@ import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
 import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
-import { lineForViewer, stageFields } from "../chat-stage.ts";
+import { lineForViewer, noTurnBegun, stageFields } from "../chat-stage.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
 import { agentRates } from "./agent-rates.ts";
@@ -2304,6 +2304,8 @@ export class Views implements Owner {
         // What failed to go in the station's chats, once for the list (looked up for each row, 1400 of them, on every
         // change of one: 2026-11-08).
         const failed = this.local.failedOutboxes(s.address);
+        // (and the chats made here whose first words are on their way: #unsentRow)
+        const going = this.local.goingFirsts(s.address);
         // What a row is made with besides its record: a row whose record and these are as they were is the one made
         // before (rule 7: the list redoes only the rows that changed). Not its station's link: what that makes of a row
         // goes once for the station (`stations`, stationOn), not on each of its rows. Nor what only its whole row
@@ -2338,7 +2340,7 @@ export class Views implements Owner {
           }
           Object.freeze(standIn);
           let shownRow: J;
-          unmade.set(standIn, () => (shownRow ??= this.#unsentRow(s.address, whole, failed)));
+          unmade.set(standIn, () => (shownRow ??= this.#unsentRow(s.address, whole, failed, whole, going)));
           return standIn;
         };
         // (the key its rows are kept by beside their records: none for a list of the watched, whose rows are made)
@@ -2370,7 +2372,7 @@ export class Views implements Owner {
             this.#rowsMade.set(shown, { sig: k.sig, list: sig, row: k.row });
             return true;
           };
-          if (kept !== undefined && holds(kept)) return kept.row === null ? null : this.#unsentRow(s.address, kept.row, failed);
+          if (kept !== undefined && holds(kept)) return kept.row === null ? null : this.#unsentRow(s.address, kept.row, failed, shown, going);
           const row = (): J => {
             // (kept beside its record under the key in force, where it was read or kept this run; else made, and kept)
             const keeps = key !== null && shown === raw && this.#keepable(s.address, raw);
@@ -2391,7 +2393,7 @@ export class Views implements Owner {
           };
           if (!keepable || get(shown, "pending") === true) {
             const made = row();
-            return made === null ? null : this.#unsentRow(s.address, made, failed);
+            return made === null ? null : this.#unsentRow(s.address, made, failed, shown, going);
           }
           // Kept, its row is made as something shows it (`unmade`): until then a stand-in, the list not showing it
           // decided as its row would (#chatRow: watching, one nobody watches).
@@ -2407,7 +2409,7 @@ export class Views implements Owner {
           unmade.set(standIn, () => {
             if (shownRow === undefined) {
               const again = this.#rowsMade.get(shown);
-              shownRow = this.#unsentRow(s.address, again !== undefined && holds(again) && again.row !== null ? again.row : row(), failed);
+              shownRow = this.#unsentRow(s.address, again !== undefined && holds(again) && again.row !== null ? again.row : row(), failed, shown, going);
             }
             return shownRow;
           });
@@ -2417,7 +2419,7 @@ export class Views implements Owner {
         // asked for, archived or changed from here; its failed messages and what rows are made with as they were): then
         // only the records between the same ones at both ends are made again, so a chat that changed costs its row
         // (each change of one made all of a station's 1400 again, 2026-11-08).
-        const failedKey = JSON.stringify([...failed].map(([thread, m]) => [thread, get(m, "id"), get(m, "text")]));
+        const failedKey = JSON.stringify([[...failed].map(([thread, m]) => [thread, get(m, "id"), get(m, "text")]), [...going]]);
         const quiet = head === null && asked.length === 0 && this.local.rowsQuiet(s.address);
         const was = keptLists.get(s.address);
         let made: (J | null)[];
@@ -2950,7 +2952,7 @@ export class Views implements Owner {
       ?? this.local.pendingRows(station).find((r) => get(r, "session") === session || get(r, "clientKey") === session);
     if (raw === undefined || this.local.beingArchived(station, raw)) return { ok: null };
     const row = this.#wholeOf(s, stations.length > 1, this.local.asChanging(station, raw));
-    return { ok: row === null ? null : this.#unsentRow(station, row) };
+    return { ok: row === null ? null : this.#unsentRow(station, row, undefined, raw) };
   }
 
   /// A record's row whole (#wholeRow), made with what the list's are (#chats) and what only it reads besides: the menu's
@@ -3079,12 +3081,25 @@ export class Views implements Owner {
 
   /// A row whose chat has a message sent here that did not go: marked red, its second line saying which (`unsent`: drawn
   /// in red), before
-  /// anything its agents do (the message waits in the chat to be sent again or dropped).
-  #unsentRow(station: string, row: J, failed?: Map<number, J>): J {
+  /// anything its agents do (the message waits in the chat to be sent again or dropped). Else, a chat made here (the
+  /// board's draft started, a new chat's page) whose first words are still on their way (`going`, local.ts
+  /// goingFirsts) while its station lists it with its agent seated and no turn begun (`record`'s agents): at work
+  /// (进行中), not ended (待收口) till its turn runs. Only those: a chat seated and asked nothing that was not made here
+  /// (a connect's, waiting for a person's first message) stays as its record says.
+  #unsentRow(station: string, row: J, failed?: Map<number, J>, record?: J, going?: ReadonlySet<number>): J {
     const thread = typeof row.thread === "number" ? row.thread : null;
     const key = row.pending === true && typeof row.clientKey === "string" ? row.clientKey : null;
     const unsent = failed !== undefined && thread !== null && key === null ? failed.get(thread) : this.local.unsent(station, thread, key);
-    if (unsent === undefined) return row;
+    if (unsent === undefined) {
+      if (row.stage !== undefined || thread === null || key !== null || record === undefined) return row;
+      if (!(going ?? this.local.goingFirsts(station)).has(thread) || !noTurnBegun(record)) return row;
+      const { archiveRead: _archiveRead, ...rest } = row;
+      const atWork: J = { ...rest, stage: "run" };
+      deepFreeze(atWork);
+      const pinned = pinnedAt.get(row);
+      if (pinned !== undefined) pinnedAt.set(atWork, pinned);
+      return atWork;
+    }
     const text = format.cleanText(format.plainText(str(unsent.text) ?? ""));
     const { stateAbout: _stateAbout, stateLead: _stateLead, stateLeadText: _stateLeadText, stateRest: _stateRest, ...rest } = row;
     // (it needs the viewer: chat-stage.ts needsViewer)

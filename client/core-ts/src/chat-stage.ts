@@ -97,20 +97,25 @@ function leadsActive(row: J): boolean {
   return arr(get(row, "opened")).some((o) => get(o, "led") === true && get(o, "active") === true);
 }
 
-/// Whether its agents are at work: asked here and not made yet, not seated yet or seated with no turn begun (made, its
-/// first words on their way: a draft started from the board stays 进行中 till its turn runs, never 待收口 between), a
-/// turn running or queued (or ended waiting on work it started), a background job or a chat it leads still going
-/// (`waitingAsync`).
+/// Whether its agents are at work: asked here and not made yet, not seated yet, a turn running or queued (or ended
+/// waiting on work it started), a background job or a chat it leads still going (`waitingAsync`).
 export function isRunningOrWaitingAsync(row: J): boolean {
   if (get(row, "pending") === true) return true;
   const agents = arr(get(row, "agents"));
   if (agents.length === 0) return true;
-  if (agents.every((a) => present.sessionStatus(a) === "idle")) return true;
   if (agents.some((a) => {
     const s = present.sessionStatus(a);
     return s === "running" || s === "queued" || get(a, "waitingAsync") === true;
   })) return true;
   return leadsActive(row);
+}
+
+/// Whether its agents are seated and none has begun a turn (nothing asked of them yet). Of itself no stage: a chat a
+/// connect made waits so for its first message from a person; a chat made here whose first message is still on its way
+/// is at work (views.ts #unsentRow, `going`).
+export function noTurnBegun(row: J): boolean {
+  const agents = arr(get(row, "agents"));
+  return agents.length > 0 && agents.every((a) => present.sessionStatus(a) === "idle");
 }
 
 /// The board's column of a chat for the viewer, the first that holds: it needs them (等你处理, even while it keeps

@@ -67,15 +67,6 @@ test("a_leader_waiting_on_a_chat_it_leads_or_a_job_is_at_work", () => {
   assert.equal(stage.subchatsLabel(finished), null);
 });
 
-test("a_chat_made_with_no_turn_begun_is_at_work_not_ended", () => {
-  // (made by its station, its first words still on their way: its agent seated, nothing run yet)
-  const seated: J = { mine: true, agents: [{ key: "s1", process: "cold" }] };
-  assert.equal(stage.boardStageOf(seated, me), "run");
-  assert.equal(stage.boardStageOf({ ...seated, agents: [{ key: "s1", process: "cold", pending: 1 }] }, me), "run");
-  // (one agent seated anew beside one that ended: the chat ended)
-  assert.equal(stage.boardStageOf({ ...seated, agents: [done(), { key: "s2", process: "cold" }] }, me), "done");
-});
-
 test("a_failure_needs_the_viewer_who_started_it_until_let_go", () => {
   const failed: J = { key: "s1", process: "cold", lastTurn: { outcome: "failed", startedAt: 1, endedAt: 2 } };
   const row: J = { mine: true, creator: creator("lin@x.com"), agents: [failed] };
