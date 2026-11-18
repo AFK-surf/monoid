@@ -30,6 +30,10 @@ pub let accents : Array[AccentTone]
 
 pub fn action(@ui.Ctx, String, String, icon? : String, busy? : Bool, disabled? : Bool, bad? : Bool) -> Bool
 
+pub fn action_box_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, selected? : () -> Bool, expanded? : () -> Bool, on? : () -> Bool, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn action_box_while_node(@view.View, () -> Bool, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, expanded? : () -> Bool, loc~ : SourceLoc) -> Unit
+
 pub fn action_node(@view.View, () -> String, () -> Unit, icon? : String, busy? : () -> Bool, disabled? : () -> Bool, bad? : Bool) -> Unit
 
 pub fn address_bar_node(@view.View, @ui.Field, () -> String, (String) -> Unit, () -> String, () -> Unit, () -> Unit, () -> Unit, can_back? : () -> Bool, can_forward? : () -> Bool, busy? : () -> Bool, stop? : () -> Unit, keys_shown? : () -> Bool, placeholder? : () -> String, lead? : (@view.View) -> Unit, progress? : () -> (Double, @ui.Color)?, start? : (@view.View) -> Unit, end? : (@view.View) -> Unit, tips? : TipLayer, framed? : Bool) -> @view.View
@@ -593,6 +597,12 @@ pub let face_ink : Int64
 
 pub let face_status_most : @ui.Len
 
+pub let fact_row_h : Double
+
+pub fn fact_row_node(FactsList, String, (@view.View) -> Unit, show? : () -> Bool, loc~ : SourceLoc) -> Unit
+
+pub fn facts_list_node(@view.View, Array[String], (FactsList) -> Unit, least? : Double, style? : () -> @ui.Style, loc~ : SourceLoc) -> @view.View
+
 pub fn facts_size(String, Double) -> String
 
 pub let faint_ground : @ui.Color
@@ -902,7 +912,11 @@ pub let kept_call : @ref.Ref[((String, @json.Json, Bytes?) -> Result[(@json.Json
 
 pub fn kept_words(String) -> @json.Json?
 
+pub fn key_cap_node(@view.View, String, () -> String, () -> Unit, look? : KeyLook, icon? : String, width? : Double, height? : Double, primary? : Bool, held? : () -> Bool, steals_focus? : Bool, repeat? : Bool, felt? : @ui.Haptic, loc~ : SourceLoc) -> @view.View
+
 pub fn key_caps(String) -> Array[String]
+
+pub let key_mark_size : Double
 
 pub fn keys_apart(size? : Double, least? : Double) -> Double
 
@@ -2186,6 +2200,12 @@ pub fn status_dot(@ui.Ctx, String) -> Unit
 
 pub let status_ring : Double
 
+pub fn step_circle_button_node(@view.View, () -> String, () -> String, (@view.View) -> Unit, look? : StepLook, loc~ : SourceLoc) -> @view.View
+
+pub fn step_circle_node(@view.View, () -> String, look? : StepLook, first_line? : @ui.TextSize, leading? : @ui.Leading, loc~ : SourceLoc) -> @view.View
+
+pub let step_circle_side : Double
+
 pub let step_words : @ui.TextStyle
 
 pub fn steps(@ui.Ctx, Array[() -> Unit]) -> Unit
@@ -2272,6 +2292,8 @@ pub let tape_line : Double
 
 pub fn tape_side_corners() -> FixedArray[@paint.CornerOf]
 
+pub fn text_action_node(@view.View, () -> String, () -> Unit, style? : () -> @ui.TextStyle, box? : () -> @ui.Style, label? : () -> String, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
 pub let text_in : Double
 
 pub let text_scale : @ui.TextScale
@@ -2353,6 +2375,8 @@ pub fn tool_mark_node(@view.View, String, Double) -> Unit
 pub fn tool_node(@view.View, () -> ToolSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, tip? : TipLayer, lights? : Bool, ripples? : Bool, roving? : RovingHover, progress? : () -> Double?) -> @view.View
 
 pub fn tool_of(String, () -> Unit, drop? : Int32, instead? : Array[MenuItem]) -> Tool
+
+pub fn tool_round_node(@view.View, String, () -> String, () -> Unit, look? : ToolLook, tips? : TipLayer, felt? : @ui.Haptic, loc~ : SourceLoc) -> @view.View
 
 
 pub let tool_side : Double
@@ -2803,6 +2827,10 @@ pub struct EdgePull {
 pub fn EdgePull::new() -> Self
 pub fn EdgePull::shown_on(Self, @view.View) -> (Double, Double, Double)
 
+pub struct FactsList {
+  // private fields
+}
+
 pub(all) struct FileCardDone {
   removed : Bool
   retried : Bool
@@ -2887,6 +2915,12 @@ pub(all) struct Items {
   meta : @ui.TextStyle
   mark : Double
   mark_line : @ui.Leading
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum KeyLook {
+  Tile
+  Pill
 }
 
 #derive(Eq, Show, @debug.Debug)
@@ -3328,6 +3362,12 @@ pub(all) struct StackFace {
   picture : () -> String
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) enum StepLook {
+  Step
+  Pin
+}
+
 pub(all) struct StrokeShape {
   up : Double
   down : Double
@@ -3420,6 +3460,12 @@ pub(all) struct Tool {
   drop : Int32
   draw : () -> Unit
   instead : Array[MenuItem]
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum ToolLook {
+  Plain
+  Floating
 }
 
 #derive(Eq, Show, @debug.Debug)

@@ -101,13 +101,6 @@ fn info_facts_node(
 ) -> Unit {
   let thread = fn() { facts().thread }
   let labels = ["from", "started", "people", "created", "lastMessage"].map(fn(k) { @sf.t("web-pages.chat.info." + k) })
-  // (its labels in a column 80 wide, or as wide as the widest of them in this language: words of a length known,
-  // whole, measured again as the system's size of words changes)
-  let label_w = fn() {
-    f.words_redone() |> ignore
-    let size = @sf.theme().t.ui * f.words_scale()
-    labels.fold(init=info_label_w, fn(m, l) { dmax(m, @ui.text_advance(l, size~).ceil()) })
-  }
   // (a Comma Task's: in no place, Comma alone, as the old view's chat_info said it)
   let comma = fn() { facts().surface.has_prefix("comma:") }
   let in_thread = fn() { opt_number(thread(), "id") is Some(_) }
@@ -117,22 +110,13 @@ fn info_facts_node(
       d => d
     }
   }
-  f.box(fn(list) {
-    // (its first fact's words as far under the panel's top as a menu's first item's: the fact's row taller than its
-    // line, centred in it)
-    let over = fn() { @sf.menu_row_over - (info_fact_h - @sf.theme().t.ui_line) / 2.0 }
-    @sf.style_node(list, fn() { info_facts.then(@ui.style(pt=@sf.room_of(over()))) })
+  // (its first fact's words as far under the panel's top as a menu's first item's: the fact's row taller than its
+  // line, centred in it; its labels in a column 80 wide, or as wide as the widest of them in this language)
+  let over = fn() { @sf.menu_row_over - (@sf.fact_row_h - @sf.theme().t.ui_line) / 2.0 }
+  @sf.facts_list_node(f, labels, least=info_label_w, style=fn() { info_facts.then(@ui.style(pt=@sf.room_of(over()))) }, fn(list) {
     // (a fact while `when` holds: its label, then its words)
     let fact = fn(when : () -> Bool, label : String, value : (@view.View) -> Unit) {
-      list.show(when, fn(row) {
-        @sf.style_node(row, fn() { info_fact })
-        row.box(fn(l) {
-          l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
-          @sf.words_node(l, fn() { label }, fn() { info_muted }) |> ignore
-        })
-        |> ignore
-        value(row)
-      })
+      @sf.fact_row_node(list, label, value, show=when)
     }
     // where it came from, only when that is not here (a still.fail chat's says nothing)
     fact(fn() { facts().place != "" || comma() }, labels[0], fn(row) {
@@ -400,27 +384,27 @@ fn info_things_node(g : @view.View, src : Source, r : ChatRef, said : () -> Info
 let info_row_round : @ui.Style = @ui.style(radius=@sf.panel_in)
 
 ///|
-/// A row of the info (info_row's, ui.tsx PanelRow) laid on `b`: its icon (14, muted) at the panel's words' inset, as
+/// A row of the info (info_row's, ui.tsx PanelRow) in `parent` (@sf.panel_content_row_node's button): its icon (14, muted) at the panel's words' inset, as
 /// the facts' words and the agents' marks over it, and words 10 apart, what is at its end (`end`, while it says
 /// something) muted, under its words where the line has not the room; round with the panel, the pointer's ground over
 /// it (info_tool's hovered); `press` as it is pressed.
-fn info_row_node(b : @view.View, icon : String, label : () -> String, end : () -> String, press : () -> Unit) -> Unit {
-  @sf.style_node(b, fn() { info_tool().then(info_row_round) })
-  b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
-  @sf.hover_ground_node(b, color=fn() { @sf.theme().p.hover })
-  @sf.presses_node(b, press)
-  b.box(fn(i) {
-    @sf.style_node(i, fn() { info_tool_icon }, in_row=true)
-    @sf.icon_node(i, icon, 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+fn info_row_node(parent : @view.View, icon : String, label : () -> String, end : () -> String, press : () -> Unit) -> Unit {
+  @sf.panel_content_row_node(parent, label, fn(_) { press() }, highlighted=@sf.lit_node, fn(b) {
+    @sf.style_node(b, fn() { info_tool().then(info_row_round) })
+    @sf.focus_ring_node(b)
+    b.box(fn(i) {
+      @sf.style_node(i, fn() { info_tool_icon }, in_row=true)
+      @sf.icon_node(i, icon, 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+    })
+    |> ignore
+    b.box(fn(l) {
+      @sf.style_node(l, fn() { info_label_flow }, in_row=true)
+      l.wraps(Is(Some(0.0))) |> ignore
+      @sf.words_node(l, label, fn() { info_words }) |> ignore
+      l.show(at_once=true, fn() { end() != "" }, fn(e) { @sf.words_node(e, end, fn() { info_end }) |> ignore })
+    })
+    |> ignore
   })
-  |> ignore
-  b.box(fn(l) {
-    @sf.style_node(l, fn() { info_label_flow }, in_row=true)
-    l.wraps(Is(Some(0.0))) |> ignore
-    @sf.words_node(l, label, fn() { info_words }) |> ignore
-    l.show(at_once=true, fn() { end() != "" }, fn(e) { @sf.words_node(e, end, fn() { info_end }) |> ignore })
-  })
-  |> ignore
 }
 
 ///|

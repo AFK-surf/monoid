@@ -24,14 +24,9 @@ let station_busy : @ui.TextStyle = @ui.text_style(color=AccentText)
 let station_state_box : @ui.Style = @ui.css("row gap=S1_25 align=ACenter")
 
 ///|
-/// Up or away: the rail's dot (railCss.dot: 6).
-// kept across runs: a value (no field of it changes)
-let station_dot_on : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Positive")
-
-///|
-/// Down: a ring in the quiet words' grey (parts.css.ts statusDot: inset 1.5 of --muted), seen on any ground.
-// kept across runs: a value (no field of it changes)
-let station_dot_off : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full border=B1_5 border_color=Muted")
+/// Up or away: the rail's dot (railCss.dot: 6), the positive ground; down, a ring in the quiet words' grey
+/// (parts.css.ts statusDot: inset 1.5 of --muted), seen on any ground (@sf.state_dot_node's `up` and its ring).
+let station_dot_side : Double = 6.0
 
 ///|
 /// Under the name of a station that only runs tasks (rig `r()`: the core's `rigs`, as it is now), in its figures'
@@ -51,7 +46,7 @@ pub fn station_state_node(parent : @view.View, s : () -> Json?) -> Unit {
   let running = fn() { number(field(field(s(), "overview"), "counts"), "running") }
   parent.box(fn(b) {
     @sf.style_node(b, fn() { station_state_box })
-    b.box(fn(d) { @sf.style_node(d, fn() { if online() { station_dot_on } else { station_dot_off } }) }) |> ignore
+    @sf.state_dot_node(b, fn() { if online() { "up" } else { "offline" } }, size=station_dot_side)
     b.show(fn() { !online() }, fn(w) { @sf.words_node(w, fn() { text(s(), "summary") }, station_words) |> ignore })
     b.show(fn() { online() && running() > 0.0 }, fn(w) {
       @sf.words_node(
