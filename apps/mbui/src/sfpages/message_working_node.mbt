@@ -208,13 +208,16 @@ fn working_said_node(
             let shown = activity_steady_node(tail, steadies, key, said, came)
             let style = fn() { if @sf.hovered_node(line) { now_words_hot } else { now_words } }
             tail.box(fn(words) { working_words_node(words, shown, came, style, visible, key.length()) }) |> ignore
-            tail.pick(fn() { working_clock_from(a(), live()) }, fn(k, from) {
+            // (made again as it comes to count a wait or no longer counts; what it counts from, a later step's start,
+            // bound: steps_seconds_by)
+            tail.pick(fn() { working_clock_from(a(), live()).map(fn(f) { f.1 }) }, fn(k, from) {
               match from {
-                Some((since, most)) => {
-                  let tick = steps_seconds(k, src, since, till?=most.map(fn(sec) { sec * 1000.0 }))
+                Some(most) => {
+                  let since = fn() { working_clock_from(a(), live()).map(fn(f) { f.0 }).unwrap_or((src.now)()) }
+                  let tick = steps_seconds_by(k, src, since, till?=most.map(fn(sec) { sec * 1000.0 }))
                   let words = fn() {
                     tick() |> ignore
-                    working_clock_words(since, most, (src.now)())
+                    working_clock_words(since(), most, (src.now)())
                   }
                   let clock = @sf.words_node(k, words, fn() { activity_clock })
                   k.reacts(words, fn(s) { clock_said.set(s) })

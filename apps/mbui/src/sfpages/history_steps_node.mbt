@@ -379,6 +379,34 @@ pub fn steps_seconds(v : @view.View, src : Source, since : Double, till? : Doubl
 }
 
 ///|
+/// A clock running in `v` as steps_seconds' does, from `since` as it says now: begun again from another moment as it
+/// says one (a later step's), no node made again for it.
+fn steps_seconds_by(v : @view.View, src : Source, since : () -> Double, till? : Double) -> () -> Int {
+  let tick : @signals.Signal[Int] = @signals.signal(0)
+  let plans = Ref(0)
+  fn plan(from : Double, n : Int) -> Unit {
+    guard plans.val == n else { return }
+    let gone = (src.now)() - from
+    if till is Some(t) && gone >= t {
+      return
+    }
+    let into = if gone > 0.0 { gone - (gone / second_ms).floor() * second_ms } else { gone }
+    v.at_moment(v.logic_at() + second_ms - into, later=true, fn() {
+      guard plans.val == n else { return }
+      tick.set(tick.untracked() + 1)
+      plan(from, n)
+    })
+    |> ignore
+  }
+
+  v.reacts(since, fn(from) {
+    plans.val += 1
+    plan(from, plans.val)
+  })
+  fn() { tick.get() }
+}
+
+///|
 /// The history's rows to come while it is read the first time in `v`, as its list draws them.
 pub fn steps_sample_node(v : @view.View, station : String, key : String, tips : @sf.TipLayer) -> Unit {
   let lines = [("group", 16), ("text", 24), ("group", 12), ("group", 20), ("text", 9), ("group", 18)]
