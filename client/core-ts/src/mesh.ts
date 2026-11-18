@@ -2483,15 +2483,21 @@ function relayStatus(endpoint: IrohEndpoint): string {
   return status.map((s) => `${s.url} ${s.connected ? "up" : "down"}`).join(", ");
 }
 
-/// Once the endpoint is on one of its relays (at once with none, or dialled at addresses too): what a dial's
+/// Once the endpoint is on one of its relays (at once with none, or where the dial was given no relay): what a dial's
 /// CONNECT_TIMEOUT_MS counts from. Getting onto a relay takes several round trips to it (TCP, TLS, the relay's own), a
 /// dozen seconds on a phone 2–4 s from every relay, back from the background (nomofu, 2026-10-30): counted in the dial's
 /// time, every dial ended as it was about to be answered, and the next bound the endpoint anew (`#stuck`), to get onto
 /// the relays from the start again. Not on one in ONTO_MAX_MS: counted from then.
-function onARelay(endpoint: IrohEndpoint, direct: boolean): Effect.Effect<void> {
+/// Only a dial given no relay (`noRelays`: the LAN's and the tailnet's endpoints, a dial at addresses alone) counts at
+/// once. One given relays waits for one even when it carries addresses a peer said before: those are dialled from the
+/// start beside the relays, and where they answer the dial is done long before (the device on that LAN), but a device
+/// gone off that network, or a web page that dials no address, carries them all the same: counted at once, every dial
+/// ran out before the endpoint was on a relay, and bound it anew, again and again (2026-11-18: the web and Android with
+/// all twelve relays down for up to 25 minutes, each dial `rebound`).
+function onARelay(endpoint: IrohEndpoint, noRelays: boolean): Effect.Effect<void> {
   const on = () => {
     const status = endpoint.relayStatus();
-    return direct || status.length === 0 || status.some((s) => s.connected);
+    return noRelays || status.length === 0 || status.some((s) => s.connected);
   };
   return Effect.gen(function* () {
     for (let waited = 0; waited < ONTO_MAX_MS && !on(); waited += ONTO_RECHECK_MS) yield* Effect.sleep(ONTO_RECHECK_MS);
@@ -2586,7 +2592,7 @@ function open(
     // The same budget as a dial had, still counted after getting onto a relay. It covers the whole opening, even
     // when the handshake succeeds but the old credential request or the first stream/write never answers.
     const deadline = Effect.gen(function* () {
-      yield* onARelay(endpoint, ips.length > 0);
+      yield* onARelay(endpoint, relays.length === 0);
       opened.onto = since();
       stages.onto = opened.onto;
       yield* Effect.sleep(CONNECT_TIMEOUT_MS);

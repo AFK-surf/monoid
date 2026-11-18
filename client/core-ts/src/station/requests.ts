@@ -312,7 +312,20 @@ export class Requests {
       const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
       const [span, head] = this.#head(station, "GET", path, [["accept", EVENT_STREAM]], 0, ctx);
       span.set("stillfail.stream", true);
-      const opened = yield* Effect.result(this.wire.request(station, head, empty).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))));
+      // Let go of before it opened (a link's `slow` or `dropped` won its race: link.ts `#follow`): its span ends too, said
+      // so, or the trace kept nothing of where the wait went.
+      const opened = yield* Effect.result(
+        this.wire.request(station, head, empty).pipe(
+          Effect.ensuring(Effect.sync(() => waiting.end())),
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              span.set("stillfail.interrupted", true);
+              span.fail();
+              span.end();
+            }),
+          ),
+        ),
+      );
       if (opened._tag === "Failure") {
         failed(span, opened.failure);
         span.end();

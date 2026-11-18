@@ -1606,6 +1606,52 @@ sim("a_station_on_the_lan_is_dialled_at_its_lan_addresses_and_the_requests_stay_
   await close(s, station, mesh);
 });
 
+/// A device that reached a station on its LAN once, its next run dialling it with every relay a dozen seconds away.
+async function rememberedOnLan(s: Sim, deviceMs: number) {
+  const { station, mesh, id } = await onLan(s);
+  station.lan = station.addr().ips;
+  await reach(s, mesh, id);
+  await s.until(() => s.host.storage.has(STATION_MESH.addressesKey));
+  await s.run(mesh.close());
+  const [a, b] = mesh.relays as [string, string];
+  s.relay(a, { device: { ms: deviceMs }, station: { ms: 40 } });
+  s.relay(b, { device: { ms: deviceMs }, station: { ms: 10 } });
+  const next = await s.run(Mesh.make(env(s), [a, b]));
+  return { station, mesh: next, id };
+}
+
+/// 2026-11-18: the web and Android, their stations' LAN addresses kept from before, off that LAN (or a web page, which
+/// dials no address), with every relay slow to get onto: each dial counted CONNECT_TIMEOUT_MS from its start as one at
+/// addresses, ran out before the endpoint was on a relay, and the next bound it anew, for up to 25 minutes. Given
+/// relays, its time counts once it is on one, and the first dial is the link.
+sim("a_device_off_the_lan_it_kept_addresses_of_waits_for_its_relays_before_its_dial_runs_out", async (s) => {
+  const { station, mesh, id } = await rememberedOnLan(s, 3_000);
+  s.net.away = true;
+  const endpoint = mesh.endpoint();
+  const tries = s.net.tries.length;
+  const started = s.time.now();
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })), 60_000);
+  // Onto a relay (4 legs of 3 s) is past CONNECT_TIMEOUT_MS by itself.
+  assert.ok(s.time.now() - started > CONNECT_TIMEOUT_MS, `reached ${s.time.now() - started} ms after it was asked`);
+  assert.equal(mesh.endpoint(), endpoint, "the endpoint was not bound anew");
+  assert.ok(s.net.tries.slice(tries).some((t) => t.to === id && t.ips), "the addresses it kept were dialled");
+  assert.equal(s.net.tries.slice(tries).filter((t) => t.to === id && t.ips).length, 1, "dialled once at them");
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
+/// The same device back on that LAN, no relay reached yet: the addresses it kept answer, and nothing waits for a relay.
+sim("a_device_on_the_lan_it_kept_addresses_of_is_linked_there_before_any_relay", async (s) => {
+  const { station, mesh, id } = await rememberedOnLan(s, 60_000);
+  const started = s.time.now();
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })), 60_000);
+  assert.ok(s.time.now() - started < 5_000, `reached ${s.time.now() - started} ms after it was asked`);
+  assert.ok(mesh.endpoint().relayStatus().every((r) => !r.connected), JSON.stringify(mesh.endpoint().relayStatus()));
+  assert.equal(link.path(), "direct");
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
 /// A station on the device's tailnet (Tailscale), at home on a (far) and held on b (near), its
 /// Tailscale address `ms` away: no hole punched, Tailscale carrying it.
 async function onTailnet(s: Sim, ms: number) {
