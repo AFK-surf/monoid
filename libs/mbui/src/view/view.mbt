@@ -9766,6 +9766,8 @@ fn View::comes(
     match v.live() {
       Some(m) if to >= 1.0 && m.coming => {
         (m.come_off)()
+        // (its way ended here, not where it was going to: come_done would wait for that end)
+        m.flex.style.come_ends = tree.cause_now()
         come_done(tree, v, m)
       }
       _ => ()
