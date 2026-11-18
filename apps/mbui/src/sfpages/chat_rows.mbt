@@ -360,9 +360,20 @@ fn unsent_button(
 }
 
 ///|
+/// When what agent `a` does now began, as its line's clock counts it: the core's `activity.now.since` (the call's start,
+/// the step's, the request's), so it says how long what it shows has gone on, as the history's latest row does; the
+/// turn's start where the core says none.
+fn activity_since(a : Agent, live : Json?) -> Double? {
+  match opt_number(field(field(live, "activity"), "now"), "since") {
+    Some(_) as at => at
+    None => a.since
+  }
+}
+
+///|
 /// An agent at work, in one line (Activity): its picture ringed while it works (a still whole ring while it waits on
 /// what it started), what it does now as the core says (each thing a moment at least, crossfading: useSteady) and how
-/// long its turn has run; pressed, its history beside the chat. One of several agents: its own stop under the pointer.
+/// long that has gone on (activity_since); pressed, its history beside the chat. One of several agents: its own stop under the pointer.
 /// For a message to come out of its picture the line folds to the picture, which is away while its copy flies
 /// (sfbase's emit.mbt).
 fn activity_row(c : @ui.Ctx, src : Source, here : MessageHere, a : Agent, em : Emits, rk : String, leaving : Bool, came : Double?) -> Unit {
@@ -400,7 +411,7 @@ fn activity_row(c : @ui.Ctx, src : Source, here : MessageHere, a : Agent, em : E
       })
     }
     None =>
-      match a.since {
+      match activity_since(a, live.value) {
         Some(s) => {
           each_second(c, now - s)
           elapsed(now - s)

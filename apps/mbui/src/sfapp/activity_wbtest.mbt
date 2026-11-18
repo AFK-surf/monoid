@@ -240,9 +240,10 @@ test "activity: an agent given words it has yet to take is at work: its line the
 ///|
 /// The working agent's chat on 小屏, its agent's `live` as the core client holds it (`live`: its version one more each
 /// time it is another value), the rest the fixture's.
-fn activity_live_chat(live : @signals.Signal[Json]) -> @ui.Tester {
+fn activity_live_chat(live : @signals.Signal[Json], clock? : Ref[() -> Double] = Ref(fn() { 0.0 })) -> @ui.Tester {
   new_run()
   let base = fixture("chat-working")
+  clock.val = base.now
   let version = Ref(0)
   let seen : Ref[Json?] = Ref(None)
   let src : Source = {
@@ -313,4 +314,27 @@ test "activity: what its agent's stream changes beside the line builds nothing i
   assert_true(before.0 != "", msg="before, the line's row was built again for what it does not show: \{Repr(before)}")
   assert_true(changed.0 != "", msg="the line's row built for its words: \{Repr(changed)}")
   assert_true(t.find("整理下一步") is Some(_), msg="the line says what it does now")
+}
+
+///|
+/// The line's clock counts what the line says, from when the core says it began (`activity.now.since`: the request
+/// sent, the call started), as the history's latest row does; not the whole turn, which said 请求中 43m 34s beside a
+/// request of 20 s (2026-11-18). Where the core says nothing, the turn's.
+test "activity: its clock counts what it does now, not its whole turn" {
+  let at = fn(since : Double?) -> Json {
+    let now : Map[String, Json] = { "key": Json::string("requesting"), "text": Json::string("请求中") }
+    if since is Some(s) {
+      now["since"] = Json::number(s)
+    }
+    { "activity": { "now": Json::object(now) } }
+  }
+  let live = @signals.signal(at(None), same=fn(a, b) { physical_equal(a, b) })
+  let clock : Ref[() -> Double] = Ref(fn() { 0.0 })
+  let t = activity_live_chat(live, clock~)
+  let now = (clock.val)()
+  let own = fn() { elapsed((clock.val)() - (now - 20000.0)) }
+  assert_true(t.find(own()) is None, msg="where the core says nothing, the turn's clock, not \{own()}")
+  live.set(at(Some(now - 20000.0)))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(own()) is Some(_), msg="the request's own clock: \{own()}")
 }

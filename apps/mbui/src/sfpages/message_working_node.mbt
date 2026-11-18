@@ -2,8 +2,8 @@
 // work_ring, steady_words, activity_change_glyphs, activity_glyphs; their styles the same): its picture ringed while it
 // works (eight arcs turning; a still whole ring while it waits on what it started), what it does now as the core says
 // (steadied: activity_steady_node.mbt), its first words coming in glyph by glyph and each step's giving way to the
-// next's at each glyph's place, the line going from the one's width to the other's with its clock, and how long its
-// turn has run; pressed, its history beside the chat; one of several agents, its own stop under the pointer. Each
+// next's at each glyph's place, the line going from the one's width to the other's with its clock, and how long what it
+// does now has gone on; pressed, its history beside the chat; one of several agents, its own stop under the pointer. Each
 // motion from the moment its cause was said (the step began showing; the row came into its list), as data. Not here
 // yet: the card over its picture (P21). What a message of its agent's coming out of its picture does to it (the line
 // folding to its picture, the picture and its ring away while the message's own flies from it, flying home again from
@@ -45,12 +45,12 @@ fn working_said(a : Agent, live : Json?) -> ActivitySaid {
 }
 
 ///|
-/// How long agent `a`'s turn has run is worked out from (activity_row's clock): when it began waiting and how long it
-/// waits at most (seconds), or when its turn began; None, no clock.
-fn working_clock_from(a : Agent) -> (Double, Double?)? {
+/// What agent `a`'s clock counts from (activity_row's): when it began waiting and how long it waits at most (seconds),
+/// or when what it does now began (activity_since, of the core's `live`); None, no clock.
+fn working_clock_from(a : Agent, live : Json?) -> (Double, Double?)? {
   match a.wait {
     Some((since, most, _)) => Some((since, most))
-    None => a.since.map(fn(s) { (s, None) })
+    None => activity_since(a, live).map(fn(s) { (s, None) })
   }
 }
 
@@ -208,7 +208,7 @@ fn working_said_node(
             let shown = activity_steady_node(tail, steadies, key, said, came)
             let style = fn() { if @sf.hovered_node(line) { now_words_hot } else { now_words } }
             tail.box(fn(words) { working_words_node(words, shown, came, style, visible, key.length()) }) |> ignore
-            tail.pick(fn() { working_clock_from(a()) }, fn(k, from) {
+            tail.pick(fn() { working_clock_from(a(), live()) }, fn(k, from) {
               match from {
                 Some((since, most)) => {
                   let tick = steps_seconds(k, src, since, till?=most.map(fn(sec) { sec * 1000.0 }))

@@ -415,6 +415,19 @@ test("a_result_written_before_its_call_still_answers_that_call", () => {
   assert.equal(activity({ timeline, phase: { phase: "thinking" } }).now.key, "think");
 });
 
+test("activity_says_when_what_it_shows_began_not_the_turn", () => {
+  // The line's clock counts what it says (as the history's latest row does): a request from when it was sent, a call
+  // from its start, a step in flight from its own; nothing said, none (the line counts the turn then).
+  const turn = [{ kind: "user", text: "go", at: "2026-11-18T08:00:00.000Z" }];
+  const sent = Date.parse("2026-11-18T08:43:14.000Z");
+  assert.equal(activity({ timeline: turn, phase: { phase: "requesting", since: sent } }).now.since, sent);
+  const call = { kind: "tool_call", tool: "Bash", text: '{"command":"ls"}', callId: "c", at: "2026-11-18T08:40:00.000Z" };
+  assert.equal(activity({ timeline: [...turn, call], phase: { phase: "working", since: sent } }).now.since, Date.parse(call.at));
+  const step = { id: "s1", step: "thinking", input: "", startedAt: sent + 5000 };
+  assert.equal(activity({ timeline: turn, steps: [step], phase: { phase: "requesting", since: sent } }).now.since, sent + 5000);
+  assert.equal(activity({ timeline: turn }).now.since, undefined);
+});
+
 test("a_post_read_from_the_transcript_stands_where_it_was_made", () => {
   const timeline = [
     { kind: "thinking", text: "plan" },

@@ -1435,6 +1435,8 @@ function pushed(live: J, runtime: string): { liveSteps: { id: string; step: stri
 /**
  * The chat's activity: the execution history's latest, in one line. The call it shows running (this turn's, said as
  * its row says it), else what is in flight (thinking, writing, a reply being written), else where the turn stands.
+ * `since`: when that thing began (the call's start, the step's, the phase's), so the line's clock counts what it says
+ * as the history's latest row does, not the whole turn; absent where nothing says.
  * `stations`: the workspace's stations' names by id, for a call that works on one (station_task).
  */
 export function activity(live: J, stations?: ReadonlyMap<string, string>): J {
@@ -1444,34 +1446,46 @@ export function activity(live: J, stations?: ReadonlyMap<string, string>): J {
   timeline.forEach((e, i) => {
     if (s(e, "kind") === "user") turn = i;
   });
-  let call: [string, string, boolean] | null = null;
-  let replying = false;
+  let call: [string, string, boolean, number | null] | null = null;
+  let replying: number | null | false = false;
+  const startOf = (e: J): number | null => (typeof e?.at === "string" ? epochMs(e.at) : null);
   const known: Known = { stations, tasks: tasksOf(timeline), agents: agentsOf(timeline) };
   for (const st of pair(timeline).steps) {
     const e = timeline[st.call];
     if (st.unwrapped || st.call < turn || st.result !== null || e?.subagent === true) continue;
     const name = toolName(s(e, "tool"));
-    if (name === "chat_post") replying = true;
+    if (name === "chat_post") replying = replying === false ? startOf(e) : replying;
     else if (name !== "chat_state") {
       const important = importantCall(s(e, "tool"), s(e, "text"));
       // Of simultaneous steps, keep the most consequential; among equals, show the latest.
-      if (call === null || important || !call[2]) call = [s(e, "callId") || `call:${st.call}`, doing(s(e, "tool"), s(e, "text"), known), important];
+      if (call === null || important || !call[2]) call = [s(e, "callId") || `call:${st.call}`, doing(s(e, "tool"), s(e, "text"), known), important, startOf(e)];
     }
   }
   const { liveSteps, phase } = pushed(live, "");
   // A reply being written comes as a step before its call is in the transcript.
   const steps: J[] = Array.isArray(live?.steps) ? live.steps : [];
-  if (steps.some((st) => st?.subagent !== true && st?.ended !== true && s(st, "step") === "tool" && toolName(s(st, "tool")) === "chat_post")) replying = true;
+  const started = (st: J): number | null => (Number.isFinite(st?.startedAt) ? (st.startedAt as number) : null);
+  const posting = steps.find((st) => st?.subagent !== true && st?.ended !== true && s(st, "step") === "tool" && toolName(s(st, "tool")) === "chat_post");
+  if (posting && replying === false) replying = started(posting);
   const rate = Number.isInteger(live?.rate) && live.rate > 0 ? (live.rate as number) : 0;
-  const said = (key: string, word: string) => ({ key, text: rate > 0 ? `${t(word)} · ≈ ${rate} token/s` : t(word) });
-  if (call && (!replying || call[2])) return { now: { key: call[0], text: call[1], mono: true, ...(call[2] ? { important: true } : {}) } };
-  if (replying) return { now: { ...said("reply", "core-logic.activity.replying"), important: true } };
+  const said = (key: string, word: string, since: number | null) => ({
+    key,
+    text: rate > 0 ? `${t(word)} · ≈ ${rate} token/s` : t(word),
+    ...(since !== null ? { since } : {}),
+  });
+  const from = (since: number | null) => (since !== null ? { since } : {});
+  if (call && (replying === false || call[2])) return { now: { key: call[0], text: call[1], mono: true, ...(call[2] ? { important: true } : {}), ...from(call[3]) } };
+  if (replying !== false) return { now: { ...said("reply", "core-logic.activity.replying", replying), important: true } };
   const flight = liveSteps.at(-1);
-  if (flight) return { now: flight.step === "text" ? said("write", "core-logic.activity.writing") : said("think", "core-logic.activity.thinking") };
+  if (flight) {
+    const since = started(steps.find((st) => s(st, "id") === flight.id));
+    return { now: flight.step === "text" ? said("write", "core-logic.activity.writing", since) : said("think", "core-logic.activity.thinking", since) };
+  }
   const at = typeof phase?.phase === "string" ? phase.phase : "";
-  if (at === "starting") return { now: said("starting", "core-logic.activity.starting") };
-  if (at === "requesting") return { now: said("requesting", "core-logic.activity.requesting") };
-  if (at === "thinking") return { now: said("think", "core-logic.activity.thinking") };
-  if (at === "responding") return { now: said("write", "core-logic.activity.writing") };
-  return { now: said("busy", "core-logic.activity.busy") };
+  const phaseSince = Number.isFinite(phase?.since) ? (phase!.since as number) : null;
+  if (at === "starting") return { now: said("starting", "core-logic.activity.starting", phaseSince) };
+  if (at === "requesting") return { now: said("requesting", "core-logic.activity.requesting", phaseSince) };
+  if (at === "thinking") return { now: said("think", "core-logic.activity.thinking", phaseSince) };
+  if (at === "responding") return { now: said("write", "core-logic.activity.writing", phaseSince) };
+  return { now: said("busy", "core-logic.activity.busy", null) };
 }
