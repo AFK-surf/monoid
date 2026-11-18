@@ -8,6 +8,7 @@ import { BETA } from "../channel.ts";
 import { PREVIEW_ORIGIN } from "../previewOrigin.ts";
 import { takeShare } from "./share.ts";
 import { putBack, take } from "../login/signin.ts";
+import { bootGoesWithFirstFrame } from "./boot.ts";
 // the app's words' face in a browser: the web's own Inter (its Latin, as the web's pages have it), not the whole face
 // the native hosts carry (apps/mbui src/sfbase/inter_face_js.mbt)
 import interLatin from "@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url";
@@ -164,6 +165,8 @@ const starting = fetchCarried("inter.woff2", interLatin);
 
 // (named by this build: a page of a newer build never runs an older app's script from the browser's cache)
 await load(`/mbui/host.js?b=${BUILT_AT}`);
+// mbui.html's mark while the app comes, taken away with the app's first frame (boot.ts)
+bootGoesWithFirstFrame(host() as never);
 // where a web service's page is shown (cloud/src/preview.ts, the host's site view)
 (host() as { siteFrame?: string } | undefined)!.siteFrame = `${PREVIEW_ORIGIN}/_stillfail/frame`;
 // what /share was given, for the app to take (share.ts), said before the app runs
