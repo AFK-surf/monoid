@@ -3,7 +3,7 @@
 ///|
 fn init {
   let asked =
-    #|{"topic":"vaultItems","workspace":"ws","vault":"plain"}
+    #|{"topic":"vaultItems","workspace":"ws-friends","vault":"plain"}
   let messages =
     #|[[{"path":["items"],"key":["id"],"patch":"item-0","ops":[{"path":["lastUse","command"],"set":"gh pr merge 5244 --squash"},{"path":["lastUse","hosts"],"append":["api.github.com","github.com","uploads.github.com"]},{"path":["lastUse","howText"],"set":"gh pr merge 5244 --squash · 代理"},{"path":["lastUse","mode"],"set":"proxy"}]}]]
   put_changes(asked, "used", messages)

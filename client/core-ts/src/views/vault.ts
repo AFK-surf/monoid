@@ -225,6 +225,13 @@ function lockOf(inner: Inner, ws: string): Checked | CoreError {
   return lock;
 }
 
+/// Whether `ws` keeps the plain library: no security mode there (no lock, or one turned off). A lock that does not check
+/// out is never taken for none: nothing is read from the plain library or written to it then.
+const plainMode = (inner: Inner, ws: string): boolean => {
+  const l = lockOf(inner, ws);
+  return l instanceof CoreError && l.code === "vault_needs_lock";
+};
+
 /// Whether a certificate is of an app device in the lock that is its person's own (lock-check.ts Device `own`: one an
 /// admin put in under their name is given no key, by itself or asked), signed by its own key; whose device it is.
 function certOwner(lock: Checked, cert: BoxCert): string | null {
@@ -944,8 +951,7 @@ const notHere = (r: Request | undefined, device: string | null, box: string | nu
 
 export function askAnswers(inner: Inner, ws: string, asks: { request: string; save: boolean }[]): AskAnswer[] {
   const lock = lockOf(inner, ws);
-  // (only a workspace without security mode keeps the plain library: a lock that does not check out is no way to it)
-  const plain = lock instanceof CoreError && lock.code === "vault_needs_lock";
+  const plain = plainMode(inner, ws);
   if (!able(inner) && !plain) return asks.map(() => ({ answer: "elsewhere" }));
   const h = held(inner, ws);
   const self = lock instanceof CoreError ? null : me(lock, signerOf(inner));
@@ -1164,7 +1170,7 @@ export function vaultsView(inner: Inner, ws: string): J {
   // Security mode on and its lock not checking out here: no plain library and nothing signed (a lock that does not
   // check out is never taken for one turned off). No words of its own: the page's not-signer card, whose press leads
   // to 安全 where the lock's state is said (its message is the core's own English, never a person's words).
-  if (lock instanceof CoreError && lock.code !== "vault_needs_lock") return { ...base, locked: true, ...statusWords([], []) };
+  if (lock instanceof CoreError && !plainMode(inner, ws)) return { ...base, locked: true, ...statusWords([], []) };
   // No security mode: the plain library, one vault on the station keeping most of its items (or the first keeping one).
   if (lock instanceof CoreError) {
     const count = new Map<string, number>();
@@ -1204,9 +1210,10 @@ export function vaultsView(inner: Inner, ws: string): J {
         ...(waitingAs(inner, ws, lock, v) !== null ? { waits: waitsOn(inner, ws, v) } : {}),
       };
     });
-  // (a secret to keep is told only to whom it is for: it may be meant for no vault yet)
+  // (a secret to keep is told only to whom it is for: it may be meant for no vault yet; none of the plain library's, which
+  // safe mode on has none of)
   const requests = Object.values(h.requests)
-    .filter((r) => r.status === "pending" && (r.save !== undefined || (h.vaults[r.vault] !== undefined && !h.vaults[r.vault]!.deleted && sub !== null && h.vaults[r.vault]!.members.includes(sub))))
+    .filter((r) => r.status === "pending" && r.vault !== PLAIN && (r.save !== undefined || (h.vaults[r.vault] !== undefined && !h.vaults[r.vault]!.deleted && sub !== null && h.vaults[r.vault]!.members.includes(sub))))
     .sort((a, b) => a.at - b.at)
     .map((r) => {
       const listing = items(inner, ws, r.vault)[r.item]?.listing;
@@ -1268,7 +1275,7 @@ function plainItemsView(inner: Inner, ws: string): J {
 
 /// The `vaultItems` topic: a vault's items, their names once it is unlocked here (else the listing's, if any).
 export function itemsView(inner: Inner, ws: string, id: string): J {
-  if (id === PLAIN) return plainItemsView(inner, ws);
+  if (id === PLAIN) return plainMode(inner, ws) ? plainItemsView(inner, ws) : { vault: PLAIN, name: "", open: false, items: [] };
   const last = lastUses(inner, ws, id);
   const v = held(inner, ws).vaults[id];
   const lock = lockOf(inner, ws);
@@ -2014,6 +2021,7 @@ class Vaults {
       const scope = SCOPES.find((s) => s === lasts);
       if (!scope) return yield* Effect.fail(CoreError.invalid("lasts: once, hour or chat"));
       if (id === PLAIN) {
+        if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         const at = nowS(inner);
         const told = yield* answersOf(inner, held(inner, self.ws).plainOn.map((s) => self.#station(s, "PUT", "/vault/plain/lasts", { lasts: scope, at })), tookOrRefused);
         if (!told.some((r) => r._tag === "Success")) return yield* fail("vault_no_station", t("core-misc.vault.noStation"));
@@ -2228,6 +2236,7 @@ class Vaults {
       if (asked.r.remove) return yield* self.#remove(asked.r, asked.station);
       if (asked.r.timeout && scope !== "once" && !timeout) return yield* Effect.fail(CoreError.invalid("this request needs an approval with its timeout; update the app"));
       if (asked.r.vault === PLAIN) {
+        if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         const { r, station } = asked;
         const h = held(inner, self.ws);
         if (!allows(h.plain[r.item]?.listing?.lasts ?? h.plainLasts?.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
@@ -2322,6 +2331,7 @@ class Vaults {
       if (given === undefined) return yield* fail("vault_typed_empty", t("core-misc.vault.typedEmpty"));
       if (given instanceof CoreError) return yield* Effect.fail(given);
       if (r.vault === PLAIN) {
+        if (!plainMode(self.#inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         yield* self.#station(station, "POST", "/vault/plain/saves", { request: r.id, ...(given ? { fields: given } : {}) });
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
@@ -2409,6 +2419,7 @@ class Vaults {
       const d = r.describe!;
       if (typeof d.name !== "string" || d.name.trim() === "" || typeof d.about !== "string") return yield* Effect.fail(CoreError.invalid("describe: {name, about}"));
       if (r.vault === PLAIN) {
+        if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         yield* self.#station(station, "POST", "/vault/plain/described", { request: r.id });
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
@@ -2435,6 +2446,7 @@ class Vaults {
     return Effect.gen(function* () {
       const inner = self.#inner;
       if (r.vault === PLAIN) {
+        if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         yield* self.#station(station, "POST", "/vault/plain/removed", { request: r.id });
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
@@ -2455,6 +2467,7 @@ class Vaults {
     return Effect.gen(function* () {
       const asked = yield* self.#request(id);
       if (asked.r.vault === PLAIN) {
+        if (!plainMode(self.#inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         const { r, station } = asked;
         yield* self.#station(station, "POST", "/vault/plain/denials", { request: r.id });
         self.#settled(r.id, { status: "denied" });
@@ -2478,7 +2491,7 @@ class Vaults {
     return Effect.gen(function* () {
       const inner = self.#inner;
       const body = yield* Effect.try({ try: () => ({ plain: plainOf(plain), listing: listingOf(listing) }), catch: asCoreError });
-      if (!(lockOf(inner, self.ws) instanceof CoreError)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
+      if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
       const h = held(inner, self.ws);
       const prev = id ? h.plain[id] : undefined;
       if (id && (!prev || prev.deleted)) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
