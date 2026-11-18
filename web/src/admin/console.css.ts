@@ -32,24 +32,12 @@ export const toolbar = style({
   "@media": { [NARROW]: { flexWrap: "wrap", rowGap: "8px" } },
 });
 export const search = style({
-  position: "relative", flex: "1", minWidth: "0", display: "flex",
+  flex: "1",
   "@media": { [NARROW]: { flexBasis: "100%" } },
 });
-globalStyle(`${search} > svg`, { position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: vars.subtle, pointerEvents: "none" });
-globalStyle(`${search} > input`, { paddingLeft: "36px", borderColor: "transparent", background: vars.neutralBg, textOverflow: "ellipsis" });
 export const sort = style({ flex: "none", display: "flex", alignItems: "center", gap: "6px", fontSize: vars.textUi });
 export const sortBy = style({ whiteSpace: "nowrap" });
-export const filters = style({ display: "flex", gap: "4px", flexWrap: "wrap", margin: "12px 0 16px" });
-export const filter = style({
-  height: "28px", padding: "0 10px", border: "0", borderRadius: "999px", background: "none", color: vars.muted,
-  fontSize: vars.textUi, display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer",
-  transition: `background ${vars.dur} ${vars.easeOut}`,
-  selectors: {
-    "&:hover": { background: vars.hover },
-    "&[data-on]": { background: vars.selected, color: vars.text },
-  },
-});
-globalStyle(`${filter} > span`, { fontSize: vars.textMeta, color: vars.subtle, fontVariantNumeric: "tabular-nums" });
+export const filters = style({ margin: "12px 0 16px" });
 
 export const list = style({ display: "grid", gap: "2px" });
 export const empty = style({ margin: "24px 12px", fontSize: vars.textUi, color: vars.muted });

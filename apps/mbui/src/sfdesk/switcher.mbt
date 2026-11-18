@@ -106,7 +106,8 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
         @sf.style_node(p, fn() { switcher_panel.then(@ui.style(w=Fixed(room()))) }, in_row=true)
         p
         .ground(By(fn() { @sf.panel_ground() }))
-        .shadow(By(fn() { (@sf.dialog_shadow, @sf.dialog_shadow_y, @sf.theme().p.shadow) }))
+        .edge(By(fn() { (1.0, @sf.panel_edge()) }))
+        .shadow(By(fn() { (@sf.dialog_shadow, @sf.dialog_shadow_y, @sf.float_shadow_ink()) }))
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }))
         .offset(By(fn() { (look().dx, look().dy) }))
@@ -117,9 +118,12 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
         // (what it holds as far in as its look says, past its own ground, edge and shadow: Look's `words`, its ground
         // first)
         let words_in = fn() { look().words }
+        // (the search's combobox: its field's box, its list's lines the options: finder_combobox_node)
+        let combo : Ref[@sf.SearchCombo?] = Ref(None)
         p.box(fn(b) {
           @sf.style_node(b, fn() { switcher_search_box })
           b.alpha(By(words_in)) |> ignore
+          combo.val = Some(@sfpages.finder_combobox_node(b, fn() { @sf.t("web-main.switcher.search") }, close))
           let f = @ui.field(
             b,
             @sfpages.finder_field(),
@@ -149,6 +153,7 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
           l.alpha(By(words_in)) |> ignore
           @sfpages.finder_list_node(
             l,
+            combo.val.unwrap(),
             src,
             workspace,
             fn() {
@@ -157,7 +162,6 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
                 None => []
               }
             },
-            close,
             fn() { @sfpages.found_stacked(room() - 2.0 * switcher_edge) },
             idle_chats=true,
             most=fn() {

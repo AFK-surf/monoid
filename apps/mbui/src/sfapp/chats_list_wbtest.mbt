@@ -84,7 +84,7 @@ test "a row's menu at each width and with either hand: held by a finger, right c
 }
 
 ///|
-test "a row's rename ends when its field loses focus, and can be opened again" {
+test "a row's rename ends when its field loses focus, keeping what it holds as a file manager does, and can be opened again" {
   let calls : Array[Made] = []
   let t = lists_tester(calls, 1280.0, 0, false)
   let title = "夜里的构建又失败了"
@@ -102,9 +102,9 @@ test "a row's rename ends when its field loses focus, and can be opened again" {
   t.ctx().blur()
   t.draw()
   assert_false(@sfpages.renaming())
-  assert_false(t.semantics().iter().any(fn(s) { s.value.contains("临时草稿") }))
-  assert_true(t.find(title) is Some(_))
-  assert_eq(named(calls, "chat.rename").length(), 0)
+  // (its whole title picked as it came, so what was typed took its place; left, that is kept: @sf.inline_rename_node)
+  assert_eq(named(calls, "chat.rename").length(), 1)
+  assert_eq(text(Some(named(calls, "chat.rename")[0].params), "title"), "临时草稿")
   let (x, y) = t.find(title).unwrap()
   t.right_click(x, y)
   t.tap_text("重命名")
@@ -118,13 +118,13 @@ test "a row's rename ends when its field loses focus, and can be opened again" {
   t.tap_text("重命名")
   t.type_text("保存")
   t.enter()
-  assert_eq(named(calls, "chat.rename").length(), 1)
-  assert_eq(text(Some(named(calls, "chat.rename")[0].params), "title"), title + "保存")
+  assert_eq(named(calls, "chat.rename").length(), 2)
+  assert_eq(text(Some(named(calls, "chat.rename")[1].params), "title"), "保存")
   assert_false(@sfpages.renaming())
 }
 
 ///|
-test "clicking another chat leaves an unfinished rename and opens that chat" {
+test "clicking another chat ends an unfinished rename, keeping it, and opens that chat" {
   let calls : Array[Made] = []
   let t = lists_tester(calls, 1280.0, 0, false)
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
@@ -138,7 +138,8 @@ test "clicking another chat leaves an unfinished rename and opens that chat" {
   t.release(next_x, next_y)
   assert_false(t.semantics().iter().any(fn(s) { s.value.contains("临时草稿") }))
   assert_eq(open_title(), "首页的列表改成按天分组")
-  assert_eq(named(calls, "chat.rename").length(), 0)
+  assert_eq(named(calls, "chat.rename").length(), 1)
+  assert_eq(text(Some(named(calls, "chat.rename")[0].params), "title"), "临时草稿")
 }
 
 ///|
@@ -361,11 +362,12 @@ test "a mouse's 重命名: the row's title a field in its place, focused; Enter 
     assert_true(t.find("重命名对话") is None, msg=at)
     let (active, _, _, _) = t.ime()
     assert_true(active, msg=at)
-    t.type_text("（已修）")
+    // (its whole title picked: what is typed takes its place)
+    t.type_text("夜里的构建已修好")
     t.key(@ui.key_code_enter)
     let asked = named(calls, "chat.rename")
     assert_eq(asked.length(), 1, msg=at)
-    assert_eq(text(Some(asked[0].params), "title"), "夜里的构建又失败了（已修）", msg=at)
+    assert_eq(text(Some(asked[0].params), "title"), "夜里的构建已修好", msg=at)
     // again, let be with Esc: nothing asked
     let (x, y) = t.find("夜里的构建又失败了").unwrap()
     t.right_click(x, y)

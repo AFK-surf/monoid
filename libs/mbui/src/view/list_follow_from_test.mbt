@@ -25,6 +25,10 @@ let fw_foot : Double = 30.0
 let fw_key : Int = 70
 
 ///|
+/// Another key as tall as fw_key, come after it.
+let fw_key2 : Int = 73
+
+///|
 let fw_line : Int = 50
 
 ///|
@@ -46,7 +50,7 @@ priv struct FwCase {
 ///|
 /// A page's list 300 by 400 under a cover `cover` of keys 0 to 9 (a head line of 16 over words of 24, marked where what
 /// is read starts), and fw_line (44) under them where `line`; following its foot, its pinned foot fw_foot tall. fw_key's
-/// words `tall` (a signal), marked; 71 and 72 as the others. Drawn once, at 0.
+/// and fw_key2's words `tall` (a signal), marked; 71 and 72 as the others. Drawn once, at 0.
 fn fw_case(tall : Double, line? : Bool = false, cover? : Double = fw_cover) -> FwCase {
   let scroll = @view.Scroll::list()
   let place : @view.ListPlace[Int] = @view.ListPlace::new()
@@ -75,7 +79,7 @@ fn fw_case(tall : Double, line? : Bool = false, cover? : Double = fw_cover) -> F
           }
           b.box(fn(h) { h.height(Is(Some(fw_head))).words(Is("名\{k}")) |> ignore }) |> ignore
           b.box(fn(w) {
-            if k == fw_key {
+            if k == fw_key || k == fw_key2 {
               w.height(By(fn() { Some(tall.get()) })) |> ignore
             } else {
               w.height(Is(Some(24.0))) |> ignore
@@ -306,5 +310,131 @@ test "follow_from: held, its key gone: the limit with it, at its foot, the next 
     let at2 = at + fw_after_ms + 100.0
     let next = c.walk(at2, fn() { c.keys.set(fw_keys([71])) }, rate, from=at + fw_after_ms)
     assert_true(next[next.length() - 1].2 < 0.01, msg="at \{rate}: the next, off its foot by \{next[next.length() - 1].2}")
+  }
+}
+
+///|
+/// Where fw_key2's top is drawn (its head line's words; rc_none where none) and how far the list is off its foot.
+fn FwCase::look2(self : FwCase) -> (Double, Double) {
+  (rc_y(self.tree, "名\{fw_key2}"), self.off_foot())
+}
+
+///|
+test "follow_from: held by a key's top, not moved, it follows its foot still; the page following the next come, back to its foot, held by that one's top; one that fits, or none, at its foot" {
+  for rate in rc_rates {
+    let (c, _) = fw_held(rate)
+    assert_true(c.scroll.follows_now() && !c.scroll.at_foot_now(), msg="at \{rate}: held, following its foot as told")
+    // the next tall one come, the page following it from its top as the old list did (following_row)
+    let at = rc_at + fw_after_ms + 100.0
+    let edge = fw_cover + fw_margin
+    let looks = []
+    let mut t = at
+    while t <= at + fw_after_ms {
+      looks.push(t)
+      t = t + rc_look_ms
+    }
+    let next = rc_walk(
+      c.tree,
+      [
+        (
+          at,
+          fn() {
+            c.keys.set(fw_keys([fw_key, fw_key2]))
+            c.place.follow_from(Some(fw_key2), margin=fw_margin)
+          },
+        ),
+      ],
+      looks,
+      rate,
+      from=rc_at + fw_after_ms,
+      fn() { c.look2() },
+    )
+    for i, y in next {
+      assert_true(y.0 == rc_none || y.0 >= edge - 0.01, msg="at \{rate}, look \{i}: its top \{y.0} over \{edge}")
+    }
+    let (top, off) = next[next.length() - 1]
+    assert_true((top - edge).abs() < 0.01 && off > 1.0, msg="at \{rate}: the next held at \{top}, off its foot by \{off}")
+    assert_true(c.scroll.follows_now(), msg="at \{rate}: held by the next, following its foot as told")
+    // one that fits come, followed from its top: at its foot
+    let at2 = at + fw_after_ms + 100.0
+    let fits = c.walk(at2, fn() {
+      c.keys.set(fw_keys([fw_key, fw_key2, 71]))
+      c.place.follow_from(Some(71), margin=fw_margin)
+    }, rate, from=at + fw_after_ms)
+    assert_true(fits[fits.length() - 1].2 < 0.01, msg="at \{rate}: one that fits, off its foot by \{fits[fits.length() - 1].2}")
+    assert_true(c.scroll.at_foot_now(), msg="at \{rate}: one that fits, at its foot as told")
+  }
+}
+
+///|
+test "follow_from: held by a key's top, the page following none (the viewer's own come): at its foot, following it" {
+  for rate in rc_rates {
+    let (c, _) = fw_held(rate)
+    let at = rc_at + fw_after_ms + 100.0
+    let own = c.walk(at, fn() {
+      c.keys.set(fw_keys([fw_key, 71]))
+      c.place.follow_from(None)
+    }, rate, from=rc_at + fw_after_ms)
+    assert_true(own[own.length() - 1].2 < 0.01, msg="at \{rate}: off its foot by \{own[own.length() - 1].2}")
+    assert_true(c.scroll.at_foot_now() && c.scroll.follows_now(), msg="at \{rate}: at its foot as told")
+  }
+}
+
+///|
+test "follow_from: held by a key's top, moved by the reader: it follows its foot no more" {
+  for rate in rc_rates {
+    let (c, _) = fw_held(rate)
+    let at = rc_at + fw_after_ms + 100.0
+    c.walk(at, fn() { c.scroll.put(0.0) }, rate, from=rc_at + fw_after_ms) |> ignore
+    assert_true(!c.scroll.follows_now(), msg="at \{rate}: moved, following its foot as told")
+    // the next come, the page asking nothing (it follows no foot): nothing that shows moves
+    let at2 = at + fw_after_ms + 100.0
+    let was = c.off_foot()
+    let after = c.walk(at2, fn() { c.keys.set(fw_keys([fw_key, 71])) }, rate, from=at + fw_after_ms)
+    assert_true(after[after.length() - 1].2 > was, msg="at \{rate}: moved to its foot, \{was} → \{after[after.length() - 1].2}")
+  }
+}
+
+///|
+test "follow_from: said as it glides back to its foot (to_end), the key come then tall: the glide ends where that key's top is held, never over it; following its foot there" {
+  for rate in rc_rates {
+    let (c, _) = fw_held(rate)
+    let at = rc_at + fw_after_ms + 100.0
+    c.walk(at, fn() { c.scroll.put(0.0) }, rate, from=rc_at + fw_after_ms) |> ignore
+    let at2 = at + fw_after_ms + 100.0
+    let edge = fw_cover + fw_margin
+    let looks = []
+    let mut t = at2
+    while t <= at2 + fw_after_ms {
+      looks.push(t)
+      t = t + rc_look_ms
+    }
+    let ys = rc_walk(
+      c.tree,
+      [
+        (at2, fn() { c.place.to_end() }),
+        (
+          at2 + 60.0,
+          fn() {
+            c.keys.set(fw_keys([fw_key, fw_key2]))
+            c.place.follow_from(Some(fw_key2), margin=fw_margin)
+          },
+        ),
+      ],
+      looks,
+      rate,
+      from=at + fw_after_ms,
+      fn() { (c.look2(), c.scroll.follows_now()) },
+    )
+    for i, y in ys {
+      let ((top, _), follows) = y
+      assert_true(top == rc_none || top >= edge - 0.01, msg="at \{rate}, look \{i}: its top \{top} over \{edge}")
+      if looks[i] >= at2 + 60.0 {
+        assert_true(follows, msg="at \{rate}, look \{i}: on its way, following its foot as told")
+      }
+    }
+    let ((top, off), _) = ys[ys.length() - 1]
+    assert_true((top - edge).abs() < 0.01 && off > 1.0, msg="at \{rate}: at rest its top \{top}, off its foot by \{off}")
+    assert_true(c.scroll.follows_now(), msg="at \{rate}: held there, following its foot as told")
   }
 }

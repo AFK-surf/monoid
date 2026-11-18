@@ -9,20 +9,6 @@ fn whole_long_words(t : @ui.Tester, fragment : String) -> Unit raise {
 }
 
 ///|
-test "a long model name can be read when choosing a model" {
-  let t = screen_in("settings-run-models", corner_windows[1], "zh", said=true)
-  whole_long_words(t, "Opus 5.5")
-}
-
-///|
-test "a choice keeps the badges beside its short name" {
-  for win in [corner_windows[1], corner_windows[4]] {
-    let t = screen_in("settings-run-accounts", win, "zh")
-    assert_eq(t.corner_faults(), [], msg=win.0)
-  }
-}
-
-///|
 test "a long station name can be read at the top of its sheet" {
   let t = screen_in("chat-peek", corner_windows[0], "zh", said=true)
   whole_long_words(t, "Willow — 后面")
@@ -40,14 +26,6 @@ test "a transfer's long name remains a compact one-line summary" {
 test "a station card's long name remains a one-line summary" {
   let t = screen_in("settings-stations", corner_windows[0], "zh", said=true)
   let lines = t.lines_of("Willow — 后面")
-  assert_eq(lines.length(), 1, msg="\{Repr(lines)}")
-  assert_true(lines[0].has_suffix("…"), msg="\{Repr(lines)}")
-}
-
-///|
-test "a long selected model remains a one-line setting" {
-  let t = screen_in("settings-run", corner_windows[1], "zh", said=true)
-  let lines = t.lines_of("Opus 5.5 — 后面")
   assert_eq(lines.length(), 1, msg="\{Repr(lines)}")
   assert_true(lines[0].has_suffix("…"), msg="\{Repr(lines)}")
 }

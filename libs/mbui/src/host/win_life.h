@@ -297,6 +297,55 @@ void mb_host_set_dark(int32_t dark) {
   title_dark();
 }
 
+// ---- where its window was left ----
+
+// An app's window opens where it was last left, its size and place and whether it was maximized (the Mac's frame
+// autosave, the Windows way): its placement kept in HKCU\Software\<the app's id> as the person leaves it (a move or
+// a resize let go, the window put away, the app quitting) and put back before it is first shown, unless no screen
+// shows it now. A run that stands for no one looking at it (scripted, driven, recorded, a bench's, one taking pictures
+// or told its size) and a window of its own (MBUI_WINDOW) keep the size they are given.
+static int place_kept(void) {
+  return *app_id() && !window_run() && !script && !shot_dir && !getenv("MBUI_WIN") && !getenv("MBUI_DRIVE") &&
+         !getenv("MBUI_DRIVE_B64") && !getenv("MBUI_BENCH") && !getenv("MBUI_RECORD");
+}
+
+static void place_key(WCHAR *out, size_t cap) {
+  _snwprintf(out, cap, L"Software\\%ls", app_id());
+  out[cap - 1] = 0;
+}
+
+static void place_keep(void) {
+  if (!hwnd || !place_kept()) return;
+  WINDOWPLACEMENT p = {sizeof p};
+  if (!GetWindowPlacement(hwnd, &p)) return;
+  WCHAR key[256];
+  place_key(key, 256);
+  RegSetKeyValueW(HKEY_CURRENT_USER, key, L"WindowPlacement", REG_BINARY, &p, sizeof p);
+}
+
+// The kept placement put on the window, still hidden: how to show it (SW_SHOW where none was kept).
+static int place_put_back(void) {
+  if (!hwnd || !place_kept()) return SW_SHOW;
+  WINDOWPLACEMENT p;
+  DWORD n = sizeof p;
+  WCHAR key[256];
+  place_key(key, 256);
+  if (RegGetValueW(HKEY_CURRENT_USER, key, L"WindowPlacement", RRF_RT_REG_BINARY, NULL, &p, &n) != ERROR_SUCCESS ||
+      n != sizeof p || p.length != sizeof p)
+    return SW_SHOW;
+  RECT *r = &p.rcNormalPosition;
+  if (r->right - r->left < 100 || r->bottom - r->top < 100 || !MonitorFromRect(r, MONITOR_DEFAULTTONULL))
+    return SW_SHOW;
+  // (left minimized: opened as it was before, maximized where it was)
+  int max = p.showCmd == SW_SHOWMAXIMIZED || (p.showCmd == SW_SHOWMINIMIZED && (p.flags & WPF_RESTORETOMAXIMIZED));
+  p.showCmd = SW_HIDE;
+  p.flags = 0;
+  SetWindowPlacement(hwnd, &p);
+  // (again: the first may have moved it onto a screen of another scale, whose WM_DPICHANGED sized it by that scale)
+  SetWindowPlacement(hwnd, &p);
+  return max ? SW_SHOWMAXIMIZED : SW_SHOW;
+}
+
 // ---- put away, brought back ----
 
 static ULONGLONG put_away_at;  // GetTickCount64's as the window was closed (0: it is out)
@@ -325,6 +374,7 @@ static int tray_on;
 static void wins_close_beside(void);
 static int put_away(void) {
   if (!*app_id() || window_run()) return 0;
+  place_keep();
   // (the windows beside it close with it, as the Mac's)
   wins_close_beside();
   if (!tray_on) {
@@ -673,6 +723,7 @@ static void tray_gone(void) {
 
 // the app quits: its icon taken from the notification area first (else it lingers there until pointed at)
 static void quit(void) {
+  place_keep();
   tray_gone();
   exit(0);
 }

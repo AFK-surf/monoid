@@ -1253,6 +1253,21 @@
   "web-pages.security.devicesWhich": "最近 30 天内登录过",
   "web-pages.security.lead": "谁可以访问此 workspace 的 station 并在其上执行命令",
   "web-pages.security.members": "成员",
+  "web-pages.security.myDevices": "我的设备",
+  "web-pages.security.otherMembers": "其他成员",
+  "web-pages.security.memberTrustedDevices": {
+    "one": "{n} 台受信任设备",
+    "other": "{n} 台受信任设备"
+  },
+  "web-pages.security.memberDevices": {
+    "one": "{n} 台设备",
+    "other": "{n} 台设备"
+  },
+  "web-pages.security.memberWebDevices": {
+    "one": "{n} 个网页版",
+    "other": "{n} 个网页版"
+  },
+  "web-pages.security.memberNoDevices": "暂无设备",
   "web-pages.security.needsAppTitle": "请先安装客户端",
   "web-pages.security.newDeviceOf": "{name}的新设备",
   "web-pages.security.newDevices": "新设备登录后需经批准",
@@ -1471,6 +1486,7 @@
   "web-pages.screen.someone": "他人",
   "web-pages.screen.takeOver": "接管",
   "web-pages.screen.takeOverTip": "暂停 {names}，由你控制",
+  "web-pages.screen.heldBy": "{who} 正在操作此画面，点「接管」后可操作",
   "web-pages.screen.copiedText": "远端已复制：",
   "web-pages.screen.copiedImage": "远端复制了一张图片",
   "web-pages.screen.copyHere": "复制到本机",
@@ -2215,5 +2231,29 @@
   "web-pages.experimental.farviewNative.title": "Farview 原生标签页渲染",
   "web-pages.experimental.farviewNative.description": "浏览器标签页由本机直接排版绘制，滚动和输入即时响应；遇到显示异常可随时关掉切回截图画面",
   "web-pages.experimental.board.title": "对话列表看板视图",
-  "web-pages.experimental.board.description": "在主页按状态、机器或成员分列查看对话并管理待派发事项；关闭后自动退回普通对话列表"
+  "web-pages.experimental.board.description": "在主页按状态、机器或成员分列查看对话并管理待派发事项；关闭后自动退回普通对话列表",
+  "web-pages.rowMenu.open": "打开",
+  "web-pages.rowMenu.openChat": "打开对话",
+  "web-pages.rowMenu.copyName": "复制名称",
+  "web-pages.rowMenu.copyAddress": "复制地址",
+  "web-pages.rowMenu.copied": "已复制「{name}」",
+  "web-pages.rowMenu.restore": "恢复对话",
+  "web-pages.cloud.connect.title": "把机器加入工作区",
+  "web-pages.cloud.connect.lead": "{host} 请求把「{machine}」作为 station 加入你选的工作区。只有你刚在那里点了连接，才继续。",
+  "web-pages.cloud.connect.aMachine": "一台机器",
+  "web-pages.cloud.connect.workspace": "加入哪个工作区",
+  "web-pages.cloud.connect.name": "station 名称",
+  "web-pages.cloud.connect.note": "点「加入」后，加入用的命令会交给 {host}，机器上的 station 随即重启并加入。命令一小时内有效，只能用一次。",
+  "web-pages.cloud.connect.add": "加入",
+  "web-pages.cloud.connect.adding": "正在加入",
+  "web-pages.cloud.connect.cancel": "取消",
+  "web-pages.cloud.connect.handing": "正在回到 {host}",
+  "web-pages.cloud.connect.reading": "正在读取你的工作区",
+  "web-pages.cloud.connect.failed": "没有加入：{error}。可以再点一次「加入」。",
+  "web-pages.cloud.connect.noCommand": "没有拿到加入用的命令",
+  "web-pages.cloud.connect.noWorkspace": "没有能添加 station 的工作区",
+  "web-pages.cloud.connect.noWorkspaceBody": "只有工作区的所有者或管理员能添加 station。在 {name} 里新建一个工作区，或请所有者把你设为管理员，再回到 console 点一次连接。",
+  "web-pages.cloud.connect.refused": "没有连接",
+  "web-pages.cloud.connect.refusedBody": "这个链接不是从 {name} 认可的 console 发起的，没有发送任何东西。请回到你的 console，在机器页面重新点连接。",
+  "web-pages.cloud.connect.signInBody": "登录后会回到这一页，选好工作区就能把机器加进去。"
 }

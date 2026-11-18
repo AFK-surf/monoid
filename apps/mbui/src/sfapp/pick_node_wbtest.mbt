@@ -1,7 +1,8 @@
 // A pick of the presenters' (@sf.pick) on 中屏 and 大屏, beside what opened it: short (or with no search) a menu of
 // its choices, the one chosen checked, what each is under its words and its value at its row's end; long, a panel with
-// a search over its list, the words typed finding by label, note and value, Enter picking the first found, none found
-// said so, the list scrolling past its most. On 小屏 a sheet still. What each does, as the old presenter has it
+// a search over its list, the words typed finding by label, note and value, ↓ ↑ moving what is active among what is
+// found (passing those not to be chosen), Enter picking it (the first found where the keys have not moved), none found
+// said so; Escape clearing what is typed, then closing it, the list scrolling past its most. On 小屏 a sheet still. What each does, as the old presenter has it
 // (presenters.mbt), held whatever draws it.
 
 ///|
@@ -71,12 +72,12 @@ test "pick, long, 大屏 keyboard and mouse: its search has the focus; 第11 typ
   let chosen = Ref("")
   let t = pick_at_point(@sf.pick_search_from + 4, chosen)
   println("PICKSAID long \{pick_said(t)} field \{t.field_words()}")
-  // (a dialog titled so, its search with the focus, each choice a radio called by its words and its note, the chosen one on)
+  // (a dialog titled so, its search with the focus, each choice an option called by its words and its note)
   let shape = (
     t.query(Dialog, label="选一个") is Some(_),
     t.focused().map(fn(s) { (s.role is TextField, s.label) }),
-    t.all(MenuItemRadio).filter(fn(s) { s.label.has_prefix("第") }).length(),
-    t.query(MenuItemRadio, label="第1项 最近用过") is Some(_),
+    t.all(Option).filter(fn(s) { s.label.has_prefix("第") }).length(),
+    t.query(Option, label="第1项 最近用过") is Some(_),
   )
   let all = (t.find("第2项") is Some(_), t.find("第11项") is Some(_))
   t.type_text("第11")
@@ -115,12 +116,12 @@ test "pick, long, 大屏 keyboard and mouse: 30 choices, its list no taller than
   let chosen = Ref("")
   let t = pick_at_point(30, chosen)
   let (_, py, _, ph) = t.get(Dialog, label="选一个").rect
-  let (_, y1, _, _) = t.get(MenuItemRadio, label="第1项 最近用过").rect
+  let (_, y1, _, _) = t.get(Option, label="第1项 最近用过").rect
   let field = t.find("搜索")
   let (wx, wy) = (680.0, y1 + 120.0)
   t.wheel(wx, wy, 200.0)
   t.run_for(@ui.move_most_ms)
-  let (_, y1b, _, _) = t.get(MenuItemRadio, label="第1项 最近用过").rect
+  let (_, y1b, _, _) = t.get(Option, label="第1项 最近用过").rect
   println("PICKSAID scroll panel \{py} \{ph} row1 \{y1} -> \{y1b} field \{Repr(field)} -> \{Repr(t.find("搜索"))}")
   assert_eq((ph <= @sf.pick_list_most + 80.0, y1b < y1, t.find("搜索") == field), (true, true, true))
 }
@@ -225,7 +226,7 @@ test "pick, long, 大屏 keyboard and mouse: 9 found in a window just tall enoug
       t.resize(1280.0, 464.0)
       t.run_for(@ui.move_most_ms)
     }
-    (t.get(Dialog, label="选一个").rect, t.get(MenuItemRadio, label="甲9").rect)
+    (t.get(Dialog, label="选一个").rect, t.get(Option, label="甲9").rect)
   }
   let (whole, grown) = (at(false), at(true))
   assert_eq(grown, whole)
@@ -244,7 +245,7 @@ test "pick, long, 大屏 keyboard and mouse: its last row whole at its list's fo
   let chosen = Ref("")
   let t = open(8, chosen)
   let (dx, dy, dw, dh) = t.get(Dialog, label="选一个").rect
-  let (_, ry, _, rh) = t.get(MenuItemRadio, label="第8项").rect
+  let (_, ry, _, rh) = t.get(Option, label="第8项").rect
   let list_foot = dy + dh - @sf.panel_pad
   let fits = (ry + rh - list_foot).abs() < 0.5
   t.tap(dx + dw / 2.0, list_foot - 1.0)
@@ -327,4 +328,57 @@ test "pick, long, 大屏 keyboard and mouse: words typed in its search, the lang
     (after.map(fn(s) { (s.role is TextField, s.label, s.id == before.id) }), words, back),
     (Some((true, "Search", true)), "第1", Some("搜索")),
   )
+}
+
+///|
+/// 大屏, keyboard and mouse, chat A open; a long pick of `n` (none chosen; c2 not to be chosen) presented at a point,
+/// come in; what was chosen.
+fn pick_with_off(n : Int, chosen : Ref[String]) -> @ui.Tester {
+  let t = menu_tester(1280.0, 800.0, 0)
+  let choices = Array::makei(n, fn(i) { @sf.choice("c\{i + 1}", "第\{i + 1}项", disabled=i == 1) })
+  @sf.pick("选一个", choices, "", fn(k) { chosen.val = k }, from=@sf.at_point(600.0, 300.0))
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "pick, long, 大屏 keyboard and mouse: the keys in its search; ↓ passes 第2项 (not to be chosen) to 第3项, the active one; Enter: c3 chosen, closed" {
+  let chosen = Ref("")
+  let t = pick_with_off(@sf.pick_search_from + 4, chosen)
+  let in_search = t.focused().map(fn(s) { s.role is TextField })
+  let first = t.query(Combobox, label="选一个") is Some(_)
+  t.key(@ui.key_code_down)
+  t.frame()
+  // (still in its search: the keys moved what is active, not the focus)
+  let still = t.focused().map(fn(s) { s.role is TextField })
+  t.key(@ui.key_code_enter)
+  t.frame()
+  assert_eq((in_search, first, still, chosen.val, @sf.presenting()), (Some(true), true, Some(true), "c3", false))
+}
+
+///|
+test "pick, long, 大屏 keyboard and mouse: ↑ from the first goes round to the last; ↓ back to the first; Enter: c1" {
+  let chosen = Ref("")
+  let t = pick_with_off(@sf.pick_search_from + 4, chosen)
+  t.key(@ui.key_code_up)
+  t.frame()
+  t.key(@ui.key_code_down)
+  t.frame()
+  t.key(@ui.key_code_enter)
+  t.frame()
+  assert_eq((chosen.val, @sf.presenting()), ("c1", false))
+}
+
+///|
+test "pick, long, 大屏 keyboard and mouse: 第1 typed, Escape: what is typed cleared, it still open; Escape again: closed, none chosen" {
+  let chosen = Ref("")
+  let t = pick_with_off(@sf.pick_search_from + 4, chosen)
+  t.type_text("第1")
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  let cleared = (t.field_words(), @sf.presenting(), t.find("第5项") is Some(_))
+  t.key(@ui.key_escape)
+  t.frame()
+  assert_eq((cleared, chosen.val, @sf.presenting()), (("", true, true), "", false))
 }

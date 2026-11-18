@@ -11,10 +11,10 @@ import { Effect } from "effect";
 import { CoreError } from "../src/error.ts";
 import { t } from "../src/i18n.ts";
 import { type Entry, entryHash, signedBytes } from "../src/lock.ts";
-import { PersonalLock } from "../src/personal-lock.ts";
+import { PersonalLock, type Statements } from "../src/personal-lock.ts";
 import { Runner } from "../src/runtime.ts";
 import { FakeHost } from "../src/testing.ts";
-import { hex } from "../src/util.ts";
+import { hex, utf8 } from "../src/util.ts";
 
 const SUB = "s1";
 const STATION = "ws/st";
@@ -63,8 +63,10 @@ function device(name: string, at: ReturnType<typeof stations>) {
   host.secureAsk = () => Effect.sync(() => void asked.n++);
   const runner = new Runner(host.time.clock);
   const down = () => Effect.fail(new CoreError("network", "the cloud is down"));
-  const lock = new PersonalLock({ host, runner, cloud: down, device: () => Effect.succeed(id), label: () => name, changed: () => {}, stations: at.env });
-  return { host, runner, lock, id, asked };
+  // (the key it signs workspaces' things with: none said at first, as an app from before signers were said there)
+  const signKey = { v: null as string | null };
+  const lock = new PersonalLock({ host, runner, cloud: down, device: () => Effect.succeed(id), label: () => name, changed: () => {}, stations: at.env, signKey: () => signKey.v });
+  return { host, runner, lock, id, asked, signKey };
 }
 
 function signed(chain: Entry[], by: string, kind: string, body: unknown, at = 1_800_000_000): Entry {
@@ -220,4 +222,66 @@ test("lost (X puts c on), then c named otherwise by another device of the person
   // 知道了 takes it away.
   w.a.lock.dismissPending(SUB, shown[0]!.item.id);
   assert.deepEqual(w.a.lock.pendingShown(SUB), []);
+});
+
+/// A workspace's statement as `lock.joinStation` makes one (a station taken in), made after `after` (whose heads it
+/// was made after are kept in `heads`), shown as the person's act.
+function protecting(heads: string[]): Statements {
+  return (after) => {
+    heads.push(entryHash(after.at(-1)!));
+    return { bodies: [{ ws: "ws", kind: "station", key: "aa".repeat(32), prev: null, salt: heads.length.toString(16).padStart(32, "0") }], shown: [{ act: "protectStation", name: "a" }] };
+  };
+}
+
+test("a workspace's statements refused at a station as at odds (another device of the person's moved their lock on meanwhile, a 409): read, made again and signed after the head with the seed in hand, taken; the person asked once, nothing of the refused kept as said", async () => {
+  const w = await setUp();
+  const Q = signed([w.g, w.P, w.X], "a", "device", other("77"), 1_800_000_500);
+  w.st.say.refuse = true;
+  w.st.say.meanwhile = () => { w.st.say.follow = false; w.st.say.chains = [[w.g, w.P, w.X, Q]]; };
+  const heads: string[] = [];
+  const before = { asked: w.a.asked.n, brought: w.st.brought.length };
+  const out = await w.a.runner.run(Effect.result(w.a.lock.say(SUB, "ws", protecting(heads), "why")));
+  assert.ok(out._tag === "Success" && out.success === null, JSON.stringify(out));
+  assert.equal(w.a.asked.n - before.asked, 1, "asked once, for the call");
+  assert.equal(w.st.brought.length - before.brought, 2, "brought, refused, brought again");
+  assert.deepEqual(heads, [entryHash(w.X), entryHash(Q)], "made after the head pinned, then after the one the stations said");
+  const pinned = w.a.lock.entries(SUB);
+  assert.deepEqual(pinned.slice(0, 4).map(entryHash), [w.g, w.P, w.X, Q].map(entryHash), "the stations' head");
+  assert.deepEqual(pinned.slice(4).map((e) => [e.kind, e.prev]), [["ws", entryHash(Q)]], "the statement once, after it");
+  assert.deepEqual(w.a.lock.pendingShown(SUB), [], "nothing pending nor failed");
+  const stated = JSON.parse(new TextDecoder().decode(w.a.host.storage.get(`personal-lock-stated-${hex(utf8(SUB))}`)!)) as [string, unknown][];
+  assert.equal(stated.length, 1, "only the statement taken kept as said");
+  // Brought again with nothing moved meanwhile: refused as it was, nothing signed again.
+  const v = await setUp();
+  v.st.say.refuse = true;
+  const n = v.st.brought.length;
+  const refused = await v.a.runner.run(Effect.result(v.a.lock.say(SUB, "ws", protecting([]), "why")));
+  assert.ok(refused._tag === "Failure" && refused.failure.code === "lock_refused", JSON.stringify(refused));
+  assert.equal(v.st.brought.length - n, 1, "not signed again");
+  assert.equal(v.a.host.storage.get(`personal-lock-stated-${hex(utf8(SUB))}`), undefined, "the refused not kept as said");
+});
+
+test("lost with no seed in hand, then the person verifies this device (confirmSigner) or signs for a rig (signRig): the seed in hand signs again what lost its place, once, nobody asked again", async () => {
+  for (const act of ["rig", "confirm"] as const) {
+    const w = await setUp();
+    w.st.say.follow = false;
+    w.st.say.chains = [[w.g, w.P, w.Y, w.Z]];
+    await w.a.runner.run(w.a.lock.refresh(SUB));
+    await w.a.host.time.pass(1_000);
+    assert.equal(w.a.lock.entries(SUB).filter(isPut("33")).length, 0, `${act}: X aside`);
+    w.st.say.follow = true;
+    // (its signer known only now: not said on its person's lock, as an app from before; 验证 offered)
+    if (act === "confirm") {
+      w.a.signKey.v = `ed25519:${"5e".repeat(32)}`;
+      assert.equal(w.a.lock.signerUnsaid(SUB), true);
+    }
+    const before = w.a.asked.n;
+    if (act === "rig") await w.a.runner.run(w.a.lock.signRig(SUB, "settings", { v: 1 }, "why"));
+    else await w.a.runner.run(Effect.result(w.a.lock.confirmSigner(SUB, "why")));
+    const pinned = w.a.lock.entries(SUB);
+    assert.equal(pinned.filter(isPut("33")).length, 1, `${act}: c on the chain again`);
+    assert.equal(pinned.slice(4).filter(isPut("33"))[0]?.prev, entryHash(w.Z), `${act}: after the head`);
+    assert.equal(w.a.asked.n - before, 1, `${act}: asked once`);
+    if (act === "confirm") assert.equal(w.a.lock.signerUnsaid(SUB), false, "its signer said");
+  }
 });

@@ -177,6 +177,77 @@ pub fn rippled_node(
 }
 
 ///|
+/// A search whose list is a page's list of its own (⌘K's, the search page's): mbui's headless combobox
+/// (`@headless.combobox`) in the node that holds its field, its options made by `ripple_option_node` in that list's
+/// rows, its list by `SearchCombo::list_node`.
+pub struct SearchCombo {
+  priv cb : @headless.Combobox[String]
+}
+
+///|
+/// Node `v` (what holds a search's field) the combobox of that search (`@headless.combobox` in `v` itself), called
+/// `label`: `keys` its options shown now, in order, `active` the one the keys are on (the caller's) and `activate` told
+/// one to move them to, by the keys or a press; `choose` told the one chosen (a press on one, just made active; Enter on
+/// the active one where the keymap gives Enter to it: `combobox_bindings`); `chosen` the one read out selected; `moved`
+/// told the one the keys made active (what the list brings into sight). ↓ and ↑ go no further than the ends. Its
+/// combobox.
+#callsite(autofill(loc))
+pub fn search_combo_node(
+  v : @view.View,
+  label : () -> String,
+  keys : () -> Array[String],
+  active : () -> String?,
+  activate : (String?) -> Unit,
+  choose : (String) -> Unit,
+  chosen? : () -> String? = fn() { None },
+  moved? : (String) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> SearchCombo {
+  let made : Ref[@headless.Combobox[String]?] = Ref(None)
+  @headless.combobox(
+    v,
+    label,
+    keys,
+    active,
+    activate,
+    choose,
+    fn(_, cb) { made.val = Some(cb) },
+    chosen~,
+    wraps=false,
+    moved~,
+    in_node=true,
+    made_for=loc,
+  )
+  |> ignore
+  { cb: made.val.unwrap() }
+}
+
+///|
+/// Node `l` (the search's list, what scrolls its lines) the combobox's listbox, called as the combobox is.
+pub fn SearchCombo::list_node(self : SearchCombo, l : @view.View) -> Unit {
+  self.cb.listbox(l, fn(_) {  }, in_node=true) |> ignore
+}
+
+///|
+/// Node `v` an option of search `combo` (`@headless.Combobox::option` in its node, read out an option called
+/// `label()`, selected as the combobox says; taking no focus), its key `key()`: rippling round its `corner` as a finger
+/// or the pointer presses it, as rippled_node's, that press the option's (made active and chosen).
+#callsite(autofill(loc))
+pub fn ripple_option_node(
+  v : @view.View,
+  combo : SearchCombo,
+  key : () -> String,
+  label : () -> String,
+  corner : Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  combo.cb.option(v, key, label, in_node=true, made_for=loc, fn(o, opt) {
+    rippled_look(loc~, o, Is(corner), fn() { opt.press() })
+  })
+  |> ignore
+}
+
+///|
 /// A button in `parent` of mbui's headless button (`@headless.button`: read out a button named `label()`, `press` done
 /// as it is pressed, however it came), rippling as a finger or the pointer presses it (press_look's, heard through its
 /// `Hold`, as media_key_node's): `look` lays it out and draws it as it is made, saying how round it is (the ripple's
@@ -803,12 +874,22 @@ let heading_lead_gap : Double = 6.0
 /// its middle, so a control there makes the line no taller than its words do.
 #callsite(autofill(loc))
 pub fn line_end_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  line_end_while_node(loc~, parent, fn() { true }, make)
+}
+
+///|
+/// line_end_node's, as high as its line only while `on` says so (a switch row's note under its title: the switch on
+/// the title's first line); else as high as what it holds, so a row of one line is as tall as its control, lined up
+/// in its middle as it was.
+#callsite(autofill(loc))
+fn line_end_while_node(parent : @view.View, on : () -> Bool, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(l) {
     l
     .row(Is(true))
     .gap(Is(12.0))
     .lines_up(Is(Some(Middle)))
     .height(By(fn() {
+      guard on() else { return None }
       let th = @ui.tree_theme()
       let line = match look_node(l) {
         Narrow => th.text_size(Body).1
@@ -891,7 +972,7 @@ pub(all) enum RowLead {
 
 ///|
 /// What a row says after its title of whose or what it is (a tag: link_row_node's `title_after`), `words` as it says
-/// it now: the meta's size, subtle, on one line (memoryTag).
+/// it now: the meta's size, subtle, on one line, on no ground (memoryTag): its words alone, nothing round them.
 #callsite(autofill(loc))
 pub fn row_tag_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
   words_node(loc~, parent, words, fn() { row_tag }) |> ignore
@@ -903,7 +984,8 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 
 ///|
 /// A row on a group's card that goes somewhere (link_row's, narrow, in a card): `lead` before its title (`strong`
-/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, a red dot before it
+/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, in amber where
+/// `value_warn`: soon not as it should be, a web page's days left; a red dot before it
 /// where `value_dot`) and a chevron (none where not `chevron`; an arrow out where it goes `out` of the app); `note` under
 /// its title, a line of its own as wide as its words, its end then on its first line, its lead across that line's
 /// middle; `below` under that while `below_open` says it is any of the way open (a room opening on it, its row growing
@@ -938,6 +1020,7 @@ pub fn link_row_node(
   press : () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -970,6 +1053,7 @@ pub fn link_row_node(
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
   title_masked? : () -> Bool,
+  busy? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   link_row_made(
@@ -979,6 +1063,7 @@ pub fn link_row_node(
     fn(_) { press },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1011,6 +1096,7 @@ pub fn link_row_node(
     chevron_room~,
     lines_from_lead~,
     title_masked?,
+    busy?,
   )
 }
 
@@ -1026,6 +1112,7 @@ pub fn link_row_opens_node(
   opens : (@view.View) -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1065,6 +1152,7 @@ pub fn link_row_opens_node(
     fn(row) { fn() { opens(row) } },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1107,6 +1195,7 @@ fn link_row_made(
   pressed_by : (@view.View) -> () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1139,8 +1228,15 @@ fn link_row_made(
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
   title_masked? : () -> Bool,
+  busy? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
+  // (`busy`: a spinner after what it says where nothing else is there, pressed none, lit none)
+  let off = busy.unwrap_or(fn() { false })
+  let (tail, tail_shown) = match (busy, tail) {
+    (Some(b), None) => (Some(fn(s : @view.View) { spinner_node(s, size=link_row_spin) |> ignore }), b)
+    _ => (tail, tail_shown)
+  }
   // (one that adds: one that acts, after a ＋ in the link's ink, link_row's `adds`)
   let acts = acts || adds
   let lead = if adds { LeadIcon("plus") } else { lead }
@@ -1163,7 +1259,10 @@ fn link_row_made(
   }
   let ends = goes && (out || (chevron && !acts && control is None))
   // (what it says, its note: in the link's ink, in amber, where it says so)
-  let value_look = fn(base : @ui.TextStyle) { if value_lit { base.then(lit_words) } else { base } }
+  let value_look = fn(base : @ui.TextStyle) {
+    let lit = if value_lit { base.then(lit_words) } else { base }
+    if value_warn() { lit.then(lacking) } else { lit }
+  }
   let note_look = fn(base : @ui.TextStyle) { if lacks { base.then(lacking) } else { base } }
   if look_node(parent) is Wide {
     // (its note as a wide page says it, where it says it otherwise: `wide_note`)
@@ -1180,7 +1279,7 @@ fn link_row_made(
       parent, title, pressed_by, value, value_bad, value_dot, note, trouble, strong, danger, value_look, note_look, lead,
       face || by_side, by_side,
       lead_ink, goes, ends, mark, acts, below, below_open, note_cut, title_after, title_after_shown, folds, tail, tail_shown,
-      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?,
+      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?, busy=off,
     )
     return
   }
@@ -1215,8 +1314,14 @@ fn link_row_made(
     .lines_up(By(fn() { Some(if under() && !(lead is LeadTile(_)) && !face { Start } else { Middle }) }))
     |> ignore
     if goes {
-      hover_ground_node(r)
-      pressed_node(r, pressed_by(r), Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
+      hover_ground_node(r, on=fn() { !off() })
+      // (busy: pressed none)
+      let pressed = pressed_by(r)
+      pressed_node(r, fn() { if !off() { pressed() } }, Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
+      // (bound only where it can be busy: every other row's press as pressed_node's, nothing more bound)
+      if busy is Some(_) {
+        r.presses(By(fn() { !off() })).focusable(By(fn() { !off() })) |> ignore
+      }
       row_folds_said(r, title, folds)
     }
     // what it is by: on its first line where lines are under it (row_lead: as tall as that line at least, across its
@@ -1321,7 +1426,7 @@ fn link_row_made(
             |> ignore
             tv.show(fn() { value() != "" }, fn(said) {
               said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-              said.show(value_dot, fn(d) { status_dot_node(d) })
+              said.show(value_dot, fn(d) { state_dot_node(d, fn() { "error" }, in_node=true) })
               if value_cut || value_wraps {
                 said.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               }
@@ -1661,20 +1766,15 @@ pub fn row_lead_mark_node(parent : @view.View, name : String, color? : () -> Int
 }
 
 ///|
-/// A red dot (status_dot's "error", as a node): something there is not right though nothing is wrong to say.
-pub fn status_dot_node(d : @view.View) -> Unit {
-  d
-  .width(Is(Some(status_dot_side)))
-  .height(Is(Some(status_dot_side)))
-  // (round as a pill is said to be, Full: as round as it can be)
-  .radius(Is(1.0e6))
-  .ground(By(fn() { theme().p.red }))
-  |> ignore
-}
+/// A busy link row's spinner (link_row_node's `busy`): 14.
+let link_row_spin : Double = 14.0
 
 ///|
-/// status_dot_box's side (dot_size).
-let status_dot_side : Double = 7.0
+/// A red dot (status_dot's "error", as a node: state_dot_node's, in `d` itself): something there is not right though
+/// nothing is wrong to say.
+pub fn status_dot_node(d : @view.View) -> Unit {
+  state_dot_node(d, fn() { "error" }, in_node=true)
+}
 
 ///|
 /// A switch (switch's, as a node: @kit.switch's look in the web's, switch_look_for), `on()` as it is, named `label`

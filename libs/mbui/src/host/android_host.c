@@ -1358,7 +1358,24 @@ int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
 double mb_host_perf_size(void) { return 0; }
 moonbit_bytes_t mb_host_perf_read(void) { return moonbit_make_bytes(0, 0); }
 
-double mb_host_gpu_ms(void) { return -1; }
+// The GL thread's time drawing the frame it drew last (MBView.drawOnGl: the commands given, not the GPU's own time;
+// -1 before any), in µs, and how many frames the app handed over were never drawn, each's place taken by a newer one
+// as it waited (FrameMail.takeDropped), since the run began: written by the GL thread, read by the app's.
+static int64_t gl_drawn_us = -1;
+static int32_t gl_dropped;
+
+JNIEXPORT void JNICALL Java_dev_mbui_MBView_glDrawn(JNIEnv *env, jclass c, jdouble ms, jint dropped) {
+  (void)env, (void)c;
+  __atomic_store_n(&gl_drawn_us, (int64_t)(ms * 1000.0), __ATOMIC_RELAXED);
+  if (dropped > 0) __atomic_add_fetch(&gl_dropped, (int32_t)dropped, __ATOMIC_RELAXED);
+}
+
+double mb_host_gpu_ms(void) {
+  int64_t us = __atomic_load_n(&gl_drawn_us, __ATOMIC_RELAXED);
+  return us < 0 ? -1 : (double)us / 1000.0;
+}
+
+int32_t mb_host_frames_dropped(void) { return __atomic_load_n(&gl_dropped, __ATOMIC_RELAXED); }
 
 // The CPU's time the whole process has had, every thread's (@hostapi.cpu_ms: MBUI_PROBE's share of a CPU), in ms.
 double mb_host_cpu_ms(void) {

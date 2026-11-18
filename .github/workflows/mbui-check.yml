@@ -242,7 +242,7 @@ jobs:
       # 156-162 s, app build 267-311 s of its 5 minutes (1bf02b58, 16c0c777 stopped, f150a1db, 2026-11-11), the branch
       # having compiled the same units by their content already. What is not found is compiled, as before.
       - name: The units the merged branches compiled
-        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -275,7 +275,7 @@ jobs:
       # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so what it compiled
       # is main's once merged. Only a run that built every program it builds: one cut at its limit puts none, below)
       - name: The units main's store had
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
         run: |
           mkdir -p "$RUNNER_TEMP/store-main" "$RUNNER_TEMP/store-arch"
           # (and arch/next's: everyone's already, a cache on main's ref)
@@ -403,8 +403,13 @@ jobs:
       # 25-30 s of tar and upload pushed the store's save past the job's end, 44071439638 attempt 4)
       - name: The units this run compiled, for main's
         id: queue-units
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success'
         run: |
+          # (the store's save after it comes first: with 45 s or less left, none put for main)
+          if [ "$((JOB_END - $(date +%s)))" -le 45 ]; then
+            echo "units for main: $((JOB_END - $(date +%s))) s left before JOB_END; skipped so this run's store saves in time"
+            exit 0
+          fi
           (cd "$MBC_STORE" && find . -mindepth 2 -maxdepth 2 -type d | sort) > "$RUNNER_TEMP/units-after"
           comm -13 "$RUNNER_TEMP/units-before" "$RUNNER_TEMP/units-after" > "$RUNNER_TEMP/units-new"
           echo "units main's store lacks: $(wc -l < "$RUNNER_TEMP/units-new")"
@@ -631,15 +636,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1/4, 3/4, contrast]
+        group: [1/4, 2/4, 3/4, 4/4, contrast]
         fps: [""]
-        # Groups 2 and 4 reached the job limit in 44250614119. Each runner takes half.
-        # Keep the two corners parts from 44236112180.
+        # The Chinese odd-window sweep exceeded the job limit in run 44236112180.
         include:
-          - { group: 2/4, fps: "", part: 1/2 }
-          - { group: 2/4, fps: "", part: 2/2 }
-          - { group: 4/4, fps: "", part: 1/2 }
-          - { group: 4/4, fps: "", part: 2/2 }
           - { group: corners, fps: "", part: 1/2 }
           - { group: corners, fps: "", part: 2/2 }
     env: &app-env
@@ -897,7 +897,10 @@ jobs:
         run: |
           # (the app's jobs' alone: mbui's own, motion-mbui-*, are mbui-ci's)
           find "$RUNNER_TEMP/motion" -mindepth 1 -maxdepth 1 -type d ! -name 'motion-mbui-*' -exec find {} -type f \; | xargs -r cat > "$RUNNER_TEMP/motion.txt"
-          MOTION_BARS_FAIL=$STRICT bash libs/mbui/scripts/motion_bars.sh "$RUNNER_TEMP/motion.txt" "the app's bars against what 60, 120 and the default rate found" >> "$GITHUB_STEP_SUMMARY" ||
+          # (pipefail after the find, where an empty download still leaves an empty motion.txt: tee puts the lines to
+          # change in the log too, and the script's own status still fails the step)
+          set -o pipefail
+          MOTION_BARS_FAIL=$STRICT bash libs/mbui/scripts/motion_bars.sh "$RUNNER_TEMP/motion.txt" "the app's bars against what 60, 120 and the default rate found" | tee -a "$GITHUB_STEP_SUMMARY" ||
             { echo "::error title=$NAME::a bar to fall or a file to leave motion_counted: this job's summary says which, and the one line to change for each"; exit 1; }
 
   # On main, after a merge: what failed, at the rates or the default's, and what merged since the last run that went

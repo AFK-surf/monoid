@@ -579,7 +579,10 @@ fn Copies::reason(self : Copies, peer : String, e : Error) -> String {
   }
   if is_refused(e) {
     let m = message_of(e)
-    return if m.contains("no such replica request") || m.contains("is required") || m.contains("unknown") {
+    return if m.contains("no such replica request") ||
+      m.contains("is required") ||
+      m.contains("are required") ||
+      m.contains("unknown") {
       "old"
     } else {
       "error"
@@ -643,6 +646,10 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
   if k.again is Some(_) && !now {
     return
   }
+  // (one from before copies, found so: asked again only once it is heard from, `heard`, never by a pass or a retry)
+  if !now && k.error is Some(_) && k.reason == Some("old") && self.old.contains(peer) {
+    return
+  }
   call_opt(k.again)
   k.again = None
   guard self.head_of_ws(ws) is Some(head) && head_batches(head).length() > 0 else { return }
@@ -702,22 +709,28 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
       }
     } catch {
       e => {
-        if k.error is None {
+        let reason = self.reason(peer, e)
+        // (one from before copies, which knows no `replica.*`: nothing to say or retry until it says it is up)
+        if reason == "old" {
+          self.old[peer] = true
+        } else if k.error is None {
           self.w.warn("copies", "a place not brought level", jo([("ws", js(ws)), ("place", js(peer)), ("error", js(message_of(e)))]))
         }
         k.error = Some(message_of(e))
-        k.reason = Some(self.reason(peer, e))
+        k.reason = Some(reason)
         k.known = None
-        let wait = backoff(copies_retry_ms, k.tries, copies_retry_most_ms)
-        k.tries += 1
-        if !self.closed {
-          // timer: a retry after a failure
-          k.again = Some(
-            self.w.after(wait, () => {
-              k.again = None
-              self.level(ws, peer, true, true)
-            }),
-          )
+        if reason != "old" {
+          let wait = backoff(copies_retry_ms, k.tries, copies_retry_most_ms)
+          k.tries += 1
+          if !self.closed {
+            // timer: a retry after a failure
+            k.again = Some(
+              self.w.after(wait, () => {
+                k.again = None
+                self.level(ws, peer, true, true)
+              }),
+            )
+          }
         }
         // (one not reached: the next station after those this one's copies fall to holds them meanwhile)
         if was_error is None {

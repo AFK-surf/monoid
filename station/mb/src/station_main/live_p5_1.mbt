@@ -39,6 +39,10 @@ priv struct P51 {
   mut forwards : @gate.Forwards?
   /// What to do as the station stops, last first.
   stops : Array[() -> Unit]
+  /// What the overview keeps between its makings (overview.ts: the groups' memory, the decisions' view kept).
+  overview_kept : @events.OverviewKept
+  /// The chats' store the overview reads its chats' titles from (overview.ts `chatTitleOf`), made at its first read.
+  mut threads : @store_threads.Store?
 }
 
 ///|
@@ -212,6 +216,8 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
     keeper_call: Ref(None),
     forwards: None,
     stops: [],
+    overview_kept: @events.OverviewKept::new(),
+    threads: None,
   }
   p51_live.val = Some(p)
   // The parts' lines through the host's `note` ("warn helper: …"): each with its time, and heard, as P5-1's are.

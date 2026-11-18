@@ -7,12 +7,7 @@
 /// How far behind the one in use the page's panel is drawn by what reads it in node `n` (tape_behind's): its ground a
 /// step darker that far, the page's own where it is in use.
 fn tape_page_ground(n : @view.View) -> Int64 {
-  let k = tape_behind_at(Page, tape_drawn_at(n))
-  if k <= 0.0 {
-    @sf.theme().p.bg
-  } else {
-    @sf.behind_ground(k~)
-  }
+  tape_ground(tape_behind_at(Page, tape_drawn_at(n)))
 }
 
 ///|
@@ -620,17 +615,13 @@ fn tape_made(
         context_node(p)
         @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
-    // (by its station and session: another's another page)
-    Setting(RunSettings(station, key)) if pane_makes.val =>
-      made("run/" + station + "/" + key, fn(p, core, _here, _stint, told, _acts) {
-        context_node(p)
-        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
-      })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) if pane_makes.val =>
-      made("adb/" + focus, fn(p, core, _here, _stint, told, _acts) {
+      made("adb/" + focus, fn(p, core, here, _stint, told, _acts) {
         context_node(p)
-        @settings.adb_node(p, core, focus, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+        @settings.adb_node(p, core, focus, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, sub=fn() {
+          here().sub
+        })
       })
     Setting(Vault) if pane_makes.val =>
       made("vault", fn(p, core, here, _stint, told, _acts) {

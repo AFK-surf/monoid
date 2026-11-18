@@ -27,6 +27,7 @@ import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession, type T
 import { DSH_KEY, dshRoute, expandRoute, profileEnv, profileModel, type DshRoute } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type TurnOutcome } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 type Env = Record<string, string | undefined>;
@@ -234,7 +235,7 @@ export class DshDriver extends OwnProcessDriver<DshSession> {
     await writeFile(patchFile, patchText(setup.patch), { mode: 0o600 });
     const args = ["--profile", "acp", "--patch", patchFile];
 
-    const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "dsh"), options.route) };
+    const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "dsh"), options.route) });
     env.DSH_HOME = home;
     // Not the person's ~/.agents: the session's workspace's skills are where it runs (agent-home.ts `sessionSkills`).
     env.DSH_AGENTS_HOME = join(home, "agents");
@@ -279,7 +280,7 @@ export class DshDriver extends OwnProcessDriver<DshSession> {
   protected crashed(options: OpenOptions, replayed: Replayed, _info: RunnerInfo, events: Events) {
     const turn: Turn = { busy: false, prompted: false, aborting: false, ...(replayed.turn ?? {}), closed: false };
     const session = new DshSession(this, replayed.session ?? options.resume ?? "", turn, replayed.live ?? null, events);
-    session.toolsUrl = options.mcpUrl;
+    session.toolsUrl = options.mcpUrl || null;
     return session;
   }
 }

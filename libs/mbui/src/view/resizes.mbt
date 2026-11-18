@@ -42,6 +42,16 @@ pub fn View::resizes(
   // View::comes itself)
   guard self.comes(self, from, 1.0, spec?, foot~) else { return self }
   let at = st.come_at
+  // (in a page's list's foot on no way said: what a flight that carries a key in at this moment rises by, if one does
+  // (Tree::feet_carried); those of another moment forgotten as one is said)
+  if foot && spec is None && tree.list_of(self.at) != self.at {
+    let resized = tree.motion_aux().feet_resized
+    let gone = resized.iter().filter(fn(e) { e.1 != at }).map(fn(e) { e.0 }).to_array()
+    for g in gone {
+      resized.remove(g)
+    }
+    resized[self.at] = at
+  }
   // (once the change is told whole and laid out (View::comes' wait, which measures it, and its column's group then):
   // come out as tall as it was, from rest, nothing of it goes)
   @signals.after_flush(fn() {

@@ -2700,9 +2700,12 @@ export function lockView(inner: Inner, ws: string): J {
       : lastSeen !== null ? usedText(at - lastSeen)
       : seen !== null && (manages || d.sub === sub) ? t("web-pages.security.unused")
       : null;
+    const renewSoon = typeof d.exp === "number" && d.exp - at < RENEW_SECS;
+    const { group, app } = prefs.deviceParts(label);
+    const leftText = left !== null ? t("web-pages.security.daysLeft", { n: left }) : null;
     return {
       id: d.id, kind, label, signs: trusted, older, mine, daysLeft: left,
-      renewSoon: typeof d.exp === "number" && d.exp - at < RENEW_SECS,
+      renewSoon,
       recent, lastSeen, usedText: used,
       // taken out by this device, where it signs: the viewer's own others. Someone else's is theirs alone to take out
       // (owners and admins take the member out; the user, 2026-11-10: a person's devices are their own lock's, which
@@ -2719,7 +2722,31 @@ export function lockView(inner: Inner, ws: string): J {
         left !== null ? t("web-pages.security.daysLeft", { n: left }) : null,
         recent ? t("web-pages.security.recent") : null,
       ].filter((x) => x !== null).join(" · ")),
+      // (an app's machine, a phone or a computer, as the approvers' rows say it; its brand's app; under its name in a
+      // line: its app, when it was last used (this device its row marks), whether it signs, the days a web page has
+      // left where not soon to run out, said apart then, in amber)
+      ...(kind === "app" ? { machine: /^(android|ios) /.test(group ?? "") || /^(android|ios) /i.test(label) ? "phone" : "computer" } : {}),
+      ...(app !== null ? { appText: app } : {}),
+      // (its app's brand as it is written, still.fail; else the line's first letter capital)
+      noteText: ((rest: string) => (app === null ? upperFirst(rest) : rest === "" ? app : `${app} · ${rest}`))([
+        mine ? null : used,
+        trusted ? t("web-pages.security.signs") : null,
+        leftText !== null && !renewSoon ? leftText : null,
+      ].filter((x) => x !== null).join(" · ")),
+      ...(leftText !== null ? { leftText } : {}),
     };
+  };
+  // A member's devices counted in words: those that sign, the web pages, the rest (apps not trusted); none, said so.
+  const devicesText = (devices: J[]) => {
+    const trusted = devices.filter((d) => d.signs).length;
+    const web = devices.filter((d) => !d.signs && d.kind === "web").length;
+    const rest = devices.length - trusted - web;
+    const parts = [
+      trusted > 0 ? t("web-pages.security.memberTrustedDevices", { n: trusted }) : null,
+      rest > 0 ? t("web-pages.security.memberDevices", { n: rest }) : null,
+      web > 0 ? t("web-pages.security.memberWebDevices", { n: web }) : null,
+    ].filter((x) => x !== null);
+    return parts.length > 0 ? parts.join(" · ") : t("web-pages.security.memberNoDevices");
   };
   // this device first, then the most lately used
   const byUse = (a: J, b: J) => Number(b.mine) - Number(a.mine) || (b.lastSeen ?? -1) - (a.lastSeen ?? -1);
@@ -2738,13 +2765,20 @@ export function lockView(inner: Inner, ws: string): J {
   };
   const stations = arr(get(v, "stations")).map((s) => ({
     id: s.id, name: s.name, version: s.version ?? null, online: s.online !== false, protected: f.stations.has(s.id) && keeps(inner, ws, s.id),
+    ...(str(s.emoji) ? { emoji: s.emoji } : {}), ...(str(s.icon) ? { icon: s.icon } : {}),
   }));
   // (those added who have not signed in yet are the workspace page's, `added`: no one here to show devices of)
-  const members = [...f.members].filter(([s]) => !isPending(s)).map(([s, m]) => ({
-    sub: s, email: m.email, name: str(get(people.get(s), "name")) ?? "", role: m.role, you: s === sub,
-    nameText: str(get(people.get(s), "name")) || m.email, roleText: roleText(m.role),
-    groups: byApp([...f.devices.values()].filter((d) => d.sub === s).map(device)),
-  }));
+  const members = [...f.members].filter(([s]) => !isPending(s)).map(([s, m]) => {
+    const theirs = [...f.devices.values()].filter((d) => d.sub === s).map(device);
+    const picture = str(get(people.get(s), "picture"));
+    return {
+      sub: s, email: m.email, name: str(get(people.get(s), "name")) ?? "", role: m.role, you: s === sub,
+      nameText: str(get(people.get(s), "name")) || m.email, roleText: roleText(m.role),
+      devicesText: devicesText(theirs),
+      ...(picture ? { picture } : {}),
+      groups: byApp(theirs),
+    };
+  });
   const renew = members.flatMap((m) => (m.you ? m.groups.flatMap((g) => g.devices).filter((d) => d.renewSoon) : []));
   const dismissed = get(get(inner.data.shared({ topic: "prefs" }), "lockNotice"), ws) === true;
   // Let in here by its person's own lock (`onBoundPerson`): no approval in this one makes it sign (views/pair.ts

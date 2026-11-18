@@ -496,6 +496,13 @@ pub(all) struct Kept {
   refusal : String?
 }
 
+pub(all) struct LeafDoor {
+  authenticated : (@door.Connection, String, Int64) -> Unit
+  view : (String) -> @json.Json raise
+  follow : async (@door.Connection, String, @door.Stream) -> Unit
+  attach : async (@door.Connection, String, @json.Json, String) -> @json.Json
+}
+
 pub(all) struct LocalAnswer {
   head : (Int32, Array[String]) -> Unit
   write : async (Bytes) -> Unit
@@ -562,6 +569,7 @@ pub(all) struct Members {
   served : ((Int32, Viewer?, Bool, Int32?) -> Unit)?
   lang_of : (Array[(String, String)]) -> String
   update_words : (String) -> String
+  leaves : LeafDoor?
 }
 
 pub(all) struct Membership {

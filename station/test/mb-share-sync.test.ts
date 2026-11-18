@@ -26,7 +26,7 @@ import { ConfigFile } from "../src/ops/config.ts";
 import { Said } from "../src/ops/i18n.ts";
 import { allowedIn } from "../src/sessions/config.ts";
 import { writeBuiltinSkills } from "../src/sessions/agent-home.ts";
-import { Sharing, shareRefusal, signInFiles } from "../src/share/index.ts";
+import { Sharing, portable, shareRefusal, signInFiles } from "../src/share/index.ts";
 import { MemorySync, asideSkill, memoryFollowed, memoryPath, recOf } from "../src/share/memory.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { toChatShare } from "../src/store/rows.ts";
@@ -652,11 +652,16 @@ test("what a profile is lent, refused and served by, a memory's paths and record
     { runtime: "agy", access: { kind: "subscription" } }, { access: { kind: "opencode-go", login: true } }, { access: { kind: "api-provider", provider: "kimi-code", login: true } },
     { access: { kind: "api-provider", provider: "deepseek", key: "k" }, name: "n", env: { A: "1" }, home: "h", models: ["x"], enabled: false, fast: true },
     { access: { kind: "subscription", key: "secret" }, runtime: "claude", model: null }, { share: { borrowed: true } }, {},
+    { runtime: "codex", access: { kind: "subscription" }, env: { HTTP_PROXY: "http://127.0.0.1:7890", https_proxy: "http://127.0.0.1:7890", All_Proxy: "socks5://127.0.0.1:7891", NO_PROXY: "corp.example", no_proxy: "x", KEEP: "1", MY_HTTP_PROXY: "y", HTTP_PROXY_2: "z" } },
   ];
   for (const p of profiles) {
     assert.deepEqual(await pure("signInFiles", p), signInFiles(p), JSON.stringify(p));
     assert.deepEqual(await pure("shareRefusal", p), shareRefusal(p), JSON.stringify(p));
+    assert.deepEqual(await pure("portable", p), portable(p), JSON.stringify(p));
   }
+  // A machine's proxy stays on its machine: another station has its own way out, or none.
+  assert.deepEqual(portable(profiles.at(-1)!).env, { KEEP: "1", MY_HTTP_PROXY: "y", HTTP_PROXY_2: "z" });
+  assert.equal("env" in portable({ runtime: "claude" }), false);
   for (const [p, ws, home] of [[{ share: { borrowed: true, workspaces: ["a"] } }, "b", "a"], [{ share: { borrowed: true, workspaces: ["a"] } }, null, "a"], [{ withheld: ["j"] }, "j", "h"], [{ withheld: ["j"] }, "h", "h"], [{}, "x", null], [{ share: { borrowed: true, workspaces: ["b"] } }, null, "a"]] as const) {
     assert.equal(await pure("allowedIn", p, { ws, home }), allowedIn(p as Json, ws, home), JSON.stringify([p, ws, home]));
   }

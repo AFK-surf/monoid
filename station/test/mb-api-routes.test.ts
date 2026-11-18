@@ -1835,6 +1835,10 @@ function defineCases() {
   add("idempotent write", { method: "POST", path: "/sessions/s1/evict", headers: { "Idempotency-Key": "k1" } });
   add("idempotent write again", { method: "POST", path: "/sessions/s1/evict", headers: { "Idempotency-Key": "k1" } });
   add("batch", { method: "POST", path: "/batch", body: { gets: ["/threads/7/entries?before=3", "/sessions/s1", "/threads/7", "/nope"] } }, { unordered: true });
+  // (each answer a line as it is read: admin.ts `batchLines`; a client from before given each as a GET of it is)
+  add("batch lines", { method: "POST", path: "/batch", headers: { accept: "application/x-ndjson" }, body: { gets: ["/threads/7/entries?before=3", "/sessions/s1", "/threads/7", "/nope"] } });
+  add("batch lines for a client from before", { method: "POST", path: "/batch", headers: { Accept: "application/json, application/x-ndjson", "stillfail-runtimes": "claude" }, body: { gets: ["/sessions/s1", "/threads/7/entries"] } }, { world: (w) => w.handlers.set("runtimeView.runtimeView", ([, v]) => ({ ...v, projected: true })) });
+  add("batch keyed", { method: "POST", path: "/batch", headers: { "idempotency-key": "b1" }, body: { gets: ["/threads/7"] } });
   add("batch bad", { method: "POST", path: "/batch", body: { gets: "x" } });
   add("batch too large", { method: "POST", path: "/batch", body: Buffer.alloc(1_000_001, 32) });
   add("old client's runtimes", { method: "GET", path: "/sessions", headers: { "stillfail-runtimes": "claude" } }, { world: (w) => w.handlers.set("runtimeView.runtimeView", ([, v]) => v) });

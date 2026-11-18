@@ -292,7 +292,7 @@ pub fn navigation_menu(
       Some(body) => {
         let k = open
         let o = c.overlay(key + "/content", anchor=tids[k], initial_focus=pick(c.focus_shown(tids[k]), -1, 0), fn() {
-          beside(c, key + "/content", tids[k], Bottom, Start, 6.0, @ui.still_look, Region, items[k].label, look, body)
+          beside(c, key + "/content", tids[k], Bottom, Start, 6.0, None, Region, items[k].label, look, body)
         })
         if o.dismissed is Some(_) {
           open = -1

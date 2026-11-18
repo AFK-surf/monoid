@@ -97,29 +97,30 @@ pub fn own_head_node(
           words.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           // its name a size under the page's large title (its mark beside it: a phone's line), on as many lines as it
           // takes (an address broken after its @ and its dots, not inside a word of it), pressed to rename it
-          words.box(fn(n) {
-            match rename {
-              Some(f) => {
-                presses_node(n, f, on=renames)
-                n
-                .says(By(fn() {
-                  if renames() {
-                    Some(@view.said(Button, label=if rename_label() == "" { name() } else { rename_label() }))
-                  } else {
-                    None
-                  }
-                }))
-                .alpha(By(fn() { if renames() && n.pressed() { head_pressed_alpha } else { 1.0 } }))
-                |> ignore
-              }
-              None => ()
-            }
+          let name_words = fn(n : @view.View) {
             words_node(n, fn() { name().replace_all(old="@", new="@\u{200B}").replace_all(old=".", new=".\u{200B}") }, fn() {
               head_name_lines
             })
             |> ignore
-          })
-          |> ignore
+          }
+          match rename {
+            // (a button while it renames (button_while_node), seen fainter while pressed; else its words alone)
+            Some(f) =>
+              button_while_node(
+                words,
+                renames,
+                fn() { if rename_label() == "" { name() } else { rename_label() } },
+                fn(_) { f() },
+                fn(n, pressed) {
+                  if pressed {
+                    n.alpha(By(fn() { if n.pressed() { head_pressed_alpha } else { 1.0 } })) |> ignore
+                  }
+                  name_words(n)
+                },
+              )
+              |> ignore
+            None => words.box(name_words) |> ignore
+          }
           words.show(busy, fn(s) { spinner_node(s, size=spinner_inline) |> ignore })
         })
         |> ignore
@@ -275,29 +276,6 @@ pub fn loose_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : Sourc
   parent.box(made_for=loc, fn(b) {
     style_node(b, fn() { if narrow { pg_loose } else { wide_block } })
     body(b)
-  })
-  |> ignore
-}
-
-///|
-/// A field (field's, as a node) in `parent`: its `label` (13, 500), what `body` makes (the input), and under it what is
-/// wrong (`error`, 12 red) or else a `hint` (12, muted), as each says it now, 6 apart; on a wide page 420 at most.
-#callsite(autofill(loc))
-pub fn labelled_field_node(
-  parent : @view.View,
-  label : () -> String,
-  body : (@view.View) -> Unit,
-  hint? : () -> String = fn() { "" },
-  error? : () -> String = fn() { "" },
-  loc~ : SourceLoc,
-) -> Unit {
-  let wide = look_node(parent) is Wide
-  parent.box(made_for=loc, fn(b) {
-    style_node(b, fn() { if wide { field_box_wide } else { field_box } })
-    words_node(b, label, fn() { field_label }) |> ignore
-    body(b)
-    b.show(fn() { error() != "" }, fn(w) { words_node(w, error, fn() { field_error }) |> ignore })
-    b.show(fn() { error() == "" && hint() != "" }, fn(w) { words_node(w, hint, fn() { field_hint }) |> ignore })
   })
   |> ignore
 }

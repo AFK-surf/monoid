@@ -988,6 +988,15 @@ fn view_changes_taken(tree : @view.Tree) -> Bool {
 let view_window : Ref[(Double, Double)] = Ref((0.0, 0.0))
 
 ///|
+/// Where an old view is laid out (a point of its place in the window), as its build takes it: to 1/65536 of a point, so
+/// that what adding up the places of what holds it in floating point leaves over is no other place (a page laid out
+/// where a way ends by a margin as far as what holds it has moved off it: at each frame of the way the same place, not
+/// built again there), far under a pixel of any screen.
+fn laid_snapped(v : Double) -> Double {
+  (v * 65536.0).round() / 65536.0
+}
+
+///|
 /// Where each old view of `tree` is placed now (as it was last laid out), and whether the one is the whole window.
 fn old_place(tree : @view.Tree) -> Unit {
   let (w, h) = view_window.val
@@ -1012,6 +1021,7 @@ fn old_place(tree : @view.Tree) -> Unit {
   for d in old_drawn(tree) {
     let (c, x, y, a, s, ux, uy, _) = d
     let (ox, oy) = tree.laid_origin(c.id).unwrap_or((x, y))
+    let (ox, oy) = (laid_snapped(ox), laid_snapped(oy))
     old_placed.push((c.id, x, y, c.w, c.h, a, ox, oy, s))
     // (the side what holds it went beside what it goes beside, for its build (old_went): told as it changes)
     match old_islands.iter().find_first(fn(o) { o.id == c.id }) {
@@ -1071,9 +1081,10 @@ fn old_drawn(tree : @view.Tree) -> Array[(@view.Content, Double, Double, Double,
 }
 
 ///|
-/// The window's tree told as the frame was built (what a build set that the tree follows): brought now, and where it
-/// places an old view otherwise than this pass built it for, the frame built again for that before it is drawn (drawn
-/// so, an old view built for the room it had would be drawn in the room it has now, till the next frame).
+/// The window's tree told as the frame was built (what a build set that the tree follows, the theme it set among it):
+/// brought now, and where it places an old view otherwise than this pass built it for, the frame built again for that
+/// before it is drawn (drawn so, an old view built for the room it had would be drawn in the room it has now, till the
+/// next frame).
 fn view_told_as_built(c : Ctx) -> Unit {
   // (the old views built: told the tree first, what waited for that (a list's set-out under an old view in its foot:
   // Tree::old_views_built) taken as it is brought now)
@@ -1081,10 +1092,16 @@ fn view_told_as_built(c : Ctx) -> Unit {
     Some(tree) => tree.old_views_built()
     None => ()
   }
+  // (the theme the old views were built in, set as they built (Ctx::set_theme, the first frame's too), told the tree's
+  // nodes now: drawn in it by this frame, not a frame late as the next one's begins (view_frame). Untracked: told, not
+  // read, by what watches the frame's build)
+  @signals.untracked(fn() { tree_theme_said.val.set(Some(c.theme_for(c.window_w))) })
   match view_app.val {
     Some(tree) if view_owes(tree) => {
       let was = view_island_said()
       view_brought(tree)
+      // (what a still pointer is over, the tree laid out again as told: view_arrived's)
+      view_pointed_again()
       if view_island_said() != was {
         c.read_changed("the window's tree placed an old view otherwise as the frame was built")
       }
@@ -1751,7 +1768,9 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       clipping.push(c.id)
     }
     // (on a flight with an end that stays (View::shared's `stays`): cut to that end's room as what held it cut it,
-    // opening as it leaves it, for what it holds too: a picture under a bar flies out from under it)
+    // opening as it leaves it, for what it holds too: a picture under a bar flies out from under it; on one both of
+    // whose ends are within a node said View::flights_within, cut to where that node is seen: a board's card going to
+    // another column)
     // (what is seen of it rounded as the flight has it, cut to the window or to that room: Tree::lift_cut_corners)
     match tree.lift_cut(c.id) {
       Some((x0, y0, x1, y1)) => {

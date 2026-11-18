@@ -10,7 +10,7 @@ let max_text : Int = 200000
 
 ///|
 /// station/src/store/rows.ts STILLFAIL_SURFACE.
-pub let stillfail_surface : String = "ember"
+pub let stillfail_surface : String = "chat"
 
 ///|
 /// args.ts `jsString`.

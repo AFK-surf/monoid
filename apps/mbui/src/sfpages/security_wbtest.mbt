@@ -56,22 +56,122 @@ test "安全码: a wrong code keeps the keyboard for another try; approval puts 
 }
 
 ///|
-test "安全, at each width and with either hand: its people, devices and stations" {
+test "安全, at each width and with either hand: the viewer's own devices, the other members, the stations" {
   for case in page_cases {
     let (w, platform) = case
     let t = setting_tester(Security, w, platform~)
     let at = "\{w} platform \{platform}"
-    // (by app: its name over its devices, which machine each is, the most lately used first)
-    scrolled_to(t, w, "示例工作站")
-    let (_, app) = t.find("still.fail 桌面版").unwrap()
-    let (_, pro) = t.find("林的 MacBook Pro").unwrap()
-    let (_, sample) = t.find("示例工作站").unwrap()
-    assert_true(app < pro && pro < sample, msg=at)
-    scrolled_to(t, w, "Ana 的 MacBook Air")
-    assert_true(t.find("Ana 的 MacBook Air") is Some(_), msg=at)
-    assert_true(t.find("5 天前使用过 · 受信任") is Some(_), msg=at)
+    // (我的设备: a row each, this one marked 此设备 after its name, not said again under it)
+    assert_true(drawn_whole(t, "我的设备"), msg=at)
+    assert_true(drawn_whole(t, "此设备"), msg=at)
+    assert_true(drawn_whole(t, "still.fail Android · 受信任"), msg=at)
+    // (this one first, then the most lately used, whatever app each is: no app's name over them, no person's)
+    scrolled_to(t, w, "客户端")
+    let order = ["林的 MacBook Pro", "Chrome · macOS", "示例工作站", "客户端"].map(fn(n) {
+      t.find(n).map(fn(p) { p.1 }).unwrap_or(-1.0)
+    })
+    for i in 1..<order.length() {
+      assert_true(order[i - 1] >= 0.0 && order[i - 1] < order[i], msg="\{at}: \{Repr(order)}")
+    }
+    assert_false(drawn_whole(t, "still.fail 桌面版"), msg=at)
+    assert_false(drawn_whole(t, "其他"), msg=at)
+    assert_false(drawn_whole(t, "林"), msg=at)
+    // (其他成员: their devices counted, their role at the end; their devices only in their panel)
+    scrolled_to(t, w, "1 台受信任设备")
+    assert_true(drawn_whole(t, "其他成员"), msg=at)
+    assert_true(drawn_whole(t, "Ana"), msg=at)
+    assert_true(drawn_whole(t, "管理员"), msg=at)
+    assert_true(t.find("Ana 的 MacBook Air") is None, msg=at)
     scrolled_to(t, w, "受保护")
     assert_true(t.find("受保护") is Some(_), msg=at)
+    assert_true(t.find("成员和设备") is None, msg=at)
+  }
+}
+
+///|
+/// The inks the glyphs of `words` are drawn in (each glyph's top left within their box), as drawn last.
+fn inks_of(t : @ui.Tester, words : String) -> Array[Int64] {
+  match t.rect_of(words) {
+    Some((x, y, w, h)) =>
+      t.drawn_glyphs().filter(fn(g) { g.0 >= x - 2.0 && g.0 <= x + w + 2.0 && g.1 >= y - 2.0 && g.1 <= y + h + 2.0 }).map(fn(g) { g.2 })
+    None => []
+  }
+}
+
+///|
+test "安全, at each width and with either hand: a web page's days left alone in amber, at its row's end" {
+  for (w, platform) in page_cases {
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "Chrome · macOS")
+    let warn = @sf.theme().p.warn_ink >> 8
+    let left = inks_of(t, "剩余 4 天")
+    assert_true(left.length() > 0 && left.iter().all(fn(c) { c >> 8 == warn }), msg="\{at}: \{Repr(left)}")
+    let rest = inks_of(t, "still.fail 网页版 · 2 天前使用过")
+    assert_true(rest.length() > 0 && !rest.iter().any(fn(c) { c >> 8 == warn }), msg="\{at}: \{Repr(rest)}")
+    // (on its row's line, after its name)
+    let (lx, ly, _, _) = t.rect_of("剩余 4 天").unwrap()
+    let (nx, ny, nw, nh) = t.rect_of("Chrome · macOS").unwrap()
+    assert_true(lx > nx + nw && ly < ny + nh, msg=at)
+  }
+}
+
+///|
+test "安全, at each width and with either hand: a device of one's own opens 续期 and 移除 beside it, 移除 in red; this one and someone else's open nothing" {
+  for (w, platform) in page_cases {
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    // (this device: nothing to do about it from here)
+    tap_words(t, "Pixel 9")
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sf.presenting(), msg=at)
+    scrolled_to(t, w, "Chrome · macOS")
+    tap_words(t, "Chrome · macOS")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    assert_true(drawn_whole(t, "续期"), msg=at)
+    assert_true(drawn_whole(t, "移除"), msg=at)
+    let renew = inks_of(t, "续期")
+    let remove = inks_of(t, "移除")
+    // (its glyphs red; under a sheet the page's own words there stay drawn under it)
+    assert_true(remove.filter(fn(c) { c >> 8 == @sf.theme().p.red >> 8 }).length() >= 2, msg="\{at}: \{Repr(remove)}")
+    assert_true(renew.length() > 0 && !renew.iter().any(fn(c) { c >> 8 == @sf.theme().p.red >> 8 }), msg="\{at}: \{Repr(renew)}")
+    @sf.close_presented()
+    t.run_for(@ui.move_most_ms)
+  }
+}
+
+///|
+test "安全, at each width and with either hand: another member opens their devices in a panel, nothing to take out there" {
+  for (w, platform) in page_cases {
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "1 台受信任设备")
+    tap_words(t, "Ana")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    assert_true(drawn_whole(t, "Ana 的 MacBook Air"), msg=at)
+    assert_true(drawn_whole(t, "still.fail 桌面版 · 5 天前使用过 · 受信任"), msg=at)
+    assert_true(drawn_whole(t, "ana@example.com · 管理员"), msg=at)
+    assert_false(drawn_whole(t, "移除"), msg=at)
+    assert_false(drawn_whole(t, "续期"), msg=at)
+    @sf.close_presented()
+    t.run_for(@ui.move_most_ms)
+  }
+}
+
+///|
+test "安全, at each width and with either hand: a station's own mark before its name" {
+  for (w, platform) in page_cases {
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "Maple")
+    // (what is drawn small before a station's name on its line: Willow's mark more than Maple's, which has none)
+    let before = fn(name : String) {
+      let (nx, ny, _, nh) = t.rect_of(name).unwrap()
+      t.drawn_instances().filter(fn(i) { i[2] < 32.0 && i[3] < 32.0 && i[0] + i[2] <= nx && i[1] < ny + nh && i[1] + i[3] > ny }).length()
+    }
+    assert_true(before("Willow") > before("Maple"), msg="\{at}: \{before("Willow")} \{before("Maple")}")
   }
 }
 
@@ -204,39 +304,32 @@ test "a station's protect button follows its request through failure, retry and 
 }
 
 ///|
+/// The menu of the viewer's own device `name` opened by its row (its name pressed), then 移除 in it pressed.
+fn removed_from_menu(t : @ui.Tester, w : Double, name : String) -> Unit raise {
+  scrolled_to(t, w, name)
+  tap_words(t, name)
+  t.run_for(@ui.move_most_ms)
+  tap_words(t, "移除")
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
 test "安全, at each width and with either hand: another device of one's own taken out, asked first; not this one, nor someone else's" {
   for case in page_cases {
     let (w, platform) = case
     let t = setting_tester(Security, w, platform~)
     let at = "\{w} platform \{platform}"
-    let name = "林的 MacBook Pro"
-    scrolled_to(t, w, name)
-    // (移除 on each of the viewer's own but this device's: their MacBook's, the first not above its name, at its end
-    // wide, under its words narrow)
-    let (_, y) = t.find(name).unwrap()
-    let shown = t.words().filter(fn(x) { x.0 == "移除" && x.5 > 0.5 && x.2 + x.4 > y })
-    guard shown.length() > 0 else { fail("no 移除 drawn") }
-    let mut near = shown[0]
-    for x in shown {
-      if x.2 < near.2 {
-        near = x
-      }
-    }
-    t.tap(near.1 + near.3 / 2.0, near.2 + near.4 / 2.0)
-    t.frame()
+    removed_from_menu(t, w, "林的 MacBook Pro")
     assert_true(@sf.presenting(), msg=at)
     assert_true(t.find("移除「林的 MacBook Pro · still.fail 桌面版」？") is Some(_), msg=at)
     assert_true(t.find("该设备将无法再访问受保护的 station，重新批准后才能使用") is Some(_), msg=at)
     @sf.close_presented()
     t.frame()
-    // (someone else's device, the last of the people's: theirs alone to take out, so no 移除 from its name down,
-    // though the viewer owns the workspace; the user, 2026-11-10)
-    // (the page opened anew: the dialog just closed is not what is looked at)
+    // (no 移除 on the page itself: what is done about a device is in its menu; someone else's is theirs alone to take
+    // out, so their panel has none either, though the viewer owns the workspace; the user, 2026-11-10)
     let t = setting_tester(Security, w, platform~)
-    scrolled_to(t, w, "Ana 的 MacBook Air")
-    let (_, theirs) = t.find("Ana 的 MacBook Air").unwrap()
-    let under = t.words().filter(fn(x) { x.0 == "移除" && x.5 > 0.5 && x.2 + x.4 > theirs })
-    assert_eq(under.length(), 0, msg="\{at}: \{Repr(under.map(fn(x) { (x.1, x.2) }))} under \{theirs}")
+    scrolled_to(t, w, "1 台受信任设备")
+    assert_false(drawn_whole(t, "移除"), msg=at)
   }
 }
 
@@ -463,19 +556,7 @@ test "安全, at each width and with either hand: a removal answered pending say
       }
     })
     let at = "\{w} platform \{platform}"
-    let name = "林的 MacBook Pro"
-    scrolled_to(t, w, name)
-    let (_, y) = t.find(name).unwrap()
-    let shown = t.words().filter(fn(x) { x.0 == "移除" && x.5 > 0.5 && x.2 + x.4 > y })
-    guard shown.length() > 0 else { fail("no 移除 drawn") }
-    let mut near = shown[0]
-    for x in shown {
-      if x.2 < near.2 {
-        near = x
-      }
-    }
-    t.tap(near.1 + near.3 / 2.0, near.2 + near.4 / 2.0)
-    t.frame()
+    removed_from_menu(t, w, "林的 MacBook Pro")
     assert_true(@sf.presenting(), msg=at)
     t.run_for(@ui.move_most_ms)
     // (the dialog's own 移除: its button, the last made)

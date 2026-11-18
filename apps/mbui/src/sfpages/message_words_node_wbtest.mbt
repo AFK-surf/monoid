@@ -655,3 +655,19 @@ test "what a person wrote with files, made once as nodes, is drawn as the old vi
     }
   }
 }
+
+///|
+test "what is sent from here flies as long as it is far up to flight_desk_ms, after its delay where it has one" {
+  for far in [40.0, 120.0, 200.0, 420.0, 900.0] {
+    let (ms, along) = (sent_part_flight.way)(far)
+    assert_eq(ms, @sf.dmin(@sfbase.flight_way_ms(true, far), @sfbase.flight_desk_ms), msg="\{far} points")
+    assert_eq(along(ms), 1.0, msg="\{far} points: at its end")
+    // (a new chat's first words on 窄排法: as long again as their delay, still till it is out)
+    let (late, along_late) = ((sent_flight(@sfbase.flight_carry_after_ms)).way)(far)
+    assert_eq(late, ms + @sfbase.flight_carry_after_ms, msg="\{far} points, set out late")
+    assert_eq(along_late(@sfbase.flight_carry_after_ms), 0.0, msg="\{far} points: still till it sets out")
+  }
+  assert_true((sent_part_flight.way)(40.0).0 < @sfbase.flight_desk_ms)
+  // (going nowhere: none)
+  assert_eq((sent_part_flight.way)(0.2).0, 0.0)
+}

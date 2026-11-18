@@ -1,7 +1,7 @@
 // Answers compressed for a client that asks so (`accept-encoding: zstd`; station/src/mesh/compress.ts): a whole answer
-// at zstd's fast level (a batch harder), an event stream each piece flushed against the last megabyte of the stream.
-// JSON and text only, nothing of a preview, never what says an encoding already. The zstd itself is the carrier's
-// (`Packer`: the shell's `zstd.compress` and `zstd.stream`).
+// at zstd's fast level, an event stream (and a batch's answers a line at a time, `application/x-ndjson`) each piece
+// flushed against the last megabyte of the stream. JSON and text only, nothing of a preview, never what says an
+// encoding already. The zstd itself is the carrier's (`Packer`: the shell's `zstd.compress` and `zstd.stream`).
 
 ///|
 pub let zstd : String = "zstd"
@@ -16,10 +16,6 @@ pub let level : Int = 3
 
 ///|
 pub let window_log : Int = 20
-
-///|
-/// Several reads in one (POST /batch) compressed harder.
-pub let batch_level : Int = 9
 
 ///|
 /// A zstd stream: each piece given comes out flushed.
@@ -46,7 +42,9 @@ pub fn asks_zstd(headers : Array[(String, String)]) -> Bool {
 
 ///|
 fn texty(t : String) -> Bool {
-  t.has_prefix("application/json") || t.has_prefix("text/")
+  t.has_prefix("application/json") ||
+  t.has_prefix("application/x-ndjson") ||
+  t.has_prefix("text/")
 }
 
 ///|
@@ -73,11 +71,7 @@ pub async fn compressed(
       if body.length() < small {
         return answer
       }
-      let bare = match path.find("?") {
-        Some(i) => path.clamped_view(end=i).to_owned()
-        None => path
-      }
-      let out = (packer.whole)(body, if bare == "/batch" { batch_level } else { level })
+      let out = (packer.whole)(body, level)
       { status: answer.status, headers: sent, body: Whole(out) }
     }
     Coming(source) => {

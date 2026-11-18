@@ -840,6 +840,13 @@ pub fn Ctx::selected_text(self : Ctx) -> String {
 }
 
 ///|
+/// The words picked with the pointer now, an old view's or the window's tree's ("" none): Ctx::selected_text's, for
+/// what has no build to ask it of (a node's handler as a right click's menu opens).
+pub fn picked_words() -> String {
+  selected_words()
+}
+
+///|
 /// The words picked with the pointer, each paragraph's on a line of its own in the page's order ("" none).
 fn selected_words() -> String {
   let spans : Array[SelSpan] = picked.spans.values().filter(fn(s) { s.a < s.b }).collect()

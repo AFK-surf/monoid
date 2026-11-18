@@ -219,10 +219,10 @@ fn wide_reset() -> Unit {
   wide.bar_mr = 0.0
   wide.landed.set("")
   wide.rail_menu.set(None)
-  rail_menu_drawn.val = None
+  rail_menus_reset()
+  attention_shown.val = 0
   wide.rail_drag.set(None)
   attention_from.val = None
-  workspace_add_from.val = None
   transfers_from.val = None
   wide.editing.set(false)
   wide.attention_open.set(false)

@@ -193,6 +193,8 @@ fn p52_told_threads(bus : LiveBus, threads : @store_threads.Store) -> Unit {
   for c in sent {
     bus.notify_store(c)
   }
+  // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
+  bus.drain_thread_requests(threads)
 }
 
 ///|
@@ -597,7 +599,7 @@ fn P52::last_station_said(self : P52, key : String) -> Json raise {
   }
   let entries = jitems(self.store("entriesBefore", [jfield(jfield(latest, "thread"), "id"), Json::null(), ji(1)]))
   match entries.last() {
-    Some(last) if jtext(last, "authorKind") == Some("station") => jfield(last, "text")
+    Some(last) if jtext(last, "authorKind") is Some("station" | "ember" | "stillfail") => jfield(last, "text")
     _ => Json::null()
   }
 }
@@ -989,6 +991,11 @@ async fn P52::update_codex(self : P52, before : String?) -> Unit {
   match (self.bus.coord_ask.val)("updates.updateOldCodex", { "running": jopt(before) }) {
     Object(m) if m.get("error") is Some(String(e)) => raise LiveError(e)
     _ => ()
+  }
+  // (agents.ts `updateOldCodex`: the old hosts marked before any conversation can retry; other turns keep running there)
+  match self.drivers.get("codex") {
+    Some(d) => ignore((d.ask)("runtimeChanged", { "replaced": jb(before is None), "drainBusy": jb(true) }))
+    None => ()
   }
 }
 

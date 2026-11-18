@@ -1,20 +1,6 @@
-// How a part of Comma's answers the hand where mbui has no headless component for it yet (a menu's row, a dropdown's
-// trigger: presses_node), and what every part's look reads of the hand: lit under a pointer (with a mouse) or while
-// held (with a finger), its ring while the keyboard's focus is on it, as react-aria's useHover and useFocusRing give
-// Comma's own parts. A button, a toggle, a disclosure, a choice, a radio group and a slider are mbui's headless ones.
-
-///|
-/// `v` pressed (`press`, once a press) while `on()`: taking the focus then, and the hand.
-pub fn presses_node(v : @view.View, press : () -> Unit, on? : () -> Bool = fn() { true }) -> Unit {
-  v.presses(By(on)).focusable(By(on)).on_press(press) |> ignore
-  let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
-  v.gesture(
-    @ui.touch_slop(),
-    tap=fn(d) { if on_it(d) && @signals.untracked(on) { press() } },
-    drag=fn(d) { if d.kind == Up && @ui.pointing() is Mouse && on_it(d) && @signals.untracked(on) { press() } },
-  )
-  |> ignore
-}
+// What every part's look reads of the hand: lit under a pointer (with a mouse) or while held (with a finger), its ring
+// while the keyboard's focus is on it, as react-aria's useHover and useFocusRing give Comma's own parts. How each answers
+// the hand is mbui's headless component's: a button, a toggle, a disclosure, a choice, a radio group, a slider, a menu.
 
 ///|
 /// Whether `v` is lit now (Comma's hover and its press): under the pointer or pressed with a mouse, pressed with a

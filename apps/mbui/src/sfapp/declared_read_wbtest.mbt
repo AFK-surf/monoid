@@ -136,7 +136,7 @@ fn gated_pages() -> Array[Page] {
     Memory("ws1/st1"), MemoryDoc("ws1/st1", "", 0), Usage, Archive, AdbShare("ws1/st1"), NewProfile("ws1/st1"),
     ProfileAccount("k1"), VaultItems, VaultItem("v1", "i1"), AutoDecisions, AutoCompletion, AutoPolicy("ws1/st1"),
     BarSettings, KeptFiles, KeptChat("ws1/st1", 1), Changelog, About, Shortcuts, LocalStation, Notifications,
-    Permissions, Archiving, StationArchiving("ws1/st1"), StationMove("ws1/st1"), UsagePrices(7), RunSettings("ws1/st1", "k"),
+    Permissions, Archiving, StationArchiving("ws1/st1"), StationMove("ws1/st1"), UsagePrices(7),
   ]
   [
     Chat(r),

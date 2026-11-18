@@ -806,10 +806,8 @@ pub fn login_card_node(
 /// 取消 as the card's × (login_cancel's), spinning while it is done.
 fn login_cancel_node(h : @view.View, core : Core, station : String, id : String) -> Unit {
   let busy = fn() { login_cancelling(core, station, id) }
-  h.box(fn(b) {
+  @sf.action_box_node(h, fn() { @sf.t("web-main.logins.cancelWhat") }, fn(_) { login_cancel_now(core, station, id) }, disabled=fn() { busy() }, fn(b) {
     @sf.style_node(b, fn() { if @sf.lit_node(b) && !busy() { lc_cancel_lit } else { lc_cancel } }, in_row=true)
-    @sf.presses_node(b, fn() { login_cancel_now(core, station, id) }, on=fn() { !busy() })
-    b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.logins.cancelWhat"))) })) |> ignore
     b.pick(busy, fn(m, spins) {
       if spins {
         @sf.spinner_node(m, size=lc_spin) |> ignore
@@ -860,13 +858,11 @@ fn login_active_node(card : @view.View, core : Core, station : String, l : () ->
 ///|
 /// The device code (login_code's), as `code` says it now: pressed, copied, said so.
 fn login_code_node(p : @view.View, core : Core, code : () -> String) -> Unit {
-  p.box(fn(b) {
-    @sf.style_node(b, fn() { lc_code_room })
-    @sf.presses_node(b, fn() {
+  @sf.action_box_node(p, fn() { @sf.t("web-main.logins.copyCode") + " " + code() }, fn(_) {
       @sfbase.copy_out(code())
       (core.say)(@sf.t("web-main.logins.codeCopied"))
-    })
-    b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.logins.copyCode") + " " + code())) })) |> ignore
+    }, fn(b) {
+    @sf.style_node(b, fn() { lc_code_room })
     b.box(fn(w) {
       w
       .words_runs(By(fn() { [@ui.span(code(), mono=true)] }))
@@ -885,7 +881,7 @@ fn login_code_node(p : @view.View, core : Core, code : () -> String) -> Unit {
 fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
   let foot = fn(style : @ui.Style) { if s().last { style.then(lc_foot_reach) } else { style } }
   let button = fn(at : @view.View, in_row : Bool) {
-    at.box(fn(b) {
+    @sf.action_box_node(at, fn() { s().label }, fn(_) { (s().press)() }, disabled=fn() { s().busy }, fn(b) {
       @sf.style_node(
         b,
         fn() {
@@ -906,8 +902,6 @@ fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
         },
         in_row~,
       )
-      @sf.presses_node(b, fn() { (s().press)() }, on=fn() { !s().busy })
-      b.says(By(fn() { Some(@view.said(Button, label=s().label)) })) |> ignore
       let ink = fn() { if s().solid { @sf.theme().p.on_primary } else { @sf.theme().p.text } }
       b.show(fn() { s().busy }, fn(x) { @sf.spinner_node(x, size=lc_spin, arc=ink) |> ignore })
       @sf.words_node(b, fn() { s().label }, fn() { if s().solid { lc_step_words_solid } else { lc_step_words } }) |> ignore
@@ -924,13 +918,11 @@ fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
     x.box(fn(r) {
       @sf.style_node(r, fn() { foot(lc_step_row) })
       button(r, true)
-      r.box(fn(m) {
-        @sf.style_node(m, fn() { (if @sf.lit_node(m) { lc_more_lit } else { lc_more }).then(lc_inner_round) }, in_row=true)
-        @sf.presses_node(m, fn() {
+      @sf.action_box_node(r, fn() { @sf.t("common.login.otherWays") }, fn(m) {
           let (wx, wy, ww, wh) = m.placed_window_now()
           @sf.menu(s().more.map(fn(i) { Some(i) }), from=At(wx, wy, ww, wh), along=End)
-        })
-        m.says(By(fn() { Some(@view.said(Button, label=@sf.t("common.login.otherWays"))) })) |> ignore
+        }, fn(m) {
+        @sf.style_node(m, fn() { (if @sf.lit_node(m) { lc_more_lit } else { lc_more }).then(lc_inner_round) }, in_row=true)
         @sf.icon_node(m, "more", lc_icon, By(fn() { @sf.theme().p.text })) |> ignore
       })
       |> ignore
@@ -985,10 +977,8 @@ fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Jso
     })
     |> ignore
     b.show(fn() { words() != "" || shows().busy }, fn(d) {
-      d.box(fn(go) {
+      @sf.action_box_node(d, fn() { @sf.t("web-main.logins.finish") }, fn(_) { send(words()) }, disabled=fn() { shows().busy }, fn(go) {
         @sf.style_node(go, fn() { (if @sf.lit_node(go) && !shows().busy { lc_done_lit } else { lc_done }).then(lc_done_round) }, in_row=true)
-        @sf.presses_node(go, fn() { send(words()) }, on=fn() { !shows().busy })
-        go.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.logins.finish"))) })) |> ignore
         // busy: a spinner over its word, as wide as before
         @sf.words_node(go, fn() { @sf.t("web-main.logins.finish") }, fn() { lc_done_words }).alpha(By(fn() {
           if shows().busy {
@@ -1289,20 +1279,14 @@ pub fn step_card_node(
 ) -> Unit {
   v.box(fn(room) {
     @sf.style_node(room, fn() { lc_room })
-    room.box(fn(card) {
-      let goes = fn() { go() is Some(_) }
+    let goes = fn() { go() is Some(_) }
+    @sf.action_box_while_node(room, goes, title, fn(_) {
+      match @signals.untracked(go) {
+        Some(f) => f()
+        None => ()
+      }
+    }, fn(card) {
       @sf.style_node(card, fn() { if goes() && @sf.lit_node(card) { lc_card_step_lit } else { lc_card } })
-      @sf.presses_node(
-        card,
-        fn() {
-          match @signals.untracked(go) {
-            Some(f) => f()
-            None => ()
-          }
-        },
-        on=goes,
-      )
-      card.says(By(fn() { if goes() { Some(@view.said(Button, label=title())) } else { None } })) |> ignore
       card.box(fn(h) {
         @sf.style_node(h, fn() { lc_head })
         h.box(fn(t) {

@@ -659,10 +659,13 @@ pub fn chat_inputs_left(r : ChatRef) -> Unit {
       }
     None => ()
   }
+  // (what was read of it kept for its page opened again: chat_seeds_put)
+  chat_seeds_put(key, chat_read.kept(chat_params(r)), chat_head_read.kept(chat_params(r)))
   chat_inputs.forget(key)
   chat_heads.forget(key)
   chat_head_jsons.forget(key)
-  // (its messages by key let go with it: read again from its list as it is read again)
+  // (its messages by key let go with it: read again from its list as it is read again, those that did not change
+  // taken as they were read)
   chat_messages_kept.remove(key)
 }
 
@@ -674,12 +677,44 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
     Some(input) => input.live.val = false
     None => ()
   }
+  // (what was read of it kept for its page opened again: chat_seeds_put)
+  chat_seeds_put(key, chat_read.kept_from(src, chat_params(r)), chat_head_read.kept_from(src, chat_params(r)))
   chat_inputs.forget_from(src, key)
   chat_heads.forget_from(src, key)
   chat_head_jsons.forget_from(src, key)
   // (its messages by key let go with it, chat_read_left having told where it was left: read again from its list as it
-  // is read again)
+  // is read again, those that did not change taken as they were read)
   chat_messages_kept.remove(key)
+}
+
+///|
+/// The chats' reads as their pages were left (chat_read's, by the chat's key), the last `chats_kept` of them: the core's
+/// client keeps as many chats' values as it lets them go (@core.Client::keep), and a page of one opened again (a source
+/// of its own, its read made from nothing) is given that value again (`same`) or what changed from it, each message
+/// that did not change the same JSON. So that page's read is made from the one kept (chat_read_seed): none of those
+/// messages read again, only what changed. Never shown: what the page shows is what the core answers, as before.
+// kept across runs: emptied as a run begins (chat_seeds_reset)
+let chat_read_seeds : Array[(String, ChatRead)] = []
+
+///|
+/// The read kept of the chat whose value `v` (its messages `message_json`) is (chat_read_seeds): one whose value is it,
+/// or of whose messages one is the same JSON, as the core's client keeps them (the newest first); none else.
+fn chat_read_seed(v : Json, message_json : Array[Json]) -> ChatRead? {
+  let m = message_json.length()
+  let mut i = chat_read_seeds.length() - 1
+  while i >= 0 {
+    let w = chat_read_seeds[i].1
+    let n = w.read.length()
+    if physical_equal(w.raw, v) ||
+      (n > 0 && m > 0 &&
+      (physical_equal(w.read[0].0, message_json[0]) ||
+      physical_equal(w.read[n - 1].0, message_json[m - 1]) ||
+      (n <= m && physical_equal(w.read[n - 1].0, message_json[n - 1])))) {
+      return Some(w)
+    }
+    i -= 1
+  }
+  None
 }
 
 ///|
@@ -817,13 +852,13 @@ fn chat_read_again(message_json : Array[Json], was : ChatRead) -> (Array[(Json, 
     let (wj, _) = was.read[i]
     guard !physical_equal(j, wj) else { continue }
     guard message_key(j) == message_key(wj) else { return None }
-    let m = message_of(j)
+    let m = message_read(j)
     read[i] = (j, m)
     messages[i] = m
   }
   for i in n..<message_json.length() {
     let j = message_json[i]
-    let m = message_of(j)
+    let m = message_read(j)
     read.push((j, m))
     messages.push(m)
   }
@@ -838,6 +873,12 @@ fn chat_read_again(message_json : Array[Json], was : ChatRead) -> (Array[(Json, 
 let chat_read : Derived[ChatRead] = Derived::new_ref("chat", fn(v, was) {
   chat_read_made.val += 1
   let message_json = items(Some(v), "messages")
+  // (made from nothing, a source's first: from what was read of this chat as a page of it was left, where it is the
+  // same chat's, as from the read before: chat_read_seeds)
+  let was = match was {
+    Some(_) => was
+    None => chat_read_seed(v, message_json)
+  }
   let (read, messages) = match was {
     Some(w) if physical_equal(w.message_json, message_json) && same_chat_messages(message_json, w.read) =>
       (w.read, w.view.messages)
@@ -856,7 +897,7 @@ let chat_read : Derived[ChatRead] = Derived::new_ref("chat", fn(v, was) {
               None => []
             },
             message_key,
-            message_of,
+            message_read,
           )
           (read, read.map(fn(p) { p.1 }))
         }

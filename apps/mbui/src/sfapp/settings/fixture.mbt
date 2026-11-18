@@ -380,7 +380,6 @@ fn fixture_reset() -> Unit {
   rigs_fixture_reset()
   move_fixture_reset()
   devices_fixture_reset()
-  fx_many_models.val = false
   fx_many_kept.val = false
   fx_station_many_profiles.val = false
   fx_station_update_failed.val = false
@@ -941,6 +940,14 @@ pub fn fixture_page(mode : String) -> String {
     // 密钥 before the library, this device not signing: verified once by a press, or what it waits for
     "settings-vault-confirm" => fx.lock_case = "confirm"
     "settings-vault-syncing" => fx.lock_case = "syncing"
+    // 密钥 on a device not confirmed in an upgraded workspace's safe mode, its security page as the core says it: left
+    // out by its station and waiting to be approved, or its person's lock begun anew elsewhere (`replaced`); each as the
+    // core says it since (not confirmed, the way to 安全) and as it said before (`-was`: held on 正在同步…, or offered
+    // 验证, which its person's lock refuses: `personal_outside`)
+    "settings-vault-waiting" => fx.lock_case = "waiting"
+    "settings-vault-waiting-was" => fx.lock_case = "waiting-was"
+    "settings-vault-replaced" => fx.lock_case = "replaced"
+    "settings-vault-replaced-was" => fx.lock_case = "replaced-was"
     "settings-vault-prompt" => fx.key_ask = true
     "settings-vault-words" => recovery_words["ws1"] = fx_words()
     "settings-vault-add" => fixture_open.desk = "vault-add"
@@ -967,15 +974,8 @@ pub fn fixture_page(mode : String) -> String {
     // what the upgrade of safe mode waits for (security.mbt upgrade_keys): a station this person may update, one they
     // may not, a member, a device, more than six, a station of another workspace, a station updating
     m if m.has_prefix("settings-security-upgrade-") => fx.upgrade = m.unsafe_substring(start=26, end=m.length())
-    // the run's models listed (model_list.mbt): more than 8, by series, one of another station's to borrow
-    "settings-run-models" => {
-      fx_many_models.val = true
-      run_list.set("session:s-c1", "model")
-    }
     // 本机缓存 with many chats kept (a card of 200 rows)
     "settings-kept-many" => fx_many_kept.val = true
-    // the run's accounts listed (run_more.mbt account_list)
-    "settings-run-accounts" => run_list.set("session:s-c1", "account")
     // the fonts page at code's faces
     "settings-fonts-code" => fonts_at.set(2)
     "settings-new-connect-platform" => fx_connect_step.val = "platform"
@@ -1005,7 +1005,7 @@ pub fn fixture_page(mode : String) -> String {
       "stations"
     "settings-adb" | "settings-adb-off" | "settings-adb-unpaired" | "settings-adb-pairing" | "settings-adb-connected" | "settings-adb-failed" =>
       "adb:ws1/st1"
-    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" =>
+    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" | "settings-adb-lock-multi" | "settings-adb-lock-multi-replaced" | "settings-adb-lock-multi-member" =>
       "adb:"
     // the second station a phone is lent to, its first paired already
     "settings-adb-second" => "adb:ws1/st2"
@@ -1020,7 +1020,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
-    | "settings-vault-confirm" | "settings-vault-syncing" => "vault"
+    | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
+    | "settings-vault-replaced-was" => "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
     "settings-vault-item" => "vault-item:v1#it1"
     "settings-decisions" => "decisions-settings"
@@ -1032,7 +1033,6 @@ pub fn fixture_page(mode : String) -> String {
     "settings-about-flow" => "about"
     "settings-fonts-coming" | "settings-fonts-code" => "fonts"
     "settings-prices" => "prices:7"
-    "settings-run" | "settings-run-models" | "settings-run-accounts" | "settings-run-runtime" => "run:ws1/st1#s-c1"
     "settings-add-people" | "settings-workspace-mark" | "settings-workspace-motion" => "workspace"
     "settings-stations-motion" | "settings-stations-incompatible" | "settings-stations-low" => "stations"
     "settings-connects-motion" => "connects"
@@ -2853,6 +2853,12 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
   if name == "lock" && mode.has_prefix("lock-") {
     return Some(waiting_lock(mode))
   }
+  // (settings-vault-waiting, -replaced: the security page of a device not confirmed, as lock-waiting's, lock-replaced's)
+  match fx.lock_case {
+    "waiting" | "waiting-was" if name == "lock" => return Some(waiting_lock("lock-waiting"))
+    "replaced" | "replaced-was" if name == "lock" => return Some(waiting_lock("lock-replaced"))
+    _ => ()
+  }
   let me : Json = obj([("sub", str("u1")), ("email", str("lin@example.com")), ("name", str("林")), ("role", str("owner"))])
   match name {
     // Willow's logins (station_logins.mbt): codex's under way, gh's done yesterday
@@ -3140,21 +3146,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
     "profileFlow" if fx.new_login => Some(fx_profile_flow_plan())
     "profileFlow" if fx.new_key => Some(fx_profile_flow_key())
     "profileFlow" => Some(fx_profile_flow(hermes=mode == "settings-new-profile-hermes"))
-    "pick" if text(Some(Json::object(params)), "of").has_prefix("session:") => {
-      let v = fx_session_pick()
-      if mode == "settings-run-runtime" {
-        match v {
-          Object(o) => {
-            o["runtimeFixed"] = Json::boolean(false)
-            o["runtimes"] = ["claude", "codex"]
-            Some(Json::object(o))
-          }
-          _ => Some(v)
-        }
-      } else {
-        Some(v)
-      }
-    }
+    "pick" if text(Some(Json::object(params)), "of").has_prefix("session:") => Some(fx_session_pick())
     "connectFlow" if fx_connect_step.val == "commaBind" => Some(fx_comma_flow())
     "connectFlow" if fx_connect_step.val == "platformGroup" => Some(fx_group_flow("platform", mode))
     "connectFlow" if fx_connect_step.val == "groupBind" || fx_connect_step.val == "groupForm" || fx_connect_step.val == "groupDone" =>
@@ -3395,32 +3387,33 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 ("you", Json::boolean(true)),
                 ("nameText", str("林")),
                 ("roleText", str("Owner")),
+                ("devicesText", str(if fx.lock_case == "confirm" { "3 台受信任设备 · 1 台设备 · 1 个网页版" } else { "4 台受信任设备 · 1 个网页版" })),
                 (
                   "groups",
                   [
                     obj([
                       ("appText", str("still.fail Android")),
                       ("devices", [
-                        obj([("id", str("d1")), ("kind", str("app")), ("label", str("still.fail Android · Pixel 9")), ("signs", Json::boolean(fx.lock_case != "confirm")), ("older", Json::boolean(false)), ("mine", Json::boolean(true)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1760000000.0)), ("removable", Json::boolean(false)), ("nameText", str("Pixel 9")), ("fullText", str("Pixel 9 · still.fail Android")), ("metaText", str(if fx.lock_case == "confirm" { "此设备" } else { "此设备 · 受信任" }))]),
+                        obj([("id", str("d1")), ("kind", str("app")), ("label", str("still.fail Android · Pixel 9")), ("signs", Json::boolean(fx.lock_case != "confirm")), ("older", Json::boolean(false)), ("mine", Json::boolean(true)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1760000000.0)), ("removable", Json::boolean(false)), ("nameText", str("Pixel 9")), ("fullText", str("Pixel 9 · still.fail Android")), ("metaText", str(if fx.lock_case == "confirm" { "此设备" } else { "此设备 · 受信任" })), ("machine", str("phone")), ("appText", str("still.fail Android")), ("noteText", str(if fx.lock_case == "confirm" { "still.fail Android" } else { "still.fail Android · 受信任" }))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("still.fail 桌面版")),
                       ("devices", [
-                        obj([("id", str("d4")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 林的 MacBook Pro")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759990000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("林的 MacBook Pro")), ("fullText", str("林的 MacBook Pro · still.fail 桌面版")), ("metaText", str("一天内使用过 · 受信任"))]),
-                        obj([("id", str("d6")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 示例工作站")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759700000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("示例工作站")), ("fullText", str("示例工作站 · still.fail 桌面版")), ("metaText", str("3 天前使用过 · 受信任"))]),
+                        obj([("id", str("d4")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 林的 MacBook Pro")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759990000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("林的 MacBook Pro")), ("fullText", str("林的 MacBook Pro · still.fail 桌面版")), ("metaText", str("一天内使用过 · 受信任")), ("machine", str("computer")), ("appText", str("still.fail 桌面版")), ("noteText", str("still.fail 桌面版 · 一天内使用过 · 受信任"))]),
+                        obj([("id", str("d6")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 示例工作站")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759700000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("示例工作站")), ("fullText", str("示例工作站 · still.fail 桌面版")), ("metaText", str("3 天前使用过 · 受信任")), ("machine", str("computer")), ("appText", str("still.fail 桌面版")), ("noteText", str("still.fail 桌面版 · 3 天前使用过 · 受信任"))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("still.fail 网页版")),
                       ("devices", [
-                        obj([("id", str("d2")), ("kind", str("web")), ("label", str("still.fail 网页版 · Chrome · macOS")), ("signs", Json::boolean(false)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("daysLeft", Json::number(4.0)), ("renewSoon", Json::boolean(true)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759800000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("Chrome · macOS")), ("fullText", str("Chrome · macOS · still.fail 网页版")), ("metaText", str("2 天前使用过 · 剩余 4 天"))]),
+                        obj([("id", str("d2")), ("kind", str("web")), ("label", str("still.fail 网页版 · Chrome · macOS")), ("signs", Json::boolean(false)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("daysLeft", Json::number(4.0)), ("renewSoon", Json::boolean(true)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759800000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("Chrome · macOS")), ("fullText", str("Chrome · macOS · still.fail 网页版")), ("metaText", str("2 天前使用过 · 剩余 4 天")), ("appText", str("still.fail 网页版")), ("noteText", str("still.fail 网页版 · 2 天前使用过")), ("leftText", str("剩余 4 天"))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("其他")),
                       ("devices", [
-                        obj([("id", str("d5")), ("kind", str("app")), ("label", str("")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("客户端")), ("fullText", str("客户端")), ("metaText", str("超过一个月未使用 · 受信任"))]),
+                        obj([("id", str("d5")), ("kind", str("app")), ("label", str("")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("客户端")), ("fullText", str("客户端")), ("metaText", str("超过一个月未使用 · 受信任")), ("machine", str("computer")), ("noteText", str("超过一个月未使用 · 受信任"))]),
                       ]),
                     ]),
                   ],
@@ -3434,13 +3427,14 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 ("you", Json::boolean(false)),
                 ("nameText", str("Ana")),
                 ("roleText", str("管理员")),
+                ("devicesText", str("1 台受信任设备")),
                 (
                   "groups",
                   [
                     obj([
                       ("appText", str("still.fail 桌面版")),
                       ("devices", [
-                        obj([("id", str("d3")), ("kind", str("app")), ("label", str("still.fail 桌面版 · Ana 的 MacBook Air")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759570000.0)), ("removable", Json::boolean(false)), ("nameText", str("Ana 的 MacBook Air")), ("fullText", str("Ana 的 MacBook Air · still.fail 桌面版")), ("metaText", str("5 天前使用过 · 受信任"))]),
+                        obj([("id", str("d3")), ("kind", str("app")), ("label", str("still.fail 桌面版 · Ana 的 MacBook Air")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759570000.0)), ("removable", Json::boolean(false)), ("nameText", str("Ana 的 MacBook Air")), ("fullText", str("Ana 的 MacBook Air · still.fail 桌面版")), ("metaText", str("5 天前使用过 · 受信任")), ("machine", str("computer")), ("appText", str("still.fail 桌面版")), ("noteText", str("still.fail 桌面版 · 5 天前使用过 · 受信任"))]),
                       ]),
                     ]),
                   ],
@@ -3451,7 +3445,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           (
             "stations",
             [
-              obj([("id", str("st1")), ("name", str("Willow")), ("online", Json::boolean(true)), ("protected", Json::boolean(true))]),
+              obj([("id", str("st1")), ("name", str("Willow")), ("online", Json::boolean(true)), ("protected", Json::boolean(true)), ("icon", str("glyph:desktop"))]),
               obj([("id", str("st2")), ("name", str("Maple")), ("online", Json::boolean(false)), ("protected", Json::boolean(false))]),
             ],
           ),
@@ -3466,7 +3460,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         obj([
           ("available", Json::boolean(true)),
           ("locked", Json::boolean(true)),
-          ("canSign", Json::boolean(fx.lock_case != "confirm" && fx.lock_case != "syncing")),
+          ("canSign", Json::boolean(!["confirm", "syncing", "waiting", "waiting-was", "replaced", "replaced-was"].contains(fx.lock_case))),
           ("setUp", Json::boolean(!fx.vault_off)),
           ("plainLeft", Json::number(fx.plain_left.to_double())),
           (
@@ -3501,8 +3495,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ] +
         (match fx.lock_case {
           // (not signing for a reason of its own: the core's words, and 验证 where a press ends it)
-          "confirm" => [("stateText", str("此设备需完成一次验证后才能使用密钥库")), ("confirmText", str("验证"))]
-          "syncing" => [("stateText", str("正在同步安全模式的成员名单，同步完成后即可使用"))]
+          "confirm" | "replaced-was" => [("stateText", str("此设备需完成一次验证后才能使用密钥库")), ("confirmText", str("验证"))]
+          "syncing" | "waiting-was" => [("stateText", str("正在同步安全模式的成员名单，同步完成后即可使用"))]
           _ => []
         })),
       )
@@ -3736,6 +3730,10 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     fx.own_after = if name == "lock.restartOwn" { "rebound" } else { "asked" }
     fx_changed()
     return Some(Ok(Json::null()))
+  }
+  // (验证 on a device whose person's lock was begun anew elsewhere: refused, as the core did before it offered none)
+  if name == "lock.confirmSigner" && fx.lock_case == "replaced-was" {
+    return Some(Err(obj([("code", str("personal_outside")), ("message", str("此设备尚未获批：先在这台设备上发送批准请求，输入你的受信任设备上显示的安全码"))])))
   }
   match rigs_fixture_call(name, p) {
     Some(r) => return Some(r)
@@ -4554,10 +4552,6 @@ fn fx_profile_flow(hermes? : Bool = false) -> Json {
 }
 
 ///|
-/// Whether the run's models are many (MBUI_FIXTURE=settings-run-models).
-let fx_many_models : Ref[Bool] = Ref(false)
-
-///|
 /// Whether many chats are kept (MBUI_FIXTURE=settings-kept-many): 200 more after the three, each with a few KB.
 let fx_many_kept : Ref[Bool] = Ref(false)
 
@@ -4590,37 +4584,11 @@ fn fx_kept_most_first(chats : Array[Json]) -> Array[Json] {
 }
 
 ///|
-/// A chat's agent as it runs and as it is to run (`pick` of `session:<key>`, MBUI_FIXTURE=settings-run): its effort
+/// A chat's agent as it runs and as it is to run (`pick` of `session:<key>`, the comma and group flows): its effort
 /// raised to high, the rest as it was.
 fn fx_session_pick() -> Json {
   let model = obj([("model", str("claude-opus-5-5")), ("name", str("Opus 5.5")), ("maker", obj([("id", str("anthropic"))]))])
-  let m = fn(id : String, name : String, family : String) {
-    obj([("model", str(id)), ("name", str(name)), ("family", str(family)), ("maker", obj([("id", str("anthropic"))]))])
-  }
-  // (MBUI_FIXTURE=settings-run-models: many, by series, one borrowed from Maple)
-  let options : Json = if fx_many_models.val {
-    [
-      obj([("model", str("claude-opus-5-5")), ("name", str("Opus 5.5")), ("family", str("Opus")), ("maker", obj([("id", str("anthropic"))]))]),
-      m("claude-opus-5-1", "Opus 5.1", "Opus"),
-      m("claude-opus-5", "Opus 5", "Opus"),
-      m("claude-sonnet-5-5", "Sonnet 5.5", "Sonnet"),
-      m("claude-sonnet-5", "Sonnet 5", "Sonnet"),
-      m("claude-sonnet-4-5", "Sonnet 4.5", "Sonnet"),
-      m("claude-haiku-4-5", "Haiku 4.5", "Haiku"),
-      m("claude-haiku-4", "Haiku 4", "Haiku"),
-      obj([
-        ("model", str("claude-fable-5-1")),
-        ("name", str("Fable 5.1")),
-        ("family", str("Fable")),
-        ("maker", obj([("id", str("anthropic"))])),
-        ("availability", str("borrowable")),
-        ("fromStation", obj([("name", str("Maple")), ("icon", str("glyph:laptop:teal"))])),
-        ("fromText", str("借自 Maple")),
-      ]),
-    ]
-  } else {
-    [model]
-  }
+  let options : Json = [model]
   obj([
     ("value", obj([("model", str("claude-opus-5-5")), ("runtime", str("claude"))])),
     ("draft", obj([("model", str("claude-opus-5-5")), ("runtime", str("claude")), ("effort", str("high"))])),
@@ -4912,6 +4880,23 @@ fn fx_adb_share() -> Json {
         ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
     "lock-outside" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([]))])]))])
+    // two accounts signed in here: another's lock has this device on it, the workspace's account (u1) is to be approved
+    // on its own (`multi`), or set it up again elsewhere (`multi-replaced`); or the other way round (`multi-member`)
+    "lock-multi" | "lock-multi-replaced" | "lock-multi-member" => {
+      let (mine, other) = match fx_adb.val {
+        "lock-multi" => ("outside", "member")
+        "lock-multi-replaced" => ("replaced", "member")
+        _ => ("member", "outside")
+      }
+      let own = if mine == "member" { Json::array([device("ed25519:u1", "OPPO PLP110", true)]) } else { Json::array([]) }
+      let others = if other == "member" { Json::array([device("ed25519:w1", "OPPO PLP110", true)]) } else { Json::array([]) }
+      granted("connected", [
+        ("personal", Json::array([
+          obj([("sub", str("s-work")), ("email", str("lin@work.example")), ("standing", str(other)), ("devices", others)]),
+          obj([("sub", str("u1")), ("email", str("lin@example.com")), ("standing", str(mine)), ("devices", own)]),
+        ])),
+      ])
+    }
     // lent for a chat's grant to Willow: its adb waiting to be paired (the pairing dialog not open yet, then open),
     // holding the phone, failing
     "unpaired" => granted("unpaired", [])

@@ -45,52 +45,6 @@ fn context_entry_node(v : @view.View, src : Source, r : ChatRef, key : String, s
 }
 
 ///|
-/// Its tile's name: that it can be compacted said once the context is filling up (amber or red), not before.
-fn context_tile_label(entry : ContextTile?, level : String) -> String {
-  match entry {
-    Some(e) if e.compacts && (level == "amber" || level == "red") => tr("web-mobile.agent.contextCompactable")
-    _ => tr("android-chat.agent.context")
-  }
-}
-
-///|
-/// A tile's name under its figure (12/16, muted) in `v`, as `name` and `open` say it now; its context's ending in ›
-/// when something can be done to it, or a spinner, or the failure's mark.
-fn context_tile_name_node(v : @view.View, name : () -> String, open : () -> ContextTile?) -> Unit {
-  v.box(fn(row) {
-    @sf.style_node(row, fn() { tile_name_row })
-    @sf.words_node(row, name, fn() { tile_name }) |> ignore
-    row.pick(
-      fn() {
-        match open() {
-          None => 0
-          Some(o) if o.busy || o.failed => 1
-          Some(_) => 2
-        }
-      },
-      fn(m, what) {
-        match what {
-          1 =>
-            @sfpages.doing_mark_node(m, fn() { open().map_or(false, fn(o) { o.busy }) }, fn() {
-              if open().map_or(false, fn(o) { o.failed }) {
-                Some("")
-              } else {
-                None
-              }
-            })
-          2 => @sf.icon_node(m, "chevron-right", tile_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
-          _ => ()
-        }
-      },
-    )
-  })
-  |> ignore
-}
-
-///|
-let tile_chevron : Double = 11.0
-
-///|
 /// What can be done to its context by hand, the library's panel (nodes of the window's tree, made once as it opens:
 /// @sf.panel_nodes): compacted, or cleared (asked first: @sf.confirm); each row there while its session says it can.
 fn open_context(src : Source, r : ChatRef, key : String) -> Unit {
@@ -128,13 +82,3 @@ fn open_context(src : Source, r : ChatRef, key : String) -> Unit {
     })
   })
 }
-
-///|
-/// A tile's name (muted), and its name with its › side by side.
-// kept across runs: a value (no field of it changes)
-let tile_name : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_name_row : @ui.Style = @ui.css("row gap=S0_5 align=ACenter")
-

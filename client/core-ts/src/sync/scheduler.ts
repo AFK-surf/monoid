@@ -26,7 +26,8 @@ export const Priority = {
 
 type Waiting = {
   key: string;
-  priority: number;
+  /// What it was asked at (the most of every time it was), before what a UI makes urgent (`prioritize`) raises it.
+  basePriority: number;
   seq: number;
   work: Effect.Effect<void, CoreError>;
   done: Deferred.Deferred<void, CoreError>;
@@ -36,11 +37,17 @@ type Waiting = {
 /// a slow link a read can take a minute (every thread, the sidebar), and two of them would hold up the chat opened.
 export const URGENT_ROOM = 2;
 
-/// One lane: its tasks, run `width` at a time (and URGENT_ROOM more of the urgent).
+/// One lane: its tasks, run by how urgent each is now (`#pump`): what a UI has open or a person waits on in `width` and
+/// URGENT_ROOM more, what a UI shows in `width`, what is kept current in the background one at a time and only while
+/// nothing more urgent is asked or under way, what is idle alone once nothing else is.
 class Lane {
   readonly waiting: Waiting[] = [];
   readonly running = new Map<string, Waiting>();
   readonly width: number;
+  /// Requests made in a person's sight that are no task of the lane (`foregroundBegin`): under way now.
+  foreground = 0;
+  /// Told once something more urgent than the background is asked or under way (`preempted`).
+  preempt: Deferred.Deferred<void> | null = null;
   constructor(width: number) {
     this.width = width;
   }
@@ -51,8 +58,8 @@ export class Scheduler {
   readonly #scoped: Scoped;
   readonly #lanes = new Map<string, Lane>();
   #seq = 0;
-  /// The priority things matching a key's prefix get while a UI makes them urgent (`prioritize`), by who asked.
-  readonly #boosts = new Map<string, [string, number]>();
+  /// The priority things matching any of the key prefixes get while a UI makes them urgent (`prioritize`), by who asked.
+  readonly #boosts = new Map<string, [readonly string[], number]>();
   /// Told when a lane has nothing left to run, a task of it just over.
   onIdle: (lane: string) => void = () => {};
 
@@ -72,8 +79,41 @@ export class Scheduler {
 
   #boosted(key: string, priority: number): number {
     let p = priority;
-    for (const [prefix, boost] of this.#boosts.values()) if (key.startsWith(prefix)) p = Math.max(p, boost);
+    for (const [prefixes, boost] of this.#boosts.values()) {
+      if (boost <= p) continue;
+      for (const prefix of prefixes) {
+        if (key.startsWith(prefix)) {
+          p = boost;
+          break;
+        }
+      }
+    }
     return p;
+  }
+
+  /// How urgent a task is now: what it was asked at, raised by what a UI makes urgent.
+  #effective(w: Waiting): number {
+    return this.#boosted(w.key, w.basePriority);
+  }
+
+  /// Whether anything of a lane more urgent than `than` waits or runs.
+  #above(lane: Lane, than: number): boolean {
+    for (const w of lane.running.values()) if (this.#effective(w) > than) return true;
+    for (const w of lane.waiting) if (this.#effective(w) > than) return true;
+    return false;
+  }
+
+  /// Whether a lane has a request in a person's sight under way, or a task more urgent than the background.
+  #urgent(lane: Lane): boolean {
+    return lane.foreground > 0 || this.#above(lane, Priority.background);
+  }
+
+  /// What is idle in a lane (`preempted`) gives way: something more urgent is asked or under way.
+  #preemptIdle(lane: Lane): void {
+    const preempt = lane.preempt;
+    if (preempt === null) return;
+    lane.preempt = null;
+    Deferred.doneUnsafe(preempt, Effect.void);
   }
 
   /// Asks for a task: in `lane`, by `key` (one task per key), at `priority`. Returns its completion: what its run
@@ -85,20 +125,25 @@ export class Scheduler {
   /// As `ask`, without waiting: the completion to wait on, if one wants to.
   enqueue(lane: string, key: string, priority: number, work: Effect.Effect<void, CoreError>): Deferred.Deferred<void, CoreError> {
     const l = this.#lane(lane);
-    const p = this.#boosted(key, priority);
     const waiting = l.waiting.find((w) => w.key === key);
     if (waiting) {
       // (raised to the urgent, it may go on now in the room kept for them)
-      if (p > waiting.priority) {
-        waiting.priority = p;
+      if (priority > waiting.basePriority) {
+        waiting.basePriority = priority;
         this.#pump(l, lane);
       }
       return waiting.done;
     }
-    const task: Waiting = { key, priority: p, seq: ++this.#seq, work, done: Deferred.makeUnsafe<void, CoreError>() };
+    const task: Waiting = { key, basePriority: priority, seq: ++this.#seq, work, done: Deferred.makeUnsafe<void, CoreError>() };
     l.waiting.push(task);
     this.#pump(l, lane);
     return task.done;
+  }
+
+  /// Whether the task of `key` waits or runs in `lane`.
+  queued(lane: string, key: string): boolean {
+    const l = this.#lanes.get(lane);
+    return l !== undefined && (l.running.has(key) || l.waiting.some((w) => w.key === key));
   }
 
   /// Whether a lane has anything to run, or running.
@@ -107,19 +152,65 @@ export class Scheduler {
     return l !== undefined && (l.running.size > 0 || l.waiting.length > 0);
   }
 
+  /// A request in a person's sight (not quiet) that is no task of the lane begins: until the returned function is
+  /// called (once; again does nothing), the background of `lane` waits and what is idle there gives way.
+  foregroundBegin(lane: string): () => void {
+    const l = this.#lane(lane);
+    l.foreground++;
+    this.#preemptIdle(l);
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      l.foreground--;
+      this.#pump(l, lane);
+      if (l.foreground === 0 && l.running.size === 0 && l.waiting.length === 0) this.onIdle(lane);
+    };
+  }
+
+  /// Done at once while `lane` has a request in a person's sight under way or a task more urgent than the background,
+  /// else once it has: what is idle (fill.ts) races it to give way.
+  preempted(lane: string): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const l = this.#lane(lane);
+      if (this.#urgent(l)) return Effect.void;
+      return Deferred.await((l.preempt ??= Deferred.makeUnsafe<void>()));
+    });
+  }
+
   #pump(lane: Lane, name: string): void {
+    // (something urgent asked or under way: what is idle gives way to it)
+    if (this.#urgent(lane)) this.#preemptIdle(lane);
     for (;;) {
       // The most urgent, then the oldest; one already running for its key waits for that run.
       let best = -1;
+      let bestP = 0;
       for (let i = 0; i < lane.waiting.length; i++) {
         const w = lane.waiting[i];
         if (lane.running.has(w.key)) continue;
-        if (best < 0 || w.priority > lane.waiting[best].priority || (w.priority === lane.waiting[best].priority && w.seq < lane.waiting[best].seq)) best = i;
+        const p = this.#effective(w);
+        if (best < 0 || p > bestP || (p === bestP && w.seq < lane.waiting[best].seq)) {
+          best = i;
+          bestP = p;
+        }
       }
       if (best < 0) return;
-      // The lane full: only the urgent go on, into the room kept for them.
       const busy = lane.running.size;
-      if (busy >= lane.width && (lane.waiting[best].priority < Priority.focused || busy >= lane.width + URGENT_ROOM)) return;
+      if (bestP >= Priority.focused) {
+        // What a UI has open or a person waits on: the lane's width and the room kept for them.
+        if (busy >= lane.width + URGENT_ROOM) return;
+      } else if (bestP > Priority.background) {
+        // What a UI shows: the lane's width.
+        if (busy >= lane.width) return;
+      } else if (bestP > Priority.idle) {
+        // The background: one at a time, and only while nothing more urgent is asked or under way, so that what is
+        // asked next never waits behind more than the one already gone.
+        if (busy >= lane.width || lane.foreground > 0 || this.#above(lane, Priority.background)) return;
+        for (const w of lane.running.values()) if (this.#effective(w) <= Priority.background) return;
+      } else {
+        // What is idle: alone, once nothing else is.
+        if (busy > 0 || lane.foreground > 0 || this.#above(lane, Priority.idle)) return;
+      }
       const [task] = lane.waiting.splice(best, 1);
       lane.running.set(task.key, task);
       this.#runner.fork(
@@ -144,22 +235,14 @@ export class Scheduler {
     }
   }
 
-  /// Makes what matches `prefix` at least `priority` while `who` says so (a UI's focus); `null` lets it go.
-  prioritize(who: string, prefix: string | null, priority: number = Priority.focused): void {
-    if (prefix === null) this.#boosts.delete(who);
-    else this.#boosts.set(who, [prefix, priority]);
-    if (prefix === null) return;
-    for (const [name, lane] of this.#lanes) {
-      let raised = false;
-      for (const w of lane.waiting) {
-        if (w.key.startsWith(prefix) && w.priority < priority) {
-          w.priority = priority;
-          raised = true;
-        }
-      }
-      // (raised to the urgent, it may go on now in the room kept for them)
-      if (raised) this.#pump(lane, name);
-    }
+  /// Makes what matches `prefix` (or any of several) at least `priority` while `who` says so (a UI's focus); `null`
+  /// (or none) lets it go, and what it raised that has not begun goes back to what it was asked at.
+  prioritize(who: string, prefix: string | readonly string[] | null, priority: number = Priority.focused): void {
+    const prefixes = prefix === null ? null : typeof prefix === "string" ? [prefix] : prefix.length === 0 ? null : [...prefix];
+    if (prefixes === null) this.#boosts.delete(who);
+    else this.#boosts.set(who, [prefixes, priority]);
+    // (raised to the urgent, it may go on now in the room kept for them; let go, it waits its turn again)
+    for (const [name, lane] of this.#lanes) this.#pump(lane, name);
   }
 
   /// Drops what waits in a lane (a station no longer reached, a signed-out account): those waiting on it are told.
@@ -169,12 +252,12 @@ export class Scheduler {
     for (const w of l.waiting.splice(0)) Deferred.doneUnsafe(w.done, Effect.fail(why));
   }
 
-  /// What waits and runs, for tests: `lane key@priority`.
+  /// What waits and runs, for tests: `lane key@priority`, as urgent as each is now.
   pending(): string[] {
     const out: string[] = [];
     for (const [name, lane] of this.#lanes) {
-      for (const w of lane.running.values()) out.push(`${name} ${w.key}@${w.priority} running`);
-      for (const w of lane.waiting) out.push(`${name} ${w.key}@${w.priority}`);
+      for (const w of lane.running.values()) out.push(`${name} ${w.key}@${this.#effective(w)} running`);
+      for (const w of lane.waiting) out.push(`${name} ${w.key}@${this.#effective(w)}`);
     }
     return out;
   }

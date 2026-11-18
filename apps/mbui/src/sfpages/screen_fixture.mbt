@@ -95,6 +95,10 @@ pub fn open_screen_fixture(mode : String) -> Unit {
     screen_fix_mode.val = "screen-pages"
     return
   }
+  if mode == "chat-browser-agent-driving" {
+    screen_fix_mode.val = "screen-browser-agent-driving"
+    return
+  }
   if !mode.has_prefix("screen-") {
     return
   }
@@ -454,6 +458,40 @@ pub fn screen_fixture_stream(
       st["address"] = Json::string(if user { "https://mail.proton.me/u/0/inbox" } else { "https://console.anthropic.com/login" })
       st["title"] = Json::string(if user { "收件箱 - Proton Mail" } else { "Sign in · Anthropic" })
       st["line"] = Json::string(if user { "mail.proton.me · 控制" } else { "console.anthropic.com · 控制" })
+      on_value({ "state": Json::object(st) }, None)
+    }
+    "screen-browser-agent-driving" => {
+      live(false, true, [agent], Some([agent]), Some(true), Some("只看 · \{agent} 正在控制"), None, None, None)
+      let st = match screen_fix_state("live", false, true, [agent], "", Some([agent]), Some(true), Some("只看 · \{agent} 正在控制"), None, None, None) {
+        Object(o) => o.copy()
+        _ => {}
+      }
+      st["kind"] = Json::string("browser")
+      st["openUrl"] = Json::boolean(true)
+      st["address"] = Json::string("https://accounts.google.com/v3/signin/identifier")
+      st["title"] = Json::string("Sign in - Google Accounts")
+      on_value({ "state": Json::object(st) }, None)
+    }
+    "screen-passkey" => {
+      @ui.fake_passkey_asks.clear()
+      @ui.fake_passkey.val = Some(fn(_, _, _, _) { "0\u{1f}0909\u{1f}abcdef\u{1f}070707\u{1f}05\u{1f}\u{1f}" })
+      live(true, true, [], None, None, None, None, Some(["text", "png"]), Some(drop))
+      let st = match screen_fix_state("live", true, true, [], "", None, None, None, None, Some(["text", "png"]), Some(drop)) {
+        Object(o) => o.copy()
+        _ => {}
+      }
+      st["kind"] = Json::string("browser")
+      st["openUrl"] = Json::boolean(true)
+      st["address"] = Json::string("https://accounts.google.com/v3/signin/challenge/pk")
+      st["title"] = Json::string("Welcome - Google Accounts")
+      st["passkey"] = {
+        "id": "1",
+        "host": "accounts.google.com",
+        "rpId": "google.com",
+        "clientData": "{\"type\":\"webauthn.get\"}",
+        "allow": [],
+        "userVerification": "preferred",
+      }
       on_value({ "state": Json::object(st) }, None)
     }
     _ => ()

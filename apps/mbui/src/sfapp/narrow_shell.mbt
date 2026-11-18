@@ -716,14 +716,11 @@ fn narrow_made_as(
       made("kept/" + station + "/" + thread.to_string(), fn(p, core, _here, frame, _stint, _acts) {
         @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame~)
       })
-    // (by its station and session: another's another page)
-    Setting(RunSettings(station, key)) =>
-      made("run/" + station + "/" + key, fn(p, core, _here, frame, _stint, _acts) {
-        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame~)
-      })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) =>
-      made("adb/" + focus, fn(p, core, _here, frame, _stint, _acts) { @settings.adb_node(p, core, focus, on_back=core.pop, frame~) })
+      made("adb/" + focus, fn(p, core, here, frame, _stint, _acts) {
+        @settings.adb_node(p, core, focus, on_back=core.pop, frame~, sub=fn() { here().sub })
+      })
     Setting(Vault) => made("vault", fn(p, core, here, frame, _stint, _acts) { @sfpages.vault_node(p, core, here, on_back=core.pop, frame~) })
     // (by its vault and item: another's another page)
     Setting(VaultItem(vault, item)) =>

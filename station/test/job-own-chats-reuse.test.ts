@@ -11,13 +11,13 @@ import { Store } from "../src/store/store.ts";
 for (const count of [4, 400]) for (const archived of [false, true]) test(`job chat names reuse members of ${count} chats within one read (archived ${archived})`, () => {
   const s = Store.open(":memory:");
   try {
-    s.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a",
+    s.insertSession({ key: "a", connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: "a",
       createdAt: 1, lastActiveAt: 1, createdBy: "ann@x" });
     s.insertJob({ id: "job-a", sessionKey: "a", name: "job", command: "true", cwd: "/", port: null, token: "job-a",
       state: "running", pgid: null, exitCode: null, startedAt: 1, endedAt: null, restarts: 0, log: "/dev/null", watch: false });
     if (archived) s.db.prepare("UPDATE sessions SET archived_at=1 WHERE key='a'").run();
-    const add = s.db.prepare("INSERT INTO threads(surface,channel,thread_ts,title,created_at,home,hidden_at) VALUES ('ember','CHAT',?,?,?,'a',?)");
-    const member = s.db.prepare("INSERT INTO thread_sessions(thread,session,connect,joined_at) VALUES (?,'a','ember',1)");
+    const add = s.db.prepare("INSERT INTO threads(surface,channel,thread_ts,title,created_at,home,hidden_at) VALUES ('chat','CHAT',?,?,?,'a',?)");
+    const member = s.db.prepare("INSERT INTO thread_sessions(thread,session,connect,joined_at) VALUES (?,'a','chat',1)");
     const ids: number[] = [];
     for (let i = 0; i < count; i++) {
       const id = Number(add.run(`chat-${i}`, i === 0 ? "Selected" : "Other", i + 1, archived ? 1 : null).lastInsertRowid);
@@ -56,12 +56,12 @@ test("reused members remain in the read snapshot and are reloaded in the next re
   const dir = mkdtempSync(join(tmpdir(), "job-chat-members-"));
   const path = join(dir, "stillfail.db"), s = Store.open(path), writer = new DatabaseSync(path);
   try {
-    for (const key of ["a", "b"]) s.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc",
+    for (const key of ["a", "b"]) s.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc",
       workspace: "/w", token: key, createdAt: 1, lastActiveAt: 1, createdBy: "ann@x" });
     s.insertJob({ id: "job-a", sessionKey: "a", name: "job", command: "true", cwd: "/", port: null, token: "job-a",
       state: "running", pgid: null, exitCode: null, startedAt: 1, endedAt: null, restarts: 0, log: "/dev/null", watch: false });
-    const thread = s.openThreadOf("ember", "CHAT", "shared", "Shared", "ann@x", "a");
-    s.joinThread(thread.id, "a", "ember"); s.joinThread(thread.id, "b", "ember");
+    const thread = s.openThreadOf("chat", "CHAT", "shared", "Shared", "ann@x", "a");
+    s.joinThread(thread.id, "a", "chat"); s.joinThread(thread.id, "b", "chat");
     s.db.prepare("UPDATE thread_sessions SET joined_at=CASE session WHEN 'a' THEN 1 ELSE 2 END WHERE thread=?").run(thread.id);
     let changed = false;
     const observed = new Proxy(s.db, { get(target, property) {

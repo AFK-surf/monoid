@@ -517,6 +517,16 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_cache_cold(with_message(rich_chat(f.older), screens_answer))
           } else if f.mode == "chat-archived" {
             with_flag(rich_chat(f.older), "archived")
+          } else if f.mode == "chat-held" {
+            // its station not reached: what is sent is held till it is (looks.ts offlineNote)
+            match with_flag(rich_chat(f.older), "offline") {
+              Object(m) => {
+                let o = m.copy()
+                o["offlineNote"] = Json::string("暂时连不上「Willow」：当前显示的是之前读取的内容，发出的消息会在连上后送达")
+                Json::object(o)
+              }
+              v => v
+            }
           } else if f.mode == "chat-cold-offline" {
             with_flag(with_cache_cold(rich_chat(f.older)), "offline")
           } else if f.mode == "chat-actions-run" {
@@ -1195,6 +1205,11 @@ pub fn with_sent(base : Json, session : String) -> Json {
 ///|
 /// An entry of the outbox (Outgoing).
 pub fn outgoing_json(id : String, params : Json, state : String, error : String) -> Json {
+  outgoing_json_made(id, params, state, error, true)
+}
+
+///|
+fn outgoing_json_made(id : String, params : Json, state : String, error : String, with_time : Bool) -> Json {
   let p = Some(params)
   let o : Map[String, Json] = {
     "id": Json::string(id),
@@ -1203,6 +1218,10 @@ pub fn outgoing_json(id : String, params : Json, state : String, error : String)
     "quotes": Json::array(items(p, "quotes")),
     "createdAt": 0,
     "state": Json::string(state),
+  }
+  if with_time {
+    // (its time, as the core says it of `createdAt` from the moment it has it, sent or not: present.ts times)
+    o["time"] = ago("刚刚", "10/19 09:12:00")
   }
   // its words in runs, as its message will draw them (views.ts drawn: personWords)
   match @sf.kept_words(text(p, "text")) {
@@ -1260,8 +1279,6 @@ pub fn fix_deliver(session : String, id : String) -> Unit {
           Object(m) => {
             let m = m.copy()
             m["seq"] = Json::number((100 + fix_serial.val + 1).to_double())
-            // (its time under it, as the core says an outgoing one's: Outgoing.time)
-            m["time"] = ago("刚刚", "10/19 09:12:00")
             fc.outbox[i] = Json::object(m)
           }
           j => fc.outbox[i] = j
@@ -1699,10 +1716,10 @@ pub fn seeded_draft(mode : String, key : String) -> Json {
 pub fn seeded_outbox(mode : String) -> Array[Json] {
   let words : Json = { "text": "好，就按这个改，顺便把深色模式的截图也换掉" }
   match mode {
-    "chat-sending" => [outgoing_json("o-seed", words, "sending", "")]
+    "chat-sending" => [outgoing_json_made("o-seed", words, "sending", "", false)]
     // a picture sent while it went up, among its files from here (views.ts goingUp), how far it is said under it
     "chat-uploading" =>
-      match outgoing_json("o-seed", { "text": "第二屏的截图，帮我看看", "attachments": [going_up_picture] }, "sending", "") {
+      match outgoing_json_made("o-seed", { "text": "第二屏的截图，帮我看看", "attachments": [going_up_picture] }, "sending", "", false) {
         Object(m) => {
           @sfbase.sent_picture_kept("upload\u{1}up-seed", fixture_file("compare.png"))
           let o = m.copy()
@@ -1712,11 +1729,32 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         }
         o => [o]
       }
-    "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    "chat-failed" => [outgoing_json_made("o-seed", words, "failed", "Willow 没有回应", false)]
+    // chat-unsure: did not go after it went out with no answer, so it may be the station's already: 重试, no 删除
+    "chat-unsure" =>
+      match outgoing_json_made("o-seed", words, "failed", "连接断开", false) {
+        Object(m) => {
+          let o = m.copy()
+          o["unsure"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
+    // chat-held: sent while its station is not reached, held till it is (looks.ts outboxHeld), 编辑 and 删除 beside it
+    "chat-held" =>
+      match outgoing_json_made("o-seed", words, "sending", "", false) {
+        Object(m) => {
+          let o = m.copy()
+          o["waits"] = Json::string("连上后发出")
+          o["held"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
     // chat-refused: refused as it is (a file the station cannot have), its words and a quote with it, 编辑 under it
     "chat-refused" => {
       let quote : Json = { "author": "Claude", "text": "高度先按 90 估，量过一次就记住。", "ts": "ts8", "role": "agent", "comment": "这个值得再确认" }
-      match outgoing_json("o-seed", { "text": "好，就按这个改，顺便把深色模式的截图也换掉", "quotes": [quote] }, "failed", "a.jpg 的上传源已丢失") {
+      match outgoing_json_made("o-seed", { "text": "好，就按这个改，顺便把深色模式的截图也换掉", "quotes": [quote] }, "failed", "a.jpg 的上传源已丢失", false) {
         Object(m) => {
           let o = m.copy()
           o["final"] = Json::boolean(true)
@@ -1728,7 +1766,7 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
     // chat-uploading-files: files other than pictures going up before it goes, no words with them, each one's card
     // saying how much of it the station has (views.ts uploads)
     "chat-uploading-files" =>
-      match outgoing_json("o-seed", { "text": "" }, "sending", "") {
+      match outgoing_json_made("o-seed", { "text": "" }, "sending", "", false) {
         Object(m) => {
           let o = m.copy()
           o["waits"] = Json::string("正在上传 2 个文件")
@@ -1834,6 +1872,10 @@ pub let fix_phone : Ref[String] = Ref("")
 ///|
 /// The length chat-phone's request was last allowed for (`adb.decide`'s scope): "" none yet.
 pub let fix_phone_scope : Ref[String] = Ref("")
+
+///|
+/// chat-phone-multi's 发送批准请求 pressed (`adb.personalJoin`): its trusted device shows the code to type.
+pub let fix_phone_join : Ref[Bool] = Ref(false)
 
 ///|
 /// Granted, how its station's adb holds the phone, as the station says it on the card ("": not said).
@@ -2000,7 +2042,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
     fix_rig.val = f.mode.unsafe_substring(start="chat-rig-".length(), end=f.mode.length())
   }
   let stepped = f.mode.has_prefix("chat-phone-step-")
-  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
+  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-multi" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
   // (chat-phone-granted: its request approved already; chat-phone-lacks: waiting, on a phone without Developer options;
   // chat-phone-linked-<link>[-desk]: approved, its station holding the phone as <link> says, on the phone or (-desk)
   // on a computer; chat-phone-step-<what>: approved, on a phone that lacks <what> first, its station holding it as
@@ -2213,6 +2255,12 @@ pub fn fixture_card_call(f : Fixture, name : String, params : Json) -> Result[Js
     "adb.decide" if text(p, "request") == "p-1" => {
       fix_phone_scope.val = text(p, "scope")
       fix_phone.val = if text(p, "scope") != "" { "granted" } else { "denied" }
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
+    // chat-phone-multi's device asking to be approved on its account's lock: a trusted device of theirs shows the code
+    "adb.personalJoin" if f.mode == "chat-phone-multi" => {
+      fix_phone_join.val = true
       f.changed()
       Some(Ok(Json::object({})))
     }

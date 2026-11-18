@@ -1,8 +1,7 @@
 // The rest of settings' pages (the Android app's settings module): what the automatic decisions' pages keep (their
 // drafts: the pages are src/sfpages automatic_decisions.mbt's, one each in every frame), this device's bottom bars
 // , what this device keeps, the changelog, the prices the usage is
-// counted at; and, used from the chats' pages, how an agent runs (History.kt
-// RunSettingsScreen, run_page) and the machine's own sessions to go on with.
+// counted at; and, used from the chats' pages, the machine's own sessions to go on with.
 
 // ---------------------------------------------------------------------------
 // 自动决策

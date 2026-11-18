@@ -219,10 +219,11 @@ pub async fn HelperGrants::refresh(self : HelperGrants, force? : Bool = false) -
         async fn() {
           let status = self.helper.request(jo([("op", js("status"))])) catch {
             e => {
-              // (said once until it answers again or says otherwise: grants.ts)
+              // (said once until it answers again or says otherwise, not by the addresses in it: grants.ts)
               let said = message_of(e)
-              if self.unanswered != Some(said) {
-                self.unanswered = Some(said)
+              let key = without_addresses(said)
+              if self.unanswered != Some(key) {
+                self.unanswered = Some(key)
                 self.io.log.warn("helper", "still.fail Helper did not answer", fields=jo([("error", js(said))]))
               }
               return
@@ -452,4 +453,26 @@ async fn HelperGrants::disk(self : HelperGrants, grant : String) -> String? {
     }
   }
   None
+}
+
+///|
+/// What an error says with each address in it (`0x7a68c38ff0`) said alike (grants.ts `withoutAddresses`).
+fn without_addresses(said : String) -> String {
+  let hex = (c : Char) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+  let cs = said.to_array()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < cs.length() {
+    if cs[i] == '0' && i + 2 < cs.length() && cs[i + 1] == 'x' && hex(cs[i + 2]) {
+      out.write_string("0x…")
+      i += 2
+      while i < cs.length() && hex(cs[i]) {
+        i += 1
+      }
+    } else {
+      out.write_char(cs[i])
+      i += 1
+    }
+  }
+  out.to_string()
 }

@@ -2,7 +2,8 @@
 // Menu (menu/styles.ts), Dropdown (dropdown/Dropdown, SelectItem), Popup (popup/Popup) and Dialog (dialog/styles.ts).
 // Each comes as its cause says, faded and grown in from 0.97 over its own duration on surface-smooth-out, and goes the
 // same way back; a menu, a dropdown's list and a popup go at a press outside them or Escape, a dialog at a press on its
-// scrim or Escape.
+// scrim or Escape. A menu and a dropdown's list are mbui's headless menu (@headless.menu), the dropdown's trigger its
+// disclosure, placed beside what opened them by the tree (View::beside).
 
 ///|
 /// A shadow of Comma's, light and dark (tokens_made's `shadow_*` and `shadow_dark_*`), as the appearance is now.
@@ -108,20 +109,27 @@ pub fn menu_item(
 }
 
 ///|
-/// The rows of a menu in `m`: each 6 in from the menu's sides, rounded sm, 8 in and 6 over and under its words (small,
-/// medium, the secondary's), lit in quaternary under the hand or by the arrow keys; Enter or a press does it and closes
-/// the menu. `lit` is the row lit now (-1 none).
+/// The rows of a menu, its items of mbui's headless menu (@headless.menu: what it is to the keys and a screen reader,
+/// ↓ ↑ Home End among its items, around its ends, Enter, Space or a press doing one, Escape closing it), in `m`, its
+/// node: each 6 in from the menu's sides, rounded sm, 8 in and 6 over and under its words (small, medium, the
+/// secondary's), lit in quaternary where the keys are on it (the pointer moving onto it brings them there); done, it
+/// closes the menu. One chosen says so (a tick at its end, read out checked: a radio of the menu's where `radios`, else a
+/// check), one that destroys in the error's words. The focus its ground's as it opens, the keys going from there to the
+/// first (`first`: to the first item that says it is checked, where one does), given back as it goes. Read out a menu
+/// named `label`.
 #callsite(autofill(loc))
 fn menu_rows(
-  parent : @view.View,
+  m : @view.View,
   items : () -> Array[MenuRow],
-  lit : @signals.Signal[Int],
+  label : String,
   close : () -> Unit,
+  radios? : Bool = false,
+  first? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.box(made_for=loc, fn(m) {
+  @headless.menu(m, in_node=true, made_for=loc, label=fn() { label }, on_close=close, fn(_, menu) {
     let all = @signals.untracked(items)
-    for i, item in all {
+    for item in all {
       if item.divided {
         m.box(fn(d) {
           d.height(Is(Some(0.5))).margin(Is((0.0, space_xs, 0.0, space_xs))).ground(By(fn() { colors().border_primary }))
@@ -131,8 +139,12 @@ fn menu_rows(
       }
       m.box(fn(g) {
         g.padding(Is((space_sm, 0.0, space_sm, 0.0))) |> ignore
-        g.box(fn(r) {
-          let on = fn() { lit.get() == i }
+        let act = fn(_ : @view.View) {
+          (item.press)()
+          close()
+        }
+        let look = fn(r : @view.View, it : @headless.MenuItem) {
+          let on = fn() { it.focused() || lit(r, fn() { !it.disabled() }) }
           let hand = eased_by(r, on, ms_feedback_out, ease_smooth_out)
           r
           .row(Is(true))
@@ -141,13 +153,9 @@ fn menu_rows(
           .padding(Is((space_md, space_sm, space_md, space_sm)))
           .radius(Is(radius_sm))
           .ground(By(fn() { alpha(colors().bg_quaternary, hand.shown(r)) }))
-          .says(Is(Some(@view.said(MenuItem, label=item.label))))
+          // (the pointer moving onto it: the keys' too, one row lit)
+          .on_pointer_moved(fn() { if !it.focused() { r.ask_focus() |> ignore } })
           |> ignore
-          presses_node(r, fn() {
-            (item.press)()
-            close()
-          })
-          r.reacts(fn() { r.pointed() }, fn(p) { if p { lit.set(i) } })
           r.box(fn(w) {
             w
             .grow(Is(1.0))
@@ -168,36 +176,26 @@ fn menu_rows(
           if item.checked {
             icon_node(r, icon_check, 20.0, fn() { colors().fg_brand_primary }) |> ignore
           }
-        })
-        |> ignore
+        }
+        if radios {
+          menu.radio_item(g, fn() { item.label }, fn() { item.checked }, act, look) |> ignore
+        } else if item.checked {
+          menu.check_item(g, fn() { item.label }, fn() { true }, act, look) |> ignore
+        } else {
+          menu.item(g, fn() { item.label }, act, look) |> ignore
+        }
       })
       |> ignore
     }
-    // (the arrow keys move the lit row, Enter does it)
-    m.on_key(fn(k) {
-      let n = @signals.untracked(items).length()
-      if n == 0 {
-        return false
-      }
-      let now = lit.untracked()
-      if k.code == @ui.key_code_down {
-        lit.set(if now < 0 { 0 } else { (now + 1) % n })
-        true
-      } else if k.code == @ui.key_code_up {
-        lit.set(if now <= 0 { n - 1 } else { now - 1 })
-        true
-      } else if k.code == @ui.key_code_enter && now >= 0 && now < n {
-        (@signals.untracked(items)[now].press)()
-        close()
-        true
-      } else {
-        false
-      }
-    })
-    |> ignore
-  }) |> ignore
+  })
+  |> ignore
+  // (the focus its ground's as it opens, or the one chosen's: the keys from there; given back as it goes)
+  if first {
+    m.focus_opens_first(takes=fn(s) { s.check == Some(On) }) |> ignore
+  } else {
+    m.focus_opens_first(takes=fn(_) { false }) |> ignore
+  }
 }
-
 
 ///|
 /// Comma's menu of `anchor` in `layer`, open while `open` says: `items` (MenuRow), 240 wide (`width`), under `anchor`
@@ -214,26 +212,24 @@ pub fn menu_node(
   side? : @view.Side = Bottom,
 ) -> Unit {
   let close = fn() { open.set(false) }
-  let lit : @signals.Signal[Int] = @signals.signal(-1)
   let h = layer.holder(anchor)
   escape_closes(h, fn() { open.get() }, close)
   h.show(fn() { open.get() }, fn(c) { closes_outside(c, close, "Close " + label) })
   h.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
-    lit.set(-1)
     let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
     m.beside(anchor.id(), side~, along=Start, offset=space_xs) |> ignore
     m.width(Is(Some(width))).padding(Is((0.0, space_sm, 0.0, space_sm))) |> ignore
     panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
-    m.says(Is(Some(@view.said(Menu, label~)))) |> ignore
-    menu_rows(m, items, lit, close)
+    menu_rows(m, items, label, close)
   })
 }
 
 ///|
 /// Comma's dropdown in `parent`: a trigger like an input (40 high, rounded md, the primary edge, the xs shadow, its
 /// words small: the chosen option, else `placeholder` in the placeholder's colour, a chevron at its end), opening under
-/// it as wide as it a menu of `options` with a tick by the chosen one. Choosing sets `chosen` (its index). Read out a
-/// combo box named `label`. The trigger's node.
+/// it as wide as it a menu of `options`, a radio each, a tick by the chosen one, the keys on it as it opens. Choosing
+/// sets `chosen` (its index). The trigger mbui's headless disclosure (@headless.disclosure: what opens a menu), read out
+/// by `label` and the option chosen. The trigger's node.
 #callsite(autofill(loc))
 pub fn dropdown_node(
   parent : @view.View,
@@ -246,82 +242,87 @@ pub fn dropdown_node(
   disabled? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  let trigger = parent.box(made_for=loc, fn(t) {
-    let live = fn() { !disabled() }
-    t
-    .row(Is(true))
-    .lines_up(Is(Some(Middle)))
-    .gap(Is(space_md))
-    .height(Is(Some(40.0)))
-    .padding(Is((space_lg + space_xxs, 0.0, space_lg, 0.0)))
-    .radius(Is(radius_md))
-    .ground(By(fn() { if disabled() { colors().bg_disabled } else { colors().bg_primary } }))
-    .edge(By(fn() {
-      let c = colors()
-      (1.0, if open.get() { c.border_brand } else { c.border_primary })
-    }))
-    .shadow(By(fn() { cast(shadow_xs, shadow_dark_xs) }))
-    .says(By(fn() {
-      let i = chosen.get()
-      let value = if i >= 0 && i < options.length() { options[i] } else { "" }
-      Some(@view.said(Combobox, label~, value~, expanded=open.get()))
-    }))
-    |> ignore
-    presses_node(t, fn() { open.set(!open.untracked()) }, on=live)
-    t.box(fn(w) {
-      w
-      .grow(Is(1.0))
-      .words(
-        By(fn() {
-          let i = chosen.get()
-          if i >= 0 && i < options.length() {
-            options[i]
-          } else {
-            placeholder
-          }
-        }),
-        look=words_in(type_small),
-      )
-      .ink(By(fn() {
+  let value = fn() {
+    let i = chosen.get()
+    if i >= 0 && i < options.length() {
+      options[i]
+    } else {
+      ""
+    }
+  }
+  let trigger = @headless.disclosure(
+    parent,
+    made_for=loc,
+    fn() {
+      let v = value()
+      if v == "" {
+        label
+      } else if label == "" {
+        v
+      } else {
+        label + ": " + v
+      }
+    },
+    fn() { open.get() },
+    fn(_) { open.set(!open.untracked()) },
+    disabled~,
+    fn(t, _) {
+      t
+      .row(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .gap(Is(space_md))
+      .height(Is(Some(40.0)))
+      .padding(Is((space_lg + space_xxs, 0.0, space_lg, 0.0)))
+      .radius(Is(radius_md))
+      .ground(By(fn() { if disabled() { colors().bg_disabled } else { colors().bg_primary } }))
+      .edge(By(fn() {
         let c = colors()
-        if disabled() {
-          c.text_disabled
-        } else if chosen.get() >= 0 {
-          c.text_primary
+        (1.0, if open.get() { c.border_brand } else { c.border_primary })
+      }))
+      .shadow(By(fn() { cast(shadow_xs, shadow_dark_xs) }))
+      |> ignore
+      t.box(fn(w) {
+        w
+        .grow(Is(1.0))
+        .words(By(fn() { if value() == "" { placeholder } else { value() } }), look=words_in(type_small))
+        .ink(By(fn() {
+          let c = colors()
+          if disabled() {
+            c.text_disabled
+          } else if chosen.get() >= 0 {
+            c.text_primary
+          } else {
+            c.text_placeholder
+          }
+        }))
+        |> ignore
+      })
+      |> ignore
+      icon_node(t, icon_chevron_down_small, 20.0, fn() { colors().fg_quaternary }).turn(By(fn() {
+        if open.get() {
+          3.141592653589793
         } else {
-          c.text_placeholder
+          0.0
         }
       }))
       |> ignore
-    })
-    |> ignore
-    icon_node(t, icon_chevron_down_small, 20.0, fn() { colors().fg_quaternary }).turn(By(fn() {
-      if open.get() {
-        3.141592653589793
-      } else {
-        0.0
-      }
-    }))
-    |> ignore
-    ring_node(t, fn() { radius_md })
-  })
+      ring_node(t, fn() { radius_md })
+    },
+  )
   let close = fn() { open.set(false) }
-  let lit : @signals.Signal[Int] = @signals.signal(-1)
   let h = layer.holder(trigger)
   escape_closes(h, fn() { open.get() }, close)
   h.show(fn() { open.get() }, fn(c) { closes_outside(c, close, "Close " + label) })
   h.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
-    lit.set(chosen.untracked())
     let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
     m.beside(trigger.id(), side=Bottom, along=Start, offset=space_xs, width=Anchor) |> ignore
     m.padding(Is((0.0, space_sm, 0.0, space_sm))) |> ignore
     panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
-    m.says(Is(Some(@view.said(Listbox, label~)))) |> ignore
     let items = fn() {
       let i = chosen.get()
       options.mapi(fn(j, o) { menu_item(o, fn() { chosen.set(j) }, checked=j == i) })
     }
-    menu_rows(m, items, lit, close)
+    menu_rows(m, items, label, close, radios=true, first=true)
   })
   trigger
 }

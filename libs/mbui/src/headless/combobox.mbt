@@ -94,6 +94,7 @@ pub struct Combobox[K] {
   priv off : () -> Bool
   priv key_off : (K) -> Bool
   priv activate : (K?) -> Unit
+  priv moved : (K) -> Unit
   priv choose : (K) -> Unit
   priv field : Bool
 }
@@ -182,6 +183,7 @@ fn[K : Eq] Combobox::step(
         _ => n - 1
       }
       (self.activate)(Some(live[j]))
+      (self.moved)(live[j])
       true
     }
   }
@@ -194,8 +196,10 @@ fn[K : Eq] Combobox::step(
 /// the active one, a press on one); `chosen` which is the one chosen (read out selected); `key_disabled` an option that
 /// takes no press and that the keys pass by; `disabled` while none of it does; `on_close` told by Escape; `wraps`
 /// whether ↓ past the last comes to the first and ↑ before the first to the last; `field` whether a field in it keeps
-/// the keyboard (false: its list takes the focus by Tab, a select with no search). `look` is given its node and the
-/// `Combobox[K]` its list and options are made by, once as it is made. Its node.
+/// the keyboard (false: its list takes the focus by Tab, a select with no search). `moved` told the key the keys made
+/// active (↓ ↑ Home End), after `activate`: what a look brings into view, where a press (already in view) brings
+/// nothing. `look` is given its node and the `Combobox[K]` its list and options are made by, once as it is made, in
+/// `parent` itself where `in_node` (the box that holds its field). Its node.
 #callsite(autofill(loc))
 pub fn[K : Eq] combobox(
   parent : @view.View,
@@ -212,10 +216,12 @@ pub fn[K : Eq] combobox(
   on_close? : () -> Unit,
   wraps? : Bool = true,
   field? : Bool = true,
+  moved? : (K) -> Unit = fn(_) {  },
+  in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
+  let setup = fn(v : @view.View) {
     let now = fn() { active_of(keys(), active(), key_disabled) }
     let cb : Combobox[K] = {
       node: v,
@@ -226,6 +232,7 @@ pub fn[K : Eq] combobox(
       off: disabled,
       key_off: key_disabled,
       activate,
+      moved,
       choose,
       field,
     }
@@ -266,7 +273,13 @@ pub fn[K : Eq] combobox(
       }
     })
     |> ignore
-  })
+  }
+  if in_node {
+    setup(parent)
+    parent
+  } else {
+    parent.box(loc~, made_for=made_for.unwrap_or(loc), setup)
+  }
 }
 
 ///|

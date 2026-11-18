@@ -415,7 +415,7 @@ pub fn archive_look(db : @sql.Db, args : Json) -> Json raise {
   }
   let own = []
   let own_unknown = []
-  for t in db.all("SELECT * FROM threads WHERE surface = ? AND home IS NULL AND hidden_at IS NULL", [Json::string("ember")]) {
+  for t in db.all("SELECT * FROM threads WHERE surface = ? AND home IS NULL AND hidden_at IS NULL", [Json::string("chat")]) {
     let id = field(t, "id")
     if marks && one(db, "SELECT 1 FROM archive_keep_rows WHERE thread = ? LIMIT 1", [id]) is Some(_) {
       continue

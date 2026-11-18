@@ -20,6 +20,12 @@ async fn P55::jobs(self : P55, name : String, args : Array[Json]) -> Json {
 }
 
 ///|
+/// What the slice asks of the vault's and the devices' part (P5-4), by name, its arguments in order.
+async fn P55::ui(self : P55, name : String, args : Array[Json]) -> Json {
+  (self.bus.ui_ask.val)(name, Json::array(args))
+}
+
+///|
 fn jv_strs(xs : Array[String]) -> @jsjson.JValue {
   @jsjson.JValue::Arr(xs.map(x => of_core(Json::string(x))))
 }
@@ -298,7 +304,12 @@ async fn P55::start_copies(self : P55) -> Unit {
       },
     },
   ])
-  self.closing(async fn() { copies.close() })
+  // (the export's process ended with them, waited for: left to see its stdin close as the station exits, it went on
+  // writing in the data directory after the station had stopped)
+  self.closing(async fn() {
+    copies.close()
+    (runner.close)()
+  })
   self.closing(async fn() { retire.close() })
   // The other stations' requests: a retirement's (`retire.`), the copies' (`replica.`).
   bus.on_peer_prefix("retire.", async fn(from, ws, meth, params, bytes) {

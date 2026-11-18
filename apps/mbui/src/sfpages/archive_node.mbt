@@ -168,12 +168,10 @@ fn note_waits(note : Json?) -> Bool {
 }
 
 ///|
-/// Looking for one by its title or last line (ArchiveSearch) in `parent`: a round ground as tall as the theme's band,
-/// the search mark, the field, and while it holds words the clear key at its end, inside the ground, as round as it;
-/// what it holds the page's words looked for (`q`, trimmed), `asked_again` as they change (the first page again).
+/// Looking for one by its title or last line (ArchiveSearch) in `parent`: the library's field to look through a list by
+/// (@sf.search_input_node); what it holds the page's words looked for (`q`, trimmed), `asked_again` as they change (the first page again).
 fn archive_search_node(parent : @view.View, q : @signals.Signal[String], asked_again : () -> Unit) -> Unit {
   let own = @ui.Field::new(text=q.untracked())
-  let held = fn() { own.text() != "" }
   parent.box(fn(page) {
     @sf.style_node(page, fn() { archive_search_page })
     page.reacts(fn() { own.text() }, fn(w) {
@@ -183,58 +181,10 @@ fn archive_search_node(parent : @view.View, q : @signals.Signal[String], asked_a
         asked_again()
       }
     })
-    page.box(fn(g) {
-      @sf.style_node(g, fn() {
-        let l = @sf.theme().chat_list
-        let pad = @sf.band_pad_in(Whole)
-        let end = if held() { @sf.room_of(0.0) } else { @sf.room_of(pad) }
-        archive_search_ground.then(@ui.style(h=Fixed(l.band_h), pl=@sf.room_of(pad), pr=end))
-      })
-      @sf.icon_node(g, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-      @ui.field(
-        g,
-        own,
-        placeholder_by=fn() { @sf.t("web-pages.archive.search") },
-        max_lines=1,
-        enter_sends=true,
-        size_by=fn() { @sf.theme().t.ui },
-        line=@signals.untracked(fn() { @sf.theme().t.ui_line }),
-        colors_by=fn() {
-          let p = @sf.theme().p
-          (p.text, p.subtle, p.accent)
-        },
-      )
-      .grow(Is(1.0))
-      .basis(Is(Some(0.0)))
-      .shrink(Is(1.0))
-      .min_width(Is(Some(0.0)))
-      |> ignore
-      g.show(held, fn(k) {
-        // (its sizes the native input's, the same all the run (@sf.native_input): read once, as icon_button_node takes
-        // them, the settings' search's way)
-        let l = @signals.untracked(fn() { @sf.theme().chat_list })
-        @sf.icon_button_node(
-          k,
-          "close",
-          fn() { @sf.t("android-misc.drive.pick.filterClear") },
-          fn() {
-            own.set("")
-            own.focus()
-          },
-          size=l.band_h,
-          icon_size=l.band_icon,
-        )
-        |> ignore
-      })
-    })
-    |> ignore
+    @sf.search_input_node(page, own, fn() { @sf.t("web-pages.archive.search") }) |> ignore
   })
   |> ignore
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-let archive_search_ground : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter radius=Full").then(@ui.style(bg=@sf.search_ground))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -260,6 +210,29 @@ fn archive_row_node(r : @view.View, core : Core, it : () -> Json, tips? : @sf.Ti
       None => @settings.failed_of(core, ["session.delete"], [("station", station()), ("key", session())])
     }
   }
+  // (its menu where the pointer's other button is pressed on it: its chat opened, restored as its 恢复 does, and where
+  // it can be, deleted for good as its 删除 does, after a line and in red; restoring and deleting not while one is
+  // under way)
+  r.on_menu(fn(m) {
+    let i = @signals.untracked(v)
+    let doing = @signals.untracked(busy)
+    let items : Array[@sf.MenuItem?] = [
+      Some(
+        @sf.menu_item_of(
+          @sf.t("web-pages.rowMenu.openChat"),
+          fn() { (core.open_chat)(text(i, "station"), text(i, "session"), text(i, "title")) },
+          icon="chat",
+        ),
+      ),
+      Some(@sf.menu_item_of(@sf.t("web-pages.rowMenu.restore"), fn() { archive_restore_from(core, i) }, icon="retry", disabled=doing)),
+    ]
+    if flag(i, "deletable") {
+      items.push(None)
+      items.push(Some(@sf.menu_item_of(@sf.t("common.delete"), fn() { archive_delete_from(core, i) }, icon="trash", danger=true, disabled=doing)))
+    }
+    @sf.menu(items, from=@sf.at_point(m.wx, m.wy))
+  })
+  |> ignore
   // (on the page's ground, no card under it: its words on the page's title's line, as the day's heading's are)
   @sf.ground_row_node(r, fn(row) {
     @sf.link_row_node(

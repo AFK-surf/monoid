@@ -400,9 +400,12 @@ fn TipFade::shown(self : TipFade, t : @view.View) -> Double {
 }
 
 ///|
-/// A tip's node `t` as tip_look draws it (tip_box, tip_words), beside `anchor` on `side`, saying `label`, then the keys of
-/// action `shortcut` where there are any as it is shown (tip_line, tip_quiet): its look and its words set as the window's
-/// theme says, as that changes; in and out as `fade` says.
+/// A tip's node `t` as tip_look draws it (tip_ground, tip_edge, tip_words), beside `anchor` on `side`, saying `label`,
+/// then the keys of action `shortcut` where there are any as it is shown, each a cap of its own at its end (key_caps,
+/// tip_cap_node): its look and its words set as the window's theme says, as that changes; in and out as `fade` says.
+/// With keys it stands `tip_key_in` over and under them, as tall as one without (its words' line, tip_cap_over over and
+/// under it), and `tip_key_side` from them at its end as from its words at its start (what a box holds as far in from
+/// either side: the padding rule), its corner's room: what stands in its corners would be held concentric with them.
 #callsite(autofill(loc))
 fn tip_look_node(
   t : @view.View,
@@ -420,15 +423,18 @@ fn tip_look_node(
   let theme = fn() { @ui.tree_theme() }
   let px = @ui.Space::px(S2_5)
   let py = @ui.Space::px(S1_25)
+  // (whether it says keys, as it is shown: a keyboard come or gone while it shows, so the next time it is)
+  let keys = @signals.untracked(fn() { key_caps(shortcut_keys(shortcut)) })
   t
   .beside(anchor, side~, along=Middle, offset=gap, at_pointer~)
-  .padding(Is((px, py, px, py)))
+  .padding(Is(if keys.is_empty() { (px, py, px, py) } else { (tip_key_side, tip_key_in, tip_key_side, tip_key_in) }))
   .max_width(Is(Some(tip_widest)))
-  .radius(By(fn() { theme().corner(Lg) }))
-  .ground(By(fn() { theme().color(Primary) }))
+  .radius(Is(tip_round))
+  .ground(By(fn() { tip_ground() }))
+  .edge(By(fn() { tip_edge() }))
   .shadow(By(fn() {
     let (blur, dy) = @ui.Shadow::blur_y(Md)
-    (blur, dy, theme().shadow)
+    (blur, dy, if library_theme().dark { float_shadow_ink() } else { theme().shadow })
   }))
   // (its ground in first, its words after, as kit's tip_in and pop_out have them (ground_first): the ground the first
   // half of the way in, the words the second; going, the other way round)
@@ -460,32 +466,30 @@ fn tip_look_node(
     let (size, line) = theme().text_size(Meta)
     { size, weight: 400, line, wrap, tracking: @view.letters_own, balance: false, max_lines: 0 }
   }
-  // (whether it says keys, as it is shown: a keyboard come or gone while it shows, so the next time it is)
-  let keys = @signals.untracked(fn() { shortcut_keys(shortcut) })
   t.box(made_for=loc, fn(w) {
-    if keys != "" {
-      // (its words, then its keys at 60% (tip_line, tip_quiet), the two of them fading in after its ground)
-      style_node(w, fn() { tip_line })
+    if !keys.is_empty() {
+      // (its words, then its keys' caps, on its words' first line however many lines they break into: the words as
+      // far from the caps' top and foot as their line is shorter than the caps)
+      style_node(w, fn() { tip_key_line })
       w.box(fn(l) {
-        l.words(By(fn() { label() })).words_look(By(fn() { words_look(true) })).ink(By(fn() { theme().color(OnPrimary) }))
+        l
+        .padding(Is((0.0, tip_cap_over, 0.0, tip_cap_over)))
+        .shrink(Is(1.0))
+        .words(By(fn() { label() }))
+        .words_look(By(fn() { words_look(true) }))
+        .ink(By(fn() { tip_words() }))
         |> ignore
       })
       |> ignore
       w.box(fn(q) {
-        q.alpha(Is(tip_keys_seen)) |> ignore
-        q.box(fn(k) {
-          k
-          .words(By(fn() { shortcut_keys(shortcut) }))
-          .words_look(By(fn() { words_look(false) }))
-          .ink(By(fn() { theme().color(OnPrimary) }))
-          |> ignore
-        })
-        |> ignore
+        style_node(q, fn() { tip_caps_node })
+        for cap in keys {
+          tip_cap_node(q, cap)
+        }
       })
       |> ignore
     } else {
-      w.words(By(fn() { label() })).words_look(By(fn() { words_look(true) })).ink(By(fn() { theme().color(OnPrimary) }))
-      |> ignore
+      w.words(By(fn() { label() })).words_look(By(fn() { words_look(true) })).ink(By(fn() { tip_words() })) |> ignore
     }
     // (its ground handed on among its layer's tips, its words with it: from where the one before was drawn, from its
     // middle)
@@ -508,8 +512,147 @@ fn tip_look_node(
 }
 
 ///|
-/// How far a tip's keys are seen (tip_quiet's).
-let tip_keys_seen : Double = 0.6
+/// A key's cap in a tip's row of them (`parent`): `cap` (⌘, ⇧, K, Ctrl, Esc) in the tip's words' ink at the caption's
+/// size, 500, in the middle of a box as high as the tip's words' line and tip_cap_over over and under it, as wide at
+/// least, tip_cap_round round, its ground and line the tip's words mixed into its ground (opaque: no line seen through a
+/// ground under it), as the theme says as that changes.
+#callsite(autofill(loc))
+fn tip_cap_node(parent : @view.View, cap : String, loc~ : SourceLoc) -> Unit {
+  parent.box(made_for=loc, fn(k) {
+    style_node(k, fn() { tip_cap_node_look })
+    let side = fn() { node_sp(k, @ui.tree_theme().text_size(Meta).1) + 2.0 * tip_cap_over }
+    k
+    .height(By(fn() { Some(side()) }))
+    .min_width(By(fn() { Some(side()) }))
+    .radius(Is(tip_cap_round))
+    .ground(By(fn() { mix(tip_words(), tip_cap_ground, tip_ground()) }))
+    .edge(By(fn() { (1.0, mix(tip_words(), tip_cap_line, tip_ground())) }))
+    |> ignore
+    k.box(fn(w) {
+      w
+      .words(Is(cap))
+      .words_look(
+        By(fn() {
+          let (size, line) = @ui.tree_theme().text_size(Caption)
+          { size, weight: 500, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+        }),
+      )
+      .ink(By(fn() { tip_words() }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The keys of a shortcut as the app says them, each a cap of its own: on an Apple keyboard its marks (⌃ ⌥ ⇧ ⌘) one a
+/// cap each and the key after them one (`⌘⇧F`, `⌘ Enter`); elsewhere each part between `+` (`Ctrl+Shift+F`), a `+`
+/// where a part would be empty the key itself (`Ctrl++`). None for none.
+pub fn key_caps(keys : String) -> Array[String] {
+  let caps : Array[String] = []
+  let is_mark = fn(c : Char) { c == '⌃' || c == '⌥' || c == '⇧' || c == '⌘' }
+  let said = keys.trim(chars=" ").to_owned()
+  let chars = said.to_array()
+  if chars.is_empty() {
+    return caps
+  }
+  if is_mark(chars[0]) {
+    let mut at = 0
+    while at < chars.length() && is_mark(chars[at]) {
+      caps.push(chars[at].to_string())
+      at += 1
+    }
+    let key = String::from_array(chars[at:]).trim(chars=" ").to_owned()
+    if key != "" {
+      caps.push(key)
+    }
+    return caps
+  }
+  let mut part : Array[Char] = []
+  for c in chars {
+    if c == '+' && !part.is_empty() {
+      caps.push(String::from_array(part).trim(chars=" ").to_owned())
+      part = []
+    } else {
+      part.push(c)
+    }
+  }
+  if !part.is_empty() {
+    caps.push(String::from_array(part).trim(chars=" ").to_owned())
+  }
+  caps
+}
+
+///|
+/// A tip's ground: the primary ink in light (a dark charcoal over the page); in the dark not that ink (the light grey,
+/// a glare of a block) but what floats lifted `tip_lift` toward the words, a step over a menu's (panel_ground).
+pub fn tip_ground() -> Int64 {
+  let t = theme()
+  if t.dark {
+    mix(t.p.text, tip_lift, t.p.raised)
+  } else {
+    t.p.primary
+  }
+}
+
+///|
+/// A tip's line (how wide, its colour): in the dark what floats has (panel_edge), cutting it off a dark ground; none in
+/// light, its dark ground off the light page by itself.
+pub fn tip_edge() -> (Double, Int64) {
+  let t = theme()
+  if t.dark {
+    (1.0, panel_edge())
+  } else {
+    (0.0, 0L)
+  }
+}
+
+///|
+/// A tip's words: on the primary ink's in light, the words' own ink in the dark.
+pub fn tip_words() -> Int64 {
+  let t = theme()
+  if t.dark {
+    t.p.text
+  } else {
+    t.p.on_primary
+  }
+}
+
+///|
+let tip_lift : Double = 0.05
+
+///|
+/// A tip's caps: how far over and under its words' line they reach (so the tip, tip_key_in round them, is as tall as one
+/// of words alone, 5 round them), how round, how far in from them the tip stands (concentric: tip_round less it), and
+/// how much of the tip's words their ground and line are.
+let tip_cap_over : Double = 1.0
+
+///|
+let tip_round : Double = 8.0
+
+///|
+let tip_key_in : Double = 4.0
+
+///|
+let tip_key_side : Double = 8.0
+
+///|
+let tip_cap_round : Double = @ui.concentric(tip_round, tip_key_in)
+
+///|
+let tip_cap_ground : Double = 0.1
+
+///|
+let tip_cap_line : Double = 0.2
+
+///|
+// kept across runs: a value (no field of it changes)
+let tip_caps_node : @ui.Style = @ui.css("row gap=S0_5 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tip_cap_node_look : @ui.Style = @ui.css("row px=S1_25 align=ACenter justify=JCenter")
 
 ///|
 /// How far a tip is from its control (kit's tooltip `offset`), and how wide it may grow (tip_max).

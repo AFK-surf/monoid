@@ -23,13 +23,9 @@ pub fn chooser_button_node(
   card_words? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let layer = match parent.lent(offers_layer_lent) {
-    Some(l) => l
-    None => parent.tree.root()
-  }
-  let open = @signals.signal(false, same=fn(a, b) { a == b })
-  // (opened by the keyboard: its first row's the focus as it opens)
-  let by_key = Ref(false)
+  let menu = ChooserMenu::new(parent)
+  let open = menu.open
+  let by_key = menu.by_key
   let height = button_height()
   let b = @headless.disclosure(
     made_for=loc,
@@ -54,16 +50,10 @@ pub fn chooser_button_node(
       .radius(Is(height / 2.0))
       .ground(By(fn() { alpha(theme().p.hover, hand.shown(v)) }))
       |> ignore
-      v.on_key(fn(k) {
-        if k.mods == 0 && k.code == @ui.key_code_down && v.focused() && !open.untracked() {
-          by_key.val = true
-          open.set(true)
-          true
-        } else {
-          false
-        }
+      menu.keys(v, fn() { true }, fn() {
+        by_key.val = true
+        open.set(true)
       })
-      |> ignore
       // (what it holds in its middle, as a button's: the old one's justify=JCenter)
       v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       let w = v.box(fn(w) {
@@ -84,35 +74,9 @@ pub fn chooser_button_node(
       let m = @motion.moves_for(v, words, spec=button_reshape)
       m.reshapes(v)
       m.moves_with(w)
-      // (closed as it starts leaving, and as it is let go)
-      v.on_leaving(fn() { open.set(false) }) |> ignore
-      v.owns(fn() { open.set(false) }) |> ignore
     },
   )
-  // (its menu made as it opens, in the layer, living as long as the choice does; the focus given back to it as it goes)
-  let holder = layer.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(b)
-  holder.show(fn() { open.get() }, at_once=true, fn(m) {
-    m.over(Is(true)).opened_by(@view.ByNode(b.id())) |> ignore
-    let now = chosen()
-    let items = choices().map(fn(c) { Some(menu_item_of(c.1, chosen=c.0 == now, fn() { choose(c.0) })) })
-    menu_node(
-      m,
-      fn() { true },
-      fn(_) { b },
-      fn() { items },
-      "",
-      Start,
-      chooser_menu_off,
-      by_key.val,
-      false,
-      fn(item) {
-        open.set(false)
-        (item.select)()
-      },
-      fn() { open.set(false) },
-      min_w=chooser_menu_w,
-      side~,
-    )
-  })
+  // (its menu made as it opens, in the layer, living as long as the choice does: ChooserMenu::menu)
+  menu.menu(b, choices, chosen, choose, side, true, loc~)
   b
 }

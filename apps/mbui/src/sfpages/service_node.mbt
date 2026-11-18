@@ -500,8 +500,10 @@ fn address_or_marking_node(
 }
 
 ///|
-/// The address in `parent`: the place's capsule (@sf.bar_field_node), the web's mark and the service's name, then where
-/// its page is, typed to go there (Enter goes; the keyboard's 前往); nowhere else to go (a visualization) its name alone.
+/// The address in `parent`: the place's capsule (@sf.address_field_node), the web's mark and the service's name, then
+/// where its page is, followed while nobody types there; pressed into, its caret at its end (a path after the name, not
+/// picked whole: what is typed goes after it), typed to go there (Enter goes; the keyboard's 前往), Escape giving it
+/// up; nowhere else to go (a visualization) its name alone.
 fn address_node(
   parent : @view.View,
   p : ServicePage,
@@ -511,17 +513,12 @@ fn address_node(
   part : () -> (Double, @ui.Color)?,
   least : Double,
 ) -> Unit {
-  let typing = @signals.signal(false)
-  @sf.bar_field_node(
-    parent,
-    fn() { typing.get() },
-    fn(b) {
-      // (a tap anywhere on it types there)
-      if !fixed {
-        b.cursor(Is(Some(IBeam))).on_press(fn() { p.address.focus() }) |> ignore
-      }
-      @sf.icon_node(b, "web", @sf.theme().bars.icon, By(fn() { @sf.theme().p.muted })) |> ignore
-      if fixed {
+  if fixed {
+    @sf.bar_field_node(
+      parent,
+      fn() { false },
+      fn(b) {
+        @sf.icon_node(b, "web", @sf.theme().bars.icon, By(fn() { @sf.theme().p.muted })) |> ignore
         b.box(fn(n) {
           @sf.style_node(n, fn() { file_name_box }, in_row=true)
           @sf.words_node(n, fn() {
@@ -531,49 +528,34 @@ fn address_node(
           |> ignore
         })
         |> ignore
-        return
-      }
+      },
+      end~,
+      part~,
+      least~,
+    )
+    |> ignore
+    return
+  }
+  @sf.address_field_node(
+    parent,
+    p.address,
+    fn() { site.page_at().0 },
+    fn(path) { site.load(if path.has_prefix("/") { path } else { "/" + path }) },
+    fn() { @sf.t("web-main.preview.path") },
+    selects=false,
+    lead=fn(b) {
+      @sf.icon_node(b, "web", @sf.theme().bars.icon, By(fn() { @sf.theme().p.muted })) |> ignore
       @sf.words_node(b, fn() {
         p.said()
         p.name
       }, fn() { address_name_words })
       .shrink(Is(1.0))
       |> ignore
-      // where it went is what the bar says, unless someone is typing there
-      b.reacts(fn() { (site.page_at().0, typing.get()) }, fn(told) {
-        let (at, editing) = told
-        if !editing && at != p.shown_path {
-          p.shown_path = at
-          p.address.set(at)
-        }
-      })
-      b.box(fn(f) {
-        f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-        let field = @ui.field(
-          f,
-          p.address,
-          max_lines=1,
-          enter_sends=true,
-          ime_action=@hostapi.ime_action_go,
-          label=@sf.t("web-main.preview.path"),
-          size_by=fn() { @sf.theme().t.ui },
-          colors_by=fn() {
-            let t = @sf.theme()
-            (if typing.get() { t.p.text } else { t.p.muted }, t.p.muted, t.p.accent)
-          },
-          submitted=fn(typed) {
-            let path = typed.trim().to_owned()
-            site.load(if path.has_prefix("/") { path } else { "/" + path })
-            p.address.let_go()
-          },
-        )
-        f.reacts(fn() { field.focused() }, fn(on) { typing.set(on) })
-      })
-      |> ignore
     },
     end~,
-    part~,
+    progress=part,
     least~,
+    anywhere=true,
   )
   |> ignore
 }

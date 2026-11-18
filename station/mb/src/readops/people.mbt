@@ -294,7 +294,7 @@ fn Known::people(self : Known, refs : Json) -> Array[Json] raise {
 fn slack_connect_of(sessions : Array[Map[String, Json]]) -> String? {
   for m in sessions {
     match field(m, "connect") {
-      String(c) if c != "ember" => return Some(c)
+      String(c) if c != "chat" => return Some(c)
       _ => ()
     }
   }
@@ -347,14 +347,14 @@ fn Names::name(self : Names, kind : String, author : String) -> Json raise {
   if self.names.get(key) is Some(n) {
     return n
   }
-  let name = if kind == "ember" {
+  let name = if kind == "station" {
     Json::string("still.fail")
   } else if kind == "agent" {
     // An agent goes by the name of the connect it posts through (on the page, of the connect that started it).
     let session = one(self.db, "SELECT * FROM sessions WHERE key = ?", [Json::string(author)])
     let via = self.members.search_by(m => field(m, "session") == Json::string(author)).map(i => field(self.members[i], "connect"))
     let connect = match via {
-      Some(String(c)) if c != "ember" => Json::string(c)
+      Some(String(c)) if c != "chat" => Json::string(c)
       _ =>
         match session {
           Some(s) => field(s, "connect")
@@ -370,7 +370,7 @@ fn Names::name(self : Names, kind : String, author : String) -> Json raise {
           None => Json::null()
         }
     }
-  } else if self.surface == Json::string("ember") {
+  } else if self.surface == Json::string("chat") {
     if author == "local" {
       match self.known.admin { Some(w) => Json::string(w); None => Json::null() }
     } else {

@@ -1005,50 +1005,147 @@ let agent_card_stop_icon : Double = 12.0
 
 ///|
 /// usage_tiles' figures as nodes in `parent`, as `card` says them now: what it cost, the cache's hit rate, how full its
-/// context is (how much of how much over it while it is pointed at, in `tips`). With `context`, its context's tile
-/// opens what can be done to it beside itself (`busy`: a spinner, not pressed; `compacts`: that it can be compacted
-/// said once it is filling up). None before it has made a call.
+/// context is (how much of how much over it while it is pointed at, in `tips`), each its share of the row. With
+/// `context`, its context's tile opens what can be done to it beside itself (`busy`: a spinner, not pressed; `failed`:
+/// the failure's mark; `compacts`: that it can be compacted said once it is filling up). None before it has made a
+/// call. `roomy`: the figures of an agent's card in a sheet or its history (usage_tile_roomy: 9 over, 8 under, 16 in
+/// at either side, a row's corner, the ink at 5%; each figure as large as fits its tile's room, 20 down, 16 down where
+/// it is longer than six characters, its name on one line; the tiles of a row as tall as each other), `top` over them;
+/// else a hover card's (agent_card_tile).
 pub fn usage_tiles_node(
   parent : @view.View,
   card : () -> Json?,
   tips : @sf.TipLayer,
   context? : (@sf.Beside) -> Unit,
   busy? : () -> Bool = fn() { false },
+  failed? : () -> Bool = fn() { false },
   compacts? : () -> Bool = fn() { false },
+  roomy? : Bool = false,
+  top? : Double = 0.0,
 ) -> Unit {
   let cost = fn() { text(card(), "cost") }
   let cache = fn() { field(card(), "cache") }
   let ctx = fn() { field(card(), "context") }
-  let figure_style = fn(level : String) {
-    if level == "red" {
-      agent_card_figure_red
-    } else if level == "amber" {
-      agent_card_figure_amber
-    } else {
-      agent_card_figure
+  let unknown = fn() { flag(ctx(), "unknown") }
+  let level = fn() { if unknown() { "" } else { text(ctx(), "level") } }
+  let ink = fn(level : String) {
+    let p = @sf.theme().p
+    match level {
+      "red" => p.red
+      "amber" => p.warn_ink
+      _ => p.text
     }
   }
-  let plain = fn(t : @view.View, figure : () -> String, name : () -> String, level : () -> String) -> @view.View {
-    t.box(fn(b) {
-      @sf.style_node(b, fn() { agent_card_tile })
-      @sf.words_node(b, figure, fn() { figure_style(level()) }) |> ignore
-      @sf.words_node(b, name, fn() { agent_card_tile_name }) |> ignore
-    })
+  // (a figure in `b`, in its level's ink: a hover card's at the title's size; a roomy one's as large as fits the
+  // tile's room as it is laid out, on a line as tall as its largest's at the system's size of words, the tiles of a
+  // row as high as each other, their names level)
+  let figure_node = fn(b : @view.View, figure : () -> String, level : () -> String, room : () -> Double) {
+    if roomy {
+      b.box(fn(f) {
+        f.min_height(By(fn() { Some(@sf.node_sp(f, usage_roomy_line)) })).lies_along(Is(Middle)) |> ignore
+        f.box(fn(w) {
+          w
+          .words(By(figure))
+          .words_look(By(fn() {
+            let size = usage_figure_fit(w, figure(), room())
+            { size, weight: 600, line: (size * usage_roomy_leading).round(), wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+          }))
+          .ink(By(fn() { ink(level()) }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    } else {
+      @sf.words_node(b, figure, fn() {
+        match level() {
+          "red" => agent_card_figure_red
+          "amber" => agent_card_figure_amber
+          _ => agent_card_figure
+        }
+      })
+      |> ignore
+    }
+  }
+  let name_look = fn() { if roomy { usage_roomy_name } else { agent_card_tile_name } }
+  // (a tile in `t`: its ground, its figure over its name (a roomy one read out 「name figure」); `more` what stands after
+  // its name)
+  let tile = fn(
+    t : @view.View,
+    figure : () -> String,
+    name : () -> String,
+    level : () -> String,
+    press : ((@view.View) -> Unit)?,
+    more : ((@view.View) -> Unit)?,
+  ) -> @view.View {
+    let made = fn(b : @view.View, room : () -> Double) {
+      @sf.style_node(b, fn() {
+        match (roomy, press) {
+          (true, _) => usage_tile_roomy.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, usage_roomy_ground))))
+          (false, Some(_)) => agent_card_tile_button
+          (false, None) => agent_card_tile
+        }
+      })
+      if roomy {
+        // (a row's corner: concentric with the card's it stands in; read out 「name figure」)
+        b.radius(Is(@sf.row_corner)) |> ignore
+        let role : @view.Role = if press is Some(_) { Button } else { Text }
+        b.says(By(fn() { Some(@view.said(role, label=name() + " " + figure())) })) |> ignore
+      } else if press is Some(_) {
+        // (a hover card's: what its press opens)
+        b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.chat.contextActions"))) })) |> ignore
+      }
+      match press {
+        Some(f) => @sf.presses_node(b, fn() { f(b) })
+        None => ()
+      }
+      figure_node(b, figure, level, room)
+      match more {
+        Some(m) =>
+          b.box(fn(r) {
+            @sf.style_node(r, fn() { agent_card_tile_more })
+            @sf.words_node(r, name, name_look) |> ignore
+            m(r)
+          })
+          |> ignore
+        // (a roomy one's on one line in a row of its own, as long as it is: never broken off a character at a time in a
+        // narrow tile at large words, as the sheet's had it)
+        None if roomy =>
+          b.box(fn(r) {
+            @sf.style_node(r, fn() { usage_roomy_name_row })
+            @sf.words_node(r, name, name_look) |> ignore
+          })
+          |> ignore
+        None => @sf.words_node(b, name, name_look) |> ignore
+      }
+    }
+    // (a roomy figure is as large as its tile's room: the tile made by the room it is given; a hover card's at its
+    // size, the tile a box)
+    if roomy {
+      // (as tall as the row's tallest: the tiles of a row level at their feet)
+      t.by_room(fn(b, given) {
+        made(b, fn() { dmax(0.0, given.width() - 2.0 * @sf.text_in) })
+      })
+      .grow(Is(1.0))
+      .basis(Is(Some(0.0)))
+    } else {
+      t.box(fn(b) { made(b, fn() { 0.0 }) })
+    }
   }
   // (each tile's share of the row: what shows it takes it)
   let across = fn(t : @view.View) { t.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore }
-  parent.show(at_once=true, fn() { cost() != "" || cache() is Some(_) || ctx() is Some(_) }, fn(o) {
+  parent.show(at_once=true, fn() { cost() != "" || cache() is Some(Object(_)) || ctx() is Some(Object(_)) }, fn(o) {
     o.box(fn(r) {
-      @sf.style_node(r, fn() { agent_card_tiles_row })
+      @sf.style_node(r, fn() { if roomy { usage_tiles_roomy.then(@ui.style(pt=@sf.room_of(top))) } else { agent_card_tiles_row } })
       r.show(at_once=true, fn() { cost() != "" }, fn(t) {
         across(t)
-        plain(t, cost, fn() { @sf.t("web-main.chat.agentCard.cost") }, fn() { "" }) |> ignore
+        tile(t, cost, fn() { @sf.t("web-main.chat.agentCard.cost") }, fn() { "" }, None, None) |> ignore
       })
       r.show(at_once=true, fn() { cache() is Some(Object(_)) }, fn(t) {
         across(t)
-        plain(t, fn() { text(cache(), "text") }, fn() { @sf.t("web-main.chat.agentCard.cache") }, fn() { "" }) |> ignore
+        tile(t, fn() { text(cache(), "text") }, fn() { @sf.t("web-main.chat.agentCard.cache") }, fn() { "" }, None, None)
+        |> ignore
       })
-      let unknown = fn() { flag(ctx(), "unknown") }
       let figure = fn() {
         if unknown() {
           text(ctx(), "text")
@@ -1056,47 +1153,44 @@ pub fn usage_tiles_node(
           number(ctx(), "percent").round().to_int().to_string() + "%"
         }
       }
-      let level = fn() { if unknown() { "" } else { text(ctx(), "level") } }
       r.show(at_once=true, fn() { ctx() is Some(Object(_)) }, fn(t) {
         across(t)
         match context {
           Some(open) =>
-            t.box(fn(b) {
-              @sf.style_node(b, fn() { agent_card_tile_button })
-              @sf.presses_node(b, fn() {
+            tile(
+              t,
+              figure,
+              fn() {
+                if compacts() && (level() == "amber" || level() == "red") {
+                  @sf.t("web-mobile.agent.contextCompactable")
+                } else {
+                  @sf.t("web-main.chat.agentCard.context")
+                }
+              },
+              level,
+              Some(fn(b) {
                 if !@signals.untracked(busy) {
                   let (x, y, w, h) = b.placed_window_now()
                   open(At(x, y, w, h))
                 }
-              })
-              b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.chat.contextActions"))) })) |> ignore
-              @sf.words_node(b, figure, fn() { figure_style(level()) }) |> ignore
-              b.box(fn(m) {
-                @sf.style_node(m, fn() { agent_card_tile_more })
-                @sf.words_node(m, fn() {
-                  if compacts() && (level() == "amber" || level() == "red") {
-                    @sf.t("web-mobile.agent.contextCompactable")
-                  } else {
-                    @sf.t("web-main.chat.agentCard.context")
-                  }
-                }, fn() { agent_card_tile_name })
-                |> ignore
-                m.pick(at_once=true, busy, fn(i, now) {
-                  if now {
-                    @sf.spinner_node(i, size=11.0) |> ignore
-                  } else {
-                    @sf.icon_node(i, "chevron-right", 11.0, By(fn() { @sf.theme().p.muted })) |> ignore
+              }),
+              Some(fn(m) {
+                // (what can be done to it: ›; under way, turning; failed lately, its mark)
+                m.pick(at_once=true, fn() { if busy() { 1 } else if failed() { 2 } else { 0 } }, fn(i, now) {
+                  match now {
+                    1 => @sf.spinner_node(i, size=usage_more_icon) |> ignore
+                    2 => doing_mark_node(i, fn() { false }, fn() { Some("") })
+                    _ => @sf.icon_node(i, "chevron-right", usage_more_icon, By(fn() { @sf.theme().p.muted })) |> ignore
                   }
                 })
-              })
-              |> ignore
-            })
+              }),
+            )
             |> ignore
           None =>
             t.pick(at_once=true, unknown, fn(k, unknown_now) {
-              let tile = plain(k, figure, fn() { @sf.t("web-main.chat.agentCard.context") }, level)
+              let shown = tile(k, figure, fn() { @sf.t("web-main.chat.agentCard.context") }, level, None, None)
               if !unknown_now {
-                @sf.tip_node(tips, tile, fn() { text(ctx(), "text") }) |> ignore
+                @sf.tip_node(tips, shown, fn() { text(ctx(), "text") }) |> ignore
               }
             })
         }
@@ -1105,3 +1199,57 @@ pub fn usage_tiles_node(
     |> ignore
   })
 }
+
+///|
+/// The size a figure is drawn at in node `v` (agent_tiles_fit_size's): the largest of its steps (16 down for one longer
+/// than 6, else 20 down) whose figure is narrower than `room` at the system's size of words; 10 at the least.
+fn usage_figure_fit(v : @view.View, figure : String, room : Double) -> Double {
+  let sizes : Array[Double] = if figure.length() > 6 {
+    [16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0]
+  } else {
+    [20.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0]
+  }
+  for sz in sizes {
+    if @sf.node_words_w(figure, @sf.node_sp(v, sz), weight=600) <= room - 1.0 {
+      return sz
+    }
+  }
+  10.0
+}
+
+///|
+/// The roomy figures' row: 8 apart; each tile 9 over, 8 under, 16 in at either side, a row's corner, on the ink at 5%;
+/// its figure on a line as tall as the largest's (26), each figure's own 1.3 its size; its name 12 on 16, muted,
+/// on one line (usage_roomy_name_row).
+// kept across runs: a value (no field of it changes)
+let usage_tiles_roomy : @ui.Style = @ui.css("row w=Full gap=S2")
+
+///|
+// kept across runs: a value (no field of it changes)
+let usage_tile_roomy : @ui.Style = @ui.css("pb=S2").then(
+  @ui.style(pl=@sf.room_of(@sf.text_in), pr=@sf.room_of(@sf.text_in), pt=@sf.room_of(usage_roomy_over)),
+)
+
+///|
+// kept across runs: a value (no field of it changes)
+let usage_roomy_name_row : @ui.Style = @ui.css("row gap=S0_5 align=ACenter")
+
+///|
+let usage_roomy_over : Double = 9.0
+
+///|
+let usage_roomy_ground : Double = 0.05
+
+///|
+let usage_roomy_line : Double = 26.0
+
+///|
+let usage_roomy_leading : Double = 1.3
+
+///|
+// kept across runs: a value (no field of it changes)
+let usage_roomy_name : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, color=Muted, wrap=false)
+
+///|
+/// The › (or what turns, or the failure's mark) after the context's name: 11.
+let usage_more_icon : Double = 11.0

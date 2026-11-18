@@ -255,7 +255,7 @@ pub fn open_device(core : Core, here : Here, station : String, id : String, from
     })
     // 免批准 on one of a rig's: its person's switch
     v.show(fn() { via == "rig" && flag(d(), "mine") }, fn(o) {
-      @sf.panel_switch_noted_node(
+      @sf.panel_switch_row_node(
         o,
         fn() { @sf.t("web-pages.devices.open") },
         fn() { flag(d(), "ownOpen") },

@@ -5,9 +5,10 @@
 //   - under all of it, what the frame does in every tier before its pages (signed_in_frame) and what the tape's frame
 //     does under its panels (sfdesk's tape_under: the sidebar as it was left, the chat landed on, back);
 //   - the tape: its row of panels, moved as its move says, what each holds an island of its own;
-//   - over it, a film played over the whole window, what opens over the panels (sfdesk's
-//     overlays.mbt), the presenters (signed_in_over): taking presses where they draw them alone, the panels' covers
-//     under them the tree's;
+//   - over it, a film played over the whole window, what of the old frame is kept over the panels (sfdesk's
+//     overlays), the presenters (signed_in_over): taking presses where they draw them alone, the panels' covers
+//     under them the tree's; and what opens over the panels (sfdesk's overlays_node: a right click's menu, the
+//     rail's, 待处理's panel), nodes of the tree's;
 //   - over all of it, the chat being shared as a picture, a visualization over the whole screen, a station's screen or
 //     terminal or a
 //     drive's text read, and an image opened: nodes of the tree's (sfpages' publish_layer_node, sfbase's
@@ -23,6 +24,8 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (page_local_ms at most), as a page pushed on a phone slides in then
   @sfdesk.tape_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // what opens over the panels (sfdesk's overlays.mbt: a right click's menu, the rail's, 待处理's panel): nodes of the tree's
+  @sfdesk.overlays_node(v, src)
   // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
   signed_in_prompts(v, src)
   // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
@@ -51,6 +54,8 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
   // a page opened in the pane shows once the core has given what it shows (page_local_ms at most: pane_page_wait, pane_pages)
   @sfdesk.pane_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // what opens over the panels (sfdesk's overlays.mbt: a right click's menu, the rail's, 待处理's panel): nodes of the tree's
+  @sfdesk.overlays_node(v, src)
   // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
   signed_in_prompts(v, src)
   // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
@@ -208,14 +213,14 @@ fn taped_under(c : @ui.Ctx, src : Source) -> Unit {
 }
 
 ///|
-/// Over the tape's panels (an island, taking presses where it draws them alone): what opens over the panels (sfdesk's
-/// overlays.mbt); words picked let go by back first; what is over the frame in every tier (signed_in_over). A
-/// station's screen over the whole window, as Android's ScreenActivity is over the app, is a node of its own
+/// Over the tape's panels (an island, taking presses where it draws them alone): what the old frame keeps of what opens
+/// over the panels (sfdesk's overlays); words picked let go by back first; what is over the frame in every tier
+/// (signed_in_over). A station's screen over the whole window, as Android's ScreenActivity is over the app, is a node of its own
 /// (wide_page).
 fn taped_over(c : @ui.Ctx, src : Source) -> Unit {
   match workspace_in_view(src).0 {
-    Some(w) => {
-      @sfdesk.overlays(c, src, w)
+    Some(_) => {
+      @sfdesk.overlays(c)
       pick_back(c)
       signed_in_over(c)
     }

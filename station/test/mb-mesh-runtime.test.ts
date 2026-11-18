@@ -617,7 +617,8 @@ test("a view's frames, its ask and every frame a client sends, checked as screen
     await same("regionOf", v === undefined ? {} : { v }, () => regionOf(v));
   }
   const screens: Json[] = [
-    {}, { codecs: ["h264", "vp9", "h265"], maxWidth: 99999, maxHeight: 3.4, control: true, fit: { width: 390, height: 844, scale: 3 }, quality: "hd", fps: 60, audio: "pcm_s16le", opus: true },
+    {}, { codecs: ["h264", "vp9", "h265"], maxWidth: 99999, maxHeight: 3.4, control: true, fit: { width: 390, height: 844, scale: 3 }, quality: "hd", fps: 60, audio: "pcm_s16le", opus: true, passkeys: false },
+    { codecs: ["jpeg"], control: true, passkeys: true }, { codecs: ["jpeg"], peek: true, passkeys: false }, { codecs: ["jpeg"], passkeys: "yes" },
     { codecs: "h264", peek: true, control: true, quality: "smooth", fps: 30, audio: "pcm_s16le", gamut: "p3", client: "  iPhone\u0000​ 15  ", app: "x".repeat(40), self: "‮dev", taken: true },
     { control: true, fit: { width: 100, height: 844, scale: 3 } }, { control: false, fit: { width: 390, height: 844, scale: 3 } }, { control: true, fit: { width: 390.6, height: 2000, scale: 4.5 } },
     { codecs: ["jpeg", "jpeg"], fps: 24, quality: "best", gamut: "srgb", client: 5, app: "", self: "😀".repeat(40), taken: "yes", maxWidth: -3, maxHeight: Number.NaN },

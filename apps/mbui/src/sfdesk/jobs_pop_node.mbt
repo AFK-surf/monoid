@@ -147,53 +147,21 @@ fn jobs_pop_row(row : @view.View, job : () -> Json?, end : () -> String, open : 
 }
 
 ///|
-/// A job's status (job_dot's) in `d`: a small dot, its tone's colour: alive breathing slowly round it (its breath out
-/// from .6 to 1.15 and back, fading), restarting breathing to .35 and back; on the resident clock's steps, as the old
-/// view's cycles were.
+/// A job's status (job_dot's) in `d`: a small dot, its tone's colour (@sf.state_dot_node: alive breathing slowly round
+/// it, restarting breathing to .35 and back, on the resident clock's steps, as the old view's cycles were), a tone it
+/// does not know the strong line's grey.
 fn jobs_pop_dot(d : @view.View, tone : () -> String) -> Unit {
-  d.pick(tone, fn(p, t) {
-    p.box(fn(dot) {
-      @sf.style_node(dot, fn() {
-        match t {
-          "up" | "live" => job_dot_up
-          "restart" => job_dot_restart
-          "fail" => job_dot_fail
-          _ => job_dot_off
-        }
-      })
-      if t == "restart" {
-        dot.alpha(By(fn() {
-          let f = dot.cycle_resident(@sf.breath_ms)
-          let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
-          1.0 - (1.0 - job_breath_low) * @ui.Ease::InOut.at(way)
-        }))
-        |> ignore
-      }
-      if t == "live" {
-        dot.box(fn(halo) {
-          @sf.style_node(halo, fn() { job_halo })
-          halo.over(Is(true)).offset(Is((-job_halo_out, -job_halo_out))) |> ignore
-          let way = fn() {
-            let f = halo.cycle_resident(job_live_ms)
-            if f < 0.5 {
-              f * 2.0
-            } else {
-              2.0 - f * 2.0
-            }
-          }
-          halo.scale(By(fn() { 0.6 + 0.55 * way() })).alpha(By(fn() { 0.35 * (1.0 - way()) })) |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
+  @sf.state_dot_node(d, size=job_dot_across, breathes=true, fn() {
+    match tone() {
+      "up" | "live" | "restart" | "fail" => tone()
+      _ => "off"
+    }
   })
 }
 
 ///|
-/// How faint a restarting job's dot breathes (breathe's `low` in job_dot).
-// kept across runs: a value
-let job_breath_low : Double = 0.35
+/// A job's dot (jobDot): 8 across.
+let job_dot_across : Double = 8.0
 
 ///|
 /// The line under a job's name (job_meta's) in `w`: its state's word in its dot's colour's ink, what it said in the

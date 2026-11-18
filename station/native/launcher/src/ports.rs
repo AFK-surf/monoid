@@ -126,7 +126,7 @@ mod tests {
         let got = listen(taken, false, String::new).unwrap().local_addr().unwrap().port();
         assert!(got != taken && got > 0);
         assert_eq!(listen(taken, true, || "taken".into()).unwrap_err(), "taken");
-        let config = Config { port: taken, named: true, english: false };
+        let config = Config { port: taken, named: true, english: false, moonbit: false };
         let data = temp("named");
         assert!(mcp(&data, &config, true).unwrap_err().contains("已被别的程序占用"));
         std::fs::remove_dir_all(&data).unwrap();
@@ -164,7 +164,7 @@ mod tests {
         // check-mac, 2026-11-17: 49183 had again as 49192).
         let (sock, other) = (TcpListener::bind("127.0.0.1:0").unwrap(), TcpListener::bind("127.0.0.1:0").unwrap());
         let (port, usual) = (sock.local_addr().unwrap().port(), other.local_addr().unwrap().port());
-        let config = Config { port: usual, named: false, english: true };
+        let config = Config { port: usual, named: false, english: true, moonbit: false };
         // A station on another data directory never tries the usual port: any free one.
         let mut asked = vec![];
         let first = mcp_with(&data, &config, false, binder(vec![(0, sock)], &mut asked)).unwrap();

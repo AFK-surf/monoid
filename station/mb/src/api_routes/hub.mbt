@@ -31,7 +31,7 @@ const NAMING_KEEP : Int32 = 100
 const ASSEMBLED_KEEP_MS : Double = 3600000.0
 
 ///|
-const STILLFAIL_SURFACE : String = "ember"
+const STILLFAIL_SURFACE : String = "chat"
 
 ///|
 /// The hub's call.

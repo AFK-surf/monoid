@@ -559,9 +559,14 @@ test("scheduler: a turn refused before anything is held, a whole move that does 
 
 test("scheduler: a turn under way, read as it goes (held, its plan shown, GET /move's page), stopped by a person: nothing further, the item under way gives up", { skip }, async () => {
   let open: () => void = () => {};
+  // (each side's turn come to its gate, told as it asks for it)
+  const reached: Promise<void>[] = [];
   const gate = () => {
     const g = new Map<string, Promise<void>>();
-    g.set("c2", new Promise<void>((r) => (open = r)));
+    const held = new Promise<void>((r) => (open = r));
+    let hit = () => {};
+    reached.push(new Promise<void>((r) => (hit = r)));
+    g.get = (id: string) => (id === "c2" ? (hit(), held) : undefined);
     return g;
   };
   const opens: (() => void)[] = [];
@@ -574,12 +579,9 @@ test("scheduler: a turn under way, read as it goes (held, its plan shown, GET /m
   s.p.parked = (call, args) => call === "mod.chats.move" && (args[0] as Json)?.id === "c2";
   const tsRun = s.tsS.move("ws", "B", { module: "chats", item: "c2", arriveStopped: true, follow: ["jobs"] }, "p@x");
   const mbTurn = await s.sched("moveSoon", "ws", "B", { module: "chats", item: "c2", arriveStopped: true, follow: ["jobs"] }, "p@x");
-  // (the TypeScript's turn at its gate as the program's is: by what it did, not a count of turns, which its plan's
-  // reads and its turn's file outrun on a loaded machine)
-  for (let i = 0; !s.tw.log.some((l) => l.startsWith("move chats/c2")); i++) {
-    if (i > 100_000) assert.fail(`the TypeScript's turn never came to the chat: ${JSON.stringify(s.tw.log)}`);
-    await new Promise((r) => setImmediate(r));
-  }
+  // (both turns at their gates: told as each comes to it, not a count of turns, which its plan's reads and its turn's
+  // file outrun on a loaded machine)
+  await Promise.all(reached);
   await s.p.quiet();
   assert.equal(await s.sched("busy"), s.tsS.busy(), "busy");
   assert.deepEqual(await s.sched("current"), plain(s.tsS.current()), "what it is at");

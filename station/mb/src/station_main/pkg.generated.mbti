@@ -11,6 +11,7 @@ import {
   "station/sql",
   "station/station_main/media",
   "station/store_sessions",
+  "station/store_threads",
   "station/updates",
 }
 
@@ -105,6 +106,8 @@ pub fn lan_addrs() -> Array[@json.Json]
 
 pub fn lang_of(String?) -> String
 
+pub async fn live_p5_1_handed() -> Unit
+
 pub fn lock_command(@host.Host, String, String, String?) -> String
 
 pub fn loopback_answer(String, String?, Bool, @json.Json?, String) -> Reply
@@ -176,6 +179,8 @@ pub async fn start_live_p5_3(LiveBus) -> Unit
 pub async fn start_live_p5_4(LiveBus, rig? : Bool) -> Unit
 
 pub async fn start_live_p5_5(LiveBus) -> Unit
+
+pub async fn start_rig_updates(LiveBus) -> Unit
 
 pub fn start_time_of(Int32) -> Double?
 
@@ -294,6 +299,7 @@ pub(all) struct LiveBus {
   control_say : (@json.Json) -> Unit
   stop_station : (String) -> Unit
   restart_front : (() -> Unit)?
+  run_installer : ((String, Map[String, String]) -> Unit)?
   config_raw : @ref.Ref[() -> @json.Json]
   config_update : @ref.Ref[async ((@json.Json) -> @json.Json) -> @json.Json]
   config_listen : @ref.Ref[((@json.Json) -> Unit) -> () -> Unit]
@@ -331,15 +337,29 @@ pub(all) struct LiveBus {
   jobs_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   ui_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   coord_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  release_hearers : Array[() -> Unit]
+  peer_hearers : Array[(String) -> Unit]
+  helper_pids : Array[() -> Array[Int32]]
+  trimmers : Array[() -> Int32]
+  threads_preparing : Map[String, Bool]
 }
+pub fn LiveBus::all_helper_pids(Self) -> Array[Int32]
 pub fn LiveBus::as_rig(Self) -> Bool
 pub async fn LiveBus::call_peer(Self, String, String?, String, @json.Json, bytes? : Bytes) -> (@json.Json, Bytes?)
 pub async fn LiveBus::dispatch_peer(Self, String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?)
-pub fn LiveBus::new(@host.Host, String, Array[String], String, String, String, @cloud_lock.StationKey, @sql.Db, @store_sessions.Store, StationParts, @effect.Deferred[String], Bool, String, Int32?, (@json.Json) -> Unit, (String) -> Unit, restart_front? : () -> Unit) -> Self
+pub fn LiveBus::drain_thread_requests(Self, @store_threads.Store) -> Unit
+pub fn LiveBus::new(@host.Host, String, Array[String], String, String, String, @cloud_lock.StationKey, @sql.Db, @store_sessions.Store, StationParts, @effect.Deferred[String], Bool, String, Int32?, (@json.Json) -> Unit, (String) -> Unit, restart_front? : () -> Unit, run_installer? : (String, Map[String, String]) -> Unit) -> Self
+pub fn LiveBus::notify_peer_heard(Self, String) -> Unit
 pub fn LiveBus::notify_store(Self, @json.Json) -> Unit
 pub fn LiveBus::on_peer(Self, String, async (String, String?, @json.Json, Bytes?) -> (@json.Json, Bytes?)) -> Unit
+pub fn LiveBus::on_peer_heard(Self, (String) -> Unit) -> Unit
 pub fn LiveBus::on_peer_prefix(Self, String, async (String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?)) -> Unit
+pub fn LiveBus::on_release(Self, () -> Unit) -> Unit
+pub fn LiveBus::on_trim(Self, () -> Int32) -> Unit
+pub fn LiveBus::register_pids(Self, () -> Array[Int32]) -> Unit
 pub fn LiveBus::subscribe_store(Self, (@json.Json) -> Unit) -> () -> Unit
+pub fn LiveBus::told_release(Self) -> Unit
+pub fn LiveBus::trim_helpers(Self) -> Int32
 
 pub(all) struct PartRoute {
   meth : String

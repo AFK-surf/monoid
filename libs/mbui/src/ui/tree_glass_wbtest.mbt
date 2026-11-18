@@ -151,8 +151,6 @@ fn themed_corner_tester(w : Double) -> Tester {
   let wide = { ..Theme::light(), corner_fit: Some({ least: 6.0, most: 34.0, near: 4.0, far: 16.0 }) }
   let narrow = { ..Theme::light(), corner_fit: None }
   let t = Tester::new(fn(c) { c.set_theme(wide, narrow~, narrow_below=themed_below) }, w~, h=200.0, window_corner=16.0)
-  // (as the app sets it before its first frame)
-  t.ctx().set_theme(wide, narrow~, narrow_below=themed_below)
   set_view_app(fn(root) {
     root.box(fn(n) {
       n

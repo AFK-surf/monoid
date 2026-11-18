@@ -1743,7 +1743,7 @@ test("read/: names books, views' config and authors, the machine's transcripts, 
   const vm_ = await privateOf("read/views.ts", {}, "views");
   const people: Record<string, { name: string; email: string; picture: string }> = { "c1/U1": { name: "Ann", email: "", picture: "pic" }, "c1/U0": { name: "", email: "", picture: "x" } };
   const cases = [
-    { kind: "ember", author: "x" }, { kind: "agent", author: "s1", members: [{ session: "s1", connect: "c1" }], sessionConnect: "c2", sessionTitle: "T" },
+    { kind: "station", author: "x" }, { kind: "agent", author: "s1", members: [{ session: "s1", connect: "c1" }], sessionConnect: "c2", sessionTitle: "T" },
     { kind: "agent", author: "s1", members: [{ session: "s1", connect: "ember" }], sessionConnect: "c1", sessionTitle: "T" }, { kind: "agent", author: "s2", members: [], sessionConnect: null, sessionTitle: "Title" },
     { kind: "agent", author: "s3", members: [], sessionConnect: "zz", sessionTitle: null }, { kind: "person", author: "local", surface: "ember", admin: "Root" }, { kind: "person", author: "a@x", surface: "ember", names: { "a@x": "Ann X" } },
     { kind: "person", author: "b@x", surface: "ember" }, { kind: "person", author: "U1", surface: "slack", members: [{ session: "s", connect: "ember" }, { session: "s1", connect: "c1" }] },

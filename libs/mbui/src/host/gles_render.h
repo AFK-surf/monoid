@@ -711,7 +711,7 @@ static void gl_setup(void) {
 // pass rounds the frost's slow slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur
 // under 4 pixels, too narrow to halve, is written back into the copy: it leaves no slope that wide).
 
-typedef struct { GLuint t, fb; int w, h; } level;
+typedef struct { GLuint t, fb; int w, h; GLenum format; } level;
 static level lv[5];
 static int lv_w, lv_h;
 static GLuint bd_tex, r_tex;  // r_tex: the capture's sharp level liquid glass sees through its lip (unit 1 then)
@@ -720,18 +720,12 @@ static int gn;
 // the app's part of the surface (MBView: the soft keyboard over the rest), in its pixels from the foot
 static int vy0, vhp;
 
-// the blur kept in the levels is of the last capture while it is (kept_ok: capture, below)
+// the last capture's blur is kept to be shown again (capture, below)
 static int kept_ok;
-
-// a new context has none of the old textures
-static void glass_lost(void) {
-  memset(lv, 0, sizeof lv);
-  lv_w = lv_h = 0;
-  kept_ok = 0;
-}
+static void glass_forget(void);
 
 static level level_tex(GLenum format, int w, int h) {
-  level l = {0, 0, w > 0 ? w : 1, h > 0 ? h : 1};
+  level l = {0, 0, w > 0 ? w : 1, h > 0 ? h : 1, format};
   glGenTextures(1, &l.t);
   glBindTexture(GL_TEXTURE_2D, l.t);
   glTexStorage2D(GL_TEXTURE_2D, 1, format, l.w, l.h);
@@ -754,7 +748,8 @@ static void ensure_levels(int w, int h) {
     }
   lv_w = w > lv_w ? w : lv_w;
   lv_h = h > lv_h ? h : lv_h;
-  kept_ok = 0;
+  // (the blurs kept were shown by where they lie in levels of the old size: one made now would be shown by the new)
+  glass_forget();
   for (int j = 0; j < 4; j++)
     lv[j] = level_tex(j == 0 ? GL_RGBA8 : GL_RGB10_A2, (lv_w + (1 << j) - 1) >> j, (lv_h + (1 << j) - 1) >> j);
   lv[4] = level_tex(GL_RGB10_A2, lv_w, lv_h);
@@ -812,6 +807,9 @@ static void gl_dirty_add(double x, double y, double w, double h) {
 
 #ifndef MB_HOST_THREADS
 void mb_host_render_dirty(double x, double y, double w, double h) { gl_dirty_add(x, y, w, h); }
+// (each frame drawn as it is made, on the app's thread: none dropped. A host whose app runs on another thread counts
+// those a newer one took the place of: android_host.c)
+int32_t mb_host_frames_dropped(void) { return 0; }
 #endif
 
 // The parts of the frame the next one draws, from what was said of them (taken: a frame nothing was said for is drawn
@@ -977,8 +975,9 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
   }
 }
 
-// What the glass shows of a grab blurred in the levels: bd_tex, r_tex and the uniforms that say where in them it is.
-static void show_blur(const Grab *m) {
+// What the glass shows of a grab's blur in texture `bt` (bw × bh, level k's place in it) and its sharp level in `rt`
+// (rw × rh): bd_tex, r_tex and the uniforms that say where in them it is.
+static void show_blur(const Grab *m, GLuint bt, int bw, int bh, GLuint rt, int rw, int rh) {
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   int k = m->k, contained = m->contained, px0 = m->px0, pb0 = m->pb0, top = m->top;
@@ -987,25 +986,29 @@ static void show_blur(const Grab *m) {
   memcpy(gshape, m->shape, sizeof gshape);
   memcpy(grad, m->rad, sizeof grad);
   gn = m->n;
-  level *L = contained && k == 0 ? &lv[4] : &lv[k];
   float d = (float)(1 << k);
-  bd_tex = L->t;
-  gmap[0] = sc / d / L->w; gmap[1] = -sc / d / L->h;
-  gmap[2] = -(float)px0 / d / L->w; gmap[3] = (float)(top - pb0) / d / L->h;
-  guvc[0] = 0.5f / L->w; guvc[1] = 0.5f / L->h; guvc[2] = (lw[k] - 0.5f) / L->w; guvc[3] = (lh[k] - 0.5f) / L->h;
+  bd_tex = bt;
+  gmap[0] = sc / d / bw; gmap[1] = -sc / d / bh;
+  gmap[2] = -(float)px0 / d / bw; gmap[3] = (float)(top - pb0) / d / bh;
+  guvc[0] = 0.5f / bw; guvc[1] = 0.5f / bh; guvc[2] = (lw[k] - 0.5f) / bw; guvc[3] = (lh[k] - 0.5f) / bh;
   // the sharp one, of the levels its blur left as they were copied: the half once halved twice or more, the copy once
-  // halved (not contained: contained, its copy is the edge's pass's), else L
+  // halved (not contained: contained, its copy is the edge's pass's), else the blurred one (grab_sharp)
   int rk = k >= 2 ? 1 : k == 1 && !contained ? 0 : k;
-  level *R = k >= 2 ? &lv[1] : k == 1 && !contained ? &lv[0] : L;
   float rd = (float)(1 << rk);
-  r_tex = R->t;
-  rmap[0] = sc / rd / R->w; rmap[1] = -sc / rd / R->h;
-  rmap[2] = -(float)px0 / rd / R->w; rmap[3] = (float)(top - pb0) / rd / R->h;
-  ruvc[0] = 0.5f / R->w; ruvc[1] = 0.5f / R->h; ruvc[2] = (lw[rk] - 0.5f) / R->w; ruvc[3] = (lh[rk] - 0.5f) / R->h;
+  r_tex = rt;
+  rmap[0] = sc / rd / rw; rmap[1] = -sc / rd / rh;
+  rmap[2] = -(float)px0 / rd / rw; rmap[3] = (float)(top - pb0) / rd / rh;
+  ruvc[0] = 0.5f / rw; ruvc[1] = 0.5f / rh; ruvc[2] = (lw[rk] - 0.5f) / rw; ruvc[3] = (lh[rk] - 0.5f) / rh;
+}
+
+// The level a grab's blur is left in, and the one its sharp level is (the blur's own where it has none apart).
+static level *grab_blurred(const Grab *m) { return m->contained && m->k == 0 ? &lv[4] : &lv[m->k]; }
+static level *grab_sharp(const Grab *m) {
+  return m->k >= 2 ? &lv[1] : m->k == 1 && !m->contained ? &lv[0] : grab_blurred(m);
 }
 
 // A grab of target_fb blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
-// Gaussian left, then shown (show_blur).
+// Gaussian left (grab_blurred). The levels are shared by every capture: what is shown is the copy a slot keeps (below).
 // (how many: scripts/gles_render_test.c, a blur shown again as kept is none)
 static int blurs_made;
 
@@ -1029,78 +1032,212 @@ static void blur(const Grab *m) {
   for (int j = 1; j <= k; j++)
     post_pass(j == 1 && contained ? &lv[4] : &lv[j - 1], lw[j - 1], lh[j - 1], &lv[j], lw[j], lh[j], 1, 0, 0, 0);
   if (m->sg > 0.3f) {
-    level *from = contained && k == 0 ? &lv[4] : &lv[k];
+    level *from = grab_blurred(m);
     level *tmp = contained && k == 0 ? &lv[0] : &lv[4];
     post_pass(from, lw[k], lh[k], tmp, lw[k], lh[k], 2, m->sg, 1, 0);
     post_pass(tmp, lw[k], lh[k], from, lw[k], lh[k], 2, m->sg, 0, 1);
   }
-  show_blur(m);
 }
 
-// The blur the levels hold, as long as no capture came after it (kept_ok): what it was of. What a capture copies is
-// what the frame drew before it (its instances up to the glass, the pieces of the frame's shapes they are drawn by,
-// the ground the frame cleared to) in the grab's rectangle of a surface of that size: a frame that draws all that the
-// same under the same glass (a caret blinking in a composer, a spinner turning, a button lit under the hand, over a
-// list at rest) shows the blur as it is, with no copy and no passes, the framebuffer drawn into not left for them
-// (apple_render.m's same_under, Metal's). A stream or a native view's picture drawn under it (its pictures change under
+// The blurs kept, a slot each, as many as a screen has groups of glass at once (a bar at the top, a composer and its
+// ground at the foot, a sheet's, a page sliding over another: 2 to 6), the one least lately shown taken for a new one.
+// A slot holds a capture's blur (and liquid glass's sharp level) copied out of the levels, as big as the levels (so it
+// is shown by the same numbers as the level it came from, to the byte), and what it was of. What a capture copies is
+// what the frame drew before it in the grab's rectangle (the instances up to the glass that reach into it, the pieces
+// of the frame's shapes they are drawn by, the ground the frame cleared to) of a surface of that size: a frame that
+// draws all that the same under the same glass (a caret blinking in a composer, a spinner turning, a button lit under
+// the hand, over a list at rest) shows the blur as it is, with no copy and no passes, the framebuffer drawn into not
+// left for them (apple_render.m's slots, Metal's); one where something moved under one group of glass makes that
+// group's blur again, the others' kept. A stream or a native view's picture drawn into it (its pictures change under
 // the same instances) is blurred anew each frame, as is a frame an image under it had no texture for yet.
-static float *kept_under;
-static size_t kept_under_cap, kept_under_n;
-static Grab kept_grab;
-static double kept_key[9];
+#define MB_GLASS_SLOTS 8
+typedef struct {
+  GLuint bt, bfb, rt, rfb;
+  int bw, bh, rw, rh;
+  GLenum bf, rf;
+  float *under;
+  size_t under_cap, under_n;
+  int32_t whole, picked;
+  Grab grab;
+  double key[9];
+  int valid;
+  unsigned used;
+} glass_slot;
+static glass_slot slots[MB_GLASS_SLOTS];
+static unsigned slots_clock;
+// what the capture now is of (under_now), as a slot keeps it
+static float *under_now;
+static size_t under_now_cap, under_now_n;
+static int32_t under_whole, under_picked;
 
-// The floats a capture of the run at start is of, and their count: those before it and the shapes' pieces (from
-// `pieces` on), 0 when a stream or a native view's picture is among them.
-static size_t under_of(const float *f, int32_t start, int32_t count, int32_t pieces) {
-  for (int32_t i = 0; i < start; i++)
-    if (f[i * MB_INST + 20] > (float)MB_STREAM_TEX) return 0;
-  return (size_t)(start + (count - pieces)) * MB_INST;
-}
-
-static int same_under(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m, const double key[9]) {
-  size_t n = under_of(f, start, count, pieces);
-  if (!kept_ok || n == 0 || n != kept_under_n || memcmp(&kept_grab, m, sizeof *m) != 0 ||
-      memcmp(kept_key, key, sizeof kept_key) != 0)
-    return 0;
-  size_t a = (size_t)start * MB_INST;
-  return memcmp(kept_under, f, a * sizeof(float)) == 0 &&
-         memcmp(kept_under + a, f + (size_t)pieces * MB_INST, (n - a) * sizeof(float)) == 0;
-}
-
-static void keep_under(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m, const double key[9]) {
-  size_t n = under_of(f, start, count, pieces);
+static void glass_forget(void) {
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
   kept_ok = 0;
-  if (n == 0) return;
-  if (kept_under_cap < n) {
-    kept_under = (float *)realloc(kept_under, n * sizeof(float));
-    kept_under_cap = n;
+}
+
+// a new context has none of the old textures
+static void glass_lost(void) {
+  memset(lv, 0, sizeof lv);
+  lv_w = lv_h = 0;
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    glass_slot *s = &slots[i];
+    s->bt = s->bfb = s->rt = s->rfb = 0;
+    s->bw = s->bh = s->rw = s->rh = 0;
   }
-  size_t a = (size_t)start * MB_INST;
-  memcpy(kept_under, f, a * sizeof(float));
-  memcpy(kept_under + a, f + (size_t)pieces * MB_INST, (n - a) * sizeof(float));
-  kept_under_n = n;
-  kept_grab = *m;
-  memcpy(kept_key, key, sizeof kept_key);
-  kept_ok = 1;
+  glass_forget();
+}
+
+// Whether instance i (its run of glass starting at `run`) draws anything in g (x0, y0, x1, y1, points): its quad as
+// the vertex shader makes it (VS: grown round its rect, liquid glass over its group's bounds), turned ones always.
+static int reaches(const float *f, int32_t i, int32_t run, const float g[4]) {
+  const float *b = f + (size_t)i * MB_INST;
+  if (b[32] != 0.0f) return 1;
+  int kind = (int)(b[5] + 0.5f);
+  float e = kind == 2 ? fabsf(b[7]) * 3.0f + 2.0f : 1.0f;
+  // (liquid: its group's bounds, each shape and the first's reach round it, 2 more: grab_of)
+  if (kind == 6) e = fmaxf(fabsf(b[23]), fabsf(f[(size_t)run * MB_INST + 23])) + 2.0f;
+  e += 1.0f;
+  float x0 = fminf(b[0], b[0] + b[2]) - e, x1 = fmaxf(b[0], b[0] + b[2]) + e;
+  float y0 = fminf(b[1], b[1] + b[3]) - e, y1 = fmaxf(b[1], b[1] + b[3]) + e;
+  return x1 > g[0] && x0 < g[2] && y1 > g[1] && y0 < g[3];
+}
+
+// What the capture of the run at start is of (under_now): every instance before the last glass (or what draws by a
+// glass's blur) that reaches into its rectangle (that glass shows what is under it, wherever that is), those after it that reach into it, and the frame's
+// shapes' pieces (from `pieces` on). 0 when a stream or a native view's picture is among them.
+static int under_take(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m) {
+  float sc = (float)cur_scale;
+  float g[4] = {(float)m->px0 / sc - 1.0f, (float)(m->top - (m->pb0 + m->h)) / sc - 1.0f,
+                (float)(m->px0 + m->w) / sc + 1.0f, (float)(m->top - m->pb0) / sc + 1.0f};
+  int32_t whole = 0, run = 0;
+  for (int32_t i = 0; i < start; i++) {
+    float tid = f[(size_t)i * MB_INST + 20];
+    if (i > 0 && tid != f[(size_t)(i - 1) * MB_INST + 20]) run = i;
+    // (glass, and what is drawn by what a glass's blur shows: adaptive words over it, kind 7, light or dark by it)
+    int sees = tid < 0.0f || (int)(f[(size_t)i * MB_INST + 5] + 0.5f) == 7;
+    if (sees && reaches(f, i, run, g)) whole = i + 1;
+  }
+  size_t n = ((size_t)whole + (size_t)(count - pieces)) * MB_INST;
+  if (under_now_cap < n + (size_t)(start - whole) * MB_INST) {
+    under_now_cap = n + (size_t)(start - whole) * MB_INST;
+    under_now = (float *)realloc(under_now, under_now_cap * sizeof(float));
+  }
+  float *o = under_now;
+  for (int32_t i = 0; i < whole; i++)
+    if (f[(size_t)i * MB_INST + 20] > (float)MB_STREAM_TEX) return 0;
+  memcpy(o, f, (size_t)whole * MB_INST * sizeof(float));
+  o += (size_t)whole * MB_INST;
+  int32_t picked = 0;
+  for (int32_t i = whole; i < start; i++) {
+    if (!reaches(f, i, i, g)) continue;
+    if (f[(size_t)i * MB_INST + 20] > (float)MB_STREAM_TEX) return 0;
+    memcpy(o, f + (size_t)i * MB_INST, MB_INST * sizeof(float));
+    o += MB_INST;
+    picked++;
+  }
+  memcpy(o, f + (size_t)pieces * MB_INST, (size_t)(count - pieces) * MB_INST * sizeof(float));
+  o += (size_t)(count - pieces) * MB_INST;
+  under_now_n = (size_t)(o - under_now);
+  under_whole = whole;
+  under_picked = picked;
+  return 1;
+}
+
+// The slot whose blur is of what the capture now is (under_now), or none.
+static glass_slot *slot_same(const Grab *m, const double key[9]) {
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    glass_slot *s = &slots[i];
+    if (s->valid && s->under_n == under_now_n && s->whole == under_whole && s->picked == under_picked &&
+        memcmp(&s->grab, m, sizeof *m) == 0 && memcmp(s->key, key, sizeof s->key) == 0 &&
+        memcmp(s->under, under_now, under_now_n * sizeof(float)) == 0)
+      return s;
+  }
+  return NULL;
+}
+
+// A texture of the slot's (made again at another size or format) holding level `l`'s w × h foot left.
+static void slot_copy(GLuint *t, GLuint *fb, int *tw, int *th, GLenum *tf, const level *l, int w, int h) {
+  if (!*t || *tw != l->w || *th != l->h || *tf != l->format) {
+    if (*t) {
+      glDeleteFramebuffers(1, fb);
+      glDeleteTextures(1, t);
+    }
+    level made = level_tex(l->format, l->w, l->h);
+    *t = made.t;
+    *fb = made.fb;
+    *tw = made.w;
+    *th = made.h;
+    *tf = l->format;
+  }
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, l->fb);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, *fb);
+  glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+}
+
+// The blur just made (blur) kept in the slot least lately shown: copied out of the levels, liquid glass's sharp level
+// too where it is apart. Not yet said to be of anything (valid).
+static glass_slot *slot_fill(const Grab *m) {
+  glass_slot *s = &slots[0];
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    if (!slots[i].valid) {
+      s = &slots[i];
+      break;
+    }
+    if (slots[i].used < s->used) s = &slots[i];
+  }
+  s->valid = 0;
+  int lw[4], lh[4];
+  grab_levels(m, lw, lh);
+  level *L = grab_blurred(m), *R = grab_sharp(m);
+  int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
+  slot_copy(&s->bt, &s->bfb, &s->bw, &s->bh, &s->bf, L, lw[m->k], lh[m->k]);
+  // (frosted glass sees no sharp level, liquid's shapes are counted: grab_of)
+  if (m->n > 0 && R != L) slot_copy(&s->rt, &s->rfb, &s->rw, &s->rh, &s->rf, R, lw[rk], lh[rk]);
+  return s;
+}
+
+static void slot_show(const Grab *m, glass_slot *s) {
+  s->used = ++slots_clock;
+  int sharp_apart = m->n > 0 && grab_sharp(m) != grab_blurred(m);
+  if (sharp_apart) show_blur(m, s->bt, s->bw, s->bh, s->rt, s->rw, s->rh);
+  else show_blur(m, s->bt, s->bw, s->bh, s->bt, s->bw, s->bh);
+}
+
+static void slot_keep(glass_slot *s, const Grab *m, const double key[9]) {
+  if (s->under_cap < under_now_n) {
+    s->under = (float *)realloc(s->under, under_now_n * sizeof(float));
+    s->under_cap = under_now_n;
+  }
+  memcpy(s->under, under_now, under_now_n * sizeof(float));
+  s->under_n = under_now_n;
+  s->whole = under_whole;
+  s->picked = under_picked;
+  s->grab = *m;
+  memcpy(s->key, key, sizeof s->key);
+  s->valid = 1;
 }
 
 static void main_state(void);
 
 // What the run [start, end) of glass sees (`pieces`: where the frame's shapes' pieces start, `r`, `g`, `b` the ground it
-// was cleared to), blurred anew or as the levels keep it; 0 when none of it shows. Leaves the main programs' state.
+// was cleared to), blurred anew or as a slot keeps it; 0 when none of it shows. Leaves the main programs' state.
 static int capture(const float *f, int32_t start, int32_t end, int32_t count, int32_t pieces, double r, double g,
                    double b) {
   Grab m;
   int shows = grab_of(&m, f, start, end, count);
   double key[9] = {fb_w, fb_h, cur_scale, cur_w, cur_h, r, g, b, over_other};
-  if (shows && same_under(f, start, count, pieces, &m, key)) {
-    show_blur(&m);
-  } else if (shows) {
-    blur(&m);
-    // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not kept
-    // to be shown again as theirs)
-    if (encode_missing) kept_ok = 0;
-    else keep_under(f, start, count, pieces, &m, key);
+  if (shows) {
+    int known = under_take(f, start, count, pieces, &m);
+    glass_slot *s = known ? slot_same(&m, key) : NULL;
+    if (!s) {
+      blur(&m);
+      s = slot_fill(&m);
+      // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not kept
+      // to be shown again as theirs)
+      if (known && !encode_missing) slot_keep(s, &m, key);
+    }
+    kept_ok = s->valid;
+    slot_show(&m, s);
   }
   main_state();
   return shows;

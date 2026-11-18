@@ -28,12 +28,13 @@
 //
 // The wire, a line of JSON each way at a time on one stream: new → `hello {workspaces: [{ws, credential}], kind, label,
 // sign_key}`; trusted → `code {workspaces}` (the ones it approves) or `no {error}`; new → `pake {y}`; trusted → `pake
-// {y, mac}`; new → `confirm {mac}` when the trusted one's MAC is right, else `wrong`; trusted → `approved {workspaces,
+// {y, mac, roots?}` (`roots`: asked into its person's own locks, the root of each, `rootsOf`); new → `confirm {mac}`
+// when the trusted one's MAC is right, else `wrong`; trusted → `approved {workspaces,
 // failed}`, or `wrong {left}` / `no`. A `no` says why: `tries` (out of them), `denied` (turned away there), `late` (the
 // code too old), `bad_share`; a trusted device from before `late` closes the stream then with no word. An `approved`
 // that signed it in nowhere (each workspace in `failed`, with why) is no approval: the new device says why.
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { Deferred, Effect, Fiber, Queue } from "effect";
+import { Deferred, Effect, Fiber, Queue, type Result } from "effect";
 import type { Inner } from "../core.ts";
 import { hooks } from "../core/execute.ts";
 import { CoreError, asCoreError } from "../error.ts";
@@ -79,12 +80,22 @@ const PAIR_ANSWER_MS = 30_000;
 /// confirmation, then brings the entry to the cloud. What it costs: a line that went before the trusted device had the
 /// confirmation is said gone that much later.
 export const PAIR_SIGNED_MS = 10_000;
+/// Meanwhile, what is read again, after each of these (ms) in turn: a moved workspace's chain never moves as one of its
+/// people's logs lets this device in, and a person's own lock is told to no device that is not on it, so nothing tells
+/// the new device (a retry after a lost answer, with a backoff, within PAIR_SIGNED_MS).
+const PAIR_SIGNED_AGAIN = [500, 1_000, 2_000, 3_000, 3_000];
+/// How long a code typed waits for a trusted device reached that has not said yet whether it shows a code (its dial's
+/// own wait, PAIR_ANSWER_MS, is far longer): its answer on its way over a slow line (6 s a message) is taken, while a
+/// device that never answers (a phone put away as it was reached) holds no wrong code's answer back.
+export const PAIR_LATE_CODE_MS = 8_000;
 /// How long the new device waits for a trusted device to answer a code typed: its first answer (its pake, which it
 /// makes at once) PAIR_REPLY_MS, the whole of it (that the code was wrong, or the approval: it signs within lock.ts
-/// ASKED_MS, then brings the entry to the cloud) PAIR_PROVE_MS from the code typed; no answer then is its end. A
+/// ASKED_MS, then brings the entry to the cloud) PAIR_PROVE_MS from the code typed, for every trusted device tried with
+/// it, one that answered late (`prove`) too; no answer then is its end. A
 /// trusted phone put away as its code was read off it closes nothing (its connection is kept 10 minutes idle), so
 /// without these the new device waited on it that long (2026-11-18). Two round trips of a slow line fit in
-/// PAIR_PROVE_MS (lock-pair-faults.test.ts: 6 s a message), and PAIR_SIGNED_MS after it is still under 40 s.
+/// PAIR_PROVE_MS (lock-pair-faults.test.ts: 6 s a message), and PAIR_SIGNED_MS after it, with lock.ts ASKED_MS of reads
+/// once approved, is still under the 40 s a call is given (lock-pair-modes-faults.test.ts).
 export const PAIR_REPLY_MS = 15_000;
 export const PAIR_PROVE_MS = 25_000;
 /// Who signs member credentials, and what kind they are (station/src/cloud/provider.ts STILLFAIL `credential`).
@@ -127,11 +138,11 @@ export function credentialOf(token: string, keys: unknown, ws: string, device: s
 /// A new device showing this one's code: who, where it asks, the code, how to turn it away.
 /// `hidden`: its prompt closed here, the code still good. `until`: when the code is too old (ms).
 /// `personal`: it asks into this person's own locks, each account's it can be let into here, not a workspace
-///; `places` is empty then. `seed`: the key, read as the person was asked before the code showed.
+///; `places` is empty then. Nobody is asked as the code shows: the key is read once the code is proved (`approve`).
 /// A place's `joins`: the lock there has not heard of this person (made a member since it was turned on); `moved`: its
 /// chain moved to its people's own logs, where a web page is let in by an entry of its person's own log (`movedPlace`);
 /// `admit`, there, someone's first device: who is said a member, with the log of their own its hello brought.
-type Asking = { personal?: { subs: string[]; key: string; seed: Uint8Array | null }; device: string; name: string; email: string; kind: "app" | "web"; label: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
+type Asking = { personal?: { subs: string[]; key: string }; device: string; name: string; email: string; kind: "app" | "web"; label: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
 
 const askings = new WeakMap<Inner, Map<string, Asking>>();
 const askingsOf = (inner: Inner) => {
@@ -396,6 +407,8 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
     const personal = places.length === 0 ? personalAsked(inner, hello.value) : null;
     const who = personal !== null ? personal.who : asked.who;
     if ((places.length === 0 && personal === null) || who === null) return yield* d.send({ t: "no", error: "not_here" });
+    // (their lock begun with nobody asked where it can be, so that its root goes with the code, `rootsOf`)
+    if (personal !== null) for (const sub of personal.subs) yield* inner.adb.personal().beginForQuietly(sub);
     const all = askingsOf(inner);
     const before = all.get(peer);
     if (before) Deferred.doneUnsafe(before.away, Effect.void);
@@ -404,8 +417,7 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
       device: peer, name: who.name, email: who.email, kind, label: (str(get(hello.value, "label")) ?? "").slice(0, 120),
       signKey: kind === "app" ? str(get(hello.value, "sign_key")) : null, code: pairCode((b) => inner.host.randomBytes(b)),
       at: Math.floor(inner.host.nowMs() / 1000), until: inner.host.nowMs() + PAIR_WAIT_MS, places, hidden: false, away: Deferred.makeUnsafe<void>(),
-      // (their lock begun in this ask where they have none, personal-lock.ts `seedFor`)
-      ...(personal !== null ? { personal: { subs: personal.subs, key: personal.key, seed: yield* Effect.orElseSucceed(inner.adb.personal().seedFor(personal.subs[0]!, t("core-misc.personal.reason.add")), () => null) } } : {}),
+      ...(personal !== null ? { personal: { subs: personal.subs, key: personal.key } } : {}),
     };
     all.set(peer, asking);
     told(inner);
@@ -434,7 +446,10 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
             const keys = pakeKeys(p, unhex(str(m.y) ?? ""), "trusted");
             if (keys === null) return yield* d.send({ t: "no", error: "bad_share" });
             expect = keys.theirs;
-            yield* d.send({ t: "pake", y: hex(p.share), mac: hex(keys.mine) });
+            // (asked into the person's own locks: the root each is, which the new device takes a lock read elsewhere
+            // by once its answer is lost, `recoverJoined`; it trusts it only once this MAC checks)
+            const roots = asking.personal ? rootsOf(inner, asking.personal.subs) : null;
+            yield* d.send({ t: "pake", y: hex(p.share), mac: hex(keys.mine), ...(roots !== null ? { roots } : {}) });
           } else if (m.t === "confirm" && expect !== null && sameMac(expect, unhex(str(m.mac) ?? ""))) {
             return yield* d.send(yield* approve(inner, asking));
           } else {
@@ -452,19 +467,50 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
   });
 }
 
+/// The roots of the person's own locks of `subs` held here (a lock begun as the code showed, `seedFor`, too): what the
+/// new device asking into them goes by where the approval does not reach it (`recoverJoined`). A root is no secret (the
+/// stations keep it, a workspace binds it), so it goes before the code is proved; the new device takes it only once
+/// this device proved it knows the code (`tryOne`). Null where none is held.
+function rootsOf(inner: Inner, subs: readonly string[]): Record<string, string> | null {
+  const personal = inner.adb.personal();
+  const roots = Object.fromEntries(subs.flatMap((s) => {
+    const r = personal.root(s);
+    return r === null ? [] : [[s, r] as const];
+  }));
+  return Object.keys(roots).length > 0 ? roots : null;
+}
+
 /// The new device signed in where it asked and this device approves it: an app as one that signs too, a web page for
 /// WEB_DEVICE_SECS; its person made a member first where the lock has not heard of them.
 function approve(inner: Inner, a: Asking): Effect.Effect<J> {
   return Effect.gen(function* () {
     if (a.personal) {
-      const { subs, key, seed } = a.personal;
+      const { subs, key } = a.personal;
+      const reason = t("core-misc.personal.reason.add");
       const chains: Record<string, Entry[]> = {};
       const failed: { ws: string; error: string }[] = [];
       // (its entry pending on their lock, no station of theirs up: the first such row, which the answer carries)
       let pending: unknown = null;
+      // The key, read once the code is proved and once for every account (their lock begun in this ask where they have
+      // none, personal-lock.ts `seedFor`): one turned down is not asked again for the next account.
+      let seed: Uint8Array | null = null;
+      let seedErr: CoreError | null = null;
       for (const sub of subs) {
+        if (seed === null && seedErr === null) {
+          const got = yield* Effect.result(inner.adb.personal().seedFor(sub, reason));
+          if (got._tag === "Success") seed = got.success;
+          else if (got.failure.code !== "personal_outside") seedErr = got.failure;
+          else {
+            failed.push({ ws: personOf(sub), error: got.failure.message });
+            continue;
+          }
+        }
+        if (seedErr !== null) {
+          failed.push({ ws: personOf(sub), error: seedErr.message });
+          continue;
+        }
         // (put on the person's lock, then in the workspaces' where they bound it, as one: `withBound`)
-        const add = inner.adb.personal().addDevice(sub, { key, id: a.device, label: a.label, ...(a.signKey !== null ? { sign_key: a.signKey } : {}) }, t("core-misc.personal.reason.add"), seed);
+        const add = inner.adb.personal().addDevice(sub, { key, id: a.device, label: a.label, ...(a.signKey !== null ? { sign_key: a.signKey } : {}) }, reason, seed);
         const added = yield* Effect.result(withBound(inner, sub, Effect.tap(add, () => putOnBound(inner, sub, { id: a.device, label: a.label, signKey: a.signKey }))));
         if (added._tag === "Success") chains[sub] = added.success;
         else failed.push({ ws: personOf(sub), error: added.failure.message });
@@ -585,8 +631,9 @@ function hide(inner: Inner, device: string): void {
 
 /// A trusted device that showed a code, and the workspaces it approves this one in; `until`, when its code is too old
 /// (ms, as this device saw it come); `confirmed`: the code's confirmation went to it (only then may it have signed this
-/// device in).
-export type Met = { id: string; d: Duplex; workspaces: string[]; until?: number; confirmed?: boolean };
+/// device in); `roots`: asked into its person's own locks, the root of each as it said it once it proved the code
+/// (`rootsOf`), by which a lock read elsewhere is taken where its answer is lost (`recoverJoined`).
+export type Met = { id: string; d: Duplex; workspaces: string[]; until?: number; confirmed?: boolean; roots?: Record<string, string> };
 /// This device's try: how far it got, the trusted devices showing a code.
 /// `lost`: a trusted device that showed a code ended since, others still showing theirs (the code typed may be its).
 /// `approvedIn`, once `done`: the workspaces it was signed in to (of those it waited in, the others still wait).
@@ -600,6 +647,24 @@ export type Trying = { state: "finding" | "code" | "checking" | "wrong" | "none"
 const tryings = new WeakMap<Inner, Trying>();
 let runs = 0;
 
+/// Whether `places` (where a trusted device shows its code, or this device was approved) take in workspace `ws`: by
+/// itself, or by the person's own lock of the account `ws` is this device's under (`person:<sub>`), which a member
+/// carried by a moved workspace's chain unbound (`carriedUnbound`) asks into from that workspace's page, where that lock
+/// is what lets the device in there (`byOwnLock`).
+function coversWorkspace(inner: Inner, places: readonly string[], ws: string): boolean {
+  if (places.includes(ws)) return true;
+  if (isPerson(ws)) return false;
+  const owner = inner.workspaces.owner(ws);
+  return owner !== null && places.includes(personOf(owner)) && byOwnLock(inner, ws, owner);
+}
+
+/// Whether workspace `ws` lets `sub`'s devices in by their own lock: its chain moved to its people's own logs, or binds
+/// them to a lock of their own. One whose chain binds them to none lets a device in only by its own entry, which an
+/// approval into their own lock does not sign.
+function byOwnLock(inner: Inner, ws: string, sub: string): boolean {
+  return movedHere(inner, ws) || stateOf(inner, ws).persons.get(sub) !== undefined;
+}
+
 function mine(inner: Inner, ws: string): J | null {
   const y = tryings.get(inner);
   if (!y || !y.workspaces.includes(ws)) return null;
@@ -607,14 +672,22 @@ function mine(inner: Inner, ws: string): J | null {
   if (credentialError !== undefined) return { state: "failed", devices: 0, error: credentialError };
   // Signed in elsewhere, not here: no trusted device that answered approves it in this one (2026-11-04: a web page
   // waiting in three workspaces, approved in two, showed this one's page as it was, its code typed, as though nothing
-  // had come of it).
-  if (y.state === "done" && y.approvedIn !== undefined && !y.approvedIn.includes(ws)) {
-    return { state: "failed", devices: 0, error: t("core-misc.lock.pairElsewhere", { names: y.approvedIn.map((w) => nameOf(inner, w)).join(t("core-misc.lock.listSep")) }) };
+  // had come of it). Put on its person's own lock is signed in to every workspace of theirs (`coversWorkspace`), and
+  // said by those workspaces' names, never the lock's own (people are not asked to tell the two apart).
+  if (y.state === "done" && y.approvedIn !== undefined && !coversWorkspace(inner, y.approvedIn, ws)) {
+    const where = [...new Set(y.approvedIn.flatMap((w) => (isPerson(w) ? [...inner.workspaces.owned()].filter(([x, o]) => personOf(o) === w && x !== ws && byOwnLock(inner, x, o)).map(([x]) => x) : [w])))];
+    const names = where.map((w) => nameOf(inner, w)).filter((n) => n !== "");
+    // (none to name: said as one that went, never with a name left out)
+    return { state: "failed", devices: 0, error: names.length === 0 ? endedText([]) : t("core-misc.lock.pairElsewhere", { names: names.join(t("core-misc.lock.listSep")) }) };
   }
   const until = Math.max(0, ...[...y.met.values()].map((m) => m.until ?? 0));
   const typing = y.state === "code" || y.state === "wrong";
-  // The devices that may approve it here, each whether it shows a code for here now (the lock's view names them).
-  const approvers = (y.approvers?.get(ws) ?? []).map((id) => ({ id, showing: y.met.get(id)?.workspaces.includes(ws) === true }));
+  // The devices that may approve it here, each whether it shows a code for here now (the lock's view names them; one
+  // showing it for the person's own lock shows it for each workspace of theirs).
+  const approvers = (y.approvers?.get(ws) ?? []).map((id) => {
+    const m = y.met.get(id);
+    return { id, showing: m !== undefined && coversWorkspace(inner, m.workspaces, ws) };
+  });
   return {
     state: y.state, devices: y.met.size, ...(y.left !== undefined ? { left: y.left } : {}), ...(y.error !== undefined ? { error: y.error } : {}),
     ...(typing && until > 0 ? { until, untilText: untilText(inner, until) } : {}),
@@ -773,12 +846,37 @@ export const dialer = {
   open(inner: Inner, id: string, relays: string[]): Effect.Effect<Duplex, CoreError> {
     return Effect.gen(function* () {
       const endpoint = (yield* inner.mesh()).endpoint();
-      const connection = yield* Effect.mapError(endpoint.connect({ id, relays }, PAIR_ALPN, []), (e) => CoreError.plainly("pair", e));
-      const stream = yield* Effect.mapError(connection.openBi(), (e) => {
-        connection.close(0, "done");
+      // (dialled on the core's fiber, given up as this one is interrupted: a dial that comes through after it was given
+      // up on, a later round's under way, is closed, not left to show the trusted device's code again)
+      let abandoned = false;
+      const givenUp = Deferred.makeUnsafe<void>();
+      let connection: IrohConnection | null = null;
+      const dialled = Deferred.makeUnsafe<IrohConnection, CoreError>();
+      inner.runner.fork(
+        Effect.flatMap(Effect.result(endpoint.connect({ id, relays }, PAIR_ALPN, [], Deferred.await(givenUp))), (r) =>
+          Effect.sync(() => {
+            if (r._tag === "Success") {
+              if (abandoned) return r.success.close(0, "done");
+              connection = r.success;
+              Deferred.doneUnsafe(dialled, Effect.succeed(r.success));
+            } else Deferred.doneUnsafe(dialled, Effect.fail(CoreError.plainly("pair", r.failure)));
+          }),
+        ),
+      );
+      const conn = yield* Deferred.await(dialled).pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            abandoned = true;
+            Deferred.doneUnsafe(givenUp, Effect.void);
+            (connection as IrohConnection | null)?.close(0, "done");
+          }),
+        ),
+      );
+      const stream = yield* Effect.mapError(conn.openBi(), (e) => {
+        conn.close(0, "done");
         return CoreError.plainly("pair", e);
       });
-      return streamDuplex(stream, () => connection.close(0, "done"));
+      return streamDuplex(stream, () => conn.close(0, "done"));
     });
   },
 };
@@ -1063,10 +1161,13 @@ function prove(inner: Inner, typed: string): Effect.Effect<unknown, CoreError> {
     // A device can show its code while these are being checked. It did not receive this code and must not be reported
     // as having rejected it.
     const checked = [...y.met.values()];
+    // (every trusted device tried with this code answers by PAIR_PROVE_MS from now, one that answered late too: what
+    // the person waits on stays within the 40 s a call is given, PAIR_SIGNED_MS after it included)
+    const proveUntil = inner.host.nowMs() + PAIR_PROVE_MS;
     // Each tried at once, and the first to take the code taken: the others are not waited for (2026-11-18: one trusted
     // phone approved in 50 ms while another, put away after it showed its code, held the new device on 正在验证).
     // Those not answered then are let go with the rest once approved (`drop`). Till one takes it, all are waited for.
-    const attempt = (m: Met) => Effect.result(tryOne(inner, m, base, code));
+    const attempt = (m: Met) => Effect.result(tryOne(inner, m, base, code, proveUntil));
     const tryAll = (ms: Met[]) =>
       Effect.gen(function* () {
         const tried: (readonly [Met, Effect.Success<ReturnType<typeof attempt>>])[] = [];
@@ -1084,9 +1185,13 @@ function prove(inner: Inner, typed: string): Effect.Effect<unknown, CoreError> {
     // None took it, and a device reached is still to answer with its code (its dial's own wait, PAIR_ANSWER_MS): it may
     // show the code typed already, its answer on the way (2026-11-14, side run of 09719be0: D typed the code its second
     // trusted device showed while D had heard only the first's, which said it was wrong). Those it answers with, tried
-    // with the same code; whatever else came meanwhile, as before, is the next code's.
+    // with the same code; whatever else came meanwhile, as before, is the next code's. PAIR_LATE_CODE_MS at most: one
+    // reached that never answers (a phone put away as it was reached, a computer on its system's unlock prompt) held a
+    // wrong code's answer back for the whole of its dial's wait, and with a code shown elsewhere gone quiet took the call
+    // past its 40 s. It goes on being heard meanwhile; a code it shows after is the next code's.
     if (!results.some(([, r]) => r._tag === "Success" && "approved" in r.success) && (y.answering?.size ?? 0) > 0) {
-      yield* Effect.forEach([...y.answering!.values()], (a) => Deferred.await(a), { discard: true });
+      const answering = Effect.forEach([...y.answering!.values()], (a) => Deferred.await(a), { discard: true });
+      yield* Effect.timeoutOption(answering, Math.max(0, Math.min(PAIR_LATE_CODE_MS, proveUntil - inner.host.nowMs()))); // timer: a deadline
       const late = [...y.met.values()].filter((m) => !checked.includes(m));
       checked.push(...late);
       results.push(...(yield* tryAll(late)));
@@ -1105,52 +1210,13 @@ function prove(inner: Inner, typed: string): Effect.Effect<unknown, CoreError> {
     }
     // Not approved as far as this device heard, a trusted device having ended as the code was proved to it: it may have
     // signed it in all the same, its answer lost on the way back (its line gone, its app put away as it answered;
-    // 2026-11-04 a phone signed a web page in and the page said the code was wrong). The lock as the cloud keeps it says.
-    if (approved === null && ends.length > 0) {
-      const places = y.workspaces.filter((w) => !isPerson(w));
-      const signedIn = () => {
-        const now = Math.floor(inner.host.nowMs() / 1000);
-        return places.filter((ws) => live(stateOf(inner, ws).devices.get(base), now) !== undefined);
-      };
-      // Not named, though a trusted device that had the confirmation went without a word: it signs after the
-      // confirmation (a read, the signature, the cloud's POST), and the read here can come first (2026-11-12: signed
-      // in, the new device said its code had failed). Then the lock is waited for to move and name this device, as it
-      // is told to have moved (lock.ts `hold`), not read again; PAIR_SIGNED_MS at most. Listened for from before the
-      // read, so that a move while it reads is not missed. One that ended before the confirmation, or with a word,
-      // signed nothing to wait for.
-      const unheard = places.length > 0 && results.some(([m, r]) => m.confirmed === true && r._tag === "Failure" && r.failure.code === "pair_gone");
-      const named = Deferred.makeUnsafe<string[]>();
-      if (unheard) {
-        y.lockSigned = (ws) => {
-          if (!places.includes(ws)) return;
-          const now = signedIn();
-          if (now.length > 0) Deferred.doneUnsafe(named, Effect.succeed(now));
-        };
-      }
-      const inNow = yield* Effect.ensuring(
-        Effect.gen(function* () {
-          for (const ws of places) yield* Effect.ignore(read(inner, ws), { log: "Unhandled", message: "pairing workspace read" });
-          const now = signedIn();
-          if (now.length > 0 || !unheard) return now;
-          const got = yield* Effect.timeoutOption(Deferred.await(named), PAIR_SIGNED_MS); // timer: a deadline
-          return got._tag === "Some" ? got.value : now;
-        }),
-        Effect.sync(() => { if (unheard) delete y.lockSigned; }),
-      );
-      if (inNow.length > 0) approved = { t: "approved", workspaces: inNow, failed: [] };
-    }
+    // 2026-11-04 a phone signed a web page in and the page said the code was wrong). The locks as they are kept say.
+    if (approved === null && ends.length > 0) approved = yield* signedAnyway(inner, y, base, results);
     if (approved !== null) {
       drop(y);
       y.state = "done";
       y.approvedIn = arr(get(approved, "workspaces")).filter((w): w is string => typeof w === "string");
-      for (const place of y.approvedIn.filter(isPerson)) {
-        const sub = place.slice("person:".length);
-        yield* inner.adb.personal().joined(sub, arr(get(get(approved, "chains"), sub)) as Entry[]);
-      }
-      for (const ws of y.approvedIn.filter((w) => !isPerson(w))) {
-        approvedHere(inner, ws);
-        yield* Effect.ignore(read(inner, ws), { log: "Unhandled", message: "pairing workspace read" });
-      }
+      yield* approvedNow(inner, y.approvedIn, get(approved, "chains"));
     } else if (checked.some((m) => y.met.get(m.id) === m)) {
       y.state = "wrong";
       y.left = left;
@@ -1177,6 +1243,106 @@ function prove(inner: Inner, typed: string): Effect.Effect<unknown, CoreError> {
     changed(inner, y);
     if (approved === null) return yield* Effect.fail(y.state === "wrong" ? new CoreError("pair_wrong", y.error ?? "") : new CoreError("pair_ended", endedText(ends)));
     return approved;
+  });
+}
+
+/// What one trusted device answered a code typed (`tryOne`'s).
+type Tried = readonly [Met, Result.Result<{ approved: J } | { left: number }, CoreError>];
+
+/// Where this device is signed in though no approval came (`prove`), as an approval would say it, or null: the
+/// workspaces it waits in whose lock as read names it, and the person's own locks it asked into that a trusted device
+/// put it on (`recoverJoined`, by the roots that device said, `Met`'s `roots`).
+///
+/// A trusted device that had the confirmation and went without a word (`unheard`) signs after it (a read, the
+/// signature, bringing it to the stations), and the read here can come first (2026-11-12: signed in, the new device said
+/// its code had failed). Then what tells this device is waited for, PAIR_SIGNED_MS at most: a chain's lock is told to
+/// have moved (lock.ts `hold`, listened for from before the first read, so that a move while it reads is not missed).
+/// What tells nothing is read again meanwhile (PAIR_SIGNED_AGAIN): a moved workspace's chain never moves as one of its
+/// people's logs lets this device in (a newcomer's `member`, a web page's `web`), nor is a person's own lock told to a
+/// device not on it, and a station that refused this device is asked again (views/lock.ts `refusedAgain`) to be read
+/// at all. One that ended before the confirmation, or with a word, signed nothing to wait for: read once.
+function signedAnyway(inner: Inner, y: Trying, base: string, results: readonly Tried[]): Effect.Effect<J | null> {
+  return Effect.gen(function* () {
+    const gone = results.filter(([m, r]) => m.confirmed === true && r._tag === "Failure" && r.failure.code === "pair_gone").map(([m]) => m);
+    const places = y.workspaces.filter((w) => !isPerson(w));
+    // (the roots the trusted devices said, by person: only one that proved it knows the code said any, `tryOne`)
+    const roots = new Map<string, Set<string>>();
+    for (const m of gone) for (const [sub, root] of Object.entries(m.roots ?? {})) roots.set(sub, (roots.get(sub) ?? new Set()).add(root));
+    const unheard = gone.length > 0 && (places.length > 0 || roots.size > 0);
+    const personal = inner.adb.personal();
+    const chains: Record<string, Entry[]> = {};
+    const signedIn = () => {
+      const now = Math.floor(inner.host.nowMs() / 1000);
+      return places.filter((ws) => live(stateOf(inner, ws).devices.get(base), now) !== undefined);
+    };
+    const found = (): J | null => {
+      const inNow = signedIn();
+      const subs = Object.keys(chains);
+      if (inNow.length === 0 && subs.length === 0) return null;
+      return { t: "approved", workspaces: [...inNow, ...subs.map(personOf)], failed: [], ...(subs.length > 0 ? { chains: { ...chains } } : {}) };
+    };
+    // Each lock of the person's not found yet looked for, then each place not signed in yet read, within one call's
+    // wait of the stations (lock.ts ASKED_MS): a lock found first is pinned before the reads, so a station that lets
+    // this device in by it takes it at the hello those reads make (a member carried unbound, `carriedUnbound`), and the
+    // stations of the workspaces it lets this device in to are asked again (`approvedHere`).
+    const look = Effect.gen(function* () {
+      const within = asked(inner);
+      const joins = (unheard ? [...roots] : []).filter(([sub]) => chains[sub] === undefined).map(([sub, of]) =>
+        Effect.map(Effect.orElseSucceed(personal.recoverJoined(sub, of, within), () => null), (chain) => {
+          if (chain === null) return;
+          chains[sub] = chain;
+          for (const [ws, o] of inner.workspaces.owned()) if (o === sub && held(inner, ws)?.head != null) approvedHere(inner, ws);
+        }));
+      yield* Effect.forEach(joins, (e) => e, { concurrency: "unbounded", discard: true });
+      const signed = signedIn();
+      const reads = places.filter((ws) => !signed.includes(ws)).map((ws) =>
+        within.wait(Effect.ignore(Effect.andThen(Effect.sync(() => { if (unheard && movedHere(inner, ws)) refusedAgain(inner, ws); }), read(inner, ws)), { log: "Unhandled", message: "pairing workspace read" })));
+      yield* Effect.forEach(reads, (e) => e, { concurrency: "unbounded", discard: true });
+    });
+    const named = Deferred.makeUnsafe<void>();
+    if (unheard) {
+      y.lockSigned = (ws) => {
+        if (places.includes(ws) && signedIn().length > 0) Deferred.doneUnsafe(named, Effect.void);
+      };
+    }
+    return yield* Effect.ensuring(
+      Effect.gen(function* () {
+        const until = inner.host.nowMs() + PAIR_SIGNED_MS;
+        yield* look;
+        if (found() !== null || !unheard) return found();
+        const again = Effect.gen(function* () {
+          for (const ms of PAIR_SIGNED_AGAIN) {
+            yield* Effect.sleep(ms); // timer: a retry after a failure (its answer lost), with a backoff, within PAIR_SIGNED_MS
+            yield* look;
+            if (found() !== null) return;
+          }
+          yield* Effect.never;
+        });
+        yield* Effect.timeoutOption(Effect.raceFirst(Deferred.await(named), again), Math.max(0, until - inner.host.nowMs())); // timer: a deadline
+        return found();
+      }),
+      Effect.sync(() => { if (unheard) delete y.lockSigned; }),
+    );
+  });
+}
+
+/// Approved in `approvedIn` (`chains`: the person's own locks it was put on, as the device that did it brought them):
+/// those locks pinned, and every workspace that lets it in by them read at once, as each it was signed in to is, one
+/// call's wait of the stations for all of them (lock.ts ASKED_MS). A moved workspace's stations that refused it are
+/// asked again (`approvedHere`): put on its person's own lock, it is let in to each workspace of theirs that binds it,
+/// and nothing would tell it so, its page left waiting.
+function approvedNow(inner: Inner, approvedIn: readonly string[], chains: unknown): Effect.Effect<void, CoreError> {
+  return Effect.gen(function* () {
+    const personal = inner.adb.personal();
+    const subs = new Set(approvedIn.filter(isPerson).map((p) => p.slice("person:".length)));
+    for (const sub of subs) {
+      const chain = arr(get(chains, sub)) as Entry[];
+      if (chain.length > 0) yield* personal.joined(sub, chain);
+    }
+    const theirs = [...inner.workspaces.owned()].filter(([ws, o]) => subs.has(o) && held(inner, ws)?.head != null).map(([ws]) => ws);
+    const affected = [...new Set([...approvedIn.filter((w) => !isPerson(w)), ...theirs])];
+    for (const ws of affected) approvedHere(inner, ws);
+    yield* asked(inner).wait(Effect.forEach(affected, (ws) => Effect.ignore(read(inner, ws), { log: "Unhandled", message: "pairing workspace read" }), { concurrency: "unbounded", discard: true }));
   });
 }
 
@@ -1207,12 +1373,13 @@ function ended(answer: unknown): CoreError {
   return new CoreError("pair_gone", "the trusted device gave up");
 }
 
-/// One trusted device: the code proved, its answer; ended there, why (`ended`).
-export function tryOne(inner: Inner, m: Met, base: string, code: string): Effect.Effect<{ approved: J } | { left: number }, CoreError> {
+/// One trusted device: the code proved, its answer; ended there, why (`ended`). `proveUntil`: when every device tried
+/// with this code is to have answered (`prove`'s), sooner than PAIR_PROVE_MS from now for one that answered late.
+export function tryOne(inner: Inner, m: Met, base: string, code: string, proveUntil = Infinity): Effect.Effect<{ approved: J } | { left: number }, CoreError> {
   return Effect.gen(function* () {
     const p = pakeStart(code, pairSession(base, m.id, m.workspaces), (b) => inner.host.randomBytes(b));
     // (no answer in time is taken as its end: `ended(null)`)
-    const until = inner.host.nowMs() + PAIR_PROVE_MS;
+    const until = Math.min(inner.host.nowMs() + PAIR_PROVE_MS, proveUntil);
     const next = (most: number) =>
       Effect.suspend(() => Effect.map(Effect.timeoutOption(m.d.next(), Math.max(0, Math.min(most, until - inner.host.nowMs()))), (o) => (o._tag === "Some" ? o.value : null))); // timer: a deadline
     yield* m.d.send({ t: "pake", y: hex(p.share) });
@@ -1221,6 +1388,10 @@ export function tryOne(inner: Inner, m: Met, base: string, code: string): Effect
     const keys = pakeKeys(p, unhex(str(r.y) ?? ""), "new");
     if (keys !== null && sameMac(keys.theirs, unhex(str(r.mac) ?? ""))) {
       yield* m.d.send({ t: "confirm", mac: hex(keys.mine) });
+      // (the roots of the person's own locks it said: taken only now, from a device that proved it knows the code, on
+      // the connection to the device the lock names by that id)
+      const roots = rootsSaid(r.roots);
+      if (roots !== null) m.roots = roots;
       m.confirmed = true;
       const a = yield* next(PAIR_PROVE_MS);
       if (isObject(a) && a.t === "approved") return arr(a.workspaces).length > 0 ? { approved: a } : yield* Effect.fail(unsigned(a));
@@ -1231,6 +1402,13 @@ export function tryOne(inner: Inner, m: Met, base: string, code: string): Effect
     if (isObject(w) && w.t === "wrong" && typeof w.left === "number" && w.left > 0) return { left: w.left };
     return yield* Effect.fail(ended(w));
   });
+}
+
+/// The roots a trusted device said (`rootsOf`), as hashes by account: null where it said none.
+function rootsSaid(raw: unknown): Record<string, string> | null {
+  if (!isObject(raw)) return null;
+  const roots = Object.fromEntries(Object.entries(raw).filter((x): x is [string, string] => typeof x[1] === "string" && /^[0-9a-f]{64}$/.test(x[1])));
+  return Object.keys(roots).length > 0 ? roots : null;
 }
 
 /// `adb.personalJoin`: this device asks the devices on its person's own locks to show one code, for all of `subs`.
@@ -1277,9 +1455,11 @@ export const personalPairState = (inner: Inner, sub: string): J => {
   if (y?.state === "done" && y.approvedIn !== undefined && !y.approvedIn.includes(personOf(sub))) return null;
   const at = mine(inner, personOf(sub));
   if (at === null) return null;
-  // Which of the person's devices show the code, by name: where to look.
-  const known = new Map(inner.adb.personal().approvers(sub).map((d) => [d.id, d.label]));
-  return { ...at, showing: [...(y?.met.keys() ?? [])].map((id) => known.get(id) ?? "").filter((n) => n !== "") };
+  // Which of the person's devices show the code, by name: where to look. Only those that showed it for this person's
+  // lock (`workspaces`: another account's signed in here may be met on the same device, whose lock it is not on).
+  const known = new Map(inner.adb.personal().approvers(sub).map((d) => [d.id, deviceText({ kind: "app", label: d.label })]));
+  const person = personOf(sub);
+  return { ...at, showing: [...(y?.met.values() ?? [])].filter((m) => m.workspaces.includes(person)).map((m) => known.get(m.id) ?? "").filter((n) => n !== "") };
 };
 
 function cancel(inner: Inner): void {

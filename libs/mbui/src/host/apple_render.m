@@ -905,8 +905,9 @@ static id<MTLTexture> level_tex(MTLPixelFormat format, int w, int h) {
   return [dev newTextureWithDescriptor:td];
 }
 
-// the blur kept in the levels is of the last capture while it is (kept_ok, below)
+// the last capture's blur is kept to be shown again (encode, below)
 static int kept_ok;
+static void glass_forget(void);
 
 static void ensure_levels(int w, int h) {
   if (lv_w >= w && lv_h >= h && lv[0]) return;
@@ -916,7 +917,8 @@ static void ensure_levels(int w, int h) {
     lv[j] = level_tex(j == 0 ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA16Float, (lv_w + (1 << j) - 1) >> j,
                       (lv_h + (1 << j) - 1) >> j);
   ltmp = level_tex(MTLPixelFormatRGBA16Float, lv_w, lv_h);
-  kept_ok = 0;
+  // (the blurs kept were shown by where they lie in levels of the old size: one made now would be shown by the new)
+  glass_forget();
 }
 
 // one pass of the blur: src into dst's top left (w × h); mode 1 halving, 2 a Gaussian of deviation sg along (dx, dy)
@@ -1095,12 +1097,13 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
   }
 }
 
-// What the glass shows of a grab blurred in the levels: gtex, and gu, its numbers with where in level k it is.
-static void show_blur(const Grab *m) {
+// What the glass shows of a grab's blur in texture `bt` (level k's place in it) and its sharp level in `rt`: gtex,
+// rtex, and gu, its numbers with where in them it is.
+static void show_blur(const Grab *m, id<MTLTexture> bt, id<MTLTexture> rt) {
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   gu = m->g;
-  gtex = m->contained && m->k == 0 ? ltmp : lv[m->k];
+  gtex = bt;
   float sc = (float)at_scale;
   float W = (float)gtex.width, H = (float)gtex.height, d = (float)(1 << m->k);
   gu.map[0] = sc / d / W; gu.map[1] = sc / d / H;
@@ -1109,8 +1112,9 @@ static void show_blur(const Grab *m) {
   gu.uvc[2] = ((float)lw[m->k] - 0.5f) / W; gu.uvc[3] = ((float)lh[m->k] - 0.5f) / H;
   // the sharp one, of the levels its blur left as they were copied (blur): the half once halved twice or more, the
   // copy once halved (not contained: contained, its copy is the edge's pass's, ltmp), else the blurred one itself
+  // (grab_sharp)
   int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
-  rtex = m->k >= 2 ? lv[1] : m->k == 1 && !m->contained ? lv[0] : gtex;
+  rtex = rt;
   float RW = (float)rtex.width, RH = (float)rtex.height, rd = (float)(1 << rk);
   gu.rmap[0] = sc / rd / RW; gu.rmap[1] = sc / rd / RH;
   gu.rmap[2] = -(float)m->px0 / rd / RW; gu.rmap[3] = -(float)m->py0 / rd / RH;
@@ -1118,8 +1122,15 @@ static void show_blur(const Grab *m) {
   gu.ruvc[2] = ((float)lw[rk] - 0.5f) / RW; gu.ruvc[3] = ((float)lh[rk] - 0.5f) / RH;
 }
 
+// The level a grab's blur is left in, and the one its sharp level is (the blur's own where it has none apart).
+static id<MTLTexture> grab_blurred(const Grab *m) { return m->contained && m->k == 0 ? ltmp : lv[m->k]; }
+static id<MTLTexture> grab_sharp(const Grab *m) {
+  return m->k >= 2 ? lv[1] : m->k == 1 && !m->contained ? lv[0] : grab_blurred(m);
+}
+
 // A grab of target blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
-// Gaussian left (passes of their own, the target's pass ended before), then shown (show_blur).
+// Gaussian left (passes of their own, the target's pass ended before; grab_blurred). The levels are shared by every
+// capture: what is shown is the copy a slot keeps (below).
 // (how many: scripts/apple_render_test.m, a blur shown again as kept is none)
 static int blurs_made;
 
@@ -1137,57 +1148,167 @@ static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) 
   if (m->contained) post_pass(cb, lv[0], lw[0], lh[0], ltmp, lw[0], lh[0], 3, 0, 0, 0, &m->edge);
   for (int j = 1; j <= k; j++) post_pass(cb, j == 1 && m->contained ? ltmp : lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL);
   if (m->sg > 0.3f) {
-    id<MTLTexture> from = m->contained && k == 0 ? ltmp : lv[k];
+    id<MTLTexture> from = grab_blurred(m);
     id<MTLTexture> tmp = m->contained && k == 0 ? lv[0] : ltmp;
     post_pass(cb, from, lw[k], lh[k], tmp, lw[k], lh[k], 2, m->sg, 1, 0, NULL);
     post_pass(cb, tmp, lw[k], lh[k], from, lw[k], lh[k], 2, m->sg, 0, 1, NULL);
   }
-  show_blur(m);
 }
 
-// The blur the levels hold, as long as no capture came after it (kept_ok): what it was of. What a capture copies is
-// what the frame drew before it (its instances up to the glass, the pieces of the frame's shapes they are drawn by,
-// the ground the frame cleared to) in the grab's rectangle of a target of that size: a frame that draws all that the
-// same under the same glass (a caret blinking in a composer over a chat at rest) shows the blur as it is, with no copy,
-// no passes, and its pass not broken in two. A stream drawn under it (its pictures change under the same instances)
-// is blurred anew each frame.
-static float *kept_under;
-static size_t kept_under_cap, kept_under_n;
-static Grab kept_grab;
-static double kept_key[7];
+// The blurs kept, a slot each, as many as a window has groups of glass at once (a bar at the top, a composer and its
+// ground at the foot, a sheet's, a page sliding over another: 2 to 6), the one least lately shown taken for a new one
+// (gles_render.h's, GLES's). A slot holds a capture's blur (and liquid glass's sharp level) copied out of the levels,
+// as big as the levels (so it is shown by the same numbers as the level it came from, to the byte), and what it was
+// of. What a capture copies is what the frame drew before it in the grab's rectangle (the instances up to the glass
+// that reach into it, the pieces of the frame's shapes they are drawn by, the ground the frame cleared to) of a target
+// of that size: a frame that draws all that the same under the same glass (a caret blinking in a composer over a chat
+// at rest) shows the blur as it is, with no copy, no passes, and its pass not broken in two; one where something moved
+// under one group of glass makes that group's blur again, the others' kept. A stream or a native view's hole drawn
+// into it (its pictures change under the same instances) is blurred anew each frame, as is a frame an image under it
+// had no texture for yet.
+#define MB_GLASS_SLOTS 8
+typedef struct {
+  float *under;
+  size_t under_cap, under_n;
+  int32_t whole, picked;
+  Grab grab;
+  double key[7];
+  int valid;
+  unsigned used;
+} GlassSlot;
+static GlassSlot slots[MB_GLASS_SLOTS];
+static id<MTLTexture> slot_bt[MB_GLASS_SLOTS], slot_rt[MB_GLASS_SLOTS];
+static unsigned slots_clock;
+// what the capture now is of (under_take), as a slot keeps it
+static float *under_now;
+static size_t under_now_cap, under_now_n;
+static int32_t under_whole, under_picked;
 
-// The floats a capture of the run at start is of, and their count: those before it and the shapes' pieces (from
-// seg_base on), 0 when a stream is among them.
-static size_t under_of(const float *f, int32_t start, int32_t count, int32_t pieces) {
-  for (int32_t i = 0; i < start; i++)
-    if (f[i * MB_INST + 20] > (float)MB_STREAM_TEX) return 0;
-  return (size_t)(start + (count - pieces)) * MB_INST;
-}
-
-static int same_under(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m, const double key[7]) {
-  size_t n = under_of(f, start, count, pieces);
-  if (!kept_ok || n == 0 || n != kept_under_n || memcmp(&kept_grab, m, sizeof *m) != 0 || memcmp(kept_key, key, sizeof kept_key) != 0)
-    return 0;
-  size_t a = (size_t)start * MB_INST;
-  return memcmp(kept_under, f, a * sizeof(float)) == 0 &&
-         memcmp(kept_under + a, f + (size_t)pieces * MB_INST, (n - a) * sizeof(float)) == 0;
-}
-
-static void keep_under(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m, const double key[7]) {
-  size_t n = under_of(f, start, count, pieces);
+static void glass_forget(void) {
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
   kept_ok = 0;
-  if (n == 0) return;
-  if (kept_under_cap < n) {
-    kept_under = realloc(kept_under, n * sizeof(float));
-    kept_under_cap = n;
+}
+
+// Whether instance i (its run of glass starting at `run`) draws anything in g (x0, y0, x1, y1, points): its quad as
+// the vertex shader makes it (vmain: grown round its rect, liquid glass over its group's bounds), turned ones always.
+static int reaches(const float *f, int32_t i, int32_t run, const float g[4]) {
+  const float *b = f + (size_t)i * MB_INST;
+  if (b[32] != 0.0f) return 1;
+  int kind = (int)(b[5] + 0.5f);
+  float e = kind == 2 ? fabsf(b[7]) * 3.0f + 2.0f : 1.0f;
+  // (liquid: its group's bounds, each shape and the first's reach round it, 2 more: grab_of)
+  if (kind == 6) e = fmaxf(fabsf(b[23]), fabsf(f[(size_t)run * MB_INST + 23])) + 2.0f;
+  e += 1.0f;
+  float x0 = fminf(b[0], b[0] + b[2]) - e, x1 = fmaxf(b[0], b[0] + b[2]) + e;
+  float y0 = fminf(b[1], b[1] + b[3]) - e, y1 = fmaxf(b[1], b[1] + b[3]) + e;
+  return x1 > g[0] && x0 < g[2] && y1 > g[1] && y0 < g[3];
+}
+
+// What the capture of the run at start is of (under_now): every instance before the last glass (or what draws by a
+// glass's blur) that reaches into its rectangle (that glass shows what is under it, wherever that is), those after it that reach into it, and the frame's
+// shapes' pieces (from `pieces` on). 0 when a stream or a native view's hole is among them.
+static int under_take(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m) {
+  float sc = (float)at_scale;
+  float g[4] = {(float)m->px0 / sc - 1.0f, (float)m->py0 / sc - 1.0f, (float)(m->px0 + m->w) / sc + 1.0f,
+                (float)(m->py0 + m->h) / sc + 1.0f};
+  int32_t whole = 0, run = 0;
+  for (int32_t i = 0; i < start; i++) {
+    float tid = f[(size_t)i * MB_INST + 20];
+    if (i > 0 && tid != f[(size_t)(i - 1) * MB_INST + 20]) run = i;
+    // (glass, and what is drawn by what a glass's blur shows: adaptive words over it, kind 7, light or dark by it)
+    int sees = tid < 0.0f || (int)(f[(size_t)i * MB_INST + 5] + 0.5f) == 7;
+    if (sees && reaches(f, i, run, g)) whole = i + 1;
   }
-  size_t a = (size_t)start * MB_INST;
-  memcpy(kept_under, f, a * sizeof(float));
-  memcpy(kept_under + a, f + (size_t)pieces * MB_INST, (n - a) * sizeof(float));
-  kept_under_n = n;
-  kept_grab = *m;
-  memcpy(kept_key, key, sizeof kept_key);
-  kept_ok = 1;
+  size_t most = ((size_t)start + (size_t)(count - pieces)) * MB_INST;
+  if (under_now_cap < most) {
+    under_now_cap = most;
+    under_now = realloc(under_now, under_now_cap * sizeof(float));
+  }
+  for (int32_t i = 0; i < whole; i++)
+    if (f[(size_t)i * MB_INST + 20] > (float)MB_STREAM_TEX) return 0;
+  float *o = under_now;
+  memcpy(o, f, (size_t)whole * MB_INST * sizeof(float));
+  o += (size_t)whole * MB_INST;
+  int32_t picked = 0;
+  for (int32_t i = whole; i < start; i++) {
+    if (!reaches(f, i, i, g)) continue;
+    if (f[(size_t)i * MB_INST + 20] > (float)MB_STREAM_TEX) return 0;
+    memcpy(o, f + (size_t)i * MB_INST, MB_INST * sizeof(float));
+    o += MB_INST;
+    picked++;
+  }
+  memcpy(o, f + (size_t)pieces * MB_INST, (size_t)(count - pieces) * MB_INST * sizeof(float));
+  o += (size_t)(count - pieces) * MB_INST;
+  under_now_n = (size_t)(o - under_now);
+  under_whole = whole;
+  under_picked = picked;
+  return 1;
+}
+
+// The slot whose blur is of what the capture now is (under_now), or -1.
+static int slot_same(const Grab *m, const double key[7]) {
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    GlassSlot *s = &slots[i];
+    if (s->valid && s->under_n == under_now_n && s->whole == under_whole && s->picked == under_picked &&
+        memcmp(&s->grab, m, sizeof *m) == 0 && memcmp(s->key, key, sizeof s->key) == 0 &&
+        memcmp(s->under, under_now, under_now_n * sizeof(float)) == 0)
+      return i;
+  }
+  return -1;
+}
+
+// `l`'s w × h top left copied into *t (made again at another size or format than l's).
+static void slot_copy(id<MTLBlitCommandEncoder> bl, id<MTLTexture> __strong *t, id<MTLTexture> l, int w, int h) {
+  if (!*t || (*t).width != l.width || (*t).height != l.height || (*t).pixelFormat != l.pixelFormat)
+    *t = level_tex(l.pixelFormat, (int)l.width, (int)l.height);
+  [bl copyFromTexture:l sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+           sourceSize:MTLSizeMake(w, h, 1) toTexture:*t destinationSlice:0 destinationLevel:0
+    destinationOrigin:MTLOriginMake(0, 0, 0)];
+}
+
+// The blur just made (blur) kept in the slot least lately shown: copied out of the levels, liquid glass's sharp level
+// too where it is apart. Not yet said to be of anything (valid).
+static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m) {
+  int i = 0;
+  for (int j = 0; j < MB_GLASS_SLOTS; j++) {
+    if (!slots[j].valid) {
+      i = j;
+      break;
+    }
+    if (slots[j].used < slots[i].used) i = j;
+  }
+  slots[i].valid = 0;
+  int lw[4], lh[4];
+  grab_levels(m, lw, lh);
+  int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
+  id<MTLTexture> L = grab_blurred(m), R = grab_sharp(m);
+  id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
+  slot_copy(bl, &slot_bt[i], L, lw[m->k], lh[m->k]);
+  // (frosted glass sees no sharp level, liquid's shapes are counted: grab_of)
+  if (m->g.misc[0] > 0.0f && R != L) slot_copy(bl, &slot_rt[i], R, lw[rk], lh[rk]);
+  [bl endEncoding];
+  return i;
+}
+
+static void slot_show(const Grab *m, int i) {
+  slots[i].used = ++slots_clock;
+  int sharp_apart = m->g.misc[0] > 0.0f && grab_sharp(m) != grab_blurred(m);
+  show_blur(m, slot_bt[i], sharp_apart ? slot_rt[i] : slot_bt[i]);
+}
+
+static void slot_keep(int i, const Grab *m, const double key[7]) {
+  GlassSlot *s = &slots[i];
+  if (s->under_cap < under_now_n) {
+    s->under = realloc(s->under, under_now_n * sizeof(float));
+    s->under_cap = under_now_n;
+  }
+  memcpy(s->under, under_now, under_now_n * sizeof(float));
+  s->under_n = under_now_n;
+  s->whole = under_whole;
+  s->picked = under_picked;
+  s->grab = *m;
+  memcpy(s->key, key, sizeof s->key);
+  s->valid = 1;
 }
 
 // where the pieces of the frame's shapes start (src/ui/shape.mbt: the instances of kind 12 after every one drawn)
@@ -1350,19 +1471,24 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         // in it whole: the app's part takes in all a capture it reaches copies, @damage)
         shows = shows && grab_in_part(&m);
         double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
-        if (shows && same_under(f, start, count, seg_base, &m, key)) {
-          // what it sees is what the levels hold: shown on in this pass
-          show_blur(&m);
+        int known = shows && under_take(f, start, count, seg_base, &m);
+        int slot = known ? slot_same(&m, key) : -1;
+        if (slot >= 0) {
+          // what it sees is what a slot holds: shown on in this pass
+          kept_ok = 1;
+          slot_show(&m, slot);
           [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
           [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
           [enc setFragmentTexture:gtex atIndex:2];
         } else if (shows) {
           [enc endEncoding];
           blur(cb, target, &m);
+          slot = slot_fill(cb, &m);
           // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
           // kept to be shown again as theirs)
-          if (encode_missing) kept_ok = 0;
-          else keep_under(f, start, count, seg_base, &m, key);
+          if (known && !encode_missing) slot_keep(slot, &m, key);
+          kept_ok = slots[slot].valid;
+          slot_show(&m, slot);
           enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
         }
         bound = tid;
@@ -1603,8 +1729,10 @@ void mb_render_trim(void) {
   for (int j = 0; j < 4; j++) lv[j] = nil;
   ltmp = nil;
   gtex = nil;
+  rtex = nil;
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) slot_bt[i] = slot_rt[i] = nil;
   lv_w = lv_h = 0;
-  kept_ok = 0;
+  glass_forget();
   // (and the canvas: the next frame drawn whole into one made again, not skipped as the same as before)
   canvas = nil;
   canvas_ok = 0;
@@ -1632,6 +1760,9 @@ static void copy_to_drawable(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTL
 
 // How many frames were drawn and presented (scripts/apple_render_test.m: frames that took another's place are not).
 static int present_drawn;
+// How many frames handed to present_q were never drawn, each's place taken by a newer one as it waited
+// (@hostapi.frames_dropped; the main thread's).
+static int32_t present_dropped;
 
 // Frame `fr` drawn for window `w` and presented: on present_q, or on the main thread once the queue is drained (`tx`:
 // presented with the main thread's Core Animation transaction, once its commands are scheduled, as Core Animation
@@ -1801,6 +1932,7 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
       else if (was->lat >= 0) fr->lat = was->lat;
     }
     w->pending = fr;
+    if (was) present_dropped++;
     int go = !w->queued;
     w->queued = 1;
     os_unfair_lock_unlock(&present_mu);
@@ -2118,3 +2250,5 @@ void mb_render_draw_timed(const double *inst, int32_t count, double r, double g,
 
 // The GPU's time for the last frame presented that it finished (ms).
 double mb_host_gpu_ms(void) { return last_gpu; }
+
+int32_t mb_host_frames_dropped(void) { return present_dropped; }

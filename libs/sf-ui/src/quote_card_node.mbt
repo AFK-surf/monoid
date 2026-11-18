@@ -78,13 +78,26 @@ fn quote_source_node(
     // (what is pressed where it leads: all of its words' box, laid over it (what is pressed found past its words,
     // which take none); taking no press where it leads nowhere, and so not the words' box itself, whose tip a pin's
     // words have then)
-    let hit = source.box(fn(h) {
-      h.over(Is(true)) |> ignore
-      presses_node(h, jump, on=jumps)
-      h.says(By(fn() { if jumps() { Some(@view.said(Button, label=t("web-main.quote.jump"))) } else { None } })) |> ignore
-      // (its tip saying where it leads, as a control's)
-      tip_node(tips, h, fn() { if jumps() { t("web-main.quote.jump") } else { "" } }) |> ignore
-    })
+    // (where it leads, mbui's headless button over all of it (button_while_node: no box of its own, the pick's laid
+    // over it), its tip saying where, as a control's; lit, its words take the text's ink. `hit`: the button as it is
+    // now, made before the words' ink reads it (the pick asked for first, so made again first as jumps() changes);
+    // a Ref, setting it wakes nothing: what reads it reads jumps() and the button's hand, signals both)
+    let hit : Ref[@view.View?] = Ref(None)
+    button_while_node(
+      source,
+      jumps,
+      fn() { t("web-main.quote.jump") },
+      fn(_) { jump() },
+      fn(b, pressed) {
+        hit.val = if pressed { Some(b) } else { None }
+        if pressed {
+          tip_node(tips, b, fn() { t("web-main.quote.jump") }) |> ignore
+        }
+      },
+      fills=true,
+      over=true,
+      plain=false,
+    )
     // (its words' row, made anew as it comes to be a pin's or not: the pick's own box is the row, as quote_words')
     source.pick(fn() { pin() != "" }, fn(p, pinned) {
       style_node(p, fn() { quote_words })
@@ -107,7 +120,13 @@ fn quote_source_node(
           icon_node(mark, "quote-open", quote_icon, By(fn() { theme().p.accent })) |> ignore
         })
         |> ignore
-        let look = fn() { if jumps() && lit_node(hit) { quote_text_hot } else { quote_text } }
+        let look = fn() {
+          if jumps() && (match hit.val { Some(b) => b.alive() && lit_node(b); None => false }) {
+            quote_text_hot
+          } else {
+            quote_text
+          }
+        }
         // (beside its mark, in the room the row leaves it, as an old view's words in a row are)
         p.box(fn(w) {
           w

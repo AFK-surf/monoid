@@ -504,9 +504,41 @@ fn switches_walk(mode : String, s : Screen, ms : Double, found : Map[String, Int
       if sw.0 == "opener" {
         // (opened, its choices read, shut again; then each: opened again, the choice pressed, measured from there)
         let shut = switch_places(t)
+        let shut_presented = @sf.last_presented()
+        let menus = fn() { t.semantics().filter(fn(n) { !n.hidden && n.role == Menu }).length() }
+        let shut_menus = menus()
         t.tap(px, py)
         t.run_for(@ui.move_most_ms)
         let choices = switch_choices(t)
+        // (one that put up no layer, no menu and no choice opens in its place (a collapsible section: 其他运行中): shut
+        // again by its own press, never by Escape, which closes what it is in (待处理's panel), then measured as a
+        // switch is)
+        if choices.length() == 0 && @sf.last_presented() == shut_presented && menus() <= shut_menus {
+          if switch_node(t, s, sw, nth) is Some((cx, cy)) {
+            t.tap(cx, cy)
+            t.run_for(@ui.move_most_ms)
+          }
+          guard switch_node(t, s, sw, nth) is Some((ox, oy)) else {
+            println("SWITCHES_UNREACHED \{at}")
+            continue
+          }
+          t.ways_set_out() |> ignore
+          let (from, changes) = switch_measure(t, fn() { t.tap(ox, oy) }, Map([(own, true)]), top, ms)
+          switch_leaks(at)
+          if switch_top() != top {
+            println("SWITCHES_LEFT \{at}")
+            again = true
+            break
+          }
+          switch_said(t, at, row, from, changes, found)
+          // (as after any press: a switch there before not pressed and gone now, this screen opened again for the rest)
+          let after = switches_keyed(t).map(fn(k) { k.0 })
+          if now.iter().any(fn(k) { !pressed.contains(k.0) && !after.contains(k.0) }) {
+            again = true
+            break
+          }
+          continue
+        }
         let menu : Map[String, Bool] = Map([(own, true)])
         for k, _ in switch_places(t) {
           if !shut.contains(k) {

@@ -186,6 +186,13 @@ pub let knob_spring : Spec = motion_spring(0.2, bounce=0.12)
 pub let digit_spring : Spec = motion_spring(0.2)
 
 ///|
+/// A cover's spring critically damped (as stiff as cover_spring, 420): a sliding thumb sent to one of a few items side
+/// by side that comes to the last of them without going past it, out of what holds them, and slows to rest there. Of an
+/// item's index (0, 1, …): at rest within a thousandth of one.
+// kept across runs: a value, never written
+pub let cover_damped_spring : Spec = spring(ratio=1.0, stiffness=420.0, threshold=0.001)
+
+///|
 /// A cover's spring (@ui.Ctx::cover's: a sliding thumb sent to another item), for what moves one otherwise: its way
 /// solved as the cover's is (@ui.cover_spring_at), at rest when the cover's is (@ui.cover_spring_end). Gone from 0 (where
 /// it set out from) to 1 (the item it goes to), the way a cover's is.

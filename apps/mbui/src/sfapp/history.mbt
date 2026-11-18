@@ -116,10 +116,10 @@ fn history_details_node(v : @view.View, src : Source, r : ChatRef, key : String,
     held.padding(Is((18.0, 0.0, 18.0, 30.0))) |> ignore
     held.box(fn(st) {
       st.padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
-      agent_status_node(st, src, a)
+      @sfpages.agent_status_node(st, src, a)
     })
     |> ignore
-    agent_tiles_node(held, card, 14.0)
+    agent_tiles_node(held, card, 14.0, tips~)
     agent_notes_node(held, card, 10.0)
     held.box(fn(gap) { gap.height(Is(Some(6.0))) |> ignore }) |> ignore
     // How it runs is picked in the same panel as elsewhere in the app.
@@ -170,253 +170,19 @@ fn history_details_node(v : @view.View, src : Source, r : ChatRef, key : String,
         detail(x, fn() { tr("android-chat.history.detail.machine") }, said(fn() { text(host(), "identity") }))
       })
     })
-    ignore(tips)
   })
   |> ignore
 }
 
 ///|
-/// Where it stands (agent_status's, as nodes) in `v`, as `a` says it now: a dot in its tone on the first line's middle,
-/// its words and, muted, for how long, counting on each second from when it began.
-fn agent_status_node(v : @view.View, src : Source, a : () -> Json?) -> Unit {
-  let s = fn() { field(a(), "session") }
-  v.box(fn(row) {
-    row.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
-    row.box(fn(d) {
-      d.padding(Is((0.0, 6.0, 0.0, 0.0))).shrink(Is(0.0)) |> ignore
-      d.box(fn(dot) {
-        dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { tone_color(text(s(), "tone")) })) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-    // (its clock made again as what it counts from changes)
-    row.pick(at_once=true, fn() { since_from(src, a()) }, fn(w, from) {
-      w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-      let tick = match from {
-        Some((at, till)) => @sfpages.steps_seconds(w, src, at, till?=till)
-        None => fn() { 0 }
-      }
-      w
-      .words_runs(By(fn() {
-        tick() |> ignore
-        let since = since_words(src, a())
-        let runs = [@ui.span(text(s(), "statusText"))]
-        if since != "" {
-          runs.push(@ui.span(" · " + since, color=@sf.theme().p.muted))
-        }
-        runs
-      }))
-      .words_look(By(fn() { @ui.style_words(status_words) }))
-      .ink(By(fn() { @ui.style_ink(status_words) }))
-      |> ignore
-    })
-  })
-  |> ignore
+/// The figures that say most (agent_tiles', as nodes) in `v`, `top` over them, as `card` says them now: the library's
+/// figures of an agent's card (@sfpages.usage_tiles_node's roomy ones: what it cost, the cache's hit rate, how full its
+/// context is, each large over its name, side by side; a context worth a look in its level's colour; its tip in
+/// `tips`). None while none is known.
+fn agent_tiles_node(v : @view.View, card : () -> Json?, top : Double, tips? : @sf.TipLayer = @sf.TipLayer::new(fn() { None })) -> Unit {
+  @sfpages.usage_tiles_node(v, card, tips, roomy=true, top~)
 }
 
-///|
-/// Where its words stand: the meta's, 18 a line, in the ink.
-// kept across runs: a value (no field of it changes)
-let status_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg)
-
-///|
-/// When what agent `a`'s status counts from began and for how long at most it counts (ms; none: on), none when it
-/// counts nothing (when it was last at it, as the core says it).
-fn since_from(src : Source, a : Json?) -> (Double, Double?)? {
-  let wait = field(a, "wait")
-  match wait {
-    Some(Object(_)) => {
-      let from = number(wait, "since")
-      Some((from, opt_number(wait, "seconds").map(fn(sec) { sec * second_ms })))
-    }
-    _ =>
-      match opt_number(a, "since") {
-        Some(at) => Some((at, None))
-        None => {
-          ignore(src)
-          None
-        }
-      }
-  }
-}
-
-///|
-/// For how long agent `a` has stood where it does (agent_since's words, read at the time it is drawn): at work since
-/// its turn began, waiting as long as it has (of at most), else when it was last at it.
-fn since_words(src : Source, a : Json?) -> String {
-  let wait = field(a, "wait")
-  let since = opt_number(a, "since")
-  if wait is None && since is None {
-    return text(field(field(field(a, "session"), "time"), "lastActiveAt"), "ago")
-  }
-  let now = (src.now)()
-  match wait {
-    Some(Object(_)) => {
-      let from = number(wait, "since")
-      match opt_number(wait, "seconds") {
-        Some(sec) => elapsed(dmin(now, from + sec * second_ms) - from) + " / " + elapsed(sec * second_ms)
-        None => elapsed(now - from)
-      }
-    }
-    _ => {
-      let from = since.unwrap_or(now)
-      elapsed(now - from)
-    }
-  }
-}
-
-///|
-/// The figures that say most (agent_tiles', as nodes) in `v`, `top` over them, as `card` says them now: what it cost,
-/// the cache's hit rate, how full its context is, each large over its name, side by side; a context worth a look in its
-/// level's colour. None while none is known.
-fn agent_tiles_node(v : @view.View, card : () -> Json?, top : Double) -> Unit {
-  v.show(at_once=true, fn() { agent_tiles_known(card()) }, fn(o) {
-    let cost = fn() { text(card(), "cost") }
-    let cache = fn() { field(card(), "cache") }
-    let context = fn() { field(card(), "context") }
-    o.padding(Is((0.0, top, 0.0, 0.0))) |> ignore
-    o.by_room(fn(r, given) {
-      @sf.style_node(r, fn() { tiles_row })
-      let tile_room = fn() {
-        let n = (if cost() != "" { 1 } else { 0 }) +
-          (if cache() is Some(Object(_)) { 1 } else { 0 }) +
-          (if context() is Some(Object(_)) { 1 } else { 0 })
-        let w = given.width()
-        if n > 0 && w > 0.0 {
-          dmax(0.0, (w - 8.0 * (n - 1).to_double()) / n.to_double() - 2.0 * @sf.text_in)
-        } else {
-          0.0
-        }
-      }
-      let tile = fn(p : @view.View, figure : () -> String, name : () -> String, level : () -> String) {
-        p.box(fn(t) {
-          t
-          .radius(Is(@sf.row_corner))
-          .ground(By(fn() { @sf.alpha(@sf.theme().p.text, 0.05) }))
-          .padding(Is((@sf.text_in, 9.0, @sf.text_in, 8.0)))
-          .says(By(fn() { Some(@view.said(Text, label=name() + " " + figure())) }))
-          |> ignore
-          t.box(fn(f) {
-            // (no lower than a heading's line at the system's size of words, a figure on a smaller one in its middle:
-            // the tiles of a row as high as each other, their names level)
-            f
-            .min_height(By(fn() {
-              f.words_redone() |> ignore
-              Some(@sf.node_sp(f, @ui.tree_theme().text_size(Heading).1))
-            }))
-            .lies_along(Is(Middle))
-            |> ignore
-            @sf.words_node(f, figure, fn() {
-              let big = history_tile_figure_style(f, figure(), tile_room())
-              match level() {
-                "red" => big.then(@ui.text_style(color=Danger))
-                "amber" => big.then(@ui.text_style(color=WarnInk))
-                _ => big
-              }
-            })
-            |> ignore
-          })
-          |> ignore
-          @sf.words_node(t, name, fn() { history_tile_name }) |> ignore
-        })
-        |> ignore
-      }
-      // (each tile's share of the row: what shows it takes it)
-      let across = fn(p : @view.View) { p.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore }
-      r.show(at_once=true, fn() { cost() != "" }, fn(p) {
-        across(p)
-        tile(p, cost, fn() { tr("android-chat.agent.cost") }, fn() { "" })
-      })
-      r.show(at_once=true, fn() { cache() is Some(Object(_)) }, fn(p) {
-        across(p)
-        tile(p, fn() { text(cache(), "text") }, fn() { tr("android-chat.agent.cache") }, fn() { "" })
-      })
-      r.show(at_once=true, fn() { context() is Some(Object(_)) }, fn(p) {
-        across(p)
-        tile(
-          p,
-          fn() {
-            if flag(context(), "unknown") {
-              text(context(), "text")
-            } else {
-              "\{number(context(), "percent").round().to_int()}%"
-            }
-          },
-          fn() { tr("android-chat.agent.context") },
-          fn() { if flag(context(), "unknown") { "" } else { text(context(), "level") } },
-        )
-      })
-    })
-    |> ignore
-  })
-}
-
-///|
-fn history_tile_figure_style(f : @view.View, fig : String, room : Double) -> @ui.TextStyle {
-  if room <= 0.0 {
-    return if fig.length() > 6 { tile_figure_xl } else { tile_figure }
-  }
-  f.words_redone() |> ignore
-  let th = @ui.tree_theme()
-  let fits = fn(sz : @ui.TextSize) {
-    @sf.node_words_w(fig, @sf.node_sp(f, th.text_size(sz).0), weight=600) <= room - 1.0
-  }
-  if fig.length() <= 6 && fits(Heading) {
-    return tile_figure
-  }
-  if fits(Xl) { return tile_figure_xl }
-  if fits(Lg) { return tile_figure_lg }
-  if fits(Base) { return tile_figure_base }
-  if fits(Sm) { return tile_figure_sm }
-  if fits(Xs) { return tile_figure_xs }
-  if fits(Xs2) { return tile_figure_xs2 }
-  tile_figure_xs3
-}
-
-///|
-/// A tile's figure: the heading's size (22), 600, on its line (30); at most 20 (Xl) where it is longer than six
-/// characters, and shrinking along the theme's scale to fit its tile's inner width so numbers never truncate.
-// kept across runs: a value (no field of it changes)
-let tile_figure : @ui.TextStyle = @ui.text_style(size=Heading, weight=Semibold, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_figure_xl : @ui.TextStyle = @ui.text_style(size=Xl, weight=Semibold, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_figure_lg : @ui.TextStyle = @ui.text_style(size=Lg, weight=Semibold, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_figure_base : @ui.TextStyle = @ui.text_style(size=Base, weight=Semibold, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_figure_sm : @ui.TextStyle = @ui.text_style(size=Sm, weight=Semibold, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_figure_xs : @ui.TextStyle = @ui.text_style(size=Xs, weight=Semibold, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_figure_xs2 : @ui.TextStyle = @ui.text_style(size=Xs2, weight=Semibold, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tile_figure_xs3 : @ui.TextStyle = @ui.text_style(size=Xs3, weight=Semibold, color=Fg, wrap=false)
-
-///|
-/// A tile's name under its figure: caption size, muted, allowed to wrap at large font sizes.
-// kept across runs: a value (no field of it changes)
-let history_tile_name : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, color=Muted)
-
-///|
-/// The tiles side by side across the details, 8 apart.
-// kept across runs: a value (no field of it changes)
-let tiles_row : @ui.Style = @ui.css("row w=Full gap=S2")
 
 ///|
 /// What is wrong (agent_notes', as nodes) in `v`, `top` over it, as `card` says it now: a line each in its level's

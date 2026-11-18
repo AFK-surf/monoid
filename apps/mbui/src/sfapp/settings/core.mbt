@@ -192,8 +192,6 @@ pub(all) enum Route {
   StationMove(String)
   /// the prices the usage is counted at, over its days (UsagePricesScreen)
   UsagePrices(Int)
-  /// how a chat's agent runs (RunSettingsScreen): its station, its session's key
-  RunSettings(String, String)
 }
 
 ///|
@@ -546,10 +544,6 @@ pub fn left(route : Route) -> Unit {
       kept_all.set(false)
     }
     BarSettings => bar_adding.set(false)
-    RunSettings(_, key) => {
-      run_opened.remove("session:" + key)
-      run_list.remove("session:" + key)
-    }
     _ => ()
   }
 }
@@ -641,9 +635,6 @@ pub fn reset() -> Unit {
   kept.asked.set(0)
   kept.read.set(-1)
   kept_all.set(false)
-  run_opened.clear()
-  run_list.clear()
-  run_model_find.set("")
   new_profiles.clear()
   bar_adding.set(false)
   opened.plain.clear()
@@ -657,7 +648,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
 }
 
 ///|
@@ -717,7 +708,6 @@ pub fn route_of(name : String) -> Route? {
             "archiving" => Some(StationArchiving(arg))
             "move" => Some(StationMove(arg))
             "prices" => Some(UsagePrices(int_of(arg, 7)))
-            "run" => Some(RunSettings(address, id))
             "memory" => Some(Memory(arg))
             "memory-doc" => Some(MemoryDoc(address, id, 0))
             "profiles" => Some(Profiles(arg))

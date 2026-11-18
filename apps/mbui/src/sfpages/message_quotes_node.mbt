@@ -12,7 +12,8 @@
 /// its `said` (MessageFilesAt's). Sent from here a moment ago (`from`: where each card stood in the composer, in their
 /// order), each card flies from there as its words' bubble does from the field, at its own width all the way and from
 /// the height it stood at there to its own; its own picture from its square in that card (`flies_of`: by
-/// quote_picture_key, sfbase's sent_part_take), growing to its place in it as a file sent does.
+/// quote_picture_key, sfbase's sent_part_take), growing to its place in it as a file sent does; all of it with the rest of
+/// what was sent (`fly`: SentFly's, each card its part sent_quote_part, its picture by its key).
 fn message_quotes_node(
   v : @view.View,
   src : Source,
@@ -24,6 +25,7 @@ fn message_quotes_node(
   said? : () -> Bool = fn() { false },
   from? : Array[(Double, Double, Double, Double)?] = [],
   flies_of? : (String) -> (Double, Double, Double, Double)? = fn(_) { None },
+  fly? : SentFly = sent_fly_alone,
 ) -> Unit {
   let place = message_files_at(here, said)
   v.show(fn() { quotes().length() > 0 }, fn(s) {
@@ -43,7 +45,8 @@ fn message_quotes_node(
         // (its row as wide as the cards' column, as the old card is, w=Full in it: quote_box)
         @sf.style_node(slot, fn() { quote_card_row })
         // (sent from here a moment ago: where its card stood in the composer, taken once as it is made)
-        let flies_from = from.get(@signals.untracked(fn() { keys().search(k.get()).unwrap_or(0) })).unwrap_or(None)
+        let made_i = @signals.untracked(fn() { keys().search(k.get()).unwrap_or(0) })
+        let flies_from = from.get(made_i).unwrap_or(None)
         // (read through its key, never kept: its place among the message's quotes)
         let i = fn() { keys().search(k.get()).unwrap_or(0) }
         let q = fn() -> Quote {
@@ -76,25 +79,17 @@ fn message_quotes_node(
           pictured=fn() { own() is Some(_) },
           picture=fn(b) {
             let n = @signals.untracked(i)
-            quote_picture_node(b, src, here, place, own, @signals.untracked(at) + "/q:" + n.to_string(), flies_of=fn() {
+            quote_picture_node(b, src, here, place, own, @signals.untracked(at) + "/q:" + n.to_string(), fly~, part=@sfbase.quote_picture_key(n), flies_of=fn() {
               flies_of(@sfbase.quote_picture_key(n))
             })
           },
         )
         // (the card itself, its ground and all it draws, from where it stood in the composer, its words' bubble's way
-        // (mine_bubble_node: the same flight, its rise as late): as wide as it is all the way, so its words are drawn at
-        // their size, its height from the one it stood at there to its own; a flight, sf/motion.mbt's kind 4,
-        // View::flies_in)
+        // (mine_bubble_node: the same flight, as long as it is far, its rise as late): as wide as it is all the way, so
+        // its words are drawn at their size, its height from the one it stood at there to its own; a flight,
+        // sf/motion.mbt's kind 4, View::flies_in)
         match flies_from {
-          Some((x, y, _, fh)) =>
-            card
-            .flies_in(
-              // det-ok(motion-length): words sent's own, as their bubble's (mine_bubble_node), sf/motion.mbt kind 4
-              @motion.flight_by(@motion.tween(@sfbase.flight_desk_ms, ease=Flight)),
-              fn(to) { Some((x, y, to.2, fh)) },
-              up_late=sent_up_late,
-            )
-            |> ignore
+          Some((x, y, _, fh)) => fly.flies_in(card, sent_quote_part(made_i), fn(to) { Some((x, y, to.2, fh)) })
           None => ()
         }
       })
@@ -121,6 +116,8 @@ fn quote_picture_node(
   own : () -> Attachment?,
   at : String,
   flies_of? : () -> (Double, Double, Double, Double)? = fn() { None },
+  fly? : SentFly = sent_fly_alone,
+  part? : String = "",
 ) -> Unit {
   let a = fn() {
     match own() {
@@ -141,7 +138,7 @@ fn quote_picture_node(
         match kind {
           "image" =>
             p.pick(at_once=true, fn() { media_size(a(), image_least, image_min_side, room.width()) }, fn(q, size) {
-              message_image_node(q, src, place, a, by, fn() { at }, fn() { size.0 }, fn() { size.1 }, corner=@sf.quote_picture_corner, flies_from=from_now(q))
+              message_image_node(q, src, place, a, by, fn() { at }, fn() { size.0 }, fn() { size.1 }, corner=@sf.quote_picture_corner, flies=sent_flies(fly, part, from_now(q)))
             })
             |> ignore
           "video" =>
@@ -149,7 +146,7 @@ fn quote_picture_node(
               at_once=true,
               fn() { (@sfbase.file_key(a()), media_size(a(), video_least, 0.0, room.width())) },
               fn(q, made) {
-                message_video_node(q, src, here.tips, place, a, by, fn() { at }, fn() { made.1.0 }, fn() { made.1.1 }, corner=@sf.quote_picture_corner, flies_from=from_now(q))
+                message_video_node(q, src, here.tips, place, a, by, fn() { at }, fn() { made.1.0 }, fn() { made.1.1 }, corner=@sf.quote_picture_corner, flies_from=from_now(q), fly~, part~)
               },
             )
             |> ignore

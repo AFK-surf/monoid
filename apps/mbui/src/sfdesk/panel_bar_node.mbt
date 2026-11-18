@@ -128,17 +128,19 @@ fn side_bar_node(
     // (the desktop app has no title bar: the panel's bar drags the window as the page's does, where nothing in it
     // takes the press)
     bar.shrink(Is(0.0)).moves_window(By(@ui.window_inset_now)) |> ignore
-    bar.pick(at_once=true, alone, fn(p, alone) {
-      if alone {
-        side_title_node(p, src, r, view, fn() { tabs().get(0).unwrap_or("") })
-      } else {
-        @sf.style_node(p, fn() { side_tab_list }, in_row=true)
-        p.each(at_once=true, tabs, fn(t) { t }, fn(row, tab) {
-          let tab = @signals.untracked(fn() { tab.get() })
-          side_tab_node(row, src, r, view, tab, fn() { front() == tab }, tips)
-        })
-      }
-    })
+    // (one tab alone its title only on the tape: beside a chat, its tabs always, no structure to pick between them)
+    if on_tape {
+      bar.pick(at_once=true, alone, fn(p, alone) {
+        if alone {
+          side_title_node(p, src, r, view, fn() { tabs().get(0).unwrap_or("") })
+        } else {
+          @sf.style_node(p, fn() { side_tab_list }, in_row=true)
+          side_tabs_node(p, src, r, view, tabs, front, tips)
+        }
+      })
+    } else {
+      side_tabs_node(bar, src, r, view, tabs, front, tips)
+    }
     // the station's screen or terminal in front: expand to full window, or pop out to a window of its own (a screen's
     // with touch its own 全屏 does it, over all of it with the system's bars put away: sfpages' full_asked, so not
     // twice)
@@ -241,85 +243,52 @@ fn side_mark_node(n : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
 }
 
 ///|
-/// A tab in `row` (side_tab_of's): its mark and its name, cut short where the tabs have not the room (all of it in its
-/// tip then, but for the chat's own four), pressed to bring it in front; its × beside them closing it, a control of its
-/// own (not in what brings it in front: its room to be pressed in reaching past the tab's height, @view.press_room). In
-/// front (`front`) on the selected ground, its words the words' colour and 500; behind, lit by the hand on the
-/// pointer's ground, its mark and words brought up to the words' colour.
-fn side_tab_node(
-  row : @view.View,
+/// The panel's tabs in `p` (@sf.tab_bar_node's capsules, one tab list: Tab stopping at the one in front, ← → bringing
+/// each in front): each its mark and its name, cut short where the tabs have not the room (all of it in its tip then,
+/// but for the chat's own four), pressed to bring it in front; its × at its end closing it, concentric with it, a
+/// control of its own. In front on the selected ground, its words the words' colour and 500; behind, lit by the hand
+/// on the pointer's ground, its mark and words brought up to the words' colour.
+fn side_tabs_node(
+  p : @view.View,
   src : Source,
   r : ChatRef,
   view : () -> ChatView?,
-  tab : String,
-  front : () -> Bool,
+  tabs : () -> Array[String],
+  front : () -> String,
   tips : @sf.TipLayer,
 ) -> Unit {
-  let names = fn() { side_tab_names(src, r, view(), tab) }
-  @sf.style_node(row, side_tab_row, in_row=true)
-  // (short of room in the list, a tab gives way, its words cut short, its mark and × whole: sideTab's min-width 0)
-  row.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-  let body : Ref[@view.View?] = Ref(None)
-  let lit = fn() {
-    !front() &&
-    (@sf.lit_in_node(row) ||
-    (match body.val {
-      Some(b) => @sf.lit_node(b)
-      None => false
-    }))
-  }
-  row
-  .ground(By(fn() {
-    if front() {
-      @ui.tree_theme().color(Selected)
-    } else if lit() {
-      @ui.tree_theme().color(Hover)
-    } else {
-      0L
-    }
-  }))
+  let names = fn(tab : String) { side_tab_names(src, r, view(), tab) }
+  @sf.tab_bar_node(
+    p,
+    fn() { @sf.t("web-pages.screen.tabs") },
+    tabs,
+    front,
+    fn(tab) { side_front_pressed(src, r, tab) },
+    fn(tab) { names(tab).0 },
+    fn(b, tab, shown) {
+      side_mark_node(b, src, r, view, tab, fn() { shown.front() || shown.lit() })
+      @sf.words_node(b, fn() { names(tab).0 }, fn() {
+        if shown.front() {
+          side_tab_front
+        } else if shown.lit() {
+          side_tab_words_lit
+        } else {
+          side_tab_words
+        }
+      })
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      |> ignore
+    },
+    close=fn(tab) { side_change(src, r, "close", Some(tab)) },
+    close_label=fn(tab) { names(tab).1 },
+    at_once=true,
+    tips~,
+    tip=fn(tab) { !(tab is ("jobs" | "files" | "letters" | "things")) },
+  )
+  .grow(Is(1.0))
+  .min_width(Is(Some(0.0)))
   |> ignore
-  row.box(fn(b) {
-    body.val = Some(b)
-    @sf.style_node(b, side_tab_body, in_row=true)
-    b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    b.says(By(fn() { Some(@view.said(Tab, label=names().0, selected=front())) })) |> ignore
-    @sf.presses_node(b, fn() { side_front_pressed(src, r, tab) })
-    side_mark_node(b, src, r, view, tab, fn() { front() || lit() })
-    @sf.words_node(b, fn() { names().0 }, fn() {
-      if front() {
-        side_tab_front
-      } else if lit() {
-        side_tab_words_lit
-      } else {
-        side_tab_words
-      }
-    })
-    |> ignore
-    if !(tab is ("jobs" | "files" | "letters" | "things")) {
-      @sf.tip_node(tips, b, fn() { names().0 }, repeats=true) |> ignore
-    }
-  })
-  |> ignore
-  // (its close 20 round, its icon 12: side_tab_close's)
-  @sf.icon_button_node(row, "close", fn() { names().1 }, fn() { side_change(src, r, "close", Some(tab)) }, size=20.0, icon_size=12.0)
-  .shrink(Is(0.0))
-  |> ignore
-}
-
-///|
-/// A tab's capsule (side_tab_shape's): 30 high, round, its close 5 from its end; what brings it in front from its start
-/// (side_tab_body), its close after it. (Made as it is asked, not kept at the program's start: the start's one function
-/// is at Wasm's most locals, 50000.)
-fn side_tab_row() -> @ui.Style {
-  @ui.style(row=true, h=@sf.side_tab_h, pr=S1_25, gap=S1_5, align=ACenter, radius=Full)
-}
-
-///|
-/// What brings a tab in front (side_tab_shape's start): as high as the tab and round at its start as the tab is (its
-/// focus there, concentric with it), its mark in the middle of the tab's start, its label 6 after it.
-fn side_tab_body() -> @ui.Style {
-  @ui.style(row=true, h=Full, pl=@sf.capsule_end_room(@sf.side_tab_side, side_tab_mark_side), gap=S1_5, align=ACenter, radius=Full)
 }
 
 ///|

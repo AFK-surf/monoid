@@ -27,3 +27,24 @@ test("the app's script goes as its build brotlied it, said to be brotli, to a br
     assert.equal(await plain.text(), app, origin);
   }
 });
+
+test("a console's request to add a station lets only a listed console in its form-action, and refuses another", async () => {
+  const listed = { ...env, CONNECT_CONSOLES: "https://console.example, https://other.example" };
+  const ask = (back: string) => new Request(`${env.PUBLIC_ORIGIN}/connect/station?return=${encodeURIComponent(back)}&state=sc_1&name=m1`);
+  const csp = (answer: Response) => answer.headers.get("content-security-policy") ?? "";
+
+  const taken = await serveWeb(ask("https://console.example/connect/station"), listed, files);
+  assert.equal(taken.status, 200);
+  assert.match(csp(taken), /form-action 'self' https:\/\/console\.example https:\/\/accounts\.google\.com;/);
+
+  for (const back of ["https://evil.example/connect/station", "https://console.example/other", "https://console.example/connect/station?x=1", "nonsense"]) {
+    const refused = await serveWeb(ask(back), listed, files);
+    assert.equal(refused.status, 302, back);
+    assert.equal(refused.headers.get("location"), `${env.PUBLIC_ORIGIN}/connect/station?refused=1`, back);
+  }
+  // Listing none: every console refused. Any other page keeps the form-action it had.
+  assert.equal((await serveWeb(ask("https://console.example/connect/station"), env, files)).status, 302);
+  const other = await serveWeb(new Request(`${env.PUBLIC_ORIGIN}/login?return=${encodeURIComponent("https://console.example/connect/station")}`), listed, files);
+  assert.doesNotMatch(csp(other), /console\.example/);
+  assert.doesNotMatch(csp(await serveWeb(new Request(`${env.PUBLIC_ORIGIN}/connect/station?refused=1`), listed, files)), /console\.example/);
+});

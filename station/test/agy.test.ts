@@ -445,7 +445,9 @@ for (const crashed of [false, true]) {
     const next = new AgyDriver({ data });
     drivers.push(next);
     const later: RuntimeEvent[] = [];
-    const adopted = await next.adopt(configured, snapshot, (e) => later.push(e));
+    // (after a crash, taken up before the station's door opened: no address of its tools known)
+    const adopted = await next.adopt(crashed ? { ...configured, mcpUrl: "" } : configured, snapshot, (e) => later.push(e));
+    assert.equal(adopted.mcpUrl(), crashed ? null : configured.mcpUrl);
     assert.equal(adopted.model, "gemini-3.1-pro");
     await adopted.abort();
     await until(() => ended(later).length === 1);

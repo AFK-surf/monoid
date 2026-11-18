@@ -1,0 +1,17 @@
+import {
+  "mbui/hostapi",
+  "mbui/motion",
+  "mbui/ui",
+  "mbui/view",
+  "mbui/signals",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/string",
+  "stillfail/sf",
+  "stillfail/sfbase",
+  "stillfail/sfkept",
+}
+
+options(
+  // (the sources the page shows: beside its script in a browser, none elsewhere)
+  targets: { "sources_js.mbt": [ "js" ], "sources_native.mbt": [ "native", "wasm", "wasm-gc" ] },
+)

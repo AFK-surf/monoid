@@ -55,7 +55,15 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
     "" => text(rv, "email")
     n => n
   }
-  @sf.panel_nodes(fill("web-pages.security.pairTitle", [("name", who)]), from=Unanchored, gone=hide, fn(v, close) {
+  // 拒绝 in the panel's foot: across a sheet's, at a dialog's end in its corner (panel_nodes')
+  let foot = fn(v, close : () -> Unit) {
+    @sf.button_node(v, fn() { tr("web-pages.security.pairDeny") }, fn() {
+      close()
+      deny()
+    })
+    |> ignore
+  }
+  @sf.panel_nodes(fill("web-pages.security.pairTitle", [("name", who)]), from=Unanchored, gone=hide, foot~, fn(v, close) {
     // done or turned away on another device: gone here too, as the core says so; asked in one more workspace
     // meanwhile, named too (what it shows bound to the ask as the core holds it now, as it was put up till then)
     let now = fn() { prompt_now(core, "pairing", fn(x) { text(Some(x), "device") == device }) }
@@ -107,20 +115,6 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
         @sf.words_node(u, fn() { text(shown(), "untilText") }, fn() { pair_until }) |> ignore
       })
       @sf.words_node(col, fn() { tr("web-pages.security.pairNote") }, fn() { @sf.note.then(@sf.full_words) }) |> ignore
-      col.box(fn(room) {
-        @sf.style_node(room, fn() { pair_deny_room })
-        @sf.wide_button_node(
-          room,
-          fn() { tr("web-pages.security.pairDeny") },
-          fn() {
-            close()
-            deny()
-          },
-          false,
-        )
-        |> ignore
-      })
-      |> ignore
     })
     |> ignore
   })
@@ -174,11 +168,6 @@ let pair_code_look : @view.WordsLook = {
 /// Until when the code holds, under it (13 muted, centred).
 // kept across runs: a value (no field of it changes)
 let pair_until : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true, w=Full)
-
-///|
-/// 拒绝, as wide as the sheet, 4 under the note and 16 over the sheet's foot.
-// kept across runs: a value (no field of it changes)
-let pair_deny_room : @ui.Style = @ui.css("w=Full pt=S1 pb=S4")
 
 ///|
 /// A code's letters a little apart (letterSpacing 5): a thin space between each two.

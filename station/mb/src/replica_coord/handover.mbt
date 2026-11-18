@@ -384,7 +384,7 @@ fn routed(k : J) -> Bool {
 }
 
 ///|
-pub let stillfail_surface = "ember"
+pub let stillfail_surface = "chat"
 
 ///|
 /// What a chat handed here is told once, as its next turn starts.

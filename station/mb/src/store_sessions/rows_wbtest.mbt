@@ -139,7 +139,8 @@ test "a hand-over's paths, surfaces and ts" {
   inspect(moved_path(jnum(1.0), "/there", "/here"), content="Number(1)")
   inspect(path_join("/here/", "a/../b//c/"), content="/here/b/c/")
   inspect(surface_here("feishu:c1", { "c1": "c2" }), content="feishu:c2")
-  inspect(surface_here("ember", { "c1": "c2" }), content="ember")
+  inspect(surface_here("ember", { "c1": "c2" }), content="chat")
+  inspect(surface_here("chat", { "c1": "c2" }), content="chat")
   inspect(
     after_of("dismissed", { "viewer": "v", "n": 3 }),
     content=(

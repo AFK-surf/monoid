@@ -301,6 +301,7 @@ fn p54_browser_source(s : @browser.ScreenSource) -> @screens.ScreenSource {
       max_height: o.max_height,
       peek: o.peek,
       fit: o.fit.map(f => (f.width, f.height, f.scale)),
+      passkeys: o.passkeys,
     })
     let next = async fn() -> @screens.Frame? {
       match (v.next)() {
@@ -504,6 +505,35 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
     env: env_all(),
   })
   let door_url = () => bus.parts.door_url()
+  let hold = @browser.BrowserAgentHold::new(
+    {
+      driving_people: id => screens.hub.driving_people(id),
+      has_taken_view: id => screens.hub.has_taken_view(id),
+      yield_to_agent: (id, by) => screens.hub.yield_to_agent(id, by),
+      join_agent: (id, by) => screens.hub.join(id, @screens.Watcher::new(by, true, _ => (), agent=true)),
+    },
+    session => {
+      let title = match p54_session_row(bus, session) {
+        Some(row) => p54_text(Some(row), "title").unwrap_or("").trim().to_string()
+        None => ""
+      }
+      "agent: \{if title != "" { title } else { session }}"
+    },
+    clock,
+  )
+  browsers.on_agent_act((session, target, m) => hold.act(session, target, m))
+  browsers.on_stopped(session => hold.release_session(session))
+  ignore(
+    bus.store.subscribe(change => match change {
+      { "type": "session", "key": String(k), .. } =>
+        match p54_session_row(bus, k) {
+          Some({ "running": True, .. }) => ()
+          _ => hold.release_session(k)
+        }
+      { "type": "sessionRemoved", "key": String(k), .. } => hold.release_session(k)
+      _ => ()
+    }),
+  )
   @browser.browser_live(
     {
       door: _ => bus.parts.door({ prefix: @browser.browser_prefix, request: async fn(r, conn) { p54_browser_upgrade(host, browsers, r, conn) } }),
