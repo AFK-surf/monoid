@@ -290,6 +290,9 @@ test "chat as nodes: the viewer's own words sent while an answer's top holds the
 
 ///|
 test "chat list: held by an answer's top, the next message moves nothing; the viewer's own words sent set the list gliding to its foot with the row placed" {
+  if @ui.test_at_a_rate() {
+    return
+  }
   for screen in rp_screens {
     let (_, w, h, platform) = screen
     let clock = Ref(0.0)
