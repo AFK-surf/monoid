@@ -243,8 +243,8 @@ let notice_pill_size : @ui.TextSize = Meta
 let notice_pill_leading : @ui.Leading = L7
 
 ///|
-/// Its pill: as wide as its words, 6 by 14 in, round at its ends (16 once opened); the hover ground, a failure's red
-/// ground.
+/// Its pill: as wide as its words, 6 by 14 in, its corner 16 open or closed (round at its ends on one line); the hover
+/// ground, a failure's red ground.
 fn notice_pill_of(failed : Bool, open : Bool) -> @ui.Style {
   match (failed, open) {
     (false, false) => notice_pill
@@ -255,12 +255,15 @@ fn notice_pill_of(failed : Bool, open : Bool) -> @ui.Style {
 }
 
 ///|
+/// Its corner one size closed and open (Xl1_5, no less than half its height on one line, so round closed), never
+/// `Full`, which is half of whatever height it is drawn at on its way and so swelled to a blob as an open pill began to
+/// close.
 // kept across runs: a value (no field of it changes)
-let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Full bg=Hover")
+let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Xl1_5 bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_pill_open : @ui.Style = notice_pill.then(@ui.css("radius=Xl1_5"))
+let notice_pill_open : @ui.Style = notice_pill
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -277,8 +280,10 @@ let notice_pill_failed_open : @ui.Style = notice_pill_open.then(@ui.css("bg=Over
 let notice_pill_line : @ui.Style = @ui.css("row align=AEnd")
 
 ///|
+/// Opened, its first line where it was closed: in the middle of the pill, which opens about its middle, so what was
+/// pressed never moves across as it opens or closes (what more there is of it under it, from the pill's start).
 // kept across runs: a value (no field of it changes)
-let notice_pill_line_open : @ui.Style = @ui.css("row align=AStart")
+let notice_pill_line_open : @ui.Style = @ui.css("row align=AStart justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

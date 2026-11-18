@@ -20,7 +20,8 @@
 /// paragraph's links as they are (its words' node, each link's way, its words and its first run: what shows over one
 /// while it is pointed at, @ui.runs_links' `shown`); `link_cards`, the card each link has (drawn in its layer while a
 /// mouse rests on that link: link_cards_node); `one_line`: its first block's words alone, on one line as wide as
-/// they are, cut with an ellipsis where the column is narrower (markdown's: a notice closed); `chat_title`, what a bare
+/// they are, cut with an ellipsis where the column is narrower (markdown's: a notice closed); `one_line_by`: so while it
+/// says, and else all of it, those words one node either way (a notice opened and closed: their way); `chat_title`, what a bare
 /// link to a chat reads as; `code`, a fenced block of a language drawn another way (what draws it, its code as it
 /// changes); `files`, the files it names by their names, drawn where it names them (a paragraph of only a link to one,
 /// or its images); `screens`, its links to screens: a paragraph of only one its card, one bare in a sentence its title.
@@ -51,6 +52,7 @@ pub fn markdown_node(
   on_link_shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?),
   one_line? : Bool = false,
+  one_line_by? : () -> Bool,
   chat_title? : (String) -> String? = fn(_) { None },
   code? : (String) -> ((@view.View, () -> String) -> Unit)? = fn(_) { None },
   files? : (String) -> PlacedNode?,
@@ -130,7 +132,15 @@ pub fn markdown_node(
       Some(given) => @signals.computed(fn(_) { core_blocks(given(), text()) })
       None => @signals.computed(fn(_) { md_node_blocks(text(), tree()) })
     }
-    if one_line {
+    if one_line_by is Some(closed) {
+      // (its first block's words one node, on one line cut short while `closed`, broken into lines and the rest of its
+      // blocks under them while not: the same words broken anew at another width, never one copy for another, so on a
+      // way they are drawn at their size and cut, not drawn smaller and grown back (mbui's grown_cut_of))
+      md_words_node(col, md, fn() { first_words(blocks.get()) }, md.size, 0, one_line=closed)
+      col.show(fn() { !closed() && blocks.get().length() > 1 }, fn(rest) {
+        md_blocks_node(rest, md, fn() { blocks.get() }, false, range=Some((1, 1 << 30)))
+      })
+    } else if one_line {
       // (its first block's words on one line, cut short: markdown's one_line)
       md_words_node(col, md, fn() { first_words(blocks.get()) }, md.size, 0, wrap=false, cut=true)
     } else {
@@ -968,6 +978,7 @@ fn md_words_node(
   weight : Int,
   wrap? : Bool = true,
   cut? : Bool = false,
+  one_line? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   // (worked out once as what they are worked out of changes, what reads them many times over reading that)
@@ -979,6 +990,10 @@ fn md_words_node(
     // words applied first, as the old view's paragraph's line_em; else Md::lh's points)
     let share = (md.line)()
     let line = if share > 0.0 { -share } else { md_line(md, size) }
+    let wrap = match one_line {
+      Some(f) => !f()
+      None => wrap
+    }
     { size, weight: if weight > 0 { weight } else { 400 }, line, wrap, tracking: @view.letters_own, balance: false, max_lines: 0 }
   }
   let words = p.box(made_for=loc, fn(w) {
@@ -1016,8 +1031,13 @@ fn md_words_node(
       None => ()
     }
     // (on one line as wide as they are, cut short with an ellipsis where the column is narrower: one_line's)
-    if cut {
-      w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+    match one_line {
+      Some(f) =>
+        w.cuts(By(f)).min_width(By(fn() { if f() { Some(0.0) } else { None } })).allow_ellipsis(By(f)) |> ignore
+      None =>
+        if cut {
+          w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+        }
     }
   })
   // (its links pressed and their cards, made once it has one: words_links_node)

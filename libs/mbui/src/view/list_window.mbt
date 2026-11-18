@@ -1728,6 +1728,9 @@ fn View::scrolls_window_ids(
   let pin_x = Ref(0.0)
   let pin_with : Ref[(Int, Int?)] = Ref((0, None))
   let pin_foot = Ref(false)
+  // (whether the press opens what was pressed (it said itself shut as it was pressed): at its foot, followed there as it
+  // opens, so what it opens to is seen over what covers the foot, not grown under it)
+  let pin_opens = Ref(false)
   // (the node its blocks are held in, once made: what they hold set coming or going kept by it, Tree's list_inner)
   let held_node = Ref(-1)
   // (how tall what lies over what was pressed is, each measured now as wide as it was last laid out; where what it is
@@ -1847,6 +1850,10 @@ fn View::scrolls_window_ids(
     })
     let x_then = @signals.untracked(at)
     let foot_then = s.at_foot() && @signals.untracked(follows)
+    let opens_then = match self.tree.nodes[v.at].said {
+      Some(said) => said.expanded == Some(false)
+      None => false
+    }
     fn() {
       (unpin.val)()
       room_held.val = None
@@ -1858,6 +1865,7 @@ fn View::scrolls_window_ids(
       let ks = @signals.untracked(keys)
       pin_with.val = (ks.length(), ks.last())
       pin_foot.val = foot_then
+      pin_opens.val = opens_then
       // (all it set off ended: held so once more, in the layout of that moment, then no more. Its end the latest any
       // of what was set coming or going in it at the press's moment declares (a row's way, what a block holds; a
       // group turned back too), said once the change is told whole and its column's group with it, a wait inside a
@@ -3159,8 +3167,11 @@ fn View::scrolls_window_ids(
         held = row_holds
       }
     }
-    // (held by what was pressed in a block: neither following its foot nor held at it meanwhile)
-    if !asked && pin.val is Some((k, _, _, _)) && laid_at.contains(k) {
+    // (held by what was pressed in a block: neither following its foot nor held at it meanwhile; but one at its foot
+    // that follows it, pressed to open: its foot followed on the press's way, what it opens to seen as it comes, held
+    // no further than a block's top `margin` under what covers its top, as below (the coordinator of the chat page's
+    // motion, 2026-11-18: one way from the press's frame, never a scroll after it); shut, or not at its foot, held)
+    if !asked && pin.val is Some((k, _, _, _)) && laid_at.contains(k) && !(pin_foot.val && pin_opens.val) {
       follows_foot = false
       held = false
     }
@@ -4569,6 +4580,11 @@ fn View::scrolls_window_ids(
               })
             }
             fn walk(i : Int, base : Double, held : Double, base_x : Double, held_x : Double) -> Unit {
+              // (down a column, how far off where it is laid out the foot of the one before is drawn as the way sets
+              // out: one come under it comes from there, not from where it rests, drawn over what is still growing
+              // to it (a notice's time under its pill as the pill opens))
+              let down = self.tree.nodes[i].flex.style.direction is Column
+              let mut foot_off = 0.0
               for c in self.tree.nodes[i].kids {
                 let n = self.tree.nodes[c]
                 guard n.live else { continue }
@@ -4616,6 +4632,7 @@ fn View::scrolls_window_ids(
                     }
                     let across = fn(amt : FlipInAmt) { { ..amt, dx: dxx - held_x, lw, from_r } }
                     let leaf = !n.kids.iter().any(fn(x) { self.tree.nodes[x].live })
+                    foot_off = d - held - (if grown.abs() > 0.5 { grown } else { 0.0 })
                     if leaf && grown > 0.5 {
                       // (a leaf grown: drawn as tall as it was, growing to as it rests on the way, as a ground alone (a
                       // box that holds nothing, its ground its look: sizes_steady's) is; one that draws something
@@ -4636,7 +4653,8 @@ fn View::scrolls_window_ids(
                     if held_x != 0.0 {
                       ()
                     } else if h > 0.5 {
-                      put(c, flip_in_down(0.0, 0.0, h, true))
+                      put(c, flip_in_down(if down { foot_off } else { 0.0 }, 0.0, h, true))
+                      foot_off = foot_off - h
                     }
                 }
               }

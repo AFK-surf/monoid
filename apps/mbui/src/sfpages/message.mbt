@@ -1512,12 +1512,15 @@ fn notice_pill_of(failed : Bool, open : Bool) -> @ui.Style {
 }
 
 ///|
+/// A notice's pill: its corner one size closed and open (Xl1_5, no less than half its height on one line, so round
+/// closed), never `Full`, which is half of whatever height it is drawn at on its way and so swelled to a blob as an
+/// open pill began to close.
 // kept across runs: a value (no field of it changes)
-let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Full bg=Hover")
+let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Xl1_5 bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_pill_open : @ui.Style = notice_pill.then(@ui.css("radius=Xl1_5"))
+let notice_pill_open : @ui.Style = notice_pill
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1553,8 +1556,10 @@ fn notice_end_strut(leading : Double, scale : Double) -> Double {
 let notice_count_words : @ui.TextStyle = @ui.text_style(size=notice_size, leading=notice_leading, weight=Medium, wrap=false)
 
 ///|
+/// Opened, its first line where it was closed: in the middle of the pill, which opens about its middle, so what was
+/// pressed never moves across as it opens or closes (what failed said of it under it, from the pill's start).
 // kept across runs: a value (no field of it changes)
-let notice_line_open : @ui.Style = @ui.css("row align=AStart")
+let notice_line_open : @ui.Style = @ui.css("row align=AStart justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

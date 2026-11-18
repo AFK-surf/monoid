@@ -46,14 +46,13 @@ fn notice_body_node(
     @sf.style_node(across, fn() { notice_across })
     across.box(fn(beside) {
       @sf.style_node(beside, fn() { notice_with_action })
-      notice_pill_node(beside, src, here, m, open, opened, copied)
+      notice_pill_node(beside, src, here, m, open, opened, copied, across)
     })
     |> ignore
-    // (its time under it while it is open: one against nothing said to leave, as a show said so would not (it holds
-    // its place unfaded, then lets it go at once): coming, its place opens and it is seen once that holds it whole;
-    // going, it fades where it is, its place closing after; no words of it cut (msg_part_leave_ms; the coordinator of
-    // the migration, 2026-11-14))
-    across.pick(open, leave=msg_part_leave_ms, fn(t, on) { if on { message_time_node(t, here.tips, fn() { m().time }) } })
+    // (its time under it while it is open, coming with the pill's foot as the pill opens in its list's block, never
+    // drawn where it rests over the pill still growing to it (a pick's fader is drawn by its own place's way there);
+    // going, it fades where it is, msg_part_leave_ms)
+    across.show(open, leave=msg_part_leave_ms, fn(t) { message_time_node(t, here.tips, fn() { m().time }) })
   })
   |> ignore
 }
@@ -61,14 +60,16 @@ fn notice_body_node(
 ///|
 /// How a notice's words are drawn now (system_notice's): a chat's run changed, open, a line each (`Lines`), else to
 /// another runtime or model each side after its mark (`Sides`), else on one line or what changed (`Short`); about a
-/// profile, its link at its end (`Linked`); else its Markdown, open or on one line (`Md`).
+/// profile, its link at its end (`Linked`); else its Markdown (`Md`). Linked and Md are the same words open or closed,
+/// broken anew (open: all of them; closed: on one line, cut short), one node for both, so that opening never puts one
+/// copy for another (a pick under a page's list draws those smaller and grows them back).
 #derive(Eq)
 priv enum NoticeWords {
   Lines
   Sides
   Short
-  Linked(Bool)
-  Md(Bool)
+  Linked
+  Md
 }
 
 ///|
@@ -83,9 +84,9 @@ fn notice_words_of(m : Message, open : Bool) -> NoticeWords {
       Short
     }
   } else if m.profile != "" && m.notice_link >= 0 && m.notice_link <= m.notice_words.length() {
-    Linked(open)
+    Linked
   } else {
-    Md(open)
+    Md
   }
 }
 
@@ -111,6 +112,7 @@ fn notice_pill_node(
   open : () -> Bool,
   opened : @sf.LiveMap[String, Bool],
   copied : @sf.LiveMap[String, Double],
+  across : @view.View,
 ) -> Unit {
   let failed = fn() { m().notice_failed }
   let ink = fn() -> @ui.Color { if failed() { Danger } else { Fg } }
@@ -138,11 +140,17 @@ fn notice_pill_node(
     // down, its corners with it, on its list's way, @view.transition)
     fn() {
       let ts = @signals.untracked(m).ts
-      @view.transition(fn() { opened[ts] = !opened.get(ts).unwrap_or(false) })
+      // (its size said to change for the press before anything of it is laid out anew: its words broken anew are no
+      // structure, so without it the list would take where all was drawn only once the words were laid out open, and
+      // the pill would widen at once)
+      @view.transition(fn() {
+        across.resizes() |> ignore
+        opened[ts] = !opened.get(ts).unwrap_or(false)
+      })
     },
-    fn(room) { room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, how) }) },
+    fn(room) { room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, open, how) }) },
     // (what follows its words held to the foot of their first line where they are Markdown)
-    md_led=fn() { notice_words_of(m(), false) is Md(_) },
+    md_led=fn() { notice_words_of(m(), false) is Md },
     end=fn(line, strut) {
       line.pick(end, fn(e, which) {
         match which {
@@ -213,7 +221,14 @@ fn notice_label(m : Message) -> String {
 
 ///|
 /// A notice's words (system_notice's, by NoticeWords) in `v`, in `ink`, at the notice's size and leading.
-fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, ink : () -> @ui.Color, how : NoticeWords) -> Unit {
+fn notice_words_node(
+  v : @view.View,
+  here : MessageNodeHere,
+  m : () -> Message,
+  ink : () -> @ui.Color,
+  open : () -> Bool,
+  how : NoticeWords,
+) -> Unit {
   let style = fn(open : Bool) { (if open { notice_words_open } else { notice_words }).then(@ui.text_style(color=ink())) }
   match how {
     Lines =>
@@ -255,7 +270,7 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
         |> ignore
       })
       |> ignore
-    Linked(open) => {
+    Linked => {
       let runs = fn() {
         let now = m()
         [
@@ -266,12 +281,12 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
       v.box(fn(w) {
         w
         .words_runs(By(runs))
-        .words_look(By(fn() { @ui.style_words(style(open)) }))
+        .words_look(By(fn() { @ui.style_words(style(open())) }))
         .runs_look(By(fn() {
           { ..@view.runs_plain, link: if m().notice_failed { @sf.theme().p.red } else { @sf.theme().p.text } }
         }))
-        .ink(By(fn() { @ui.style_ink(style(open)) }))
-        .allow_ellipsis(Is(!open))
+        .ink(By(fn() { @ui.style_ink(style(open())) }))
+        .allow_ellipsis(By(fn() { !open() }))
         |> ignore
         @ui.runs_links(w, runs, fn(_) {
           open_page(Setting(@settings.Route::Profile(here.station, @signals.untracked(m).profile)))
@@ -280,7 +295,7 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
       })
       |> ignore
     }
-    Md(open) => {
+    Md => {
       // (its words as Markdown, as the core read them (a chat it opened: a link to it), of the notice's size open or
       // closed; closed, their first block on one line)
       let th = @ui.tree_theme()
@@ -291,7 +306,7 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
         tree=fn() { m().notice_md },
         size=fn() { meta },
         line=fn() { th.leading(notice_leading).unwrap_or(0.0) / meta },
-        one_line=!open,
+        one_line_by=fn() { !open() },
         ink=fn() { if m().notice_failed { @sf.theme().p.red } else { 0L } },
         on_link=fn(h) { open_link(h) },
         chat_title=fn(h) { chat_title_of(m())(h) },

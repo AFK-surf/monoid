@@ -647,6 +647,9 @@ test "a notice's action at the end of its first line, closed and opened: it neve
   let (ox, oy, ow, _) = t.rect_of(words).unwrap()
   let (bx, by, _, _) = t.rect_of("重新分配账号").unwrap()
   assert_true(bx > ox + ow && (by - oy).abs() < 2.0, msg="opened, still after its words on their line: \{Repr((ox, oy, ow, bx, by))}")
+  // (what was pressed never moves across as it opens: its first line in the middle of the pill, which opens about its
+  // middle; its action with it)
+  assert_true((ox - wx).abs() < 0.5 && (bx - ax).abs() < 0.5, msg="opened, its first line where it was: \{Repr((wx, ox, ax, bx))}")
   let faults = nt_audit(t, 0, 0, 0, 1)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
   // Even when a long notice wraps onto multiple lines once opened, its trailing action stays aligned with the first line.
