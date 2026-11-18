@@ -69,6 +69,93 @@ test "permissions folded: counted on their line, opened by it, ticked, all turne
 }
 
 ///|
+/// Permissions open in a box `w` wide (words at `scale`): five groups, each a box to tick (so their names start alike in
+/// a column), `admin` said of the fourth.
+fn u18_open_at(w : Double, admin : Bool, scale? : Double = 1.0) -> @ui.Tester {
+  let tips = TipLayer::new(fn() { None })
+  let sections = fn() -> Array[CheckSection] {
+    [
+      {
+        title: "消息",
+        groups: [
+          { id: "read", label: "读消息", tip: "读频道里的消息", fixed: false, admin: false },
+          { id: "write", label: "发消息", tip: "在频道里回复", fixed: false, admin: false },
+          { id: "files", label: "文件", tip: "读和传文件", fixed: false, admin: false },
+          { id: "users", label: "成员", tip: "读成员资料", fixed: false, admin: admin },
+          { id: "channels", label: "频道", tip: "列出频道", fixed: false, admin: false },
+        ],
+      },
+    ]
+  }
+  u5_case(scale~, fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(w))) |> ignore
+      check_groups_node(b, sections, fn(id) { id == "read" }, fn(_, _) {  }, fn() { true }, fn() {  }, u18_said(), tips)
+    })
+    |> ignore
+  })
+}
+
+///|
+fn u18_at(t : @ui.Tester, words : String) -> (Double, Double, Double, Double) {
+  t.rect_of(words).unwrap()
+}
+
+///|
+test "permissions three to a line where the room has it, a short line's last ones in the columns over them" {
+  let t = u18_open_at(600.0, false)
+  let (x0, y0, _, _) = u18_at(t, "读消息")
+  let (x1, y1, _, _) = u18_at(t, "发消息")
+  let (x2, y2, _, _) = u18_at(t, "文件")
+  let (x3, y3, _, _) = u18_at(t, "成员")
+  let (x4, y4, _, _) = u18_at(t, "频道")
+  assert_eq((y1, y2), (y0, y0))
+  assert_true(x0 < x1 && x1 < x2)
+  // (the second line's two where the first two are, each a third of the line, not its half)
+  assert_true(y3 > y0)
+  assert_eq(y4, y3)
+  assert_eq((x3, x4), (x0, x1))
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "permissions two to a line where the room has not three, 需管理员 beside its name over nothing" {
+  let t = u18_open_at(400.0, true)
+  let (x0, y0, _, _) = u18_at(t, "读消息")
+  let (x1, y1, _, _) = u18_at(t, "发消息")
+  let (x2, y2, _, _) = u18_at(t, "文件")
+  let (x3, y3, w3, _) = u18_at(t, "成员")
+  let (xa, ya, wa, _) = u18_at(t, "需管理员")
+  assert_eq(y1, y0)
+  assert_true(x1 > x0)
+  assert_true(y2 > y0)
+  assert_eq((x2, y3, x3), (x0, y2, x1))
+  // (its name whole, then 需管理员, within the box)
+  assert_eq(ya > y3 - 8.0 && ya < y3 + 8.0, true)
+  assert_true(xa >= x3 + w3)
+  assert_true(xa + wa <= 400.0)
+  assert_eq(t.audit(), [])
+  // (words at 1.3: three no longer have the room at 600)
+  let big = u18_open_at(600.0, true, scale=1.3)
+  let (bx0, by0, _, _) = u18_at(big, "读消息")
+  let (bx2, by2, _, _) = u18_at(big, "文件")
+  assert_eq(bx2, bx0)
+  assert_true(by2 > by0)
+  assert_eq(big.audit(), [])
+}
+
+///|
+test "permissions one to a line in a narrow box" {
+  let t = u18_open_at(300.0, true)
+  let rows = ["读消息", "发消息", "文件", "成员", "频道"].map(fn(w) { u18_at(t, w) })
+  for i in 1..<rows.length() {
+    assert_eq(rows[i].0, rows[0].0)
+    assert_true(rows[i].1 > rows[i - 1].1)
+  }
+  assert_eq(t.audit(), [])
+}
+
+///|
 test "the avatars: each pressed by its name picks it, the one picked read out selected" {
   let picked = @signals.signal("")
   let got = Ref("")

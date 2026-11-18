@@ -64,49 +64,17 @@ fn stories_u18(tips : @sf.TipLayer) -> Array[Story] {
       file: "form_swatch_node.mbt",
       api: [("form_swatch_node.mbt", "check_groups_node")],
       play: None,
-      about: "折起来的权限：一行说开了几个、共几个，按它展开；有没开的时行尾可一键全开。展开后每节一个标题和全选 / 全不选（固定开着的那组不动），每行三组，每组一个勾选框和名字，只有管理员能批的在名字后注明，悬停说它允许什么。",
+      about: "折起来的权限：一行说开了几个、共几个，按它展开；有没开的时行尾可一键全开。展开后每节一个标题和全选 / 全不选（固定开着的那组不动），放得下时每行三组，窄了每行两组或一组（有需管理员的组时每列要宽些，系统字号放大时也一样），每组一个勾选框和名字，只有管理员能批的在名字后注明，悬停说它允许什么。",
       cases: [
+        ("收起 · 展开（读消息固定开着，成员需管理员）", fn(card) { story_u18_checks(card, tips) }),
         (
-          "收起 · 展开（读消息固定开着）",
+          "窄处 320 宽：放不下三列时两列或一列",
           fn(card) {
-            let on : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
-            on["read"] = true
-            on["write"] = true
-            let open = kept(true)
-            @sf.check_groups_node(
-              card,
-              fn() {
-                [
-                  {
-                    title: "消息",
-                    groups: [
-                      { id: "read", label: "读消息", tip: "读它在的频道里的消息", fixed: true, admin: false },
-                      { id: "write", label: "发消息", tip: "在频道里回复", fixed: false, admin: false },
-                      { id: "files", label: "文件", tip: "读和传文件", fixed: false, admin: false },
-                    ],
-                  },
-                  {
-                    title: "工作区",
-                    groups: [
-                      { id: "users", label: "成员", tip: "读成员的名字和头像", fixed: false, admin: false },
-                      { id: "channels", label: "频道", tip: "列出频道", fixed: false, admin: false },
-                    ],
-                  },
-                ]
-              },
-              fn(id) { on.get(id).unwrap_or(false) },
-              fn(id, now) { on[id] = now },
-              fn() { open.get() },
-              fn() { open.set(!open.get()) },
-              {
-                summary: fn(n, all) { "权限：开了 \{n} 个，共 \{all} 个" },
-                all_on: fn() { "全部开启" },
-                select_all: fn() { "全选" },
-                select_none: fn() { "全不选" },
-                admin: fn() { "需管理员" },
-              },
-              tips,
-            )
+            card.box(fn(b) {
+              b.max_width(Is(Some(320.0))) |> ignore
+              story_u18_checks(b, tips)
+            })
+            |> ignore
           },
         ),
       ],
@@ -177,6 +145,49 @@ fn stories_u18(tips : @sf.TipLayer) -> Array[Story] {
       ],
     },
   ]
+}
+
+///|
+/// The permissions of check-groups' cases in `card`: two sections, 读消息 fixed on, 成员 only admins allow; open at first.
+fn story_u18_checks(card : @view.View, tips : @sf.TipLayer) -> Unit {
+  let on : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+  on["read"] = true
+  on["write"] = true
+  let open = kept(true)
+  @sf.check_groups_node(
+    card,
+    fn() {
+      [
+        {
+          title: "消息",
+          groups: [
+            { id: "read", label: "读消息", tip: "读它在的频道里的消息", fixed: true, admin: false },
+            { id: "write", label: "发消息", tip: "在频道里回复", fixed: false, admin: false },
+            { id: "files", label: "文件", tip: "读和传文件", fixed: false, admin: false },
+          ],
+        },
+        {
+          title: "工作区",
+          groups: [
+            { id: "users", label: "成员", tip: "读成员的名字和头像", fixed: false, admin: true },
+            { id: "channels", label: "频道", tip: "列出频道", fixed: false, admin: false },
+          ],
+        },
+      ]
+    },
+    fn(id) { on.get(id).unwrap_or(false) },
+    fn(id, now) { on[id] = now },
+    fn() { open.get() },
+    fn() { open.set(!open.get()) },
+    {
+      summary: fn(n, all) { "权限：开了 \{n} 个，共 \{all} 个" },
+      all_on: fn() { "全部开启" },
+      select_all: fn() { "全选" },
+      select_none: fn() { "全不选" },
+      admin: fn() { "需管理员" },
+    },
+    tips,
+  )
 }
 
 ///|

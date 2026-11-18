@@ -190,7 +190,8 @@ pub(all) struct CheckGroupsSaid {
 /// Groups of permissions, folded, in `parent` (`sections()` as they are now; nothing while they have none): a line
 /// saying how many are on of all (`on(id)` each), pressed to open them (`open()`, `toggle` done as it is pressed: a
 /// disclosure), all turned on from its end while some are off; open, each section its title and 全选 / 全不选 (its
-/// fixed groups staying on), its groups three to a line, each a box to tick (`set(id, on)` told as it is ticked) and
+/// fixed groups staying on), its groups three to a line where the room has it, two or one where it has less (each
+/// column 152 at least, 192 where some group says only admins allow it, at the system's size of words), each a box to tick (`set(id, on)` told as it is ticked) and
 /// its name (what only admins allow said after it), the pointer's ground on it, what it allows over it on hover (its tip
 /// in `tips`); a fixed one a tick without a box.
 #callsite(autofill(loc))
@@ -215,6 +216,7 @@ pub fn check_groups_node(
     out
   }
   let count = fn() { every().filter(fn(g) { on(g) }).length() }
+  let admin_any = fn() { sections().iter().any(fn(s) { s.groups.iter().any(fn(g) { g.admin }) }) }
   parent.show(fn() { every().length() > 0 }, fn(p) {
     p.box(made_for=loc, fn(b) {
       style_node(loc~, b, fn() { check_groups })
@@ -265,22 +267,27 @@ pub fn check_groups_node(
                 |> ignore
               })
               |> ignore
-              let mut i = 0
-              while i < groups.length() {
-                let row = groups[i:if i + 3 < groups.length() { i + 3 } else { groups.length() }].to_owned()
-                s.box(fn(r) {
-                  style_node(loc~, r, fn() { check_row })
-                  for g in row {
-                    check_group_node(loc~, r, g, on, set, said, tips)
+              // (as many to a line as the room has for each, three at most, a line's last ones as wide as the others
+              // and where they would be under them: a width each, bound to the room, never a structure by it)
+              s.by_room(fn(grid, room) {
+                style_node(loc~, grid, fn() { check_grid })
+                grid.wraps(Is(Some(check_grid_lines))) |> ignore
+                let each_w = fn() {
+                  let w = room.width()
+                  if w <= 0.0 {
+                    None
+                  } else {
+                    let least = (if admin_any() { check_col_admin } else { check_col }) * grid.words_scale()
+                    let n = check_columns(w, least)
+                    // (in 64ths of a point: n of them and their gaps never more than the line, which would wrap)
+                    Some(((w - check_grid_gap * (n - 1).to_double()) / n.to_double() * 64.0).floor() / 64.0)
                   }
-                  // (three to a line, a short line's room kept)
-                  for _ in row.length()..<3 {
-                    r.box(fn(e) { style_node(loc~, e, fn() { check_group_label }, in_row=true) }) |> ignore
-                  }
-                })
-                |> ignore
-                i = i + 3
-              }
+                }
+                for g in groups {
+                  check_group_node(loc~, grid, g, on, set, said, tips, each_w)
+                }
+              })
+              |> ignore
             })
             |> ignore
           })
@@ -293,8 +300,8 @@ pub fn check_groups_node(
 }
 
 ///|
-/// A group of permissions in `r` (check_groups_node's): its box ticked (a fixed one, always on: a tick without a box),
-/// its name, what only admins allow said beside it, the pointer's ground on it; what it allows over it while it is
+/// A group of permissions in `r` (check_groups_node's), as wide as `width()` says: its box ticked (a fixed one, always
+/// on: a tick without a box), its name (cut short where it has not the room), what only admins allow said beside it, the pointer's ground on it; what it allows over it while it is
 /// pointed at.
 #callsite(autofill(loc))
 fn check_group_node(
@@ -304,10 +311,12 @@ fn check_group_node(
   set : (String, Bool) -> Unit,
   said : CheckGroupsSaid,
   tips : TipLayer,
+  width : () -> Double?,
   loc~ : SourceLoc,
 ) -> Unit {
   let item = r.box(made_for=loc, fn(b) {
     style_node(loc~, b, fn() { check_group }, in_row=true)
+    b.width(By(width)) |> ignore
     hover_ground_node(b)
     if g.fixed {
       icon_node(b, "check", check_group_tick, By(fn() { theme().p.accent })) |> ignore
@@ -316,6 +325,7 @@ fn check_group_node(
     }
     b.box(fn(l) {
       style_node(loc~, l, fn() { check_group_label }, in_row=true)
+      l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       words_node(loc~, l, fn() { g.label }, fn() { check_group_words }) |> ignore
     })
     |> ignore
@@ -584,13 +594,41 @@ let check_section_head : @ui.Style = @ui.css("row w=Full pt=S2 gap=S2 align=ACen
 let check_section_title : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Semibold, color=Muted, wrap=false)
 
 ///|
+/// The groups of a section, wrapping (8 along a line, 4 between lines: the section's gap, as its lines were).
 // kept across runs: a value (no field of it changes)
-let check_row : @ui.Style = @ui.css("row w=Full gap=S2")
+let check_grid : @ui.Style = @ui.css("row gap=S2")
 
 ///|
-/// A group (modelPoolItem: a third of the line, 32 high, 8 by 6 in, 8 apart, the pointer's ground on it).
+let check_grid_gap : Double = 8.0
+
+///|
+let check_grid_lines : Double = 4.0
+
+///|
+/// How wide a column is at least for a group's box, its name and their room (152), and with 需管理员 beside it (192), at
+/// words as said.
+let check_col : Double = 152.0
+
+///|
+let check_col_admin : Double = 192.0
+
+///|
+/// How many columns of groups `w` holds, each `least` wide at least and check_grid_gap apart: three at most, one at
+/// least (and three before it is laid out).
+fn check_columns(w : Double, least : Double) -> Int {
+  if w <= 0.0 || w >= least * 3.0 + check_grid_gap * 2.0 {
+    3
+  } else if w >= least * 2.0 + check_grid_gap {
+    2
+  } else {
+    1
+  }
+}
+
+///|
+/// A group (modelPoolItem: a column of the line, 32 high, 8 by 6 in, 8 apart, the pointer's ground on it).
 // kept across runs: a value (no field of it changes)
-let check_group : @ui.Style = @ui.style(w=grow).then(@ui.css("row h=S8 px=S2 gap=S2 radius=Lg align=ACenter hovered{bg=Hover}"))
+let check_group : @ui.Style = @ui.css("row h=S8 px=S2 gap=S2 radius=Lg align=ACenter hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -598,7 +636,7 @@ let check_group_label : @ui.Style = @ui.style(w=grow)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let check_group_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, wrap=false)
+let check_group_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, wrap=false, w=Cut)
 
 ///|
 /// A place's least height (34), 更换's weight (500).
