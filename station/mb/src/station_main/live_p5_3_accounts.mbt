@@ -78,7 +78,16 @@ fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
     urls: p53_jv(
       p53_obj([
         ("opencode", p53_s(@agent_runtimes.opencode)),
-        ("anthropic", p53_s("https://api.anthropic.com")),
+        // ($STILLFAIL_ANTHROPIC_API: a test's stand-in, as profiles.ts reads it)
+        (
+          "anthropic",
+          p53_s(
+            match env_get("STILLFAIL_ANTHROPIC_API") {
+              Some(u) if u != "" => u
+              _ => "https://api.anthropic.com"
+            },
+          ),
+        ),
         ("chatgpt", p53_s("https://chatgpt.com")),
         ("claudeToken", p53_s("https://platform.claude.com/v1/oauth/token")),
         ("console", p53_s(@accounts_oauth.console_url)),
