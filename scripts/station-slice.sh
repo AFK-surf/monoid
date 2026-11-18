@@ -28,6 +28,8 @@ long="test/rules-fork.test.ts:168 test/memory-sync-random.test.ts:69 test/replic
 long="$long test/move-accounts.test.ts:53 test/replica-retire.test.ts:44 test/lock-moved-model.test.ts:40"
 long="$long test/lock-roster4.test.ts:39 test/updates.test.ts:36 test/chat-handover-steps.test.ts:28"
 long="$long test/mb-reader-timeline.test.ts:22 test/chat-handover.test.ts:21 test/lock-world-1.test.ts:21"
+# (mb-twin-station: two stations under the launcher, then a chain of three handovers, 12-15 s on Studio, 2026-11-18)
+long="$long test/mb-twin-station.test.ts:15"
 long="$long test/chat-handover-back.test.ts:20 test/mb-replica.test.ts:20 test/chat-handover-moves.test.ts:19"
 long="$long test/lock-world-2.test.ts:19 test/lock-world-3.test.ts:19 test/hub.test.ts:18"
 long="$long test/move-plan-bounded.test.ts:15 test/replica-stations.test.ts:13 test/lock-forks.test.ts:12"
