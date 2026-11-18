@@ -256,6 +256,8 @@ priv struct BoxSpec {
   roomy : Bool
   placeholder : String
   tools : ((@view.View) -> Unit)?
+  /// a line of its own between the words and the foot (待派发's model control), opened; None, no such line
+  line_over_foot : ((@view.View) -> Unit)?
   words_end : Double
   sends : () -> String
   send_icon : () -> String
@@ -270,6 +272,7 @@ fn chat_box_spec() -> BoxSpec {
     roomy: false,
     placeholder: "",
     tools: None,
+    line_over_foot: None,
     words_end: 0.0,
     sends: fn() { @sf.t("web-main.composer.send") },
     send_icon: fn() { "arrow-up" },
@@ -731,6 +734,22 @@ fn composer_box_node(
         }, regrow)
       })
       |> ignore
+      // (a line of its own under the words, opened, over ＋ and send's: as wide as the box, from where its words begin)
+      match spec.line_over_foot {
+        Some(over) =>
+          line.show(fn() { multiline() }, fn(o) {
+            o
+            .width_share(Is(1.0))
+            .row(Is(true))
+            .lines_up(Is(Some(Middle)))
+            .min_width(Is(Some(0.0)))
+            // (its control's own room round its words lining them up with the words over it)
+            .padding(Is((0.0, 0.0, 8.0, 0.0)))
+            |> ignore
+            over(o)
+          })
+        None => ()
+      }
       line.box(fn(tail) {
         tail
         .row(Is(true))

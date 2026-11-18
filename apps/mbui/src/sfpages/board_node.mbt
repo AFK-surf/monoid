@@ -1436,9 +1436,10 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
             round=true,
           )
           |> ignore
-          // (on what: the one model control, picked for this draft alone, as a new chat there runs till then)
-          model_triple_node(r, own.src, st, @sfbase.board_pick_of(id))
         }),
+        // (on what, on a line of its own over where it goes: the one model control, picked for this draft alone, as a
+        // new chat there runs till then)
+        line_over_foot: Some(fn(o) { model_triple_node(o, own.src, st, @sfbase.board_pick_of(id)) }),
         // (wide, clear of × in its corner)
         words_end: if wide { card_title_end() } else { 0.0 },
         sends: fn() { board_words(if dispatching() { "dispatch" } else { "add" }) },
@@ -2059,8 +2060,10 @@ fn draft_edit_card(
     }, at_start=false)
     card.box(fn(foot) {
       foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-      // (what it is to run on, changed here as where it was written: its own model control, concentric with the
-      // card's foot corner as 保存 is with the other)
+      // (what it is to run on, changed here as where it was written: its own model control, in the foot as 取消 and
+      // 保存 are, so the card is as tall as it was and nothing under it moves as it closes; as wide as they leave it,
+      // what it says left out last to first where that is short; concentric with the card's foot corner as 保存 is
+      // with the other)
       if station != "" {
         foot.box(fn(m) {
           // (its round corner as far in from the card's start and foot as the card's corner less its own: in from
@@ -2069,12 +2072,20 @@ fn draft_edit_card(
           let h = @ui.Space::S7.px()
           let pick_in = fn() { (@sf.card_corner - h / 2.0 - foot_in()).max(0.0) }
           let pick_up = fn() { (2.0 * pick_in() - (@sf.button_height() + save_in() - h)).max(0.0) }
-          m.margin(By(fn() { (pick_in(), 0.0, 0.0, pick_up()) })).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          m
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .margin(By(fn() { (pick_in(), 0.0, 0.0, pick_up()) }))
+          .grow(Is(1.0))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          |> ignore
           model_triple_node(m, src, station, @sfbase.board_pick_of(id))
         })
         |> ignore
+      } else {
+        foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
       }
-      foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
       @sf.button_node(foot, fn() { board_words("cancel") }, fn() { finish(false) }) |> ignore
       foot.box(fn(k) {
         k.margin(By(fn() { (0.0, 0.0, save_in(), save_in()) })).shrink(Is(0.0)) |> ignore
