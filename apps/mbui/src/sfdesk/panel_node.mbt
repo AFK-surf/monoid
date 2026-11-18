@@ -364,6 +364,8 @@ fn side_history_node(q : @view.View, src : Source, r : ChatRef, agent : String, 
     @sfpages.history_steps_node(s, src, r.station, agent, tips)
   })
   |> ignore
+  // (what its press asked, taken over by what it read as it was made: side_front_pressed)
+  @sfbase.shown_read(side_tab_shown_at(r, agent))
 }
 
 ///|

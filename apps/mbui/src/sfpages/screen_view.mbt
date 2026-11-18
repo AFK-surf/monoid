@@ -773,6 +773,7 @@ fn screen_panel_on_now(u : ScreenUi, id : String) -> Bool {
 /// actions pressed: the reviewer with pengxiao, 2026-11-12; the system's bars turned to another edge, where the item it
 /// was opened at is no longer: screen_native_acts).
 fn screen_panels_close(u : ScreenUi) -> Unit {
+  center_wait_give_up()
   match u.native_panel {
     Some((_, root, _)) => {
       let open = screen_panel_open_from(root)

@@ -40,6 +40,7 @@ pub fn reset() -> Unit {
   screen_fix_heard.val = None
   screens_open.clear()
   screen_uis.clear()
+  center_wait_give_up()
   screens_made.val = 0
   hover_reset()
   hovered_file.val = None

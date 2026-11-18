@@ -73,9 +73,23 @@ pub fn side_front_pressed(src : Source, r : ChatRef, tab : String) -> Unit {
   }
   side_front_wait.val = None
   // (what it asked handed to the tab as it is first built, its reads then the tab's own: side_tab_shown_at)
-  let w = @sfbase.show_answered_wait(src, side_tab_reads(r, tab), side_tab_shown_at(r, tab), fn() {
-    side_change(src, r, "front", Some(tab))
-  })
+  let at = side_tab_shown_at(r, tab)
+  let front = fn() { side_change(src, r, "front", Some(tab)) }
+  // (an agent's history its transcript's place too, as it is opened (history_side_open): its line there from its
+  // first frame, nothing pushed down under its head after it came)
+  let w = if side_history_tab(tab) {
+    // (a replay of a run from before asks nothing ahead: shown at once, as history_side_open)
+    let path = if !src.read_only && (src.switches_ahead)() { Some(wh_transcript(src, r.station, tab)) } else { None }
+    let placed = fn() {
+      match path {
+        Some(p) => p.get() is Some(_)
+        None => true
+      }
+    }
+    @sfbase.show_answered_with(src, side_tab_reads(r, tab), placed, at, front)
+  } else {
+    @sfbase.show_answered_wait(src, side_tab_reads(r, tab), at, front)
+  }
   if w.waiting() {
     side_front_wait.val = Some(w)
   }
@@ -90,10 +104,20 @@ pub fn side_tab_shown_at(r : ChatRef, tab : String) -> String {
 
 ///|
 /// What tab `tab` of chat `r`'s panel reads as it is first drawn, that its press waits for (side_front_pressed): 任务
-/// its chat's services and jobs (jobs_tab_node's `chatJobs`).
+/// its chat's services and jobs (jobs_tab_node's `chatJobs`); an agent's history its model's pick (its head's
+/// model_triple_node) and its steps, with 详情 what they read where they are unfolded (wh_details_asks).
 fn side_tab_reads(r : ChatRef, tab : String) -> Array[(String, Map[String, Json])] {
   match tab {
     "jobs" => [("chatJobs", chat_params(r))]
+    _ if side_history_tab(tab) =>
+      [
+        ("pick", { "station": Json::string(r.station), "of": Json::string("session:" + tab) }),
+        ..if @signals.untracked(fn() { !history_own.shut.get() }) {
+          wh_details_asks(r.station, tab)
+        } else {
+          [@sfpages.history_ask(r.station, tab)]
+        },
+      ]
     _ => []
   }
 }

@@ -86,10 +86,45 @@ fn center_open(pg : ScreenPage, from : @sf.Anchor, asked : String) -> Unit {
     debug_apps_open(s, u, from)
     return
   }
-  screen_panel_toggle(u, "center", fn() {
-    @sf.panel_nodes(@sf.t("web-pages.screen.panel"), fn(v, done) { center_node(v, s, u, from, pg.close, done) }, from~, side=screen_panel_side(), focus=false)
-  })
+  let open = fn() {
+    screen_panel_toggle(u, "center", fn() {
+      @sf.panel_nodes(@sf.t("web-pages.screen.panel"), fn(v, done) { center_node(v, s, u, from, pg.close, done) }, from~, side=screen_panel_side(), focus=false)
+    })
+  }
+  // (pressed again while it waits: given up, nothing opened; up already: closed at once)
+  match center_wait.val {
+    Some(w) if w.waiting() => {
+      center_wait.val = None
+      w.give_up()
+      return
+    }
+    _ => center_wait.val = None
+  }
+  if screen_panel_on(u, "center") {
+    open()
+    return
+  }
+  // (once what it reads as it is first made is answered, the screen as it was meanwhile: how its station is reached,
+  // read while the screen is live (screen_net), comes with it, never changing its 连接 line after it came)
+  let asks : Array[(String, Map[String, Json])] = [
+    ("prefs", {}),
+    ..if @signals.untracked(fn() { s.phase() == "live" }) {
+      [("stationNet", { "station": Json::string(s.station) })]
+    } else {
+      []
+    },
+  ]
+  let w = @sfbase.present_answered(s.src, asks, open)
+  if w.waiting() {
+    center_wait.val = Some(w)
+  }
 }
+
+///|
+/// What waits for 控制中心's first read, pressed (center_open): one at a time, given up as it is pressed again, as the
+/// page's panels close (screen_panels_close) and between runs (pages.mbt reset).
+// kept across runs: put back by reset
+let center_wait : Ref[@sfbase.PressWait?] = Ref(None)
 
 ///|
 /// 按键 as a round button (the foot's, the rail's, the folded tools') in `parent`: pressed, its panel beside it; on while
@@ -1113,4 +1148,16 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
     most=@sf.open_hold_ms,
   )
   |> ignore
+}
+
+///|
+/// What waits for 控制中心 (center_wait) given up, nothing opened.
+fn center_wait_give_up() -> Unit {
+  match center_wait.val {
+    Some(w) => {
+      center_wait.val = None
+      w.give_up()
+    }
+    None => ()
+  }
 }

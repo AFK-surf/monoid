@@ -851,7 +851,7 @@ pub fn terminal_pane_node(
     }),
   ]
   // 控制中心 panel (session-level management: station's remote sessions switcher + 新建终端, 字号, 在文件中打开, 复制链接, 新窗口, 全屏, 只看, 结束会话)
-  let open_center_panel = fn(from : @sf.Anchor) {
+  let open_center_now = fn(from : @sf.Anchor) {
     @sf.panel_nodes(
       @sf.t("web-pages.screen.panel"),
       fn(p, done) {
@@ -1064,6 +1064,36 @@ pub fn terminal_pane_node(
       along=End,
       focus=false,
     )
+  }
+  // (what waits for 控制中心's first read, pressed: one at a time, given up as it is pressed again or the page goes)
+  let center_wait : Ref[@sfbase.PressWait?] = Ref(None)
+  v.owns(fn() {
+    match center_wait.val {
+      Some(w) => w.give_up()
+      None => ()
+    }
+    center_wait.val = None
+  })
+  |> ignore
+  let open_center_panel = fn(from : @sf.Anchor) {
+    match center_wait.val {
+      Some(w) if w.waiting() => {
+        center_wait.val = None
+        w.give_up()
+        return
+      }
+      _ => center_wait.val = None
+    }
+    // (once what it reads as it is first made is answered, the screen as it was meanwhile: its station's screens come
+    // with it, never pushing its rows down after it came)
+    let w = @sfbase.present_answered(
+      src,
+      [("screens", { "station": str(at.station) }), ("terminals", { "station": str(at.station) }), ("prefs", {})],
+      fn() { open_center_now(from) },
+    )
+    if w.waiting() {
+      center_wait.val = Some(w)
+    }
   }
   v.grow(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })).padding(By(fn() { (0.0, 0.0, @sf.native_clear(), 0.0) })) |> ignore
   // (the terminal's own dark ground on under the column beside its screen, from under its head to its foot, as the
@@ -1989,6 +2019,6 @@ pub fn terminal_pane_node(
   })
   // Open fixture center panel when asked by open_fixture ("keys" is now inline via keys_open signal!)
   if asked == "center" {
-    open_center_panel(At(pane_w() - 28.0, top() + 24.0, 32.0, 32.0))
+    open_center_now(At(pane_w() - 28.0, top() + 24.0, 32.0, 32.0))
   }
 }

@@ -1213,7 +1213,9 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
           }
         _ => ()
       }
-      net
+      // (answered whatever it has, as the core does: a station that says no network, none, client/core-ts views.ts
+      // stationNet's `ok: null`)
+      Some(net.unwrap_or(Json::null()))
     }
     _ => value
   }

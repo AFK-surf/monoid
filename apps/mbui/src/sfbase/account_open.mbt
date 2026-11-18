@@ -311,6 +311,46 @@ pub fn open_old_whole(src : Source, asks : Array[(String, Map[String, Json])], o
 }
 
 ///|
+/// A panel of the window's tree (`@sf.panel_nodes`) opened by a press, once `asks` (what its nodes read as they are
+/// first made, said by the code they read them by) are answered, the screen as it was meanwhile (press_wait): so what
+/// waits on a station (a terminal's 控制中心 its station's screens) comes with the panel, never pushing its rows down
+/// after it came; at once where they are answered already. What was asked is held by the panel as long as it is drawn
+/// (presented_held), so its nodes take it over without asking anew. A replay of a run from before asks nothing ahead
+/// (switches_ahead), opened at once. What waits is returned: given up by the press's control where it is pressed again
+/// meanwhile.
+pub fn present_answered(
+  src : Source,
+  asks : Array[(String, Map[String, Json])],
+  open : () -> Unit,
+) -> PressWait {
+  if asks.is_empty() || src.read_only || !(src.switches_ahead)() {
+    return press_wait(fn() { true }, open)
+  }
+  let (answered, leases) = asked_now(src, asks)
+  press_wait(answered, fn() { presented_held(leases, open) }, let_go=fn() { leases.each(fn(l) { l.cancel() }) })
+}
+
+///|
+/// show_answered_wait, waiting as well for `ready` (what the page shown reads that is no topic: a call's answer it keeps,
+/// an agent's history's transcript's place) before `show`; a replay of a run from before asks nothing ahead
+/// (switches_ahead), shown at once.
+pub fn show_answered_with(
+  src : Source,
+  asks : Array[(String, Map[String, Json])],
+  ready : () -> Bool,
+  at : String,
+  show : () -> Unit,
+) -> PressWait {
+  if src.read_only || !(src.switches_ahead)() {
+    return press_wait(fn() { true }, show)
+  }
+  let (answered, leases) = asked_now(src, asks)
+  press_wait(fn() { answered() && ready() }, fn() { hand_over_shown(at, leases, show) }, let_go=fn() {
+    leases.each(fn(l) { l.cancel() })
+  })
+}
+
+///|
 /// `open` run (what puts up something presented: a panel, a sheet), `leases` handed to what it put up (or the sheet it
 /// came to be a page of): held by the window's tree past what asked them, let go as that is drawn no more (closed and
 /// gone, @sf.presented_drawn_of); at once where nothing is drawn.
