@@ -614,6 +614,50 @@ test("the conversations' own parts: a title asked of a runtime session of their 
   assert.equal(await a.ended, 0, a.err());
 });
 
+test("the relays tool with no mesh up: the mesh's relays listed as none, enrolling and revoking one refused", { skip }, async () => {
+  const data = fresh("r");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  // The mesh's address held by the test: its endpoint never binds, so the relays tool's asks reach the control plane's
+  // own answers (live_p5_1_plane.mbt), never the mesh directory's (live_p5_1_scopes.mbt), whenever they are asked.
+  const held = createSocket("udp4");
+  await new Promise<void>((resolve) => held.bind(0, "127.0.0.1", () => resolve()));
+  try {
+    const a = await launch(data, app, bin, out, undefined, { STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${held.address().port}` });
+    await a.next("ready", (m) => m.ready === true);
+    const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+    await until("the mesh failed to bind", () => /mesh stopped; trying again/.test(a.err()), () => a.err());
+    const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+    try {
+      session(store, data, "chat:c-relays", "claude", "t0", "1790000000.000001");
+      const listed = await tool(door, "t0", "relays", { action: "list" });
+      assert.equal(listed.error, false, `${listed.text}\n${a.err()}`);
+      assert.deepEqual(JSON.parse(listed.text).mesh, []);
+      const enrolled = await tool(door, "t0", "relays", { action: "enroll", name: "r1" });
+      assert.equal(enrolled.error, true);
+      assert.match(enrolled.text, /native mesh relay enrollment is not available on this station/);
+      const revoked = await tool(door, "t0", "relays", { action: "revoke", node: "a".repeat(64) });
+      assert.equal(revoked.error, true);
+      assert.match(revoked.text, /native mesh relay control is not available on this station/);
+      assert.doesNotMatch(a.err(), /no such control plane call/);
+    } finally {
+      store.close();
+    }
+    a.tell({ op: "stop" });
+    assert.equal(await a.ended, 0, a.err());
+  } finally {
+    held.close();
+  }
+});
+
 /// The program's id of a data directory (`stillfail-reader id`): its key made there.
 function stationId(data: string): string {
   const r = spawnSync(binary!, ["id", "--data", data], { env: { PATH: "/usr/bin:/bin", HOME: data, TMPDIR: tmpdir() }, encoding: "utf8" });

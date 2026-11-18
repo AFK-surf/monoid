@@ -403,6 +403,11 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
       @cloud_net.remove_relay(self.ways, text("workspace").unwrap_or(""), text("url").unwrap_or("")).to_json() catch {
         @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", jv_of_json({ "message": Json::string(m) }))
       }
+    // (the relays tool's mesh asks before the mesh's directory answers them, or while no mesh runs: answered as
+    // agents.ts answers them with no directory, none listed and nothing enrolled or revoked; live_p5_1_scopes.mbt
+    // answers them once the mesh is up)
+    "meshList" => Json::array([])
+    "meshRevoke" | "meshEnroll" => Json::null()
     // (cloud/signed.ts `signedPost`: the feedback's reports, their fixes and replies)
     "signedPost" =>
       match self.control.signed(text("path").unwrap_or(""), text("tag").unwrap_or(""), match arg { Object(m) => m.get("value").unwrap_or(Json::null()); _ => Json::null() }) {
