@@ -134,6 +134,7 @@
       "src/sfapp/tabletop.mbt",
       "src/sfapp/tape_shell.mbt",
       "src/sfdesk/attention.mbt",
+      "src/sfdesk/attention_node.mbt",
       "src/sfdesk/board.mbt",
       "src/sfdesk/brand.mbt",
       "src/sfdesk/chats.mbt",
@@ -148,6 +149,7 @@
       "src/sfdesk/rail.mbt",
       "src/sfdesk/rail_native.mbt",
       "src/sfdesk/rail_node.mbt",
+      "src/sfdesk/rail_overlays_node.mbt",
       "src/sfdesk/side.mbt",
       "src/sfdesk/side_node.mbt",
       "src/sfdesk/switch.mbt",
@@ -359,7 +361,6 @@
       "src/sfbase/fresh.mbt": 1,
       "src/sfbase/viewer_tree.mbt": 16,
       "src/sfdesk/chats.mbt": 1,
-      "src/sfdesk/context_menu.mbt": 1,
       "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/tape_view.mbt": 3,
       "src/sfpages/search.mbt": 2

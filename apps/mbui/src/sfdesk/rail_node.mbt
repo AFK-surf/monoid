@@ -766,11 +766,19 @@ fn rail_transfers_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : (
   })
   |> ignore
   key.laid_nowhere(By(fn() { coming(src, ws()).none() })) |> ignore
+  // (its list: put up beside it as it is opened, closed as it is shut or once there is none: transfers.mbt
+  // rail_transfers_list)
+  key.reacts(fn() { (ftransfers.open.get(), coming(src, ws()).none()) }, fn(_) {
+    match @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) {
+      Some(w) => rail_transfers_list(src, w)
+      None => ()
+    }
+  })
 }
 
 ///|
 /// The key of what comes and goes as it is made (rail_transfers_node), and where it was as its list was opened from it:
-/// where the list opens beside (rail_overlays).
+/// where the list opens beside (rail_transfers_list).
 // kept across runs: let go with its node
 let rail_transfers_key : Ref[@view.View?] = Ref(None)
 

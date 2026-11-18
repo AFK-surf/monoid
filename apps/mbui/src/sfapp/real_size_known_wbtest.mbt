@@ -5,6 +5,12 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-18: what opens over the wide frame made as nodes of the window's tree (sfdesk overlays_node), what
+// the old view built of it before now made and laid out in the tree's count: 待处理 open beside the bell
+// (home-shared-bell) its rows, every one the core lists (the 小屏 sheet's nodes, attention_rows_node), the rail's menu
+// (rail-menu) its rows, and every wide screen the closed menus' and panel's few nodes (the files' and the places'
+// screens, a tenth under their bars before it, over it now).
+
 // Raised once, 2026-11-17: 小屏 Home's list no longer opens under what is left up long (moved into 待处理, sfdesk
 // open_jobs.mbt, its bell lit by the viewer's own): the chats' rows take the screen those groups took, so Home's opening,
 // and each screen that opens over Home, makes, lays out and measures the rows of a screen more of chats (what each row
@@ -501,7 +507,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide home": (1222, 822, 71),
   "wide home-bars": (1222, 822, 71),
   "wide home-jobs": (1222, 822, 71),
-  "wide home-shared-bell": (1222, 822, 71),
+  "wide home-shared-bell": (3096, 2408, 358),
   "wide home-sheet": (1222, 822, 71),
   "wide home-news": (1222, 822, 71),
   "wide home-station-updates": (1222, 822, 71),
@@ -510,11 +516,11 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide station-updates-app": (1284, 877, 79),
   "wide new-workspace": (1275, 868, 78),
   "wide new-workspace-code": (1284, 875, 81),
-  "wide rail-menu": (1222, 822, 71),
+  "wide rail-menu": (1300, 869, 80),
   "wide landing": (56, 35, 5),
   "wide landing-invited": (58, 36, 5),
   "wide blocked": (46, 30, 4),
-  "wide place": (714, 606, 86),
+  "wide place": (791, 613, 86),
   "wide switcher": (1487, 1008, 128),
   "wide switcher-found": (1495, 1010, 125),
   // (raised once, 2026-11-17: ⌘/'s shortcuts made as nodes, as phone keys-dialog above)
@@ -603,13 +609,13 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide history": (1740, 1229, 150),
   "wide history-details": (1740, 1229, 150),
   "wide drive": (927, 783, 114),
-  "wide drive-roots": (723, 606, 86),
+  "wide drive-roots": (797, 613, 86),
   "wide drive-download": (937, 793, 114),
-  "wide drive-empty": (703, 586, 82),
+  "wide drive-empty": (775, 593, 82),
   "wide drive-loading": (877, 715, 111),
   "wide drive-sub": (792, 664, 96),
   "wide drive-upload": (1036, 911, 123),
-  "wide files": (719, 609, 86),
+  "wide files": (796, 616, 86),
   "wide files-add-folder": (987, 830, 126),
   "wide files-clash": (986, 833, 126),
   "wide files-columns": (969, 821, 103),

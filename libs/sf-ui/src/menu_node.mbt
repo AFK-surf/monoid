@@ -619,6 +619,14 @@ fn menu_row_node(
         })
         |> ignore
       }
+      // (what stands at its end beside its item (a place's ＋), pushed there)
+      match extra.end {
+        Some(e) => {
+          into.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+          menu_end_node(into, r, e)
+        }
+        None => ()
+      }
       // (ticked, its check at its end where the menu says so (a chat's 抄送: 左子健's), what it is shown in stretching
       // to the row's end)
       if check_end {
@@ -673,16 +681,66 @@ fn menu_row_node(
 
 ///|
 /// What a row of a menu has besides its item (a pick's choice's): what it is under its words (`note`), what it is at
-/// now at its end (`value`), its own mark (`mark`, as wide as the column).
+/// now at its end (`value`), its own mark (`mark`, as wide as the column), a button of its own at its end (`end`).
 pub(all) struct MenuExtra {
   note : String
   value : String
   mark : ChoiceMark?
+  end : MenuEnd?
 }
 
 ///|
 /// A row with nothing besides its item.
-let menu_no_extra : MenuExtra = { note: "", value: "", mark: None }
+let menu_no_extra : MenuExtra = { note: "", value: "", mark: None, end: None }
+
+///|
+/// A button at the end of a menu's row, beside what choosing the row does (a place's ＋ in the rail's menu, putting it
+/// in the rail where the row goes to it): its icon (`icon`) and what it is read out as (`label`); `press`, what pressing
+/// it does, the row not chosen.
+pub(all) struct MenuEnd {
+  label : String
+  icon : String
+  press : () -> Unit
+}
+
+///|
+/// End `e` of menu row `row` in `into` (its first line): a round button 24 across in the row's capsule end
+/// (menu_row_end), its icon 14, muted, in the words' ink with the hover's ground under the hand; shown while the row
+/// is pointed at or its focus shown, the pointer on it, or always to a finger (which hovers over nothing), faded in and
+/// out from the moment that changes (nav_fade), taking presses only while it shows (@headless.hover_reveal).
+#callsite(autofill(loc))
+fn menu_end_node(into : @view.View, row : @view.View, e : MenuEnd, loc~ : SourceLoc) -> Unit {
+  @headless.button(made_for=loc, into, fn() { e.label }, fn(_) { (e.press)() }, fn(k, _) {
+    style_node(k, fn() { menu_end_box }, in_row=true)
+    let reveal = @headless.hover_reveal(row, k, always=fn() { !pointer_rests() || (row.focused() && row.focus_shown()) })
+    let way = @motion.NodeWay::new(if @signals.untracked(fn() { reveal.shown() }) { 1.0 } else { 0.0 })
+    k.reacts(fn() { reveal.shown() }, at_start=false, fn(on) { way.go(k, if on { 1.0 } else { 0.0 }, nav_fade) })
+    hover_ground_node(k)
+    k.box(fn(i) {
+      i.alpha(By(fn() { way.shown(i) })) |> ignore
+      icon_node(i, e.icon, menu_end_icon, By(fn() {
+        let p = library_theme().p
+        if lit_node(k) {
+          p.text
+        } else {
+          p.muted
+        }
+      }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A menu row's end button (menu_end_node): 24 round, its icon in its middle, in the row's capsule end, concentric
+/// with it (menu_row_end).
+// kept across runs: a value (no field of it changes)
+let menu_end_box : @ui.Style = @ui.css("w=S6 h=S6 radius=Full align=ACenter justify=JCenter").then(menu_row_end)
+
+///|
+let menu_end_icon : Double = 14.0
 
 ///|
 /// A heading among a menu's items: its words (`label()`) as far in as its rows' words

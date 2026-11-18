@@ -1278,8 +1278,8 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
     check_end=true,
     extras=fn(i) {
       match to().0.get(i) {
-        Some(o) => { note: "", value: "", mark: Some(Drawn(if o.via == "feishu" { "feishu" } else { "slack" })) }
-        None => { note: "", value: "", mark: None }
+        Some(o) => { note: "", value: "", mark: Some(Drawn(if o.via == "feishu" { "feishu" } else { "slack" })), end: None }
+        None => { note: "", value: "", mark: None, end: None }
       }
     },
   )
