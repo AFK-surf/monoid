@@ -933,6 +933,8 @@ pub fn keys_rows_node(@view.View, (@view.View) -> Unit) -> Unit
 pub fn kind_icon(String) -> String
 
 
+pub fn labels_across(@view.View, Array[String]) -> Double
+
 pub let lacking : @ui.TextStyle
 
 pub fn language() -> String
@@ -1743,6 +1745,30 @@ pub fn progress_spinner_node(@view.View, () -> Double?, size? : Double, stroke? 
 
 pub let quiet : @ui.TextStyle
 
+pub let quiet_card_corner : Double
+
+pub fn quiet_card_node(@view.View, (@view.View) -> Unit, last? : () -> Bool) -> Unit
+
+pub let quiet_card_style : @ui.Style
+
+pub fn quiet_first_line(@view.View) -> Unit
+
+pub let quiet_row_corner : Double
+
+pub fn quiet_row_dot(Double, Double) -> @ui.Style
+
+pub let quiet_row_label : @ui.TextStyle
+
+pub let quiet_row_middle : @ui.Style
+
+pub fn quiet_row_node(@view.View, () -> String, (@view.View) -> Unit, look? : @ui.Style, press? : () -> Unit) -> @view.View
+
+pub let quiet_row_style : @ui.Style
+
+pub let quiet_row_tile : @ui.Style
+
+pub let quiet_row_top : @ui.Style
+
 pub let quieter : @ui.TextStyle
 
 pub fn quota_chip(@ui.Ctx, @json.Json?, small? : Bool, compact? : Bool, marked? : Bool, key? : String, said? : String) -> Unit
@@ -1844,7 +1870,11 @@ pub let ref_menu_corner : @ui.Radius
 
 pub fn resize_handle(@ui.Ctx, String, Double, min~ : Double, max~ : Double, label~ : String, edge? : @view.Side, press? : String, over? : Bool, active? : Bool) -> Resized
 
+pub let reveal_least : Double
+
 pub let reveal_ms : Double
+
+pub fn reveal_part_node(@view.View, () -> Bool, (@view.View) -> Unit, look? : (@view.View) -> @ui.Style) -> Unit
 
 pub fn ring_shapes(Double, Double, Int64) -> Array[@paint.Shape]
 
@@ -1869,6 +1899,8 @@ pub fn roving_hover_node(RovingHover, @view.View, () -> Bool, () -> Int64, @view
 
 pub fn round_key_node(@view.View, String, () -> String, () -> Unit, side? : Double, icon_size? : Double, ink? : () -> Int64) -> Unit
 
+pub fn row_chevron_node(@view.View) -> Unit
+
 pub let row_corner : Double
 
 pub fn row_corner_keys(@ui.Ctx, () -> Unit) -> Unit
@@ -1886,6 +1918,8 @@ pub let row_key : @ui.Len
 pub let row_key_box : @ui.Style
 
 pub fn row_keys_room(Int32) -> Double
+
+pub fn row_label_node(@view.View, String, () -> Double) -> Unit
 
 pub fn row_lead_mark(@ui.Ctx, String, color? : Int64) -> Unit
 
@@ -2185,6 +2219,8 @@ pub fn station_mark(@ui.Ctx, String, String, Double, Int64, none? : String, stil
 pub fn station_mark_node(@view.View, () -> String, () -> String, Double, () -> Int64, () -> Int32, visible_only? : Bool) -> Unit
 
 pub fn station_mark_visible(@ui.Ctx, String, String, Double) -> Bool
+
+pub fn stats_card_node(@view.View, () -> Bool, Array[(() -> Bool, (@view.View) -> Unit)]) -> Unit
 
 pub fn status_dot(@ui.Ctx, String) -> Unit
 
