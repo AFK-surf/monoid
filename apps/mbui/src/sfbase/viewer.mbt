@@ -175,6 +175,13 @@ pub(all) struct Viewer {
   sniffed : @signals.Signal[Bool?]
   sniffing : @signals.Signal[Bool]
   bytes : @signals.Signal[Bytes?]
+  /// a chat's big image: what `bytes` holds is its station's preview (`station.file` with `preview`: at most 2048
+  /// across), the image itself read in its place only as it is zoomed into, saved, shared or installed
+  /// (Viewer::whole_due)
+  previewed : @signals.Signal[Bool]
+  /// zoomed in past fitted, as its zoom was last told (viewer_tree.mbt): what asks for the image itself in place of
+  /// its preview
+  zoomed_in : @signals.Signal[Bool]
   fetching : @signals.Signal[Bool]
   /// how much of it has come while it is read whole, and its whole size where the station says it (FileData.progress)
   got : @signals.Signal[(Double, Double?)?]
@@ -1130,6 +1137,8 @@ pub fn new_viewer(
     sniffed: @signals.signal(None),
     sniffing: @signals.signal(false),
     bytes: @signals.signal(None),
+    previewed: @signals.signal(false),
+    zoomed_in: @signals.signal(false),
     fetching: @signals.signal(false),
     got: @signals.signal(None),
     error: @signals.signal(None),
@@ -1729,13 +1738,47 @@ pub fn Viewer::kept_whole(self : Viewer) -> Bool {
 }
 
 ///|
+/// An image this small or smaller is read whole at once: its station makes no preview of it (the core's
+/// drive-kept.ts `PREVIEW_SMALL`).
+pub let preview_small : Double = 300.0 * 1024.0
+
+///|
+/// Whether it is read first as its station's preview: a chat's image over preview_small, not zoomed into nor asked
+/// for (to save, share or install).
+fn Viewer::wants_preview(self : Viewer) -> Bool {
+  self.chat_file() &&
+  self.shown_kind() == Some(KImage) &&
+  self.file.size > preview_small &&
+  !self.asked &&
+  !self.zoomed_in.untracked()
+}
+
+///|
+/// Whether the image itself is to be read in place of the preview it shows: zoomed into, or asked for.
+pub fn Viewer::whole_due(self : Viewer) -> Bool {
+  self.previewed.get() && (self.asked || self.zoomed_in.get())
+}
+
+///|
+/// Its bytes as they are here to be saved, shared or installed: none while what is here is a preview.
+fn Viewer::whole_here(self : Viewer) -> Bytes? {
+  if self.previewed.untracked() {
+    None
+  } else {
+    self.bytes.untracked()
+  }
+}
+
+///|
 /// The whole of it: a chat's in one `station.file`; a drive's a part (4 MB) at a time, as its reader reads.
 pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Json]) -> Unit) -> Unit {
   // (its answer one change, whoever asked (the one shown, or read ahead beside it): what came, or that it failed, told
   // with its no longer being read, never what follows either running between them and asking again)
+  let previewed = Ref(false)
   let done = fn(r) {
     @signals.start_batch()
     self.got.set(None)
+    self.previewed.set(previewed.val)
     done(r)
     @signals.end_batch()
   }
@@ -1757,6 +1800,10 @@ pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Jso
       if self.kept_whole() || self.asked {
         p["from"] = self.opened_from()
       }
+      let preview = self.wants_preview()
+      if preview {
+        p["preview"] = Json::boolean(true)
+      }
       (src.read_going)(
         "station.file",
         Json::object(p),
@@ -1777,7 +1824,10 @@ pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Jso
         },
         fn(r) {
           match r {
-            Ok((_, bytes)) => done(Ok(bytes))
+            Ok((answer, bytes)) => {
+              previewed.val = preview && field(Some(answer), "preview") is Some(True)
+              done(Ok(bytes))
+            }
             Err(e) => done(Err(e))
           }
         },
@@ -1924,7 +1974,9 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
     return
   }
   let want = !v.told_of() || v.asked
-  if want && !v.file.path.has_prefix("draft:") && v.bytes.get() is None && !v.fetching.get() && v.error.get() is None &&
+  // (a preview shown: the image itself once it is zoomed into or asked for, the preview shown till it comes)
+  if want && !v.file.path.has_prefix("draft:") && (v.bytes.get() is None || v.whole_due()) && !v.fetching.get() &&
+    v.error.get() is None &&
     (v.kind is Some(_) || v.sniffed.get() is Some(_)) {
     v.fetching.set(true)
     v.read_whole(src, fn(r) {
@@ -1936,7 +1988,8 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
           )
           v.took_whole(src, bytes)
           v.bytes.set(Some(bytes))
-          if !v.named {
+          // (a preview is not what a viewer opened again shows at once: the core answers it from the device)
+          if !v.named && !v.previewed.untracked() {
             keep_read(v.id(), bytes)
           }
         }
@@ -2416,7 +2469,8 @@ pub let surface2_dark : Int64 = 0x2C2D31FFL
 /// failure, 无法安装：…. Asked by a node of the window's tree (its press, its bytes come: viewer_tree.mbt), as that is
 /// done, once.
 pub fn Viewer::ask_install(self : Viewer) -> Unit {
-  match self.bytes.get() {
+  self.bytes.get() |> ignore
+  match self.whole_here() {
     Some(b) => @ui.install_package(self.file.name, b)
     None => {
       self.error.set(None)
@@ -2433,7 +2487,8 @@ pub fn Viewer::ask_install(self : Viewer) -> Unit {
 /// (downloads.mbt): on by itself whatever becomes of this viewer, how far it has come said here and on its message,
 /// kept once it is all here; a drive's is fetched first.
 pub fn Viewer::ask_save(self : Viewer, c : @ui.Ctx) -> Unit {
-  match self.bytes.get() {
+  self.bytes.get() |> ignore
+  match self.whole_here() {
     // kept as keep_way_of says, said once the host has answered (keep.mbt)
     Some(b) => keep_bytes(c, self.file.name, self.mime, b)
     None => self.ask_whole()
@@ -2453,7 +2508,7 @@ pub fn shares_out() -> Bool {
 /// told of (as Viewer::ask_install's, then handed on as it comes: share_after); 本机没有可打开此文件的应用 when
 /// nothing takes it.
 pub fn Viewer::ask_share(self : Viewer) -> Unit {
-  match self.bytes.untracked() {
+  match self.whole_here() {
     Some(b) => if !@ui.share("", self.file.name, self.mime, b) { toast_later(@sf.t("android-misc.drive.noApp")) }
     None => {
       self.error.set(None)
@@ -2467,7 +2522,7 @@ pub fn Viewer::ask_share(self : Viewer) -> Unit {
 ///|
 /// What was asked to be shared before it was here, handed on as its whole comes, once (Viewer::ask_share).
 pub fn Viewer::share_came(self : Viewer) -> Unit {
-  if self.share_after && self.bytes.untracked() is Some(_) {
+  if self.share_after && self.whole_here() is Some(_) {
     self.share_after = false
     self.ask_share()
   }
@@ -2477,7 +2532,8 @@ pub fn Viewer::share_came(self : Viewer) -> Unit {
 /// 下载 pressed on a node of the window's tree (a tab's tools beside a chat: viewer_tab.mbt), outside any build: as
 /// Viewer::ask_save, what is here handed to the host at once (keep_now).
 pub fn Viewer::save_now(self : Viewer) -> Unit {
-  match self.bytes.get() {
+  self.bytes.get() |> ignore
+  match self.whole_here() {
     Some(b) => keep_now(self.file.name, self.mime, b)
     None => self.ask_whole()
   }
@@ -2817,7 +2873,8 @@ fn Viewer::image_name(self : Viewer) -> String {
 /// opened and read is never missing where its message shows it.
 fn Viewer::took_whole(self : Viewer, src : Source, b : Bytes) -> Unit {
   guard self.chat_file() && self.shown_kind() == Some(KImage) && b.length() > 0 else { return }
-  if self.image == "" {
+  // (the image itself after its preview: put in the preview's picture's place, the same name)
+  if self.image == "" || self.bytes.untracked() is Some(_) {
     self.image = self.image_name()
     @ui.add_image(self.image, b)
   }
@@ -2875,7 +2932,9 @@ pub fn Viewer::read_near(self : Viewer, src : Source, before : Viewer?, after : 
               Ok(b) => {
                 n.took_whole(src, b)
                 n.bytes.set(Some(b))
-                keep_read(n.id(), b)
+                if !n.previewed.untracked() {
+                  keep_read(n.id(), b)
+                }
               }
               Err(_) => n.error.set(Some(""))
             }

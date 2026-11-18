@@ -557,9 +557,9 @@ pub fn viewer_tab_node(
   })
   // 下载 asked: a chat's file's download said to the core at that change; what was asked before it was here saved, or
   // installed, as its whole comes; each once
-  q.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_)) }, fn(_) {
+  q.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_), vw.previewed.get()) }, fn(_) {
     download_told(src, vw)
-    if vw.bytes.untracked() is Some(_) {
+    if vw.whole_here() is Some(_) {
       if vw.save_after {
         vw.save_after = false
         vw.save_now()

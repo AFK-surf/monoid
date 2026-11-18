@@ -5,7 +5,7 @@
 // here with the same pixels).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -19,7 +19,7 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { Hub } from "../src/sessions/hub.ts";
 import { sizeOf } from "../src/sessions/image-size.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
-import { SMALL, dir, idOf, keep, kept, thumbnail, wanted } from "../src/drive/thumbs.ts";
+import { SMALL, dir, idOf, keep, kept, preview, thumbnail, wanted } from "../src/drive/thumbs.ts";
 import { Store } from "../src/store/store.ts";
 import type { Attachment } from "../src/store/rows.ts";
 import { FakeDriver } from "./hub-fakes.ts";
@@ -32,8 +32,9 @@ const golden = JSON.parse(readFileSync(join(fixtures, "golden.json"), "utf8")) a
 >;
 const codecs = loadMesh();
 
-/// A PNG of `w`×`h` pixels, RGB or RGBA (what `pixel` gives), unfiltered.
-function png(w: number, h: number, pixel: (x: number, y: number) => number[]): Buffer {
+/// A PNG of `w`×`h` pixels, RGB or RGBA (what `pixel` gives), unfiltered; `level`, its deflate's (0: stored, as large
+/// as a screenshot a careless program wrote).
+function png(w: number, h: number, pixel: (x: number, y: number) => number[], level = 6): Buffer {
   const channels = pixel(0, 0).length;
   const raw = Buffer.alloc(h * (1 + w * channels));
   let at = 0;
@@ -54,7 +55,7 @@ function png(w: number, h: number, pixel: (x: number, y: number) => number[]): B
   ihdr.writeUInt32BE(h, 4);
   ihdr[8] = 8;
   ihdr[9] = channels === 4 ? 6 : 2;
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw, { level })), chunk("IEND", Buffer.alloc(0))]);
 }
 
 /// thumbs.rs's tests' `noisy`.
@@ -73,6 +74,11 @@ function testImages(into: string) {
   writeFileSync(join(into, "notes.txt"), "hi");
   for (const name of ["photo.jpg", "photo-small.jpg", "icon.webp", "wide.webp"]) copyFileSync(join(fixtures, name), join(into, name));
 }
+
+/// What the whole-window viewer is shown before an image itself (thumbs.rs `preview`): a photo, smooth and large; a
+/// screenshot, few colours with sharp edges, stored as it came.
+const photo = () => png(4000, 3000, (x, y) => [x >> 4, y >> 4, (x * y) >> 12]);
+const screenshot = () => png(1000, 600, (x, y) => (((x >> 1) ^ (y >> 1)) % 7 < 2 ? [0, 90, 200] : [255, 255, 255]), 0);
 
 /// thumbhash's `thumb_hash_to_approximate_aspect_ratio`.
 function aspect(hash: Buffer): number {
@@ -150,6 +156,76 @@ test("leaves small images and others alone", async () => {
     // Without the codecs, every image is shown itself.
     writeFileSync(join(tmp, "shot.png"), noisy(400, 400));
     assert.equal(await thumbnail(join(tmp, "shot.png"), thumbs, null), null);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a preview of a big photo: at most 2048 across, a JPEG at half the image or less, made once", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "thumbs-"));
+  try {
+    const src = join(tmp, "photo.png");
+    writeFileSync(src, photo());
+    const thumbs = join(tmp, "thumbs");
+    const made = await preview(src, thumbs, codecs);
+    assert.equal(made?.type, "image/jpeg");
+    assert.equal(made.path, join(thumbs, `${idOf(src)}.p.jpg`));
+    assert.deepEqual(sizeOf(readFileSync(made.path)), [2048, 1536]);
+    assert.ok(statSync(made.path).size * 2 <= statSync(src).size);
+    // Kept: asked again, the same file; and beside the thumbnail, not it.
+    const modified = statSync(made.path).mtimeMs;
+    assert.equal((await preview(src, thumbs, codecs))?.path, made.path);
+    assert.equal(statSync(made.path).mtimeMs, modified);
+    assert.equal(await kept(thumbs, idOf(src)), null);
+    assert.deepEqual(sizeOf(readFileSync((await thumbnail(src, thumbs, codecs))!.path)), [720, 540]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a preview of a screenshot under 2048 across: its pixels as they are, a lossless WebP smaller than a JPEG", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "thumbs-"));
+  try {
+    const src = join(tmp, "shot.png");
+    writeFileSync(src, screenshot());
+    const made = await preview(src, join(tmp, "thumbs"), codecs);
+    assert.equal(made?.type, "image/webp");
+    assert.equal(made.path, join(tmp, "thumbs", `${idOf(src)}.p.webp`));
+    // Never made larger; VP8L, lossless.
+    const bytes = readFileSync(made.path);
+    assert.deepEqual(sizeOf(bytes), [1000, 600]);
+    assert.equal(bytes.toString("latin1", 12, 16), "VP8L");
+    assert.ok(bytes.length * 2 <= statSync(src).size);
+    assert.equal((await preview(src, join(tmp, "thumbs"), codecs))?.path, made.path);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("no preview of an image of 300 KiB or less, or of one no copy halves", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "thumbs-"));
+  try {
+    const thumbs = join(tmp, "thumbs");
+    // Large to look at, small to read: read whole at once.
+    const flat = png(3000, 2000, (x, y) => (((x >> 6) + (y >> 6)) % 2 ? [255, 255, 255] : [20, 20, 20]));
+    assert.ok(flat.length <= 300 * 1024);
+    writeFileSync(join(tmp, "flat.png"), flat);
+    assert.equal(await preview(join(tmp, "flat.png"), thumbs, codecs), null);
+    // Over 300 KiB, but within 2048 and dense: no copy comes to half of it.
+    const dense = noisy(1200, 800);
+    assert.ok(dense.length > 300 * 1024);
+    writeFileSync(join(tmp, "dense.png"), dense);
+    assert.equal(await preview(join(tmp, "dense.png"), thumbs, codecs), null);
+    // Nothing kept of either, and so asked again it is made again and not found.
+    assert.deepEqual(existsSync(thumbs) ? readdirSync(thumbs) : [], []);
+    // Not an image by name, unreadable, missing, or no codecs: none.
+    writeFileSync(join(tmp, "moving.gif"), Buffer.alloc(400 * 1024));
+    assert.equal(await preview(join(tmp, "moving.gif"), thumbs, codecs), null);
+    writeFileSync(join(tmp, "broken.png"), Buffer.alloc(400 * 1024, 7));
+    assert.equal(await preview(join(tmp, "broken.png"), thumbs, codecs), null);
+    assert.equal(await preview(join(tmp, "missing.png"), thumbs, codecs), null);
+    writeFileSync(join(tmp, "photo.png"), photo());
+    assert.equal(await preview(join(tmp, "photo.png"), thumbs, null), null);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -257,6 +333,22 @@ test("the files route and a message give what the Rust station gives", async () 
     }
     // Small, other or unreadable images get none.
     for (const name of names.filter((n) => golden[n]!.thumbnail === null)) assert.equal(await kept(thumbs, idOf(join(uploads, name))), null, name);
+
+    // thumb=2: an image's preview where it has one, else the image itself (which a station from before answers too:
+    // a core tells them apart by the bytes, the image's size).
+    writeFileSync(join(uploads, "big.png"), photo());
+    const preview2 = async (name: string) => {
+      const a = await ask("GET", `/sessions/${encodeURIComponent(made.key)}/files`, "", [["name", name], ["thumb", "2"]]);
+      assert.equal(a.status, 200, name);
+      return [a.headers["content-type"], a.body as Buffer] as const;
+    };
+    const [type, body] = await preview2("big.png");
+    assert.equal(type, "image/jpeg");
+    assert.deepEqual(sizeOf(body), [2048, 1536]);
+    assert.ok(body.length * 2 <= statSync(join(uploads, "big.png")).size);
+    for (const name of ["shot.png", "photo.jpg", "moving.gif", "notes.txt"]) {
+      assert.equal(sha256((await preview2(name))[1]), sha256(readFileSync(join(uploads, name))), `${name}: the file itself`);
+    }
   } finally {
     await hub.shutdown();
     await jobs.shutdown();

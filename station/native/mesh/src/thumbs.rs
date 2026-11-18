@@ -19,6 +19,27 @@ const MAX_H: u32 = 600;
 /// An image already this small is shown itself.
 const SMALL: u64 = 24 * 1024;
 
+/// What the whole-window viewer shows before the image itself (`preview`): as large as a screen shows it whole, at most
+/// this across either way; the image itself only to zoom in, save or share.
+const PREVIEW_MAX: u32 = 2048;
+/// An image this small is read whole there at once.
+const PREVIEW_SMALL: u64 = 300 * 1024;
+
+/// A smaller copy of an image: how large at most, which name beside its id, how much smaller it must come out to be
+/// kept (bytes × `of` below the image's), and whether a lossless WebP is tried too (kept where it is the smaller).
+struct Size {
+    max_w: u32,
+    max_h: u32,
+    suffix: &'static str,
+    of: u64,
+    lossless: bool,
+}
+const THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, suffix: "", of: 1, lossless: false };
+/// Kept only at half the image or less: anything more saves too little of the wait to be worth a second read. A
+/// screenshot of text is often smaller as a lossless WebP than as a JPEG, and then has every edge as it was; a photo
+/// is the JPEG. (Not a lossy WebP: the `image` crate writes none, and the app's own decoder reads only lossless ones.)
+const PREVIEW: Size = Size { max_w: PREVIEW_MAX, max_h: PREVIEW_MAX, suffix: ".p", of: 2, lossless: true };
+
 /// Whether a file is an image a thumbnail is made for (a GIF would lose its motion).
 fn wanted(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -36,15 +57,30 @@ fn thumbnail_of(image: &Path, dir: &Path) -> Option<(PathBuf, &'static str)> {
         return None;
     }
     let id = id_of(image);
-    kept(dir, &id).or_else(|| make(decode(image)?, len, dir, &id))
+    kept(dir, &id, &THUMB).or_else(|| make(decode(image)?, len, dir, &id, &THUMB))
+}
+
+/// thumbs.rs `preview`: as `thumbnail`, at PREVIEW, for an image over PREVIEW_SMALL.
+fn preview_of(image: &Path, dir: &Path) -> Option<(PathBuf, &'static str)> {
+    let name = image.file_name()?.to_str()?;
+    if !wanted(name) {
+        return None;
+    }
+    let len = std::fs::metadata(image).ok()?.len();
+    if len <= PREVIEW_SMALL {
+        return None;
+    }
+    let id = id_of(image);
+    kept(dir, &id, &PREVIEW).or_else(|| make(decode(image)?, len, dir, &id, &PREVIEW))
 }
 
 fn id_of(image: &Path) -> String {
     hex::encode(&Sha256::digest(image.to_string_lossy().as_bytes())[..16])
 }
 
-fn kept(dir: &Path, id: &str) -> Option<(PathBuf, &'static str)> {
-    [("jpg", "image/jpeg"), ("png", "image/png")].into_iter().map(|(ext, kind)| (dir.join(format!("{id}.{ext}")), kind)).find(|(path, _)| path.is_file())
+fn kept(dir: &Path, id: &str, size: &Size) -> Option<(PathBuf, &'static str)> {
+    let suffix = size.suffix;
+    [("jpg", "image/jpeg"), ("png", "image/png"), ("webp", "image/webp")].into_iter().map(|(ext, kind)| (dir.join(format!("{id}{suffix}.{ext}")), kind)).find(|(path, _)| path.is_file())
 }
 
 /// The image as it is seen: turned as its camera says (a photo's EXIF), which a copy without that note must do itself.
@@ -58,20 +94,27 @@ fn decode(image: &Path) -> Option<DynamicImage> {
     Some(decoded)
 }
 
-fn make(decoded: DynamicImage, len: u64, dir: &Path, id: &str) -> Option<(PathBuf, &'static str)> {
-    // Resampled with care: most are screenshots of text, which a quick filter leaves jagged.
-    let small = if decoded.width() > MAX_W || decoded.height() > MAX_H { decoded.resize(MAX_W, MAX_H, FilterType::CatmullRom) } else { decoded };
+fn make(decoded: DynamicImage, len: u64, dir: &Path, id: &str, size: &Size) -> Option<(PathBuf, &'static str)> {
+    // Resampled with care: most are screenshots of text, which a quick filter leaves jagged. Never made larger.
+    let (max_w, max_h) = (size.max_w, size.max_h);
+    let small = if decoded.width() > max_w || decoded.height() > max_h { decoded.resize(max_w, max_h, FilterType::CatmullRom) } else { decoded };
     // Clear parts stay clear (PNG); anything else is a photo or a screenshot, smallest as JPEG.
     let clear = small.color().has_alpha() && small.to_rgba8().pixels().any(|p| p.0[3] < 255);
-    let (ext, kind, bytes) = if clear { ("png", "image/png", png(&small)?) } else { ("jpg", "image/jpeg", jpeg(&small)?) };
-    // No smaller than the image itself: it is shown as it is.
-    if bytes.len() as u64 >= len {
+    let (mut ext, mut kind, mut bytes) = if clear { ("png", "image/png", png(&small)?) } else { ("jpg", "image/jpeg", jpeg(&small)?) };
+    if size.lossless
+        && let Some(exact) = webp(&small, clear).filter(|exact| exact.len() < bytes.len())
+    {
+        (ext, kind, bytes) = ("webp", "image/webp", exact);
+    }
+    // No smaller than the image itself (a preview: than half of it): it is shown as it is.
+    if bytes.len() as u64 * size.of >= len {
         return None;
     }
     std::fs::create_dir_all(dir).ok()?;
-    let path = dir.join(format!("{id}.{ext}"));
+    let suffix = size.suffix;
+    let path = dir.join(format!("{id}{suffix}.{ext}"));
     // Written whole before it is there to be read.
-    let partial = dir.join(format!("{id}.{ext}.part"));
+    let partial = dir.join(format!("{id}{suffix}.{ext}.part"));
     std::fs::write(&partial, bytes).ok()?;
     std::fs::rename(&partial, &path).ok()?;
     Some((path, kind))
@@ -81,6 +124,14 @@ fn png(image: &DynamicImage) -> Option<Vec<u8>> {
     let mut out = Cursor::new(Vec::new());
     image.write_to(&mut out, ImageFormat::Png).ok()?;
     Some(out.into_inner())
+}
+
+/// Lossless: every pixel as it is (with its clear parts when it has them).
+fn webp(image: &DynamicImage, clear: bool) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
+    if clear { image.to_rgba8().write_with_encoder(encoder).ok()? } else { image.to_rgb8().write_with_encoder(encoder).ok()? }
+    Some(out)
 }
 
 /// Quality high enough that small text keeps its edges.
@@ -100,7 +151,7 @@ fn hash(image: &DynamicImage) -> String {
 #[napi(object)]
 pub struct Thumbnail {
     pub path: String,
-    /// Its content type: image/jpeg, or image/png for one with clear parts.
+    /// Its content type: image/jpeg, or image/png for one with clear parts (a preview: image/webp where that is smaller).
     #[napi(js_name = "type")]
     pub kind: String,
 }
@@ -110,6 +161,16 @@ pub struct Thumbnail {
 #[napi]
 pub async fn thumbnail(image: String, dir: String) -> Option<Thumbnail> {
     let found = tokio::task::spawn_blocking(move || thumbnail_of(Path::new(&image), Path::new(&dir))).await.ok().flatten()?;
+    Some(Thumbnail { path: found.0.to_string_lossy().into_owned(), kind: found.1.to_string() })
+}
+
+/// thumbs.rs `preview`: the image's preview in `dir` (`<id>.p.jpg`, `.p.png` with clear parts, or a lossless `.p.webp`
+/// where that is smaller) and its type, made if it is not there yet: at most 2048 across either way, never made larger;
+/// null when the image itself is shown (not a png/jpg/jpeg/webp by its name, 300 KiB or less, not readable as an image,
+/// or no copy at half its bytes or less).
+#[napi]
+pub async fn preview(image: String, dir: String) -> Option<Thumbnail> {
+    let found = tokio::task::spawn_blocking(move || preview_of(Path::new(&image), Path::new(&dir))).await.ok().flatten()?;
     Some(Thumbnail { path: found.0.to_string_lossy().into_owned(), kind: found.1.to_string() })
 }
 
@@ -135,8 +196,8 @@ pub async fn thumbhash(image: String, dir: Option<String>) -> Option<Hashed> {
         if let Some(dir) = dir.filter(|_| len > SMALL) {
             let (dir, id) = (PathBuf::from(dir), id_of(&path));
             std::thread::spawn(move || {
-                if kept(&dir, &id).is_none() {
-                    let _ = make(decoded, len, &dir, &id);
+                if kept(&dir, &id, &THUMB).is_none() {
+                    let _ = make(decoded, len, &dir, &id, &THUMB);
                 }
             });
         }
