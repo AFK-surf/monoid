@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [855e7eb76](https://github.com/AFK-surf/monoid/commit/855e7eb76d16328411aa3049bb80511fd5785cc1) fix(mbui): a node shaken by ShakeWay is no jolt al | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.55 | 63.49 | 96.8 | 114.79 |
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
 | [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
 | [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.58 | 63.66 | 96.75 | 123.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
 | [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
 | [53ebc9dfa](https://github.com/AFK-surf/monoid/commit/53ebc9dfa53e06ffd6a9cf614766b2f4e8daa895) Port AndroidLiquidGlass and refine glass controls | 2.54 | 3.42 | 13.99 | 35.91 | 53.81 | 31.48 | 63.36 | 96.52 | 123.09 |
-| [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [855e7eb76](https://github.com/AFK-surf/monoid/commit/855e7eb76d16328411aa3049bb80511fd5785cc1) fix(mbui): a node shaken by ShakeWay is no jolt al | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.87 |
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.71 |
 | [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
 | [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
 | [53ebc9dfa](https://github.com/AFK-surf/monoid/commit/53ebc9dfa53e06ffd6a9cf614766b2f4e8daa895) Port AndroidLiquidGlass and refine glass controls | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
-| [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
