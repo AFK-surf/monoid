@@ -634,8 +634,17 @@ pub fn Accounts::hub_config(self : Accounts) -> HubConfig {
 }
 
 ///|
+/// Only the profile asked is made: `health` asks it once a profile, and a view goes through every profile's health
+/// (and `health_of` each other's too), so making all of them each time made the overview cubic in the profiles
+/// (21 profiles held a station's thread at 100%). A profile is made of its own entry alone, its id `js_string` of
+/// the entry's, as `hub_config` makes each.
 fn Accounts::profile(self : Accounts, id : String) -> Profile? {
-  self.profiles().iter().find_first(p => p.id == id)
+  for p in jitems(self.config_raw.get("profiles")) {
+    if js_string(p.get("id")) == id {
+      return Some(profile_of(p, self.given.data, id => self.found(id)))
+    }
+  }
+  None
 }
 
 ///|
