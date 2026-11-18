@@ -40,7 +40,7 @@ fn uprobe_end(t : @ui.Tester, tag : String) -> Unit {
 fn uprobe_open() -> @ui.Tester {
   new_run()
   let src = fixture("home")
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=1)
   bars_picked.set(Some(([kept_bar], 0)))
   t.run_for(kept_switch_over_ms)
   kept_go(t, "usage", true)
@@ -158,7 +158,7 @@ test "usage probe: the filtered view answered late" {
       let answer = base.topic(name, params).get().snapshot()
       if name == "usage" && params.get("only") is Some(_) && pending.get() { { ..answer, value: None } } else { answer }
     } }
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=1)
     bars_picked.set(Some(([kept_bar], 0)))
     t.run_for(kept_switch_over_ms)
     kept_go(t, "usage", true)
@@ -190,7 +190,7 @@ test "usage probe: answered mid-way" {
       let answer = base.topic(name, params).get().snapshot()
       if name == "usage" && params.get("only") is Some(_) && pending.get() { { ..answer, value: None } } else { answer }
     } }
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=1)
     bars_picked.set(Some(([kept_bar], 0)))
     t.run_for(kept_switch_over_ms)
     kept_go(t, "usage", true)
