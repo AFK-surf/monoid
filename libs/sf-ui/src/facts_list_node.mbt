@@ -106,7 +106,7 @@ let fact_cell : @ui.Style = @ui.css("row align=ACenter")
 ///|
 /// Its value's: what is left of the row (as narrow as it must be), what it holds across its middle.
 // kept across runs: a value (no field of it changes)
-let fact_value : @ui.Style = @ui.style(row=true, w=grow, min_w=Fixed(0.0), align=ACenter)
+let fact_value : @ui.Style = @ui.style(row=true, w=grow, min_w=S0, align=ACenter)
 
 ///|
 // kept across runs: a value (no field of it changes)

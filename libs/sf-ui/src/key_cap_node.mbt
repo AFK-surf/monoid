@@ -113,7 +113,7 @@ pub fn key_cap_node(
     if steals_focus {
       focus_ring_node(v)
     }
-    key_cap_look(v, cap, icon, look, width, height, primary, is_held, pressed)
+    key_cap_look(v, cap, icon, look, width, height, primary, is_held, pressed, loc~)
     if felt is Some(h) {
       v.reacts(fn() { v.pressed() }, fn(down) {
         if down {
@@ -149,6 +149,7 @@ fn key_cap_look(
   primary : Bool,
   held : () -> Bool,
   pressed : () -> Bool,
+  loc~ : SourceLoc,
 ) -> Unit {
   let solid = fn() { primary || held() }
   match look {
@@ -185,7 +186,7 @@ fn key_cap_look(
       if icon != "" {
         icon_node(v, icon, key_mark_size, By(ink)) |> ignore
       } else {
-        v.box(fn(w) {
+        v.box(made_for=loc, fn(w) {
           w
           .words(Is(cap))
           .words_look(By(fn() { @ui.style_words(key_tile_words) }))

@@ -36,7 +36,7 @@ pub fn step_circle_node(
   let circle = fn(at : @view.View) {
     at.box(made_for=loc, fn(c) {
       made.val = Some(c)
-      step_circle_look(c, n, look)
+      step_circle_look(c, n, look, loc~)
     })
     |> ignore
   }
@@ -62,13 +62,13 @@ pub fn step_circle_button_node(
 ) -> @view.View {
   @headless.button(made_for=loc, parent, label, press, fn(c, _) {
     focus_ring_node(c)
-    step_circle_look(c, n, look)
+    step_circle_look(c, n, look, loc~)
   })
 }
 
 ///|
 /// What a step's circle `c` is drawn as (step_circle_node's), its number `n()` as `look` has it.
-fn step_circle_look(c : @view.View, n : () -> String, look : StepLook) -> Unit {
+fn step_circle_look(c : @view.View, n : () -> String, look : StepLook, loc~ : SourceLoc) -> Unit {
   match look {
     Step => {
       style_node(c, fn() { step_circle })
@@ -77,7 +77,7 @@ fn step_circle_look(c : @view.View, n : () -> String, look : StepLook) -> Unit {
     Pin => {
       style_node(c, fn() { step_pin })
       c.shadow(Is((pin_raised.sigma, pin_raised.dy, pin_raised.color))) |> ignore
-      c.box(fn(i) {
+      c.box(made_for=loc, fn(i) {
         style_node(i, fn() { step_pin_in })
         mark_words_node(i, n, fn() { step_pin_words }) |> ignore
       })

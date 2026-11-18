@@ -26,15 +26,17 @@ test "a key that repeats: held, pressed at 400 ms and every 45 ms after; let go 
     |> ignore
   })
   let (x, y) = t.find("←").unwrap()
+  // (a millisecond either side of the hold's moment, then two repeats' worth past it)
+  let a_ms = 1.0
   t.press_at(x, y)
-  t.run_for(399.0)
+  t.run_for(key_repeat_after - a_ms)
   let before = pressed.val
-  t.run_for(2.0)
+  t.run_for(a_ms * 2.0)
   let at_hold = pressed.val
-  t.run_for(90.0)
+  t.run_for(key_repeat_every * 2.0)
   let after = pressed.val
   t.release(x, y)
-  t.run_for(200.0)
+  t.run_for(key_repeat_every * 4.0)
   assert_eq((before, at_hold, after, pressed.val), (0, 1, 3, 3))
   // (a tap: pressed once)
   t.click(Button, label="左")
