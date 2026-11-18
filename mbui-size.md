@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [67b858b04](https://github.com/AFK-surf/monoid/commit/67b858b044a40f7bf29ba899194293c609b59e78) fix(lock): vault gate, refused statements and adb  | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 122.22 |
 | [2e7b5df70](https://github.com/AFK-surf/monoid/commit/2e7b5df7029d1b3564d404ab5d1b69d4301ffbcb) perf(mbui): the composer's placeholder fades by it | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 115.44 |
 | [578a45fe4](https://github.com/AFK-surf/monoid/commit/578a45fe4e650c946d00c0081a40e7b8a6b301a6) feat(mbui): move the wide frame's overlays onto th | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 106 |
 | [0218efe31](https://github.com/AFK-surf/monoid/commit/0218efe3185f5810e93f2d33a36a27a8c3bd464f) fix(station): keep local tools out of profile prox | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33815598f](https://github.com/AFK-surf/monoid/commit/33815598fcddcaa323fa0367afb4e3849a636178) mbui app: a chat's composer made as nodes, whole ( | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.54 | 117.45 |
 | [7c3c797b7](https://github.com/AFK-surf/monoid/commit/7c3c797b72fdc40941ae12bec151b4d7cc83d199) fix(mbui): pick a preset's model on the composer's | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.52 | 63.46 | 96.77 | 117.45 |
 | [3a3bad347](https://github.com/AFK-surf/monoid/commit/3a3bad34737a5401bc21aa71b0b1e3b3de1bde99) fix(station): the front takes a Node's new protoco | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.52 | 63.46 | 96.73 | 117.45 |
-| [3db36a227](https://github.com/AFK-surf/monoid/commit/3db36a227d053592a4b2e1a13fc1476daad9ff67) fix(mbui): background Android test activity via HO | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.51 | 63.46 | 96.75 | 117.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [67b858b04](https://github.com/AFK-surf/monoid/commit/67b858b044a40f7bf29ba899194293c609b59e78) fix(lock): vault gate, refused statements and adb  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 53.92 |
 | [2e7b5df70](https://github.com/AFK-surf/monoid/commit/2e7b5df7029d1b3564d404ab5d1b69d4301ffbcb) perf(mbui): the composer's placeholder fades by it | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 53.92 |
 | [578a45fe4](https://github.com/AFK-surf/monoid/commit/578a45fe4e650c946d00c0081a40e7b8a6b301a6) feat(mbui): move the wide frame's overlays onto th | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
 | [0218efe31](https://github.com/AFK-surf/monoid/commit/0218efe3185f5810e93f2d33a36a27a8c3bd464f) fix(station): keep local tools out of profile prox | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33815598f](https://github.com/AFK-surf/monoid/commit/33815598fcddcaa323fa0367afb4e3849a636178) mbui app: a chat's composer made as nodes, whole ( | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
 | [7c3c797b7](https://github.com/AFK-surf/monoid/commit/7c3c797b72fdc40941ae12bec151b4d7cc83d199) fix(mbui): pick a preset's model on the composer's | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
 | [3a3bad347](https://github.com/AFK-surf/monoid/commit/3a3bad34737a5401bc21aa71b0b1e3b3de1bde99) fix(station): the front takes a Node's new protoco | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
-| [3db36a227](https://github.com/AFK-surf/monoid/commit/3db36a227d053592a4b2e1a13fc1476daad9ff67) fix(mbui): background Android test activity via HO | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
