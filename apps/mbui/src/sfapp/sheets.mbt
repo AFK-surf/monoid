@@ -66,21 +66,6 @@ let job_dot_side : Double = 8.0
 let job_dot_over : Double = 7.0
 
 ///|
-/// A session's tone (the core's accent | green | blue | red | neutral, format.ts statusText) as the library's dot says
-/// how something stands (@sf.state_dot_node): at work (running, queued) busy; done online; waiting on a person (blocked,
-/// a decision) waiting; failed error; else (idle, aborted) a ring.
-fn tone_state(tone : String) -> String {
-  match tone {
-    "accent" => "busy"
-    "green" => "online"
-    "blue" => "waiting"
-    "red" => "error"
-    "amber" | "warn" => "busy"
-    _ => "offline"
-  }
-}
-
-///|
 /// A chat's or an agent's title row, as wide as it is given.
 // kept across runs: a value (no field of it changes)
 let title_row_whole : @ui.Style = @ui.css("w=Full")
@@ -510,7 +495,7 @@ fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : ()
     row.box(fn(w) {
       @sf.style_node(w, fn() { info_fill }, in_row=true)
       @sf.words_node(w, fn() { text(s(), "agentText") }, fn() { info_agent_name }) |> ignore
-      let since = agent_since_node(w, src, a)
+      let since = @sfpages.agent_since_node(w, src, a)
       @sf.words_node(
         w,
         fn() {
@@ -533,21 +518,6 @@ fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : ()
     chevron_node(row)
   })
   |> ignore
-}
-
-///|
-/// For how long agent `a` (as it is now) has stood where it does (agent_since's), read again in `v` each whole second
-/// while it runs on: at work since its turn began, waiting as long as it has (of at most), else when it was last at it.
-fn agent_since_node(v : @view.View, src : Source, a : () -> Json?) -> () -> String {
-  let tick = @sfpages.agent_card_seconds(v, src, fn() { @sfpages.agent_wait_of(a()) })
-  fn() {
-    tick() |> ignore
-    let av = a()
-    match @sfpages.agent_wait_of(av) {
-      Some(_) => @sfpages.agent_waited_words((src.now)(), av)
-      None => text(field(field(field(av, "session"), "time"), "lastActiveAt"), "ago")
-    }
-  }
 }
 
 ///|
@@ -1015,7 +985,7 @@ fn agent_title_node(h : @view.View, src : Source, r : ChatRef, key : String, a :
     line.box(fn(w) {
       @sf.style_node(w, fn() { agent_title_words }, in_row=true)
       @sf.words_node(w, fn() { text(s(), "agentText") }, fn() { agent_title_name }) |> ignore
-      agent_status_node(w, src, a)
+      @sfpages.agent_status_node(w, src, a)
     })
     |> ignore
     line.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(b) {
