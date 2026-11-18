@@ -7,16 +7,20 @@
 // the test says.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, Queue } from "effect";
 import { CoreError, HostError } from "../src/error.ts";
 import { type Entry, entryHash, next, signedBytes } from "../src/lock.ts";
-import { type Duplex, dialer, PAIR_DIAL_MS, PAIR_DIAL_TRIES, PAIR_REDIAL_MS, personalBegin, personalPairState, personalProve } from "../src/views/pair.ts";
+import { type Duplex, dialer, streamDuplex, PAIR_DIAL_MS, PAIR_DIAL_TRIES, PAIR_REDIAL_MS, personalBegin, personalPairState, personalProve } from "../src/views/pair.ts";
 import { lockSeen, signerOf } from "../src/views/lock.ts";
 import { ME, elsewhere, genesis, pipe, rig } from "./lock-rig.ts";
 import { stationReplies } from "./station-fixture.ts";
 import { pairSession, pakeKeys, pakeStart } from "../src/pair.ts";
 import { hex } from "../src/util.ts";
+import type { IrohConnection, IrohStream } from "../src/iroh.ts";
 const unhex = (h: string) => Uint8Array.from(h.match(/../g) ?? [], (b) => parseInt(b, 16));
+
+/// The mesh's own dial (views/pair.ts `dialer`), before a test puts a line of its own there.
+const meshOpen = dialer.open;
 
 /// The owner's phone and computer, apps that sign: the devices that may approve this one.
 const PHONE_APP = "e1".repeat(32);
@@ -689,4 +693,94 @@ test("the code a trusted device shows typed before its answer reached this devic
   await typed;
   console.log("typed the laptop's code:", JSON.stringify(out));
   assert.deepEqual(Object.keys(out as object), ["ok"], `approved: ${JSON.stringify(out)}`);
+});
+
+/// Two ends of a stream, each what one writes the other reads (null once it finished).
+async function streams(): Promise<[IrohStream, IrohStream]> {
+  const a = await Effect.runPromise(Queue.unbounded<Uint8Array | null>());
+  const b = await Effect.runPromise(Queue.unbounded<Uint8Array | null>());
+  const end = (mine: Queue.Queue<Uint8Array | null>, theirs: Queue.Queue<Uint8Array | null>) =>
+    ({
+      read: () => Queue.take(mine),
+      write: (bytes: Uint8Array) => Effect.sync(() => void Queue.offerUnsafe(theirs, bytes.slice())),
+      finish: () => Effect.sync(() => void Queue.offerUnsafe(theirs, null)),
+      stopped: () => Effect.succeed(null),
+      reset: () => {},
+    }) as unknown as IrohStream;
+  return [end(a, b), end(b, a)];
+}
+
+/// A dial on the mesh's endpoint whose handshake comes through only after PAIR_DIAL_MS (the host's own: it goes on
+/// past the dial given up, and answers with the connection where that came first, iroh.ts `connect`): closed there and
+/// then, never asked for a stream, so the trusted device it reached shows no code of its own for it, the one the next
+/// dial was shown standing. The dial was told it was given up as its time ran out.
+test("a dial whose handshake comes after PAIR_DIAL_MS is closed as it comes: the code the next dial was shown stands and is typed once", async () => {
+  const w = await waiting({});
+  dialer.open = meshOpen;
+  const inner = w.core.inner;
+  const conns: { reason: string | null; streams: number }[] = [];
+  let hellos = 0;
+  let givenUpAt: number | null = null;
+  const connection = (stream: IrohStream | null) => {
+    const c = { reason: null as string | null, streams: 0 };
+    conns.push(c);
+    return {
+      remoteId: () => PHONE_APP,
+      openBi: () => Effect.sync(() => (c.streams++, stream!)),
+      acceptBi: () => Effect.never,
+      openUni: () => Effect.never,
+      close: (_code: number, reason: string) => void (c.reason ??= reason),
+      closeReason: () => (c.reason === null ? null : { kind: "local", reason: c.reason }),
+      closed: () => Effect.never,
+      paths: () => [],
+      stats: () => ({}),
+    } as unknown as IrohConnection;
+  };
+  // The phone as a trusted device answers a stream it is opened on: its code shown, the code typed proved, approved.
+  const serve = (there: IrohStream) =>
+    Effect.gen(function* () {
+      const d = streamDuplex(there, () => {});
+      yield* d.next();
+      hellos++;
+      yield* d.send({ t: "code", workspaces: ["ws"] });
+      const m = (yield* d.next()) as { y: string };
+      const pk = pakeStart(SHOWN[PHONE_APP]!, pairSession(ME, PHONE_APP, ["ws"]), (b) => b.fill(5));
+      const keys = pakeKeys(pk, unhex(m.y), "trusted")!;
+      yield* d.send({ t: "pake", y: hex(pk.share), mac: hex(keys.mine) });
+      const said = (yield* d.next()) as { t: string };
+      yield* d.send(said.t === "confirm" ? { t: "approved", workspaces: ["ws"] } : { t: "wrong", left: 2 });
+    });
+  let dials = 0;
+  const [here, there] = await streams();
+  const endpoint = {
+    connect: (addr: { id: string }, _alpn: Uint8Array, _additional: Uint8Array[], givenUp?: Effect.Effect<void>) =>
+      Effect.suspend(() => {
+        if (addr.id !== PHONE_APP) return Effect.fail(new HostError("not reached"));
+        dials++;
+        if (dials > 1) {
+          inner.runner.fork(Effect.ignore(serve(there)));
+          return Effect.succeed(connection(here));
+        }
+        if (givenUp !== undefined) inner.runner.fork(Effect.andThen(givenUp, Effect.sync(() => void (givenUpAt = w.host.nowMs()))));
+        const came = Deferred.makeUnsafe<IrohConnection>();
+        inner.runner.fork(Effect.andThen(Effect.sleep(PAIR_DIAL_MS + 1_000), Effect.sync(() => void Deferred.doneUnsafe(came, Effect.succeed(connection(null))))));
+        return Deferred.await(came);
+      }),
+  };
+  inner.mesh = () => Effect.succeed({ deviceId: () => ME, sign: () => ({ publicKey: new Uint8Array(32), signature: new Uint8Array(64) }), link: () => Effect.fail(CoreError.plainly("mesh", "this fixture has no station link")), endpoint: () => endpoint } as never);
+  const began = w.host.nowMs();
+  await w.ask("lock.pair", { workspace: "ws" });
+  await w.host.time.pass(PAIR_DIAL_MS + 500);
+  assert.equal(dials, 2, "dialled again as the first ran its time out");
+  assert.equal((await w.pair()).state, "code", "the code shown on the second dial");
+  assert.ok(givenUpAt !== null && givenUpAt - began <= PAIR_DIAL_MS + 100, `the first dial told it was given up (${givenUpAt === null ? "never" : givenUpAt - began} ms)`);
+  await w.host.time.pass(1_000);
+  assert.deepEqual(conns[1], { reason: "done", streams: 0 }, "the first dial's connection, come late, closed as it came");
+  assert.equal(conns[0]!.reason, null, "the second's open");
+  assert.equal(hellos, 1, "the phone was asked once");
+  assert.equal((await w.pair()).state, "code", "its code stands");
+  const done = await w.ask("lock.pairCode", { workspace: "ws", code: SHOWN[PHONE_APP]! });
+  assert.ok(done !== undefined, "approved by the code shown");
+  assert.equal(hellos, 1);
+  assert.equal(dials, 2);
 });

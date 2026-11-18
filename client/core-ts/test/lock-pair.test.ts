@@ -765,16 +765,17 @@ test("a device joins its person's own lock face to face: the code shown on a dev
   };
   const said = await m.run(Effect.andThen(phone.send({ t: "hello", v: 1, workspaces: [], kind: "app", label: "Pixel 8", sign_key: null, personal: { subs: ["s1", "someone-else"], key: KEY } }), phone.next()));
   assert.deepEqual(said, { ok: { t: "code", workspaces: ["person:s1"] } });
-  assert.equal(asked, 1, "the person is asked as the code is shown");
+  assert.equal(asked, 0, "nobody asked as the code is shown");
   const shown = (await m.prompts()).pairing.find((p: { device: string }) => p.device === PHONE);
   assert.match(shown.code, /^[0-9]{6}$/);
   const met2 = { id: ME, d: phone, workspaces: ["person:s1"] };
   const wrong = shown.code === "000000" ? "000001" : "000000";
   assert.deepEqual(await m.run(tryOne(inner, met2, PHONE, wrong)), { ok: { left: PAIR_TRIES - 1 } });
   assert.equal(personal.chain("s1")!.devices.has(KEY), false, "a wrong code lets nobody in");
+  assert.equal(asked, 0, "nor as a code is typed wrong");
   const right = await m.run(tryOne(inner, met2, PHONE, shown.code)) as { ok: { approved: { chains: Record<string, Entry[]> } } };
   assert.equal(personal.chain("s1")!.devices.has(KEY), true);
-  assert.equal(asked, 1, "and not again as it is let in");
+  assert.equal(asked, 1, "asked once, as the code typed right lets it in");
   assert.equal(checkChain(right.ok.approved.chains.s1!, "s1")!.devices.has(KEY), true, "it brings the whole lock to pin");
 });
 

@@ -1323,9 +1323,16 @@ export class PersonalLock {
     });
   }
 
-  /// The key's seed, the person asked, ahead of a code shown here: letting the new device in then asks nothing more.
-  unseal(reason: string): Effect.Effect<Uint8Array, CoreError> {
-    return this.#unseal(reason);
+  /// Their lock begun with nobody asked where an act of theirs on it would begin it (`seedFor`'s `begins`) and this
+  /// device may (`beginQuietly`'s `acted`), ahead of that act: a code shown here goes with its root (views/pair.ts
+  /// `rootsOf`), and the act asks only once the code is proved. Never unseals, never asks; nothing done otherwise.
+  beginForQuietly(sub: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.standing(sub) !== "none" || this.#env.begins?.(sub) !== true || !this.mayBeginQuietly(sub)) return;
+      const read = yield* Effect.result(this.refresh(sub, undefined, this.asked()));
+      if (read._tag === "Failure" || this.standing(sub) !== "none" || !this.mayBeginQuietly(sub)) return;
+      yield* Effect.ignore(this.beginQuietly(sub, true));
+    });
   }
 
   /// The key's seed for an act of the person's own on their lock (`reason` its ask): unsealed where this device is on

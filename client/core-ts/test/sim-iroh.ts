@@ -920,7 +920,7 @@ export class SimNet {
   /// The device's iroh, as a host gives the core.
   iroh(): Iroh {
     return wrapIroh(
-      async (o) => this.#add(new SimEndpoint(this, "device", o.secretKey, o.relayUrls.map(href), o.relayOnly, [], false, o.lookup, o.relayEntries)) as never,
+      async (o) => this.#add(new SimEndpoint(this, "device", o.secretKey, o.relayUrls.map(href), o.relayOnly, o.alpns ?? [], false, o.lookup, o.relayEntries)) as never,
       (b) => b,
     );
   }
