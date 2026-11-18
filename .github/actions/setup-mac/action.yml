@@ -31,6 +31,10 @@ runs:
         echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
         # The targets kept before (target-*, check-*, linux-*): no job reads them now.
         find "$HOME/stillfail-ci" -mindepth 1 -maxdepth 1 -type d \( -name 'target*' -o -name 'check-*' -o -name 'linux*' \) -mmin +240 -exec rm -rf {} + 2>/dev/null || true
+        # The station reader's MBC_STORE (station/mb/build.sh): an entry is <store>/<2 of its key>/<key>, said used as
+        # mbc takes or keeps it (mbc.mbt's c_touch); those unused for 3 days go, the store grew without end before
+        # (a write into it failed on Mini1, 44243874638, 2026-11-18).
+        find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mtime +3 -exec rm -rf {} + 2>/dev/null || true
         # Rust's tests a few at a time: three runners share the machine, and the core's timing tests fail under load.
         echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
         # (Not the station's test files a few at a time (STILLFAIL_NODE_TEST_JOBS, scripts/check.sh): three a check

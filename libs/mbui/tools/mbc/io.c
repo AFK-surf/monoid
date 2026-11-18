@@ -3,6 +3,7 @@
 #if !defined(_WIN32) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE // (memmem)
 #endif
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,15 +71,34 @@ moonbit_bytes_t mbc_read_file(moonbit_bytes_t path) {
 
 int32_t mbc_read_ok(void) { return mbc_file_ok; }
 
+// why the last write or rename that failed did (errno, taken before free() or fclose() can change it): what
+// `cannot write` says, so a disk full (ENOSPC) or a directory taken away is told by the failure itself
+static int mbc_errno;
+
 int32_t mbc_write_file(moonbit_bytes_t path, moonbit_bytes_t data) {
   char *p = cpath(path);
   FILE *f = fopen(p, "wb");
+  int e = errno;
   free(p);
-  if (!f) return 0;
+  if (!f) {
+    mbc_errno = e;
+    return 0;
+  }
   int32_t n = Moonbit_array_length(data);
   size_t put = fwrite(data, 1, (size_t)n, f);
-  int ok = fclose(f) == 0 && (int32_t)put == n;
-  return ok;
+  e = (int32_t)put == n ? 0 : errno;
+  if (fclose(f) != 0 && e == 0) e = errno;
+  if ((int32_t)put != n || e != 0) {
+    mbc_errno = e != 0 ? e : EIO;
+    return 0;
+  }
+  return 1;
+}
+
+// the reason the last failed write or rename gave, as the system words it
+moonbit_bytes_t mbc_last_error(void) {
+  const char *s = mbc_errno != 0 ? strerror(mbc_errno) : "unknown error";
+  return bytes_of(s, strlen(s));
 }
 
 int32_t mbc_rename(moonbit_bytes_t from, moonbit_bytes_t to) {
@@ -88,8 +108,10 @@ int32_t mbc_rename(moonbit_bytes_t from, moonbit_bytes_t to) {
 #else
   int r = rename(a, b);
 #endif
+  int e = errno;
   free(a);
   free(b);
+  if (r != 0) mbc_errno = e;
   return r == 0;
 }
 

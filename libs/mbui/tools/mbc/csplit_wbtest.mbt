@@ -199,6 +199,75 @@ test "data and selected units share compile commands across optimization levels"
 }
 
 ///|
+test "units MBC_LIGHT_KEEP names stay at the program's level in a light program" {
+  let env_name = b"MBC_LIGHT_KEEP"
+  let previous = getenv("MBC_LIGHT_KEEP").unwrap_or(b"")
+  defer ignore(c_setenv(env_name, previous))
+  assert_eq(c_setenv(env_name, b" \t "), 1)
+  assert_false(is_light_keep(b"view_1.c"))
+  assert_eq(c_setenv(env_name, b"  view_\tflex_\n"), 1)
+  assert_true(is_light_keep(b"view_1.c"))
+  assert_true(is_light_keep(b"flex_4.c"))
+  assert_false(is_light_keep(b"page_view_1.c"))
+  let c = prelude_src + "\n" + items_src
+  let (files, _) = sp(c)
+  let kept_unit = utf8(fn_units(files)[0])
+  let dir = tmp_path("light keep")
+  makedirs(dir)
+  defer rmtree(dir)
+  let src = path_join(dir, b"sample.c")
+  let objs = path_join(dir, b"objects")
+  assert_true(write_file(src, utf8(c)))
+  makedirs(objs)
+  let cc = [b"clang"]
+  let flags0 = [b"-O2", b"-Wall"]
+  let flags = [b"-Wall", b"-O0"]
+  let (main_jobs, _) = split_jobs(src, objs, cc, flags0, [], [b"-O0"], false, false)
+  // (the function unit named, then not: at -O2 with nothing behind it, then at -O0 with -O2 tried first)
+  for keep in [kept_unit, b"other_"] {
+    assert_eq(c_setenv(env_name, keep), 1)
+    let (light_jobs, _) = split_jobs(
+      src, objs, cc, flags, [], [b"-O0"], false, false, alt_flags=Some(flags0),
+    )
+    // (without a light program, MBC_LIGHT_KEEP changes nothing)
+    let (plain_jobs, _) = split_jobs(src, objs, cc, flags, [], [b"-O0"], false, false)
+    let mut checked = 0
+    for i, main_job in main_jobs {
+      let name = basename(main_job.src)
+      if name != kept_unit {
+        continue
+      }
+      let job = light_jobs[i]
+      let optimized = compile_args(cc, flags0, main_job.src, main_job.obj, false).0
+      let unoptimized = compile_args(cc, flags, main_job.src, main_job.obj, false).0
+      assert_eq(main_job.argv, optimized)
+      assert_eq(plain_jobs[i].argv, unoptimized)
+      if keep == kept_unit {
+        // at -O2, the store's key main's own
+        assert_eq(job.argv, optimized)
+        assert_eq(job.alt_argv, None)
+      } else {
+        assert_eq(job.argv, unoptimized)
+        assert_eq(job.alt_argv, Some(optimized))
+      }
+      checked += 1
+    }
+    assert_eq(checked, 1)
+  }
+  // (data and init units are never kept, whatever is named)
+  assert_eq(c_setenv(env_name, b"data init"), 1)
+  let (light_jobs, _) = split_jobs(
+    src, objs, cc, flags, [], [b"-O0"], false, false, alt_flags=Some(flags0),
+  )
+  for job in light_jobs {
+    let name = basename(job.src)
+    if is_data(name) || is_init(name) {
+      assert_true(job.alt_argv is Some(_))
+    }
+  }
+}
+
+///|
 test "the store prefers an optimized object and falls back to the light object" {
   let dir = tmp_path("store optimization levels")
   makedirs(dir)

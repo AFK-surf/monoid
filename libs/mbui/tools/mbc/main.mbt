@@ -80,7 +80,7 @@ fn write_if_changed(path : Bytes, data : Bytes) -> Bool {
   }
   let tmp = cat([path, b".tmp"])
   if !write_file(tmp, data) || c_rename(tmp, path) == 0 {
-    die("cannot write \{str(path)}")
+    die("cannot write \{str(path)}: \{write_error()}")
   }
   true
 }
@@ -146,7 +146,7 @@ fn cmd_csplit(args : Array[String]) -> Unit {
   let changed = s.changed
   tick("written")
   match json {
-    Some(j) => if !write_file(utf8(j), manifest_json(s)) { die("cannot write \{j}") }
+    Some(j) => if !write_file(utf8(j), manifest_json(s)) { die("cannot write \{j}: \{write_error()}") }
     None => ()
   }
   let mut ntypes = 0
