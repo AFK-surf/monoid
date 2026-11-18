@@ -166,6 +166,13 @@ pub trait Os {
     fn restart_front(&mut self) -> bool {
         false
     }
+    /// The release's installer `script` started apart from the launcher, told `env` only, as the station's
+    /// platform.startInstaller starts it (its copy in run/ replacing any there, its exit and log beside it): whether it
+    /// started. Asked by a Node whose own start of it did not (`{"installer":…}`), so a station whose program cannot
+    /// start one still updates. None where the platform does not here (Windows' scheduled task is the station's).
+    fn run_installer(&mut self, _script: &str, _env: &[(String, String)]) -> bool {
+        false
+    }
 }
 
 /// A Node and what the launcher knows of it.
@@ -506,6 +513,21 @@ impl<O: Os> Lifecycle<O> {
                     log::info(&format!("what Node {from} held in memory is carried over to Node {}", to.process.pid()));
                 }
                 _ => log::warn(&format!("Node {from} gave what it held with no Node to carry it to")),
+            }
+        } else if let Some(script) = message["installer"]["script"].as_str() {
+            // The Node serving could not start the release's installer (updates.ts `startPlanned`): started here.
+            if slot != Slot::Current {
+                log::warn("a Node not serving asked for the installer to be started; not now");
+                return;
+            }
+            let env: Vec<(String, String)> = message["installer"]["env"]
+                .as_object()
+                .map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect())
+                .unwrap_or_default();
+            if self.os.run_installer(script, &env) {
+                log::info("the station's installer started by the launcher");
+            } else {
+                log::warn("the station's installer not started by the launcher either");
             }
         } else if message["restartFront"] == true {
             if slot == Slot::Current {
@@ -943,6 +965,8 @@ mod tests {
         front_killed: u32,
         /// The fronts ended and started anew as a Node asked (`restart_front`).
         restarted_fronts: u32,
+        /// The installers started as a Node asked (`run_installer`): the script and what it was told.
+        installers: Vec<(String, Vec<(String, String)>)>,
     }
 
     impl Os for Fake {
@@ -990,6 +1014,10 @@ mod tests {
             self.front = if self.front_starts.is_empty() { true } else { self.front_starts.remove(0) };
             self.front
         }
+        fn run_installer(&mut self, script: &str, env: &[(String, String)]) -> bool {
+            self.installers.push((script.to_string(), env.to_vec()));
+            true
+        }
     }
 
     impl Drop for Fake {
@@ -1013,7 +1041,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0 };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, installers: vec![] };
         let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
@@ -1136,6 +1164,16 @@ mod tests {
         station.ended(third, EXITED_0);
         station.pass(s(3600));
         assert_eq!(station.last(), fourth, "once");
+    }
+
+    #[test]
+    fn the_node_serving_that_could_not_start_the_installer_has_the_launcher_start_it_and_no_other_node_does() {
+        let mut station = station("installer", false);
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.said(Slot::Current, json!({"installer": {"script": "/app/bin/install.zh.sh", "env": {"STILLFAIL_DATA": "/d", "N": 1}}}));
+        assert_eq!(station.os.installers, [("/app/bin/install.zh.sh".to_string(), vec![("STILLFAIL_DATA".to_string(), "/d".to_string())])]);
+        station.said(Slot::Next, json!({"installer": {"script": "/x", "env": {}}}));
+        assert_eq!(station.os.installers.len(), 1, "only the Node serving updates the station");
     }
 
     #[test]

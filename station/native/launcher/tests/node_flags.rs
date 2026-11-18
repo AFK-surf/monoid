@@ -19,6 +19,12 @@ fn every_flag_node_goes_by_is_given_by_both_launchers() {
     for flag in &flags {
         let quoted = format!("\"{flag}\"");
         assert!(UNIX.contains(&quoted), "run.rs does not give Node {flag}");
+        // (Windows' installer runs as a scheduled task the station registers, which the launcher does not start: it says
+        // it starts none, and Node asks it for none there)
+        if flag == "--launcher-installer" {
+            assert!(!WINDOWS.contains(&quoted), "run_windows.rs gives Node {flag} with no installer of its own to start");
+            continue;
+        }
         assert!(WINDOWS.contains(&quoted), "run_windows.rs does not give Node {flag}");
     }
 }

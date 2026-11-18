@@ -586,6 +586,7 @@ export const AgentsLive = (control: Control) =>
         // Where its releases are: still.fail cloud's origin, Comma's `/stations` (ControlPlane.releaseBase).
         origin: () => plane.releaseBase(),
         running: () => hub.running(),
+        ...(control.runInstaller ? { launcherInstaller: control.runInstaller } : {}),
       });
       codexIncomplete = () => { void updates.check().catch((error) => log.warn("updates", "Codex installation not checked", { error: String(error) })); };
       updates.start();

@@ -40,6 +40,11 @@ export type Control = {
   /// `restart_front`). Given where the launcher hands down its sockets (Unix's, which keeps a front) and asks for
   /// heartbeats: one from before would take the line for one it does not know, and nothing would be done.
   restartFront?: () => void;
+  /// Asks the launcher to start the release's installer `script`, told `env`, as platform.startInstaller would, where
+  /// this process could not (updates.ts `startPlanned`): the launcher, which changes seldom, is the station's way to
+  /// update when the station's own start of the installer is broken (0.1.9984 to 0.1.9996 never started one again
+  /// after an update). Given where the launcher says it does (`--launcher-installer`).
+  runInstaller?: (script: string, env: Record<string, string>) => void;
 };
 
 export function launcher(args: string[]): Control {
@@ -109,5 +114,6 @@ export function launcher(args: string[]): Control {
     carried,
     heartbeat: () => void (heartbeats && say({ heartbeat: true })),
     ...(handed && heartbeats ? { restartFront: () => void say({ restartFront: true }) } : {}),
+    ...(args.includes("--launcher-installer") ? { runInstaller: (script: string, env: Record<string, string>) => void say({ installer: { script, env } }) } : {}),
   };
 }

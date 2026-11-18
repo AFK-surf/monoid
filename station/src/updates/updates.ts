@@ -148,6 +148,9 @@ export type UpdatesOptions = {
   codexHostProbe?: typeof missingCodexHost;
   /// How the station's installer is started (`startInstaller`; tests give one that ends before it returns).
   startInstaller?: typeof startInstaller;
+  /// The launcher's start of the installer, where it offers one (launcher.ts `runInstaller`): what starts it when this
+  /// process's own start does not.
+  launcherInstaller?: (script: string, env: Record<string, string>) => void;
   timing?: Partial<Timing>;
   /// Its time (a TestClock in tests).
   clock?: Clock.Clock;
@@ -273,6 +276,7 @@ export class Updates {
   private runtimeChanged: (kind: RuntimeKind, installed: boolean, replaced: boolean) => void;
   private codexHostProbe: typeof missingCodexHost;
   private startInstaller: typeof startInstaller;
+  private launcherInstaller: ((script: string, env: Record<string, string>) => void) | null;
   // Long-lived work, and time: fibers in this part's scope on its clock, ended with it.
   private fibers: Fibers;
   private closed = false;
@@ -313,6 +317,7 @@ export class Updates {
     this.runtimeChanged = o.runtimeChanged ?? (() => {});
     this.codexHostProbe = o.codexHostProbe ?? missingCodexHost;
     this.startInstaller = o.startInstaller ?? startInstaller;
+    this.launcherInstaller = o.launcherInstaller ?? null;
     // Read before an update can replace the release.
     this.release = releaseChannel(this.app);
     this.installed = this.release ?? channelFrom(this.config.raw(), null);
@@ -1220,7 +1225,13 @@ export class Updates {
     } catch (e) {
       log.warn("updates", "update.started not written; a handover or restart will not say how the update went", { error: (e as Error).message });
     }
-    const ok = !this.closed && (await this.startInstaller(plan.script, runDir, env, this.app));
+    let ok = !this.closed && (await this.startInstaller(plan.script, runDir, env, this.app));
+    if (!ok && !this.closed && this.launcherInstaller !== null) {
+      // Not started here: the launcher starts it (its exit and log in run/ as one started here), followed as one.
+      log.warn("updates", "the station's installer not started here; the launcher starts it", { to: plan.release.version });
+      this.launcherInstaller(plan.script, env);
+      ok = true;
+    }
     if (!ok) {
       await rm(startedFile, { force: true }).catch(() => {});
       if (handed.STILLFAIL_ARCHIVE) await rm(dirname(handed.STILLFAIL_ARCHIVE), { recursive: true, force: true }).catch(() => {});

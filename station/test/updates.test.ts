@@ -507,6 +507,37 @@ describe("updates", { concurrency: true }, () => {
     assert.equal(readFileSync(join(dir, "run", "update.exit"), "utf8").trim(), "0");
   });
 
+  test("an installer this process could not start is started by the launcher, told what it would have been, and followed", async (t) => {
+    const dir = temp();
+    const [origin, server] = await cloudWithRelease("0.1.1310", "1310");
+    t.after(() => server.close());
+    const asked: [string, Record<string, string>][] = [];
+    const updates = installed(dir, "1300", null, {
+      origin: () => origin, env: { PATH: "/usr/bin:/bin" }, startInstaller: async () => false,
+      launcherInstaller: (script, env) => void asked.push([script, env]),
+    }, "#!/bin/sh\n");
+    t.after(() => updates.close());
+    await updates.check();
+    await updates.update("station", "zh");
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0]![0], join(dir, "app", "bin", "install.zh.sh"));
+    assert.equal(asked[0]![1].STILLFAIL_DATA, dir);
+    assert.equal(asked[0]![1].STILLFAIL_RELEASE_SHA256, SHA_A);
+    assert.equal(station(updates).state, "updating", "followed as one started here");
+    assert.ok(existsSync(join(dir, "run", "update.started")));
+  });
+
+  test("an installer neither this process nor a launcher from before could start is a failure said", async (t) => {
+    const dir = temp();
+    const [origin, server] = await cloudWithRelease("0.1.1310", "1310");
+    t.after(() => server.close());
+    const updates = installed(dir, "1300", null, { origin: () => origin, env: { PATH: "/usr/bin:/bin" }, startInstaller: async () => false }, "#!/bin/sh\n");
+    t.after(() => updates.close());
+    await updates.check();
+    await assert.rejects(updates.update("station", "zh"));
+    assert.notEqual(station(updates).state, "updating");
+  });
+
   test("a feed that does not verify offers nothing, and nothing is installed from it", shInstaller, async (t) => {
     const unsigned = { version: "0.1.1310", build: 1310, commit: "0".repeat(40) };
     const forged = feedOf(1310, {}, OTHER);

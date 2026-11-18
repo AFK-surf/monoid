@@ -212,6 +212,10 @@ fn hold_signals(hold: bool) {
 impl Os for System {
     type Node = Node;
 
+    fn run_installer(&mut self, script: &str, env: &[(String, String)]) -> bool {
+        run_installer(&self.options.data.join("run"), Path::new(script), env)
+    }
+
     fn now(&self) -> Instant {
         Instant::now()
     }
@@ -227,7 +231,7 @@ impl Os for System {
             .arg(app)
             .arg("--data")
             .arg(&self.options.data)
-            .args(["--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"])
+            .args(["--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat", "--launcher-installer"])
             .stdin(Stdio::null())
             .process_group(0);
         // macOS's malloc keeps what is freed for the next allocation of its size, the pages still the process's: on a
@@ -557,6 +561,36 @@ fn raise_nofile() {
     }
 }
 
+/// platform/unix.ts `startInstaller` as the launcher does it: the release's installer `script` copied to `run`/install.sh
+/// (the copy an update before left there taken away first), run by sh in the background of a shell that ends at once,
+/// its exit in update.exit and what it says in update.log, told `env` and nothing else of this process's.
+fn run_installer(run: &Path, script: &Path, env: &[(String, String)]) -> bool {
+    let copy = run.join("install.sh");
+    let _ = std::fs::remove_file(&copy);
+    if let Err(error) = std::fs::copy(script, &copy) {
+        log::warn(&format!("the installer not copied to {}: {error}", copy.display()));
+        return false;
+    }
+    let shell = r#"( sh "$1"; echo $? > "$2/update.exit" ) > "$2/update.log" 2>&1 < /dev/null &"#;
+    let started = Command::new("/bin/sh")
+        .args(["-c", shell, "sh"])
+        .arg(&copy)
+        .arg(run)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match started {
+        Ok(status) => status.success(),
+        Err(error) => {
+            log::warn(&format!("the installer's shell not started: {error}"));
+            false
+        }
+    }
+}
+
 pub fn run(mut options: Options) -> i32 {
     keep_low_fds();
     raise_nofile();
@@ -796,6 +830,27 @@ fn describe(status: c_int) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_installer_the_launcher_starts_replaces_the_copy_left_in_run_and_is_told_only_its_env() {
+        let dir = std::env::temp_dir().join(format!("launcher-installer-{}", std::process::id()));
+        let run = dir.join("run");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("install.sh"), "echo old > \"$STILLFAIL_DATA/ran\"\n").unwrap();
+        let script = dir.join("install.zh.sh");
+        std::fs::write(&script, "echo \"new $STILLFAIL_DATA ${HOME:-none}\" > \"$STILLFAIL_DATA/ran\"\n").unwrap();
+        let data = dir.to_string_lossy().to_string();
+        assert!(run_installer(&run, &script, &[("STILLFAIL_DATA".into(), data.clone())]));
+        let exit = run.join("update.exit");
+        let until = Instant::now() + Duration::from_secs(20);
+        while !exit.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::read_to_string(&exit).unwrap().trim(), "0");
+        assert_eq!(std::fs::read_to_string(dir.join("ran")).unwrap(), format!("new {data} none\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// What there is to read at `fd` now.
     fn read_now(fd: &OwnedFd, into: &mut Vec<u8>) {

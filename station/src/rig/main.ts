@@ -134,7 +134,10 @@ export const RigLive = (control: Control) =>
       time.after(DISK_EVERY_MS, relieving); // timer: a sample of this machine (its disk)
 
       // Its own release, read at start and as the cloud says one is out; updated by itself while nothing runs.
-      const updates = makeUpdates({ app, data, config, origin: () => plane.releaseBase(), running: () => 0, stationOnly: true });
+      const updates = makeUpdates({
+        app, data, config, origin: () => plane.releaseBase(), running: () => 0, stationOnly: true,
+        ...(control.runInstaller ? { launcherInstaller: control.runInstaller } : {}),
+      });
       updates.start();
       plane.told("release", () => void updates.check().catch((error) => log.warn("updates", "the release not read", { error: String(error) })));
       control.on("hup", () => void updates.answerChannelAsk());

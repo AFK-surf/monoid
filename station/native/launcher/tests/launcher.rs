@@ -310,7 +310,7 @@ fn node_serves_the_launchers_ports_and_station_json_names_the_launcher() {
     let start = &station.log()[0].2;
     let app = station.app.display();
     let data = station.data.display();
-    assert_eq!(start, &format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries --launcher-heartbeat"));
+    assert_eq!(start, &format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries --launcher-heartbeat --launcher-installer"));
     station.signal(libc::SIGTERM);
     assert!(station.wait().success());
     assert!(station.said(node, "got stop") && station.said(node, "exit"));
@@ -1245,7 +1245,7 @@ fn a_release_of_the_moonbit_station_alone_runs_it_with_the_same_arguments_and_it
     assert_ne!(first, station.pid());
     // The release's program itself (exec'd by the stand-in: the same process), told what Node was told.
     let (app, data) = (station.app.display(), station.data.display());
-    assert_eq!(station.log()[0].2, format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries --launcher-heartbeat"));
+    assert_eq!(station.log()[0].2, format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries --launcher-heartbeat --launcher-installer"));
     assert!(station.said(first, "heartbeat asked"));
     assert_eq!(ask(mcp).unwrap(), format!("{first} mcp"));
     assert_eq!(ask(admin).unwrap(), format!("{first} admin"));

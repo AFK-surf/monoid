@@ -22,7 +22,10 @@
   while they run (`native/launcher/src/lifecycle.rs`): a Node that has taken over and goes silent on its heartbeat
   (said from its main thread's loop, `--launcher-heartbeat`) is killed and started again, a front that stops answering
   its asks is killed and started again, and one given up is tried again later, the Node then handed over to one linked
-  to it. What a Node says of itself for `stillfail status` is `<data>/run/health.json` (`src/ops/health.ts`), fresh
+  to it. Where the Node serving could not start the release's installer it asks the launcher, which starts it as the
+  Node would (`--launcher-installer`, `run.rs` `run_installer`; not on Windows, whose installer is a scheduled task):
+  the launcher changes seldom, so a station whose own program is broken still updates. What a Node says of itself for
+  `stillfail status` is `<data>/run/health.json` (`src/ops/health.ts`), fresh
   only while its loop runs. A device's requests of the
   routes in `src/mesh/served.ts` (the reads a device makes, `/batch`, `/changed`, its marks, names and a message in
   words and quotes) the front hands the MoonBit program that answers them itself (station/mb's reader `--serve`), not
