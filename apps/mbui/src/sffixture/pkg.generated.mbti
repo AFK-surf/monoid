@@ -572,6 +572,10 @@ pub let table_images_answer : String
 
 pub let table_cells_answer : String
 
+pub let table_long_answer : String
+
+pub fn table_long_md() -> Json
+
 pub let table_cells_md : Json
 
 pub let table_images_md : Json

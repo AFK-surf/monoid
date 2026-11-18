@@ -492,12 +492,32 @@ fn chat_body_gap_room(gap : ChatBodyGap, w : Double) -> Double {
 /// How row `r` is made (chat_body_row's): its kind, and of an agent's message read before the chat showed it, which make
 /// of piece it is (chat_body_piece_make), what such a row's nodes are made as (a long message's first piece, under its
 /// head; a piece after it, its block alone; the last, its files and what it asks under it); -1 for any other. Made again
-/// only as that changes.
+/// only as that changes. A piece after the first of one said while the chat shows is so too, with its block, whether it
+/// holds its table's head and whether it is the last: it comes out of no picture, and its message streamed in makes it
+/// another piece (a table come to more rows than a piece holds, its rows after the first a piece of their own, scrolled
+/// across with them: chat_table_kept).
 fn chat_body_made_as(r : ChatBodyRow) -> (ChatBodyKind, Int) {
   let kind = chat_body_kind(r.entry)
   match r.entry {
     Said(m) if kind == KAgent && !m.said => (kind, chat_body_piece_make(r.piece))
+    Said(_) if kind == KAgent && chat_piece_after_first(r.piece) => {
+      // (which block it is and whether it holds its table's head too: what its nodes are made for)
+      let (from, head, last) = match r.piece {
+        Some(pc) => (pc.from, pc.rows.map_or(true, fn(rows) { rows.0 == 0 }), pc.last)
+        None => (0, true, true)
+      }
+      (kind, (((from * 2 + (if head { 1 } else { 0 })) * 8 + chat_body_piece_make(r.piece)) * 2) + (if last { 1 } else { 0 }))
+    }
     _ => (kind, -1)
+  }
+}
+
+///|
+/// Whether a piece of a message is one after its first (agent_said_node draws it its blocks alone, no head over it).
+fn chat_piece_after_first(piece : @sf.MdPiece?) -> Bool {
+  match piece {
+    Some(pc) => pc.from > 0 || (pc.rows is Some((r, _)) && r > 0)
+    None => false
   }
 }
 

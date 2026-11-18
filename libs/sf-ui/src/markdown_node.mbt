@@ -114,6 +114,10 @@ pub fn markdown_node(
       glyphs,
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
+      rows_by: match (piece.bind(fn(p) { p.rows }), piece_by) {
+        (Some(_), Some(by)) => Some(fn() { by().bind(fn(p) { p.rows }) })
+        _ => None
+      },
       across_of,
       tracks_of,
       text_face,
@@ -336,6 +340,9 @@ priv struct MdNode {
   /// the rows of its table or the items of its list it draws where it is a piece of one (markdown_node's `piece`):
   /// none, all of them; none in what a block holds (a list's item, a quote)
   table_rows : (Int, Int)?
+  /// those rows or items as they are now, where the piece is told as it changes (markdown_node's `piece_by`: a message's
+  /// table streamed in, the piece of its rows after the first growing as rows come), none: table_rows all along
+  rows_by : (() -> (Int, Int)?)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
   /// what the pieces of the table at a block keep of its columns together (markdown_node's `tracks_of`: measured once
@@ -714,7 +721,7 @@ fn md_block_node(
           Some(List(l)) => Some(l)
           _ => None
         }
-      }, 1, items=md.table_rows)
+      }, 1, items=md.table_rows, items_by?=md.rows_by)
     4 => {
       let lang = fn() {
         match block() {
@@ -787,6 +794,7 @@ fn md_block_node(
         md.on_link_hold,
         fit=md.fit,
         rows=md.table_rows,
+        rows_by?=md.rows_by,
         across=match md.table_rows {
           Some(_) => @signals.untracked(fn() { (md.across_of)(md.block_at) })
           None => @view.Scroll::across()
@@ -1104,8 +1112,9 @@ fn md_list_node(
   list : () -> MdList?,
   depth : Int,
   items? : (Int, Int)? = None,
+  items_by? : () -> (Int, Int)?,
 ) -> Unit {
-  let inner_md = { ..md, bleed: fn() { 0.0 }, table_rows: None }
+  let inner_md = { ..md, bleed: fn() { 0.0 }, table_rows: None, rows_by: None }
   let s = md.size
   // (the list's own, worked out once for all its items as what they are worked out of changes)
   let ordered_now = @signals.computed(fn(_) { list().map(fn(l) { l.ordered }).unwrap_or(false) })
@@ -1127,6 +1136,11 @@ fn md_list_node(
   // (all its items, or those of them its piece draws (`items`), each by its place among all)
   let count = fn() {
     let n = list().map(fn(l) { l.items.length() }).unwrap_or(0)
+    // (those its piece draws as it is now, where it is told so: more come as the list is streamed in)
+    let items = match items_by {
+      Some(f) => f()
+      None => items
+    }
     match items {
       Some((from, upto)) => {
         let upto = if upto < n { upto } else { n }

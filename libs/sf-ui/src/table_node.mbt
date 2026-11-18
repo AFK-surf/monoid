@@ -222,6 +222,7 @@ fn md_table_body_node(
   fit? : Bool = false,
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
   rows? : (Int, Int)? = None,
+  rows_by? : () -> (Int, Int)?,
   across? : @view.Scroll = @view.Scroll::across(),
   tracks_kept? : @view.TracksKept,
   cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
@@ -249,9 +250,14 @@ fn md_table_body_node(
       None => true
     }
     // (its bar under its last row: where it is in pieces, the one its table ends in now, followed as it grows)
-    let has_foot = match rows {
-      Some((_, upto)) => Some(fn() { table().map_or(true, fn(t) { upto >= t.rows.length() + 1 }) })
-      None => None
+    let has_foot = match (rows, rows_by) {
+      (Some(_), Some(by)) =>
+        Some(fn() {
+          let upto = by().map_or(0, fn(r) { r.1 })
+          table().map_or(true, fn(t) { upto >= t.rows.length() + 1 })
+        })
+      (Some((_, upto)), None) => Some(fn() { table().map_or(true, fn(t) { upto >= t.rows.length() + 1 }) })
+      (None, _) => None
     }
     let across = match rows {
       Some(_) => across.beside()
@@ -311,7 +317,21 @@ fn md_table_body_node(
             .lines_up(Is(Some(Start)))
             // (pointed at as a whole, its key with it: what shows its key; taking no press nor hold for it)
             .points(Is(copy))
-            .margin(by_bleed(fn(b) { (0.0, 0.0, if copy && b >= table_key_room { -table_key_room } else { 0.0 }, 0.0) }))
+            // (every piece of a table in pieces as wide as the first, whose key the others have not: scrolled across as
+            // one, each goes as far, its rows' cells under the head's whichever is moved)
+            .margin(by_bleed(fn(b) {
+              let hung = b >= table_key_room
+              let end = if !copy {
+                0.0
+              } else if has_head {
+                if hung { -table_key_room } else { 0.0 }
+              } else if hung {
+                0.0
+              } else {
+                table_key_room
+              }
+              (0.0, 0.0, end, 0.0)
+            }))
             |> ignore
             table_frame_node(
               beside,
@@ -322,6 +342,7 @@ fn md_table_body_node(
               on_link_hold~,
               cell_images?,
               rows~,
+              rows_by?,
               cell_runs~,
               line_share?,
               link_cards~,
@@ -385,6 +406,7 @@ fn md_table_body_node(
           on_link_hold~,
           cell_images?,
           rows~,
+          rows_by?,
           cell_runs~,
           line_share?,
           link_cards~,
@@ -446,6 +468,7 @@ fn table_frame_node(
   scale? : (() -> Double)? = None,
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
   rows? : (Int, Int)? = None,
+  rows_by? : () -> (Int, Int)?,
   cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
   line_share? : () -> Double,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
@@ -470,6 +493,11 @@ fn table_frame_node(
     let all = fn() { table().map_or(0, fn(t) { t.rows.length() + 1 }) }
     let rows = fn() {
       let n = all()
+      // (those its piece draws as it is now, where it is told so: rows streamed in after them its own)
+      let some = match rows_by {
+        Some(f) => f()
+        None => some
+      }
       match some {
         Some((from, upto)) => {
           let upto = if upto < n { upto } else { n }

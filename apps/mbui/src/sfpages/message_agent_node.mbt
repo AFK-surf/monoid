@@ -118,6 +118,12 @@ fn agent_said_node(
     Some(pc) => pc.last
     None => true
   }
+  // (one said while the chat shows: its words streamed in may cut it into pieces as it is drawn (a table come to more
+  // rows than a piece holds), its first this, under its head; what it draws, its files and what it asks under it then as
+  // its piece is now. One read before, as it was made: chat_body_made_as makes it again as its piece changes)
+  let streamed = @signals.untracked(m).said
+  let piece_now = fn() { if streamed { piece_by() } else { piece } }
+  let last_now = fn() { piece_now().map_or(true, fn(pc) { pc.last }) }
   let row = message_row_frame_node(v, key, side, top, fn(r) {
     // (come by data while its agent was at work: out of that agent's picture on its line (`out_of`), as emit.mbt's, each
     // step from the cause's moment: the line folds into its picture (Fold); its own picture glides there from that one
@@ -172,7 +178,19 @@ fn agent_said_node(
         // (what it quotes ahead of its words, as the old body's)
         message_quotes_node(b, src, here, fn() { m().quotes }, fn() { m().attachments }, false, fn() { message_place(m()) }, said=fn() { m().said })
         // (its words, or the card in their place: one in the other's place as the post says)
-        b.pick(fn() { agent_card_kind(m()) == "" }, fn(p, words) {
+        // (and, of one streamed, which make of piece it is now: none, a block, some rows of a table or items of a list,
+        // the last or not: its words drawn again as that changes, its head as it was, coming out of its picture)
+        b.pick(fn() {
+          (
+            agent_card_kind(m()) == "",
+            if streamed {
+              piece_now().map_or(0, fn(pc) { if pc.rows is Some(_) { 2 } else { 1 } }) * 2 + (if last_now() { 1 } else { 0 })
+            } else {
+              0
+            },
+          )
+        }, fn(p, made) {
+          let words = made.0
           // (what is read in it starts here, its words or the card in their place, under its head line and what it
           // quotes: what a page's list holds what shows by, where it starts (View::read_from))
           p.read_from() |> ignore
@@ -183,13 +201,16 @@ fn agent_said_node(
             // (its words and its files one piece, none apart, as the old list holds them to be picked: pickable's
             // pick_fill; a letter's, drawn by the old view alone, has them 4 apart)
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, tracks_of~, files_too=last, share~)
+            let piece = @signals.untracked(piece_now)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, tracks_of~, files_too=piece.map_or(true, fn(pc) { pc.last }), share~)
           } else {
             message_card_node(p, here, core, m)
           }
         })
-        // (what it asks under it: its last piece's)
-        if last {
+        // (what it asks under it: its last piece's; of one streamed, while it is that)
+        if streamed {
+          agent_asks_node(b, src, here, m, core, sought=ask_sought, only_while=last_now)
+        } else if last {
           agent_asks_node(b, src, here, m, core, sought=ask_sought)
         }
       },
@@ -203,7 +224,8 @@ fn agent_said_node(
 
 ///|
 /// What agent's message `m` asks under it in `b`, where it asks anything: nothing else made, as no gap is wanted for
-/// nothing; a login's card where there is a core to read it with; what a go-to brings before the eyes while `sought`.
+/// nothing; a login's card where there is a core to read it with; what a go-to brings before the eyes while `sought`;
+/// nothing while `only_while` says not (a message streamed in whose piece it is under is no longer its last).
 fn agent_asks_node(
   b : @view.View,
   src : Source,
@@ -211,9 +233,11 @@ fn agent_asks_node(
   m : () -> Message,
   core : @settings.Core?,
   sought? : () -> Bool = fn() { false },
+  only_while? : () -> Bool = fn() { true },
 ) -> Unit {
   b.show(
     fn() {
+      guard only_while() else { return false }
       match decision_asks(m()) {
         Nothing => false
         Login => core is Some(_)
