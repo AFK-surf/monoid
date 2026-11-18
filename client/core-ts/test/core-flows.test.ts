@@ -52,6 +52,8 @@ test("two_workspaces_are_kept_apart", async () => {
   });
   const core = await Core.create(host, { clock: host.time.clock, sample: 0 });
   const inner = core.inner;
+  const dropped:string[]=[];
+  inner.meshNow=()=>({dropLink:(address:string)=>{dropped.push(address);}} as unknown as NonNullable<ReturnType<typeof inner.meshNow>>);
   const ui = core.connect();
   const values = new Map();
   subscribe(core, ui, 1, { topic: "workspace", workspace: "w1" });
@@ -86,12 +88,16 @@ test("two_workspaces_are_kept_apart", async () => {
   await run(inner.cloudSync.refreshAccount("s1"));
   await host.settle();
   assert.equal(inner.data.get({ topic: "overview", station: "w1/a" }), undefined);
+  assert.deepEqual(dropped,["w1/a"],"a removed station closes its transport, preserving other workspace links");
   assert.notEqual(inner.data.get({ topic: "overview", station: "w2/b" }), undefined);
   // W1's account signs out: W1 is no one's, W2 is as it was.
   await run(inner.accounts.signOut("s1"));
   await host.time.pass(10);
   assert.deepEqual([inner.workspaces.owner("w1"), inner.workspaces.owner("w2")], [null, "s2"]);
   assert.notEqual(inner.data.get({ topic: "overview", station: "w2/b" }), undefined);
+  await run(inner.accounts.signOut("s2"));
+  await host.time.pass(10);
+  assert.deepEqual(dropped,["w1/a","w2/b"],"leaving the remaining workspace closes its transport too");
   slow.end();
   core.close();
 });

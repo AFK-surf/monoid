@@ -1,6 +1,12 @@
+import { LeafAttachments } from "./leaf.ts";
 // The station on the mesh, once it is in a workspace (cloud.json there): its endpoint, its relays, its presence at
 // its control plane, members' connections, and the control plane's gateways' (the device tools, mesh/tools.ts). Everything here lives in the layer's scope: stopping the station closes
 // the endpoint and every connection and loop it started.
+import { watchRelay } from "./relay-watch.ts";
+import { RelayRecords } from "./relay-records.ts";
+import { ScopeSync } from "./scope-sync.ts";
+import { RelayEnrollment } from "./enrollment.ts";
+import { EnrollmentDoor, ENROLLMENT_ALPN, workspaceScope } from "./enrollment-door.ts";
 import { closePeerRelays } from "./peer-relays.ts";
 import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
@@ -29,7 +35,7 @@ import { bindStation, type Endpoint } from "./native.ts";
 import { lanAddrs, tailnetAddrs } from "./lan.ts";
 import { Superseded } from "./superseded.ts";
 import { Storms } from "./storms.ts";
-import { Fibers } from "../ops/fibers.ts";
+import { Fibers, wall } from "../ops/fibers.ts";
 
 export const MeshLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -62,7 +68,7 @@ export const MeshLive = Layer.effectDiscard(
       // The order is the one the endpoint prefers: a station asking for web requests offers the station transport's
       // protocol after it (to tell a station from before it), and is to be answered in the first (peer-http.ts).
       const bound = wantedRelays(cloud.state);
-      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
+      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN, ENROLLMENT_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
       const acquire = Effect.acquireRelease(
         bind,
         // iroh closes gracefully, waiting on every connection (the keepers' too): up to ~12 s. A station stopping or
@@ -101,14 +107,25 @@ export const MeshLive = Layer.effectDiscard(
       );
       // The workspace's other stations: asked through this endpoint, their tasks stopped once they are not in it.
       // And the stations of other workspaces chats are shared with or from (xshare/index.ts).
-      const call = peerCall(endpoint, cloud.state, undefined, { reaches: (target, workspace) => side.outside?.reaches(target, workspace) === true });
+      let meshDirectory: ScopeSync | undefined;
+      const call = peerCall(endpoint, cloud.state, undefined, { reaches: (target, workspace) => side.outside?.reaches(target, workspace) === true }, undefined, {},
+        (target, workspace) => meshDirectory?.scopeFor(target, workspace));
+      if (endpoint.meshConfigure && endpoint.meshRemove && endpoint.meshListen) {
+        meshDirectory = new ScopeSync(endpoint, store.db, cloud.state, key, call, (args) => admin.readers.read("internalMeshControl", args, "en"));
+        const relayControl = { list: (workspace: string) => meshDirectory!.relays(workspace), revoke: (workspace: string, node: string) => meshDirectory!.revoke(workspace, node) };
+        side.relayControl = relayControl;
+        yield* Effect.addFinalizer(() => Effect.promise(async () => {
+          if (side.relayControl === relayControl) side.relayControl = undefined;
+          await meshDirectory!.close();
+        }));
+      }
       peers.attach(call);
       // (its watch of the ways, which lets go of connections through a relay turned off, ends with the mesh)
       yield* Effect.addFinalizer(() => Effect.sync(() => { call.close?.(); closePeerRelays(endpoint); }));
       // The agents' door's way to the other stations' web services (peer-http.ts).
       yield* Effect.acquireRelease(
         Effect.sync(() => {
-          const http = new PeerHttp(endpoint, cloud.state);
+          const http = new PeerHttp(endpoint, cloud.state, undefined, undefined, (target, workspace) => meshDirectory?.scopeFor(target, workspace));
           side.peers.route = http;
           return http;
         }),
@@ -164,7 +181,7 @@ export const MeshLive = Layer.effectDiscard(
       deviceBuildsOf(cloud.state, store);
       // (and the members' devices seen, read before the first hello, not as it comes)
       seenDevicesOf(cloud.state);
-      const members: Members = { cloud: cloud.state, admin, up: () => SubscriptionRef.getUnsafe(up), streams: (head: any) => parts.streamOf(head), screens, traces, accepted: plane.credential, lan: () => lanAddrs(endpoint.sockets()), tailnet: () => tailnetAddrs(endpoint.sockets()), connected: () => parts.connected() };
+      const members: Members = { ...(meshDirectory && endpoint.meshAttachLeaf ? {leaves:new LeafAttachments(endpoint,meshDirectory,cloud.state)} : {}), cloud: cloud.state, admin, up: () => SubscriptionRef.getUnsafe(up), streams: (head: any) => parts.streamOf(head), screens, traces, accepted: plane.credential, lan: () => lanAddrs(endpoint.sockets()), tailnet: () => tailnetAddrs(endpoint.sockets()), connected: () => parts.connected() };
       // The reads the MoonBit program answers itself (served.ts), where the front keeps the endpoint and the program is
       // here: the front hands it their streams, and this process only who each connection's member is.
       const route = endpoint.route?.bind(endpoint);
@@ -234,6 +251,18 @@ export const MeshLive = Layer.effectDiscard(
         }),
         ({ fibers }) => Effect.promise(() => fibers.close()),
       );
+      const relayRecords = new RelayRecords(store.db);
+      const enrollment = new EnrollmentDoor(new RelayEnrollment(store.db, key.id, wall.now),
+        (scope) => cloud.state.memberships().some((m) => workspaceScope(cloud.state.state!.origin, m.workspace) === scope),
+        (text) => key.sign(text),
+        async (scope, node) => JSON.parse(await admin.readers.read("internalMeshControl", { kind: "registration", scope, node, issuer: key.id }, "en")),
+        async (signed) => {
+          relayRecords.take(signed, JSON.parse(signed.body).scope, new Set([key.id]));
+          await meshDirectory?.registration(signed);
+        }, async (scope, node, first, stream, conn, reader) => {
+          if (!meshDirectory) throw new Error("native mesh directory is not available");
+          await watchRelay(meshDirectory, scope, node, first, stream, conn, reader);
+        });
       // Its connections (accept.ts), each served by its protocol's own. Their fibers are of the set made above, before
       // the traces, the device tools and the storms' watch: as the station stops they end after those have.
       yield* accept(endpoint, {
@@ -245,11 +274,12 @@ export const MeshLive = Layer.effectDiscard(
           else if (conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) || conn.alpn().equals(PEER_HTTP_ALPN)) call.arrived(conn);
         },
         serve: (conn) =>
-          conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) ? servePeer(conn, cloud.state, peers)
+          conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) ? servePeer(conn, cloud.state, peers, meshDirectory ? (peer, workspace, request) => meshDirectory.answer(peer, workspace, request) : undefined)
           : conn.alpn().equals(PEER_HTTP_ALPN) ? serveHttp(conn, cloud.state, {
               forwarded: (port) => side.forwarded(port),
               device: (peer, workspace, session, device, probe) => side.device == null ? Promise.reject(new DeviceRefused(404, "no devices here yet")) : side.device(peer, workspace, session, device, probe),
             })
+          : conn.alpn().equals(ENROLLMENT_ALPN) ? enrollment.serve(conn)
           : conn.alpn().equals(TOOLS_ALPN) ? serveTools(gateways, conn)
           : serve(members, conn),
         closing: STOPPING,

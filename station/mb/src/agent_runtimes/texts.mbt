@@ -230,6 +230,7 @@ pub let notes : Array[(Int, String)] = [
   (173, "feedback_send takes desktopPlatform when the affected desktop app is known, so its fix is announced on that platform’s release."),
   (174, "Codex reports which models offer Ultrafast for each subscription. Use speed: ultrafast with one of those models."),
   (175, "Skill stillfail-browser: Farview now has an authenticator of its own as Chrome does, so a site asking for a passkey stored in its sign-in signs with it automatically in either engine; no need to switch to Chrome for a passkey."),
+  (176, "relays action enroll (name) now issues a one-use workspace mesh relay enrollment token, valid for 24 hours. Keep it private; it grants forwarding only and is redeemed at the issuing station. list includes registered mesh nodes; revoke (node) asks the issuing station to remove one."),
 ]
 
 ///|

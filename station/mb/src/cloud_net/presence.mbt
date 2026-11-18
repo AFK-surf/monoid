@@ -434,6 +434,10 @@ pub fn apply_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit {
 
 ///|
 fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit {
+  guard global_mesh_relays(field(body, "mesh_relays")) is Some(mesh_relays) else {
+    (p.log)("invalid global mesh registry")
+    return
+  }
   let s = p.cloud
   let lock = p.lock
   let named_ws = text_of(field(body, "workspace"))
@@ -498,6 +502,7 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
         st["relay_urls"] = Json::array(strings_of(r).map(Json::string))
       _ => ()
     }
+    st["mesh_relays"] = Json::array(mesh_relays)
     match field(body, "stillfail_relays") {
       Some(Array(_)) as r =>
         st["stillfail_relays"] = Json::array(strings_of(r).map(Json::string))

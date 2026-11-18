@@ -44,7 +44,8 @@
 //        failing every branch's bundle, static and check-linux; the store is asked first.)
 //
 // STILLFAIL_NATIVE=build never downloads (builds what the cache lacks); STILLFAIL_NATIVE=offline neither downloads nor
-// builds. Builds go to $CARGO_TARGET_DIR/native/<part> when it is set, else the crate's own target/ (a worktree's own:
+// builds. Builds go to $CARGO_TARGET_DIR/native/<part> when it is set (station crates add the target to the part),
+// else the crate's own target/ (a worktree's own:
 // a vendored crate built from two checkouts in one target confuses rustc, docs/operations.md).
 import { execFileSync, spawn, spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -203,12 +204,15 @@ function stationCrate(dir: string, artifact: (t: Target) => string, name: string
     inputs: [dir, ...extra],
     recipe: (t) => ({ cargo: cargoCommand(t), artifact: artifact(t), name: named(t) }),
     build(t, out) {
-      const target = targetDir(join(ROOT, dir, "target"), basename(dir));
+      const target = stationTargetDir(dir, t);
       cargo(cargoCommand(t), join(ROOT, dir), { CARGO_TARGET_DIR: target, ...(t === "win32-x64" ? noLibnode(target) : {}) });
       copyFileSync(join(target, TRIPLE(t), "release", artifact(t)), join(out, named(t)));
     },
   };
 }
+/// Concurrent station targets must not share Cargo's artifact lock in a CI job.
+const stationTargetDir = (dir: string, t: Target) => targetDir(join(ROOT, dir, "target"), `${basename(dir)}-${t}`);
+
 /// napi-build links a MinGW addon to libnode.dll, which Node does not have on Windows: its Node-API is in
 /// the executable, and napi-sys (dyn-symbols, its default) looks every function up there when the addon loads. So it
 /// is given an empty import library to link (nothing is taken from it) and a libnode.dll to find beside it.
@@ -234,7 +238,7 @@ function withHidden(part: Part): Part {
     files: (t) => (t === "win32-x64" ? [...part.files(t), hidden] : part.files(t)),
     build(t, out) {
       part.build(t, out);
-      if (t === "win32-x64") copyFileSync(join(targetDir(join(ROOT, "station/native/launcher/target"), "launcher"), TRIPLE(t), "release", hidden), join(out, hidden));
+      if (t === "win32-x64") copyFileSync(join(stationTargetDir("station/native/launcher", t), TRIPLE(t), "release", hidden), join(out, hidden));
     },
   };
 }
@@ -401,7 +405,7 @@ const PARTS: Record<string, Part> = {
   // The station's iroh and image codecs, a Node addon ( §3); the core on Node (its tests,
   // apps/mbui's e2e peer) uses it too.
   mesh: {
-    ...stationCrate("station/native/mesh", MESH_LIB, "mesh.node", VENDORED),
+    ...stationCrate("station/native/mesh", MESH_LIB, "mesh.node", ["client/shell/src/mesh.rs", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", ...VENDORED]),
     targets: STATION_BINS,
     env: "STILLFAIL_MESH_NATIVE",
   },
@@ -424,7 +428,7 @@ const PARTS: Record<string, Part> = {
   "iroh-wasm": {
     files: () => ["stillfail_iroh_wasm.js", "stillfail_iroh_wasm.d.ts", "stillfail_iroh_wasm_bg.wasm", "stillfail_iroh_wasm_bg.wasm.d.ts"],
     targets: ["wasm32"],
-    inputs: ["client/iroh-wasm", "client/Cargo.toml", "client/Cargo.lock", ...VENDORED],
+    inputs: ["client/iroh-wasm", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", "client/Cargo.toml", "client/Cargo.lock", ...VENDORED],
     recipe: () => ({ script: "client/iroh-wasm/build.sh" }),
     build(_t, out) {
       const target = targetDir(join(ROOT, "client/target"), "iroh-wasm");
@@ -441,7 +445,7 @@ const PARTS: Record<string, Part> = {
     files: (t) => (t === "win32-x64" ? ["stillfail_shell.dll", "stillfail_shell.dll.lib", "tests"] : ["libstillfail_shell.so"]),
     targets: ["android-arm64", "win32-x64", "linux-x64", "linux-arm64"],
     msvc: true,
-    inputs: ["client/shell", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
+    inputs: ["client/shell", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
     recipe: (t) =>
       t === "win32-x64" ? { cargo: SHELL_TESTS, rustflags: SHELL_WIN_RUSTFLAGS, xwin: XWIN }
       : LINUX(t) ? { cargo: shellLinux(t) }
@@ -482,7 +486,7 @@ const PARTS: Record<string, Part> = {
   "shell-station": {
     files: () => ["libstillfail_shell.a"],
     targets: ["linux-x64", "linux-arm64", "win32-x64"],
-    inputs: ["client/shell", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
+    inputs: ["client/shell", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
     recipe: (t) => ({ cargo: shellStation(t) }),
     build(t, out) {
       const target = targetDir(join(ROOT, "client/target"), "shell-station");
@@ -498,7 +502,7 @@ const PARTS: Record<string, Part> = {
   "shell-apple": {
     files: () => ["libstillfail_shell.a", "libstillfail_shell.libs"],
     targets: ["darwin-arm64", "ios-arm64", "ios-sim-arm64"],
-    inputs: ["client/shell", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
+    inputs: ["client/shell", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
     recipe: (t) => ({ cargo: shellApple(t), min: APPLE_MIN[t], c: appleCOldest(t) }),
     build(t, out) {
       const triple = APPLE_TRIPLES[t]!;

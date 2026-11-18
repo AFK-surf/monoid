@@ -241,6 +241,7 @@ pub(all) struct CloudView {
   is_rig : () -> Bool
   stillfail_relays : () -> Array[String]?
   relays : () -> Array[String]
+  mesh_relays : () -> Array[@json.Json]
   memberships : () -> Array[Membership]
   membership : (String) -> Membership?
   rigs : (String) -> Array[String]

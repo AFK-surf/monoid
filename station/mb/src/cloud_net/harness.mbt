@@ -697,7 +697,7 @@ pub fn state_json(s : Map[String, Json]) -> Json {
     }
   }
   for k in [
-    "stillfail_relays", "gateway_keys", "removed_at", "removed_code",
+    "stillfail_relays", "mesh_relays", "gateway_keys", "removed_at", "removed_code",
   ] {
     match s.get(k) {
       Some(v) => out[k] = v

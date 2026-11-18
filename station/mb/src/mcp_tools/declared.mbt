@@ -1027,7 +1027,7 @@ let decl_peer_forward : String =
 let decl_relays : String =
   #|{
   #|  "name": "relays",
-  #|  "description": "List, add or remove the relays of this chat's workspace of its own: the relays its members' devices and its stations use besides still.fail's (say, one in an office in mainland China, where still.fail's are slow). action list shows them, still.fail's, and the ways the workspace turned off. action add (url: https://host[:port][/path] of an iroh relay, still.fail's build of it) first reaches it from this station: it must answer as a relay over https with a valid certificate; one that does not is not added, and why is said. Nobody approves: it is the workspace's at once, told to its other stations and its members' devices, which measure it and use it where it is faster; the app's 连接方式 shows each relay and which chat added it, and a person takes one away there. action remove takes one away. At most 4 of its own.",
+  #|  "description": "Manage this workspace's relays. list shows relay URLs, disabled routes and registered mesh nodes. add probes an https iroh relay URL before sharing it with workspace stations and devices; no approval needed. remove removes a URL; at most 4 own URLs. enroll (name) issues a private one-use token valid for 24 hours, granting forwarding only. revoke (node) removes a mesh relay through its issuing station, which must be reachable.",
   #|  "inputSchema": {
   #|    "type": "object",
   #|    "properties": {
@@ -1036,8 +1036,18 @@ let decl_relays : String =
   #|        "enum": [
   #|          "list",
   #|          "add",
-  #|          "remove"
+  #|          "remove",
+  #|          "enroll",
+  #|          "revoke"
   #|        ]
+  #|      },
+  #|      "node": {
+  #|        "type": "string",
+  #|        "description": "Mesh relay public key from list (revoke)."
+  #|      },
+  #|      "name": {
+  #|        "type": "string",
+  #|        "description": "Name for a new mesh relay (enroll)."
   #|      },
   #|      "url": {
   #|        "type": "string",

@@ -187,20 +187,24 @@ test("a failed reissue withdraws its new card and keeps the previous location", 
 test("a recovered vault decision finishes the queued sign-in outcome", async () => {
   const r = rig("done", dbFile("signin-outbox-recovered-"));
   let restarted: SignIns | undefined;
+  let unsubscribe: (() => void) | undefined;
   try {
     await r.signIns.close();
     const ask = { ...r.ask, status: "done", save: "r_save", kept: "granted" };
     r.db.prepare("UPDATE signin_asks SET body=? WHERE id=?").run(JSON.stringify(ask), ask.id);
     queueSigninSave(r.db, "agent", "r_save", "granted");
+    const written = Promise.withResolvers<void>();
+    unsubscribe = r.store.subscribe((change) => {
+      if (change.type === "thread" && change.id === r.thread && change.entries.some((entry) => entry.kind === "edit")) written.resolve();
+    });
     restarted = new SignIns(r.deps);
     r.prior.resolve();
-    await until(() => r.db.prepare("SELECT 1 FROM signin_save_pending").get() === undefined);
-    await until(() => {
-      const row = r.db.prepare("SELECT card FROM entries WHERE thread=? ORDER BY n DESC LIMIT 1").get(r.thread);
-      return row?.card != null && JSON.parse(String(row.card)).signin.outcome?.kept === "granted";
-    });
+    await written.promise;
+    assert.equal(r.db.prepare("SELECT 1 FROM signin_save_pending").get(), undefined);
+    const row = r.db.prepare("SELECT card FROM entries WHERE thread=? ORDER BY n DESC LIMIT 1").get(r.thread)!;
+    assert.deepEqual(JSON.parse(String(row.card)).signin.outcome, { status: "done", save: "r_save", kept: "granted" });
     assert.equal(r.db.prepare("SELECT COUNT(*) AS n FROM closed_cards WHERE thread=?").get(r.thread)?.n, 1);
-  } finally { await restarted?.close(); await r.close(); }
+  } finally { unsubscribe?.(); await restarted?.close(); await r.close(); }
 });
 
 test("a queued sign-in outcome survives restart and follows the previous station's edit", async () => {

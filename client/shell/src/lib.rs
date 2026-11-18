@@ -26,6 +26,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 mod adb;
 mod keep;
+mod mesh;
 mod log;
 
 const MDNS_SERVICE: &str = "stillfail";
@@ -488,6 +489,7 @@ type Accepted = Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiv
 /// held unanswered, not even their handshake (`iroh.holdIncoming`), and those held.
 #[derive(Default)]
 struct Kept {
+    mesh: mesh::Scopes,
     accepted: Accepted,
     keepers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// The relays it was bound with, and those of them it is home on now (one removed is home no more: a keeper is
@@ -3036,9 +3038,42 @@ impl Inner {
                 Ok(Answer::json(json!({})))
             }
             "iroh.bind" => self.bind(&a, bytes.unwrap_or_default()).await,
+            "iroh.meshSubscribe" | "iroh.meshUnsubscribe" => {
+                let Handle::Endpoint(_, kept) = self.handle(id_of(&a)?)? else { return Err("not an endpoint".into()) };
+                let socket = a.get("socket").and_then(Value::as_u64).ok_or("missing subscription socket")?;
+                if op == "iroh.meshUnsubscribe" { kept.mesh.unsubscribe(socket); }
+                else {
+                    let Handle::Tcp { write, .. } = self.handle(socket)? else { return Err("not a control socket".into()) };
+                    kept.mesh.subscribe(socket, write)?;
+                }
+                Ok(Answer::json(json!({})))
+            }
+            "iroh.meshAttachLeaf" | "iroh.meshUseLeaf" | "iroh.meshDetachLeaf" => {
+                let Handle::Endpoint(endpoint,kept)=self.handle(id_of(&a)?)? else {return Err("not an endpoint".into())};
+                if op=="iroh.meshAttachLeaf" {
+                    let connection=a.get("connection").and_then(Value::as_u64).ok_or("missing leaf connection")?;
+                    let Handle::Conn(connection)=self.handle(connection)? else {return Err("not a connection".into())};
+                    Ok(Answer::json(kept.mesh.attach_leaf(&endpoint,connection,&a).await?))
+                } else {
+                    if op=="iroh.meshUseLeaf" {kept.mesh.use_leaf(&endpoint,&a).await?;} else {kept.mesh.detach_leaf(&a).await?;}
+                    Ok(Answer::json(json!({})))
+                }
+            }
+            "iroh.meshConfigure" | "iroh.meshRemove" => {
+                let (endpoint,kept)=match self.handle(id_of(&a)?)? {
+                    Handle::Endpoint(endpoint,kept)=>(endpoint,kept),
+                    _=>return Err("not an endpoint".into()),
+                };
+                if op=="iroh.meshRemove" {
+                    kept.mesh.remove(&a).await?;
+                    Ok(Answer::json(json!({})))
+                } else {
+                    Ok(Answer::json(kept.mesh.configure_root(&endpoint,&a).await?))
+                }
+            }
             "iroh.connect" => {
-                let endpoint = match self.handle(id_of(&a)?)? {
-                    Handle::Endpoint(endpoint, _) => endpoint,
+                let (endpoint, kept) = match self.handle(id_of(&a)?)? {
+                    Handle::Endpoint(endpoint, kept) => (endpoint, kept),
                     Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
                     _ => return Err("not an endpoint".into()),
                 };
@@ -3051,7 +3086,10 @@ impl Inner {
                     let disabled: Vec<RelayUrl> = disabled.iter().map(|u| relay_url(u.as_str().unwrap_or_default())).collect::<Result<_, _>>()?;
                     options = options.with_disabled_relays(disabled);
                 }
-                let addr = endpoint_addr(said)?;
+                let mut addr = endpoint_addr(said)?;
+                if let Some(scope) = said.get("meshScope").and_then(Value::as_str) {
+                    addr.addrs.insert(kept.mesh.address(scope, addr.id).await?);
+                }
                 let connecting = endpoint.connect_with_opts(addr, &bytes.unwrap_or_default(), options).await.map_err(err)?;
                 let conn = connecting.await.map_err(err)?;
                 Ok(Answer::json(json!({ "id": self.keep_conn(conn) })))
@@ -3127,6 +3165,7 @@ impl Inner {
             }
             "iroh.close" => {
                 let id = id_of(&a)?;
+                if let Ok(Handle::Endpoint(_,kept))=self.handle(id) { kept.mesh.clear().await; }
                 let forget = a.get("forget").and_then(Value::as_bool).unwrap_or(false);
                 let endpoint = {
                     let mut handles = self.handles.lock().unwrap();
@@ -3686,7 +3725,10 @@ impl Inner {
         }));
         let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
         mark_with_dscp(a.get("dscp"))?;
+        let kept = Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), ..Kept::default() });
         let mut builder = Endpoint::builder(Minimal)
+            .add_custom_transport(kept.mesh.hub.clone())
+            .path_selector(Arc::new(mesh_transport::selection::Selector::new(kept.mesh.hub.clone())))
             .secret_key(key)
             .alpns(alpns)
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
@@ -3715,7 +3757,7 @@ impl Inner {
                 .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
         }
         let endpoint = builder.bind().await.map_err(err)?;
-        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), ..Kept::default() }))) })))
+        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, kept)) })))
     }
 
     /// An account's database: opened, a statement run, its rows, closed, its file removed.

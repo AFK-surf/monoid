@@ -1,3 +1,4 @@
+import type { MeshRelay } from "./mesh-relay-registry";
 // The relays stations and devices use. The first is this cloud's own (RELAY_URL, or PUBLIC_ORIGIN's /relay:
 // relay-worker.ts), handed out alone as `relay_url` to what came before there were several. The others are the cloud's
 // list (relay-registry.ts, kept by the Directory), its operator's to keep: no deploy's config lists them (the user,
@@ -12,7 +13,7 @@ import type { WayView } from "./types";
  * mainland reaches Beijing well, a station in Tokyo Hong Kong; 2026-10-08, bft). `name` "" is none. */
 export type Listed = { url: string; name: string; target: string | null };
 /** The relays as the cloud has them: its own and its list. */
-export type Relays = { own: string; listed: Listed[] };
+export type Relays = { own: string; listed: Listed[]; mesh?: MeshRelay[] };
 
 /** This cloud's own relay. */
 export const ownRelay = (env: { PUBLIC_ORIGIN: string; RELAY_URL?: string }): string => env.RELAY_URL || env.PUBLIC_ORIGIN;
@@ -29,7 +30,7 @@ export const relayUrls = (r: Relays): string[] => {
  * is on the other side of each. An entry is not another relay: putting both among `relay_urls` registers the same key
  * twice and the connections displace each other. New clients choose an entrance within the relay connection; older
  * ones dial each entry on an endpoint of its own. A station is not told the entries. */
-export function relays(r: Relays, device = false): { relay_url: string; relay_urls: string[]; relay_names: Record<string, string>; relay_entries?: string[]; relay_entry_targets?: Record<string, string> } {
+export function relays(r: Relays, device = false): { mesh_relays?: MeshRelay[]; relay_url: string; relay_urls: string[]; relay_names: Record<string, string>; relay_entries?: string[]; relay_entry_targets?: Record<string, string> } {
   const own = relayUrls(r);
   const isOwn = (url: string) => own.some((u) => sameUrl(u) === sameUrl(url));
   const entries: string[] = [];
@@ -44,7 +45,7 @@ export function relays(r: Relays, device = false): { relay_url: string; relay_ur
   }
   const named = (url: string) => r.listed.find((l) => sameUrl(l.url) === sameUrl(url) && l.name !== "")?.name;
   const names = Object.fromEntries([...own, ...entries].flatMap((url) => (named(url) ? [[url, named(url)!]] : [])));
-  return { relay_url: own[0]!, relay_urls: own, relay_names: names, ...(device ? { relay_entries: entries, relay_entry_targets: targets } : {}) };
+  return { ...(r.mesh?.length ? { mesh_relays: r.mesh } : {}), relay_url: own[0]!, relay_urls: own, relay_names: names, ...(device ? { relay_entries: entries, relay_entry_targets: targets } : {}) };
 }
 
 /** What a relay is called: its name on the list, else its host. */

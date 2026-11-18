@@ -667,6 +667,9 @@ function baseWorld(): World {
     .on("feedback.link", ([k]) => (k === "s1" ? "https://app.example/o/w1/st1/s1" : null))
     .is("feedback.send", { $ref: "feedbackSender" }).is("feedback.reply", { $ref: "feedbackReplier" })
     .on("feedbackSender", () => ({ number: 12 })).on("feedbackReplier", () => ({ id: "r1" }))
+    .on("relays.meshList", () => [{ node: "a".repeat(64), name: "office" }])
+    .on("relays.enroll", ([workspace, name, by]) => ({ workspace, name, by, token: "private-once" }))
+    .on("relays.revoke", ([workspace, node]) => ({ workspace, node, revoked: true }))
     .on("relays.ways", () => ({ $ref: "ways" })).on("relays.workspaceOf", () => "w1").on("relays.by", () => "chat One")
     .on("ways.view", () => ({ relays: [{ url: "https://r1.example/", by: "x" }], off: [] }))
     .on("ways.cloud.state", () => ({ origin: "https://app.still.fail" }))
@@ -1013,6 +1016,19 @@ function defineCases() {
 
   // ── relays
   call("relays list", "relays", { action: "list" });
+  call("relays enroll", "relays", { action: "enroll", name: "office" });
+  call("relays enroll empty name", "relays", { action: "enroll", name: "" });
+  call("relays enroll missing name", "relays", { action: "enroll" });
+  call("relays enroll non-string name", "relays", { action: "enroll", name: 42 });
+  call("relays enroll refused", "relays", { action: "enroll", name: "office" }, "t1", (w) => w.on("relays.enroll", () => thrown("Error", { message: "issuer unavailable" })));
+  call("relays revoke", "relays", { action: "revoke", node: "a".repeat(64) });
+  for (const node of [undefined, 42, "a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64)]) {
+    call(`relays revoke invalid ${node}`, "relays", { action: "revoke", node });
+  }
+  call("relays revoke refused", "relays", { action: "revoke", node: "a".repeat(64) }, "t1", (w) => w.on("relays.revoke", () => thrown("Error", { message: "issuer offline" })));
+  fn("relays list without mesh", "relaysWithoutMesh", ["t1", { action: "list" }]);
+  fn("relays enroll unavailable", "relaysWithoutMesh", ["t1", { action: "enroll" }]);
+  fn("relays revoke unavailable", "relaysWithoutMesh", ["t1", { action: "revoke" }]);
   call("relays, no ways", "relays", { action: "list" }, "t1", (w) => w.is("relays.ways", null));
   call("relays, no workspace", "relays", { action: "list" }, "t1", (w) => w.is("relays.workspaceOf", ""));
   call("relays add", "relays", { action: "add", url: "https://relay.example" });
@@ -1415,7 +1431,7 @@ async function typescriptSide(): Promise<Side & { setup: [string, Json][] }> {
     ...jobTools(P("jobs"), (k: string) => callWorld("jobs.workspace", [k]), P("places")),
     ...screenTools(P("screens"), () => callWorld("base", []), (s: string) => callWorld("agentName", [s])),
     ...permissionTools(P("grants"), () => callWorld("base", [])), ...computerTools(computer), ...forwardTools(P("forwards")),
-    ...relayTools({ ways: () => callWorld("relays.ways", []), workspaceOf: (s: string) => callWorld("relays.workspaceOf", [s]), by: (s: string) => callWorld("relays.by", [s]) }),
+    ...relayTools({ ways: () => callWorld("relays.ways", []), workspaceOf: (s: string) => callWorld("relays.workspaceOf", [s]), by: (s: string) => callWorld("relays.by", [s]), meshList: (w: string) => callWorld("relays.meshList", [w]), enroll: (w: string, n: string, b: string) => callWorld("relays.enroll", [w, n, b]), revoke: async (w: string, n: string) => callWorld("relays.revoke", [w, n]) }),
     ...feedbackTools(P("store"), (k: string) => callWorld("feedback.link", [k]), () => callWorld("feedback.send", []), () => callWorld("feedback.reply", [])),
     ...moveTools(moves), ...retireTools(P("retireAsks")), ...deviceTools(P("devices")), ...rigTools(P("rigUse")), ...searchTools(searchDeps),
   ];
@@ -1508,6 +1524,7 @@ async function typescriptSide(): Promise<Side & { setup: [string, Json][] }> {
     described: (base, id) => described(P("screens"), base, id),
     letGo: (by, id, action, view) => letGo(P("screens"), by, id, action, view),
     probeRelay: (u) => probeRelay(u),
+    relaysWithoutMesh: (s, a) => relayTools({ ways: () => callWorld("relays.ways", []), workspaceOf: (s: string) => callWorld("relays.workspaceOf", [s]), by: (s: string) => callWorld("relays.by", [s]) })[0].run(s, a),
     noHelper: (s, a) => noHelper[0].run(s, a),
     report: (s, a, l) => report(s, a, l), fixedNotice: (r, s) => fixedNotice(r, s),
     tellFixed: () => tellFixed(async (told: string[]) => callWorld("feedback.fixed", [told]), (s: string, t: string) => callWorld("feedback.notify", [s, t])),

@@ -10,6 +10,7 @@ crate-type = ["cdylib", "lib"]
 name = "stillfail_shell"
 
 [dependencies]
+mesh-transport = { path = "../../libs/mesh-transport" }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros", "net", "io-util"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }

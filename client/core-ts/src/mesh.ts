@@ -481,6 +481,7 @@ function headersOf(v: J): [string, string][] {
 
 export class Link {
   readonly conn: IrohConnection;
+  readonly endpoint?: IrohEndpoint;
   readonly #control: Control;
   readonly #lock = Semaphore.makeUnsafe(1);
   renewalFailed = false;
@@ -507,8 +508,9 @@ export class Link {
   /// the credential was had; the first credential went as the later of the last two came.
   opened: { onto: number; dialled: number; credential: number } | null = null;
 
-  constructor(conn: IrohConnection, control: Control, credential: string, credentials: CredentialSource, pinned: string | null) {
+  constructor(conn: IrohConnection, control: Control, credential: string, credentials: CredentialSource, pinned: string | null, endpoint?: IrohEndpoint) {
     this.conn = conn;
+    this.endpoint = endpoint;
     this.#control = control;
     this.credential = credential;
     this.credentials = credentials;
@@ -737,6 +739,9 @@ export type MeshEnv = {
   runner: Runner;
   tracer: Tracer;
   iroh: Iroh;
+  /// Program-owned admission to additional transports, on the same endpoint.
+  prepare?(address: string, endpoint: IrohEndpoint): Effect.Effect<string | undefined, CoreError>;
+  linked?(address: string, link: Link, endpoint: IrohEndpoint): Effect.Effect<void, CoreError>;
   wakes: Wakes;
   /// The protocol its links are dialled on (what the peer's endpoint takes).
   alpn: Uint8Array;
@@ -1591,7 +1596,7 @@ export class Mesh {
       let at: Effect.Effect<Link, CoreError>[] = [];
       if (this.#mainOn(addr)) {
         const straight = this.#straightAt(addr);
-        const dial = open(this.#env, endpoint, relays, endpointId(addr), credentials, fresh, null, ctx, straight);
+        const dial = open(this.#env, endpoint, relays, endpointId(addr), credentials, fresh, null, ctx, straight, addr);
         // Given those addresses, its last dial went unanswered: each relay's own endpoint (on that relay alone, at no
         // address) dialled beside it. An address can reach the station one way only, and iroh's handshake goes on the
         // way the station heard first: a station in WSL with mirrored networking says the Windows machine's own
@@ -1671,7 +1676,7 @@ export class Mesh {
     return Effect.suspend(() => {
       this.#dialing++;
       return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) =>
-        endpoint === null ? Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` })) : open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx),
+        endpoint === null ? Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` })) : open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr),
       ).pipe(Effect.ensuring(Effect.sync(() => this.#dialing--)));
     });
   }
@@ -1729,7 +1734,7 @@ export class Mesh {
     this.#atDialling.add(key);
     this.#dialing++;
     return Effect.flatMap(this.#pinnedEndpoint(kind), (endpoint) =>
-      endpoint === null ? Effect.fail(unreached({ message: `no ${kind} endpoint` })) : open(this.#env, endpoint, [], endpointId(addr), credentials, fresh, kind, undefined, at),
+      endpoint === null ? Effect.fail(unreached({ message: `no ${kind} endpoint` })) : open(this.#env, endpoint, [], endpointId(addr), credentials, fresh, kind, undefined, at, addr),
     ).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -1750,6 +1755,10 @@ export class Mesh {
     const ways = this.#live(addr);
     if (ways.some((w) => w.link === link)) return;
     this.#ways.set(addr, [...ways, new Way(link)]);
+    if (this.#env.linked && link.endpoint && (link.pinned === null || isFenced(link.pinned))) {
+      const follow=Effect.andThen(link.admitted(),()=>this.#env.linked!(addr,link,link.endpoint!));
+      this.#env.runner.fork(Effect.ignore(Effect.raceFirst(follow,Effect.asVoid(link.conn.closed())),{log:"Unhandled",message:"link transport admission"}));
+    }
     // A way just opened answers: not taken for unanswered as the ways before it were.
     this.#tellHealth(addr);
     if (link.pinned !== LAN && link.pinned !== TAILNET) this.#env.runner.fork(Effect.andThen(Deferred.await(link.answered), Effect.sync(() => this.#heard(addr, link))));
@@ -2050,7 +2059,7 @@ export class Mesh {
       const tries: Effect.Effect<Link, CoreError>[] = [];
       // Not while the LAN endpoint reaches it: the requests keep off the main endpoint then (LAN_RECALL_MS).
       const onLan = this.now() - (this.#lanAt.get(addr) ?? -Infinity) < LAN_RECALL_MS;
-      if (!have.has("main") && !onLan && this.#mainOn(addr)) tries.push(open(this.#env, this.#endpoint, relays, endpointId(addr), credentials, false, null, undefined));
+      if (!have.has("main") && !onLan && this.#mainOn(addr)) tries.push(open(this.#env, this.#endpoint, relays, endpointId(addr), credentials, false, null, undefined, [], addr));
       if (!mainOnly) for (const r of this.#pinnable(addr)) if (!have.has(r)) tries.push(this.#dialPinned(addr, r, credentials, false, undefined));
       yield* Effect.all(
         tries.map((attempt) => Effect.map(Effect.result(attempt), (r) => (r._tag === "Success" ? this.#adopt(addr, r.success) : undefined))),
@@ -2419,6 +2428,7 @@ function open(
   pinned: string | null,
   ctx: SpanContext | undefined,
   ips: string[] = [],
+  address: string = stationId,
 ): Effect.Effect<Link, CoreError> {
   // (the record's: each dial a line as it ends, where lines are kept: record.ts)
   const n = ++dials;
@@ -2436,12 +2446,13 @@ function open(
     const establish = Effect.gen(function* () {
       if (!/^[0-9a-f]{64}$/.test(stationId)) return yield* Effect.fail(CoreError.invalid(t("core-logic.mesh.bad_station_id", { id: stationId })));
       const device = endpoint.id();
+      const meshScope = env.prepare ? yield* env.prepare(address,endpoint) : undefined;
       // A host may finish its native handshake after its caller is interrupted. Keep taking that answer, and close
       // it if this opening has ended. Until the Link is handed out, this opening owns the connection.
       const dialled = Deferred.makeUnsafe<IrohConnection, CoreError>();
       env.runner.fork(
         Effect.gen(function* () {
-          const r = yield* Effect.result(endpoint.connect(ips.length > 0 ? { id: stationId, relays, ips } : { id: stationId, relays }, env.alpn, [], Deferred.await(givenUp)));
+          const r = yield* Effect.result(endpoint.connect({ id:stationId,relays,...(ips.length > 0 ? {ips} : {}),...(meshScope ? {meshScope} : {})}, env.alpn, [], Deferred.await(givenUp)));
           opened.dialled = since();
           stages.dialled = opened.dialled;
           if (r._tag === "Success") {
@@ -2467,7 +2478,7 @@ function open(
       const control = new Control(stream, env);
       yield* control.send(credential.credential, credential.also, ctx?.traceparent());
       stages.sent = since();
-      const link = new Link(conn, control, credential.credential, credentials, pinned);
+      const link = new Link(conn, control, credential.credential, credentials, pinned, endpoint);
       link.opened = opened;
       // The station's answer to the first credential, while requests already go: a refusal closes the link.
       env.runner.fork(

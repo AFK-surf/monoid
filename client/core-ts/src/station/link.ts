@@ -376,6 +376,7 @@ export class Links {
     for (const [address, link] of [...this.#links]) {
       if (wanted.has(address)) continue;
       this.#links.delete(address);
+      core.meshNow()?.dropLink(address);
       core.runner.close(link.scoped);
       this.#told.gone(address);
       core.scheduler.drop(address, new CoreError("gone", t("station.core.localGone")));

@@ -1,3 +1,6 @@
+import { RelayEnrollment } from "../mesh/enrollment.ts";
+import { workspaceScope } from "../mesh/enrollment-door.ts";
+import { stationAddr } from "../mesh/relays.ts";
 // The agents' side of the station (server.rs `App::start`): the hub with its drivers, background jobs, tasks for other
 // stations, the agents' tools and their door (/mcp). Made here and given to the rest; nothing else starts an agent.
 //
@@ -551,6 +554,18 @@ export const AgentsLive = (control: Control) =>
         // The relays of the chat's workspace of its own (mesh/ways.ts), added by the agents themselves.
         ...relayTools({
           ways: () => (plane.state.state === null ? null : waysOf(plane.state)),
+          meshList: (workspace) => meshSide.relayControl?.list(workspace) ?? [],
+          revoke: async (workspace, node) => {
+            if (!meshSide.relayControl) throw new Error("native mesh relay control is not available");
+            return meshSide.relayControl.revoke(workspace, node);
+          },
+          enroll: (workspace, name, by) => {
+            if (!meshSide.relayControl) throw new Error("native mesh relay enrollment is not available");
+            const state = plane.state.state;
+            if (!state || !plane.state.membership(workspace)) throw new Error("this station is not in the relay's workspace");
+            const registry = new RelayEnrollment(store.db, key.id, wall.now);
+            return { ...registry.issue(workspaceScope(state.origin, workspace), name, by), endpoint: stationAddr(plane.state, key.id, workspace) };
+          },
           workspaceOf: (session) => store.sessionWs(session) ?? plane.state.home(),
           by: (session) => {
             try {

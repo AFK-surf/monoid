@@ -2,8 +2,10 @@
 // (hosts/node-addon.ts), client/iroh-wasm in a browser (hosts/web.ts). Both have the same calls; this makes them the
 // core's Effects.
 import { Effect, Fiber } from "effect";
+import { accessOf } from "./iroh-access.ts";
+export { accessOf } from "./iroh-access.ts";
 import { HostError } from "./error.ts";
-import type { BindOptions, CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohStream } from "./iroh.ts";
+import type { BindOptions, CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohStream, IrohMeshScope, IrohMeshDescriptor, IrohLeafAttachment } from "./iroh.ts";
 
 export type BoundStream = {
   read(): Promise<Uint8Array | null>;
@@ -24,6 +26,10 @@ export type BoundConnection = {
   stats(): { rxBytes: number; txBytes: number };
 };
 export type BoundEndpoint = {
+  meshUseLeaf?(value: {scope: string; attachment: IrohLeafAttachment}): Promise<void>;
+  meshDetachLeaf?(value: {scope: string; attachmentId: number[]}): Promise<void>;
+  meshConfigure?(scope: IrohMeshScope): Promise<IrohMeshDescriptor>;
+  meshRemove?(scope: string): Promise<void>;
   id(): string;
   /// `givenUp`: resolves when the dial is to be given up (a binding from before takes no such argument and goes on).
   connect(addr: IrohAddr, alpn: never, additional: never[], givenUp?: Promise<void>): Promise<BoundConnection>;
@@ -40,15 +46,6 @@ const host = (e: unknown) => new HostError(e instanceof Error ? e.message : Stri
 const call = <A>(f: () => Promise<A>): Effect.Effect<A, HostError> => Effect.tryPromise({ try: f, catch: host });
 /// The binding's bytes (a Buffer) as plain ones, not copied.
 const view = (b: Uint8Array) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-
-/// The path's relay is its logical server; show the address actually carrying that server's connection.
-export function accessOf(relay: string | null, statuses: { url: string; access?: string }[]): string | null {
-  if (relay === null) return null;
-  const key = (url: string) => {
-    try { return new URL(url).href; } catch { return url; }
-  };
-  return statuses.find((s) => key(s.url) === key(relay))?.access ?? relay;
-}
 
 /// `bind` the binding's; `bytes` makes bytes as it takes them (Node's addon: a Buffer).
 export function wrapIroh(bind: (o: BindOptions) => Promise<BoundEndpoint>, bytes: (b: Uint8Array) => unknown): Iroh {
@@ -86,6 +83,10 @@ export function wrapIroh(bind: (o: BindOptions) => Promise<BoundEndpoint>, bytes
     const accept = e.accept?.bind(e);
     return {
       id: () => e.id(),
+      ...(e.meshUseLeaf && { meshUseLeaf: (value: {scope: string; attachment: IrohLeafAttachment}) => call(() => e.meshUseLeaf!(value)) }),
+      ...(e.meshDetachLeaf && { meshDetachLeaf: (value: {scope: string; attachmentId: number[]}) => call(() => e.meshDetachLeaf!(value)) }),
+      ...(e.meshConfigure && { meshConfigure: (scope: IrohMeshScope) => call(() => e.meshConfigure!(scope)) }),
+      ...(e.meshRemove && { meshRemove: (scope: string) => call(() => e.meshRemove!(scope)) }),
       connect: (addr, alpn, additional, givenUp) =>
         Effect.map(
           // Given up when `givenUp` succeeds or this is interrupted (its answer let go either way).

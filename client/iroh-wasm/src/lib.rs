@@ -10,6 +10,8 @@
 //! Every method that waits answers a Promise: each takes what it needs out of `self` first, as wasm-bindgen's futures
 //! must own what they hold.
 
+mod mesh;
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -82,7 +84,10 @@ pub fn bind(options: JsValue) -> Promise {
         let relay_map = iroh::RelayMap::from_iter(relays.iter().map(|relay| {
             iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
         }));
+        let mesh = Arc::new(mesh::Scopes::default());
         let endpoint = IrohEndpoint::builder(Minimal)
+            .add_custom_transport(mesh.hub.clone())
+            .path_selector(Arc::new(mesh_transport::selection::Selector::new(mesh.hub.clone())))
             .secret_key(SecretKey::from_bytes(&bytes))
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
             .home_on_every_relay()
@@ -90,13 +95,15 @@ pub fn bind(options: JsValue) -> Promise {
             .bind()
             .await
             .map_err(failed)?;
-        Ok(Endpoint { inner: endpoint }.into())
+        Ok(Endpoint { inner: endpoint, mesh }.into())
     })
 }
 
 #[derive(Deserialize)]
 struct Addr {
     id: String,
+    #[serde(default, rename = "meshScope")]
+    mesh_scope: Option<String>,
     #[serde(default)]
     relays: Option<Vec<String>>,
 }
@@ -114,6 +121,7 @@ fn endpoint_addr(addr: JsValue) -> Result<EndpointAddr, JsValue> {
 #[wasm_bindgen]
 pub struct Endpoint {
     inner: IrohEndpoint,
+    mesh: Arc<mesh::Scopes>,
 }
 
 #[derive(Serialize)]
@@ -130,14 +138,53 @@ impl Endpoint {
         hex::encode(self.inner.id().as_bytes())
     }
 
+    #[wasm_bindgen(js_name = meshConfigure)]
+    pub fn mesh_configure(&self, config: JsValue) -> Promise {
+        let mesh = self.mesh.clone();
+        let key = self.inner.secret_key().clone();
+        future_to_promise(async move {
+            let config = serde_wasm_bindgen::from_value(config).map_err(failed)?;
+            to_js(&mesh.configure(&key, config).await.map_err(failed)?)
+        })
+    }
+
+    #[wasm_bindgen(js_name = meshUseLeaf)]
+    pub fn mesh_use_leaf(&self, command: JsValue) -> Promise {
+        let mesh = self.mesh.clone();
+        let root = self.inner.id();
+        future_to_promise(async move {
+            let command = serde_wasm_bindgen::from_value(command).map_err(failed)?;
+            mesh.use_leaf(root, command).await.map_err(failed)?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+    #[wasm_bindgen(js_name = meshDetachLeaf)]
+    pub fn mesh_detach_leaf(&self, command: JsValue) -> Promise {
+        let mesh = self.mesh.clone();
+        future_to_promise(async move {
+            let command = serde_wasm_bindgen::from_value(command).map_err(failed)?;
+            mesh.detach_leaf(command).await.map_err(failed)?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    #[wasm_bindgen(js_name = meshRemove)]
+    pub fn mesh_remove(&self, scope: String) -> Promise {
+        let mesh = self.mesh.clone();
+        future_to_promise(async move { mesh.remove(&scope).await.map_err(failed)?; Ok(JsValue::UNDEFINED) })
+    }
+
     /// A connection to a station offering `alpn` and, for one from before a rename, the `additional` ones. Once
     /// `given_up` resolves (its caller stopped waiting) the handshake is given up, its connection dropped and so closed,
     /// as the station's addon gives a dial up (station/native/mesh `dial`).
     pub fn connect(&self, addr: JsValue, alpn: Uint8Array, additional: Vec<Uint8Array>, given_up: Option<Promise>) -> Promise {
         let endpoint = self.inner.clone();
+        let mesh = self.mesh.clone();
         future_to_promise(async move {
             let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional.iter().map(Uint8Array::to_vec).collect());
-            let addr = endpoint_addr(addr)?;
+            let said: Addr = serde_wasm_bindgen::from_value(addr.clone()).map_err(failed)?;
+            let mut addr = endpoint_addr(addr)?;
+            if let Some(scope) = said.mesh_scope { addr.addrs.insert(mesh.address(&scope, addr.id).await.map_err(failed)?); }
             let handshake = async {
                 let connecting = endpoint.connect_with_opts(addr, &alpn.to_vec(), options).await.map_err(failed)?;
                 connecting.await.map_err(failed)
@@ -199,7 +246,9 @@ impl Endpoint {
 
     pub fn close(&self) -> Promise {
         let endpoint = self.inner.clone();
+        let mesh = self.mesh.clone();
         future_to_promise(async move {
+            mesh.clear().await;
             endpoint.close().await;
             Ok(JsValue::UNDEFINED)
         })

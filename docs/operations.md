@@ -20,6 +20,30 @@ station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/
 
 更新支持原地交接：启动器（station/native/launcher，pid 不变）收到 SIGUSR2，在旁边起新版本的 Node 进程，新的就绪后放掉旧的，轮次、运行时和 job 不断（station/native/launcher/src/run.rs、station/src/ops/launcher.ts）；不支持交接的旧版本（Rust station），安装器会先排空再重启。
 
+## 独立 mesh 中继
+
+独立中继从本仓库构建：
+
+```sh
+cargo build --release --manifest-path libs/mesh-transport/Cargo.toml --bin mesh-relay
+```
+
+workspace 中继由该 workspace 内的 `relays` 工具以 `action: "enroll"` 和名称签发邀请。把返回的完整 JSON 保存为权限受限的邀请文件，交给中继进程；邀请只授予转发身份，不授予业务访问权限，有效期为 24 小时。
+
+```sh
+libs/mesh-transport/target/release/mesh-relay /path/to/relay-data /path/to/invitation.json
+```
+
+首次注册后，重启只传同一个数据目录。该目录保存私钥、注册及完整目录缓存，必须持久保存，不能让两个中继实例共用。注册成功后可删除邀请文件；程序保存的注册状态不再保留已消费 token。换 workspace 或签发 station 使用新数据目录。用 `relays` 的 `list` 查看节点公钥，`revoke` 加 `node` 撤销；签发 station 必须可达。被撤销的进程退出，重新加入需要新的邀请。
+
+全局中继由 cloud 运营方通过 `POST /v1/admin/relays/mesh-token`（`name`）签发邀请，将响应的 `invitation` 对象保存为文件，使用同一程序的全局模式：
+
+```sh
+libs/mesh-transport/target/release/mesh-relay --global /path/to/global-relay-data /path/to/invitation.json
+```
+
+全局模式重启也只保留模式和数据目录参数，不能与 workspace 模式共用目录。运营方用 `POST /v1/admin/relays/mesh-remove`（`node`）撤销。注册接口沿用管理员认证；不要把邀请文件、私钥或 token 放进版本库和日志。进程由部署环境的服务管理器托管；程序本身不安装系统服务。
+
 ## 管理界面
 
 管理 station 从 workspace 内进入，通过客户端 core 与 station 建立带成员凭证的连接。本机旧管理端口 4760 仅重定向到 cloud，已经不再提供独立管理页；4750 是 agent MCP 端点，不要对公网暴露。这两个端口都默认只监听本机，实际端口以 station 的运行记录为准。

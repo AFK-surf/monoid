@@ -34,15 +34,31 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   corrects it. `scripts/check.sh` refuses a path written in one that is not there.
 - A rule the owner gives that is not checked, and anything an agent would get wrong from the code alone, goes in the
   AGENTS.md of the narrowest directory it is about, said once, in a few lines. What the code or its comments already
-  say is not written again; a decision says why and, where it was the owner's, when (`the user, 2026-11-09`).
+  say is not written again. State the rule and its reason without attribution or date annotations.
 - A new directory with rules of its own gets an AGENTS.md and a CLAUDE.md of one line, `@AGENTS.md`.
 
 ## Changes, checks and CI
 
-- One pull request per piece of work, from `origin/main`. Merging to main deploys the beta (`.github/workflows/pipeline.yml`,
-  `scripts/plan.sh`: what each path deploys), so main is always releasable.
-- A bug's fix merges once its newest commit's checks passed; a change to the product or to what people see, when
-  the owner has said so (the user, 2026-10-31).
+### Pull requests and evidence
+
+- Make one pull request per request, from `origin/main`. Split it only when a maintainer asks. External contributions
+  follow the stricter rule: one issue per pull request.
+- Squash each task into one commit before its first pull request. After that, append commits without a squash.
+- For requests started through still.fail, use the requester's GitHub account when local `gh` has it.
+  Otherwise use CommaBot and add `Co-authored-by: Name <requester-email>` to the commits.
+  For requests from other sources, use the existing `gh` identity without the CommaBot fallback.
+- End the pull request description with the model or models that completed the work and the test frameworks used.
+- UI changes need before-and-after images. Changes to animation or timing also need a short video.
+  Upload PR evidence to GitHub and link it in the description. Never commit screenshots or other assets made only
+  for the PR.
+- Merging to main deploys the beta (`.github/workflows/pipeline.yml`, `scripts/plan.sh`: what each path deploys), so
+  main is always releasable. A bug's fix merges once its newest commit's checks passed; a change to the product or
+  to what people see, when the owner has said so.
+
+### Commit and pull request messages
+
+- Use `.agents/skills/ste-writing/SKILL.md` for commit messages and pull request titles and descriptions.
+  Commit subjects use `{type}({scope}): {description}`, for example `feat(server): add mesh routes`.
 - What people will notice of a change is said in its commit message's trailers: `Changelog:` a line for them, in
   Chinese (`修复：…`, `新增：…`, `改进：…`); `Changelog-parts:` where they see it (`station`, `web`, `android`,
   `desktop`, `cloud`); `Fixes: FB-<n>` a bug report it fixes. The apps' changelog and each stable release's notes
@@ -52,11 +68,14 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   release's notes; one of an experimental feature names where it is turned on (`新增：实验性功能「对话列表看板视图」中，…`).
   The change that opens it to stable writes its line for stable then. A line already written otherwise is said again in
   `docs/changelog-notes.json`.
+
+### Checks and compatibility
+
 - `sh scripts/check.sh full origin/main..HEAD` checks what the range changed (the git hooks run its quick part);
   `STILLFAIL_CHECK_PART` narrows it. Run the part you changed before a PR; the whole of it is CI's.
 - A fix that cannot wait a day for the next stable release (a crash, data lost, people locked out, a release that does
   not update) says `Stable: yes` in its commit message: the stable release is the day before's main, and only such
-  fixes are cherry-picked onto it (`.github/stable-plan.py`; the user, 2026-11-09).
+  fixes are cherry-picked onto it (`.github/stable-plan.py`).
 - Older stations and newer cores coexist: what is kept for older versions goes 7 days after its replacement ships, and
   that change raises the floor (`OLDEST_CORE` in `station/src/api/oldest.ts`, `OLDEST_STATION` in
   `client/core-ts/src/station/oldest.ts`). Databases migrate forward only. Existing commands and shared links keep
@@ -71,22 +90,22 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
 ## To people there is one safe mode
 
 - A person's own lock (which devices are theirs) is the root of trust; a workspace's lock is going away as a thing
-  of its own (the user, 2026-11-05): it keeps the roster (members, stations) and follows each person's own lock for
+  of its own: it keeps the roster (members, stations) and follows each person's own lock for
   their devices.
-- People are never asked to tell the two apart (the user, 2026-11-10): 安全模式, 受信任设备 and 批准 look and work as
+- People are never asked to tell the two apart: 安全模式, 受信任设备 and 批准 look and work as
   they did before there was a lock of one's own. No page, prompt or refusal sends someone to 个人锁 to be let in to
   a workspace, or names it where the workspace's lock was named before.
 - A person's devices are theirs alone to change: owners and admins take a member out, never one device of someone
-  else's (the user, 2026-11-10).
+  else's.
 - Everyone in safe mode comes to have a lock of their own with nobody asked (`client/core-ts/src/views/lock.ts`
   `ownLockFor`): their devices trusted in a workspace's lock are put on it by the one of them that approved them
-  there, and take it from that one, a member's as an owner's, so that nobody approves a device again (the user,
-  2026-11-10). What that costs, known and taken: until a member's devices have a lock pinned, an owner or admin of a
+  there, and take it from that one, a member's as an owner's, so that nobody approves a device again.
+  What that costs, known and taken: until a member's devices have a lock pinned, an owner or admin of a
   workspace of theirs who rewrites its lock with a changed app can get a device of their own taken as that member's
   (`vouchersIn` says how); the entries that did it stay in the lock. Do not widen it (never by a device id, never the
   device that approved one already on the lock), and do not narrow it without the owner.
 - Every error, refusal and wait tells the person what to do next to get done what they set out to do; none is a dead
-  end (the user, 2026-11-12).
+  end.
 
 ## No polling between still.fail's own parts
 
@@ -126,11 +145,11 @@ and any tunnel's name in the station or the cloud.
 
 ## The cloud is the account system and nothing else
 
-Only the account system depends on still.fail cloud (the user, 2026-11-09): accounts and sign-in, workspaces, their
+Only the account system depends on still.fail cloud: accounts and sign-in, workspaces, their
 members, roles and invitations, the list of a workspace's stations, and the member credentials it signs. Nothing else
 does. What devices and stations keep, decide or tell each other goes between them over the mesh, and keeps working
 with the cloud down, slow, rate-limited or holding something back. The relays are not the cloud (they only carry the
-mesh's packets, end to end encrypted), and push notifications are the one exception (the user, 2026-11-09): a station
+mesh's packets, end to end encrypted), and push notifications are the one exception: a station
 gives the cloud its notices to push through APNs, FCM and Web Push (`cloud/src/push.ts`).
 
 Signatures the cloud cannot forge are not enough: what the cloud only carries, it can still hold back, delay or lose.
@@ -145,7 +164,7 @@ before, never waited on; that goes 7 days after these stations ship. Its taking 
 station took is pending on the device that signed it (`client/core-ts/src/lock-pending.ts`) until one does, or until
 the lock names none (its last station taken out), which the cloud keeps as before there were stations.
 
-Stations that took different entries at one place used to never come back to one chain (2026-11-12;
+Stations that took different entries at one place used to never come back to one chain (
 `station/test/lock-world-sim.ts` lists what that broke and what still does), so each log goes by a fork choice
 (`station/test/lock-fork-choice-model.ts`), and a workspace's chain moves into its people's own logs (`moved {root}`;
 `station/test/lock-roster4-model.ts`, rules/AGENTS.md). The stations go by the fork choice
@@ -158,7 +177,7 @@ off an entry that lost, and the device that signed it signs it again after the h
 `carry`). The cloud's copy, for the stations and devices from before, is kept the same way: what a station gives it as
 another keeper's goes by the fork choice (`cloud/src/lock.ts` `keepLockAt`), each station giving it its chain where the
 cloud's parts from it (`station/src/cloud/presence.ts` `planeParted`), so it names the stations' head again. What it is
-built to (the user, 2026-11-12):
+built to:
 
 - The lock's adversary is the cloud and every station but the one asked (`rules/protocol/lock.spthy`): only signatures
   of devices on a lock decide. No cloud and no station orders entries, arbitrates between them, or is the one to follow.

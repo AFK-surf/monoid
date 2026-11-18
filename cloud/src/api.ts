@@ -37,6 +37,7 @@ const STATUS: Record<string, number> = {
   invite_code_required: 403, invite_code_invalid: 404, invite_code_used: 409, invite_code_expired: 410,
   invalid_note: 400, invalid_expiry: 400, invalid_limits: 400,
   feedback_not_found: 404,
+  invalid_signature: 401, wrong_relay_kind: 403, too_many_mesh_relays: 409, mesh_registry_capacity: 409, mesh_generation_exhausted: 409, mesh_relay_not_registered: 403, stale_mesh_address: 409, invalid_node: 400, mesh_relay_not_found: 404,
   invalid_target: 400, too_many_relays: 429, relay_not_found: 404, invalid_token: 403, wrong_relay: 403, unknown_relay: 400, invalid_secret: 403, not_from_relay: 403, invalid_request: 400,
   invalid_lock_entries: 400, lock_exists: 409, lock_fork: 409, lock_does_not_follow: 409, lock_refused: 409, invalid_device: 400, invalid_kind: 400,
 };
@@ -159,6 +160,19 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   if (path === "/v1/relays/load" && method === "POST") return receiveLoad(request, env);
   // A relay putting itself on the cloud's list with a token its operator made (relay-registry.ts, relay-enroll.sh):
   // { token, url } (url where the token names none). Answers its secret, which its counters come with.
+  if (path === "/v1/relays/mesh/events" && method === "POST") {
+    const input = await body(request, 4096);
+    return env.DIRECTORY.getByName("primary").fetch(new Request("https://directory/mesh-relays/events", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+    }));
+  }
+  if (path === "/v1/relays/mesh" && method === "GET") {
+    return directory(async () => ({ relays: await env.DIRECTORY.getByName("primary").meshRelays() }));
+  }
+  if ((path === "/v1/relays/mesh/enroll" || path === "/v1/relays/mesh/address") && method === "POST") {
+    const input = await body(request, 20_480);
+    return directory(() => env.DIRECTORY.getByName("primary").meshRelayRegister(input.body,input.signature,path.endsWith("/enroll")));
+  }
   if (path === "/v1/relays/enroll" && method === "POST") {
     const input = await readJson(request).catch(() => null);
     if (!input) return reply({ error: "invalid_request" }, 400);
@@ -521,9 +535,20 @@ export async function relayAdmin(env: Env, by: string, path: string, method: str
   const dir = env.DIRECTORY.getByName("primary");
   const call = path.slice("/v1/admin/relays/".length);
   const said = (v: unknown) => (typeof v === "string" ? v : "");
-  if (call === "list") return directory(() => dir.relayList());
+  if (call === "list") return directory(async () => ({ ...await dir.relayList(), mesh: await dir.meshRelays() }));
   if (call === "put") return audited(env, by, "relay.put", said(input.name) || said(input.url), said(input.url), () => directory(() => dir.relayPut(by, input)));
   if (call === "remove") return audited(env, by, "relay.remove", said(input.url), "", () => directory(async () => (await dir.relayRemove(input.url), { removed: true })));
+  if (call === "mesh-remove") return audited(env, by, "relay.remove", said(input.node), "", () => directory(async () => (await dir.meshRelayRemove(input.node), { removed: true })));
+  if (call === "mesh-token") {
+    return audited(env, by, "relay.token", said(input.name), "", () => directory(async () => {
+      if (input.url !== undefined || input.target !== undefined) throw new Error("invalid_request");
+      const made = await dir.relayToken(by, { name: input.name });
+      const listed = relays(await dir.relaysNow());
+      return { name: made.name, expires_at: made.expires_at,
+        invitation: { origin: env.PUBLIC_ORIGIN, token: made.token, relays: listed.relay_urls },
+        command: "mesh-relay --global DATA_DIRECTORY INVITATION_JSON_FILE" };
+    }));
+  }
   if (call === "token") {
     return audited(env, by, "relay.token", said(input.name), said(input.url) || said(input.target), () => directory(async () => {
       const made = await dir.relayToken(by, input);

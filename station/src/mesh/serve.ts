@@ -744,6 +744,7 @@ function onPersonalLock(cloud: Cloud, admitted: Admitted, named: string, endpoin
 }
 
 export type Members = {
+  leaves?: import("./leaf.ts").LeafAttachments;
   cloud: Cloud;
   admin: Admin;
   /// Whether the station answers now (its parts started; not handing over).
@@ -820,7 +821,8 @@ function admission(m: Members, device: string): Admit {
     const head = lockHead(m.cloud, joinedOf(m.cloud, current.viewer.workspace));
     const lan = m.lan?.() ?? [];
     const tailnet = m.tailnet?.() ?? [];
-    const line = { ok: true, station: m.cloud.membership(current.viewer.workspace)?.name ?? state().name, expires_at: current.exp, ...(head ? { lock: head } : {}), ...(lan.length > 0 ? { lan } : {}), ...(tailnet.length > 0 ? { tailnet } : {}) };
+    m.leaves?.authenticated(conn,current.viewer.workspace,current.exp);
+    const line = { ...(m.leaves ? {meshLeaf:true} : {}), ok: true, station: m.cloud.membership(current.viewer.workspace)?.name ?? state().name, expires_at: current.exp, ...(head ? { lock: head } : {}), ...(lan.length > 0 ? { lan } : {}), ...(tailnet.length > 0 ? { tailnet } : {}) };
     // The ways it had as its last request came (said when it ends, where it has none left then).
     let lastWays = "";
 
@@ -897,6 +899,7 @@ function admission(m: Members, device: string): Admit {
       // Renewals on the credential stream (one that fails is answered why, by the door, and ends nothing).
       renew: (line) => {
         ({ admitted: current, named } = check(line));
+        m.leaves?.authenticated(conn,current.viewer.workspace,current.exp);
         watchExpiry();
         told();
         return { ok: true, expires_at: current.exp };
@@ -1018,6 +1021,21 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
     return socket(m, stream, reader, head, path);
   }
   const body = await reader.rest();
+  if (path === "/admin/api/mesh/leaf/events" && method === "GET") {
+    if (!m.leaves) return answer(404,{error:"no leaf transport"});
+    await writeLine(stream,{status:200,headers:{"content-type":"application/x-ndjson"}});
+    return m.leaves.follow(conn,viewer.workspace,stream);
+  }
+  if (path === "/admin/api/mesh/leaf") {
+    if (!m.leaves) return answer(404,{error:"no leaf transport"});
+    try {
+      if (method === "GET") return answer(200,m.leaves.view(viewer.workspace));
+      if (method !== "POST" || body.length > 16_384) return answer(400,{error:"invalid leaf attachment request"});
+      const input=JSON.parse(body.toString());
+      if (typeof input?.target!=="string") return answer(400,{error:"missing leaf target"});
+      return answer(200,await m.leaves.attach(conn,viewer.workspace,input.descriptor,input.target));
+    } catch (error) { return answer(403,{error:String(error)}); }
+  }
   // A device that stops reading or loses its connection no longer needs its pending reads. Do not cancel writes: their
   // effects and idempotency answers must be finished even when their caller goes away.
   const controller = readsOf(method, path) ? new AbortController() : null;

@@ -135,6 +135,9 @@ async fn Mesh::part(self : Mesh, client : Client) -> Unit {
     return
   }
   client.gone = true
+  if self.endpoint is Some(endpoint) {
+    ignore(self.host.shell("iroh.meshUnsubscribe", { "id": endpoint, "socket": client.conn.id })) catch { _ => () }
+  }
   client.bound = 0
   let left = []
   while client.coming.try_take() is Some(c) {
@@ -468,6 +471,9 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
       client.streams = streams
       self.binds += 1
       client.bound = self.binds
+      if self.endpoint is Some(endpoint) {
+        ignore(self.host.shell("iroh.meshSubscribe", { "id": endpoint, "socket": client.conn.id }))
+      }
       let waited = self.waiting.copy()
       self.waiting.clear()
       for c in waited {
@@ -569,7 +575,7 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
     }
     "conn.answers" => self.host.shell("conn.answers", { "id": arg("conn"), "within": arg("within") }).0
     "conn.seen" => self.seen(arg("conn"))
-    "online" | "insertRelay" | "removeRelay" | "publicRelays" | "keep" | "setCongestion" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" => {
+    "online" | "insertRelay" | "removeRelay" | "publicRelays" | "keep" | "setCongestion" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" | "meshConfigure" | "meshRemove" | "meshAttachLeaf" | "meshDetachLeaf" => {
       let args = match asked_args(arg) {
         Object(m) => {
           m["id"] = self.bound()

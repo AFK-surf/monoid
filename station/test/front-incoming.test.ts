@@ -213,12 +213,18 @@ test("the front's endpoint linked again is bound with the relays it is on now", 
     await endpoint.disabledRelays!("peer-a", ["https://ours.example"], true);
     await endpoint.disabledRelays!("peer-b", ["https://ours.example"], false);
     await endpoint.disabledRelays!("peer-b", [], false);
+    const activeScope = { scope: "01".repeat(32), peers: [], relayUrls: ["https://own.example"] };
+    const removedScope = { ...activeScope, scope: "02".repeat(32) };
+    await endpoint.meshConfigure!(activeScope);
+    await endpoint.meshConfigure!(removedScope);
+    await endpoint.meshRemove!(removedScope.scope);
     await endpoint.route!(Buffer.from("test"), ["/tmp/test.sock"], ["GET /test"]);
     links[0]!.destroy();
     while (mesh.frontLink!() === "ok") await new Promise((r) => setImmediate(r));
     while (links.length < 2 || mesh.frontLink!() !== "ok") await new Promise((r) => setImmediate(r));
     assert.deepEqual(bound, [["https://ours.example", "https://own.example"], ["https://own.example", "https://more.example"]]);
     assert.deepEqual(told.filter((x) => x.link === 2 && x.op === "disabledRelays").map((x) => x.args), [{ peer: "peer-a", relays: ["https://ours.example"], public: true }]);
+    assert.deepEqual(told.filter((x) => x.link === 2 && x.op === "meshConfigure").map((x) => x.args), [activeScope]);
     const replay = told.findIndex((x) => x.link === 2 && x.op === "disabledRelays");
     const routed = told.findIndex((x) => x.link === 2 && x.op === "route");
     assert.ok(replay >= 0 && routed > replay, "restrictions replay before incoming requests are routed");

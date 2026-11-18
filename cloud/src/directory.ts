@@ -1,3 +1,5 @@
+import { MeshRelayEvents, watchRequest, watchMessage } from "./mesh-relay-events";
+import { MESH_RELAY_TABLES, meshRegistration, meshRelayMessage, type MeshRelay } from "./mesh-relay-registry";
 // Who belongs where: users, workspaces, memberships, invitations and
 // stations, in one SQLite-backed object so every change is a single
 // transaction. Callers have already verified the account's access token;
@@ -19,7 +21,7 @@ import { CODE_TTL_DAYS, isAdmin, newCode, normalizeCode } from "./admin";
 import { clock, denied, digest, nowSeconds, pastedSecret, randomSecret, type Identity } from "./auth";
 import { header, publicOrigins } from "./compat";
 import type { Env } from "./env";
-import { grantKeys } from "./grants";
+import { grantKeys, verifyKeySignature } from "./grants";
 import { langOf, setCloud, type Lang } from "./i18n.ts";
 import { isIconUrl } from "./icons";
 import { showsOf, type Shows } from "./noticeText";
@@ -128,6 +130,7 @@ export type PushDevice =
 export type PushRegistration = PushDevice & { id: string; lang: Lang; shows: Shows | null };
 
 export class Directory extends DurableObject<Env> {
+  #meshEvents = new MeshRelayEvents();
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // (its pushes' words name its product)
@@ -230,6 +233,7 @@ export class Directory extends DurableObject<Env> {
     // The cloud's list of relays (relay-registry.ts), and the tokens made for relays to put themselves on it. (What a
     // deploy's config said before was taken as the list once, 2026-11-17: the `relays-listed` migration.)
     ctx.storage.sql.exec(RELAY_TABLES);
+    ctx.storage.sql.exec(MESH_RELAY_TABLES);
     if (sockets.where(env) === "objects") this.handOff();
     // What deliveries a restart cut short still owe.
     if (this.#one("SELECT 1 AS x FROM outbox LIMIT 1")) void ctx.blockConcurrencyWhile(() => this.#arm());
@@ -1930,10 +1934,54 @@ export class Directory extends DurableObject<Env> {
 
   // ── the cloud's relays (relays.ts, relay-registry.ts) ───────────────────
 
+  meshRelays(): MeshRelay[] {
+    return this.#rows("SELECT node, name, generation, revision, address FROM mesh_relays WHERE revoked = 0 ORDER BY node").map((row) => ({
+      node: row.node as string, name: row.name as string, generation: row.generation as number,
+      revision: row.revision as number, address: JSON.parse(row.address as string),
+    }));
+  }
+
+  async meshRelayRegister(body: unknown, signature: unknown, enroll: boolean): Promise<MeshRelay> {
+    const input = meshRegistration(body, enroll, this.env.PUBLIC_ORIGIN.startsWith("http:")) ?? fail(400, "invalid_request");
+    if (typeof signature !== "string" || !await verifyKeySignature(input.node, signature, meshRelayMessage(this.env.PUBLIC_ORIGIN, body as string))) fail(401,"invalid_signature");
+    const hash = enroll ? await digest(input.token!) : null;
+    // All awaits precede the token/row read. Consumption and the generation
+    // change are one transaction, including concurrent attempts with one token.
+    const result = this.ctx.storage.transactionSync(() => {
+      const old = this.#one("SELECT * FROM mesh_relays WHERE node = ?",input.node);
+      if (enroll) {
+        const token = this.#one("SELECT * FROM relay_tokens WHERE token_hash = ? AND expires_at > ?",hash!,nowSeconds()) ?? fail(403,"invalid_token");
+        if (token.url !== null || token.target !== null) fail(403,"wrong_relay_kind");
+        if ((!old || old.revoked) && this.meshRelays().length >= 32) fail(409,"too_many_mesh_relays");
+        if (!old && (this.#one("SELECT COUNT(*) AS n FROM mesh_relays")?.n as number) >= 256) fail(409,"mesh_registry_capacity");
+        const generation = old ? Number(old.generation)+1 : 1;
+        if (!Number.isSafeInteger(generation)) fail(409,"mesh_generation_exhausted");
+        this.#run("DELETE FROM relay_tokens WHERE token_hash = ?",hash!);
+        this.#run(`INSERT INTO mesh_relays (node,name,generation,revision,address,revoked,added_at,added_by) VALUES (?,?,?,?,?,0,?,?)
+          ON CONFLICT(node) DO UPDATE SET name=excluded.name,generation=excluded.generation,revision=excluded.revision,address=excluded.address,revoked=0,added_at=excluded.added_at,added_by=excluded.added_by`,
+          input.node,token.name as string,generation,input.revision,JSON.stringify(input.address),nowSeconds(),token.made_by as string);
+        return { node:input.node,name:token.name as string,generation,revision:input.revision,address:input.address };
+      }
+      if (!old || old.revoked || old.generation !== input.generation) fail(403,"mesh_relay_not_registered");
+      if (input.revision <= Number(old!.revision)) fail(409,"stale_mesh_address");
+      this.#run("UPDATE mesh_relays SET revision = ?, address = ? WHERE node = ?",input.revision,JSON.stringify(input.address),input.node);
+      return { node:input.node,name:old!.name as string,generation:Number(old!.generation),revision:input.revision,address:input.address };
+    });
+    this.#relaysChanged();
+    return result;
+  }
+
+  meshRelayRemove(node: unknown): void {
+    if (typeof node !== "string" || !/^[0-9a-f]{64}$/.test(node)) fail(400,"invalid_node");
+    if (!this.#one("SELECT node FROM mesh_relays WHERE node = ?",node as string)) fail(404,"mesh_relay_not_found");
+    this.#run("UPDATE mesh_relays SET revoked = 1 WHERE node = ?",node as string);
+    this.#relaysChanged();
+  }
+
   /** The relays as this cloud has them: its own, and its list in the order its relays were put on it. */
   #relays(): Relays {
     const listed = this.#rows("SELECT url, name, target FROM relays ORDER BY added_at, rowid").map((r) => ({ url: r.url as string, name: r.name as string, target: (r.target as string | null) ?? null }));
-    return { own: ownRelay(this.env), listed };
+    return { own: ownRelay(this.env), listed, mesh: this.meshRelays() };
   }
 
   /** The same, for what reads it outside this object (status.ts, relay-load.ts, the probes). */
@@ -2068,6 +2116,7 @@ export class Directory extends DurableObject<Env> {
   /** The list changed: every station connected is sent its state again (its relays in it), every device told to read
    * its `/v1/me` again. */
   #relaysChanged(): void {
+    this.#meshEvents.changed(this.meshRelays());
     const stations = new Set(this.#rows("SELECT key FROM live WHERE kind = 'station'").map((r) => r.key as string));
     for (const ws of this.ctx.getWebSockets()) {
       const attachment = ws.deserializeAttachment() as Attachment;
@@ -2675,6 +2724,19 @@ export class Directory extends DurableObject<Env> {
    * station (whose signature it checked) in `x-stillfail-station`.
    */
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === "/mesh-relays/events" && request.method === "POST") {
+      const signed = await request.json() as { body?: unknown; signature?: unknown };
+      const input = watchRequest(signed.body, Date.now());
+      if (!input || typeof signed.signature !== "string" || !await verifyKeySignature(input.node, signed.signature, watchMessage(this.env.PUBLIC_ORIGIN, signed.body as string))) {
+        return Response.json({ error: "invalid_signature" }, { status: 401 });
+      }
+      // The signature check awaits. Read admission afterwards so revocation wins.
+      const relays = this.meshRelays();
+      if (!relays.some(r => r.node === input.node && r.generation === input.generation)) return Response.json({ error: "mesh_relay_not_registered" }, { status: 403 });
+      const stream = this.#meshEvents.open(input.node,input.generation,input.at,Date.now(),relays);
+      if (!stream) return Response.json({ error: "mesh_watch_capacity" }, { status: 429 });
+      return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
+    }
     // Only while the sockets are rolled back here (sockets.where). An old Worker's, in flight as it is replaced, is
     // turned away as a restarting service: the device or station tries again, through the new one, onto its object.
     if (sockets.where(this.env) === "objects") return Response.json({ error: "moved" }, { status: 503 });

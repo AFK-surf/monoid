@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 
 /// `disabledRelays`: relays it is not to be reached through, though Address Lookup names them (an addon from before
 /// takes no notice). Said, they stay so for every connection to it until a dial says others.
-export type Addr = { id: string; relays?: string[]; ips?: string[]; disabledRelays?: string[] };
+export type Addr = { id: string; meshScope?: string; relays?: string[]; ips?: string[]; disabledRelays?: string[] };
 export type Stream = {
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
@@ -55,7 +55,22 @@ export type Connection = {
   /// hands what answers a route (`Endpoint.route`) name it by.
   handed?: number;
 };
+/// Native neighbor identity bound to a business endpoint. Membership is checked by the caller.
+export type MeshDescriptor = {
+  binding: { scope: number[]; policy: number[]; endpoint: number[]; neighbor: number[]; generation: number; transit: boolean; signature: number[] };
+  address: unknown;
+};
+export type MeshLeafAttachment = { scope: number[]; policy: number[]; issuer: MeshDescriptor["binding"]; leaf: MeshDescriptor["binding"]; target: number[]; id: number[]; expires_unix_ms: number; signature: number[] };
+export type MeshScopeView = { scope: string; descriptor: MeshDescriptor };
+export type MeshGlobalRelay = { node: string; name: string; generation: number; revision: number; address: { id: string; addrs: ({ Ip: string } | { Relay: string })[] } };
+export type MeshScope = { transit?: boolean; scope: string; peers: MeshDescriptor[]; relayUrls: string[]; globalRelays?: MeshGlobalRelay[] };
+
 export type Endpoint = {
+  meshAttachLeaf?(connection: Connection, value: {scope: string; descriptor: MeshDescriptor; target: string; expiresUnixMs: number}): Promise<MeshLeafAttachment>;
+  meshDetachLeaf?(value: {scope: string; attachmentId: number[]}): Promise<void>;
+  meshListen?(listener: (scopes: MeshScopeView[]) => void): () => void;
+  meshConfigure?(scope: MeshScope): Promise<MeshDescriptor>;
+  meshRemove?(scope: string): Promise<void>;
   id(): string;
   sockets(): string[];
   online(): Promise<void>;

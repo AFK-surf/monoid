@@ -268,6 +268,7 @@ async function sameWays(name: string, state: any, steps: any[], kept?: object) {
   const ours = await mb({ op: "ways", state: read, kept: text ?? null, now: 0, steps, peers });
   assert.deepEqual(ours, ts, name);
   mock.restoreAll();
+  return ts;
 }
 
 test("the ways: added, removed, set, turned off and on, refused in the same words, the newer kept", { skip }, async () => {
@@ -626,6 +627,17 @@ test("marks brought level: the newer of each kept by both, retried through a pee
   await sameFollow("one from before", "marks", { state: stateOf(A), kept: mine, peers: { [B]: { state: stateOf(B), before: true, delay: 1, home: WS } }, events: [{ at: 50, do: "mark", name: "again" }], until: 1000 });
 });
 
+test("registered mesh ways remain off when the URL relay list is replaced", { skip }, async () => {
+  const state = stateOf(A, { mesh_relays: [{ node: B, name: "global", generation: 1, revision: 1, address: { id: B, addrs: [] } }] });
+  const result = await sameWays("mesh way registration and preservation", state, [
+    { now: 10, do: "setWay", ws: WS, way: `mesh:${B}`, on: false },
+    { now: 20, do: "set", ws: WS, urls: [] },
+    { now: 30, do: "setWay", ws: WS, way: `mesh:${C}`, on: false },
+  ]);
+  assert.deepEqual((result.steps[1] as any).ok.off, [`mesh:${B}`]);
+  assert.deepEqual(result.steps[2], { error: "no such way: a registered relay, or ours, lan, tailnet, direct" });
+});
+
 // ── the plane's frames ──
 
 async function sameFrames(name: string, state: any, frames: any[]) {
@@ -634,7 +646,9 @@ async function sameFrames(name: string, state: any, frames: any[]) {
   for (const f of frames) {
     if (typeof f.now === "number") mock.method(wall, "now", () => f.now * 1000);
     const sent: unknown[] = [];
-    applyState(cloud, f.text ?? JSON.stringify(f.frame), (frame) => sent.push(frame));
+    const apply = () => applyState(cloud, f.text ?? JSON.stringify(f.frame), (frame) => sent.push(frame));
+    if (f.reject) assert.throws(apply);
+    else apply();
     let file: unknown = null;
     try { file = JSON.parse(readFileSync(join(cloud.data, "mesh", "cloud.json"), "utf8")); } catch {}
     out.push(plain({ state: file, sent, peersCurrent: cloud.peersCurrent, reached: cloud.reached, rostersSaid: cloud.rostersSaid, planeLockSeq: cloud.planeLockSeq, memberships: cloud.memberships().map((m) => m.workspace) }));
@@ -642,6 +656,7 @@ async function sameFrames(name: string, state: any, frames: any[]) {
   const ours = (await mb({ op: "frames", state: read, now: frames[0]?.now ?? 0, frames })).map((o: any) => { delete o.grantsGone; return o; });
   assert.deepEqual(ours, out, name);
   mock.restoreAll();
+  return out;
 }
 
 test("the plane's frames make the same cloud.json; whole ↔ rig only as both agree, within the hour", { skip }, async () => {
@@ -681,6 +696,34 @@ test("the plane's frames make the same cloud.json; whole ↔ rig only as both ag
   await sameFrames("a joined workspace takes over a home it was taken out of", stateOf(A, { joined: [{ workspace: W2, workspace_name: "W2", name: "there", peers: [], revocations: [] }] }), [
     { now: 10, frame: { type: "state", workspace: W2, workspace_name: "W2", peers: [{ id: B }], workspaces: [] } },
   ]);
+});
+
+test("global mesh frames normalize metadata and reject malformed registries before any state changes", { skip }, async () => {
+  const row = { node: B, name: "🚀".repeat(40), generation: 1, revision: 2, address: { id: B, addrs: [{ Relay: "HTTPS://RELAY.EXAMPLE:443/path" }, { Ip: "[fe80::1%eth0]:1234" }, { Ip: "127.0.0.1:00123" }] } };
+  const invalid = [
+    null, {}, Array(33).fill(row), [row, row],
+    [{ ...row, generation: 0 }], [{ ...row, revision: 1.5 }], [{ ...row, revision: 2 ** 53 }],
+    [{ ...row, name: "🚀".repeat(41) }], [{ ...row, node: B.toUpperCase() }],
+    [{ ...row, address: { id: C, addrs: [] } }],
+    ...[
+      [{ Ip: "01.2.3.4:1234" }], [{ Ip: "[::1]:65536" }], [{ Ip: "[fe80::1%bad_zone]:1" }],
+      [{ Relay: "https://user:pass@relay.example" }], [{ Relay: "https://relay.example/?query" }],
+      [{ Custom: "recursive" }], [{ Ip: "127.0.0.1:1", Relay: "https://relay.example" }],
+      Array(9).fill({ Ip: "127.0.0.1:1" }),
+    ].map(addrs => [{ ...row, address: { id: B, addrs } }]),
+  ];
+  const frames = [
+    { now: 1, frame: { type: "state", peers: [], mesh_relays: [row] } },
+    ...invalid.map(mesh_relays => ({ reject: true, now: 2, frame: { type: "state", workspace: "must-not-move", name: "must-not-change", peers: [{ id: C }], mesh_relays } })),
+    { now: 3, frame: { type: "state", peers: [] } },
+  ];
+  const result = await sameFrames("global mesh metadata and atomic rejection", stateOf(A), frames);
+  assert.deepEqual((result[0] as any).state.mesh_relays, [{ ...row, address: { id: B, addrs: [{ Relay: "https://relay.example/path" }, ...row.address.addrs.slice(1)] } }]);
+  for (const rejected of result.slice(1, -1)) assert.deepEqual(rejected, result[0]);
+  assert.deepEqual((result.at(-1) as any).state.mesh_relays, []);
+  const reloaded = await sameFrames("persisted global mesh metadata survives reload",
+    (result[0] as any).state, [{ now: 4, frame: { type: "other" } }]);
+  assert.deepEqual((reloaded[0] as any).state.mesh_relays, (result[0] as any).state.mesh_relays);
 });
 
 test("another station on this key: three replaced in a row before they held, ended only by one that holds", { skip }, async () => {

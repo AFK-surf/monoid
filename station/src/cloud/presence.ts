@@ -19,6 +19,7 @@ import type { CloudSaid } from "./plane.ts";
 import { type ProviderSpec, signedHeaders } from "./provider.ts";
 import { wall } from "../ops/fibers.ts";
 import { type Ways, waysOf } from "../mesh/ways.ts";
+import { globalRelaysOf } from "../mesh/global-relays.ts";
 
 /// The cloud expects a "ping" this often and drops a station silent for three of them.
 const PING_MS = 30_000;
@@ -397,6 +398,7 @@ export function applyState(s: CloudState, text: string, send: (frame: unknown) =
 
 function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown) {
   if (body?.type === "state") {
+    const meshRelays = globalRelaysOf(body.mesh_relays);
     // A workspace it joined taking over from a home it was taken out of: its lock goes along (cloud/state.ts `succeed`).
     // So too, its home not locked (which the plane moves at its word), any workspace this station keeps a lock for, or
     // one joining named, listed now or not, its old home gone or not: else that lock, joined workspaces' only, would
@@ -423,6 +425,7 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
         if (typeof body[k] === "string") st[k] = body[k];
       }
       if (Array.isArray(body.relay_urls)) st.relay_urls = body.relay_urls.filter((u: unknown) => typeof u === "string");
+      st.mesh_relays = meshRelays;
       if (Array.isArray(body.stillfail_relays)) st.stillfail_relays = body.stillfail_relays.filter((u: unknown): u is string => typeof u === "string");
       else delete st.stillfail_relays;
       // The home workspace's own relays and ways turned off as the plane kept them: what mesh/ways.ts takes first.

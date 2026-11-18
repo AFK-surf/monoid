@@ -18,6 +18,25 @@ let compacted_from : String = "50000"
 pub let schema : String =
 (
   $|
+  $|CREATE TABLE IF NOT EXISTS mesh_relay_tokens (
+  $|  hash TEXT PRIMARY KEY, scope TEXT NOT NULL, name TEXT NOT NULL,
+  $|  made_by TEXT NOT NULL, expires INTEGER NOT NULL
+  $|);
+  $|CREATE INDEX IF NOT EXISTS mesh_relay_tokens_scope ON mesh_relay_tokens(scope, expires);
+  $|CREATE TABLE IF NOT EXISTS mesh_relay_registrations (
+  $|  scope TEXT NOT NULL, node TEXT NOT NULL, issuer TEXT NOT NULL,
+  $|  generation INTEGER NOT NULL, name TEXT NOT NULL, made_by TEXT NOT NULL,
+  $|  revoked INTEGER NOT NULL DEFAULT 0,
+  $|  PRIMARY KEY(scope, node)
+  $|);
+  $|CREATE TABLE IF NOT EXISTS mesh_announcements (
+  $| scope TEXT NOT NULL, node TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, signature TEXT NOT NULL,
+  $| PRIMARY KEY(scope, node)
+  $|);
+  $|CREATE TABLE IF NOT EXISTS mesh_relay_records (
+  $| scope TEXT NOT NULL, node TEXT NOT NULL, issuer TEXT NOT NULL, generation INTEGER NOT NULL,
+  $| body TEXT NOT NULL, signature TEXT NOT NULL, PRIMARY KEY(scope,node)
+  $|);
   $|CREATE TABLE IF NOT EXISTS archive_suggestions (
   $|  thread INTEGER PRIMARY KEY,
   $|  version INTEGER NOT NULL,

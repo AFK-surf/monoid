@@ -41,6 +41,8 @@ pub(all) struct CloudView {
   stillfail_relays : () -> Array[String]?
   /// still.fail's relays (`Cloud.relays`: `relay_urls`, else `relay_url`; what is no URL left out).
   relays : () -> Array[String]
+  /// Registered global mesh relays as last accepted from the plane.
+  mesh_relays : () -> Array[Json]
   /// Every workspace the station is in now, its home one first.
   memberships : () -> Array[Membership]
   membership : (String) -> Membership?
@@ -428,6 +430,10 @@ pub fn StateCloud::view(self : StateCloud) -> CloudView {
           _ => None
         }
       None => None
+    },
+    mesh_relays: () => match self.state {
+      Some(m) => array_of(m.get("mesh_relays")).unwrap_or([])
+      None => []
     },
     relays: () => self.relays(),
     memberships: () => self.memberships(),

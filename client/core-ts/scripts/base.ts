@@ -44,6 +44,7 @@ const BASE = [
   "src/mesh.ts",
   "src/iroh.ts",
   "src/iroh-bindings.ts",
+  "src/iroh-access.ts",
   "src/hosts/node-addon.ts",
   "src/host-of.ts",
   "src/runtime.ts",

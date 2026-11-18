@@ -7,6 +7,7 @@
 //
 // What the addon answers at once of a connection (how it runs, its ways, what went over it) is what the front said
 // last, asked again as it is read: a log line or a storm's count a read behind. The rest is as the addon's.
+import type { MeshDescriptor, MeshLeafAttachment, MeshScope, MeshScopeView } from "./endpoint.ts";
 import { rm } from "node:fs/promises";
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -44,6 +45,8 @@ let opened = 0;
 
 /// One process's link to the front: its asks and answers, and the streams it is given.
 export class Front {
+  meshScopes: MeshScopeView[] | null = null;
+  onMeshScopes: ((scopes: MeshScopeView[]) => void) | null = null;
   readonly #control: Socket;
   readonly #server: Server;
   readonly streamsPath: string;
@@ -76,9 +79,14 @@ export class Front {
     createInterface({ input: control })
       .on("error", end)
       .on("line", (line) => {
-        let said: { id: number; ok?: unknown; error?: string };
+        let said: { id: number; ok?: unknown; error?: string; event?: string; scopes?: MeshScopeView[] };
         try { said = JSON.parse(line); }
         catch { return void log.warn("mesh", "the front said what is not JSON", { line: line.slice(0, 200) }); }
+        if (said.event === "meshScopes" && Array.isArray(said.scopes) && said.scopes.length <= 32) {
+          this.meshScopes = said.scopes;
+          this.onMeshScopes?.(said.scopes);
+          return;
+        }
         const asked = this.#asked.get(said.id);
         if (!asked) return;
         this.#asked.delete(said.id);
@@ -539,6 +547,7 @@ class FrontEndpoint implements Endpoint {
     this.#bind = bind;
     this.#front = front;
     this.#said = said;
+    this.#attachMesh(front);
   }
 
   static async bind(socket: string, options: Parameters<Mesh["bind"]>[0], closing: () => void = () => {}): Promise<FrontEndpoint> {
@@ -587,6 +596,13 @@ class FrontEndpoint implements Endpoint {
             try {
               // Restore restrictions before accepting or dialing on this endpoint.
               for (const args of this.#disabled.values()) await next.ask("disabledRelays", { args });
+              for (const [scope, desired] of this.#meshScopes) {
+                if (desired.config) await next.ask("meshConfigure", { args: desired.config });
+                else {
+                  await next.ask("meshRemove", { args: { scope } });
+                  this.#meshScopes.delete(scope);
+                }
+              }
               if (this.#routed) await next.ask("route", this.#routed);
               this.#relays = await next.ask("relayStatus").catch(() => []);
             } catch (error) {
@@ -595,6 +611,7 @@ class FrontEndpoint implements Endpoint {
             }
             this.#front = next;
             this.#said = said;
+            this.#attachMesh(next);
             this.#watch(next);
             log.info("mesh", "linked to the front again", { station: said.id });
             return;
@@ -609,6 +626,19 @@ class FrontEndpoint implements Endpoint {
   async #ask(op: string, args: Record<string, unknown> = {}) {
     if (this.#again) await this.#again;
     return this.#front.ask(op, args);
+  }
+
+  readonly #meshListeners = new Set<(scopes: MeshScopeView[]) => void>();
+  #attachMesh(front: Front) {
+    front.onMeshScopes = (scopes) => {
+      if (this.#front === front && !this.#closed) for (const listener of this.#meshListeners) listener(scopes);
+    };
+    if (front.meshScopes) front.onMeshScopes(front.meshScopes);
+  }
+  meshListen(listener: (scopes: MeshScopeView[]) => void): () => void {
+    this.#meshListeners.add(listener);
+    if (this.#front.meshScopes) listener(this.#front.meshScopes);
+    return () => { this.#meshListeners.delete(listener); };
   }
 
   /// Linked to the front now: not linking to it again after its link went.
@@ -650,6 +680,41 @@ class FrontEndpoint implements Endpoint {
       }
       throw error;
     });
+  }
+  // A lost reply does not undo the desired directory or a removal. Keep a
+  // removal until the front acknowledges it, including after a control reconnect.
+  readonly #meshScopes = new Map<string, { config: MeshScope | null }>();
+  async #meshChange(scope: string, config: MeshScope | null): Promise<any> {
+    if (this.#again) await this.#again;
+    const front = this.#front;
+    const before = this.#meshScopes.get(scope);
+    if (!before && this.#meshScopes.size >= 32) throw new Error("too many mesh scopes");
+    const desired = { config: config ? structuredClone(config) : null };
+    this.#meshScopes.set(scope, desired);
+    try {
+      const answer = await front.ask(config ? "meshConfigure" : "meshRemove", { args: desired.config ?? { scope } });
+      if (!config && this.#meshScopes.get(scope) === desired) this.#meshScopes.delete(scope);
+      return answer;
+    } catch (error) {
+      // An explicit refusal leaves the previous state. A lost connection leaves
+      // the outcome unknown, so replay the desired state before serving again.
+      if (!front.isGone && this.#meshScopes.get(scope) === desired) {
+        if (before) this.#meshScopes.set(scope, before);
+        else this.#meshScopes.delete(scope);
+      }
+      throw error;
+    }
+  }
+  meshAttachLeaf(connection: Connection, value: {scope: string; descriptor: MeshDescriptor; target: string; expiresUnixMs: number}): Promise<MeshLeafAttachment> {
+    if (connection.handed === undefined) return Promise.reject(new Error("leaf connection is not held by this front"));
+    return this.#ask("meshAttachLeaf", {args:{...value,connection:connection.handed}});
+  }
+  async meshDetachLeaf(value: {scope: string; attachmentId: number[]}): Promise<void> { await this.#ask("meshDetachLeaf",{args:value}); }
+  meshConfigure(scope: MeshScope): Promise<MeshDescriptor> {
+    return this.#meshChange(scope.scope, scope);
+  }
+  async meshRemove(scope: string): Promise<void> {
+    await this.#meshChange(scope, null);
   }
   insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.some((u) => bare(u) === bare(url)) ? urls : [...urls, url])); }
   removeRelay(url: string) { return this.#ask("removeRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.filter((u) => bare(u) !== bare(url)))); }
@@ -694,6 +759,7 @@ class FrontEndpoint implements Endpoint {
 
   async close() {
     this.#closed = true;
+    this.#meshListeners.clear();
     this.#closing();
     await this.#front.ask("close").catch(() => {});
     this.#front.close();

@@ -48,6 +48,7 @@ export const UNPROTECTED =
 export type Membership = Joined & { home: boolean };
 
 export type CloudState = {
+  mesh_relays?: import("../mesh/endpoint.ts").MeshGlobalRelay[];
   /// The control plane it is enrolled in (cloud/provider.ts): absent is still.fail cloud, as files from before say.
   provider?: Provider;
   origin: string;
@@ -367,6 +368,7 @@ function stateText(s: CloudState): string {
     relay_url: s.relay_url, relay_urls: s.relay_urls, grant_keys: s.grant_keys, peers: s.peers, revocations: s.revocations,
   };
   if (s.stillfail_relays !== undefined) out.stillfail_relays = s.stillfail_relays;
+  if (s.mesh_relays !== undefined) out.mesh_relays = s.mesh_relays;
   if (s.gateway_keys !== undefined) out.gateway_keys = s.gateway_keys;
   if (s.removed_at !== undefined) out.removed_at = s.removed_at;
   if (s.removed_code !== undefined) out.removed_code = s.removed_code;

@@ -1,0 +1,4 @@
+{
+  "body": "{\"scope\":\"abababababababababababababababababababababababababababababababab\",\"node\":\"e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351\",\"issuer\":\"ee93a4f66f8d16b819bb9beb9ffccdfcdc1412e87fee6a324c2a99a1e0e67148\",\"generation\":7,\"name\":\"测试 relay\",\"made_by\":\"member@example.test\",\"revoked\":0}",
+  "signature": "7ecdf9694f5e52b8263ca8766d1061cc4acbf700801bee6ce93af75a1f4f060fa49db8cafa4b6eb9126ed9acb7927af95d77a2de805b5d8dd344b2e1603dc007"
+}

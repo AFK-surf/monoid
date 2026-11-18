@@ -1,8 +1,9 @@
 // The station's native mesh addon (native/mesh §3): what it offers besides the endpoint (endpoint.ts: iroh), which is
 // the image codecs of the thumbnails and the rest below, and where it is. A release has it beside the station's code
 // (mesh.node); a checkout has it where cargo built it; STILLFAIL_MESH_NATIVE says otherwise.
+import { log } from "../ops/log.ts";
 import { fileURLToPath } from "node:url";
-import { type Bind, type Endpoint, type Endpoints, loadAddon } from "./endpoint.ts";
+import { type Bind, type Endpoint, type Endpoints, type MeshScopeView, loadAddon } from "./endpoint.ts";
 
 export type { Addr, Connection, Endpoint, Stream, Traffic } from "./endpoint.ts";
 
@@ -47,6 +48,22 @@ export function withRelays(mesh: Mesh): Mesh {
     bind: async (options: Bind) => {
       const endpoint = await mesh.bind(options);
       bound.add(endpoint);
+      const native = endpoint as Endpoint & {
+        meshSubscribe?(id: number, listener: (error: Error | null, scopes: MeshScopeView[]) => void): Promise<void>;
+        meshUnsubscribe?(id: number): void;
+      };
+      if (native.meshSubscribe && native.meshUnsubscribe) {
+        let serial = 0;
+        endpoint.meshListen = (listener) => {
+          const id = ++serial;
+          let active = true;
+          void native.meshSubscribe!(id, (error, scopes) => { if (active && !error) listener(scopes); }).then(
+            () => { if (!active) native.meshUnsubscribe!(id); },
+            (error) => { active = false; log.warn("mesh", "native scope subscription failed", { error: String(error) }); },
+          );
+          return () => { active = false; native.meshUnsubscribe!(id); };
+        };
+      }
       const close = endpoint.close.bind(endpoint);
       endpoint.close = () => {
         bound.delete(endpoint);

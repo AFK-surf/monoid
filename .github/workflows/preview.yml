@@ -76,6 +76,7 @@ jobs:
       win_build: ${{ steps.what.outputs.win_build }}
     steps:
       # (the history's commits and trees, the files' contents only for beta.sh: what changed is told by the trees)
+      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none", sparse-checkout: apps/mbui/scripts }
       - id: what
@@ -159,9 +160,11 @@ jobs:
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
           [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" } # the build's number is the commits in the history (their files only as checked out)
+      - run: bash scripts/git-history.sh
       # (GTK 4 and what the host and the core link beside it: libsoup, libsecret)
       - uses: ./.github/actions/apt
         with:
@@ -352,6 +355,8 @@ jobs:
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
       - name: iOS's SDK 27.1 or later
         run: |
           v=$(xcrun --sdk iphoneos --show-sdk-version)
@@ -559,9 +564,12 @@ jobs:
           Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:RUNNER_TOOL_CACHE, $env:LOCALAPPDATA, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
           "Defender kept off them in $([int]((Get-Date) - $t).TotalMilliseconds) ms"
       # the natives' keys are git's blobs: the checkout as git has it
-      - run: git config --global core.autocrlf false
+      - run: |
+          git config --global core.autocrlf false
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" } # (the build's number: the commits in the history)
+      - run: bash scripts/git-history.sh
       # Node alone first (the natives' fetch, the build's scripts): the rest of the setup (pnpm, its store) is done while
       # cl compiles the app. The image's Node, from its tool cache, put on the PATH as it is: setup-node's would print
       # npm's and yarn's versions, their first start on the runner (29-81 s of some runs, 2026-10-25, 40225325122; the
