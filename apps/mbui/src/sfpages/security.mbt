@@ -31,7 +31,18 @@ pub fn security_node(
     frame~,
     said?,
     width?,
-    lead=fn() { @sf.t("web-pages.security.lead") },
+    // (on: how many sign and what it protects, as the workspace page's lead says who and how many; else what it is)
+    lead=fn() {
+      let l = lock()
+      if flag(l, "available") && flag(l, "locked") {
+        @sf.t("web-pages.security.onMeta", args=[
+          ("signers", count(l, "signers").to_string()),
+          ("stations", count(l, "protected").to_string()),
+        ])
+      } else {
+        @sf.t("web-pages.security.lead")
+      }
+    },
     fn() {
       let out : Array[String] = []
       let l = lock()
@@ -62,9 +73,8 @@ pub fn security_node(
           upgrade_keys(l, out)
           // (what was just done and is not in effect: after the state and the upgrade)
           pending_keys(l, out)
-          out.push("people")
+          people_keys(l, out)
           out.push("stations")
-          out.push("web")
           // (an upgraded workspace turned off by one person alone: to another owner, who and the way out in its place)
           if text(l, "rootText") != "" {
             out.push("root-only")
@@ -114,14 +124,12 @@ pub fn security_node(
           upgrade_line_node(b, core, lock, @string.parse_int(k[upgrade_key.length():]) catch { _ => 0 })
         "pending" => @sf.section_heading_node(b, fn() { text(lock(), "pendingText") })
         k if k.has_prefix(pending_key) => pending_node(b, core, ws, lock, k.unsafe_substring(start=pending_key.length(), end=k.length()))
-        "people" => people_node(b, core, ws, lock)
+        // (what a web page may do, its people's devices' note: under its heading, as the workspace page's people say
+        // how many they are)
+        "people" =>
+          @sf.section_heading_node(b, fn() { @sf.t("web-pages.security.people") }, note=fn() { @sf.t("web-pages.security.webRisk") })
+        k if k.has_prefix(member_key) => member_node(b, core, ws, lock, k[member_key.length():].to_owned(), stint)
         "stations" => stations_node(b, core, ws, lock, stint)
-        "web" =>
-          @sf.section_node(b, fn() { @sf.t("web-pages.security.webTitle") }, fn(s) {
-            @sf.page_card_node(s, fn(k) {
-              @sf.words_node(k, fn() { @sf.t("web-pages.security.webRisk") }, fn() { sec_said }) |> ignore
-            })
-          })
         "turn-off" => turn_off_node(b, core, ws, here)
         "root-only" => @sf.page_note_node(b, fn() { text(lock(), "rootText") })
         _ => ()
@@ -263,35 +271,35 @@ fn sec_point_node(parent : @view.View, icon : String, words : () -> String, rest
 }
 
 ///|
-/// On (On): its state with how many sign and what it protects (a line of its own under it), what that means, and
-/// where this device does not sign, why.
+/// On (On): its state, a row on a card of its own (the online dot before it, what that means under it); how many sign
+/// and what it protects is the page's lead. Where this device does not sign, why, under that in the same row.
 fn lock_on_node(parent : @view.View, lock : () -> Json?) -> Unit {
-  sec_lead_node(parent, fn(k) {
-    sec_state_node(k, true, fn() { @sf.t("web-pages.security.on") })
-    @sf.words_node(
-      k,
-      fn() {
-        @sf.t("web-pages.security.onMeta", args=[
-          ("signers", count(lock(), "signers").to_string()),
-          ("stations", count(lock(), "protected").to_string()),
-        ])
+  let me = fn() { field(lock(), "me") }
+  // (nor where it is to be verified once: its own card says why, confirm_signer_node)
+  let unsigned = fn() {
+    !flag(lock(), "signs") && !flag(me(), "waiting") && !flag(me(), "unsigned") && text(me(), "confirmText") == ""
+  }
+  @sf.group_node(parent, fn(g) {
+    @sf.link_row_node(
+      g,
+      fn() { @sf.t("web-pages.security.on") },
+      fn() {  },
+      note=fn() { @sf.t("web-pages.security.onLead") },
+      lead=LeadLine(fn(l) { @sf.state_dot_node(l, fn() { "online" }) }),
+      below=fn(b) {
+        @sf.words_node(
+          b,
+          fn() {
+            @sf.t(if flag(lock(), "canSign") { "web-pages.security.notSignerApp" } else { "web-pages.security.notSignerWeb" })
+          },
+          fn() { @sf.pg_link_note },
+        )
+        |> ignore
       },
-      fn() { sec_state_meta },
+      below_open=fn() { if unsigned() { 1.0 } else { 0.0 } },
+      goes=false,
+      chevron=false,
     )
-    |> ignore
-    @sf.words_node(k, fn() { @sf.t("web-pages.security.onLead") }, fn() { sec_said }) |> ignore
-    let me = fn() { field(lock(), "me") }
-    // (nor where it is to be verified once: its own card says why, confirm_signer_node)
-    k.show(fn() { !flag(lock(), "signs") && !flag(me(), "waiting") && !flag(me(), "unsigned") && text(me(), "confirmText") == "" }, fn(n) {
-      @sf.words_node(
-        n,
-        fn() {
-          @sf.t(if flag(lock(), "canSign") { "web-pages.security.notSignerApp" } else { "web-pages.security.notSignerWeb" })
-        },
-        fn() { sec_note },
-      )
-      |> ignore
-    })
   })
 }
 
@@ -623,66 +631,6 @@ fn sec_pending_node(parent : @view.View, core : Core, ws : () -> String, pv : ()
 }
 
 ///|
-/// 成员: its people (DeviceRow's people), each with what they are, and their devices by the app each is, its name over
-/// the first (still.fail 桌面版: which machine each is).
-fn people_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> Json?) -> Unit {
-  @sf.section_node(parent, fn() { @sf.t("web-pages.security.people") }, fn(s) {
-    sec_group_node(s, fn(g) {
-      g.each(fn() { indexed(items(lock(), "members")) }, fn(e) { e.0 }, fn(row, e) {
-        let mv = fn() { Some(e.get().1) }
-        let name = fn() { text(mv(), "nameText") }
-        let role = fn() { text(mv(), "roleText") }
-        let wide = @sf.look_node(row) is Wide
-        let body = fn(p : @view.View) {
-          if wide {
-            sec_line_node(p, name, note=role)
-          } else {
-            sec_line_node(p, name, end=fn(e) { sec_end_words_node(e, role) })
-          }
-          // (by the app each is, its name over its first: which machine each is)
-          let devices = fn() {
-            let out : Array[(Int, String, Bool, Json)] = []
-            for i, gr in items(mv(), "groups") {
-              let gv = Some(gr)
-              for j, d in items(gv, "devices") {
-                out.push((out.length(), if j == 0 { text(gv, "appText") } else { "" }, i > 0 && j == 0, d))
-              }
-            }
-            out
-          }
-          p.show(fn() { devices().length() > 0 }, fn(d) {
-            d.box(fn(list) {
-              @sf.style_node(list, fn() { if wide { sec_devices } else { @sf.full_width } })
-              list.each(devices, fn(x) { x.0 }, fn(dr, x) {
-                sec_device_node(
-                  dr,
-                  core,
-                  ws,
-                  fn() { Some(x.get().3) },
-                  fn() { flag(lock(), "signs") },
-                  over=fn() { x.get().1 },
-                  apart=fn() { x.get().2 },
-                )
-              })
-            })
-            |> ignore
-          })
-        }
-        if wide {
-          row.box(fn(r) {
-            @sf.style_node(r, fn() { sec_rows })
-            body(r)
-          })
-          |> ignore
-        } else {
-          body(row)
-        }
-      })
-    })
-  })
-}
-
-///|
 /// `a`'s each by where it stands (a list's rows keyed by their place: each made again only as what is there changes).
 fn indexed(a : Array[Json]) -> Array[(Int, Json)] {
   a.mapi(fn(i, x) { (i, x) })
@@ -890,22 +838,6 @@ fn sec_line_node(
 }
 
 ///|
-/// What a row does at its end (sec_do's): narrow, words in the link's ink (a spinner in their place while it is at
-/// work); wide, the web's quiet button (`primary`: its main one). `press` done as it is pressed.
-fn sec_do_node(
-  parent : @view.View,
-  label : () -> String,
-  press : () -> Unit,
-  busy? : () -> Bool = fn() { false },
-  primary? : Bool = false,
-) -> Unit {
-  match @sf.look_node(parent) {
-    Narrow => sec_tap_do_node(parent, label, press, busy)
-    Wide => @sf.button_node(parent, label, press, tone=if primary { Primary } else { Ghost }, busy~) |> ignore
-  }
-}
-
-///|
 /// What a row does as words in the link's ink (the library's tap_text_node: its words where the row's start, its room
 /// to be pressed round them), a spinner in their place while it is at work: a narrow row's at its end, and a change
 /// not in effect's 知道了 at either width.
@@ -935,87 +867,168 @@ fn sec_end_words_node(parent : @view.View, words : () -> String, warn? : Bool = 
 }
 
 ///|
-/// A device in the lock (DeviceRow), `d` as it is now: its mark (a web page's, an app's), which machine it is (`over`:
-/// the app over the first of its group), this device or when it was last used and the rest in a line (amber where it is
-/// to be renewed soon); 续期 where this device signs (`can_renew`), 移除 (asked first) where it may take it out.
-fn sec_device_node(
-  parent : @view.View,
-  core : Core,
-  ws : () -> String,
-  d : () -> Json?,
-  can_renew : () -> Bool,
-  over~ : () -> String,
-  apart~ : () -> Bool,
-) -> Unit {
-  let id = fn() { text(d(), "id") }
-  let renewing = fn() { is_doing(core, ["lock.renew"], [("workspace", ws()), ("device", id())]) }
-  let removing = fn() { is_doing(core, ["lock.removeDevice"], [("workspace", ws()), ("device", id())]) }
-  let renews = fn() { has(d(), "daysLeft") && can_renew() }
-  let removes = fn() { flag(d(), "removable") }
-  let kind = fn() { if text(d(), "kind") == "web" { "web" } else { "monitor" } }
-  sec_line_node(
-    parent,
-    fn() { text(d(), "nameText") },
-    note=fn() { text(d(), "metaText") },
-    warn=fn() { flag(d(), "renewSoon") },
-    strong=false,
-    indent=true,
-    over~,
-    apart~,
-    mark=fn(m) {
-      @sf.icon_node(m, @signals.untracked(kind), sec_device_glyph, By(fn() { @sf.theme().p.muted }), name_now=kind) |> ignore
-    },
-    acts=fn(a) {
-      a.show(renews, fn(x) {
-        sec_do_node(x, fn() { @sf.t("web-pages.security.renew") }, busy=renewing, fn() {
-          let now = @signals.untracked(id)
-          lock_call(core, @signals.untracked(ws), "renew", @sf.t("web-pages.security.renew"), [("device", now)], done=@sf.t(
-            "web-pages.security.renewed",
-          ))
-        })
-      })
-      a.show(removes, fn(x) {
-        sec_do_node(x, fn() { @sf.t("web-pages.security.remove") }, busy=removing, fn() {
-          remove_dialog(core, @signals.untracked(ws), @signals.untracked(id), @signals.untracked(fn() { text(d(), "fullText") }))
-        })
-      })
-    },
-    acts_shown=fn() { renews() || removes() },
-  )
+/// 成员和设备: its people (DeviceRow's people), each a card of their own: who they are and their role, then their
+/// devices, each a row (security_device_node). The heading's here; each person a block of the page's list by who
+/// they are (`member_key`), so one coming or going leaves the others where they are.
+fn people_keys(l : Json?, out : Array[String]) -> Unit {
+  out.push("people")
+  for m in items(l, "members") {
+    out.push(member_key + text(Some(m), "sub"))
+  }
 }
 
 ///|
-/// Station: the workspace's stations and whether the lock protects each (StationRow); none, said so.
-fn stations_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> Json?, stint : () -> Int) -> Unit {
-  @sf.section_node(parent, fn() { "Station" }, fn(s) {
-    let stations = fn() { items(lock(), "stations") }
-    s.pick(fn() { stations().length() == 0 }, fn(p, none) {
-      if none {
-        @sf.page_card_node(p, fn(k) {
-          @sf.words_node(k, fn() { @sf.t("web-pages.security.noStations") }, fn() { sec_said }) |> ignore
-        })
-        return
+/// A person's block's key: this, then their sub.
+let member_key : String = "member/"
+
+///|
+/// The person `sub` as `lock` says them now, a card of their own (MemberRow's look, the workspace page's): their
+/// picture, name (你 after it for the viewer), their email under it and role at its end; under them each of their devices, the most lately used
+/// first, by the app each is (the core's groups, kept in their order).
+fn member_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> Json?, sub : String, stint : () -> Int) -> Unit {
+  // (what they are as the core says it now; as last, once gone, while their block goes)
+  let last : Ref[Json?] = Ref(None)
+  let mv = fn() {
+    match items(lock(), "members").iter().find_first(fn(m) { text(Some(m), "sub") == sub }) {
+      Some(m) => last.val = Some(m)
+      None => ()
+    }
+    last.val
+  }
+  let devices = fn() {
+    let out : Array[(String, Json)] = []
+    for g in items(mv(), "groups") {
+      for d in items(Some(g), "devices") {
+        out.push((text(Some(d), "id"), d))
       }
-      let can = fn() { flag(lock(), "owner") && flag(lock(), "signs") }
-      sec_group_node(
-        p,
-        top_button=fn() { can() && !flag(stations().get(0), "protected") },
-        bottom_button=fn() { can() && !flag(stations().last(), "protected") },
-        fn(g) {
-          g.each(fn() { indexed(stations()) }, fn(e) { e.0 }, fn(row, e) {
-            sec_station_node(row, core, ws, fn() { Some(e.get().1) }, can, stint)
-          })
-        },
-      )
+    }
+    out
+  }
+  @sf.group_node(parent, fn(g) {
+    let name = fn() { text(mv(), "nameText") }
+    @sf.link_row_node(
+      g,
+      name,
+      fn() {  },
+      value=fn() { text(mv(), "roleText") },
+      // (their email under their name, as the workspace page's: their picture across both lines, not in the card's
+      // corner)
+      note=fn() { text(mv(), "email") },
+      lead=LeadMade(fn(l) { ws_avatar_node(l, core, fn() { text(mv(), "email") }, name, fn() { "" }, stint) }),
+      face=true,
+      title_after=fn(a) { ws_you_node(a, fn() { @sf.t("android-settings.members.you") }) },
+      title_after_shown=fn() { flag(mv(), "you") },
+      goes=false,
+      chevron=false,
+    )
+    g.each(devices, fn(e) { e.0 }, fn(row, e) {
+      security_device_node(row, core, ws, fn() { Some(e.get().1) }, fn() { flag(lock(), "signs") })
     })
   })
 }
 
 ///|
-/// A station and whether the lock protects it (StationRow), `sv` as it is now: a dot (green, amber where not), its mark
-/// and name (wide, the two together) and why not; 受保护, or 加入 (where `can`: the owner's signing device), or 未保护 in
-/// amber.
-fn sec_station_node(
+/// A device in the lock (DeviceRow), `d` as it is now, a row as every settings list's: its mark (a phone, a computer,
+/// a web page: the core's `kind` and `machine`, a computer's where it cannot tell), which machine it is, and under it
+/// the app, this device or when it was last used and the rest (the core's `metaText`); where it is to be renewed soon,
+/// its days left after its name in amber (`leftText`). What can be done about it is a menu, the row pressed
+/// (device_menu): 续期 where this device signs, 移除 (in red, asked first) where it may take it out; a row with neither
+/// goes nowhere. A ring at its end while either is under way.
+fn security_device_node(parent : @view.View, core : Core, ws : () -> String, d : () -> Json?, can_renew : () -> Bool) -> Unit {
+  let id = fn() { text(d(), "id") }
+  let on = fn() { [("workspace", ws()), ("device", id())] }
+  let calls = ["lock.renew", "lock.removeDevice"]
+  let busy = fn() { is_doing(core, calls, on()) }
+  let failed = fn() { failed_of(core, calls, on()) }
+  let renews = fn() { has(d(), "daysLeft") && can_renew() }
+  let acts = fn() { renews() || flag(d(), "removable") }
+  let mark = fn() { device_mark(d()) }
+  parent.pick(acts, fn(r, goes) {
+    @sf.link_row_node(
+      r,
+      fn() { text(d(), "nameText") },
+      fn() {
+        let (x, y, w, h) = r.placed_window_now()
+        device_menu(core, @signals.untracked(ws), @signals.untracked(d), @signals.untracked(renews), At(x, y, w, h))
+      },
+      note=fn() { text(d(), "metaText") },
+      lead=LeadIcon(@signals.untracked(mark)),
+      title_after=fn(a) { @sf.words_node(a, fn() { text(d(), "leftText") }, fn() { sec_warn_state }) |> ignore },
+      title_after_shown=fn() { text(d(), "leftText") != "" },
+      tail=fn(e) { doing_mark_node(e, busy, failed, size=ws_doing_mark) },
+      tail_shown=fn() { busy() || failed() is Some(_) },
+      goes~,
+      chevron=false,
+    )
+  })
+}
+
+///|
+/// A device's mark by what the core says it is: a web page's, a phone's, else a computer's (one it cannot tell too).
+fn device_mark(d : Json?) -> String {
+  if text(d, "kind") == "web" {
+    "web"
+  } else if text(d, "machine") == "phone" {
+    "phone"
+  } else {
+    "monitor"
+  }
+}
+
+///|
+/// What can be done about device `d`, beside its row (`from`: a sheet from the foot on 小屏, a popover beside it
+/// else, the presenters'): 续期 where `renews`, 移除 where it may take it out, in red and asked first (remove_dialog).
+fn device_menu(core : Core, ws : String, d : Json?, renews : Bool, from : @sf.Beside) -> Unit {
+  let id = text(d, "id")
+  let items : Array[@sf.MenuItem?] = []
+  if renews {
+    items.push(
+      Some(
+        @sf.menu_item_of(@sf.t("web-pages.security.renew"), icon="refresh", fn() {
+          lock_call(core, ws, "renew", @sf.t("web-pages.security.renew"), [("device", id)], done=@sf.t("web-pages.security.renewed"))
+        }),
+      ),
+    )
+  }
+  if flag(d, "removable") {
+    items.push(
+      Some(
+        @sf.menu_item_of(@sf.t("web-pages.security.remove"), icon="trash", danger=true, further=true, fn() {
+          remove_dialog(core, ws, id, text(d, "fullText"))
+        }),
+      ),
+    )
+  }
+  @sf.menu(items, from~, title=text(d, "fullText"), along=End)
+}
+
+///|
+/// Station: the workspace's stations and whether the lock protects each (StationRow); none, said so.
+fn stations_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> Json?, stint : () -> Int) -> Unit {
+  // (its heading as the people's, the room over it a heading's whatever is before it: a note too)
+  @sf.section_heading_node(parent, fn() { "Station" })
+  let stations = fn() { items(lock(), "stations") }
+  parent.pick(fn() { stations().length() == 0 }, fn(p, none) {
+    // (none: said in their place, as a list with none says it, no card of its own)
+    if none {
+      @sf.page_none_node(p, fn() { @sf.t("web-pages.security.noStations") })
+      return
+    }
+    let can = fn() { flag(lock(), "owner") && flag(lock(), "signs") }
+    @sf.group_node(p, fn(g) {
+      g.each(fn() { indexed(stations()) }, fn(e) { e.0 }, fn(row, e) {
+        security_station_node(row, core, ws, fn() { Some(e.get().1) }, can, stint)
+      })
+    })
+  })
+}
+
+///|
+/// A station and whether the lock protects it (StationRow), `sv` as it is now, a row as the Station page's: its mark
+/// (whether it is online wide, then its emoji or icon: station_lead), its name; 受保护 at its end, or why not under its
+/// name and at its end 保护 in the link's ink, the row pressed (where `can`: the owner's signing device; asked first, a
+/// ring in its place while that goes), or 未保护 in amber.
+fn security_station_node(
   parent : @view.View,
   core : Core,
   ws : () -> String,
@@ -1023,70 +1036,62 @@ fn sec_station_node(
   can : () -> Bool,
   stint : () -> Int,
 ) -> Unit {
-  let wide = @sf.look_node(parent) is Wide
   let id = fn() { text(sv(), "id") }
+  let name = fn() { text(sv(), "name") }
   let guarded = fn() { flag(sv(), "protected") }
   let joining = fn() { is_doing(core, ["lock.joinStation"], [("workspace", ws()), ("station", id())]) }
-  let emoji = fn() { text(sv(), "emoji") }
-  let icon = fn() { text(sv(), "icon") }
-  // (wide: its mark before its name, the two together)
-  let marked = fn() { wide && @sf.has_station_mark(emoji(), icon()) }
-  sec_line_node(
-    parent,
-    fn() { if marked() { "" } else { text(sv(), "name") } },
-    note=fn() { if guarded() { "" } else { @sf.t("web-pages.security.unprotectedWhy") } },
-    mark=fn(m) {
-      sec_dot_node(m, guarded)
-      m.show(marked, fn(n) {
-        n.box(fn(b) {
-          @sf.style_node(b, fn() { @sf.desk_named }, in_row=true)
-          @sf.station_mark_node(b, emoji, icon, @sf.desk_mark, fn() { @sf.theme().p.text }, stint)
-          @sf.words_node(b, fn() { text(sv(), "name") }, fn() { sec_row_name }) |> ignore
-        })
-        |> ignore
-      })
+  let wide = @sf.look_node(parent) is Wide
+  let marked = fn() { @sf.has_station_mark(text(sv(), "emoji"), text(sv(), "icon")) }
+  // (what is before its name as the Station page's: wide, whether it is online, then its mark; narrow its mark alone,
+  // and nothing, no room kept, where it has none)
+  let lead = @sf.station_lead(fn() { flag(sv(), "online") }, fn() { text(sv(), "emoji") }, fn() { text(sv(), "icon") }, stint)
+  parent.pick(
+    fn() {
+      let state = if guarded() { 0 } else if can() { 1 } else { 2 }
+      if wide || marked() {
+        state
+      } else {
+        state + 3
+      }
     },
-    end=fn(e) {
-      e.pick(
-        fn() {
-          if guarded() {
-            0
-          } else if can() {
-            1
-          } else {
-            2
-          }
-        },
-        fn(p, which) {
-          match which {
-            0 => sec_end_words_node(p, fn() { @sf.t("web-pages.security.protected") })
-            // (kept a button while its spinner turns, at either width; wide, out into the card's corner)
-            1 =>
-              p.box(fn(r) {
-                if wide {
-                  r.margin(Is((0.0, 0.0, @sf.card_foot_in(@sf.button_height()) - @sf.card_pad, 0.0))) |> ignore
-                }
-                @sf.button_node(
-                  r,
-                  fn() { @sf.t("web-pages.security.join") },
-                  fn() { join_dialog(core, @signals.untracked(ws), @signals.untracked(id), @signals.untracked(fn() { text(sv(), "name") })) },
-                  tone=Ghost,
-                  busy=joining,
-                )
-                |> ignore
-              })
-              |> ignore
-            _ => sec_end_words_node(p, fn() { @sf.t("web-pages.security.unprotected") }, warn=true)
-          }
-        },
-      )
+    fn(r, which) {
+      let lead = if which < 3 { lead } else { NoLead }
+      match which % 3 {
+        0 =>
+          @sf.link_row_node(r, name, fn() {  }, value=fn() { @sf.t("web-pages.security.protected") }, lead~, goes=false, chevron=false)
+        // (what it does pressed at its end, in the link's ink, as a row that acts says it: asked first, a ring in its
+        // place while that goes; a button there would stand taller than its line, over the note under it)
+        1 =>
+          @sf.link_row_node(
+            r,
+            name,
+            fn() { join_dialog(core, @signals.untracked(ws), @signals.untracked(id), @signals.untracked(name)) },
+            value=fn() { @sf.t("web-pages.security.join") },
+            value_lit=true,
+            note=fn() { @sf.t("web-pages.security.unprotectedWhy") },
+            lead~,
+            chevron=false,
+            busy=joining,
+          )
+        _ =>
+          @sf.link_row_node(
+            r,
+            name,
+            fn() {  },
+            note=fn() { @sf.t("web-pages.security.unprotectedWhy") },
+            lead~,
+            tail=fn(e) { @sf.words_node(e, fn() { @sf.t("web-pages.security.unprotected") }, fn() { sec_warn_state }) |> ignore },
+            goes=false,
+            chevron=false,
+          )
+      }
     },
   )
 }
 
 ///|
-/// 关闭安全模式, asked first (turn_off_dialog): wide, a danger button; narrow, at the foot, in red, a row on a card of
-/// its own; a spinner while it goes, pressed none then.
+/// 关闭安全模式, asked first (turn_off_dialog): a row in red on a card of its own at either width (退出此 workspace's
+/// look); a ring while it goes, pressed none then.
 fn turn_off_node(parent : @view.View, core : Core, ws : () -> String, here : () -> Here) -> Unit {
   let off = fn() { is_doing(core, ["lock.disable"], [("workspace", ws())]) }
   let press = fn() {
@@ -1094,21 +1099,9 @@ fn turn_off_node(parent : @view.View, core : Core, ws : () -> String, here : () 
       turn_off_dialog(core, @signals.untracked(ws), @signals.untracked(here).name)
     }
   }
-  let label = fn() { @sf.t("web-pages.security.turnOff") }
-  match @sf.look_node(parent) {
-    Wide =>
-      parent.box(fn(a) {
-        @sf.style_node(a, fn() { sec_actions })
-        @sf.button_node(a, label, press, tone=Danger, busy=off) |> ignore
-      })
-      |> ignore
-    Narrow =>
-      parent.box(fn(f) {
-        @sf.style_node(f, fn() { acc_narrow_foot })
-        @sf.group_node(f, fn(g) { @sf.link_row_node(g, label, press, danger=true, acts=true, busy=off) })
-      })
-      |> ignore
-  }
+  @sf.group_node(parent, fn(g) {
+    @sf.link_row_node(g, fn() { @sf.t("web-pages.security.turnOff") }, press, danger=true, chevron=false, busy=off)
+  })
 }
 
 ///|
@@ -1441,9 +1434,6 @@ let sec_state_lines : @ui.TextStyle = sec_state.then(@sf.in_lines)
 // kept across runs: a value (no field of it changes)
 let sec_state_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
-///|
-// kept across runs: a value (no field of it changes)
-let sec_state_meta : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1552,11 +1542,6 @@ let sec_warn : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnI
 // kept across runs: a value (no field of it changes)
 let sec_warn_state : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnInk, wrap=false)
 
-///|
-/// A person's devices, 42 in, 8 apart; by app, its name (the meta's 12 in 500, muted, on a line) over the first, a
-/// group 14 from the one before it (deviceGroup, deviceApp).
-// kept across runs: a value (no field of it changes)
-let sec_devices : @ui.Style = @ui.css("w=Full pl=S10 gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)

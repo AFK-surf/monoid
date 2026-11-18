@@ -197,7 +197,7 @@ function innerOf(parts: { host: FakeHost; store: Store; data: Data; views?: View
   };
   return {
     host: parts.host, store: parts.store, runner: parts.store.runner, data: parts.data, views: parts.views, workspaces,
-    accounts: { list: () => [{ sub: "s1", email: "me@x.com", name: "左子健" }] },
+    accounts: { list: () => [{ sub: "s1", email: "me@x.com", name: "陆知远" }] },
     // (no station is asked here: what they said is set, as the sync would)
     stations: { seen: { read: () => {} }, link: () => ({ state: { state: "online" } }), reachable: () => false },
     provider: { kind: "stillfail" }, adb: { personal: () => personal }, meshNow: () => null,

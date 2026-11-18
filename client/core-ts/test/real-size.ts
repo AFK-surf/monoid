@@ -70,7 +70,7 @@ const pick = <T>(pool: readonly T[], i: number): T => pool[((i % pool.length) + 
 // ── people ──
 
 const PEOPLE_BASE = [
-  { sub: "s1", email: "me@x.com", name: "左子健" },
+  { sub: "s1", email: "me@x.com", name: "陆知远" },
   { sub: "s2", email: "lina@acme.dev", name: "Lina Park" },
   { sub: "s3", email: "wang.lei@acme.dev", name: "王磊" },
   { sub: "s4", email: "chen.yu@acme.dev", name: "陈雨" },
@@ -1391,7 +1391,7 @@ function lockOf(now: number): J {
   const secs = Math.floor(now / 1000);
   const devices = PEOPLE.flatMap((p, i) => [
     { id: `dev-${p.sub}-mac`, sub: p.sub, kind: "app", label: `macos still.fail 桌面版 · ${p.name} 的 MacBook Pro`, sign_key: `sk-${p.sub}-mac` },
-    { id: `dev-${p.sub}-phone`, sub: p.sub, kind: "app", label: `${i % 2 === 0 ? "ios" : "android"} still.fail · ${p.name} 的${i % 2 === 0 ? " iPhone 16" : " Pixel 8"}`, sign_key: `sk-${p.sub}-phone` },
+    { id: `dev-${p.sub}-phone`, sub: p.sub, kind: "app", label: `still.fail ${i % 2 === 0 ? "iOS" : "Android"} · ${p.name} 的${i % 2 === 0 ? " iPhone 16" : " Pixel 8"}`, sign_key: `sk-${p.sub}-phone` },
     ...(i % 3 === 0 ? [{ id: `dev-${p.sub}-web`, sub: p.sub, kind: "web", label: `web still.fail 网页版 · Chrome on ${p.name} 的台式机`, exp: secs + (i + 2) * 86400 }] : []),
   ]);
   const genesis = {
@@ -1518,7 +1518,7 @@ export function screensOf(now: number): J {
   const views = (who: [string, string, string][]) => who.map(([name, device, app], i) => ({ id: `v-${name}-${i}`, name, device, app, at: now - (i + 1) * 4 * MIN, control: i === 0, ...(app === "agent" ? { agent: true } : {}) }));
   return {
     screens: [
-      { id: "desktop", kind: "desktop", title: "Maple", width: 3456, height: 2234, viewers: ["左子健"], controlledBy: ["左子健"], views: views([["左子健", "still.fail 桌面版 · MacBook Pro", "desktop"]]), clipboard: ["text", "png"], drop: { folder: "/Users/maple/Downloads", reveal: true } },
+      { id: "desktop", kind: "desktop", title: "Maple", width: 3456, height: 2234, viewers: ["陆知远"], controlledBy: ["陆知远"], views: views([["陆知远", "still.fail 桌面版 · MacBook Pro", "desktop"]]), clipboard: ["text", "png"], drop: { folder: "/Users/maple/Downloads", reveal: true } },
       { id: "browser:T1", kind: "browser", title: "Pull request #5244 · acme/app", width: 1280, height: 800, viewers: ["修复 Android 上聊天列表滚动掉帧", "Lina Park"], controlledBy: ["修复 Android 上聊天列表滚动掉帧"], views: views([["修复 Android 上聊天列表滚动掉帧", "agent", "agent"], ["Lina Park", "still.fail · Pixel 8", "android"]]), clipboard: ["text"], peek: true, closable: true, openedBy: CHAT.keys[0], drop: { folder: "/Users/maple/Downloads", reveal: false } },
       { id: "browser:T2", kind: "browser", title: "Grafana · relay 1k 并发", width: 1440, height: 900, viewers: [], controlledBy: [], views: [], clipboard: ["text"], peek: true, closable: true, openedBy: keyOf(0, 30) },
     ],

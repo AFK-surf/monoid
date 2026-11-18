@@ -61,20 +61,63 @@ test "安全, at each width and with either hand: its people, devices and statio
     let (w, platform) = case
     let t = setting_tester(Security, w, platform~)
     let at = "\{w} platform \{platform}"
-    // (by app: its name over its devices, which machine each is, the most lately used first)
+    // (a person's devices, the most lately used first, each its app under its name: no row of an app's name alone)
     scrolled_to(t, w, "示例工作站")
-    let (_, app) = t.find("still.fail 桌面版").unwrap()
     let (_, pro) = t.find("林的 MacBook Pro").unwrap()
     let (_, sample) = t.find("示例工作站").unwrap()
-    assert_true(app < pro && pro < sample, msg=at)
+    assert_true(pro < sample, msg=at)
+    assert_eq(t.words().filter(fn(x) { x.0 == "still.fail 桌面版" }).length(), 0, msg=at)
+    assert_true(t.find("still.fail 桌面版 · 一天内使用过 · 受信任") is Some(_), msg=at)
+    // (soon to run out: its days left beside its name in amber, the rest of its line not)
+    scrolled_to(t, w, "Chrome · macOS")
+    let left = t.words().filter(fn(x) { x.0 == "剩余 4 天" && x.5 > 0.5 })
+    guard left.length() == 1 else { fail("\{at}: 剩余 4 天 drawn \{left.length()} times") }
+    let (_, lx, ly, lw, lh, _) = left[0]
+    let (_, name_y) = t.find("Chrome · macOS").unwrap()
+    assert_true((ly + lh / 2.0 - name_y).abs() < 3.0, msg="\{at}: 剩余 4 天 at \{ly}, its name at \{name_y}")
+    let amber = @sf.theme().p.warn_ink
+    let inks = sec_inks_in(t, lx, ly, lw, lh)
+    assert_true(inks.length() > 0 && inks.iter().all(fn(i) { i >> 8 == amber >> 8 }), msg="\{at}: 剩余 4 天 in \{Repr(inks)}")
+    let meta = t.words().filter(fn(x) { x.0 == "still.fail 网页版 · 2 天前使用过" && x.5 > 0.5 })
+    guard meta.length() == 1 else { fail("\{at}: no line under it") }
+    let (_, mx, my, mw, mh, _) = meta[0]
+    assert_false(sec_inks_in(t, mx, my, mw, mh).iter().any(fn(i) { i >> 8 == amber >> 8 }), msg=at)
     scrolled_to(t, w, "Ana 的 MacBook Air")
-    assert_true(t.find("Ana 的 MacBook Air") is Some(_), msg=at)
-    assert_true(t.find("5 天前使用过 · 受信任") is Some(_), msg=at)
+    assert_true(t.find("still.fail 桌面版 · 5 天前使用过 · 受信任") is Some(_), msg=at)
     scrolled_to(t, w, "受保护")
     assert_true(t.find("受保护") is Some(_), msg=at)
   }
 }
 
+///|
+test "安全, at each width and with either hand: each row's mark across its title's first line, a row's end beside it or not" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    // (a device's mark, a phone's, a computer's, the web's: on the line of its name, not across its two lines)
+    for name in ["Pixel 9", "林的 MacBook Pro", "Chrome · macOS"] {
+      scrolled_to(t, w, name)
+      let row = t.words().filter(fn(x) { x.0 == name && x.5 > 0.5 })
+      guard row.length() == 1 else { fail("\{at}: \{name} drawn \{row.length()} times") }
+      let (_, nx, ny, _, nh, _) = row[0]
+      guard sec_mark_before(t, nx, ny - nh, ny + 2.0 * nh) is Some((top, bottom)) else {
+        fail("\{at}: no mark before \{name}")
+      }
+      let centre = (top + bottom) / 2.0
+      assert_true((centre - (ny + nh / 2.0)).abs() < 2.0, msg="\{at}: \{name}'s mark \{top}..\{bottom}, its line \{ny}..\{ny + nh}")
+    }
+    // (a station with what it does at its end, 保护: its mark too on its name's line)
+    scrolled_to(t, w, "Maple")
+    let (_, maple) = t.find("Maple").unwrap()
+    let end = t.words().filter(fn(x) { x.0 == "保护" && x.5 > 0.5 })
+    guard end.length() == 1 else { fail("\{at}: 保护 drawn \{end.length()} times") }
+    assert_true((end[0].2 + end[0].4 / 2.0 - maple).abs() < 3.0, msg="\{at}: 保护 at \{end[0].2}, Maple at \{maple}")
+    // (and no mark the audit knows off its first line, no line starting between a mark and its words)
+    assert_eq(t.first_line_faults(), [], msg=at)
+    assert_eq(t.line_start_faults(), [], msg=at)
+  }
+}
 ///|
 test "安全, at each width and with either hand: no row of a lock of one's own, the workspace's safe mode alone" {
   // (to people there is one safe mode, the user, 2026-11-10: its row was at the page's top, on every app but the web)
@@ -89,12 +132,12 @@ test "安全, at each width and with either hand: no row of a lock of one's own,
 }
 
 ///|
-test "protecting a station keeps its button and label, with the spinner inside and no repeated press" {
+test "protecting a station: its row says 保护 and asks first; under way, a ring in its place and no press asks again" {
   for (w, platform) in page_cases {
     let at = "\{w} platform \{platform}"
     let idle = setting_tester(Security, w, platform~)
     scrolled_to(idle, w, "Maple")
-    assert_false(idle.get(Button, label="保护").disabled, msg=at)
+    assert_false(idle.get(Link, label="Maple").disabled, msg=at)
     tap_words(idle, "保护")
     idle.frame()
     assert_true(@sf.presenting(), msg=at)
@@ -104,24 +147,19 @@ test "protecting a station keeps its button and label, with the spinner inside a
     let busy = setting_tester(Security, w, platform~, mode="settings-security-protecting")
     scrolled_to(busy, w, "Maple")
     busy.run_for(@ui.move_most_ms)
-    let button = busy.get(Button, label="保护")
-    assert_true(button.disabled, msg=at)
-    assert_true(busy.find("保护") is Some(_), msg=at)
-    let (x, y, width, height) = button.rect
-    assert_true(busy.drawn_rects().iter().any(fn(r) {
-      r.4 == @sf.theme().p.hover && r.0 <= x && r.1 <= y && r.0 + r.2 >= x + width && r.1 + r.3 >= y + height
-    }), msg="button ground: \{at}")
+    let row = busy.get(Link, label="Maple")
+    assert_true(row.disabled, msg=at)
+    let (x, y, width, height) = row.rect
     assert_true(busy.drawn_instances().iter().any(fn(i) {
       i[5] == 10.0 && i[0] >= x && i[1] >= y && i[0] + i[2] <= x + width && i[1] + i[3] <= y + height
-    }), msg="spinner inside the button: \{at}")
+    }), msg="a ring in the row: \{at}")
     busy.tap(x + width / 2.0, y + height / 2.0)
     busy.frame()
     assert_false(@sf.presenting(), msg=at)
   }
 }
-
 ///|
-test "a station's protect button follows its request through failure, retry and success" {
+test "a station's 保护 follows its request through failure, retry and success" {
   for (w, platform) in page_cases {
     let running = Ref(false)
     let joined = Ref(false)
@@ -173,17 +211,19 @@ test "a station's protect button follows its request through failure, retry and 
     scrolled_to(t, w, "Maple")
     tap_words(t, "保护")
     t.frame()
+    // (the dialog's own 保护, its button)
     let (x, y, width, height) = t.get(Button, label="保护").rect
     t.tap(x + width / 2.0, y + height / 2.0)
     t.frame()
     assert_eq(answers.length(), 1)
     assert_eq(requests[0], { "workspace": "ws1", "station": "st2" })
-    assert_true(t.get(Button, label="保护").disabled)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.get(Link, label="Maple").disabled)
     running.val = false
     @settings.fixture_changed()
     answers[0](Err({ "message": "offline" }))
     t.frame()
-    assert_false(t.get(Button, label="保护").disabled)
+    assert_false(t.get(Link, label="Maple").disabled)
     // The first confirmation is still drawn as it closes; retry at a declared later moment.
     t.run_for(@ui.move_most_ms)
     tap_words(t, "保护")
@@ -198,48 +238,54 @@ test "a station's protect button follows its request through failure, retry and 
     @settings.fixture_changed()
     answers[1](Ok({}))
     t.frame()
-    assert_true(t.query(Button, label="保护") is None)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.query(Link, label="Maple") is None)
+    assert_eq(t.words().filter(fn(word) { word.0 == "保护" && word.5 > 0.5 }).length(), 0)
     assert_eq(t.words().filter(fn(word) { word.0 == "受保护" && word.5 > 0.5 }).length(), 2)
   }
 }
 
 ///|
-test "安全, at each width and with either hand: another device of one's own taken out, asked first; not this one, nor someone else's" {
+test "安全, at each width and with either hand: another device of one's own taken out from its menu, asked first; not this one, nor someone else's" {
   for case in page_cases {
     let (w, platform) = case
     let t = setting_tester(Security, w, platform~)
     let at = "\{w} platform \{platform}"
     let name = "林的 MacBook Pro"
     scrolled_to(t, w, name)
-    // (移除 on each of the viewer's own but this device's: their MacBook's, the first not above its name, at its end
-    // wide, under its words narrow)
-    let (_, y) = t.find(name).unwrap()
-    let shown = t.words().filter(fn(x) { x.0 == "移除" && x.5 > 0.5 && x.2 + x.4 > y })
-    guard shown.length() > 0 else { fail("no 移除 drawn") }
-    let mut near = shown[0]
-    for x in shown {
-      if x.2 < near.2 {
-        near = x
-      }
-    }
-    t.tap(near.1 + near.3 / 2.0, near.2 + near.4 / 2.0)
+    // (no 移除 nor 续期 on the page: what can be done about a device is its row's menu)
+    let laid = t.words().filter(fn(x) { (x.0 == "移除" || x.0 == "续期") && x.5 > 0.5 })
+    assert_eq(laid.length(), 0, msg="\{at}: \{Repr(laid)}")
+    sec_device_menu(t, name)
+    assert_true(@sf.presenting(), msg=at)
+    // (in the menu, 移除 in red, its words' glyphs: what is drawn under the menu in its box, dimmed, is the page's)
+    let shown = t.words().filter(fn(x) { x.0 == "移除" && x.5 > 0.5 })
+    guard shown.length() == 1 else { fail("\{at}: 移除 drawn \{shown.length()} times in its menu") }
+    let (_, rx, ry, rw, rh, _) = shown[0]
+    let red = @sf.theme().p.red
+    let inks = sec_inks_in(t, rx, ry, rw, rh)
+    assert_true(inks.iter().any(fn(i) { i >> 8 == red >> 8 }), msg="\{at}: 移除 drawn in \{Repr(inks)}")
+    tap_words(t, "移除")
     t.frame()
+    t.run_for(@ui.move_most_ms)
     assert_true(@sf.presenting(), msg=at)
     assert_true(t.find("移除「林的 MacBook Pro · still.fail 桌面版」？") is Some(_), msg=at)
     assert_true(t.find("该设备将无法再访问受保护的 station，重新批准后才能使用") is Some(_), msg=at)
     @sf.close_presented()
     t.frame()
-    // (someone else's device, the last of the people's: theirs alone to take out, so no 移除 from its name down,
+    // (this device, and someone else's, the last of the people's: theirs alone to take out, so their rows go nowhere,
     // though the viewer owns the workspace; the user, 2026-11-10)
-    // (the page opened anew: the dialog just closed is not what is looked at)
     let t = setting_tester(Security, w, platform~)
-    scrolled_to(t, w, "Ana 的 MacBook Air")
-    let (_, theirs) = t.find("Ana 的 MacBook Air").unwrap()
-    let under = t.words().filter(fn(x) { x.0 == "移除" && x.5 > 0.5 && x.2 + x.4 > theirs })
-    assert_eq(under.length(), 0, msg="\{at}: \{Repr(under.map(fn(x) { (x.1, x.2) }))} under \{theirs}")
+    for theirs in ["Pixel 9", "Ana 的 MacBook Air"] {
+      scrolled_to(t, w, theirs)
+      assert_true(t.query(Link, label=theirs) is None, msg="\{at}: \{theirs} goes somewhere")
+      let (x, y) = t.find(theirs).unwrap()
+      t.tap(x, y)
+      t.frame()
+      assert_false(@sf.presenting(), msg="\{at}: \{theirs} opened something")
+    }
   }
 }
-
 ///|
 test "安全, at each width and with either hand: 关闭安全模式 asks first, the workspace's name typed" {
   for case in page_cases {
@@ -465,16 +511,8 @@ test "安全, at each width and with either hand: a removal answered pending say
     let at = "\{w} platform \{platform}"
     let name = "林的 MacBook Pro"
     scrolled_to(t, w, name)
-    let (_, y) = t.find(name).unwrap()
-    let shown = t.words().filter(fn(x) { x.0 == "移除" && x.5 > 0.5 && x.2 + x.4 > y })
-    guard shown.length() > 0 else { fail("no 移除 drawn") }
-    let mut near = shown[0]
-    for x in shown {
-      if x.2 < near.2 {
-        near = x
-      }
-    }
-    t.tap(near.1 + near.3 / 2.0, near.2 + near.4 / 2.0)
+    sec_device_menu(t, name)
+    tap_words(t, "移除")
     t.frame()
     assert_true(@sf.presenting(), msg=at)
     t.run_for(@ui.move_most_ms)
@@ -796,4 +834,41 @@ test "安全, at each width and with either hand: none of its person's devices a
       assert_true(shown.contains(after), msg="\{at}: \{shown}")
     }
   }
+}
+
+///|
+/// Device `name`'s row pressed (its menu opened, at rest).
+fn sec_device_menu(t : @ui.Tester, name : String) -> Unit raise {
+  let (x, y, w, h) = t.get(Link, label=name).rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+/// The inks of the glyphs drawn in the box at (`x`, `y`), `w` by `h` (their tops in its upper half).
+fn sec_inks_in(t : @ui.Tester, x : Double, y : Double, w : Double, h : Double) -> Array[Int64] {
+  let out = []
+  for g in t.drawn_glyphs() {
+    if g.0 >= x - 1.0 && g.0 <= x + w + 1.0 && g.1 >= y - 1.0 && g.1 < y + h / 2.0 && !out.contains(g.2) {
+      out.push(g.2)
+    }
+  }
+  out
+}
+
+///|
+/// How far down a row's mark reaches, top and foot, where it is drawn before `x` between `top` and `foot` (a line
+/// icon's strokes): None where nothing is.
+fn sec_mark_before(t : @ui.Tester, x : Double, top : Double, foot : Double) -> (Double, Double)? {
+  let mut out : (Double, Double)? = None
+  for i in t.drawn_instances() {
+    if i[0] + i[2] <= x && i[0] + i[2] > x - 40.0 && i[1] >= top && i[1] + i[3] <= foot {
+      out = match out {
+        None => Some((i[1], i[1] + i[3]))
+        Some((a, b)) => Some((@cmp.minimum(a, i[1]), @cmp.maximum(b, i[1] + i[3])))
+      }
+    }
+  }
+  out
 }

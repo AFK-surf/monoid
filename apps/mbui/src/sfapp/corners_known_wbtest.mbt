@@ -27,10 +27,8 @@ let corners_everywhere_known : Map[String, Int] = {
   // gone as the page's height is any other (English's has none).
   known["touch-zh settings-vault-waits"] = 3
   // 安全 made its person's only trusted device (lock-rebound-security) in the 600 wide window touch is in, in Chinese: the rail's
-  // one, and its page, which does not fill its panel, ending with 网页版's card 17 over the panel's foot, 16 in, its foot
-  // corners where the panel's 42 would want them 25. Where it ends is its words' and the window's, as 密钥's above: gone
-  // as the page's height is any other (English's has none).
-  known["touch-zh lock-rebound-security"] = 3
+  // one (its page ends with no card of its own at the panel's foot since 网页版's card became its people's note).
+  known["touch-zh lock-rebound-security"] = 1
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the

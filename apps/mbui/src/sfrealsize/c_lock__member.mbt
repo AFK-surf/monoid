@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"lock","workspace":"ws"}
   let messages =
-    #|[[{"path":["members",3,"groups",2,"devices",0,"renewSoon"],"set":true}]]
+    #|[[{"path":["members",3,"groups",2,"devices",0,"leftText"],"set":"剩余 5 天"},{"path":["members",3,"groups",2,"devices",0,"metaText"],"set":"web still.fail 网页版 · 一天内使用过"},{"path":["members",3,"groups",2,"devices",0,"renewSoon"],"set":true}]]
   put_changes(asked, "member", messages)
 }
