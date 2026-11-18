@@ -510,8 +510,9 @@ for t in $targets; do
           # (chat_drive_parity's four runs on the four since, some 75 s each of one of its cores (gt1's 29-35 s, CI's
           # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
           # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
-          # Use the measured sweep costs after three runs move from the first group to contrast.
-          *) specs="4,4,215,1 3,4,525,1 4,4,440,1 4,4,380,1" ;;
+          # On run 44223691256, group 3 still had page tests at the five-minute limit. The other groups
+          # finished in 219 to 224 s. Allow for more time in group 3's sweeps and give it fewer pages.
+          *) specs="4,4,215,1 3,4,525,1 4,4,740,1 4,4,380,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
