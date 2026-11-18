@@ -1402,13 +1402,14 @@ fn triple_body_node(
   // whose models it lists, where another station could lend some: this station's, or every station's (the core's
   // `otherStations`), in the title's place, a choice of two
   let scope_node = fn(parent : @view.View) {
-    @sf.segmented_node(
+    // (the small one, as wide as its two words, not the page's: it stands in a title's place)
+    @sf.seg_node(
       parent,
       fn() { [@sf.t("web-main.model.here"), @sf.t("web-main.model.everywhere")] },
       fn() { if flag(v(), "otherStations") { 1 } else { 0 } },
       fn(i) { pick_draft(src, station, of, { "otherStations": Json::boolean(i == 1) }) },
-      head=true,
     )
+    |> ignore
   }
   // beside what opened it, its title (and its search) over the models (heads_itself); the choice of whose models in
   // the title's place where another station could lend some
