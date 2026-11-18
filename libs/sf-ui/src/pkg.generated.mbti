@@ -1415,7 +1415,7 @@ pub let page_list_opened : @ref.Ref[(@ui.Ctx, String, Int32) -> Unit]
 
 pub let page_narrow_most : Double
 
-pub fn page_node(@view.View, () -> String, () -> Array[String], (@view.View, String) -> Unit, on_back~ : () -> Unit, frame? : () -> PageFrame, lead? : () -> String, about? : () -> String, actions? : (@view.View) -> Unit, said? : (PageSaid) -> Unit, width? : () -> Double, scroll? : @view.Scroll, tips? : TipLayer, head? : (@view.View) -> Unit, near_foot? : (Double, () -> Bool, () -> Unit)) -> Unit
+pub fn page_node(@view.View, () -> String, () -> Array[String], (@view.View, String) -> Unit, on_back~ : () -> Unit, frame? : () -> PageFrame, lead? : () -> String, about? : () -> String, actions? : (@view.View) -> Unit, said? : (PageSaid) -> Unit, width? : () -> Double, scroll? : @view.Scroll, tips? : TipLayer, head? : (@view.View) -> Unit, near_foot? : (Double, () -> Bool, () -> Unit), small? : () -> String, back_as? : () -> String, reused? : (String) -> Int?, make_reused? : (@view.View, Int, () -> String) -> Unit) -> Unit
 
 pub fn page_none_node(@view.View, () -> String) -> Unit
 

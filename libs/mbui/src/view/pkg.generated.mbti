@@ -1690,6 +1690,7 @@ pub fn View::read_from(Self) -> Self
 pub fn View::rect(Self) -> (Double, Double, Double, Double)
 pub fn View::resizes(Self, spec? : (Double, (Double) -> Double), foot? : Bool) -> Self
 pub fn View::reused_bool(Self, default? : Bool) -> @signals.Signal[Bool]
+pub fn View::reused_kind(Self) -> Int?
 #callsite(autofill(loc))
 pub fn View::row(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::row_order(Self) -> Int32?

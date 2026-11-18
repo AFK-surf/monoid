@@ -595,6 +595,18 @@ pub fn[K : Hash + Eq] View::scrolls_window(
 }
 
 ///|
+// kept across runs: what each block a page's list puts by and takes again lends (View::lends), let go with it
+let reused_kind_lent : Lent[Int] = Lent::new()
+
+///|
+/// The kind `reused` (or `scrolls_reused`'s `shape`) gave the pooled block holding `self`, constant for the block's
+/// life (`None` outside a reused block): so a `make_reused` with several kinds branches on this, never reading `key`
+/// untracked.
+pub fn View::reused_kind(self : View) -> Int? {
+  self.lent(reused_kind_lent)
+}
+
+///|
 /// View::scrolls_window whose blocks are taken again as they leave what shows (its `reused`), said by one make:
 /// `make` makes a block in its node with what says its key as it is now, the one key it is made for or, taken for
 /// another, that one's from then (its parts read it through `key()` where they are bound, a press as it runs: what reads
@@ -5298,6 +5310,8 @@ fn View::scrolls_window_ids(
                   _ => {
                     let key = @signals.signal(k, same=fn(a, b) { a == b })
                     let v = slot.box(fn(v) {
+                      // (its kind lent to all of it, the same for its life: View::reused_kind)
+                      v.lends(reused_kind_lent, kind) |> ignore
                       // (what its parts keep of its key: what was kept of it given back as each is made, reused_state.mbt)
                       self.tree.reused_made(v, fn(path) { kept.x_of(k, path) }, fn(path) { kept.bool_of(k, path) }, kept_keys)
                       block(v, fn() { key.get() }, fn(v) { make_by(v, fn() { key.get() }) })
