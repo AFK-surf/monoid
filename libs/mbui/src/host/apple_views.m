@@ -2752,3 +2752,81 @@ void mb_host_keep_end(int32_t kid) {
   if (k.out) keep_drop(k);
   [keeps removeObjectForKey:@(kid)];
 }
+
+// ---- the system's liquid glass (apple.h mb_views_glass, apple_render.m native_split) ----
+// A container of UIGlassContainerEffect over the canvas view's own picture and under the clear layer the rest of the
+// frame is drawn into, holding a UIGlassEffect view for each liquid glass instance: the system blurs and bends the
+// canvas's picture under them and merges the ones near each other, as UIKit's own bars do. It takes no touch: what is
+// pressed is the canvas's, as ever.
+
+#if TARGET_OS_OSX
+int mb_views_native_glass(void) { return 0; }
+void mb_views_glass(int n, const double *glass) { (void)n; (void)glass; }
+#else
+static int native_glass = -1;
+static __weak UIView *glass_canvas, *glass_over;
+static UIVisualEffectView *glass_box;
+static NSMutableArray<UIVisualEffectView *> *glass_views;
+static double glass_told[MB_NGLASSES][MB_NGLASS_N];
+static int glass_shown;
+
+int mb_views_native_glass(void) {
+  if (native_glass < 0) {
+    native_glass = 0;
+    if (@available(iOS 26.0, *)) native_glass = [NSBundle.mainBundle.infoDictionary[@"MBUINativeGlass"] boolValue];
+    if (native_glass) vlog(@"view glass: the system's liquid glass (MBUINativeGlass)");
+  }
+  return native_glass;
+}
+
+void mb_views_glass_in(UIView *canvas, UIView *over) {
+  glass_canvas = canvas;
+  glass_over = over;
+}
+
+void mb_views_glass(int n, const double *d) {
+  if (!mb_views_native_glass() || !glass_canvas) return;
+  if (@available(iOS 26.0, *)) {
+    if (n > MB_NGLASSES) n = MB_NGLASSES;
+    if (!n && !glass_shown) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (!glass_box) {
+      UIGlassContainerEffect *c = [UIGlassContainerEffect new];
+      glass_box = [[UIVisualEffectView alloc] initWithEffect:c];
+      glass_box.userInteractionEnabled = NO;
+      glass_views = [NSMutableArray new];
+    }
+    UIView *canvas = glass_canvas, *over = glass_over;
+    if (glass_box.superview != canvas) {
+      if (over && over.superview == canvas) [canvas insertSubview:glass_box belowSubview:over];
+      else [canvas addSubview:glass_box];
+    }
+    if (!CGRectEqualToRect(glass_box.frame, canvas.bounds)) glass_box.frame = canvas.bounds;
+    if (n > 0) ((UIGlassContainerEffect *)glass_box.effect).spacing = d[6];
+    for (int i = 0; i < n; i++) {
+      const double *e = d + i * MB_NGLASS_N;
+      if (i >= (int)glass_views.count) {
+        UIGlassEffect *g = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+        UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:g];
+        v.userInteractionEnabled = NO;
+        [glass_box.contentView addSubview:v];
+        [glass_views addObject:v];
+        for (int k = 0; k < MB_NGLASS_N; k++) glass_told[i][k] = -1;
+      }
+      UIVisualEffectView *v = glass_views[i];
+      v.hidden = NO;
+      if (memcmp(glass_told[i], e, sizeof glass_told[i]) == 0) continue;
+      memcpy(glass_told[i], e, sizeof glass_told[i]);
+      v.frame = CGRectMake(e[0], e[1], e[2], e[3]);
+      double r = fmin(e[4], fmin(e[2], e[3]) * 0.5);
+      v.cornerConfiguration = [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius fixedRadius:r]];
+      v.alpha = e[5];
+    }
+    for (int i = n; i < (int)glass_views.count; i++) glass_views[i].hidden = YES;
+    glass_box.hidden = n == 0;
+    glass_shown = n > 0;
+    [CATransaction commit];
+  }
+}
+#endif

@@ -48,6 +48,8 @@ typedef struct {
   int32_t count;
   double bg[3], w, h, scale;
   int tw, th, glass, lat;
+  // (drawn on a clear ground: what goes over the system's glass, native_split)
+  int clear;
   MBDirty parts;
   int through_n;
   float through_tid[MB_THROUGH];
@@ -1619,7 +1621,7 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   double p3 = CACurrentMediaTime();
   id<MTLCommandBuffer> pcb = [queue commandBuffer];
   if (drawable && direct) {
-    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, 1, NULL);
+    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, fr->clear ? 0.0 : 1.0, NULL);
     pictures_missing = encode_missing;
   } else if (drawable) {
     int dw = (int)drawable.texture.width, dh = (int)drawable.texture.height;
@@ -1670,6 +1672,133 @@ static void present_job(MBRenderWin *w) {
   }
 }
 
+#if !TARGET_OS_OSX
+// The system's liquid glass, a build's alone (apple.h mb_views_glass): a frame with liquid glass (kind 6) is drawn in
+// two. What comes before its first liquid instance is drawn into the canvas, as ever, under the glass views; what
+// comes after it, but for the liquid instances (now the system's), into `over`, a clear layer over them. Frosted glass
+// after it is left out there (a clear layer is drawn straight into its drawable, which nothing reads back), and words
+// inked by what is under their glass (kind 7) are drawn dark, as on a light ground. The run of a frame's segments at its
+// end (kind 12, read from where they start: seg_base) ends both.
+static MBRenderWin over_win = {.w = 800, .h = 600, .scale = 2};
+static float *over_f;
+static size_t over_cap;
+static int32_t over_n, over_last_n = -1;
+static float *over_last;
+static size_t over_last_cap;
+static int over_was;
+
+void mb_render_init_over(CAMetalLayer *layer) {
+  over_win.layer = layer;
+  layer.device = dev;
+  layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+  layer.framebufferOnly = YES;
+  layer.opaque = NO;
+  layer.hidden = YES;
+}
+
+static float *over_room(float **p, size_t *cap, int32_t n) {
+  size_t need = (size_t)(n > 0 ? n : 1) * MB_INST * sizeof(float);
+  if (*cap < need) {
+    free(*p);
+    *cap = need * 2;
+    *p = malloc(*cap);
+  }
+  return *p;
+}
+
+// The frame `f` cut where its liquid glass starts: the canvas's count back, what goes over the glass in over_f,
+// the glass told to the views. 0 in *shows where no liquid glass shows (the frame as it was).
+static int32_t native_split(float *f, int32_t count, int *shows) {
+  *shows = 0;
+  int32_t s = -1, segs = count;
+  while (segs > 0 && (int)(f[(segs - 1) * MB_INST + 5] + 0.5f) == 12) segs--;
+  for (int32_t i = 0; i < segs && s < 0; i++)
+    if ((int)(f[i * MB_INST + 5] + 0.5f) == 6) s = i;
+  if (s < 0) {
+    mb_views_glass(0, NULL);
+    over_n = 0;
+    return count;
+  }
+  double zoom = mlayer && mlayer.contentsScale > 0 ? vscale / mlayer.contentsScale : 1.0;
+  double glass[MB_NGLASSES * MB_NGLASS_N];
+  int ng = 0;
+  int32_t nseg = count - segs;
+  float *o = over_room(&over_f, &over_cap, segs - s + nseg);
+  int32_t on = 0;
+  for (int32_t i = s; i < segs; i++) {
+    const float *b = f + i * MB_INST;
+    int kind = (int)(b[5] + 0.5f);
+    float r[4];
+    if (kind == 6) {
+      if (ng < MB_NGLASSES && shows_of(b, r) && b[15] > 0.0f) {
+        double *e = glass + ng++ * MB_NGLASS_N;
+        e[0] = b[0] * zoom; e[1] = b[1] * zoom; e[2] = b[2] * zoom; e[3] = b[3] * zoom;
+        e[4] = b[4] * zoom;
+        e[5] = b[15] > 1.0f ? 1.0 : b[15];
+        e[6] = b[23] * zoom;
+      }
+      continue;
+    }
+    if (kind == 5) continue;
+    float *d = o + on++ * MB_INST;
+    memcpy(d, b, MB_INST * sizeof(float));
+    if (kind == 7) {
+      d[5] = 1.0f;
+      d[8] = 0.11f; d[9] = 0.11f; d[10] = 0.12f;
+    }
+  }
+  if (nseg > 0) {
+    memcpy(o + on * MB_INST, f + segs * MB_INST, (size_t)nseg * MB_INST * sizeof(float));
+    memmove(f + s * MB_INST, f + segs * MB_INST, (size_t)nseg * MB_INST * sizeof(float));
+  }
+  over_n = on + nseg;
+  mb_views_glass(ng, glass);
+  *shows = 1;
+  return s + nseg;
+}
+
+// Whether what goes over the glass is what was drawn there last (kept for the next frame's asking).
+static int over_same(void) {
+  int same = over_last_n == over_n && (over_n == 0 || memcmp(over_last, over_f, (size_t)over_n * MB_INST * sizeof(float)) == 0);
+  if (!same) {
+    float *k = over_room(&over_last, &over_last_cap, over_n);
+    if (over_n > 0) memcpy(k, over_f, (size_t)over_n * MB_INST * sizeof(float));
+    over_last_n = over_n;
+  }
+  return same;
+}
+
+// What goes over the glass drawn into its layer and presented with the main thread's transaction, as the canvas's
+// frame and the glass views are (mb_render_present's views' path); the layer hidden once no glass shows.
+static void present_over(int shows) {
+  CAMetalLayer *l = over_win.layer;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  l.hidden = !shows;
+  [CATransaction commit];
+  if (!shows) return;
+  CGSize want = mlayer.drawableSize;
+  if (!CGSizeEqualToSize(l.drawableSize, want)) l.drawableSize = want;
+  if (l.contentsScale != mlayer.contentsScale) l.contentsScale = mlayer.contentsScale;
+  over_win.w = vw;
+  over_win.h = vh;
+  over_win.scale = vscale;
+  MBFrame *fr = [MBFrame new];
+  fr->count = over_n;
+  fr->w = vw; fr->h = vh; fr->scale = vscale;
+  fr->tw = (int)want.width;
+  fr->th = (int)want.height;
+  fr->clear = 1;
+  fr->atlas_seq = atlas_seq;
+  fr->lat = -1;
+  fr->inst = over_f;
+  l.presentsWithTransaction = YES;
+  draw_frame(&over_win, fr, 1, 0);
+  l.presentsWithTransaction = NO;
+  fr->inst = NULL;
+}
+#endif
+
 void mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
   // a frame that put a native view elsewhere (apple_views.m: a page in a message, as the list scrolls) presented in
   // the transaction that puts it there (the frame's: mac_app.m drawFrame, ios_app.m tick), so the view and the hole it
@@ -1680,13 +1809,28 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   // the frame as floats, its groups' headers drawn out (groups.h): made once, compared, handed over, kept
   float *f = next_room(count);
   mb_groups_floats(f, inst, count);
+  // (the system's glass: the canvas's part of the frame, what goes over it apart; both presented with the glass views)
+  int over_shows = 0, over_moved = 0;
+#if !TARGET_OS_OSX
+  if (over_win.layer && mb_views_native_glass()) {
+    count = native_split(f, count, &over_shows);
+    over_moved = over_shows || over_was;
+  }
+#endif
   int has_hole = glass_through(f, count);
   BOOL want_opaque = !has_hole;
   int opaque_changed = mlayer && mlayer.opaque != want_opaque;
-  int with_views = (mb_views_take_moved() || opaque_changed) && !mlayer.presentsWithTransaction;
+  int with_views = (mb_views_take_moved() || opaque_changed || over_moved) && !mlayer.presentsWithTransaction;
   // (the last frame handed over had no drawable: not the one shown)
   if (atomic_exchange(&rw->missed, 0)) shown_ok = 0;
-  if (!opaque_changed && same_as_shown(f, count, r, g, b)) {
+  int over_kept = 1;
+#if !TARGET_OS_OSX
+  if (over_moved) {
+    int same = over_same();
+    over_kept = over_shows == over_was && same;
+  }
+#endif
+  if (!opaque_changed && over_kept && same_as_shown(f, count, r, g, b)) {
     // (what was said of it, nothing changed, not left for the next)
     dirty_told = dirty_whole = dirty_n = 0;
     through_n = 0;
@@ -1718,6 +1862,10 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
     int had = draw_frame(rw, fr, mlayer.presentsWithTransaction, 1);
     fr->inst = NULL;
     if (with_views) mlayer.presentsWithTransaction = NO;
+#if !TARGET_OS_OSX
+    if (over_moved) present_over(over_shows);
+    over_was = over_shows;
+#endif
     keep_last(count, r, g, b);
     shown_ok = had;
   } else {

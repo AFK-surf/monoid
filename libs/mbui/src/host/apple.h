@@ -143,3 +143,21 @@ int mb_views_take_moved(void);
 #define MB_FROSTS 16
 #define MB_FROST_N 16
 int mb_views_frost(int n, const double *frosts);
+// The system's own liquid glass, a build's alone (iOS 26 and on, its Info.plist's MBUINativeGlass YES): a way to see
+// mbui's liquid glass beside UIKit's, never what a build ships by itself (the owner, 2026-11-18: 原生做成对照组). Each
+// liquid glass instance (kind 6) of a frame is a UIGlassEffect view in one container over the canvas's picture, which
+// then holds only what was drawn under the first; what is drawn after it is drawn into a second, clear layer over the
+// views (apple_render.m native_split). Whether this build does so; the glass shown (n of them, MB_NGLASS_N numbers:
+// its rect x y w h in the canvas view's points, its corners' radius, its opacity, the container's merging spacing),
+// the others hidden, its picture's layer shown while any is.
+#define MB_NGLASSES 16
+#define MB_NGLASS_N 7
+int mb_views_native_glass(void);
+void mb_views_glass(int n, const double *glass);
+#if !TARGET_OS_OSX
+@class UIView;
+// the clear layer over the glass (ios_app.m: a view over the container, taking no touch), drawn as the canvas is
+void mb_render_init_over(CAMetalLayer *layer);
+// where the glass goes: in the canvas's view, under `over` (the view of that layer)
+void mb_views_glass_in(UIView *canvas, UIView *over);
+#endif

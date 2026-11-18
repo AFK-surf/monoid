@@ -160,6 +160,14 @@ static void send_text(int kind, NSString *s, int a, int b) {
 
 static void run_script_step(int step);
 
+// the clear layer what is drawn over the system's liquid glass goes into (apple.h mb_views_glass): over the glass views,
+// taking no touch
+@interface MBOverView : UIView
+@end
+@implementation MBOverView
++ (Class)layerClass { return [CAMetalLayer class]; }
+@end
+
 @implementation MBView
 
 + (Class)layerClass { return [CAMetalLayer class]; }
@@ -167,6 +175,15 @@ static void run_script_step(int step);
 - (instancetype)initWithFrame:(CGRect)f {
   self = [super initWithFrame:f];
   mb_render_init((CAMetalLayer *)self.layer);
+  if (mb_views_native_glass()) {
+    MBOverView *over = [[MBOverView alloc] initWithFrame:self.bounds];
+    over.userInteractionEnabled = NO;
+    over.opaque = NO;
+    over.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self addSubview:over];
+    mb_render_init_over((CAMetalLayer *)over.layer);
+    mb_views_glass_in(self, over);
+  }
   self.doc = @"";
   self.marked = NSMakeRange(NSNotFound, 0);
   self.tok = [[UITextInputStringTokenizer alloc] initWithTextInput:self];
