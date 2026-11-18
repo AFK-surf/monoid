@@ -65,7 +65,12 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     everies: {},
     live_locator: None,
     feedback: None,
+    card_outcomes: None,
+    outcomes_following: false,
   }
+  // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
+  // cards closed and restated by one worker here (agents.ts `cardOutcomes`).
+  ctx.outcomes_start()
   ctx.site_instructions = @agent_runtimes.read_site_instructions(
     host,
     env_get("STILLFAIL_SITE_INSTRUCTIONS"),

@@ -15,6 +15,8 @@ priv struct P54Sock {
   mut reading : Bool
   mut destroyed : Bool
   mut kept : Bool
+  /// The port the other end connects from, where it was accepted here (Node's `socket.remotePort`).
+  remote_port : Int?
 }
 
 ///|
@@ -85,7 +87,7 @@ fn P54DevWorld::id(self : P54DevWorld) -> Int {
 }
 
 ///|
-fn P54DevWorld::sock(self : P54DevWorld, conn : P54Wire) -> Json {
+fn P54DevWorld::sock(self : P54DevWorld, conn : P54Wire, remote_port? : Int? = None) -> Json {
   let id = self.id()
   self.socks[id] = {
     conn,
@@ -95,6 +97,7 @@ fn P54DevWorld::sock(self : P54DevWorld, conn : P54Wire) -> Json {
     reading: false,
     destroyed: false,
     kept: false,
+    remote_port,
   }
   Json::number(id.to_double())
 }
@@ -124,6 +127,28 @@ async fn P54DevWorld::fill(self : P54DevWorld, s : P54Sock) -> Unit {
     ignore(w.succeed(()))
   }
   s.waiting.clear()
+}
+
+///|
+/// The port of an accepted connection's peer as the shell says it (`127.0.0.1:54321`, `[::1]:54321`): the digits
+/// after its last colon.
+fn p54_peer_port(peer : String?) -> Int? {
+  guard peer is Some(p) && p.rev_find(":") is Some(i) else { return None }
+  let digits = p[i + 1:].to_owned()
+  guard digits != "" && digits.iter().all(c => c >= '0' && c <= '9') else { return None }
+  match (try { Some(@string.parse_int(digits)) } catch { _ => None }) {
+    Some(n) if n > 0 && n < 65536 => Some(n)
+    _ => None
+  }
+}
+
+///|
+/// A member's connection as the devices are given it (P5-1's `member_stream`: its remote id), or the id it has.
+fn p54_conn_remote(v : Json?) -> String {
+  match v {
+    Some(String(s)) => s
+    _ => p54_text(v, "remoteId").unwrap_or("")
+  }
 }
 
 ///|
@@ -461,7 +486,10 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       match self.listeners.get(p54_int(a(0))) {
         Some(lid) => {
           let (got, _) = host.shell("tcp.accept", { "id": lid }) catch { _ => return @jsjson.JValue::Null }
-          self.sock(p54_wire_of_conn({ host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }))
+          self.sock(
+            p54_wire_of_conn({ host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }),
+            remote_port=p54_peer_port(p54_text(Some(got), "peer")),
+          )
         }
         None => Json::null()
       }
@@ -574,7 +602,12 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       self.sock_of(a(0)).closed.wait()
       Json::null()
     }
-    "net.remotePort" => Json::null()
+    // (where an accepted socket comes from: who asks the adb door, and of which chat's server, is told by its port)
+    "net.remotePort" =>
+      match self.socks.get(p54_int(a(0))) {
+        Some({ remote_port: Some(port), .. }) => Json::number(port.to_double())
+        _ => Json::null()
+      }
     "net.join" => {
       let one = self.sock_of(a(0))
       let two = self.sock_of(a(1))
@@ -617,8 +650,16 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       let (got, _) = host.shell("conn.answers", { "id": a(0).unwrap_or(Json::null()), "what": a(1).unwrap_or(Json::null()) })
       got
     }
-    "conn.remoteId" => p54_get(a(1), "remoteId").unwrap_or(Json::string(""))
-    "conn.about" => { "device": Json::string(""), "via": Json::string("none"), "ways": Json::string("") }
+    "conn.remoteId" => Json::string(p54_conn_remote(a(0)))
+    // (link.ts `about`, for the log: the device by its id's first 12; how it is reached P5-1 keeps, not told here)
+    "conn.about" => {
+      let remote = p54_conn_remote(a(0))
+      {
+        "device": Json::string(if remote.length() > 12 { remote[:12].to_owned() } else { remote }),
+        "via": Json::string("none"),
+        "ways": Json::string(""),
+      }
+    }
     "stream.read" => {
       let (said, bytes) = p54_stream_call(host, a(0).unwrap_or(Json::null()), "read") catch { _ => return @jsjson.JValue::Null }
       match (p54_get(Some(said), "end"), bytes) {
@@ -680,16 +721,18 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       got
     }
     "store.sessionChat" | "store.sessionThread" => (bus.hub_ask.val)(name, jarr)
+    // (card-outbox-worker.ts `save`: the request's write, then its outcome queued for the agents' side's worker, which
+    // closes and restates the card)
     "cardOutcomes.save" => {
       match fn_of(a(1)) {
         Some(f) => ignore(f([]))
         None => ()
       }
-      Json::null()
+      (bus.hub_ask.val)("cardOutcomes.save", Json::array([a(0).unwrap_or(Json::null())]))
     }
     // the hub and the agents' side (P5-2's)
-    "hub.has" => Json::boolean(false)
-    "hub.identity" => Json::null()
+    "hub.has" => Json::boolean(["prepareCardPosts", "prepareLatestThreads"].contains(s(0)))
+    "hub.identity" => (bus.hub_ask.val)(name, jarr)
     "hub.notify" | "hub.shared" | "hub.prepareCardPosts" | "hub.prepareLatestThreads" | "chat.post" | "agents.runners" =>
       (bus.hub_ask.val)(name, jarr)
     "jobs.watched" => (bus.jobs_ask.val)(name, jarr)
@@ -814,7 +857,14 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     @session_chats.Words::new(p54_jv(zh), p54_jv(en)),
   )
   world.set_lang((bus.lang.val)())
-  let adb = @adb_devices.Adb::new(world, bus.db, @screens.server_file(screens.io), record=path([bus.data, "run", "adb-servers.json"]), admit=!is_windows())
+  let adb = @adb_devices.Adb::new(
+    world,
+    bus.db,
+    @screens.server_file(screens.io),
+    record=path([bus.data, "run", "adb-servers.json"]),
+    admit=!is_windows(),
+    outcomes=true,
+  )
   let registry = @adb_devices.DeviceRegistry::new(world, bus.db)
   let devices = @adb_devices.Devices::new(world, registry, phones=adb)
   // An offer or an ask on a member's link (`adb`), given the stream the mesh opened for it.
