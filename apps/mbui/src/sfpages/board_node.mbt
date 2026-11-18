@@ -2049,8 +2049,8 @@ fn draft_group_tag(parent : @view.View, words : () -> String) -> Unit {
 /// wait and the lines' bones breathing; then the lines numbered, each its words to edit in place, what it waits for
 /// under it in grey (等 1、2), its ⋯ at its end (shown under the pointer or while it is edited; always to a finger:
 /// 派发这项, which earlier lines it waits for, 删除这项); ＋ 添加 after them; at its foot 放入待派发 (each line a draft of
-/// one group in its place) and 全部派发 (those waiting for none each its own chat; the others wait in 待派发), its ⋯
-/// before them (按原话派发: `start`, the draft as it is; 返回修改: `edit`).
+/// one group in its place) and 全部派发 (those waiting for none each its own chat; the others wait in 待派发); beside
+/// 先理清, two small grey links (按原话派发: `start`, the draft as it is; 返回修改: `edit`).
 fn draft_clarify_card(
   parent : @view.View,
   src : Source,
@@ -2099,22 +2099,6 @@ fn draft_clarify_card(
       None => ()
     }
   }
-  let head_more : Ref[@view.View?] = Ref(None)
-  let head_menu = fn() {
-    @sf.menu(
-      [
-        Some(@sf.menu_item_of(@sf.t("web-main.board.clarify.as_is"), fn() {
-          @sfbase.clarify_reset()
-          start()
-        }, icon="play")),
-        Some(@sf.menu_item_of(@sf.t("web-main.board.clarify.back"), fn() {
-          @sfbase.clarify_reset()
-          edit()
-        }, icon="edit")),
-      ],
-      from=beside_of(head_more.val),
-    )
-  }
   let foot_in = fn() { @sf.card_corner - @sf.theme().control_h / 2.0 }
   let save_in = fn() { (@sf.theme().control_h - @sf.button_height()).max(0.0) / 2.0 }
   parent.box(fn(card) {
@@ -2133,7 +2117,16 @@ fn draft_clarify_card(
         top.box(fn(head) {
           head.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
           @sf.icon_node(head, "sparks", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
-          @sf.words_node(head, fn() { board_words("clarify") }, fn() { card_title_look }) |> ignore
+          @sf.words_node(head, fn() { board_words("clarify") }, fn() { card_title_look }).grow(Is(1.0)) |> ignore
+          // (the draft as it was: started as written, or its words edited again; small grey links)
+          for l in [("web-main.board.clarify.as_is", true), ("web-main.board.clarify.back", false)] {
+            let (key, as_is) = l
+            @sf.link_node(head, fn() { @sf.t(key) }, fn() {
+              @sfbase.clarify_reset()
+              if as_is { start() } else { edit() }
+            }, style=fn() { card_meta_look }, ink=fn() { @sf.theme().p.muted })
+            |> ignore
+          }
         })
         |> ignore
         top.box(fn(said) {
@@ -2180,13 +2173,10 @@ fn draft_clarify_card(
       })
     })
     |> ignore
-    // its ways out: its ⋯ (按原话派发, 返回修改); into 待派发, or to work
+    // its ways out: into 待派发, or to work
     card.box(fn(foot) {
       foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
       foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
-      head_more.val = Some(
-        @sf.icon_button_node(foot, "more", fn() { @sf.t("web-main.board.clarify.more") }, head_menu, tips~, size=card_key, icon_size=14.0),
-      )
       @sf.button_node(foot, fn() { @sf.t("web-main.board.clarify.place") }, place, disabled=fn() { !ready() || !has_words() }) |> ignore
       foot.box(fn(k) {
         k.margin(By(fn() { (0.0, 0.0, save_in(), save_in()) })).shrink(Is(0.0)) |> ignore
@@ -2313,6 +2303,8 @@ fn clarify_task_node(
       |> ignore
       // what it waits for, one grey line
       main.show(fn() { !t.after.get().is_empty() }, fn(g) {
+        // (where its words start, past their ground's edge)
+        g.padding(Is((4.0, 0.0, 0.0, 0.0))) |> ignore
         @sf.words_node(g, fn() { @sfbase.clarify_waits_words(t) }, fn() { meta_cut_look }) |> ignore
       })
     })

@@ -47,12 +47,6 @@ fn clarify_line_menu(t : @ui.Tester, k : Int, item : String) -> Unit raise {
   board_tap_words(t, item)
 }
 
-///|
-/// The split's own ⋯ (at its foot, after its lines) opened, and its `item` pressed.
-fn clarify_split_menu(t : @ui.Tester, item : String) -> Unit raise {
-  clarify_press(t, "更多操作", k=t.all(Button, label="更多操作").length() - 1)
-  board_tap_words(t, item)
-}
 
 ///|
 /// The board's chats of workspace ws1 titled by one of `titles`, and in which column each stands.
@@ -142,7 +136,7 @@ test "大屏: a line deleted, one added by hand, empty; 返回修改 leaves the 
   clarify_press(t, "添加")
   assert_eq(clarify_now(), [clarify_lines()[0], clarify_lines()[2], ""])
   assert_eq(board_faults(t), [])
-  clarify_split_menu(t, "返回修改")
+  board_tap_words(t, "返回修改")
   assert_eq(@sfbase.clarify.draft.untracked(), "")
   assert_eq(board_kept_drafts()[0], @sffixture.fix_clarify_words)
 }
