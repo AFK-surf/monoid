@@ -259,6 +259,47 @@ test("failed native scope application retries once and a healthy scope does not 
   assert.equal(listeners.size, 0);
 });
 
+// A front from before the mesh operations (launcher STREAMS 4) answers every meshConfigure so: no retry makes it take
+// one. The launcher is asked once to start the release's front, and no retry timer is set, with a launcher or without.
+for (const launcher of [true, false]) test(`a front from before meshConfigure ${launcher ? "is restarted once" : "is said once"} and never retried on a timer`, async () => {
+  const { ScopeSync } = await import("../src/mesh/scope-sync.ts");
+  const { workspaceScope } = await import("../src/mesh/enrollment-door.ts");
+  const { RelayEnrollment } = await import("../src/mesh/enrollment.ts");
+  const { signRelayRecord } = await import("../src/mesh/relay-records.ts");
+  const { hearLines } = await import("../src/ops/log.ts");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const data = mkdtempSync(join(tmpdir(), "mesh-old-front-"));
+  const db = new DatabaseSync(":memory:");
+  const workspace = "ws", origin = "https://example.test";
+  const scopes = workspaceScope(origin, workspace);
+  const cloud = { data, peersCurrent: true, state: { origin, station: node }, relays: () => [], waysSaid: () => null,
+    memberships: () => [{ workspace, peers: [] }], membership: (ws: string) => ws === workspace ? { workspace, peers: [] } : null, listen: () => () => {},
+  } as unknown as import("../src/cloud/state.ts").Cloud;
+  const said: string[] = [];
+  let tellSaid!: () => void;
+  const toldOld = new Promise<void>((resolve) => { tellSaid = resolve; });
+  hearLines((l) => { if (l.at !== "mesh") return; said.push(l.message); if (/before meshConfigure/.test(l.message)) tellSaid(); });
+  let attempts = 0, restarts = 0;
+  const waits: number[] = [];
+  const endpoint = { meshConfigure: async () => { attempts++; throw new Error("no operation meshConfigure"); }, meshRemove: async () => {} } as unknown as import("../src/mesh/endpoint.ts").Endpoint;
+  const sync = new ScopeSync(endpoint, db, cloud, signer, async () => { throw new Error("no peers"); },
+    async (args: any) => JSON.stringify(args.kind === "relayRecords" ? db.prepare("SELECT body,signature FROM mesh_relay_records WHERE scope=?").all(args.scope) : []),
+    { after: (ms) => { waits.push(ms); return () => {}; }, close: async () => {} }, launcher ? () => { restarts++; } : undefined);
+  try {
+    await toldOld;
+    // the roster changed again (a relay registered): tried once more, still refused, nothing more said or asked
+    const registry = new RelayEnrollment(db, node, () => 1000);
+    const token = registry.issue(scopes, "relay", "member");
+    await sync.registration(signRelayRecord(registry.redeem(scopes, token.token, "03".repeat(32)), signer.sign));
+    assert.equal(attempts, 2);
+    assert.equal(restarts, launcher ? 1 : 0);
+    assert.deepEqual(waits, [], "no retry timer");
+    assert.deepEqual(said.filter((m) => /before meshConfigure|mesh directory update failed/.test(m)).length, 1, JSON.stringify(said));
+  } finally { hearLines(null); await sync.close(); db.close(); rmSync(data, { recursive: true, force: true }); }
+});
+
 test("Node and Rust verify the same signed address fixture", async () => {
   const { readFile } = await import("node:fs/promises");
   const record = JSON.parse(await readFile(new URL("../../libs/mesh-transport/tests/fixtures/announcement.json", import.meta.url), "utf8"));
