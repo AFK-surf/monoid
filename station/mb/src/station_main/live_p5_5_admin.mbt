@@ -297,7 +297,11 @@ fn P55::admin_ops(self : P55, u : @updates.Updates) -> Unit {
   })
   self.op("updates.update", async fn(arg) {
     let a = core_items(arg)
-    u.update(text_at(a, 0), text_at(a, 1))
+    // (a third: the release the station goes back to)
+    match arg_at(a, 2) {
+      String(t) => u.update(text_at(a, 0), text_at(a, 1), to=t)
+      _ => u.update(text_at(a, 0), text_at(a, 1))
+    }
     Json::null()
   })
 }

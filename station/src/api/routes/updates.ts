@@ -67,6 +67,7 @@ export const routes = ({ updates }: UpdatesDeps): Route[] => {
         if (asked.to !== undefined && typeof asked.to !== "string") throw new Refused(400, tr(r.lang, "station.updates.badVersion"));
         if (asked.repair === true && id === "codex") await u.repairCodex(r.lang);
         else if (asked.repair !== undefined && asked.repair !== false) throw new Refused(400, tr(r.lang, "station.updates.codexRepairUnavailable"));
+        else if (asked.to === undefined) await u.update(id, r.lang);
         else await u.update(id, r.lang, asked.to);
       }),
     },

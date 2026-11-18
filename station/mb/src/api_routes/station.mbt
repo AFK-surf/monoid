@@ -452,7 +452,7 @@ fn Admin::updates_routes(self : Admin) -> Array[Route] {
         self.backend.tell("updates.setAuto", [jbool(on), js(r.lang)])
       }),
     ),
-    // One of them updated (or a runtime installed): { id }.
+    // One of them updated (or a runtime installed): { id }; the station put back to a release before it: { id, to }.
     route(
       "POST",
       "^\\/updates$",
@@ -462,11 +462,22 @@ fn Admin::updates_routes(self : Admin) -> Array[Route] {
           Some(Str(s)) => s
           _ => ""
         }
+        let to = match asked.get("to") {
+          None => None
+          Some(Str(t)) => Some(t)
+          Some(_) => raise Refused(400, self.tr(r.lang, "station.updates.badVersion"))
+        }
         match asked.get("repair") {
           Some(Bool(true)) if id == "codex" =>
             self.backend.tell("updates.repairCodex", [js(r.lang)])
           None | Some(Bool(false)) =>
-            self.backend.tell("updates.update", [js(id), js(r.lang)])
+            self.backend.tell(
+              "updates.update",
+              match to {
+                None => [js(id), js(r.lang)]
+                Some(t) => [js(id), js(r.lang), js(t)]
+              },
+            )
           _ =>
             raise Refused(
               400,

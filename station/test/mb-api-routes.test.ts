@@ -1580,6 +1580,8 @@ function defineCases() {
   add("update repair", { method: "POST", path: "/updates", body: { id: "codex", repair: true } });
   add("update repair other", { method: "POST", path: "/updates", body: { id: "claude", repair: true } });
   add("update failing", { method: "POST", path: "/updates", body: { id: "nope" } });
+  add("update back", { method: "POST", path: "/updates", body: { id: "station", to: "0.1.4" } });
+  add("update back bad", { method: "POST", path: "/updates", body: { id: "station", to: 4 } });
   add("updates member", { method: "POST", path: "/updates/check", viewer: MEMBER });
   // workspaces.ts, copies.ts, xshare.ts, links.ts, overview
   add("workspaces", { method: "GET", path: "/workspaces" });
