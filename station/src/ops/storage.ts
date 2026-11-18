@@ -122,7 +122,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "resources", class: "bounded-ephemeral", what: "resource samples", maxBytes: 64 * MiB },
   { name: "Trash", class: "authoritative", what: "files the drive put in the trash" },
   // Process state and logs.
-  { name: "run", class: "bounded-ephemeral", what: "what runs (runners, pids, sockets, the update's log)", reclaim: "Upkeep: runner sweep, update.log cut" },
+  { name: "run", class: "bounded-ephemeral", what: "what runs (runners, pids, sockets, the update's log, an app model's empty directory while it answers)", reclaim: "Upkeep: runner sweep, update.log cut" },
   { name: "jobs", class: "bounded-ephemeral", what: "jobs' logs and exit files", maxAgeMs: 14 * DAY, reclaim: "jobs/jobs.ts capLogs, collect" },
   { name: "remote", class: "session-bound", what: "other stations' tasks here and tasks started from here", reclaim: "jobs/remote.ts sweep, relieve, budget, expire" },
   { name: "thumbs", class: "bounded-ephemeral", what: "thumbnails of images", maxBytes: THUMBS_CAP, reclaim: "Upkeep capByAge" },

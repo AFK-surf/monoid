@@ -1,6 +1,7 @@
 // A workspace's apps as its devices use them (apps/registry.ts): the list, one app's source (its current version, or
 // one by `?rev=`), its versions, a version made current again (POST …/current), its documents read, written and
-// deleted, and a completion its widget asks of the model of the chat it is shown in (POST …/llm). Reads are every
+// deleted, and a completion its widget asks of the model of the chat it is shown in (POST …/llm: its profile's
+// provider with its key, or one text-only turn of its Claude Code or Codex login; apps/completion.ts). Reads are every
 // member's; writes are those of a member who may write (a read-only one is refused here as by the admin API). What
 // changes is told on the event stream (`app`, `app-doc`) by the registry, to the app's workspace.
 import { type Answer, type Request, error, ok, param, segment } from "../request.ts";
@@ -9,6 +10,7 @@ import { readOnly } from "../../mesh/credential.ts";
 import { AppRefused, type Apps } from "../../apps/registry.ts";
 import { CompletionError, type TitleCompletion, completeText } from "../../sessions/title-completion.ts";
 import type { profileFetch } from "../../ops/agent-env.ts";
+import { RuntimeTextError } from "../../sessions/text-runtime.ts";
 
 /// The most of a widget's prompt and system text, in bytes; the tokens an answer takes by default and at most.
 export const PROMPT_MOST = 32 * 1024;
@@ -21,15 +23,27 @@ export const LLM_AT_ONCE = 4;
 /// A request's body so large at most (a document's JSON, a prompt, with room for its wrapping).
 const BODY_MOST = 128 * 1024;
 
+/// What a widget asks of the model.
+export type AppAsk = { system: string | null; prompt: string; maxTokens: number };
+
 /// The completion the chat of session `key` can make for a widget shown in it: its workspace and its profile's
-/// endpoint; or why it cannot (its words say what to do next); null where there is no such session.
-export type AppCompletion = { ws: string; config: TitleCompletion } | { ws: string; refusal: string };
+/// endpoint (a keyed provider), or a text-only turn of the profile's own runtime (`runtime`, Claude Code or Codex:
+/// `complete` runs it, ended once it answers or `signal` is aborted); or why it cannot (its words say what to do
+/// next); null where there is no such session.
+export type AppCompletion =
+  | { ws: string; config: TitleCompletion }
+  | { ws: string; runtime: "claude" | "codex"; complete(ask: AppAsk, signal: AbortSignal): Promise<string> }
+  | { ws: string; refusal: string };
+
+const RUNTIME_NAME = { claude: "Claude Code", codex: "Codex" } as const;
 
 export type AppRouteDeps = {
   apps: Apps;
   completion(session: string): AppCompletion | null;
   /// How a completion goes out (the profile's proxy; a test's provider).
   fetcher?: typeof profileFetch;
+  /// The deadline a completion is given (a test's, to end one at its moment).
+  deadline?: () => AbortSignal;
 };
 
 const READ_ONLY = "a read-only member does not change an app: ask an owner or admin of the workspace to make you a member who may write";
@@ -46,7 +60,7 @@ function body(r: Request): Record<string, unknown> {
 
 const whole = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) ? v : null);
 
-export function routes({ apps, completion, fetcher }: AppRouteDeps): Route[] {
+export function routes({ apps, completion, fetcher, deadline: within }: AppRouteDeps): Route[] {
   const running = new Map<string, number>();
   const answer = async (f: () => unknown | Promise<unknown>): Promise<Answer> => {
     try {
@@ -144,17 +158,19 @@ export function routes({ apps, completion, fetcher }: AppRouteDeps): Route[] {
           const now = running.get(ws) ?? 0;
           if (now >= LLM_AT_ONCE) throw new AppRefused(429, `${LLM_AT_ONCE} completions of this workspace's apps are under way: try again once one is answered`);
           running.set(ws, now + 1);
-          // timer: a deadline on the provider's answer (the network's time).
-          const deadline = AbortSignal.timeout(LLM_WAIT_MS);
+          // timer: a deadline on the provider's answer (the network's time); a runtime's turn is ended at it.
+          const deadline = within ? within() : AbortSignal.timeout(LLM_WAIT_MS);
           const signal = r.signal ? AbortSignal.any([r.signal, deadline]) : deadline;
           try {
-            const text = await completeText(c.config, { system, prompt, maxTokens: Math.min(asked, TOKENS_MOST) }, signal, fetcher);
+            const ask = { system, prompt, maxTokens: Math.min(asked, TOKENS_MOST) };
+            const text = "config" in c ? await completeText(c.config, ask, signal, fetcher) : await c.complete(ask, signal);
             return { text };
           } catch (e) {
+            if (deadline.aborted) throw new AppRefused(504, `the model did not answer in ${LLM_WAIT_MS / 1000} s: try again, or ask for a shorter answer`);
+            if ("runtime" in c) throw runtimeRefusal(RUNTIME_NAME[c.runtime], e as Error);
             if (e instanceof CompletionError) {
               throw new AppRefused(502, e.problem === "failed" ? `the model's provider refused or failed${e.status === null ? "" : ` (${e.status})`}: check the chat's profile (its key, its quota), or try again later` : e.problem === "too large" ? "the model's answer was too large: ask for a shorter one (max_tokens)" : "the model gave no text: ask again, or for text only");
             }
-            if (deadline.aborted) throw new AppRefused(504, `the model did not answer in ${LLM_WAIT_MS / 1000} s: try again, or ask for a shorter answer`);
             throw new AppRefused(502, `the model's provider was not reached (${(e as Error).message}): check the station's network, or try again later`);
           } finally {
             const left = (running.get(ws) ?? 1) - 1;
@@ -164,4 +180,19 @@ export function routes({ apps, completion, fetcher }: AppRouteDeps): Route[] {
         }),
     },
   ];
+}
+
+/// Why a text-only turn of the chat's Claude Code or Codex gave no text, and what to do.
+function runtimeRefusal(name: string, e: Error): AppRefused {
+  if (!(e instanceof RuntimeTextError)) {
+    return new AppRefused(502, `${name} could not be started for the app (${e.message}): check that ${name} is installed and signed in on this station (the profile's settings), or try again later`);
+  }
+  const detail = e.detail === "" ? "" : ` (${e.detail})`;
+  switch (e.problem) {
+    case "failed": return new AppRefused(502, `${name} failed to answer${detail}: check the chat's profile (its sign-in, its quota), or try again later`);
+    case "tool": return new AppRefused(502, "the model tried to use a tool, which an app's model has none of: ask it for text only");
+    case "too large": return new AppRefused(502, "the model's answer was too large: ask for a shorter one");
+    case "closed": return new AppRefused(502, `${name} ended before it answered${detail}: check that it is installed and signed in on this station, or try again`);
+    case "aborted": return new AppRefused(502, "the completion was called off before it was answered: ask again");
+  }
 }

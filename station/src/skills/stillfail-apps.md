@@ -11,8 +11,8 @@ mini-program, written exactly as skill `stillfail-viz` says, but **named and kep
 - one app can be shown in many chats and on every device, and you change it in place (everyone showing it reloads);
 - each app has its own **document store** (collections of JSON documents) that every chat and device showing it
   shares; a change is pushed to every open widget;
-- its widget can ask **the model of the chat it is shown in** for a text completion; the station sends it with that
-  chat's profile, its provider and key (the widget never sees a key).
+- its widget can ask **the model of the chat it is shown in** for a text completion; the station asks it with that
+  chat's profile, its key or its login (the widget never sees either).
 
 Apps belong to the chat's workspace on this station. Use an app when something should last, be shared, keep data or be
 updated later; use a plain attached `.mbui` (skill `stillfail-viz`) for a one-off figure.
@@ -79,9 +79,15 @@ arrives later as a call of your exported `mbui_event`, its input JSON (read with
 
 ### The model
 
-It is the chat's own profile. Only a profile whose provider speaks chat completions with a key (a DeepSeek Harness
-profile) can answer; otherwise the widget gets an error saying so. Prompts up to 32 KiB, answers up to 4096 tokens
-(512 by default); keep them short.
+It is the chat's own profile, with the chat's model (else the profile's). These can answer:
+
+- a Claude Code or Codex profile, a subscription's login or a key: one text-only turn of that runtime, with no tools,
+  no files and nothing kept after it (slower than a key's provider: seconds to start);
+- a DeepSeek Harness profile with a key whose provider speaks chat completions: asked over HTTP.
+
+Any other profile gets an error saying so; show the app in a chat on one of these. Prompts up to 32 KiB; answers up to
+4096 tokens (512 by default) from a key's provider, where `max_tokens` holds, and of a bounded length from Claude Code
+or Codex, where it does not. 60 s at most, 4 at once in a workspace; keep them short.
 
 ## Rules
 

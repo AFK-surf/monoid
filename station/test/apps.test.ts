@@ -1,12 +1,18 @@
 // Station apps (src/apps/registry.ts, src/api/routes/apps.ts, src/tools/apps.ts): versions kept whole and made current,
 // a save on a version that moved on refused, a rollback recorded as a step, the schema guard, the documents, what is
-// told, the routes' workspaces and who may write, the tools, and the model's completion against a fake provider.
+// told, the routes' workspaces and who may write, the tools, and the model's completion against a fake provider and
+// through a Claude Code or Codex profile's own runtime (the real drivers, fake `claude` and `codex` on PATH, real runners).
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { appCompletion } from "../src/apps/completion.ts";
+import { ClaudeDriver } from "../src/agents/claude.ts";
+import { CodexDriver } from "../src/agents/codex.ts";
 import { AppRefused, type AppEvent, Apps, DOCS_MOST } from "../src/apps/registry.ts";
 import { type AppCompletion, routes } from "../src/api/routes/apps.ts";
 import type { Request } from "../src/api/request.ts";
@@ -231,4 +237,128 @@ test("the tools: a file of the chat's saved as a version, listed, rolled back, i
   assert.deepEqual((await call("app_data", { id: "todo", op: "list", collection: "items" })).docs.map((d: any) => d.id), ["a"]);
   assert.deepEqual(await call("app_data", { id: "todo", op: "delete", collection: "items", doc: "a" }), { deleted: true });
   await assert.rejects(call("app_data", { id: "todo", op: "set", collection: "items" }), /doc is required/);
+});
+
+// The model through the profile's own runtime: fake executables started as the real ones are, by name on PATH.
+const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
+process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
+// Short: the runners' sockets live under it (104 bytes at most on macOS).
+const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "al-") : "/tmp/al-");
+const scratch = join(data, "run", "app-llm");
+const claudeDriver = new ClaudeDriver({ data, subscriptionToken: async () => ({ token: "renewed-login", expiresAt: Date.now() + 3600_000 }) });
+const skills = join(data, "skills");
+mkdirSync(skills, { recursive: true });
+writeFileSync(join(data, "cert.pem"), "");
+const codexDriver = new CodexDriver({ data, hostSkills: skills, caBundle: join(data, "cert.pem") });
+after(async () => {
+  await Promise.all([claudeDriver.shutdown(), codexDriver.shutdown()]);
+  rmSync(data, { recursive: true, force: true });
+});
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/// Looks every 20 ms until `done` holds: what real processes do has no event here.
+async function eventually(done: () => boolean) {
+  while (!done()) await sleep(20);
+}
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+let made = 0;
+/// A chat on a subscription profile of `runtime`, the fake's starts and stdin dumped; the routes asking through it.
+function onRuntime(runtime: "claude" | "codex", { runtimes = [runtime], deadline, model = null }: { runtimes?: string[]; deadline?: () => AbortSignal; model?: string | null } = {}) {
+  const i = ++made;
+  const home = join(data, `h${i}`);
+  mkdirSync(home, { recursive: true });
+  const dump = join(data, `dump${i}`);
+  if (runtime === "claude") writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "kept", refreshToken: "rt" } }));
+  const profile = { id: `p${i}`, runtime, runtimes, home, model: `${runtime}-default`, access: { kind: "subscription" }, env: { FAKE_DUMP: dump }, spelling: () => null } as any;
+  const row = { key: `chat:c${i}`, ws: "w1", profile: profile.id, model, runtime, cwd: "/the/chats/workspace", workspace: "/the/chats/workspace", effort: null } as any;
+  const side = { getSession: (k: string) => (k === row.key ? row : null), profile: () => profile, allows: () => true, home: () => "w1", driver: (r: string) => (r === "claude" ? claudeDriver : r === "codex" ? codexDriver : undefined), scratch } as any;
+  const { apps } = world();
+  apps.save("w1", { id: "todo", kind: "mbui", source: mbui({}), note: "v1", by: "s" });
+  const rs = routes({ apps, completion: (k) => appCompletion(side, k), deadline });
+  const llm = (body: Record<string, unknown>) => ask(rs, "POST", "/apps/todo/llm", viewer("w1"), { session: row.key, ...body });
+  return { llm, dump, row, profile };
+}
+
+test("the model through a Claude Code login: one turn with no tools, no MCP server and no session kept, in a directory of its own", async () => {
+  const c = onRuntime("claude");
+  const a = await c.llm({ system: "be brief", prompt: "say:hello there" });
+  assert.deepEqual(a, { status: 200, body: { text: "hello there" } });
+  const started = lines(c.dump)[0];
+  const args = started.argv as string[];
+  assert.ok(args.includes("-p"));
+  assert.equal(args[args.indexOf("--tools") + 1], "");
+  for (const flag of ["--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"]) assert.ok(args.includes(flag), flag);
+  assert.ok(!args.includes("--dangerously-skip-permissions"));
+  assert.deepEqual(JSON.parse(args[args.indexOf("--mcp-config") + 1]!), { mcpServers: {} });
+  assert.equal(args[args.indexOf("--model") + 1], "claude-default", "the profile's model, the chat having none");
+  assert.match(args[args.indexOf("--append-system-prompt") + 1]!, /no tools[\s\S]*be brief$/);
+  // On the profile's own login: its home, its token as the station renews it.
+  assert.equal(started.env.CLAUDE_CONFIG_DIR, c.profile.home);
+  assert.equal(started.env.CLAUDE_CODE_OAUTH_TOKEN, "renewed-login");
+  assert.ok(lines(`${c.dump}.stdin`).some((m) => JSON.stringify(m).includes("say:hello there")));
+  // Its process ended and its directory removed once it answered; never the chat's workspace.
+  await eventually(() => !alive(started.pid));
+  await eventually(() => readdirSync(scratch).length === 0);
+});
+
+test("the model through a Claude Code login: a process that exits says so, and one past the deadline is killed", async () => {
+  const gone = onRuntime("claude");
+  const a = await gone.llm({ prompt: "exit" });
+  assert.equal(a.status, 502);
+  assert.match(a.body.error, /^Claude Code failed to answer \(claude exited \(3\)[\s\S]*: check the chat's profile \(its sign-in, its quota\), or try again later$/);
+  const late = new AbortController();
+  const slow = onRuntime("claude", { deadline: () => late.signal });
+  const asked = slow.llm({ prompt: "hold:1" });
+  await eventually(() => existsSync(`${slow.dump}.stdin`) && readFileSync(`${slow.dump}.stdin`, "utf8").includes("hold:1"));
+  const pid = lines(slow.dump)[0].pid as number;
+  assert.ok(alive(pid));
+  late.abort();
+  const b = await asked;
+  assert.equal(b.status, 504);
+  assert.match(b.body.error, /did not answer in 60 s: try again/);
+  await eventually(() => !alive(pid));
+});
+
+test("the model through a Codex login: an ephemeral read-only thread with no shell or MCP server, in an empty directory", async () => {
+  const c = onRuntime("codex", { model: "picked" });
+  assert.deepEqual(await c.llm({ system: "be brief", prompt: "say:hi" }), { status: 200, body: { text: "hi" } });
+  const sent = lines(`${c.dump}.stdin`);
+  const start = sent.find((m) => m.method === "thread/start");
+  assert.equal(start.params.sandbox, "read-only");
+  assert.equal(start.params.ephemeral, true);
+  assert.deepEqual(start.params.environments, []);
+  assert.equal(start.params.config["features.shell_tool"], false);
+  assert.equal(start.params.config["features.unified_exec"], false);
+  assert.equal(start.params.config.web_search, "disabled");
+  assert.equal(start.params.model, "picked", "the chat's model");
+  assert.match(start.params.developerInstructions, /no tools[\s\S]*be brief$/);
+  assert.ok(start.params.cwd.startsWith(scratch), "not the chat's workspace");
+  assert.equal(lines(c.dump)[0].env.CODEX_HOME, c.profile.home);
+  await eventually(() => lines(`${c.dump}.stdin`).some((m) => m.method === "thread/unsubscribe"));
+  await eventually(() => !existsSync(start.params.cwd));
+});
+
+test("the model through a Codex login: an app-server that exits says so, and a turn past the deadline is interrupted", async () => {
+  const late = new AbortController();
+  const slow = onRuntime("codex", { deadline: () => late.signal });
+  const asked = slow.llm({ prompt: "hold:1" });
+  await eventually(() => existsSync(`${slow.dump}.stdin`) && lines(`${slow.dump}.stdin`).some((m) => m.method === "turn/start"));
+  late.abort();
+  const b = await asked;
+  assert.equal(b.status, 504);
+  await eventually(() => lines(`${slow.dump}.stdin`).some((m) => m.method === "turn/interrupt"));
+  await eventually(() => lines(`${slow.dump}.stdin`).some((m) => m.method === "thread/unsubscribe"));
+  const gone = onRuntime("codex");
+  const a = await gone.llm({ prompt: "exit" });
+  assert.equal(a.status, 502);
+  assert.match(a.body.error, /^Codex .*(installed and signed in|sign-in)/);
+});
+
+test("a profile with none of the runtimes that answer is refused, naming those that do", async () => {
+  const c = onRuntime("claude", { runtimes: ["grok"] });
+  const a = await c.llm({ prompt: "say:x" });
+  assert.equal(a.status, 422);
+  assert.match(a.body.error, /Claude Code or Codex profile can, or a DeepSeek Harness profile with a key/);
+  assert.equal(existsSync(c.dump), false, "nothing was started");
 });
