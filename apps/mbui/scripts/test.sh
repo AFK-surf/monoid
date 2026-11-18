@@ -417,7 +417,12 @@ for t in $targets; do
           # minutes on main 7b8ad5f2 43493491412 and dd870393 43496129988, where the first's was 183 and the second's
           # 137-165. Reckoned 1000: by the table its pages all go to the others (the first +45 s on its four programs,
           # the second +40 on its four, the fourth +131 on its twelve), which have the room)
-          60) specs="4,4,520,1 4,4,120,1 1,4,1000,1 12,12,120,1" ;;
+          # (page-seconds.txt written again from main's runs of 2026-11-18 (44391836965, 44389380389, 44379034613): the
+          # first's job was 123-137 s at 60 beside its 222 s of pages by the table, its other runs reckoned too many; the
+          # second's 289 s of its 5 minutes on a slow runner with 621, reckoned too few; the third's one program near
+          # empty. The first reckoned 320, the second 300, the third 900: by the table the first's pages 418 s, the
+          # second's 437, the fourth's 2093 on its twelve)
+          60) specs="4,4,320,1 4,4,300,1 1,4,900,1 12,12,120,1" ;;
           # (the first's packages' programs at 120 275 s beside its pages' 263, the job 295 s of its 5 minutes, main
           # 436755fc 43074044573, 2026-11-11: reckoned 160 s of its cores, they take some 500 now)
           # (the second's and the fourth's on three runners each at 120, twelve programs (mbui-check.yml's app-rates
@@ -740,7 +745,17 @@ for t in $targets; do
           # second's 714 to 817, the first's 743 to 716)
           # (chat_page_nodes' two on the third at 120 since (app_group_of): the first's other runs preview_tree's 0-54, the
           # second's its 54-121, the third's none but send_steady's moment)
-          [ "${APP_GROUP:-}" = 4/4 ] && [ "${MBUI_TEST_FPS:-}" = 120 ] && [ "${APP_PART#*/}" = 3 ] && specs="4,4,250,1 4,4,280,1 4,4,0,1"
+          # (at 60 the first two parts each have half of chat_page_nodes' tests beside their pages (80 s of one core),
+          # the third none: dealt as though none had any, part 2/3 ran its pages 284 s and was cut at its 5 minutes, part
+          # 3/3 148-200 s, main a6881ee25 44395572349, 2026-11-18. At 120 the first two reckoned 250 and 280 were too
+          # many: 136-169 s where the third was 294 on a3a444e19 44391836965. By the table, at 60 the parts' pages
+          # 645, 644 and 804 s, at 120 512, 491 and 661)
+          if [ "${APP_GROUP:-}" = 4/4 ] && [ "${APP_PART#*/}" = 3 ]; then
+            case "${MBUI_TEST_FPS:-}" in
+              60) specs="4,4,160,1 4,4,160,1 4,4,0,1" ;;
+              120) specs="4,4,150,1 4,4,170,1 4,4,0,1" ;;
+            esac
+          fi
           while read -r g f; do [ "$g" = "${APP_PART%/*}" ] && kept+=("$f"); done < <(page_deal "$specs" "${words[@]:3}")
           [ ${#kept[@]} = 0 ] || mine+=("${words[0]} ${words[1]} ${words[2]} ${kept[*]}")
         else
@@ -766,12 +781,19 @@ for t in $targets; do
   # it runs, its process's state and CPU time, the last of what it printed, and its threads' stacks where gdb is there.
   # Why: app 1/4 was cut at its 5 minutes with nothing said of which file had not ended, #6837 b68070c9c and main
   # d77015c89, 2026-11-17, its runs 137 s otherwise.
+  # (its sleep in the background, killed with it: a sleep of its own process left by exe_run's kill held fd 9, the
+  # step's stderr, open up to 10 s after the tests ended, and app 4/4 at 60 fps part 2/3 was cut at its 5 minutes
+  # 9.5 s after its tests had all passed in 284 s, main a6881ee25 44395572349, 2026-11-18)
   parts_watch() {
     [ -n "${GITHUB_ACTIONS:-}" ] || return 0
-    local d=$1 exe=$2 t0 said=" " name arg pid
+    local d=$1 exe=$2 t0 said=" " name arg pid sp=
+    trap '[ -z "$sp" ] || kill "$sp" 2>/dev/null; exit 0' TERM INT EXIT
     t0=$(date +%s)
     while :; do
-      sleep 10 # det-ok(script-wait): a watchdog's look at the parts still running, never a wait a test passes by
+      sleep 10 & # det-ok(script-wait): a watchdog's look at the parts still running, never a wait a test passes by
+      sp=$!
+      wait "$sp" 2>/dev/null || break
+      sp=
       [ $(($(date +%s) - t0)) -ge "${MBUI_PART_SAYS:-150}" ] || continue
       while read -r name arg; do
         [ -f "$d/$name.out" ] && [ ! -f "$d/$name.code" ] || continue
