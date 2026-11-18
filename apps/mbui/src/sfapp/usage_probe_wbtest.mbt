@@ -396,12 +396,12 @@ test "usage probe: real size, a person's row picked" {
         ("usage", Some(only)) => {
           let p = params.copy()
           p.remove("only")
-          let answer = real.topic_read(name, p)
+          let answer = (real.topic_read)(name, p)
           let list = text(Some(only), "list")
           let key = text(Some(only), "key")
           { ..answer, value: if pending.get() { None } else { uprobe_filtered(answer.value, list, key) } }
         }
-        _ => real.topic_read(name, params)
+        _ => (real.topic_read)(name, params)
       }
     } }
     open_fixture_over("home", src)
@@ -419,7 +419,7 @@ test "usage probe: real size, a person's row picked" {
       t.run_for(kept_glide_over_ms)
     }
     let head = t.words().iter().find_first(fn(w) { w.0 == "花费明细" && w.2 > 0.0 })
-    println("H\{late}: head \{head.map(fn(h) { h.2 })}")
+    println("H\{late}: head \{match head { Some(h) => h.2; None => -1.0 }}")
     uprobe_tap(t, "人")
     t.run_for(kept_switch_over_ms)
     let hy = match t.words().iter().find_first(fn(w) { w.0 == "花费明细" }) { Some(w) => w.2; None => 0.0 }
