@@ -71,9 +71,8 @@ fn run_card_node(parent : @view.View, value : () -> Json?, href : () -> String, 
     })
   }) |> ignore
   parent.each(fn() { run_jobs(value()) }, fn(j) { j.2 }, fn(row, item) {
-    @headless.button(row, fn() { item.get().0 }, fn(_) { open_link(item.get().2) }, fn(b, _) {
+    @sf.action_box_node(row, fn() { item.get().0 }, fn(_) { open_link(item.get().2) }, fn(b) {
       @sf.style_node(b, fn() { run_job_row })
-      b.focus_ring_theme() |> ignore
       b.box(fn(name) {
         @sf.style_node(name, fn() { run_name_column }, in_row=true)
         @sf.words_node(name, fn() { item.get().0 }, fn() { run_name_words(@sf.lit_node(b)) }) |> ignore

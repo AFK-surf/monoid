@@ -343,7 +343,7 @@ fn tabs_button_node(k : @view.View, pg : ScreenPage, side? : Double) -> Unit {
       @sf.panel_nodes(l, fn(v, done) { tabs_node(v, s, u, done, pg.close) }, from=Node(from), side=screen_panel_side(), focus=false)
     })
   }
-  let b = @headless.button(k, fn() { label() + " \{count()}" }, open, fn(b, _) {
+  let b = @sf.action_box_node(k, fn() { label() + " \{count()}" }, open, fn(b) {
     @sf.style_node(b, fn() { browser_count_box }, in_row=true)
     // (in a bar of tools, as big as they are: what is pressed side by side is one height; in a pane's own bar, its keys')
     let side = match side {

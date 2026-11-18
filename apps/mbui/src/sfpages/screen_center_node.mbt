@@ -370,13 +370,11 @@ fn quick_tile_node(
   lit : () -> Bool,
   press : () -> Unit,
 ) -> Unit {
-  row.box(fn(t) {
+  @sf.action_box_node(row, label, on=lit, fn(_) { press() }, fn(t) {
     @sf.style_node(t, fn() {
       let look = if lit() { tile_box.then(tile_lit) } else { tile_box }
       if t.pressed() { look.then(tile_pressed) } else { look }
     }, in_row=true)
-    t.says(By(fn() { Some(@view.said(Button, label=label(), pressed=lit())) })) |> ignore
-    @sf.presses_node(t, press)
     let ink = fn() { @ui.tree_theme().color(if lit() { Bg } else { Fg }) }
     @sf.icon_node(t, "", round_icon, By(ink), name_now=icon) |> ignore
     // (cut short where a tile has not the room for its name, at the system's larger words)
@@ -457,10 +455,8 @@ fn tiles_node(parent : @view.View, count : Int, per : Int, gap : @ui.Style, tile
 /// A tile in `row` (`look`: tile_box's, key_tile_box's), its ground the hover's while pressed, read out a button named
 /// `label`, `press` as it is pressed; what is on it made by `face`.
 fn center_tile_node(row : @view.View, look : @ui.Style, label : String, press : () -> Unit, face : (@view.View) -> Unit) -> Unit {
-  row.box(fn(t) {
+  @sf.action_box_node(row, fn() { label }, fn(_) { press() }, fn(t) {
     @sf.style_node(t, fn() { if t.pressed() { look.then(tile_pressed) } else { look } }, in_row=true)
-    t.says(Is(Some(@view.said(Button, label~)))) |> ignore
-    @sf.presses_node(t, press)
     face(t)
   })
   |> ignore

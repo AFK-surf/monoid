@@ -115,39 +115,13 @@ fn share_looks_pick_node(v : @view.View, src : Source, w : Workspace) -> Unit {
   }
   v.box(fn(all) {
     @sf.style_node(all, fn() { groups_and_looks })
-    @headless.radio_group(
+    @sf.share_tabs_node(
       all,
       fn() { @sf.t("web-main.stations.shareLook") },
+      share_groups,
+      fn(group) { @sf.t("web-main.stations.shareGroup." + group) },
       shown,
       fn(g) { share_group_shown.set(g) },
-      kind=Tab,
-      fn(row, rg) {
-        @sf.style_node(row, fn() { groups_row })
-        for group in share_groups {
-          let name = fn() { @sf.t("web-main.stations.shareGroup." + group) }
-          rg.item(row, fn() { group }, name, fn(item, it) {
-            @sf.style_node(item, fn() { groups_item })
-            item.box(fn(n) {
-              let look = fn() {
-                if it.chosen() {
-                  groups_name_on
-                } else if it.hovered() || it.focus_shown() {
-                  groups_name_lit
-                } else {
-                  groups_name
-                }
-              }
-              n
-              .words(By(name))
-              .words_look(By(fn() { @ui.style_words(look()) }))
-              .ink(By(fn() { @ui.style_ink(look()) }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        }
-      },
     )
     |> ignore
     // (as wide as the picture is laid out: more looks than that has the room for scrolled in it, not the stage made as
@@ -198,19 +172,19 @@ let share_look_ring_w : Double = @sf.share_look_tile_w + 2.0 * (@ui.Space::px(@s
 fn share_look_item(v : @view.View, src : Source, w : Workspace, look : ShareLook) -> Unit {
   let name = fn() { @sf.t("web-main.stations.shareLook." + look.key) }
   let on = fn() { share_look(src).key == look.key }
-  @headless.choice(v, Button, name, on, fn(_) {
+  @sf.action_box_node(v, name, selected=on, fn(_) {
     if !on() {
       (src.call)("prefs.set", { "shareLook": Json::string(look.key) }, @sfbase.answer_unread)
     }
-  }, fn(item, it) {
+  }, fn(item) {
     @sf.style_node(item, fn() { looks_item })
     item.box(fn(ring) {
-      @sf.style_node(ring, fn() { if it.chosen() { looks_ring_on } else { looks_ring } })
+      @sf.style_node(ring, fn() { if on() { looks_ring_on } else { looks_ring } })
       look_tile_node(ring, src, look, w)
     })
     |> ignore
     item.box(fn(n) {
-      let st = fn() { if it.chosen() || it.hovered() || it.focus_shown() { looks_name_on } else { looks_name } }
+      let st = fn() { if on() || item.pointed() || item.focus_shown() { looks_name_on } else { looks_name } }
       n.words(By(name)).words_look(By(fn() { @ui.style_words(st()) })).ink(By(fn() { @ui.style_ink(st()) })) |> ignore
     })
     |> ignore
@@ -668,29 +642,10 @@ fn share_looks_reset() -> Unit {
 // kept across runs: a value (no field of it changes)
 let groups_and_looks : @ui.Style = @ui.css("gap=S2 w=Full align=ACenter")
 
-///|
-/// The sets' names in a line in the middle, 16 apart.
-// kept across runs: a value (no field of it changes)
-let groups_row : @ui.Style = @ui.css("row gap=S4 justify=JCenter w=Full")
 
-///|
-/// A set's name, with room round it to be pressed.
-// kept across runs: a value (no field of it changes)
-let groups_item : @ui.Style = @ui.css("py=S1")
 
-///|
-/// A set's name: as the looks' names are (the white thinned; the one shown the white, a little bolder), a size larger.
-// kept across runs: a value (no field of it changes)
-let groups_name : @ui.TextStyle = looks_name.then(@ui.text_style(size=Sm))
 
-///|
-// kept across runs: a value (no field of it changes)
-let groups_name_on : @ui.TextStyle = groups_name.then(@ui.text_style(color=Data(@sf.share_ink), weight=Medium))
 
-///|
-/// Another set's name under the hand: the white, as it rests otherwise (the hand changes its ink alone).
-// kept across runs: a value (no field of it changes)
-let groups_name_lit : @ui.TextStyle = groups_name.then(@ui.text_style(color=Data(@sf.share_ink)))
 
 ///|
 /// The looks side by side, 8 apart (four in a 360 phone's stage), from the strip's start: what is past its end

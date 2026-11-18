@@ -760,9 +760,8 @@ pub fn terminal_pane_node(
       }
     },
   )
-  // Modifiers on the accessory bar: `once` for the next key, `kept_mods` locked until pressed again
-  let once : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
-  let kept_mods : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+  // Modifiers on the accessory bar: held for the next key, then locked until pressed again (KeyPadMods)
+  let pad_mods = @sf.KeyPadMods::new()
   let send = fn(k : @ui.KeyIn) {
     let modes = sync_modes()
     if terminal_copy_key(k) {
@@ -802,11 +801,9 @@ pub fn terminal_pane_node(
       return
     }
     let app_keys = terminal_app_keys_mode(modes)
-    let mods = once.untracked() | kept_mods.untracked()
+    // (those held for the next key alone let go as a key goes down)
+    let mods = if k is Key(down=false, ..) { pad_mods.held_now() } else { pad_mods.consume_once() }
     let said = terminal_keys_of(terminal_held(k, mods), app_keys)
-    if !(k is Key(down=false, ..)) {
-      once.set(0)
-    }
     if said != "" {
       if (modes & @hostapi.term_mode_viewport_active) == 0 {
         scroll_to_bottom()
@@ -1254,79 +1251,6 @@ pub fn terminal_pane_node(
       )
     }
   })
-  let held_press = fn(bit : Int) {
-    if (kept_mods.untracked() & bit) != 0 {
-      kept_mods.set(kept_mods.untracked() & bit.lnot())
-    } else if (once.untracked() & bit) != 0 {
-      once.set(once.untracked() & bit.lnot())
-      kept_mods.set(kept_mods.untracked() | bit)
-    } else {
-      once.set(once.untracked() | bit)
-    }
-  }
-  let held = fn(bit : Int) { fn() { ((once.get() | kept_mods.get()) & bit) != 0 } }
-  // (a key of the bars over the soft keyboard: pressed, the focus stays on what is typed in (key_catcher_node), never
-  // taken by the key; felt as it goes down; the arrows and ⌫ go on as they are held)
-  let pad_key = fn(
-    parent : @view.View,
-    cap : String,
-    name : String,
-    press : () -> Unit,
-    w_px : Double,
-    h_px : Double,
-    primary : Bool,
-    held_fn : (() -> Bool)?,
-    icon : String,
-    repeat : Bool,
-  ) {
-    @sf.key_cap_node(
-      parent,
-      cap,
-      fn() { name },
-      press,
-      look=Tile,
-      icon~,
-      width?=if w_px > 0.0 { Some(w_px) } else { None },
-      height=h_px,
-      primary~,
-      held?=held_fn,
-      steals_focus=false,
-      repeat~,
-      felt=KeyboardTap,
-    )
-    |> ignore
-  }
-  let dpad_cluster = fn(
-    parent : @view.View,
-    key_w : Double,
-    key_h : Double,
-    enter_w : Double,
-    enter_h : Double,
-  ) {
-    parent.box(fn(cl) {
-      cl.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(6.0)) |> ignore
-      cl.box(fn(arrows) {
-        arrows.gap(Is(4.0)) |> ignore
-        arrows.box(fn(top_r) {
-          top_r.row(Is(true)).gap(Is(4.0)) |> ignore
-          top_r.box(fn(sp) { sp.width(Is(Some(key_w))).height(Is(Some(key_h))) |> ignore }) |> ignore
-          pad_key(top_r, "↑", @sf.t("android-misc.screen.key.up"), fn() { tap("ArrowUp", "ArrowUp") }, key_w, key_h, false, None, "", true)
-          pad_key(top_r, "⌫", @sf.t("web-pages.terminal.backspace"), fn() { tap("Backspace", "Backspace") }, key_w, key_h, false, None, "", true)
-        })
-        |> ignore
-        arrows.box(fn(bot_r) {
-          bot_r.row(Is(true)).gap(Is(4.0)) |> ignore
-          pad_key(bot_r, "←", @sf.t("android-misc.screen.key.left"), fn() { tap("ArrowLeft", "ArrowLeft") }, key_w, key_h, false, None, "", true)
-          pad_key(bot_r, "↓", @sf.t("android-misc.screen.key.down"), fn() { tap("ArrowDown", "ArrowDown") }, key_w, key_h, false, None, "", true)
-          pad_key(bot_r, "→", @sf.t("android-misc.screen.key.right"), fn() { tap("ArrowRight", "ArrowRight") }, key_w, key_h, false, None, "", true)
-        })
-        |> ignore
-      })
-      |> ignore
-      pad_key(cl, "⏎", @sf.t("web-pages.terminal.sendCmd"), fn() { tap("Enter", "Enter") }, enter_w, enter_h, true, None, "", false)
-    })
-    |> ignore
-  }
   let kept_size : Ref[(Int, Int)?] = Ref(None)
   let last_kb : Ref[Double] = Ref(@signals.untracked(fn() { v.keyboard_inset() }))
   v.reacts(
@@ -1865,34 +1789,34 @@ pub fn terminal_pane_node(
               area.gap(Is(6.0)) |> ignore
               area.box(fn(bar) {
                 bar.row(Is(true)).gap(Is(6.0)) |> ignore
-                pad_key(bar, "键盘", @sf.t("android-misc.screen.keyboard"), fn() {
+                @sf.key_pad_key_node(bar, "键盘", @sf.t("android-misc.screen.keyboard"), fn() {
                   keys_open.set(false)
                   kb_up.set(true)
-                }, 0.0, 38.0, false, None, "", false)
-                pad_key(bar, "粘贴", @sf.t("web-pages.screen.paste"), paste_clipboard, 0.0, 38.0, false, None, "", false)
-                pad_key(bar, "", @sf.t("web-pages.terminal.hideKeyboard"), fn() { keys_open.set(false) }, 48.0, 38.0, false, None, "chevron-down", false)
+                }, height=38.0) |> ignore
+                @sf.key_pad_key_node(bar, "粘贴", @sf.t("web-pages.screen.paste"), paste_clipboard, height=38.0) |> ignore
+                @sf.key_pad_key_node(bar, "", @sf.t("web-pages.terminal.hideKeyboard"), fn() { keys_open.set(false) }, width=48.0, height=38.0, icon="chevron-down") |> ignore
               })
               |> ignore
               build_ext_tiles(area)
             } else if kind == 1 {
               // Keyboard Up: Single-row full-visibility strip with Backspace & auto-repeat
               area.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(3.0)) |> ignore
-              pad_key(area, "Esc", "Esc", fn() { tap("Escape", "Escape") }, 0.0, 42.0, false, None, "", false)
-              pad_key(area, "Tab", "Tab", fn() { tap("Tab", "Tab") }, 0.0, 42.0, false, None, "", false)
-              pad_key(area, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { held_press(@ui.key_in_ctrl) }, 0.0, 42.0, false, Some(held(@ui.key_in_ctrl)), "", false)
-              pad_key(area, "Alt", @sf.t("android-misc.screen.key.option"), fn() { held_press(@ui.key_in_alt) }, 0.0, 42.0, false, Some(held(@ui.key_in_alt)), "", false)
-              pad_key(area, "←", @sf.t("android-misc.screen.key.left"), fn() { tap("ArrowLeft", "ArrowLeft") }, 31.0, 42.0, false, None, "", true)
-              pad_key(area, "↓", @sf.t("android-misc.screen.key.down"), fn() { tap("ArrowDown", "ArrowDown") }, 31.0, 42.0, false, None, "", true)
-              pad_key(area, "↑", @sf.t("android-misc.screen.key.up"), fn() { tap("ArrowUp", "ArrowUp") }, 31.0, 42.0, false, None, "", true)
-              pad_key(area, "→", @sf.t("android-misc.screen.key.right"), fn() { tap("ArrowRight", "ArrowRight") }, 31.0, 42.0, false, None, "", true)
-              pad_key(area, "⌫", @sf.t("web-pages.terminal.backspace"), fn() { tap("Backspace", "Backspace") }, 31.0, 42.0, false, None, "", true)
-              pad_key(area, "", @sf.t("web-pages.terminal.hideKeyboard"), fn() {
+              @sf.key_pad_key_node(area, "Esc", "Esc", fn() { tap("Escape", "Escape") }, height=42.0) |> ignore
+              @sf.key_pad_key_node(area, "Tab", "Tab", fn() { tap("Tab", "Tab") }, height=42.0) |> ignore
+              @sf.key_pad_key_node(area, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { pad_mods.press(@ui.key_in_ctrl) }, height=42.0, held=fn() { pad_mods.holds(@ui.key_in_ctrl) }) |> ignore
+              @sf.key_pad_key_node(area, "Alt", @sf.t("android-misc.screen.key.option"), fn() { pad_mods.press(@ui.key_in_alt) }, height=42.0, held=fn() { pad_mods.holds(@ui.key_in_alt) }) |> ignore
+              @sf.key_pad_key_node(area, "←", @sf.t("android-misc.screen.key.left"), fn() { tap("ArrowLeft", "ArrowLeft") }, width=31.0, height=42.0, repeat=true) |> ignore
+              @sf.key_pad_key_node(area, "↓", @sf.t("android-misc.screen.key.down"), fn() { tap("ArrowDown", "ArrowDown") }, width=31.0, height=42.0, repeat=true) |> ignore
+              @sf.key_pad_key_node(area, "↑", @sf.t("android-misc.screen.key.up"), fn() { tap("ArrowUp", "ArrowUp") }, width=31.0, height=42.0, repeat=true) |> ignore
+              @sf.key_pad_key_node(area, "→", @sf.t("android-misc.screen.key.right"), fn() { tap("ArrowRight", "ArrowRight") }, width=31.0, height=42.0, repeat=true) |> ignore
+              @sf.key_pad_key_node(area, "⌫", @sf.t("web-pages.terminal.backspace"), fn() { tap("Backspace", "Backspace") }, width=31.0, height=42.0, repeat=true) |> ignore
+              @sf.key_pad_key_node(area, "", @sf.t("web-pages.terminal.hideKeyboard"), fn() {
                 kb_up.set(false)
                 match catcher_ref.val {
                   Some(k) => @ui.key_catcher_focus_set(k, false)
                   None => ()
                 }
-              }, 31.0, 42.0, false, None, "chevron-down", false)
+              }, width=31.0, height=42.0, icon="chevron-down") |> ignore
             } else {
               // Keyboard Down Default: Left 2x3 Action Grid + Right Inverted-T Arrow Pad + Backspace + Tall Enter
               area.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
@@ -1900,21 +1824,21 @@ pub fn terminal_pane_node(
                 left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(4.0)) |> ignore
                 left.box(fn(r1) {
                   r1.row(Is(true)).gap(Is(5.0)) |> ignore
-                  pad_key(r1, "Esc", "Esc", fn() { tap("Escape", "Escape") }, 0.0, 41.0, false, None, "", false)
-                  pad_key(r1, "Tab", "Tab", fn() { tap("Tab", "Tab") }, 0.0, 41.0, false, None, "", false)
-                  pad_key(r1, "^C", @sf.t("web-pages.terminal.combo.interrupt"), fn() { raw_send("\u{03}") }, 0.0, 41.0, false, None, "", false)
+                  @sf.key_pad_key_node(r1, "Esc", "Esc", fn() { tap("Escape", "Escape") }, height=41.0) |> ignore
+                  @sf.key_pad_key_node(r1, "Tab", "Tab", fn() { tap("Tab", "Tab") }, height=41.0) |> ignore
+                  @sf.key_pad_key_node(r1, "^C", @sf.t("web-pages.terminal.combo.interrupt"), fn() { raw_send("\u{03}") }, height=41.0) |> ignore
                 })
                 |> ignore
                 left.box(fn(r2) {
                   r2.row(Is(true)).gap(Is(5.0)) |> ignore
-                  pad_key(r2, "键盘", @sf.t("android-misc.screen.keyboard"), fn() { kb_up.set(true) }, 0.0, 41.0, false, None, "", false)
-                  pad_key(r2, "粘贴", @sf.t("web-pages.screen.paste"), paste_clipboard, 0.0, 41.0, false, None, "", false)
-                  pad_key(r2, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { held_press(@ui.key_in_ctrl) }, 0.0, 41.0, false, Some(held(@ui.key_in_ctrl)), "", false)
+                  @sf.key_pad_key_node(r2, "键盘", @sf.t("android-misc.screen.keyboard"), fn() { kb_up.set(true) }, height=41.0) |> ignore
+                  @sf.key_pad_key_node(r2, "粘贴", @sf.t("web-pages.screen.paste"), paste_clipboard, height=41.0) |> ignore
+                  @sf.key_pad_key_node(r2, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { pad_mods.press(@ui.key_in_ctrl) }, height=41.0, held=fn() { pad_mods.holds(@ui.key_in_ctrl) }) |> ignore
                 })
                 |> ignore
               })
               |> ignore
-              dpad_cluster(area, 38.0, 41.0, 44.0, 86.0)
+              @sf.key_pad_dpad_node(area, 38.0, 41.0, 44.0, 86.0, fn(key) { tap(key, key) }) |> ignore
             }
           },
         )

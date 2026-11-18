@@ -176,6 +176,8 @@ pub fn bar_keys_link() -> @paint.CornerOf?
 
 pub fn bar_keys_top() -> Double
 
+pub fn bar_meter_button_node(@view.View, () -> String, (@view.View) -> Unit, ring~ : Double, part~ : () -> Double, value~ : () -> String, color~ : () -> Int64, loc~ : SourceLoc) -> @view.View
+
 pub fn begin(@ui.Ctx) -> Theme
 
 pub fn behind_ground(k? : Double) -> Int64
@@ -762,6 +764,8 @@ pub fn glyph_color(String, Bool) -> Int64?
 
 pub fn gradient(@ui.Ctx, Double, Double, Double, Int64, Int64, radius? : Double) -> Unit
 
+pub fn grid_table_node(@view.View, (@view.View, GridTable) -> Unit, in_node? : Bool, loc~ : SourceLoc) -> @view.View
+
 pub fn ground_node(@view.View) -> @view.View
 
 pub fn group(@ui.Ctx, () -> Unit, card? : Bool) -> Unit
@@ -775,6 +779,12 @@ pub fn group_row(@ui.Ctx, Bool, Bool, () -> Unit, id? : Int32) -> Unit
 pub let group_row_end_radius : @ui.Radius
 
 pub fn group_rows_node(@view.View, (@view.View) -> Unit) -> Unit
+
+pub fn key_pad_dpad_node(@view.View, Double, Double, Double, Double, (String) -> Unit, loc~ : SourceLoc) -> @view.View
+
+pub fn key_pad_key_node(@view.View, String, String, () -> Unit, width? : Double, height~ : Double, primary? : Bool, held? : () -> Bool, icon? : String, repeat? : Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn key_pad_row_node(@view.View, Array[KeyPadKey], @signals.Signal[Array[String]], look? : () -> @ui.Style, loc~ : SourceLoc) -> @view.View
 
 pub fn[T : Eq, K : Hash + Eq] keyed_rows_node(@view.View, () -> Array[T], (T) -> K, (@view.View, @signals.Signal[T]) -> Unit) -> Unit
 
@@ -1992,6 +2002,10 @@ pub fn select(@ui.Ctx, String, String, Array[(String, String)], (String) -> Unit
 
 pub let select_chevron : Double
 
+pub fn select_ring_node(@view.View, () -> String, () -> Int32, () -> Unit, side? : Double, loc~ : SourceLoc) -> @view.View
+
+pub let select_ring_side : Double
+
 pub let select_w : Double
 
 pub fn select_node(@view.View, () -> String, () -> Array[(String, String)], (String) -> Unit, label? : () -> String, disabled? : () -> Bool, whole? : Bool) -> Unit
@@ -2070,6 +2084,8 @@ pub let share_receipt_rule : Int64
 pub let share_ring_grey : Int64
 
 pub let share_rings : Array[Int64]
+
+pub fn[K : Eq] share_tabs_node(@view.View, () -> String, Array[K], (K) -> String, () -> K, (K) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let share_terminal_cell : Int64
 
@@ -2896,6 +2912,16 @@ pub(all) struct Got {
   total : Double
 }
 
+pub struct GridRow {
+  // private fields
+}
+pub fn GridRow::head(Self, @view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
+
+pub struct GridTable {
+  // private fields
+}
+pub fn GridTable::row(Self, @view.View, (@view.View, GridRow) -> Unit, in_node? : Bool, loc~ : SourceLoc) -> @view.View
+
 pub(all) struct Grounds {
   bg : Int64
   canvas : Int64
@@ -2930,6 +2956,25 @@ pub(all) enum KeyLook {
   Tile
   Pill
 }
+
+pub(all) struct KeyPadKey {
+  cap : String
+  name : String
+  icon : String
+  drop : Int32
+  held : (() -> Bool)?
+  felt : @ui.Haptic?
+  press : () -> Unit
+}
+
+pub struct KeyPadMods {
+  // private fields
+}
+pub fn KeyPadMods::consume_once(Self) -> Int32
+pub fn KeyPadMods::held_now(Self) -> Int32
+pub fn KeyPadMods::holds(Self, Int32) -> Bool
+pub fn KeyPadMods::new() -> Self
+pub fn KeyPadMods::press(Self, Int32) -> Unit
 
 #derive(Eq, Show, @debug.Debug)
 pub(all) enum Layout {

@@ -821,74 +821,32 @@ fn screen_row_keys() -> Array[RowKey] {
 fn keys_row_node(parent : @view.View, pg : ScreenPage, mouse? : Bool = true) -> Unit {
   let s = pg.s
   let u = pg.u
-  let keys = screen_row_keys().filter(fn(k) { k.button == 0 || mouse })
-  let held = fn(k : RowKey) { k.mod_ != 0 && (u.held.held_said() & k.mod_) != 0 }
-  let leaves = fn(k : RowKey) { if held(k) { 0 } else { k.drop } }
-  let on_face = fn(k : RowKey) {
-    let turned = u.keys_turned.get()
-    turned.is_empty() || turned.contains(k.name)
-  }
-  let slots : Map[String, @view.View] = Map([])
-  parent.box(fn(row) {
-    @sf.style_node(row, fn() { keys_row_box }, in_row=true)
-    // (as wide as it is given, what has not the room there left out: View::drops)
-    row.fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    for k in keys {
-      row.show(at_once=true, fn() { on_face(k) }, fn(slot) {
-        slots[k.name] = slot
-        slot.drops(By(fn() { leaves(k) })) |> ignore
-        row_key_node(slot, pg, k, fn() { held(k) })
-      })
-    }
-    // (the ⋯: on the first face there only while a key is out; turned, always, the way on or back)
-    row.box(fn(more) {
-      let turned = fn() { !u.keys_turned.get().is_empty() }
-      more.drops(By(fn() { if turned() { 0 } else { -1 } })) |> ignore
-      @sf.key_cap_node(more, "", fn() { @sf.t("common.more") }, icon="more", held=turned, fn() {
-        // (turned to those this face left out as last laid out: from the first face its others, and from them, where
-        // they too have not the room, the rest; none left out, back)
-        u.keys_turned.set(
-          keys
-          .filter(fn(k) {
-            let face = @signals.untracked(fn() { on_face(k) })
-            face && leaves(k) > 0 && slots.get(k.name).map(fn(v) { v.alive() && v.left_out() }).unwrap_or(false)
-          })
-          .map(fn(k) { k.name }),
-        )
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-  ignore(s)
-}
-
-///|
-/// A key of the keys row in `slot`: its words or its mark, solid while `held` (a modifier held for the next key);
-/// pressed, a modifier held or let go, a mouse button clicked where the pointer is, or the key sent with what is held.
-fn row_key_node(slot : @view.View, pg : ScreenPage, k : RowKey, held : () -> Bool) -> Unit {
-  let s = pg.s
-  let u = pg.u
-  @sf.key_cap_node(
-    slot,
-    k.label,
-    fn() { k.name },
-    fn() {
-      if k.mod_ != 0 {
-        u.held.toggle(k.mod_)
-      } else if k.button != 0 {
-        button_clicked(s, u, k.button)
-      } else {
-        let mods = u.held.take()
-        stroke(fn(j) { s.input(s.src, j) }, k.key, k.code, mods)
+  let keys = screen_row_keys()
+    .filter(fn(k) { k.button == 0 || mouse })
+    .map(fn(k) -> @sf.KeyPadKey {
+      {
+        cap: k.label,
+        name: k.name,
+        icon: k.icon,
+        drop: k.drop,
+        // (a modifier: solid while held for the next key, which keeps it in the row)
+        held: if k.mod_ != 0 { Some(fn() { (u.held.held_said() & k.mod_) != 0 }) } else { None },
+        felt: button_felt(k.button),
+        // pressed, a modifier held or let go, a mouse button clicked where the pointer is, or the key sent with what
+        // is held
+        press: fn() {
+          if k.mod_ != 0 {
+            u.held.toggle(k.mod_)
+          } else if k.button != 0 {
+            button_clicked(s, u, k.button)
+          } else {
+            let mods = u.held.take()
+            stroke(fn(j) { s.input(s.src, j) }, k.key, k.code, mods)
+          }
+        },
       }
-    },
-    icon=k.icon,
-    held?=if k.mod_ != 0 { Some(held) } else { None },
-    felt?=button_felt(k.button),
-  )
-  |> ignore
+    })
+  @sf.key_pad_row_node(parent, keys, u.keys_turned, look=fn() { keys_row_box }) |> ignore
 }
 
 ///|

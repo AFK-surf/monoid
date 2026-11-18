@@ -608,7 +608,7 @@ fn screen_ended_node(b : @view.View, pg : ScreenPage) -> Unit {
 /// A capsule under what happened (重新打开, 前往权限设置) in `parent`, light on the screen's dark: the solid one in the
 /// dark theme, the soft one in the light; `press` as it is pressed.
 fn again_key_node(parent : @view.View, words : String, press : () -> Unit) -> Unit {
-  @headless.button(parent, fn() { words }, fn(_) { press() }, fn(b, _) {
+  @sf.action_box_node(parent, fn() { words }, fn(_) { press() }, fn(b) {
     let dark = fn() { @ui.tree_theme().dark }
     @sf.style_node(b, fn() { if dark() { again_solid } else { again_soft } }, in_row=true)
     @sf.hover_ground_node(b)
@@ -865,7 +865,7 @@ fn drop_row_node(r : @view.View, s : ScreenSess, d : ScreenDropItem) -> Unit {
 /// A button that is not the main one in `parent` (soft_button_box's: the chip under the ink's words), named `label`;
 /// pressed, `press`.
 fn soft_button_node(parent : @view.View, label : () -> String, press : () -> Unit) -> Unit {
-  @headless.button(parent, label, fn(_) { press() }, fn(b, _) {
+  @sf.action_box_node(parent, label, fn(_) { press() }, fn(b) {
     @sf.style_node(b, fn() { soft_button_box }, in_row=true)
     @sf.hover_ground_node(b)
     @sf.words_node(b, label, fn() { soft_button_words }) |> ignore

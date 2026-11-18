@@ -552,17 +552,8 @@
     "page-headless": {
       "src/sfbase/viz_mbui_node.mbt": 1,
       "src/sfdesk/open_jobs.mbt": 3,
-      "src/sfpages/actions_run.mbt": 1,
       "src/sfpages/board_node.mbt": 2,
-      "src/sfpages/composer_node.mbt": 2,
-      "src/sfpages/recent.mbt": 1,
-      "src/sfpages/resources_node.mbt": 4,
-      "src/sfpages/screen_browser.mbt": 1,
-      "src/sfpages/screen_case.mbt": 1,
-      "src/sfpages/screen_stage.mbt": 2,
-      "src/sfpages/service_node.mbt": 2,
-      "src/sfpages/share_looks.mbt": 2,
-      "src/sfpages/share_quota.mbt": 1
+      "src/sfpages/composer_node.mbt": 2
     },
     "page-control-by-hand": {
       "src/sfapp/chat_bar_node.mbt": 1,
@@ -613,13 +604,8 @@
       "src/sfpages/new_chat.mbt": 1,
       "src/sfpages/presets.mbt": 1,
       "src/sfpages/rail_cards.mbt": 2,
-      "src/sfpages/recent.mbt": 1,
       "src/sfpages/remote_node.mbt": 1,
-      "src/sfpages/resources_node.mbt": 2,
-      "src/sfpages/screen_center_node.mbt": 2,
       "src/sfpages/search.mbt": 2,
-      "src/sfpages/service.mbt": 1,
-      "src/sfpages/service_node.mbt": 1,
       "src/sfpages/sidebar_node.mbt": 1,
       "src/sfpages/station_node.mbt": 2,
       "src/sfpages/things.mbt": 2,
