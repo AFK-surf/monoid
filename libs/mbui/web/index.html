@@ -15,12 +15,177 @@
   #ime { position: fixed; left: 0; top: 0; width: 2px; height: 20px; opacity: 0; padding: 0; border: 0;
          resize: none; overflow: hidden; font-size: 16px; caret-color: transparent; color: transparent;
          background: transparent; outline: none; }
+
+  /* What shows where this browser gives no WebGL 2 (hardware acceleration turned off, a browser too old): the app
+     draws with it, so it is never loaded there; the page says how to turn it on instead. Plain HTML, the app not
+     being there to draw it. The card's corner is 28 and its padding 20, so what sits in a corner of it is 8. */
+  #nogl { --bg: #F5F5F7; --card: #FFFFFF; --text: #1D1D1F; --muted: #6E6E73; --line: rgba(0, 0, 0, 0.08);
+          --chip: rgba(0, 0, 0, 0.05); --chip-hover: rgba(0, 0, 0, 0.09); --primary: #1D1D1F; --on-primary: #FFFFFF;
+          position: fixed; inset: 0; z-index: 1; display: flex; overflow-y: auto; box-sizing: border-box;
+          padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+                   max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+          background: var(--bg); color: var(--text); -webkit-text-size-adjust: 100%;
+          font: 400 14px/20px system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
+  #nogl[hidden] { display: none; }
+  @media (prefers-color-scheme: dark) {
+    #nogl { --bg: #161618; --card: #1E1E22; --text: #F5F5F7; --muted: #A1A1A6; --line: rgba(255, 255, 255, 0.08);
+            --chip: rgba(255, 255, 255, 0.07); --chip-hover: rgba(255, 255, 255, 0.12); --primary: #F5F5F7;
+            --on-primary: #161618; }
+  }
+  #nogl .card { margin: auto; box-sizing: border-box; width: 100%; max-width: 520px; padding: 20px;
+                border-radius: 28px; background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+  #nogl h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 500; }
+  #nogl .lead { margin: 4px 0 0; color: var(--muted); }
+  #nogl ol { margin: 20px 0 0; padding: 0; list-style: none; display: grid; row-gap: 16px; }
+  /* a step's number sits on its first line, never in the middle of a step of several */
+  #nogl li { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; align-items: start; }
+  #nogl .n { width: 20px; height: 20px; border-radius: 10px; background: var(--chip); font-size: 12px;
+             line-height: 20px; font-weight: 500; text-align: center; font-variant-numeric: tabular-nums; }
+  #nogl .say { overflow-wrap: anywhere; }
+  #nogl b { font-weight: 500; }
+  #nogl code { font: 400 13px/20px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  /* an address to open, with its copy: the address's box 8 round, the button in it 3 in, so 5 */
+  #nogl .addr { display: flex; align-items: center; column-gap: 8px; margin-top: 8px; padding: 3px 3px 3px 10px;
+                border-radius: 8px; background: var(--chip); }
+  #nogl .addr code { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+  #nogl button { font: inherit; font-weight: 500; color: inherit; border: 0; margin: 0; cursor: pointer; }
+  #nogl .copy { flex: none; height: 26px; padding: 0 10px; border-radius: 5px; font-size: 13px;
+                background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+  #nogl .note { margin: 20px 0 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted);
+                font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
+  #nogl .note code { font-size: 12px; line-height: 18px; color: var(--text); }
+  #nogl .reload { display: block; margin-top: 20px; height: 36px; padding: 0 16px; border-radius: 8px;
+                  background: var(--primary); color: var(--on-primary); }
+  #nogl button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  @media (hover: hover) {
+    #nogl .copy:hover { background: var(--chip-hover); }
+    #nogl .reload:hover { opacity: 0.85; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    #nogl button { transition: background-color 120ms, opacity 120ms; }
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <textarea id="ime" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
-<script src="host.js"></script>
-<script src="demo.js"></script>
+<div id="nogl" lang="en" hidden>
+  <main class="card" aria-labelledby="nogl-h">
+    <h1 id="nogl-h"></h1>
+    <p class="lead" id="nogl-lead"></p>
+    <ol id="nogl-steps"></ol>
+    <p class="note" id="nogl-note"></p>
+    <button type="button" class="reload" id="nogl-reload">Reload</button>
+  </main>
+</div>
+<script>
+// The app draws with WebGL 2 (host.js): where this browser gives none it is not loaded (a whole bundle fetched only to
+// stop at its first draw on a blank page); the page says how to turn it on instead. The context asked for to know is
+// let go at once: a browser keeps only a few of them.
+(function () {
+  var ok = !!globalThis.__mbrender;
+  if (!ok) {
+    try {
+      var gl = document.createElement('canvas').getContext('webgl2');
+      if (gl) {
+        ok = true;
+        var lose = gl.getExtension('WEBGL_lose_context');
+        if (lose) lose.loseContext();
+      }
+    } catch (e) {}
+  }
+  if (ok) {
+    // in the order written, as the two tags were (async false: each run in turn, not as each comes)
+    ['host.js', 'demo.js'].forEach(function (src) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.async = false;
+      document.body.appendChild(s);
+    });
+    return;
+  }
+
+  var ua = navigator.userAgent || '';
+  var mobile = /Android|iPhone|iPad|iPod|Mobile/.test(ua) || !!(navigator.userAgentData && navigator.userAgentData.mobile);
+  // Chromium's on a computer, by the scheme of its own pages: Edge's, Opera's and Brave's say Chrome/ as well
+  var scheme = mobile ? null
+    : /Edg\//.test(ua) ? 'edge'
+    : /OPR\//.test(ua) ? 'opera'
+    : navigator.brave ? 'brave'
+    : /Chrome\//.test(ua) ? 'chrome'
+    : null;
+  var firefox = !mobile && /Firefox\//.test(ua);
+
+  var el = function (tag, cls, kids) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    (kids || []).forEach(function (k) { e.appendChild(typeof k === 'string' ? document.createTextNode(k) : k); });
+    return e;
+  };
+  var code = function (s) { return el('code', null, [s]); };
+  // an address to open in a new tab (a browser's own pages cannot be linked to), with a button that copies it
+  var address = function (url) {
+    var b = el('button', 'copy', ['Copy']);
+    b.type = 'button';
+    b.setAttribute('aria-label', 'Copy ' + url);
+    var copied = function () { b.textContent = 'Copied'; };
+    var back = function () { b.textContent = 'Copy'; };
+    b.addEventListener('click', function () {
+      var c = navigator.clipboard;
+      if (c && c.writeText) c.writeText(url).then(copied, function () {});
+    });
+    // "Copied" until the pointer or the focus leaves it: no timer
+    b.addEventListener('pointerleave', back);
+    b.addEventListener('blur', back);
+    return el('div', 'addr', [code(url), b]);
+  };
+
+  var page = (document.title || '').trim() || 'This page';
+  var head, lead, steps, note;
+  if (scheme) {
+    var setting = scheme === 'opera' ? 'Use hardware acceleration when available' : 'Use graphics acceleration when available';
+    head = 'Graphics acceleration is turned off';
+    lead = page + ' draws with WebGL 2, which needs graphics acceleration.';
+    steps = [
+      ['Open this address in a new tab:', address(scheme + '://settings/system')],
+      ['Turn on ', el('b', null, [setting]), '.'],
+      ['Relaunch the browser, then reload.'],
+    ];
+    note = ['Still off after relaunching? ', code(scheme + '://gpu'), ' shows what the browser turned off and why.'];
+  } else if (firefox) {
+    head = 'Hardware acceleration is turned off';
+    lead = page + ' draws with WebGL 2, which needs hardware acceleration.';
+    steps = [
+      ['Open this address in a new tab:', address('about:preferences#general')],
+      ['Under Performance, turn off ', el('b', null, ['Use recommended performance settings']), ', then turn on ',
+        el('b', null, ['Use hardware acceleration when available']), '.'],
+      ['Restart the browser, then reload.'],
+    ];
+    note = ['Still off after restarting? ', code('about:support'), ' shows why under Graphics.'];
+  } else {
+    head = 'WebGL 2 is not available';
+    lead = page + ' draws with WebGL 2, which is not on in this browser.';
+    steps = [
+      ['Turn on hardware acceleration in the browser’s settings.'],
+      ['Update the browser to its latest version.'],
+      ['Reload this page.'],
+    ];
+    note = ['Current versions of Chrome, Edge, Firefox and Safari all have WebGL 2.'];
+  }
+
+  document.getElementById('nogl-h').textContent = head;
+  document.getElementById('nogl-lead').textContent = lead;
+  var ol = document.getElementById('nogl-steps');
+  steps.forEach(function (s, i) {
+    ol.appendChild(el('li', null, [el('span', 'n', [String(i + 1)]), el('div', 'say', s)]));
+  });
+  var n = document.getElementById('nogl-note');
+  note.forEach(function (k) { n.appendChild(typeof k === 'string' ? document.createTextNode(k) : k); });
+  document.getElementById('nogl-reload').addEventListener('click', function () { location.reload(); });
+  document.getElementById('c').style.display = 'none';
+  document.getElementById('ime').style.display = 'none';
+  document.getElementById('nogl').hidden = false;
+})();
+</script>
 </body>
 </html>
