@@ -43,6 +43,8 @@ pub fn clamp(Double, Double, Double) -> Double
 
 pub fn compose_to_motion(Double, Double) -> (Double, Double, Double)
 
+pub let cover_damped_spring : Spec
+
 pub let cover_spring : Spec
 
 pub fn cubic_bezier(Double, Double, Double, Double) -> (Double) -> Double
