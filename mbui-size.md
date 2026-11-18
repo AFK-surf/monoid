@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 2.56 | 3.44 | 14.07 | 36.02 | 54.15 | 31.58 | 63.66 | 96.75 | 118.31 |
 | [9fe2303fd](https://github.com/AFK-surf/monoid/commit/9fe2303fd4ab738aaaf7db52da58975505202b0c) fix(screens): coalesce unsent pointer moves, recov | 2.56 | 3.44 | 14.07 | 36.02 | 54.15 | 31.58 | 63.66 | 96.75 | 118.31 |
 | [b5c70cdc0](https://github.com/AFK-surf/monoid/commit/b5c70cdc09495a54107ea7d332195db61b15967f) fix(mbui): keep a Windows video's frame shown thro | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.58 | 115.97 |
 | [e31f5a37f](https://github.com/AFK-surf/monoid/commit/e31f5a37f32c446b9035c32514dd3f6b1c924d7f) fix(mbui): a mouse's drag scrolls no table or code | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.58 | 115.97 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.32 | 96.77 | 126.18 |
 | [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 2.54 | 3.41 | 13.98 | 35.9 | 53.78 | 31.48 | 63.32 | 96.77 | 116.78 |
 | [3d4e7f31c](https://github.com/AFK-surf/monoid/commit/3d4e7f31c8c5cb3dd90c1edec406bfc8da86e8e5) feat(station): put the MoonBit station together wh | 2.54 | 3.41 | 13.98 | 35.9 | 53.77 | 31.47 | 63.32 | 96.99 | 123.22 |
-| [8dea365d1](https://github.com/AFK-surf/monoid/commit/8dea365d1d1817c3ab8256bf568900d88cafc779) test(mbui): sizes_across bars hold what 60 and 120 | 2.54 | 3.41 | 13.98 | 35.9 | 53.77 | 31.47 | 63.32 | 96.58 | 123.22 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [9fe2303fd](https://github.com/AFK-surf/monoid/commit/9fe2303fd4ab738aaaf7db52da58975505202b0c) fix(screens): coalesce unsent pointer moves, recov | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.66 |
 | [b5c70cdc0](https://github.com/AFK-surf/monoid/commit/b5c70cdc09495a54107ea7d332195db61b15967f) fix(mbui): keep a Windows video's frame shown thro | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.66 |
 | [e31f5a37f](https://github.com/AFK-surf/monoid/commit/e31f5a37f32c446b9035c32514dd3f6b1c924d7f) fix(mbui): a mouse's drag scrolls no table or code | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.81 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [3d4e7f31c](https://github.com/AFK-surf/monoid/commit/3d4e7f31c8c5cb3dd90c1edec406bfc8da86e8e5) feat(station): put the MoonBit station together wh | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
-| [8dea365d1](https://github.com/AFK-surf/monoid/commit/8dea365d1d1817c3ab8256bf568900d88cafc779) test(mbui): sizes_across bars hold what 60 and 120 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
