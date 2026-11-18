@@ -176,7 +176,7 @@ fn usage_rank_row_node(parent : @view.View, core : Core, rank_key : () -> String
   let filters_only = fn() { rank_key() != "chats" && item_key() != "" }
   let interactive = fn() { opens_chat() || filters_only() }
   // (one that only filters the days by it: a button, pressed as a whole; else a link to its chat, or nothing to press)
-  @sf.action_box_while_node(parent, filters_only, fn() { text(it(), "title") }, fn(_) {
+  @sf.action_box_while_node(parent, filters_only, fn() { text(it(), "title") }, in_pick=true, fn(_) {
     @signals.untracked(fn() {
       let rk = rank_key()
       let ik = item_key()
@@ -420,6 +420,7 @@ fn usage_split_node(parent : @view.View, v : () -> Json?, press : UsagePress) ->
           @sf.action_box_while_node(
             it,
             can_pick,
+            in_pick=true,
             fn() {
               let word = if selected() { "web-main.usage.onlyOff" } else { "web-main.usage.only" }
               @sf.t(word, args=[("name", text(pv(), "name"))])
@@ -581,25 +582,30 @@ fn usage_chart_node(parent : @view.View, v : () -> Json?, filtered : () -> Json?
       col.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       col.box(fn(row) {
         row.row(Is(true)).height(Is(Some(@sf.usage_plot))).gap(By(gap)) |> ignore
-        row.each(daily, fn(d) { text(Some(d), "day") }, fn(cell, d) {
+        row.each(daily, fn(d) { text(Some(d), "day") }, fn(day, d) {
           let dv = fn() { Some(d.get()) }
           let key = fn() { text(dv(), "day") }
-          // (its day's share of the row, as high as the plot, what is said over its bar past its top where they are
-          // taller: its own least none)
-          cell.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-          // (pressed as a button by the keyboard and a screen reader; a finger or the pointer goes through it to the
-          // plot's, which picks the day nearest)
-          let day = @sf.action_box_node(cell, fn() { text(dv(), "label") + " " + shown_cost_text(dv()) }, fn(_) {
+          days[@signals.untracked(key)] = day
+          // (a button by the keyboard and a screen reader, the day's own node; a finger or the pointer goes through it to
+          // the plot's, which picks the day nearest)
+          @sf.action_box_node(day, fn() { text(dv(), "label") + " " + shown_cost_text(dv()) }, in_node=true, fn(_) {
             press(@signals.untracked(key))
           }, fn(day) {
-            day.grow(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))).lies_along(Is(End)).takes(fn(_, _, _) { [] })
+            day
+            .grow(Is(1.0))
+            .basis(Is(Some(0.0)))
+            .min_width(Is(Some(0.0)))
+            // (as high as the plot, what is said over its bar past its top where they are taller: its own least none)
+            .min_height(Is(Some(0.0)))
+            .lies_along(Is(End))
+            .takes(fn(_, _, _) { [] })
             |> ignore
             usage_bar_node(day, v, dv, fn() {
               let shown = usage_pick.day.get()
               shown == "" || key() == shown
             }, fn() { if !many() && key() == said() { shown_cost_text(dv()) } else { "" } })
           })
-          days[@signals.untracked(key)] = day
+          |> ignore
         })
         // (days too many for what is said over one to fit its day, where it was cut to "$…": said over all of them
         // instead, whole, as near its day's middle as the days' row leaves it)

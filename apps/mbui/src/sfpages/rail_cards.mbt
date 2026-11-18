@@ -40,6 +40,7 @@ pub fn rail_card_node(
         @sf.action_box_while_node(
           st,
           fn() { to() != "" },
+          in_pick=true,
           fn() { text(Some(s.get()), "label") + " " + text(Some(s.get()), "value") },
           fn(_) {
             let p = @signals.untracked(to)

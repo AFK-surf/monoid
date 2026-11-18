@@ -367,7 +367,9 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       } else if place == "connects" {
         (439, 0, 306)
       } else {
-        (476, 0, 393)
+        // (用量's controls that are a button only while they filter, its rank rows and its legend, each over
+        // action_box_while_node's pick)
+        (487, 0, 398)
       }
       assert_eq(home_again_peak.val, first, msg="\{tag} home→\{place}")
       t.run_for(kept_switch_over_ms)

@@ -631,3 +631,20 @@ test "a button whose name is said once (label_is) runs no binding for what it sa
   let (by, once) = (bound(false), bound(true))
   assert_eq(by - once, 1)
 }
+
+///|
+test "a button in its node (in_node): the node it is given is the button, read out and pressed as one, no box of its own" {
+  let pressed = Ref(0)
+  let holder : Ref[@view.NodeId?] = Ref(None)
+  let made : Ref[@view.NodeId?] = Ref(None)
+  let t = window(fn(root) {
+    root.box(fn(h) {
+      holder.val = Some(h.id())
+      h.width(Is(Some(120.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+      made.val = Some(@headless.button(h, fn() { "行" }, in_node=true, fn(_) { pressed.val += 1 }, fn(_, _) {  }).id())
+    })
+    |> ignore
+  })
+  t.click(Button, label="行")
+  assert_eq((made.val == holder.val, pressed.val), (true, 1))
+}

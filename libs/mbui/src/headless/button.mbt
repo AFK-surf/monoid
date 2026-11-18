@@ -157,7 +157,8 @@ pub fn Button::press(self : Button) -> Unit {
 /// part of a part), `made_for` is where that part was asked for, its own `loc~` handed on, so what is found in the
 /// button is traced to the look's line and to the line that asked for it (source.mbt). `label_is`: its name never
 /// changes (`label` is it), so where nothing else it says can change (no `disabled`, `value` nor `range`) what it says,
-/// that it takes a press and the focus are said once (`Is`), no binding of its own made for them. The node.
+/// that it takes a press and the focus are said once (`Is`), no binding of its own made for them. `in_node`: the button
+/// is `parent` itself, no box of its own (a row a structure made: a list's, a pick's). The node.
 #callsite(autofill(loc))
 pub fn button(
   parent : @view.View,
@@ -171,11 +172,12 @@ pub fn button(
   value? : () -> String,
   range? : () -> (Double, Double, Double)?,
   label_is? : String,
+  in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
   let off = disabled.unwrap_or(fn() { false })
-  parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
+  let made = fn(v : @view.View) {
     look(v, { node: v, off })
     if hold is Some(h) {
       attach_hold(v, h)
@@ -228,5 +230,11 @@ pub fn button(
     if default_on is Some(f) {
       v.default_press(By(f)) |> ignore
     }
-  })
+  }
+  if in_node {
+    made(parent)
+    parent
+  } else {
+    parent.box(loc~, made_for=made_for.unwrap_or(loc), made)
+  }
 }
