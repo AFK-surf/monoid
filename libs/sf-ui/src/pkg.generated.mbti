@@ -148,6 +148,9 @@ pub fn avatar_node(@view.View, () -> String, () -> String, () -> String, Double)
 #callsite(autofill(loc))
 pub fn avatar_stack_node(@view.View, Array[StackFace], Double, () -> Int64, ring_w? : Double, over? : Double, first_over? : Bool, letter? : (() -> Int64, () -> @ui.TextStyle), most? : Int32, more_look? : () -> @ui.TextStyle, label? : () -> String, tips? : TipLayer, tip? : () -> String, loc~ : SourceLoc) -> @view.View
 
+#callsite(autofill(loc))
+pub fn avatar_tiles_node(@view.View, () -> Array[AppAvatar], () -> String, () -> Double, (AppAvatar) -> Unit, TipLayer, loc~ : SourceLoc) -> @view.View
+
 pub fn avatars_base() -> String
 
 pub let back : @ui.TextStyle
@@ -193,6 +196,9 @@ pub fn block(@ui.Ctx, () -> Unit) -> Unit
 pub let body : @ui.TextStyle
 
 pub fn bones(@ui.Ctx, () -> Unit, still? : Bool, fill? : Bool) -> Unit
+
+#callsite(autofill(loc))
+pub fn bot_tile_node(@view.View, () -> String, Double, (@view.View, Double) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn box_fit(Double, Double, Double) -> (Double, Double)
 
@@ -266,6 +272,9 @@ pub fn change_node(@view.View, () -> Array[ChangeLine], () -> String, () -> Stri
 pub let chat_station_in : @ui.Space
 
 pub let chat_station_most : @ui.Len
+
+#callsite(autofill(loc))
+pub fn check_groups_node(@view.View, () -> Array[CheckSection], (String) -> Bool, (String, Bool) -> Unit, () -> Bool, () -> Unit, CheckGroupsSaid, TipLayer, loc~ : SourceLoc) -> Unit
 
 pub fn check_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool) -> Unit
 
@@ -802,6 +811,11 @@ pub fn has_station_mark(String, String) -> Bool
 
 pub fn head_end(@ui.Ctx, () -> Unit) -> Unit
 
+#callsite(autofill(loc))
+pub fn head_state_node(@view.View, () -> String, () -> String, () -> String, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub let head_state_words : @ui.TextStyle
+
 pub fn heading(@ui.Ctx, String, note? : String, actions? : () -> Unit) -> Unit
 
 pub fn heading_in_at(ListAt) -> Double
@@ -869,6 +883,9 @@ pub fn icon_parts(@ui.Ctx, String, Array[Int32], size? : Double, color? : Int64)
 pub fn icon_parts_node(@view.View, String, Array[Int32], Double, @view.Live[Int64]) -> @view.View
 
 pub fn icon_path(String) -> String
+
+#callsite(autofill(loc))
+pub fn icon_well_node(@view.View, () -> String, () -> Unit, () -> Int64, () -> Int64, () -> String, () -> String, Int32, loc~ : SourceLoc) -> @view.View
 
 pub let identity_mark : Double
 
@@ -1657,6 +1674,14 @@ pub let pin_raised : Raised
 
 pub fn place_node(@view.View, () -> String, () -> String, (Bool) -> @ui.Style, @ui.TextStyle, press? : (() -> Unit)?, on? : () -> Bool, mark? : Double) -> @view.View
 
+pub fn place_note_look(Bool) -> @ui.TextStyle
+
+#callsite(autofill(loc))
+pub fn place_note_node(@view.View, () -> String, () -> Bool, change? : () -> String, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn place_row_node(@view.View, () -> String, (@view.View) -> Unit, () -> Bool, end? : (@view.View) -> Unit, press? : () -> Unit, can? : () -> Bool, selected? : () -> Bool, loc~ : SourceLoc) -> Unit
+
 pub fn player(@ui.Ctx, String, ViewerFile, Array[ViewerEntry], back_label~ : String, on_back~ : () -> Unit, on_go~ : (String) -> Unit) -> Unit
 
 pub fn player_fills_native(Double) -> Bool
@@ -1759,6 +1784,9 @@ pub fn progress_spinner(@ui.Ctx, String, Double?, size? : Double, stroke? : Doub
 pub fn progress_spinner_node(@view.View, () -> Double?, size? : Double, stroke? : Double) -> @view.View
 
 pub let quiet : @ui.TextStyle
+
+#callsite(autofill(loc))
+pub fn quiet_action_node(@view.View, () -> String, () -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let quieter : @ui.TextStyle
 
@@ -2242,6 +2270,9 @@ pub fn submenu_row(@ui.Ctx, String, String, Array[MenuItem?], icon? : String, si
 pub fn submenu_row_node(@view.View, () -> String, () -> Array[MenuItem?], icon? : () -> String, side? : @view.Side) -> Unit
 
 pub fn surface(Double, Double) -> Surface
+
+#callsite(autofill(loc))
+pub fn swatch_field_node(@view.View, @ui.Field, () -> Int64, String, after? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn switch(@ui.Ctx, String, Bool, label? : String, disabled? : Bool, small? : Bool, busy? : Bool, on_change? : (Bool) -> Unit) -> Bool
 
@@ -2775,6 +2806,29 @@ pub(all) struct ChatList {
   found : Found
   slide : @motion.Spec
   move : @motion.Spec
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct CheckGroup {
+  id : String
+  label : String
+  tip : String
+  fixed : Bool
+  admin : Bool
+}
+
+pub(all) struct CheckGroupsSaid {
+  summary : (Int32, Int32) -> String
+  all_on : () -> String
+  select_all : () -> String
+  select_none : () -> String
+  admin : () -> String
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct CheckSection {
+  title : String
+  groups : Array[CheckGroup]
 }
 
 #derive(Eq, @debug.Debug)

@@ -259,33 +259,15 @@ fn cd_identity_node(
     fn() { text(cv(), "name") },
     lines=fn() { [join([text(cv(), "placeText"), text(item(), "stationName")], " · ")] },
     state=fn(st) {
-      st.pick(fn() { if doing() != "" { 1 } else if failing() != "" { 2 } else { 0 } }, fn(p, k) {
-        p.row(Is(true)).gap(Is(cd_state_gap)).lines_up(Is(Some(Middle))) |> ignore
-        match k {
-          1 => {
-            @sf.spinner_node(p, size=cd_icon) |> ignore
-            @sf.words_node(p, doing, fn() { cd_sub_words }) |> ignore
-          }
-          2 => {
-            doing_mark_node(p, fn() { false }, fn() { Some(failing()) }, tips~)
-            @sf.words_node(p, failing, fn() { cd_sub_words }) |> ignore
-          }
-          _ => {
-            @sf.state_dot_node(p, fn() { text(cv(), "presence") })
-            @sf.words_node(p, fn() { text(cv(), "statusText") }, fn() { cd_sub_words }) |> ignore
-          }
-        }
+      @sf.head_state_node(st, doing, failing, fn() { text(cv(), "presence") }, fn() { text(cv(), "statusText") }, fn(p) {
+        doing_mark_node(p, fn() { false }, fn() { Some(failing()) }, tips~)
       })
-      @sf.words_node(st, fn() { @sf.t("web-pages.connect.owner") }, fn() { cd_sub_words }) |> ignore
+      @sf.words_node(st, fn() { @sf.t("web-pages.connect.owner") }, fn() { @sf.head_state_words }) |> ignore
       cn_owner_node(st, core, fn() { field(cv(), "createdBy") }, tips, stint)
     },
     actions=fn(a) { cd_menu_node(a, core, here, station, cv) },
   )
 }
-
-///|
-/// How it stands in its head's line (head_state's gap=S2, its parts as one).
-let cd_state_gap : Double = 8.0
 
 ///|
 /// Whether the connect's last write was its turning on or off (said as such meanwhile), by station/id.
@@ -696,35 +678,7 @@ fn cd_avatar_node(m : @view.View, core : Core, cv : () -> Json?, side : Double, 
       None => ""
     }
   }
-  m.box(fn(d) {
-    d.width(Is(Some(side))).height(Is(Some(side))) |> ignore
-    // (its picture's node made only once it is decoded: its decode asked here, nothing drawn of it asking it before)
-    let ready = fn() {
-      let k = key()
-      if k == "" {
-        return false
-      }
-      d.image_ask(k, side * d.pixel_scale())
-      d.image_ready(k, side * d.pixel_scale())
-    }
-    d.show(ready, fn(p) {
-      p
-      .width(Is(Some(side)))
-      .height(Is(Some(side)))
-      .radius(By(fn() { @ui.tree_theme().corner(Lg) }))
-      .image(By(fn() { Some((key(), "", 8192)) }))
-      .image_covers(Is(true))
-      |> ignore
-    })
-    // (its kind's mark three fifths of it, on a tile of its side: no larger than the room its head gives it, which
-    // a tile 2.4 times the mark was, over the lines under it on a phone)
-    d.show(fn() { !ready() }, fn(t) {
-      @sf.style_node(t, fn() { cd_avatar_box })
-      t.width(Is(Some(side))).height(Is(Some(side))).ground(By(fn() { @sf.theme().p.paper })) |> ignore
-      cn_kind_node(t, fn() { text(cv(), "kind") }, (side * cd_avatar_mark).round())
-    })
-  })
-  |> ignore
+  @sf.bot_tile_node(m, key, side, fn(t, size) { cn_kind_node(t, fn() { text(cv(), "kind") }, size) }) |> ignore
 }
 
 ///|
@@ -1286,21 +1240,8 @@ fn cd_secret_dialog(core : Core, station : String, cv : Json?) -> Unit {
 }
 
 ///|
-let cd_avatar_mark : Double = 0.6
-
-///|
+/// A ring and a mark beside words (14).
 let cd_icon : Double = 14.0
-
-///|
-let cd_kind_icon : Double = 13.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let cd_avatar_box : @ui.Style = @ui.css("align=ACenter justify=JCenter radius=Xl")
-
-///|
-// kept across runs: a value (no field of it changes)
-let cd_sub_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
 
 ///|
 /// The callout on amber (12 by 14 in, a corner of 14; its title in the amber's ink, its list 6 under it, 4 apart).
@@ -1326,14 +1267,6 @@ let cd_effect_words : @ui.Style = @ui.style(w=@sf.grow)
 ///|
 // kept across runs: a value (no field of it changes)
 let cd_bullet : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let cd_text_button_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let cd_text_button_lit : @ui.TextStyle = cd_text_button_words.then(@ui.text_style(color=Fg))
 
 ///|
 /// What is wrong on its callout (the ui's 13, the words' ink).

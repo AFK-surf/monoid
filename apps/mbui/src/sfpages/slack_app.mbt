@@ -664,60 +664,28 @@ fn app_fields_node(
   k.box(fn(l) {
     @sf.style_node(l, fn() { sa_look })
     // its avatar (appAvatar: 136, the settings' corner, on the neutral ground behind its colour): pressed, a picture
-    let ab = @sf.action_box_node(l, fn() { @sf.t("web-pages.slackApp.upload") }, fn(_) { upload() }, fn(a) {
-      @sf.style_node(a, fn() { sa_avatar }, in_row=true)
-      a.ground(By(ground)).clips(Is(true)) |> ignore
-      a.pick(fn() { d.shown.get() }, fn(s, shown) {
-        if shown != "" {
-          s.box(fn(img) {
-            img
-            .over(Is(true))
-            .image(Is(Some((shown, "", @sf.app_icon_px))))
-            .image_covers(Is(true))
-            .image_fades(Is(false))
-            |> ignore
-          })
-          |> ignore
-        } else {
-          s.box(fn(e) {
-            @sf.style_node(e, fn() { sa_avatar_empty })
-            @sf.icon_node(e, "image-upload", sa_upload_icon, By(ink)) |> ignore
-            @sf.words_node(e, fn() { @sf.t(if fresh { "web-pages.slackApp.uploadShort" } else { "web-pages.slackApp.keep" }) }, fn() { sa_avatar_words }).ink(By(ink)) |> ignore
-          })
-          |> ignore
-        }
-      })
-    })
+    let ab = @sf.icon_well_node(l, fn() { @sf.t("web-pages.slackApp.upload") }, upload, ground, ink, fn() { d.shown.get() }, fn() {
+      @sf.t(if fresh { "web-pages.slackApp.uploadShort" } else { "web-pages.slackApp.keep" })
+    }, @sf.app_icon_px)
     @sf.tip_node(tips, ab, fn() { @sf.t("web-pages.slackApp.upload") }) |> ignore
     l.box(fn(m) {
       @sf.style_node(m, fn() { sa_look_main }, in_row=true)
       @sf.input_node(m, d.name_field, placeholder=@sf.t("web-pages.settings.workspace.name")) |> ignore
       @sf.input_node(m, d.desc_field, placeholder=@sf.t("web-pages.slackApp.descriptionPlaceholder")) |> ignore
-      m.box(fn(c) {
-        @sf.style_node(c, fn() { sa_colour })
-        c.box(fn(w) {
-          @sf.style_node(w, fn() { sa_swatch }, in_row=true)
-          w.ground(By(ground)) |> ignore
-        })
-        |> ignore
-        c.box(fn(h) {
-          @sf.style_node(h, fn() { sa_hex }, in_row=true)
-          @sf.input_node(h, d.hex_field, label=@sf.t("web-pages.slackApp.color")) |> ignore
-        })
-        |> ignore
-        // what was picked's own colour, after one set by hand
-        let recommended = fn() {
-          match d.picked.get() {
-            "" => d.upload_bg.get()
-            id =>
-              match all().iter().find_first(fn(a) { a.id == id }) {
-                Some(a) => a.bg
-                None => d.upload_bg.get()
-              }
-          }
+      // what was picked's own colour, after one set by hand
+      let recommended = fn() {
+        match d.picked.get() {
+          "" => d.upload_bg.get()
+          id =>
+            match all().iter().find_first(fn(a) { a.id == id }) {
+              Some(a) => a.bg
+              None => d.upload_bg.get()
+            }
         }
+      }
+      @sf.swatch_field_node(m, d.hex_field, ground, @sf.t("web-pages.slackApp.color"), after=fn(c) {
         c.show(fn() { d.colour_set.get() && recommended() != "" && recommended().to_lower() != d.color.get().to_lower() }, fn(r) {
-          cd_text_button_node(r, fn() { @sf.t("web-pages.slackApp.recommended") }, fn() {
+          @sf.quiet_action_node(r, fn() { @sf.t("web-pages.slackApp.recommended") }, fn() {
             let bg = @signals.untracked(recommended)
             d.colour_set.set(false)
             colour(bg)
@@ -726,6 +694,7 @@ fn app_fields_node(
               None => ()
             }
           })
+          |> ignore
         })
       })
       |> ignore
@@ -733,199 +702,41 @@ fn app_fields_node(
     |> ignore
   })
   |> ignore
-  sa_avatar_picker_node(k, d, all, width, pick, tips)
+  @sf.avatar_tiles_node(k, all, fn() { d.picked.get() }, width, pick, tips) |> ignore
   sa_permissions_node(k, d, sections, tips)
 }
 
 ///|
-/// The avatars to start from (sa_avatar_picker's, as nodes) in `k`: 15 to a line in the room `width` says, fewer where
-/// it is less, 6 apart, 16 over them, 10 under; each square, edged in the line (the one picked ringed in the ink, the
-/// field's hover grey under the pointer), its picture or its maker's mark; named by its tip.
-fn sa_avatar_picker_node(
-  k : @view.View,
-  d : SaDraft,
-  all : () -> Array[@sf.AppAvatar],
-  width : () -> Double,
-  pick : (@sf.AppAvatar) -> Unit,
-  tips : @sf.TipLayer,
-) -> Unit {
-  let side = fn() { (width() - sa_tile_gap * (sa_tile_columns - 1).to_double()) / sa_tile_columns.to_double() }
-  k.box(fn(p) {
-    @sf.style_node(p, fn() { sa_picker })
-    p.box(fn(r) {
-      @sf.style_node(r, fn() { sa_picker_row })
-      r.wraps(Is(Some(sa_tile_gap))) |> ignore
-      // (the one picked, by member: a change of it tells the two tiles it concerns)
-      let picked_is = r.selected(fn() { Some(d.picked.get()) })
-      // (each tile its own avatar, given it by the list as it is made)
-      r.each(all, fn(a) { a.id }, fn(t, item) {
-        let a = item.untracked()
-        let label = if a.label.has_prefix("android-") { @sf.t(a.label) } else { a.label }
-        let on = fn() { picked_is(a.id) }
-        let tile = @sf.action_box_node(t, fn() { label }, selected=on, fn(_) { pick(a) }, fn(b) {
-          // (its edge: picked, sa_tile_on's; under the pointer, sa_tile_lit's, its hovered{border_color=FieldHover})
-          @sf.style_node(b, fn() { if on() { sa_tile_on } else if b.pointed() { sa_tile_lit } else { sa_tile } })
-          b
-          .width(By(fn() { Some(side()) }))
-          .height(By(fn() { Some(side()) }))
-          .ground(Is(@sf.hex_color(a.bg).unwrap_or(@sf.icon_fallback)))
-          .clips(Is(true))
-          |> ignore
-          if a.mark != "" {
-            b.pick(side, fn(m, w) {
-              @sf.drawable_node(m, a.mark, w * sa_mark_share, tint?=if a.mono { Some(fn() { Some(sa_white) }) } else { None }) |> ignore
-            })
-          } else {
-            b.box(fn(img) {
-              img
-              .over(Is(true))
-              .scale(Is(sa_thumb_scale))
-              .image(Is(Some((@sf.avatars_base() + "/avatars/" + a.id + ".thumb.webp", "", 256))))
-              .image_covers(Is(true))
-              |> ignore
-            })
-            |> ignore
-          }
-        })
-        @sf.tip_node(tips, tile, fn() { label }) |> ignore
-      })
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// The permissions, folded (sa_permissions', as nodes) in `k`: how many are on of all; all turned on from its line
-/// while some are off; open, each section its title and 全选 / 全不选 (the first group stays on), its groups three to a
-/// line, each a box to tick and its name (需管理员 beside those only admins allow), what it allows on hover; the first a
-/// tick without a box. Nothing while there are none.
+/// The permissions, folded (sa_permissions', as nodes: @sf.check_groups_node) in `k`: the core's sections (`sections`, as
+/// they are now) as the library's, each group on as the draft says it, ticked into it; open as the draft keeps it.
 fn sa_permissions_node(k : @view.View, d : SaDraft, sections : () -> Array[Json], tips : @sf.TipLayer) -> Unit {
-  let every = fn() {
-    let out : Array[String] = []
-    for s in sections() {
-      for g in items(Some(s), "groups") {
-        out.push(text(Some(g), "id"))
-      }
-    }
-    out
-  }
-  let on = fn() { every().filter(fn(g) { d.groups.get(g).unwrap_or(false) }).length() }
-  k.show(fn() { every().length() > 0 }, fn(p) {
-    p.box(fn(b) {
-      @sf.style_node(b, fn() { sa_perms })
-      b.box(fn(l) {
-        @sf.style_node(l, fn() { sa_perms_line })
-        let said = fn() { @sf.t("web-pages.slackApp.permissions", args=[("on", on().to_string()), ("all", every().length().to_string())]) }
-        @sf.action_box_node(l, said, expanded=fn() { d.perms.get() }, fn(_) { d.perms.set(!d.perms.untracked()) }, fn(s) {
-          @sf.style_node(s, fn() { sa_perms_summary }, in_row=true)
-          @sf.icon_node(s, "chevron-right", cd_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
-            if d.perms.get() {
-              "chevron-down"
-            } else {
-              "chevron-right"
-            }
-          })
-          |> ignore
-          @sf.words_node(s, said, fn() { sa_perms_said }) |> ignore
-        })
-        |> ignore
-        l.show(fn() { on() < every().length() }, fn(a) {
-          cd_text_button_node(a, fn() { @sf.t("web-pages.slackApp.allOn") }, fn() {
-            for g in @signals.untracked(every) {
-              d.groups[g] = true
-            }
-          })
-        })
+  @sf.check_groups_node(
+    k,
+    fn() {
+      sections().map(fn(s) {
+        let sv = Some(s)
+        {
+          title: text(sv, "title"),
+          groups: items(sv, "groups").map(fn(g) {
+            let gv = Some(g)
+            { id: text(gv, "id"), label: text(gv, "label"), tip: text(gv, "tip"), fixed: flag(gv, "fixed"), admin: opt_text(gv, "admin") is Some(_) }
+          }),
+        }
       })
-      |> ignore
-      b.show(fn() { d.perms.get() }, fn(o) {
-        o.box(fn(ss) {
-          @sf.style_node(ss, fn() { sa_perm_sections })
-          ss.each(fn() { sections().mapi(fn(i, s) { (i, s) }) }, fn(x) { text(Some(x.1), "title") + "\u{1}" + x.0.to_string() }, fn(sec, x) {
-            let sv = Some(@signals.untracked(fn() { x.get().1 }))
-            let groups = items(sv, "groups")
-            let all = fn() { groups.iter().all(fn(g) { d.groups.get(text(Some(g), "id")).unwrap_or(false) }) }
-            sec.box(fn(s) {
-              @sf.style_node(s, fn() { sa_perm_section })
-              s.box(fn(h) {
-                @sf.style_node(h, fn() { sa_perm_head })
-                @sf.words_node(h, fn() { text(sv, "title") }, fn() { sa_perm_title }) |> ignore
-                cd_text_button_node(h, fn() { @sf.t(if all() { "web-pages.settings.members.none" } else { "web-pages.settings.members.all" }) }, fn() {
-                  let was = @signals.untracked(all)
-                  for g in groups {
-                    d.groups[text(Some(g), "id")] = flag(Some(g), "fixed") || !was
-                  }
-                })
-              })
-              |> ignore
-              let mut i = 0
-              while i < groups.length() {
-                let row = groups[i:if i + 3 < groups.length() { i + 3 } else { groups.length() }].to_owned()
-                s.box(fn(r) {
-                  @sf.style_node(r, fn() { sa_perm_row })
-                  for g in row {
-                    sa_permission_node(r, d, Some(g), tips)
-                  }
-                  // (three to a line, a short line's room kept)
-                  for _ in row.length()..<3 {
-                    r.box(fn(e) { @sf.style_node(e, fn() { sa_perm_label }, in_row=true) }) |> ignore
-                  }
-                })
-                |> ignore
-                i = i + 3
-              }
-            })
-            |> ignore
-          })
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-  })
-}
-
-///|
-/// A group of permissions (sa_permission's, as nodes) in `r`: its box ticked (the first, always on: a tick without a
-/// box), its name, 需管理员 beside one only admins allow, the pointer's ground on it; what it allows over it while it is
-/// pointed at (the core's tip).
-fn sa_permission_node(r : @view.View, d : SaDraft, g : Json?, tips : @sf.TipLayer) -> Unit {
-  let id = text(g, "id")
-  let item = r.box(fn(b) {
-    @sf.style_node(b, fn() { sa_perm_item }, in_row=true)
-    @sf.hover_ground_node(b)
-    if flag(g, "fixed") {
-      @sf.icon_node(b, "check", cd_kind_icon, By(fn() { @sf.theme().p.accent })) |> ignore
-    } else {
-      @sf.check_node(b, fn() { d.groups.get(id).unwrap_or(false) }, fn(on) { d.groups[id] = on }, fn() { text(g, "label") })
-    }
-    b.box(fn(l) {
-      @sf.style_node(l, fn() { sa_perm_label }, in_row=true)
-      @sf.words_node(l, fn() { text(g, "label") }, fn() { sa_perm_words }) |> ignore
-    })
-    |> ignore
-    if opt_text(g, "admin") is Some(_) {
-      @sf.words_node(b, fn() { @sf.t("web-pages.slackApp.admin") }, fn() { sa_admin_words }) |> ignore
-    }
-  })
-  @sf.tip_node(tips, item, fn() { text(g, "tip") }) |> ignore
-}
-
-///|
-/// Words to press beside a row's (cd_text_button's, as a node) in `parent`: the meta's 13 underlined, muted, the
-/// words' ink under the pointer; `press` done as they are pressed.
-fn cd_text_button_node(parent : @view.View, label : () -> String, press : () -> Unit) -> Unit {
-  @sf.action_box_node(parent, label, fn(_) { press() }, fn(b) {
-    b.box(fn(w) {
-      w
-      .words_runs(By(fn() { [@ui.span(label(), underline=true)] }), look=@ui.style_words(cd_text_button_words))
-      .ink(By(fn() { @ui.style_ink(if b.pointed() { cd_text_button_lit } else { cd_text_button_words }) }))
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
+    },
+    fn(id) { d.groups.get(id).unwrap_or(false) },
+    fn(id, on) { d.groups[id] = on },
+    fn() { d.perms.get() },
+    fn() { d.perms.set(!d.perms.untracked()) },
+    {
+      summary: fn(on, all) { @sf.t("web-pages.slackApp.permissions", args=[("on", on.to_string()), ("all", all.to_string())]) },
+      all_on: fn() { @sf.t("web-pages.slackApp.allOn") },
+      select_all: fn() { @sf.t("web-pages.settings.members.all") },
+      select_none: fn() { @sf.t("web-pages.settings.members.none") },
+      admin: fn() { @sf.t("web-pages.slackApp.admin") },
+    },
+    tips,
+  )
 }
 
 ///|
@@ -955,27 +766,8 @@ fn sa_icon_failed(d : SaDraft, words : String) -> Unit {
 }
 
 ///|
-/// The sizes: the avatar 136 (its upload mark 20), the avatars 15 to a line 6 apart (a mark 55% of its tile, a
-/// buddy's picture 1.18 times it), the card's padding 20.
-let sa_upload_icon : Double = 20.0
-
-///|
-let sa_tile_columns : Int = 15
-
-///|
-let sa_tile_gap : Double = 6.0
-
-///|
-let sa_mark_share : Double = 0.55
-
-///|
-let sa_thumb_scale : Double = 1.18
-
-///|
+/// The card's padding (20).
 let sa_card_in : Double = 20.0
-
-///|
-let sa_white : Int64 = 0xFFFFFFFFL
 
 ///|
 /// The guide (tokenGuide: its steps 18 apart).
@@ -1009,114 +801,11 @@ let sa_blue : @ui.Style = @ui.css("row w=Full px=S3_5 py=S3 gap=S2_5 radius=Xl1_
 let sa_blue_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
 
 ///|
-/// Its look (appLook: the avatar 136 and the rest, 16 apart; appLookMain: 8 apart; appColour: 8 apart, the swatch 28,
-/// the hex field 96).
+/// Its look (appLook: the avatar's well and the rest, 16 apart; appLookMain: 8 apart).
 // kept across runs: a value (no field of it changes)
 let sa_look : @ui.Style = @ui.css("row w=Full gap=S4 align=AStretch")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sa_avatar : @ui.Style = @ui.css("w=S32 h=S32 radius=Xl3 clip border=B1 border_color=Line align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_avatar_empty : @ui.Style = @ui.css("gap=S1 align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
 let sa_look_main : @ui.Style = @ui.style(w=@sf.grow, gap=S2)
 
-///|
-// kept across runs: a value (no field of it changes)
-let sa_colour : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_swatch : @ui.Style = @ui.css("w=S7 h=S7 radius=Lg border=B1 border_color=Border")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_hex : @ui.Style = @ui.css("w=S24")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_picker : @ui.Style = @ui.css("w=Full pt=S4 pb=S2_5 gap=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_picker_row : @ui.Style = @ui.css("row w=Full gap=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_tile : @ui.Style = @ui.css("radius=Lg clip border=B1 border_color=Line align=ACenter justify=JCenter hovered{border_color=FieldHover}")
-
-///|
-/// A tile under the pointer (sa_tile's hovered, as a node takes it).
-// kept across runs: a value (no field of it changes)
-let sa_tile_lit : @ui.Style = sa_tile.then(@ui.css("border_color=FieldHover"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_tile_on : @ui.Style = sa_tile.then(@ui.css("border=B2 border_color=Fg"))
-
-///|
-/// What the avatar says while it has no picture (keep, upload: a note's words, in what reads on its colour), and 需管理员
-/// beside a group only admins allow (a note's words): the dialog's look and the page's alike.
-// kept across runs: a value (no field of it changes)
-let sa_avatar_words : @ui.TextStyle = desk_note
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_admin_words : @ui.TextStyle = desk_note
-
-///|
-/// The permissions (appPerms: the ui's 13; its line muted, 6 down; permSections 4 apart, 8 under it; a section's head
-/// its title (h4) and its toggle; permGrid three to a line, 8 apart).
-// kept across runs: a value (no field of it changes)
-let sa_perms : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perms_line : @ui.Style = @ui.css("row w=Full py=S1_5 gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perms_summary : @ui.Style = @ui.css("row gap=S1 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perm_sections : @ui.Style = @ui.css("w=Full pt=S2 gap=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perm_section : @ui.Style = @ui.css("w=Full gap=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perm_head : @ui.Style = @ui.css("row w=Full pt=S2 gap=S2 align=ACenter justify=JBetween")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perm_title : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Semibold, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perm_row : @ui.Style = @ui.css("row w=Full gap=S2")
-
-///|
-/// A group (modelPoolItem: a third of the line, 32 high, 8 by 6 in, 8 apart, the pointer's ground on it).
-// kept across runs: a value (no field of it changes)
-let sa_perm_item : @ui.Style = @ui.style(w=@sf.grow).then(@ui.css("row h=S8 px=S2 gap=S2 radius=Lg align=ACenter hovered{bg=Hover}"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perm_label : @ui.Style = @ui.style(w=@sf.grow)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_perm_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, wrap=false)
-
-///|
-/// What a fold's line says beside its title (the ui's 13 muted, in a line).
-// kept across runs: a value (no field of it changes)
-let sa_perms_said : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false)

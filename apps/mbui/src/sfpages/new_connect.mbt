@@ -531,7 +531,7 @@ fn nc_team_node(k : @view.View, core : Core, f : NcFlow, view : () -> Json?, clo
           m.box(fn(l) {
             @sf.style_node(l, fn() { nc_manual_line })
             @sf.words_node(l, fn() { @sf.t("web-pages.connect.noToken") }, fn() { nc_meta }) |> ignore
-            cd_text_button_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) })
+            @sf.quiet_action_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
           })
           |> ignore
         })
@@ -565,7 +565,7 @@ fn nc_team_node(k : @view.View, core : Core, f : NcFlow, view : () -> Json?, clo
         |> ignore
       })
       |> ignore
-      cd_text_button_node(r, fn() { @sf.t("web-pages.connect.manualShort") }, fn() { nc_go(core, f, "manual", close) })
+      @sf.quiet_action_node(r, fn() { @sf.t("web-pages.connect.manualShort") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
     })
     |> ignore
   })
