@@ -2029,15 +2029,18 @@ fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, sta
       // (where it runs, and on what under it)
       p.box(fn(on) {
         on.gap(Is(4.0)).lines_up(Is(Some(Start))) |> ignore
-        @sf.station_choice_node(
-          on,
-          stations,
-          fn() { station.get() },
-          fn(at) { station.set(at) },
-          title=board_words("goes-on"),
-          label=fn(name) { board_words("goes-on") + ": " + name },
-        )
-        .margin(By(fn() { ((words_at() - @ui.Space::px(S1)).max(0.0), 0.0, 0.0, 0.0) }))
+        // (in a box of its own, the choice making none it gives back, put down to the words' first line)
+        on.box(fn(c) {
+          c.margin(By(fn() { ((words_at() - @ui.Space::px(S1)).max(0.0), 0.0, 0.0, 0.0) })) |> ignore
+          @sf.station_choice_node(
+            c,
+            stations,
+            fn() { station.get() },
+            fn(at) { station.set(at) },
+            title=board_words("goes-on"),
+            label=fn(name) { board_words("goes-on") + ": " + name },
+          )
+        })
         |> ignore
         // (what was picked for it on the station it goes to: its own on each)
         on.pick(fn() { station.get() }, at_once=true, fn(m, st) {
