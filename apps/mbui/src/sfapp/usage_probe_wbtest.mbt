@@ -30,6 +30,10 @@ fn uprobe_end(t : @ui.Tester, tag : String) -> Unit {
     t.run_for(kept_glide_over_ms)
   }
   uprobe_at(t, tag + " (at its end)")
+  if tag.has_prefix("D") {
+    let ws = t.words().filter(fn(w) { w.1 >= 0.0 && w.1 < 390.0 && w.2 > -50.0 && w.2 < 900.0 }).map(fn(w) { "\{w.0}@\{w.2.to_int()}" })
+    println("words \{tag}: \{ws.join(" / ")}")
+  }
 }
 
 ///|
