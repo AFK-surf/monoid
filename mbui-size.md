@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33815598f](https://github.com/AFK-surf/monoid/commit/33815598fcddcaa323fa0367afb4e3849a636178) mbui app: a chat's composer made as nodes, whole ( | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.54 | 117.45 |
 | [7c3c797b7](https://github.com/AFK-surf/monoid/commit/7c3c797b72fdc40941ae12bec151b4d7cc83d199) fix(mbui): pick a preset's model on the composer's | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.52 | 63.46 | 96.77 | 117.45 |
 | [3a3bad347](https://github.com/AFK-surf/monoid/commit/3a3bad34737a5401bc21aa71b0b1e3b3de1bde99) fix(station): the front takes a Node's new protoco | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.52 | 63.46 | 96.73 | 117.45 |
 | [3db36a227](https://github.com/AFK-surf/monoid/commit/3db36a227d053592a4b2e1a13fc1476daad9ff67) fix(mbui): background Android test activity via HO | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.51 | 63.46 | 96.75 | 117.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [767bf3a54](https://github.com/AFK-surf/monoid/commit/767bf3a5416785c76355e2972f140b9a8ca0abf7) station: route events during handover adoption (#7 | 2.54 | 3.41 | 13.97 | 35.17 | 53.72 | 30.76 | 61.69 | 96.55 | 109.59 |
 | [4c89a3b06](https://github.com/AFK-surf/monoid/commit/4c89a3b06b913256574e6fe0e82d6e2f9e113e44) Respect wrapping when measuring a nested row’s min | 2.54 | 3.41 | 13.97 | 35.17 | 53.72 | 31.69 | 64.57 | 96.45 | 119.72 |
 | [fde0f64c7](https://github.com/AFK-surf/monoid/commit/fde0f64c727cddabc7ede6f4260c64dbc591097a) mbui: a page's list compiled once, not once a key  | 2.54 | 3.41 | 13.97 | 35.17 | 53.72 | 31.69 | 64.57 | 96.45 | 119.72 |
-| [74df55c40](https://github.com/AFK-surf/monoid/commit/74df55c407cd82a8379c7bef1499a94390822ac8) sf-ui: extract still.fail's src/sf component libra | 2.57 | 3.63 | 15.19 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33815598f](https://github.com/AFK-surf/monoid/commit/33815598fcddcaa323fa0367afb4e3849a636178) mbui app: a chat's composer made as nodes, whole ( | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
 | [7c3c797b7](https://github.com/AFK-surf/monoid/commit/7c3c797b72fdc40941ae12bec151b4d7cc83d199) fix(mbui): pick a preset's model on the composer's | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
 | [3a3bad347](https://github.com/AFK-surf/monoid/commit/3a3bad34737a5401bc21aa71b0b1e3b3de1bde99) fix(station): the front takes a Node's new protoco | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
 | [3db36a227](https://github.com/AFK-surf/monoid/commit/3db36a227d053592a4b2e1a13fc1476daad9ff67) fix(mbui): background Android test activity via HO | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [767bf3a54](https://github.com/AFK-surf/monoid/commit/767bf3a5416785c76355e2972f140b9a8ca0abf7) station: route events during handover adoption (#7 | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.27 |
 | [4c89a3b06](https://github.com/AFK-surf/monoid/commit/4c89a3b06b913256574e6fe0e82d6e2f9e113e44) Respect wrapping when measuring a nested row’s min | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.27 |
 | [fde0f64c7](https://github.com/AFK-surf/monoid/commit/fde0f64c727cddabc7ede6f4260c64dbc591097a) mbui: a page's list compiled once, not once a key  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.51 |
-| [74df55c40](https://github.com/AFK-surf/monoid/commit/74df55c407cd82a8379c7bef1499a94390822ac8) sf-ui: extract still.fail's src/sf component libra | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.51 |
