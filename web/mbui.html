@@ -43,12 +43,13 @@
     #ime { position: fixed; left: 0; top: 0; width: 2px; height: 20px; opacity: 0; padding: 0; border: 0;
            resize: none; overflow: hidden; font-size: 16px; caret-color: transparent; color: transparent;
            background: transparent; outline: none; }
-    /* still.fail's mark in one colour while the app comes (src/mbui/boot.ts takes it away with the app's first frame):
+    /* still.fail's mark in one colour while the app comes (src/mbui/boot.ts fades it out before the app runs, then fades
+       the bare ground off the app's first frame):
        it shows after a moment, so a load from the cache shows none of it, and a light passes over it while it waits */
     #boot { position: fixed; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center;
             justify-content: center; gap: 16px; padding: max(24px, var(--safe-top)) max(16px, var(--safe-right)) max(24px, var(--safe-bottom)) max(16px, var(--safe-left)); box-sizing: border-box; background: var(--ground);
             color: var(--ink); font: 400 14px/20px system-ui, -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
-            transition: opacity 120ms ease-out; }
+            transition: opacity 160ms ease-out; }
     #boot.gone { opacity: 0; pointer-events: none; }
     #boot .mark { position: relative; width: 48px; height: 48px; border-radius: 10.8px; overflow: hidden;
                   animation: boot-in 320ms ease-out 240ms both; }
@@ -60,7 +61,7 @@
     #boot .said { margin: 0; max-width: 320px; color: var(--muted); text-align: center; text-wrap: pretty; }
     #boot .again { height: 36px; padding: 0 16px; border: 0; border-radius: 999px; cursor: pointer;
                    background: var(--chip); color: var(--ink); font: inherit; font-weight: 500; }
-    #boot.stuck .mark::after { animation: none; }
+    #boot.stuck .mark::after, #boot .mark.still::after { animation: none; display: none; }
     @keyframes boot-in { from { opacity: 0; } to { opacity: 1; } }
     @keyframes boot-light { 0% { transform: translateX(-100%); } 60%, 100% { transform: translateX(100%); } }
     :root[data-reduced-motion] #boot { transition: none; }

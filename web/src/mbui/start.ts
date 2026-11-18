@@ -13,5 +13,5 @@ if (hasWebgl2(() => document.createElement("canvas"))) {
   });
 } else {
   showGpuGuide();
-  bootGone(true);
+  bootGone();
 }
