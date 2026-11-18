@@ -182,7 +182,7 @@ pub fn chat_composer_node(
         column
       } else {
         match laid() {
-          Some(w) => @sf.dmin(w, room.width())
+          Some(w) => w
           None => room.width()
         }
       }
@@ -196,16 +196,26 @@ pub fn chat_composer_node(
     .lines_up(Is(Some(Middle)))
     |> ignore
     // (its room under it come to another height as the page sets off on its way to another width (a side panel opened
-    // or shut beside it: sfbase's column_sets_off): the list's foot placed at once as tall as it comes out, what stands
-    // in it drawn from where it stood, on the page's way there from that moment (a Move, as the rows' laid out anew go),
-    // never stepped in the frame it sets off nor going on its own after the rows rest, never a spring)
+    // or shut beside it: sfbase's column_sets_off): its height on the page's way from that moment (a Move, said there,
+    // before the change is laid out, as each row's room over it is: message_row_node), what stands in it drawn from where
+    // it stood on the same way, never stepped in the frame it sets off nor going on its own after the rows rest, never a
+    // spring; none where its height comes out the same (View::resizes drops it))
     let set_off_at = Ref(@double.neg_infinity)
-    @sfbase.column_set_off_each(foot, fn() { if foot.alive() { set_off_at.val = foot.cause_at() } })
+    @sfbase.column_set_off_each(foot, fn() {
+      if foot.alive() {
+        set_off_at.val = foot.cause_at()
+        if foot.was_placed() {
+          // (a Move by how far, as the rows' rooms go and as what stands in it is drawn: `foot_shift`, below)
+          foot.resizes(foot=true) |> ignore
+        }
+      }
+    })
     let foot_was = Ref(@signals.untracked(fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) }))
     foot.reacts(fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) }, fn(now) {
       let at = foot.cause_at()
       if at == set_off_at.val && foot.was_placed() && now != foot_was.val {
-        foot_shift.put(foot_shift.value_at(at) + now - foot_was.val)
+        let by = foot_shift.value_at(at) + now - foot_was.val
+        foot_shift.put(by)
         foot_shift.go(foot, 0.0, @motion.moved())
       }
       foot_was.val = now
@@ -406,6 +416,11 @@ fn composer_box_node(
       let wide = (stand.wide)()
       let one = stand.at(fn() { node_open_room(stand, wide) - 12.0 - composer_foot_at(wide) })
       if was > one || speed != 0.0 {
+        // (its foot down at once, words sent from it: what stands beside the list by that foot (对话目录's rail) told
+        // how far, and from when, as the old one's tells it: sfbase's chat_foot_dropped)
+        if was > one && words_go {
+          @sfbase.chat_foot_dropped.set(Some((draft, at, was - one)))
+        }
         let hold = @sfbase.sent_out_hold_ms
         sent_over.put(was - one)
         if speed != 0.0 {
