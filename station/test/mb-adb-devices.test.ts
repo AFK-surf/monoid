@@ -248,8 +248,22 @@ const partId = (what: string) => `${what}${++parts}`;
 async function same(what: string, make: (side: "ts" | "mb") => Promise<Json>) {
   const a = await make("ts");
   const b = await make("mb");
-  assert.deepEqual(b, a, what);
+  assert.deepEqual(b, a, `${what}: ${firstDiffer(b, a)}`);
   return a;
+}
+
+/// Where `b` first differs from `a` (its path and both values, as JSON): an assertion's own words leave nested arrays
+/// as [Array], which says nothing of a case that failed once on CI.
+function firstDiffer(b: Json, a: Json, at = "$"): string {
+  if (JSON.stringify(a) === JSON.stringify(b)) return "the same";
+  if (a !== null && b !== null && typeof a === "object" && typeof b === "object" && Array.isArray(a) === Array.isArray(b)) {
+    const keys = Array.isArray(a) ? [...Array(Math.max(a.length, (b as Json[]).length)).keys()] : [...new Set([...Object.keys(a), ...Object.keys(b)])];
+    for (const k of keys) {
+      const x = (a as any)[k], y = (b as any)[k];
+      if (JSON.stringify(x) !== JSON.stringify(y)) return firstDiffer(y, x, `${at}[${JSON.stringify(k)}]`);
+    }
+  }
+  return `at ${at}: program ${JSON.stringify(b)?.slice(0, 2000)}, TypeScript ${JSON.stringify(a)?.slice(0, 2000)}`;
 }
 
 // ── what needs no world ──
