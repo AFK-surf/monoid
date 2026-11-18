@@ -249,7 +249,8 @@ test("every command and flag of main.js and the launcher's channel is the progra
   const launcher = read(join(station, "src", "ops", "launcher.ts"));
   const entry = read(join(mb, "station_main", "entry.mbt"));
   const program = ["run.mbt", "cli.mbt", "entry.mbt"].map((f) => read(join(mb, "station_main", f))).join("\n");
-  const commands = [...main.matchAll(/^\s+case "([a-z-]+)":/gm)].map((m) => m[1]!);
+  // (a `case` of commandMain's switch, or a command it takes before it: `run`)
+  const commands = [...new Set([...main.matchAll(/^\s+case "([a-z-]+)":|\bcommand === "([a-z-]+)"/gm)].map((m) => (m[1] ?? m[2])!))];
   const theirs = /let station_commands : Array\[String\] = \[([^\]]*)\]/.exec(entry)?.[1] ?? "";
   const results: Result[] = [];
   assert.ok(commands.length >= 8, `main.ts's commands: ${commands.join(",")}`);
