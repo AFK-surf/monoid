@@ -576,3 +576,9 @@ pub fn OwnDriver::detach(self : OwnDriver) -> Unit {
   }
   self.live.clear()
 }
+
+///|
+/// The address of the station's tools it was given (`mcpUrl`), as the driver that opened it says it.
+pub fn OwnSession::set_tools_url(self : OwnSession, url : String?) -> Unit {
+  self.tools_url = url
+}

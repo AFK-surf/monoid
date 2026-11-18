@@ -953,6 +953,12 @@ pub fn log_refused(status : Double?) -> Bool {
 }
 
 ///|
+/// log-export.ts `configure`: lines are kept from now on.
+pub fn LogExport::configure(self : LogExport) -> Unit {
+  self.configured = true
+}
+
+///|
 /// log-export.ts `sendAll`: what waits sent, a batch at a time (`send` the status it failed with, 0 for no answer;
 /// None where it went). The bodies sent, in order.
 pub fn LogExport::send_all(

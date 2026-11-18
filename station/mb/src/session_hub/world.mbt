@@ -10,7 +10,7 @@
 //   reads (their bot, their team), each actor's process state.
 
 ///|
-pub struct World {
+pub(all) struct World {
   tell : (String, Json) -> Unit
   ask : async (String, Json) -> Json
   /// Now, by the hub's clock (ms).

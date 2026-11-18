@@ -173,3 +173,9 @@ pub fn config_edit(set : Json) -> (Json) -> Json {
     Json::object(out)
   }
 }
+
+///|
+/// What an edit must pass from now on (the parts' checks, as the station puts them together).
+pub fn ConfigFile::set_check(self : ConfigFile, check : (Json, String) -> String?) -> Unit {
+  self.check = check
+}

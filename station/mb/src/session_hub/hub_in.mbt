@@ -507,12 +507,19 @@ async fn Hub::accept_in_turn(self : Hub, connect_id : String, message : Json) ->
           Some(c) => chat_has(c, "sessionLink")
           None => false
         }
+        // (a surface whose link is none posts none: hub.ts `said !== null`)
         let said = if has {
-          js_string((self.world.ask)("chat.sessionLink", { "connect": Json::string(connect_id), "link": Json::string(l), "label": Json::string(word) }))
+          match (self.world.ask)("chat.sessionLink", { "connect": Json::string(connect_id), "link": Json::string(l), "label": Json::string(word) }) {
+            String(s) => Some(s)
+            _ => None
+          }
         } else {
-          "<\{l}|\{word}>"
+          Some("<\{l}|\{word}>")
         }
-        self.post_soon(connect_id, here, mark_notice(said))
+        match said {
+          Some(s) => self.post_soon(connect_id, here, mark_notice(s))
+          None => ()
+        }
       }
       None => ()
     }

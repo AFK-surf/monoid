@@ -34,7 +34,7 @@ pub let lapsed_words : String = "that chat's share with your workspace lapsed, u
 ///|
 /// The store's chats shared with other workspaces (store/store.ts, `chat_shares`): each share `{to: [{workspace, name,
 /// used}], write, by, at}` as store/rows.ts `toChatShare` reads it.
-pub struct ChatStore {
+pub(all) struct ChatStore {
   chat_share : (String) -> Json? raise
   chat_shares : () -> Array[(String, Json)] raise
   chat_share_lapsed : (String, Array[String]?) -> Bool raise
@@ -50,7 +50,7 @@ pub struct ChatStore {
 
 ///|
 /// What the chat shares are given (xshare/index.ts `XshareDeps`).
-pub struct XshareDeps {
+pub(all) struct XshareDeps {
   data : String
   store : ChatStore
   cloud : Cloud

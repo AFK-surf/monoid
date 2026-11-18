@@ -111,7 +111,7 @@ pub fn ChatShares::trust(Self, String, String, String, String, as_? : String?) -
 pub fn ChatShares::workspace_of(Self, String, as_? : String??) -> String?
 pub async fn ChatShares::written(Self) -> Unit
 
-pub struct ChatStore {
+pub(all) struct ChatStore {
   chat_share : (String) -> @json.Json? raise
   chat_shares : () -> Array[(String, @json.Json)] raise
   chat_share_lapsed : (String, Array[String]?) -> Bool raise
@@ -123,13 +123,13 @@ pub struct ChatStore {
   thread_home : (String) -> String? raise
 }
 
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   after : (Double, () -> Unit) -> () -> Unit
 }
 pub fn Clock::live(@effect.Runtime) -> Self
 
-pub struct Cloud {
+pub(all) struct Cloud {
   has_state : () -> Bool
   station : () -> String?
   name : () -> String?
@@ -142,13 +142,13 @@ pub struct Cloud {
   listen : (() -> Unit) -> () -> Unit
 }
 
-pub struct Config {
+pub(all) struct Config {
   raw : () -> @json.Json
   update_soon : async ((@json.Json) -> Unit raise) -> @json.Json
   listen : (() -> Unit) -> () -> Unit
 }
 
-pub struct Files {
+pub(all) struct Files {
   host : @host.Host
   sep : String
 }
@@ -175,7 +175,7 @@ pub async fn Files::write(Self, String, Bytes, Int32) -> Unit
 pub async fn Files::write_private(Self, String, Bytes) -> Unit
 pub async fn Files::write_private_text(Self, String, String) -> Unit
 
-pub struct Log {
+pub(all) struct Log {
   say : (String, String, String, @json.Json) -> Unit
 }
 pub fn Log::error(Self, String, String, @json.Json) -> Unit
@@ -183,13 +183,13 @@ pub fn Log::info(Self, String, String, @json.Json) -> Unit
 pub fn Log::stderr() -> Self
 pub fn Log::warn(Self, String, String, @json.Json) -> Unit
 
-pub struct Membership {
+pub(all) struct Membership {
   workspace : String
   workspace_name : String
   peers : Array[@json.Json]
 }
 
-pub struct MemoryDeps {
+pub(all) struct MemoryDeps {
   data : String
   cloud : Cloud
   ask : async (String, String, @json.Json) -> @json.Json
@@ -254,7 +254,7 @@ pub async fn Sharing::load(Self) -> Unit
 pub fn Sharing::login_updated(Self, profile_id? : String?) -> Unit
 pub async fn Sharing::move_profile(Self, String, String, lang? : String?, share_first? : (async (String) -> Unit)?) -> (String, String?)
 pub fn Sharing::new(SharingDeps, @effect.Runtime) -> Self
-pub fn Sharing::profile_view(Self, @json.Json) -> @json.Json?
+pub fn Sharing::profile_view(Self, @json.Json, workspace? : String?) -> @json.Json?
 pub async fn Sharing::quota_reset(Self, String, String) -> Unit
 pub async fn Sharing::reconcile(Self) -> Unit
 pub fn Sharing::reconcile_soon(Self) -> Unit
@@ -271,7 +271,7 @@ pub fn Sharing::trim_idle(Self) -> Int32
 pub async fn Sharing::unlend(Self, String, String, Bool, Bool) -> Unit
 pub async fn Sharing::unshare_moved(Self, String, Array[String]) -> Bool
 
-pub struct SharingDeps {
+pub(all) struct SharingDeps {
   data : String
   config : Config
   cloud : Cloud
@@ -337,18 +337,18 @@ pub fn Turn::new() -> Self
 pub async fn[T] Turn::run(Self, async () -> T) -> T
 pub async fn Turn::settled(Self) -> Unit
 
-pub struct Watcher {
+pub(all) struct Watcher {
   close : () -> Unit
   scan : async () -> String?
 }
 
-pub struct Watching {
+pub(all) struct Watching {
   tree : (String, (String) -> Bool, Int32, (String) -> Unit, (String) -> Unit) -> Watcher
   dir : (String, (String?) -> Unit, () -> Unit) -> Watcher?
 }
 pub fn Watching::none() -> Self
 
-pub struct XshareDeps {
+pub(all) struct XshareDeps {
   data : String
   store : ChatStore
   cloud : Cloud

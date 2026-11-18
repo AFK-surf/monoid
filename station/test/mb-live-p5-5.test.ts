@@ -1,0 +1,416 @@
+// P5-5's live parts of the station as the MoonBit program runs them itself, with no Node (station/mb
+// src/station_main/live_p5_5*.mbt): the connects, the copies and a retirement, the moves, the updates and the station's
+// `beta` features. `run` under a launcher of the test's, against a Slack and a still.fail feed of the test's on
+// 127.0.0.1: a Slack connect connected on its socket and slack_api called through the agents' door as the session's
+// bot; the station's latest release read from the channel it is on, and that channel switched as `stillfail update
+// --beta` asks it, station_move offered to the agents only then; a stop that leaves nothing. Then the same parts made
+// in the harness (`--builder harness-station-main`'s "p5_5"), as the admin API (P5-1's, not made yet) would ask them:
+// the overview's `features`, `updates`, `move` and `copies`, the routes of the updates, the moves and the copies, and
+// the mesh's methods of the copies, a retirement, a hand-over and a move answered. Every program is run with a PATH
+// that names no directory with a Node in it.
+import assert from "node:assert/strict";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { createHash, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { type AddressInfo, createServer as netServer, type Server } from "node:net";
+import { createServer, request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { after, test } from "node:test";
+import { type WebSocket, WebSocketServer } from "ws";
+import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { Store } from "../src/store/store.ts";
+import { FakeFeishu } from "./feishu-fake.ts";
+
+const binary = mbReaderBinary();
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
+
+const dirs: string[] = [];
+const fresh = (what: string) => {
+  const dir = mkdtempSync(join(tmpdir(), `sf55-${what}-`));
+  dirs.push(dir);
+  return dir;
+};
+const children: ChildProcess[] = [];
+const closers: (() => void)[] = [];
+after(async () => {
+  for (const c of closers) c();
+  const left = children.filter((c) => c.exitCode === null && c.signalCode === null);
+  for (const c of left) c.kill("SIGKILL");
+  await Promise.all(left.map((c) => new Promise<void>((r) => c.once("exit", () => r()))));
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
+
+/// An environment with no Node: an empty PATH of its own, HOME and TMPDIR as given.
+const noNode = (more: Record<string, string> = {}) => ({ PATH: fresh("path"), HOME: process.env.HOME ?? tmpdir(), TMPDIR: tmpdir(), ...more });
+
+/// What may never come, waited for as it is told (each change calls `poke`), failing with what it waited for.
+const pokes: (() => void)[] = [];
+const poke = () => {
+  for (const p of pokes.splice(0)) p();
+};
+function until(what: string, ok: () => boolean, ms = 20_000, standing: () => string = () => ""): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`never came: ${what} ${standing()}`)), ms);
+    const look = () => {
+      if (ok()) {
+        clearTimeout(timer);
+        resolve();
+      } else pokes.push(look);
+    };
+    look();
+  });
+}
+
+// ── the stand-ins: Slack (its Web API and Socket Mode) and still.fail's release feed ──
+
+type Asked = { m: string; auth: string | null; form: Record<string, string> };
+async function slackStandIn() {
+  const asked: Asked[] = [];
+  const sockets: WebSocket[] = [];
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
+    const m = (req.url ?? "").split("?")[0]!.replace(/^\/api\//, "");
+    asked.push({ m, auth: (req.headers.authorization as string | undefined) ?? null, form });
+    poke();
+    const ok = (body: object) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, ...body }));
+    };
+    switch (m) {
+      case "auth.test":
+        return ok({ team: "Acme", team_id: "T1", url: "https://acme.slack.com/", user_id: "UB", user: "bot", bot_id: "BB" });
+      case "users.info":
+        return ok({ user: { profile: { display_name: "Agent", image_72: "https://bot" } } });
+      case "apps.connections.open":
+        return ok({ url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/socket` });
+      case "conversations.info":
+        return ok({ channel: { id: form.channel, name: `name-${form.channel}` } });
+      default:
+        return ok({});
+    }
+  });
+  const wss = new WebSocketServer({ server, path: "/socket" });
+  wss.on("connection", (ws) => {
+    sockets.push(ws);
+    ws.send(JSON.stringify({ type: "hello" }));
+    poke();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  closers.push(() => {
+    for (const c of wss.clients) c.terminate();
+    wss.close();
+    server.closeAllConnections();
+    server.close();
+  });
+  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`, asked, sockets };
+}
+
+// The tests' release key and a feed it signed (scripts/release-sign.ts's shape).
+const { privateKey } = generateKeyPairSync("ed25519");
+const RAW = Buffer.from(createPublicKey(privateKey).export({ format: "jwk" }).x as string, "base64url").toString("base64");
+const keyId = createHash("sha256").update(Buffer.from(RAW, "base64")).digest("hex").slice(0, 16);
+const feedOf = (build: number) => {
+  const words = Buffer.from(JSON.stringify({
+    kind: "stillfail-station-release", version: `0.1.${build}`, build, commit: "0".repeat(40), node: "24.21.0",
+    builds: { "darwin-arm64": { sha256: "a".repeat(64), size: 1000, nodeSha256: "b".repeat(64) }, "linux-x64": { sha256: "a".repeat(64), size: 1000, nodeSha256: "b".repeat(64) } },
+  }));
+  return { version: `0.1.${build}`, build, commit: "0".repeat(40), release: words.toString("base64"), signature: sign(null, words, privateKey).toString("base64"), key: keyId };
+};
+async function feedStandIn() {
+  const asked: string[] = [];
+  const server = createServer((req, res) => {
+    asked.push(req.url ?? "");
+    poke();
+    const body = req.url === "/releases/station.json" ? feedOf(9500) : req.url === "/releases/station-beta.json" ? feedOf(9600) : null;
+    // (the control plane's own calls, its presence too, answered unavailable: a 404 there says the station was taken
+    // out of its workspace, which stops its work)
+    const release = (req.url ?? "").startsWith("/releases/");
+    res.writeHead(body !== null ? 200 : release ? 404 : 503, { "content-type": "application/json" });
+    res.end(JSON.stringify(body ?? { error: "no" }));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  closers.push(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, asked };
+}
+
+/// A data directory in a workspace (cloud.json as the control plane wrote it), its release its own `app` (an installer's,
+/// whose updates may be taken), config.json as given.
+function station(config: object): { data: string; app: string; id: string } {
+  const data = fresh("data");
+  const made = spawnSync(binary!, ["id", "--data", data], { env: noNode(), encoding: "utf8" });
+  assert.equal(made.status, 0, made.stderr);
+  const id = made.stdout.trim();
+  const app = join(data, "app");
+  mkdirSync(app, { recursive: true });
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  writeFileSync(join(data, "config.json"), JSON.stringify(config));
+  return { data, app, id };
+}
+const cloudOf = (id: string, origin: string) => ({
+  origin, station: id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: null,
+  peers: [{ id, name: "mac" }, { id: "b".repeat(64), name: "other" }], revocations: [],
+});
+
+// ── run, under a launcher of the test's ──
+
+type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; err: () => string };
+
+async function launch(data: string, app: string, env: Record<string, string>): Promise<Launched> {
+  const listener = () => new Promise<Server>((resolve) => {
+    const s = netServer();
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const [mcp, loop] = [await listener(), await listener()];
+  const fd = (s: Server) => (s as any)._handle.fd as number;
+  const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
+    stdio: ["ignore", "pipe", "pipe", fd(mcp), fd(loop), "pipe"],
+    env: noNode({ STILLFAIL_HELD_EVERY_MS: "300", ...env }),
+  });
+  children.push(child);
+  mcp.close();
+  loop.close();
+  const said: any[] = [];
+  const channel = (child.stdio as readonly unknown[])[5] as import("node:net").Socket;
+  createInterface({ input: channel }).on("line", (line) => {
+    said.push(JSON.parse(line));
+    poke();
+  });
+  let err = "";
+  child.stderr!.on("data", (d) => (err += d));
+  const next = async (what: string, ok: (m: any) => boolean) => {
+    await until(what, () => said.some(ok), 20_000, () => `said ${JSON.stringify(said)}; stderr ${err}`);
+    return said.find(ok);
+  };
+  const ended = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+  return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended, err: () => err };
+}
+
+function post(port: number, path: string, body: unknown, token?: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path, method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) } }, (res) => {
+      let text = "";
+      res.on("data", (d) => (text += d));
+      res.on("end", () => resolve(JSON.parse(text)));
+    });
+    req.on("error", reject);
+    req.end(JSON.stringify(body));
+  });
+}
+// (the whole station's tools, as a session's bearer lists them: those of the connects' and the updates' parts)
+const PARTS_TOOLS = new Set(["feishu_api", "slack_api", "station_move", "station_retire"]);
+const toolNames = async (port: number, token: string) => {
+  const listed = await post(port, "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }, token);
+  assert.ok(listed.result, JSON.stringify(listed));
+  return listed.result.tools.map((t: any) => t.name).filter((n: string) => PARTS_TOOLS.has(n)).sort();
+};
+
+test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api called as their bots, the release read from the channel it is on and that channel switched, station_move offered only on the test channel, a stop that leaves nothing", { skip }, async () => {
+  const slack = await slackStandIn();
+  const feed = await feedStandIn();
+  const feishu = await FakeFeishu.start();
+  closers.push(() => void feishu.close());
+  const { data, app, id } = station({
+    updateChannel: "stable",
+    connects: [
+      { id: "c1", kind: "slack", enabled: true, bind: { runtime: "claude" }, slack: { appToken: "xapp-1", botToken: "xoxb-1" } },
+      { id: "f1", kind: "feishu", enabled: true, bind: { runtime: "claude" }, feishu: { appId: "cli_test", appSecret: "sec-1", domain: "feishu" } },
+    ],
+  });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(cloudOf(id, feed.origin)));
+  const a = await launch(data, app, { STILLFAIL_SLACK_API: slack.base, STILLFAIL_FEISHU_API: feishu.base, STILLFAIL_RELEASE_KEYS: RAW });
+  await a.next("ready", (m) => m.ready === true);
+  const mcp = await a.next("the agents' door", (m) => m.serving === "mcp");
+  // the Slack connect: who the bot is asked, its socket opened (once the sessions are taken up: the door open)
+  await until("the Slack socket open", () => slack.sockets.length >= 1, 20_000, () => `asked ${JSON.stringify(slack.asked.map((x) => x.m))}; stderr ${a.err()}`);
+  assert.ok(slack.asked.some((x) => x.m === "auth.test" && x.auth === "Bearer xoxb-1"), "who the bot is, asked with its token");
+  assert.ok(slack.asked.some((x) => x.m === "apps.connections.open" && x.auth === "Bearer xapp-1"), "its socket's address, asked with the app's token");
+  // the Feishu connect: its app's token, its long connection opened on the shell's socket, its frames binary both ways
+  // (an event Feishu sends down it taken, its acknowledgement sent back up)
+  await until("the Feishu socket open", () => feishu.sockets.length >= 1, 20_000, () => `seen ${JSON.stringify(feishu.seen.map((x) => x.path))}; stderr ${a.err()}`);
+  assert.ok(feishu.calls("POST", "/open-apis/auth/v3/tenant_access_token/internal").some((x) => x.body?.app_id === "cli_test" && x.body?.app_secret === "sec-1"));
+  assert.equal(feishu.calls("POST", "/callback/ws/endpoint").length >= 1, true);
+  const frame = feishu.message({ id: "om_1", text: "hi", at: true });
+  await until("the Feishu event acknowledged", () => feishu.acks.length >= 1, 20_000, () => a.err());
+  assert.ok(feishu.ack(frame) !== undefined, "the acknowledgement names the frame it took");
+  // the station's latest release, read from the stable channel's feed, verified by the test's key
+  await until("the stable feed read", () => feed.asked.includes("/releases/station.json"), 20_000, () => a.err());
+  assert.equal(feed.asked.includes("/releases/station-beta.json"), false);
+  // slack_api through the agents' door, as the session the bearer names (its connect's bot)
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  store.insertSession({ key: "s1", connect: "c1", runtime: "claude", profile: "cc", workspace: data, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+  store.insertSession({ key: "s2", connect: "f1", runtime: "claude", profile: "cc", workspace: data, token: "t2", createdAt: Date.now(), lastActiveAt: Date.now() });
+  store.close();
+  // the agents' tools on a stable station: the parts', station_move not among them
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_retire"]);
+  const called = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "slack_api", arguments: { method: "conversations.info", params: { channel: "C9" } } } }, "t1");
+  assert.equal(called.result.isError, undefined, JSON.stringify(called));
+  assert.deepEqual(JSON.parse(called.result.content[0].text), { ok: true, channel: { id: "C9", name: "name-C9" } });
+  const info = slack.asked.find((x) => x.m === "conversations.info");
+  assert.deepEqual([info?.auth, info?.form.channel], ["Bearer xoxb-1", "C9"]);
+  const refused = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "slack_api", arguments: { method: "apps.manifest.export" } } }, "t1");
+  assert.equal(refused.result.isError, true);
+  assert.match(refused.result.content[0].text, /not for agents/);
+  // feishu_api the same, as the Feishu connect's app
+  const read = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "feishu_api", arguments: { method: "GET /open-apis/im/v1/chats/oc_g", params: {} } } }, "t2");
+  assert.equal(read.result.isError, undefined, JSON.stringify(read));
+  assert.deepEqual(JSON.parse(read.result.content[0].text), { code: 0, data: { name: "项目群", chat_mode: "group", group_message_type: "chat" } });
+  assert.equal(feishu.calls("GET", "/open-apis/im/v1/chats/oc_g").at(-1)?.auth, "t-cli_test");
+  const sending = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "feishu_api", arguments: { method: "POST /open-apis/im/v1/messages", params: {} } } }, "t2");
+  assert.equal(sending.result.isError, true);
+  assert.match(sending.result.content[0].text, /chat_post/);
+  // `stillfail update --beta` asks the running station (run/channel-ask, a SIGHUP the launcher passes on as `hup`)
+  writeFileSync(join(data, "run", "channel-ask"), "beta\n");
+  a.tell({ op: "hup" });
+  await until("the channel answered", () => existsSync(join(data, "run", "channel-answer")), 20_000, () => a.err());
+  assert.equal(readFileSync(join(data, "run", "channel-answer"), "utf8"), "ok beta\n");
+  assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "beta");
+  await until("the beta feed read", () => feed.asked.includes("/releases/station-beta.json"), 20_000, () => a.err());
+  // on the test channel: moving is offered, station_move an agent's tool
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_retire"]);
+  // back to stable: off again
+  writeFileSync(join(data, "run", "channel-ask"), "stable\n");
+  rmSync(join(data, "run", "channel-answer"));
+  a.tell({ op: "hup" });
+  await until("the channel answered again", () => existsSync(join(data, "run", "channel-answer")), 20_000, () => a.err());
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_retire"]);
+  // the copies' export: a process of its own (`--builder replica-export`), not in the station's, started as background
+  // work: on macOS under `taskpolicy -b` (which execs it), its priority the background band's, under the station's
+  if (process.platform !== "win32") {
+    const rows = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pri=,command="], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().split(/\s+/));
+    const own = rows.find((r) => r[0] === String(a.child.pid));
+    const exported = rows.find((r) => r[1] === String(a.child.pid) && r.slice(3).join(" ").includes("--builder replica-export"));
+    assert.ok(own !== undefined && exported !== undefined, `the export's process: ${JSON.stringify(rows.filter((r) => r[1] === String(a.child.pid)))}`);
+    if (process.platform === "darwin") assert.ok(Number(exported![2]) < Number(own![2]), `backgrounded: ${exported![2]} under ${own![2]}`);
+  }
+  // a stop: its socket closed, nothing left
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0);
+  assert.throws(() => process.kill(a.child.pid!, 0), "no process left");
+  assert.equal(existsSync(join(data, "run", "hub.json")), false);
+});
+
+// ── the same parts in the harness, asked as the admin API would ──
+
+function harness() {
+  const child = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode({ STILLFAIL_RELEASE_KEYS: RAW }) });
+  children.push(child);
+  let seq = 0;
+  const waiting = new Map<number, (v: any) => void>();
+  let stderr = "";
+  child.stderr!.on("data", (d) => (stderr += d));
+  createInterface({ input: child.stdout! }).on("line", (line) => {
+    const m = JSON.parse(line);
+    waiting.get(m.id)?.(m);
+    waiting.delete(m.id);
+  });
+  child.on("exit", (code) => {
+    for (const w of waiting.values()) w({ error: `the harness ended (${code}): ${stderr}` });
+  });
+  const send = (a: Record<string, unknown>) =>
+    new Promise<any>((resolve) => {
+      seq += 1;
+      waiting.set(seq, resolve);
+      child.stdin!.write(`${JSON.stringify({ id: seq, op: "p5_5", ...a })}\n`);
+    });
+  const ok = async (a: Record<string, unknown>) => {
+    const said = await send(a);
+    assert.equal(said.error, undefined, `${JSON.stringify(a)}: ${said.error} ${stderr}`);
+    return said.ok;
+  };
+  return { child, send, ok, stderr: () => stderr };
+}
+
+test("the parts as the admin API asks them: the overview's features, updates, move and copies; the routes of the updates, the moves and the copies; what the admin API's own routes ask of Slack, Feishu, Comma and the updates; the mesh's methods answered", { skip }, async () => {
+  const feed = await feedStandIn();
+  const { data, app, id } = station({ updateChannel: "stable" });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(cloudOf(id, feed.origin)));
+  const h = harness();
+  assert.deepEqual(await h.ok({ step: "start", data, app }), { station: id });
+  const owner = { role: "owner", workspace: "w1", email: "o@x.y" };
+  const member = { role: "member", workspace: "w1", email: "m@x.y" };
+  // the overview on a stable station
+  const first = await h.ok({ step: "overview", viewer: owner, lang: "en" });
+  assert.deepEqual(first.features, []);
+  assert.deepEqual(first.move, { offered: false });
+  assert.equal(first.updates[0].id, "station");
+  assert.equal(typeof first.copies, "object");
+  assert.deepEqual([first.slackTeams, first.slackApps], [[], []]);
+  assert.deepEqual(await h.ok({ step: "coord", name: "connects.states", arg: [] }), []);
+  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_retire"]);
+  assert.deepEqual([first.comma, first.group, first.feishuRegistrations], [true, true, []]);
+  // what the admin API's own routes (api_routes) ask of the connect kinds and Slack's, Feishu's and Comma's parts
+  for (const kind of ["slack", "feishu", "comma", "group"]) assert.deepEqual(await h.ok({ step: "coord", name: "connectKinds.get", arg: [kind] }), { $ref: kind });
+  assert.equal(await h.ok({ step: "coord", name: "connectKinds.get", arg: ["fax"] }), null);
+  const entry = await h.ok({ step: "coord", name: "feishu.entry", arg: [{ appId: "cli_x", appSecret: "s", domain: "lark" }, null] });
+  assert.deepEqual([entry.appId, entry.appSecret, entry.domain], ["cli_x", "s", "lark"]);
+  assert.ok((await h.ok({ step: "coord", name: "slack/index.createAppUrl", arg: ["Agent"] })).startsWith("https://api.slack.com/apps?new_app=1&manifest_json="));
+  const manifest = await h.ok({ step: "coord", name: "slack/index.slackManifest", arg: ["Agent", null, null] });
+  assert.equal(manifest.display_information.name, "Agent");
+  assert.equal((await h.ok({ step: "coord", name: "slack/index.withSocketMode", arg: [manifest, true] })).settings.socket_mode_enabled, true);
+  assert.deepEqual(await h.ok({ step: "coord", name: "slack/index.configTokens", arg: [{ slackConfigTokens: [] }] }), []);
+  assert.deepEqual(await h.ok({ step: "coord", name: "slack.connects", arg: [] }), []);
+  assert.equal(await h.ok({ step: "coord", name: "slack.apps.configured", arg: ["o@x.y"] }), false);
+  const slackError = await h.send({ step: "coord", name: "slack/index.nothing", arg: [] });
+  assert.match(slackError.error, /no such Slack function/);
+  assert.deepEqual(await h.ok({ step: "coord", name: "comma/index.commaLine", arg: ["comma wss://comma.example/ws tok-12345678"] }), { server: "https://comma.example", token: "tok-12345678" });
+  assert.equal(await h.ok({ step: "coord", name: "comma/index.commaLine", arg: ["not a line"] }), null);
+  assert.equal(await h.ok({ step: "coord", name: "feishu/web.domainOf", arg: ["lark"] }), "lark");
+  assert.equal(await h.ok({ step: "coord", name: "feishu.registrations.cancel", arg: ["r-none", "o@x.y", "w1"] }), false);
+  // the updates' routes: read again (the stable feed), refused to a member, the channel set
+  const checked = await h.ok({ step: "route", method: "POST", path: "/updates/check", body: null, viewer: owner, lang: "en" });
+  assert.equal(checked.status, 200);
+  assert.ok(feed.asked.includes("/releases/station.json"));
+  const read = checked.body.find((x: any) => x.id === "station");
+  assert.deepEqual([read.version, read.latest, read.channel], ["0.1.9400", "0.1.9500", "stable"]);
+  assert.equal((await h.ok({ step: "route", method: "POST", path: "/updates/check", body: null, viewer: member, lang: "en" })).status, 403);
+  assert.equal((await h.ok({ step: "route", method: "POST", path: "/updates/channel", body: { channel: "nightly" }, viewer: owner, lang: "en" })).status, 400);
+  const beta = await h.ok({ step: "route", method: "POST", path: "/updates/channel", body: { channel: "beta" }, viewer: owner, lang: "en" });
+  assert.equal(beta.status, 200);
+  assert.ok(feed.asked.includes("/releases/station-beta.json"), "read again from the channel it is on now");
+  assert.deepEqual([beta.body.find((x: any) => x.id === "station").latest, beta.body.find((x: any) => x.id === "station").channel], ["0.1.9600", "beta"]);
+  assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "beta");
+  assert.equal(await h.ok({ step: "coord", name: "agents.updates.channel", arg: [] }), "beta");
+  // on the test channel: the features, moving offered, station_move an agent's
+  const second = await h.ok({ step: "overview", viewer: owner, lang: "en" });
+  assert.deepEqual(second.features, ["terminal", "stationMove"]);
+  assert.deepEqual(second.move, { offered: true });
+  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_move", "station_retire"]);
+  // the moves' routes: the page of a move to the other station, a move refused to a member, one to a station not of it
+  const page = await h.ok({ step: "route", method: "GET", path: "/move", query: { to: "b".repeat(64) }, body: null, viewer: owner, lang: "en" });
+  assert.equal(page.status, 200, JSON.stringify(page));
+  assert.ok(Array.isArray(page.body.modules), JSON.stringify(page.body));
+  assert.equal((await h.ok({ step: "route", method: "POST", path: "/move", body: { to: "b".repeat(64), module: "chats", item: "s1" }, viewer: member, lang: "en" })).status, 403);
+  assert.equal(await h.ok({ step: "coord", name: "move.here", arg: [] }), id);
+  // the copies' routes: a retirement's start refused (switched off), a restore asked without what it needs
+  const retire = await h.ok({ step: "route", method: "POST", path: "/retire", body: { to: "b".repeat(64) }, viewer: owner, lang: "en" });
+  assert.equal(retire.status, 409);
+  assert.equal((await h.ok({ step: "route", method: "POST", path: "/copies/restore", body: {}, viewer: owner, lang: "en" })).status, 400);
+  assert.equal((await h.ok({ step: "route", method: "GET", path: "/retire/preview", body: null, viewer: member, lang: "en" })).status, 403);
+  // the mesh's methods: the copies', a retirement's, a hand-over's and a move's, each answered by its part
+  const peers = await h.ok({ step: "peers" });
+  for (const p of ["retire.", "replica.", "handover.", "move."]) assert.ok(peers.prefixes.includes(p), JSON.stringify(peers.prefixes));
+  // (a station not of the workspace is refused by the part itself, not as a method nobody answers)
+  const stranger = await h.send({ step: "peer", from: "c".repeat(64), workspace: "w1", method: "replica.list", params: {} });
+  assert.ok(stranger.error !== undefined && !/unknown peer method/.test(stranger.error), JSON.stringify(stranger));
+  assert.ok(peers.prefixes.includes("comma."), "another station's reads of the Comma statistics answered");
+  // back to stable as the admin API's own route asks it (`updates.setChannel` on coord_ask): the features off
+  assert.equal(await h.ok({ step: "coord", name: "updates/versions.channelOfId", arg: ["stable"] }), "stable");
+  assert.equal(await h.ok({ step: "coord", name: "updates.setChannel", arg: ["stable", "en"] }), null);
+  assert.equal(await h.ok({ step: "coord", name: "agents.updates.channel", arg: [] }), "stable");
+  assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "stable");
+  assert.deepEqual((await h.ok({ step: "overview", viewer: owner, lang: "en" })).features, []);
+  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_retire"]);
+  // the copies' and a retirement's on coord_ask: a refusal thrown as the routes take it, its words kept
+  const retireCoord = await h.send({ step: "coord", name: "retire.retire", arg: ["w1", "b".repeat(64), "o@x.y"] });
+  assert.ok(retireCoord.error !== undefined, JSON.stringify(retireCoord));
+  await h.ok({ step: "stop" });
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});

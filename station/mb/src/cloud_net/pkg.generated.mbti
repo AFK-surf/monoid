@@ -503,7 +503,7 @@ pub(all) struct SaidEntry {
 pub fn SaidEntry::to_json(Self) -> @json.Json
 
 pub struct StateCloud {
-  state : Map[String, @json.Json]?
+  mut state : Map[String, @json.Json]?
   mut peers_current : Bool
   told : Listeners
 }
@@ -512,6 +512,7 @@ pub fn StateCloud::memberships(Self) -> Array[Membership]
 pub fn StateCloud::new(@json.Json?) -> Self
 pub fn StateCloud::relays(Self) -> Array[String]
 pub fn StateCloud::removed(Self) -> Bool
+pub fn StateCloud::reset(Self, @json.Json?) -> Unit
 pub fn StateCloud::rigs(Self, String) -> Array[String]
 pub fn StateCloud::tell(Self) -> Unit
 pub fn StateCloud::update(Self, (Map[String, @json.Json]) -> Unit) -> Unit

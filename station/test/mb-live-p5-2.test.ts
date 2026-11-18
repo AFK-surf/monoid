@@ -1,0 +1,429 @@
+// The agents' side as the MoonBit station runs it (station/mb src/station_main live_p5_2_*.mbt): `stillfail-reader run`
+// under a launcher of the test's, with no Node on its PATH, its hub's actors in its own `--sessions` program and its
+// runtimes under the real `stillfail-runner`. A session's message to another (session_send through `/mcp`) starts the
+// other's turn: its `claude` (a fake of /bin/sh and curl, test/fake-sh) asks the tools of the station's door with its
+// own token and posts all_done, which the store keeps, and the turn ends so. An Antigravity session is declared the
+// tools that fit its budget and `station_tool` for the rest. A handover carries a session to the next process, which
+// takes it up and serves on; a drain answers idle once no turn runs; nothing of the runners or programs is left.
+import assert from "node:assert/strict";
+import { type ChildProcess, spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { type Server, createServer } from "node:net";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { after, test } from "node:test";
+import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { Store } from "../src/store/store.ts";
+
+const binary = mbReaderBinary();
+const runner = process.env.STILLFAIL_RUNNER ?? "";
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here"
+  : process.platform === "win32" ? "the launcher's descriptors are Unix's"
+  : runner === "" || !existsSync(runner) ? "no stillfail-runner (run under scripts/native.ts run runner)"
+  : !existsSync("/usr/bin/curl") ? "no /usr/bin/curl for the fake runtime"
+  : false;
+
+const dirs: string[] = [];
+// (short: a runner's and the status's Unix sockets are at most 104 bytes on macOS)
+const fresh = (what: string) => {
+  const dir = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), `p52-${what}-`));
+  dirs.push(dir);
+  return dir;
+};
+const children: ChildProcess[] = [];
+after(async () => {
+  const left = children.filter((c) => c.exitCode === null && c.signalCode === null);
+  for (const c of left) c.kill("SIGKILL");
+  await Promise.race([
+    Promise.all(left.map((c) => (c.exitCode === null && c.signalCode === null ? new Promise<void>((r) => c.once("exit", () => r())) : undefined))),
+    new Promise((r) => setTimeout(r, 5_000).unref()),
+  ]);
+  // (a runner a failed run left: ended by its pid, as its info file says)
+  for (const d of dirs) {
+    const runners = join(d, "run", "runners");
+    if (!existsSync(runners)) continue;
+    for (const info of require_json(runners)) {
+      try { process.kill(-(info as any).pgid, "SIGKILL"); } catch {}
+      try { process.kill(info.runner, "SIGKILL"); } catch {}
+    }
+  }
+  if (process.env.P52_KEEP !== "1") for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
+
+/// The fake runtimes: `claude` speaking Claude Code's stream-json, `agy` only there to be found. Of /bin/sh and curl
+/// alone: the station's PATH names no Node, nor does what it starts.
+function fakes(dir: string) {
+  // A fake Claude Code TUI, as its bridge runs it under the runner's PTY (claude-tui.mjs, claude_tui.mbt): its startup
+  // hook and its tools listed through the bridge's stdio MCP, then each pasted message acknowledged (UserPromptSubmit),
+  // answered with chat_post and ended (Stop), its hooks the commands the bridge put in its settings. Of /bin/sh alone.
+  const tui = String.raw`#!/bin/sh
+sid=""; cfg=""; settings=""
+for a in "$@"; do printf '%s\n' "$a"; done > "$FAKE_OUT/tui-argv"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session-id|--resume) sid="$2"; shift ;;
+    --mcp-config) cfg="$2"; shift ;;
+    --settings) settings="$2"; shift ;;
+  esac
+  shift
+done
+hook_node=$(printf '%s' "$settings" | /usr/bin/sed -n 's/.*"command":"\([^"]*\)","args":\["\([^"]*\)","hook"\].*/\1/p')
+hook_script=$(printf '%s' "$settings" | /usr/bin/sed -n 's/.*"command":"\([^"]*\)","args":\["\([^"]*\)","hook"\].*/\2/p')
+mcp_node=$(printf '%s' "$cfg" | /usr/bin/sed -n 's/.*"command":"\([^"]*\)","args":\["\([^"]*\)","mcp","\([^"]*\)"\].*/\1/p')
+mcp_url=$(printf '%s' "$cfg" | /usr/bin/sed -n 's/.*"command":"\([^"]*\)","args":\["\([^"]*\)","mcp","\([^"]*\)"\].*/\3/p')
+hook() { printf '{"session_id":"%s","hook_event_name":"%s"%s}' "$sid" "$1" "$2" | "$hook_node" "$hook_script" hook; }
+hook SessionStart ',"source":"startup"'
+fifo="$FAKE_OUT/tui-mcp-$$"
+/usr/bin/mkfifo "$fifo"
+"$mcp_node" "$hook_script" mcp "$mcp_url" < "$fifo" > "$FAKE_OUT/tui-tools.json" &
+exec 3> "$fifo"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' >&3
+esc=$(printf '\033')
+n=0; text=""
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | /usr/bin/tr -d '\r')
+  case "$line" in "$esc[200~"*) text="" ; line=$(printf '%s' "$line" | /usr/bin/sed "s/^$esc\[200~//") ;; esac
+  case "$line" in
+    *"$esc[201~")
+      line=$(printf '%s' "$line" | /usr/bin/sed "s/$esc\[201~$//")
+      if [ -n "$text" ]; then text="$text
+$line"; else text="$line"; fi
+      n=$((n+1))
+      printf '%s' "$text" > "$FAKE_OUT/tui-prompt-$n"
+      json=$(printf '%s' "$text" | /usr/bin/sed 's/\\/\\\\/g; s/"/\\"/g' | /usr/bin/awk 'BEGIN{ORS=""} NR>1{print "\\n"} {print}')
+      hook UserPromptSubmit ',"prompt":"'"$json"'"'
+      to=$(printf '%s' "$text" | /usr/bin/sed -n 's/.*thread="\([^"]*\)".*/\1/p' | /usr/bin/head -n 1)
+      if [ -n "$to" ]; then printf '%s' "$to" > "$FAKE_OUT/tui-to"; else to=$(/bin/cat "$FAKE_OUT/tui-to" 2>/dev/null); fi
+      /usr/bin/curl -s -X POST "$mcp_url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \
+        -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the TUI","kind":"all_done","done":"the TUI answered"}}}' > "$FAKE_OUT/tui-post-$n.json"
+      hook Stop ''
+      text="" ;;
+    *) if [ -n "$text" ]; then text="$text
+$line"; else text="$line"; fi ;;
+  esac
+done
+`;
+  writeFileSync(join(dir, "claude-tui"), tui);
+  chmodSync(join(dir, "claude-tui"), 0o755);
+  const claude = `#!/bin/sh
+# A fake Claude Code: stream-json in and out; each prompt asks the station's tools (tools/list) and posts all_done.
+# Started with no -p it is the TUI, its bridge's (claude-tui above).
+case " $* " in *" -p "*) ;; *) exec "\${0%/*}/claude-tui" "$@" ;; esac
+sid=""; cfg=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session-id|--resume) sid="$2"; shift ;;
+    --mcp-config) cfg="$2"; shift ;;
+  esac
+  shift
+done
+url=$(printf '%s' "$cfg" | /usr/bin/sed -n 's/.*"url":"\\([^"]*\\)".*/\\1/p')
+say() { printf '%s\\n' "$1"; }
+say '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
+n=0
+while IFS= read -r line; do
+  case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
+  n=$((n+1))
+  say '{"type":"system","subtype":"status","status":"requesting","session_id":"'"$sid"'"}'
+  to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
+  # (a prompt that names no thread, as a resume's: the one it was last asked in, as its conversation would know)
+  if [ -n "$to" ]; then printf '%s' "$to" > "$FAKE_OUT/to"; else to=$(/bin/cat "$FAKE_OUT/to" 2>/dev/null); fi
+  /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > "$FAKE_OUT/list-$n.json"
+  /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the fake","kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/post-$n.json"
+  say '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m'$n'","role":"assistant","content":[]}},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"a'$n'"}'
+  say '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"b'$n'"}'
+  say '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"posted"}},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"c'$n'"}'
+  say '{"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"d'$n'"}'
+  say '{"type":"stream_event","event":{"type":"message_stop"},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"e'$n'"}'
+  say '{"type":"assistant","message":{"id":"m'$n'","role":"assistant","content":[{"type":"text","text":"posted"}]},"session_id":"'"$sid"'"}'
+  say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"posted"}'
+done
+`;
+  writeFileSync(join(dir, "claude"), claude);
+  chmodSync(join(dir, "claude"), 0o755);
+  // A fake DeepSeek Harness as the station's driver plugin speaks for it (dsh-bridge.mjs): a line of JSON a request,
+  // its events as the plugin says them; each prompt asks the station's tools and posts all_done.
+  const dsh = `#!/bin/sh
+url="\${STILLFAIL_PEER_HTTP%/peer}/mcp"
+say() { printf '%s\\n' "$1"; }
+n=0
+while IFS= read -r line; do
+  case "$line" in
+    *'"op":"open"'*) say '{"id":"open","session":"dsh-s1"}' ;;
+    *'"op":"prompt"'*)
+      n=$((n+1))
+      say '{"ev":"event","type":"turn/start","data":{}}'
+      to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
+      /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+        -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > "$FAKE_OUT/dsh-list-$n.json"
+      /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+        -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by dsh","kind":"all_done","done":"dsh answered"}}}' > "$FAKE_OUT/dsh-post-$n.json"
+      say '{"ev":"event","type":"turn/end","data":{"reason":{"kind":"completed"}}}' ;;
+  esac
+done
+`;
+  writeFileSync(join(dir, "dsh"), dsh);
+  chmodSync(join(dir, "dsh"), 0o755);
+}
+
+type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; err: () => string };
+
+/// The launcher's two listening sockets, the agents' door's and the loopback's: kept across a handover, as the
+/// launcher keeps them (native/launcher), so a runtime taken up reaches the door where it was told it is.
+const listener = () => new Promise<Server>((resolve) => {
+  const s = createServer();
+  s.listen(0, "127.0.0.1", () => resolve(s));
+});
+const ports: Server[] = [];
+after(() => {
+  for (const s of ports) s.close();
+});
+
+async function launch(data: string, app: string, path: string, out: string, sockets?: [Server, Server]): Promise<Launched & { sockets: [Server, Server] }> {
+  const [mcp, loop] = sockets ?? [await listener(), await listener()];
+  const fd = (s: Server) => (s as any)._handle.fd as number;
+  const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
+    stdio: ["ignore", "pipe", "pipe", fd(mcp), fd(loop), "pipe"],
+    // (no Node: the PATH the fakes are on, and nothing else)
+    env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "" },
+  });
+  children.push(child);
+  // (the launcher's copies let go: the station alone accepts on them)
+  mcp.close();
+  loop.close();
+  const said: any[] = [];
+  const waiters: (() => void)[] = [];
+  createInterface({ input: (child.stdio as readonly unknown[])[5] as import("node:net").Socket }).on("line", (line) => {
+    said.push(JSON.parse(line));
+    for (const w of waiters.splice(0)) w();
+  });
+  let err = "";
+  child.stderr!.on("data", (d) => (err += d));
+  const next = (what: string, ok: (m: any) => boolean) =>
+    new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`never said: ${what}; said ${JSON.stringify(said)}; stderr ${err}`)), 30_000);
+      const look = () => {
+        const found = said.find(ok);
+        if (found !== undefined) {
+          clearTimeout(timer);
+          resolve(found);
+        } else waiters.push(look);
+      };
+      look();
+    });
+  const ended = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+  return { child, said, next, tell: (m) => ((child.stdio as readonly unknown[])[5] as import("node:net").Socket).write(`${JSON.stringify(m)}\n`), ended, err: () => err, sockets: [mcp, loop] };
+}
+
+/// One JSON-RPC call of the agents' door, with `token` as its bearer (none: no header).
+function mcp(port: number, body: unknown, token?: string): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (token !== undefined) headers.authorization = `Bearer ${token}`;
+    const req = request({ host: "127.0.0.1", port, path: "/mcp", method: "POST", headers }, (res) => {
+      let text = "";
+      res.on("data", (d) => (text += d));
+      res.on("end", () => resolve({ status: res.statusCode!, json: text === "" ? null : JSON.parse(text) }));
+    });
+    req.on("error", reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
+/// Looked at until `ok` (real processes: every 50 ms), or failing with `what` at 60 s.
+async function until<T>(what: string, look: () => T | null | undefined | false, detail: () => string = () => ""): Promise<T> {
+  const end = Date.now() + 60_000;
+  for (;;) {
+    const v = look();
+    if (v) return v;
+    if (Date.now() > end) throw new Error(`never: ${what}; ${detail()}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/// A session of the station's own chat, its thread, as the store keeps them (lifecycle.ts `newSession`'s rows).
+function session(store: Store, data: string, key: string, runtime: string, token: string, ts: string, ws?: string, tui?: boolean) {
+  const workspace = join(data, "sessions", "chat", key.slice(5), "workspace");
+  mkdirSync(workspace, { recursive: true });
+  const now = Date.now();
+  store.insertSession({ key, connect: "ember", runtime, profile: runtime === "claude" ? "cc" : runtime === "dsh" ? "ds" : "ag", workspace, token, createdAt: now, lastActiveAt: now, title: `chat ${key}`, ...(ws ? { ws } : {}), ...(tui ? { tui: true } : {}) } as never);
+  const thread = store.openThread("ember", "CHAT", ts, `chat ${key}`, "ada@x.com");
+  store.joinThread(thread.id, key, "ember");
+  return thread;
+}
+
+test("the agents' side: a turn under the runner posts through /mcp; agy's tools within its budget; a handover and a drain", { skip }, async () => {
+  const data = fresh("d");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  mkdirSync(join(data, "homes", "ag"), { recursive: true });
+  mkdirSync(join(data, "homes", "ds"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }, { id: "ag", runtime: "agy", home: "homes/ag" }, { id: "ds", runtime: "dsh", home: "homes/ds" }],
+    maxNudges: 1,
+  }));
+  // In a workspace (what the control plane last said): its agents reach out of the station.
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out);
+  await a.next("ready", (m) => m.ready === true);
+  const door = await a.next("the agents' door", (m) => m.serving === "mcp");
+
+  // No bearer, or one no session has: refused.
+  assert.deepEqual(await mcp(door.port, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} }), { status: 401, json: { error: "unknown session token" } });
+  assert.equal((await mcp(door.port, { jsonrpc: "2.0", id: 1, method: "tools/list" }, "nobody's")).status, 401);
+
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  const t0 = session(store, data, "chat:c-from", "claude", "t0", "1790000000.000001");
+  const t1 = session(store, data, "chat:c-to", "claude", "t1", "1790000000.000002");
+  session(store, data, "chat:c-agy", "agy", "t2", "1790000000.000003");
+  session(store, data, "chat:c-away", "claude", "t3", "1790000000.000004", "w-left");
+  const t4 = session(store, data, "chat:c-dsh", "dsh", "t4", "1790000000.000005");
+  const t5 = session(store, data, "chat:c-tui", "claude", "t5", "1790000000.000006", undefined, true);
+  void t0;
+
+  // A session's own token: the endpoint's methods, its tools as Claude Code takes them (the turn's two loaded).
+  const init = await mcp(door.port, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }, "t0");
+  assert.equal(init.status, 200);
+  assert.equal(init.json.result.serverInfo.name, "still.fail");
+  assert.equal((await mcp(door.port, { jsonrpc: "2.0", method: "notifications/initialized" }, "t0")).status, 202);
+  assert.deepEqual((await mcp(door.port, { jsonrpc: "2.0", id: 2, method: "ping" }, "t0")).json.result, {});
+  const listed = (await mcp(door.port, { jsonrpc: "2.0", id: 3, method: "tools/list" }, "t0")).json.result.tools as any[];
+  const names = listed.map((t) => t.name);
+  for (const core of ["chat_post", "chat_state", "chat_leave", "chat_history", "chat_list", "chat_read", "chat_archive", "chat_create", "session_send", "session_history", "skill_read", "workspace_limit", "peer_forward", "relays"]) {
+    assert.ok(names.includes(core), `${core} declared: ${names.join(",")}`);
+  }
+  assert.deepEqual(listed.find((t) => t.name === "chat_post")._meta, { "anthropic/alwaysLoad": true });
+  assert.equal(listed.find((t) => t.name === "chat_list")._meta, undefined);
+  // A string where the schema says a number or a boolean is read as one (typed); an unknown tool is refused.
+  assert.equal((await mcp(door.port, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "no_such", arguments: {} } }, "t0")).json.error.code, -32602);
+  // A session of a workspace the station is not in: its outward tools refused, saying why.
+  const refused = (await mcp(door.port, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "chat_post", arguments: { text: "x" } } }, "t3")).json.result;
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /not in a still\.fail workspace/);
+
+  // Antigravity: what fits its budget declared, the rest through station_tool, which says each and runs it.
+  const agy = (await mcp(door.port, { jsonrpc: "2.0", id: 6, method: "tools/list" }, "t2")).json.result.tools as any[];
+  const indirect = agy.find((t) => t.name === "station_tool");
+  assert.ok(indirect !== undefined, `station_tool declared to agy: ${agy.map((t) => t.name).join(",")}`);
+  assert.ok(agy.some((t) => t.name === "chat_post") && agy.some((t) => t.name === "chat_state"), "every turn's tools declared");
+  const folded: string[] = indirect.inputSchema.properties.name.enum;
+  assert.ok(folded.length > 0 && folded.every((n) => !agy.some((t) => t.name === n)), "what is folded is not declared");
+  assert.ok(JSON.stringify(agy).length < 30_000);
+  const described = (await mcp(door.port, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "station_tool", arguments: { name: folded.includes("chat_list") ? "chat_list" : folded[0] } } }, "t2")).json.result;
+  assert.equal(JSON.parse(described.content[0].text).name, folded.includes("chat_list") ? "chat_list" : folded[0]);
+  if (folded.includes("chat_list")) {
+    const ran = (await mcp(door.port, { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "station_tool", arguments: { name: "chat_list", arguments: {} } } }, "t2")).json.result;
+    assert.notEqual(ran.isError, true, JSON.stringify(ran));
+  }
+
+  // One session sends another a message: the other's turn runs its claude under the runner, which posts all_done.
+  const sent = (await mcp(door.port, { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "session_send", arguments: { to: "chat:c-to", text: "please answer" } } }, "t0")).json.result;
+  assert.notEqual(sent.isError, true, `${JSON.stringify(sent)}\n${a.err()}`);
+  const ended = await until("the turn's end", () => store.lastTurn("chat:c-to")?.endedAt != null && store.lastTurn("chat:c-to"), () => a.err());
+  const turns = store.listTurns("chat:c-to");
+  assert.equal(turns.length, 1, `not nudged: ${JSON.stringify(turns.slice(0, 3).map((t) => t.summary))}\n${a.err()}`);
+  assert.deepEqual([turns[0]!.summary.outcome, turns[0]!.summary.ending, turns[0]!.summary.need], ["completed", "all_done", "answered what it was sent"]);
+  void ended;
+  const posted = JSON.parse(readFileSync(join(out, "post-1.json"), "utf8"));
+  assert.notEqual(posted.result.isError, true, JSON.stringify(posted));
+  const agentSaid = store.messagesBefore(t1.id, null, 20).filter((m) => m.authorKind === "agent");
+  assert.deepEqual(agentSaid.map((m) => [m.author, m.text]), [["chat:c-to", "posted by the fake"]]);
+  const itsList = JSON.parse(readFileSync(join(out, "list-1.json"), "utf8")).result.tools.map((t: any) => t.name);
+  assert.ok(itsList.includes("chat_post"), "the runtime asked the door's tools with its own token");
+  assert.ok(!store.getSession("chat:c-to")!.running);
+
+  // DeepSeek Harness through its bridge's protocol, with no Node: opened (`open` naming its session), prompted, its
+  // turn's end read by the program; it posts through the door with its own token.
+  const toDsh = (await mcp(door.port, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "session_send", arguments: { to: "chat:c-dsh", text: "dsh, answer" } } }, "t0")).json.result;
+  assert.notEqual(toDsh.isError, true, JSON.stringify(toDsh));
+  // (its state said by chat_state in the turn, its outcome as the turn ends: the end waited for, as claude's above)
+  await until("dsh's turn ended all_done", () => store.listTurns("chat:c-dsh").some((t) => t.summary.ending === "all_done" && t.summary.endedAt != null), () => `${JSON.stringify(store.listTurns("chat:c-dsh").map((t) => t.summary))}\n${a.err()}`);
+  const dshTurns = store.listTurns("chat:c-dsh");
+  assert.deepEqual([dshTurns.length, dshTurns[0]!.summary.outcome, dshTurns[0]!.summary.need], [1, "completed", "dsh answered"]);
+  assert.deepEqual(store.messagesBefore(t4.id, null, 20).filter((m) => m.authorKind === "agent").map((m) => m.text), ["posted by dsh"]);
+
+  // Claude Code as its TUI (the session's run mode): its bridge this program (claude_tui.mbt) under the runner's PTY,
+  // no -p; the message pasted into the terminal as the station's, acknowledged by its hook, answered and ended.
+  const toTui = (await mcp(door.port, { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "session_send", arguments: { to: "chat:c-tui", text: "tui, answer" } } }, "t0")).json.result;
+  assert.notEqual(toTui.isError, true, JSON.stringify(toTui));
+  await until("the TUI's turn ended all_done", () => store.listTurns("chat:c-tui").some((t) => t.summary.ending === "all_done" && t.summary.endedAt != null), () => `${JSON.stringify(store.listTurns("chat:c-tui").map((t) => t.summary))}\n${a.err()}`);
+  const tuiTurns = store.listTurns("chat:c-tui");
+  assert.deepEqual([tuiTurns.length, tuiTurns[0]!.summary.outcome, tuiTurns[0]!.summary.need], [1, "completed", "the TUI answered"]);
+  assert.deepEqual(store.messagesBefore(t5.id, null, 20).filter((m) => m.authorKind === "agent").map((m) => m.text), ["posted by the TUI"]);
+  const tuiArgv = readFileSync(join(out, "tui-argv"), "utf8").split("\n");
+  assert.ok(!tuiArgv.includes("-p") && !tuiArgv.includes("--output-format"), tuiArgv.join(" "));
+  const tuiSettings = JSON.parse(tuiArgv[tuiArgv.indexOf("--settings") + 1]!);
+  assert.equal(tuiSettings.skipDangerousModePermissionPrompt, true);
+  for (const e of ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PreCompact", "PostCompact"]) {
+    assert.deepEqual(tuiSettings.hooks[e].at(-1).hooks[0].args.slice(1), ["hook"], e);
+  }
+  assert.equal(JSON.parse(tuiArgv[tuiArgv.indexOf("--mcp-config") + 1]!).mcpServers.stillfail.type, "stdio");
+  assert.match(readFileSync(join(out, "tui-prompt-1"), "utf8"), /^<station_message>\n[\s\S]*tui, answer[\s\S]*\n<\/station_message>$/);
+  assert.ok(Array.isArray(JSON.parse(readFileSync(join(out, "tui-tools.json"), "utf8").split("\n")[0]!).result.tools), "its tools listed through the bridge");
+
+  // The status socket says the agents.
+  // A handover: the next process takes the sessions up and serves the door; the one before ends.
+  const b = await launch(data, app, bin, out);
+  await b.next("ready", (m) => m.ready === true);
+  await b.next("taking", (m) => m.taking === true);
+  a.tell({ op: "handover" });
+  const carry = await a.next("carry", (m) => m.carry !== undefined);
+  assert.equal(await a.ended, 0);
+  b.tell({ op: "carried", carried: carry.carry });
+  const bDoor = await b.next("its door", (m) => m.serving === "mcp");
+  assert.equal(existsSync(join(data, "run", "handover.json")), false, "the handover taken up");
+  assert.deepEqual((await mcp(bDoor.port, { jsonrpc: "2.0", id: 1, method: "ping" }, "t1")).json.result, {});
+  // The taken-up session's next turn runs under the new process.
+  const sent2 = (await mcp(bDoor.port, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "session_send", arguments: { to: "chat:c-to", text: "once more" } } }, "t0")).json.result;
+  assert.notEqual(sent2.isError, true, JSON.stringify(sent2));
+  // (this test's launcher gives the next process another port: the runtime taken up was told the old one, so its turn
+  // finds no tools, and it is started again told the new one, as hub.ts takes it up; a launcher keeps the port)
+  await until("a second turn ended all_done", () => store.listTurns("chat:c-to").filter((t) => t.summary.ending === "all_done" && t.summary.endedAt != null).length >= 2, () => `${JSON.stringify(store.listTurns("chat:c-to").map((t) => t.summary))}\n${b.err()}`);
+  const second = store.messagesBefore(t1.id, null, 50).filter((m) => m.authorKind === "agent");
+  assert.equal(second.length, 2, "the second turn posted once, through the new process's door");
+  // The TUI's session taken up (its bridge's runner, kept across the handover): its next turn ends there too.
+  const tuiAgain = (await mcp(bDoor.port, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "session_send", arguments: { to: "chat:c-tui", text: "tui, once more" } } }, "t0")).json.result;
+  assert.notEqual(tuiAgain.isError, true, JSON.stringify(tuiAgain));
+  await until("the TUI's second turn ended all_done", () => store.listTurns("chat:c-tui").filter((t) => t.summary.ending === "all_done" && t.summary.endedAt != null).length >= 2, () => `${JSON.stringify(store.listTurns("chat:c-tui").map((t) => t.summary))}\n${b.err()}`);
+  assert.equal(store.messagesBefore(t5.id, null, 50).filter((m) => m.authorKind === "agent").length, 2, "the TUI's second turn posted once");
+  // A drain answers once no turn runs.
+  b.tell({ op: "drain" });
+  assert.deepEqual(await b.next("drained", (m) => m.drained !== undefined), { drained: "idle" });
+  b.tell({ op: "stop" });
+  assert.equal(await b.ended, 0);
+  store.close();
+  // Nothing of it left: no process of the station's, no runner, no sessions' program.
+  for (const p of [a.child.pid!, b.child.pid!]) assert.throws(() => process.kill(p, 0), "the station's processes ended");
+  const runners = join(data, "run", "runners");
+  await until("its runners gone", () => {
+    if (!existsSync(runners)) return true;
+    for (const f of require_json(runners)) {
+      try {
+        process.kill(f.runner, 0);
+        return false;
+      } catch {}
+    }
+    return true;
+  });
+});
+
+/// The runners' info files there.
+function require_json(dir: string): { runner: number }[] {
+  return readdirSync(dir).filter((f) => f.endsWith(".json")).flatMap((f) => {
+    try {
+      return [JSON.parse(readFileSync(join(dir, f), "utf8"))];
+    } catch {
+      return [];
+    }
+  });
+}

@@ -369,9 +369,10 @@ if [ -f "$tmp/stillfail/NODE_VERSION" ]; then
   fi
   ln -s "$node_dir" "$tmp/stillfail/node"
 fi
-# The Nodes no release here runs on any more, once it runs on this one (a running old one keeps its binary open).
+# The Nodes no release here runs on any more, once it runs on this one (a running old one keeps its binary open): all
+# of them once it runs on none (the MoonBit station's release names no NODE_VERSION).
 prune_node() {
-  [ -n "$node_dir" ] || return 0
+  [ -n "$node_dir" ] || { rm -rf "$cur/node"; return 0; }
   for d in "$(dirname "$node_dir")"/v*; do
     [ "$d" = "$node_dir" ] || rm -rf "$d"
   done

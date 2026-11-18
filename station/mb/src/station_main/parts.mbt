@@ -201,6 +201,28 @@ pub fn StationParts::card_choice_of(self : StationParts, card : Json) -> CardCho
 }
 
 ///|
+/// The part whose card `card` is, by the key it said its cards by (`card_choice`), if one.
+pub fn StationParts::card_key_of(self : StationParts, card : Json) -> String? {
+  for c in self.cards {
+    if card is Object(m) && is_object(m.get(c.0)) {
+      return Some(c.0)
+    }
+  }
+  None
+}
+
+///|
+/// The card choice a part said by `key`.
+pub fn StationParts::card_choice_named(self : StationParts, key : String) -> CardChoice? {
+  for c in self.cards {
+    if c.0 == key {
+      return Some(c.1)
+    }
+  }
+  None
+}
+
+///|
 /// What the parts carry over to the next process, by part (one that fails to give is left out).
 pub async fn StationParts::carried(self : StationParts) -> Map[String, Json] {
   let out : Map[String, Json] = Map([])

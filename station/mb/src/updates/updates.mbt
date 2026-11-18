@@ -70,7 +70,7 @@ pub fn software_version(
 
 ///|
 /// How long things take, given so tests can be quick.
-pub struct Timing {
+pub(all) struct Timing {
   /// How often the runtimes' latest versions are read again.
   every : Double
   /// How long a runtime's update may take; the station's installer.
@@ -116,7 +116,7 @@ fn station_retry_backoff(n : Int) -> Double {
 ///|
 /// The config as the station holds it (ops/config.ts ConfigFile): what it says now, told as it changes; an edit taken
 /// at once and told, then written (`config.updateSoon`).
-pub struct Config {
+pub(all) struct Config {
   mut raw : J
   listeners : Array[(Int, () -> Unit)]
   mut serial : Int
@@ -155,7 +155,7 @@ pub async fn Config::update_soon(self : Config, w : World, k : String, v : J) ->
 }
 
 ///|
-pub struct UpdatesOptions {
+pub(all) struct UpdatesOptions {
   /// The release this station runs from (`--app`).
   app : String
   data : String

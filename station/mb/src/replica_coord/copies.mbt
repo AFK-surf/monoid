@@ -75,7 +75,7 @@ pub async fn formerly_of(fs : Fs, data : String) -> Array[String] {
 
 ///|
 /// A station of a workspace's roster: its id and name.
-pub struct Member {
+pub(all) struct Member {
   id : String
   name : String
   tasks : Bool
@@ -83,7 +83,7 @@ pub struct Member {
 
 ///|
 /// What Copies is given (copies.ts `CopiesDeps`).
-pub struct CopiesDeps {
+pub(all) struct CopiesDeps {
   data : String
   here : () -> String?
   /// The workspaces it is in (export.ts `Places`).

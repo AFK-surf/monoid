@@ -30,7 +30,7 @@ pub fn unanswered(e : Error) -> Bool {
 
 ///|
 /// One socket of the machine's (the `ws` package's WebSocket), as `socket_to` keeps it up.
-pub struct Socket {
+pub(all) struct Socket {
   /// What it says, in order, as it comes.
   events : @effect.Queue[SocketEvent]
   send : (Bytes) -> Unit
@@ -54,14 +54,14 @@ pub(all) enum SocketEvent {
 ///|
 /// What one socket does besides being kept up (`SocketHooks`): as it opens, with what it says (when, on the surface's
 /// clock; `end` ends the socket, None, or fails it: the platform asks for another), and as it is pinged.
-pub struct SocketHooks {
+pub(all) struct SocketHooks {
   opened : (Socket) -> Unit
   message : (Socket, Bytes, Bool, Double, (String?) -> Unit) -> Unit
   ping : (Socket) -> Unit
 }
 
 ///|
-pub struct SurfaceOptions {
+pub(all) struct SurfaceOptions {
   /// The connect it is (for the log).
   connect : String?
   /// Keeps names across restarts and lets the admin API ask without waiting.
@@ -609,4 +609,28 @@ pub async fn ConnectedSurface::base_call(self : ConnectedSurface, name : String,
     }
     _ => self.base_get(name, args)
   }
+}
+
+///|
+/// How a platform made outside this package says what its agent is doing in a thread (Comma's `Quiet`, say).
+pub fn ConnectedSurface::set_status_line(self : ConnectedSurface, line : (J) -> StatusLine) -> Unit {
+  self.status_line = line
+}
+
+///|
+/// A platform's surface made outside this package (the station's Feishu and Comma surfaces): who its bot is, where its
+/// socket is and what it does there, how a person and their email are looked up.
+pub fn ConnectedSurface::hooked(
+  self : ConnectedSurface,
+  identify~ : async () -> J,
+  address~ : async () -> String,
+  run_socket~ : async (String, async (J) -> Unit) -> Unit,
+  look_up~ : async (String) -> J?,
+  look_up_email~ : async (String) -> String?,
+) -> Unit {
+  self.identify = identify
+  self.address = address
+  self.run_socket = run_socket
+  self.look_up = look_up
+  self.look_up_email = look_up_email
 }

@@ -27,6 +27,28 @@ pub fn shell_of(os : String, shell : String?) -> (String, Array[String]) {
 }
 
 ///|
+/// The environment a terminal's shell is started with (module.ts `shellEnv`): `env` with what makes an interactive
+/// login shell say its folder after each command (`OSC 7`) without touching the person's dotfiles: macOS's
+/// /etc/zshrc reads /etc/zshrc_Apple_Terminal with `TERM_PROGRAM=Apple_Terminal` (its session files off), and bash runs
+/// `PROMPT_COMMAND` where none is set.
+pub fn shell_env(os : String, env : Map[String, String]) -> Map[String, String] {
+  let out = env.copy()
+  if os == "darwin" || os == "macos" {
+    if !out.contains("TERM_PROGRAM") {
+      out["TERM_PROGRAM"] = "Apple_Terminal"
+    }
+    if !out.contains("SHELL_SESSIONS_DISABLE") {
+      out["SHELL_SESSIONS_DISABLE"] = "1"
+    }
+  }
+  match out.get("PROMPT_COMMAND") {
+    Some(p) if p != "" => ()
+    _ => out["PROMPT_COMMAND"] = "printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-}\" \"$PWD\""
+  }
+  out
+}
+
+///|
 /// What was kept of a terminal, read back (none where it is not one).
 pub fn meta_of(v : J?) -> TerminalMeta? {
   guard v is Some(Obj(_) | Arr(_)) else { return None }
@@ -97,7 +119,8 @@ pub(all) struct TerminalsIo {
   /// rm(path, {force: true}).
   remove : async (String) -> Unit
   read_file : async (String) -> String
-  /// startRunner(data, id, program, args, the station's environment, cwd, {cols, rows}): the runner, started.
+  /// startRunner(data, id, program, args, the station's environment with `shell_env`'s hooks, cwd, {cols, rows}): the
+  /// runner, started.
   start_runner : async (String, String, Array[String], String, Int, Int) -> RunnerInfo
   live_runners : async () -> Array[RunnerInfo]
   listening_soon : async (RunnerInfo) -> Bool
@@ -138,6 +161,11 @@ pub async fn TerminalsPart::start(io : TerminalsIo) -> TerminalsPart {
     new_id: () => TERMINAL_RUNNER + (io.random_hex)(),
     offered: Some(io.offered),
     changed: tell,
+    meta: Some((id, meta) => (io.spawn)(async fn() {
+      (io.write_file)(meta_file(io.data, id), stringify(meta.to_json())) catch {
+        _ => ()
+      }
+    })),
     gone: id => (io.spawn)(async fn() { (io.remove)(meta_file(io.data, id)) catch { _ => () } }),
     start: async fn(id, o, cwd, meta) {
       (io.mkdir)(meta_dir(io.data))

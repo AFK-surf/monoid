@@ -1041,8 +1041,13 @@ pub fn Admin::answer_from(self : Admin, said : JV) -> Answer {
   {
     status: jnumber(said.get("status")).unwrap_or(500.0).to_int(),
     headers,
-    body: if body.get("$stream") is Some(_) {
-      Stream(self.stream_of(body))
+    body: if body.get("$stream") is Some(id) {
+      // (its reader gone: the stream let go at the backend, `$stream.stop`)
+      Streamed(self.stream_of(body), async fn() {
+        self.backend.tell("$stream.stop", [id]) catch {
+          _ => ()
+        }
+      })
     } else {
       Whole(bytes_of(body).unwrap_or(b""))
     },

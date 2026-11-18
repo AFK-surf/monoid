@@ -387,7 +387,7 @@ pub struct AgyWatch {
   said : async (String, Double, Double) -> Unit
 }
 
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   sleep : async (Double) -> Unit
 }
@@ -398,7 +398,7 @@ pub struct CodexEntry {
   target : Identity
 }
 
-pub struct Config {
+pub(all) struct Config {
   mut raw : @jsjson.JValue
   listeners : Array[(Int32, () -> Unit)]
   mut serial : Int32
@@ -483,6 +483,7 @@ pub struct Machine {
   exec_path : String
   applier : String
 }
+pub fn Machine::of(build_os~ : String?, arch~ : String?, windows~ : Bool, cwd~ : String, exec_path~ : String, applier~ : String) -> Self
 
 pub struct Missing {
   binary : String
@@ -547,7 +548,7 @@ pub struct Stat {
   mtime_ms : Double
 }
 
-pub struct Timing {
+pub(all) struct Timing {
   every : Double
   runtime_limit : Double
   station_limit : Double
@@ -608,7 +609,7 @@ pub fn Updates::to_update_to(Self) -> String?
 pub async fn Updates::update(Self, String, String) -> Unit
 pub async fn Updates::update_old_codex(Self, String?, String) -> Unit
 
-pub struct UpdatesOptions {
+pub(all) struct UpdatesOptions {
   app : String
   data : String
   config : Config

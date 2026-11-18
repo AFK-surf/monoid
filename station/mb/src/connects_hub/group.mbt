@@ -151,7 +151,7 @@ pub fn device_of(key : String, public_key : (String) -> String?) -> String? {
 }
 
 ///|
-pub struct GroupOptions {
+pub(all) struct GroupOptions {
   connects : ConnectsOptions
   /// What binds the connects' endpoints (the station's mesh; a test's).
   endpoints : () -> Endpoints

@@ -4,16 +4,26 @@ package "station/station_main"
 import {
   "mbui/effect",
   "moonbitlang/core/json",
+  "moonbitlang/core/ref",
+  "station/cloud_lock",
   "station/drive",
   "station/host",
+  "station/sql",
   "station/station_main/media",
+  "station/store_sessions",
   "station/updates",
 }
 
 // Values
 pub fn answer_heap_request(String, () -> @json.Json) -> Bool
 
+pub async fn answer_route(Array[PartRoute], @json.Json) -> @json.Json?
+
+pub fn append_text(String, String) -> Bool
+
 pub fn arch() -> String
+
+pub async fn before_store_p5_1(@host.Host, String, String) -> Unit
 
 pub fn catalogs_json() -> (@json.Json, @json.Json)
 
@@ -55,6 +65,8 @@ pub async fn file_lock(@host.Host, String) -> FileLock
 
 pub fn flag(Array[String], String) -> String?
 
+pub fn group_alive(Int32) -> Bool
+
 pub async fn harness(@host.Host) -> Unit
 
 pub fn held_by(String, Int32) -> Int32?
@@ -76,6 +88,8 @@ pub fn is_windows() -> Bool
 pub fn iso_time(Double) -> String
 
 pub fn json_reply(Int32, @json.Json) -> Reply
+
+pub fn keep_descriptors() -> Int32
 
 pub fn kill(Int32, String, group? : Bool) -> Bool
 
@@ -101,6 +115,8 @@ pub fn out_write(String) -> Unit
 
 pub fn parent_pid() -> Int32
 
+pub fn pattern_matches(String, String) -> Bool
+
 pub fn peer_process(Int32) -> @json.Json?
 
 pub fn pid_alive(Int32) -> Bool
@@ -117,13 +133,23 @@ pub fn process_usage(Array[Int32]) -> Array[@json.Json?]
 
 pub fn read_lines(@host.Host, Int32, (String) -> Unit, () -> Unit) -> Unit
 
+pub fn remove_tree(String) -> Bool
+
 pub fn repo_rules_hook(RulesWorld, String) -> String
 
 pub async fn run_command(@host.Host, String, Array[String]) -> Int32
 
 pub async fn run_hook(@host.Host, String, Array[String]) -> Int32
 
+pub async fn run_sandbox_bridge(@host.Host, Array[String]) -> Int32
+
 pub async fn run_station(@host.Host, String, Array[String]) -> Int32
+
+pub fn runner_binary(String, String, String) -> String?
+
+pub fn sandbox_bridge_of(Array[String]) -> Bool
+
+pub fn sandbox_bridge_shell(Array[String]) -> String
 
 pub fn sep() -> String
 
@@ -131,7 +157,25 @@ pub async fn serve_http(@host.Host, @json.Json, async (Request, @json.Json) -> R
 
 pub fn spawn(@host.Host, String, Array[String], env? : Array[(String, String)], cwd? : String, stdin_piped? : Bool, stdout? : Sink, stderr? : Sink, group? : Bool) -> Proc raise SysError
 
+pub async fn start_live_p5_1(LiveBus) -> Unit
+
+pub async fn start_live_p5_2(LiveBus) -> Unit
+
+pub async fn start_live_p5_3(LiveBus) -> Unit
+
+pub async fn start_live_p5_4(LiveBus) -> Unit
+
+pub async fn start_live_p5_5(LiveBus) -> Unit
+
+pub fn start_time_of(Int32) -> Double?
+
+pub fn station_channel(@json.Json, String) -> String
+
 pub let station_en : String
+
+pub fn station_feature(String, @json.Json, String) -> Bool
+
+pub fn station_features(@json.Json, String) -> Array[String]
 
 pub fn station_lang(String) -> String
 
@@ -142,6 +186,8 @@ pub fn station_version(Array[String], String) -> String
 pub let station_zh : String
 
 pub fn status_text(@host.Host, String, Double) -> String
+
+pub fn stop_live_p5_1() -> Unit
 
 pub fn subagent_hook(String, String?) -> String
 
@@ -163,10 +209,34 @@ pub fn wall_ms() -> Int64
 
 pub async fn write_on(@host.Host, @json.Json, Bytes) -> Bool
 
+pub fn write_text_mode(String, String, Int32) -> Bool
+
 // Errors
+pub(all) suberror BusError {
+  BusError(String)
+}
+
+pub(all) suberror CommandMissing {
+  CommandMissing(String)
+}
+
+pub(all) suberror LiveError {
+  LiveError(String)
+}
+
+pub(all) suberror P54Refused {
+  P54Refused(String, @json.Json)
+}
+pub impl Show for P54Refused
+
 pub(all) suberror PartTwice {
   PartTwice(String)
 }
+
+pub(all) suberror ReadFailed {
+  ReadFailed(Int32, String)
+}
+pub impl Show for ReadFailed
 
 pub(all) suberror SysError {
   SysError(String)
@@ -187,6 +257,72 @@ pub struct FileLock {
   // private fields
 }
 pub fn FileLock::release(Self) -> Unit
+
+pub(all) struct LiveBus {
+  host : @host.Host
+  argv0 : String
+  args : Array[String]
+  data : String
+  app : String
+  version : String
+  key : @cloud_lock.StationKey
+  db : @sql.Db
+  store : @store_sessions.Store
+  parts : StationParts
+  stopped : @effect.Deferred[String]
+  door_ready : @effect.Deferred[String]
+  handed : Bool
+  mcp_token : String
+  previous_pid : Int32?
+  previous_gone : async () -> Unit
+  control_say : (@json.Json) -> Unit
+  stop_station : (String) -> Unit
+  restart_front : (() -> Unit)?
+  config_raw : @ref.Ref[() -> @json.Json]
+  config_update : @ref.Ref[async ((@json.Json) -> @json.Json) -> @json.Json]
+  config_listen : @ref.Ref[((@json.Json) -> Unit) -> () -> Unit]
+  config_check : @ref.Ref[((@json.Json) -> String?) -> Unit]
+  own_add : @ref.Ref[(String) -> Unit]
+  own_paths : @ref.Ref[() -> Array[String]]
+  lang : @ref.Ref[() -> String]
+  cloud_state : @ref.Ref[() -> @json.Json?]
+  cloud_reached : @ref.Ref[() -> Bool]
+  cloud_listen : @ref.Ref[((@json.Json?) -> Unit) -> () -> Unit]
+  cloud_call : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  store_listeners : Array[(Int32, (@json.Json) -> Unit)]
+  mut next_listener : Int32
+  reader_ask : @ref.Ref[async (String, @json.Json, String) -> @json.Json]
+  events_tell : @ref.Ref[(String, @json.Json, String, @json.Json) -> Unit]
+  overview_changed : @ref.Ref[() -> Unit]
+  host_sample : @ref.Ref[async () -> @json.Json]
+  peer_handlers : Map[String, async (String, String?, @json.Json, Bytes?) -> (@json.Json, Bytes?)]
+  peer_prefixes : Array[(String, async (String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?))]
+  peer_call : @ref.Ref[async (String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?)]
+  mesh_front_kind : @ref.Ref[() -> String]
+  mesh_relay_conflict : @ref.Ref[() -> Bool]
+  mesh_net_info : @ref.Ref[() -> @json.Json]
+  peer_http : @ref.Ref[async (Request, @json.Json) -> Reply?]
+  outside_reaches : @ref.Ref[(String, String?) -> Bool]
+  forwarded_port : @ref.Ref[(Int32) -> Bool]
+  runtimes_available : @ref.Ref[() -> Array[String]]
+  here_device : @ref.Ref[async (@json.Json, @json.Json) -> Unit]
+  mcp_handle : @ref.Ref[(async (Request) -> Reply)?]
+  hub_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  handover_sessions : @ref.Ref[async () -> Array[@json.Json]]
+  take_handover : @ref.Ref[async (@json.Json?) -> Unit]
+  drain_wait : @ref.Ref[async () -> String]
+  status_agents : @ref.Ref[() -> @json.Json?]
+  jobs_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  ui_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  coord_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+}
+pub async fn LiveBus::call_peer(Self, String, String?, String, @json.Json, bytes? : Bytes) -> (@json.Json, Bytes?)
+pub async fn LiveBus::dispatch_peer(Self, String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?)
+pub fn LiveBus::new(@host.Host, String, Array[String], String, String, String, @cloud_lock.StationKey, @sql.Db, @store_sessions.Store, StationParts, @effect.Deferred[String], Bool, String, Int32?, (@json.Json) -> Unit, (String) -> Unit, restart_front? : () -> Unit) -> Self
+pub fn LiveBus::notify_store(Self, @json.Json) -> Unit
+pub fn LiveBus::on_peer(Self, String, async (String, String?, @json.Json, Bytes?) -> (@json.Json, Bytes?)) -> Unit
+pub fn LiveBus::on_peer_prefix(Self, String, async (String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?)) -> Unit
+pub fn LiveBus::subscribe_store(Self, (@json.Json) -> Unit) -> () -> Unit
 
 pub(all) struct PartRoute {
   meth : String

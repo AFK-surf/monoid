@@ -32,7 +32,10 @@ env:
   FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
   # The native parts a branch's checks and builds use, split between ci-1 (`BRANCH_NATIVES`: Linux, Windows cross-builds,
   # Wasm and Android) and macos-ci (`BRANCH_MAC_NATIVES`: Apple's darwin-arm64 parts).
-  BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 reader:win32-x64 iroh-wasm shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
+  BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 iroh-wasm shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
+  # Windows' reader, built after natives in a job of its own on ci-1 (natives-win-reader): two readers side by side there,
+  # each cold at -O2, took 244-253 s of natives' five minutes and its upload was cut (44208145437, 2026-11-18).
+  BRANCH_WIN_READER: reader:win32-x64
   BRANCH_MAC_NATIVES: mesh:darwin-arm64 launcher:darwin-arm64 runner:darwin-arm64 archive-rs:darwin-arm64 reader:darwin-arm64 shell-apple:darwin-arm64 helper:darwin-arm64
 jobs:
   # What needs macOS signing/Xcode runs on macos-ci; Rust/MoonBit native builds and the station/core check run on ci-1
@@ -58,6 +61,7 @@ jobs:
       win_beta: ${{ steps.plan.outputs.win_beta }}
       natives: ${{ steps.natives.outputs.natives }}
       natives_mac: ${{ steps.natives.outputs.natives_mac }}
+      natives_win_reader: ${{ steps.natives.outputs.natives_win_reader }}
       natives_mac_runner: ${{ steps.natives.outputs.natives_mac_runner }}
       windows_natives: ${{ steps.plan.outputs.windows_natives }}
       kit: ${{ steps.plan.outputs.kit }}
@@ -92,23 +96,30 @@ jobs:
         run: |
           if [ "${{ vars.CI_1 }}" = off ]; then
             if [ "$GITHUB_REF" = refs/heads/main ]; then missing=$(node scripts/native.ts missing)
-            else missing=$(node scripts/native.ts missing $BRANCH_NATIVES $BRANCH_MAC_NATIVES); fi
+            else missing=$(node scripts/native.ts missing $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_MAC_NATIVES); fi
             echo "missing (all on mac): ${missing:-none}"
             echo "natives=$([ -n "$missing" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
             echo "natives_mac=ready" >> "$GITHUB_OUTPUT"
+            echo "natives_win_reader=ready" >> "$GITHUB_OUTPUT"
           else
             if [ "$GITHUB_REF" = refs/heads/main ]; then
               missing=$(node scripts/native.ts missing --linux)
               missing_mac=$(node scripts/native.ts missing --mac)
+              missing_win=""
             else
               missing=$(node scripts/native.ts missing $BRANCH_NATIVES)
+              # (only ui-windows uses Windows' reader, and only for a change to the station)
+              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_win=$(node scripts/native.ts missing $BRANCH_WIN_READER)
+              else missing_win=""; fi
               if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(node scripts/native.ts missing $BRANCH_MAC_NATIVES)
               else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
             fi
             echo "missing (linux): ${missing:-none}"
             echo "missing (mac): ${missing_mac:-none}"
+            echo "missing (Windows' reader): ${missing_win:-none}"
             echo "natives=$([ -n "$missing" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
             echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
+            echo "natives_win_reader=$([ -n "$missing_win" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
           fi
           # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
           # mesh, shell-apple or reader. On macos-26 a cold reader took 223 s before packing; the job hit its deadline
@@ -157,7 +168,7 @@ jobs:
             if [ "$GITHUB_REF" = refs/heads/main ]; then
               node scripts/native.ts ensure --publish
             else
-              node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_NATIVES $BRANCH_MAC_NATIVES
+              node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_MAC_NATIVES
             fi
           elif [ "$GITHUB_REF" = refs/heads/main ]; then
             node scripts/native.ts ensure --linux --publish
@@ -171,11 +182,37 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: "natives-${{ github.sha }}", path: "${{ runner.temp }}/natives.r2.json", if-no-files-found: ignore, retention-days: 7 }
 
-  # A branch's the rest of what main builds on ci-1 (linux-arm64, launcher:linux-x64, shell-station), into ci-1's cache,
+  # A branch's Windows reader (BRANCH_WIN_READER), on ci-1 after natives, so that the two readers' C does not share its
+  # cores and each has a job's five minutes: its archive staged in R2 as natives' are (natives-win-reader-<sha>), for
+  # ui-windows. With vars.CI_1 == 'off' natives builds it itself.
+  natives-win-reader:
+    needs: [plan, natives]
+    if: ${{ !cancelled() && vars.CI_1 != 'off' && github.ref != 'refs/heads/main' && needs.plan.outputs.natives_win_reader == 'needed' && contains(fromJSON('["success","skipped"]'), needs.natives.result) }}
+    runs-on: ["self-hosted", "ci-1"]
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write # its native archive staged in R2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-linux
+      - uses: ./.github/actions/mbui-moonbit
+      - name: Get or build Windows' reader
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # (one reader here: every core its)
+          STILLFAIL_NATIVE_READERS: "1"
+        run: node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_WIN_READER
+      - name: Stage its archive in R2
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-win-reader.r2.json"
+      - uses: actions/upload-artifact@v4
+        with: { name: "natives-win-reader-${{ github.sha }}", path: "${{ runner.temp }}/natives-win-reader.r2.json", if-no-files-found: ignore, retention-days: 7 }
+
+  # A branch's the rest of what main builds on ci-1 (linux-arm64, shell-station), into ci-1's cache,
   # which main's natives job takes them from without holding main's jobs back.
   natives-main:
-    needs: [plan, natives]
-    if: needs.plan.outputs.natives == 'needed' && github.ref != 'refs/heads/main' && needs.natives.result == 'success'
+    needs: [plan, natives, natives-win-reader]
+    if: ${{ !cancelled() && needs.plan.outputs.natives == 'needed' && github.ref != 'refs/heads/main' && needs.natives.result == 'success' && needs.natives-win-reader.result != 'failure' }}
     runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["self-hosted", "macos-ci"]') }}
     timeout-minutes: 5
     steps:
@@ -317,7 +354,7 @@ jobs:
   # carries (the native part agent-desktop) driving Notepad through the agents' computer tool, on GitHub's Windows,
   # whose runner has a signed-in person's session as a station's machine does. For a change to the station.
   ui-windows:
-    needs: [plan, natives]
+    needs: [plan, natives, natives-win-reader]
     if: ${{ !cancelled() && !failure() && needs.plan.outputs.station == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 5
@@ -716,7 +753,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives, natives-mac, windows-natives, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives, natives-win-reader, natives-mac, windows-natives, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2

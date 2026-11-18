@@ -1,0 +1,1406 @@
+// The agents' side of the station (P5-2; station/src/sessions/agents.ts `AgentsLive`): the hub (session_hub) with its
+// actors in the sessions' program, the nine runtimes' drivers over `stillfail-runner`, the agents' tools and their door
+// (`/mcp`), what other stations ask of this one's chats, and what the station's process does with them (its status, a
+// handover, a drain). Made by `run` (run.mbt) on the bus (live_bus.mbt); nothing registers itself.
+
+///|
+/// agents.ts's start, in MoonBit: made at once; the sessions taken up once the agents' door is open (`take_handover`).
+pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
+  let host = bus.host
+  // (the launcher's sockets and channel kept from the runners and programs it starts: one that kept them would hold
+  // the station's door and channel open after it is gone)
+  ignore(keep_descriptors())
+  let pump = Pump::new(host)
+  let program = SessionsProgram::new(host, bus.argv0, bus.data)
+  let agents = AgentsHost::new(pump, program)
+  let (zh, en) = catalogs_json()
+  let maps = (j : Json) => {
+    match j {
+      Object(m) => m
+      _ => Map([])
+    }
+  }
+  let threads = @store_threads.Store::new(bus.db, wall_ms().to_double()) catch {
+    e => {
+      live_log("error", "agents", "the threads' store does not open", {
+        "error": jstr(said_of(e)),
+      })
+      return
+    }
+  }
+  let ctx : P52 = {
+    bus,
+    host,
+    data: bus.data,
+    pump,
+    program,
+    agents,
+    threads,
+    words: @session_hub.Words::new(
+      zh=maps(zh),
+      en=maps(en),
+      lang=(bus.lang.val)(),
+    ),
+    cwords: @session_chats.Words::new(jv_of(zh), jv_of(en)),
+    rwords: @api_routes.Words::new(rv_of(zh), rv_of(en)),
+    files: @session_storage.Files::new(host, sep=sep()),
+    config: Json::object({
+      "dataDir": jstr(bus.data),
+      "profiles": Json::array([]),
+      "connects": Json::array([]),
+    }),
+    hub: None,
+    actors_program: None,
+    drivers: Map([]),
+    door_url: "",
+    taken: false,
+    site_instructions: "",
+    agents_side: None,
+    runner: runner_binary(bus.app, bus.argv0, bus.data),
+    closed: false,
+    computer: None,
+    ids_seq: Ref(0),
+    repo_index: @session_chats.RepoIndex::new(),
+    repo_walking: false,
+    everies: {},
+    live_locator: None,
+    feedback: None,
+  }
+  ctx.site_instructions = @agent_runtimes.read_site_instructions(
+    host,
+    env_get("STILLFAIL_SITE_INSTRUCTIONS"),
+  ) catch {
+    _ => ""
+  }
+  ctx.computer = Some(@mcp_tools.Computer::new(ctx.tool_ctx())) catch {
+    _ => None
+  }
+  ignore(
+    (bus.config_listen.val)(_ => {
+      ignore(
+        host.rt.fork(name="hub config", async fn() { ctx.refresh_config() }),
+      )
+    }),
+  )
+  // The drivers, over the processes the program reads.
+  let pre : Ref[(HostedProcess) -> Unit] = Ref(p => {
+    hosted_by_runner[p.info.id()] = p
+  })
+  let procs = agents.procs(() => ctx.runner, bus.data, pre)
+  let words = driver_words(bus.argv0, bus.app)
+  ctx.drivers["claude"] = claude_driver(ctx, procs, words)
+  ctx.drivers["codex"] = codex_driver(ctx, procs, words)
+  ctx.drivers["agy"] = agy_driver(ctx, procs, words)
+  for kind in ["dsh", "grok", "cursor", "devin", "hermes", "pi"] {
+    ctx.drivers[kind] = own_runtime_driver(ctx, procs, words, kind)
+  }
+  bus.runtimes_available.val = () => {
+    @session_hub.runtime_kinds.filter(k => ctx.drivers.contains(k))
+  }
+  // The hub and its actors.
+  let hub = @session_hub.Hub::new(
+    ctx.hub_world(),
+    bus.store,
+    threads,
+    words=ctx.words,
+  )
+  ctx.hub = Some(hub)
+  ctx.refresh_config()
+  ctx.actors_program = Some(ActorsProgram::new(ctx))
+  ctx.mount_live(hub)
+  // No turn until the agents' door is open (a runtime started before has no MCP endpoint).
+  hub.hold("starting")
+  ctx.wire_bus()
+  // The agents' home (agenthome/module.ts).
+  ctx.agent_home_live()
+  // Workspaces as the control plane says them (agents.ts `follow`).
+  ignore(
+    (bus.cloud_listen.val)(_ => {
+      ignore(
+        host.rt.fork(name="agents follow", async fn() {
+          match ctx.agents_side {
+            Some(side) => side.follow(ctx.place())
+            None => ()
+          }
+        }),
+      )
+    }),
+  )
+  // The auto-archive's timer, the archived sessions' expiry and the runners' sweep (lifecycle.ts).
+  ignore(host.rt.fork(name="lifecycle", async fn() { ctx.lifecycle() }))
+}
+
+///|
+/// The hub's config worked out again (config.ts `hubConfig`) from config.json.
+async fn P52::refresh_config(self : P52) -> Unit {
+  let raw = (self.bus.config_raw.val)()
+  let worked = @session_chats.hub_config(
+    self.chats_world(),
+    jv_of(raw),
+    self.data,
+    _ => None,
+  ) catch {
+    e => {
+      live_log("warn", "agents", "config.json's hub config not worked out", {
+        "error": jstr(said_of(e)),
+      })
+      return
+    }
+  }
+  self.config = p52_json_of_jv(worked)
+}
+
+///|
+/// Where the station is (cloud/state.ts as agents.ts reads it).
+fn P52::place(self : P52) -> @session_hub.Place {
+  let state = (self.bus.cloud_state.val)()
+  let home = match state {
+    Some(s) => jtext(s, "workspace")
+    None => None
+  }
+  let joined = match state {
+    Some(s) =>
+      jitems(jfield(s, "joined")).filter_map(j => {
+        match j {
+          String(w) => Some(w)
+          Object(_) => jtext(j, "workspace")
+          _ => None
+        }
+      })
+    None => []
+  }
+  {
+    bound: self.bound(),
+    joined,
+    home,
+    first: home,
+    removed: match state {
+      Some(s) => jfield(s, "removed_at") != Json::null()
+      None => false
+    },
+    rig_due: false,
+    rig_pending: None,
+  }
+}
+
+///|
+/// The workspaces the station is in: its home one first, those it joined after.
+fn P52::memberships(self : P52) -> Array[String] {
+  let p = self.place()
+  if !p.bound {
+    return []
+  }
+  let out = match p.home {
+    Some(h) => [h]
+    None => []
+  }
+  for j in p.joined {
+    if !out.contains(j) {
+      out.push(j)
+    }
+  }
+  out
+}
+
+///|
+/// A session's page in still.fail (sessions/page.ts `sessionPage`), where the station is in a workspace of still.fail
+/// cloud.
+fn P52::page_of(self : P52, key : String) -> String? {
+  guard (self.bus.cloud_state.val)() is Some(s) else { return None }
+  guard jtext(s, "origin") is Some(origin) &&
+    jtext(s, "station") is Some(station) &&
+    self.bound() else {
+    return None
+  }
+  let ws = match self.ws_of(key) {
+    Some(w) => w
+    None => jtext(s, "workspace").unwrap_or("")
+  }
+  if ws != jtext(s, "workspace").unwrap_or("") &&
+    !self.memberships().contains(ws) {
+    return None
+  }
+  let o = if origin.has_suffix("/") {
+    origin[:origin.length() - 1].to_owned()
+  } else {
+    origin
+  }
+  Some("\{o}/o/\{ws}/\{station}/\{@session_hub.encode_uri_component(key)}")
+}
+
+///|
+/// The hub's world (session_hub `World`): what the hub asks of what is outside it, answered by the station's parts.
+fn P52::hub_world(self : P52) -> @session_hub.World {
+  {
+    tell: (what, args) => self.hub_told(what, args),
+    ask: async fn(what, args) { self.hub_asked(what, args) },
+    now: () => wall_ms().to_double(),
+    config: () => self.config,
+    workspaces: () => self.memberships(),
+    station: () => {
+      match (self.bus.cloud_state.val)() {
+        Some(s) => jtext(s, "station")
+        None => None
+      }
+    },
+    link: key => self.page_of(key),
+    chat: connect => {
+      if connect == @session_hub.internal_connect {
+        Some({
+          "botUserId": jstr("UEMBER"),
+          "workspace": Json::null(),
+          "has": Json::array([]),
+        })
+      } else {
+        connect_surfaces.get(connect)
+      }
+    },
+    process_state: key => {
+      match self.actors_program {
+        Some(p) =>
+          match p.actors.get(key) {
+            Some(a) => a.process_state()
+            None => "cold"
+          }
+        None => "cold"
+      }
+    },
+    idle_ms: (key, now) => {
+      match self.actors_program {
+        Some(p) =>
+          match p.actors.get(key) {
+            Some(a) => a.idle_ms(now)
+            None => None
+          }
+        None => None
+      }
+    },
+    random_hex: n => @drive.hex(@drive.random_bytes(n)),
+    move_on: () => {
+      Some(
+        station_feature(
+          "stationMove",
+          (self.bus.config_raw.val)(),
+          self.bus.app,
+        ),
+      )
+    },
+  }
+}
+
+///|
+/// What the hub tells (and waits for nothing of).
+fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
+  match what {
+    "log" =>
+      match args {
+        Object(m) =>
+          for kv in m {
+            live_log(
+              kv.0,
+              "hub",
+              match kv.1 {
+                String(t) => t
+                o => o.stringify()
+              },
+              Json::object({}),
+            )
+          }
+        _ => ()
+      }
+    "actor.made" =>
+      match self.actors_program {
+        Some(p) =>
+          ignore(
+            p.actor(
+              jtext(args, "key").unwrap_or(""),
+              jtext(args, "runtime").unwrap_or("claude"),
+            ),
+          )
+        None => ()
+      }
+    "actor" =>
+      ignore(
+        self.host.rt.fork(name="actor told", async fn() {
+          ignore(self.hub_asked("actor", args)) catch {
+            e =>
+              live_log("warn", "hub", "an actor's call failed", {
+                "error": jstr(said_of(e)),
+              })
+          }
+        }),
+      )
+    "chat.post" =>
+      ignore(
+        self.host.rt.fork(name="chat post", async fn() {
+          ignore(self.hub_asked("chat.post", args)) catch {
+            e =>
+              live_log("warn", "hub", "a post failed", {
+                "error": jstr(said_of(e)),
+              })
+          }
+        }),
+      )
+    "drivers" => {
+      let call = jtext(args, "call").unwrap_or("")
+      let again = jitems(jfield(args, "args")).get(0) ==
+        Some(Json::boolean(true))
+      for d in self.drivers.values() {
+        match call {
+          "detach" => (d.detach)()
+          "thaw" => (d.thaw)()
+          "shutdown" =>
+            ignore(
+              self.host.rt.fork(name="driver shutdown", async fn() {
+                (d.shutdown)(again)
+              }),
+            )
+          _ => ()
+        }
+      }
+    }
+    "actors.close" =>
+      match self.actors_program {
+        Some(p) => p.close()
+        None => ()
+      }
+    "live.call" =>
+      match self.actors_program {
+        Some(p) =>
+          ignore(
+            p.post({
+              "call": ji(0),
+              "actor": jstr("#live"),
+              "method": jfield(args, "method"),
+              "args": jfield(args, "args"),
+            }),
+          )
+        None => ()
+      }
+    "closed" =>
+      self.on_closed(
+        match args {
+          String(k) => k
+          _ => jtext(args, "key").unwrap_or("")
+        },
+      )
+    "usage.close" =>
+      match usage_counter_program.val {
+        Some(p) => p.close()
+        None => ()
+      }
+    // (what the hub tells its live view, hub.ts's `live`: the shell of the program's `#live`)
+    "live.running" =>
+      match ctx_live.val {
+        Some(l) => l.running(jtext(args, "key").unwrap_or(""), jfield(args, "running") is True)
+        None => ()
+      }
+    "live.forget" => {
+      let key = match args {
+        String(k) => k
+        _ => jtext(args, "key").unwrap_or("")
+      }
+      match ctx_live.val {
+        Some(l) => l.forget(key)
+        None => ()
+      }
+      self.disarm(key)
+    }
+    "live.usageCounted" =>
+      match ctx_live.val {
+        Some(l) => l.usage_counted()
+        None => ()
+      }
+    "live.disarmAll" =>
+      for key in transcript_watches.keys().collect() {
+        self.disarm(key)
+      }
+    // (a lookup under way is not called off here: its answer is kept as any)
+    "live.abortLookups" => ()
+    "live.listener" =>
+      match jfield(args, "id") {
+        Number(n, ..) =>
+          match live_listeners.get(n.to_int()) {
+            Some(send) => send(jv_of(jfield(args, "message")))
+            None => ()
+          }
+        _ => ()
+      }
+    "live.heldTold" =>
+      match live_events.val {
+        Some(e) => e.held_told(jtext(args, "key").unwrap_or(""), jv_of(jfield(args, "message")))
+        None => ()
+      }
+    "live.arm" => self.arm(jtext(args, "key").unwrap_or(""), jtext(args, "path").unwrap_or(""))
+    "live.disarm" =>
+      self.disarm(
+        match args {
+          String(k) => k
+          _ => jtext(args, "key").unwrap_or("")
+        },
+      )
+    // (a lookup of where a session went on is not called off here: the next read asks again)
+    "live.unfollow" => ()
+    "agents.rigDueDropped" => ()
+    "taking" => (self.bus.control_say)({ "taking": jb(true) })
+    _ =>
+      if what.has_prefix("usageCheck.") || what.has_prefix("live.") {
+        (self.bus.events_tell.val)(what, args, "", Json::null())
+      } else {
+        live_log(
+          "warn",
+          "hub",
+          "the hub told the station what it does not know",
+          { "tell": jstr(what) },
+        )
+      }
+  }
+}
+
+///|
+/// The handover the process before carried (run/handover.json as it was read before it was removed).
+let carried_handover : Ref[Json?] = Ref(None)
+
+///|
+/// Runtime sessions taken up by a driver for an actor's `adopt`, by the number the hub is given.
+let adopting : Map[Int32, Agent] = Map([])
+
+///|
+/// What takes the events of a process being taken up for its actor, by its runner's id (hub.ts `takeUp`'s `router`,
+/// mb-agents.ts `HostedProcess.adopt`): its actor in the program has them from its first line, held by the actor
+/// until it is taken up (`MbActor::begin_adopt`). A Codex app-server's thread's are by its session's key.
+let adopt_routers : Map[String, (Int, Int) -> Bool] = Map([])
+
+///|
+/// What the hub asks and waits for.
+async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
+  if trace_on() {
+    err_write("p52 hub ask \{what} \{clip(args.stringify(), 200)}\n")
+  }
+  let s = (k : String) => jtext(args, k).unwrap_or("")
+  match what {
+    "actor" => {
+      guard self.actors_program is Some(p) else { return Json::null() }
+      let key = s("key")
+      let call = s("call")
+      let given = jitems(jfield(args, "args"))
+      guard p.actors.get(key) is Some(actor) else { return Json::null() }
+      if call == "adopt" {
+        let agent = match
+          jnum_of(given.get(1).unwrap_or(Json::null()), "agent") {
+          Some(n) => {
+            let a = adopting.get(n.to_int())
+            adopting.remove(n.to_int())
+            a
+          }
+          None => None
+        }
+        actor.adopt(
+          given.get(0).unwrap_or(Json::null()),
+          agent,
+          jtext(
+            Json::object({ "p": given.get(2).unwrap_or(Json::null()) }),
+            "p",
+          ).unwrap_or(""),
+        )
+        return Json::null()
+      }
+      actor.hub_asked(call, given)
+    }
+    "chat.post" => {
+      let thread = jfield(args, "thread")
+      jstr(
+        self.chat_post(
+          s("connect"),
+          jtext(thread, "channel").unwrap_or(""),
+          jtext(thread, "threadTs").unwrap_or(""),
+          s("text"),
+          jitems(jfield(args, "files")),
+        ),
+      )
+    }
+    // (hub.ts `fetched`: a shared file fetched by its chat's surface, written to the session's uploads, measured)
+    "chat.downloadTo" => {
+      let connect = s("connect")
+      let path_to = s("path")
+      let got = (self.bus.coord_ask.val)("chat.download", Json::array([Json::string(connect), jfield(args, "file")]))
+      let bytes = match got {
+        String(hex) => @cloud_lock.hex_bytes(hex)
+        _ => raise LiveError("this platform does not give files")
+      }
+      @drive.mkdir(s("dir"), true)
+      ignore(self.host.shell("fs.put", { "path": Json::string(path_to), "truncate": true }, bytes~))
+      { "size": Json::number(bytes.length().to_double()), "facts": shown_facts(self.host, path_to) }
+    }
+    "chat.history"
+    | "chat.userEmail"
+    | "chat.userName"
+    | "chat.sessionLink"
+    | "chat.quoted" =>
+      if s("connect") == @session_hub.internal_connect {
+        match what {
+          "chat.userName" =>
+            jopt(
+              self.user_name(s("connect"), jtext(args, "user").unwrap_or("")),
+            )
+          "chat.sessionLink" => jfield(args, "link")
+          _ => Json::null()
+        }
+      } else {
+        (self.bus.coord_ask.val)(what, args)
+      }
+    "drivers.evictIdle" => {
+      let mut n = 0
+      for d in self.drivers.values() {
+        n += (d.evict_idle)()
+      }
+      ji(n)
+    }
+    "drivers.freeze" => {
+      for d in self.drivers.values() {
+        (d.freeze)()
+      }
+      Json::object({})
+    }
+    "drivers.owns" => {
+      let id = match args {
+        String(x) => x
+        _ => ""
+      }
+      let kind = match id.find("-") {
+        Some(i) => id[:i].to_owned()
+        None => id
+      }
+      match self.drivers.get(kind) {
+        Some(d) => jb((d.owned_runners)().contains(id))
+        None => jb(false)
+      }
+    }
+    "drivers.adopt" => {
+      let row = jfield(args, "row")
+      let snap = jfield(args, "snap")
+      let key = jtext(row, "key").unwrap_or("")
+      guard self.actors_program is Some(p) else { return Json::null() }
+      guard p.actors.get(key) is Some(actor) else { return Json::null() }
+      let runtime = @session_hub.runtime_named(
+        jtext(row, "runtime").unwrap_or(""),
+      ).unwrap_or("claude")
+      guard self.drivers.get(runtime) is Some(driver) else {
+        return Json::null()
+      }
+      let profile = self.run_on(key, true, false)
+      let options = self.open_options(row, profile, self.link_skills(row))
+      // (its events held by its actor while it is taken up, routed from the first: hub.ts `takeUp`, #7096)
+      let generation = actor.generation
+      let took = actor.begin_adopt(generation)
+      let routed_by = if runtime == "codex" { key } else { @agent_drivers.runner_id(runtime, key) }
+      adopt_routers[routed_by] = took
+      let agent = (driver.adopt)(
+        options,
+        match jfield(snap, "agent") {
+          Null => None
+          a => Some(a)
+        },
+        actor.listener(generation),
+      ) catch {
+        e => {
+          adopt_routers.remove(routed_by)
+          actor.cancel_adopt(generation)
+          live_log("warn", "hub", "a session's process was not taken up", {
+            "session": jstr(key),
+            "error": jstr(said_of(e)),
+          })
+          return Json::null()
+        }
+      }
+      adopt_routers.remove(routed_by)
+      self.ids_seq.val += 1
+      adopting[self.ids_seq.val] = agent
+      { "agent": ji(self.ids_seq.val) }
+    }
+    "accounts.pick" =>
+      match (self.bus.jobs_ask.val)(what, args) {
+        Null => {
+          let ids = jitems(jfield(args, "candidates"))
+          match
+            self
+            .profiles()
+            .iter()
+            .find_first(p => ids.contains(jfield(p, "id"))) {
+            Some(p) => p
+            None => { "error": jstr("no account can run it") }
+          }
+        }
+        picked => picked
+      }
+    "accounts.runOn"
+    | "accounts.goesOnWith"
+    | "accounts.resetAllowance"
+    | "accounts.change"
+    | "accounts.repick"
+    | "accounts.modelEfforts" =>
+      match (self.bus.jobs_ask.val)(what, args) {
+        Null =>
+          match what {
+            "accounts.goesOnWith" => jb(true)
+            "accounts.modelEfforts" => Json::array([])
+            "accounts.change" => Json::object({})
+            _ => Json::null()
+          }
+        v => v
+      }
+    "fs.mkdirs" => {
+      for d in jitems(args) {
+        match d {
+          String(p) => ignore(attempt(() => @drive.mkdir(p, true)))
+          _ => ()
+        }
+      }
+      Json::null()
+    }
+    "fs.write" => {
+      let p = s("path")
+      ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), p), true)))
+      ignore(write_text_mode(p, s("text"), 0))
+      Json::null()
+    }
+    "fs.read" => {
+      let p = s("path")
+      if p == path([self.data, "run", "handover.json"]) {
+        match carried_handover.val {
+          Some(h) => {
+            carried_handover.val = None
+            return jstr(h.stringify())
+          }
+          None => ()
+        }
+      }
+      match attempt(() => @drive.read_all(p)) {
+        Ok(b) => jstr(@utf8.decode_lossy(b))
+        Err(_) => Json::null()
+      }
+    }
+    "fs.rm" => {
+      @drive.rm_force(s("path"))
+      Json::null()
+    }
+    "fs.rmRoom" => {
+      ignore(remove_tree(s("home")))
+      Json::null()
+    }
+    "actors.settled" => {
+      guard self.actors_program is Some(p) else { return Json::object({}) }
+      let limit = jnum_of(args, "limitMs").unwrap_or(30_000.0).to_int()
+      let done = @effect.timeout(limit, async fn() {
+        while p.busy() || p.actors.values().any(a => !a.settled()) {
+          @effect.sleep(20) // timer: a deadline to a handover's settling (the program says where each actor stands)
+        }
+      })
+      match done {
+        Some(_) => Json::object({})
+        None => { "error": jstr("the sessions did not settle in \{limit} ms") }
+      }
+    }
+    "runners.allLeft" => {
+      all_left(10_000)
+      Json::object({})
+    }
+    "runners" => {
+      let infos = self.pump.wait(
+        @agent_drivers.live_runners(self.pump.machine(), self.data),
+      ) catch {
+        _ => []
+      }
+      Json::array(infos.map(i => jstr(i.id())))
+    }
+    "runnerId" => jstr(@agent_drivers.runner_id(s("runtime"), s("key")))
+    "runners.end" => {
+      ignore(
+        self.pump.wait(
+          @agent_drivers.end_runner(
+            self.pump.machine(),
+            self.data,
+            s("id"),
+            s("id"),
+          ),
+        ),
+      ) catch {
+        _ => ()
+      }
+      Json::null()
+    }
+    // (hub.ts `takeUp`'s lookup of the sessions its runners are of by their ids' parts, its index no longer prepared:
+    // "fallback", the sessions listed whole, as SandboxNameBuilder says where it is not ready)
+    "sandboxNames.takeUp" => Json::null()
+    "machine.transcriptOf" | "transcripts.of" | "marks.forget" | "machine.copyTranscript" => self.machine_ask(what, args)
+    "live.call" =>
+      match self.actors_program {
+        Some(p) => p.call("#live", s("method"), jitems(jfield(args, "args")))
+        None => Json::null()
+      }
+    "live.locate" | "live.tailRead" | "live.page" | "live.state" | "live.counted" => self.live_ask(what, args)
+    // (live.ts `handover`: the process before's readings taken up before the program runs here, `take_handover`: none
+    // left to wait for once it asks)
+    "live.handedOver" => Json::null()
+    "cold.expires" => jb(true)
+    "cold.holdsMore" =>
+      jb(
+        self
+        .storage()
+        .cold_holds_more(
+          match args {
+            String(k) => k
+            _ => s("key")
+          },
+        ),
+      )
+    "cold.expire" => {
+      self
+      .storage()
+      .cold_expire(s("key"), jnum_of(args, "before").unwrap_or(0.0))
+      Json::null()
+    }
+    "cold.restore" => {
+      self
+      .storage()
+      .cold_restore(
+        match args {
+          String(k) => k
+          _ => s("key")
+        },
+      )
+      Json::null()
+    }
+    "disk.low" =>
+      match disk_of(self.data) {
+        Some((free, _)) => jb(free < 2.0 * 1024.0 * 1024.0 * 1024.0)
+        None => jb(false)
+      }
+    "places.directory" => {
+      let p = s("path")
+      match attempt(() => @drive.stat(p)) {
+        Ok(st) if st.dir => Json::null()
+        Ok(_) =>
+          { "refused": jstr("notDir"), "message": jstr("\{p} is not a folder") }
+        Err(_) =>
+          { "refused": jstr("missing"), "message": jstr("\{p} is not there") }
+      }
+    }
+    "agents.along" => (self.bus.coord_ask.val)("agents.along", args)
+    "agents.jobsRelaunch" => (self.bus.jobs_ask.val)("jobs.relaunch", args)
+    "agents.jobsStopAll" => (self.bus.jobs_ask.val)("jobs.stopAll", args)
+    "agents.becomeRig" => (self.bus.cloud_call.val)("becomeRig", { "due": args })
+    "agents.openDoor" => {
+      let url = self.bus.door_ready.wait()
+      self.door_url = url
+      jstr(url)
+    }
+    "store.archiveDir" => jstr(path([self.data, "archive"]))
+    "waitForWorkspaceActivity" | "prepareLegacyEdits" => Json::null()
+    "waitForWorkspaceActivity.has" | "prepareLegacyEdits.has" => jb(false)
+    // (the logins are P5-4's: none answers on a station without them)
+    "logins.has" =>
+      match (try { Ok((self.bus.ui_ask.val)(what, args)) } catch { e => Err(e) }) {
+        Ok(True) => jb(true)
+        _ => jb(false)
+      }
+    "logins.answer" => (self.bus.ui_ask.val)(what, args)
+    "presets.refusal" | "presets.keep" => self.presets_answer(what[8:].to_owned(), [args])
+    "usage.read" | "usage.drainStep" | "usage.stopIndexes" | "usage.inMemory" | "usage.retireStep" =>
+      self.usage_ask(what, args)
+    "usage.close" => {
+      match usage_counter_program.val {
+        Some(p) => p.close()
+        None => ()
+      }
+      Json::null()
+    }
+    // (agents.ts `hub.onClose`: a session archived or deleted: its other stations' tasks closed, a deleted one's
+    // workspace limits let go, its hands on the screens, its forwards, what the parts keep of it)
+    "closed" => {
+      let key = match args {
+        String(k) => k
+        _ => jtext(args, "key").unwrap_or("")
+      }
+      self.on_closed(key)
+      Json::null()
+    }
+    "turnEnded" | "now" | "carried" | "taking" => {
+      if what == "taking" {
+        (self.bus.control_say)({ "taking": jb(true) })
+      }
+      Json::null()
+    }
+    _ =>
+      raise LiveError(
+        "the hub asked the station for \{what}, which it does not know",
+      )
+  }
+}
+
+///|
+/// What the station's process asks of its agents' side, on the bus.
+fn P52::wire_bus(self : P52) -> Unit {
+  let bus = self.bus
+  bus.mcp_handle.val = Some(async fn(r) { self.mcp(r) })
+  bus.hub_ask.val = async fn(op, arg) { self.hub_op(op, arg) }
+  bus.status_agents.val = () => Some(self.status_agents())
+  bus.handover_sessions.val = async fn() { self.hand_over() }
+  bus.take_handover.val = async fn(handed) { self.take_handover(handed) }
+  bus.drain_wait.val = async fn() { self.drain() }
+  // What other stations ask of this one's chats (agents.ts `local`).
+  for
+    meth in [
+      "session.read", "session.file", "session.put", "session.create", "session.create.preset",
+      "session.create.speed", "session.create.preset.speed", "session.create.preset.tui", "session.archive", "session.notice",
+      "session.message",
+    ] {
+    bus.on_peer(meth, async fn(peer, ws, params, _bytes) {
+      (self.peer_local(peer, ws, meth, params), None)
+    })
+  }
+}
+
+///|
+/// What another station's session asks of this one's chats (agents.ts `local`, by session_hub `peer_route`).
+async fn P52::peer_local(
+  self : P52,
+  peer : String,
+  ws : String?,
+  meth : String,
+  params : Json,
+) -> Json {
+  let storage = self.storage()
+  let w = self.chats_world()
+  let request = match params {
+    Object(m) => {
+      let c = m.copy()
+      if !c.contains("method") {
+        c["method"] = jstr(meth)
+      }
+      Json::object(c)
+    }
+    other => other
+  }
+  match @session_hub.peer_route(meth) {
+    "read" => storage.for_peer(peer, request, ws)
+    "file" => storage.file_for_peer(request, ws)
+    "put" => storage.put_for_peer(peer, request, ws)
+    "archive" => storage.archive_for_peer(request, ws)
+    "create" =>
+      p52_json_of_jv(
+        @session_chats.create_for_peer(
+          w,
+          peer,
+          jv_of(request),
+          match ws {
+            Some(x) => j_s(x)
+            None => J::Null
+          },
+        ),
+      )
+    _ => {
+      let hub = self.the_hub()
+      @session_hub.hub_call(hub, "fromPeer", [jstr(peer), request, jopt(ws)])
+    }
+  }
+}
+
+///|
+/// What a part asks of the hub on the bus (`hub_ask`): a method of it by name (session_hub `hub_call`).
+async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
+  let hub = self.the_hub()
+  match op {
+    "settled" => {
+      // (a turn ended as its opener is told: opened.ts `settled`)
+      ignore(arg)
+      Json::null()
+    }
+    "processes" =>
+      Json::array(hub.processes().map(p => Json::array([jstr(p.0), jstr(p.1)])))
+    "shutdown" => {
+      // (the station stops, not handing over: every session's process ended, the program let go)
+      if self.closed {
+        return Json::null()
+      }
+      self.closed = true
+      hub.hold("drain")
+      match self.actors_program {
+        Some(p) =>
+          for kv in p.actors {
+            ignore(kv.1.hub_asked("dispose", [])) catch {
+              _ => ()
+            }
+          }
+        None => ()
+      }
+      for d in self.drivers.values() {
+        (d.shutdown)(false) catch {
+          _ => ()
+        }
+      }
+      match self.actors_program {
+        Some(p) => p.close()
+        None => ()
+      }
+      self.program.kill_now()
+      Json::null()
+    }
+    // (the other pseudo-actors of the one sessions' program, `#jobs` and `#remote` (P5-3): mounted on it, asked by it)
+    "program.has" => Json::boolean(self.actors_program is Some(_))
+    "program.shell" => {
+      guard self.actors_program is Some(p) else { return Json::boolean(false) }
+      guard jtext(arg, "key") is Some(key) else { return Json::boolean(false) }
+      let bus = self.bus
+      p.shells[key] = (
+        async fn(f, args) {
+          bus.call_peer("self", None, "$program.asked:" + key, {
+            "fn": jstr(f),
+            "args": Json::array(args),
+          }).0
+        },
+        fn(t, args) {
+          ignore(
+            self.host.rt.fork(name="shell's tell", async fn() {
+              ignore(
+                bus.call_peer("self", None, "$program.told:" + key, {
+                  "fn": jstr(t),
+                  "args": Json::array(args),
+                }),
+              )
+            }),
+          )
+        },
+      )
+      Json::boolean(true)
+    }
+    "program.call" => {
+      guard self.actors_program is Some(p) else {
+        raise LiveError("no sessions' program")
+      }
+      p.call(
+        jtext(arg, "actor").unwrap_or(""),
+        jtext(arg, "method").unwrap_or(""),
+        jitems(jfield(arg, "args")),
+      )
+    }
+    // (what the platform's own overview is made of where the agents' side makes none: P5-1's `platform_overview`)
+    "overview" => Json::null()
+    // (P5-5's connects' surfaces, told as one starts, changes or stops: what `world.chat` reads at once)
+    "surfaces" => {
+      connect_surfaces.clear()
+      match arg {
+        Object(m) =>
+          for k, v in m {
+            connect_surfaces[k] = v
+          }
+        _ => ()
+      }
+      Json::null()
+    }
+    // ── what the other slices ask by an object of its fields ──
+    "notify" => {
+      hub.act(jtext(arg, "session").unwrap_or(""), "notify", args=[jfield(arg, "text")])
+      Json::null()
+    }
+    "link" => jopt(self.page_of(jtext(arg, "session").unwrap_or("")))
+    "runners" => self.runners_with_sessions()
+    "sweepRunners" =>
+      Json::array(
+        self.pump.wait(
+          @agent_drivers.sweep_runners(self.pump.machine(), self.data, jnum_of(arg, "now").unwrap_or(wall_ms().to_double()), orphan=info => self.pump.later(
+            "an orphan runner ended",
+            async fn() { hub.end_orphan(p52_json_of_jv(info.json), wall_ms().to_double()) },
+          )),
+        ).map(Json::string),
+      )
+    "relieveArchived" => {
+      hub.relieve_archived()
+      Json::null()
+    }
+    "profileGone" => {
+      hub.profile_gone(jtext(arg, "profile").unwrap_or(""))
+      Json::null()
+    }
+    "inbox" =>
+      @session_hub.hub_call(hub, "fromPeer", [jfield(arg, "station"), jfield(arg, "request"), Json::null()])
+    "codex.renewRunning" | "codex.rateLimits" =>
+      match self.drivers.get("codex") {
+        Some(d) =>
+          (d.ask)(
+            op[6:].to_owned(),
+            match arg {
+              Array([p, ..]) => p
+              other => other
+            },
+          )
+        None => if op == "codex.renewRunning" { Json::boolean(false) } else { raise LiveError("no Codex driver here") }
+      }
+    "agy.renew" | "agy.takeBack" | "agy.noteEmail" =>
+      match self.drivers.get("agy") {
+        Some(d) =>
+          (d.ask)(
+            op[4:].to_owned(),
+            match arg {
+              Array([String(h), ..]) => { "profile": Json::string(h), "home": Json::string(h) }
+              other => other
+            },
+          )
+        None => if op == "agy.takeBack" { Json::boolean(false) } else { Json::null() }
+      }
+    "sessions.allows" => {
+      let a = jitems(arg)
+      let key = match a.get(0) {
+        Some(String(k)) => Some(k)
+        _ => None
+      }
+      Json::boolean(
+        @session_hub.allowed_in(a.get(1).unwrap_or(Json::null()), hub.ws_of(key), self.workspaces().get(0)),
+      )
+    }
+    "sessions.running" => {
+      let except = match jitems(arg).get(0) {
+        Some(String(k)) => Some(k)
+        _ => None
+      }
+      let out = []
+      for key, _ in hub.actors {
+        if Some(key) == except || hub.process_state(key) == "cold" {
+          continue
+        }
+        match hub.get_session(key) {
+          Some(row) =>
+            match jfield(row, "profile") {
+              String(p) => out.push(Json::string(p))
+              _ => ()
+            }
+          None => ()
+        }
+      }
+      Json::array(out)
+    }
+    "sessions.moved" => {
+      let a = jitems(arg)
+      let key = match a.get(0) {
+        Some(String(k)) => k
+        _ => ""
+      }
+      let was = a.get(1).unwrap_or(Json::null())
+      match hub.get_session(key) {
+        Some(now) if !hub.handed_over(key) => {
+          let named = (id : String) => {
+            let found = self.profiles().iter().find_first(p => jtext(p, "id") == Some(id))
+            match found {
+              Some(p) => jtext(p, "name")
+              None => None
+            }
+          }
+          let ran : Json = { "was": @session_hub.run_shown(was, named), "now": @session_hub.run_shown(now, named) }
+          ignore(
+            self.host.rt.fork(name="a session moved", async fn() {
+              ignore(hub.ask_actor(hub.actor(now), "runChanged", args=[ran])) catch {
+                _ => ()
+              }
+            }),
+          )
+        }
+        _ => ()
+      }
+      Json::null()
+    }
+    // ── what the accounts (P5-3's) ask of the drivers and the decisions here (agents.ts `makeAccounts`) ──
+    "codex.models" | "codex.resetQuota" | "codex.loginChanged" =>
+      match self.drivers.get("codex") {
+        Some(d) => (d.ask)(op[6:].to_owned(), Json::array(jitems(arg)))
+        None => raise LiveError("no Codex driver here")
+      }
+    "agy.catalog" =>
+      match self.drivers.get("agy") {
+        Some(d) => (d.ask)("catalog", Json::array(jitems(arg)))
+        None => raise LiveError("no Antigravity CLI driver here")
+      }
+    "hermes.models" =>
+      match self.drivers.get("hermes") {
+        Some(d) => (d.ask)("models", Json::array(jitems(arg)))
+        None => raise LiveError("no Hermes Agent driver here")
+      }
+    "decision.fingerprint" =>
+      Json::string(@session_chats.fingerprint(self.chats_world(), jv_of(jitems(arg).get(0).unwrap_or(Json::null()))))
+    "decision.resolvedModel" => {
+      let a = jitems(arg)
+      let at = (i : Int) => jv_of(a.get(i).unwrap_or(Json::null()))
+      Json::boolean(@session_chats.resolved_model(self.chats_world(), at(0), at(1), at(2)) is Some(_))
+    }
+    "decision.discover" => {
+      let a = jitems(arg)
+      let at = (i : Int) => jv_of(a.get(i).unwrap_or(Json::null()))
+      p52_json_of_jv(@session_chats.discover(self.chats_world(), at(0), at(1)))
+    }
+    // (sessions/archive-policy.ts `savePolicy` on the hub's store: what it changed, null where nothing)
+    "policy.savePolicy" => {
+      let a = jitems(arg)
+      jopt(
+        self
+        .storage()
+        .save_policy(
+          match a.get(0) {
+            Some(x) if !is_undef_json(x) => Some(x)
+            _ => None
+          },
+          a.get(1).unwrap_or(Json::null()),
+          None,
+        ),
+      )
+    }
+    // (sessions/review.ts `startReview`: how many chats are reviewed, null where none can be)
+    "reviewUndecided" =>
+      match @session_chats.start_review(self.chats_world()) {
+        Some(n) => Json::number(n)
+        None => Json::null()
+      }
+    // (agents.ts: the accounts follow the allowances while a stream is open or a session runs)
+    "following" =>
+      Json::boolean(
+        (match live_events.val {
+          Some(e) => e.in_use()
+          None => false
+        }) || hub.any_running(),
+      )
+    _ => self.hub_bridge(op, jitems(arg))
+  }
+}
+
+///|
+/// jobs/memory.ts `runnersWithSessions`: the runners alive, each with its session (runnerSessions: a live session's
+/// runner first, then any session's).
+async fn P52::runners_with_sessions(self : P52) -> Json {
+  let infos = self.pump.wait(@agent_drivers.live_runners(self.pump.machine(), self.data))
+  let whose : Map[String, String] = {}
+  let of = (rows : Json) => for s in jitems(rows) {
+    match jtext(s, "key") {
+      Some(k) =>
+        for kind in @events.runtime_kinds {
+          let id = @agent_drivers.runner_id(kind, k)
+          if !whose.contains(id) {
+            whose[id] = k
+          }
+        }
+      None => ()
+    }
+  }
+  if infos.length() > 0 {
+    of(self.store("liveSessions", [])) catch {
+      _ => ()
+    }
+    if infos.iter().any(i => !whose.contains(i.id())) {
+      of(self.store("listSessions", [])) catch {
+        _ => ()
+      }
+    }
+  }
+  Json::array(
+    infos.map(i => {
+      let m = match p52_json_of_jv(i.json) {
+        Object(m) => m.copy()
+        _ => {}
+      }
+      m["session"] = jopt(whose.get(i.id()))
+      Json::object(m)
+    }),
+  )
+}
+
+///|
+/// What `status.sock` says of the agents (api/status.ts): those at work, those warm, all, those waiting for a person,
+/// and the tasks at work.
+fn P52::status_agents(self : P52) -> Json {
+  let states = match self.hub {
+    Some(h) => h.processes()
+    None => []
+  }
+  let busy = states.filter(p => p.1 == "running").length()
+  let warm = states.filter(p => p.1 == "warm").length()
+  let running = self.bus.store.running_sessions() catch { _ => [] }
+  let tasks = running.map(r => {
+    (
+      {
+        "session": jfield(r, "key"),
+        "title": jfield(r, "title"),
+        "state": jstr("working"),
+        "since": jfield(r, "lastActiveAt"),
+        "need": Json::null(),
+      } : Json)
+  })
+  let waiting = jnum_of(
+    Json::object({ "n": self.store("waitingCount", []) catch { _ => ji(0) } }),
+    "n",
+  ).unwrap_or(0.0)
+  {
+    "agents": {
+      "busy": ji(if busy > running.length() { busy } else { running.length() }),
+      "warm": ji(warm),
+      "total": ji(
+        if states.length() > running.length() {
+          states.length()
+        } else {
+          running.length()
+        },
+      ),
+    },
+    "waiting": jn(waiting),
+    "tasks": Json::array(
+      tasks[:if tasks.length() > 50 { 50 } else { tasks.length() }].to_owned(),
+    ),
+  }
+}
+
+///|
+/// A handover (hub.ts `handOver`): turns held, every actor's snapshot, the drivers let go of their processes; the
+/// sessions handed over.
+async fn P52::hand_over(self : P52) -> Array[Json] {
+  guard self.hub is Some(hub) else { return [] }
+  let handed = hub.hand_over() catch {
+    e => {
+      live_log("warn", "agents", "the sessions were not handed over", {
+        "error": jstr(said_of(e)),
+      })
+      return []
+    }
+  }
+  self.closed = true
+  self.program.release(false)
+  jitems(jfield(handed, "sessions"))
+}
+
+///|
+/// The sessions taken up once the agents' door is open (agents.ts `start`): what the process before handed over, the
+/// runners it left, turns released.
+async fn P52::take_handover(self : P52, handed : Json?) -> Unit {
+  let url = self.bus.door_ready.wait()
+  self.door_url = url
+  carried_handover.val = handed
+  guard self.hub is Some(hub) else { return }
+  let side = @session_hub.AgentsSide::new(hub, self.place())
+  self.agents_side = Some(side)
+  side.start(self.place()) catch {
+    e =>
+      live_log("error", "agents", "the sessions were not taken up", {
+        "error": jstr(said_of(e)),
+      })
+  }
+  self.taken = true
+  self.start_usage()
+  self.start_feedback()
+  if trace_on() {
+    err_write("p52 taken up\n")
+  }
+}
+
+///|
+/// The station drained (ops/launcher.ts `drain`): once no turn runs, "idle".
+async fn P52::drain(self : P52) -> String {
+  guard self.hub is Some(hub) else { return "idle" }
+  while hub.any_running() {
+    @effect.sleep(200) // timer: a deadline's wait for what runs to end (a turn tells nothing of its end to this)
+  }
+  "idle"
+}
+
+///|
+/// The sessions' lifecycle (lifecycle.ts): auto archive and the archived sessions' expiry, each when it is next due.
+async fn P52::lifecycle(self : P52) -> Unit {
+  while !self.bus.stopped.is_done() && !self.closed {
+    let next = match self.hub {
+      Some(hub) if self.taken => {
+        let a = hub.auto_archive(wall_ms().to_double()) catch { _ => None }
+        let b = hub.expire_archived(wall_ms().to_double()) catch { _ => None }
+        match (a, b) {
+          (Some(x), Some(y)) => Some(if x < y { x } else { y })
+          (Some(x), None) | (None, Some(x)) => Some(x)
+          _ => None
+        }
+      }
+      _ => None
+    }
+    let wait = match next {
+      Some(at) => at - wall_ms().to_double()
+      None => 3_600_000.0
+    }
+    // timer: a deadline (the next session due to be archived or expired, as the store says)
+    @effect.sleep(
+      if wait < 1000.0 {
+        1000
+      } else if wait > 3_600_000.0 {
+        3_600_000
+      } else {
+        wait.to_int()
+      },
+    )
+  }
+}
+
+///|
+/// Whether what the agents' side asks and is asked is written to stderr (STILLFAIL_P52_TRACE=1: looking at what a
+/// session did).
+fn trace_on() -> Bool {
+  env_get("STILLFAIL_P52_TRACE") == Some("1")
+}
+
+///|
+/// The connects' chat surfaces as the connects' part told them (`surfaces`), by connect.
+let connect_surfaces : Map[String, Json] = Map([])
+
+///|
+/// The hub's live view (hub.ts `live`, sessions/live.ts `LiveHub`): the shell of the program's `#live`, once made.
+let ctx_live : Ref[@session_hub.LiveShell?] = Ref(None)
+
+///|
+/// The live view's listeners (a stream following a session), by their subscription: what each is given.
+let live_listeners : Map[Int, (@jsjson.JValue) -> Unit] = Map([])
+
+///|
+/// agents.ts: the live view mounted on the sessions' program as `#live`, and the event streams given it (`follow`:
+/// a session's live steps, the sessions at work, what each now does, a process's state; accounts read again as someone
+/// follows again).
+fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
+  let live = @session_hub.LiveShell::new(hub)
+  ctx_live.val = Some(live)
+  match self.actors_program {
+    Some(p) =>
+      p.shells["#live"] = (
+        async fn(f, args) { live.asked_by_program(f, args) },
+        fn(t, args) { live.told_by_program(t, args) },
+      )
+    None => ()
+  }
+  guard live_events.val is Some(events) else { return }
+  let host = self.host
+  let bus = self.bus
+  events.follow(
+    live=(key, from, last, send, brief) => {
+      let id = live.subscribe(key, from, last, brief~)
+      live_listeners[id] = send
+      Some(() => {
+        live_listeners.remove(id)
+        live.unsubscribe(key, id)
+      })
+    },
+    held=() => live.held_now(),
+    held_now=(keys, k) => ignore(
+      host.rt.fork(name="the sessions at work now", async fn() {
+        match (try { Ok(live.now_of(keys)) } catch { e => Err(e) }) {
+          Ok(v) => k(Ok(jv_of(v)))
+          Err(e) => k(Err(said_of(e)))
+        }
+      }),
+    ),
+    process_state=key => Some(hub.process_state(key)),
+    followed=() => ignore(
+      host.rt.fork(name="followed again", async fn() {
+        ignore((bus.jobs_ask.val)("accounts.followed", Json::array([]))) catch {
+          _ => ()
+        }
+      }),
+    ),
+  )
+}

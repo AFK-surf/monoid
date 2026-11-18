@@ -336,6 +336,7 @@ pub struct Request {
   signal : Signal?
 }
 pub fn Request::email(Self) -> String
+pub fn Request::new(String, String, Array[(String, String)], String?, Array[(String, String)], Bytes, JV, String, background? : Bool, signal? : Signal) -> Self
 pub fn Request::param(Self, String) -> String?
 pub fn Request::params(Self, String) -> Array[String]
 pub fn Request::text(Self) -> String
@@ -360,6 +361,7 @@ pub struct Setup {
   absent : Array[String]
 }
 pub fn Setup::has(Self, String) -> Bool
+pub fn Setup::new(Words, String, Array[String], Bool, String?, Bytes, String, Array[String]) -> Self
 
 pub struct Signal {
   mut aborted : Bool

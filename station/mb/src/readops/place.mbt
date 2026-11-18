@@ -473,3 +473,12 @@ pub fn session_place(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     "contentType": Json::string(mime(env, path)),
   }
 }
+
+///|
+/// ops/places.ts `realOutside` as the station's own parts ask it (sessions' storage): `path` with its links followed;
+/// on macOS (`mac`) one in a protected folder said as far as it was followed, nothing in it touched; None when it is
+/// not there.
+pub fn real_outside_of(host : @host.Host, path : String, home~ : String, mac~ : Bool) -> String? {
+  let env : Env = { host, sep: "/", home, homedir: home, mac, now: 0.0 }
+  real_outside(env, path)
+}

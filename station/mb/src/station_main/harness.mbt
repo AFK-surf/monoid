@@ -8,7 +8,8 @@
 //   stdout, stderr}), what it is given written on its stdin; "kill" {pid, signal, group};
 // - "fileLock" {path}: the lock taken ({handle}), "fileUnlock" {handle};
 // - "words": the catalogs the program carries; "iso" {ms}: an instant as toISOString says it;
-// - "loopback" {path, query, ready, place, lang}: what the loopback port says.
+// - "loopback" {path, query, ready, place, lang}: what the loopback port says;
+// - "p5_5" {step, …}: P5-5's live parts on a data directory of the test's (live_p5_5_harness.mbt).
 
 ///|
 pub async fn harness(host : @host.Host) -> Unit {
@@ -60,6 +61,8 @@ pub async fn harness(host : @host.Host) -> Unit {
             None => Json::null()
           },
         )
+      // (a part's route matched as the admin API matches it: live_p5_1_admin.mbt)
+      "partRoute" => Ok(part_route_match(s("pattern"), s("path")).unwrap_or(Json::null()))
       "machine" => Ok(machine())
       "lanAddrs" => Ok(Json::array(lan_addrs()))
       "diskOf" =>
@@ -183,6 +186,8 @@ pub async fn harness(host : @host.Host) -> Unit {
         Ok({ "zh": zh, "en": en })
       }
       "iso" => Ok(Json::string(iso_time(match v("ms") { Some(Number(m, ..)) => m; _ => 0.0 })))
+      // (P5-5's live parts made on a data directory of the test's: live_p5_5_harness.mbt)
+      "p5_5" => p5_5_harness(host, ask)
       "loopback" => {
         let r = loopback_answer(
           s("path"),

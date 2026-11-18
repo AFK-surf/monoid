@@ -773,7 +773,7 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
     const unhomed = (pr: Json) => JSON.parse(JSON.stringify(pr).replaceAll(ts.data, "<data>").replaceAll(mb.data, "<data>"));
     const fp = (pr: Json) => fingerprint(pr);
     const discoverOf = (pr: Json) => ({ state: "ready", provider: pr.access?.provider ?? "openrouter", model: "claude-sonnet-5-5", models: ["claude-sonnet-5-5"], fingerprint: fp(pr) });
-    const shared = { view: (pr: Json) => (pr.id === "cl" ? { shared: true } : null) };
+    const shared = { view: (pr: Json, ws: string | null) => (pr.id === "cl" ? { shared: true, workspace: ws } : null) };
     const consoleLogins = new Map<string, Json>();
     const hubTold: Json[] = [];
     const tsAccounts = new Accounts({
@@ -809,7 +809,7 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
         case "modelName": return (await import("../src/ops/model-name.ts")).modelName(args[0]);
         case "workspaces": return ["ws1", "ws2"];
         case "reviewUndecided": return 3;
-        case "shared.view": return shared.view(args[0]) ?? { $undef: 1 };
+        case "shared.view": return shared.view(args[0], args[1] ?? null) ?? { $undef: 1 };
         case "share.shareRefusal": return (await import("../src/share/index.ts")).shareRefusal(args[0]);
         case "profiles.loginCommand": return (await import("../src/accounts/profiles.ts")).loginCommand(args[0], args[1], args[2]);
         case "logins.get": return null;

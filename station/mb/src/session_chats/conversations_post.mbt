@@ -64,7 +64,7 @@ fn archived_by_hand(row : J?) -> Thrown {
 
 ///|
 /// A post as the agent gave it and, sent by send, its id.
-pub struct Held {
+pub(all) struct Held {
   id : String?
   args : J
 }

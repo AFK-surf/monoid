@@ -317,7 +317,7 @@ fn pairs_json(xs : Array[(String, String)]) -> Json {
 
 ///|
 /// One of the hub's methods, by the TypeScript's name.
-async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
+pub async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
   let unit = undefined()
   match name {
     "hold" => {

@@ -6,7 +6,7 @@
 // Mac; this waits (WAIT seconds, default 1800) for a person to allow it there, asking the helper itself whether it has
 // the grant (never the drive again, which would be one more attempt), then goes on.
 //
-//   node station/side/drive-e2e.ts    (a worktree with `pnpm run build` done in station/ and `pnpm run build:cloud`
+//   node station/side/drive-e2e.ts    (a worktree with `pnpm run build:node` done in station/ and `pnpm run build:cloud`
 //                                      at the top, the iroh dev relay on :3340; PORT, default 8917, and PORT+1..+4
 //                                      free; run where the person is logged in: the job goes in their GUI session)
 //

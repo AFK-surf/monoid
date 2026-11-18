@@ -59,6 +59,43 @@ describe("signed releases", () => {
     assert.equal(verifyFeed({ ...feedOf(1310, raw), deltas: { [platform() ?? "darwin-arm64"]: [{ from: 1300, file: "x", sha256: "nope", size: -1 }] } }, trusted).build, 1310);
   });
 
+  test("a build with no Node says 64 zeros, which this station and those from before take; one saying none is taken as none", () => {
+    // What a station from before asked of each build (signed.ts before the MoonBit station): its Node's hash too.
+    const SHA = /^[0-9a-f]{64}$/;
+    const fromBefore = (r: { builds: Record<string, { sha256?: string; nodeSha256?: string; size?: number }> }) =>
+      Object.values(r.builds).every((b) => SHA.test(b.sha256 ?? "") && SHA.test(b.nodeSha256 ?? "") && Number.isSafeInteger(b.size));
+    const zeros = { nodeSha256: "0".repeat(64) };
+    assert.equal(expected(verifyFeed(feedOf(1310, zeros), trusted), platform()).nodeSha256, "0".repeat(64));
+    assert.ok(fromBefore(words(1310, zeros)));
+    // Said empty or not at all: no Node signed (no station from before is given such a release: release-sign.ts says zeros).
+    assert.equal(expected(verifyFeed(feedOf(1310, { nodeSha256: "" }), trusted), platform()).nodeSha256, "");
+    const { nodeSha256: _, ...none } = words(1310).builds[platform() ?? "darwin-arm64"]!;
+    assert.equal(expected(verifyFeed({ version: "0.1.1310", ...signed({ ...words(1310), builds: { [platform() ?? "darwin-arm64"]: none } }) }, trusted), platform()).nodeSha256, "");
+    for (const bad of ["nope", "0".repeat(63), "A".repeat(64), 1]) unverified(() => verifyFeed(feedOf(1310, { nodeSha256: bad as string }), trusted), /not well formed/);
+  });
+
+  test("scripts/release-sign.ts signs a release with no Node (the MoonBit station's) as every station, of before too, takes it", () => {
+    const dir = temp();
+    mkdirSync(join(dir, "r", "stillfail", "station"), { recursive: true });
+    writeFileSync(join(dir, "r", "stillfail", "station", "stillfail-reader"), "the station");
+    execFileSync("tar", ["-czf", join(dir, "mac.tar.gz"), "-C", join(dir, "r"), "stillfail"]);
+    execFileSync("zip", ["-qr", join(dir, "win.zip"), "stillfail"], { cwd: join(dir, "r") });
+    const done = spawnSync(process.execPath, [join(root, "scripts", "release-sign.ts"), "station", join(dir, "station.json"), "--build", "1310", "--commit", "c".repeat(40),
+      `darwin-arm64=${join(dir, "mac.tar.gz")}`, `win32-x64=${join(dir, "win.zip")}`], {
+      env: { PATH: process.env.PATH, RELEASE_SIGNING_KEY: KEY.pem }, encoding: "utf8",
+    });
+    assert.equal(done.status, 0, done.stderr);
+    const feed = JSON.parse(readFileSync(join(dir, "station.json"), "utf8"));
+    const r = verifyFeed(feed, trusted);
+    assert.equal(r.node, "");
+    const [mac, win] = [readFileSync(join(dir, "mac.tar.gz")), readFileSync(join(dir, "win.zip"))];
+    assert.deepEqual(r.builds["darwin-arm64"], { sha256: sha256(mac), size: mac.length, nodeSha256: "0".repeat(64), rawSha256: sha256(gunzipSync(mac)), rawSize: gunzipSync(mac).length });
+    assert.equal(r.builds["win32-x64"]!.nodeSha256, "0".repeat(64));
+    // As a station from before reads the signed words: every build's hashes 64 hex digits, its Node's too.
+    const said = JSON.parse(Buffer.from(feed.release, "base64").toString("utf8"));
+    for (const b of Object.values<any>(said.builds)) assert.match(b.nodeSha256, /^[0-9a-f]{64}$/);
+  });
+
   test("the station takes only the release keys and those its environment adds; placeholders none", () => {
     assert.deepEqual([...trustedKeys({}).values()], RELEASE_KEYS.filter((k) => !k.startsWith("__")));
     const added = trustedKeys({ STILLFAIL_RELEASE_KEYS: ` ${KEY.raw} , ` });

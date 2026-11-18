@@ -158,3 +158,11 @@ fn NameBook::save(self : NameBook) -> Unit {
   self.saving = false
   (self.saved.val)(self.to_j())
 }
+
+///|
+/// A names book kept elsewhere (the connects' own, connects/names.ts), as a surface asks it: a person by key (looked
+/// up with `fetch` where it is not known or `stale` says so), a channel's name by key.
+pub(all) struct Names {
+  person : (String, async () -> J?, (J, Double) -> Bool) -> J?
+  channel : (String, async () -> String?) -> String?
+}

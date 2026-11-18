@@ -23,8 +23,9 @@
 # promote: the test channel's station release becomes the stable one: its tarballs and station.json copied to the
 # stable names, nothing built (the signed words name no channel: they hold for both). (The beta apps are other apps: a released app is released by release.sh desktop/android.
 # The web app is promoted by cloud/deploy.py promote-web.)
-# A station's release names the Node it runs on (its NODE_VERSION), which is not in it: that Node goes beside the releases, once
-# per version (node/node-v<version>-<platform>.tar.gz and its .sha256: scripts/node-dist.sh), when they lack it.
+# A station's release is the MoonBit station, with no Node (scripts/station-bundle.sh). One that names a Node it runs on
+# (its NODE_VERSION, a release from before) has that Node put beside the releases, once per version
+# (node/node-v<version>-<platform>.tar.gz and its .sha256: scripts/node-dist.sh), when they lack it.
 # RELEASE_DIR=dir: into that directory instead of the bucket (the dev cloud serves them from dist/releases: cloud/test/dev.ts).
 # RELEASES=<url>: where the releases are read from, to see whether a Node is there already (still.fail cloud's; "" with
 # RELEASE_DIR: only that directory is looked in).
@@ -159,7 +160,7 @@ released() {
 # job's 10 (43460534865, 2026-11-13). One not got here is got (or built) there as before.
 for platform in $platforms; do
   case $platform in desktop | desktop-win | android) continue ;; esac
-  parts="launcher mesh runner reader"
+  parts="launcher runner reader"
   [ "$platform" = darwin-arm64 ] && parts="$parts helper"
   [ "$platform" = win32-x64 ] && parts="$parts screen agent-desktop"
   for part in $parts; do node "$root/scripts/native.ts" fetch "$part" "$platform" > /dev/null || : & done
@@ -329,7 +330,7 @@ for platform in $platforms; do
     *)
       sh "$root/scripts/station-bundle.sh" "$out/$platform" "$platform"
       # Packed and put beside the next platform's bundling (each ~20 s, one after another before 2026-10-04).
-      # Windows' a zip (install.ps1 opens it with Expand-Archive), its Node nodejs.org's own zip (node-dist.sh).
+      # Windows' a zip (install.ps1 opens it with Expand-Archive).
       if [ "$platform" = win32-x64 ]; then
         file="stillfail-station-$platform.zip"
         station_files="${station_files:-} ${beta:+beta/}$file=$out/$file"
@@ -342,14 +343,19 @@ for platform in $platforms; do
         node_file="node/node-v$(cat "$root/.node-version")-$platform.tar.gz"
       fi
       putting="${putting:-} $!"
-      # Its Node (cached by node-dist.sh): its binary's hash is in the signed words; put unless the releases have that
-      # version already.
-      dist=$(sh "$root/scripts/node-dist.sh" "$out/node-$platform" "$platform")
-      signing="${signing:-} $platform=$out/$file,$dist"
-      if ! released "$node_file"; then
-        node_type=application/gzip; [ "$platform" = win32-x64 ] && node_type=application/zip
-        put "$dist" "$node_file" "$node_type"
-        put "$dist.sha256" "$node_file.sha256" "text/plain; charset=utf-8"
+      if [ -f "$out/$platform/stillfail/NODE_VERSION" ]; then
+        # Its Node (cached by node-dist.sh; nodejs.org's own zip on Windows): its binary's hash is in the signed words;
+        # put unless the releases have that version already.
+        dist=$(sh "$root/scripts/node-dist.sh" "$out/node-$platform" "$platform")
+        signing="${signing:-} $platform=$out/$file,$dist"
+        if ! released "$node_file"; then
+          node_type=application/gzip; [ "$platform" = win32-x64 ] && node_type=application/zip
+          put "$dist" "$node_file" "$node_type"
+          put "$dist.sha256" "$node_file.sha256" "text/plain; charset=utf-8"
+        fi
+      else
+        # No Node: the signed words name none (release-sign.ts: a node hash of zeros, as stations from before take).
+        signing="${signing:-} $platform=$out/$file"
       fi
       station=yes
       ;;
@@ -357,7 +363,7 @@ for platform in $platforms; do
 done
 for pid in ${putting:-}; do wait "$pid" || { echo "a station release was not put" >&2; exit 1; }; done
 # What stations read to say a newer release is out (station/src/updates/updates.ts), once its files are there: its
-# version, and the words naming each archive and its Node, signed with $RELEASE_SIGNING_KEY (scripts/release-sign.ts,
+# version, and the words naming each archive and its Node (where it has one), signed with $RELEASE_SIGNING_KEY (scripts/release-sign.ts,
 # scripts/release-sign.ts). Not signing is an error but into RELEASE_DIR outside CI (a dev cloud's), where it warns.
 if [ -n "${station:-}" ]; then
   node "$root/scripts/release-sign.ts" station "$out/station.json" --build "$build" --commit "$(git -C "$root" rev-parse HEAD)" \

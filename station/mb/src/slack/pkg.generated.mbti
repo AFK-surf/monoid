@@ -28,7 +28,11 @@ pub fn bot_scopes() -> Array[String]
 
 pub fn config_tokens(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
+pub fn connect_blocked(String) -> Bool
+
 pub fn connect_name(SlackConnect) -> String
+
+pub fn crc32(Bytes) -> UInt32
 
 pub fn create_app_url(String) -> String
 
@@ -176,6 +180,8 @@ pub fn with_socket_mode(@jsjson.JValue?, Bool) -> @jsjson.JValue
 
 pub fn with_stop_event(@jsjson.JValue?) -> @jsjson.JValue?
 
+pub fn zip_one(String, Bytes) -> Bytes raise
+
 // Errors
 pub(all) suberror SlackApiError {
   SlackApiError(String, String, @jsjson.JValue?)
@@ -273,6 +279,11 @@ pub fn NameBook::new(Clock, kept? : @jsjson.JValue, learn_after_ms? : Int32, sav
 pub fn NameBook::on_learn(Self, () -> Unit) -> Unit
 pub fn NameBook::person(Self, String, async () -> @jsjson.JValue?, stale? : (@jsjson.JValue, Double) -> Bool) -> @jsjson.JValue?
 pub fn NameBook::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct Names {
+  person : (String, async () -> @jsjson.JValue?, (@jsjson.JValue, Double) -> Bool) -> @jsjson.JValue?
+  channel : (String, async () -> String?) -> String?
+}
 
 pub struct Net {
   fetch : async (String, String, Array[(String, String)], Bytes?, Int32) -> HttpAnswer
@@ -413,6 +424,7 @@ pub struct SurfaceOptions {
   client : SlackClient
   connect : String?
   book : NameBook?
+  names : Names?
   ping_ms : Int32
   stale_ms : Int32
   backoff_ms : Int32
@@ -427,7 +439,7 @@ pub struct SurfaceOptions {
   models : () -> Array[ModelChoice]
   models_first : ((String) -> Array[ModelChoice])?
 }
-pub fn SurfaceOptions::new(String, String, SlackClient, Clock, WsIO, @session_chats.Words, @ref.Ref[String], (String, String, String, @jsjson.JValue) -> Unit, async (String) -> Bytes, connect? : String?, book? : NameBook?, ping_ms? : Int32, stale_ms? : Int32, backoff_ms? : Int32, on_heard? : () -> Unit, on_working? : async () -> Bool, models? : () -> Array[ModelChoice], models_first? : ((String) -> Array[ModelChoice])?) -> Self
+pub fn SurfaceOptions::new(String, String, SlackClient, Clock, WsIO, @session_chats.Words, @ref.Ref[String], (String, String, String, @jsjson.JValue) -> Unit, async (String) -> Bytes, connect? : String?, book? : NameBook?, names? : Names?, ping_ms? : Int32, stale_ms? : Int32, backoff_ms? : Int32, on_heard? : () -> Unit, on_working? : async () -> Bool, models? : () -> Array[ModelChoice], models_first? : ((String) -> Array[ModelChoice])?) -> Self
 
 pub struct ThreadStatus {
   call : async (String, Array[(String, String)]) -> Unit

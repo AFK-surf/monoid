@@ -22,7 +22,7 @@ pub fn fingerprint(kind : String, own : J?) -> String? {
 
 ///|
 /// The hub, as the workspace's connects use it.
-pub struct WsHub {
+pub(all) struct WsHub {
   /// `hub.chatOf(id)`: the surface it posts through (a connect of its own, or another station's: `remote`).
   chat_of : async (String) -> Surface?
   /// `hub.config().connects`: each connect as the hub reads it (sessions/config.ts `Connect`).
@@ -40,7 +40,7 @@ pub struct WsHub {
 
 ///|
 /// The store, as the workspace's connects use it: the threads a connect handed to other stations.
-pub struct WsStore {
+pub(all) struct WsStore {
   drop_connect_thread_station : async (String, String, String) -> Unit
   set_connect_thread_station : async (String, String, String, String) -> Unit
   connect_thread_station : async (String, String, String) -> String?
@@ -56,7 +56,7 @@ pub struct WsStore {
 ///|
 /// The mesh between the stations (mesh/bus.ts `PeerBus`): asking one, and what this one answers by method. What a
 /// station refused (`Refused` there) raises `Thrown("Declined", ...)`.
-pub struct Bus {
+pub(all) struct Bus {
   ask : async (String, J, Body) -> Answer
   /// What answers `method`: given the asking station, its request, its workspace and the bytes after it.
   on : (String, async (String, J, String?, Bytes?) -> Answer) -> Unit
@@ -65,7 +65,7 @@ pub struct Bus {
 }
 
 ///|
-pub struct WorkspaceDeps {
+pub(all) struct WorkspaceDeps {
   data : String
   hub : WsHub
   store : WsStore

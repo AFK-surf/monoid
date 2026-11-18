@@ -216,7 +216,7 @@ fn Kept::json(self : Kept) -> Json {
 
 ///|
 /// What the memory is given (memory.ts `MemoryDeps`).
-pub struct MemoryDeps {
+pub(all) struct MemoryDeps {
   data : String
   cloud : Cloud
   /// A request to another station of workspace `workspace` (the station transport).

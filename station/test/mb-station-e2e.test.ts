@@ -665,9 +665,10 @@ async function launch(data: string, app: string, more: string[] = []): Promise<L
   return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended };
 }
 
-function get(port: number | { socket: string }, path: string, body?: string): Promise<{ status: number; body: string; headers: Record<string, unknown> }> {
+function get(port: number | { socket: string }, path: string, body?: string, token?: string): Promise<{ status: number; body: string; headers: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
-    const req = request({ ...(typeof port === "number" ? { host: "127.0.0.1", port } : { socketPath: port.socket }), path, method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" } }, (res) => {
+    const headers: Record<string, string> = { "content-type": "application/json", ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}) };
+    const req = request({ ...(typeof port === "number" ? { host: "127.0.0.1", port } : { socketPath: port.socket }), path, method: body === undefined ? "GET" : "POST", headers }, (res) => {
       let text = "";
       res.on("data", (d) => (text += d));
       res.on("end", () => resolve({ status: res.statusCode!, body: text, headers: res.headers }));
@@ -698,15 +699,20 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   const unjoined = await get(admin.port, "/admin");
   assert.equal(unjoined.status, 404);
   assert.equal(unjoined.body, loopbackAnswer("/admin", null, true, null, "zh").body);
-  // the agents' door
-  const init = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }))).body);
-  assert.equal(init.result.serverInfo.version, "0.1.9400");
-  assert.deepEqual(JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }))).body).result, { tools: [] });
+  // the agents' door: a session's bearer token or nothing (tools/mcp.ts `McpEndpoint`)
+  const anonymous = await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
+  assert.equal(anonymous.status, 401);
+  assert.deepEqual(JSON.parse(anonymous.body), { error: "unknown session token" });
   assert.equal((await get(mcp.port, "/health")).status, 200);
   // the store it opened, the schema made: a session the TypeScript's store writes there is the status socket's
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
   store.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: data, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.setRunning("s1", true);
+  // its token is the door's bearer: the endpoint's methods, and the agents' tools
+  const init = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }), "t1")).body);
+  assert.equal(init.result.serverInfo.name, "still.fail");
+  const tools = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }), "t1")).body).result.tools.map((t: { name: string }) => t.name);
+  for (const core of ["chat_post", "chat_state", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "job_start", "job_list", "job_log", "job_stop", "station_list", "station_task", "station_file", "search", "skill_read", "workspace_limit", "secret_list", "feishu_api", "slack_api", "station_retire"]) assert.ok(tools.includes(core), `${core} listed: ${tools.join(",")}`);
   const running = store.runningSessions();
   const status = JSON.parse((await get({ socket: join(data, "run", "status.sock") }, "/v1/status")).body);
   assert.equal(status.version, "0.1.9400");
@@ -736,7 +742,9 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal(b.said.some((m) => m.serving === "mcp"), false, "its door not open while the one before holds the sessions");
   a.tell({ op: "handover" });
   const carry = await a.next("carry", (m) => m.carry !== undefined);
-  assert.deepEqual(carry, { carry: {} }, "what its parts carry, by part (none made yet)");
+  assert.deepEqual(Object.keys(carry.carry), ["vault"], "what its parts carry, by part (the vault's grants and boxes waiting)");
+  assert.equal(typeof carry.carry.vault, "object");
+  assert.notEqual(carry.carry.vault, null);
   assert.equal(await a.ended, 0);
   assert.equal(existsSync(join(data, "run", "hub.json")) && JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid === a.child.pid, false, "its sessions' file let go");
   b.tell({ op: "carried", carried: carry.carry });
@@ -745,7 +753,8 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal(JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, b.child.pid);
   assert.equal(existsSync(join(data, "run", "handover.json")), false, "the handover taken up");
   assert.equal((await get(bAdmin.port, "/healthz")).status, 200);
-  assert.deepEqual(JSON.parse((await get(bMcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }))).body).result, {});
+  assert.equal((await get(bMcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }))).status, 401);
+  assert.deepEqual(JSON.parse((await get(bMcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }), "t1")).body).result, {});
   b.tell({ op: "drain" });
   assert.deepEqual(await b.next("drained", (m) => m.drained !== undefined), { drained: "idle" });
   b.tell({ op: "hup" });

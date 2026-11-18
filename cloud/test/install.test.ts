@@ -602,6 +602,37 @@ test("a station updating itself runs on the Node its signed words name, the mach
   }
 });
 
+test("a station updating itself to the MoonBit station (no NODE_VERSION, no main.js) fetches no Node and links none", () => {
+  const m = machine();
+  const data = join(m.home, ".stillfail");
+  try {
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.still.fail"}');
+    // what a release from before left: its Node, kept beside the data
+    mkdirSync(join(data, "node", "v24.21.0", "bin"), { recursive: true });
+    writeFileSync(join(data, "node", "v24.21.0", "bin", "node"), "#!/bin/sh\necho v24.21.0\n", { mode: 0o755 });
+    const release = join(m.root, "release", "stillfail");
+    mkdirSync(join(release, "station"), { recursive: true });
+    writeFileSync(join(release, "station", "stillfail-reader"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    execFileSync("tar", ["-czf", join(m.root, "release.tar.gz"), "-C", join(m.root, "release"), "stillfail"]);
+    const stub = join(m.root, "stub");
+    writeFileSync(join(stub, "curl"), `#!/bin/sh\necho "curl $*" >> "$HOME/said"\nwhile [ $# -gt 1 ]; do\n  [ "$1" = -o ] && cp "${join(m.root, "release.tar.gz")}" "$2"\n  shift\ndone\n`, { mode: 0o755 });
+    // signed as scripts/release-sign.ts signs a release with no Node: a node hash of zeros, never read
+    const told = { STILLFAIL_ORIGIN: "https://releases.test", STILLFAIL_RELEASE_SHA256: sha256Of(join(m.root, "release.tar.gz")), STILLFAIL_NODE_SHA256: "0".repeat(64) };
+    const done = m.run([], told, bundledInstallScript("zh"));
+    assert.equal(done.status, 0, done.out);
+    assert.match(done.said, /curl .*\/releases\/stillfail-station-darwin-arm64\.tar\.gz/);
+    assert.doesNotMatch(done.said, /releases\/node\//, "no Node asked for");
+    const app = join(data, "app");
+    assert.ok(existsSync(join(app, "station", "stillfail-reader")));
+    for (const gone of ["node", "NODE_VERSION", join("station", "main.js")]) assert.throws(() => lstatSync(join(app, gone)), gone);
+    // the Node a release from before ran on, taken away once it runs on none
+    assert.equal(existsSync(join(data, "node")), false);
+  } finally {
+    m.done();
+  }
+});
+
 test("a Node another install put there meanwhile is the one kept, and nothing half-made is left beside it", () => {
   const m = machine();
   const data = join(m.home, ".stillfail");
@@ -680,7 +711,8 @@ test("stillfail uninstall takes the station away for good, its data kept; instal
     await new Promise<void>((r) => helper.listen(join(data, "helper", "helper.sock"), r));
     const station = launcher(data);
     writeFileSync(join(m.home, "said"), "");
-    const done = await uninstall(m, ["uninstall"]);
+    // (no Node on its PATH: a release of the MoonBit station has none, and the Helper is told all the same)
+    const done = await uninstall(m, ["uninstall"], { PATH: `${join(m.root, "stub")}:/usr/bin:/bin:/usr/sbin:/sbin` });
     helper.close();
     assert.equal(done.status, 0, done.out);
     assert.match(done.said, /^launchctl bootout gui\/\d+\/fail\.still\.station$/m);

@@ -4,7 +4,7 @@
 
 ///|
 /// The clock its waits run on (Effect's `Clock`: a TestClock in tests): the time now, in ms, and a wait.
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   sleep : async (Double) -> Unit
 }
@@ -23,7 +23,7 @@ pub fn Clock::live() -> Clock {
 
 ///|
 /// The station's log (`log.info`, `log.warn`, `log.error`): its level, part, words and fields.
-pub struct Log {
+pub(all) struct Log {
   write : (String, String, String, J) -> Unit
 }
 
@@ -44,7 +44,7 @@ pub fn Log::error(self : Log, part : String, words : String, fields : J) -> Unit
 
 ///|
 /// The files (node:fs's promises). A file that is not there raises `Thrown("ENOENT", ...)`; `sep` joins a path.
-pub struct Fs {
+pub(all) struct Fs {
   sep : String
   read_text : async (String) -> String
   read_bytes : async (String) -> Bytes
@@ -177,7 +177,7 @@ pub fn Turns::idle(self : Turns) -> Bool {
 
 ///|
 /// The words of the station (`tr`), and its own language (`stationLang()`).
-pub struct Speech {
+pub(all) struct Speech {
   words : @session_chats.Words
   lang : Ref[String]
 }

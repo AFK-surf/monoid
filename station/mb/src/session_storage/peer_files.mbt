@@ -32,7 +32,7 @@ let chunk : Double = 256.0 * 1024.0
 
 ///|
 /// A chat's attachment as another station lists it.
-pub struct Listed {
+pub(all) struct Listed {
   path : String
   name : String
   size : Double

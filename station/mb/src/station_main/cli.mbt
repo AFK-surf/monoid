@@ -495,9 +495,6 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
         @drive.write_private(config_path(data), text)
         of_core(Json::null())
       }
-      "platform.isLauncher" =>
-        // (the launcher's pid, station.json's: one still there is taken for the launcher)
-        of_core(Json::boolean(match core(0) { Number(p, ..) => pid_alive(p.to_int()); _ => false }))
       "process.kill" =>
         match core(0) {
           Number(p, ..) => {
@@ -515,13 +512,18 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
           _ => of_core(Json::boolean(false))
         }
       "os.tmpdir" => of_core(Json::string(tmpdir()))
-      _ => raise coded("ENOSYS", "the station's program does not do \{name}")
+      _ =>
+        // (the machine's own: updates_platform.mbt)
+        match updates_platform(host, data, name, a.map(to_core)) {
+          Some(v) => of_core(v)
+          None => raise coded("ENOSYS", "the station's program does not do \{name}")
+        }
     }
   }
   let tell = (name : String, a : Array[@jsjson.JValue]) => match name {
     "console.log" => if a.length() > 0 { out_write(js_text(a[0]) + "\n") }
     "console.error" => if a.length() > 0 { err_write(js_text(a[0]) + "\n") }
-    _ => ()
+    _ => ignore(updates_platform_told(name, a.map(to_core)))
   }
   let clock : @updates.Clock = {
     now: () => wall_ms().to_double(),
@@ -663,56 +665,12 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
     return 1
   }
   let at = if joining { join_path } else { enroll_path }
-  let mut answered : (Int, String) = (0, "")
-  for prefix in prefixes {
-    let signature = key.sign("\{prefix}-station-enroll-v1:\{origin}:\{token}:\{key.id}") catch {
-      e => {
-        err_write("Error: \{e}\n")
-        return 1
-      }
-    }
-    let fields : Map[String, Json] = {
-      "token": Json::string(token),
-      "station": Json::string(key.id),
-      "signature": Json::string(signature),
-      "version": Json::string(station_version(args, argv0)),
-    }
-    if joining {
-      fields["locks"] = Json::boolean(true)
-    }
-    if rig is Some(_) {
-      fields["rig"] = Json::boolean(true)
-    }
-    let asked : Json = {
-      "url": Json::string(origin + at),
-      "method": Json::string("POST"),
-      "headers": Json::array([Json::array([Json::string("content-type"), Json::string("application/json")])]),
-    }
-    let (said, bytes) = host.shell("fetch", asked, bytes=@utf8.encode(Json::object(fields).stringify())) catch {
-      e => {
-        err_write("Error: \{plane_name} did not answer: \{e}\n")
-        return 1
-      }
-    }
-    let status = match said {
-      { "status": Number(n, ..), .. } => n.to_int()
-      _ => 0
-    }
-    answered = (status, @utf8.decode_lossy(bytes.unwrap_or(b"")))
-    if prefix == prefixes[prefixes.length() - 1] || status != 401 {
-      break
-    }
-    if !(answered.1.contains("invalid_signature")) {
-      err_write("Error: \{plane_name} answered \{status}: \{answered.1}\n")
+  let body = redeem(host, key, origin, token, plane_name, at, prefixes, station_version(args, argv0), locks=joining, rig=rig is Some(_)) catch {
+    Failure(m) => {
+      err_write("Error: \{m}\n")
       return 1
     }
   }
-  let (status, text) = answered
-  if status < 200 || status >= 300 {
-    err_write("Error: \{plane_name} answered \{status}: \{text}\n")
-    return 1
-  }
-  let body = attempt(() => @json.parse(text)).unwrap_or(Json::object({}))
   let field = (k : String) => match body {
     Object(m) =>
       match m.get(k) {
@@ -870,6 +828,178 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
     )
   }
   0
+}
+
+///|
+/// cli.ts `redeem`: a one-time token redeemed at `at` (enroll or join), proving this station holds its key; the
+/// control plane's answer. Each prefix its proof may be signed under is tried while the plane says the signature is not
+/// its (cloud/provider.ts).
+async fn redeem(
+  host : @host.Host,
+  key : @cloud_lock.StationKey,
+  origin : String,
+  token : String,
+  plane_name : String,
+  at : String,
+  prefixes : Array[String],
+  version : String,
+  locks~ : Bool,
+  rig~ : Bool,
+) -> Json raise Failure {
+  let mut answered : (Int, String) = (0, "")
+  for prefix in prefixes {
+    let signature = key.sign("\{prefix}-station-enroll-v1:\{origin}:\{token}:\{key.id}") catch {
+      e => fail("\{e}")
+    }
+    let fields : Map[String, Json] = {
+      "token": Json::string(token),
+      "station": Json::string(key.id),
+      "signature": Json::string(signature),
+      "version": Json::string(version),
+    }
+    if locks {
+      fields["locks"] = Json::boolean(true)
+    }
+    if rig {
+      fields["rig"] = Json::boolean(true)
+    }
+    let asked : Json = {
+      "url": Json::string(origin + at),
+      "method": Json::string("POST"),
+      "headers": Json::array([Json::array([Json::string("content-type"), Json::string("application/json")])]),
+    }
+    let (said, bytes) = host.shell("fetch", asked, bytes=@utf8.encode(Json::object(fields).stringify())) catch {
+      e => fail("\{plane_name} did not answer: \{e}")
+    }
+    let status = match said {
+      { "status": Number(n, ..), .. } => n.to_int()
+      _ => 0
+    }
+    answered = (status, @utf8.decode_lossy(bytes.unwrap_or(b"")))
+    if prefix == prefixes[prefixes.length() - 1] || status != 401 {
+      break
+    }
+    if !answered.1.contains("invalid_signature") {
+      fail("\{plane_name} answered \{status}: \{answered.1}")
+    }
+  }
+  let (status, text) = answered
+  if status < 200 || status >= 300 {
+    fail("\{plane_name} answered \{status}: \{text}")
+  }
+  attempt(() => @json.parse(text)).unwrap_or(Json::object({}))
+}
+
+///|
+/// What a join asked over the mesh refused or did (cli.ts `KeptLock` among them: joined, the lock kept there for that
+/// workspace left as it is), as the admin API's route throws it.
+pub(all) suberror JoinRefused {
+  JoinRefused(String, String)
+}
+
+///|
+/// cli.ts `joinWorkspace` asked over the mesh (POST /workspaces/join): one more workspace joined with its one-time
+/// token, staying in those the station is in, kept in cloud.json's `joined` at once. A locked home joins only a
+/// workspace whose lock is named (`lock`); a lock kept here for that workspace that does not hold it stays, and the join
+/// says so once done (`KeptLock`). `home_locked`: whether the home's lock is on as the running station reads it
+/// (Cloud.locked, for a chain that moved).
+pub async fn join_workspace(
+  host : @host.Host,
+  data : String,
+  token : String,
+  lock : String?,
+  version : String,
+  home_locked : () -> Bool,
+) -> Json raise {
+  let lang = station_lang(data)
+  let disk : @cloud_lock.Disk = { host, }
+  let state = @cloud_lock.read_state(disk, data) catch { _ => None }
+  guard state is Some(s) && s.text("workspace") != "" && s.get("removed_at") is (None | Some(Null)) else {
+    raise JoinRefused("Error", "this station is in no workspace: enroll it first")
+  }
+  if s.get("rig") is Some(Object(_)) {
+    let ws = if s.text("workspace_name") != "" { s.text("workspace_name") } else { s.text("workspace") }
+    raise JoinRefused("Error", tr(lang, "station.cli.rig.isRig", args=[("workspace", ws)]))
+  }
+  let crypto = @cloud_lock.Crypto::of_host(host)
+  let home = @cloud_lock.read_lock(disk, crypto, data, None)
+  let on = match home {
+    None => false
+    Some({ state: Some(st), .. }) => !st.disabled && (st.moved is None || home_locked())
+    Some(_) => true
+  }
+  if on && lock is None {
+    raise JoinRefused("Error", "this station's workspace is locked: it joins only a workspace with a lock of its own")
+  }
+  let provider = s.text("provider")
+  let (plane_name, join_path, prefixes) = if provider == "comma" {
+    ("Comma", "/v1/comma/stations/join", ["comma"])
+  } else {
+    ("still.fail cloud", "/v1/stations/join", ["stillfail"])
+  }
+  let key = @cloud_lock.load_key(host, data)
+  let body = redeem(host, key, s.text("origin"), token, plane_name, join_path, prefixes, version, locks=true, rig=false)
+  let field = (k : String) => match body {
+    Object(m) =>
+      match m.get(k) {
+        Some(String(v)) => v
+        _ => ""
+      }
+    _ => ""
+  }
+  let ws = field("workspace")
+  if ws == "" {
+    raise JoinRefused("Error", "\{plane_name} did not say which workspace was joined")
+  }
+  // nameJoinedLock asked over the mesh: pinned once the plane brings a lock holding it; one kept here that does not stays.
+  let named = match lock {
+    Some(h) if ws != s.text("workspace") => {
+      let kept = @cloud_lock.read_lock(disk, crypto, data, Some(ws))
+      match kept {
+        Some(k) if k.entries.iter().any(e => (try { @cloud_lock.entry_hash(e) } catch { _ => "" }) == h) => {
+          disk.remove(@cloud_lock.joined_pending_path(data, ws))
+          "kept"
+        }
+        Some(_) => "kept another"
+        None => {
+          disk.mkdir(@cloud_lock.dirname(@cloud_lock.joined_pending_path(data, ws)))
+          disk.write(@cloud_lock.joined_pending_path(data, ws), ({ "hash": Json::string(h) } : Json).stringify())
+          "pending"
+        }
+      }
+    }
+    _ => "pending"
+  }
+  // The plane's `state` frame may have named it already (it tells the station before it answers): that is kept.
+  let now = (@cloud_lock.read_state(disk, data) catch { _ => None }).unwrap_or(s)
+  if ws != now.text("workspace") {
+    let joined = match now.get("joined") {
+      Some(Array(xs)) => xs
+      _ => []
+    }
+    if !joined.iter().any(j => j is { "workspace": String(w), .. } && w == ws) {
+      joined.push({
+        "workspace": Json::string(ws),
+        "workspace_name": Json::string(field("workspace_name")),
+        "name": Json::string(field("name")),
+        "peers": Json::array([]),
+        "revocations": Json::array([]),
+      })
+      now.fields["joined"] = Json::array(joined)
+      @cloud_lock.write_state(disk, data, now)
+    }
+  }
+  if named == "kept another" {
+    raise JoinRefused(
+      "KeptLock",
+      "this station joined the workspace but keeps another security mode record for it, which it goes by there; to take the one you named, run `stillfail lock reset --workspace \{ws}` on that computer first",
+    )
+  }
+  {
+    "workspace": Json::string(ws),
+    "workspace_name": Json::string(field("workspace_name")),
+    "name": Json::string(field("name")),
+  }
 }
 
 ///|

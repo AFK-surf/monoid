@@ -2,8 +2,15 @@
 
 ## Its shape
 
+- A release is the MoonBit station (`mb/`, the reader's program at `<app>/station/stillfail-reader`) with the launcher,
+  the runner, the Helper and the files `package.json`'s `build` lays out beside it (`../scripts/station-bundle.sh`): no
+  Node, no `main.js`, no addon, no `NODE_VERSION`, so the installer fetches no Node for it (`../cloud/src/install.ts`)
+  and its feed signs a Node hash of zeros, which stations from before take (`../scripts/release-sign.ts`). The launcher
+  runs `stillfail-reader` with the arguments it gave Node, and Node on `<app>/station/main.js` only for a release with one
+  (one from before, rolled back to; the launcher's tests' stand-in): `native/launcher/src/main.rs` `station`. What
+  follows of Node is the TypeScript the program is held to, run by the tests and `pnpm run build:node`.
 - Processes: the launcher (`native/launcher`, Rust) keeps the pid, the data directory's lock and the ports, and on an
-  update starts the next Node before letting the old one go; each agent process runs under a runner
+  update starts the next station process before letting the old one go; each agent process runs under a runner
   (`native/runner`), so a turn goes on while the station restarts or crashes and the next one takes it up
   (`src/agents/runner.ts`; `HostedProcess.adopt` in `src/agents/mb-agents.ts`); a runner no driver holds once it has (`ownedRunners`),
   or later, is ended (`src/sessions/hub.ts` `takeUp`, `endOrphan`). The station's iroh endpoint is kept by the MoonBit
@@ -182,7 +189,8 @@
   the program's reads are compared with (`test/mb-usage-counter.test.ts`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session, or a PTY
   with its lifecycle hooks recorded by `src/agents/claude-tui.mjs` when the agent environment selects
-  the model picker’s TUI run mode (chat sessions only);
+  the model picker’s TUI run mode (chat sessions only; in a release with no Node the station's program is that bridge,
+  its hooks and its tools: `mb/src/station_main/claude_tui.mbt`);
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment, ended once idle (`WARM_MS`, its threads opened again with their next turn); the
   others in `src/agents/`. A driver owns its child's stdin. Claude Code's output is read by the MoonBit program
@@ -443,7 +451,7 @@
 
 ## Tests
 
-- `pnpm exec tsgo --noEmit` types; one test file is `node ../scripts/native.ts run mesh runner archive-rs reader --
+- `pnpm exec tsgo --noEmit` types; one test file is `node ../scripts/native.ts run mesh runner archive-rs reader launcher --
   node --import ./test/setup-env.mjs --test test/<file>.test.ts` (`pnpm test` is every file). Agents in tests are
   fakes on the test's clock; real processes, signals and sockets are the side run's (`side/`).
 - CI runs `test/` on Linux, in slices (`scripts/check.sh`, station-tests): a test passes there as on a Mac, or

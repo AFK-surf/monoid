@@ -672,8 +672,11 @@ fn FakeProgram::make(
     released: () => done(lp),
     has_exited: () => p.said is Some(_),
     handed: () => p.frozen,
-    thread: (thread, live) => self.post(
-      obj([("codexThread", n(p.n)), ("id", s(thread)), ("live", live)]),
+    thread: (thread, live, routed) => self.post(
+      obj(
+        [("codexThread", n(p.n)), ("id", s(thread)), ("live", live)] +
+        (if routed { [("routed", b(true))] } else { [] }),
+      ),
     ),
     drop_thread: thread => self.post(obj([("codexDrop", n(p.n)), ("id", s(thread))])),
     route_thread: (thread, on, was) => {

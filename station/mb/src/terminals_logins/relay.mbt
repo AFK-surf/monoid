@@ -49,7 +49,7 @@ pub(all) struct RelayIo {
 
 ///|
 /// How a request to the command failed (`code`: Node's, as ECONNREFUSED).
-pub suberror SendFailed {
+pub(all) suberror SendFailed {
   SendFailed(String, String)
 }
 

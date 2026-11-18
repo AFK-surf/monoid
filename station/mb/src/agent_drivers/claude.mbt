@@ -35,7 +35,7 @@ let subagent_hook_seconds = 10
 
 ///|
 /// The station's words a driver's settings name: its hooks' commands and the tools a session speaks by.
-pub struct Words {
+pub(all) struct Words {
   /// repo-rules.ts `REPO_RULES_COMMAND`
   repo_rules_command : String
   /// repo-rules.ts `AGY_REPO_RULES_COMMAND`
@@ -310,7 +310,7 @@ pub type Renew = (String?) -> Later[(String, Double)]
 
 ///|
 /// Where the drivers get logins and keep them (claude.ts's options, no-keychain.ts, accounts/oauth.ts).
-pub struct ClaudeLogins {
+pub(all) struct ClaudeLogins {
   /// the machine login's current token (`machineToken`)
   machine_token : Renew
   /// a local subscription profile's current token, renewed under one lock (`subscriptionToken`)
@@ -349,6 +349,8 @@ pub fn claude_file_token(m : Machine, home : String) -> Later[String?] {
 pub struct ClaudeSession {
   own : OwnSession
   driver : ClaudeDriver
+  /// run as an interactive TUI under its bridge (claude-tui.mjs's, the station's program's: `TuiBridge`)
+  tui : Bool
   /// when the machine login's token it runs on runs out
   machine_expires : Double?
   effort : String?
@@ -369,6 +371,32 @@ pub struct ClaudeDriver {
   logins : ClaudeLogins
   ids : Ids
   sessions : Array[ClaudeSession]
+  /// what runs a session as a TUI (claude.ts `TUI_BRIDGE`, `TUI_NODE`, `runnerBinary`); none: no TUI here
+  tui_bridge : Ref[TuiBridge?]
+}
+
+///|
+/// What runs a Claude session as its interactive TUI (claude-tui.mjs): `program` (the hooks' and tools' command, the
+/// station's program where a release has no Node) given the bridge's `script`, then `program`, the `runner` whose
+/// `--relay-pty` keeps the terminal, and Claude's command and arguments; `shell_env` puts the user's shell's PATH in
+/// an environment where it does not find Claude's command (`withShellCommand`).
+pub(all) struct TuiBridge {
+  program : String
+  script : String
+  runner : String
+  shell_env : (String, Env) -> Later[Unit]
+}
+
+///|
+/// Whether a runner keeps a TUI's bridge (claude.ts `tuiRunner`): its first argument the bridge's file.
+pub fn tui_runner(args : Array[String]) -> Bool {
+  match args.get(0) {
+    Some(a) => {
+      let a = a.replace_all(old="\\", new="/")
+      a == "claude-tui.mjs" || a.has_suffix("/claude-tui.mjs")
+    }
+    None => false
+  }
 }
 
 ///|
@@ -392,6 +420,7 @@ pub fn ClaudeDriver::new(
     logins,
     ids,
     sessions: [],
+    tui_bridge: Ref(None),
   }
 }
 
@@ -486,9 +515,14 @@ pub fn ClaudeDriver::args_for(
     Some(m) => Some(m)
     None => profile_model(profile)
   }
-  let args = [
-    "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-  ]
+  let tui = !text_only && is_true(o, "tui")
+  let args = if tui {
+    []
+  } else {
+    [
+      "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    ]
+  }
   if !text_only {
     args.push("--dangerously-skip-permissions")
   }
@@ -584,6 +618,15 @@ pub fn ClaudeDriver::open(self : ClaudeDriver, options : JValue, events : (JValu
     }
     let file = key_file(m, profile)
     let fast = fast_for(options)
+    let tui = !is_true(o, "textOnly") && is_true(o, "tui")
+    let bridge = if tui {
+      match self.tui_bridge.val {
+        Some(b) => Some(b)
+        None => return Later::fail(lp, Failed("Claude's TUI has no bridge on this station: select Print in model settings"))
+      }
+    } else {
+      None
+    }
     let args = self.args_for(options, session_id, fast, file)
     let env = start_env(self.raw_env, claude_scrubbed)
     env.merge(expand_route((self.profiles.env)(profile, "claude"), str_at(o, "route").unwrap_or("")))
@@ -653,7 +696,9 @@ pub fn ClaudeDriver::open(self : ClaudeDriver, options : JValue, events : (JValu
       match machine.val {
         Some((token, _)) => {
           env.set("CLAUDE_CODE_OAUTH_TOKEN", token)
-          env.merge(renewed_env)
+          if !tui {
+            env.merge(renewed_env)
+          }
         }
         None => ()
       }
@@ -664,13 +709,17 @@ pub fn ClaudeDriver::open(self : ClaudeDriver, options : JValue, events : (JValu
         ("aborting", b(false)),
         ("authFailure", Null),
         ("closed", b(false)),
-        ("renews", b((machine.val is Some(_) && renews.val) || file is Some(_))),
+        ("renews", b((!tui && machine.val is Some(_) && renews.val) || file is Some(_))),
       ])
       let session = ClaudeSession::make(
         self,
         session_id,
         turn,
-        None,
+        if tui {
+          machine.val.map(x => x.1)
+        } else {
+          None
+        },
         Null,
         events,
         str_at(o, "effort"),
@@ -680,19 +729,37 @@ pub fn ClaudeDriver::open(self : ClaudeDriver, options : JValue, events : (JValu
           None
         },
         machine.val.map(x => x.0),
+        tui~,
       )
       session.own.tools_url = str_at(o, "mcpUrl")
       session.fast = fast
-      self.own
-      .start(
-        session.own,
-        str_at(o, "key").unwrap_or(""),
-        cwd,
-        self.command,
-        args,
-        env,
-        session.own.hosted_options("claude \{session_id}", "claude"),
-      )
+      let started = match bridge {
+        // First-run appearance selection is for a person at a terminal. The TUI still requires a trusted workspace for
+        // hooks.
+        Some(br) => {
+          env.set("IS_DEMO", "1")
+          (br.shell_env)(self.command, env).bind(_ => self.own.start(
+            session.own,
+            str_at(o, "key").unwrap_or(""),
+            cwd,
+            br.program,
+            [br.script, br.program, br.runner, self.command, ..args],
+            env,
+            session.own.hosted_options("claude \{session_id}", "claude"),
+          ))
+        }
+        None =>
+          self.own.start(
+            session.own,
+            str_at(o, "key").unwrap_or(""),
+            cwd,
+            self.command,
+            args,
+            env,
+            session.own.hosted_options("claude \{session_id}", "claude"),
+          )
+      }
+      started
       .map(_ => {
         self.sessions.push(session)
         session
@@ -712,9 +779,10 @@ pub fn ClaudeSession::make(
   effort : String?,
   renew : Renew?,
   token : String?,
+  tui? : Bool = false,
 ) -> ClaudeSession {
   let own = OwnSession::new(driver.lp(), "claude", session_id, turn, events, live~)
-  let session = { own, driver, machine_expires, effort, fast: None, renew, token }
+  let session = { own, driver, tui, machine_expires, effort, fast: None, renew, token }
   own.hooks = {
     ..no_hooks(),
     took: e => {
@@ -756,6 +824,7 @@ pub fn ClaudeDriver::handed_over(
     flag_of(info.args(), "--effort"),
     self.renewer(profile),
     None,
+    tui=tui_runner(info.args()),
   )
   session.own.tools_url = mcp_url_of(info.args())
   session.fast = fast_of(info.args())
@@ -802,6 +871,7 @@ pub fn ClaudeDriver::crashed(
     flag_of(args, "--effort"),
     renew,
     None,
+    tui=tui_runner(args),
   )
   session.own.tools_url = mcp_url_of(args)
   session.fast = fast_of(args)
@@ -933,13 +1003,30 @@ pub fn ClaudeSession::compact(self : ClaudeSession) -> Later[Unit] {
   self.own.set_flag("compacting", b(true))
   self.own.set_flag("compactError", Null)
   (self.own.p().tell)("compact")
-  (self.own.p().write)(user_message("/compact"))
+  (self.own.p().write)(
+    if self.tui {
+      json_text(obj([("type", s("compact"))]))
+    } else {
+      user_message("/compact")
+    },
+  )
   done(lp)
 }
 
 ///|
+/// A TUI's machine login runs out within the margin: its next turn starts it again (`outlived`).
+pub fn ClaudeSession::outlived(self : ClaudeSession) -> Bool {
+  self.tui &&
+  (match self.machine_expires {
+    Some(at) => at - self.driver.own.m.now() < claude_token_margin_ms
+    None => false
+  })
+}
+
+///|
 pub fn ClaudeSession::steer(self : ClaudeSession, text : String) -> Later[Bool] {
-  if self.own.closed() || !self.own.busy() {
+  // (the station keeps busy-time deliveries in its inbox until a TUI finishes its turn)
+  if self.tui || self.own.closed() || !self.own.busy() {
     return Later::ok(self.driver.lp(), false)
   }
   (self.own.p().write)(user_message(text))
@@ -989,7 +1076,9 @@ pub fn ClaudeSession::retune(self : ClaudeSession, options : JValue) -> Bool {
     Some(m) => Some(m)
     None => profile_model(profile)
   }
-  if self.own.closed() ||
+  if self.tui ||
+    is_true(Some(options), "tui") ||
+    self.own.closed() ||
     self.own.busy() ||
     model is None ||
     str_at(Some(options), "effort") != self.effort ||

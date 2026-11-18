@@ -5,7 +5,7 @@
 // once (its bot, its platform, a name already known), `call` any of them.
 
 ///|
-pub struct Surface {
+pub(all) struct Surface {
   /// Whether it has the call `name` (`typeof surface[name] === "function"`; `cards`, `loginCards` whether they are
   /// true).
   has : (String) -> Bool
@@ -47,7 +47,7 @@ pub fn Surface::get_opt(self : Surface, name : String, args : Array[J]) -> J? {
 
 ///|
 /// A live chat connection (connections.ts `Connection`): a surface, and how its link stands.
-pub struct Connection {
+pub(all) struct Connection {
   surface : Surface
   /// Starts receiving: what the platform says (a `ChatEvent`) handed on, resolving once it is kept.
   start : async (async (J) -> Unit) -> Unit

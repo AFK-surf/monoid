@@ -651,6 +651,7 @@ pub async fn Io::exists(Self, String) -> Bool
 pub async fn Io::fetch(Self, Request) -> Response
 pub async fn Io::get(Self, String, Array[(String, String)], Int32) -> Response
 pub async fn Io::mkdir(Self, String) -> Unit
+pub fn Io::new(Backend) -> Self
 pub async fn Io::os(Self) -> JV
 pub async fn Io::post_form(Self, String, Array[(String, String)], Array[(String, String)]) -> (Int32, JV)
 pub async fn Io::random_hex(Self, Int32) -> String
