@@ -137,7 +137,8 @@ test "waiting tile: the ring going up in the tile's middle, turning or filling" 
       |> ignore
     })
     t.draw()
-    t.run_for(260.0)
+    // (a third of a turn on: turned, where a ring that does not turn about its middle is off it)
+    t.run_for(spinner_turn_ms / 3.0)
     assert_true(near(ring_middle(t)), msg="\{Repr(part)}: ring at \{Repr(ring_middle(t))}, tile's middle \{mid}")
   }
 }
