@@ -420,10 +420,6 @@ fn pickable(l : FindLine) -> Bool {
 }
 
 ///|
-/// How many lines stay over the one the keys chose as the list scrolls to it.
-let switcher_lead : Int = 3
-
-///|
 /// A line's key: what it is, so the pointer and the list keep it.
 fn finder_key(line : FindLine) -> String {
   match line {
@@ -450,6 +446,29 @@ fn finder_h(l : FindLine, f : @sf.Found, stacked : Bool) -> Double {
     Note(_) | Wait(_, _) | Said(_) => f.quiet_h
     _ => if finder_two(l, stacked) { f.two_h } else { f.row_h }
   }
+}
+
+///|
+/// A line's height at the system's size of words (finder_h's, grown as its words are by `grown`: FoundGrown).
+fn finder_line_h(l : FindLine, f : @sf.Found, grown : FoundGrown, stacked : Bool) -> Double {
+  finder_h(l, f, stacked) +
+  (match l {
+    Head(_) => grown.head
+    _ if finder_two(l, stacked) => grown.two
+    _ => 0.0
+  })
+}
+
+///|
+/// How much a heading and a line of two grow at the system's size of words `scale` (@sf.found_grown).
+priv struct FoundGrown {
+  head : Double
+  two : Double
+}
+
+///|
+fn FoundGrown::at(f : @sf.Found, scale : Double) -> FoundGrown {
+  { head: @sf.found_grown(f, scale, two=false), two: @sf.found_grown(f, scale, two=true) }
 }
 
 ///|
@@ -661,6 +680,9 @@ pub fn finder_list_node(
     // (made anew as anything it is made of changes: a command's line holds the function it runs)
     same=fn(a, b) { physical_equal(a, b) },
   )
+  let place : @view.ListPlace[String] = @view.ListPlace::new()
+  // (the words the lines were last made for: other words, the list from its top)
+  let made_for : Ref[String?] = Ref(None)
   v.reacts(fn() { lines.get() }, fn(ls) {
     let picks : Array[Int] = []
     for i, l in ls {
@@ -668,6 +690,27 @@ pub fn finder_list_node(
         picks.push(i)
       }
     }
+    // The list at its top stays there as the lines change under it with its first line chosen (what can be done by
+    // the words answered after what they found, put over it), and goes back to its top for other words: else it
+    // holds the line it showed at its top where it was, the line chosen, the first, over what shows.
+    let words = query.untracked()
+    let was = finder.lines.untracked()
+    // (where a place asked of it is not yet done, what it has in sight is where it was, not where it goes)
+    let at_top = place.asking() ||
+      (match place.sight_now() {
+        Some(s) => was.get(0).map(finder_key) == Some(s.first) && s.into <= 0.5
+        None => true
+      })
+    let first = if finder.kind.untracked() != "" { 1 } else { 0 }
+    // (the same first line: the list held by it stays at its top as it is, nothing asked of it)
+    let first_moved = was.get(0).map(finder_key) != ls.get(0).map(finder_key)
+    if made_for.val != Some(words) || (first_moved && at_top && finder.chosen.untracked() <= first) {
+      match ls.get(0) {
+        Some(l) => place.bring(finder_key(l))
+        None => ()
+      }
+    }
+    made_for.val = Some(words)
     finder.lines.set(ls)
     finder.picks.set(picks)
     // (the one chosen kept among them)
@@ -713,16 +756,44 @@ pub fn finder_list_node(
       None => false
     }
   })
-  let place : @view.ListPlace[String] = @view.ListPlace::new()
-  // ↑ ↓: the line chosen brought into view, so many lines over it; into one kind or out of it: back to its top
+  // ↑ ↓: the line chosen brought into view only where it is not wholly in it, the list moved no further than that
+  // (its top at the top where it lay over it, with its kind's heading over it where it is the first of its kind; its
+  // foot at the foot, over the room that fades after the last line, where it lay under it); in view, the list stays
   v.reacts(fn() { finder.keyed.get() }, at_start=false, fn(_) {
     let ls = finder.lines.untracked()
     match finder.picks.untracked().get(finder.chosen.untracked()) {
       Some(i) => {
-        let top = if i > switcher_lead { i - switcher_lead } else { 0 }
-        match ls.get(top) {
-          Some(l) => place.bring(finder_key(l))
-          None => ()
+        let f = theme().found
+        let grown = FoundGrown::at(f, v.words_scale())
+        let narrow = @signals.untracked(stacked)
+        let tops : Array[Double] = []
+        let mut y = 0.0
+        for line in ls {
+          tops.push(y)
+          y = y + finder_line_h(line, f, grown, narrow)
+        }
+        let h = fn(j : Int) { finder_line_h(ls[j], f, grown, narrow) }
+        // (from its kind's heading where it is its first line; from the list's top where none is chosen over it)
+        let from = if i > 0 && ls[i - 1] is Head(_) { i - 1 } else { i }
+        let from = if ls[:from].iter().any(pickable) { from } else { 0 }
+        let sight = place.sight_now()
+        let at = sight.bind(fn(s) { ls.search_by(fn(l) { finder_key(l) == s.first }).map(fn(j) { (s, tops[j] + s.into) }) })
+        match at {
+          Some((s, top)) => {
+            let room = s.shows - foot_in
+            if tops[from] < top - 0.5 {
+              place.bring(finder_key(ls[from]))
+            } else if tops[i] + h(i) > top + room + 0.5 {
+              // (the line whose block the list's top then lies in, as far down it as that is)
+              let want = dmax(0.0, tops[i] + h(i) - room)
+              let mut j = 0
+              while j + 1 < ls.length() && tops[j + 1] <= want {
+                j = j + 1
+              }
+              place.bring(finder_key(ls[j]), offset=want - tops[j])
+            }
+          }
+          None => place.bring(finder_key(ls[from]))
         }
       }
       None => ()
@@ -743,19 +814,9 @@ pub fn finder_list_node(
       match most() {
         Some(m) => {
           let f = theme().found
-          let scale = l.words_scale()
-          let two_grown = @sf.found_grown(f, scale, two=true)
-          let head_grown = @sf.found_grown(f, scale, two=false)
+          let grown = FoundGrown::at(f, l.words_scale())
           let narrow = stacked()
-          let est = lines.get().fold(init=foot_in, fn(h, line) {
-            h +
-            finder_h(line, f, narrow) +
-            (match line {
-              Head(_) => head_grown
-              _ if finder_two(line, narrow) => two_grown
-              _ => 0.0
-            })
-          })
+          let est = lines.get().fold(init=foot_in, fn(h, line) { h + finder_line_h(line, f, grown, narrow) })
           Some(dmin(m, est))
         }
         None => None

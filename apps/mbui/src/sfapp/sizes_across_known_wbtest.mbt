@@ -56,7 +56,6 @@ fn init {
     ("src/sfapp/publish_wbtest.mbt", 2),
     ("src/sfapp/quote_image_wbtest.mbt", 1),
     ("src/sfapp/row_swipe_refused_wbtest.mbt", 1),
-    ("src/sfapp/screens_wbtest.mbt", 1),
     ("src/sfapp/service_link_wbtest.mbt", 1),
     ("src/sfapp/service_panels_wbtest.mbt", 1),
     ("src/sfapp/service_wbtest.mbt", 1),

@@ -73,6 +73,7 @@ jobs:
       core_tests: ${{ steps.plan.outputs.core_tests }}
       release_smoke: ${{ steps.plan.outputs.release_smoke }}
       check_mac: ${{ steps.plan.outputs.check_mac }}
+      check_rust: ${{ steps.plan.outputs.check_rust }}
     steps:
       - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
@@ -452,30 +453,44 @@ jobs:
   # 4-5 minutes, and with it every job of the run, GitHub's too (2026-10-16).
   # No job may take over 5 minutes (2026-10-31, as asked: the aim is 3; 10 since 2026-10-16): one that does is stuck,
   # and on macos-ci it holds one of four runners every run waits on.
-  # The full check (scripts/check.sh) in four: station typecheck/MoonBit/Rust and client Rust on ci-1 (check), the few
-  # checks that need macOS/Xcode on macos-ci only when their inputs changed (check-mac), the station's tests in slices
-  # on Linux runners of their own (check-station), and the rest beside them on Linux (check-linux).
+  # The full check (scripts/check.sh) in four: station typecheck/MoonBit/Rust and client Rust (check), the few checks
+  # that need macOS/Xcode on macos-ci only when their inputs changed (check-mac), the station's tests in slices on Linux
+  # runners of their own (check-station), and the rest beside them on Linux (check-linux).
+  # check runs on ci-1 only when the Rust it tests changed (plan.sh's check_rust: ci-1's sccache makes its cold
+  # builds short); otherwise on GitHub's ubuntu-24.04 with those Rust tests left out (STILLFAIL_SKIP_RUST_TESTS, as
+  # where CI's own files changed the check runs whole), what is left there a minute or less: with ci-1's line down,
+  # every pull request's check queued until it was cancelled (44383403135).
   check:
     needs: [plan, natives]
     if: ${{ !cancelled() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.natives.result) }}
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["self-hosted", "macos-ci"]') }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.check_rust == 'true' && (vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["self-hosted", "macos-ci"]') || '"ubuntu-24.04"') }}
     # Usually under 2 minutes, all of it with Rust built anew a few: a test that hangs (one waiting on what never comes,
     # up to its 10 minutes each) held one of macos-ci's four runners for most of an hour, and every run behind it waited
     # (2026-10-16, station/test/mesh-handover.test.ts on branches whose mesh needed a service it did not give).
     timeout-minutes: 5
     env:
       STILLFAIL_CHECK_PART: station core
+      STILLFAIL_SKIP_RUST_TESTS: ${{ needs.plan.outputs.check_rust != 'true' && '1' || '' }}
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
-      - if: runner.os == 'Linux'
+      - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
         uses: ./.github/actions/setup-linux
-      - if: runner.os == 'macOS'
+      - if: runner.environment == 'self-hosted' && runner.os == 'macOS'
         uses: ./.github/actions/setup-mac
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/setup
       # (the station's programs in MoonBit: station/mb)
       - uses: ./.github/actions/mbui-moonbit
       # Use the reader built by natives so this test job does not repeat its cold build.
       - uses: ./.github/actions/natives
+      # (what passed before at the same inputs, scripts/check.sh's `remembered`: a self-hosted runner keeps its own)
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/stillfail-check
+          key: check-sc-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: check-sc-${{ runner.os }}-
       - name: Full check (station, core)
         run: |
           range='${{ needs.plan.outputs.range }}'
@@ -1996,9 +2011,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/release-prune.ts
 
+  # (on Mini1, quick: vars.MINI1 == 'off' leaves it out, as check-mac's and natives-mac's place there)
   station-update:
     needs: [station, put]
-    if: always() && !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' && needs.put.result == 'success'
+    if: always() && !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' && needs.put.result == 'success' && vars.MINI1 != 'off'
     runs-on: [self-hosted, quick]
     timeout-minutes: 5
     steps:
