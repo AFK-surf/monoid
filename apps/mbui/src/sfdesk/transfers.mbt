@@ -289,7 +289,7 @@ fn keeping_row(row : @view.View, src : Source, k : @signals.Signal[Json]) -> Uni
       transfer_words(w, fn() { text(j(), "statusText") }, fn() { ftransfer_status })
     },
     fn(a) {
-      @sf.panel_icon_button_node(a, "close", fn() { @sf.t("web-pages.files.stopKeeping") }, fn() { keeping_stop(src, kid) })
+      @sf.icon_button_node(a, "close", fn() { @sf.t("web-pages.files.stopKeeping") }, fn() { keeping_stop(src, kid) }, tips?=@sf.panel_tips_of(a), size=transfer_tool_side, icon_size=@sf.panel_icon_size)
       |> ignore
     },
   )
@@ -300,18 +300,21 @@ fn keeping_row(row : @view.View, src : Source, k : @signals.Signal[Json]) -> Uni
 /// again where it was opened (its `from`, as what opened it said: a chat's file in the viewer over its chat's files, a
 /// drive's video or song in its player), or a drive's file's folder; only words where there is nowhere to go.
 fn opened_title(parent : @view.View, j : () -> Json?, way : (() -> String)?) -> Unit {
-  parent.box(fn(b) {
-    @sf.style_node(b, fn() { ftransfer_title })
-    let there = fn() { opens(j()) }
-    @sf.presses_node(b, fn() { if @signals.untracked(there) { open_coming(@signals.untracked(j)) } }, on=there)
-    b.says(By(fn() { if there() { Some(@view.said(Button, label=text(j(), "title"))) } else { None } })) |> ignore
-    transfer_words(b, fn() { text(j(), "title") }, fn() { ftransfer_title_words })
-    match way {
-      Some(w) => transfer_words(b, w, fn() { ftransfer_way })
-      None => ()
-    }
-  })
-  |> ignore
+  // (a button while there is somewhere to open it again, the library's block pressed as a whole; words alone else)
+  @sf.action_box_while_node(
+    parent,
+    fn() { opens(j()) },
+    fn() { text(j(), "title") },
+    fn(_) { open_coming(@signals.untracked(j)) },
+    fn(b) {
+      @sf.style_node(b, fn() { ftransfer_title })
+      transfer_words(b, fn() { text(j(), "title") }, fn() { ftransfer_title_words })
+      match way {
+        Some(w) => transfer_words(b, w, fn() { ftransfer_way })
+        None => ()
+      }
+    },
+  )
 }
 
 ///|
@@ -406,13 +409,17 @@ fn transfer_row(row : @view.View, src : Source, x : @signals.Signal[Json], go : 
     },
     fn(a) {
       a.show(fn() { flag(j(), "active") }, fn(k) {
-        @sf.panel_icon_button_node(k, "close", fn() { @sf.t("web-pages.files.cancelTransfer") }, fn() {
-          call("drive.transfer.cancel")
-        })
+        @sf.icon_button_node(
+          k,
+          "close",
+          fn() { @sf.t("web-pages.files.cancelTransfer") },
+          fn() { call("drive.transfer.cancel") },
+          tips?=@sf.panel_tips_of(k), size=transfer_tool_side, icon_size=@sf.panel_icon_size,
+        )
         |> ignore
       })
       a.show(fn() { state() == "failed" }, fn(k) {
-        @sf.panel_icon_button_node(k, "retry", fn() { @sf.t("web-pages.drive.retry") }, fn() { call("drive.transfer.retry") })
+        @sf.icon_button_node(k, "retry", fn() { @sf.t("web-pages.drive.retry") }, fn() { call("drive.transfer.retry") }, tips?=@sf.panel_tips_of(k), size=transfer_tool_side, icon_size=@sf.panel_icon_size)
         |> ignore
       })
       a.show(fn() { state() == "done" }, fn(k) {
@@ -454,11 +461,11 @@ fn download_row(row : @view.View, src : Source, d : @signals.Signal[Json]) -> Un
     },
     fn(a) {
       a.show(active, fn(k) {
-        @sf.panel_icon_button_node(k, "close", fn() { @sf.t("web-main.file.cancelDownload") }, fn() { download_cancel(src, did) })
+        @sf.icon_button_node(k, "close", fn() { @sf.t("web-main.file.cancelDownload") }, fn() { download_cancel(src, did) }, tips?=@sf.panel_tips_of(k), size=transfer_tool_side, icon_size=@sf.panel_icon_size)
         |> ignore
       })
       a.show(failed, fn(k) {
-        @sf.panel_icon_button_node(k, "retry", fn() { @sf.t("web-main.file.retryDownload") }, fn() { download_retry(src, did) })
+        @sf.icon_button_node(k, "retry", fn() { @sf.t("web-main.file.retryDownload") }, fn() { download_retry(src, did) }, tips?=@sf.panel_tips_of(k), size=transfer_tool_side, icon_size=@sf.panel_icon_size)
         |> ignore
       })
     },
@@ -510,3 +517,7 @@ let ftransfer_actions : @ui.Style = @ui.css("row gap=SPx align=ACenter")
 ///|
 /// A row's mark (14).
 let transfer_icon : Double = 14.0
+
+///|
+/// How big a row's tool is (stop, cancel, try again): a small panel's icon button, 24 across.
+let transfer_tool_side : Double = 24.0

@@ -189,7 +189,7 @@ pub fn md_node_at(node : Json) -> Int {
 
 ///|
 /// A heading's level (a node of the core's tree that is one), else None.
-pub fn md_node_depth(node : Json) -> Int? {
+fn md_node_depth(node : Json) -> Int? {
   match md_parts(node) {
     ("h", _, a) => Some(math_number(math_field(a, "depth")).to_int())
     _ => None

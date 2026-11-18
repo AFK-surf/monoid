@@ -105,7 +105,7 @@ fn paper_by_key(key : String) -> ReaderPaper {
 ///|
 /// The bar's colours on the paper (-ink, -muted, -line); its buttons lit as the
 /// page's are (the paper is night while the app is dark, a day's paper while it is light: reader_paper).
-pub fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
+fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
   let page = theme().p
   { ground: p.ground, ink: p.ink, muted: p.muted, line: p.line, hover: page.hover, chosen: page.selected }
 }
@@ -297,7 +297,7 @@ pub fn reader_panel_set(r : Reading, panel : ReaderPanel) -> Unit {
 ///|
 /// The file read, once: its bytes here already, or read whole (at most reader_most, how much
 /// has come told as it comes); decoded here, then read by the page's core as a reader shows it (read_book).
-pub fn reader_load(r : Reading, file : ViewerFile, markdown : Bool) -> Unit {
+fn reader_load(r : Reading, file : ViewerFile, markdown : Bool) -> Unit {
   r.file = Some(file)
   if r.asked {
     return
@@ -1051,7 +1051,7 @@ let desk_hairline : @ui.Style = @ui.css("row w=Full h=S0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub fn desk_panel_top() -> @ui.Style {
+fn desk_panel_top() -> @ui.Style {
   @ui.style(w=Full, h=Fixed(viewer_bar_under()))
 }
 

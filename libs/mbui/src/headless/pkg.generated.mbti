@@ -278,12 +278,13 @@ pub struct RadioGroup[K] {
 }
 pub fn[K] RadioGroup::disabled(Self[K]) -> Bool
 #callsite(autofill(loc))
-pub fn[K : Eq] RadioGroup::item(Self[K], @view.View, () -> K, () -> String, (@view.View, RadioItem) -> Unit, disabled? : () -> Bool, space_only? : Bool, slop? : Double, slide? : (Double, (@view.Drag?) -> K?), made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[K : Eq] RadioGroup::item(Self[K], @view.View, () -> K, () -> String, (@view.View, RadioItem) -> Unit, disabled? : () -> Bool, space_only? : Bool, slop? : Double, slide? : (Double, (@view.Drag?) -> K?), on_close? : () -> Unit, closes? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub struct RadioItem {
   // private fields
 }
 pub fn RadioItem::chosen(Self) -> Bool
+pub fn RadioItem::close(Self) -> Unit
 pub fn RadioItem::disabled(Self) -> Bool
 pub fn RadioItem::focus_shown(Self) -> Bool
 pub fn RadioItem::hovered(Self) -> Bool

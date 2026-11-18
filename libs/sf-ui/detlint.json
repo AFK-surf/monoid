@@ -86,7 +86,6 @@
     "hash-order": {},
     "globals": {},
     "style-literal": {
-      "src/glass.mbt": 1,
       "src/markdown.mbt": 34,
       "src/parts.mbt": 44,
       "src/picture.mbt": 1,
@@ -94,7 +93,6 @@
     },
     "box-loose": {
       "src/avatar.mbt": 1,
-      "src/glass.mbt": 1,
       "src/markdown.mbt": 26,
       "src/parts.mbt": 29,
       "src/picture.mbt": 2,
@@ -127,7 +125,7 @@
     },
     "layout-read-back": {
       "src/markdown.mbt": 1,
-      "src/parts.mbt": 5,
+      "src/parts.mbt": 1,
       "src/seg.mbt": 1,
       "src/submenu.mbt": 1,
       "src/viewer_frame.mbt": 1

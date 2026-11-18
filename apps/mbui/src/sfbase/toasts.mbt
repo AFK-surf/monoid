@@ -23,7 +23,7 @@ pub fn toasts_node(parent : @view.View, bottom : () -> Double) -> @view.View {
       if s.words == "" {
         []
       } else {
-        [@kit.toast("t\{s.n}", @sf.toast_said(s.words), action=s.action)]
+        [@sf.toast("t\{s.n}", @sf.toast_said(s.words), action=s.action)]
       }
     },
     fn(to) { if to.action != "" { @sf.toast_action_ms } else { @sf.toast_ms } },

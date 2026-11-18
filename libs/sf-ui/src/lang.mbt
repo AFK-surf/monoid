@@ -22,7 +22,7 @@ fn init {
 
 ///|
 /// "zh" or "en" for a locale (BCP 47: zh-CN, en-US, …; "" none).
-pub fn language_of(locale : String) -> String {
+fn language_of(locale : String) -> String {
   let l = locale.trim(chars=" ").to_lower()
   if l == "" || l.has_prefix("zh") {
     "zh"
