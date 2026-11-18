@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fa3b3ddab](https://github.com/AFK-surf/monoid/commit/fa3b3ddabdb92810988264377d53193f28e4764f) perf(mbui): read a popover's fade as it is painted | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 | [bdb5fa354](https://github.com/AFK-surf/monoid/commit/bdb5fa354a6b60f7c991e88c9e4f941cb9a78a2c) perf(mbui): add View::scrolls_reused and reuse blo | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 | [4f7042b81](https://github.com/AFK-surf/monoid/commit/4f7042b817596cbfbc50847253224a1958b8dd50) fix(station): include command === branches in main | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 | [781d75198](https://github.com/AFK-surf/monoid/commit/781d75198f0fb3eaddf1e5242369c35d850b1ba5) fix(ci): build the flows' program light on a branc | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.01 | 121.44 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [88d08d335](https://github.com/AFK-surf/monoid/commit/88d08d3354e8f4899fbda352f14ca5641515bf68) fix(station): a chat named is not asked to name it | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.5 | 63.41 | 96.77 | 117.45 |
 | [089f33f94](https://github.com/AFK-surf/monoid/commit/089f33f94c8f48ec0c8d9f616c3ef3bd032efe2e) fix(ci): replace undici fetch in release-deltas to | 2.55 | 3.42 | 14.02 | 35.95 | 53.9 | 31.5 | 63.41 | 96.77 | 117.45 |
 | [96fae6be6](https://github.com/AFK-surf/monoid/commit/96fae6be63bc71ff0c9597648b9af1ff6b008928) mbui: a chat's words broken anew as the side panel | 2.54 | 3.42 | 14 | 35.93 | 53.86 | 31.5 | 63.41 | 96.77 | 117.45 |
-| [47562f9dd](https://github.com/AFK-surf/monoid/commit/47562f9dd2435091c8f4fb111366a4a41fb7f990) fix(mbui): a show shown again by an answer as it c | 2.54 | 3.42 | 14 | 35.93 | 53.86 | 31.5 | 63.41 | 96.77 | 117.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fa3b3ddab](https://github.com/AFK-surf/monoid/commit/fa3b3ddabdb92810988264377d53193f28e4764f) perf(mbui): read a popover's fade as it is painted | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.02 |
 | [bdb5fa354](https://github.com/AFK-surf/monoid/commit/bdb5fa354a6b60f7c991e88c9e4f941cb9a78a2c) perf(mbui): add View::scrolls_reused and reuse blo | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
 | [4f7042b81](https://github.com/AFK-surf/monoid/commit/4f7042b817596cbfbc50847253224a1958b8dd50) fix(station): include command === branches in main | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
 | [781d75198](https://github.com/AFK-surf/monoid/commit/781d75198f0fb3eaddf1e5242369c35d850b1ba5) fix(ci): build the flows' program light on a branc | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [88d08d335](https://github.com/AFK-surf/monoid/commit/88d08d3354e8f4899fbda352f14ca5641515bf68) fix(station): a chat named is not asked to name it | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.79 |
 | [089f33f94](https://github.com/AFK-surf/monoid/commit/089f33f94c8f48ec0c8d9f616c3ef3bd032efe2e) fix(ci): replace undici fetch in release-deltas to | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.79 |
 | [96fae6be6](https://github.com/AFK-surf/monoid/commit/96fae6be63bc71ff0c9597648b9af1ff6b008928) mbui: a chat's words broken anew as the side panel | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.79 |
-| [47562f9dd](https://github.com/AFK-surf/monoid/commit/47562f9dd2435091c8f4fb111366a4a41fb7f990) fix(mbui): a show shown again by an answer as it c | 0.44 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.25 |
