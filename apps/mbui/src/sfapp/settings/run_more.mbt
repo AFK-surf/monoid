@@ -1,21 +1,5 @@
-// How a chat's agent runs, changed on a page of its own, the machine's own sessions to
-// go on with (openMachineSessions, lookAtMachineSession), and adding people to the
-// workspace with the workspace's mark.
-
-///|
-/// How an agent runs, made up, for what is shown while it is read (run_view in its bones).
-fn run_sample() -> Json {
-  let w = fn(n : Int) { Json::string(@sf.sample_words(n)) }
-  {
-    "was": [w(6), w(2), w(5)],
-    "becomes": [w(6), w(2), w(5)],
-    "modelText": w(7),
-    "efforts": [w(1), w(1), w(1)],
-    "accountText": w(6),
-    "accountNote": w(14),
-    "saveText": w(4),
-  }
-}
+// The machine's own sessions to go on with (openMachineSessions, lookAtMachineSession),
+// and adding people to the workspace with the workspace's mark.
 
 // ---------------------------------------------------------------------------
 // The machine's own sessions
@@ -1037,18 +1021,4 @@ let add_people_label : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold
 /// What came of adding: the UI's size, 20 a line.
 // kept across runs: a value (no field of it changes)
 let add_people_said : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, w=Full, leading=L6)
-
-///|
-/// The pickers opened (their `pick.set {open}` sent once a page), and which list a run page shows ("" its first view).
-// kept across runs: said as a run's page opens; the settings' reset empties it
-let run_opened : Map[String, Bool] = Map([])
-
-///|
-// kept across runs: said by a run's page; the settings' reset empties it
-let run_list : @sf.LiveMap[String, String] = @sf.LiveMap::new()
-
-///|
-/// A property's label in what a run was and becomes (meta, muted, on one line).
-// kept across runs: a value (no field of it changes)
-let run_label : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 

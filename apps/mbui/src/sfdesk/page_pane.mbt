@@ -502,11 +502,6 @@ fn pane_made(
       made("kept/" + station + "/" + thread.to_string(), fn(a, core, _here, _stint, frame, width) {
         @settings.kept_chat_node(a, core, station, thread, on_back=core.pop, frame~, width~, tips~)
       })
-    // (by its station and session: another's another page)
-    Setting(RunSettings(station, key)) =>
-      made("run/" + station + "/" + key, fn(a, core, _here, _stint, frame, width) {
-        @settings.run_settings_node(a, core, station, key, on_back=core.pop, frame~, width~, tips~)
-      })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) =>
       made("adb/" + focus, fn(a, core, _here, _stint, frame, width) { @settings.adb_node(a, core, focus, on_back=core.pop, frame~, width~, tips~) })

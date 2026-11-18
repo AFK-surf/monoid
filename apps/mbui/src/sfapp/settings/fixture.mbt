@@ -380,7 +380,6 @@ fn fixture_reset() -> Unit {
   rigs_fixture_reset()
   move_fixture_reset()
   devices_fixture_reset()
-  fx_many_models.val = false
   fx_many_kept.val = false
   fx_station_many_profiles.val = false
   fx_station_update_failed.val = false
@@ -967,15 +966,8 @@ pub fn fixture_page(mode : String) -> String {
     // what the upgrade of safe mode waits for (security.mbt upgrade_keys): a station this person may update, one they
     // may not, a member, a device, more than six, a station of another workspace, a station updating
     m if m.has_prefix("settings-security-upgrade-") => fx.upgrade = m.unsafe_substring(start=26, end=m.length())
-    // the run's models listed (model_list.mbt): more than 8, by series, one of another station's to borrow
-    "settings-run-models" => {
-      fx_many_models.val = true
-      run_list.set("session:s-c1", "model")
-    }
     // 本机缓存 with many chats kept (a card of 200 rows)
     "settings-kept-many" => fx_many_kept.val = true
-    // the run's accounts listed (run_more.mbt account_list)
-    "settings-run-accounts" => run_list.set("session:s-c1", "account")
     // the fonts page at code's faces
     "settings-fonts-code" => fonts_at.set(2)
     "settings-new-connect-platform" => fx_connect_step.val = "platform"
@@ -1032,7 +1024,6 @@ pub fn fixture_page(mode : String) -> String {
     "settings-about-flow" => "about"
     "settings-fonts-coming" | "settings-fonts-code" => "fonts"
     "settings-prices" => "prices:7"
-    "settings-run" | "settings-run-models" | "settings-run-accounts" | "settings-run-runtime" => "run:ws1/st1#s-c1"
     "settings-add-people" | "settings-workspace-mark" | "settings-workspace-motion" => "workspace"
     "settings-stations-motion" | "settings-stations-incompatible" | "settings-stations-low" => "stations"
     "settings-connects-motion" => "connects"
@@ -3140,21 +3131,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
     "profileFlow" if fx.new_login => Some(fx_profile_flow_plan())
     "profileFlow" if fx.new_key => Some(fx_profile_flow_key())
     "profileFlow" => Some(fx_profile_flow(hermes=mode == "settings-new-profile-hermes"))
-    "pick" if text(Some(Json::object(params)), "of").has_prefix("session:") => {
-      let v = fx_session_pick()
-      if mode == "settings-run-runtime" {
-        match v {
-          Object(o) => {
-            o["runtimeFixed"] = Json::boolean(false)
-            o["runtimes"] = ["claude", "codex"]
-            Some(Json::object(o))
-          }
-          _ => Some(v)
-        }
-      } else {
-        Some(v)
-      }
-    }
+    "pick" if text(Some(Json::object(params)), "of").has_prefix("session:") => Some(fx_session_pick())
     "connectFlow" if fx_connect_step.val == "commaBind" => Some(fx_comma_flow())
     "connectFlow" if fx_connect_step.val == "platformGroup" => Some(fx_group_flow("platform", mode))
     "connectFlow" if fx_connect_step.val == "groupBind" || fx_connect_step.val == "groupForm" || fx_connect_step.val == "groupDone" =>
@@ -4554,10 +4531,6 @@ fn fx_profile_flow(hermes? : Bool = false) -> Json {
 }
 
 ///|
-/// Whether the run's models are many (MBUI_FIXTURE=settings-run-models).
-let fx_many_models : Ref[Bool] = Ref(false)
-
-///|
 /// Whether many chats are kept (MBUI_FIXTURE=settings-kept-many): 200 more after the three, each with a few KB.
 let fx_many_kept : Ref[Bool] = Ref(false)
 
@@ -4590,37 +4563,11 @@ fn fx_kept_most_first(chats : Array[Json]) -> Array[Json] {
 }
 
 ///|
-/// A chat's agent as it runs and as it is to run (`pick` of `session:<key>`, MBUI_FIXTURE=settings-run): its effort
+/// A chat's agent as it runs and as it is to run (`pick` of `session:<key>`, the comma and group flows): its effort
 /// raised to high, the rest as it was.
 fn fx_session_pick() -> Json {
   let model = obj([("model", str("claude-opus-5-5")), ("name", str("Opus 5.5")), ("maker", obj([("id", str("anthropic"))]))])
-  let m = fn(id : String, name : String, family : String) {
-    obj([("model", str(id)), ("name", str(name)), ("family", str(family)), ("maker", obj([("id", str("anthropic"))]))])
-  }
-  // (MBUI_FIXTURE=settings-run-models: many, by series, one borrowed from Maple)
-  let options : Json = if fx_many_models.val {
-    [
-      obj([("model", str("claude-opus-5-5")), ("name", str("Opus 5.5")), ("family", str("Opus")), ("maker", obj([("id", str("anthropic"))]))]),
-      m("claude-opus-5-1", "Opus 5.1", "Opus"),
-      m("claude-opus-5", "Opus 5", "Opus"),
-      m("claude-sonnet-5-5", "Sonnet 5.5", "Sonnet"),
-      m("claude-sonnet-5", "Sonnet 5", "Sonnet"),
-      m("claude-sonnet-4-5", "Sonnet 4.5", "Sonnet"),
-      m("claude-haiku-4-5", "Haiku 4.5", "Haiku"),
-      m("claude-haiku-4", "Haiku 4", "Haiku"),
-      obj([
-        ("model", str("claude-fable-5-1")),
-        ("name", str("Fable 5.1")),
-        ("family", str("Fable")),
-        ("maker", obj([("id", str("anthropic"))])),
-        ("availability", str("borrowable")),
-        ("fromStation", obj([("name", str("Maple")), ("icon", str("glyph:laptop:teal"))])),
-        ("fromText", str("借自 Maple")),
-      ]),
-    ]
-  } else {
-    [model]
-  }
+  let options : Json = [model]
   obj([
     ("value", obj([("model", str("claude-opus-5-5")), ("runtime", str("claude"))])),
     ("draft", obj([("model", str("claude-opus-5-5")), ("runtime", str("claude")), ("effort", str("high"))])),

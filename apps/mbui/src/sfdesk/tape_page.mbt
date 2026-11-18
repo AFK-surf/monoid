@@ -620,12 +620,6 @@ fn tape_made(
         context_node(p)
         @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
-    // (by its station and session: another's another page)
-    Setting(RunSettings(station, key)) if pane_makes.val =>
-      made("run/" + station + "/" + key, fn(p, core, _here, _stint, told, _acts) {
-        context_node(p)
-        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
-      })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) if pane_makes.val =>
       made("adb/" + focus, fn(p, core, _here, _stint, told, _acts) {

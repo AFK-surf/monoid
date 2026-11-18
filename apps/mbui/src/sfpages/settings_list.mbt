@@ -293,7 +293,7 @@ pub fn settings_row_of(r : @settings.Route) -> @settings.Route {
     AdbShare(_) => AdbShare("")
     Station(_) | StationMove(_) => Stations
     Profile(_, _) | NewProfile(_) | ProfileAccount(_) => Profiles("")
-    Connects(_) | Connect(_, _) | RunSettings(_, _) => Connects("")
+    Connects(_) | Connect(_, _) => Connects("")
     Memory(_) | MemoryDoc(_, _, _) => Memories
     AutoCompletion | AutoPolicy(_) => AutoDecisions
     StationArchiving(_) => Archiving
