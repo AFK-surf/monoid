@@ -49,3 +49,47 @@ test "the time under one's own message comes in where it rests, never jumping ac
     )
   }
 }
+
+///|
+test "the time under one's own message, once seen, is not drawn from nothing again as an answer comes under it" {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let src = fixture("chat")
+  fix_core_for.val = 100.0
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  nav_rested(t)
+  files_page_over(t, 1280.0, 800.0)
+  t.run_for(@ui.move_most_ms)
+  guard composer_field(t) is Some((fx, fy, fw, fh)) else { @halt.saying("no composer's field") }
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.type_text("发布前再看一眼签名")
+  t.key(@ui.key_code_enter)
+  // (how opaque 刚刚 under one's own message (on the window's right) is drawn, each frame it is drawn, once it has been
+  // seen whole: the agent's answer coming in under it moves its row, and nothing of it changes)
+  let whole = Ref(false)
+  let least = Ref(1.0)
+  let answered = Ref(false)
+  t.each_frame(
+    Some(fn() {
+      for w in t.words() {
+        if w.0 == "收到：「发布前再看一眼签名」。我先看一下，有结果再告诉你。" {
+          answered.val = true
+        }
+        if w.0 == "刚刚" && w.1 > 640.0 {
+          if whole.val {
+            least.val = @cmp.minimum(least.val, w.5)
+          } else if w.5 >= 0.999 {
+            whole.val = true
+          }
+        }
+      }
+    }),
+  )
+  t.run_shown(4000.0)
+  t.each_frame(None)
+  fix_core_for.val = 0.0
+  assert_true(whole.val, msg="刚刚 under one's own message never seen whole")
+  assert_true(answered.val, msg="the agent's answer never came")
+  assert_true(least.val >= 0.999, msg="刚刚 drawn at \{least.val} after it was seen whole")
+}

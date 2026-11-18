@@ -297,6 +297,17 @@ fn View::pick_leaving(
         if in_list {
           now.held.set(1)
           held_scaled(now.fader, p, now.held, held_progress)
+          // (held by the way this change set out on alone: once that is over (the longest a way goes, as what went is
+          // let go then) it is at rest, whole, drawn by nothing's way; a later way of its place or of its list (the
+          // list's rows going as what is under or over them grows, an agent's answer streamed in) is no change of its,
+          // and drew it from nothing again each time (the user, 2026-11-18: 「“刚刚”两个字为啥一直重复播动效」))
+          let held = now.held
+          p.at_moment(at + dmax(leave, @flex.move_most_ms), fn() {
+            if held.untracked() == 1 {
+              held.set(0)
+            }
+          })
+          |> ignore
         }
         had.val = Some((k, now))
         // (holding nothing once what fades is gone and its way is over (at `ends`): laid out nowhere, no gap of its own
