@@ -728,7 +728,16 @@ pub fn fix_pick() -> Json {
       Json::null()
     },
     "value": picked(n.model, n.runtime, n.effort, "", [], false),
-    "valueOption": if n.station_empty { Json::null() } else { fix_model(n.model) },
+    // (none of this station's: the core still names the model it has, by the catalog's name and maker, as choose.ts's
+    // `valueOption` of a model not listed is)
+    "valueOption": if n.station_empty {
+      match fix_model(n.model) {
+        Object(m) => { "name": m.get("name").unwrap_or(Json::null()), "maker": m.get("maker").unwrap_or(Json::null()), "runtimes": [] }
+        other => other
+      }
+    } else {
+      fix_model(n.model)
+    },
     "draft": picked(n.d_model, n.d_runtime, n.d_effort, n.d_profile, n.d_profiles, n.d_none),
     "option": Json::string(n.d_model),
     // (all the drafted model runs on, crowded; else the one it runs on)
