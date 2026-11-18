@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
 | [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
 | [53ebc9dfa](https://github.com/AFK-surf/monoid/commit/53ebc9dfa53e06ffd6a9cf614766b2f4e8daa895) Port AndroidLiquidGlass and refine glass controls | 2.54 | 3.42 | 13.99 | 35.91 | 53.81 | 31.48 | 63.36 | 96.52 | 123.09 |
 | [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [78e0e3bc4](https://github.com/AFK-surf/monoid/commit/78e0e3bc45acac13f84ba9f1517239a74e428f0f) app: open notified chats in the current board or c | 2.57 | 3.63 | 15.93 | 37.27 | 63.38 | 32.51 | 68.98 | 96.26 | 123.64 |
 | [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 120.55 |
 | [4cc373f9f](https://github.com/AFK-surf/monoid/commit/4cc373f9f84fab44e570275f29396dfdba86c5ab) station: a batch taken as its process is let go is | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 120.55 |
-| [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 2.56 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 114.21 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
 | [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
 | [53ebc9dfa](https://github.com/AFK-surf/monoid/commit/53ebc9dfa53e06ffd6a9cf614766b2f4e8daa895) Port AndroidLiquidGlass and refine glass controls | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
 | [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [78e0e3bc4](https://github.com/AFK-surf/monoid/commit/78e0e3bc45acac13f84ba9f1517239a74e428f0f) app: open notified chats in the current board or c | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [4cc373f9f](https://github.com/AFK-surf/monoid/commit/4cc373f9f84fab44e570275f29396dfdba86c5ab) station: a batch taken as its process is let go is | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
-| [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
