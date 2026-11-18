@@ -44,7 +44,8 @@ set -- $(compiled -O1); total=$2; [ "$1" = "$total" ] || fail "the first compile
 [ "$(compiled -O1)" = "0 $total" ] || fail "nothing changed, not all kept"
 echo '#define H 2' > "$T/h.h"
 [ "$(compiled -O1)" = "1 $total" ] || fail "a header changed: x.c alone"
-[ "$(compiled -O2)" = "$total $total" ] || fail "the flags changed: all"
+data_units=$(find "$T/k/src" -type f \( -name data.c -o -name 'data_*.c' \) | wc -l)
+[ "$(compiled -O2)" = "$((total - data_units)) $total" ] || fail "the optimization level changed: keep data units"
 [ "$(compiled -O2)" = "0 $total" ] || fail "the same flags again: none"
 wrapper two
 [ "$(compiled -O2)" = "$total $total" ] || fail "the compiler changed: all"
