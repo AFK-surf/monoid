@@ -991,6 +991,23 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
   at.box(fn(b) {
     // a capsule round a 32 high button 6 in from its edge: its corner 6 + 16
     @sf.style_node(b, fn() { if in_bar { take_over_bar_row } else { take_over_box } })
+    let shake : Ref[@motion.NodeWay?] = Ref(None)
+    b.reacts(fn() { u.held_nudge.get() }, at_start=false, fn(_) {
+      @ui.haptic(Reject)
+      if @ui.reduced_motion() {
+        return
+      }
+      let way = match shake.val {
+        Some(w) => w
+        None => {
+          let w = @motion.NodeWay::new(1.0)
+          shake.val = Some(w)
+          b.offset(By(fn() { (@sf.refused_dx(w.shown(b)), 0.0) })) |> ignore
+          w
+        }
+      }
+      way.go_from(b, 0.0, 1.0, @motion.tween(@sf.refused_ms, ease=Linear))
+    })
     if !in_bar {
       floats_node(b)
       @sf.first_line_node(b, Ui, fn(l) { l.box(fn(d) { @sf.style_node(d, fn() { take_over_dot }, in_row=true) }) |> ignore }) |> ignore

@@ -367,11 +367,20 @@ fn Ctx::paint_finger_ends(self : Ctx) -> Unit {
       let ky = if k == 0 { top - 11.0 } else { top + h - 1.0 }
       self.emit_rect(x - 6.0, ky, 12.0, 12.0, 6.0, ink, 0.0, 0L, 1.0)
     }
-    // (a finger's room round it: 36 across, the line and 28 more where its knob is)
+    // (a finger's room round it: 36 across, the line and 28 more where its knob is: on Android both drops hang under
+    // the line, each to its own side, the start's too, so its room is there, not over the line where iOS's knob is)
     let half = finger_end_half
+    let drop = h_feel() == 2
+    let mid = if !drop {
+      x
+    } else if k == 0 {
+      x - handle_r
+    } else {
+      x + handle_r
+    }
     next_finger_ends[k] = Some({
-      x: x - half,
-      y: if k == 0 { top - finger_knob_room } else { top },
+      x: mid - half,
+      y: if k == 0 && !drop { top - finger_knob_room } else { top },
       w: 2.0 * half,
       h: h + finger_knob_room,
       ex: x,

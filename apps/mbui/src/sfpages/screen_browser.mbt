@@ -11,11 +11,11 @@
 // back and forward, ⌘R again (screen_view's screen_keys_in).
 
 ///|
-/// Whether the viewer shows the browser's bar: a tab of the station's browser that this viewer may send an address to
-/// (driving it), or one of a person's own pages there.
+/// Whether the viewer shows the browser's bar: a tab of the station's browser (driven or watch-only, so the bar stays
+/// in place with its address read-only and its navigation keys dimmed while an agent operates it).
 fn browser_shown(s : ScreenSess) -> Bool {
   let tab = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
-  s.open_now() && tab && (s.user_tab() || flag(s.state, "openUrl"))
+  s.open_now() && tab && (s.user_tab() || flag(s.state, "openUrl") || text(s.state, "address") != "")
 }
 
 ///|
@@ -264,6 +264,10 @@ fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -
     s.said.get() |> ignore
     address_shown(s)
   }
+  let can_drive = fn() {
+    s.said.get() |> ignore
+    flag(s.state, "openUrl")
+  }
   let bar = @sf.address_bar_node(
     row,
     field,
@@ -280,6 +284,10 @@ fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -
     fn() { browser_act(s, "screen.back", @sf.t("web-pages.screen.backWhat")) },
     fn() { browser_act(s, "screen.forward", @sf.t("web-pages.screen.forwardWhat")) },
     fn() { browser_act(s, "screen.reload", @sf.t("web-pages.screen.reloadWhat")) },
+    can_back=can_drive,
+    can_forward=can_drive,
+    can_reload=can_drive,
+    editable=can_drive,
     keys_shown=fn() { !narrow() },
     placeholder=fn() { @sf.t("web-pages.screen.addressHint") },
     tips=pg.tips,
@@ -291,7 +299,9 @@ fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -
   bar.reacts(fn() { u.address_asked.get() }, fn(n) {
     if n > u.address_done {
       u.address_done = n
-      field.focus()
+      if @signals.untracked(can_drive) {
+        field.focus()
+      }
     }
   })
   // (the tabs in a row of their own only in the viewer's bar with keyboard and mouse: screen_viewer_bar_node)
@@ -496,7 +506,7 @@ fn browser_key(s : ScreenSess, u : ScreenUi, code : String, mods : Int, down : B
     return false
   }
   let act : String? = match code {
-    "KeyL" | "KeyR" | "BracketLeft" | "BracketRight" => Some(code)
+    "KeyL" | "KeyR" | "BracketLeft" | "BracketRight" if flag(s.state, "openUrl") => Some(code)
     "KeyT" | "KeyW" if s.user_tab() => Some(code)
     _ => None
   }

@@ -39,8 +39,8 @@ fn center_node(
       ts.push("go")
       ts.push("reload")
     }
-    // a browser's tab where its bar is narrow: → and ⟳ here, ← and the address bar on it
-    if browser_shown(s) && u.narrow_bar {
+    // a browser's tab where its bar is narrow: → and ⟳ here while driving, ← and the address bar on it
+    if browser_shown(s) && s.opens_url() && u.narrow_bar {
       ts.push("forward")
       ts.push("reload")
     }

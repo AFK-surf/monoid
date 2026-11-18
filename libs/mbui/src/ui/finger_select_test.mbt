@@ -112,6 +112,32 @@ test "finger: the end's handle moved takes the end to the finger, the start stay
 }
 
 ///|
+test "finger: on Android the start's drop, hanging under the line left of the start, taken and moved back takes the start to the finger, the end staying" {
+  let t = finger_words()
+  let (x, y, _, h) = t.rect_of("hello wide world").unwrap()
+  t.press_at(x + 60.0, y + h / 2.0)
+  t.draw()
+  t.run_for(@ui.long_press_ms)
+  t.release(x + 60.0, y + h / 2.0)
+  t.draw()
+  assert_eq(t.ctx().selected_text(), "wide")
+  // the start's drop: its circle's middle half its width left of the start, as far under the line (the finger
+  // taken to half its width left of the words, the start where it was off it: at the words' start)
+  let (sx, sy, _, sh) = t.ctx().selection_box().unwrap()
+  let hx = sx - 12.5
+  let hy = sy + sh + 12.5
+  t.press_at(hx, hy)
+  t.draw()
+  t.move_to(hx - 10.0, hy)
+  t.draw()
+  t.move_to(x - 10.0, hy)
+  t.draw()
+  t.release(x - 10.0, hy)
+  t.draw()
+  assert_eq(t.ctx().selected_text(), "hello wide")
+}
+
+///|
 test "finger: a mouse's press and drag picks as it did; a finger's hold on what takes the hold itself picks nothing" {
   let held : Array[String] = []
   let t = @ui.Tester::new(

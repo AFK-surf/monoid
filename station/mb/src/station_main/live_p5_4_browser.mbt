@@ -507,9 +507,25 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
       join_agent: (id, by) => screens.hub.join(id, @screens.Watcher::new(by, true, _ => (), agent=true)),
     },
     session => {
-      let title = match p54_session_row(bus, session) {
-        Some(row) => p54_text(Some(row), "title").unwrap_or("").trim().to_string()
-        None => ""
+      let mut title = ""
+      let home = bus.store.call("sessionHomeThread", [Json::string(session)]) catch { _ => Json::null() }
+      match p54_get(Some(home), "thread") {
+        Some(t) => title = p54_text(Some(t), "title").unwrap_or("").trim().to_owned()
+        None => ()
+      }
+      if title == "" {
+        let recent = bus.store.call("recentSessionThreads", [Json::string(session), Json::number(1.0)]) catch { _ => Json::null() }
+        match p54_get(Some(recent), "threads") {
+          Some(Array(ts)) if ts.length() > 0 =>
+            title = p54_text(p54_get(Some(ts[0]), "thread"), "title").unwrap_or("").trim().to_owned()
+          _ => ()
+        }
+      }
+      if title == "" {
+        title = match p54_session_row(bus, session) {
+          Some(row) => p54_text(Some(row), "title").unwrap_or("").trim().to_owned()
+          None => ""
+        }
       }
       "agent: \{if title != "" { title } else { session }}"
     },

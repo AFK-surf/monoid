@@ -460,14 +460,14 @@ pub fn screen_fixture_stream(
       st["line"] = Json::string(if user { "mail.proton.me · 控制" } else { "console.anthropic.com · 控制" })
       on_value({ "state": Json::object(st) }, None)
     }
-    "screen-browser-agent-driving" => {
-      live(false, true, [agent], Some([agent]), Some(true), Some("只看 · \{agent} 正在控制"), None, None, None)
-      let st = match screen_fix_state("live", false, true, [agent], "", Some([agent]), Some(true), Some("只看 · \{agent} 正在控制"), None, None, None) {
+    "screen-browser-agent-driving" | "screen-browser-unnamed-agent" => {
+      let who = if m == "screen-browser-unnamed-agent" { "Agent" } else { agent }
+      live(false, true, [who], Some([who]), Some(true), Some("只看 · \{who} 正在控制"), None, None, None)
+      let st = match screen_fix_state("live", false, true, [who], "", Some([who]), Some(true), Some("只看 · \{who} 正在控制"), None, None, None) {
         Object(o) => o.copy()
         _ => {}
       }
       st["kind"] = Json::string("browser")
-      st["openUrl"] = Json::boolean(true)
       st["address"] = Json::string("https://accounts.google.com/v3/signin/identifier")
       st["title"] = Json::string("Sign in - Google Accounts")
       on_value({ "state": Json::object(st) }, None)
@@ -488,7 +488,7 @@ pub fn screen_fixture_stream(
         "id": "1",
         "host": "accounts.google.com",
         "rpId": "google.com",
-        "clientData": "{\"type\":\"webauthn.get\"}",
+        "clientData": "{\"type\":\"webauthn.get\",\"challenge\":\"dGVzdC1jaGFsbGVuZ2U\",\"origin\":\"https://accounts.google.com\",\"crossOrigin\":false}",
         "allow": [],
         "userVerification": "preferred",
       }

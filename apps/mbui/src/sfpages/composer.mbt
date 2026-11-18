@@ -1238,15 +1238,12 @@ fn composer_extras(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, 
   // picture's foot cut square and faded as it came in, 2026-11-02 the user: 「能看出问题吗」).
   // (held by words sent from it: as tall as what was added was laid out as they were sent, composer_held_extras)
   let empty = w.quotes.get().is_empty() && w.files.get().is_empty() && held <= 0.0
-  // (the room, read where it is as what it holds is painted: held_coming)
-  let room : Ref[@ui.NodeHeld?] = Ref(None)
   let area = c.box(
     style=extras_room(held),
     left?=if empty { Some(@sf.composer_pad) } else { None },
     top?=if empty { Some(@sf.composer_pad) } else { None },
-    fn() { composer_extra_items(c, src, spec, w, holds, shape, quote_pictures, file_pictures, room) },
+    fn() { composer_extra_items(c, src, spec, w, holds, shape, quote_pictures, file_pictures) },
   )
-  room.val = Some(c.node_held(area))
   // (how tall it is laid out: what words sent hold it as, composer_held_extras)
   @motion.measure(c, area, "composer/extras/room")
   @motion.scope(c, area)
@@ -1254,10 +1251,20 @@ fn composer_extras(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, 
 }
 
 ///|
-fn composer_extra_items(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, holds : String, shape : @motion.Spec, quote_pictures : Array[(MediaPicture, Json?)?], file_pictures : Array[String?], room : Ref[@ui.NodeHeld?]) -> Unit {
-  if !w.quotes.get().is_empty() {
-    let quote_had = quote_has_focus(c, w)
-    c.box(style=quotes_column, fn() {
+/// The quotes and the files each in a room of its own, always there (none tall while it holds nothing), the files 10
+/// under the quotes where both wait: what comes in one grows with its own room as it opens (held_coming), so a quote
+/// added over files waiting comes in with the quotes' room alone, the files moved down as it opens and never cut by
+/// the whole room's growth (one room for both: the quote stepped 4 in its first frame and stood, the file under it cut
+/// to nothing, chat_page_nodes_wbtest at 120 frames a second).
+fn composer_extra_items(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, holds : String, shape : @motion.Spec, quote_pictures : Array[(MediaPicture, Json?)?], file_pictures : Array[String?]) -> Unit {
+  // (each room, read where it is as what it holds is painted: held_coming)
+  let quotes_room : Ref[@ui.NodeHeld?] = Ref(None)
+  let files_room : Ref[@ui.NodeHeld?] = Ref(None)
+  let quotes_empty = w.quotes.get().is_empty()
+  let files_empty = w.files.get().is_empty()
+  let quotes_area = c.box(style=quotes_column, fn() {
+    if !quotes_empty {
+      let quote_had = quote_has_focus(c, w)
       for i, q in w.quotes.get() {
         let v = Some(q)
         let id = text(v, "id")
@@ -1311,26 +1318,34 @@ fn composer_extra_items(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writ
           composing.grounds[id] = c.node_bg(card)
         })
         @motion.layout(c, item, key + "/in", spec=shape, by=holds)
-        held_coming(c, item, key, room)
+        held_coming(c, item, key, quotes_room, "composer/quotes")
         sent_gone_now(c, w, item)
       }
-    })
-    |> ignore
+    }
+  })
+  quotes_room.val = Some(c.node_held(quotes_area))
+  @motion.scope(c, quotes_area)
+  @motion.layout(c, quotes_area, "composer/quotes", spec=shape, by=holds, cut=false)
+  // (a quote's picture is its own, not among them; 10 under the quotes by a margin, so each room is as tall as what it
+  // holds: what grows in it reaches its whole height only as its room's way ends)
+  let files_style = if !quotes_empty && !files_empty {
+    files_flow().then(@ui.style(mt=S2_5))
+  } else {
+    files_flow()
   }
-  // (a quote's picture is its own, not among them)
-  if !w.files.get().is_empty() {
-    c.box(style=files_flow(), flow=true, line_gap=files_lines(), fn() {
-      for n, f in w.files.get() {
-        let i = c.box(fn() { composer_file(c, src, spec, w, f, file_pictures[n]) })
-        let key = "composer/file/" + text(Some(f), "id")
-        @motion.layout(c, i, key + "/in", spec=shape, by=holds)
-        @motion.measure_drawn(c, i, key + "/shown")
-        held_coming(c, i, key, room)
-        sent_gone_now(c, w, i)
-      }
-    })
-    |> ignore
-  }
+  let files_area = c.box(style=files_style, flow=true, line_gap=files_lines(), fn() {
+    for n, f in w.files.get() {
+      let i = c.box(fn() { composer_file(c, src, spec, w, f, file_pictures[n]) })
+      let key = "composer/file/" + text(Some(f), "id")
+      @motion.layout(c, i, key + "/in", spec=shape, by=holds)
+      @motion.measure_drawn(c, i, key + "/shown")
+      held_coming(c, i, key, files_room, "composer/files")
+      sent_gone_now(c, w, i)
+    }
+  })
+  files_room.val = Some(c.node_held(files_area))
+  @motion.scope(c, files_area)
+  @motion.layout(c, files_area, "composer/files", spec=shape, by=holds, cut=false)
 }
 
 ///|
@@ -1353,16 +1368,16 @@ fn sent_gone_now(c : @ui.Ctx, w : Writing, i : Int) -> Unit {
 /// What waits in it (a quote's card, a file's: node `i`, keyed `key`) put in while it shows comes in (`@sf.waiting_in`, the
 /// web's enterUp on composerQuote, fileCard and composerThumb), the first frame it is built; what a draft opened with,
 /// or the composer gone to another page with, is there at once (sf/motion.mbt: what is on a page does not move of its
-/// own as it comes), though said so as it is (built again the frame after, it was there before). Below what the room
-/// shows as it opens for it (`room`, composer_extras), it grows with it from its top, as a row coming where it is
+/// own as it comes), though said so as it is (built again the frame after, it was there before). Below what its room
+/// shows as it opens for it (`room`, keyed `room_key`: composer_extra_items), it grows with it from its top, as a row coming where it is
 /// (@ui.Ctx::held_look's size; faded in by its entrance alone): whole, as far as the room has reached down it.
-fn held_coming(c : @ui.Ctx, i : Int, key : String, room : Ref[@ui.NodeHeld?]) -> Unit {
+fn held_coming(c : @ui.Ctx, i : Int, key : String, room : Ref[@ui.NodeHeld?], room_key : String) -> Unit {
   @motion.entering(c, i, key + "/in", @sf.waiting_in, at_once=!composing.same_draft)
   // (it and its room read where they are as it is painted, not where they were built: what holds them kept as its
   // nodes is put back elsewhere among the frame's as what is built before it makes more nodes or fewer)
   let held = c.node_held(i)
   c.look_by(i, fn() {
-    match (@motion.grown_shown(c, "composer/extras"), held.at(), room.val.bind(fn(r) { r.at() })) {
+    match (@motion.grown_shown(c, room_key), held.at(), room.val.bind(fn(r) { r.at() })) {
       (Some(shown), Some(i), Some(room)) => {
         let (_, top, _, _) = c.node_rect(room)
         let (_, y, _, h) = c.node_rect(i)
@@ -2014,9 +2029,9 @@ let round_hot : @ui.Style = @ui.css("bg=Hover")
 
 
 ///|
-/// The quotes waiting, 6 apart.
+/// The quotes and the files waiting, one room over the other (composer_extra_items: 10 between them where both wait).
 // kept across runs: a value (no field of it changes)
-let extras_column : @ui.Style = @ui.css("w=Full gap=S2_5")
+let extras_column : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// Where what waits stands (extras_column): in from the padding where the box is too round for it there
