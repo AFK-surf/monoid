@@ -123,31 +123,62 @@ test "pointing: a pointed child inside a pressable row let go when pointed_in tu
 }
 
 ///|
-test "pointing: while one button is held, the pointer passing over another points at none; let go, at the one under it" {
-  let a = @signals.signal(true, same=fn(x, y) { x == y })
-  let b = @signals.signal(true, same=fn(x, y) { x == y })
-  let t = two_buttons(a, b)
-  let first = match t.target_at(20.0, 20.0) {
-    Pressed(id) => id
-    _ => @halt.saying("not a button")
+/// A thumb that takes drags (as `captures` says) beside a button, each 40 square.
+fn thumb_and_button(captures : Bool) -> @view.Tree {
+  let t = @view.Tree::new(
+    fn(root) {
+      root.row(Is(true)) |> ignore
+      root.box(fn(n) { n.width(Is(Some(40.0))).height(Is(Some(40.0))).on_drag(fn(_) {  }, captures~) |> ignore }) |> ignore
+      root.box(fn(n) { n.width(Is(Some(40.0))).height(Is(Some(40.0))).on_press(fn() {  }) |> ignore }) |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(100.0, 100.0) |> ignore
+  t
+}
+
+///|
+test "pointing: while a thumb that captures is dragged, the button the pointer passes over is not pointed at; let go, it is" {
+  let t = thumb_and_button(true)
+  let thumb = match t.target_at(20.0, 20.0) {
+    Dragged(id) => id
+    _ => @halt.saying("not a thumb")
   }
-  let second = match t.target_at(60.0, 20.0) {
+  let button = match t.target_at(60.0, 20.0) {
     Pressed(id) => id
     _ => @halt.saying("not a button")
   }
   t.point_at(20.0, 20.0)
-  assert_eq(t.pointed_now(), Some(first))
-  t.hold_press(first)
+  assert_eq(t.pointed_now(), Some(thumb))
+  t.drag_at(thumb, Down, 20.0, 20.0, 10.0) |> ignore
   t.point_at(60.0, 20.0)
+  t.drag_at(thumb, Moved, 60.0, 20.0, 20.0) |> ignore
   assert_eq(t.pointed_now(), None)
   t.point_at(20.0, 20.0)
-  assert_eq(t.pointed_now(), Some(first))
+  assert_eq(t.pointed_now(), Some(thumb))
   t.point_at(60.0, 20.0)
-  assert_false(t.press_held(second))
   let hits = t.hits_said()
-  assert_true(t.press_held(first))
+  t.drag_at(thumb, Up, 60.0, 20.0, 30.0) |> ignore
   // (let go: what is placed under a still pointer said to have changed, which the host follows again, as here)
   assert_true(t.hits_said() > hits)
   t.point_at(60.0, 20.0)
-  assert_eq(t.pointed_now(), Some(second))
+  assert_eq(t.pointed_now(), Some(button))
+}
+
+///|
+test "pointing: while a thumb that does not capture is dragged (a file over folders), what the pointer passes over is pointed at" {
+  let t = thumb_and_button(false)
+  let thumb = match t.target_at(20.0, 20.0) {
+    Dragged(id) => id
+    _ => @halt.saying("not a thumb")
+  }
+  let button = match t.target_at(60.0, 20.0) {
+    Pressed(id) => id
+    _ => @halt.saying("not a button")
+  }
+  t.point_at(20.0, 20.0)
+  t.drag_at(thumb, Down, 20.0, 20.0, 10.0) |> ignore
+  t.point_at(60.0, 20.0)
+  assert_eq(t.pointed_now(), Some(button))
+  t.drag_at(thumb, Up, 60.0, 20.0, 30.0) |> ignore
 }

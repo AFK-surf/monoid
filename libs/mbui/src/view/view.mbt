@@ -626,6 +626,9 @@ struct Node {
   /// whether a drag anywhere on it is its own, whole (View::on_drag's `whole`): nothing drawn over it reached from round
   /// where it is drawn by a press on it (reach.mbt)
   mut drags_whole : Bool
+  /// whether, held, it alone is pointed at (View::on_drag's `captures`: a slider's or a scrollbar's thumb, as a captured
+  /// pointer's on the web): what the pointer passes over meanwhile is not (Tree::pointed_of)
+  mut drag_captures : Bool
   /// which saying of its on_drag it is (each said anew, or let go, another): what was told by one is that one's alone
   mut drag_said : Int
   /// where in it a finger is taken at a moment (View::takes, View::hosted_takes; none: all of it)
@@ -1967,6 +1970,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.wheel_said = 0
       n.on_drag = None
       n.drags_whole = false
+      n.drag_captures = false
       n.takes = None
       if n.takes_units.length() > 0 {
         n.takes_units = []
@@ -2114,6 +2118,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         on_drag: None,
         fingers: 1,
         drags_whole: false,
+        drag_captures: false,
         drag_said: 0,
         takes: None,
         takes_units: [],
@@ -7625,11 +7630,21 @@ pub(all) struct Drag {
 /// any tracking. One let go meanwhile is told nothing more. Up to `fingers` held on it at once, each told by its own
 /// events (Drag's `finger`); one more down calls the hold off (each of those down told Off), the rest of it nobody's.
 /// `whole`: a drag anywhere on it is its own (a picture a drag pans, as the old view's `capture`): a press on it takes
-/// nothing drawn over it smaller than its room from round where that is drawn (reach.mbt).
-pub fn View::on_drag(self : View, f : (Drag) -> Unit, fingers? : Int = 1, whole? : Bool = false) -> View {
+/// nothing drawn over it smaller than its room from round where that is drawn (reach.mbt). `captures`: while held, it
+/// alone is pointed at, and only while the pointer is over it (a slider's or a scrollbar's thumb: the controls the
+/// pointer passes over meanwhile take no hover, show no tip), as the web's setPointerCapture; not for what is dragged
+/// onto something that should answer it being over it (a file onto a folder).
+pub fn View::on_drag(
+  self : View,
+  f : (Drag) -> Unit,
+  fingers? : Int = 1,
+  whole? : Bool = false,
+  captures? : Bool = false,
+) -> View {
   guard self.live() is Some(n) else { return self }
   n.fingers = if fingers < 1 { 1 } else { fingers }
   n.drags_whole = whole
+  n.drag_captures = captures
   n.drag_said = n.drag_said + 1
   // (a raw on_drag, or a gesture said anew: answering a hold alone only where the gesture says so after it)
   n.hold_only = None
@@ -8606,6 +8621,7 @@ fn View::let_go(self : View) -> Unit {
   self.drag_ended()
   n.on_drag = None
   n.drags_whole = false
+  n.drag_captures = false
   n.drag_said = n.drag_said + 1
   n.takes = None
   // (what holds it holds one taking a point the fewer: what it held let go of already, each so)
@@ -13877,16 +13893,17 @@ fn Tree::target_in(self : Tree, x : Double, y : Double, tracked~ : Bool) -> (Tar
 /// and what hosts it say it: what says it is pointed at alone over all that takes it there (View::points); else what
 /// takes a press or a hold there; else nothing.
 pub fn Tree::pointed_of(self : Tree, t : Target) -> NodeId? {
-  // (while a node is held (a press, a drag) it alone is pointed at, and only while the pointer is over it: what the
-  // pointer passes over meanwhile is not, its hover and its tip not told, as a captured pointer's are not on the web
-  // (setPointerCapture); let go, what is under a still pointer is pointed at again: Tree::held_to)
+  // (while a node held captures the pointer (View::on_drag's `captures`) it alone is pointed at, and only while the
+  // pointer is over it: what the pointer passes over meanwhile is not, its hover and its tip not told, as a captured
+  // pointer's are not on the web (setPointerCapture); let go, what is under a still pointer is pointed at again:
+  // Tree::held_to)
   match self.held {
-    Some(h) =>
+    Some(h) if self.alive_id(h) && self.nodes[h.at].drag_captures =>
       return match t {
         Pressed(id) | Dragged(id) if id == h => Some(id)
         _ => None
       }
-    None => ()
+    _ => ()
   }
   match self.points_hover {
     Some(id) => Some(id)
@@ -14370,8 +14387,8 @@ fn Tree::held_to(self : Tree, h : NodeId?) -> Unit {
     self.pressing = h
     self.hand_told(was, fn(n) { n.pressed_cell }, false)
     self.hand_told(h, fn(n) { n.pressed_cell }, true)
-    // (what a still pointer is over worked out again: held, nothing else is pointed at; let go, what is under it is
-    // again: Tree::pointed_of)
+    // (what a still pointer is over worked out again: held by what captures it, nothing else is pointed at; let go, what
+    // is under it is again: Tree::pointed_of)
     self.hits_bump()
   }
 }
