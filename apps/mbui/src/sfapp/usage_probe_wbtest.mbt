@@ -6,7 +6,13 @@ fn uprobe_at(t : @ui.Tester, tag : String) -> Unit {
       None => "\{w}:none"
     }
   })
-  println("probe \{tag}: \{ys.join(" | ")}")
+  let mut low = ("", -1.0e9)
+  for w in t.words() {
+    if w.2 > low.1 && w.2 < 760.0 && w.1 >= 0.0 && w.1 < 390.0 {
+      low = (w.0, w.2)
+    }
+  }
+  println("probe \{tag}: \{ys.join(" | ")} || lowest \{low.0}@\{low.1}")
 }
 
 ///|
@@ -136,4 +142,36 @@ test "usage probe: isolate" {
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.usage_only_for_test(("people", "lin@example.com")) })
   t.run_for(kept_switch_over_ms)
   uprobe_end(t, "C4 set, chats tab, scrolled")
+}
+
+///|
+test "usage probe: the filtered view answered late" {
+  for late in [false, true] {
+    new_run()
+    let pending = @signals.signal(false, same=fn(a, b) { a == b })
+    let base = fixture("home")
+    let src = { ..base, topic_read: fn(name, params) {
+      let answer = base.topic(name, params).get().snapshot()
+      if name == "usage" && params.get("only") is Some(_) && pending.get() { { ..answer, value: None } } else { answer }
+    } }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(kept_switch_over_ms)
+    kept_go(t, "usage", true)
+    t.run_for(kept_switch_over_ms)
+    uprobe_tap(t, "人")
+    t.run_for(kept_switch_over_ms)
+    uprobe_end(t, "D\{late} people tab")
+    pending.set(late)
+    t.drag(180.0, 250.0, 180.0, 400.0, steps=20)
+    t.run_for(kept_glide_over_ms)
+    uprobe_at(t, "D\{late} up 150")
+    uprobe_tap(t, "林")
+    t.run_for(kept_switch_over_ms)
+    uprobe_at(t, "D\{late} 林 picked")
+    pending.set(false)
+    t.run_for(kept_switch_over_ms)
+    uprobe_at(t, "D\{late} answered")
+    uprobe_end(t, "D\{late} answered")
+  }
 }
