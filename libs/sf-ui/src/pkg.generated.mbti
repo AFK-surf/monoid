@@ -986,11 +986,15 @@ pub let line_stroke : StrokeShape
 
 pub let link : @ui.TextStyle
 
+pub fn link_card_node(@view.View, () -> String?, () -> String, () -> String, () -> Bool, () -> Unit) -> Unit
+
 pub let link_card_w : @ui.Len
 
 pub fn link_cards_node(@view.View, TipLayer, @view.View, @ui.RunsLinks, () -> Array[(String, String, Int32)], (LinkOf) -> LinkCard?) -> Map[Int32, HoverHand]
 
 pub fn link_ink() -> Int64
+
+pub fn link_mark_node(@view.View, () -> String?) -> Unit
 
 pub fn link_menu(String, from~ : Beside, () -> Unit, () -> Unit) -> Unit
 
@@ -1001,6 +1005,8 @@ pub fn link_row_node(@view.View, () -> String, () -> Unit, value? : () -> String
 pub fn link_row_opens_node(@view.View, () -> String, (@view.View) -> Unit, value? : () -> String, value_bad? : () -> Bool, value_warn? : () -> Bool, value_dot? : () -> Bool, value_lit? : Bool, note? : () -> String, wide_note? : () -> String, trouble? : () -> String, strong? : Bool, danger? : Bool, lacks? : Bool, lead? : RowLead, face? : Bool, goes? : Bool, chevron? : Bool, out? : Bool, acts? : Bool, below? : (@view.View) -> Unit, below_open? : () -> Double, note_cut? : Bool, title_after? : (@view.View) -> Unit, title_after_shown? : () -> Bool, folds? : () -> Bool, tail? : (@view.View) -> Unit, tail_shown? : () -> Bool, control? : (@view.View) -> Unit, adds? : Bool, wide_title? : () -> @ui.TextStyle, title_cut? : Bool, value_cut? : Bool, chevron_room? : Bool) -> Unit
 
 pub fn link_to_of(@json.Json, text? : String, bare? : Bool) -> LinkTo
+
+pub fn link_words_node(@view.View, () -> String, () -> String, () -> Bool, in_row? : Bool, look? : @ui.Style) -> Unit
 
 pub let list_card_corner : Double
 
@@ -1575,11 +1581,57 @@ pub fn path_of_link(String) -> (String, Int32?)?
 
 pub let peek_card_in_px : Double
 
+pub let peek_card_part : @ui.Style
+
 pub let peek_card_px : Double
 
 pub let peek_card_w : @ui.Len
 
+pub fn peek_change_node(@view.View, Bool, () -> String, () -> String, () -> String, () -> String, () -> String, () -> Array[PeekFact], (@view.View) -> Unit) -> Unit
+
+pub fn peek_chat_head_node(@view.View, () -> String, marked? : () -> Bool, mark? : (@view.View) -> Unit, ago? : () -> String) -> Unit
+
+pub fn peek_chat_where_node(@view.View, () -> Bool, () -> Bool, () -> String, () -> String, () -> String) -> Unit
+
+pub fn peek_copy_node(@view.View, () -> String, String, Map[String, Double]) -> Unit
+
+pub fn peek_excerpt_node(@view.View, () -> String) -> Unit
+
+pub fn peek_file_entries_node(@view.View, () -> Array[String]) -> Unit
+
+pub fn peek_file_foot_node(@view.View, () -> String, (@view.View) -> Unit) -> Unit
+
+pub fn peek_file_head_node(@view.View, () -> String, () -> Bool, () -> String, () -> String) -> Unit
+
+pub fn peek_file_lines_node(@view.View, () -> Int32, () -> Array[String], () -> Int32?, () -> Array[Array[@ui.Run]]) -> Unit
+
+pub fn peek_file_picture_node(@view.View, () -> String) -> Unit
+
 pub let peek_frame_px : Double
+
+pub fn peek_github_mark_node(@view.View, Double, () -> Int64) -> Unit
+
+pub fn peek_issue_glyph(String) -> String?
+
+pub fn peek_message_bones_node(@view.View) -> Unit
+
+pub fn peek_message_node(@view.View, () -> String, () -> String) -> Unit
+
+pub fn peek_note_node(@view.View, () -> String) -> Unit
+
+pub fn peek_page_tile_node(@view.View, () -> String, () -> String, () -> String, () -> Bool, () -> String, (@view.View) -> Unit) -> Unit
+
+pub fn peek_pr_glyph(String) -> String?
+
+pub fn peek_rich_node(@view.View, (@view.View) -> Unit) -> Unit
+
+pub let peek_state : @ui.Style
+
+pub fn peek_state_colours(String) -> (Int64, Int64)
+
+pub fn peek_state_pill_node(@view.View, () -> String, () -> String?, () -> String, own? : Bool, style? : @ui.Style) -> Unit
+
+pub let peek_tile_title : @ui.TextStyle
 
 pub let person_ringed : @ui.Len
 
@@ -3173,6 +3225,14 @@ pub(all) enum PanelTone {
   Accent
   Quiet
   Filled
+}
+
+#derive(Eq, Hash)
+pub(all) enum PeekFact {
+  Person(String, String)
+  Size(Int32, Int32)
+  Chip(String)
+  Checks(String, String)
 }
 
 #derive(Eq)

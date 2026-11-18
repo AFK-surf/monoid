@@ -2,7 +2,8 @@
 // and shut as the pointer rests on the chip that names the file, is the hover card's (sf's), not this; this is what is
 // in it, as the core reads the file (`filePeek`, read by whoever holds the card) and as that changes: its head, a few of
 // its lines, its picture or its first entries, its foot with its path to copy; in its bones while it is read and its
-// picture comes, said why not where it is not read.
+// picture comes, said why not where it is not read. Drawn by the library's (@sf.peek_file_head_node, its lines, picture,
+// entries and foot); this is what is read for it and what that says.
 
 ///|
 /// What a file's card shows (file_card's): its bones while it is read (and the picture it names comes); why not, read
@@ -59,19 +60,17 @@ fn file_card_node(
     }
   }
   parent.pick(shows, fn(b, s) {
-    @sf.style_node(b, fn() { peek_card_part })
+    @sf.style_node(b, fn() { @sf.peek_card_part })
     match s {
       Shown => file_shown_node(b, fn() { @sfbase.picture_drawn(picture_key()) }, value)
       // (while it is read: a made-up file's, in its bones)
       Bones => @sf.waiting_node(b, fn(bones) { file_shown_node(bones, fn() { "" }, fn() { file_sample(path) }) })
       Refused =>
-        b.box(fn(rich) {
-          @sf.style_node(rich, fn() { peek_rich })
+        @sf.peek_rich_node(b, fn(rich) {
           file_head_node(rich, fn() { base_of(path) }, fn() { path.has_suffix("/") }, fn() { path }, fn() { "" })
-          @sf.words_node(rich, fn() { text(read.get().error, "message") }, fn() { peek_note }) |> ignore
+          @sf.peek_note_node(rich, fn() { text(read.get().error, "message") })
           file_foot_node(rich, fn() { path }, fn() { "" })
         })
-        |> ignore
     }
   })
 }
@@ -101,8 +100,7 @@ fn file_shown_node(parent : @view.View, picture : () -> String, v : () -> Json?)
       _ => None
     }
   }
-  parent.box(fn(rich) {
-    @sf.style_node(rich, fn() { peek_rich })
+  @sf.peek_rich_node(parent, fn(rich) {
     file_head_node(
       rich,
       fn() {
@@ -132,29 +130,7 @@ fn file_shown_node(parent : @view.View, picture : () -> String, v : () -> Json?)
           1 => file_lines_node(b, lines, at, fn() { text(v(), "name") })
           // (its picture all in its box, fading in once it is decoded for the room it is given, the hover's ground under
           // it till then: an old view's picture's bg)
-          2 =>
-            b.by_room(fn(g, room) {
-              g
-              .height(Is(Some(peek_file_image_h)))
-              .radius(Is(peek_file_image_r))
-              .ground(By(fn() {
-                let w = room.width()
-                let side = if w > peek_file_image_h { w } else { peek_file_image_h }
-                // (its decode asked as the card is made, a pointer resting on a link opening it: there by the frame
-                // after, as drawn; View::image_ask)
-                g.image_ask(picture(), side * g.pixel_scale())
-                if g.image_ready(picture(), side * g.pixel_scale()) {
-                  0L
-                } else {
-                  @sf.theme().p.hover
-                }
-              }))
-              .image(By(fn() { Some((picture(), "", peek_image_most)) }))
-              .image_contains(Is(true))
-              .image_fades(Is(true))
-              |> ignore
-            })
-            |> ignore
+          2 => @sf.peek_file_picture_node(b, picture)
           3 => file_entries_node(b, fn() { items(v(), "entries") })
           _ => ()
         }
@@ -179,13 +155,11 @@ fn file_shown_node(parent : @view.View, picture : () -> String, v : () -> Json?)
     }
     file_foot_node(rich, fn() { text(v(), "path") }, what)
   })
-  |> ignore
 }
 
 ///|
-/// Its head (file_head's) in `parent`: its mark (14, muted; a folder's where `dir`) 6 from its name (one line, 500; a
-/// directory's ending in `/`) and when it was written (muted, at the end, where it says); its whole path under them in
-/// the code face, a home directory as `~` (shown_path).
+/// Its head (file_head's, @sf.peek_file_head_node) in `parent`: its mark (a folder's where `dir`), its name and when it
+/// was written; its whole path under them, a home directory as `~` (shown_path).
 fn file_head_node(
   parent : @view.View,
   name : () -> String,
@@ -193,38 +167,14 @@ fn file_head_node(
   path : () -> String,
   ago : () -> String,
 ) -> Unit {
-  parent.box(fn(h) {
-    @sf.style_node(h, fn() { peek_file_head })
-    h.box(fn(t) {
-      @sf.style_node(t, fn() { peek_chat_title })
-      @sf.icon_node(t, "file", peek_file_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
-        if dir() {
-          "folder"
-        } else {
-          "file"
-        }
-      })
-      |> ignore
-      t.box(fn(r) {
-        @sf.style_node(r, fn() { peek_ref }, in_row=true)
-        r.lines_up(Is(Some(@view.Along::Start))) |> ignore
-        @sf.words_node(r, fn() { if dir() { name() + "/" } else { name() } }, fn() { peek_title }) |> ignore
-      })
-      |> ignore
-      t.show(fn() { ago() != "" }, fn(a) { @sf.words_node(a, ago, fn() { peek_meta_words }) |> ignore })
-    })
-    |> ignore
-    peek_mono_node(h, fn() { [@ui.span(shown_path(path()), mono=true)] }, peek_file_path)
-  })
-  |> ignore
+  @sf.peek_file_head_node(parent, name, dir, fn() { shown_path(path()) }, ago)
 }
 
 ///|
-/// Its lines (file_lines's) in `parent`: each numbered from `lines`' start (34 wide, muted, 8 before the line), the one
-/// at `at` on the accent's pale ground, each one line, cut; in the code face at the caption's size, in the colours the
-/// core says of the language `name`'s (code.ink, as a preview colours it: code_ink_node), plain till it has.
+/// Its lines (file_lines's, @sf.peek_file_lines_node) in `parent`: each numbered from `lines`' start, the one at `at`
+/// marked, in the colours the core says of the language `name`'s (code.ink, as a preview colours it: code_ink_node),
+/// plain till it has.
 fn file_lines_node(parent : @view.View, lines : () -> Json?, at : () -> Int?, name : () -> String) -> Unit {
-  @sf.style_node(parent, fn() { peek_file_lines })
   let words = fn() {
     items(lines(), "text").map(fn(l) {
       match l {
@@ -250,140 +200,31 @@ fn file_lines_node(parent : @view.View, lines : () -> Json?, at : () -> Int?, na
       }
     }
   }
-  parent.each(fn() { Array::makei(words().length(), fn(k) { k }) }, fn(k) { k }, fn(row, k) {
-    let n = fn() { count(lines(), "start") + k.get() }
-    @sf.style_node(row, fn() { if at() == Some(n()) { peek_file_line_at } else { peek_file_line } })
-    row.box(fn(no) {
-      @sf.style_node(no, fn() { peek_file_line_no }, in_row=true)
-      peek_mono_node(no, fn() { [@ui.span(n().to_string(), mono=true)] }, peek_file_no)
-    })
-    |> ignore
-    row.box(fn(r) {
-      @sf.style_node(r, fn() { peek_ref }, in_row=true)
-      peek_mono_node(
-        r,
-        fn() {
-          match colored().get(k.get()) {
-            Some(runs) if runs.length() > 0 => runs
-            _ => {
-              let t = words().get(k.get()).unwrap_or("")
-              [@ui.span(if t != "" { t } else { " " }, mono=true)]
-            }
-          }
-        },
-        peek_file_code,
-      )
-    })
-    |> ignore
-  })
+  @sf.peek_file_lines_node(parent, fn() { count(lines(), "start") }, words, at, colored)
 }
 
 ///|
-/// A directory's first entries (file_entries's) in `parent`, two to a row, each its mark (12, muted; a folder's for a
-/// name ending in `/`) and its name in the code face (without its `/`), cut.
+/// A directory's first entries (file_entries's, @sf.peek_file_entries_node) in `parent`, by their names.
 fn file_entries_node(parent : @view.View, entries : () -> Array[Json]) -> Unit {
-  @sf.style_node(parent, fn() { peek_file_entries })
-  let name = fn(k : Int) {
-    match entries().get(k) {
-      Some(String(t)) => t
-      _ => ""
-    }
-  }
-  parent.each(fn() { Array::makei((entries().length() + 1) / 2, fn(r) { r }) }, fn(r) { r }, fn(row, r) {
-    @sf.style_node(row, fn() { peek_file_entry_row })
-    row.each(
-      fn() {
-        let r = r.get()
-        Array::makei(if 2 * r + 2 <= entries().length() { 2 } else { entries().length() - 2 * r }, fn(i) { 2 * r + i })
-      },
-      fn(k) { k },
-      fn(e, k) {
-        let dir = fn() { name(k.get()).has_suffix("/") }
-        @sf.style_node(e, fn() { peek_file_entry }, in_row=true)
-        @sf.icon_node(e, "file", peek_file_entry_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
-          if dir() {
-            "folder"
-          } else {
-            "file"
-          }
-        })
-        |> ignore
-        e.box(fn(b) {
-          @sf.style_node(b, fn() { peek_ref }, in_row=true)
-          peek_mono_node(
-            b,
-            fn() {
-              let n = name(k.get())
-              [@ui.span(if dir() { n.exact_view(end=n.length() - 1).to_owned() } else { n }, mono=true)]
-            },
-            peek_file_code,
-          )
-        })
-        |> ignore
-      },
-    )
-  })
-}
-
-///|
-/// Its foot (file_foot's) in `parent`: what it is in words (`what`, muted), and its path to copy (复制路径, saying 已复制
-/// copied_ms from the moment it was pressed) in the card's bottom end corner, concentric with it.
-fn file_foot_node(parent : @view.View, path : () -> String, what : () -> String) -> Unit {
-  parent.box(fn(f) {
-    @sf.style_node(f, fn() { peek_file_foot })
-    f.box(fn(r) {
-      @sf.style_node(r, fn() { peek_ref }, in_row=true)
-      r.lines_up(Is(Some(@view.Along::Start))) |> ignore
-      @sf.words_node(r, what, fn() { peek_meta_words }) |> ignore
+  @sf.peek_file_entries_node(parent, fn() {
+    entries().map(fn(e) {
+      match e {
+        String(t) => t
+        _ => ""
+      }
     })
-    |> ignore
-    path_copy_node(f, path)
   })
-  |> ignore
 }
 
 ///|
-/// A file's path to copy, on its card (file_foot's) in `parent`: 复制路径 to press, 已复制 for copied_ms once copied
-/// (from the moment it was pressed: pressed again while it says so, from then). By the path, as file_foot's mark is: a
-/// card of it made again while that lasts says 已复制 till its end.
-fn path_copy_node(parent : @view.View, path : () -> String) -> Unit {
-  let copied = @signals.signal(false, same=fn(a, b) { a == b })
-  let off : Ref[() -> Unit] = Ref(fn() {  })
-  // (said so from `at`, the moment it was copied, till copied_ms on; off as of then)
-  let said_from = fn(at : Double) {
-    (off.val)()
-    if parent.cause_at() < at + @sf.copied_ms {
-      copied.set(true)
-      off.val = parent.at_moment(at + @sf.copied_ms, fn() { copied.set(false) })
-    } else {
-      copied.set(false)
-    }
-  }
-  // (made while it says so from the last copy of the path, on another card of it: till that one's end)
-  parent.reacts(fn() { () }, fn(_) {
-    match path_copied_at.get(@signals.untracked(path)) {
-      Some(at) => said_from(at)
-      None => ()
-    }
-  })
-  @sf.panel_button_node(
-    parent,
-    fn() { @sf.t(if copied.get() { "common.copied" } else { "web-main.preview.copyPath" }) },
-    fn() {
-      let p = @signals.untracked(path)
-      @ui.clipboard_set(p)
-      let at = parent.cause_at()
-      path_copied_at[p] = at
-      said_from(at)
-    },
-    tone=Quiet,
-  )
-  |> ignore
-  parent.owns(fn() { (off.val)() }) |> ignore
+/// Its foot (file_foot's, @sf.peek_file_foot_node) in `parent`: what it is in words (`what`), and its path to copy
+/// (复制路径, saying 已复制 copied_ms from the moment it was pressed) in the card's bottom end corner.
+fn file_foot_node(parent : @view.View, path : () -> String, what : () -> String) -> Unit {
+  @sf.peek_file_foot_node(parent, what, fn(f) { @sf.peek_copy_node(f, path, "web-main.preview.copyPath", path_copied_at) })
 }
 
 ///|
-/// When each file's path was last copied from its card (path_copy_node's), by the path: what a card of it made again
+/// When each file's path was last copied from its card (file_foot_node's), by the path: what a card of it made again
 /// says, as file_foot's mark by the path is kept.
 // kept across runs: let go as the app begins anew (its init)
 let path_copied_at : Map[String, Double] = Map([])
@@ -391,28 +232,4 @@ let path_copied_at : Map[String, Double] = Map([])
 ///|
 fn init {
   @ui.on_reset(fn() { path_copied_at.clear() })
-}
-
-///|
-/// Words in the code face (mono's) in `parent`: `runs`, as `style` says them otherwise (its size, ink, one line and cut
-/// where it says so).
-fn peek_mono_node(parent : @view.View, runs : () -> Array[@ui.Run], style : @ui.TextStyle) -> Unit {
-  // (cut where its line has not the room, else as wide as it is, as an old view's words in a column are: not stretched
-  // across it)
-  if @ui.style_cut(style) {
-    parent.lines_up(Is(Some(@view.Along::Start))) |> ignore
-  }
-  parent.box(fn(w) {
-    w
-    .words_runs(By(runs))
-    .words_look(Is(@ui.style_words(style)))
-    .ink(By(fn() { @ui.style_ink(style) }))
-    |> ignore
-    if @ui.style_cut(style) {
-      w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-    } else if @ui.style_fills(style) && !@ui.style_words(style).wrap {
-      w.allow_ellipsis(Is(true)) |> ignore
-    }
-  })
-  |> ignore
 }
