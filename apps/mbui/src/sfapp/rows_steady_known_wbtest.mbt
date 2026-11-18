@@ -6,40 +6,22 @@
 ///|
 fn init {
   @ui.rows_steady_known([
-    // (at 60 and 120 a second, MBUI_TEST_MOTION, 2026-11-17: Tree::lists_steady's on main's own jolts there, counted whole
-    // after #6722 brought the check and was counted at the default rate alone; main's 44000442600)
-    ("src/sfapp/chat_bar_node_wbtest.mbt", 1),
-    ("src/sfapp/place_first_wbtest.mbt", 1),
-    ("src/sfapp/screens_wbtest.mbt", 1),
     // (each screen walked over a core answering late, at 60 and 120, as an answer comes: 小屏's 文件 list's foot goes 96
     // in a frame (82 on 大屏), 账号's second row -235, a chat's row -60 to -82, 归档's second row -3; the framework's change for answers, then
     // the list's line)
-    ("src/sfapp/answers_still_wbtest.mbt", 3),
+    ("src/sfapp/answers_still_wbtest.mbt", 1),
     // (words sent in a chat, the core answering 300 to 700 ms after: a row above them goes 82 in a frame as it comes,
     // every screen, at 60 and 120)
     ("src/sfapp/core_pace_rows_wbtest.mbt", 1),
     // (大屏 at 1.3, the chat's panel opened and closed: a row of the chat goes 14 one way, stands 217 ms and comes back
     // 2.8, at 60 and 120)
     ("src/sfapp/daily_paths_wbtest.mbt", 1),
-    ("src/sfapp/desk_service_wbtest.mbt", 1),
-    // (a settings page's list put where the page that came puts it, in the frame it comes: 推送历史's -31 as 修复 opens,
-    // seen once Tree::lists_steady looks at the window's tree's lists, 2026-11-16, as the replays' on main)
-    ("src/sfapp/history_fixes_wbtest.mbt", 3),
-    // (a message come at the foot of a chat's page made as nodes as it is caught up on, not said: there at once in the
-    // change that brings it, as the file's head says it is to be, its rows over it 84 up in that frame; Tree::lists_steady's,
-    // 2026-11-16)
-    ("src/sfapp/chat_nodes_seen_whole_wbtest.mbt", 1),
-    // (each screen over a core answering late: a place's list -330 to -479 in a frame as the page it opens comes;
-    // Tree::lists_steady's, 2026-11-16, as history_fixes')
-    ("src/sfapp/late_core_wbtest.mbt", 1),
-    // (设置's lists as main's pages of them came as nodes (2026-11-16): a search's list -816 in a frame as its answer comes,
-    // a page's list -206 as the page that came puts it; 大屏's list 5 in a frame as its foot's own way sets out; seen
-    // once Tree::lists_steady looks at the window's tree's lists)
-    ("src/sfapp/settings_search_wbtest.mbt", 1),
+    // (设置's lists as main's pages came as nodes: a page's list -206 as the page opens, and 大屏's list 5 in a frame
+    // as its foot's way starts, seen by Tree::lists_steady on 2026-11-16)
     ("src/sfapp/settings_wbtest.mbt", 1),
     // (大屏 over a core answering late: a chat's rows go -73 to -82 in a frame as its answer comes, 归档's second row -4,
     // at 60 and 120)
-    ("src/sfapp/ways_told_wbtest.mbt", 3),
-    ("src/sfapp/wide_wbtest.mbt", 2),
+    ("src/sfapp/ways_told_wbtest.mbt", 1),
+    ("src/sfapp/wide_wbtest.mbt", 1),
   ])
 }

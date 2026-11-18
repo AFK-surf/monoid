@@ -7,7 +7,7 @@ fn init {
   @ui.sizes_steady_known([
     // (each screen walked over a core answering late, at 60 and 120, as an answer comes: 中屏's 按天 goes -68 along its
     // row in a frame, 折合费用's -130, the workspace's column -130 in height; the framework's change for answers)
-    ("src/sfapp/answers_still_wbtest.mbt", 2),
+    ("src/sfapp/answers_still_wbtest.mbt", 1),
     // (小屏, a new chat's first words, the core answering a frame or more after: 预设's column comes 52 in a frame, at 60
     // and 120)
     ("src/sfapp/core_pace_presets_wbtest.mbt", 1),
@@ -17,7 +17,7 @@ fn init {
     ("src/sfapp/daily_paths_wbtest.mbt", 2),
     ("src/sfapp/desk_service_wbtest.mbt", 1),
     ("src/sfapp/home_wbtest.mbt", 1),
-    ("src/sfapp/menu_node_wbtest.mbt", 11),
+    ("src/sfapp/menu_node_wbtest.mbt", 2),
     // (the old composer's caption line 添加说明（可选）, an old fault: its place steps as the quoted picture's room comes
     // in, main -4.82, -12.41, -9.65 a frame round 1566.67, under what is judged; with every way at its exact moment
     // -4.74, -12.83, -9.41, over it. Taken away as the node composer takes its place)

@@ -9,7 +9,7 @@ fn init {
     ("src/sfpages/chat_body_keyed_wbtest.mbt", 3),
     ("src/sfpages/chat_body_node_wbtest.mbt", 1),
     ("src/sfpages/message_decision_node_wbtest.mbt", 1),
-    ("src/sfpages/screen_wbtest.mbt", 2),
+    ("src/sfpages/screen_wbtest.mbt", 1),
     ("src/sfpages/settings_rig_wbtest.mbt", 1),
   ])
 }
