@@ -242,7 +242,7 @@ jobs:
       # 156-162 s, app build 267-311 s of its 5 minutes (1bf02b58, 16c0c777 stopped, f150a1db, 2026-11-11), the branch
       # having compiled the same units by their content already. What is not found is compiled, as before.
       - name: The units the merged branches compiled
-        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -275,7 +275,7 @@ jobs:
       # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so what it compiled
       # is main's once merged. Only a run that built every program it builds: one cut at its limit puts none, below)
       - name: The units main's store had
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
         run: |
           mkdir -p "$RUNNER_TEMP/store-main" "$RUNNER_TEMP/store-arch"
           # (and arch/next's: everyone's already, a cache on main's ref)
@@ -403,8 +403,13 @@ jobs:
       # 25-30 s of tar and upload pushed the store's save past the job's end, 44071439638 attempt 4)
       - name: The units this run compiled, for main's
         id: queue-units
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success'
         run: |
+          # (the store's save after it comes first: with 45 s or less left, none put for main)
+          if [ "$((JOB_END - $(date +%s)))" -le 45 ]; then
+            echo "units for main: $((JOB_END - $(date +%s))) s left before JOB_END; skipped so this run's store saves in time"
+            exit 0
+          fi
           (cd "$MBC_STORE" && find . -mindepth 2 -maxdepth 2 -type d | sort) > "$RUNNER_TEMP/units-after"
           comm -13 "$RUNNER_TEMP/units-before" "$RUNNER_TEMP/units-after" > "$RUNNER_TEMP/units-new"
           echo "units main's store lacks: $(wc -l < "$RUNNER_TEMP/units-new")"
