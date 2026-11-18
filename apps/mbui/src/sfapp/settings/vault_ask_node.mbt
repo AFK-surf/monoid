@@ -357,18 +357,17 @@ pub fn vault_foot_node(
       }
     })
   }
-  // (its buttons each a part of the foot's own row, as an ask's are (@sf.ask_buttons_node): where they have not the room
-  // on one line, the one before goes on to a line over the first, the first kept in the foot's start corner)
-  let acts = fn(at : @view.View) {
-    let set_up = fn() { answer() is Some(SetUp) }
-    // (kept only in a vault that is on here: the way to turn it on first)
-    at.show(set_up, fn(s) {
-      @sf.button_node(s, fn() { tr("android-settings.vault.turnOn") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
+  // its buttons: `grouped`, one part of the foot's row (across from how long, beside them); else each a part of the
+  // foot's own row, as an ask's are (@sf.ask_buttons_node): where they have not the room on one line, the one after goes
+  // on to a line over the first, the first kept in the foot's start corner
+  let primary = fn(p : @view.View, set_up : Bool) {
+    if set_up {
+      // (kept only in a vault that is on here: the way to turn it on first)
+      @sf.button_node(p, fn() { tr("android-settings.vault.turnOn") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
       |> ignore
-    })
-    at.show(fn() { !set_up() }, fn(s) {
+    } else {
       @sf.button_node(
-        s,
+        p,
         fn() {
           if signs_in() != "" {
             tr("web-pages.vault.oauth.signIn." + signs_in())
@@ -384,9 +383,11 @@ pub fn vault_foot_node(
         card_words=foot,
       )
       |> ignore
-    })
+    }
+  }
+  let deny = fn(p : @view.View) {
     @sf.button_node(
-      at,
+      p,
       fn() { tr(if remove() { "android-settings.vault.act.dontRemove" } else if describe() { "android-settings.vault.act.dontChange" } else if save() { "android-settings.vault.act.dontSave" } else { "android-settings.vault.act.deny" }) },
       fn() {
         let r = @signals.untracked(request)
@@ -399,19 +400,27 @@ pub fn vault_foot_node(
     )
     |> ignore
   }
+  let acts = fn(at : @view.View, grouped : Bool) {
+    at.pick(fn() { answer() is Some(SetUp) }, fn(p, set_up) {
+      if grouped {
+        @sf.style_node(p, fn() { @sf.ask_foot })
+      }
+      primary(p, set_up)
+      if grouped {
+        deny(p)
+      }
+    })
+    if !grouped {
+      deny(at)
+    }
+  }
   let foot_row = fn(at : @view.View, beside : Bool) {
     let body = fn(f : @view.View) {
+      // (beside how long, the buttons one part across from it: the arrangement one_of takes only where both have the
+      // room on one line)
+      acts(f, beside)
       if beside {
-        // (the buttons one part, the choice across from them: the arrangement one_of takes only where both have the room
-        // on one line)
-        f.box(fn(p) {
-          @sf.style_node(p, fn() { @sf.ask_foot })
-          acts(p)
-        })
-        |> ignore
         choice(f)
-      } else {
-        acts(f)
       }
       // (after the buttons: the vault page's 打开对话)
       match extra {
