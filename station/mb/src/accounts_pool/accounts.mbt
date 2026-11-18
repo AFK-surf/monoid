@@ -287,6 +287,10 @@ pub struct Accounts {
   rt : @effect.Runtime
   background : Background
   mut config_raw : JV
+  /// `hub_config()` as made from `config_raw` and `checks` last, until either changes: the overview asks each
+  /// profile's health of every other's (`SessionAccounts::health_of`), which made it again each time, P³ profiles
+  /// a read (21 profiles held a station's thread at 100%, 0.1.9984).
+  mut hub_cache : HubConfig?
   catalog : Catalog
   checks : Map[String, JV]
   quotas : Map[String, JV]
@@ -369,6 +373,7 @@ pub async fn Accounts::new(
     rt,
     background,
     config_raw,
+    hub_cache: None,
     catalog,
     checks: Map::new(),
     quotas: Map::new(),
@@ -422,6 +427,7 @@ pub fn Accounts::set_hub_accounts(self : Accounts, s : SessionAccounts) -> Unit 
 /// config.json as the station says it is now (its own edits, another part's).
 pub fn Accounts::config_said(self : Accounts, raw : JV) -> Unit {
   self.config_raw = raw
+  self.hub_cache = None
 }
 
 ///|
@@ -625,12 +631,19 @@ pub fn Accounts::found(self : Accounts, id : String) -> Array[String]? {
 ///|
 /// `profiles`: the profiles as the config has them now, each running the models its check found.
 pub fn Accounts::profiles(self : Accounts) -> Array[Profile] {
-  hub_config(self.config_raw, self.given.data, found=id => self.found(id)).profiles
+  self.hub_config().profiles
 }
 
 ///|
 pub fn Accounts::hub_config(self : Accounts) -> HubConfig {
-  hub_config(self.config_raw, self.given.data, found=id => self.found(id))
+  match self.hub_cache {
+    Some(cfg) => cfg
+    None => {
+      let cfg = hub_config(self.config_raw, self.given.data, found=id => self.found(id))
+      self.hub_cache = Some(cfg)
+      cfg
+    }
+  }
 }
 
 ///|
@@ -860,6 +873,7 @@ pub async fn Accounts::update_config(
     check_config(Some(next), self.given.data)
   }
   self.config_raw = next
+  self.hub_cache = None
   ignore(self.ask("config.put", [next]))
   next
 }
