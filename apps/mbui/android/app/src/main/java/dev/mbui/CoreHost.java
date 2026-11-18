@@ -688,6 +688,7 @@ final class CoreHost {
                     switch (code) {
                         case android.hardware.biometrics.BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED:
                         case android.hardware.biometrics.BiometricPrompt.BIOMETRIC_ERROR_CANCELED:
+                        case android.hardware.biometrics.BiometricPrompt.BIOMETRIC_ERROR_NEGATIVE_BUTTON:
                             said = "user_cancelled";
                             break;
                         case android.hardware.biometrics.BiometricPrompt.BIOMETRIC_ERROR_NO_DEVICE_CREDENTIAL:

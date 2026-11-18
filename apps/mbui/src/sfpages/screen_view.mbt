@@ -625,7 +625,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
     // while it is looked at, the device stays awake: a screen is watched more than touched
     if u.awake != shown {
       u.awake = shown
-      @ui.keep_awake(shown)
+      @sfbase.keep_awake_by("screen:" + key, shown)
       // (into the device's performance record while it is kept: what warms a phone is mostly a screen looked at)
       @hostapi.perf_line("app: screen " + (if shown { "shown " } else { "hidden " }) + key)
     }
@@ -916,7 +916,7 @@ pub fn screen_covered(src : Source, station : String, screen : String, covered :
   }
   if u.awake {
     u.awake = false
-    @ui.keep_awake(false)
+    @sfbase.keep_awake_by("screen:" + key, false)
     @hostapi.perf_line("app: screen hidden " + key)
   }
   if u.turnable {
@@ -959,7 +959,7 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
         @hostapi.set_sideways(false)
       }
       if u.awake {
-        @ui.keep_awake(false)
+        @sfbase.keep_awake_by("screen:" + key, false)
         @hostapi.perf_line("app: screen closed " + key)
       }
       if u.turnable {

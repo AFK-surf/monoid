@@ -29,13 +29,26 @@ pub let code_inks : CodeInks = {
 }
 
 ///|
+/// The digit `ch` is, if it is one: a full-width digit (０-９, as a Chinese input method types them) as the digit it
+/// is.
+fn code_digit(ch : Char) -> Char? {
+  if ch >= '0' && ch <= '9' {
+    Some(ch)
+  } else if ch >= '\u{FF10}' && ch <= '\u{FF19}' {
+    Some((ch.to_int() - 0xFF10 + '0'.to_int()).unsafe_to_char())
+  } else {
+    None
+  }
+}
+
+///|
 /// The digits of `typed`, `length` at most.
 fn code_digits(typed : String, length : Int) -> String {
   let b = StringBuilder()
   let mut n = 0
   for ch in typed {
-    if ch >= '0' && ch <= '9' && n < length {
-      b.write_char(ch)
+    if code_digit(ch) is Some(d) && n < length {
+      b.write_char(d)
       n = n + 1
     }
   }
