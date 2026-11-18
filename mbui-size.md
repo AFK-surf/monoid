@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c0070ab30](https://github.com/AFK-surf/monoid/commit/c0070ab308ff3163070bde3700e86dd2578c04dd) fix(mbui): settle chat_bar_node's second row at on | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.9 | 97.24 | 124.54 |
 | [e118c93e1](https://github.com/AFK-surf/monoid/commit/e118c93e127a7c27194f8f121ca94bc19beb9f2e) perf(client): stop host and way readings from rebu | 2.58 | 3.47 | 14.15 | 36.22 | 54.46 | 31.74 | 63.89 | 97.27 | 119.67 |
 | [5a092fb5f](https://github.com/AFK-surf/monoid/commit/5a092fb5f3934840747770df5b4fc85694792eaf) fix(ci): keep put green when the prune fails, and  | 2.58 | 3.47 | 14.15 | 36.19 | 54.43 | 31.74 | 63.89 | 97.21 | 129.14 |
 | [1a1756ff4](https://github.com/AFK-surf/monoid/commit/1a1756ff40a6a5bdbb7ee839e798bce606fb8251) perf(core): make a streaming chat again without re | 2.58 | 3.47 | 14.15 | 36.19 | 54.43 | 31.74 | 63.89 | 97.11 | 129.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e5b869434](https://github.com/AFK-surf/monoid/commit/e5b86943475b32984fb6fdcd56389ddaa9886585) fix(profiles): hide the output speed section of a  | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.61 | 63.66 | 96.93 | 115.11 |
 | [2be2fd190](https://github.com/AFK-surf/monoid/commit/2be2fd190b9d0e3bdb586db220c1c8da8b445971) perf(mbui): read a chat's messages once as it open | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.61 | 63.66 | 96.93 | 115.11 |
 | [f31a0714a](https://github.com/AFK-surf/monoid/commit/f31a0714a7f9bf052625e46de28226f42f3f0ab9) ci: say failed tests in annotations, wait on CI by | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.61 | 63.66 | 96.93 | 115.11 |
-| [73221ce56](https://github.com/AFK-surf/monoid/commit/73221ce5626770fd1d3b9e4ea0f835b91c608cee) refactor(sf-ui): share facts lists, step circles,  | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 122.22 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c0070ab30](https://github.com/AFK-surf/monoid/commit/c0070ab308ff3163070bde3700e86dd2578c04dd) fix(mbui): settle chat_bar_node's second row at on | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [e118c93e1](https://github.com/AFK-surf/monoid/commit/e118c93e127a7c27194f8f121ca94bc19beb9f2e) perf(client): stop host and way readings from rebu | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [5a092fb5f](https://github.com/AFK-surf/monoid/commit/5a092fb5f3934840747770df5b4fc85694792eaf) fix(ci): keep put green when the prune fails, and  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [1a1756ff4](https://github.com/AFK-surf/monoid/commit/1a1756ff40a6a5bdbb7ee839e798bce606fb8251) perf(core): make a streaming chat again without re | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e5b869434](https://github.com/AFK-surf/monoid/commit/e5b86943475b32984fb6fdcd56389ddaa9886585) fix(profiles): hide the output speed section of a  | 0.44 | 0.57 | 2.19 | 3.28 | 5.23 | 1.61 | 4.31 | 54.04 |
 | [2be2fd190](https://github.com/AFK-surf/monoid/commit/2be2fd190b9d0e3bdb586db220c1c8da8b445971) perf(mbui): read a chat's messages once as it open | 0.44 | 0.57 | 2.18 | 3.28 | 5.23 | 1.6 | 4.31 | 54.18 |
 | [f31a0714a](https://github.com/AFK-surf/monoid/commit/f31a0714a7f9bf052625e46de28226f42f3f0ab9) ci: say failed tests in annotations, wait on CI by | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 54.02 |
-| [73221ce56](https://github.com/AFK-surf/monoid/commit/73221ce5626770fd1d3b9e4ea0f835b91c608cee) refactor(sf-ui): share facts lists, step circles,  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 54.02 |
