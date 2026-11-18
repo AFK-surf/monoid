@@ -121,14 +121,14 @@ let corner_modes : Array[String] = {
 }
 
 ///|
-/// `lang`'s screens in every other window (`half`: the first, third…, or the second, fourth…), each against its bars: the corners' and, the squeeze's ones, the squeeze's; and
+/// `lang`'s screens in the windows selected by `start` and `stride`, each against its corner and squeeze bars, and
 /// (`press_room`, Chinese) a press's room and the light theme's contrast too, on the same screen opened once. (Apart, a
 /// sweep each, Chinese's screens were opened twice: of a sweep's 1939 screens, opening them was some seven tenths of
 /// its time, the checks the rest, none of them long (27 ms each at the median, 0.3 s the longest), 2026-11-05.) (In two
 /// halves of the windows, a run each: one run a language was 150-165 s of one core on main and 253-277 s on a slow runner,
 /// app corners 289 and 292 s of its 5 minutes on feat/history-turn-time 43714223337 and mbui-player-node 43717281884,
 /// 2026-11-15, two of the runner's four cores idle.)
-fn corners_check(lang : String, half : Int, press_room~ : Bool = false) -> Unit raise {
+fn corners_check(lang : String, start : Int, stride? : Int = 2, press_room~ : Bool = false) -> Unit raise {
   let wrong : Array[String] = []
   let gaps : Array[String] = []
   let moves : Array[String] = []
@@ -137,7 +137,7 @@ fn corners_check(lang : String, half : Int, press_room~ : Bool = false) -> Unit 
   let first_lines : Array[String] = []
   let line_starts : Array[String] = []
   for k, win in corner_windows {
-    if k % 2 != half {
+    if k % stride != start {
       continue
     }
     let squeezed = squeeze_windows.contains(win.0)
@@ -246,8 +246,9 @@ fn corners_check(lang : String, half : Int, press_room~ : Bool = false) -> Unit 
       }
     }
   }
+  let windows = "\{start}/\{stride}"
   if press_room {
-    match rooms_wrong(half, rooms) {
+    match rooms_wrong(windows, rooms) {
       Some(w) => wrong.push(w)
       None => ()
     }
@@ -255,7 +256,7 @@ fn corners_check(lang : String, half : Int, press_room~ : Bool = false) -> Unit 
   wrong.append(heights)
   wrong.append(first_lines)
   wrong.append(line_starts)
-  match gaps_wrong("\{lang} \{half}/2", gaps) {
+  match gaps_wrong("\{lang} \{windows}", gaps) {
     Some(w) => wrong.push(w)
     None => ()
   }
@@ -273,8 +274,13 @@ fn corners_check(lang : String, half : Int, press_room~ : Bool = false) -> Unit 
 }
 
 ///|
-test "corners and squeeze, a press's room and the light theme's contrast: every screen in the windows 1, 3, 5 and 7, in Chinese" {
-  corners_check("zh", 0, press_room=true)
+test "corners and squeeze, a press's room and the light theme's contrast: every screen in the windows 1 and 5, in Chinese" {
+  corners_check("zh", 0, stride=4, press_room=true)
+}
+
+///|
+test "corners and squeeze, a press's room and the light theme's contrast: every screen in the windows 3 and 7, in Chinese" {
+  corners_check("zh", 2, stride=4, press_room=true)
 }
 
 ///|

@@ -35,17 +35,27 @@
 /// (its stage of nodes) a row scrolled across with its rows, its ground and its cells as far in as theirs; 2026-11-17,
 /// rule 4's one fewer in each half: 文件 and a station's drive made once as nodes, its folder 12 in from its frame's sides; chat-remote swept
 /// (a chat whose 远程's menu its bar opens): rule 4's one more in each, its wide chat's head as every wide chat's (its
-/// title 12 in, its faces 6 from its end).
+/// title 12 in, its faces 6 from its end). The Chinese odd windows run in two groups to fit the CI time limit.
+/// Their counts add up to the earlier counts for all odd windows.
 let gaps_known : Map[String, Int] = {
-  "zh 0/2 rule 1": 0,
-  "zh 0/2 rule 2": 0,
-  "zh 0/2 rule 3": 0,
-  "zh 0/2 rule 4": 2,
-  "zh 0/2 rule 5": 1,
-  "zh 0/2 rule 6": 0,
-  "zh 0/2 rule 7": 0,
-  "zh 0/2 rule 8": 5,
-  "zh 0/2 rule 9": 0,
+  "zh 0/4 rule 1": 0,
+  "zh 0/4 rule 2": 0,
+  "zh 0/4 rule 3": 0,
+  "zh 0/4 rule 4": 1,
+  "zh 0/4 rule 5": 1,
+  "zh 0/4 rule 6": 0,
+  "zh 0/4 rule 7": 0,
+  "zh 0/4 rule 8": 3,
+  "zh 0/4 rule 9": 0,
+  "zh 2/4 rule 1": 0,
+  "zh 2/4 rule 2": 0,
+  "zh 2/4 rule 3": 0,
+  "zh 2/4 rule 4": 1,
+  "zh 2/4 rule 5": 0,
+  "zh 2/4 rule 6": 0,
+  "zh 2/4 rule 7": 0,
+  "zh 2/4 rule 8": 2,
+  "zh 2/4 rule 9": 0,
   "zh 1/2 rule 1": 0,
   "zh 1/2 rule 2": 0,
   "zh 1/2 rule 3": 0,
