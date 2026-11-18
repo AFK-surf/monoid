@@ -1081,9 +1081,10 @@ fn old_drawn(tree : @view.Tree) -> Array[(@view.Content, Double, Double, Double,
 }
 
 ///|
-/// The window's tree told as the frame was built (what a build set that the tree follows): brought now, and where it
-/// places an old view otherwise than this pass built it for, the frame built again for that before it is drawn (drawn
-/// so, an old view built for the room it had would be drawn in the room it has now, till the next frame).
+/// The window's tree told as the frame was built (what a build set that the tree follows, the theme it set among it):
+/// brought now, and where it places an old view otherwise than this pass built it for, the frame built again for that
+/// before it is drawn (drawn so, an old view built for the room it had would be drawn in the room it has now, till the
+/// next frame).
 fn view_told_as_built(c : Ctx) -> Unit {
   // (the old views built: told the tree first, what waited for that (a list's set-out under an old view in its foot:
   // Tree::old_views_built) taken as it is brought now)
@@ -1091,10 +1092,16 @@ fn view_told_as_built(c : Ctx) -> Unit {
     Some(tree) => tree.old_views_built()
     None => ()
   }
+  // (the theme the old views were built in, set as they built (Ctx::set_theme, the first frame's too), told the tree's
+  // nodes now: drawn in it by this frame, not a frame late as the next one's begins (view_frame). Untracked: told, not
+  // read, by what watches the frame's build)
+  @signals.untracked(fn() { tree_theme_said.val.set(Some(c.theme_for(c.window_w))) })
   match view_app.val {
     Some(tree) if view_owes(tree) => {
       let was = view_island_said()
       view_brought(tree)
+      // (what a still pointer is over, the tree laid out again as told: view_arrived's)
+      view_pointed_again()
       if view_island_said() != was {
         c.read_changed("the window's tree placed an old view otherwise as the frame was built")
       }

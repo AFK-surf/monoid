@@ -2034,6 +2034,7 @@ pub(all) enum Leading {
   Exact(Double)
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct LeadingScale {
   l3 : Double
   l4 : Double
@@ -2486,6 +2487,7 @@ pub(all) enum Radius {
 pub fn Radius::each(Self) -> FixedArray[Double]?
 pub fn Radius::links(Self) -> FixedArray[@paint.CornerOf]?
 
+#derive(Eq, @debug.Debug)
 pub(all) struct RadiusScale {
   sm : Double
   base : Double
@@ -3271,6 +3273,7 @@ pub(all) struct TextRun {
   bottom : Double
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct TextScale {
   caption : (Double, Double)
   meta : (Double, Double)
@@ -3327,6 +3330,7 @@ pub(all) struct TextStyle {
 }
 pub fn TextStyle::then(Self, Self) -> Self
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Theme {
   dark : Bool
   bg : Int64

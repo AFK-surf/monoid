@@ -8,6 +8,7 @@
 /// changed where the app differs (`{ ..Theme::light(), accent: 0x… }`). By default still.fail's (its web and apps'
 /// tokens: the wide screen's white canvas and still.fail orange, the phone's warm paper); iOS's colours, what mbui had
 /// hard-coded, are Theme::ios_light and Theme::ios_dark.
+#derive(Eq, Debug)
 pub(all) struct Theme {
   /// dark (what draws over it picks its own shades by it)
   dark : Bool
@@ -136,6 +137,7 @@ pub(all) struct Theme {
 ///|
 /// The sizes of words, each with its line's height (size, line): the roles' (TextSize Caption … Display), then the
 /// scale's.
+#derive(Eq, Debug)
 pub(all) struct TextScale {
   caption : (Double, Double)
   meta : (Double, Double)
@@ -189,6 +191,7 @@ pub fn TextScale::tailwind() -> TextScale {
 
 ///|
 /// The heights of lines said on their own (Leading's L3 … L10, and L4_75), in pixels.
+#derive(Eq, Debug)
 pub(all) struct LeadingScale {
   l3 : Double
   l4 : Double
@@ -209,6 +212,7 @@ pub fn LeadingScale::tailwind() -> LeadingScale {
 
 ///|
 /// The corners.
+#derive(Eq, Debug)
 pub(all) struct RadiusScale {
   sm : Double
   base : Double
@@ -515,6 +519,12 @@ pub fn Ctx::set_theme(self : Ctx, t : Theme, narrow? : Theme, narrow_below? : Do
 fn Ctx::pick_theme(self : Ctx) -> Unit {
   self.theme = self.theme_for(self.width)
   self.narrow = self.theme_narrow is Some(_) && self.width < self.narrow_below
+  // (what the build goes by of it from here, set as the frame's build begins (frame_build): a theme set as it builds
+  // goes by its own for the rest of the build, its corners and spacing worked out by it in this frame)
+  self.corner_ladder = self.theme.corner_ladder
+  self.corner_fit = self.theme.corner_fit
+  self.lit_apart = self.theme.lit_apart
+  self.lit_reach = self.theme.lit_reach
 }
 
 ///|
