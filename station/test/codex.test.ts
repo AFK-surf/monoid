@@ -594,7 +594,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     await failed.dispose();
     // Opened again with the same address, as the session does after such a failure: on a new app-server, which reaches it.
     const session = await d.open(options(p, { key: first.key, resume: failed.id() }), push);
-    assert.equal(session.mcpUrl(), first.mcpUrl);
+    assert.equal(session.mcpUrl?.(), first.mcpUrl);
     await session.prompt("mcp");
     await until(ended(1));
     assert.equal(said(events), "connected");
