@@ -412,6 +412,13 @@ pub async fn Hub::hand_over(self : Hub, limit_ms? : Double = 30_000.0) -> Json {
     raise Refused(m)
   }
   let frozen = (self.world.ask)("drivers.freeze", { "limitMs": num(limit_ms) })
+  // What the drivers took in as they froze settled too (hub.ts: `settled` again after `freeze`), so the snapshots say
+  // where each stands then.
+  let frozen = if str_of(frozen, "error") is Some(_) {
+    frozen
+  } else {
+    (self.world.ask)("actors.settled", { "limitMs": num(limit_ms) })
+  }
   if str_of(frozen, "error") is Some(m) {
     (self.world.tell)("drivers", { "call": "thaw", "args": [] })
     self.release("drain")

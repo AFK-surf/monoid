@@ -645,6 +645,9 @@ class HubPair {
   now = 0;
   readonly a: Side = { log: [], states: {}, actors: new Map() };
   readonly b: Side = { log: [], states: {}, actors: new Map() };
+  /// What the program asked of the world as it handed over (hub.ts `handOver`: settled, frozen, settled again), with
+  /// the limit it gave each.
+  readonly handoverAsks: Json[] = [];
   readonly tsA: Store;
   readonly tsB: Store;
   hub: Hub;
@@ -828,7 +831,8 @@ class HubPair {
       case "fs.write": await mkdir(join(this.shadow(x.path), ".."), { recursive: true }); await writeFile(this.shadow(x.path), x.text); return null;
       case "fs.read": return readFile(this.shadow(x.path), "utf8").catch(() => null);
       case "fs.rm": await rm(this.shadow(x.path), { force: true }); return null;
-      case "actors.settled": case "drivers.freeze": case "runners.allLeft": return {};
+      case "actors.settled": case "drivers.freeze": this.handoverAsks.push([what, x.limitMs]); return {};
+      case "runners.allLeft": return {};
       case "runners": return this.runners;
       case "runnerId": return runnerId(x.runtime, x.key);
       case "sandboxNames.takeUp": {
@@ -1211,6 +1215,8 @@ test("a handover and its taking up, runners nobody holds, a profile gone, as hub
   pair.compareStores("a profile gone");
   // Handed over: held, every actor's snapshot taken (those cold and holding nothing closed), the drivers let go.
   await pair.call("handOver");
+  // What the drivers took in as they froze settled too before the snapshots, as hub.ts does.
+  assert.deepEqual(pair.handoverAsks, [["actors.settled", 30_000], ["drivers.freeze", 30_000], ["actors.settled", 30_000]]);
   await pair.call("holds", "drain");
   // The next station takes up the snapshots, and of the runners it finds, those of sessions running.
   pair.runners = ["claude-zz", "term-1"];

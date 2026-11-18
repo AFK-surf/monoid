@@ -63,17 +63,32 @@ fn slice_log(level : String, at : String, message : String, fields : Json) -> Un
 }
 
 ///|
-/// A line a part wrote through `@host.note`: "<level> <part>: <words>" as a log line of the station's own.
-fn noted(text : String) -> Unit {
+/// A line a part wrote through `@host.note` as a log line of the station's own: "<level> <part>: <words>",
+/// "[<level>] <part>: <words>", "[<part>] <words>" (an info) or "failed: <words>" (a runtime's warning); any other
+/// line an info of the station's.
+fn noted(said : String) -> Unit {
+  let text = if said.has_suffix("\n") { said[:said.length() - 1].to_owned() } else { said }
   let levels = ["debug", "info", "warn", "error"]
   let words = text.split(" ").map(w => w.to_owned()).collect()
+  let after = (n : Int) => if n < text.length() { text[n:].to_owned() } else { "" }
   match words {
-    [level, part, ..] if levels.contains(level) && part.length() > 1 && part.has_suffix(":") => {
-      let start = level.length() + 1 + part.length() + 1
-      let rest = if start < text.length() { text[start:].to_owned() } else { "" }
-      p51_log(level.to_upper(), part[:part.length() - 1].to_owned(), rest)
-    }
-    _ => err_write(text + "\n")
+    [level, part, ..] if levels.contains(level) && part.length() > 1 && part.has_suffix(":") =>
+      p51_log(level.to_upper(), part[:part.length() - 1].to_owned(), after(level.length() + 1 + part.length() + 1))
+    [tag, part, ..] if tag.length() > 2 &&
+      tag.has_prefix("[") &&
+      tag.has_suffix("]") &&
+      levels.contains(tag[1:tag.length() - 1].to_owned().to_lower()) &&
+      part.length() > 1 &&
+      part.has_suffix(":") =>
+      p51_log(
+        tag[1:tag.length() - 1].to_owned().to_upper(),
+        part[:part.length() - 1].to_owned(),
+        after(tag.length() + 1 + part.length() + 1),
+      )
+    [tag, ..] if tag.length() > 2 && tag.has_prefix("[") && tag.has_suffix("]") =>
+      p51_log("INFO", tag[1:tag.length() - 1].to_owned(), after(tag.length() + 1))
+    ["failed:", ..] => p51_log("WARN", "runtime", after("failed: ".length()))
+    _ => p51_log("INFO", "station", text)
   }
 }
 
@@ -82,7 +97,8 @@ fn noted(text : String) -> Unit {
 /// (`stationLog`), and an error line reported where the operator turned reports on (`hearErrors`).
 fn p51_log(level : String, at : String, message : String, fields? : Json) -> Unit {
   let now = wall_ms().to_double()
-  err_write(@ops_platform.log_line(now, level, at, message, fields) + "\n")
+  // (the line ends with its own newline)
+  err_write(@ops_platform.log_line(now, level, at, message, fields))
   match p51_live.val {
     Some(p) => p.heard(now, level, at, message, fields)
     None => ()

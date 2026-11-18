@@ -412,14 +412,8 @@ fn p54_browser_procs(host : @host.Host) -> @browser.MachineProcs {
       }
       { pid: Some(child.proc.pid), ended: () => ended.val }
     },
-    start_time_of: async fn(pid) {
-      let (code, out, _) = p54_run(host, "ps", ["-o", "lstart=", "-p", pid.to_string()]) catch { _ => return None }
-      if code != Some(0) || out.trim() == "" {
-        return None
-      }
-      let ms = @screens.date_parse_utc(out.trim().to_owned())
-      if ms.is_nan() { None } else { Some(ms) }
-    },
+    // (ms since the epoch as the system says it: `ps -o lstart=` is in the machine's own time zone)
+    start_time_of: async fn(pid) { start_time_of(pid) },
     group_alive: pgid => pid_alive(pgid),
     end_group: async fn(pgid, ms) {
       ignore(kill(pgid, "SIGTERM", group=true))
