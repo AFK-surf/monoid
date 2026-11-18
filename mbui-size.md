@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f27e63953](https://github.com/AFK-surf/monoid/commit/f27e6395317734d5b5ea6e79971a7c5b1a76ffc0) fix(core): a chat whose first message did not go c | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.8 | 107.44 |
 | [cd1158577](https://github.com/AFK-surf/monoid/commit/cd11585774d1d8f291d7cc75e45dc8815dc79614) feat(mbui app): write a new 待派发 task in the chat's | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.8 | 107.44 |
 | [fab5e0c17](https://github.com/AFK-surf/monoid/commit/fab5e0c176b47cb65cb966a352dbcc3057780d4d) feat(mbui): add hover_reveal, tooltip glide origin | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.6 | 120.98 |
 | [babed3f66](https://github.com/AFK-surf/monoid/commit/babed3f663c4e1148c4f4975fb26ad576c032056) fix(mbui): open the right soft keyboard on one tap | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.6 | 120.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e8271ed6e](https://github.com/AFK-surf/monoid/commit/e8271ed6e93314315beb5266a2650b6b3dc9d23a) station: wait for connect file writes in tests (#7 | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.47 | 123.22 |
 | [0b4845931](https://github.com/AFK-surf/monoid/commit/0b4845931b37f62b20f25fce13fe46037ebe3ff1) mbui: sizes_steady measures across as down (sizes_ | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.49 | 123.22 |
 | [00b57b6f0](https://github.com/AFK-surf/monoid/commit/00b57b6f0c2fbd56ae6d735f9db4be3c01b5b797) sf-ui: a slider's knob glides to a key's step inst | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.62 | 123.22 |
-| [bbf27a761](https://github.com/AFK-surf/monoid/commit/bbf27a76104fdd6fb314451ad3f5dac026df4034) ci: build Windows release alongside setup (#7002) | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.62 | 123.22 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f27e63953](https://github.com/AFK-surf/monoid/commit/f27e6395317734d5b5ea6e79971a7c5b1a76ffc0) fix(core): a chat whose first message did not go c | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.61 |
 | [cd1158577](https://github.com/AFK-surf/monoid/commit/cd11585774d1d8f291d7cc75e45dc8815dc79614) feat(mbui app): write a new 待派发 task in the chat's | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.54 |
 | [fab5e0c17](https://github.com/AFK-surf/monoid/commit/fab5e0c176b47cb65cb966a352dbcc3057780d4d) feat(mbui): add hover_reveal, tooltip glide origin | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.54 |
 | [babed3f66](https://github.com/AFK-surf/monoid/commit/babed3f663c4e1148c4f4975fb26ad576c032056) fix(mbui): open the right soft keyboard on one tap | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e8271ed6e](https://github.com/AFK-surf/monoid/commit/e8271ed6e93314315beb5266a2650b6b3dc9d23a) station: wait for connect file writes in tests (#7 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
 | [0b4845931](https://github.com/AFK-surf/monoid/commit/0b4845931b37f62b20f25fce13fe46037ebe3ff1) mbui: sizes_steady measures across as down (sizes_ | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
 | [00b57b6f0](https://github.com/AFK-surf/monoid/commit/00b57b6f0c2fbd56ae6d735f9db4be3c01b5b797) sf-ui: a slider's knob glides to a key's step inst | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
-| [bbf27a761](https://github.com/AFK-surf/monoid/commit/bbf27a76104fdd6fb314451ad3f5dac026df4034) ci: build Windows release alongside setup (#7002) | 0.43 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.43 |
