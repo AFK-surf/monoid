@@ -812,7 +812,15 @@ pub fn fix_pick() -> Json {
     "changed": Json::boolean(changed),
     "was": [],
     "becomes": [],
-    "modelText": "",
+    // (the name the core knows the model by, as its `modelText` says it: what the control shows where it is not listed)
+    "modelText": match fix_model(n.model) {
+      Object(m) =>
+        match m.get("name") {
+          Some(String(x)) => x
+          _ => ""
+        }
+      _ => ""
+    },
     "accountText": "",
     "accountNote": "",
     "accountWarn": false,

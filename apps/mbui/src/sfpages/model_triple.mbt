@@ -612,9 +612,11 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
           if model == "" {
             @sf.t("web-main.model.pick")
           } else {
-            match text(vo(), "name") {
-              "" => model
-              n => n
+            // (a model not among those listed here, none of this station's: the name the core knows it by, never its id)
+            match (text(vo(), "name"), text(v(), "modelText")) {
+              ("", "") => model
+              ("", n) => n
+              (n, _) => n
             }
           }
         }, fn() { triple_name })
@@ -1201,6 +1203,10 @@ fn triple_body_node(
       // (a group's head over its rows, whichever way it opened)
       out.append(g.1)
     }
+    // (none of this station's, its other stations' not asked: said so, and where they are, never a blank column)
+    if out.is_empty() && triple_other_stations(v()) && !flag(v(), "otherStations") {
+      out.push("none/here")
+    }
     out
   }
   let first_level = fn(parent : @view.View) {
@@ -1275,6 +1281,12 @@ fn triple_body_node(
           }
           if k.has_prefix("head/") {
             triple_column_head_node(r, @sf.t("web-main.combos.label"))
+          } else if k.has_prefix("none/") {
+            r.box(fn(e) {
+              @sf.style_node(e, fn() { triple_empty })
+              @sf.words_node(e, fn() { @sf.t("web-main.model.noneHere") }, fn() { triple_muted_lines }) |> ignore
+            })
+            |> ignore
           } else if k.has_prefix("apart/") {
             r.box(fn(a) { @sf.style_node(a, fn() { triple_apart }) }) |> ignore
           } else if k.has_prefix("model/") {
@@ -1376,14 +1388,40 @@ fn triple_body_node(
       }
     })
   }
-  // beside what opened it, its title (and its search) over the models (heads_itself)
-  let models_head = fn(parent : @view.View) {
+  let plain_head = fn(parent : @view.View) {
     parent.pick(fn() { options().length() > 8 }, fn(x, finds) {
       if finds {
         @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }, end=fn(e) { triple_find_node(e, contents) }) |> ignore
       } else {
         @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }) |> ignore
       }
+    })
+  }
+  // whose models it lists, where another station could lend some: this station's, or every station's (the core's
+  // `otherStations`), in the title's place, a choice of two
+  let scope_node = fn(parent : @view.View) {
+    @sf.segmented_node(
+      parent,
+      fn() { [@sf.t("web-main.model.here"), @sf.t("web-main.model.everywhere")] },
+      fn() { if flag(v(), "otherStations") { 1 } else { 0 } },
+      fn(i) { pick_draft(src, station, of, { "otherStations": Json::boolean(i == 1) }) },
+      head=true,
+    )
+  }
+  // beside what opened it, its title (and its search) over the models (heads_itself); the choice of whose models in
+  // the title's place where another station could lend some
+  let models_head = fn(parent : @view.View) {
+    parent.pick(fn() { triple_other_stations(v()) }, fn(y, scoped) {
+      if scoped {
+        y.box(fn(h) {
+          @sf.style_node(h, fn() { triple_scope_head })
+          h.box(fn(c) { @sf.style_node(c, fn() { triple_scope_choice }, in_row=true); scope_node(c) }) |> ignore
+          h.show(fn() { options().length() > 8 }, fn(e) { triple_find_node(e, contents) })
+        })
+        |> ignore
+        return
+      }
+      plain_head(y)
     })
   }
   // (beside what opened it no wider than its first level needs, 2026-10-26 用户「没啥内容也这么宽感觉会很奇怪」; wider
@@ -1449,6 +1487,14 @@ fn triple_body_node(
             |> ignore
           })
         }
+        // (whose models it lists, over them, where another station could lend some: models_head's choice)
+        body.show(fn() { triple_other_stations(v()) }, fn(sh) {
+          sh.box(fn(h) {
+            @sf.style_node(h, fn() { triple_scope_head })
+            scope_node(h)
+          })
+          |> ignore
+        })
         models(body)
         // its name and a stop for each level on one row across the sheet, the one it is at said in the thumb (stops):
         // as many levels as a model has on one line in any language, nothing opened over the sheet to pick one
@@ -1538,14 +1584,6 @@ fn triple_body_node(
         })
         |> ignore
       }
-    })
-    all_of.show(fn() { !side_mode() && triple_other_stations(v()) }, fn(row) {
-      @sf.panel_switch_row_node(
-        row,
-        fn() { @sf.t("web-main.model.otherStations") },
-        fn() { flag(v(), "otherStations") },
-        fn(on) { pick_draft(src, station, of, { "otherStations": Json::boolean(on) }) },
-      )
     })
     // the model picked is another station's: said over the foot, which borrows it rather than confirming
     all_of.show(fn() { field(v(), "borrow") is Some(Object(_)) }, fn(bw) {
@@ -2870,6 +2908,21 @@ let triple_picked : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color
 ///|
 // kept across runs: a value (no field of it changes)
 let triple_muted : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
+
+///|
+/// What a column says where it has nothing to list, on as many lines as it takes.
+// kept across runs: a value (no field of it changes)
+let triple_muted_lines : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
+
+///|
+/// The head of the models where whose models they are is a choice (models_head's): the choice at its start, the
+/// search at its end.
+// kept across runs: a value (no field of it changes)
+let triple_scope_head : @ui.Style = @ui.css("row w=Full pb=S1_5 gap=S3 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let triple_scope_choice : @ui.Style = @ui.css("row")
 
 ///|
 // kept across runs: a value (no field of it changes)

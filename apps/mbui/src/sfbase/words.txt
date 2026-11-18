@@ -1078,7 +1078,9 @@ web-main.model.fastNote
 web-main.model.ultrafastNote
 web-main.model.models
 web-main.model.allModels
-web-main.model.otherStations
+web-main.model.everywhere
+web-main.model.here
+web-main.model.noneHere
 web-main.model.likeModel
 web-main.model.forgetCombo
 web-main.model.noMatch

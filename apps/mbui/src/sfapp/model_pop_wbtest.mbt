@@ -21,15 +21,17 @@ test "the station's own and shared models are shown first; other stations are as
         let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
         let held = screen_in("newchat", win, lang, font_scale=scale).audit().map(bare)
         let t = screen_in("newchat-station-models", win, lang, font_scale=scale)
-        let label = @sf.t("web-main.model.otherStations")
-        assert_eq(t.get(Switch, label~).check, Some(Off))
+        let here = @sf.t("web-main.model.here")
+        let label = @sf.t("web-main.model.everywhere")
+        assert_eq(t.get(Radio, label=here).check, Some(On))
+        assert_eq(t.get(Radio, label~).check, Some(Off))
         assert_true(t.query(Button, label="Opus 5.5") is Some(_))
         assert_true(t.query(Button, label="Sonnet 5") is Some(_), msg="already shared here")
         assert_true(t.query(Button, label="GPT-6") is None)
         assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{win.0}-\{lang} \{scale}: \{t.audit().join("\n")}")
-        t.click(Switch, label~)
+        t.click(Radio, label~)
         t.run_for(squeeze_opening)
-        assert_eq(t.get(Switch, label~).check, Some(On))
+        assert_eq(t.get(Radio, label~).check, Some(On))
         assert_true(t.query(Button, label="GPT-6") is Some(_))
         assert_eq(new_fix.model, "claude-opus-5-5", msg="the filter never selects a model")
         assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{win.0}-\{lang} \{scale}: \{t.audit().join("\n")}")
@@ -42,7 +44,7 @@ test "the station's own and shared models are shown first; other stations are as
         }
         t.click(Button, has="Opus 5.5")
         t.run_for(squeeze_opening)
-        assert_eq(t.get(Switch, label~).check, Some(Off))
+        assert_eq(t.get(Radio, label=here).check, Some(On))
         assert_true(t.query(Button, label="GPT-6") is None)
       }
     }
@@ -50,19 +52,20 @@ test "the station's own and shared models are shown first; other stations are as
 }
 
 ///|
-test "a model panel with no locally available models can still show those another station could lend" {
+test "a model panel with none of this station's says so, and still shows those another station could lend" {
   for win in [corner_windows[0], corner_windows[5]] {
     let t = screen_in("newchat-station-empty", win, "zh")
-    let label = "显示其他 station 的模型"
-    assert_eq(t.get(Switch, label~).check, Some(Off))
+    // (none of this station's: said so, the way to the others' beside it)
+    assert_eq(t.get(Radio, label="本机").check, Some(On))
+    assert_true(t.find("本机没有可用的模型，切到「所有 station」可以用其他 station 的") is Some(_))
     assert_true(t.query(Button, label="Opus 5.5") is None && t.query(Button, label="GPT-6") is None)
-    t.click(Switch, label~)
+    t.click(Radio, label="所有 station")
     t.run_for(squeeze_opening)
     assert_true(t.query(Button, label="GPT-6") is Some(_))
-    t.click(Switch, label~)
+    t.click(Radio, label="本机")
     t.run_for(squeeze_opening)
     assert_true(t.query(Button, label="GPT-6") is None)
-    assert_eq(t.get(Switch, label~).check, Some(Off))
+    assert_eq(t.get(Radio, label="本机").check, Some(On))
   }
 }
 
