@@ -280,3 +280,119 @@ test "the made-up core of a long account gives a chats' list by its window as it
   t.run_for(@ui.frame_period_default * 3.0)
   assert_eq((untold, told, rows()), ((50, Some(Json::number(1160.0))), (70, Some(Json::number(1140.0))), (70, Some(Json::number(1140.0)))))
 }
+
+///|
+/// A chat that received new activity while a page of older chats was on its way.
+fn window_reordered(value : Json?) -> Json? {
+  guard value is Some(Object(m)) && m.get("days") is Some(Array(days)) &&
+    days.get(0) is Some(Object(first)) && first.get("items") is Some(Array(leading)) &&
+    days.get(3) is Some(Object(older)) && older.get("items") is Some(Array(rows)) &&
+    rows.get(0) is Some(row) else { return value }
+  let newest = first.copy()
+  newest["items"] = Json::array([row] + leading)
+  let previous = older.copy()
+  previous["items"] = Json::array(rows[1:].to_owned())
+  let next = days.copy()
+  next[0] = Json::object(newest)
+  next[3] = Json::object(previous)
+  let update = m.copy()
+  update["days"] = Json::array(next)
+  Some(Json::object(update))
+}
+
+///|
+test "小屏 chats cover every frame while flung through late pages, reordered, and flung back" {
+  new_run()
+  let heard = []
+  let reordered = @signals.signal(false)
+  let base = fixture("long-paged")
+  let src = round_trip_again({
+    ..base,
+    call: fn(name, params, done) {
+      // (the core takes a page request while the finger's glide is still going)
+      if name == "chats.window" && field(Some(params), "rows") != Some(Json::number(30.0)) {
+        @ui.later_between_frames(20.0, "chats page", fn() {
+          if field(Some(params), "rows") == Some(Json::number(50.0)) {
+            reordered.set(true)
+          }
+          (base.call)(name, params, done)
+        })
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+    topic_read: fn(name, params) {
+      let now = base.topic(name, params).get().snapshot()
+      if name == "chats" && reordered.get() {
+        { ..now, value: window_reordered(now.value) }
+      } else {
+        now
+      }
+    },
+  }, 20.0, heard=fn(m) { heard.push(m) })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.check_looks(false)
+  t.draw()
+  t.run_for(window_opened_ms)
+  let (first, _) = window_rows(src)
+  assert_eq(first.length(), 30)
+  let faults = []
+  let held : Set[Int] = Set([])
+  let look = fn() {
+    let (titles, _) = window_rows(src)
+    held.add(titles.length())
+    // One title per drawn chat. A day heading can sit between them, and at the top there can also be the search.
+    let top = status_top_now(390.0) + bar_h + 8.0
+    let foot = 844.0 - nav_foot() - bar_room_at(390.0)
+    let ys = t.words().filter_map(fn(w) {
+      let title = if w.0.has_suffix("…") { w.0.exact_view(end=w.0.length() - 1).to_owned() } else { w.0 }
+      if title.length() >= 4 && w.5 > 0.0 && w.2 >= top && w.2 < foot &&
+        titles.iter().any(fn(s) { s.has_prefix(title) }) {
+        Some(w.2)
+      } else {
+        None
+      }
+    })
+    ys.sort()
+    let mut last = top
+    let mut gap = 0.0
+    for y in ys {
+      gap = @cmp.maximum(gap, y - last)
+      last = y
+    }
+    gap = @cmp.maximum(gap, foot - last)
+    // A day heading can add space between titles, but two chat rows alone are 132 points.
+    if gap > 120.0 && faults.length() < 12 {
+      faults.push("\{t.time()} ms, \{titles.length()} chats, \{gap} points without a chat title: \{Repr(ys)}")
+    }
+  }
+  t.each_frame(Some(look))
+  for i in 0..<4 {
+    t.drag(195.0, 710.0, 195.0, 215.0, steps=3)
+    if i == 0 {
+      assert_true(t.list_moving(), msg="the first stroke flings after release")
+    }
+    if i == 1 {
+      t.glyphs_moved_on()
+    }
+    t.run_shown(window_rest_ms)
+  }
+  // Take over the downwards glide before it settles, then get back to the first rows.
+  t.drag(195.0, 710.0, 195.0, 215.0, steps=3)
+  t.run_shown(60.0)
+  for _ in 0..<6 {
+    t.drag(195.0, 215.0, 195.0, 710.0, steps=3)
+    t.run_shown(window_rest_ms)
+  }
+  let (current, _) = window_rows(src)
+  assert_true(current[0] != first[0], msg="the core's change put its chat first")
+  assert_eq(window_drawn(t, [current[0], first[0]], 844.0).length(), 2, msg="the reversed fling gets back to the first chats")
+  t.drag(195.0, 710.0, 195.0, 215.0, steps=3)
+  t.run_shown(window_rest_ms)
+  t.each_frame(None)
+  assert_eq(faults, [])
+  assert_true([30, 50, 70, 90].iter().all(fn(n) { held.contains(n) }), msg="the four pages reach the view")
+  let windows = window_wire(heard).filter(fn(s) { s.has_prefix("window ") })
+  assert_true(windows.length() >= 4, msg=Repr(windows).to_string())
+  assert_eq(windows[:4].to_owned(), ["window 30", "window 50", "window 70", "window 90"])
+}

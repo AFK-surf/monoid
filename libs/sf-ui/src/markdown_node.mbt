@@ -165,31 +165,22 @@ let md_list_piece_items : Int = 3
 /// The pieces `text` is drawn in as the core read it (`tree`, a message's `md`) where a list makes it a block a piece
 /// (markdown_node's `piece`): a block each, a table md_table_piece_rows of its rows a piece, a list md_list_piece_items
 /// of its items a piece (what an item holds, a list in it too, with it). None where it is not read
-/// yet, or it is one piece.
+/// yet, or it is one piece. Of the core's tree, worked out of its shape alone (core_pieces: none of its words read and
+/// nothing kept), so a list may ask it of every message it holds, those far out of sight too.
 pub fn markdown_pieces(text : String, tree : Json?) -> Array[MdPiece]? {
   guard tree is Some(_) && text != "" else { return None }
   let out : Array[MdPiece] = []
-  for i, b in blocks_of(text, tree) {
-    match b {
-      Table(t) if t.rows.length() + 1 > md_table_piece_rows => {
-        let all = t.rows.length() + 1
-        let mut r = 0
-        while r < all {
-          let upto = if r + md_table_piece_rows < all { r + md_table_piece_rows } else { all }
-          out.push({ from: i, upto: i + 1, rows: Some((r, upto)), last: false })
-          r = upto
+  match tree {
+    Some(Array(nodes)) => core_pieces(nodes, Ref(0), out)
+    _ => {
+      let at = Ref(0)
+      for b in blocks_of(text, tree) {
+        match b {
+          Table(t) => md_pieces_put(out, at, t.rows.length() + 1, md_table_piece_rows)
+          List(l) => md_pieces_put(out, at, l.items.length(), md_list_piece_items)
+          _ => md_pieces_put(out, at, 1, 1)
         }
       }
-      List(l) if l.items.length() > md_list_piece_items => {
-        let all = l.items.length()
-        let mut r = 0
-        while r < all {
-          let upto = if r + md_list_piece_items < all { r + md_list_piece_items } else { all }
-          out.push({ from: i, upto: i + 1, rows: Some((r, upto)), last: false })
-          r = upto
-        }
-      }
-      _ => out.push({ from: i, upto: i + 1, rows: None, last: false })
     }
   }
   guard out.length() > 1 else { return None }

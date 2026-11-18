@@ -39,7 +39,7 @@ import { sentFrom, sentHead } from "../sent-from.ts";
 export { sentFrom };
 import { archiveHintOf, badgeKindsOf, failsGoneOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
 import { stationFeature } from "../features.ts";
-import { markdown, type MdStore } from "../markdown.ts";
+import { markdown, markdownHere, mdKey, type MdStore } from "../markdown.ts";
 import { heardFiles } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
 import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, thingsOf, wordsOf } from "../things.ts";
@@ -4734,6 +4734,17 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
     const agent = str(get(by, "agent"));
     return agent !== null && keys.has(agent) ? { ...by, here: true } : by;
   };
+  // The words read as Markdown that are not read here this run: their trees read of the device at once, in one
+  // statement (data.ts `mdStore`), not one a message as each is drawn; each text's key worked out once.
+  const mdWords = (m: J): string | null => (isObject(m.notice) ? (str(m.notice.words) ?? "") : m.authorKind === "person" ? null : (str(m.text) ?? ""));
+  const keyed = new Map<string, string>();
+  if (md?.preload !== undefined) {
+    for (const m of arr(view.messages)) {
+      const text = isObject(m) ? mdWords(m) : null;
+      if (text !== null && !keyed.has(text) && !markdownHere(text)) keyed.set(text, mdKey(text));
+    }
+    if (keyed.size > 0) md.preload([...keyed.values()]);
+  }
   const messages: J[] = arr(view.messages).map((m) => {
     if (!isObject(m)) return m;
     const files = own(m.attachments, m.authorKind === "agent" ? str(m.author) : null);
@@ -4743,7 +4754,8 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
     // A person's words are drawn as they wrote them and place nothing: their files are all below them. An agent's are
     // Markdown, read here (once: markdown.ts keeps it by the words; read again as its reader changes); still.fail's
     // notice's are too, as its pill says them (noticeOf: a chat it opened is a link to it).
-    const tree = isObject(m.notice) ? markdown(str(m.notice.words) ?? "", md) : m.authorKind === "person" ? null : markdown(str(m.text) ?? "", md);
+    const words = mdWords(m);
+    const tree = words === null ? null : markdown(words, md, keyed.get(words));
     // Drawn as before while what it is drawn with is (its files, its links, who it is by, its words as read): the
     // same object.
     const was = drawnMade.get(m);

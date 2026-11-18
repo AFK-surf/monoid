@@ -1305,6 +1305,7 @@ pub struct Tree {
   /// what lays out alone (View::lays_out_alone) with something under it to be laid out again, nothing above it: laid
   /// out from it as the rest is (Tree::alone_laid_out)
   alone_due : Array[Int]
+  priv mut alone_at : Int
   /// those laid out so and not yet placed by, each with its compute's number
   alone_laid : Array[(Int, Int)]
   /// what is asked of one laid out alone once it is (View::scrolls_window's slots: whether what it shows came out
@@ -1689,6 +1690,7 @@ pub fn Tree::new(
     measuring: false,
     binding_reading: -1,
     alone_due: [],
+    alone_at: 0,
     alone_laid: [],
     alone_asks: {},
     rows_named: {},
@@ -2823,7 +2825,7 @@ fn Tree::layout_marked_at(self : Tree, at : Int, within? : Bool = false) -> Unit
     // (in what lays out alone, laid out as big as it was asked before: laid out again from it, nothing above it)
     if (i != at || within) && n.alone && n.flex.laid_given() {
       // (once a pass however much under it is marked: what is made in it marks each node it makes)
-      if !self.alone_due.contains(i) {
+      if !self.alone_due[self.alone_at:].contains(i) {
         self.alone_due.push(i)
       }
       return
@@ -2848,10 +2850,9 @@ fn Tree::laid_over_alone(self : Tree, at : Int, holder : Int) -> Int {
 /// it is unless what holds it asks it otherwise now.
 fn Tree::alone_laid_out(self : Tree) -> Unit {
   // (by its index: one that what it holds asks to be laid out again (below) put after the rest, laid out in turn)
-  let mut j = 0
-  while j < self.alone_due.length() {
-    let at = self.alone_due[j]
-    j = j + 1
+  while self.alone_at < self.alone_due.length() {
+    let at = self.alone_due[self.alone_at]
+    self.alone_at += 1
     let n = self.nodes[at]
     if n.live && n.flex.dirty {
       let mut anc_dirty = false
@@ -2921,6 +2922,7 @@ fn Tree::alone_laid_out(self : Tree) -> Unit {
     }
   }
   self.alone_due.clear()
+  self.alone_at = 0
   // (what what was asked told meanwhile (a list's block measured as tall as it was counted, what shows under it worked
   // out by that) worked out once all of it is laid out, and laid out in this same pass)
   if !self.bindings_due.is_empty() {

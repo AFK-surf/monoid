@@ -524,7 +524,8 @@ export function safeMode(inner: Inner, ws: string): boolean {
   if (isObject(k) && (typeof k.on === "boolean" || k.on === null)) on = k.on as boolean | null;
   else {
     on = safeHeld(inner, ws);
-    inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
+    // (kept after what pages wait for: the page that read it writes nothing as it opens, store.ts `turn`)
+    inner.runner.fork(inner.store.turn().pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
   }
   return on ?? get(view(inner, ws), "locked") === true;
 }
@@ -570,7 +571,7 @@ export function stationsGuard(inner: Inner, ws: string): { protects: (id: string
   if (inner.provider.kind !== "stillfail" || !safeMode(inner, ws)) return null;
   const k = inner.data.record(SAFE, ws);
   // (kept by a core from before, without them: kept again, in a turn of its own, as `safeMode` keeps it)
-  if (isObject(k) && !Array.isArray(k.stations)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
+  if (isObject(k) && !Array.isArray(k.stations)) inner.runner.fork(inner.store.turn().pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
   if (!isObject(k) || !Array.isArray(k.stations) || !Array.isArray(k.keys) || k.stations.length === 0) return null;
   const named = new Set<unknown>(k.stations);
   const keys = k.keys as unknown[];

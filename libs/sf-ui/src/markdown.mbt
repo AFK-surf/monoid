@@ -1711,6 +1711,12 @@ fn cell_images_width(images : Array[(Double, (Double) -> Unit)]) -> Double {
 /// (their `to`), for what is shown as a link is pointed at (a chat's card, a pull request's).
 pub fn md_links_to(text : String, tree : Json?) -> Map[String, LinkTo] {
   let out : Map[String, LinkTo] = Map([])
+  // (the core's tree walked to its links alone: nothing of it read as blocks, nothing kept, so what reads a chat's
+  // links reads none of its messages' words)
+  if tree is Some(Array(nodes)) {
+    core_links(nodes, text, out)
+    return out
+  }
   fn inl(xs : Array[MdInline]) -> Unit {
     for x in xs {
       match x {
