@@ -212,13 +212,31 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       must_expand_sig.set(m.0)
       can_toggle_sig.set(m.1)
     })
+    // (what the bar's first row holds last told by an answer (the chat's, its jobs' or its station's first value, as the
+    // page opens): what it leaves the title is laid out after that answer is over, and opens or shuts the second row at
+    // once as an answer's change does, not on its way; told otherwise (live, a press, the find opened or shut), on its way again)
+    let answer_settle = Ref(false)
+    let bar_inputs = fn() {
+      let v_shape = match view() {
+        Some(v) =>
+          (true, v.title, v.archivable && !v.archived, v.agents.length(), v.people.length(), chat_screens_driven(v.screens))
+        None => (false, r.title, false, 0, 0, false)
+      }
+      let st_shape = match station_now() {
+        Some(s) => (true, s.name, s.emoji, s.icon)
+        None => (false, "", "", "")
+      }
+      (v_shape, bar_has_jobs(src, r), st_shape, finding(), state.manual_expanded.get())
+    }
+    g.reacts(bar_inputs, at_start=false, fn(_) { answer_settle.val = @view.answering_now() })
     g.reacts(fn() { (mid_w_sig.get() > 0.0, expanded(), state.row2_h.get()) }, fn(cur) {
-      if cur.0 && !state.settled_initial {
-        // (open as it is first laid out: settled only once its second row's height is known (that row made while it is
-        // open, measured shut), its way and the height it comes to put there at once together, never open on a height of
-        // none first)
+      if cur.0 && (!state.settled_initial || answer_settle.val || @view.answering_now()) {
+        // (open as it is first laid out, and as an answer changes what it holds: settled only once its second row's height
+        // is known (that row made while it is open, measured shut), its way and the height it comes to put there at once
+        // together, never open on a height of none first)
         if !cur.1 || cur.2 > 0.0 {
           state.settled_initial = true
+          answer_settle.val = false
           state.open_way.put(if cur.1 { 1.0 } else { 0.0 })
           state.extra_target.set(if cur.1 { cur.2 } else { 0.0 })
         }
