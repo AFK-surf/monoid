@@ -414,9 +414,12 @@ test "usage probe: real size, a person's row picked" {
     kept_go(t, "usage", true)
     t.run_for(kept_switch_over_ms)
     uprobe_at(t, "H\{late} opened")
-    for _ in 0..<2 {
-      t.drag(180.0, 650.0, 180.0, 250.0, steps=20)
-      t.run_for(kept_glide_over_ms)
+    for _ in 0..<12 {
+      let y = match t.words().iter().find_first(fn(w) { w.0 == "花费明细" }) { Some(w) => w.2; None => 9999.0 }
+      if y > 150.0 && y < 900.0 && y > 260.0 {
+        t.drag(180.0, 500.0, 180.0, 400.0, steps=20)
+        t.run_for(kept_glide_over_ms)
+      }
     }
     let head = t.words().iter().find_first(fn(w) { w.0 == "花费明细" && w.2 > 0.0 })
     println("H\{late}: head \{match head { Some(h) => h.2; None => -1.0 }}")
