@@ -1493,8 +1493,8 @@ pub fn View::scrolls(
   // (a hold that began on what it holds (a button, a field of an old view's, nothing that takes a press) its own once
   // it moves up or down past the slop, more than across, the way it can still go: else what holds it is asked)
   .claims(fn(dx, dy) {
-    // (up or down, not by a pointer that drags no list: Tree::pointer_drags_scroll)
-    if !across && !(self.tree.drags_scroll)() {
+    // (not by a pointer that drags nothing that scrolls, up or down or across: Tree::pointer_drags_scroll)
+    if !(self.tree.drags_scroll)() {
       s.claimed = false
       return false
     }

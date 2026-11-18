@@ -13979,10 +13979,11 @@ pub fn Tree::lists_feel(self : Tree, f : () -> (ListFeel, Double)) -> Unit {
 }
 
 ///|
-/// Whether the pointer now drags what scrolls up or down (a page's list, a plain column) as a finger does, as it is
-/// asked: not where a desktop's page says the mouse drags no list (the wheel and the trackpad scroll it, a drag is the
-/// pointer's own: words picked), its column then taking over no hold to scroll (View::scrolls' `claims`); one scrolled
-/// across (a code block, a table) still dragged along its row, as an old view's sideways box is. None said, it does.
+/// Whether the pointer now drags what scrolls (a page's list, a plain column, a row scrolled across) as a finger does,
+/// as it is asked: not where a desktop's page says the mouse drags no list (the wheel and the trackpad scroll it, a
+/// drag is the pointer's own: words picked), its column then taking over no hold to scroll (View::scrolls' `claims`),
+/// nor one scrolled across (a code block, a table), as an old view's sideways box is not (ui's claim_down): the wheel,
+/// the trackpad and its bar scroll it. None said, it does.
 /// The bridge of the old frames' saying (ui's Ctx::mouse_drags_lists, the last said holding): once the frames are
 /// nodes, the tree's own.
 pub fn Tree::pointer_drags_scroll(self : Tree, f : () -> Bool) -> Unit {
