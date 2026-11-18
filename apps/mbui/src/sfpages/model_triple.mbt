@@ -1417,20 +1417,20 @@ fn triple_body_node(
   let models_head = fn(parent : @view.View) {
     parent.pick(fn() { triple_other_stations(v()) }, fn(y, scoped) {
       if scoped {
+        // (the choice on the title's line; the search, where there is one, on a line of its own under it, the
+        // column's width: beside the choice it had not the room)
         y.box(fn(h) {
           @sf.style_node(h, fn() { triple_scope_head })
           h.box(fn(c) { @sf.style_node(c, fn() { triple_scope_choice }, in_row=true); scope_node(c) }) |> ignore
-          // (the search the rest of the line, no wider: never past the models' column)
-          h.show(fn() { options().length() > 8 }, fn(e) {
-            e.box(fn(f) {
-              @sf.style_node(f, fn() { triple_scope_find }, in_row=true)
-              f.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              triple_find_node(f, contents)
-            })
-            |> ignore
-          })
         })
         |> ignore
+        y.show(fn() { options().length() > 8 }, fn(e) {
+          e.box(fn(f) {
+            @sf.style_node(f, fn() { triple_search })
+            triple_find_node(f, contents)
+          })
+          |> ignore
+        })
         return
       }
       plain_head(y)
@@ -2935,11 +2935,6 @@ let triple_scope_head : @ui.Style = @ui.css("row w=Full pb=S1_5 gap=S3 align=ACe
 ///|
 // kept across runs: a value (no field of it changes)
 let triple_scope_choice : @ui.Style = @ui.css("row")
-
-///|
-/// The search beside the choice (triple_scope_head's): the rest of its line.
-// kept across runs: a value (no field of it changes)
-let triple_scope_find : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 // kept across runs: a value (no field of it changes)
