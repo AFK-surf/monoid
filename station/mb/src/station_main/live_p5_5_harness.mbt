@@ -7,10 +7,20 @@
 // - {step: "tools"}; {step: "call", name, args, context}; {step: "coord", name, arg}; {step: "config", config};
 // - {step: "peers"}: the mesh's methods answered; {step: "peer", from, workspace, method, params}: one asked;
 // - {step: "platform", name, args}: what the updates ask of this machine (updates_platform.mbt), as they ask it;
+// - {step: "standIn", hub, peers}: the agents' side (`hub_ask`, by name) and the other stations (by method) answered
+//   with what the test gives, what was asked kept; {step: "asked"}: what was asked of them since; {step: "heard",
+//   hub}: answered once the agents' side was asked that (what a choice set going comes to);
+// - {step: "card", key, call: "may"|"chosen", viewer, card, option, at}: a part's card choice, as the admin API asks it;
 // - {step: "stop"}.
 
 ///|
 let p5_5_harnessed : Ref[LiveBus?] = Ref(None)
+
+///|
+let p5_5_stood_asked : Array[Json] = []
+
+///|
+let p5_5_stood_waits : Array[(String, @effect.Deferred[Unit])] = []
 
 ///|
 async fn p5_5_harness(host : @host.Host, ask : Json) -> Result[Json, String] {
@@ -77,6 +87,47 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
         "config" => {
           let next = p55_jfield(ask, "config")
           (bus.config_update.val)(_ => next)
+        }
+        "standIn" => {
+          let hub = p55_jfield(ask, "hub")
+          let peers = p55_jfield(ask, "peers")
+          bus.hub_ask.val = fn(name, arg) {
+            p5_5_stood_asked.push({ "hub": Json::string(name), "args": arg })
+            for w in p5_5_stood_waits {
+              if w.0 == name {
+                ignore(w.1.succeed(()))
+              }
+            }
+            p55_jfield(hub, name)
+          }
+          bus.peer_call.val = fn(target, ws, meth, params, _bytes) raise {
+            p5_5_stood_asked.push({ "peer": Json::string(target), "workspace": p55_jopt(ws), "method": Json::string(meth), "params": params })
+            match peers {
+              Object(m) if m.contains(meth) => (p55_jfield(peers, meth), None)
+              _ => raise BusError("\{meth}: not answered by the test's stations")
+            }
+          }
+          Json::null()
+        }
+        "asked" => Json::array(p5_5_stood_asked.copy())
+        "heard" => {
+          let name = p55_jtext(ask, "hub")
+          if !p5_5_stood_asked.iter().any(x => p55_jstr(x, "hub") == Some(name)) {
+            let heard : @effect.Deferred[Unit] = @effect.Deferred::new()
+            p5_5_stood_waits.push((name, heard))
+            heard.wait()
+          }
+          Json::null()
+        }
+        "card" => {
+          guard bus.parts.card_choice_named(p55_jtext(ask, "key")) is Some(choice) else { raise BusError("no card choice") }
+          match p55_jtext(ask, "call") {
+            "may" => p55_jopt((choice.may)(p55_jfield(ask, "viewer"), p55_jfield(ask, "card"), p55_jfield(ask, "at")))
+            _ => {
+              (choice.chosen)(p55_jfield(ask, "viewer"), p55_jfield(ask, "card"), p55_jtext(ask, "option"), p55_jfield(ask, "at"))
+              Json::null()
+            }
+          }
         }
         "stop" => {
           ignore(bus.stopped.succeed("the test stops"))
