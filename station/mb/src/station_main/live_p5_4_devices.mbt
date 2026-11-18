@@ -339,7 +339,8 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::null()
     }
     "fs.copy" => {
-      @drive.copy_file(s(0), s(1))
+      // (copyFile: what a send cut short left at `<to>` replaced)
+      copy_file_over(s(0), s(1))
       Json::null()
     }
     "fs.realpath" => Json::string(@drive.realpath(s(0)))

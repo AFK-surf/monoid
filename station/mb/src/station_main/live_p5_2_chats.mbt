@@ -617,9 +617,11 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
     }
     "appendFile" => {
       // (the hub's uploads add each part at the file's end, making it with the first)
+      // (made only where it is not there: another failure is the append's, never a part written over)
       let had = match attempt(() => @drive.stat(s(0))) {
         Ok(st) => Some(st.size)
-        Err(_) => None
+        Err(@drive.FsError(f)) if f.code == "ENOENT" => None
+        Err(e) => raise fail(e)
       }
       ignore(
         @drive.write_part(s(0), {
@@ -672,11 +674,14 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
         Some(Number(m, ..)) => (m.to_int() & 1) == 1
         _ => false
       }
-      if !excl {
-        ignore(attempt(() => @drive.unlink(s(1))))
-      }
-      @drive.copy_file(s(0), s(1)) catch {
-        e => raise fail(e)
+      if excl {
+        @drive.copy_file(s(0), s(1)) catch {
+          e => raise fail(e)
+        }
+      } else {
+        copy_file_over(s(0), s(1)) catch {
+          e => raise fail(e)
+        }
       }
       Json::null()
     }
@@ -690,9 +695,18 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
       Json::null()
     }
     "readdir" =>
-      Json::array(
-        (@drive.names(s(0)) catch { e => raise fail(e) }).map(Json::string),
-      )
+      // (`withFileTypes`: each entry's name and whether it is a folder, as the routes read it)
+      if args.get(1) is Some(Object({ "withFileTypes": True, .. })) {
+        Json::array(
+          (@drive.readdir(s(0)) catch { e => raise fail(e) }).map(d => {
+            ({ "name": Json::string(d.name), "dir": Json::boolean(d.is_dir) } : Json)
+          }),
+        )
+      } else {
+        Json::array(
+          (@drive.names(s(0)) catch { e => raise fail(e) }).map(Json::string),
+        )
+      }
     "readdirTypes" => {
       let names = @drive.names(s(0)) catch { e => raise fail(e) }
       Json::array(

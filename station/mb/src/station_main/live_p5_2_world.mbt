@@ -206,9 +206,8 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
         let partial = (if to.has_suffix(".jsonl") { to[:to.length() - 6].to_owned() } else { to }) + ".jsonl.part"
         let copied = attempt(() => {
           @drive.mkdir(@nodepath.dirname(sep(), to), true)
-          // (a part a copy cut short left: the drive's copy makes a new file only)
-          ignore(attempt(() => @drive.unlink(partial)))
-          @drive.copy_file(from, partial)
+          // (a part a copy cut short left is replaced)
+          copy_file_over(from, partial)
           @drive.rename(partial, to)
         })
         if copied is Err(e) {

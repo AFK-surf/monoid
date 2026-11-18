@@ -1,8 +1,22 @@
-// Paths as the station checks them (station/src/ops/paths.ts on a Unix machine: `/` separates, compared as they are).
+// Paths as the station checks them (station/src/ops/paths.ts): on a Unix machine `/` separates and they are compared as
+// they are; on Windows (`windows_paths`, said by the station as it starts) by ops_platform's and node:path win32's rules.
+
+///|
+/// Windows' paths, and the directory a path with no drive is resolved from; none: Unix's.
+let windows : Ref[String?] = Ref(None)
+
+///|
+/// The station runs on Windows, its working directory `cwd`: every path here goes by Windows' rules from now on.
+pub fn windows_paths(cwd : String) -> Unit {
+  windows.val = Some(cwd)
+}
 
 ///|
 /// files.rs `clean`: absolute, `.` and `..` worked out lexically.
 pub fn clean(path : String) -> String {
+  if windows.val is Some(cwd) {
+    return @ops_platform.clean_path(Windows(cwd), path)
+  }
   let out : Array[String] = []
   for part in path.split("/") {
     let part = part.to_string()
@@ -20,12 +34,18 @@ pub fn clean(path : String) -> String {
 
 ///|
 pub fn same_path(a : String, b : String) -> Bool {
+  if windows.val is Some(cwd) {
+    return @ops_platform.same_path(Windows(cwd), a, b)
+  }
   a == b
 }
 
 ///|
 /// `path` is `dir` or under it.
 pub fn within(path : String, dir : String) -> Bool {
+  if windows.val is Some(cwd) {
+    return @ops_platform.within(Windows(cwd), path, dir)
+  }
   dir == "/" || path == dir || path.has_prefix(dir + "/")
 }
 
@@ -38,6 +58,9 @@ pub fn inside(path : String, dir : String) -> Bool {
 ///|
 /// Path::file_name: the last part; none for `..` or the root.
 pub fn file_name(path : String) -> String? {
+  if windows.val is Some(cwd) {
+    return @ops_platform.file_name(Windows(cwd), path)
+  }
   let parts = path
     .split("/")
     .map(p => p.to_string())
@@ -53,6 +76,9 @@ pub fn file_name(path : String) -> String? {
 ///|
 /// node:path `join` (POSIX): the parts joined by `/`, normalized; "." for nothing.
 pub fn join(parts : Array[String]) -> String {
+  if windows.val is Some(_) {
+    return @nodepath.join("\\", parts)
+  }
   let given = parts.filter(p => p != "")
   if given.length() == 0 {
     return "."
@@ -63,6 +89,9 @@ pub fn join(parts : Array[String]) -> String {
 ///|
 /// node:path `normalize` (POSIX).
 pub fn normalize(path : String) -> String {
+  if windows.val is Some(_) {
+    return @nodepath.join("\\", [path])
+  }
   if path == "" {
     return "."
   }
@@ -101,6 +130,9 @@ pub fn normalize(path : String) -> String {
 ///|
 /// node:path `dirname` (POSIX).
 pub fn dirname(path : String) -> String {
+  if windows.val is Some(_) {
+    return @nodepath.dirname("\\", path)
+  }
   if path == "" {
     return "."
   }

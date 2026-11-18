@@ -976,6 +976,10 @@ async fn P51::admin_live(self : P51) -> AdminLive {
     // are a Mac's)
     if platform() == "darwin" { ["retire.starts"] } else { ["retire.starts", "grants"] },
   )
+  // (the routes' paths by this machine's rules: ops/paths.ts on Windows is win32's)
+  if is_windows() {
+    @api_routes.windows_paths(@drive.cwd())
+  }
   let holder : Ref[AdminLive?] = Ref(None)
   let backend = @api_routes.Backend::new(async fn(name, args) { self.backend(holder.val.unwrap(), name, args) })
   let a : AdminLive = {

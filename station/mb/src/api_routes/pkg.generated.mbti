@@ -201,6 +201,8 @@ pub fn utf8(String) -> Bytes
 
 pub fn utf8_text(Bytes) -> String
 
+pub fn windows_paths(String) -> Unit
+
 pub fn within(String, String) -> Bool
 
 // Errors

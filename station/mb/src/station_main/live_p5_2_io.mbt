@@ -432,11 +432,11 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       Ok(_) => lok(lp, ())
       Err(e) => lfail(lp, e)
     },
-    copy: (from, to) => match attempt(() => @drive.copy_file(from, to)) {
+    copy: (from, to) => match attempt(() => copy_over(from, to)) {
       Ok(_) => lok(lp, ())
       Err(e) => lfail(lp, e)
     },
-    copy_file: (from, to) => match attempt(() => @drive.copy_file(from, to)) {
+    copy_file: (from, to) => match attempt(() => copy_file_over(from, to)) {
       Ok(_) => lok(lp, ())
       Err(e) => lfail(lp, e)
     },
@@ -563,5 +563,28 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
     destroy: () => close_once(),
     writable: () => !gone.val && !ended.val,
     destroyed: () => gone.val,
+  }
+}
+
+///|
+/// node's `copyFile`: `to` replaced where it is there (the drive's copy makes a new file only), never `from` itself.
+fn copy_file_over(from : String, to : String) -> Unit raise {
+  ignore(@drive.stat(from))
+  if from != to {
+    ignore(attempt(() => @drive.unlink(to)))
+  }
+  @drive.copy_file(from, to)
+}
+
+///|
+/// node's `cp(from, to, { recursive: true })`: a folder copied whole into `to`, each file replacing what is there.
+fn copy_over(from : String, to : String) -> Unit raise {
+  if @drive.stat(from).dir {
+    @drive.mkdir(to, true)
+    for e in @drive.readdir(from) {
+      copy_over(path([from, e.name]), path([to, e.name]))
+    }
+  } else {
+    copy_file_over(from, to)
   }
 }
