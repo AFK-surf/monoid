@@ -276,6 +276,11 @@ const PROFILES: any[] = (() => {
   }
   out.push({ id: "kimi-login", runtime: "claude", home, access: { kind: "api-provider", provider: "kimi-code", login: true, key: "t" } });
   out.push({ id: "openrouter-fast", runtime: "claude", home, access: { kind: "api-provider", provider: "openrouter" } });
+  // A proxy of the profile's own, and one a borrowed profile brought from its host's machine (left out).
+  const proxied = { HTTPS_PROXY: "http://127.0.0.1:7890", no_proxy: "corp.example", All_Proxy: "socks5://h:1", KEEP: "1", MY_HTTP_PROXY: "y" };
+  out.push({ id: "own-proxied", runtime: "codex", home, access: { kind: "subscription" }, env: proxied });
+  out.push({ id: "borrowed-proxied", runtime: "codex", home, access: { kind: "subscription" }, env: proxied, share: { id: "sh-1", borrowed: true, host: "h" } });
+  out.push({ id: "hosted-proxied", runtime: "claude", home, access: { kind: "subscription" }, env: proxied, share: { id: "sh-2", allow: [] } });
   out.push({ id: "odd", runtime: 5, home, access: "nope" });
   out.push({ id: "odd2", runtime: "claude", home, access: { kind: null, provider: "" } });
   return out;
@@ -302,6 +307,9 @@ describe("providers.ts, profiles.ts: where each profile's account speaks and wha
       await same(fn, each.filter(([p]) => fn !== "accessKind" || typeof p.access?.kind !== "number"), ts as any);
     const runtimes = ["claude", "codex", "dsh", "pi", "grok", "agy", "devin", "cursor", "hermes"];
     await same("profileEnv", PROFILES.flatMap((p) => runtimes.map((r) => [p, r])), P.profileEnv);
+    const byId = (id: string) => PROFILES.find((p) => p.id === id);
+    assert.deepEqual(P.profileEnv(byId("own-proxied"), "codex"), { HTTPS_PROXY: "http://127.0.0.1:7890", no_proxy: "corp.example", All_Proxy: "socks5://h:1", KEEP: "1", MY_HTTP_PROXY: "y" }, "its own proxy kept");
+    assert.deepEqual(P.profileEnv(byId("borrowed-proxied"), "codex"), { KEEP: "1", MY_HTTP_PROXY: "y" }, "the host's machine's proxy left there");
     await same("apiSource", PROFILES.map((p) => [P.profileVia(p)]), (via) => P.apiSource(via) ?? null);
     const kinds = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider"];
     const vias = [{}, { provider: "xai" }, { provider: "google" }, { provider: "openrouter" }, { provider: "opencode" }, { provider: "deepseek" }, { provider: "custom", endpoint: "https://c.test/v1" }, { provider: "custom", endpoint: "https://c.test/v1", protocol: "responses" }];
@@ -878,6 +886,7 @@ async function sameOpen(c: any) {
   }
   const files = (home: string) => tree(home).map(([p, t, m]) => [p, t.replaceAll(mbHome, tsHome), m]);
   assert.deepStrictEqual(files(mbHome), files(tsHome), `${name}: the files written`);
+  return ts;
 }
 
 describe("a session opened on its process: what it is started with and asked first", { skip }, () => {
@@ -1002,6 +1011,23 @@ describe("a session opened on its process: what it is started with and asked fir
     await sameOpen({ kind: "hermes", name: "hermes named badly", runner: "hm-o", command: "hermes", options: {}, answers: acpAnswers({ "session/new": { result: { sessionId: "a b" } } }) });
     await sameOpen({ kind: "hermes", name: "hermes resumed", runner: "hm-o", command: "hermes", options: { resume: "hm-9", model: "m9" }, files: [["hermes/sessions/hm-9.jsonl", `${JSON.stringify({ type: "session", id: "hm-9", hermesHome: "/srv/hermes-old/" })}\n{}`]], answers: acpAnswers() });
     await sameOpen({ kind: "hermes", name: "hermes relative home", runner: "hm-o", command: "hermes", options: { profile: { env: { HERMES_HOME: "rel" } } }, answers: acpAnswers() });
+  });
+
+  test("a profile's own proxy leaves this machine out of it, for every runtime: its tools are on 127.0.0.1", async () => {
+    const env = { HTTPS_PROXY: "http://127.0.0.1:7890", NO_PROXY: "corp.example" };
+    const kept = "corp.example,localhost,127.0.0.1,::1";
+    const cases = [
+      { kind: "dsh", runner: "dsh-o", bridge: dsh.BRIDGE, command: "dsh", answers: { open: { session: "dsh-new" } } },
+      { kind: "cursor", runner: "cur-o", bridge: cursor.BRIDGE, node: "/n", sdk: "/sdk", answers: { open: { session: "agent-9" } } },
+      { kind: "pi", runner: "pi-o", bridge: pi.BRIDGE, command: "pi", answers: { get_state: { success: true } } },
+      { kind: "devin", runner: "dv-o", command: "devin", answers: acpAnswers() },
+      { kind: "grok", runner: "gk-o", command: "grok", answers: acpAnswers() },
+      { kind: "hermes", runner: "hm-o", command: "hermes", answers: acpAnswers() },
+    ];
+    for (const c of cases) {
+      const ts = await sameOpen({ ...c, name: `${c.kind} proxied`, options: { profile: { env } } });
+      assert.deepEqual([ts.started?.env.NO_PROXY, ts.started?.env.no_proxy], [kept, kept], `${c.kind}: this machine left out of the profile's proxy`);
+    }
   });
 });
 

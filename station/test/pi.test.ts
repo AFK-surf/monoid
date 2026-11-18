@@ -286,7 +286,9 @@ describe("the Pi driver", { concurrency: true }, () => {
       await eventually(gate.said);
       const next = driver();
       const b = listen();
-      const taken: AgentSession = await next.adopt({ ...o, resume: session.id() }, snapshot, b.push);
+      // (after a crash, taken up before the station's door opened: no address of its tools known)
+      const taken: AgentSession = await next.adopt({ ...o, resume: session.id(), ...(crashed ? { mcpUrl: "" } : {}) }, snapshot, b.push);
+      assert.equal(taken.mcpUrl?.(), crashed ? null : o.mcpUrl);
       assert.equal(taken.id(), session.id());
       assert.equal(taken.busy(), true);
       await gate.open("b");

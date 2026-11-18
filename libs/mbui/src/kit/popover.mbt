@@ -101,9 +101,9 @@ pub fn popover(
   body : () -> Unit,
 ) -> @ui.Changed[Bool] {
   let mut now = open
-  if @motion.presence(c, "\u{2}pop/" + key, open, initial=true, enter~, exit~) is Some(shows) {
+  if @motion.presence_by(c, "\u{2}pop/" + key, open, initial=true, enter~, exit~) is Some(shows) {
     let o = c.overlay(key, modal~, anchor~, anchor_node?, initial_focus=if focus { -1 } else { 0 }, inert=!open, fn() {
-      beside(c, key, anchor, side, along, offset, shows, Dialog, label, look, body, at?)
+      beside(c, key, anchor, side, along, offset, Some(shows), Dialog, label, look, body, at?)
     })
     if o.dismissed is Some(_) {
       now = false
@@ -187,9 +187,9 @@ pub fn hover_card(
   if held && was {
     open = true
   }
-  if @motion.presence(c, "\u{2}pop/" + key, open, initial=true, enter~, exit~) is Some(shows) {
+  if @motion.presence_by(c, "\u{2}pop/" + key, open, initial=true, enter~, exit~) is Some(shows) {
     let o = c.overlay(key, anchor=trigger, initial_focus=0, inert=!open, fn() {
-      beside(c, key, trigger, side, along, offset, shows, Group, "", look, body, along_offset~)
+      beside(c, key, trigger, side, along, offset, Some(shows), Group, "", look, body, along_offset~)
     })
     if o.dismissed is Some(_) && !(held && was) {
       open = false
@@ -350,12 +350,12 @@ pub fn tooltip(
   state.causes = ready
   let owner = Built(id)
   let mut open = (shown || held || (!shut && (focused || rested || (was && hovered)))) && tip_owns(owner)
-  if @motion.presence(c, "\u{2}pop/" + key, open, initial=true, enter=tip_in, exit=pop_out) is Some(shows) {
+  if @motion.presence_by(c, "\u{2}pop/" + key, open, initial=true, enter=tip_in, exit=pop_out) is Some(shows) {
     // A previous tooltip may finish its exit only until another claims the slot: never paint two at once.
     if tip_owns(owner) {
       // (the system's back goes on to what is under it: a tip only says what the pointer rests on, no place to leave)
       let o = c.overlay(key, anchor=trigger, outside=false, back=false, initial_focus=0, inert=!open, fn() {
-        beside(c, key, trigger, side, along, offset, shows, Tooltip, text, fn(c, s, _) { look(c, s, text) }, fn() {  }, at?=at)
+        beside(c, key, trigger, side, along, offset, Some(shows), Tooltip, text, fn(c, s, _) { look(c, s, text) }, fn() {  }, at?=at)
       })
       if o.dismissed is Some(_) {
         kit.val.shut[id] = true
@@ -381,7 +381,7 @@ fn beside(
   side : @ui.Side,
   along : @ui.Along,
   offset : Double,
-  shows : @ui.Look,
+  shows : @motion.Showing?,
   role : @ui.Role,
   label : String,
   look : (@ui.Ctx, PopState, () -> Unit) -> Unit,
@@ -414,7 +414,11 @@ fn beside(
   } else {
     c.stop_wheel(i)
   }
-  c.look(i, grown_from(shows, went, along))
+  match shows {
+    // (how far in or out it is, read as it is painted: what built it not built again each frame of its way)
+    Some(s) => s.look_on(c, i, then=fn(l) { grown_from(l, went, along) })
+    None => c.look(i, grown_from(@ui.still_look, went, along))
+  }
 }
 
 ///|

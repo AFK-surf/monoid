@@ -1411,9 +1411,11 @@ export const personalPairState = (inner: Inner, sub: string): J => {
   if (y?.state === "done" && y.approvedIn !== undefined && !y.approvedIn.includes(personOf(sub))) return null;
   const at = mine(inner, personOf(sub));
   if (at === null) return null;
-  // Which of the person's devices show the code, by name: where to look.
-  const known = new Map(inner.adb.personal().approvers(sub).map((d) => [d.id, d.label]));
-  return { ...at, showing: [...(y?.met.keys() ?? [])].map((id) => known.get(id) ?? "").filter((n) => n !== "") };
+  // Which of the person's devices show the code, by name: where to look. Only those that showed it for this person's
+  // lock (`workspaces`: another account's signed in here may be met on the same device, whose lock it is not on).
+  const known = new Map(inner.adb.personal().approvers(sub).map((d) => [d.id, deviceText({ kind: "app", label: d.label })]));
+  const person = personOf(sub);
+  return { ...at, showing: [...(y?.met.values() ?? [])].filter((m) => m.workspaces.includes(person)).map((m) => known.get(m.id) ?? "").filter((n) => n !== "") };
 };
 
 function cancel(inner: Inner): void {

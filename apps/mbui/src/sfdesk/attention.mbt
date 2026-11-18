@@ -48,85 +48,6 @@ fn attention_set(open : Bool) -> Unit {
 }
 
 ///|
-/// The window's width as 待处理's panel was last drawn (attention_panel: a turn closes it).
-let attention_size : FixedArray[Double] = [0.0]
-
-///|
-/// 待处理's panel: beside the rail's bell, 10 past it (with no bell in the rail, under 待处理 under
-/// 新建对话, 6 under it), 300 wide. With the bell, the stations' trouble not looked at yet (looked at as it opens:
-/// listed while open, then no longer, until the trouble changes, kept on this device) and the services left up long
-/// first; then each workspace's chats that want the viewer, not read since (the one in view's first), 忽略 on the row
-/// pointed at (`decision.dismiss`); pressed, its chat; 全部已读 and 通知设置 at its foot, which stays as the rest
-/// scrolls.
-fn attention_panel(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  let close = fn() { attention_set(false) }
-  // (the window turned beside the system's tabs: what it opened from is elsewhere, closed: rail_native.mbt)
-  if native_turned(c, attention_size) {
-    close()
-  }
-  let railed = rail_items(src, w.id).contains("attention")
-  let trigger = c.id(if railed || @sf.native_on() { "rail/attention" } else { "side/attention" })
-  // its stations all reached again: a trouble later in the same words is new (said once the frame is built)
-  c.after_build("attention/forget", fn() { trouble_forget(src, w) })
-  // what was stopped here let go of once the core no longer lists it (open_jobs.mbt)
-  c.after_build("attention/jobs-gone", fn() { open_jobs_prune(src, w) })
-  // looked at as it opens (kept at once), no longer listed once it closes: listed while it is first read
-  if wide.attention_open.get() && attention.trouble_seen is None {
-    attention.trouble_seen = Some(trouble_kept(src, w, "seen"))
-    let now = station_trouble_words(src, w)
-    if railed && now != "" {
-      c.tell("attention/seen", fn() { trouble_keep(src, w, "seen", Json::string(now)) })
-    }
-    // the services left up long it lists: shown, no longer lighting it (still listed)
-    if railed && long_jobs_lit(src, w) {
-      c.tell("attention/jobs-seen", fn() { long_jobs_seen(src, w) })
-    }
-  }
-  // (dismissed by the hand, Escape or a press outside it and the bell: closed at that moment)
-  c.with_dismissed(fn(_) { attention_set(false) }, fn() {
-    @kit.popover(
-      c,
-      "attention",
-      wide.attention_open.get(),
-      trigger,
-      // (the system's bell: in its column down the side, beside it from its top; at the top's lead, under it from its left)
-      side=if @sf.native_side() {
-        Left
-      } else if railed && !@sf.native_on() {
-        Right
-      } else {
-        Bottom
-      },
-      along=Start,
-      offset=if railed { attention_off_rail } else { attention_off_side },
-      // (the rail's bell a node of the window's tree: beside where it was as it was pressed, rail_node's)
-      // (opened before the bell was placed, a fixture's: where it is now)
-      at?=if railed && !@sf.native_on() {
-        match attention_from.val {
-          Some(r) => Some(r)
-          None => rail_place_at("attention")
-        }
-      } else {
-        None
-      },
-      // (and a press of it its own, none outside the panel)
-      anchor_node?=if railed && !@sf.native_on() { rail_drawn.get("attention") } else { None },
-      // (its foot under what scrolls, held at the panel's foot: 全部已读 is wanted most when the list is longest,
-      // pengxiao 2026-11-12)
-      look=fn(c, s, body) {
-        @sf.small_panel(c, w=Px(attention_w), fn() {
-          @sf.within_room(c, s, body, inner=att_list)
-          attention_foot(c, src, w, close)
-        })
-        |> ignore
-      },
-      fn() { attention_rows(c, src, w, railed, close) },
-    )
-    |> ignore
-  })
-}
-
-///|
 /// 待处理's panel open (a screen's fixture).
 pub fn open_attention() -> Unit {
   attention_set(true)
@@ -268,37 +189,67 @@ fn attention_read_all(src : Source, list : Array[Json]) -> Unit {
 /// 待处理 as a panel of its own, where there is no bell to open it beside (小屏's Home, its top bar's bell): its rows
 /// and its foot nodes, each following what it lists (the stations' trouble, the core's marks, what is left up long,
 /// what was let go here) as that changes. As it opens, what it shows of the stations' trouble and of what is left up
-/// long is looked at, as attention_panel's (kept: no longer lighting the bell), listed while it is open.
+/// long is looked at, as the panel beside the bell's (kept: no longer lighting the bell), listed while it is open.
 pub fn open_attention_panel(src : Source, w : Workspace, from : @sf.Anchor) -> Unit {
+  attention_present(src, w, from, @sf.t("web-main.attention.entry"), true, fn(close) { close }, gone=fn() {
+    attention.trouble_seen = None
+  })
+}
+
+///|
+/// 待处理's panel presented by `from` (titled `title`, "" none): as it opens, the stations' trouble as looked at before
+/// kept for while it is open, and where it lists them (`railed`: the bell's, 小屏's own), what it shows of the
+/// stations' trouble and of what is left up long looked at (kept: no longer lighting the bell); its rows
+/// (attention_rows_node) and its foot (attention_foot_node) given what closes it, as `closes` makes that of the
+/// panel's own close. `w`, `side`, `along`, `offset`: beside what opened it (panel_nodes'); `gone` as it closes unsaid.
+fn attention_present(
+  src : Source,
+  w : Workspace,
+  from : @sf.Anchor,
+  title : String,
+  railed : Bool,
+  closes : (() -> Unit) -> () -> Unit,
+  width? : Double = @sf.panel_w,
+  side? : @ui.Side = Bottom,
+  along? : @ui.Along = Start,
+  offset? : Double = @sf.panel_offset,
+  foot_style? : @ui.Style = att_foot,
+  gone? : () -> Unit = fn() {  },
+) -> Unit {
   attention.trouble_seen = Some(trouble_kept(src, w, "seen"))
   let now = station_trouble_words(src, w)
-  if now != "" {
+  if railed && now != "" {
     trouble_keep(src, w, "seen", Json::string(now))
   }
-  if long_jobs_lit(src, w) {
+  // the services left up long it lists: shown, no longer lighting it (still listed)
+  if railed && long_jobs_lit(src, w) {
     long_jobs_seen(src, w)
   }
   // its stations all reached again: a trouble later in the same words is new
   trouble_forget(src, w)
   @sf.panel_nodes(
-    @sf.t("web-main.attention.entry"),
+    title,
     fn(v, close) {
       v.box(fn(b) {
         @sf.style_node(b, fn() { att_sheet })
-        attention_rows_node(b, src, w, close)
+        attention_rows_node(b, src, w, railed, closes(close))
       })
       |> ignore
     },
     from~,
+    w=width,
+    side~,
+    along~,
+    offset~,
     foot=fn(v, close) {
       // (across the foot's row, its words at its start as the old foot's were)
       v.box(fn(b) {
         @sf.style_node(b, fn() { att_sheet }, in_row=true)
-        attention_foot_node(b, src, w, close)
+        attention_foot_node(b, src, w, closes(close), style=foot_style)
       })
       |> ignore
     },
-    gone=fn() { attention.trouble_seen = None },
+    gone~,
   )
 }
 
@@ -327,64 +278,6 @@ fn attention_groups(src : Source, w : Workspace, shown : Bool) -> Array[(String,
     _ => ()
   }
   groups
-}
-
-///|
-/// What 待处理's panel holds, read while it is open.
-fn attention_rows(c : @ui.Ctx, src : Source, w : Workspace, railed : Bool, close : () -> Unit) -> Unit {
-  let groups = attention_groups(src, w, true)
-  let trouble = if railed { bell_trouble(src, w) } else { "" }
-  let jobs = railed && open_jobs_any(src, w)
-  let several = groups.length() > 1 || groups.iter().any(fn(g) { g.0 != w.id })
-  if groups.length() == 0 && trouble == "" && !jobs {
-    c.box(style=att_empty, fn() { c.text(@sf.t("web-main.attention.empty"), style=att_empty_words) |> ignore }) |> ignore
-  }
-  let mut first = true
-  // (a small panel's groups: a named one its name's room over it, one with none 6 under the one before)
-  let group = fn(name : String, lead : ((@ui.Ctx) -> Unit)?, body : () -> Unit) {
-    if name == "" && !first {
-      c.box(style=att_group_next, fn() { @sf.panel_group(c, body) }) |> ignore
-    } else {
-      @sf.panel_group(c, label=name, lead?=lead, body)
-    }
-    first = false
-  }
-  if trouble != "" {
-    group("Station", None, fn() {
-      attention_item(c, "attention/trouble", "alert", trouble, "", "", None, fn() {
-        close()
-        @sfbase.go_place("stations") |> ignore
-      })
-    })
-  }
-  for g in groups {
-    // each workspace's mark before its name, as the core says it of the workspace (WorkspaceMark's workspaceEmoji, workspaceIcon)
-    let mark = attention_mark(src, g.0)
-    let lead = fn(c : @ui.Ctx) {
-      @sf.workspace_badge(c, g.1, text(mark, "workspaceEmoji"), text(mark, "workspaceIcon"), att_ws_mark)
-    }
-    group(if several { g.1 } else { "" }, Some(lead), fn() {
-      for i in g.2 {
-        let v = Some(i)
-        let key = attention_key(i)
-        let title = text(v, "title")
-        attention_item(
-          c,
-          "attention/" + key,
-          text(v, "kind"),
-          if title != "" { title } else { @sf.t("web-main.attention.untitled") },
-          attention_line(v),
-          attention_note(v),
-          attention_dismiss(src, i),
-          fn() { attention_go(src, w, g.0, i, close) },
-        )
-      }
-    })
-  }
-  // (what is left up long under what waits on the viewer)
-  if jobs {
-    group("", None, fn() { open_jobs(c, src, w, close) })
-  }
 }
 
 ///|
@@ -473,16 +366,16 @@ fn attention_unread(src : Source, w : Workspace) -> Array[Json] {
 }
 
 ///|
-/// What 待处理's panel of its own holds (open_attention_panel), in node `v`, as the panel beside the rail's bell holds it
-/// (attention_rows): the stations' trouble not looked at before it opened (pressed, the Stations' place); each
-/// workspace's chats that want the viewer, the one in view's first, under its name where there are several (its mark
-/// before it); what is left up long (open_jobs_node: the viewer's own, the others' folded); nothing waiting said where
-/// none of it is. A part with one before it 6 under it, as a group with no name of attention_rows' is; each following
-/// what it lists as that changes.
-fn attention_rows_node(v : @view.View, src : Source, w : Workspace, close : () -> Unit) -> Unit {
+/// What 待处理's panel holds (attention_present's), in node `v`: where it is the bell's (`railed`: the rail's, 小屏's
+/// own), the stations' trouble not looked at before it opened (pressed, the Stations' place); each workspace's chats
+/// that want the viewer, the one in view's first, under its name where there are several (its mark before it); where
+/// it is the bell's, what is left up long (open_jobs_node: the viewer's own, the others' folded; under 待处理 in the
+/// sidebar the sidebar's foot lists it); nothing waiting said where none of it is. A part with one before it 6 under
+/// it; each following what it lists as that changes.
+fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Bool, close : () -> Unit) -> Unit {
   let groups = fn() { attention_groups(src, w, true) }
-  let trouble = fn() { bell_trouble(src, w) }
-  let jobs = fn() { open_jobs_any(src, w) }
+  let trouble = fn() { if railed { bell_trouble(src, w) } else { "" } }
+  let jobs = fn() { railed && open_jobs_any(src, w) }
   let several = fn() {
     let gs = groups()
     gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
@@ -542,7 +435,7 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, close : () -
 }
 
 ///|
-/// A row of 待处理's panel in node `row` (attention_item's), of the core's item `i` as it is now: its dot (amber
+/// A row of 待处理's panel in node `row`, of the core's item `i` as it is now: its dot (amber
 /// waiting on the viewer, red gone wrong, blue unread, said as an image of its kind), its title (500) and its line; 忽略
 /// at its end where it can be let go, while the hand is on the row (always to a finger, which hovers over nothing),
 /// its note its tip. Pressed, `go`.
@@ -636,11 +529,17 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
 }
 
 ///|
-/// 待处理's foot in node `v` (attention_foot's): 全部已读 while it lists unread, 通知设置, small words, quiet, in ink
+/// 待处理's foot in node `v`: 全部已读 while it lists unread, 通知设置, small words, quiet, in ink
 /// under the hand; following what it lists as that changes.
-fn attention_foot_node(v : @view.View, src : Source, w : Workspace, close : () -> Unit) -> Unit {
+fn attention_foot_node(
+  v : @view.View,
+  src : Source,
+  w : Workspace,
+  close : () -> Unit,
+  style? : @ui.Style = att_foot,
+) -> Unit {
   v.box(fn(f) {
-    @sf.style_node(f, fn() { att_foot })
+    @sf.style_node(f, fn() { style })
     f.show(at_once=true, fn() { attention_unread(src, w).length() > 0 }, fn(r) {
       attention_link_node(r, fn() { @sf.t("web-main.attention.readAll") }, fn() {
         attention_read_all(src, @signals.untracked(fn() { attention_unread(src, w) }))
@@ -655,7 +554,7 @@ fn attention_foot_node(v : @view.View, src : Source, w : Workspace, close : () -
 }
 
 ///|
-/// Words to press at 待处理's foot in `parent` (attention_link's), quiet, in ink under the hand; read out a link.
+/// Words to press at 待处理's foot in `parent`, quiet, in ink under the hand; read out a link.
 fn attention_link_node(parent : @view.View, label : () -> String, press : () -> Unit) -> Unit {
   parent.box(fn(b) {
     @sf.presses_node(b, press)
@@ -664,110 +563,6 @@ fn attention_link_node(parent : @view.View, label : () -> String, press : () -> 
   })
   |> ignore
 }
-
-///|
-/// 待处理's foot: 全部已读 while it lists unread, 通知设置, small words, quiet (link).
-fn attention_foot(c : @ui.Ctx, src : Source, w : Workspace, close : () -> Unit) -> Unit {
-  let unread = attention_unread(src, w)
-  c.box(style=att_foot, fn() {
-    if unread.length() > 0 {
-      attention_link(c, "attention/read-all", @sf.t("web-main.attention.readAll"), on_press=fn() {
-        attention_read_all(src, unread)
-      })
-    }
-    attention_link(c, "attention/settings", @sf.t("web-main.attention.settings"), on_press=fn() {
-      close()
-      open_settings_at(@settings.Route::Notifications)
-    })
-  })
-  |> ignore
-}
-
-///|
-/// A row of 待处理's panel: its dot (amber waiting on the viewer, red gone wrong, blue unread), its title
-/// (500) and its line; 忽略 at its end while pointed at, when it can be let go (`note` its tip). Pressed, `go`.
-fn attention_item(
-  c : @ui.Ctx,
-  key : String,
-  kind : String,
-  title : String,
-  line : String,
-  note : String,
-  dismiss : (() -> Unit)?,
-  go : () -> Unit,
-) -> Unit {
-  let id = c.id(key)
-  let drop = c.id(key + "/dismiss")
-  c.on_press(id, fn() {
-    go()
-  })
-  let hover = c.lit(id) || c.lit(drop)
-  let b = c.box(style=if hover { att_item_on } else { att_item }, id~, fn() {
-    // (its kind in words: role="img")
-    let (ground, said) : (@ui.Color, String) = match kind {
-      "alert" => (Data(@sf.theme().p.red), "web-main.attention.alertOne")
-      "done" => (@sf.mark_blue, "web-main.chatMark.done")
-      _ => (Data(@sf.theme().p.warn_ink), "web-main.attention.waitOne")
-    }
-    // (its first line: the dot, the title and 忽略 on one line; the line under it from the title's edge)
-    c.box(style=att_head, fn() {
-      c.box(style=att_mark, fn() {
-        let dot = c.box(style=att_dot.then(@ui.style(bg=ground)), fn() {  })
-        c.semantics(dot, Image, label=@sf.t(said))
-      })
-      |> ignore
-      c.box(style=att_text, fn() { c.text(title, style=att_title) |> ignore }) |> ignore
-      match dismiss {
-        // (always to a finger, which hovers over nothing)
-        Some(d) if @sf.pointed_or_finger(c, hover) => {
-          c.on_press(drop, fn() {
-            d()
-          })
-          let on = c.lit(drop)
-          let x = c.box(style=if on { att_dismiss_on } else { att_dismiss }, id=drop, fn() {
-            c.text(@sf.t("web-main.attention.dismiss"), style=if on { att_dismiss_on_words } else { att_dismiss_words })
-            |> ignore
-          })
-          c.semantics(x, Button, id=drop, label=@sf.t("web-main.attention.dismiss"))
-          @sf.tip(c, key + "/dismiss-tip", drop, note)
-        }
-        _ => ()
-      }
-    })
-    |> ignore
-    if line != "" {
-      c.box(style=att_under, fn() {
-        // (the dot's column, empty: the line starts where the title does)
-        c.box(style=att_mark, fn() {  }) |> ignore
-        c.box(style=att_text, fn() { c.text(line, style=att_line) |> ignore }) |> ignore
-      })
-      |> ignore
-    }
-  })
-  c.semantics(b, Button, id~, label=title)
-}
-
-///|
-/// Words to press at 待处理's foot, quiet, in ink pointed at.
-fn attention_link(c : @ui.Ctx, key : String, label : String, on_press? : () -> Unit) -> Unit {
-  let id = c.id(key)
-  let b = c.box(id~, fn() { c.text(label, style=if c.lit(id) { att_link_on } else { att_link }) |> ignore })
-  c.semantics(b, Link, id~, label~)
-  match on_press {
-    Some(f) => c.on_press(id, f)
-    None => ()
-  }
-}
-
-
-///|
-/// The panel's groups 2 apart; one with no name 6 further (group + group).
-// kept across runs: a value (no field of it changes)
-let att_list : @ui.Style = @ui.css("w=Full gap=S0_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let att_group_next : @ui.Style = @ui.css("w=Full pt=S1_5")
 
 ///|
 /// A workspace's mark before its name over its chats.
@@ -804,9 +599,10 @@ let att_under : @ui.Style = @ui.css("row w=Full gap=S2_5")
 let att_item_on : @ui.Style = att_item.then(@ui.css("bg=Hover"))
 
 ///|
-/// Its dot's column: the 16 a long job's dot and a workspace's mark stand in (open_job_mark), the dot in its middle.
+/// Its dot's column: the 16 a long job's dot and a workspace's mark stand in (open_job_mark), the dot at its start, where
+/// the groups' headings' words start (gaps.mbt rule 8: what else stands in the panel as far in as its rows' marks).
 // kept across runs: a value (no field of it changes)
-let att_mark : @ui.Style = @ui.css("w=S4 align=ACenter justify=JCenter")
+let att_mark : @ui.Style = @ui.css("w=S4 align=AStart justify=JCenter")
 
 ///|
 /// Its dot, 7 round, in the amber's ink (red gone wrong).
@@ -851,6 +647,11 @@ let att_dismiss_on_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, l
 /// The foot (foot): its words 12 apart, 8 by 10 in and 4 under, 4 more over it.
 // kept across runs: a value (no field of it changes)
 let att_foot : @ui.Style = @ui.css("row w=Full gap=S3 px=S2_5 pt=S3 pb=S1")
+
+///|
+/// The foot beside the bell: as att_foot, its room over it the panel's foot's (8) and 4 more, 12 under what scrolls.
+// kept across runs: a value (no field of it changes)
+let att_foot_beside : @ui.Style = @ui.css("row w=Full gap=S3 px=S2_5 pt=S1 pb=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)

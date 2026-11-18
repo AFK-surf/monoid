@@ -248,13 +248,13 @@ fn relay_places(p : @view.View, shown : () -> RelayShown) -> Unit {
     })
     let total = fn() { number(view(), "total").to_int() }
     l.show(fn() { recent() && total() > items(view(), "rows").length() }, fn(m) {
-      m.box(fn(b) {
-        let label = fn() { @sf.t("web-main.relay.showAll", args=[("count", total().to_string())]) }
-        @sf.style_node(b, fn() { relay_more })
-        @sf.presses_node(b, fn() { relaying.all.set(true) })
-        b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
-        @sf.words_node(b, label, fn() { relay_more_words }) |> ignore
-      })
+      @sf.text_action_node(
+        m,
+        fn() { @sf.t("web-main.relay.showAll", args=[("count", total().to_string())]) },
+        fn() { relaying.all.set(true) },
+        style=fn() { relay_more_words },
+        box=fn() { relay_more },
+      )
       |> ignore
     })
     l.each(
@@ -312,15 +312,11 @@ fn relay_place(
   change : Bool,
   on_press? : () -> Unit,
 ) -> Unit {
-  parent.box(fn(b) {
+  // (pressed, a button named by the place; else what it shows, nothing to press)
+  let look = fn(b : @view.View) {
     @sf.style_node(b, fn() { relay_place_box })
     b.ground(By(fn() { if on { @ui.tree_theme().color(AccentBg) } else { 0L } })) |> ignore
     @sf.hover_ground_node(b, on=fn() { !on && on_press is Some(_) })
-    match on_press {
-      Some(f) => @sf.presses_node(b, f)
-      None => ()
-    }
-    b.says(By(fn() { Some(@view.said(Button, label=name())) })) |> ignore
     relay_mark(b, kind)
     @sf.words_node(b, name, fn() { if on { relay_place_name_on } else { relay_place_name } }) |> ignore
     b.box(fn(g) { @sf.style_node(g, fn() { relay_grow }, in_row=true) }) |> ignore
@@ -342,8 +338,11 @@ fn relay_place(
       })
       |> ignore
     })
-  })
-  |> ignore
+  }
+  match on_press {
+    Some(f) => @sf.action_box_node(parent, name, fn(_) { f() }, look) |> ignore
+    None => parent.box(look) |> ignore
+  }
 }
 
 ///|
@@ -430,12 +429,13 @@ fn relay_via(
       b.show(change, at_once=true, fn(w) {
         w.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
         @sf.words_node(w, fn() { " · " }, fn() { relay_via_words }) |> ignore
-        w.box(fn(k) {
-          @sf.style_node(k, fn() { relay_via_change })
-          @sf.presses_node(k, fn() { relaying.choosing.set(true) })
-          k.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.relay.changeBot"))) })) |> ignore
-          @sf.words_node(k, fn() { @sf.t("web-main.relay.changeBot") }, fn() { relay_more_words }) |> ignore
-        })
+        @sf.text_action_node(
+          w,
+          fn() { @sf.t("web-main.relay.changeBot") },
+          fn() { relaying.choosing.set(true) },
+          style=fn() { relay_more_words },
+          box=fn() { relay_via_change },
+        )
         |> ignore
       })
     })
@@ -467,17 +467,15 @@ fn relay_bot_choice(parent : @view.View, src : Source, shown : () -> RelayShown)
       let state = fn() { text(bot(), "state") }
       let on = fn() { on_is(id) }
       let can = fn() { state() == "in" || state() == "join" }
-      cell.box(fn(r) {
+      @sf.action_box_node(cell, fn() { text(bot(), "label") }, selected=on, fn(_) {
+        if can() {
+          relaying.bot.set(id)
+          relaying.choosing.set(false)
+        }
+      }, fn(r) {
         @sf.style_node(r, fn() { relay_place_box })
         r.ground(By(fn() { if on() { @ui.tree_theme().color(AccentBg) } else { 0L } })) |> ignore
         @sf.hover_ground_node(r, on=fn() { !on() && can() })
-        @sf.presses_node(r, fn() {
-          if can() {
-            relaying.bot.set(id)
-            relaying.choosing.set(false)
-          }
-        })
-        r.says(By(fn() { Some(@view.said(Button, label=text(bot(), "label"), selected=on())) })) |> ignore
         relay_avatar(r, src, fn() { relay_connect(id) })
         @sf.words_node(r, fn() { text(bot(), "label") }, fn() {
           if on() {
@@ -495,18 +493,19 @@ fn relay_bot_choice(parent : @view.View, src : Source, shown : () -> RelayShown)
         })
         |> ignore
         r.show(fn() { opt_text(bot(), "invite") is Some(_) }, at_once=true, fn(w) {
-          w.box(fn(k) {
-            @sf.style_node(k, fn() { relay_via_change })
-            @sf.presses_node(k, fn() {
+          @sf.text_action_node(
+            w,
+            fn() { @sf.t("web-main.relay.copyInvite") },
+            fn() {
               let place = match shown().picked {
                 Some(row) => text(Some(row), "name")
                 None => ""
               }
               @sfbase.copy_out(text(bot(), "invite"), said=@sf.t("web-main.relay.inviteCopied", args=[("place", place)]))
-            })
-            k.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.relay.copyInvite"))) })) |> ignore
-            @sf.words_node(k, fn() { @sf.t("web-main.relay.copyInvite") }, fn() { relay_more_words }) |> ignore
-          })
+            },
+            style=fn() { relay_more_words },
+            box=fn() { relay_via_change },
+          )
           |> ignore
         })
       })

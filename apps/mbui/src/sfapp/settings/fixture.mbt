@@ -940,6 +940,14 @@ pub fn fixture_page(mode : String) -> String {
     // 密钥 before the library, this device not signing: verified once by a press, or what it waits for
     "settings-vault-confirm" => fx.lock_case = "confirm"
     "settings-vault-syncing" => fx.lock_case = "syncing"
+    // 密钥 on a device not confirmed in an upgraded workspace's safe mode, its security page as the core says it: left
+    // out by its station and waiting to be approved, or its person's lock begun anew elsewhere (`replaced`); each as the
+    // core says it since (not confirmed, the way to 安全) and as it said before (`-was`: held on 正在同步…, or offered
+    // 验证, which its person's lock refuses: `personal_outside`)
+    "settings-vault-waiting" => fx.lock_case = "waiting"
+    "settings-vault-waiting-was" => fx.lock_case = "waiting-was"
+    "settings-vault-replaced" => fx.lock_case = "replaced"
+    "settings-vault-replaced-was" => fx.lock_case = "replaced-was"
     "settings-vault-prompt" => fx.key_ask = true
     "settings-vault-words" => recovery_words["ws1"] = fx_words()
     "settings-vault-add" => fixture_open.desk = "vault-add"
@@ -997,7 +1005,7 @@ pub fn fixture_page(mode : String) -> String {
       "stations"
     "settings-adb" | "settings-adb-off" | "settings-adb-unpaired" | "settings-adb-pairing" | "settings-adb-connected" | "settings-adb-failed" =>
       "adb:ws1/st1"
-    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" =>
+    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" | "settings-adb-lock-multi" | "settings-adb-lock-multi-replaced" | "settings-adb-lock-multi-member" =>
       "adb:"
     // the second station a phone is lent to, its first paired already
     "settings-adb-second" => "adb:ws1/st2"
@@ -1012,7 +1020,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
-    | "settings-vault-confirm" | "settings-vault-syncing" => "vault"
+    | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
+    | "settings-vault-replaced-was" => "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
     "settings-vault-item" => "vault-item:v1#it1"
     "settings-decisions" => "decisions-settings"
@@ -2844,6 +2853,12 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
   if name == "lock" && mode.has_prefix("lock-") {
     return Some(waiting_lock(mode))
   }
+  // (settings-vault-waiting, -replaced: the security page of a device not confirmed, as lock-waiting's, lock-replaced's)
+  match fx.lock_case {
+    "waiting" | "waiting-was" if name == "lock" => return Some(waiting_lock("lock-waiting"))
+    "replaced" | "replaced-was" if name == "lock" => return Some(waiting_lock("lock-replaced"))
+    _ => ()
+  }
   let me : Json = obj([("sub", str("u1")), ("email", str("lin@example.com")), ("name", str("林")), ("role", str("owner"))])
   match name {
     // Willow's logins (station_logins.mbt): codex's under way, gh's done yesterday
@@ -3443,7 +3458,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         obj([
           ("available", Json::boolean(true)),
           ("locked", Json::boolean(true)),
-          ("canSign", Json::boolean(fx.lock_case != "confirm" && fx.lock_case != "syncing")),
+          ("canSign", Json::boolean(!["confirm", "syncing", "waiting", "waiting-was", "replaced", "replaced-was"].contains(fx.lock_case))),
           ("setUp", Json::boolean(!fx.vault_off)),
           ("plainLeft", Json::number(fx.plain_left.to_double())),
           (
@@ -3478,8 +3493,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ] +
         (match fx.lock_case {
           // (not signing for a reason of its own: the core's words, and 验证 where a press ends it)
-          "confirm" => [("stateText", str("此设备需完成一次验证后才能使用密钥库")), ("confirmText", str("验证"))]
-          "syncing" => [("stateText", str("正在同步安全模式的成员名单，同步完成后即可使用"))]
+          "confirm" | "replaced-was" => [("stateText", str("此设备需完成一次验证后才能使用密钥库")), ("confirmText", str("验证"))]
+          "syncing" | "waiting-was" => [("stateText", str("正在同步安全模式的成员名单，同步完成后即可使用"))]
           _ => []
         })),
       )
@@ -3713,6 +3728,10 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     fx.own_after = if name == "lock.restartOwn" { "rebound" } else { "asked" }
     fx_changed()
     return Some(Ok(Json::null()))
+  }
+  // (验证 on a device whose person's lock was begun anew elsewhere: refused, as the core did before it offered none)
+  if name == "lock.confirmSigner" && fx.lock_case == "replaced-was" {
+    return Some(Err(obj([("code", str("personal_outside")), ("message", str("此设备尚未获批：先在这台设备上发送批准请求，输入你的受信任设备上显示的安全码"))])))
   }
   match rigs_fixture_call(name, p) {
     Some(r) => return Some(r)
@@ -4859,6 +4878,23 @@ fn fx_adb_share() -> Json {
         ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
     "lock-outside" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([]))])]))])
+    // two accounts signed in here: another's lock has this device on it, the workspace's account (u1) is to be approved
+    // on its own (`multi`), or set it up again elsewhere (`multi-replaced`); or the other way round (`multi-member`)
+    "lock-multi" | "lock-multi-replaced" | "lock-multi-member" => {
+      let (mine, other) = match fx_adb.val {
+        "lock-multi" => ("outside", "member")
+        "lock-multi-replaced" => ("replaced", "member")
+        _ => ("member", "outside")
+      }
+      let own = if mine == "member" { Json::array([device("ed25519:u1", "OPPO PLP110", true)]) } else { Json::array([]) }
+      let others = if other == "member" { Json::array([device("ed25519:w1", "OPPO PLP110", true)]) } else { Json::array([]) }
+      granted("connected", [
+        ("personal", Json::array([
+          obj([("sub", str("s-work")), ("email", str("lin@work.example")), ("standing", str(other)), ("devices", others)]),
+          obj([("sub", str("u1")), ("email", str("lin@example.com")), ("standing", str(mine)), ("devices", own)]),
+        ])),
+      ])
+    }
     // lent for a chat's grant to Willow: its adb waiting to be paired (the pairing dialog not open yet, then open),
     // holding the phone, failing
     "unpaired" => granted("unpaired", [])

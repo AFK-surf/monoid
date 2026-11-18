@@ -114,6 +114,8 @@ pub fn open_cards_fixture(mode : String) -> Unit {
       )
     // the bare address in the long answer held: its menu (link_menu.mbt)
     "chat-link-menu" => {
+      // (before the app says its words as it starts: the menu's are said here)
+      @sf.set_words(fill)
       link_menu_at("https://example.com/bench/list", 220.0, 360.0, 383.0)
     }
     _ => ()

@@ -101,6 +101,64 @@ priv struct Job {
 }
 
 ///|
+/// How long a station waits before it tries a peer again that it could not reach or exchange with, at first; each
+/// failure after doubles it, up to `peer_retry_most_ms` (scope-sync.ts `PEER_RETRY_MS`, as ways and lock-sync do).
+let peer_retry_ms : Int = 5_000
+
+///|
+let peer_retry_most_ms : Int = 10 * 60_000
+
+///|
+/// What a station from before the directory exchange answers it (scope-sync.ts `OLD_PEER`): a method it does not
+/// know, or (one from before `meshDirectory` in peer.ts `servePeer`) the exchange taken as a task's request.
+fn old_peer(said : String) -> Bool {
+  let s = said.to_lower()
+  (s.contains("unknown") && s.contains("method")) ||
+  s.contains("no such method") ||
+  s.contains("unsupported peer method") ||
+  s.contains("session and task key is required") ||
+  s.contains("session and task key are required")
+}
+
+///|
+fn backoff(wait : Int, first : Int, most : Int) -> Int {
+  if wait == 0 {
+    first
+  } else if wait * 2 < most {
+    wait * 2
+  } else {
+    most
+  }
+}
+
+///|
+/// What a failed exchange did to its job, and how long it waits before it is tried again.
+priv enum Failed {
+  /// A station from before the exchange: level with it until this station's word changes.
+  Level
+  /// The peer's call failed (it is off, or refused): tried again from 5 s, doubling up to 10 min, said at INFO.
+  Peer(Int)
+  /// This station's own directory failed: tried again from 1 s, doubling up to 60 s, said at WARN.
+  Own(Int)
+}
+
+///|
+/// A failed exchange taken (scope-sync.ts `#pump`'s rejection): `peer_failed` where the peer's call raised.
+fn Job::failed(self : Job, word : String, peer_failed : Bool, said : String) -> Failed {
+  if peer_failed && old_peer(said) {
+    self.done = word
+    self.wait = 0
+    Level
+  } else if peer_failed {
+    self.wait = backoff(self.wait, peer_retry_ms, peer_retry_most_ms)
+    Peer(self.wait)
+  } else {
+    self.wait = backoff(self.wait, 1000, 60000)
+    Own(self.wait)
+  }
+}
+
+///|
 /// What the directory is given of the station (mesh.ts's ScopeSync arguments).
 pub(all) struct SyncParts {
   cloud : @cloud_net.CloudView
@@ -111,7 +169,11 @@ pub(all) struct SyncParts {
   read : async (Json) -> Json
   after : (Int, () -> Unit) -> () -> Unit
   now : () -> Double
+  /// A failure of this station's own directory (logged at WARN).
   log : (String) -> Unit
+  /// A peer not brought level, its words and fields (logged at INFO): a peer that is off is the workspace's ordinary
+  /// state, not this station's failure.
+  info : (String, Json) -> Unit
 }
 
 ///|
@@ -368,6 +430,8 @@ fn ScopeSync::pump(self : ScopeSync) -> Unit {
     }
     job.running = true
     self.active += 1
+    // Whether the peer's call failed, not this station's own directory (its endpoint, its store).
+    let peer_failed = Ref(false)
     let send = (asked : String) => async fn(request : Json) -> Json {
       guard !self.closed && self.jobs.get(key) is Some(j) && physical_equal(j, job) else {
         fail("mesh membership changed")
@@ -381,6 +445,9 @@ fn ScopeSync::pump(self : ScopeSync) -> Unit {
           out
         }
         _ => Map([("method", Json::string(asked))])
+      }
+      errdefer {
+        peer_failed.val = true
       }
       (self.parts.call)(job.peer, job.workspace, Json::object(body))
     }
@@ -413,21 +480,31 @@ fn ScopeSync::pump(self : ScopeSync) -> Unit {
           }
           Err(e) =>
             if !self.closed && self.jobs.get(key) is Some(j) && physical_equal(j, job) {
-              let said = "\{e}".to_lower()
-              if (said.contains("unknown") && said.contains("method")) || said.contains("no such method") {
-                job.done = word
-              } else {
-                self.failed(e)
-                job.wait = if job.wait == 0 {
-                  1000
-                } else if job.wait * 2 < 60000 {
-                  job.wait * 2
-                } else {
-                  60000
+              let wait = match job.failed(word, peer_failed.val, "\{e}") {
+                Level => None
+                Peer(wait) => {
+                  (self.parts.info)("a station's mesh directory was not brought level", {
+                    "peer": Json::string(
+                      if job.peer.length() > 12 {
+                        job.peer[:12].to_owned()
+                      } else {
+                        job.peer
+                      },
+                    ),
+                    "workspace": Json::string(job.workspace),
+                    "error": Json::string("\{e}"),
+                  })
+                  Some(wait)
                 }
+                Own(wait) => {
+                  self.failed(e)
+                  Some(wait)
+                }
+              }
+              if wait is Some(ms) {
                 // timer: a retry after a failure, with a backoff (a directory exchange)
                 job.cancel = Some(
-                  (self.parts.after)(job.wait, () => {
+                  (self.parts.after)(ms, () => {
                     job.cancel = None
                     self.pump()
                   }),

@@ -1508,6 +1508,7 @@ pub fn Ctx::picture(Self, String, x~ : Double, y~ : Double, w~ : Double, h~ : Do
 pub fn Ctx::place(Self, (Double, Double, Double, Double), Double, Double, side? : @view.Side, along? : @view.Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool) -> (Double, Double, @view.Side)
 pub fn Ctx::place_by_size(Self, Int32, (Double, Double) -> (Double, Double)) -> Unit
 pub fn Ctx::place_most(Self, padding? : Double) -> Double
+pub fn Ctx::placeholder_by(Self, String, () -> Double) -> Unit
 pub fn Ctx::pointer(Self) -> (Double, Double, Bool)
 pub fn Ctx::pointer_after_keys(Self) -> Bool
 pub fn Ctx::pointer_at(Self) -> Double

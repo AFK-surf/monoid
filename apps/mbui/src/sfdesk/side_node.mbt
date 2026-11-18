@@ -352,6 +352,15 @@ fn lists_band_node(
     band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(k) {
       k.box(fn(t) {
         @sf.style_node(t, fn() { todo_box })
+        // (what 待处理's panel opens under: attention_node.mbt)
+        side_attention.val = Some(t)
+        t.owns(fn() {
+          match side_attention.val {
+            Some(v) if physical_equal(v, t) => side_attention.val = None
+            _ => ()
+          }
+        })
+        |> ignore
         let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
         @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
           attention_set(!wide.attention_open.untracked())

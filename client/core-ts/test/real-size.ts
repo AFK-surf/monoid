@@ -1299,18 +1299,21 @@ const OTHER_STATIONS = [{ id: "lab-1", name: "Lab GPU", version: "0.1.7018" }, {
 /// The relays still.fail cloud offers (`/v1/me` relay_urls), and the workspace's own one (cloud/src/relays.ts).
 const RELAYS = ["https://relay.still.fail", "https://relay-bj.still.fail", "https://relay-sg.still.fail"];
 const OWN_RELAY = "https://relay.acme.dev";
+/// The workspace without safe mode whose plain library of secrets the vault's pages read: a friend's, of the owner's
+/// too (safe mode on, the vault is no plain library: views/vault.ts `plainMode`).
+export const PLAIN_WORKSPACE = "ws-friends";
 /// The workspaces the account is in, as its `/v1/me` lists them: this one, another of the owner's, a friend's.
 const ACCOUNT_WORKSPACES = [
   { id: "ws", name: "Acme", role: "owner", relays: [OWN_RELAY], ways_off: ["tailnet"] },
   { id: OTHER_WORKSPACE.id, name: OTHER_WORKSPACE.name, role: "owner", relays: [], ways_off: [] },
-  { id: "ws-friends", name: "周末项目", role: "member", relays: [], ways_off: [] },
+  { id: PLAIN_WORKSPACE, name: "周末项目", role: "member", relays: [], ways_off: [] },
 ];
 
 /// The records of the account a core keeps as it is told (by table and key, as `data.put` takes them): its `/v1/me`
 /// (its workspaces, the relays), a new chat's picks as the device remembers them (choose.ts: the configurations it
 /// started on most, the preset picked), what each station said of the workspaces it is in (views/memberships.ts), the
-/// workspace's lock as its stations keep it (views/lock.ts), and its plain library of secrets with their uses
-/// (views/vault.ts).
+/// workspace's lock as its stations keep it (views/lock.ts), and the plain library of secrets with their uses of the
+/// workspace without safe mode (`PLAIN_WORKSPACE`, views/vault.ts).
 export function records(now: number): [string, string, unknown][] {
   const me = {
     user: { sub: "s1", email: PEOPLE[0].email, name: PEOPLE[0].name, beta: true }, workspaces: ACCOUNT_WORKSPACES,
@@ -1328,7 +1331,7 @@ export function records(now: number): [string, string, unknown][] {
     ...UP.map((at, st): [string, string, unknown] => ["memberships", at, { workspaces: [{ workspace: "ws", workspaceName: "Acme", name: STATIONS[st]!.name, home: true }], canJoin: true }]),
     ["lock", "ws", lockOf(now)],
     ["lockPending", "ws", pendingOf(now)],
-    ["vault", "ws", vaultOf(now)],
+    ["vault", PLAIN_WORKSPACE, vaultOf(now)],
   ];
 }
 
@@ -1356,8 +1359,8 @@ function presetsOf(now: number, station: number): J {
 
 /// The workspace's lock as its stations keep it (views/lock.ts `Held`): its genesis naming its members, their devices
 /// (each a phone and a computer or two, a web page for some) and its stations, and when each device was last seen. Its
-/// entries are not signed (the lock's view folds them as they are; views/vault.ts checks them, and keeps to its plain
-/// library, unchecked).
+/// entries are not signed (the lock's view folds them as they are). A lock that does not check out keeps no plain
+/// library (views/vault.ts `plainMode`): that is `PLAIN_WORKSPACE`'s, which has no lock.
 /// What this device signed in the workspace's lock that no station took yet (src/lock-pending.ts), as many as are kept:
 /// PENDING_MOST waiting (the bound on signing more) and as many failed (the bound on those kept), by the longest names.
 function pendingOf(now: number): J {

@@ -195,6 +195,7 @@ pub(all) struct SyncParts {
   after : (Int32, () -> Unit) -> () -> Unit
   now : () -> Double
   log : (String) -> Unit
+  info : (String, @json.Json) -> Unit
 }
 
 // Type aliases

@@ -23,6 +23,7 @@ import type { Events } from "./own-process.ts";
 import { accessKind, expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { AGY_REPO_RULES_COMMAND } from "./repo-rules.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 
@@ -370,7 +371,7 @@ export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home)
 /// win), its `--gemini-dir` (`ANTIGRAVITY_GEMINI_DIR`, for sandbox sync too), its sign-in in that file alone
 /// (`AGY_FILE_TOKENS`), updates off, and the peer HTTP endpoint.
 export function agyEnv(options: OpenOptions): Record<string, string> {
-  const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "agy"), options.route) };
+  const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "agy"), options.route) });
   env.ANTIGRAVITY_GEMINI_DIR = geminiDir(options.profile.home);
   if (platform.hasKeychain) Object.assign(env, AGY_FILE_TOKENS);
   env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";

@@ -931,11 +931,12 @@ pub fn CodexDriver::info(self : CodexDriver, what : String, fields : JValue) -> 
 }
 
 ///|
-/// A profile's environment as its app-server is started with (`{...cleanEnv(SCRUBBED), ...expandRoute(...)}`).
+/// A profile's environment as its app-server is started with (`keepLocal({...cleanEnv(SCRUBBED), ...expandRoute(...)})`).
 pub fn CodexDriver::child_env(self : CodexDriver, profile : JValue) -> Env {
   let env = start_env(self.world.raw_env, codex_scrubbed)
   env.merge(expand_route((self.profiles.env)(profile, "codex"), profile_id(profile)))
-  env
+  // The profile's own proxy too leaves this machine out (`keepLocal`).
+  keep_local(env)
 }
 
 ///|

@@ -365,10 +365,10 @@ let signin_foot_room : @ui.Style = @ui.css("w=Full gap=S3_5")
 ///|
 /// One of 1Password's logins for the site, as a node of the window's tree (signin_choice's).
 fn signin_choice_node(v : @view.View, words : () -> String, on_press : () -> Unit) -> Unit {
-  @headless.button(v, words, fn(_) { on_press() }, fn(row, b) {
+  @sf.action_box_node(v, words, fn(_) { on_press() }, fn(row) {
     @sf.style_node(row, signin_choice_box)
-    row.focus_ring_theme().ground(By(fn() { @ui.tree_theme().color(Faint) })) |> ignore
-    @sf.hover_ground_node(row, lit=Some(fn() { b.focus_shown() || b.hovered() || b.pressed() }))
+    row.ground(By(fn() { @ui.tree_theme().color(Faint) })) |> ignore
+    @sf.hover_ground_node(row, lit=Some(fn() { row.focus_shown() || row.pointed() || row.pressed() }))
     @sf.words_node(row, words, signin_choice_words) |> ignore
     @sf.icon_node(row, "chevron-right", 16.0, By(fn() { @ui.tree_theme().color(Muted) })).shrink(Is(0.0)) |> ignore
   })

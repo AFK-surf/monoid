@@ -908,15 +908,23 @@ fn composer_text(
   if composing.hint_shown.get() == "" || composing.switching {
     composing.hint_shown.set(wanted)
   }
-  let said_key = "composer/said/" + spec.draft
-  let said_fade = @motion.trans(fade=0.0, spec=@motion.tween(@sf.hint_back_ms, ease=Out))
-  let said_leave = @motion.trans(fade=0.0, spec=@motion.tween(@sf.hint_back_ms, ease=Leave))
-  let said_look = match
-    @motion.presence(c, said_key, wanted == composing.hint_shown.get(), enter=said_fade, exit=said_leave) {
-    Some(look) => look
-    None => {
+  // (told as what it is to say changes, and once more as the one it says has faded out; where it is on its way is
+  // read only as it is painted, Ctx::placeholder_by: the chat's old view is not built again at each frame of the fade)
+  let said_fade = @motion.tween(@sf.hint_back_ms, ease=Out)
+  let shows_wanted = wanted == composing.hint_shown.get()
+  let said_in = @motion.anim(c, "composer/said/" + spec.draft, if shows_wanted { 1.0 } else { 0.0 })
+  if shows_wanted {
+    if said_in.target() != 1.0 {
+      said_in.animate(c, 1.0, said_fade)
+    }
+  } else {
+    if said_in.target() != 0.0 {
+      said_in.animate(c, 0.0, @motion.tween(@sf.hint_back_ms, ease=Leave))
+    }
+    // (faded out: the other said in its place, coming in from there)
+    if said_in.over(c) {
       composing.hint_shown.set(wanted)
-      @motion.presence(c, said_key, true, enter=said_fade, exit=said_leave).unwrap_or(@ui.look(alpha=0.0))
+      said_in.animate(c, 1.0, said_fade)
     }
   }
   let said = composing.hint_shown.get()
@@ -943,7 +951,7 @@ fn composer_text(
         max_lines=text_lines(c),
         plain=true,
         color=p.text,
-        placeholder_color=@sf.alpha(p.subtle, hint_in.get(c) * said_look.alpha),
+        placeholder_color=p.subtle,
         caret_color=if away { @sf.alpha(p.accent, 0.0) } else { p.accent },
         enter_sends=@sf.enter_sends(command=by_command),
         command_sends=@sf.command_sends(by_command),
@@ -976,6 +984,8 @@ fn composer_text(
           }
         },
       )
+      // (how far it says it, as it is painted: the hint's own way and the fade from what it said to what it says)
+      c.placeholder_by(composer_field_key, fn() { hint_in.get(c) * said_in.get(c) })
       match res.pasted {
         Some(words) => @sfbase.writing_paste(src, w, spec.station, words)
         None => ()
@@ -1040,8 +1050,9 @@ fn composer_hint(
   } else if reshaped {
     hint.snap(c, 0.0)
     hint.animate(c, 1.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=going.duration(0.0, 1.0, 0.0)))
-  } else {
-    hint.follow(c, 1.0, @motion.tween(@sf.hint_back_ms, ease=Out))
+  } else if hint.target() != 1.0 {
+    // (told only as it is to come back, not stepped at each build while it does: its paint reads where it is)
+    hint.animate(c, 1.0, @motion.tween(@sf.hint_back_ms, ease=Out))
   }
   hint
 }

@@ -79,9 +79,11 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // 24 and 7, what fell brought down to it: before it (1015, 29, 673, 79, 941), (326, 17, 239, 27, 319), (2443, 483,
   // 2011, 217, 2447), (886, 130, 882, 123, 1057), (564, 366, 617, 96), (721, 382, 911, 125) scrolling up, its frames
   // (140, 102, 125, 28), (160, 105, 146, 28))
+  // (2026-11-18: each wide shell holds what opens over its panels as nodes, closed: a right click's menu, the rail's, its
+  // adder and 待处理, sfdesk overlays_node: wide cold 6 more made, 2 laid)
   "phone cold": (1035, 31, 667, 80, 969),
   "phone again": (346, 19, 233, 28, 347),
-  "wide cold": (2476, 503, 1920, 220, 2475),
+  "wide cold": (2482, 503, 1922, 217, 2471),
   "wide again": (905, 130, 871, 124, 1083),
   "phone up": (552, 359, 601, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read

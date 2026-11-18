@@ -811,6 +811,8 @@ test "a phone's request allowed: adb.decide for its station and request, for the
   t.click(Button, label=@sf.t("android-misc.adb.ask.how"))
   t.run_for(@ui.move_most_ms)
   assert_eq(calls.filter(fn(c) { c.0 == "adb.decide" }).length(), 0)
+  // (共享调试 opened with the chat's station's step first: beside the chat where there is room, the station's tab)
+  assert_true(app.nav.top() == Setting(@settings.Route::AdbShare("ws1/st1")))
 }
 
 ///|

@@ -487,7 +487,7 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
     const session = this.session(options, events);
     session.model = options.model ?? profileModel(options.profile) ?? session.model;
     session.replayed(replayed, options.resume);
-    session.toolsUrl = options.mcpUrl;
+    session.toolsUrl = options.mcpUrl || null;
     return session;
   }
 }

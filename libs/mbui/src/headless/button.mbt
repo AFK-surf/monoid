@@ -147,7 +147,9 @@ pub fn Button::press(self : Button) -> Unit {
 /// A button in `parent`, called `label` (what a screen reader says, as it changes; its look draws it or not), `press`
 /// done as it is pressed, given the button's node (where what it opens goes beside); `disabled` while it cannot be
 /// pressed; `default_on` while it is its layer's default, pressed by Enter that nothing with the focus takes (a
-/// dialog's primary button; never one that cannot be undone: View::default_press). `look` is run once as it is made,
+/// dialog's primary button; never one that cannot be undone: View::default_press); `focusable` false where another
+/// control keeps the keyboard while it is pressed (a key of a keyboard's bar over a terminal: pressed, the keyboard's
+/// focus stays where it is, Tab passing it by, as a choice's can be). `look` is run once as it is made,
 /// given its node and what it reads of it: all that is drawn of it, and how
 /// it is laid out. Its node is made at `loc`, the line that says it; where that is a library's part with a look (a
 /// part of a part), `made_for` is where that part was asked for, its own `loc~` handed on, so what is found in the
@@ -161,6 +163,7 @@ pub fn button(
   disabled? : () -> Bool = fn() { false },
   default_on? : () -> Bool,
   hold? : Hold,
+  focusable? : Bool = true,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -175,7 +178,6 @@ pub fn button(
     // pressing it)
     v
     .presses(By(able))
-    .focusable(By(able))
     .says(By(fn() { Some(@view.said(Button, label=label())) }))
     // (the tree's to run, however the press came (View::on_press: outside any tracking, as one change); never while
     // disabled: a press on its way as that changed, the tree not yet told)
@@ -185,6 +187,9 @@ pub fn button(
       }
     })
     |> ignore
+    if focusable {
+      v.focusable(By(able)) |> ignore
+    }
     // (its layer's default while `default_on` says so, only where said: View::default_press, a binding no other button pays
     // for)
     if default_on is Some(f) {

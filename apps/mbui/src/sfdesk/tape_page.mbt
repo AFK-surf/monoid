@@ -617,9 +617,11 @@ fn tape_made(
       })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) if pane_makes.val =>
-      made("adb/" + focus, fn(p, core, _here, _stint, told, _acts) {
+      made("adb/" + focus, fn(p, core, here, _stint, told, _acts) {
         context_node(p)
-        @settings.adb_node(p, core, focus, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+        @settings.adb_node(p, core, focus, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, sub=fn() {
+          here().sub
+        })
       })
     Setting(Vault) if pane_makes.val =>
       made("vault", fn(p, core, here, _stint, told, _acts) {

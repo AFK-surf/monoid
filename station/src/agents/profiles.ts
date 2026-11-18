@@ -240,12 +240,25 @@ export function profileRuntimes(p: Profile): Runtime[] {
   return own ? [own] : [];
 }
 
+/// A variable naming one machine's way out (its proxy, what bypasses it): the machine's own, set in config.json's
+/// `agentEnv`, never carried to another station with a shared profile (`share/index.ts` `portable`).
+export const machineProxy = (name: string) => /^(https?|all|no)_proxy$/i.test(name);
+
+/// A profile's own variables: a borrowed one's without the proxy its host's machine went through, which this one may
+/// not have (a borrowed profile that named 127.0.0.1:7890 of its host lost its tools here).
+function customEnv(p: Profile): Record<string, string> {
+  const custom = p.env && typeof p.env === "object" ? (p.env as Record<string, string>) : {};
+  const share = p.share as { borrowed?: unknown } | undefined;
+  if (!(share && typeof share === "object" && share.borrowed === true)) return custom;
+  return Object.fromEntries(Object.entries(custom).filter(([k]) => !machineProxy(k)));
+}
+
 /// The environment for a profile's processes of `runtime` (config.rs `envs`, Profile::env): none for a runtime it does
 /// not run. In values, `{route}` is still to be expanded.
 export function profileEnv(p: Profile, runtime: Runtime): Record<string, string> {
   if (!profileRuntimes(p).includes(runtime)) return {};
   const key = (access(p).key ?? "").trim();
-  const custom = p.env && typeof p.env === "object" ? (p.env as Record<string, string>) : {};
+  const custom = customEnv(p);
   const env = accessEnv(runtime, accessKind(p), key, profileModel(p), profileVia(p));
   // Its key read from a file instead (`keyFile`): none given, or Claude Code would take it over the file's.
   if (keyFile(p) !== undefined) {

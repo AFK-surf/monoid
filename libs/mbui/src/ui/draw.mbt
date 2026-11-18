@@ -1853,7 +1853,10 @@ fn Ctx::editor_drawn_across(self : Ctx, n : Node) -> (Double, Double)? {
     Some(st) =>
       match st.tl {
         Some(tl) => {
-          let w = if st.text.length() == 0 && (st.ph_color & 0xFFL) != 0L && n.text.length() > 0 {
+          // (its placeholder as far as it shows now, read as it is, not followed: what reads this reads it for what
+          // moves over it, laid out again each frame of that move)
+          let ph = @signals.untracked(fn() { st.ph_shown() })
+          let w = if st.text.length() == 0 && (ph & 0xFFL) != 0L && n.text.length() > 0 {
             n.hint_shown().w
           } else {
             tl.w

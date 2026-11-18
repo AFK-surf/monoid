@@ -58,10 +58,10 @@ let corners_everywhere_known : Map[String, Int] = {
   known["desk-en settings-profile-account"] = 1
   known["desk-win-zh settings-profile-account"] = 3
   known["desk-win-en settings-profile-account"] = 3
-  // 待处理 open beside the rail's bell in a Windows window's 中屏 (home-shared-bell): the rail's one on the tape, said
-  // twice (the bell's panel holds the rail drawn as it was pressed, rail_drawn, beside the rail itself).
-  known["desk-win-zh home-shared-bell"] = 2
-  known["desk-win-en home-shared-bell"] = 2
+  // 待处理 open beside the rail's bell in a Windows window's 中屏 (home-shared-bell): the rail's one on the tape (the
+  // panel a presenter's of the window's tree, no old view holding the rail drawn again beside it).
+  known["desk-win-zh home-shared-bell"] = 1
+  known["desk-win-en home-shared-bell"] = 1
   known
 }
 

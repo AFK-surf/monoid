@@ -111,19 +111,6 @@ let mark_edge : Double = 1.5
 let mark_edge_a : Double = 0.55
 
 ///|
-/// A mark's pin: 24, round, white, 2 in (its shadow raised_node's); the accent inside, its number 11 bold in white.
-// kept across runs: a value (no field of it changes)
-let mark_pin : @ui.Style = @ui.css("w=S6 h=S6 radius=Full bg=OnAccent p=S0_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let mark_pin_in : @ui.Style = @ui.css("w=Full h=Full radius=Full bg=Accent align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let mark_pin_words : @ui.TextStyle = @ui.text_style(size=@sf.mark_pin_size, weight=Bold, color=OnAccent, wrap=false)
-
-///|
 /// What is said of a mark beside its pin: 26 high, round, 10 in; 12 in the ink, one line (its ground and shadow
 /// mark_bubble_node's, mark_said_node's).
 // kept across runs: a value (no field of it changes)

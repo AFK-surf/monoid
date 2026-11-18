@@ -1867,6 +1867,10 @@ pub let fix_phone : Ref[String] = Ref("")
 pub let fix_phone_scope : Ref[String] = Ref("")
 
 ///|
+/// chat-phone-multi's 发送批准请求 pressed (`adb.personalJoin`): its trusted device shows the code to type.
+pub let fix_phone_join : Ref[Bool] = Ref(false)
+
+///|
 /// Granted, how its station's adb holds the phone, as the station says it on the card ("": not said).
 pub let fix_phone_link : Ref[String] = Ref("")
 
@@ -2031,7 +2035,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
     fix_rig.val = f.mode.unsafe_substring(start="chat-rig-".length(), end=f.mode.length())
   }
   let stepped = f.mode.has_prefix("chat-phone-step-")
-  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
+  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-multi" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
   // (chat-phone-granted: its request approved already; chat-phone-lacks: waiting, on a phone without Developer options;
   // chat-phone-linked-<link>[-desk]: approved, its station holding the phone as <link> says, on the phone or (-desk)
   // on a computer; chat-phone-step-<what>: approved, on a phone that lacks <what> first, its station holding it as
@@ -2244,6 +2248,12 @@ pub fn fixture_card_call(f : Fixture, name : String, params : Json) -> Result[Js
     "adb.decide" if text(p, "request") == "p-1" => {
       fix_phone_scope.val = text(p, "scope")
       fix_phone.val = if text(p, "scope") != "" { "granted" } else { "denied" }
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
+    // chat-phone-multi's device asking to be approved on its account's lock: a trusted device of theirs shows the code
+    "adb.personalJoin" if f.mode == "chat-phone-multi" => {
+      fix_phone_join.val = true
       f.changed()
       Some(Ok(Json::object({})))
     }

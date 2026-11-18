@@ -33,6 +33,14 @@ pub fn agent_card_node(@view.View, @sfbase.Source, @sfbase.ChatRef, String, @sf.
 
 pub fn agent_mark(@ui.Ctx, String, String, String, side? : Double, said? : String, ground? : Int64, corner? : @ui.Radius, joined? : Bool) -> Unit
 
+pub fn agent_since_node(@view.View, @sfbase.Source, () -> @json.Json?) -> () -> String
+
+pub fn agent_since_words(Double, @json.Json?) -> String
+
+pub fn agent_status_node(@view.View, @sfbase.Source, () -> @json.Json?) -> Unit
+
+pub fn agent_tone_state(String) -> String
+
 pub fn agent_work(@ui.Ctx, @sfbase.Source, @json.Json?) -> Unit
 
 pub fn agent_work_line(@ui.Ctx, @json.Json?, Int32, inset? : Bool) -> Unit

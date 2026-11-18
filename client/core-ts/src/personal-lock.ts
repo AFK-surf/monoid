@@ -616,14 +616,23 @@ export class PersonalLock {
       if (this.standing(sub) !== "member") return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
       if (!this.signerUnsaid(sub)) return null;
       const seed = yield* this.#unseal(reason);
+      const within = this.asked();
+      // (what lost its place signed again first, with the seed in hand: it may have said this device again already)
+      yield* this.#signAgain(sub, seed, within);
       const mine = this.#myKey === null ? undefined : this.#lastSaid(sub).get(this.#myKey);
       const signKey = this.#mySignKey();
-      // (said meanwhile, as the person was asked)
-      if (mine === undefined || signKey === null || mine.said?.sign_key === signKey) return null;
+      // (said meanwhile, as the person was asked, or as what lost its place was signed again)
+      if (mine === undefined || signKey === null || mine.said?.sign_key === signKey) {
+        yield* this.#addBinds(sub, seed, within);
+        yield* this.#addApproved(sub, seed, within);
+        return null;
+      }
       const { key, id, label } = mine.device;
-      const within = this.asked();
       const pending = yield* this.#append(sub, seed, "device", { key, id, label, sign_key: signKey }, false, within);
-      if (pending === null) yield* this.#addBinds(sub, seed, within);
+      if (pending === null) {
+        yield* this.#addBinds(sub, seed, within);
+        yield* this.#addApproved(sub, seed, within);
+      }
       return pending === null ? null : { pending: pendingRow(pending, this.#env.stations?.names?.(sub) ?? []) };
     });
   }
@@ -1289,6 +1298,11 @@ export class PersonalLock {
       if (standing === "none" || standing === "outside") return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
       if (standing === "replaced") return yield* Effect.fail(new CoreError("personal_replaced", t("core-misc.personal.replaced")));
       const seed = yield* this.#unseal(reason);
+      // (as `signGrant`: with the seed in hand, the lock put right first; the rig is given the chain after, rigs.ts)
+      const after = this.asked();
+      yield* this.#signAgain(sub, seed, after);
+      yield* this.#restate(sub, seed, after);
+      yield* this.#addApproved(sub, seed, after);
       return { body, sig: { key: this.#myKey!, sig: hex(ed25519.sign(rigBytes(kind, body, sha256), seed)) } };
     });
   }
@@ -1459,7 +1473,11 @@ export class PersonalLock {
 
   /// In the turn: `make`'s statements signed one after another after the chain pinned and what is pending, kept, brought
   /// together; what is left of it once the turn is given up (taken by a station past the wait: pinned then).
-  #state(sub: string, seed: Uint8Array, ws: string, make: Statements, within: Asked | undefined): Effect.Effect<Effect.Effect<Pending | null, CoreError>, CoreError> {
+  /// A station refusing them (`lock_refused`: another device of the person's moved the chain on meanwhile, a 409) has the
+  /// stations read and, the head moved, them made and signed again after it with the seed in hand (`tries`, AGAIN_MOST at
+  /// most), as an entry of `#signHere` that lost its place is: nothing more asked of the person, nothing of the refused
+  /// kept as shown or said.
+  #state(sub: string, seed: Uint8Array, ws: string, make: Statements, within: Asked | undefined, tries = 0): Effect.Effect<Effect.Effect<Pending | null, CoreError>, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const pinned = this.#pinned.get(sub) ?? [];
       if (pinned.length === 0) return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
@@ -1487,6 +1505,18 @@ export class PersonalLock {
       if (entries.length === 0 && also.length === 0) return Effect.succeed(null);
       if (checkChain(chain, sub) === null) return yield* Effect.fail(new CoreError("lock_invalid", t("core-misc.lock.chainInvalid")));
       this.#env.stations?.kept?.(ws, made.bodies);
+      const brought = this.#env.stations === undefined ? null : yield* Effect.result(this.#env.stations.bring(sub, chain, within, { ws, bodies: made.bodies }));
+      if (brought !== null && brought._tag === "Failure") {
+        if (brought.failure.code !== "lock_refused") return yield* Effect.fail(brought.failure);
+        // (refused: never signed again by `#signAgain` as lost, made anew here after the head the stations say)
+        for (const e of [...also, ...entries]) this.#handled.add(hashOf(e));
+        yield* Effect.ignore(this.refresh(sub), { log: "Unhandled", message: "personal lock read after a refusal" });
+        const now = this.#pinned.get(sub) ?? [];
+        const moved = now.length !== pinned.length || (now.length > 0 && entryHash(now[now.length - 1]!) !== entryHash(pinned[pinned.length - 1]!));
+        if (moved && tries < AGAIN_MOST) return yield* this.#state(sub, seed, ws, make, within, tries + 1);
+        return yield* Effect.fail(brought.failure);
+      }
+      // (what the person did, kept as shown once a station took it or it waits as pending: never one refused)
       const said: [string, { act: Act | null; name: string; role?: string }][] = [];
       entries.forEach((e, i) => {
         const as = made.shown[i];
@@ -1499,8 +1529,6 @@ export class PersonalLock {
         this.#stated.set(sub, kept);
         this.#env.runner.fork(Effect.ignore(this.#env.host.storageSet(statedAs(sub), utf8(JSON.stringify(kept))), { log: "Unhandled", message: "personal lock: statements kept" }));
       }
-      const brought = this.#env.stations === undefined ? null : yield* Effect.result(this.#env.stations.bring(sub, chain, within, { ws, bodies: made.bodies }));
-      if (brought !== null && brought._tag === "Failure") return yield* Effect.fail(brought.failure);
       const taken = brought === null ? 0 : brought.success;
       if (typeof taken === "number" && taken > 0) {
         // (the entries alone, for the devices from before that read the lock there: a body never goes to the cloud)
