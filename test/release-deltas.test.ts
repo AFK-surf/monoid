@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -453,4 +455,85 @@ test("a station's base pruned, a package not the one its feed names: those left 
   assert.match(r.err, /mac\/beta\/latest\.json: no deltas: .*not the one its feed names/);
   assert.ok(json(w2.rel, "linux/mbui/latest.json").deltas);
   assert.ok(existsSync(join(w2.rel, "station-beta.json")) && statSync(join(w2.rel, "station-beta.json")).size > 0);
+});
+
+// --- the releases over HTTP (--releases URL), as CI has them ---
+
+type Served = { method: string; path: string; status: number };
+/** `pub` served on 127.0.0.1 under /r/, /moved/ redirecting there by two hops; each body written a few KB at a time,
+ * the next once the last is taken (chunked, no length). `cut`: a file whose body is cut off halfway, the connection
+ * destroyed. `noHead`: HEAD refused (405). */
+async function serve(t: { after(f: () => void | Promise<void>): void }, pub: string, o: { cut?: string; noHead?: boolean } = {}) {
+  const served: Served[] = [];
+  const answer = (req: IncomingMessage, res: ServerResponse, status: number, headers: Record<string, string> = {}) => {
+    served.push({ method: req.method!, path: req.url!, status });
+    res.writeHead(status, headers).end();
+  };
+  const server = createServer((req, res) => {
+    const path = decodeURIComponent(req.url!.split("?")[0]!);
+    if (path.startsWith("/moved/")) return answer(req, res, 301, { location: `/again/${path.slice("/moved/".length)}` });
+    if (path.startsWith("/again/")) return answer(req, res, 307, { location: `http://127.0.0.1:${(server.address() as AddressInfo).port}/r/${path.slice("/again/".length)}` });
+    if (!path.startsWith("/r/")) return answer(req, res, 400);
+    const name = path.slice(3), at = join(pub, name);
+    if (req.method === "HEAD" && o.noHead) return answer(req, res, 405);
+    if (name.includes("..") || !existsSync(at) || statSync(at).isDirectory()) return answer(req, res, 404);
+    const range = /^bytes=0-0$/.test(req.headers.range ?? "");
+    served.push({ method: req.method!, path: req.url!, status: range ? 206 : 200 });
+    const data = readFileSync(at), body = range ? data.subarray(0, 1) : data;
+    res.writeHead(range ? 206 : 200, { "content-type": "application/octet-stream" });
+    if (req.method === "HEAD") return res.end();
+    const end = name === o.cut ? body.length >> 1 : body.length;
+    let i = 0;
+    const more = () => {
+      while (i < end) {
+        const chunk = body.subarray(i, Math.min(end, i + 4096));
+        i += chunk.length;
+        if (!res.write(chunk)) return void res.once("drain", more);
+      }
+      if (name === o.cut) setImmediate(() => res.destroy());
+      else res.end();
+    };
+    more();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/moved`, served };
+}
+
+/** run, without blocking this process: its server answers the script. */
+const runAsync = (rel: string, releases: string) => new Promise<{ status: number | null; out: string; err: string }>((resolve, reject) => {
+  const p = spawn(process.execPath, [script, rel, "--releases", releases], { env: { ...process.env, GITHUB_ACTIONS: "", GITHUB_STEP_SUMMARY: "" } });
+  let out = "", err = "";
+  p.stdout.on("data", (b) => { out += b; });
+  p.stderr.on("data", (b) => { err += b; });
+  p.on("error", reject);
+  p.on("close", (status) => resolve({ status, out, err }));
+});
+
+test("--releases a URL: redirects followed, what is not there passed over, the same made as from a directory", async (t) => {
+  const w = world(t);
+  const local = join(w.tmp, "local");
+  cpSync(w.rel, local, { recursive: true });
+  run(local, w.pub);
+  const s = await serve(t, w.pub);
+  const r = await runAsync(w.rel, s.url);
+  assert.equal(r.status, 0, r.err);
+  assert.deepEqual(snapshot(w.rel), snapshot(local), "the same deltas and feeds as from the directory");
+  assert.ok(s.served.some((x) => x.status === 301) && s.served.some((x) => x.status === 307), "redirected");
+  assert.ok(s.served.some((x) => x.method === "HEAD" && x.status === 404), "has: an archive not there");
+  assert.ok(s.served.some((x) => x.method === "GET" && x.status === 404), "fetch: a name not there");
+  assert.ok(s.served.some((x) => x.method === "GET" && x.status === 200 && x.path.endsWith(MAC(99))), "a base fetched");
+});
+
+test("--releases a URL that cuts a base off halfway, HEAD refused: that base left out, the rest made, exit 0", async (t) => {
+  const w = world(t);
+  const s = await serve(t, w.pub, { cut: MAC(99), noHead: true });
+  const r = await runAsync(w.rel, s.url);
+  assert.equal(r.status, 0, r.err);
+  assert.deepEqual(json(w.rel, "mac/beta/latest.json").deltas.map((d: { from: number }) => d.from), [100]);
+  assert.match(r.out, /mac\/beta 101: from 100 [0-9.]+ MB, from 99 not fetched \(/);
+  assert.equal(json(w.rel, "linux/mbui/latest.json").deltas.length, 1);
+  assert.equal(json(w.rel, "station-beta.json").deltas["linux-x64"].length, 1);
+  assert.ok(s.served.some((x) => x.method === "HEAD" && x.status === 405), "HEAD refused");
+  assert.ok(s.served.some((x) => x.method === "GET" && x.status === 404 && x.path.includes("station/archive/beta/101-")), "has by a GET of its first byte");
 });

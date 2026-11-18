@@ -37,9 +37,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, inflateRawSync, zstdCompressSync, zstdDecompressSync } from "node:zlib";
@@ -283,22 +284,57 @@ function source(where: string): Source {
       async has(name) { return existsSync(join(where, name)); },
     };
   }
+  // node:http(s) and not fetch: Node 24's undici asserts (`!this.paused`, Parser.finish) on a TLS socket's end while a
+  // body is paused, thrown in the socket's event and not on the request's promise, which ended the whole run. A
+  // connection of its own for each request (agent: false), at most 5 redirects.
   const url = (name: string) => `${where.replace(/\/+$/, "")}/${name}`;
-  const get = async (name: string, signal: AbortSignal, range = false) => {
-    const r = await fetch(url(name), { signal, headers: { "user-agent": "stillfail-release-deltas", ...(range ? { range: "bytes=0-0" } : {}) } });
-    if (r.status === 404) { await r.body?.cancel(); return null; }
-    if (!r.ok) { await r.body?.cancel(); throw new Error(`${url(name)}: ${r.status}`); }
-    return r;
+  const request = (u: string, method: "GET" | "HEAD", signal: AbortSignal, headers: Record<string, string> = {}, hops = 0): Promise<IncomingMessage> =>
+    new Promise((resolve, reject) => {
+      const get = u.startsWith("https:") ? httpsRequest : httpRequest;
+      const req = get(u, { method, signal, agent: false, headers: { "user-agent": "stillfail-release-deltas", ...headers } }, (res) => {
+        const status = res.statusCode ?? 0, to = res.headers.location;
+        if ([301, 302, 303, 307, 308].includes(status) && to) {
+          res.resume();
+          if (hops >= 5) return reject(new Error(`${u}: more than 5 redirects`));
+          return resolve(request(new URL(to, u).href, status === 303 && method !== "HEAD" ? "GET" : method, signal, headers, hops + 1));
+        }
+        resolve(res);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  /** `name`'s response when it is there (2xx), null when it is not (404); any other status is an error. */
+  const get = async (name: string, method: "GET" | "HEAD", signal: AbortSignal, headers?: Record<string, string>) => {
+    const res = await request(url(name), method, signal, headers);
+    const status = res.statusCode ?? 0;
+    if (status >= 200 && status < 300) return res;
+    res.resume();
+    if (status === 404) return null;
+    throw Object.assign(new Error(`${url(name)}: ${status}`), { status });
   };
   return {
     async fetch(name, to, signal) {
-      const r = await get(name, signal);
-      if (!r) return false;
-      await pipeline(Readable.fromWeb(r.body as any), createWriteStream(to));
+      const res = await get(name, "GET", signal);
+      if (!res) return false;
+      await pipeline(res, createWriteStream(to), { signal });
       return true;
     },
-    async text(name, signal) { const r = await get(name, signal); return r ? r.text() : null; },
-    async has(name, signal) { const r = await get(name, signal, true); await r?.body?.cancel(); return r !== null; },
+    async text(name, signal) {
+      const res = await get(name, "GET", signal);
+      if (!res) return null;
+      const chunks: Buffer[] = [];
+      for await (const c of res) chunks.push(c as Buffer);
+      return Buffer.concat(chunks).toString("utf8");
+    },
+    async has(name, signal) {
+      let res: IncomingMessage | null;
+      try { res = await get(name, "HEAD", signal); } catch (e) {
+        if ((e as { status?: number }).status !== 405 && (e as { status?: number }).status !== 501) throw e;
+        res = await get(name, "GET", signal, { range: "bytes=0-0" });
+      }
+      res?.resume();
+      return res !== null;
+    },
   };
 }
 
