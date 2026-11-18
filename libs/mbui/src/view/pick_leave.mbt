@@ -84,6 +84,31 @@ fn leave_held_progress(p : View) -> Double {
 }
 
 ///|
+/// How much of all of it show `v`, held on its way (held_on_way), is drawn: as tall as it is laid out there of as tall
+/// as all of it is, whatever way it is on, so a way set out again from where it is (a later group's on what is still
+/// on its way, Tree::come_group_settle; one turned back) draws on from where it was. Measured nowhere yet, by how far
+/// its way has gone (leave_held_progress), `going` from all of it.
+fn show_held_share(v : View, going : Bool) -> Double {
+  if v.live() is Some(m) && m.coming {
+    let st = m.flex.style
+    let whole = st.come_whole
+    let ends = st.come_ends
+    if whole == whole && whole >= 0.5 && ends == ends {
+      let t = v.drawn_while(fn(now) { now < ends })
+      let at = if t == @double.infinity { ends } else { t }
+      let x = @flex.come_tall_at(st, whole, at) / whole
+      return if x < 0.0 { 0.0 } else if x > 1.0 { 1.0 } else { x }
+    }
+  }
+  let p = leave_held_progress(v)
+  if going {
+    1.0 - p
+  } else {
+    p
+  }
+}
+
+///|
 /// Whether place `p` lies in a block of a page's list whose insides go its way (Tree's list_inner, joining): there a
 /// pick leaving is held by its place's way (the file's head).
 fn Tree::pick_held(self : Tree, p : View) -> Bool {
@@ -109,12 +134,7 @@ fn held_on_way(v : View, going : Bool) -> Unit {
   let told = @signals.signal(0, same=fn(a, b) { a == b })
   let share = fn() {
     told.get() |> ignore
-    let p = leave_held_progress(v)
-    if going {
-      1.0 - p
-    } else {
-      p
-    }
+    show_held_share(v, going)
   }
   v.alpha(By(fn() { row_held_at(share()).0 })) |> ignore
   v.scale(By(fn() { row_held_at(share()).1 }), about=DrawnSide(0.0)) |> ignore
