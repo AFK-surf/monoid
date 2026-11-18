@@ -29,17 +29,20 @@ function shape(jpeg: Uint8Array): number {
 }
 
 test("an iPhone Duo's poses, its picture following", { skip: !hasSimctl && "no Xcode simulators here", timeout: LONG }, async () => {
-  const runtimes = JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.supportedDeviceTypes?.some((t: any) => t.identifier.endsWith(".iPhone-Duo")));
-  if (runtimes.length === 0) return;
-  const runtime = runtimes.at(-1);
-  const udid = simctl("create", `still.fail side duo ${process.pid}`, "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", runtime.identifier);
+  // (SIM_DUO_UDID: the run's Duo, made and set booting before, .github/workflows/side.yml; shut down and deleted here
+  // as one of its own is, so that the Mac has its memory back at once)
+  const made = process.env.SIM_DUO_UDID;
+  const runtimes = made ? [] : JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.supportedDeviceTypes?.some((t: any) => t.identifier.endsWith(".iPhone-Duo")));
+  if (!made && runtimes.length === 0) return;
+  const udid = made ?? simctl("create", `still.fail side duo ${process.pid}`, "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", runtimes.at(-1).identifier);
   const dir = mkdtempSync(join(tmpdir(), "sim-duo-"));
   const helper = new HelperApp({ app: process.env.STILLFAIL_HELPER ?? execFileSync(process.execPath, [join(ROOT, "scripts/native.ts"), "file", "helper"], { encoding: "utf8" }).trim(), dir: process.env.STILLFAIL_HELPER_DIR ?? join(dir, "helper") });
   const hub = new ScreenHub();
   const simulators = new Simulators({ screens: hub, helper });
   let view: ScreenView | null = null;
   try {
-    simctl("boot", udid);
+    // (the run's is booting already, and `simctl boot` refuses a device that is)
+    if (!made) simctl("boot", udid);
     simctl("bootstatus", udid, "-b");
     await simulators.start();
     for (let i = 0; i < 10 && !hub.get(`simulator:${udid}`); i++) await simulators.refresh();

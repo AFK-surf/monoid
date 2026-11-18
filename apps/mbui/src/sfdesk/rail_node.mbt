@@ -473,6 +473,11 @@ fn rail_place_node(
       return
     }
     guard ws() is Some(w) else { return }
+    // the lit place pressed again (not 待处理, a panel; not 看板, its board brought over) where its list is away from
+    // its top: that list back to its top, as a platform's tab pressed again (back_to_top.mbt); at its top, as follows
+    if rail_lit(src, w, place) && place != "attention" && place != "board" && rail_back_to_top(lit_place()) {
+      return
+    }
     // the lit place pressed again (not 待处理, a panel): its sidebar folded or opened, not gone to; folded so with the
     // pointer on the rail, it is shown a while; on the tape, the page brought over
     // (看板 pressed again: its board brought over on the tape, board_go's)
@@ -642,8 +647,8 @@ fn rail_card_node(anchor : @view.View, src : Source, tips : @sf.TipLayer, place 
       // (a small panel's: @sf.small_panel)
       .ground(By(fn() { @sf.panel_ground() }))
       .radius(Is(@sf.r_menu))
-      .edge(By(fn() { (1.0, @sf.theme().p.line) }))
-      .shadow(By(fn() { (16.0, 12.0, @sf.theme().p.shadow) }))
+      .edge(By(fn() { (1.0, @sf.panel_edge()) }))
+      .shadow(By(fn() { @sf.float_shadow() }))
       .clips(Is(true))
       .padding(Is((@sf.panel_pad, @sf.panel_pad, @sf.panel_pad, @sf.panel_pad)))
       // (a press on it its own: a ground, the arrow over it)

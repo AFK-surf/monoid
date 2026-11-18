@@ -1373,6 +1373,7 @@ pub fn Ctx::frame_number(Self) -> Int32
 pub fn Ctx::gives_way(Self, Int32) -> Unit
 pub fn Ctx::glass_solid(Self) -> Bool
 pub fn Ctx::glyphs_by(Self, Int32, (@view.GlyphAt) -> @view.GlyphLook) -> Unit
+pub fn Ctx::grounds_by(Self, Int64, () -> Int64, () -> Unit) -> Unit
 pub fn Ctx::hand_lit(Self, Bool) -> Bool
 pub fn Ctx::hand_on(Self, Int32) -> Bool
 pub fn Ctx::hand_shown(Self, Bool, () -> Unit) -> Unit

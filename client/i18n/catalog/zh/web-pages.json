@@ -2216,5 +2216,11 @@
   "web-pages.experimental.farviewNative.title": "Farview 原生标签页渲染",
   "web-pages.experimental.farviewNative.description": "浏览器标签页由本机直接排版绘制，滚动和输入即时响应；遇到显示异常可随时关掉切回截图画面",
   "web-pages.experimental.board.title": "对话列表看板视图",
-  "web-pages.experimental.board.description": "在主页按状态、机器或成员分列查看对话并管理待派发事项；关闭后自动退回普通对话列表"
+  "web-pages.experimental.board.description": "在主页按状态、机器或成员分列查看对话并管理待派发事项；关闭后自动退回普通对话列表",
+  "web-pages.rowMenu.open": "打开",
+  "web-pages.rowMenu.openChat": "打开对话",
+  "web-pages.rowMenu.copyName": "复制名称",
+  "web-pages.rowMenu.copyAddress": "复制地址",
+  "web-pages.rowMenu.copied": "已复制「{name}」",
+  "web-pages.rowMenu.restore": "恢复对话"
 }

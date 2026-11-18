@@ -1,7 +1,7 @@
 // Signed releases (scripts/release-sign.ts): what verifies and what does not, the release signed by
 // scripts/release-sign.ts as CI signs it, and `stillfail-station update` saying what to run.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -223,6 +223,38 @@ describe("signed releases", () => {
       console.error = error;
     }
     assert.ok(asked.every((a) => a === "/stations/releases/station-beta.json"), asked.join());
+  });
+
+  test("`stillfail-station update` in its own process waits out a retry's pause instead of ending with exit code 13", async (t) => {
+    // The command runs under main.ts' top-level await with no server holding the loop: a feed read broken once used to
+    // leave only wall.sleep's unref'd timer, and Node ended the process with 13 before the read was tried again.
+    const asked: string[] = [];
+    const server = createServer((req, res) => {
+      asked.push(req.url ?? "");
+      if (asked.length === 1) return void req.socket.destroy();
+      if (req.url === "/releases/station.json") return void res.end(JSON.stringify(feedOf(1310)));
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    t.after(() => server.close());
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const data = temp();
+    const app = join(data, "app");
+    mkdirSync(join(app, "bin"), { recursive: true });
+    mkdirSync(join(data, "mesh"));
+    writeFileSync(join(app, "BUILD"), "1300\n");
+    writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin }));
+    const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+    const child = spawn(process.execPath, [main, "update", "--app", app, "--data", data], { env: { ...process.env, STILLFAIL_CONFIG: join(data, "config.json") } });
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (s: string) => (stderr += s));
+    child.stdout.resume();
+    const code = await new Promise<number | null>((r) => child.on("close", r));
+    assert.notEqual(code, 13, stderr);
+    assert.doesNotMatch(stderr, /unsettled top-level await/);
+    // Read again after the pause, and refused there: the tests' key is not a release key.
+    assert.deepEqual(asked, ["/releases/station.json", "/releases/station.json"], stderr);
+    assert.equal(code, 1, stderr);
   });
 
   test("`stillfail-station update` takes a delta from the build it runs, and says what it made for the installer", { skip: process.platform === "win32" && "a .tar.gz release" }, async (t) => {

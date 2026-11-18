@@ -6,7 +6,8 @@
 
 ///|
 /// Send in `parent`, named `label` (read out, and its tip in `tips`, over it); `press` done as it is pressed while
-/// `ready()`; while it is not, read out disabled and taking no press nor the focus. While `starting()`, a ring turning
+/// `ready()`; while it is not, read out disabled and taking no press nor the focus, a press on it shaking it across where it is
+/// drawn (refused_shake). While `starting()`, a ring turning
 /// in its middle. `icon_now` changes the arrow where the same control can do another action. The node.
 #callsite(autofill(loc))
 pub fn send_button_node(
@@ -54,6 +55,9 @@ pub fn send_button_node(
       .lies_along(Is(Middle))
       .ground(By(fn() { send_ground(able.shown(v), lit.shown(v)) }))
       |> ignore
+      // (pressed while what is written cannot go (no new chat being made for it), shaken where it is drawn:
+      // refused_shake)
+      refused_shake(v, fn() { !ready() && !starting() })
       v.pick(starting, fn(i, turning) {
         if turning {
           spinner_node(i, size=theme().round.glyph) |> ignore

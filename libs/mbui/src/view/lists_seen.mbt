@@ -4,11 +4,11 @@
 
 ///|
 /// What a page's list gives a test (Tree::lists_seen): its scroll, how many keys it has, and asked of it, a row brought to
-/// its top by where it is among its keys, and its foot.
+/// its top by where it is among its keys (gliding there where said and near), and its foot.
 priv struct ListAsked {
   scroll : Scroll
   count : () -> Int
-  bring : (Int) -> Unit
+  bring : (Int, Bool) -> Unit
   to_end : () -> Unit
   way_steady : () -> (Double, Bool, Array[(String, NodeId, Bool, Bool)])
 }
@@ -31,6 +31,9 @@ pub(all) struct ListSeen {
   count : Int
   /// how far it is scrolled, as of the logic's moment (Scroll::at)
   at : Double
+  /// how far it is scrolled at its top, as far up as the hand takes it (Scroll::top_now: past what is tucked over it
+  /// once that was taken out of sight; else 0): `at` there, it is at its top
+  top : Double
   /// how far it shows past an end (Scroll::past: from its top positive, from its foot negative)
   past : Double
   /// whether it is on by itself (a fling, what shows past an end going back)
@@ -99,6 +102,7 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
       sight: (first, last),
       count: (a.count)(),
       at: s.at(self),
+      top: @signals.untracked(fn() { s.top_now() }),
       past: s.past(self),
       moving: s.glides_till() is Some(_),
       at_foot: @signals.untracked(fn() { s.at_foot_now() }),
@@ -133,10 +137,11 @@ pub fn Tree::list_in_front(self : Tree) -> ListSeen? {
 
 ///|
 /// Page's list `list`'s row `order` (where it is among its keys) brought to its top, as its ListPlace::bring is: done as
-/// the list is next laid out. Nothing where it is no page's list or has no such row.
-pub fn Tree::list_bring(self : Tree, list : NodeId, order : Int) -> Unit {
+/// the list is next laid out, or gliding there from the cause's moment where `glide` and it is near (a place's tab
+/// pressed again where it shows: back to its top). Nothing where it is no page's list or has no such row.
+pub fn Tree::list_bring(self : Tree, list : NodeId, order : Int, glide? : Bool = false) -> Unit {
   match self.lists_asked.get(list.at) {
-    Some(a) if self.alive_id(list) => (a.bring)(order)
+    Some(a) if self.alive_id(list) => (a.bring)(order, glide)
     _ => ()
   }
 }

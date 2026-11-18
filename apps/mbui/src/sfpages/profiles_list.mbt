@@ -375,6 +375,16 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
   }
   r.box(fn(d) {
     d.alpha(By(fn() { if usable() { 1.0 } else { pl_away } })) |> ignore
+    // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
+    d.on_menu(fn(m) {
+      let e = @signals.untracked(ev)
+      let name = match text(field(e, "profile"), "name") {
+        "" => text(e, "title")
+        n => n
+      }
+      pl_menu(fn() { (core.push)(Profile(text(e, "station"), text(field(e, "profile"), "id"))) }, name, m)
+    })
+    |> ignore
     d.pick(fn() { tone() == 1 }, fn(x, amber) {
       @sf.link_row_node(
         x,
@@ -432,6 +442,9 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
   let id = fn() { text(pv(), "id") }
   let on = fn() { [("station", station), ("id", id())] }
   let calls = ["profile.check", "profile.quota"]
+  // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
+  r.on_menu(fn(m) { pl_menu(fn() { (core.push)(Profile(station, @signals.untracked(id))) }, text(@signals.untracked(pv), "name"), m) })
+  |> ignore
   @sf.link_row_node(
     r,
     fn() { text(pv(), "name") },
@@ -480,6 +493,18 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
     },
     // (its tail's room only while it holds something: what is under way, or its allowance's chips)
     tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || @sf.has_quota(field(pv(), "quota")) },
+  )
+}
+
+///|
+/// An account's row menu at the pointer's other button's press `m`: its page opened (`open`), its `name` copied.
+fn pl_menu(open : () -> Unit, name : String, m : @view.Menu) -> Unit {
+  @sf.menu(
+    [
+      Some(@sf.menu_item_of(@sf.t("web-pages.rowMenu.open"), open, icon="arrow-up-right")),
+      copy_item("web-pages.rowMenu.copyName", name),
+    ].filter(fn(i) { i is Some(_) }),
+    from=@sf.at_point(m.wx, m.wy),
   )
 }
 

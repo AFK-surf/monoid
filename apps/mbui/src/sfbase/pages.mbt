@@ -1524,6 +1524,8 @@ pub fn reset() -> Unit {
   outside_reset()
   // what was asked of the core from a button, under way or failed (act.mbt)
   acting_reset()
+  // a colour theme shown a moment over the one set (app_frame.mbt)
+  accent_preview_reset()
   // how an update stands (updates.mbt)
   update_reset()
   // a chat's relay picker (relay.mbt)

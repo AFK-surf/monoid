@@ -21,7 +21,7 @@ import { topicKey, type Topic } from "../protocol.ts";
 import type { Runner } from "../runtime.ts";
 import { equal, isObject } from "../util.ts";
 import { TITLED } from "../titles.ts";
-import { CHAT_COLUMNS, CHAT_MADE, type ChatColumnsMade, ensureChatColumns, ensureFilesKept, ensureKept, ensureLetters, ensureLogBytes, LOG_TABLES, ensureMdKept, ensureMoved, ensureOverviewParts, ensureSaid, ensureSlackSaid, giveBackRoom, migrate, overviewProfilesOf, PART_COLUMNS, partRev, versionOf } from "./schema.ts";
+import { CHAT_COLUMNS, CHAT_MADE, type ChatColumnsMade, ensureChatColumns, ensureFilesKept, ensureKept, ensureLetters, ensureLogBytes, LOG_TABLES, ensureMdKept, ensureMoved, ensureOverviewParts, ensureSaid, ensureSlackSaid, ensureSlackWho, giveBackRoom, migrate, overviewProfilesOf, PART_COLUMNS, partRev, versionOf } from "./schema.ts";
 import { CHAT_READS, rowColumns, type ChatRead } from "./chat-reads.ts";
 import { KEPT, KEPT_ALL, KeptValues, type ListRow } from "./kept.ts";
 import { readItem, type Said } from "../elsewhere.ts";
@@ -282,6 +282,10 @@ class Cache {
 }
 
 const K = (...parts: (string | number)[]) => parts.join("\u0001");
+/// A Slack person's id as a mention of them is written: a bot heard as its mention (`<@U…>`), its id out of it.
+const slackId = (user: string): string => user.replace(/^<@(.+)>$/, "$1");
+/// Of `slack_said`, the rows that name who was heard (slack_who's).
+const HEARD = "out = 0 AND user IS NOT NULL AND who IS NOT NULL AND who != ''";
 /// A word looked for, as `LIKE ? ESCAPE '\'` takes it: anywhere in the text, its own `%` `_` `\` as they are.
 const like = (term: string) => `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 /// What chats show small, kept (`file_kept`, in characters of base64): at most this much, let go to FILES_KEPT_TO of it
@@ -448,7 +452,17 @@ export class AccountDb {
         console.error("still.fail core: a chat's columns could not be derived:", e instanceof Error ? e.message : String(e));
       }
       try {
-        if (ensureSlackSaid(sql)) this.#fillSlackSaid();
+        const said = ensureSlackSaid(sql);
+        let who = false;
+        try {
+          who = ensureSlackWho(sql);
+          this.#slackWhoMade = true;
+        } catch {
+          // No room to make it: who was heard is read of slack_said, as before it was.
+          this.#slackWhoMade = false;
+        }
+        if (said) this.#fillSlackSaid();
+        if (this.#slackWhoMade && (said || who)) this.#fillSlackWho();
       } catch {
         // No room to make it: what agents said in Slack is not shown in their chats this time.
       }
@@ -639,7 +653,8 @@ export class AccountDb {
     this.#logIndices.delete(K(table, station, id));
     this.#logSpans.delete(K(table, station, id));
     this.#changes.logs.set(K(table, station, id), [table, station, id]);
-    if (table === "slack") this.#slackNames.delete(station);
+    // (slack_who, where it is kept, says when its names change: #heardWho)
+    if (table === "slack" && !this.#slackWhoMade) this.#slackNames.delete(station);
     const key = K(table, station, id);
     const was = this.#logPuts.get(key);
     const log = was ?? { from: this.#logPutsFrom, puts: [] };
@@ -2429,7 +2444,7 @@ export class AccountDb {
       }
       if (table === "transcript" && this.#hasSlackSaid()) {
         let said = false;
-        if (cutAfter !== null && this.sql.run("DELETE FROM slack_said WHERE station = ? AND session = ? AND i > ?", [station, id, cutAfter]) > 0) said = true;
+        if (cutAfter !== null && this.#forgetSaid(station, "session = ? AND i > ?", [id, cutAfter])) said = true;
         if (written.length > 0 && this.#readSlackSaid(station, id, written)) said = true;
         if (said) this.#tellLog("slack", station, id);
       }
@@ -2458,15 +2473,22 @@ export class AccountDb {
   /// whether anything changed.
   #readSlackSaid(station: string, session: string, items: [number, J][]): boolean {
     let changed = false;
+    // (the people a row written over named, found again once all is written)
+    const again = new Set<string>();
     for (const [n, e] of [...items].sort((a, b) => a[0] - b[0])) {
       const read = readItem(n, e);
       if (read === null) continue;
       if ("said" in read) {
         for (const s of read.said) {
+          if (this.#keepWho) {
+            const was = this.sql.all(`SELECT user, who, at FROM slack_said WHERE station = ? AND session = ? AND i = ? AND k = ? AND ${HEARD}`, [station, session, n, s.k])[0];
+            if (was !== undefined && (s.out || was[0] !== s.user || was[1] !== s.who || was[2] !== s.at)) again.add(slackId(String(was[0])));
+          }
           this.sql.run(
             "INSERT OR REPLACE INTO slack_said (station, session, i, k, out, call, user, who, at, dest, text, failed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             [station, session, n, s.k, s.out ? 1 : 0, s.call, s.user, s.who, s.at, s.to, s.text],
           );
+          if (this.#keepWho && !s.out && s.user && s.who) this.#heardWho(station, slackId(s.user), s.who, s.at);
           changed = true;
         }
         continue;
@@ -2483,7 +2505,106 @@ export class AccountDb {
       this.sql.run("UPDATE slack_said SET dest = ?, failed = ?, refused = ? WHERE station = ? AND session = ? AND i = ? AND out = 1", [to, r.failed ? 1 : 0, r.refused ? 1 : 0, station, session, row[0] as number]);
       changed = true;
     }
+    for (const user of again) this.#whoAgain(station, user);
     return changed;
+  }
+
+  /// Whether `slack_who` is there (made as the database opens).
+  #slackWhoMade = false;
+  /// Whether slack_said's rows written are kept in slack_who as they are (not while slack_said is filled whole: it is
+  /// filled whole after).
+  get #keepWho(): boolean {
+    return this.#slackWhoMade && !this.#fillingSaid;
+  }
+  #fillingSaid = false;
+
+  /// `user` heard at a station as `who` at `at`, into slack_who: first heard the earliest, named as heard the latest.
+  /// What is named and in what order changing lets the names kept go (slackNames).
+  #heardWho(station: string, user: string, who: string, at: number): void {
+    const was = this.sql.all("SELECT first, who, at FROM slack_who WHERE station = ? AND user = ?", [station, user])[0];
+    if (was === undefined) {
+      this.sql.run("INSERT INTO slack_who (station, user, first, who, at) VALUES (?, ?, ?, ?, ?)", [station, user, at, who, at]);
+      this.#slackNamesStale.add(station);
+      return;
+    }
+    const first = Math.min(was[0] as number, at);
+    const later = at >= (was[2] as number);
+    const name = later ? who : String(was[1]);
+    const last = later ? at : (was[2] as number);
+    if (first === was[0] && name === was[1] && last === was[2]) return;
+    this.sql.run("UPDATE slack_who SET first = ?, who = ?, at = ? WHERE station = ? AND user = ?", [first, name, last, station, user]);
+    if (first !== was[0] || name !== was[1]) this.#slackNamesStale.add(station);
+  }
+
+  /// slack_who's row of `user` at a station found again of slack_said (some of their rows gone or written over).
+  #whoAgain(station: string, user: string): void {
+    const ids = [station, user, `<@${user}>`];
+    const of = (r: SqlRow) => slackId(String(r[0])) === user;
+    const firsts = this.sql.all(`SELECT user, MIN(at) FROM slack_said WHERE station = ? AND user IN (?, ?) AND ${HEARD} GROUP BY user`, ids).filter(of);
+    const lasts = this.sql.all(`SELECT user, who, MAX(at) FROM slack_said WHERE station = ? AND user IN (?, ?) AND ${HEARD} GROUP BY user`, ids).filter(of);
+    const was = this.sql.all("SELECT first, who, at FROM slack_who WHERE station = ? AND user = ?", [station, user])[0];
+    if (firsts.length === 0) {
+      if (was !== undefined) {
+        this.sql.run("DELETE FROM slack_who WHERE station = ? AND user = ?", [station, user]);
+        this.#slackNamesStale.add(station);
+      }
+      return;
+    }
+    const first = Math.min(...firsts.map((r) => r[1] as number));
+    const latest = lasts.reduce((a, b) => ((b[2] as number) > (a[2] as number) ? b : a));
+    const who = String(latest[1]);
+    const at = latest[2] as number;
+    if (was !== undefined && first === was[0] && who === was[1] && at === was[2]) return;
+    this.sql.run("INSERT OR REPLACE INTO slack_who (station, user, first, who, at) VALUES (?, ?, ?, ?, ?)", [station, user, first, who, at]);
+    if (was === undefined || first !== was[0] || who !== was[1]) this.#slackNamesStale.add(station);
+  }
+
+  /// slack_said's rows of a station `where` (of a session) go; slack_who's people they may have been the first or the
+  /// last heard of found again. Answers whether any went.
+  #forgetSaid(station: string, where: string, params: SqlValue[]): boolean {
+    const going = this.#keepWho ? this.sql.all(`SELECT user, MIN(at), MAX(at) FROM slack_said WHERE station = ? AND ${where} AND ${HEARD} GROUP BY user`, [station, ...params]) : [];
+    if (this.sql.run(`DELETE FROM slack_said WHERE station = ? AND ${where}`, [station, ...params]) === 0) return false;
+    const again = new Set<string>();
+    for (const [raw, lo, hi] of going) {
+      const user = slackId(String(raw));
+      const was = this.sql.all("SELECT first, at FROM slack_who WHERE station = ? AND user = ?", [station, user])[0];
+      if (was === undefined || (lo as number) <= (was[0] as number) || (hi as number) >= (was[1] as number)) again.add(user);
+    }
+    for (const user of again) this.#whoAgain(station, user);
+    return true;
+  }
+
+  /// slack_who filled whole of slack_said (either made now).
+  #fillSlackWho(): void {
+    const heard = new Map<string, { station: string; user: string; first: number; who: string; at: number }>();
+    for (const [station, raw, first] of this.sql.all(`SELECT station, user, MIN(at) FROM slack_said WHERE ${HEARD} GROUP BY station, user`)) {
+      const user = slackId(String(raw));
+      const key = K(String(station), user);
+      const was = heard.get(key);
+      if (was === undefined) heard.set(key, { station: String(station), user, first: first as number, who: "", at: -Infinity });
+      else was.first = Math.min(was.first, first as number);
+    }
+    for (const [station, raw, who, at] of this.sql.all(`SELECT station, user, who, MAX(at) FROM slack_said WHERE ${HEARD} GROUP BY station, user`)) {
+      const was = heard.get(K(String(station), slackId(String(raw))));
+      if (was !== undefined && (at as number) > was.at) {
+        was.who = String(who);
+        was.at = at as number;
+      }
+    }
+    this.sql.exec("BEGIN IMMEDIATE");
+    try {
+      this.sql.run("DELETE FROM slack_who", []);
+      for (const h of heard.values()) this.sql.run("INSERT INTO slack_who (station, user, first, who, at) VALUES (?, ?, ?, ?, ?)", [h.station, h.user, h.first, h.who, h.at]);
+      this.sql.exec("COMMIT");
+    } catch (e) {
+      try {
+        this.sql.exec("ROLLBACK");
+      } catch {
+        // Rolled back already.
+      }
+      throw e;
+    }
+    this.#slackNames.clear();
   }
 
   /// `slack_said` made now: filled from the transcripts held.
@@ -2491,6 +2612,7 @@ export class AccountDb {
     const sessions = this.sql.all("SELECT DISTINCT station, session FROM transcript");
     if (sessions.length === 0) return;
     this.sql.exec("BEGIN IMMEDIATE");
+    this.#fillingSaid = true;
     try {
       for (const [station, session] of sessions) {
         const items = this.sql.all("SELECT i, json FROM transcript WHERE station = ? AND session = ? ORDER BY i", [station as string, session as string]).map((r) => [r[0] as number, parse(r[1])] as [number, J]);
@@ -2504,6 +2626,8 @@ export class AccountDb {
         // Rolled back already.
       }
       throw e;
+    } finally {
+      this.#fillingSaid = false;
     }
   }
 
@@ -2519,17 +2643,21 @@ export class AccountDb {
   }
 
   /// The Slack people a station's agents were given messages from, by Slack id: their names as last heard (a bot is said
-  /// as its mention, `<@U…>`: its id out of it). Kept until `slack_said` changes.
+  /// as its mention, `<@U…>`: its id out of it), in the order they were first heard. Read of slack_who, kept until
+  /// what it names or its order changes (`#slackNamesStale`), and the list it was while it reads the same.
   #slackNames = new Map<string, [string, string][]>();
+  #slackNamesStale = new Set<string>();
   slackNames(station: string): [string, string][] {
     if (!this.#hasSlackSaid()) return [];
-    let names = this.#slackNames.get(station);
-    if (names === undefined) {
-      const rows = this.sql.all("SELECT user, who FROM slack_said WHERE station = ? AND out = 0 AND user IS NOT NULL AND who IS NOT NULL AND who != '' ORDER BY at", [station]);
-      names = [...new Map(rows.map((r) => [String(r[0]).replace(/^<@(.+)>$/, "$1"), String(r[1])])).entries()];
-      this.#slackNames.set(station, names);
-    }
-    return names;
+    const was = this.#slackNames.get(station);
+    if (was !== undefined && !this.#slackNamesStale.has(station)) return was;
+    this.#slackNamesStale.delete(station);
+    const names: [string, string][] = this.#slackWhoMade
+      ? this.sql.all("SELECT user, who FROM slack_who WHERE station = ? ORDER BY first, user", [station]).map((r) => [String(r[0]), String(r[1])])
+      : [...new Map(this.sql.all(`SELECT user, who FROM slack_said WHERE station = ? AND ${HEARD} ORDER BY at`, [station]).map((r) => [slackId(String(r[0])), String(r[1])])).entries()];
+    const kept = was !== undefined && equal(was, names) ? was : names;
+    this.#slackNames.set(station, kept);
+    return kept;
   }
 
   #forgetEntries(station: string, thread: number): void {
@@ -2545,7 +2673,7 @@ export class AccountDb {
         if (this.sql.run("DELETE FROM letter WHERE station = ? AND thread = ?", [station, Number(id)]) > 0) this.#tellLog("letter", station, id);
       } else {
         if (this.sql.run("DELETE FROM transcript WHERE station = ? AND session = ?", [station, id]) > 0) this.#tellLog("transcript", station, id);
-        if (this.#hasSlackSaid() && this.sql.run("DELETE FROM slack_said WHERE station = ? AND session = ?", [station, id]) > 0) this.#tellLog("slack", station, id);
+        if (this.#hasSlackSaid() && this.#forgetSaid(station, "session = ?", [id])) this.#tellLog("slack", station, id);
       }
     });
   }
@@ -2868,6 +2996,7 @@ export class AccountDb {
           for (const [session] of sessions) this.#tellLog("slack", station, String(session));
         }
       }
+      if (this.#slackWhoMade) this.sql.run("DELETE FROM slack_who WHERE station = ?", [station]);
       this.#slackNames.delete(station);
       if (this.#filesKept) this.sql.run("DELETE FROM file_kept WHERE station = ?", [station]);
       if (this.#mdKept) {

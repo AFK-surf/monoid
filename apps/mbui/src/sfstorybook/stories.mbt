@@ -147,7 +147,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
           },
         ),
         (
-          "不可用 · 大号",
+          "不可用、大号",
           fn(card) {
             side_by_side(card, fn(r) {
               @sf.icon_button_node(r, "send", fn() { "发送" }, fn() {  }, tips~, disabled=fn() { true }) |> ignore
@@ -282,7 +282,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "浮在列表上的圆形按钮，可带计数。",
       cases: [
         (
-          "无计数 · 有计数",
+          "无计数、有计数",
           fn(card) {
             side_by_side(card, fn(r) {
               @sf.float_button_node(r, "compose", fn() { "新对话" }, fn() {  }, tips~) |> ignore
@@ -302,7 +302,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "文字链接，可带图标或箭头。",
       cases: [
         (
-          "文字 · 图标 · 箭头",
+          "文字、图标、箭头",
           fn(card) {
             side_by_side(card, fn(r) {
               @sf.link_node(r, fn() { "查看详情" }, fn() {  }) |> ignore
@@ -316,14 +316,14 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
     {
       key: "chip",
       group: "按钮",
-      name: "标签与胶囊 Chip · Pill · Badge",
+      name: "标签与胶囊 Chip / Pill / Badge",
       file: "chip_node.mbt",
       api: [("chip_node.mbt", "chip_node"), ("chip_node.mbt", "toggle_chip_node"), ("chip_node.mbt", "press_chip_node"), ("chip_node.mbt", "pill_node"), ("chip_node.mbt", "badge_node")],
       play: Some(pill_play),
       about: "可按的小标签（Chip、可切换的 ToggleChip），以及只用来显示状态的胶囊（Pill）和角标（Badge）。",
       cases: [
         (
-          "Chip · ToggleChip（按一下切换）",
+          "Chip、ToggleChip（按一下切换）",
           fn(card) {
             let on = kept(true)
             side_by_side(card, fn(r) {
@@ -369,7 +369,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "不能误按的操作：按住直到填满才执行，中途松手回退；执行后原地变成限时撤销。键盘和读屏按下即执行。",
       cases: [
         (
-          "按住删除 · 可撤销",
+          "按住删除、可撤销",
           fn(card) {
             let done = kept(0)
             side_by_side(card, fn(r) {
@@ -432,7 +432,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "开和关两种状态，按一下切换；圆钮用弹簧弹到另一头，飞行中随速度拉长，落位恢复正圆。",
       cases: [
         (
-          "开 · 关 · 小号 · 不可用",
+          "开、关、小号、不可用",
           fn(card) {
             let a = kept(true)
             let b = kept(false)
@@ -640,7 +640,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "拖动、点按跳转、方向键调整一个数值；按住时圆钮和填充轨融成一滴，上方气泡显示数值。",
       cases: [
         (
-          "音量 · 不可用",
+          "音量、不可用",
           fn(card) {
             let v = kept(40.0)
             @sf.value_slider_node(card, fn() { "音量" }, fn() { v.get() }, fn(x) { v.set(x) }, format=fn(n) { "\{n}%" }, tips~)
@@ -660,7 +660,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "一行文字的输入框：可带标签、占位、密码，或不可用。",
       cases: [
         (
-          "占位 · 有字 · 密码 · 不可用",
+          "占位、有字、密码、不可用",
           fn(card) {
             @sf.input_node(card, @ui.Field::new(), placeholder="搜索对话") |> ignore
             @sf.input_node(card, @ui.Field::new(text="still.fail"), label="名字") |> ignore
@@ -703,7 +703,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
         (
           "提示 hint",
           fn(card) {
-            @sf.field_node(card, fn() { "station 名字" }, fn(b) { @sf.input_node(b, @ui.Field::new(text="mac-mini")) |> ignore }, hint=fn() {
+            @sf.field_node(card, fn() { "station 名字" }, fn(b) { @sf.input_node(b, @ui.Field::new(text="mac-mini"), placeholder="station 名字") |> ignore }, hint=fn() {
               "别人在列表里看到的名字"
             })
           },
@@ -745,7 +745,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
           },
         ),
         (
-          "窄排法：开关 · 选择 · 链接 · 自定控件",
+          "窄排法：开关、选择、链接、自定控件",
           fn(card) {
             let on = kept(true)
             let theme = kept(0)
@@ -773,7 +773,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "进度条（已知多少，或一直扫动）、圆环和转圈。",
       cases: [
         (
-          "进度条：40% · 不知道多少",
+          "进度条：40%、不知道多少",
           fn(card) {
             let t = @sf.theme
             @sf.progress_node(card, fn() { Some(0.4) }, fn() { t().p.line }, fn() { t().p.accent }) |> ignore
@@ -789,7 +789,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
           },
         ),
         (
-          "圆环 · 转圈",
+          "圆环、转圈",
           fn(card) {
             side_by_side(card, fn(r) {
               @sf.progress_ring_node(r, 24.0, fn() { 0.25 }, fn() { @sf.theme().p.accent }) |> ignore
@@ -883,14 +883,14 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
     {
       key: "marks",
       group: "标记",
-      name: "头像与标记 Avatar · Mark",
+      name: "头像与标记 Avatar / Mark",
       file: "mark_node.mbt",
       api: [("mark_node.mbt", "avatar_node"), ("mark_node.mbt", "tile_avatar_node"), ("mark_node.mbt", "station_mark_node"), ("mark_node.mbt", "workspace_badge_node")],
       play: None,
       about: "人的头像（没有图时是名字的首字）、station 和 workspace 的标记。",
       cases: [
         (
-          "头像：圆 · 方",
+          "头像：圆、方",
           fn(card) {
             side_by_side(card, fn(r) {
               for p in [("u1", "左子健"), ("u2", "Ada"), ("u3", "Bob")] {
@@ -902,7 +902,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
           },
         ),
         (
-          "station · workspace",
+          "station、workspace",
           fn(card) {
             side_by_side(card, fn(r) {
               @sf.station_mark_node(r, fn() { "🗼" }, fn() { "" }, 32.0, fn() { 0L }, fn() { 0 })
@@ -924,7 +924,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "页面里用的文字样式，都跟着系统的字号变大。",
       cases: [
         (
-          "title · lead · body · paragraph · caption · note · meta · code",
+          "title, lead, body, paragraph, caption, note, meta, code",
           fn(card) {
             for st in [
               ("标题 title", @sf.title),
@@ -933,7 +933,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
               ("段落 paragraph：较长的一段文字，行距更宽，读起来不累。", @sf.paragraph),
               ("说明 caption", @sf.caption),
               ("注 note", @sf.note),
-              ("附注 meta · 3 分钟前", @sf.meta),
+              ("附注 meta：3 分钟前", @sf.meta),
               ("let code = \"JetBrains Mono\"", @sf.code),
             ] {
               let (words, style) = st
@@ -985,7 +985,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       about: "消息里附带的文件：名字、大小，失败时可重试。",
       cases: [
         (
-          "正常 · 失败",
+          "正常、失败",
           fn(card) {
             @sf.file_card_node(
               card,
@@ -1047,7 +1047,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
     {
       key: "presenters",
       group: "弹层",
-      name: "菜单与弹层 Menu · Pick · Panel",
+      name: "菜单与弹层 Menu / Pick / Panel",
       file: "presenters.mbt",
       api: [("presenters.mbt", "menu"), ("presenters.mbt", "pick"), ("presenters.mbt", "confirm"), ("presenters.mbt", "ask"), ("presenters.mbt", "panel_nodes")],
       play: None,

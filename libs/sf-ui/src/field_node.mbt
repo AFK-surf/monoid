@@ -226,7 +226,8 @@ let field_disabled_alpha : Double = 0.55
 /// A field (field's, as nodes) in `parent`: its `label` (13, 500) over what `body` makes in it (the input), 6 apart,
 /// what `aside` makes at its head's end where it is given; under it what is wrong (`error`, 12 red) or else a `hint`
 /// (12, muted), as each says it now; on a wide page not in a panel as wide as what is typed in it
-/// needs (field_box_wide), else as wide as where it is.
+/// needs (field_box_wide), else as wide as where it is. Its label pressed (or what of it takes no press of its own), the
+/// keyboard's focus to what is typed in under it (field_focus_first), as an HTML label's.
 #callsite(autofill(loc))
 pub fn field_node(
   parent : @view.View,
@@ -241,7 +242,7 @@ pub fn field_node(
     // (in a panel's body: lent where it is, panel_in_lent)
     let wide_page = look_node(f) is Wide && f.lent(panel_in_lent) is None
     style_node(f, fn() { if wide_page { field_box_wide } else { field_box } })
-    f.box(fn(top) {
+    let head = f.box(fn(top) {
       style_node(top, fn() { field_top })
       words_node(top, label, fn() { field_label }) |> ignore
       // (at the row's end, what is left of it before it: field_top's JBetween)
@@ -255,10 +256,33 @@ pub fn field_node(
         None => ()
       }
     })
-    |> ignore
     body(f)
+    // (its label pressed, or anywhere of it that takes no press of its own (round what is typed in, its hint), as an
+    // HTML label for its input: the focus to the first of what `body` made that takes it, never what stands at its
+    // head's end; a finger moving on from there the column's it scrolls in, as any press's)
+    f.gesture(@ui.touch_slop(), tap=fn(_) { field_focus_first(f, head) }) |> ignore
     f.show(fn() { error() != "" }, fn(w) { words_node(w, error, fn() { field_error }) |> ignore })
     f.show(fn() { error() == "" && hint() != "" }, fn(w) { words_node(w, hint, fn() { field_hint }) |> ignore })
   })
   |> ignore
+}
+
+///|
+/// The keyboard's focus given to the first in field `f` (field_node's box) that takes it, in the tree's order, but what
+/// is in its head `head` (its label and what stands at its end): what is typed in, as a label's press gives its input.
+/// Nothing where none of it takes the focus now (disabled).
+fn field_focus_first(f : @view.View, head : @view.View) -> Unit {
+  let tree = f.tree
+  for at in tree.focus_order() {
+    if at.hosted || !tree.holds(f.id(), at.id) || tree.holds(head.id(), at.id) {
+      continue
+    }
+    match tree.view_of(at.id) {
+      Some(to) => {
+        to.ask_focus() |> ignore
+        return
+      }
+      None => ()
+    }
+  }
 }

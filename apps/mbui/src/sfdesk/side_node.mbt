@@ -21,6 +21,15 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     |> ignore
     dock_round_node(cut, at)
     cut.box(fn(side) {
+      // (where the rail's lit place pressed again finds its list: back_to_top.mbt)
+      side_made.val = Some(side)
+      side.owns(fn() {
+        match side_made.val {
+          Some(v) if physical_equal(v, side) => side_made.val = None
+          _ => ()
+        }
+      })
+      |> ignore
       side
       .width(By(fn() { Some(at().laid_w) }))
       .height(By(fn() { Some(at().box.3) }))

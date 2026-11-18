@@ -87,12 +87,17 @@ const hasSimctl = platform() === "darwin" && existsSync(SIMCTL);
 const run = (file: string, args: string[]) => Promise.resolve(execFileSync(file, args, { encoding: "utf8", maxBuffer: 16 << 20 }));
 
 test("a simulator turned from its view, all the way round", { skip: !hasSimctl && "no Xcode simulators here", timeout: 10 * 60_000 }, async () => {
-  const runtimes = JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.platform === "iOS");
-  // (SIM_RUNTIME: an older one, as "iOS-17")
-  const runtime = runtimes.findLast((r: any) => r.identifier.includes(process.env.SIM_RUNTIME ?? "")) ?? runtimes.at(-1);
-  const type = runtime.supportedDeviceTypes.find((t: any) => (process.env.SIM_TYPE ? t.name === process.env.SIM_TYPE : t.productFamily === "iPhone"));
-  const udid = simctl("create", `still.fail side rotate ${process.pid}`, type.identifier, runtime.identifier);
-  console.log(`on ${type.name}, ${runtime.name}`);
+  // (SIM_SHARED_UDID: the run's iPhone of the newest runtime, set booting before and shared by the side tests in turn,
+  // .github/workflows/side.yml: used where no runtime or type is asked for, kept booted and left as it was found)
+  const shared = !process.env.SIM_RUNTIME && !process.env.SIM_TYPE ? process.env.SIM_SHARED_UDID : undefined;
+  const udid = shared ?? (() => {
+    const runtimes = JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.platform === "iOS");
+    // (SIM_RUNTIME: an older one, as "iOS-17")
+    const runtime = runtimes.findLast((r: any) => r.identifier.includes(process.env.SIM_RUNTIME ?? "")) ?? runtimes.at(-1);
+    const type = runtime.supportedDeviceTypes.find((t: any) => (process.env.SIM_TYPE ? t.name === process.env.SIM_TYPE : t.productFamily === "iPhone"));
+    console.log(`on ${type.name}, ${runtime.name}`);
+    return simctl("create", `still.fail side rotate ${process.pid}`, type.identifier, runtime.identifier);
+  })();
   const dir = mkdtempSync(join(tmpdir(), "sim-rotate-"));
   const debug = new SimDebug(SIMCTL, udid, run, async () => { throw new Error("no view here"); });
   const helper = new HelperApp({ app: process.env.STILLFAIL_HELPER ?? execFileSync(process.execPath, [join(ROOT, "scripts/native.ts"), "file", "helper"], { encoding: "utf8" }).trim(), dir: process.env.STILLFAIL_HELPER_DIR ?? join(dir, "helper") });
@@ -107,7 +112,8 @@ test("a simulator turned from its view, all the way round", { skip: !hasSimctl &
     return got.lines.map((l) => l.text).filter((t) => t.startsWith("side-"));
   };
   try {
-    simctl("boot", udid);
+    // (the shared one is booting already, and `simctl boot` refuses a device that is)
+    if (!shared) simctl("boot", udid);
     simctl("bootstatus", udid, "-b");
     const app = join(dir, "SideRotate.app");
     mkdirSync(app);
@@ -197,10 +203,15 @@ test("a simulator turned from its view, all the way round", { skip: !hasSimctl &
     debug.close();
     // (the station's own, as this Mac granted it: left running)
     if (!process.env.STILLFAIL_HELPER_DIR) await helper.quit();
-    try {
-      simctl("shutdown", udid);
-    } catch {}
-    simctl("delete", udid);
+    if (shared) {
+      try { simctl("terminate", udid, APP); } catch {}
+      try { simctl("uninstall", udid, APP); } catch {}
+    } else {
+      try {
+        simctl("shutdown", udid);
+      } catch {}
+      simctl("delete", udid);
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });

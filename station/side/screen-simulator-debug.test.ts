@@ -61,10 +61,15 @@ const hasSimctl = platform() === "darwin" && existsSync(SIMCTL);
 const run = (file: string, args: string[]) => Promise.resolve(execFileSync(file, args, { encoding: "utf8", maxBuffer: 16 << 20, timeout: 60_000 }));
 
 test("a simulator's app found, started again and its log read", { skip: !hasSimctl && "no Xcode simulators here" }, async () => {
-  const runtimes = JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.platform === "iOS");
-  const runtime = runtimes.at(-1);
-  const type = runtime.supportedDeviceTypes.find((t: any) => t.productFamily === "iPhone");
-  const udid = simctl("create", `still.fail side debug ${process.pid}`, type.identifier, runtime.identifier);
+  // (SIM_SHARED_UDID: the run's iPhone of the newest runtime, set booting before and shared by the side tests in turn,
+  // .github/workflows/side.yml: used where no runtime or type is asked for, kept booted and left as it was found)
+  const shared = !process.env.SIM_RUNTIME && !process.env.SIM_TYPE ? process.env.SIM_SHARED_UDID : undefined;
+  const udid = shared ?? (() => {
+    const runtimes = JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.platform === "iOS");
+    const runtime = runtimes.at(-1);
+    const type = runtime.supportedDeviceTypes.find((t: any) => t.productFamily === "iPhone");
+    return simctl("create", `still.fail side debug ${process.pid}`, type.identifier, runtime.identifier);
+  })();
   const dir = mkdtempSync(join(tmpdir(), "sim-debug-"));
   const debug = new SimDebug(SIMCTL, udid, run, async () => { throw new Error("no view here"); });
   try {
@@ -116,10 +121,15 @@ test("a simulator's app found, started again and its log read", { skip: !hasSimc
     assert.ok(more > 0, "its log goes on after the restart");
   } finally {
     debug.close();
-    try {
-      simctl("shutdown", udid);
-    } catch {}
-    simctl("delete", udid);
+    if (shared) {
+      try { simctl("terminate", udid, APP); } catch {}
+      try { simctl("uninstall", udid, APP); } catch {}
+    } else {
+      try {
+        simctl("shutdown", udid);
+      } catch {}
+      simctl("delete", udid);
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -670,6 +670,20 @@ fn cn_row_node(
     })
     |> ignore
   }
+  // (its menu where the pointer's other button is pressed anywhere on it: its page opened, its name copied)
+  r.on_menu(fn(m) {
+    let named = @signals.untracked(name)
+    @sf.menu(
+      [
+        Some(
+          @sf.menu_item_of(@sf.t("web-pages.rowMenu.open"), fn() { (core.push)(Connect(station, @signals.untracked(id))) }, icon="arrow-up-right"),
+        ),
+        copy_item("web-pages.rowMenu.copyName", named),
+      ].filter(fn(i) { i is Some(_) }),
+      from=@sf.at_point(m.wx, m.wy),
+    )
+  })
+  |> ignore
   // (its lead a 28x28 face across the row's middle; a platform's mark said once on a row, where the row leads with it,
   // else before its team)
   r.pick(fn() { image.get() is Some(_) }, fn(p, pictured) {
