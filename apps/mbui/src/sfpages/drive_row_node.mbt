@@ -374,7 +374,13 @@ pub fn drive_row_node(
                 fn(b) { drive_row_menu(key, (row.items)(), Node(b), along=End) },
                 size=if compact { more_compact } else { more_size },
               )
-              more.alpha(By(fn() { if open_now() || @sf.lit_within_node(g) { 1.0 } else { 0.0 } })) |> ignore
+              // (taking no finger while it is clear: a tap where it is not seen is the row's; its focus kept, so the
+              // keyboard still reaches it, shown as it has it)
+              let more_shown = fn() { open_now() || @sf.lit_within_node(g) || more.focus_shown() }
+              more
+              .alpha(By(fn() { if more_shown() { 1.0 } else { 0.0 } }))
+              .takes(fn(w, h, _) { if more_shown() { [(0.0, 0.0, w, h)] } else { [] } })
+              |> ignore
             }
             _ => ()
           }
