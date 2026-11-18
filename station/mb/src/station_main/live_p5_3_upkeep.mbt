@@ -49,6 +49,9 @@ let p53_config_backups_kept : Int = 3
 let p53_node_part_ms : Double = 24.0 * 3600000.0
 
 ///|
+let p53_board_files_gone_ms : Double = 24.0 * 3600000.0
+
+///|
 priv struct P53Upkeep {
   bus : LiveBus
   jobs : P53Jobs
@@ -187,6 +190,9 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
     jb(true)
   })
   self.renewables(now, p53_thumbs_cap, p53_node_part_ms, note)
+  note("board files", async fn() {
+    Json::array(p53_gone_board_files(host, at(["board-files"]), p53_board_files_gone_ms, now).map(p53_s))
+  })
   let (free, total) = disk_of(data).unwrap_or((-1.0, -1.0))
   out["free"] = jn(free)
   out["total"] = jn(total)
@@ -323,6 +329,49 @@ async fn p53_remove_stale(host : @host.Host, dir : String, prefix : String, most
     }
   }
   gone
+}
+
+///|
+/// The files of drafts of 待派发 started or deleted (<person>/.gone/<draft>/<file> of board-files) put aside `most_ms`
+/// or longer before `now`, removed, and a draft's folder left empty (storage.ts `goneBoardFiles`).
+async fn p53_gone_board_files(host : @host.Host, dir : String, most_ms : Double, now : Double) -> Array[String] {
+  let gone = []
+  for person in p53_names(host, dir) {
+    let aside = @nodepath.join(sep(), [dir, person, ".gone"])
+    for draft in p53_names(host, aside) {
+      let files = p53_names(host, @nodepath.join(sep(), [aside, draft]))
+      let mut left = files.length()
+      for f in files {
+        let path = @nodepath.join(sep(), [aside, draft, f])
+        match p53_num(p53_lstat(host, path), "mtimeMs") {
+          Some(at) if now - at >= most_ms => {
+            p53_remove(host, path)
+            gone.push(person + "/" + draft + "/" + f)
+            left -= 1
+          }
+          _ => ()
+        }
+      }
+      if left == 0 {
+        p53_remove(host, @nodepath.join(sep(), [aside, draft]))
+      }
+    }
+  }
+  gone.sort_by(p53_units_order)
+  gone
+}
+
+///|
+/// As JavaScript's sort() compares strings: by their UTF-16 code units (MoonBit's compare puts the shorter first).
+fn p53_units_order(a : String, b : String) -> Int {
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  for i in 0..<n {
+    let d = a.unsafe_charcode_at(i) - b.unsafe_charcode_at(i)
+    if d != 0 {
+      return d
+    }
+  }
+  a.length() - b.length()
 }
 
 ///|
