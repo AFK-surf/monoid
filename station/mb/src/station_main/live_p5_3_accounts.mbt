@@ -65,6 +65,9 @@ priv struct P53Accounts {
   logins : @accounts_oauth.LoginManager
   /// The machine's own logins (accounts/index.ts `machine`: machine.ts), on a whole station.
   machine : @accounts_oauth.MachineLogins?
+  /// What the model catalog last said, as the accounts read it (catalog.ts `learn`'s table, one for the station):
+  /// the models' makers and prices, kept by P53Models.
+  pool_catalog : @accounts_pool.Catalog
 }
 
 ///|
@@ -109,7 +112,19 @@ fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
   let words : @accounts_oauth.Words = { tr: (lang, key, args) => ctx.words.tr(lang, key, args~) }
   let logins = p53_login_manager(bus, words, oauth_io, ctx.io)
   let machine = if bus.as_rig() { None } else { Some(p53_machine_logins(bus, words, oauth_io, ctx)) }
-  let a : P53Accounts = { bus, backend, ctx, accounts: None, sharing: None, sessions: None, oauth_io, claude_auth, logins, machine }
+  let a : P53Accounts = {
+    bus,
+    backend,
+    ctx,
+    accounts: None,
+    sharing: None,
+    sessions: None,
+    oauth_io,
+    claude_auth,
+    logins,
+    machine,
+    pool_catalog: @accounts_pool.Catalog::new(),
+  }
   me.val = Some(a)
   a
 }
@@ -194,7 +209,7 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
         rt,
         clock,
         p53_jv(raw),
-        @accounts_pool.Catalog::new(),
+        self.pool_catalog,
       ) catch {
         e => {
           p53_log("error", "accounts", "the accounts were not made", fields=p53_obj([("error", p53_s(p53_words(e)))]))
@@ -817,44 +832,81 @@ fn p53_uuid() -> String {
 priv struct P53Models {
   bus : LiveBus
   accounts : P53Accounts
+  /// What the catalog says (catalog.ts's table), told on to the accounts' (`P53Accounts::pool_catalog`).
+  told : @accounts_oauth.Catalog
   mut catalog : @accounts_oauth.ModelCatalog?
+  /// The cloud said the catalog changed before what was kept was read (Some: to that ETag, if it named one): asked for
+  /// once it is.
+  mut pending : String??
 }
 
 ///|
 fn P53Models::new(bus : LiveBus, accounts : P53Accounts) -> P53Models {
-  { bus, accounts, catalog: None }
+  { bus, accounts, told: @accounts_oauth.Catalog::new(), catalog: None, pending: None }
 }
 
 ///|
-/// still.fail cloud's origin, where the station is in a workspace of its.
+/// still.fail cloud's origin, where the station is in a workspace of its (models/module.ts `origin`: none where the
+/// plane is Comma's, which serves no catalog).
 fn p53_origin(bus : LiveBus) -> String? {
-  match p53_str(p53_cloud(bus), "origin") {
+  let cloud = p53_cloud(bus)
+  guard @cloud_net.provider_of(Some(p53_get(cloud, "provider"))) is Stillfail else { return None }
+  match p53_str(cloud, "origin") {
     Some(o) if o != "" => Some(o)
     _ => None
   }
 }
 
 ///|
+/// What the catalog says now, given the accounts (their makers' profiles and prices read it).
+fn P53Models::learned(self : P53Models) -> Unit {
+  let models : Map[String, @accounts_pool.JV] = Map::new()
+  if self.told.snapshot() is { "models": Object(m), .. } {
+    for k, v in m {
+      models[k] = p53_jv(v)
+    }
+  }
+  self.accounts.pool_catalog.models = models
+}
+
+///|
 fn P53Models::attach(self : P53Models) -> Unit {
   let bus = self.bus
+  let not_read = (e : Error) => p53_log(
+    "info",
+    "models",
+    "the model catalog was not read",
+    fields=p53_obj([("error", p53_s(p53_words(e)))]),
+  )
   ignore(
     bus.host.rt.fork(name="model catalog", async fn() {
       let catalog = @accounts_oauth.ModelCatalog::open(
         self.accounts.oauth_io,
-        @accounts_oauth.Catalog::new(),
+        self.told,
         @nodepath.join(sep(), [bus.data, "model-catalog.json"]),
         () => p53_origin(bus),
-        added=keys => self.accounts.new_models(keys),
+        added=keys => {
+          self.learned()
+          self.accounts.new_models(keys)
+        },
       ) catch {
         e => {
-          p53_log("info", "models", "the model catalog was not read", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+          not_read(e)
           return
         }
       }
       self.catalog = Some(catalog)
+      self.learned()
       // (asked for in the background at the start, and as the cloud says it changed: its presence socket, `models`)
-      catalog.refresh() catch {
-        e => p53_log("info", "models", "the model catalog was not read", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+      self.refresh(None) catch {
+        e => not_read(e)
+      }
+      // (what the cloud said meanwhile, while what was kept was read)
+      if self.pending is Some(etag) {
+        self.pending = None
+        self.refresh(etag) catch {
+          e => not_read(e)
+        }
       }
     }),
   )
@@ -874,14 +926,24 @@ fn P53Models::attach(self : P53Models) -> Unit {
 }
 
 ///|
-/// The cloud said the catalog changed (to `etag`): asked for again.
+/// The cloud said the catalog changed (to `etag`): asked for again, once what was kept is read if it is not yet.
 async fn P53Models::refresh(self : P53Models, etag : String?) -> Unit {
   match self.catalog {
-    Some(c) =>
+    Some(c) => {
       match etag {
         Some(e) => c.refresh(etag=e)
         None => c.refresh()
       }
-    None => ()
+      self.learned()
+    }
+    None => self.pending = Some(etag)
+  }
+}
+
+///|
+/// Once what it read of the cloud is written (the station stopping: models/module.ts's finalizer).
+async fn P53Models::written(self : P53Models) -> Unit {
+  if self.catalog is Some(c) {
+    c.written()
   }
 }

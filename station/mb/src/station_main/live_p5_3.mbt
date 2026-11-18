@@ -381,6 +381,7 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
       p.jobs.shutdown()
       ignore(p.program.call(p53_remote_key, "close", [])) catch { _ => () }
       p.share.close()
+      p.models.written() catch { _ => () }
       p.accounts.close()
       p.search.close()
       p.program.close()
