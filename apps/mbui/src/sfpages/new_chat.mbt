@@ -18,7 +18,9 @@
 // their row is in the chat's list (flight.mbt), what is written meanwhile going on into the chat's draft
 // (`composer.carry`); over the chat its scene and what is under it fade where they are
 // . The frame says what is over it and under it, and what it does as the page
-// becomes the chat (NewChatFrame).
+// becomes the chat (NewChatFrame). Clarified first (先理清再派发, its control among the choices: sfbase's clarify.mbt),
+// the first words are not sent: the page is the brief the agent makes of them instead (new_brief), the chat made only
+// once it is confirmed, the brief its first message, by the same way as words sent (new_send).
 
 ///|
 /// What the frame a new chat is drawn in gives it: the settings' core (the machine's own sessions, borrowing a
@@ -165,6 +167,11 @@ fn new_on(
   station : Json?,
   state : NewState,
 ) -> Unit {
+  // (its words with the agent, or their brief come: the brief in the page's place)
+  if state is Here && @sfbase.clarify.step.get() != Writing {
+    new_brief(c, src, w, frame, v, station)
+    return
+  }
   if c.width < @sf.page_narrow_most || c.ime_inset() > 0.0 {
     new_narrow(c, src, w, frame, v, station, state)
   } else {
@@ -218,22 +225,18 @@ fn new_narrow(
   // the scene in all the page, its end clear of the foot over it (mNewBody's --m-new-foot: as tall as the foot was
   // last laid out)
   let clear = @motion.measured(c, "new/foot").unwrap_or(0.0)
-  c.box(style=new_scene_room, fn() {
-    c.list("new/scene", 1, new_scene_guess, fn(_) {
-      c.box(style=new_scene_column, fn() {
-        let scene = c.box(style=new_scene_narrow, fn() { new_scene_narrow_body(c, src, frame, v, station, state) })
-        // fading where it is (as it is drawn); back, the chat not made
-        match state {
-          Going(up, _) => c.look_by(scene, fn() { @ui.look(alpha=1.0 - up.get(c)) })
-          _ => if sending_up > 0.0 { c.look(scene, @ui.look(alpha=1.0 - sending_up)) }
-        }
-        list_space(c, clear)
-      })
-      |> ignore
+  new_scroll(c, "new/scene", fn() {
+    c.box(style=new_scene_column, fn() {
+      let scene = c.box(style=new_scene_narrow, fn() { new_scene_narrow_body(c, src, frame, v, station, state) })
+      // fading where it is (as it is drawn); back, the chat not made
+      match state {
+        Going(up, _) => c.look_by(scene, fn() { @ui.look(alpha=1.0 - up.get(c)) })
+        _ => if sending_up > 0.0 { c.look(scene, @ui.look(alpha=1.0 - sending_up)) }
+      }
+      list_space(c, clear)
     })
     |> ignore
   })
-  |> ignore
   // gone to the chat: the scene seen only where it was seen, over the foot; what the band frosted and the composer
   // covered stays hidden as they leave (the choices and the band fade sooner than the scene, the composer is the
   // chat's, under it)
@@ -258,6 +261,7 @@ fn new_narrow(
           over = c.box(style=new_over, fn() {
             if !going {
               new_notices(c, v, station, width)
+              new_clarify_line(c, width)
             }
             c.box(style=@ui.style(w=Fixed(width)), fn() { new_choosers(c, src, w, v, station, state) }) |> ignore
           })
@@ -416,6 +420,11 @@ fn new_controls(
         preset_fixed_menu(src, w, address, v, @sf.t("web-main.preset.fixedModel", args=[("name", @sf.title_accented(text(v, "presetName")))]), from)
       }
     })
+  }
+  // (and whether its words are clarified before it is dispatched: in the composer's row; over the composer, a line
+  // of its own, new_clarify_line)
+  if !floating {
+    new_clarify_control(c, going)
   }
 }
 
@@ -610,6 +619,10 @@ fn new_wide(
       if !(state is Held(_)) {
         // what is sent waits for its quota, or its station went as it was written in (the page stays, said so)
         new_notices(c, v, station, col, part=fn(i) { new_part(c, i, state, false) })
+        // clarified first: what sending does then
+        if @sfbase.clarify.on.get() {
+          new_part(c, new_clarify_hint(c, col), state, false)
+        }
       }
       match state {
         Held(error) =>
@@ -713,11 +726,17 @@ fn new_composer_place(
     Held(_) if address == "" => list_space(c, @motion.measured(c, "new/composer").unwrap_or(new_composer_room(c, wide)))
     _ => {
       let held = state is Held(_)
+      // (clarified first: its words go to be organized into a brief, send saying so)
+      let clarifying = @sfbase.clarify.on.get() && !(state is Going(_, _))
       let spec : ComposerSpec = {
         station: address,
         draft: new_chat_drafts + w.id,
         session: "",
-        placeholder: @sf.t("web-main.newChat.placeholder"),
+        placeholder: if clarifying {
+          @sf.t("web-main.newChat.clarify.placeholder")
+        } else {
+          @sf.t("web-main.newChat.placeholder")
+        },
         toolbar: if wide && !held { Some(fn() { new_tools(c, src, w, v, station) }) } else { None },
         note: [],
         tail: None,
@@ -736,7 +755,21 @@ fn new_composer_place(
       let at = if wide { composer_alone } else { composer_place(c, c.width) }
       let place = c.box(style=new_composer_box, fn() {
         c.sized(width, c.height, fn() {
-          composer(c, src, w, spec, fn(d) { new_send(c, src, frame, v, address, name, d) }, place=at)
+          composer(
+            c,
+            src,
+            w,
+            spec,
+            fn(d) {
+              if clarifying {
+                new_clarify_ask(src, address, d)
+              } else {
+                new_send(c, src, frame, v, address, name, d)
+              }
+            },
+            place=at,
+            send_words=if clarifying { @sf.t("web-main.newChat.clarify.send") } else { "" },
+          )
         })
       })
       // over what is under it on the page (the web's dock, over the page): going between its places, it passes over
@@ -1119,6 +1152,190 @@ fn new_send(
   app.nav.become(Chat(r))
 }
 
+// ── clarified first: the brief ────────────────────────────────────────────
+
+///|
+/// What scrolls in the page (its scene narrow, the brief): `body` in all the page, scrolled when it does not fit.
+fn new_scroll(c : @ui.Ctx, key : String, body : () -> Unit) -> Unit {
+  c.box(style=new_scene_room, fn() { c.list(key, 1, new_scene_guess, fn(_) { body() }) |> ignore }) |> ignore
+}
+
+///|
+/// Whether its words are clarified before it is dispatched (先理清再派发), in the composer's row among the choices as
+/// the station's control is (new_capsule): its spark and its name, the accent's with a check after it while it is on
+/// (its words the accent's words', AccentText, as the board's chip on: the accent itself too light for words on the
+/// composer's ground); pressed,
+/// on or off (the page's own for now: sfbase's clarify.mbt).
+fn new_clarify_control(c : @ui.Ctx, going : Bool) -> Unit {
+  let t = @sf.theme()
+  let on = @sfbase.clarify.on.get()
+  let ink = if on { t.p.accent_text } else { t.p.text }
+  let label = @sf.t("web-main.newChat.clarify.toggle")
+  new_capsule(
+    c,
+    "new/clarify",
+    label,
+    false,
+    fn() {
+      @sf.icon(c, "sparks", size=new_mark, color=ink) |> ignore
+      c.box(style=new_station_name, drop=new_drop_station_name, fn() {
+        c.text(label, style=if on { new_capsule_words_on } else { new_capsule_words }) |> ignore
+      })
+      |> ignore
+      if on {
+        @sf.icon(c, "check", size=new_chevron, color=ink) |> ignore
+      }
+    },
+    on_press=fn() {
+      if !going {
+        @sfbase.clarify.on.set(!on)
+      }
+    },
+  )
+}
+
+///|
+/// The same over the composer narrow, in a line of its own over the choices (`width` wide): a chip (@sf.chip, its
+/// check and the accent's words while on), what sending does then beside it; the choices' glass row as it was.
+fn new_clarify_line(c : @ui.Ctx, width : Double) -> Unit {
+  let on = @sfbase.clarify.on.get()
+  c.box(style=new_clarify_line_box.then(@ui.style(w=Fixed(width))), fn() {
+    @sf.chip(c, @sf.t("web-main.newChat.clarify.toggle"), key="new/clarify", icon=if on { "check" } else { "sparks" }, ink=if on { @sf.theme().p.accent_text } else { @sf.theme().p.text }, on_press=fn() {
+      @sfbase.clarify.on.set(!on)
+    })
+    if on {
+      c.text(@sf.t("web-main.newChat.clarify.hint"), style=new_clarify_hint_words) |> ignore
+    }
+  })
+  |> ignore
+}
+
+///|
+/// What sending does while it is clarified first, in a line of its own (`width` wide): its words go to the agent to
+/// be made a brief, the chat starting once that is confirmed.
+fn new_clarify_hint(c : @ui.Ctx, width : Double) -> Int {
+  c.box(style=new_clarify_hint_box.then(@ui.style(w=Fixed(width))), fn() {
+    @sf.icon(c, "sparks", size=new_mark, color=@sf.theme().p.muted) |> ignore
+    c.text(@sf.t("web-main.newChat.clarify.hint"), style=new_clarify_hint_words) |> ignore
+  })
+}
+
+///|
+/// The words of draft `d` sent to be clarified on `station` (sfbase's clarify_start): left in the draft as they are,
+/// for 按原话派发 and 返回修改; nothing made, nothing sent.
+fn new_clarify_ask(src : Source, station : String, d : Writing) -> Unit {
+  let words = d.text.get().trim(chars=" \n\t").to_owned()
+  if words == "" || station == "" {
+    return
+  }
+  @ui.haptic(KeyboardTap)
+  @sfbase.clarify_start(src, station, words)
+}
+
+///|
+/// The brief in the page's place (Create with agent's): what it is and where it will start, the words it was made
+/// of, then while the agent organizes them its four parts breathing (整理中…), else each part to edit (目标, 范围, 验收标准,
+/// 需要确认的问题); under it 确认并开跑 (the chat started with the brief its first message), 按原话派发 (with the words as
+/// they were) and, quiet, 返回修改 (the words back in the composer). Scrolled in all the page, a column as wide as
+/// the page's wide one at most.
+fn new_brief(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFrame, v : Json?, station : Json?) -> Unit {
+  let clarify = @sfbase.clarify
+  let ready = clarify.step.get() == Ready
+  let address = text(station, "station")
+  let name = text(station, "name")
+  let narrow = c.width < @sf.page_narrow_most
+  let col = if narrow { c.width - 2.0 * new_brief_in } else { dmin(new_column_w, c.width - 2.0 * new_column_in) }
+  let d = writing(src, new_chat_drafts + w.id)
+  // the chat started with `words` its first message, by the way words sent go (new_send): the draft holding them
+  let start = fn(words : String) {
+    if words == "" {
+      return
+    }
+    if d.text.get() != words {
+      d.field.set(words)
+      @sfbase.writing_text(src, d, words)
+    }
+    @sfbase.clarify_reset()
+    new_send(c, src, frame, v, address, name, d)
+  }
+  new_scroll(c, "new/brief", fn() {
+    c.box(style=new_brief_page, fn() {
+      c.box(style=new_brief_column.then(@ui.style(w=Fixed(col))), fn() {
+        // what it is, and where it will start
+        c.box(style=new_brief_head, fn() {
+          @sf.icon(c, "sparks", size=new_brief_mark, color=@sf.theme().p.accent) |> ignore
+          c.text(@sf.t("web-main.newChat.clarify.title"), style=new_brief_title) |> ignore
+        })
+        |> ignore
+        c.text(
+          if ready {
+            @sf.t("web-main.newChat.clarify.lead", args=[("station", new_station_words(station))])
+          } else {
+            @sf.t("web-main.newChat.clarify.organizing")
+          },
+          style=new_sub_left,
+        )
+        |> ignore
+        c.box(style=new_brief_body, fn() {
+          // the words it was made of
+          c.box(style=new_brief_part, fn() {
+            c.text(@sf.t("web-main.newChat.clarify.said"), style=new_brief_label_muted) |> ignore
+            c.text(clarify.words.get(), style=new_brief_said) |> ignore
+          })
+          |> ignore
+          let parts = [
+            ("goal", "web-main.newChat.clarify.goal", clarify.goal, 2),
+            ("scope", "web-main.newChat.clarify.scope", clarify.scope, 3),
+            ("accept", "web-main.newChat.clarify.accept", clarify.accept, 4),
+            ("ask", "web-main.newChat.clarify.ask", clarify.ask, 2),
+          ]
+          if ready {
+            for part in parts {
+              let (key, label, f, rows) = part
+              c.box(style=new_brief_part, fn() {
+                c.text(@sf.t(label), style=new_brief_label) |> ignore
+                @sf.textarea(c, "new/brief/" + key, rows~, most=12, field=f, placeholder=@sf.t("web-main.newChat.clarify.empty"))
+                |> ignore
+              })
+              |> ignore
+            }
+          } else {
+            // (organized meanwhile: its four parts breathing in their places, as tall as they will be)
+            @sf.wait_line(c, @sf.t("web-main.newChat.clarify.organizing"), key="new/brief")
+            @sf.bones(c, fn() {
+              for part in parts {
+                let (_, label, _, rows) = part
+                c.box(style=new_brief_part, fn() {
+                  c.text(@sf.t(label), style=new_brief_label) |> ignore
+                  c.text(@sf.sample_words(rows * 8), style=new_brief_said) |> ignore
+                })
+                |> ignore
+              }
+            })
+          }
+        })
+        |> ignore
+        c.box(style=if narrow { new_brief_actions_narrow } else { new_brief_actions }, fn() {
+          if ready {
+            @sf.button(c, @sf.t("web-main.newChat.clarify.confirm"), key="new/brief/confirm", tone=Primary, icon="play", on_press=fn() {
+              start(@sfbase.clarify_brief_text())
+            })
+            @sf.button(c, @sf.t("web-main.newChat.clarify.asIs"), key="new/brief/as-is", on_press=fn() {
+              start(clarify.words.get())
+            })
+          }
+          @sf.button(c, @sf.t("web-main.newChat.clarify.back"), key="new/brief/back", tone=Ghost, on_press=fn() {
+            @sfbase.clarify_back()
+          })
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+}
+
 // ── the run picker ────────────────────────────────────────────────────────
 
 ///|
@@ -1354,3 +1571,88 @@ let new_notice_box : @ui.Style = @ui.css("px=S3 py=S2 mb=S2 radius=Xl bg=A(Warn,
 ///|
 // kept across runs: a value (no field of it changes)
 let new_notice_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, w=Full)
+
+///|
+/// What sending does while it is clarified first (as the notices' line, without their ground): its spark, 6 before
+/// its words, muted; 8 under it.
+// kept across runs: a value (no field of it changes)
+let new_clarify_hint_box : @ui.Style = @ui.css("row px=S1 pb=S2 gap=S1_5 align=AStart")
+
+///|
+/// The words of the control that clarifies first while it is on (board_node's chip_on_look's colour).
+// kept across runs: a value (no field of it changes)
+let new_capsule_words_on : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=AccentText, wrap=false, w=Cut)
+
+///|
+/// Its line over the choices narrow: the chip, what sending does beside it, 8 apart, 6 over the choices, 2 in as they are.
+// kept across runs: a value (no field of it changes)
+let new_clarify_line_box : @ui.Style = @ui.css("row px=S0_5 pb=S1_5 gap=S2 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let new_clarify_hint_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=@sf.grow)
+
+///|
+/// The brief: 16 in from the page's sides narrow (the column's 32 wide), its mark.
+let new_brief_in : Double = 16.0
+
+///|
+let new_brief_mark : Double = 18.0
+
+///|
+///|
+/// The brief's page: its column in the middle, 32 over it, 24 under it.
+// kept across runs: a value (no field of it changes)
+let new_brief_page : @ui.Style = @ui.css("w=Full pt=S8 pb=S6 align=ACenter")
+
+///|
+/// Its column: its head, what it says, its card, its actions, 10 apart.
+// kept across runs: a value (no field of it changes)
+let new_brief_column : @ui.Style = @ui.css("gap=S2_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let new_brief_head : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let new_brief_title : @ui.TextStyle = @ui.text_style(size=Heading, weight=Semibold, color=Fg, w=@sf.grow)
+
+///|
+/// What it says under its head: as the page's sub, from the start.
+// kept across runs: a value (no field of it changes)
+let new_sub_left : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
+
+///|
+/// Its parts, 16 apart, 8 under what it says: the words it was made of, then each part of the brief.
+// kept across runs: a value (no field of it changes)
+let new_brief_body : @ui.Style = @ui.css("w=Full pt=S2 gap=S4")
+
+///|
+/// A part of it: its name over what it holds, 6 apart.
+// kept across runs: a value (no field of it changes)
+let new_brief_part : @ui.Style = @ui.css("w=Full gap=S1_5")
+
+///|
+/// A part's name (as a field's label: 13, 500), the words' muted.
+// kept across runs: a value (no field of it changes)
+let new_brief_label : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let new_brief_label_muted : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Muted, w=Full)
+
+///|
+/// The words it was made of: as they were typed, the body's.
+// kept across runs: a value (no field of it changes)
+let new_brief_said : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
+
+///|
+/// Its actions: wide, in a row from the end, 8 apart, 6 under its parts; narrow, each the column's width, one over
+/// the other.
+// kept across runs: a value (no field of it changes)
+let new_brief_actions : @ui.Style = @ui.css("row w=Full pt=S1_5 gap=S2 justify=JEnd align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let new_brief_actions_narrow : @ui.Style = @ui.css("w=Full pt=S1_5 gap=S2 align=AStretch")

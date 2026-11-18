@@ -1235,5 +1235,22 @@
   "web-main.share.mask": "账号名",
   "web-main.share.maskAll": "完全打码",
   "web-main.share.maskSome": "部分打码",
-  "web-main.share.masked": "已打码"
+  "web-main.share.masked": "已打码",
+  "web-main.newChat.clarify.toggle": "先理清再派发",
+  "web-main.newChat.clarify.hint": "发送后，agent 会先把你的话整理成任务简报，你确认后再开跑。",
+  "web-main.newChat.clarify.send": "整理",
+  "web-main.newChat.clarify.placeholder": "说说要做的事，先整理成任务简报",
+  "web-main.newChat.clarify.title": "任务简报",
+  "web-main.newChat.clarify.organizing": "正在把你的话整理成任务简报…",
+  "web-main.newChat.clarify.lead": "改好后确认，会在 {station} 上以这份简报开启新会话。",
+  "web-main.newChat.clarify.said": "你的原话",
+  "web-main.newChat.clarify.goal": "目标",
+  "web-main.newChat.clarify.scope": "范围",
+  "web-main.newChat.clarify.accept": "验收标准",
+  "web-main.newChat.clarify.ask": "需要确认的问题",
+  "web-main.newChat.clarify.empty": "没有就留空",
+  "web-main.newChat.clarify.confirm": "确认并开跑",
+  "web-main.newChat.clarify.asIs": "按原话派发",
+  "web-main.newChat.clarify.back": "返回修改",
+  "web-main.newChat.clarify.failed": "没能整理成简报：{error}。可以按原话发送，或稍后再试。"
 }

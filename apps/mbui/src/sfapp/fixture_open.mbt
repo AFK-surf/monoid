@@ -639,6 +639,19 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_model = n.model
       n.d_runtime = n.runtime
     }
+    // (its words clarified first: typed, being made a brief, the brief come, one of its parts edited)
+    if mode.has_prefix("newchat-clarify") {
+      let clarify = @sfbase.clarify
+      clarify.on.set(true)
+      if mode != "newchat-clarify" {
+        clarify.words.set(@sffixture.fix_clarify_words)
+        clarify.step.set(if mode == "newchat-clarify-organizing" { Organizing } else { Ready })
+        @sfbase.clarify_fill(@sffixture.fix_clarify_brief())
+      }
+      if mode == "newchat-clarify-edited" {
+        clarify.scope.set(clarify.scope.text() + "\n不改动现有的分享链接功能。")
+      }
+    }
     if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
     if mode == "newchat-ultrafast-model" {
       let n = @sffixture.new_fix

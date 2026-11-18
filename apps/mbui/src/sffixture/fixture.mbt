@@ -2669,6 +2669,12 @@ pub fn fixture(mode : String) -> Source {
           f.changed()
           done(Ok(Json::object({})))
         }
+        // a new chat's words made a brief (newChat.clarify, newchat_fixture.mbt): after a beat, as an agent takes a
+        // while; never while the page is to show it being organized (newchat-clarify-organizing)
+        "newChat.clarify" =>
+          if f.mode != "newchat-clarify-organizing" {
+            fix_later(fix_clarify_ms, fn() { done(Ok(fix_clarify_brief())) })
+          }
         _ =>
           match fixture_new_call(f, name, params) {
             Some(r) => done(r)

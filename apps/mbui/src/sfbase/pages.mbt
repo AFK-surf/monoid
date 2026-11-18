@@ -1541,8 +1541,10 @@ pub fn reset() -> Unit {
   places_back_said.set(0)
   // when the flash of a message gone to on a page made as nodes is over (chat_list.mbt)
   flash_rest_nodes.val = -1.0
-  // a new chat while it is made (fresh.mbt)
+  // a new chat while it is made (fresh.mbt), and whether it is clarified first (clarify.mbt)
   fresh_reset()
+  clarify.on.set(false)
+  clarify_reset()
   // how times are said (message_words.mbt)
   absolute_times.set(false)
   // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled

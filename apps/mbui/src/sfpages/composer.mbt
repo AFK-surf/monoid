@@ -294,7 +294,8 @@ fn notice_choice_key(chat : String, mark : String) -> String {
 /// The composer (ComposerView) for `spec`, `send` what pressing send (or Enter) does with what is written once it is
 /// ready. Drawn where its place is; a page lays it out (its width: composer_width). `place`: where it stands at a
 /// panel's foot (composer_place: each shape where it stands concentric with the corners it is in, the morph between
-/// them).
+/// them). `send_words`: what send says it does where it does other than send ("" its arrow alone: a new chat clarified
+/// first says 整理, its words going to be organized, not sent).
 pub fn composer(
   c : @ui.Ctx,
   src : Source,
@@ -302,6 +303,7 @@ pub fn composer(
   spec : ComposerSpec,
   send : (Writing) -> Unit,
   place? : ComposerPlace = composer_alone,
+  send_words? : String = "",
 ) -> Unit {
   let p = @sf.theme().p
   let w = writing(src, spec.draft)
@@ -615,7 +617,7 @@ pub fn composer(
               None => ()
             }
             said = composer_note(c, spec.note)
-            send_i = send_button(c, ready, w.starting.get(), submit)
+            send_i = send_button(c, ready, w.starting.get(), submit, words=send_words)
           })
           |> ignore
         })
@@ -625,7 +627,7 @@ pub fn composer(
         words = composer_text(c, src, ws, spec, w, cap, multiline, hint, submit)
         c.box(style=tail_row, fn() {
           said = composer_note(c, spec.note)
-          send_i = send_button(c, ready, w.starting.get(), submit)
+          send_i = send_button(c, ready, w.starting.get(), submit, words=send_words)
         })
         |> ignore
       }
@@ -1140,13 +1142,14 @@ pub fn pick_files(w : Writing) -> Unit {
 /// Send (sendBtn): 32 round, the text's ink with the canvas's arrow while it can go (a step lighter pointed at), the
 /// ink faint over the box's ground while not, going from one to the other as a control answers (a button's background
 /// over --dur: sent, it fades to faint); a turning ring while a new chat is made for it.
-fn send_button(c : @ui.Ctx, ready : Bool, starting : Bool, submit : () -> Unit) -> Int {
+fn send_button(c : @ui.Ctx, ready : Bool, starting : Bool, submit : () -> Unit, words? : String = "") -> Int {
   let p = @sf.theme().p
   let id = c.id("composer/send")
   let hot = ready && c.lit(id)
+  let said = if words == "" { @sf.t("web-main.composer.send") } else { words }
   // (whatever this build saw: submit asks whether it is ready as it is pressed)
   c.on_press(id, fn() { submit() })
-  @sf.tip(c, "composer/send", id, @sf.t("web-main.composer.send"))
+  @sf.tip(c, "composer/send", id, said)
   // (told as it is built, eased as it is painted: what builds the composer is not built again each frame they go, as
   // its words are sent)
   let able = @motion.told(c, "composer/send/able", if ready { 1.0 } else { 0.0 }, spec=@motion.tween(@sf.dur_ms, ease=Out))
@@ -1155,16 +1158,24 @@ fn send_button(c : @ui.Ctx, ready : Bool, starting : Bool, submit : () -> Unit) 
     let on = @sf.mix(@sf.mix(p.text, send_hot, p.canvas), lit, p.text)
     @sf.mix(on, able, @sf.over(p.raised, @sf.alpha(p.text, send_off)))
   }
-  let b = c.box(style=@sf.round_face().then(@ui.style(bg=Data(ground_at(able.target(), lit.target())))), id~, fn() {
+  // (saying what it does: as high and round as the arrow's, as wide as its words need, its spark before them)
+  let face = if words == "" { @sf.round_face() } else { @sf.round_face().then(send_worded) }
+  let b = c.box(style=face.then(@ui.style(bg=Data(ground_at(able.target(), lit.target())))), id~, fn() {
     if starting {
       @sf.spinner(c, size=@sf.theme().round.glyph) |> ignore
-    } else {
+    } else if words == "" {
       let arrow = @sf.icon(c, "arrow-up", size=@sf.theme().round.glyph, color=@sf.mix(p.canvas, able.target(), p.raised))
       c.ink_by(arrow, fn() { @sf.mix(p.canvas, able.get(c), p.raised) })
+    } else {
+      let spark = @sf.icon(c, "sparks", size=send_worded_mark, color=@sf.mix(p.canvas, able.target(), p.raised))
+      c.ink_by(spark, fn() { @sf.mix(p.canvas, able.get(c), p.raised) })
+      // (its ink the arrow's, as it is painted)
+      let said_i = c.text(words, style=send_worded_words)
+      c.ink_by(said_i, fn() { @sf.mix(p.canvas, able.get(c), p.raised) })
     }
   })
   c.bg_by(b, fn() { ground_at(able.get(c), lit.get(c)) })
-  c.semantics(b, Button, id~, label=@sf.t("web-main.composer.send"), disabled=!ready)
+  c.semantics(b, Button, id~, label=said, disabled=!ready)
   b
 }
 
@@ -1972,6 +1983,18 @@ let tools_gap : @ui.Style = @ui.style(w=@sf.grow)
 /// changes shape what it says goes with send, never closer to it or further.
 // kept across runs: a value (no field of it changes)
 let tail_row : @ui.Style = @ui.css("row gap=S1 align=ACenter")
+
+///|
+/// Send saying what it does (send_button's `words`): as wide as its words, 12 in, its spark 4 before them.
+// kept across runs: a value (no field of it changes)
+let send_worded : @ui.Style = @ui.css("row w=Hug px=S3 gap=S1")
+
+///|
+let send_worded_mark : Double = 14.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let send_worded_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Fg, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
