@@ -151,7 +151,7 @@ pub let mouse_chat_list : ChatList = {
   band_h: 32.0,
   band_words: @ui.text_style(size=Ui, color=Fg, leading=L6, wrap=false, w=Full),
   side_list: @ui.css("w=Full h=Full px=S2"),
-  side_row: @ui.css("row w=Full min_h=S8 py=S1_5 gap=S2").then(@ui.style(px=room(mouse_band_pad), radius=side_row_radius)),
+  side_row: @ui.css("row w=Full min_h=S8 py=S1_5 gap=S2 align=ACenter").then(@ui.style(px=room(mouse_band_pad), radius=side_row_radius)),
   side_hint: @ui.css("row w=Full py=S1_5 gap=S2 align=ACenter").then(@ui.style(px=room(mouse_band_pad))),
   side_drop: @ui.css("w=Full").then(@ui.style(radius=side_row_radius)),
   heading: @ui.css("w=Full pt=S3_5 pb=S1"),

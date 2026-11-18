@@ -568,14 +568,16 @@ test "大屏, 中屏: a button of the bar says its keys in its tip after its wor
       assert_true(keys != "", msg="\{win.0}: \{tip.1} has keys")
       guard wide_bar_button(t, label) is Some(b) else { fail("\{win.0}: no \{label}") }
       wide_bar_tip(t, label)
-      // (its words, its keys after them on their line, under the button)
+      // (its words, then its keys each a cap after them, in their order, on their line, under the button)
       let under = fn(w : String) { t.locate(w).filter(fn(p) { p.1 > b.1 + b.3 }) }
-      match (under(label), under(keys)) {
-        ([w, ..], [k, ..]) => {
-          assert_true(k.0 > w.0, msg="\{win.0}: \{label}'s keys after it: \{Repr(w)} \{Repr(k)}")
-          assert_true((k.1 - w.1).abs() < 1.0, msg="\{win.0}: \{label}'s keys on its line: \{Repr(w)} \{Repr(k)}")
+      guard under(label) is [w, ..] else { fail("\{win.0}: \{label}'s tip: \{Repr(under(label))}") }
+      let mut after = w.0
+      for cap in @sf.key_caps(keys) {
+        // (on the words' line, after the key before it)
+        guard under(cap).filter(fn(k) { k.0 > after && (k.1 - w.1).abs() < 2.0 }) is [k, ..] else {
+          fail("\{win.0}: \{label}'s key \{cap} after \{after} on its line \{Repr(w)}: \{Repr(under(cap))}")
         }
-        (ws, ks) => fail("\{win.0}: \{label}'s tip: \{Repr(ws)} \{Repr(ks)}")
+        after = k.0
       }
     }
   }

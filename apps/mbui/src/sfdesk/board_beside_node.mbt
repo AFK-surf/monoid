@@ -1,0 +1,64 @@
+// The chat beside the board's page (board.mbt's board_beside, under its own bar): made as nodes where 实验性功能's
+// 试用新对话页 is on (sfbase's chat_page_nodes), its messages chat_body_nodes' and its composer sfpages'
+// chat_composer_node in their list's foot, as the pane's chat page has them (pane_made's, chat_page_made's); else its
+// old view in Home's entry's island, as before. Turned either way while it shows, the one chosen at once in its place.
+
+///|
+/// Chat `r`'s page beside the board in `page`, Home's entry `serial`'s: as 试用新对话页 says now, made again in its
+/// place as that turns or another chat is shown there.
+fn board_beside_page(page : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, serial : Int) -> Unit {
+  page.pick(
+    fn() { (@sfbase.chat_page_nodes.get(), r.station + "\u{1}" + r.session) },
+    fn(p, made) {
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      if made.0 {
+        board_beside_nodes(p, src, r, tips, serial)
+      } else {
+        // (its old view in Home's entry's island: let go with it, as a side panel's)
+        app.nav.page_island(p, serial, fn(c, _page) {
+          // (as page_one does for a chat in the pane: a mouse can pick its words and copy or quote them)
+          c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), fn() {
+            match @sfbase.workspace_in_view(src).0 {
+              Some(w) => chat_page(c, src, w, r)
+              None => ()
+            }
+          })
+        }, key=fn() { tape_island_key() + " board " + r.station + ":" + r.session })
+        .grow(Is(1.0))
+        |> ignore
+      }
+    },
+    at_once=true,
+  )
+}
+
+///|
+/// Chat `r`'s page beside the board made as nodes in `p`, as chat_page_made makes a chat's in the pane: its own source,
+/// Home's entry's (what it reads let go with `p`), the chat's subscription held by `p`; its words picked with the mouse
+/// and its menu; felt as it comes to need its viewer; its messages under the bar's room (board_beside's bar, none of
+/// its own here), the composer in their list's foot; a picture flying from it drawn under the bar.
+fn board_beside_nodes(p : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, serial : Int) -> Unit {
+  let retained = @sfbase.page_entry_source(src, p, serial)
+  @sfbase.page_entry_read(serial, retained, Chat(r))
+  (@sfbase.page_chat_reader(retained, p, serial))(Chat(r))
+  // (drawn while Home's entry is, or kept shown in place while the one on top waits: the pane's)
+  let shows = fn() { pane_page_wait.draws(serial) }
+  p.ground(By(fn() { @sf.theme().p.bg })) |> ignore
+  context_node(p)
+  @sfbase.feel_needed_node(p, retained, r)
+  p.box(fn(col) {
+    col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    chat_body_nodes(col, retained, r, tips, fn() { 0 }, fn(n) {
+      n
+      .box(fn(at) {
+        // (over a picture flying out from under it, the round buttons the foot holds made before it under that picture)
+        at.flights_under() |> ignore
+        @sfpages.chat_composer_node(at, retained, r, shows~, tips~, apart=fn() { false })
+      })
+      |> ignore
+    }, shows)
+  })
+  |> ignore
+  // (a picture flying from its list drawn here while under the bar, the bar over it: viewer_flight_slot)
+  p.box(fn(slot) { @sfbase.viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
+}

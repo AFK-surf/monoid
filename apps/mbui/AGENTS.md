@@ -51,7 +51,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   stays here, in its look, and no more than that: the icon button's and bar tool's tip held up by a finger's long press
   and a ripple's press-look are given to `@headless.button` and `@headless.toggle` via `@headless.Hold`, and a switch's
   press held and let go on it via `hold_press`.
-- Its parts are shown on their own, each beside its states, by `src/sfstories` (a story a part, `stories.mbt`), built
+- Its parts are shown on their own, each beside its states, by `src/sfstorybook` (a story a part, `stories.mbt`; the foundations first, `foundations.mbt`), its page `src/sfstories`, built
   for the browser by `scripts/kit-web.sh` and deployed from main to kit.monoid.zone (`cloud/wrangler.kit.jsonc`).
 
 - Beside a block of several lines, an icon, a mark, a chevron or a one-line part (a plan, a value) sits on its first

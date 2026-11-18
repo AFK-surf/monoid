@@ -2267,5 +2267,11 @@
   "web-pages.experimental.farviewNative.title": "Native Farview tab rendering",
   "web-pages.experimental.farviewNative.description": "Draw Farview browser tabs directly on this device for instant scrolling and typing; turn it off anytime to switch back to screenshots",
   "web-pages.experimental.board.title": "Board view for chats",
-  "web-pages.experimental.board.description": "View chats in columns by status, station, or person and manage pending tasks; turning it off returns to the chat list"
+  "web-pages.experimental.board.description": "View chats in columns by status, station, or person and manage pending tasks; turning it off returns to the chat list",
+  "web-pages.rowMenu.open": "Open",
+  "web-pages.rowMenu.openChat": "Open chat",
+  "web-pages.rowMenu.copyName": "Copy name",
+  "web-pages.rowMenu.copyAddress": "Copy address",
+  "web-pages.rowMenu.copied": "Copied “{name}”",
+  "web-pages.rowMenu.restore": "Restore chat"
 }

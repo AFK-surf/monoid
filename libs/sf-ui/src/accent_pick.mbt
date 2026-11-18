@@ -9,7 +9,9 @@
 /// accent and a slider of hues under the dots, as wide as they are (`hue`: what a screen reader calls it), its track
 /// every hue's accent, its knob the one's; not chosen, a ＋ in an outline, which takes the hue it had last
 /// (custom_hue_kept). `choose` told the key a person chooses (a press's, a step's or a drag's along the hues; the
-/// caller says it chosen then: `chosen` follows it).
+/// caller says it chosen then: `chosen` follows it). `preview`, where given, told the key of a dot the pointer comes
+/// over unchosen (the caller shows the window in it a moment) and None as it leaves it, or the dots are let go, with
+/// nothing chosen: a dot chosen ends it untold, the caller's choose saying the rest.
 #callsite(autofill(loc))
 pub fn accent_pick_node(
   parent : @view.View,
@@ -18,8 +20,15 @@ pub fn accent_pick_node(
   hue : () -> String,
   chosen : () -> String,
   choose : (String) -> Unit,
+  preview? : (String?) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
+  // (the dot whose colour is shown a moment, by its key, while the pointer is over it: None, none)
+  let previewed : Ref[String?] = Ref(None)
+  let choose = fn(key : String) {
+    previewed.val = None
+    choose(key)
+  }
   let own = fn() { custom_hue(chosen()) }
   // (the hue 自定义 takes as it is pressed: the one it has while it is chosen)
   parent.reacts(own, fn(h) {
@@ -30,6 +39,18 @@ pub fn accent_pick_node(
   })
   let ink_of = fn(a : AccentTone) { if theme().dark { a.dark } else { a.light } }
   parent.box(made_for=loc, fn(col) {
+    // (let go with a colour shown a moment: the one chosen shown again)
+    match preview {
+      Some(tell) =>
+        col.on_leaving(fn() {
+          if previewed.val is Some(_) {
+            previewed.val = None
+            tell(None)
+          }
+        })
+        |> ignore
+      None => ()
+    }
     // (narrow, a section's own: in from the page's edge as far as its heading's words, as its note is)
     let start = if look_node(col) is Narrow { accent_narrow_in } else { 0.0 }
     col.gap(Is(accent_column_gap)).padding(Is((start, 0.0, 0.0, 0.0))) |> ignore
@@ -63,6 +84,22 @@ pub fn accent_pick_node(
           .ground(By(fn() { ink().unwrap_or(accent_no_ring) }))
           .edge(By(fn() { (2.0, ring()) }))
           |> ignore
+          // (the pointer over it unchosen: its colour shown a moment; off it again, the chosen one's, unless another
+          // was shown since)
+          match preview {
+            Some(tell) =>
+              d.reacts(fn() { hovered_node(d) && !on() }, fn(over) {
+                let k = @signals.untracked(key)
+                if over {
+                  previewed.val = Some(k)
+                  tell(Some(k))
+                } else if previewed.val == Some(k) {
+                  previewed.val = None
+                  tell(None)
+                }
+              })
+            None => ()
+          }
           d.show(on, fn(c) { icon_node(c, "check", mark, Is(0xFFFFFFFFL)) |> ignore })
           d.show(fn() { !on() && ink() is None }, fn(c) { icon_node(c, "plus", mark, By(fn() { theme().p.muted })) |> ignore })
         })

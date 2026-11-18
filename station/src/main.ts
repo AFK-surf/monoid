@@ -387,10 +387,14 @@ function run() {
 }
 
 async function commandMain() {
+if (command === "run") {
+  run();
+  return;
+}
+// A command of the command line: nothing else holds the loop while it waits (wall.hold).
+const held = wall.hold();
+try {
 switch (command) {
-  case "run":
-    run();
-    break;
   case "enroll": {
     const [, origin, token] = positionals(args, VALUED);
     const provider = (flag(args, "--provider") ?? "stillfail") as Provider;
@@ -459,6 +463,9 @@ switch (command) {
     break;
   default:
     usage();
+}
+} finally {
+  held();
 }
 }
 

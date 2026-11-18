@@ -247,6 +247,8 @@ pub fn chat_page_made(
   leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
   narrower? : (@view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
+  held? : (@view.View) -> ColumnLaid,
+  held_from? : () -> Bool = fn() { true },
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
   let page_read = page_chat_reader(retained, v, serial)
@@ -458,9 +460,43 @@ pub fn chat_page_made(
         at_once=true,
       )
     }
-    None =>
+    None => {
+      // (its old view, on the block's way laid out where and as wide as it is where the way ends (`held`, the
+      // shell's: its start as far from where it is now as the page is narrower there, `by`), drawn where the page is
+      // by its offset, moved across and aside: an old view laid out elsewhere is built again, one moved by its offset
+      // is not, so it is built as the way sets off and not at each frame of it)
+      let host = match held {
+        Some(by) => {
+          let h = v.box(fn(h) { h.grow(Is(1.0)).shrink(Is(0.0)).min_height(Is(Some(0.0))) |> ignore })
+          // (none of it at rest, nothing read as the chat changes: bound once the shell's way has first set off
+          // (`held_from`), at that cause)
+          let bound = Ref(false)
+          h.reacts(held_from, fn(going) {
+            if going && !bound.val && h.alive() {
+              bound.val = true
+              h
+              // (as wide as what holds it leaves it at rest, nothing of its own said there)
+              .width(By(fn() {
+                let c = by(h)
+                if c.by.abs() < 0.5 && c.across == 0.0 {
+                  None
+                } else {
+                  Some(c.laid)
+                }
+              }))
+              .margin(By(fn() { (by(h).by, 0.0, 0.0, 0.0) }))
+              .offset(By(fn() { (by(h).across - by(h).by + aside_of(h), 0.0) }))
+              .lays_anew(By(fn() { by(h).laid }))
+              |> ignore
+              v.clips(By(fn() { by(h).by.abs() > 0.5 })) |> ignore
+            }
+          })
+          h
+        }
+        None => v
+      }
       app.nav.page_island(
-        v,
+        host,
         serial,
         fn(c, page) {
           page_entry_read(serial, retained, page)
@@ -471,6 +507,7 @@ pub fn chat_page_made(
       )
       .grow(Is(1.0))
       |> ignore
+    }
   }
   // (a picture flying from its list drawn here while under its bar, the bar over it: viewer_flight_slot)
   v.box(fn(slot) { viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
@@ -1487,6 +1524,8 @@ pub fn reset() -> Unit {
   outside_reset()
   // what was asked of the core from a button, under way or failed (act.mbt)
   acting_reset()
+  // a colour theme shown a moment over the one set (app_frame.mbt)
+  accent_preview_reset()
   // how an update stands (updates.mbt)
   update_reset()
   // a chat's relay picker (relay.mbt)

@@ -88,6 +88,9 @@ export function grantState(s: HelperStatus, grant: GrantId): GrantState {
   return said === "granted" || said === "denied" ? said : "unknown";
 }
 
+/// What an error says with each address in it (`0x7a68c38ff0`) said alike.
+export const withoutAddresses = (said: string): string => said.replace(/0x[0-9a-fA-F]+/g, "0x…");
+
 export class HelperGrants {
   readonly helper: HelperApp;
   readonly #folders: boolean;
@@ -97,7 +100,7 @@ export class HelperGrants {
   /// When a look was last tried, answered or not.
   #attempted = -Infinity;
   #checking: Promise<void> | null = null;
-  /// What the Helper's last failure to answer said, logged; null once it answered.
+  /// What the Helper's last failure to answer said (`withoutAddresses`), logged; null once it answered.
   #unanswered: string | null = null;
   readonly #asked = new Map<GrantId, number>();
   readonly #listeners = new Set<() => void>();
@@ -160,10 +163,11 @@ export class HelperGrants {
         (status: HelperStatus) => this.#learn(status),
         (error) => {
           // Said once until it answers again or says otherwise: a station whose Helper cannot start was asked every few
-          // seconds.
+          // seconds. Otherwise not by the addresses in it: LaunchServices' refusal names an NSError's, new at each try.
           const said = (error as Error).message;
-          if (said === this.#unanswered) return;
-          this.#unanswered = said;
+          const key = withoutAddresses(said);
+          if (key === this.#unanswered) return;
+          this.#unanswered = key;
           log.warn("helper", "still.fail Helper did not answer", { error: said });
         },
       ),

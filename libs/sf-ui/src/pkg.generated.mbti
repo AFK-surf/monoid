@@ -679,6 +679,10 @@ pub fn float_button_node(@view.View, String, () -> String, () -> Unit, count? : 
 
 pub let float_button_reach : Double
 
+pub fn float_shadow() -> (Double, Double, Int64)
+
+pub fn float_shadow_ink() -> Int64
+
 pub let floating : Raised
 
 pub fn foot_across(Double) -> @ui.Style
@@ -897,6 +901,8 @@ pub fn join_meta(Array[String]) -> String
 pub let kept_call : @ref.Ref[((String, @json.Json, Bytes?) -> Result[(@json.Json, Bytes?), @json.Json]?)?]
 
 pub fn kept_words(String) -> @json.Json?
+
+pub fn key_caps(String) -> Array[String]
 
 pub fn keys_apart(size? : Double, least? : Double) -> Double
 
@@ -1458,6 +1464,8 @@ pub fn panel_column(@ui.Ctx, String, Double, @ui.Style, () -> Unit) -> Unit
 pub fn panel_content_row_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, highlighted? : (@view.View) -> Bool, loc~ : SourceLoc) -> Unit
 
 pub fn panel_corner_foot() -> @ui.Style
+
+pub fn panel_edge() -> Int64
 
 pub fn panel_field_in_node(@view.View) -> @ui.Style
 
@@ -2279,6 +2287,12 @@ pub fn theme() -> Theme
 pub fn tile_avatar(@ui.Ctx, String, String, String, Double) -> Unit
 
 pub fn tile_whole() -> Bool
+
+pub fn tip_edge() -> (Double, Int64)
+
+pub fn tip_ground() -> Int64
+
+pub fn tip_words() -> Int64
 
 pub fn title_accented(String) -> String
 

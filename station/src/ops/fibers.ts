@@ -135,6 +135,14 @@ export const wall = {
     timer.unref();
     return () => clearInterval(timer);
   },
+  /// Keeps the process up until the returned function is called. A command of the command line runs under the
+  /// entry's top-level await with no server holding the event loop: while it waits on `sleep` alone (a retry's
+  /// backoff), nothing would be left on the loop and Node would end it with exit code 13 ("unsettled top-level
+  /// await") before the wait is over. Its command holds one of these until it is done.
+  hold(): () => void {
+    const timer = setInterval(() => {}, 60_000); // timer: no work, it only holds the event loop while a command runs
+    return () => clearInterval(timer);
+  },
   /// `what`, failed with an Error saying `why` if it is not settled within `ms`.
   within<A>(ms: number, what: Promise<A>, why: string): Promise<A> {
     let stop = () => {};

@@ -988,6 +988,15 @@ fn view_changes_taken(tree : @view.Tree) -> Bool {
 let view_window : Ref[(Double, Double)] = Ref((0.0, 0.0))
 
 ///|
+/// Where an old view is laid out (a point of its place in the window), as its build takes it: to 1/65536 of a point, so
+/// that what adding up the places of what holds it in floating point leaves over is no other place (a page laid out
+/// where a way ends by a margin as far as what holds it has moved off it: at each frame of the way the same place, not
+/// built again there), far under a pixel of any screen.
+fn laid_snapped(v : Double) -> Double {
+  (v * 65536.0).round() / 65536.0
+}
+
+///|
 /// Where each old view of `tree` is placed now (as it was last laid out), and whether the one is the whole window.
 fn old_place(tree : @view.Tree) -> Unit {
   let (w, h) = view_window.val
@@ -1012,6 +1021,7 @@ fn old_place(tree : @view.Tree) -> Unit {
   for d in old_drawn(tree) {
     let (c, x, y, a, s, ux, uy, _) = d
     let (ox, oy) = tree.laid_origin(c.id).unwrap_or((x, y))
+    let (ox, oy) = (laid_snapped(ox), laid_snapped(oy))
     old_placed.push((c.id, x, y, c.w, c.h, a, ox, oy, s))
     // (the side what holds it went beside what it goes beside, for its build (old_went): told as it changes)
     match old_islands.iter().find_first(fn(o) { o.id == c.id }) {

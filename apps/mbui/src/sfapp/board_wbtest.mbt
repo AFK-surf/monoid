@@ -1986,3 +1986,78 @@ test "大屏: Enter or pressing another card keeps edited words; an empty edit d
   assert_eq(board_faults(t), [])
 }
 
+
+///|
+/// Whether the chat beside the board is its page made as nodes, by the message `words` it shows (whole, as no card's
+/// line says it): drawn by a node of its messages' (sfpages' chat_page_node, chat_body_node) and no old view's list
+/// under it, its composer sfpages' composer_node's (its field's words, the cursor in it or not); the old page the
+/// other way round.
+fn board_beside_made_nodes(t : @ui.Tester, words : String, at : String) -> Bool raise {
+  let said = t.sources_of(words)
+  let by_nodes = said.contains("sfpages/chat_page_node.mbt") || said.contains("sfpages/chat_body_node.mbt")
+  let old_rows = t.old_list_row_boxes().iter().any(fn(rows) { !rows.is_empty() })
+  assert_true(by_nodes != old_rows, msg="\{at}: its message drawn by nodes \{by_nodes}, an old list's rows \{old_rows}")
+  // (its field's words: 发消息 with the cursor in it, 按空格输入 without)
+  let composed = ["发消息", "按空格输入"].iter().any(fn(w) { t.sources_of(w).contains("sfpages/composer_node.mbt") })
+  assert_eq(composed, by_nodes, msg="\{at}: its composer made as nodes \{composed}")
+  by_nodes
+}
+
+///|
+/// board_faults but the edge of the chat beside the board where it reaches over that chat's page made as nodes (sfpages'
+/// board_beside_edge, half over each side as a side panel's edge is: the framework's edge a press takes where it is
+/// drawn, as experimental_wbtest leaves out the pane's).
+fn board_beside_faults(t : @ui.Tester) -> Array[String] {
+  board_faults(t).filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfpages/board_node.mbt:") })
+}
+
+///|
+test "大屏, 试用新对话页 on: the chat beside the board made as nodes, its composer too; words sent from it, another card's chat in its place, the switch turned either way at once" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("board")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  open_fixture_over("board", src)
+  @sfbase.chat_page_nodes.set(true)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="给设置页加一个深色模式开关")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  let c4_last = "做完了：开关和三处颜色都改好了，已合进 main（a3f9c21）。"
+  assert_true(board_beside_made_nodes(t, c4_last, "opened"), msg="opened: the page made as nodes")
+  assert_eq(board_beside_faults(t), [])
+  assert_eq(t.audit().filter(fn(f) { f.contains("sfdesk/board_beside_node") }), [])
+  // words written in its composer and sent, by its chat
+  t.tap_text("发消息")
+  t.type_text("再加一个跟随系统")
+  tap_send(t)
+  let sent = named(calls, "chat.send")
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].params), "text"), "再加一个跟随系统")
+  assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "再加一个跟随系统") is Some(_), msg="what was sent in its list")
+  assert_eq(board_beside_faults(t), [])
+  // another card pressed: its chat in its place at once, the one before let go
+  t.click(Button, label="Slack 里问的报销流程")
+  t.run_for(@ui.move_most_ms)
+  let c7_last = "做完了：三个步骤整理成了一页文档，放在共享盘的「行政」里。"
+  assert_true(board_beside_made_nodes(t, c7_last, "another"), msg="another: the page made as nodes")
+  assert_false(t.sources_of(c4_last).contains("sfpages/chat_body_node.mbt"), msg="the chat before let go")
+  assert_eq(board_beside_faults(t), [])
+  // 试用新对话页 turned off while it shows: its old page at once; on again, nodes
+  @sfbase.chat_page_nodes.set(false)
+  t.run_for(@ui.move_most_ms)
+  assert_false(board_beside_made_nodes(t, c7_last, "turned off"), msg="turned off: the old page")
+  @sfbase.chat_page_nodes.set(true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_beside_made_nodes(t, c7_last, "turned on"), msg="turned on: the page made as nodes")
+  assert_eq(board_beside_faults(t), [])
+}

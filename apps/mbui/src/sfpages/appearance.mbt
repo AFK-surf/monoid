@@ -2,7 +2,8 @@
 // device shows still.fail, its settings (@sf.settings: wide, rows of one list card, each choice at its row's end;
 // narrow, a block each): 主题, 主题色, 字体 (the faces chosen, opening their page: FontRow; font_setting.mbt), 动画, 震动, 语言; with
 // keyboard and mouse the files dragged into a chat too, and laid out wide the rail changed in place (as the web's,
-// `wideOnly`). Each choice is the core's prefs (`prefs.set`), shown at once. When a done chat is offered to archive is
+// `wideOnly`). Each choice is the core's prefs (`prefs.set`), shown at once; a colour theme's dot pointed at shows the
+// window in it a moment, the one set again as the pointer leaves it unchosen or the page goes. When a done chat is offered to archive is
 // 归档's, as the web's.
 
 ///|
@@ -112,10 +113,14 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
             fn() { @sf.t("web-pages.appearance.accent.hue") },
             shown,
             fn(picked) {
+              // (chosen while it was shown a moment: kept as it shows, never back to the one before till the prefs say it)
+              @sfbase.accent_chosen(picked)
               if picked != @signals.untracked(shown) {
                 @settings.set_pref(core, "accent", picked)
               }
             },
+            // (a dot pointed at: the window in its colours a moment; off it, or the page let go, the one set again)
+            preview=@sfbase.accent_preview,
           )
         },
       )

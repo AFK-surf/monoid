@@ -1381,6 +1381,70 @@ pub fn presence(
 }
 
 ///|
+/// What `presence_by` shows while it does: its way in or out, drawn only on a node it is given (Showing::look_on).
+pub struct Showing {
+  priv fade : Anim
+  priv grow : Anim
+  priv way : Trans
+}
+
+///|
+/// `presence`, its look read where it is shown (Showing::look_on: Ctx::look_by, as it is painted), not as it is built:
+/// what builds it is built as `shown` changes and once more as it has gone (Anim::over: at the end its way declared),
+/// not at each frame of its way in or out. The same motion as `presence`'s, the same look at each frame; None once it
+/// has gone.
+#callsite(autofill(loc))
+pub fn presence_by(
+  c : @ui.Ctx,
+  key : String,
+  shown : Bool,
+  enter? : Trans = trans(fade=0.0),
+  exit? : Trans,
+  initial? : Bool = false,
+  start_at? : Double,
+  loc~ : SourceLoc,
+) -> Showing? {
+  let out = match exit {
+    Some(t) => t
+    None => enter
+  }
+  let to = if shown { 1.0 } else { 0.0 }
+  let from = if initial { 0.0 } else { to }
+  let way = if shown { enter } else { out }
+  // (telling it reads no clock: told)
+  let (fade, grow) = @signals.untracked(fn() {
+    let f = anim(c, key + "\u{1}fade", from)
+    let m = anim(c, key + "\u{1}move", from)
+    match start_at {
+      Some(at) => {
+        if f.target != to {
+          f.animate(c, to, way.fade_spec, start_at=at, loc~)
+        }
+        if m.target != to {
+          m.animate(c, to, way.spec, start_at=at, loc~)
+        }
+      }
+      None => {
+        f.follow(c, to, way.fade_spec, loc~)
+        m.follow(c, to, way.spec, loc~)
+      }
+    }
+    (f, m)
+  })
+  // (gone once both have come to 0 by the ends their ways declared: built again then, not each frame before)
+  if !shown && fade.over(c) && grow.over(c) {
+    return None
+  }
+  Some({ fade, grow, way })
+}
+
+///|
+/// Node `i` drawn as it shows on its way in or out (`then`: what is made of that look, as it is painted).
+pub fn Showing::look_on(self : Showing, c : @ui.Ctx, i : Int, then? : (@ui.Look) -> @ui.Look = fn(l) { l }) -> Unit {
+  c.look_by(i, fn() { then(self.way.at(self.fade.get(c), self.grow.get(c))) })
+}
+
+///|
 /// Node `i`, built while it leaves (`shown` false: `presence`, or a value the app animates, still drawing it as it
 /// goes), is only drawn (@ui.Ctx::draw_only): drawn, never tapped nor found on screen, so what is tapped
 /// meanwhile is what is under it, at once. Shown, it is tapped as anything.

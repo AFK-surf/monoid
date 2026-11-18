@@ -227,6 +227,8 @@ function foundOn(chats: J, found: J): J {
 type RowsChanged = { whole: boolean; gone: J[]; come: J[] };
 /// How many rows going and coming a list's days take one by one (`#daysOf`); more, they are made again whole.
 const ROWS_PUT_ALONE = 32;
+/// How many messages' links to chats are kept found (views.ts `#chatsLinked`): more than a chat's page shows.
+const LINKS_KEPT = 512;
 
 /// A station's rows as its records `listed` make them (`make`), from what `was` (its records then) made: the same
 /// records in the same order taken as they were, walking both, a record put in or taken out stepped over (a chat moved
@@ -1622,7 +1624,7 @@ export class Views implements Owner {
     for (const e of entries) {
       if (!mayLink(e)) continue;
       const text = str(get(e, "text")) ?? "";
-      for (const linked of chatsLinked(text, station)) {
+      for (const linked of this.#chatsLinked(text, station)) {
         const c = { ...linked, station: this.stationNow(linked.station) };
         if (out.includes(c.station)) continue;
         if (c.station === station || (this.stations(ofAddress(c.station)) ?? []).some((s) => s.address === c.station && s.online)) out.push(c.station);
@@ -1637,7 +1639,7 @@ export class Views implements Owner {
   /// link were most of what opening a chat that has one took (0.65-0.83 s on a phone, 2026-10-31).
   #linkedChats(station: string, text: string): J[] {
     if (!text.includes("/chats/") && !text.includes("/o/")) return [];
-    return chatsLinked(text, station).flatMap((linked) => {
+    return this.#chatsLinked(text, station).flatMap((linked) => {
       const c = { ...linked, station: this.stationNow(linked.station) };
       const found = this.#core.data.chatNamed(c.station, c.id);
       if (found === undefined || (found.archived && !isObject(get(found.row, "archived")))) return [];
@@ -1645,6 +1647,20 @@ export class Views implements Owner {
       const thread = u64(get(row, "thread"));
       return [{ href: c.href, title: str(get(row, "title")) || t("core-views.new_chat"), ...(thread !== null ? { thread } : {}), ...(found.archived ? { archived: true, note: t("core-views.search.archived") } : {}) }];
     });
+  }
+
+  /// The links to chats `text`, said in a chat on `station`, has (chatsLinked), found once while it is among the last
+  /// `LINKS_KEPT` looked through: a chat's messages are looked through again each time it is made, and finding them
+  /// is most of what that takes.
+  readonly #linksFound = new Map<string, ReturnType<typeof chatsLinked>>();
+  #chatsLinked(text: string, station: string): ReturnType<typeof chatsLinked> {
+    const key = `${station}\u0001${text}`;
+    const was = this.#linksFound.get(key);
+    if (was !== undefined) return was;
+    const found = sharedValue(chatsLinked(text, station));
+    if (this.#linksFound.size >= LINKS_KEPT) this.#linksFound.delete(this.#linksFound.keys().next().value!);
+    this.#linksFound.set(key, found);
+    return found;
   }
 
   /// Who is looking: the account that reaches the workspace.
@@ -3656,12 +3672,13 @@ export class Views implements Owner {
     const all: J[] = merge(arr(page.entries));
     const said = all.filter((m) => !isLetter(m, keys));
     const letters = Math.max(u64(get(thread, "letters")) ?? 0, all.length - said.length);
-    const { scope, viewer, members_, bots } = this.#peopleOf(station, agents);
+    const whom = this.#peopleOf(station, agents);
+    const { scope, viewer, members_, bots } = whom;
     const waiting = agents.reduce((max, a) => Math.max(max, u64(get(a.session, "pending")) ?? 0), 0);
     const peopleSeqs = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [m.seq as number] : []));
     const waits = peopleSeqs.slice(Math.max(peopleSeqs.length - waiting, 0));
     const written = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [[m.seq as number, str(m.text) ?? ""] as [number, string]] : []));
-    let messages = timed("chat.shown", () => this.#shown(station, thread, agents, said, waits));
+    let messages = timed("chat.shown", () => this.#shown(station, thread, agents, said, waits, whom));
     // The station binds a capacity retry, and a failed turn, to the notice that announced it. Only that notice offers
     // cancelling the retry, or trying again, and only while that agent still stands there: an old notice must never
     // stop or start later work in the same chat.
@@ -3905,8 +3922,8 @@ export class Views implements Owner {
   /// viewer's those with seqs in `waits` still waiting for its agents; a notice that a runtime is not installed with
   /// installing it, as the station's updates have it now (or under the viewer's message that waits for it); a failure
   /// notice one to report where the station takes bug reports.
-  #shown(station: string, thread: J, agents: J[], said: J[], waits: number[]): J[] {
-    const { scope, viewer, slackUsers, members_, bots } = this.#peopleOf(station, agents);
+  #shown(station: string, thread: J, agents: J[], said: J[], waits: number[], people = this.#peopleOf(station, agents)): J[] {
+    const { scope, viewer, slackUsers, members_, bots } = people;
     const updates = arr(get(this.#chatOverview(station), "updates"));
     const role = get(this.ok({ topic: "workspace", workspace: scope }), "role");
     const manages = role === "owner" || role === "admin";

@@ -1179,18 +1179,14 @@ fn tape_swipes(n : @view.View, p : TapePane) -> Unit {
 ///|
 /// What panel `p`'s island draws (`body`, its answer): behind the one in use on the ground a step darker
 /// (@sf.behind_ground), as far behind as the tape's move has got, what is on it as it is; in use, on its own, read out
-/// (behind it, only drawn: what reads the widgets reads its cover).
+/// (behind it, only drawn: what reads the widgets reads its cover). Built as each move sets off, as far behind as it
+/// ends; its ground worked out as it is painted while the move goes (Ctx::grounds_by), so nothing of it is built again
+/// at each frame of it.
 fn tape_behind(c : @ui.Ctx, p : TapePane, body : () -> Unit) -> Unit {
-  // (where the move has got as the island is built: built again each frame it goes, at rest no more)
+  // (where the move ends, read as the island is built: built again as a move sets off, not as it goes)
   tape_goes.said.get() |> ignore
   tape_goes.way.said()
-  let t = if tape_goes.way.goes_at(c.moment()) {
-    tape_goes.way.get(c) |> ignore
-    c.moment()
-  } else {
-    @double.infinity
-  }
-  let k = tape_behind_at(p, t)
+  let k = tape_behind_at(p, @double.infinity)
   let shown = fn() {
     if wide.tape_at.get() == p {
       body()
@@ -1198,10 +1194,38 @@ fn tape_behind(c : @ui.Ctx, p : TapePane, body : () -> Unit) -> Unit {
       c.hidden_from_semantics(body)
     }
   }
+  let built = fn() {
+    if k <= 0.0 {
+      shown()
+    } else {
+      @sf.with_ground(c, @sf.behind_ground(k~), shown)
+    }
+  }
+  let i = tape_index(p)
+  if tape_goes.behind[2 * i] == tape_goes.behind[2 * i + 1] {
+    built()
+    return
+  }
+  // (as far behind as the move has got, as it is painted: what stands on its ground, the page's or the darker one,
+  // eased with it)
+  c.grounds_by(
+    tape_ground(k),
+    fn() {
+      // (the frames asked for while the move goes, as they are painted: Way::get)
+      tape_goes.way.get(c) |> ignore
+      tape_ground(tape_behind_at(p, c.moment()))
+    },
+    built,
+  )
+}
+
+///|
+/// The ground of a panel `k` of the way behind the one in use: the page's in use, a step darker that far behind.
+fn tape_ground(k : Double) -> Int64 {
   if k <= 0.0 {
-    shown()
+    @sf.theme().p.bg
   } else {
-    @sf.with_ground(c, @sf.behind_ground(k~), shown)
+    @sf.behind_ground(k~)
   }
 }
 
@@ -1262,14 +1286,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     }
     q
     .clips(Is(true))
-    .ground(By(fn() {
-      let k = tape_behind_at(Panel, tape_drawn_at(q))
-      if k <= 0.0 {
-        @sf.theme().p.bg
-      } else {
-        @sf.behind_ground(k~)
-      }
-    }))
+    .ground(By(fn() { tape_ground(tape_behind_at(Panel, tape_drawn_at(q))) }))
     .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .padding(By(fn() { (0.0, 0.0, tape_room_now().under, 0.0) }))
     |> ignore

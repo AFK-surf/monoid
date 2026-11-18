@@ -547,6 +547,24 @@ pub fn Ctx::bg_by(self : Ctx, i : Int, f : () -> Int64) -> Unit {
 }
 
 ///|
+/// What `body` builds standing on ground `from` (each node of it whose own ground is that colour) drawn on the colour `f`
+/// gives as it is painted, as Ctx::bg_by, where it says none of its own: a panel's ground easing to another as a move
+/// goes (one going behind another, a step darker as far as the move has got) under what is built once as it sets off,
+/// not again at each frame of it. A node whose ground was worked out of `from` (one faded over it) keeps its own.
+pub fn Ctx::grounds_by(self : Ctx, from : Int64, f : () -> Int64, body : () -> Unit) -> Unit {
+  let start = self.count
+  body()
+  for i in start..<self.count {
+    if self.nodes[i].bg == from {
+      let e = self.drawn_of(i)
+      if e.bg_by is None {
+        e.bg_by = Some(f)
+      }
+    }
+  }
+}
+
+///|
 /// What node `i` holds drawn in the ink `f` gives as it is painted (RRGGBBAA): its words' glyphs (not a colour emoji's),
 /// its lines and its shapes (an icon's), in place of the ink each was built with; its grounds, edges, shadows and
 /// pictures as they are. Read as it is drawn, not as it is built, as Ctx::bg_by (words or an icon easing to another ink

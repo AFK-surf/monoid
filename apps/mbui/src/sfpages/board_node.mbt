@@ -1501,7 +1501,7 @@ fn board_files_node(
               @sf.icon_node(v, "file", 22.0, By(fn() { @sf.theme().p.muted })) |> ignore
             }
           })
-        }, fn() { false }, fn() { None }, fn() { false }, fn() {  }, fn() { "" })
+        }, fn() { false }, fn() { None }, fn() { false }, fn() {  }, fn() { "" }, rim=false)
         |> ignore
       })
     }) |> ignore

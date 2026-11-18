@@ -189,6 +189,9 @@ pub fn pregenerate_keyframes(Generator) -> (Array[Double], Double)
 pub fn presence(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double) -> @ui.Look?
 
 #callsite(autofill(loc))
+pub fn presence_by(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double, loc~ : SourceLoc) -> Showing?
+
+#callsite(autofill(loc))
 pub fn press_feel(@view.View, live? : () -> Bool, sink_px? : Double, sink_most? : Double, hover_ms? : Double, hovers? : Bool, scale_node? : Bool, size? : (Double, Double), loc~ : SourceLoc) -> PressFeel
 
 pub let press_sink : Double
@@ -428,6 +431,11 @@ pub fn SheetWay::offset_y(Self, @view.View, Double) -> Double
 pub fn SheetWay::show_in(Self, @view.View, open~ : () -> Bool, close~ : () -> Unit, scrim? : (Double) -> Int64, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 pub fn SheetWay::shown_on(Self, @view.View) -> Double
 pub fn SheetWay::target(Self) -> Double
+
+pub struct Showing {
+  // private fields
+}
+pub fn Showing::look_on(Self, @ui.Ctx, Int32, then? : (@ui.Look) -> @ui.Look) -> Unit
 
 #derive(Eq, @debug.Debug)
 pub(all) enum Spec {

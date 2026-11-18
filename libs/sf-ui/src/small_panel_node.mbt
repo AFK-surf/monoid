@@ -11,11 +11,8 @@ pub fn small_panel_node(p : @view.View) -> @view.View {
   .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
   .radius(Is(r_menu))
   .ground(By(fn() { panel_ground() }))
-  .edge(By(fn() { (small_panel_line, theme().p.line) }))
-  .shadow(By(fn() {
-    let (blur, dy) = small_panel_shadow
-    (blur, dy, theme().p.shadow)
-  }))
+  .edge(By(fn() { (small_panel_line, panel_edge()) }))
+  .shadow(By(fn() { float_shadow() }))
   .clips(Is(true))
 }
 
@@ -31,9 +28,6 @@ pub fn ground_node(v : @view.View) -> @view.View {
 ///|
 /// A small panel's line round it (its width), and its shadow's blur and how far under it it falls (small_panel's).
 let small_panel_line : Double = 1.0
-
-///|
-let small_panel_shadow : (Double, Double) = (16.0, 12.0)
 
 ///|
 /// A small panel's button (panel_button's) in `parent`, made once: a capsule 24 high, its words (`label` as it changes)

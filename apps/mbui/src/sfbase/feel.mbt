@@ -48,7 +48,7 @@ pub fn feel_needed(c : @ui.Ctx, r : ChatRef, v : ChatView) -> Unit {
 /// as source `src` reads it. Till the view is read nothing is seen of it: what it first comes to is seen, not felt, as
 /// feel_needed sees the view first read (a chat opened while it needs its viewer is no change; felt as it came on
 /// opening it till 2026-11-15).
-fn feel_needed_node(n : @view.View, src : Source, r : ChatRef) -> Unit {
+pub fn feel_needed_node(n : @view.View, src : Source, r : ChatRef) -> Unit {
   let seen : Ref[Bool?] = Ref(None)
   n.reacts(fn() { chat_view_now(src, r).map(chat_needs) }, fn(now) {
     guard now is Some(needs) else { return }
