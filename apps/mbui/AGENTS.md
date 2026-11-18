@@ -181,8 +181,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   (the user, 2026-11-17: 「这些东西的展示都做成一样的交互，大屏默认在右边展示，cmd+点击全屏，在右边也提供全屏按钮，用同
   一套逻辑，后续方便做成独立窗口」): a tab of the chat's side panel by default where there is one, over the whole window
   as that same tab with the command key held or the panel's 全屏 (`src/sfbase/tab_full.mbt`), drawn by the same nodes
-  in either, never a second preview of its own. A new kind that opens beside goes through it; a window of its own will
-  be its third place. Pictures, films and songs still open in the whole-window viewer (its flight, marking, stepping)
+  in either, never a second preview of its own. A new kind that opens beside goes through it, and a window of its own
+  is its third place (`src/sfdesk/tab_full_node.mbt`, `src/sfbase/window.mbt`). Pictures, films and songs still open in the whole-window viewer (its flight, marking, stepping)
   till the tab has those.
 
 ## Made once, as nodes

@@ -33,6 +33,10 @@ pub fn full_held() -> Bool {
 ///|
 /// Tab `tab` of chat `r`'s side panel over the whole window.
 pub fn tab_full_open(r : ChatRef, tab : String) -> Unit {
+  // (in a window of its own: that window to the front instead, window.mbt's tab_window_front)
+  if tab_window_front(r, tab) is Some(_) {
+    return
+  }
   tab_viewer_moves(r.station + ":" + r.session, tab)
   tab_full.set(Some({ chat: r, tab }))
 }

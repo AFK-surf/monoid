@@ -121,6 +121,7 @@ static double put_away_at = -1;  // boot_ms() as the window was put away (-1: it
 static double asleep_at = -1;    // as the computer went to sleep (-1: awake)
 static int tray_on;              // the desktop shows the app's icon (its watcher took it)
 
+static int first_hidden_bare;  // the first hidden as it closed while another was open, no icon to put it away to
 static void bring_back(void) {
   if (!win_slots[0].win) return;
   if (put_away_at >= 0) {
@@ -137,15 +138,36 @@ static void bring_back(void) {
     say_shown(put_away_at);
     put_away_at = -1;
   }
+  first_hidden_bare = 0;
+  // (the first's frame, whichever window is in place as it is brought back: a window beside it may ask it)
+  int back = win_active;
+  win_use(0);
   schedule();
+  win_put_back(back);
 }
 
-// the window closed: put away where the program is an app and the desktop shows its icon; else the program ends
-static void wins_close_beside(void);
+// (said further down, with what the windows beside this one are: a run of its own beside it)
+static int window_run(void);
+
+// the window closed: put away where the program is an app and the desktop shows its icon; else the program ends. The
+// windows beside it stay as they are: the first's canvas goes with its window as it is hidden, their context (the
+// run's one, linux_app.c canvas_context) kept by them, and the first's made on it again as it is brought back. With
+// no icon to put it away to (a bare run, or no watcher of icons) it is hidden only while a window beside it is open,
+// the run ending as the last of them closes (linux_app.c win_closed_told), as the Mac's.
 static int put_away(void) {
-  if (!life_app || !tray_on) return 0;
-  // (the windows beside it close with it, as the Mac's: drawn in its canvas's context, which goes as it is hidden)
-  wins_close_beside();
+  if (window_run()) return 0;
+  if (!life_app || !tray_on) {
+    int beside = 0;
+    for (int k = 1; k < MB_WINS; k++)
+      if (win_slots[k].win) beside = 1;
+    if (!beside) return 0;
+    fprintf(stdout, "linux: closed, hidden while a window beside it is open\n");
+    fflush(stdout);
+    first_hidden_bare = 1;
+    gtk_widget_set_visible(win_slots[0].win, FALSE);
+    app_state();
+    return 1;
+  }
   fprintf(stdout, "linux: put away, to its icon\n");
   fflush(stdout);
   gtk_widget_set_visible(win_slots[0].win, FALSE);

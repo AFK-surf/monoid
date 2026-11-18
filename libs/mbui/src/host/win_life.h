@@ -253,7 +253,10 @@ static int state_told = -1;
 void mb_host_set_app_state(void (*f)(int32_t)) { state_cb = f; }
 static void tell_state(void) {
   if (!state_cb || !hwnd) return;
-  int shown = IsWindowVisible(hwnd) && !IsIconic(hwnd);
+  // (shown: any window of the run's, the first put away and another open among them)
+  int shown = 0;
+  for (int k = 0; k < MB_WINS && !shown; k++)
+    if (win_slots[k].h && IsWindowVisible(win_slots[k].h) && !IsIconic(win_slots[k].h)) shown = 1;
   // (in front: any window of the run's, a window beside the first among them)
   int front = shown && win_of(GetForegroundWindow()) >= 0;
   // (| 4: the app goes on with its window not shown, as what comes from outside asks: win_app.c draw_frame)
@@ -351,6 +354,7 @@ static int place_put_back(void) {
 static ULONGLONG put_away_at;  // GetTickCount64's as the window was closed (0: it is out)
 static ULONGLONG asleep_at;    // as the PC went to sleep (0: awake)
 
+static int first_hidden_bare;  // a bare run's first hidden as it closed while another was open (put_away)
 static void bring_back(void) {
   if (!hwnd) return;
   if (put_away_at || IsIconic(hwnd)) {
@@ -363,20 +367,34 @@ static void bring_back(void) {
     say_shown(put_away_at);
     put_away_at = 0;
   }
-  ws->want_frame = 1;
+  first_hidden_bare = 0;
+  // (the first's frame, whichever window is in place as it is brought back: a window beside it may ask it)
+  win_slots[0].want_frame = 1;
   tell_state();
 }
 
 static int tray_on;
 
 // the window closed: put away where the program is an app (to its icon in the notification area; minimized where it
-// has none there, as Explorer is not running), else the program ends
-static void wins_close_beside(void);
+// has none there, as Explorer is not running), else the program ends. The windows beside it stay as they are: the
+// first only hidden, its window kept (what is posted to it, the run's thread's messages, still comes), all of them
+// going only as the program ends. A bare run's (not an app) hidden while a window beside it is open, the run ending as
+// the last of them closes (win_app.c win_closed), as the Mac's.
 static int put_away(void) {
-  if (!*app_id() || window_run()) return 0;
+  if (window_run()) return 0;
+  if (!*app_id()) {
+    int beside = 0;
+    for (int k = 1; k < MB_WINS; k++)
+      if (win_slots[k].h) beside = 1;
+    if (!beside) return 0;
+    fprintf(stdout, "win: closed, hidden while a window beside it is open\n");
+    fflush(stdout);
+    first_hidden_bare = 1;
+    ShowWindow(hwnd, SW_HIDE);
+    tell_state();
+    return 1;
+  }
   place_keep();
-  // (the windows beside it close with it, as the Mac's)
-  wins_close_beside();
   if (!tray_on) {
     fprintf(stdout, "win: put away, minimized (no notification area)\n");
     fflush(stdout);

@@ -330,19 +330,30 @@ void mb_host_pick_end(int32_t pid) {
 
 // ---- let go on the window ----
 
-// where it is held, posted on `mbui.drop` as it moves ({"type":"over","x","y"}, {"type":"left"}), then let go, its
-// files read as a pick's ({"type":"drop","x","y","pick"})
+// where it is held, posted on `mbui.drop` as it moves ({"type":"over","x","y","wid"}, {"type":"left","wid"}), then let
+// go, its files read as a pick's ({"type":"drop","x","y","pick","wid"}). Each window of the run takes what is let go on
+// it (its own target: drop_targets, its number and whether what is held over it has files), where it is said in that
+// window's points and with its number.
 static void drop_post(const char *json) { mb_post("mbui.drop", json, strlen(json), NULL, 0); }
 
-static void drop_at(POINTL pt, double *x, double *y) {
+typedef struct WinDropTarget {
+  IDropTarget iface;  // (first: the target COM is given is the window's own)
+  int wid;
+  int has_files;
+} WinDropTarget;
+static WinDropTarget drop_targets[MB_WINS];
+static WinDropTarget *drop_of(IDropTarget *t) { return CONTAINING_RECORD(t, WinDropTarget, iface); }
+
+static void drop_at(int wid, POINTL pt, double *x, double *y) {
   POINT p = {pt.x, pt.y};
-  ScreenToClient(hwnd, &p);
-  *x = p.x / ws->scale;
-  *y = p.y / ws->scale;
+  WinSlot *w = &win_slots[wid];
+  if (w->h) ScreenToClient(w->h, &p);
+  double k = w->scale > 0 ? w->scale : 1;
+  *x = p.x / k;
+  *y = p.y / k;
 }
 
 static FORMATETC drop_files_format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-static int drop_has_files;
 
 static HRESULT STDMETHODCALLTYPE dt_query(IDropTarget *t, REFIID riid, void **out) {
   if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropTarget)) {
@@ -358,42 +369,50 @@ static ULONG STDMETHODCALLTYPE dt_ref(IDropTarget *t) {
   return 1;
 }
 
-static void dt_over(POINTL pt, DWORD *effect) {
-  *effect = drop_has_files ? DROPEFFECT_COPY : DROPEFFECT_NONE;
-  if (!drop_has_files) return;
+static void dt_over(WinDropTarget *d, POINTL pt, DWORD *effect) {
+  *effect = d->has_files ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+  if (!d->has_files) return;
   double x, y;
-  drop_at(pt, &x, &y);
-  char b[96];
-  snprintf(b, sizeof b, "{\"type\":\"over\",\"x\":%.1f,\"y\":%.1f}", x, y);
+  drop_at(d->wid, pt, &x, &y);
+  char b[128];
+  snprintf(b, sizeof b, "{\"type\":\"over\",\"x\":%.1f,\"y\":%.1f,\"wid\":%d}", x, y, d->wid);
+  drop_post(b);
+}
+
+static void dt_left(WinDropTarget *d) {
+  char b[48];
+  snprintf(b, sizeof b, "{\"type\":\"left\",\"wid\":%d}", d->wid);
   drop_post(b);
 }
 
 static HRESULT STDMETHODCALLTYPE dt_enter(IDropTarget *t, IDataObject *data, DWORD keys, POINTL pt, DWORD *effect) {
-  (void)t, (void)keys;
-  drop_has_files = data && data->lpVtbl->QueryGetData(data, &drop_files_format) == S_OK;
-  dt_over(pt, effect);
+  (void)keys;
+  WinDropTarget *d = drop_of(t);
+  d->has_files = data && data->lpVtbl->QueryGetData(data, &drop_files_format) == S_OK;
+  dt_over(d, pt, effect);
   return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE dt_move(IDropTarget *t, DWORD keys, POINTL pt, DWORD *effect) {
-  (void)t, (void)keys;
-  dt_over(pt, effect);
+  (void)keys;
+  dt_over(drop_of(t), pt, effect);
   return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE dt_leave(IDropTarget *t) {
-  (void)t;
-  if (drop_has_files) drop_post("{\"type\":\"left\"}");
-  drop_has_files = 0;
+  WinDropTarget *d = drop_of(t);
+  if (d->has_files) dt_left(d);
+  d->has_files = 0;
   return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE dt_drop(IDropTarget *t, IDataObject *data, DWORD keys, POINTL pt, DWORD *effect) {
-  (void)t, (void)keys;
+  (void)keys;
+  WinDropTarget *d = drop_of(t);
   *effect = DROPEFFECT_NONE;
   STGMEDIUM m;
   int pid = 0;
-  if (drop_has_files && data && data->lpVtbl->GetData(data, &drop_files_format, &m) == S_OK) {
+  if (d->has_files && data && data->lpVtbl->GetData(data, &drop_files_format, &m) == S_OK) {
     HDROP h = (HDROP)GlobalLock(m.hGlobal);
     UINT n = h ? DragQueryFileW(h, 0xFFFFFFFF, NULL, 0) : 0;
     WCHAR **paths = (WCHAR **)calloc(n ? n : 1, sizeof(WCHAR *));
@@ -410,22 +429,34 @@ static HRESULT STDMETHODCALLTYPE dt_drop(IDropTarget *t, IDataObject *data, DWOR
     for (UINT i = 0; i < got; i++) free(paths[i]);
     free(paths);
   }
-  drop_has_files = 0;
+  d->has_files = 0;
   if (!pid) {
-    drop_post("{\"type\":\"left\"}");
+    dt_left(d);
     return S_OK;
   }
   double x, y;
-  drop_at(pt, &x, &y);
-  char b[128];
-  snprintf(b, sizeof b, "{\"type\":\"drop\",\"x\":%.1f,\"y\":%.1f,\"pick\":%d}", x, y, pid);
+  drop_at(d->wid, pt, &x, &y);
+  char b[160];
+  snprintf(b, sizeof b, "{\"type\":\"drop\",\"x\":%.1f,\"y\":%.1f,\"pick\":%d,\"wid\":%d}", x, y, pid, d->wid);
   drop_post(b);
   *effect = DROPEFFECT_COPY;
   return S_OK;
 }
 
 static IDropTargetVtbl drop_vtbl = {dt_query, dt_ref, dt_ref, dt_enter, dt_move, dt_leave, dt_drop};
-static IDropTarget drop_target = {&drop_vtbl};
 
-// the window takes what is let go on it (OLE's: OleInitialize, before it)
-static void files_start(void) { RegisterDragDrop(hwnd, &drop_target); }
+// window `wid` takes what is let go on it (OLE's: OleInitialize, before the first), and no longer as it goes (its
+// WM_DESTROY: win_closed)
+static void drop_start(int wid) {
+  if (wid < 0 || wid >= MB_WINS || !win_slots[wid].h) return;
+  WinDropTarget *d = &drop_targets[wid];
+  d->iface.lpVtbl = &drop_vtbl;
+  d->wid = wid;
+  d->has_files = 0;
+  RegisterDragDrop(win_slots[wid].h, &d->iface);
+}
+static void drop_stop(int wid) {
+  if (wid < 0 || wid >= MB_WINS || !win_slots[wid].h) return;
+  RevokeDragDrop(win_slots[wid].h);
+  drop_targets[wid].has_files = 0;
+}

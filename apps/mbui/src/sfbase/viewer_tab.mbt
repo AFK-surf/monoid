@@ -671,67 +671,154 @@ fn tab_keys_node(
   corner : @view.Live[Double],
   full : (() -> Unit)?,
   tips : @sf.TipLayer,
+  gives? : Bool = false,
 ) -> Unit {
-  r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
+  // (`gives`: its keys made in the row of the bar over the whole window or of a window of its own, which leaves out
+  // what has not the room (sf's viewer_bar_node: View::fits), each the `k`-th to leave into its ⋯ at its end, there only
+  // while something did (View::drops); else a row of its own, kept whole)
+  if !gives {
+    r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
+  }
+  let slots : Array[(Ref[@view.View?], () -> Bool, () -> @sf.MenuItem?)] = []
+  // each of its keys there while `there` says so, the `k`-th to leave where it gives (tab_keys_drop_*), what it is in
+  // its ⋯ once it left
+  let slot = fn(k : Int, there : () -> Bool, menu : () -> @sf.MenuItem?, make : (@view.View) -> Unit) {
+    let held : Ref[@view.View?] = Ref(None)
+    r.show(there, fn(x) {
+      held.val = Some(x)
+      if gives {
+        x.drops(Is(k)) |> ignore
+      }
+      make(x)
+    })
+    slots.push((held, there, menu))
+  }
   // 预览 / 源码: a table's, a page's, an mbui widget's, once read (the library's segmented choice, what it chooses told:
   // Viewer::set_source)
-  r.show(fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }, fn(x) {
-    x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    @sf.seg_node(
-      x,
-      fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },
-      fn() {
-        vw.source_told.get() |> ignore
-        if vw.source {
-          1
-        } else {
-          0
-        }
-      },
-      fn(k) { vw.set_source(k == 1) },
-      item_w=vf_tabs_item,
-    )
-    |> ignore
-  })
-  // the reader's panels, opened from here (the layout's in the tab's stage)
-  r.show(fn() { vf_reads(vw) }, fn(x) {
-    x.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
-    let panels = [
-      (@sf.ReaderPanel::Contents, "list", @sf.t("web-pages.drive.reader.contents")),
-      (@sf.ReaderPanel::Find, "search", @sf.t("web-pages.drive.reader.find")),
-      (@sf.ReaderPanel::Layout, "text", @sf.t("web-pages.drive.reader.layout")),
-    ]
-    for p in panels {
-      let (panel, icon, label) = p
-      @sf.tool_node(
-        x,
-        fn() { { icon, label, on: @sf.reader_panel_of(vw.read_key()) == panel, disabled: false } },
-        ink,
-        corner,
-        fn() { @sf.reader_panel_toggle(vw.read_key(), panel) },
-        tip=tips,
+  let sourced = fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }
+  slot(
+    tab_keys_drop_source,
+    sourced,
+    fn() {
+      let now = vw.source
+      Some(
+        @sf.menu_item_of(
+          @sf.t(if now { "web-main.preview.rendered" } else { "web-main.preview.source" }),
+          fn() { vw.set_source(!now) },
+        ),
       )
-      |> ignore
-    }
-  })
+    },
+    fn(x) {
+        x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        @sf.seg_node(
+          x,
+          fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },
+          fn() {
+            vw.source_told.get() |> ignore
+            if vw.source {
+              1
+            } else {
+              0
+            }
+          },
+          fn(k) { vw.set_source(k == 1) },
+          item_w=vf_tabs_item,
+        )
+        |> ignore
+    },
+  )
+  // the reader's panels, opened from here (the layout's in the tab's stage)
+  let panels = [
+    (@sf.ReaderPanel::Contents, "list", @sf.t("web-pages.drive.reader.contents"), tab_keys_drop_contents),
+    (@sf.ReaderPanel::Find, "search", @sf.t("web-pages.drive.reader.find"), tab_keys_drop_find),
+    (@sf.ReaderPanel::Layout, "text", @sf.t("web-pages.drive.reader.layout"), tab_keys_drop_layout),
+  ]
+  for p in panels {
+    let (panel, icon, label, k) = p
+    slot(
+      k,
+      fn() { vf_reads(vw) },
+      fn() { Some(@sf.menu_item_of(label, fn() { @sf.reader_panel_toggle(vw.read_key(), panel) }, icon~)) },
+      fn(x) {
+        @sf.tool_node(
+          x,
+          fn() { { icon, label, on: @sf.reader_panel_of(vw.read_key()) == panel, disabled: false } },
+          ink,
+          corner,
+          fn() { @sf.reader_panel_toggle(vw.read_key(), panel) },
+          tip=tips,
+        )
+        |> ignore
+      },
+    )
+  }
   // 下载: what is here saved at once; one told of, read whole first; a ring while the core downloads it
   let dl = fn() { vw.download(src) }
-  r.show(fn() { !vw.coming() }, fn(x) {
-    @sf.tool_node(
-      x,
-      fn() {
-        // (a film or a song played as it comes: read whole as it is asked)
-        let saving = vw.bytes.get() is Some(_) || ((vw.told_of() || vw.played()) && !vw.asked_now())
-        { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving }
-      },
-      ink,
-      corner,
-      fn() { vw.save_now() },
-      tip=tips,
-      progress=fn() { if downloading(dl()) { Some(number(dl(), "progress")) } else { None } },
-    )
+  let saving = fn() {
+    // (a film or a song played as it comes: read whole as it is asked)
+    vw.bytes.get() is Some(_) || ((vw.told_of() || vw.played()) && !vw.asked_now())
+  }
+  slot(
+    tab_keys_drop_download,
+    fn() { !vw.coming() },
+    fn() {
+      Some(
+        @sf.menu_item_of(
+          @sf.t("web-main.preview.download"),
+          fn() { vw.save_now() },
+          icon="download",
+          disabled=!@signals.untracked(saving),
+        ),
+      )
+    },
+    fn(x) {
+      @sf.tool_node(
+        x,
+        fn() { { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving() } },
+        ink,
+        corner,
+        fn() { vw.save_now() },
+        tip=tips,
+        progress=fn() { if downloading(dl()) { Some(number(dl(), "progress")) } else { None } },
+      )
+      |> ignore
+    },
+  )
+  // what left it, in its ⋯ at its end (there only while something did)
+  if gives {
+    r.box(fn(x) {
+      x.drops(Is(-1)) |> ignore
+      let at : Ref[@view.View?] = Ref(None)
+      at.val = Some(
+        @sf.tool_node(
+          x,
+          fn() { { icon: "more", label: @sf.t("web-main.menu.more"), on: false, disabled: false } },
+          ink,
+          corner,
+          fn() {
+            let gone : Array[@sf.MenuItem?] = []
+            for s in slots {
+              let (held, there, item) = s
+              match held.val {
+                Some(v) if @signals.untracked(there) && @signals.untracked(fn() { v.left_out() }) =>
+                  match item() {
+                    Some(m) => gone.push(Some(m))
+                    None => ()
+                  }
+                _ => ()
+              }
+            }
+            match at.val {
+              Some(n) => @sf.menu(gone, from=Node(n))
+              None => ()
+            }
+          },
+          tip=tips,
+        ),
+      )
+    })
     |> ignore
-  })
+  }
   // 全屏: the tab over the whole window (tab_full.mbt)
   match full {
     Some(f) =>
@@ -747,6 +834,23 @@ fn tab_keys_node(
     None => ()
   }
 }
+
+///|
+/// Which of a file's keys in the bar of a window of its own leaves it first where it has not the room (View::drops: 1
+/// first): 预览 / 源码 (the widest), then the reader's 排版, 搜索, 目录, then 下载.
+let tab_keys_drop_source : Int = 1
+
+///|
+let tab_keys_drop_layout : Int = 2
+
+///|
+let tab_keys_drop_find : Int = 3
+
+///|
+let tab_keys_drop_contents : Int = 4
+
+///|
+let tab_keys_drop_download : Int = 5
 
 ///|
 /// How far a tab's picture is fitted clear of its stage's edges (the whole window's on a stage under 640, @kit.Zoom's),
@@ -774,7 +878,9 @@ pub fn viewer_tab_bar_tools(
   tips : @sf.TipLayer,
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
-  row.box(fn(r) { tab_keys_node(r, src, vw, fn() { @sf.page_viewer_ink() }, corner, None, tips) }) |> ignore
+  // (made in the bar's own row: short of room, a window of its own at its least, its keys leaving it into its ⋯,
+  // tab_keys_node's `gives`)
+  tab_keys_node(row, src, vw, fn() { @sf.page_viewer_ink() }, corner, None, tips, gives=true)
 }
 
 ///|

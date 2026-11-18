@@ -38,6 +38,7 @@ pub fn service_view_node(
   full? : (() -> Unit)? = None,
   round? : FixedArray[@ui.CornerOf]? = None,
   tips? : @sf.TipLayer,
+  beside? : (() -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
   svc_keep.val = fn(patch) { (src.call)("prefs.set", patch, @sfbase.answer_unread) }
@@ -142,7 +143,7 @@ pub fn service_view_node(
     }
     v.box(fn(col) {
       col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      bar(col, false, fn(top) { service_page_bar_node(top, src, p, site, station, fixed, close, full, corners, tips) })
+      bar(col, false, fn(top) { service_page_bar_node(top, src, p, site, station, fixed, close, full, corners, tips, beside~) })
       col.box(fn(st) {
         st.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         if in_panel {
@@ -189,12 +190,45 @@ fn service_page_bar_node(
   full : (() -> Unit)?,
   corners : FixedArray[Double]?,
   tips : @sf.TipLayer,
+  beside? : (() -> Unit)? = None,
 ) -> Unit {
   let at = match (close, corners) {
     (Some(_), Some(k)) => Some((k[0], k[1]))
     _ => None
   }
+  // (a window of its own's one bar, `beside` its 移到侧边 at its end: the window's top row, a bar's height, what of it
+  // takes no press moving the window, clear of its buttons, the system's at its left (a Mac's) and the app's at its right (Windows', Linux's: its
+  // last key past the window's corner where they are not))
+  let parent = match beside {
+    None => parent
+    Some(_) =>
+      parent.box(fn(w) {
+        w
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .height(Is(Some(@sf.wide_bar_h)))
+        .shrink(Is(0.0))
+        .moves_window(By(@ui.window_inset_now))
+        .padding(By(fn() {
+          let pad = @ui.Space::px(S2)
+          let start = if @ui.window_keys_left_now() { window_bar_buttons_in } else { window_bar_in }
+          // (its last key a bar key of its own size, not the window's corner key: past the corner's arc, not following
+          // it; before the window's own buttons where they are the app's)
+          let roots = @ui.tree_corner_roots_now()
+          let end = if @ui.window_keys_own() {
+            @sf.window_keys_room(roots~) + window_bar_in
+          } else {
+            @sf.window_corner_past(window_bar_in, roots~)
+          }
+          (dmax(0.0, start - pad), 0.0, dmax(0.0, end - pad), 0.0)
+        }))
+        |> ignore
+      })
+  }
   @sf.page_bar_node(parent, corners=at, fn(row) {
+    if beside is Some(_) {
+      row.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    }
     row.fits(Is(true)) |> ignore
     back_forward_node(row, site, tips)
     let reload_slot : Ref[@view.View?] = Ref(None)
@@ -213,7 +247,12 @@ fn service_page_bar_node(
       })
       |> ignore
     }
-    address_or_marking_node(row, src, p, site, fixed)
+    // (a window of its own at its least: the place given way to further, what is beside it gone into its ⋯ first)
+    if beside is Some(_) {
+      address_or_marking_node(row, src, p, site, fixed, least=window_bar_field_least)
+    } else {
+      address_or_marking_node(row, src, p, site, fixed)
+    }
     let size_slot : Ref[@view.View?] = Ref(None)
     row.box(fn(slot) {
       slot.drops(Is(bar_drop_size)) |> ignore
@@ -279,9 +318,39 @@ fn service_page_bar_node(
     |> ignore
     full_key_node(row, full, tips)
     panel_close_key_node(row, close, tips)
+    // 移到侧边, a window of its own's last
+    match beside {
+      // (round, as big as the bar's other keys, lit round where the pointer is on it: in from the window's corner as far
+      // as it is from the bar's top, a circle stands clear of the corner's arc as the rule holds it)
+      Some(b) =>
+        @sf.icon_button_node(
+          row,
+          "panel-open",
+          fn() { @sf.t("web-main.preview.moveBeside") },
+          b,
+          tips~,
+          size=@sf.theme().bars.key,
+          icon_size=@sf.theme().bars.icon,
+        )
+        |> ignore
+      None => ()
+    }
   })
   |> ignore
 }
+
+///|
+/// How far in from the window's sides a window of its own's one bar stands (service_page_bar_node's `beside`): past its
+/// corner (@sf.window_corner_past), after a Mac's own buttons at its left.
+let window_bar_in : Double = 12.0
+
+///|
+let window_bar_buttons_in : Double = 84.0
+
+///|
+/// The least a window of its own's place gives way to (address_or_marking_node's `least`): its ← → and its keys
+/// beside it whole in a window at its least, 420 wide.
+let window_bar_field_least : Double = 72.0
 
 ///|
 /// The same under the page in `parent` (service_foot_bar's, Safari's compact bar at the foot), in one row in a thumb's
@@ -446,7 +515,7 @@ let load_ring_side : Double = 20.0
 
 ///|
 /// Where it is in `parent` (address_or_marking's, previewAddress: its name, then its path, typed to go elsewhere, a tap
-/// anywhere on it typing there), or what marking says in its place while marking or its marks are there; `end` and
+/// anywhere on it typing there where it holds its end key, the foot's), or what marking says in its place while marking or its marks are there; `end` and
 /// `part` as @sf.bar_field_node has them (reload at its end, how far the page came along its foot).
 fn address_or_marking_node(
   parent : @view.View,
@@ -541,6 +610,7 @@ fn address_node(
     end~,
     progress=part,
     least~,
+    // (a press anywhere on the capsule, its lead too, writes there: @sf.address_field_node)
     anywhere=true,
   )
   |> ignore
@@ -1099,8 +1169,17 @@ pub fn file_view_node(
   close : (() -> Unit)?,
   full? : (() -> Unit)? = None,
   tips? : @sf.TipLayer,
+  beside? : (() -> Unit)? = None,
+  bar? : ((@view.View) -> Unit)? = None,
 ) -> Unit {
   let loaded = @sfbase.viz_load_node(parent, src, station, key, path)
+  // (a window of its own's bar over what is said while it is not read: `bar`; read, its page's own bar the window's)
+  let barred = fn(b : @view.View) {
+    match bar {
+      Some(make) => make(b)
+      None => ()
+    }
+  }
   parent.pick(
     at_once=true,
     fn() {
@@ -1113,8 +1192,14 @@ pub fn file_view_node(
     fn(b, what) {
       b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       match what {
-        0 => service_wait_node(b, fn() { @sfbase.viz_tr("common.opening") })
-        1 => service_note_node(b, fn() { @sfbase.viz_tr("android-chat.preview.unreadable", args=[("name", name)]) })
+        0 => {
+          service_wait_node(b, fn() { @sfbase.viz_tr("common.opening") })
+          barred(b)
+        }
+        1 => {
+          service_note_node(b, fn() { @sfbase.viz_tr("android-chat.preview.unreadable", args=[("name", name)]) })
+          barred(b)
+        }
         _ => {
           let job = "file:" + key + "\n" + path
           let f = match @sfbase.service_files.get(service_key(station, job)) {
@@ -1140,6 +1225,7 @@ pub fn file_view_node(
             close~,
             full~,
             tips?,
+            beside~,
           )
         }
       }

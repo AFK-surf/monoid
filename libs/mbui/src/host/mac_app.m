@@ -88,7 +88,8 @@ static NSView *the_box;
 // input now is put in place for it (win_use) and the first put back after: what the app asks of the window then
 // (its size, its scale, a frame, its title, a drag, its cursor) is that window's, and the app is told which it is
 // (mb_host_windows' 4). Closed by the person, the app is told (an outside event, MB_OUTSIDE_WINDOW) and the run goes
-// on; the first window closed, they all close with it.
+// on. The first closed is put away (an app's bundle) or hidden while another is open (a bare run, which ends as the
+// last one seen closes): the windows beside it stay.
 @interface MBWinSlot : NSObject
 @property(nonatomic) int wid;
 @property(nonatomic, strong) NSWindow *win;
@@ -102,6 +103,17 @@ static NSView *the_box;
 @property(nonatomic, strong) NSMutableArray *observers;
 // its content's zoom (@hostapi.set_window_zoom: each window's own) while another is in place
 @property(nonatomic) double zoom;
+// what the app opened it as (mb_host_windows' 1, its spec): its role (its frame kept under it, a second of the role
+// set down and to the right of the one before), whether its top row is the app's (an inset window), when it opened
+@property(nonatomic, copy) NSString *role;
+@property(nonatomic) BOOL inset;
+@property(nonatomic) int opened;
+// full screen or on its way there (full_screen_going), its buttons' place in its top row (buttonsDown: their move,
+// mb_host_window_buttons_down) and the pointer's shape over it (@hostapi.set_cursor): each window's own
+@property(nonatomic) BOOL fullScreenOn;
+@property(nonatomic) double buttonsDown, buttonsFrom, buttonsTo, buttonsT0, buttonsMs;
+@property(nonatomic, strong) CADisplayLink *buttonsLink;
+@property(nonatomic) int cursorKind;
 @end
 @implementation MBWinSlot
 @end
@@ -133,6 +145,10 @@ static int win_of(NSWindow *w) {
   for (NSNumber *k in win_slots)
     if (win_slots[k].win == w) return k.intValue;
   return -1;
+}
+static MBWinSlot *slot_of_window(NSWindow *w) {
+  int k = w ? win_of(w) : -1;
+  return k >= 0 ? win_slots[@(k)] : nil;
 }
 static int event_wid(void) {
   if (win_slots.count < 2) return win_active;
@@ -166,8 +182,7 @@ static void window_modifiers(int wid, BOOL active) {
   app_cb.key(0, mods);
   win_use(back);
 }
-// the pointer's shape (@hostapi.set_cursor), and the press under way (what @hostapi.window_drag drags the window with)
-static int cursor_kind;
+// the press under way (what @hostapi.window_drag drags the window with)
 static NSEvent *down_event;
 static int down_secondary;
 // whether the press under way went to the window (@hostapi.window_drag), and the one before it: a double click is the
@@ -303,12 +318,12 @@ static double paced_hz, link_hz = -1;
   // (words: nothing said till they are let go, no files held over the window)
   if (!drag_has_files(info)) return drag_has_words(info) ? NSDragOperationCopy : NSDragOperationNone;
   NSPoint p = [self convertPoint:info.draggingLocation fromView:nil];
-  drop_post([NSString stringWithFormat:@"{\"type\":\"over\",\"x\":%.1f,\"y\":%.1f}", p.x, p.y]);
+  drop_post([NSString stringWithFormat:@"{\"type\":\"over\",\"x\":%.1f,\"y\":%.1f,\"wid\":%d}", p.x, p.y, self.wid]);
   return NSDragOperationCopy;
 }
 - (void)draggingExited:(id<NSDraggingInfo>)info {
   (void)info;
-  drop_post(@"{\"type\":\"left\"}");
+  drop_post([NSString stringWithFormat:@"{\"type\":\"left\",\"wid\":%d}", self.wid]);
 }
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)info {
   NSArray<NSURL *> *urls = [info.draggingPasteboard readObjectsForClasses:@[ NSURL.class ]
@@ -318,7 +333,7 @@ static double paced_hz, link_hz = -1;
   if (urls.count == 0) {
     // words: what they say, where they were let go
     NSString *s = [info.draggingPasteboard stringForType:NSPasteboardTypeString];
-    m = s.length ? @{@"type" : @"words", @"x" : @(p.x), @"y" : @(p.y), @"text" : s} : nil;
+    m = s.length ? @{@"type" : @"words", @"x" : @(p.x), @"y" : @(p.y), @"text" : s, @"wid" : @(self.wid)} : nil;
   } else {
     // files: where each is (a folder or not, its bytes), and the pick their reading is (begun as the app takes them as
     // files)
@@ -330,16 +345,22 @@ static double paced_hz, link_hz = -1;
       if (!dir.boolValue) [u getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
       [paths addObject:@{@"path" : u.path, @"dir" : @(dir.boolValue), @"size" : @(size.longLongValue)}];
     }
-    m = @{@"type" : @"drop", @"x" : @(p.x), @"y" : @(p.y), @"pick" : @(drop_pick(urls)), @"paths" : paths};
+    m = @{@"type" : @"drop", @"x" : @(p.x), @"y" : @(p.y), @"pick" : @(drop_pick(urls)), @"paths" : paths,
+          @"wid" : @(self.wid)};
   }
   NSData *json = m ? [NSJSONSerialization dataWithJSONObject:m options:0 error:nil] : nil;
   if (!json) {
-    drop_post(@"{\"type\":\"left\"}");
+    drop_post([NSString stringWithFormat:@"{\"type\":\"left\",\"wid\":%d}", self.wid]);
     return NO;
   }
   mb_post("mbui.drop", (const char *)json.bytes, json.length, NULL, 0);
-  // (after the drag has ended in the app it came from: else that one takes the front back as it finishes)
-  dispatch_async(dispatch_get_main_queue(), ^{ bring_back(); });
+  // (the window it was let go on, not the first: after the drag has ended in the app it came from, else that one takes
+  // the front back as it finishes)
+  __weak NSWindow *on = self.window;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [on makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+  });
   return YES;
 }
 
@@ -696,7 +717,7 @@ static NSCursor *cursor_of(int kind) {
   }
 }
 - (void)cursorUpdate:(NSEvent *)e {
-  [cursor_of(cursor_kind) set];
+  [cursor_of(win_slots[@(self.wid)].cursorKind) set];
 }
 - (void)otherMouseUp:(NSEvent *)e {
   if (e.buttonNumber == 3) go_back();
@@ -1072,38 +1093,50 @@ static void run_script_step(int step) {
 // starts bringing it back (WillExit), or it did not go (MBAppDelegate). What the app lays out by (its top row with the
 // buttons or without: mb_host_window_inset; the window's corners), where the buttons are, follow it from the start of
 // the system's move, so the move shows the window as it will be: told at the move's end, the app changed its layout
-// once the window was back, a jump after it.
-static bool full_screen_on;
+// once the window was back, a jump after it. Each window's own (MBWinSlot's fullScreenOn).
 
 // The window's buttons in the app's top row (an inset window): 16 from its left, centred on its 44, as still.fail's
 // desktop app has them (Electron's trafficLightPosition {16, 15}), as far apart as the system has them. Put there by
 // AppKit itself, each time it lays their title bar out (the window resized, its appearance set, in and out of full
 // screen): the window's frame (NSThemeFrame) asks itself how high the bar is (_titlebarHeight), how far in from the
 // left its buttons start (_minXTitlebarWidgetInset) and whether they are centred in it (_shouldCenterTrafficLights),
-// and the window's is one of ours (MBWindow) that says 44 (taller where the app has them lower: buttons_down), 16 and
+// and the window's is one of ours (MBWindow) that says 44 (taller where the app has them lower: buttonsDown), 16 and
 // yes, as Chrome's has its buttons in its tab strip. Moved there after AppKit had put them in its own place, they were
 // in that place for a frame each time: shaking as the window was resized, wrong as it came out of full screen. Not
-// while the window is full screen or on its way there (full_screen_on: the system's own bar there): AppKit's own
-// answers. Where AppKit's frame has none of these, the buttons stay in AppKit's own place.
+// while the window is full screen or on its way there (fullScreenOn: the system's own bar there): AppKit's own
+// answers. Where AppKit's frame has none of these, the buttons stay in AppKit's own place. Each frame asks of its own
+// window (its slot): one window full screen leaves the others' buttons as they are.
 static Class frame_base;
 
-static bool buttons_inset(void) { return setup_inset && !full_screen_on; }
+// The inset of the window being made, before its slot is (mb_host_run, win_open): -1 none being made.
+static int making_inset = -1;
 
-// How much lower than centred on the first 44 the app has its buttons (mb_host_window_buttons_down): its top row that
-// far under the window's top. The bar AppKit centres them in twice that taller.
-static double buttons_down;
+// Whether window `w`'s buttons are in the app's top row now, and how much lower than centred on the first 44 the app
+// has them (mb_host_window_buttons_down): its top row that far under the window's top. The bar AppKit centres them in
+// twice that taller.
+static bool buttons_inset_of(NSWindow *w, double *down) {
+  MBWinSlot *slot = slot_of_window(w);
+  if (down) *down = slot ? slot.buttonsDown : 0;
+  if (slot) return slot.inset && !slot.fullScreenOn;
+  return making_inset > 0;
+}
 
 static double frame_bar_height(id self, SEL s) {
-  return buttons_inset() ? 44 + 2 * buttons_down
-                         : ((double (*)(id, SEL))class_getMethodImplementation(frame_base, s))(self, s);
+  double down = 0;
+  return buttons_inset_of([(NSView *)self window], &down)
+             ? 44 + 2 * down
+             : ((double (*)(id, SEL))class_getMethodImplementation(frame_base, s))(self, s);
 }
 
 static double frame_buttons_left(id self, SEL s) {
-  return buttons_inset() ? 16 : ((double (*)(id, SEL))class_getMethodImplementation(frame_base, s))(self, s);
+  return buttons_inset_of([(NSView *)self window], NULL)
+             ? 16
+             : ((double (*)(id, SEL))class_getMethodImplementation(frame_base, s))(self, s);
 }
 
 static BOOL frame_buttons_centred(id self, SEL s) {
-  return buttons_inset() || ((BOOL (*)(id, SEL))class_getMethodImplementation(frame_base, s))(self, s);
+  return buttons_inset_of([(NSView *)self window], NULL) ||
+         ((BOOL (*)(id, SEL))class_getMethodImplementation(frame_base, s))(self, s);
 }
 
 @interface NSWindow (MBFrameView)
@@ -1123,7 +1156,8 @@ static BOOL frame_buttons_centred(id self, SEL s) {
 + (Class)frameViewClassForStyleMask:(NSWindowStyleMask)m {
   Class base = [super frameViewClassForStyleMask:m];
   static Class ours;
-  if (!setup_inset) return base;
+  // (made once a window of the run is inset; a window that is not answers as AppKit's own frame: buttons_inset_of)
+  if (!ours && !setup_inset && making_inset <= 0) return base;
   if (!ours) {
     SEL h = NSSelectorFromString(@"_titlebarHeight"), x = NSSelectorFromString(@"_minXTitlebarWidgetInset"),
         c = NSSelectorFromString(@"_shouldCenterTrafficLights");
@@ -1146,12 +1180,16 @@ static BOOL frame_buttons_centred(id self, SEL s) {
 // (_tileTitlebarAndRedisplay:; a layout asked for, of the frame or of the bar, does not). Else where the system did
 // not take the window there after all, the bar stayed as it was laid out for full screen.
 static void full_screen_going(NSWindow *w, bool on) {
-  full_screen_on = on;
+  MBWinSlot *slot = slot_of_window(w);
+  slot.fullScreenOn = on;
   NSView *frame = w.contentView.superview;
   SEL tile = NSSelectorFromString(@"_tileTitlebarAndRedisplay:");
   if ([frame respondsToSelector:tile]) ((void (*)(id, SEL, BOOL))objc_msgSend)(frame, tile, YES);
-  [the_view requestFrame];
+  [(slot ? slot.view : the_view) requestFrame];
 }
+
+// The window put in place's slot (win_use), nil before the run's first window is made.
+static MBWinSlot *slot_now(void) { return win_slots[@(win_active)]; }
 
 // ---------------------------------------------------------------------------
 // The host API MoonBit calls
@@ -1187,27 +1225,27 @@ static void window_shown_now(void) {
 
 // Whether the window's buttons are in the app's top row now (an inset window, not full screen nor going there).
 int32_t mb_host_window_inset(void) {
-  NSWindow *w = the_view.window;
-  return setup_inset && w && !full_screen_on ? 1 : 0;
+  MBWinSlot *slot = slot_now();
+  return slot.inset && slot.win && !slot.fullScreenOn ? 1 : 0;
 }
 
 // Whether the window fills the screen now or is going to (@hostapi.full_screen), and made to or back (as its green
 // button does).
 int32_t mb_host_full_screen(void) {
-  return the_view.window && full_screen_on ? 1 : 0;
+  MBWinSlot *slot = slot_now();
+  return slot.win && slot.fullScreenOn ? 1 : 0;
 }
 
 // The window's buttons moved to `by` lower than centred on the app's top row's first 44 (@hostapi.window_buttons_down),
 // from where they are, over `ms` on a Move's way (mbui's Ease::Move: a critically damped spring's, move_k 7.4), each
 // display frame their title bar laid out again as AppKit lays it out itself (full_screen_going's). At once where there
-// is no way to see them go: `ms` none, the window not on the screen or held out of sight as it opens.
-static double buttons_from, buttons_to, buttons_t0, buttons_ms;
-static CADisplayLink *buttons_link;
-
-static void buttons_tile(void) {
-  NSView *frame = the_view.window.contentView.superview;
+// is no way to see them go: `ms` none, the window not on the screen or held out of sight as it opens. The window in
+// place's buttons, their move its own (MBWinSlot's buttons*).
+static void buttons_tile(MBWinSlot *slot) {
+  NSView *frame = slot.win.contentView.superview;
   SEL tile = NSSelectorFromString(@"_tileTitlebarAndRedisplay:");
-  if (buttons_inset() && [frame respondsToSelector:tile]) ((void (*)(id, SEL, BOOL))objc_msgSend)(frame, tile, YES);
+  if (slot.inset && !slot.fullScreenOn && [frame respondsToSelector:tile])
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(frame, tile, YES);
 }
 
 static double buttons_way(double t) {
@@ -1217,52 +1255,64 @@ static double buttons_way(double t) {
   return (1 - (1 + x) * exp(-x)) / (1 - (1 + k) * exp(-k));
 }
 
+// (one window's move: the slot not held by it, its link let go as the window closes)
 @interface MBButtonsMove : NSObject
+@property(nonatomic, weak) MBWinSlot *slot;
 @end
 @implementation MBButtonsMove
 - (void)tick:(CADisplayLink *)link {
-  double t = (CACurrentMediaTime() - buttons_t0) * 1000 / buttons_ms;
-  buttons_down = buttons_from + (buttons_to - buttons_from) * buttons_way(t);
-  if (t >= 1) {
-    buttons_down = buttons_to;
+  MBWinSlot *slot = self.slot;
+  if (!slot) {
     [link invalidate];
-    buttons_link = nil;
+    return;
   }
-  buttons_tile();
+  double t = (CACurrentMediaTime() - slot.buttonsT0) * 1000 / slot.buttonsMs;
+  slot.buttonsDown = slot.buttonsFrom + (slot.buttonsTo - slot.buttonsFrom) * buttons_way(t);
+  if (t >= 1) {
+    slot.buttonsDown = slot.buttonsTo;
+    [link invalidate];
+    slot.buttonsLink = nil;
+  }
+  buttons_tile(slot);
 }
 @end
 
 void mb_host_window_buttons_down(double by, double ms) {
-  if (by == buttons_to && (buttons_link || buttons_down == by)) return;
-  NSWindow *w = the_view.window;
-  [buttons_link invalidate];
-  buttons_link = nil;
-  buttons_to = by;
-  if (ms <= 0 || !w || !w.visible || (window_held && !window_shown)) {
-    buttons_down = by;
-    buttons_tile();
+  MBWinSlot *slot = slot_now();
+  if (!slot) return;
+  if (by == slot.buttonsTo && (slot.buttonsLink || slot.buttonsDown == by)) return;
+  NSWindow *w = slot.win;
+  [slot.buttonsLink invalidate];
+  slot.buttonsLink = nil;
+  slot.buttonsTo = by;
+  BOOL held = slot.wid == 0 ? window_held && !window_shown : slot.view.held;
+  if (ms <= 0 || !w || !w.visible || held) {
+    slot.buttonsDown = by;
+    buttons_tile(slot);
     return;
   }
-  static MBButtonsMove *mover;
-  if (!mover) mover = [MBButtonsMove new];
-  buttons_from = buttons_down;
-  buttons_t0 = CACurrentMediaTime();
-  buttons_ms = ms;
-  buttons_link = [the_view displayLinkWithTarget:mover selector:@selector(tick:)];
-  [buttons_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+  MBButtonsMove *mover = [MBButtonsMove new];
+  mover.slot = slot;
+  slot.buttonsFrom = slot.buttonsDown;
+  slot.buttonsT0 = CACurrentMediaTime();
+  slot.buttonsMs = ms;
+  slot.buttonsLink = [slot.view displayLinkWithTarget:mover selector:@selector(tick:)];
+  [slot.buttonsLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 
 void mb_host_set_full_screen(int32_t on) {
-  NSWindow *w = the_view.window;
-  if (w && (on != 0) != full_screen_on) [w toggleFullScreen:nil];
+  MBWinSlot *slot = slot_now();
+  NSWindow *w = slot.win;
+  if (w && (on != 0) != slot.fullScreenOn) [w toggleFullScreen:nil];
 }
 
 // How round the system draws the window's corners (@hostapi.window_corner), in points: what AppKit's own frame of it
 // says (16 on macOS 27, for a window with a title bar, one see-through over its content, one with a toolbar alike);
 // where it says nothing, by the system's version (16 since macOS 26, 10 before). None filling the screen.
 double mb_host_window_corner(void) {
-  NSWindow *w = the_view.window;
-  if (!w || full_screen_on) return 0;
+  MBWinSlot *slot = slot_now();
+  NSWindow *w = slot.win;
+  if (!w || slot.fullScreenOn) return 0;
   SEL s = NSSelectorFromString(@"_cornerRadius");
   if ([w respondsToSelector:s]) {
     NSMethodSignature *sig = [w methodSignatureForSelector:s];
@@ -1338,7 +1388,7 @@ void mb_host_set_badge(int32_t n) {
 // down, 5 an open hand, 6 a closed one, 7 a crosshair, 8 what cannot be done, 9 and 10 resizing from a corner (top
 // left or bottom right, top right or bottom left).
 void mb_host_set_cursor(int32_t kind) {
-  cursor_kind = kind;
+  slot_now().cursorKind = kind;
   [cursor_of(kind) set];
 }
 
@@ -1402,33 +1452,69 @@ static NSString *const window_front_notice = @"fail.still.mbui.window.front";
 // ---- the windows of one run (win_use, above) ----
 
 // Window `wid` gone (closed by the person, or by the app: mb_host_windows' 3): what it held let go of, the app told
-// between frames (MB_OUTSIDE_WINDOW; one the app closed itself it knows of already).
+// between frames (MB_OUTSIDE_WINDOW; one the app closed itself it knows of already). Its frame kept under its role
+// (its autosave name let go, for the next of the role to take). A bare run whose first window was closed (hidden)
+// ends as the last window beside it closes: none is left to be seen.
 static void win_closed(int wid) {
   MBWinSlot *slot = win_slots[@(wid)];
   if (!slot || wid == 0) return;
   if (win_active == wid) win_use(0);
   [slot.view.link invalidate];
   slot.view.link = nil;
+  [slot.buttonsLink invalidate];
+  slot.buttonsLink = nil;
   for (id obs in slot.observers) [[NSNotificationCenter defaultCenter] removeObserver:obs];
   [slot.observers removeAllObjects];
+  NSString *kept = slot.win.frameAutosaveName;
+  if (kept.length) {
+    [slot.win saveFrameUsingName:kept];
+    [slot.win setFrameAutosaveName:@""];
+  }
   [win_slots removeObjectForKey:@(wid)];
   mb_views_forget(wid);
   mb_render_forget(wid);
+  if (!in_bundle() && !window_run() && win_slots.count == 1 && !win_slots[@0].win.visible) exit(0);
+  tell_state();
   dispatch_async(dispatch_get_main_queue(), ^{
     if (outside_cb) outside_cb(MB_OUTSIDE_WINDOW, wid, -1);
   });
 }
 
-static void wins_close_beside(void) {
-  for (NSNumber *k in win_slots.allKeys)
-    if (k.intValue > 0) [win_slots[k].win close];
+// What the app opens a window as (mb_host_windows' 1): its spec's field, nil (0) where it says none.
+static NSString *spec_text(NSDictionary *spec, NSString *key) {
+  id v = spec[key];
+  return [v isKindOfClass:NSString.class] ? v : nil;
+}
+static double spec_num(NSDictionary *spec, NSString *key) {
+  id v = spec[key];
+  return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : 0;
 }
 
-// A window of this run for `what` (the app's words for what it shows, @hostapi.window_open_id): its id, 0 where none.
-// As large as the first is now, down and to the right of it; its title the app's, its top row the app's as the first's.
+// A window of this run for `what` (@hostapi.window_open_id): its id, 0 where none. `what` a spec (a JSON object:
+// role, title, w, h, minW, minH, inset, each left out as the first's), else the app's words for what it shows. As
+// large as the first is now, down and to the right of it, its title the first's, its top row the app's as the first's,
+// but for what the spec says. One of a role (an app's bundle, a run nobody stands for aside) is where the last of the
+// role was left (its frame kept under the role, AppKit's autosave); a second of a role open beside the first of it,
+// down and to the right of the last one opened, never over it.
 static int win_open(NSString *what) {
-  (void)what;
   if (!win_slots || win_slots.count >= MB_WINS) return 0;
+  NSDictionary *spec = nil;
+  if ([what hasPrefix:@"{"]) {
+    id j = [NSJSONSerialization JSONObjectWithData:[what dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    if ([j isKindOfClass:NSDictionary.class]) spec = j;
+  }
+  NSString *role = spec_text(spec, @"role") ?: @"", *given_title = spec_text(spec, @"title");
+  double spec_w = spec_num(spec, @"w"), spec_h = spec_num(spec, @"h");
+  double min_w = spec_num(spec, @"minW") > 0 ? spec_num(spec, @"minW") : setup_min_w;
+  double min_h = spec_num(spec, @"minH") > 0 ? spec_num(spec, @"minH") : setup_min_h;
+  BOOL inset = [spec[@"inset"] isKindOfClass:NSNumber.class] ? [spec[@"inset"] boolValue] : setup_inset != 0;
+  // (the last opened of its role, open now)
+  MBWinSlot *same = nil;
+  if (role.length)
+    for (NSNumber *k in win_slots) {
+      MBWinSlot *o = win_slots[k];
+      if ([o.role isEqualToString:role] && (!same || o.opened > same.opened)) same = o;
+    }
   int wid = 0;
   for (int k = 1; k < MB_WINS; k++)
     if (!win_slots[@(k)]) {
@@ -1438,15 +1524,17 @@ static int win_open(NSString *what) {
   if (!wid) return 0;
   NSWindow *first = win_slots[@0].win;
   NSRect fr = first ? [first contentRectForFrameRect:first.frame] : NSMakeRect(120, 120, 900, 720);
-  NSRect r = NSMakeRect(0, 0, fr.size.width, fr.size.height);
+  NSRect r = NSMakeRect(0, 0, spec_w > 0 ? spec_w : fr.size.width, spec_h > 0 ? spec_h : fr.size.height);
   NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable |
                             NSWindowStyleMaskMiniaturizable;
-  if (setup_inset) style |= NSWindowStyleMaskFullSizeContentView;
+  if (inset) style |= NSWindowStyleMaskFullSizeContentView;
+  // (its frame's answers before its slot is: buttons_inset_of)
+  making_inset = inset ? 1 : 0;
   NSWindow *w = [[MBWindow alloc] initWithContentRect:r styleMask:style backing:NSBackingStoreBuffered defer:NO];
   w.releasedWhenClosed = NO;
-  w.title = first.title ?: @"";
-  if (setup_min_w > 0 || setup_min_h > 0) w.contentMinSize = NSMakeSize(setup_min_w, setup_min_h);
-  if (setup_inset) {
+  w.title = given_title.length ? given_title : (first.title ?: @"");
+  if (min_w > 0 || min_h > 0) w.contentMinSize = NSMakeSize(min_w, min_h);
+  if (inset) {
     w.titlebarAppearsTransparent = YES;
     w.titleVisibility = NSWindowTitleHidden;
   }
@@ -1469,26 +1557,52 @@ static int win_open(NSString *what) {
   slot.view = v;
   slot.a11yNodes = [NSMutableDictionary new];
   slot.a11yElements = [NSMutableDictionary new];
+  slot.role = role;
+  slot.inset = inset;
+  static int opened;
+  slot.opened = ++opened;
   win_slots[@(wid)] = slot;
+  making_inset = -1;
   // (the app's delegate: windowShouldClose lets it close, the run going on)
   w.delegate = (id<NSWindowDelegate>)NSApp.delegate;
-  if (first) [w setFrameTopLeftPoint:NSMakePoint(NSMinX(first.frame) + 32 * wid, NSMaxY(first.frame) - 32 * wid)];
+  if (same) [w setFrameTopLeftPoint:NSMakePoint(NSMinX(same.win.frame) + 28, NSMaxY(same.win.frame) - 28)];
+  else if (first) [w setFrameTopLeftPoint:NSMakePoint(NSMinX(first.frame) + 32 * wid, NSMaxY(first.frame) - 32 * wid)];
   else [w center];
+  // (where the last of its role was left, if it was: set after its content is in, as the first's MainWindow)
+  if (role.length && !same && in_bundle() && !looked_at_run() && !window_run() && !latency_run())
+    [w setFrameAutosaveName:[@"MBWindow_" stringByAppendingString:role]];
   slot.observers = [NSMutableArray new];
   for (NSNotificationName name in @[ NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification ])
     [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:name object:w queue:nil
                                                                             usingBlock:^(NSNotification *n) {
                                                                               window_modifiers(wid, [n.name isEqualToString:NSWindowDidBecomeKeyNotification]);
+                                                                              tell_state();
                                                                             }]];
   [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification
                                                                               object:w queue:nil
                                                                           usingBlock:^(NSNotification *n) { win_closed(wid); }]];
-  // (seen again, uncovered or out of the Dock: drawn as it is now; the view not held by what is told)
+  // (full screen from as the system starts taking it there, a window from as it starts bringing it back: its own,
+  // full_screen_going)
+  __weak NSWindow *going = w;
+  [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillEnterFullScreenNotification
+                                                                              object:w queue:nil
+                                                                          usingBlock:^(NSNotification *n) {
+                                                                            full_screen_going(going, true);
+                                                                          }]];
+  [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillExitFullScreenNotification
+                                                                              object:w queue:nil
+                                                                          usingBlock:^(NSNotification *n) {
+                                                                            full_screen_going(going, false);
+                                                                          }]];
+  // (seen again, uncovered or out of the Dock: drawn as it is now, the app told whether any window is seen; the view
+  // not held by what is told)
   __weak MBView *seen = v;
-  for (NSNotificationName name in @[ NSWindowDidChangeOcclusionStateNotification, NSWindowDidDeminiaturizeNotification ])
+  for (NSNotificationName name in @[ NSWindowDidChangeOcclusionStateNotification, NSWindowDidDeminiaturizeNotification,
+                                     NSWindowDidMiniaturizeNotification ])
     [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:name object:w queue:nil
                                                                             usingBlock:^(NSNotification *n) {
                                                                               [seen requestFrame];
+                                                                              tell_state();
                                                                             }]];
   // (out of sight till its first frame is drawn, on the screen so that it is drawn at its size and scale there: a
   // frame of the window on its own, as soon as the app has said what it shows, the run's frames not waited for; never
@@ -1519,12 +1633,18 @@ static void held_shown(MBView *v) {
 
 // The windows of this run (host_native.mbt's `windows`): 0 whether they open in it (yes, but in a window that is a
 // run of its own, MBUI_WINDOW, a run that measures input to the screen or one recorded frame by frame), 1 one opened, 2 one to the front, 3 one
-// closed by the app, 4 the window in place now.
+// closed by the app, 4 the window in place now, 5 a window's title set to `what` (`wid` -1: the window in place's).
+// 2 with `wid` 0 brings the first back (put away or hidden: bring_back).
 int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
   switch (op) {
     case 0: return !window_run() && !latency_run() && !record_dir;
     case 1: return win_open(mb_ns_from_string(what));
     case 2: {
+      if (wid == 0) {
+        if (!win_slots[@0].win) return 0;
+        bring_back();
+        return 1;
+      }
       MBWinSlot *slot = wid > 0 ? win_slots[@(wid)] : nil;
       if (!slot) return 0;
       if (slot.win.miniaturized) [slot.win deminiaturize:nil];
@@ -1539,6 +1659,12 @@ int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
       return 0;
     }
     case 4: return win_active;
+    case 5: {
+      MBWinSlot *slot = win_slots[@(wid < 0 ? win_active : wid)];
+      if (!slot.win) return 0;
+      slot.win.title = mb_ns_from_string(what) ?: @"";
+      return 1;
+    }
     default: return 0;
   }
 }
@@ -1584,7 +1710,8 @@ static void say_shown(uint64_t since) {
 }
 
 static void bring_back(void) {
-  NSWindow *w = the_view.window;
+  // (the first's, whichever window is in place: asked from one beside it, op 2 with wid 0)
+  NSWindow *w = win_slots[@0].win ?: the_view.window;
   if (!w) return;
   if (w.isMiniaturized) [w deminiaturize:nil];
   [w makeKeyAndOrderFront:nil];
@@ -1606,13 +1733,21 @@ static void bring_back(void) {
 - (BOOL)windowShouldClose:(NSWindow *)w {
   // (a window of the run beside the first: closed, the run going on: win_closed)
   if (win_of(w) > 0) return YES;
-  // (the first: the windows beside it with it)
-  wins_close_beside();
-  if (!in_bundle() || window_run()) return YES;
-  [w orderOut:nil];
-  if (!put_away_at) put_away_at = clock_gettime_nsec_np(CLOCK_MONOTONIC);
-  tell_state();
-  return NO;
+  // (the first, the windows beside it left as they are: a window of the app's own ends with it; an app's bundle's is
+  // put away; a bare run's hidden while another is open, else it ends)
+  if (window_run()) return YES;
+  if (in_bundle()) {
+    [w orderOut:nil];
+    if (!put_away_at) put_away_at = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    tell_state();
+    return NO;
+  }
+  if (win_slots.count > 1) {
+    [w orderOut:nil];
+    tell_state();
+    return NO;
+  }
+  return YES;
 }
 - (void)windowDidFailToEnterFullScreen:(NSWindow *)w {
   full_screen_going(w, false);
@@ -1684,7 +1819,7 @@ static void watch_sleep(void) {
                 mb_render_trim();
                 say_shown(since);
                 tell_state();
-                [the_view requestFrame];
+                mb_host_request_frame();
               }];
   [ws addObserverForName:NSWorkspaceScreensDidSleepNotification object:nil queue:NSOperationQueue.mainQueue
               usingBlock:^(NSNotification *n) {
@@ -1696,7 +1831,7 @@ static void watch_sleep(void) {
                 screens_asleep = 0;
                 mb_render_trim();
                 tell_state();
-                [the_view requestFrame];
+                mb_host_request_frame();
               }];
 }
 
@@ -1863,6 +1998,8 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                               NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable;
     if (setup_inset) style |= NSWindowStyleMaskFullSizeContentView;
+    // (its frame's answers before its slot is: buttons_inset_of)
+    making_inset = setup_inset ? 1 : 0;
     NSWindow *w = [[MBWindow alloc] initWithContentRect:r styleMask:style backing:NSBackingStoreBuffered defer:NO];
     w.title = mb_ns_from_string(title);
     if (setup_min_w > 0 || setup_min_h > 0) w.contentMinSize = NSMakeSize(setup_min_w, setup_min_h);
@@ -1911,33 +2048,47 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     first.win = w;
     first.box = box;
     first.view = the_view;
+    first.inset = setup_inset != 0;
     win_slots[@0] = first;
+    making_inset = -1;
     // the wheel's upright scroll over a page that gives it to the canvas (ui's Touch: VerticalOut; a list of messages
-    // with a page in it scrolls as a list), the canvas's; any other the page's
+    // with a page in it scrolls as a list), the canvas's; any other the page's. In whichever window of the run it came
+    // to, that window put in place as its page is asked and its canvas given the wheel.
     static id wheel_monitor;
     if (!wheel_monitor)
       wheel_monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel
                                                             handler:^NSEvent *(NSEvent *e) {
-                                                              if (!the_view || e.window != the_view.window) return e;
-                                                              NSPoint p = [the_view convertPoint:e.locationInWindow fromView:nil];
+                                                              int wid = win_of(e.window);
+                                                              MBView *v = wid >= 0 ? win_slots[@(wid)].view : nil;
+                                                              if (!v) return e;
+                                                              int back = win_active;
+                                                              win_use(wid);
+                                                              NSPoint p = [v convertPoint:e.locationInWindow fromView:nil];
                                                               const char *m = mb_views_touch_at(p.x, p.y, NULL);
-                                                              if (!m || strcmp(m, "vertical") != 0) return e;
-                                                              if (fabs(e.scrollingDeltaY) < fabs(e.scrollingDeltaX)) return e;
-                                                              [the_view scrollWheel:e];
-                                                              return nil;
+                                                              BOOL canvas = m && strcmp(m, "vertical") == 0 &&
+                                                                            fabs(e.scrollingDeltaY) >= fabs(e.scrollingDeltaX);
+                                                              if (canvas) [v scrollWheel:e];
+                                                              win_use(back);
+                                                              return canvas ? nil : e;
                                                             }];
     // a trackpad's pinch over a page that gives two fingers to the canvas (ui's Touch: PinchOut), the canvas's: the page
-    // does not zoom (the canvas takes no pinch of its own on the Mac yet: it goes no further)
+    // does not zoom (the canvas takes no pinch of its own on the Mac yet: it goes no further); in its own window, as
+    // the wheel's
     static id magnify_monitor;
     if (!magnify_monitor)
       magnify_monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMagnify
                                                               handler:^NSEvent *(NSEvent *e) {
-                                                                if (!the_view || e.window != the_view.window) return e;
-                                                                NSPoint p = [the_view convertPoint:e.locationInWindow fromView:nil];
+                                                                int wid = win_of(e.window);
+                                                                MBView *v = wid >= 0 ? win_slots[@(wid)].view : nil;
+                                                                if (!v) return e;
+                                                                int back = win_active;
+                                                                win_use(wid);
+                                                                NSPoint p = [v convertPoint:e.locationInWindow fromView:nil];
                                                                 const char *m = mb_views_touch_at(p.x, p.y, NULL);
-                                                                if (!m || strcmp(m, "pinch") != 0) return e;
-                                                                [the_view magnifyWithEvent:e];
-                                                                return nil;
+                                                                BOOL canvas = m && strcmp(m, "pinch") == 0;
+                                                                if (canvas) [v magnifyWithEvent:e];
+                                                                win_use(back);
+                                                                return canvas ? nil : e;
                                                               }];
     // (held: out of sight till the app shows it, mb_host_window_show)
     if (window_held && !window_shown) {
@@ -1948,7 +2099,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     else [w makeKeyAndOrderFront:nil];
     [w makeFirstResponder:the_view];
     // full screen from as the system starts taking the window there, a window from as it starts bringing it back
-    // (full_screen_on)
+    // (its slot's fullScreenOn)
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillEnterFullScreenNotification object:w queue:nil
                                                   usingBlock:^(NSNotification *n) { full_screen_going(w, true); }];
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillExitFullScreenNotification object:w queue:nil
@@ -1980,7 +2131,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     // the system's appearance switched (light, dark, auto at dusk): a frame, which asks it again (mb_host_system_dark)
     [[NSDistributedNotificationCenter defaultCenter] addObserverForName:@"AppleInterfaceThemeChangedNotification"
                                                                  object:nil queue:[NSOperationQueue mainQueue]
-                                                             usingBlock:^(NSNotification *n) { [the_view requestFrame]; }];
+                                                             usingBlock:^(NSNotification *n) { mb_host_request_frame(); }];
     dispatch_async(dispatch_get_main_queue(), ^{ tell_state(); });
     [NSApp run];
   }
@@ -2232,17 +2383,23 @@ moonbit_string_t mb_host_env(moonbit_string_t name) {
   return mb_string_from_ns(v ? [NSString stringWithUTF8String:v] ?: @"" : @"");
 }
 
-// The app in front or not (@hostapi.set_app_state): 1 while the window is shown (not hidden, minimized or covered), | 2
-// while it is also the active app's key window; told as any of that changes, and only then.
+// The app in front or not (@hostapi.set_app_state): 1 while a window of the run is shown (not hidden, minimized or
+// covered: any of them, the first put away and another open is shown), | 2 while one shown is also the active app's key
+// window; told as any of that changes, and only then.
 static void (*state_cb)(int32_t);
 void mb_host_set_app_state(void (*f)(int32_t)) { state_cb = f; }
 static void tell_state(void) {
-  NSWindow *w = the_view.window;
-  if (!state_cb || !w) return;
-  int shown = !asleep_at && !screens_asleep && w.isVisible && !w.isMiniaturized &&
-              (w.occlusionState & NSWindowOcclusionStateVisible) != 0;
+  if (!state_cb || !win_slots.count) return;
+  int shown = 0, key = 0;
+  if (!asleep_at && !screens_asleep)
+    for (NSNumber *k in win_slots) {
+      NSWindow *w = win_slots[k].win;
+      if (!w.isVisible || w.isMiniaturized || (w.occlusionState & NSWindowOcclusionStateVisible) == 0) continue;
+      shown = 1;
+      if (w.isKeyWindow) key = 1;
+    }
   window_seen = shown;
-  int front = shown && NSApp.isActive && w.isKeyWindow;
+  int front = shown && NSApp.isActive && key;
   // (not shown: what drawing holds given back, the frame shown kept; a frame after makes what it needs again)
   if (!shown) mb_render_trim();
   // (told only as it changes: the same said again tells the app nothing, and draws nothing)
@@ -2251,7 +2408,7 @@ static void tell_state(void) {
   if (s == told) return;
   told = s;
   state_cb(s);
-  [the_view requestFrame];
+  mb_host_request_frame();
 }
 
 // Whether the system's appearance is dark (@hostapi.system_dark): the app's own (NSApp.appearance is never set, so this is

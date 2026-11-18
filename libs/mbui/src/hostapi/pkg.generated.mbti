@@ -601,6 +601,8 @@ pub fn window_open_id(String) -> Int32
 
 pub fn window_opens() -> Bool
 
+pub fn window_set_title(Int32, String) -> Unit
+
 pub fn window_setup(Double, Double, Double, Double, inset? : Bool) -> Unit
 
 pub fn window_show() -> Unit
@@ -1140,4 +1142,5 @@ pub(open) trait Host {
   fn ncall_result(Self, Int32) -> String = _
   fn ncall_end(Self, Int32) -> Unit = _
   fn words_spaced(Self) -> Int32 = _
+  fn window_set_title(Self, Int32, String) -> Unit = _
 }

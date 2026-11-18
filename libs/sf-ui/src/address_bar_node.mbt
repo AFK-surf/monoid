@@ -12,8 +12,8 @@
 /// what a screen reader calls it; `placeholder`: what it says empty. `lead`: what stands before the words in the
 /// capsule (the web's mark, a site's name); `end`: what stands at its end in a press's room (reload); `progress`: how far
 /// the page came, along its foot (its share and colour; none: nothing). `anywhere`: a press anywhere on the capsule
-/// (its lead too) writes there, the capsule then one press's target as tall as it is drawn (a bar whose capsule is a
-/// press's room high); else only the words take a press, their room grown round them (rule 2). `least`: how narrow it
+/// (its lead too) writes there, taken by a box of no ground in it that is a ground to the hand, so the words' room grown
+/// round them past the capsule (rule 2) is the field's still; else only the words take a press, their room so grown. `least`: how narrow it
 /// comes to (bar_field_node's). `framed`: on a bar of the canvas's own ground (a station's browser's), the capsule on
 /// the card's ground with its line round it and the address in the words' colour (bar_field_node's). `selects`: pressed
 /// into, all of it picked to be written over, the address put back with its caret at its start (a whole address, its
@@ -54,89 +54,115 @@ pub fn address_field_node(
     loc~,
     parent,
     fn() { writing.get() && editable() },
-    fn(b) {
-      // (a press anywhere on it writes there, where the caller says so and it is editable)
-      if anywhere {
-        b
-        .cursor(By(fn() { if editable() { Some(IBeam) } else { None } }))
+    fn(cap) {
+      // (a press anywhere on it writes there, where the caller says so and it is editable: taken by a box of no ground
+      // over the capsule's own (the capsule's ground, as tall as it is drawn, beside a bar's keys of another height, is
+      // no press's), a ground to the hand (not one of the tree's press boxes) taking a finger only in itself, so the
+      // words' room grown past it (rule 2) is the field's still. Where the capsule holds an end key, `cap` is that box,
+      // bar_field_node's words; else one is made as it makes it)
+      let ibeam : @view.Live[@view.Cursor?] = By(fn() { if editable() { Some(IBeam) } else { None } })
+      let anywhere_in = fn(w : @view.View) {
+        w
+        .cursor(ibeam)
         .on_press(fn() { if @signals.untracked(editable) { field.focus() } })
+        .takes(fn(bw, bh, _) { [(0.0, 0.0, bw, bh)] })
+        .as_ground()
         |> ignore
       }
-      // (Escape, which the field takes not, gives the writing up: the page's address again, the field let go)
-      b.on_key(fn(k) {
-        if k.code == @ui.key_escape && k.mods == 0 && field.focused() {
-          field.let_go()
-          put_back()
-          true
-        } else {
-          false
-        }
-      })
-      |> ignore
-      match lead {
-        Some(f) => f(b)
-        None => ()
-      }
-      // where the page is is what it says, unless someone is writing there
-      b.reacts(fn() { (url(), writing.get(), editable()) }, fn(told) {
-        if !told.2 && field.focused() {
-          field.let_go()
-        }
-        if !told.1 || !told.2 {
-          put_back()
-        }
-      })
-      b.box(fn(f) {
-        f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).presses(By(editable)) |> ignore
-        let input = @ui.field(
-          f,
-          field,
-          max_lines=1,
-          enter_sends=true,
-          ime_action=@hostapi.ime_action_go,
-          label=@signals.untracked(label),
-          placeholder_by=placeholder,
-          size_by=fn() { theme().t.ui },
-          colors_by=fn() {
-            let t = theme()
-            (if editable() && (writing.get() || framed) { t.p.text } else { t.p.muted }, t.p.muted, t.p.accent)
-          },
-          submitted=fn(typed) {
-            if !@signals.untracked(editable) {
-              field.let_go()
-              put_back()
-              return
-            }
-            let to = typed.trim().to_owned()
+      let made = fn(b : @view.View) {
+        // (Escape, which the field takes not, gives the writing up: the page's address again, the field let go)
+        b.on_key(fn(k) {
+          if k.code == @ui.key_escape && k.mods == 0 && field.focused() {
             field.let_go()
-            if to == "" {
-              put_back()
-              return
-            }
-            go(to)
-          },
-        )
-        // pressed into: all of it picked, to be written over (where it `selects`). Taken from it by a layer put over it (a panel, a menu:
-        // presenter_visible as it goes) it is written in still, what was written kept and nothing picked again as the
-        // keys come back
-        let under_layer = Ref(false)
-        input.reacts(fn() { field.focused() }, fn(on) {
-          if on {
-            let fresh = !under_layer.val
-            under_layer.val = false
-            writing.set(true)
-            if fresh && selects {
-              field.pick(0, field.text().length())
-            }
-          } else if @signals.untracked(presenter_visible) {
-            under_layer.val = true
+            put_back()
+            true
           } else {
-            under_layer.val = false
-            writing.set(false)
+            false
           }
         })
-      })
-      |> ignore
+        |> ignore
+        match lead {
+          Some(f) => f(b)
+          None => ()
+        }
+        // where the page is is what it says, unless someone is writing there
+        b.reacts(fn() { (url(), writing.get(), editable()) }, fn(told) {
+          if !told.2 && field.focused() {
+            field.let_go()
+          }
+          if !told.1 || !told.2 {
+            put_back()
+          }
+        })
+        b.box(fn(f) {
+          f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).presses(By(editable)) |> ignore
+          let input = @ui.field(
+            f,
+            field,
+            max_lines=1,
+            enter_sends=true,
+            ime_action=@hostapi.ime_action_go,
+            label=@signals.untracked(label),
+            placeholder_by=placeholder,
+            size_by=fn() { theme().t.ui },
+            colors_by=fn() {
+              let t = theme()
+              (if editable() && (writing.get() || framed) { t.p.text } else { t.p.muted }, t.p.muted, t.p.accent)
+            },
+            submitted=fn(typed) {
+              if !@signals.untracked(editable) {
+                field.let_go()
+                put_back()
+                return
+              }
+              let to = typed.trim().to_owned()
+              field.let_go()
+              if to == "" {
+                put_back()
+                return
+              }
+              go(to)
+            },
+          )
+          // pressed into: all of it picked, to be written over (where it `selects`). Taken from it by a layer put over it (a panel, a menu:
+          // presenter_visible as it goes) it is written in still, what was written kept and nothing picked again as the
+          // keys come back
+          let under_layer = Ref(false)
+          input.reacts(fn() { field.focused() }, fn(on) {
+            if on {
+              let fresh = !under_layer.val
+              under_layer.val = false
+              writing.set(true)
+              if fresh && selects {
+                field.pick(0, field.text().length())
+              }
+            } else if @signals.untracked(presenter_visible) {
+              under_layer.val = true
+            } else {
+              under_layer.val = false
+              writing.set(false)
+            }
+          })
+        })
+        |> ignore
+      }
+      match end {
+        None if anywhere => {
+          cap.cursor(ibeam) |> ignore
+          cap.box(fn(w) {
+            style_node(w, fn() { bar_field_words }, in_row=true)
+            anywhere_in(w)
+            made(w)
+          })
+          |> ignore
+        }
+        _ => {
+          if anywhere {
+            anywhere_in(cap)
+          }
+          made(cap)
+        }
+      }
     },
     end~,
     part=progress,

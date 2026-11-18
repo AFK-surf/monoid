@@ -18,7 +18,7 @@ fn entry_said() -> Unit {
 /// Whether the app signed in is at its landing: no workspace in view, every account answered with none
 /// (not in a window of its own).
 fn landing_now(src : Source) -> Bool {
-  if @sfbase.lone_page.val is Some(_) {
+  if @sfbase.first_lone_page() is Some(_) {
     return false
   }
   let (current, all, answered, _) = workspace_in_view(src)

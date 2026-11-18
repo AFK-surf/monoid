@@ -187,7 +187,7 @@ pub fn font_scale() -> Double {
 /// the frame has it, followed (host_said.mbt): what read it is built again as it changes (a Mac's window going full
 /// screen and back), a list's row or a part kept as its nodes too.
 pub fn window_inset() -> Bool {
-  inset_said.now()
+  inset_said.val.now()
 }
 
 ///|
@@ -209,7 +209,7 @@ pub fn window_keys_own() -> Bool {
 /// Whether the window is maximized now (@hostapi.window_zoomed; a Tester's as set_window_zoomed made it), as the frame
 /// has it, followed (host_said.mbt): what read it is built again as it changes.
 pub fn window_zoomed() -> Bool {
-  zoomed_said.now()
+  zoomed_said.val.now()
 }
 
 ///|
@@ -218,7 +218,7 @@ pub fn window_zoomed() -> Bool {
 /// (host_said.mbt): what read it is built again as it changes (the button lit and held as the host says, not when
 /// something else builds it again).
 pub fn window_snap_state() -> Int {
-  snap_said.now()
+  snap_said.val.now()
 }
 
 ///|

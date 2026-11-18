@@ -43,19 +43,36 @@ fn[T : Eq] HostSaid::now(self : HostSaid[T]) -> T {
 }
 
 ///|
-/// Whether the window's buttons are in the app's top row (window_inset).
+/// Whether the window's buttons are in the app's top row (window_inset): each window's own (window_kept.mbt), a window
+/// in full screen beside one that is not neither told the other's.
 // kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
-let inset_said : HostSaid[Bool] = host_said(false, fn() { @hostapi.window_inset() })
+let inset_said : Ref[HostSaid[Bool]] = Ref(inset_said_new())
 
 ///|
-/// Whether the window is maximized (window_zoomed).
-// kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
-let zoomed_said : HostSaid[Bool] = host_said(false, fn() { @hostapi.window_zoomed() })
+fn inset_said_new() -> HostSaid[Bool] {
+  host_said(false, fn() { @hostapi.window_inset() })
+}
 
 ///|
-/// How the pointer stands on the window's maximize button the app draws (window_snap_state).
+/// Whether the window is maximized (window_zoomed): each window's own, as inset_said.
 // kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
-let snap_said : HostSaid[Int] = host_said(0, fn() { @hostapi.window_snap_state() })
+let zoomed_said : Ref[HostSaid[Bool]] = Ref(zoomed_said_new())
+
+///|
+fn zoomed_said_new() -> HostSaid[Bool] {
+  host_said(false, fn() { @hostapi.window_zoomed() })
+}
+
+///|
+/// How the pointer stands on the window's maximize button the app draws (window_snap_state): each window's own, as
+/// inset_said.
+// kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
+let snap_said : Ref[HostSaid[Int]] = Ref(snap_said_new())
+
+///|
+fn snap_said_new() -> HostSaid[Int] {
+  host_said(0, fn() { @hostapi.window_snap_state() })
+}
 
 ///|
 /// Whether the system is set to dark (system_dark).
@@ -124,9 +141,9 @@ let layers_said : HostSaid[Bool] = host_said(false, fn() { @hostapi.stream_layer
 /// The host's settings, each asked as the frame begins (on_frame, before the window's tree is brought): what read one
 /// that changed is told.
 fn host_settings_arrive() -> Unit {
-  inset_said.arrive()
-  zoomed_said.arrive()
-  snap_said.arrive()
+  inset_said.val.arrive()
+  zoomed_said.val.arrive()
+  snap_said.val.arrive()
   dark_said.arrive()
   words_size_said.arrive()
   reads_out_said.arrive()

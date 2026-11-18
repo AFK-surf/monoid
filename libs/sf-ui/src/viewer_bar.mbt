@@ -120,10 +120,10 @@ pub fn viewer_bar(
           }
         }
       }
-      // clear of the window's buttons at its right where they are the app's (Windows': window_keys); else at the
-      // window's corner as a page's bar's last is
+      // clear of the window's buttons at its right where they are the app's (Windows': window_keys, on its line over
+      // all the window, `whole`); else at the window's corner as a page's bar's last is
       let end = if @ui.window_keys_own() {
-        window_keys_room_at(c.width) + viewer_bar_in
+        window_keys_room() + viewer_bar_in
       } else if capsule_end {
         window_clear_in(viewer_bar_in)
       } else {

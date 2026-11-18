@@ -677,6 +677,10 @@ pub fn set_web_lines(Bool) -> Unit
 
 pub fn set_window_key_handler((Int32, Int32) -> Bool) -> Unit
 
+pub fn set_window_title(String) -> Unit
+
+pub fn set_window_title_of(Int32, String) -> Unit
+
 pub fn set_window_tree((Int32, String) -> (@view.View) -> Unit, around? : (Ctx) -> Unit) -> Unit
 
 pub fn set_window_zoom(Double) -> Unit
@@ -887,6 +891,8 @@ pub fn window_keys_own_now() -> Bool
 pub fn window_open(String) -> Bool
 
 pub fn window_open_here(String) -> Int32
+
+pub fn window_open_spec(WindowSpec) -> Int32
 
 pub fn window_opens() -> Bool
 
@@ -2932,8 +2938,8 @@ pub fn Tester::drawn_shapes(Self) -> Array[(Double, Double, Double, Double, Doub
 pub fn Tester::drawn_text(Self) -> String
 pub fn Tester::drawn_words_found(Self) -> Array[(@view.Drawn, Int32, Bool, String, Double)]
 pub fn Tester::drive(Self, String, max? : Int32, each? : (Self) -> Unit) -> Array[String]
-pub fn Tester::drop_files(Self, Double, Double, Array[(String, Bytes)], paths? : Array[String]) -> Unit
-pub fn Tester::drop_words(Self, Double, Double, String) -> Unit
+pub fn Tester::drop_files(Self, Double, Double, Array[(String, Bytes)], paths? : Array[String], wid? : Int32) -> Unit
+pub fn Tester::drop_words(Self, Double, Double, String, wid? : Int32) -> Unit
 pub fn Tester::dump(Self) -> String
 pub fn Tester::each_frame(Self, (() -> Unit)?) -> Unit
 pub fn Tester::edit_can(Self) -> Int32
@@ -2994,7 +3000,7 @@ pub fn Tester::haptics(Self) -> Array[Haptic]
 pub fn Tester::height_faults(Self) -> Array[String]
 pub fn Tester::hold_drag(Self, Double, Double, Double, Double, steps? : Int32) -> Unit
 pub fn Tester::hold_faults(Self) -> Array[String]
-pub fn Tester::hold_files(Self, (Double, Double)?) -> Unit
+pub fn Tester::hold_files(Self, (Double, Double)?, wid? : Int32) -> Unit
 pub fn Tester::hold_mods(Self, Int32) -> Unit
 pub fn Tester::hold_move(Self, Double, Double) -> Unit
 pub fn Tester::hold_seen_whole(Self, String) -> Unit
@@ -3060,7 +3066,7 @@ pub fn Tester::native_asked(Self) -> Array[(String, @json.Json)]
 pub fn Tester::native_calls(Self) -> Array[(Int32, String, @json.Json)]
 pub fn Tester::nav_said(Self) -> String
 #callsite(autofill(loc))
-pub fn Tester::new((Ctx) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, tree? : (@view.View) -> Unit, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, theme? : () -> Theme, loc~ : SourceLoc) -> Self
+pub fn Tester::new((Ctx) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, tree? : (@view.View) -> Unit, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, windows_beside? : Bool, theme? : () -> Theme, loc~ : SourceLoc) -> Self
 pub fn Tester::next_frame_time(Self) -> Double
 pub fn Tester::next_wake(Self) -> (Double, String)?
 pub fn Tester::notice_asks(Self) -> Int32
@@ -3161,9 +3167,11 @@ pub fn Tester::set_utc_offset(Self, Int32) -> Unit
 pub fn Tester::set_wall(Self, Double) -> Unit
 pub fn Tester::set_window_beside_size(Self, Int32, Double, Double) -> Unit
 pub fn Tester::set_window_inset(Self, Bool) -> Unit
+pub fn Tester::set_window_inset_of(Self, Int32, Bool) -> Unit
 pub fn Tester::set_window_opens(Self, Bool) -> Unit
 pub fn Tester::set_window_snap(Self, Int32) -> Unit
 pub fn Tester::set_window_zoomed(Self, Bool) -> Unit
+pub fn Tester::set_window_zoomed_of(Self, Int32, Bool) -> Unit
 pub fn Tester::set_windows_in_process(Self, Bool) -> Unit
 pub fn Tester::settings_said(Self, String) -> Bool
 pub fn Tester::shape_boxes(Self) -> Array[(String, Double, Double, Double, Double)]
@@ -3209,7 +3217,7 @@ pub fn Tester::touch(Self, Int32, Double, Double) -> Unit
 pub fn Tester::touch_at(Self, Int32, Double, Double, Double) -> Unit
 pub fn Tester::touch_raw(Self, Int32, Int32, Double, Double, Double) -> Unit
 #callsite(autofill(loc))
-pub fn Tester::tree((@view.View) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, theme? : () -> Theme, loc~ : SourceLoc) -> Self
+pub fn Tester::tree((@view.View) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, windows_beside? : Bool, theme? : () -> Theme, loc~ : SourceLoc) -> Self
 pub fn Tester::tree_frames(Self) -> Array[TreeFrame]
 pub fn Tester::tree_frames_from_now(Self) -> Unit
 pub fn Tester::tree_room_faults(Self) -> Array[String]
@@ -3241,12 +3249,15 @@ pub fn Tester::wheel_phase(Self, Double, Double, Double, Int32) -> Unit
 pub fn Tester::wheel_told(Self, Double, Double, Double, Double, Int32, Double) -> Unit
 pub fn Tester::wheel_with(Self, Double, Double, Double, Double, Int32) -> Unit
 pub fn Tester::window_acts(Self) -> Array[Int32]
+pub fn Tester::window_acts_of(Self, wid? : Int32) -> Array[Int32]
 pub fn Tester::window_buttons_down(Self) -> (Double, Double)
 pub fn Tester::window_drags(Self) -> Int32
 pub fn Tester::window_ids_closed(Self) -> Array[Int32]
 pub fn Tester::window_ids_fronted(Self) -> Array[Int32]
+pub fn Tester::window_role(Self, Int32) -> String
 pub fn Tester::window_shows(Self) -> Int32
 pub fn Tester::window_snap_rect(Self) -> (Double, Double, Double, Double)
+pub fn Tester::window_title(Self, wid? : Int32) -> String
 pub fn Tester::windows_beside(Self) -> Array[(Int32, String)]
 pub fn Tester::windows_fronted(Self) -> Array[String]
 pub fn Tester::windows_opened(Self) -> Array[String]
@@ -3475,6 +3486,20 @@ pub(all) enum Weight {
   Bold
 }
 pub fn Weight::value(Self) -> Int32
+
+#derive(Eq, @debug.Debug)
+pub(all) struct WindowSpec {
+  role : String
+  title : String
+  w : Double
+  h : Double
+  min_w : Double
+  min_h : Double
+  inset : Bool?
+  what : String
+}
+pub fn WindowSpec::new(what? : String, role? : String, title? : String, w? : Double, h? : Double, min_w? : Double, min_h? : Double, inset? : Bool?) -> Self
+pub fn WindowSpec::to_json_string(Self) -> String
 
 pub struct Words {
   text : String

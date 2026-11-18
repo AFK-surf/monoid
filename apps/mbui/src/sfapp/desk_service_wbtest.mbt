@@ -314,3 +314,144 @@ test "desk: a web service beside its chat laid out at a size through its sizes b
   t.run_for(@ui.move_most_ms)
   assert_false(@sf.presenter_visible(), msg="the sizes closed")
 }
+
+///|
+test "desk: a web service beside its chat sent to a window of its own and back by its 移到侧边: the same page and site view all along, opened once and never closed, drawn by one window at a time" {
+  new_run()
+  let src = fixture("chat-info")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  t.set_window_beside_size(1, 960.0, 720.0)
+  t.run_for(@ui.move_most_ms)
+  app.nav.push(Service("ws1/st1", "j-web"))
+  t.frame()
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  let site = service_site_id("j-web")
+  let opened = fn() { t.views().filter(fn(v) { v.has_prefix("open \{site} ") }).length() }
+  assert_eq(opened(), 1)
+  t.click(Button, label=@sf.t("web-pages.screen.window"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 1, msg="a window of this run")
+  let (wid, what) = t.windows_beside()[0]
+  assert_true(what.contains("\"role\":\"tab\"") && what.contains("\"tab\":\"service:j-web\""), msg=what)
+  assert_eq(side_now(r).0, [], msg="off the panel")
+  assert_true(service_pages.contains(service_key("ws1/st1", "j-web")), msg="its page kept")
+  assert_eq(service_site_id("j-web"), site, msg="the same site view")
+  assert_true(!t.views().contains("close \{site}"), msg="never closed")
+  // its title the job's name as the core says it, in place of the word it was opened with
+  let title = t.window_title(wid~)
+  assert_true(title != "" && title != @sfbase.svc("android-chat.preview.service"), msg="its title: \{title}")
+  // drawn there alone: its bar and its page in the window, nothing of it in the first
+  let there = Ref((0, 0))
+  t.in_window(wid, fn() {
+    there.val = (t.all(Button, label="刷新").length(), t.holes().length())
+  })
+  assert_eq(there.val.0, 1, msg="its bar in the window")
+  assert_true(there.val.1 > 0, msg="its page drawn in the window")
+  assert_eq(t.all(Button, label="刷新").length(), 0, msg="none of its bar in the first window")
+  let audit = Ref([])
+  t.in_window(wid, fn() { audit.val = t.audit() })
+  assert_eq(audit.val, [], msg="the window at 960 × 720: \{Repr(audit.val)}")
+  // its link followed again: that window to the front, the panel not opened on it here
+  app.nav.push(Service("ws1/st1", "j-web"))
+  t.frame()
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 1, msg="never a second window")
+  assert_eq(t.window_ids_fronted(), [wid])
+  assert_eq(side_now(r).0, [], msg="the panel not opened on it")
+  assert_eq(t.all(Button, label="刷新").length(), 0, msg="none of its bar in the first window still")
+  // 移到侧边 there: back in the panel, in front, the window closed; the same site view, opened once, never closed
+  let pressed = Ref(false)
+  t.in_window(wid, fn() {
+    match t.query(Button, label=@sf.t("web-main.preview.moveBeside")) {
+      Some(b) => {
+        pressed.val = true
+        t.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
+      }
+      None => ()
+    }
+  })
+  assert_true(pressed.val, msg="移到侧边 in the window's bar")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 0, msg="the window closed")
+  assert_eq(side_now(r), (["service:j-web"], "service:j-web"), msg="back in the panel, in front")
+  assert_eq(service_site_id("j-web"), site, msg="the same site view again")
+  assert_eq(opened(), 1, msg="opened once")
+  assert_true(!t.views().contains("close \{site}"), msg="never closed")
+  assert_eq(t.all(Button, label="刷新").length(), 1, msg="its bar beside the chat again")
+  assert_true(t.holes().length() > 0, msg="its page drawn beside the chat again")
+}
+
+///|
+test "desk: a web service in a window of its own on a Mac and on Windows, its buttons in its top row, at 960 × 720 and at its least 420 × 320: its page's own bar the window's one bar, 移到侧边 at its end, Windows' own buttons on its line after it; nothing the audit finds" {
+  for platform in [0, 3] {
+    let at = "platform \{platform}"
+    new_run()
+    let src = fixture("chat-info")
+    let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+    open_chat(r)
+    let t = @ui.Tester::new(
+      fn(c) { view(c, src) },
+      tree=app_tree(src),
+      w=1440.0,
+      h=900.0,
+      platform~,
+      window_inset=true,
+      window_corner=if platform == 3 { 8.0 } else { 16.0 },
+    )
+    t.set_window_opens(true)
+    t.set_windows_in_process(true)
+    t.run_for(@ui.move_most_ms)
+    app.nav.push(Service("ws1/st1", "j-web"))
+    t.frame()
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label=@sf.t("web-pages.screen.window"))
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.windows_beside().length(), 1, msg=at)
+    let wid = t.windows_beside()[0].0
+    // one bar: its page's, 刷新 in it, 移到侧边 at its end, no viewer's bar over it
+    let bar = Ref((0, 0, None))
+    t.in_window(wid, fn() {
+      bar.val = (
+        t.all(Button, label="刷新").length(),
+        t.all(Button, label=@sf.t("web-main.preview.moveBeside")).length(),
+        t.query(Button, label=@sf.t("web-main.preview.moveBeside")).map(fn(n) { n.rect }),
+      )
+    })
+    assert_eq((bar.val.0, bar.val.1), (1, 1), msg="\{at}: one bar, its page's")
+    let audit = Ref([])
+    t.in_window(wid, fn() { audit.val = t.audit() })
+    assert_eq(audit.val, [], msg="\{at}, 960 × 720: \{Repr(audit.val)}")
+    // 移到侧边 under the pointer, lit: round as the window's corner is, concentric with it
+    let (mx, my, mw, mh) = bar.val.2.unwrap()
+    let lit = Ref([])
+    t.in_window(wid, fn() { t.move_to(mx + mw / 2.0, my + mh / 2.0) })
+    t.run_for(@ui.move_most_ms)
+    t.in_window(wid, fn() { lit.val = t.corner_faults() })
+    assert_eq(lit.val, [], msg="\{at}: 移到侧边 lit: \{Repr(lit.val)}")
+    if platform == 3 {
+      let (bx, by, bw, bh) = bar.val.2.unwrap()
+      for key in ["desktop.menu.minimize", "desktop.window.maximize", "desktop.menu.close"] {
+        let k = Ref(None)
+        t.in_window(wid, fn() { k.val = t.query(Button, label=@sf.t(key)).map(fn(n) { n.rect }) })
+        match k.val {
+          Some((kx, ky, _, kh)) => {
+            assert_true(((ky + kh / 2.0) - (by + bh / 2.0)).abs() < 1.0, msg="\{at}: \{key} on 移到侧边's line")
+            assert_true(kx >= bx + bw, msg="\{at}: \{key} after 移到侧边")
+          }
+          None => fail("\{at}: no \{key}")
+        }
+      }
+    }
+    t.set_window_beside_size(wid, 420.0, 320.0)
+    t.run_for(@ui.move_most_ms)
+    t.in_window(wid, fn() { audit.val = t.audit() })
+    assert_eq(audit.val, [], msg="\{at}, 420 × 320: \{Repr(audit.val)}")
+  }
+}

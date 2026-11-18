@@ -166,6 +166,14 @@ struct FakeHost {
   mut window_ids : Int
   mut window_at : Int
   window_sizes : Map[Int, (Double, Double)]
+  /// each window's own beside the first, by id (Tester::set_window_inset_of, set_window_zoomed_of, and an opened
+  /// window's spec's "inset"): its buttons in its top row, maximized, how the pointer stands on its maximize button,
+  /// what the app asked of its own buttons, oldest first (the first window's: `inset`, `zoomed`, `snap_state`,
+  /// `window_acts`)
+  window_insets : Map[Int, Bool]
+  window_zooms : Map[Int, Bool]
+  window_snaps : Map[Int, Int]
+  window_acts_by : Map[Int, Array[Int]]
   window_ids_fronted : Array[Int]
   window_ids_closed : Array[Int]
   /// the number on the app's icon as last told (@ui.set_badge)

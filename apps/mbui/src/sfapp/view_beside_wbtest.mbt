@@ -5,13 +5,21 @@
 // on 小屏 the same press opens the whole window, and nothing offers beside.
 
 ///|
-/// The first row's chat of the made-up core (MBUI_FIXTURE `mode`), in a window `w` by `h` of `platform`'s, at rest.
-fn beside_tester(mode? : String = "chat", w? : Double = 1280.0, h? : Double = 800.0, platform? : Int = 0) -> @ui.Tester {
+/// The first row's chat of the made-up core (MBUI_FIXTURE `mode`), in a window `w` by `h` of `platform`'s (its buttons
+/// in its top row where `inset` says, its corner `corner`), at rest.
+fn beside_tester(
+  mode? : String = "chat",
+  w? : Double = 1280.0,
+  h? : Double = 800.0,
+  platform? : Int = 0,
+  inset? : Bool = false,
+  corner? : Double = 0.0,
+) -> @ui.Tester {
   new_run()
   let src = fixture(mode)
   beside_src.val = Some(src)
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, window_inset=inset, window_corner=corner)
   nav_rested(t)
   t.run_for(@ui.move_most_ms)
   t
@@ -969,4 +977,251 @@ test "a plain press on a message's text attachment opens its side tab" {
   assert_true(@sfbase.viewer.get() is None)
   assert_eq(t.all(Tab, label="list.ts", selected=true).length(), 1)
   assert_true(shown_beside(t, "list.ts", "export const estimate"))
+}
+
+///|
+/// beside_tester's, its windows opening in the run (a Mac's), each beside the first `w` by `h`: window 1 the first
+/// opened.
+fn beside_windows(t : @ui.Tester, w? : Double = 960.0, h? : Double = 720.0) -> Unit {
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  t.set_window_beside_size(1, w, h)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+/// The words window `wid` of the run draws now (0 the first).
+fn beside_window_words(t : @ui.Tester, wid : Int) -> Array[String] {
+  let out = Ref([])
+  t.in_window(wid, fn() { out.val = t.words().map(fn(w) { w.0 }) })
+  out.val
+}
+
+///|
+/// The audit's faults of window `wid` of the run, as it is drawn now.
+fn beside_window_audit(t : @ui.Tester, wid : Int) -> Array[String] {
+  let out = Ref([])
+  t.in_window(wid, fn() { out.val = t.audit() })
+  out.val
+}
+
+///|
+/// The button named `label` in window `wid` of the run pressed (its middle tapped there): whether there was one.
+fn beside_window_press(t : @ui.Tester, wid : Int, label : String) -> Bool {
+  let found = Ref(false)
+  t.in_window(wid, fn() {
+    match t.query(Button, label~) {
+      Some(b) => {
+        found.val = true
+        t.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
+      }
+      None => ()
+    }
+  })
+  found.val
+}
+
+///|
+/// The file named `name` beside the chat, in front, sent to a window of its own by the panel's 在新窗口打开.
+fn file_to_window(t : @ui.Tester, name : String) -> Unit raise {
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file(name), beside=true)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label=@sf.t("web-pages.screen.window"))
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "大屏: a file's tab sent to a window of its own by the panel's 在新窗口打开: the window made as a tab's (WindowSpec), the reader there, none of it in the panel; asked again, that window to the front; its 移到侧边 puts it back in the panel and closes the window" {
+  let t = beside_tester()
+  // (no size said for the window here: it opens at the size its WindowSpec says, as a host makes it)
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  t.run_for(@ui.move_most_ms)
+  file_to_window(t, "说明.md")
+  assert_eq(t.windows_beside().length(), 1, msg="one window of this run")
+  assert_eq(t.windows_opened(), [], msg="no run of its own")
+  let (wid, what) = t.windows_beside()[0]
+  for field in ["\"role\":\"tab\"", "\"title\":\"说明.md\"", "\"w\":960", "\"h\":720", "\"minW\":420", "\"minH\":320", "\"sideTab\":"] {
+    assert_true(what.contains(field), msg="\{field} in \{what}")
+  }
+  let size = Ref((0.0, 0.0))
+  t.in_window(wid, fn() { size.val = t.size() })
+  assert_eq(size.val, (960.0, 720.0), msg="made at its WindowSpec's size")
+  assert_eq((t.window_title(wid~), t.window_role(wid)), ("说明.md", "tab"))
+  // its reader there, its tools in its bar; none of it in the panel (the tab left it, its viewer that window's)
+  let words = beside_window_words(t, wid)
+  assert_true(words.iter().any(fn(w) { w.contains("发布前要做的") }), msg="the reader in the window: \{Repr(words)}")
+  assert_true(words.contains("说明.md"), msg="its name in its bar: \{Repr(words)}")
+  assert_eq(view_tabs(t), [], msg="off the panel")
+  assert_true(t.find("发布前要做的") is None, msg="not drawn in the first window")
+  assert_true(@sfbase.tab_viewer_held(beside_chat, @sfbase.window_here_page(wid).map(fn(p) { match p { SideTab(f) => f.tab; _ => "" } }).unwrap_or("")))
+  assert_eq(beside_window_audit(t, wid), [], msg="the window at 960 × 720: \{Repr(beside_window_audit(t, wid))}")
+  // the same file asked beside again (a message's card): that window to the front, never a second, the panel not
+  // opened on it here
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"), beside=true)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 1, msg="never a second window")
+  assert_eq(t.window_ids_fronted(), [wid])
+  assert_eq(view_tabs(t), [], msg="the panel not opened on it")
+  assert_true(t.find("发布前要做的") is None, msg="not drawn in the first window")
+  // 移到侧边 there: back in the panel, in front, the window closed, the reader as it was
+  assert_true(beside_window_press(t, wid, @sf.t("web-main.preview.moveBeside")), msg="移到侧边 in the window's bar")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 0, msg="the window closed")
+  assert_eq(view_tabs(t).length(), 1, msg="back in the panel")
+  assert_eq(t.all(Tab, label="说明.md", selected=true).length(), 1, msg="in front")
+  assert_true(shown_beside(t, "说明.md", "发布前要做的"), msg="drawn beside the chat again")
+}
+
+///|
+test "大屏: a file's tab over the whole window sent to a window of its own by its bar's 在新窗口打开: the whole window put away at once; that window closed by the person lets the tab go" {
+  let t = beside_tester()
+  beside_windows(t, w=420.0, h=320.0)
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"), beside=true)
+  t.run_for(@ui.move_most_ms)
+  let tab = view_tabs(t)[0]
+  t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(full_now("说明.md"), msg="over the whole window")
+  let keys = t.all(Button, label=@sf.t("web-pages.screen.window"))
+  assert_true(keys.length() > 0, msg="在新窗口打开 in its bar")
+  let k = keys[keys.length() - 1]
+  t.tap(k.rect.0 + k.rect.2 / 2.0, k.rect.1 + k.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="the whole window put away")
+  assert_true(app.nav.top() is Chat(_), msg="back on the chat")
+  assert_eq(t.windows_beside().length(), 1)
+  let wid = t.windows_beside()[0].0
+  assert_true(beside_window_words(t, wid).iter().any(fn(w) { w.contains("发布前要做的") }), msg="the reader there")
+  assert_eq(beside_window_audit(t, wid), [], msg="the window at its least, 420 × 320: \{Repr(beside_window_audit(t, wid))}")
+  // closed by its own close button: the tab let go of, as its tab closed beside the chat would be
+  t.close_window_beside(wid)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 0)
+  assert_eq(view_tabs(t), [], msg="not back in the panel")
+  assert_true(!@sfbase.tab_viewer_held(beside_chat, tab), msg="its viewer let go of")
+  assert_true(@sfbase.tab_full.get() is None)
+}
+
+///|
+/// Where the node read out `label` (its role `role`) is in window `wid` of the run: its rectangle, if there is one.
+fn beside_window_rect(t : @ui.Tester, wid : Int, role : @ui.Role, label : String) -> (Double, Double, Double, Double)? {
+  let out = Ref(None)
+  t.in_window(wid, fn() { out.val = t.query(role, label~).map(fn(n) { n.rect }) })
+  out.val
+}
+
+///|
+test "大屏: a file's tab in a window of its own on a Mac and on Windows, its buttons in its top row, at 960 × 720 and at its least 420 × 320: nothing the audit finds; its name in its middle; Windows' own buttons on its bar's line after 移到侧边; at its least its keys in its ⋯; its own close button and Ctrl+W close it, the tab let go" {
+  for platform in [0, 3] {
+    let corner = if platform == 3 { 8.0 } else { 16.0 }
+    let at = "platform \{platform}"
+    let t = beside_tester(platform~, inset=true, corner~)
+    t.set_window_opens(true)
+    t.set_windows_in_process(true)
+    t.run_for(@ui.move_most_ms)
+    file_to_window(t, "说明.md")
+    assert_eq(t.windows_beside().length(), 1, msg=at)
+    let wid = t.windows_beside()[0].0
+    t.run_for(@ui.move_most_ms)
+    assert_eq(beside_window_audit(t, wid), [], msg="\{at}, 960 × 720: \{Repr(beside_window_audit(t, wid))}")
+    // its name in the window's middle, whichever side the window's buttons are on
+    let name = Ref(None)
+    t.in_window(wid, fn() { name.val = t.words().iter().find_first(fn(w) { w.0 == "说明.md" }) })
+    match name.val {
+      Some((_, x, _, w, _, _)) => assert_true(((x + w / 2.0) - 480.0).abs() < 2.0, msg="\{at}: its name at \{x}, \{w} wide")
+      None => fail("\{at}: no name in its bar")
+    }
+    let beside = beside_window_rect(t, wid, Button, @sf.t("web-main.preview.moveBeside"))
+    assert_true(beside is Some(_), msg="\{at}: 移到侧边")
+    if platform == 3 {
+      // Windows' own buttons the app's, on the line of its bar, after its last key
+      let (bx, by, bw, bh) = beside.unwrap()
+      for key in ["desktop.menu.minimize", "desktop.window.maximize", "desktop.menu.close"] {
+        match beside_window_rect(t, wid, Button, @sf.t(key)) {
+          Some((kx, ky, _, kh)) => {
+            assert_true(((ky + kh / 2.0) - (by + bh / 2.0)).abs() < 1.0, msg="\{at}: \{key} on 移到侧边's line: \{ky}, \{by}")
+            assert_true(kx >= bx + bw, msg="\{at}: \{key} after 移到侧边: \{kx}, \{bx + bw}")
+          }
+          None => fail("\{at}: no \{key} in the window")
+        }
+      }
+    }
+    // at its least: the audit still finds nothing; what has not the room in its ⋯
+    t.set_window_beside_size(wid, 420.0, 320.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(beside_window_audit(t, wid), [], msg="\{at}, 420 × 320: \{Repr(beside_window_audit(t, wid))}")
+    // its name and what it is whole, the room given for the other side's buttons given back first
+    let said = beside_window_words(t, wid)
+    assert_true(said.contains("说明.md") && said.contains("500 B · Markdown"), msg="\{at}: its name whole at its least: \{Repr(said)}")
+    if platform == 3 {
+      assert_true(beside_window_press(t, wid, @sf.t("web-main.menu.more")), msg="\{at}: its ⋯ at its least")
+      t.run_for(@ui.move_most_ms)
+      let words = beside_window_words(t, wid)
+      let reader = [
+        @sf.t("web-pages.drive.reader.contents"),
+        @sf.t("web-pages.drive.reader.find"),
+        @sf.t("web-pages.drive.reader.layout"),
+        @sf.t("web-main.preview.download"),
+      ]
+      assert_true(reader.iter().any(fn(k) { words.contains(k) }), msg="\{at}: what left its bar in its ⋯: \{Repr(words)}")
+      t.in_window(wid, fn() { t.key(@ui.key_escape) })
+      t.run_for(@ui.move_most_ms)
+    }
+    // closed by its own close button (the app's on Windows: @hostapi.window_act; the system's on a Mac: the person's)
+    if platform == 3 {
+      assert_true(beside_window_press(t, wid, @sf.t("desktop.menu.close")), msg="\{at}: its close button")
+      t.run_for(@ui.move_most_ms)
+      assert_eq(t.window_acts_of(wid~), [3], msg=at)
+    } else {
+      t.close_window_beside(wid)
+      t.run_for(@ui.move_most_ms)
+    }
+    assert_eq(t.windows_beside(), [], msg="\{at}: closed")
+    assert_eq(view_tabs(t), [], msg="\{at}: not back beside the chat")
+    // again, closed by Ctrl+W (⌘W on a Mac)
+    file_to_window(t, "说明.md")
+    assert_eq(t.windows_beside().length(), 1, msg=at)
+    let again = t.windows_beside()[0].0
+    t.in_window(again, fn() { t.key(@ui.key_of_char('w'), mods=if platform == 3 { @ui.mod_ctrl } else { @ui.mod_cmd }) })
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.windows_beside(), [], msg="\{at}: closed by its keys")
+    assert_eq(view_tabs(t), [], msg="\{at}: let go")
+  }
+}
+
+///|
+test "a terminal and a station's screen each alone in a window of its own, on a Mac and on Windows, its buttons in its top row, at 960 × 720 and at its least 420 × 320: its one bar its top row, nothing the audit finds" {
+  let pages : Array[(String, @sfbase.Page)] = [
+    ("terminal", Terminal({ station: "ws1/st1", terminal: "term-2", watch: false, cwd: "~/still.fail" })),
+    ("screen-live", Screen({ station: "ws-1/st-1", screen: "browser:tab-1", title: "Chrome", until_gone: false })),
+  ]
+  for kind in pages {
+    let (mode, page) = kind
+    for platform in [0, 3] {
+      for size in [(960.0, 720.0), (420.0, 320.0)] {
+        let (w, h) = size
+        let at = "\{mode}, platform \{platform}, \{w} × \{h}"
+        let calls : Array[Made] = []
+        let t = wide_tester(
+          calls,
+          mode~,
+          w~,
+          h~,
+          platform~,
+          window_corner=if platform == 3 { 8.0 } else { 16.0 },
+          window_inset=true,
+          before=fn(_) {
+            if mode == "screen-live" {
+              @sfpages.open_screen_fixture("screen-live")
+            }
+            @sfbase.lone_page.val = Some(page)
+          },
+        )
+        t.run_for(@ui.move_most_ms)
+        assert_eq(t.audit(), [], msg="\{at}: \{Repr(t.audit())}")
+        @sfbase.lone_page.val = None
+      }
+    }
+  }
 }

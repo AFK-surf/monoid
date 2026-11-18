@@ -53,6 +53,8 @@ fn scene_tester(
     },
     window_corner~,
     nav_able=arg("MBUI_FILM_NAV_ABLE") == "1",
+    // (MBUI_FILM_WINDOWS=1: windows of the run open to the app from its first frame, as its tree is made; below)
+    windows_beside=arg("MBUI_FILM_WINDOWS") == "1",
   )
   // (as a host builds and lays out: no frame built again keeping no rows to be compared, a list's rows on the
   // device's pixels; film.mbt's head)
