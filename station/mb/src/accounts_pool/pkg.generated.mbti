@@ -834,6 +834,8 @@ pub(all) struct SpendHour {
   cache_write : Double
   cache_write_long : Double
   output : Double
+  gen_ms : Double
+  gen_output : Double
 }
 pub fn SpendHour::of_jv(JV) -> Self
 

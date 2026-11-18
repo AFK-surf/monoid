@@ -1898,13 +1898,14 @@ export class Views implements Owner {
       case "profilesOverview": {
         // The Profile overview's pools (views/profiles-overview.ts) of the accounts as the list's rows keep them (each
         // window's percent left and its refill's moment: no overview decorated whole) and their stations' hours, made
-        // again as either changes and at each hour (its hours are the clock's).
+        // again as either changes and at each quarter hour (its hours, and its models' speed a quarter apart, are the
+        // clock's).
         const stations0 = this.#stationsOr(view.scope as string);
         if (stations0 === undefined || !Array.isArray(stations0)) return stations0 as Value | undefined;
         const key = profileRowKey();
         const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) })));
         const now = this.#core.host.nowMs();
-        this.#againIn(HOUR - (now % HOUR));
+        this.#againIn(HOUR / 4 - (now % (HOUR / 4)));
         const stations = new Map(stations0.map((s) => [s.address, s.online]));
         const pace = (station: string) => (stations.get(station) === true ? this.ok({ topic: "profilePace", station }) : undefined);
         return { ok: profilesOverview(arr(listed.items), pace, now, this.#core.host.utcOffsetMin(now)) };

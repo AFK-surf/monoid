@@ -27,8 +27,15 @@ export function installProfileHours(db: DatabaseSync): void {
 /// What a profile's calls of one model spent in one hour, added up.
 export type SpendHour = {
   hour: number; profile: string; runtime: string; model: string | null; fast: boolean; calls: number; input: number; cacheRead: number;
-  cacheWrite: number; cacheWriteLong: number; output: number;
+  cacheWrite: number; cacheWriteLong: number; output: number; genMs?: number; genOutput?: number;
 };
+
+/// What a profile's calls of one model whose time is known took (ms) and wrote in one quarter hour (usage/speed).
+export type SpeedQuarter = { quarter: number; profile: string; model: string; genMs: number; genOutput: number };
+
+/// How many hours back the quarters of the calls' times are read (Profile overview's 输出速度 over 6 hours, each point
+/// the hour before it).
+export const SPEED_QUARTER_HOURS = 8;
 
 /// The hours kept from `?` on, by their hour's index alone (store.ts profileHours; profile-hours-bounded.test.ts).
 export const QUOTA_HOURS_READ = `SELECT profile, hour, at, windows_json FROM profile_quota_hours INDEXED BY profile_quota_hours_hour
@@ -38,11 +45,19 @@ export const QUOTA_HOURS_READ = `SELECT profile, hour, at, windows_json FROM pro
 export const SPEND_HOURS_READ = `SELECT (CASE WHEN quarter >= 0 THEN quarter / 4 ELSE (quarter - 3) / 4 END) AS hour,
     profile, runtime, model, fast,
     SUM(calls) AS calls, SUM(input) AS input, SUM(cache_read) AS cache_read,
-    SUM(cache_write) AS cache_write, SUM(cache_write_long) AS cache_write_long, SUM(output) AS output
+    SUM(cache_write) AS cache_write, SUM(cache_write_long) AS cache_write_long, SUM(output) AS output,
+    SUM(gen_ms) AS gen_ms, SUM(gen_output) AS gen_output
   FROM usage_15m INDEXED BY usage_15m_quarter
   WHERE quarter >= ? AND profile <> '' AND calls > 0
   GROUP BY 1, 2, 3, 4, 5
   ORDER BY profile, hour`;
+/// The calls' times by quarter, account and model from the quarter `?` on, by the same index: the last
+/// SPEED_QUARTER_HOURS' quarters alone.
+export const SPEED_QUARTERS_READ = `SELECT quarter, profile, model, SUM(gen_ms) AS gen_ms, SUM(gen_output) AS gen_output
+  FROM usage_15m INDEXED BY usage_15m_quarter
+  WHERE quarter >= ? AND profile <> '' AND model <> '' AND gen_ms > 0
+  GROUP BY 1, 2, 3
+  ORDER BY quarter, profile, model`;
 
 /// One window of an allowance as an hour keeps it.
 export type HourWindow = { label: string; scope: string | null; usedPercent: number; resetsAt: number | null; minutes: number | null };

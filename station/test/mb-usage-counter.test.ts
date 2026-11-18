@@ -217,6 +217,91 @@ test("Codex, its rollout found by its id and the one a running thread said; dsh;
   assert.equal(await w.read(["codex-a"], "Codex read on"), 1);
 });
 
+test("how long each call took: Claude Code's from what asked it, Codex's to its last item, a response read in two parts", { skip }, async () => {
+  const w = await world();
+  const t0 = w.now();
+  const workspace = join(w.data, "sessions/ember/c-9/workspace");
+  session(w, "chat:c-9", workspace, t0 - 1_000);
+  w.each((s) => s.startTurnFor("t9", "chat:c-9", "input", { profile: "cc", person: "a@x", thread: null }));
+  const main = join(w.data, "transcripts/claude", claudeProject(workspace), "r9.jsonl");
+  const asked = (at: number) => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "user", message: { role: "user", content: "go" }, timestamp: iso(at) });
+  append(main, [asked(t0 + 1_000)]);
+  assert.equal(await w.read(undefined, "asked, nothing written yet"), 0);
+  append(main, [claudeLine("k1", t0 + 3_000, "claude-opus-5-5", usage(1, 0, 0, 0, 10)), asked(t0 + 3_500)]);
+  assert.equal(await w.read(undefined, "its first block"), 1);
+  append(main, [
+    claudeLine("k1", t0 + 5_000, "claude-opus-5-5", usage(1, 0, 0, 0, 30)),
+    JSON.stringify({ type: "api-request", sessionId: "s", id: "r", timestamp: iso(t0 + 6_000) }),
+    claudeLine("k2", t0 + 8_000, "claude-opus-5-5", usage(1, 0, 0, 0, 5)),
+  ]);
+  assert.equal(await w.read(undefined, "its last block, and the next call"), 1);
+  // Codex: asked by a turn begun and by a tool's output, timed to the last item before each count.
+  session(w, "codex-t", join(w.data, "wt"), t0 - 1_000, "codex", "cx");
+  runtimeSession(w, "codex-t", "rid-t", "cx");
+  w.each((s) => s.startTurn("turn-t", "codex-t", "input"));
+  const rollout = join(w.data, "transcripts/codex/2026/10/06", "rollout-2026-10-06T08-00-00-rid-t.jsonl");
+  const line = (at: number, type: string, payload: Record<string, unknown>) => JSON.stringify({ timestamp: iso(at), type, payload });
+  const count = (at: number, total: number, output: number) => line(at, "event_msg", {
+    type: "token_count", info: { total_token_usage: { total_tokens: total }, last_token_usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: output } },
+  });
+  append(rollout, [
+    line(t0, "session_meta", { id: "rid-t", cwd: join(w.data, "wt") }),
+    line(t0, "turn_context", { model: "gpt-6" }),
+    line(t0 + 1_000, "event_msg", { type: "task_started" }),
+    line(t0 + 2_000, "response_item", { type: "reasoning", summary: [] }),
+    line(t0 + 4_000, "response_item", { type: "custom_tool_call", name: "exec" }),
+  ]);
+  assert.equal(await w.read(["codex-t"], "Codex writing"), 0);
+  append(rollout, [
+    line(t0 + 4_500, "response_item", { type: "custom_tool_call_output", output: "ok" }),
+    count(t0 + 4_600, 100, 30),
+    line(t0 + 6_000, "response_item", { type: "message", role: "assistant", content: [] }),
+    count(t0 + 6_100, 200, 40),
+  ]);
+  assert.equal(await w.read(["codex-t"], "Codex counted"), 2);
+  const timed = (store: Store) => store.db.prepare("SELECT id, output, gen_ms, gen_output FROM usage WHERE gen_ms > 0 ORDER BY id").all();
+  assert.deepEqual(timed(w.ts).map((r) => [r.id, r.output, r.gen_ms, r.gen_output]), [
+    ["codex:rid-t:100", 30, 3_000, 30], ["codex:rid-t:200", 40, 1_400, 40], ["k1", 30, 4_000, 30], ["k2", 5, 2_000, 5],
+  ]);
+  const quarters = w.ts.db.prepare("SELECT SUM(gen_ms) AS ms, SUM(gen_output) AS output FROM usage_15m").get() as { ms: number; output: number };
+  assert.deepEqual([quarters.ms, quarters.output], [10_400, 105]);
+});
+
+test("what was read before calls were timed is timed once, from then on, as a counter starts; no call more", { skip }, async () => {
+  const w = await world();
+  const t0 = w.now();
+  const workspace = join(w.data, "sessions/ember/c-8/workspace");
+  session(w, "chat:c-8", workspace, t0 - 1_000);
+  w.each((s) => s.startTurnFor("t8", "chat:c-8", "input", { profile: "cc", person: "a@x", thread: null }));
+  const main = join(w.data, "transcripts/claude", claudeProject(workspace), "r8.jsonl");
+  const asked = (at: number) => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "user", message: { role: "user", content: "go" }, timestamp: iso(at) });
+  append(main, [
+    asked(t0 + 1_000), claudeLine("j1", t0 + 3_000, "claude-opus-5-5", usage(1, 0, 0, 0, 10)),
+    asked(t0 + 10_000), claudeLine("j2", t0 + 14_000, "claude-opus-5-5", usage(1, 0, 0, 0, 20)),
+  ]);
+  assert.equal(await w.read(undefined, "read and timed"), 2);
+  // As a station from before the calls were timed left them: none timed, nothing kept of where its reading stood.
+  w.each((s) => s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0; UPDATE usage_files SET speed = NULL"));
+  append(main, [asked(t0 + 20_000)]);
+  // Counters started anew (what they kept of each transcript let go), told to time from j2 on.
+  const profiles = [{ home: join(w.data, "homes/cc") }, { home: join(w.data, "homes/cx") }];
+  const ts = new ReferenceUsageCounter({ store: w.ts, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock });
+  const mb = new UsageCounter({ store: w.mb, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock, mb: binary });
+  cleanup.unshift(() => ts.stop(), () => mb.stop());
+  const from = t0 + 5_000;
+  assert.equal(await ts.read(new Set(["chat:c-8"]), from), 0);
+  assert.equal(await mb.read(new Set(["chat:c-8"]), from), 0);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "timed again alike");
+  const timed = (store: Store) => store.db.prepare("SELECT id, gen_ms, gen_output FROM usage ORDER BY id").all().map((r) => [r.id, r.gen_ms, r.gen_output]);
+  assert.deepEqual(timed(w.ts), [["j1", 0, 0], ["j2", 4_000, 20]]);
+  // Its reading goes on from where it stood: the next call timed from the line that asked it.
+  append(main, [claudeLine("j3", t0 + 23_000, "claude-opus-5-5", usage(1, 0, 0, 0, 30))]);
+  assert.equal(await ts.read(new Set(["chat:c-8"])), 1);
+  assert.equal(await mb.read(new Set(["chat:c-8"])), 1);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "read on alike");
+  assert.deepEqual(timed(w.ts).at(-1), ["j3", 3_000, 30]);
+});
+
 test("a transcript cut short or replaced is read again from its start, its old calls not taken; put away, read from its frames", { skip }, async () => {
   for (const how of ["shortened", "replaced", "segmented", "single-frame"] as const) {
     const w = await world();

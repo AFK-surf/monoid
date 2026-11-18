@@ -16,6 +16,9 @@ export const IDLE_MS = 60_000;
 /// since the last sweep (`last`, 0 before the first), begun at `started`.
 export type MbRead = {
   only: string[] | null; started: number; last: number; dataDir: string; homes: string[]; hints: TranscriptLocationHints;
+  /// What a transcript had been read of before its calls were timed is read again, its calls from then on timed
+  /// (counter.ts TIMED_BACK_MS, as it starts).
+  timeFrom?: number;
 };
 /// What it answers: how many calls were new, of which sessions, the earliest made when, and the hints as it left them.
 export type MbReadAnswer = { added: number; sessions: string[]; from: number | null; hints: TranscriptLocationHints };

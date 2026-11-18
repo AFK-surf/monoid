@@ -410,11 +410,21 @@ let spend_hours_read : String =
   #|SELECT (CASE WHEN quarter >= 0 THEN quarter / 4 ELSE (quarter - 3) / 4 END) AS hour,
   #|    profile, runtime, model, fast,
   #|    SUM(calls) AS calls, SUM(input) AS input, SUM(cache_read) AS cache_read,
-  #|    SUM(cache_write) AS cache_write, SUM(cache_write_long) AS cache_write_long, SUM(output) AS output
+  #|    SUM(cache_write) AS cache_write, SUM(cache_write_long) AS cache_write_long, SUM(output) AS output,
+  #|    SUM(gen_ms) AS gen_ms, SUM(gen_output) AS gen_output
   #|  FROM usage_15m INDEXED BY usage_15m_quarter
   #|  WHERE quarter >= ? AND profile <> '' AND calls > 0
   #|  GROUP BY 1, 2, 3, 4, 5
   #|  ORDER BY profile, hour
+
+///|
+/// profile-hours.ts SPEED_QUARTERS_READ.
+let speed_quarters_read : String =
+  #|SELECT quarter, profile, model, SUM(gen_ms) AS gen_ms, SUM(gen_output) AS gen_output
+  #|  FROM usage_15m INDEXED BY usage_15m_quarter
+  #|  WHERE quarter >= ? AND profile <> '' AND model <> '' AND gen_ms > 0
+  #|  GROUP BY 1, 2, 3
+  #|  ORDER BY quarter, profile, model
 
 ///|
 let active_sessions : String =
@@ -506,6 +516,7 @@ let statements : Array[(String, String)] = [
   ("delete_expired_remote_runs", delete_expired_remote_runs),
   ("quota_hours_read", quota_hours_read),
   ("spend_hours_read", spend_hours_read),
+  ("speed_quarters_read", speed_quarters_read),
   ("active_sessions", active_sessions),
   ("turns_from", turns_from),
   ("turns_between", turns_between),

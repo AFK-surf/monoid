@@ -63,7 +63,83 @@ export type OverviewPool = {
   /// How many more accounts of its usual plan, full, it would take not to go without, the week foreseen and the weeks
   /// after it (`neededFor`); none where it does not go without.
   neededAccounts: number | null;
+  /// How fast its models wrote (tokens a second, to a tenth; -1 where none of their calls was timed then): Claude's, Fable's,
+  /// Codex's and Gemini's alone, by the models their calls named (`speedPool`), none where nothing was timed at all.
+  speed?: PoolSpeed;
 };
+
+/// A pool's models' speed over three spans, each point what their calls timed in the window that ends there wrote over the
+/// time they took (sliding): `quarters` the last 6 hours a quarter apart, each of the hour before it; `hours` the last
+/// 24 an hour apart, each of the 3 before; `days` the last week 6 hours apart, each of the day before. The last of each
+/// is now's.
+export type PoolSpeed = { quarters: number[]; hours: number[]; days: number[] };
+
+const QUARTER_MS = 900_000;
+
+/// The pool a model's speed counts in, by its name (no provider path, variant or version): a model's own later.
+export function speedPool(model: string): string | null {
+  const raw = model.trim().toLowerCase();
+  const bare = (raw.split("[")[0]?.split("/").pop() ?? "").split("@")[0]!;
+  if (bare.includes("fable") || bare.includes("mythos")) return "Fable";
+  if (bare.includes("claude") || /^(opus|sonnet|haiku)/.test(bare)) return "Claude";
+  if (bare.includes("gemini") || bare.includes("gemma")) return "Gemini";
+  if (bare.startsWith("gpt") || /^o\d/.test(bare) || bare.includes("codex")) return "Codex";
+  return null;
+}
+
+/// What each pool's models wrote and took (ms) by quarter and by hour, of the stations the accounts are on (each said
+/// its own calls: GET /profiles/pace's speedQuarters and speedHours).
+type Took = Map<number, [number, number]>;
+function speedsOf(items: J[], pace: (station: string) => J): Map<string, { quarters: Took; hours: Took }> {
+  const stations = new Set<string>();
+  for (const i of items) for (const m of Array.isArray(i?.members) ? i.members : []) stations.add(str(m?.station));
+  const out = new Map<string, { quarters: Took; hours: Took }>();
+  const add = (list: unknown, which: "quarters" | "hours") => {
+    for (const r of Array.isArray(list) ? list : []) {
+      const at = num(r?.at);
+      const output = num(r?.output);
+      const ms = num(r?.ms);
+      const pool = speedPool(str(r?.model));
+      if (at === null || output === null || ms === null || !(ms > 0) || pool === null) continue;
+      const of = out.get(pool) ?? { quarters: new Map(), hours: new Map() };
+      out.set(pool, of);
+      const was = of[which].get(at) ?? [0, 0];
+      of[which].set(at, [was[0] + output, was[1] + ms]);
+    }
+  };
+  for (const station of stations) {
+    const said = pace(station);
+    add(said?.speedQuarters, "quarters");
+    add(said?.speedHours, "hours");
+  }
+  return out;
+}
+
+/// Each window's tokens a second (to a tenth), the windows `width` long ending at each of `ends`; -1 where none was timed.
+function sliding(took: Took, ends: number[], width: number): number[] {
+  return ends.map((end) => {
+    let output = 0;
+    let ms = 0;
+    for (let at = end - width + 1; at <= end; at++) {
+      const t = took.get(at);
+      if (t !== undefined) { output += t[0]; ms += t[1]; }
+    }
+    return ms > 0 ? round((output / ms) * 1000, 1) : -1;
+  });
+}
+
+function speedOf(took: { quarters: Took; hours: Took } | undefined, now: number): PoolSpeed | undefined {
+  if (took === undefined) return undefined;
+  const q = Math.floor(now / QUARTER_MS);
+  const h = Math.floor(now / HOUR_MS);
+  const span = (n: number, last: number, step: number) => Array.from({ length: n }, (_, i) => last - step * (n - 1 - i));
+  const speed = {
+    quarters: sliding(took.quarters, span(24, q, 1), 4),
+    hours: sliding(took.hours, span(24, h, 1), 3),
+    days: sliding(took.hours, span(28, h, 6), 24),
+  };
+  return [...speed.quarters, ...speed.hours, ...speed.days].some((v) => v >= 0) ? speed : undefined;
+}
 
 /// One window of an account's allowance, as its station or an hour of it says it.
 type Win = { label: string; scope: string; used: number; resetsAt: number | null; minutes: number | null; mark: string };
@@ -708,5 +784,12 @@ function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank
 /// The overview's pools of the workspace's accounts (`profilesWhole`'s items), with their stations' hours (`pace`,
 /// by a station's address: what it said of GET /profiles/pace; nothing said, none), at `now` in the viewer's offset.
 export function profilesOverview(items: J[], pace: (station: string) => J, now: number, offsetMin: number): { pools: OverviewPool[] } {
-  return { pools: poolSpecs(items, pace, now).map((spec) => poolOf(spec, now, offsetMin)) };
+  const speeds = speedsOf(items, pace);
+  return {
+    pools: poolSpecs(items, pace, now).map((spec) => {
+      const pool = poolOf(spec, now, offsetMin);
+      const speed = speedOf(speeds.get(spec.title), now);
+      return speed === undefined ? pool : { ...pool, speed };
+    }),
+  };
 }

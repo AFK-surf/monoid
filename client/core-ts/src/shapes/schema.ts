@@ -3645,7 +3645,13 @@ export const SHAPES: Record<string, Shape> = {
     ["starveSpans", vec("i64"), { client: vec("I54"), doc: "The hours on it goes without, in pairs: the first (0: the next hour) and the one after the last." }],
     ["hourlyNet", vec("f64"), { doc: "Each hour's pace against what it could keep up (%/h, to a tenth): the last 24 (0..23) as spent, the next 24 (24..47) as\nforeseen; an hour going without negative." }],
     ["neededAccounts", opt("i64"), { client: opt("I54"), doc: "How many more accounts of the pool's usual plan are needed to keep up with its pace without going without; none\nwhen it keeps up (left out: a pool's change as a station goes holds to its bar)." }],
+    ["speed", opt("PoolSpeed"), { doc: "How fast its models wrote (Claude, Fable, Codex and Gemini alone); none where none of their calls was timed." }],
   ], { doc: "A model's pool of the Profile overview." }),
+  PoolSpeed: struct([
+    ["quarters", vec("f64"), { doc: "Tokens a second (to a tenth; -1: none timed) the last 6 hours, 24 a quarter hour apart, each of the hour before it; the last now's." }],
+    ["hours", vec("f64"), { doc: "The same the last 24 hours, an hour apart, each of the 3 hours before it." }],
+    ["days", vec("f64"), { doc: "The same the last week, 28 six hours apart, each of the day before it." }],
+  ], { doc: "A pool's models' speed: what their timed calls wrote over the time they took, in a sliding window (views/profiles-overview.ts `speedOf`)." }),
   ProfileRow: struct([
     ["key", "String", { doc: "As WorkspaceProfile's: what one account's page asks it by (`profile`)." }],
     ["group", "String", { doc: "As WorkspaceProfile's." }],

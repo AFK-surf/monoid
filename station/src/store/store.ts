@@ -39,10 +39,10 @@ import * as usage from "./usage.ts";
 import { timed } from "./timed.ts";
 import * as handover from "./handover.ts";
 import { installIncrementalUsageTotals, usageTotalsComplete } from "./usage-totals-source.ts";
-import { HOUR_MS, hourWindows, installProfileHours, PACE_HOURS, QUOTA_HOURS_READ, SPEND_HOURS_READ, type HourWindow, type SpendHour } from "./profile-hours.ts";
+import { HOUR_MS, hourWindows, installProfileHours, PACE_HOURS, QUOTA_HOURS_READ, SPEED_QUARTER_HOURS, SPEED_QUARTERS_READ, SPEND_HOURS_READ, type HourWindow, type SpeedQuarter, type SpendHour } from "./profile-hours.ts";
 import { installUsageSpan } from "./usage-span.ts";
 import { installUsageChatStats } from "./usage-chat-stats.ts";
-import { installUsage15m, moveUsage15m } from "./usage-15m.ts";
+import { installUsage15m, installUsage15mGen, moveUsage15m } from "./usage-15m.ts";
 import { compactRecentlyCompacted, hasCompactUsage, savedCompactContext } from "./usage-compact.ts";
 import { DELETE_EXPIRED_REMOTE_RUNS, installRemoteRuns } from "./remote-runs.ts";
 import { HAS_ACTIVE_WATCH, HAS_SESSION_ACTIVE_WATCH, HAS_ACTIVE_WATCH_BEFORE_UPGRADE, HAS_SESSION_ACTIVE_WATCH_BEFORE_UPGRADE, installActiveWatches } from "./watch-jobs.ts";
@@ -767,6 +767,7 @@ export class Store {
       if (!hasCompactUsage(db)) addUsageCompactions(db);
       installUsageCompactions(db);
       installUsage15m(db, clock.currentTimeMillisUnsafe());
+      installUsage15mGen(db);
       installProfileHours(db);
       installIncrementalUsageTotals(db);
       usage.installUsageCounter(db, clock.currentTimeMillisUnsafe());
@@ -3964,15 +3965,19 @@ export class Store {
   /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET
   /// /profiles/pace): by the hour's index and usage_15m's quarters' (`from * 4`, the hour's first quarter), so a read
   /// takes those hours' rows alone.
-  profileHours(nowHour: number): { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[] } {
+  profileHours(nowHour: number): { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[]; speed: SpeedQuarter[] } {
     const from = nowHour - PACE_HOURS;
     const quotas = this.#all(QUOTA_HOURS_READ, from)
       .map((r) => ({ profile: r.profile as string, hour: r.hour as number, at: r.at as number, windows: (parsed(r.windows_json) ?? []) as HourWindow[] }));
     const spend = this.#all(SPEND_HOURS_READ, from * 4).map((r): SpendHour => ({
       hour: r.hour, profile: r.profile, runtime: r.runtime, model: r.model === "" ? null : r.model, fast: r.fast === 1, calls: r.calls,
       input: r.input, cacheRead: r.cache_read, cacheWrite: r.cache_write, cacheWriteLong: r.cache_write_long, output: r.output,
+      genMs: r.gen_ms, genOutput: r.gen_output,
     }));
-    return { quotas, spend };
+    const speed = this.#all(SPEED_QUARTERS_READ, (nowHour - SPEED_QUARTER_HOURS) * 4).map((r): SpeedQuarter => ({
+      quarter: r.quarter, profile: r.profile, model: r.model, genMs: r.gen_ms, genOutput: r.gen_output,
+    }));
+    return { quotas, spend, speed };
   }
 
   /// A profile deleted: its hours go with it.

@@ -31,12 +31,14 @@ pub(all) struct Call {
   calls : Double
   context : Double?
   window : Double?
+  mut gen_ms : Double
 }
 
 pub(all) struct CallState {
   mut model : String?
   mut codex_id : String?
   mut window : Double?
+  mut speed : Speed
 }
 
 pub struct Counter {
@@ -44,6 +46,13 @@ pub struct Counter {
 }
 pub fn Counter::new(@host.Host, @sql.Db, String) -> Self
 pub async fn Counter::read(Self, @json.Json) -> @json.Json
+
+pub(all) struct Speed {
+  mut since : Double?
+  mut open_start : Double?
+  mut open_id : String?
+  mut ended : Double?
+}
 
 // Type aliases
 

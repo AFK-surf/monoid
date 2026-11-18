@@ -22,7 +22,7 @@ import { type StoreChange, type UsageGroup, Store, newMessage } from "../src/sto
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { UsageCounter } from "../src/usage/counter.ts";
-import { type CallState, callsOf, claudeFiles, claudeProject, readFrom } from "./usage-counter-reference.ts";
+import { type CallState, GEN_MOST, callsOf, claudeFiles, claudeProject, readFrom, speedOf, speedText } from "./usage-counter-reference.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
 import { keepUsage } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
@@ -73,7 +73,7 @@ test("a Claude response written as several lines counts once, with its cache spl
   assert.equal(calls.length, 3);
   assert.deepEqual(calls[0], {
     id: "m1", at: 1000, model: "claude-opus-5-5", subagent: false, fast: false, input: 2, cacheRead: 100, cacheWrite: 0, cacheWriteLong: 50, output: 30,
-    calls: 1, context: 152, window: null,
+    calls: 1, context: 152, window: null, genMs: 0,
   });
   // Without the split, what was written to the cache is taken as written for five minutes.
   assert.deepEqual([calls[1]!.cacheWrite, calls[1]!.cacheWriteLong, calls[1]!.fast, calls[1]!.context], [7, 0, true, 12]);
@@ -102,6 +102,53 @@ test("Codex calls are its token counts, told once each, with the model its turn 
   // What it sent (its input has what was cached in it) is the context, of the window it says.
   assert.deepEqual([calls[2]!.context, calls[2]!.window], [70, 258000]);
   assert.equal(state.model, "gpt-6");
+});
+
+test("a Claude call's time is from the line that asked to its last block, its response read in two parts too", () => {
+  const asked = (at: number) => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "user", message: { role: "user", content: [{ type: "tool_result", content: "x" }] }, timestamp: iso(at) });
+  const state = fresh();
+  // Asked, read; the response comes in the next read, a tool's result between its blocks (its tool run while it streamed).
+  assert.deepEqual(callsOf("claude", [asked(1000)].join("\n"), false, state), []);
+  const calls = callsOf("claude", [
+    claudeLine("m1", 3000, "claude-opus-5-5", usage(2, 100, 0, 0, 10)),
+    asked(3500),
+    claudeLine("m1", 5000, "claude-opus-5-5", usage(2, 100, 0, 0, 30)),
+    // A request sent is when it was asked, where Claude Code writes it.
+    JSON.stringify({ type: "api-request", sessionId: "s", id: "r", timestamp: iso(6000) }),
+    claudeLine("m2", 8000, "claude-opus-5-5", usage(2, 100, 0, 0, 5)),
+    JSON.stringify({ type: "assistant", timestamp: iso(9000), isSidechain: true, message: { id: "m3", model: "claude-haiku-4-5", usage: usage(1, 0, 0, 0, 1) } }),
+  ].join("\n"), false, state);
+  assert.deepEqual(calls.map((c) => [c.id, c.output, c.genMs]), [["m1", 30, 4000], ["m2", 5, 2000], ["m3", 1, 0]]);
+  // What a read leaves of it is kept with the transcript's place for the next.
+  assert.deepEqual(speedOf(speedText(state.speed!)), state.speed);
+  // A pause longer than a call takes alone is none's.
+  const late = fresh();
+  assert.deepEqual(callsOf("claude", [asked(0), claudeLine("m9", GEN_MOST + 1, "claude-opus-5-5", usage(1, 0, 0, 0, 1))].join("\n"), false, late).map((c) => c.genMs), [0]);
+});
+
+test("a Codex call's time is from what asked it to the last item it wrote before its token count", () => {
+  const line = (at: number, type: string, payload: Record<string, unknown>) => JSON.stringify({ timestamp: iso(at), type, payload });
+  const count = (at: number, total: number, output: number) => line(at, "event_msg", {
+    type: "token_count", info: { total_token_usage: { total_tokens: total }, last_token_usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: output } },
+  });
+  const state = fresh();
+  const first = callsOf("codex", [
+    line(1000, "event_msg", { type: "task_started" }),
+    line(1001, "response_item", { type: "message", role: "user", content: [] }),
+    line(2000, "response_item", { type: "reasoning", summary: [] }),
+    line(4000, "response_item", { type: "custom_tool_call", name: "exec" }),
+  ].join("\n"), false, state);
+  assert.deepEqual(first, []);
+  const calls = callsOf("codex", [
+    line(4500, "response_item", { type: "custom_tool_call_output", output: "ok" }),
+    count(4600, 100, 30),
+    count(4600, 100, 30),
+    line(6000, "response_item", { type: "message", role: "assistant", content: [] }),
+    line(7600, "response_item", { type: "function_call", name: "f" }),
+    line(8000, "response_item", { type: "function_call_output", output: "ok" }),
+    count(8100, 200, 40),
+  ].join("\n"), false, state);
+  assert.deepEqual(calls.map((c) => [c.id, c.genMs]), [["codex::100", 3000], ["codex::100", 0], ["codex::200", 3000]]);
 });
 
 test("a turn told at once is the calls it says, with the context it ended with; dsh's window comes before its calls", () => {

@@ -6,7 +6,9 @@
 // 1. `额度与恢复`: what the pool had left the last 48 hours as its accounts were read, and the week on as foreseen
 //    (refills stepping up, red where it goes without);
 // 2. `消耗速度`: each of the last 24 hours and the next 24 against the most it could spend an hour and last the week
-//    (0, the middle line), in %/h: above it green (spent less than that), under it red (more, or going without).
+//    (0, the middle line), in %/h: above it green (spent less than that), under it red (more, or going without);
+// and under them `输出速度`: how fast its models wrote (tokens a second, a sliding window: the core's `speed`) over the
+// last 6 hours, 24 hours or week, as chosen.
 
 ///|
 /// A model's pool as the core makes it (`profilesOverview`: client/core-ts views/profiles-overview.ts).
@@ -28,6 +30,9 @@ priv struct ModelPool {
   hourly_net : Array[Double]
   /// how many more accounts of its usual plan it would take to keep up with its pace (0: it keeps up)
   needed_accounts : Int
+  /// its models' tokens a second (-1: none timed then), over each span `ov_speed_span` chooses (the core's `speed`:
+  /// quarters, hours, days); empty where none of its calls was timed
+  speed : Array[Array[Double]]
 }
 
 ///|
@@ -73,6 +78,138 @@ fn ov_pool_of(j : Json) -> ModelPool {
     },
     hourly_net: nums("hourlyNet"),
     needed_accounts: count(v, "neededAccounts"),
+    speed: match field(v, "speed") {
+      Some(Object(_)) as sp =>
+        ["quarters", "hours", "days"].map(k => {
+          items(sp, k).map(fn(x) {
+            match x {
+              Number(n, ..) => n
+              _ => -1.0
+            }
+          })
+        })
+      _ => []
+    },
+  }
+}
+
+///|
+/// Which span `输出速度` shows: 0 the last 6 hours, 1 the last 24, 2 the last week (the page's, every pool's).
+let ov_speed_span : @signals.Signal[Int] = @signals.signal(1, same=fn(a, b) { a == b })
+
+///|
+fn ov_speed_spans() -> Array[String] {
+  if ov_en() {
+    ["6 hours", "24 hours", "7 days"]
+  } else {
+    ["6小时", "24小时", "7天"]
+  }
+}
+
+///|
+/// The span's points as the core said them, none where nothing of the pool's was timed.
+fn ov_speed_points(pool : ModelPool) -> Array[Double] {
+  pool.speed.get(ov_speed_span.get()).unwrap_or([])
+}
+
+///|
+/// Whether any of the span's windows was timed.
+fn ov_speed_known(points : Array[Double]) -> Bool {
+  points.iter().any(fn(v) { v >= 0.0 })
+}
+
+///|
+/// A speed in words: whole tokens a second, under 10 to a tenth.
+fn ov_tps(v : Double) -> String {
+  let whole = if v < 10.0 {
+    let tenths = (v * 10.0).round().to_int()
+    if tenths % 10 == 0 { (tenths / 10).to_string() } else { (tenths / 10).to_string() + "." + (tenths % 10).to_string() }
+  } else {
+    v.round().to_int().to_string()
+  }
+  whole + " tok/s"
+}
+
+///|
+/// The speed chart's top: the next round speed over what it shows.
+fn ov_speed_top(points : Array[Double]) -> Double {
+  let mut most = 0.0
+  for v in points {
+    if v > most {
+      most = v
+    }
+  }
+  for step in [10.0, 20.0, 40.0, 60.0, 80.0, 100.0, 120.0, 160.0, 200.0, 300.0, 400.0, 600.0, 800.0, 1000.0] {
+    // (a tenth over what it shows at least: its line never on the top's)
+    if most * 1.1 <= step {
+      return step
+    }
+  }
+  (most * 1.1 / 500.0).ceil() * 500.0
+}
+
+///|
+/// Each point the speed of the window that ends there, the last now's at the right edge, the first as far in as its
+/// span says (the points end a step apart over the whole span); a run of windows timed one line, one alone a dot, those
+/// not timed a gap.
+fn ov_speed_shapes(points : Array[Double], top : Double, w : Double, h : Double) -> Array[@ui.Shape] {
+  let n = points.length()
+  if w <= 10.0 || n < 2 || top <= 0.0 {
+    return []
+  }
+  let t = @sf.theme()
+  let pad_top = 6.0
+  let pad_bot = 6.0
+  let ph = h - pad_top - pad_bot
+  let x_of = fn(i : Int) -> Double { (i + 1).to_double() / n.to_double() * w }
+  let y_of = fn(v : Double) -> Double { pad_top + (1.0 - @cmp.minimum(1.0, v / top)) * ph }
+  let shapes : Array[@ui.Shape] = []
+  for yg in [y_of(top), y_of(top / 2.0), y_of(0.0)] {
+    shapes.push(@ui.shape_of([([0.0, yg, w, yg], false)], stroke=t.p.line, width=1.0))
+  }
+  let ink = t.p.accent
+  let mut i = 0
+  while i < n {
+    if points[i] < 0.0 {
+      i += 1
+      continue
+    }
+    let line : Array[Double] = []
+    let start = i
+    while i < n && points[i] >= 0.0 {
+      line.push(x_of(i))
+      line.push(y_of(points[i]))
+      i += 1
+    }
+    if i - start == 1 {
+      shapes.push(@ui.shape_of([(ov_circle_poly(line[0], line[1], 2.6), true)], fill=ink))
+    } else {
+      let area = line.copy()
+      area.push(x_of(i - 1))
+      area.push(y_of(0.0))
+      area.push(x_of(start))
+      area.push(y_of(0.0))
+      shapes.push(@ui.shape_of([(area, true)], fill=@sf.alpha(ink, if t.dark { 0.10 } else { 0.08 })))
+      shapes.push(@ui.shape_of([(line, false)], stroke=ink, width=2.0))
+    }
+  }
+  if points[n - 1] >= 0.0 {
+    let x = x_of(n - 1)
+    let y = y_of(points[n - 1])
+    shapes.push(@ui.shape_of([(ov_circle_poly(x, y, 4.6), true)], fill=t.p.card))
+    shapes.push(@ui.shape_of([(ov_circle_poly(x, y, 3.1), true)], fill=ink))
+  }
+  shapes
+}
+
+///|
+/// The speed chart's times under it, its span's from its start to now.
+fn ov_speed_hours() -> Array[String] {
+  let now = if ov_en() { "Now" } else { "现在" }
+  match ov_speed_span.get() {
+    0 => ["-6h", "-4.5h", "-3h", "-1.5h", now]
+    2 => if ov_en() { ["-7d", "", "-3.5d", "", now] } else { ["-7天", "", "-3.5天", "", now] }
+    _ => ["-24h", "-18h", "-12h", "-6h", now]
   }
 }
 
@@ -1009,8 +1146,94 @@ fn ov_charts_node(
       })
       |> ignore
     })
+    ov_speed_node(body, active_pool)
   })
   |> ignore
+}
+
+///|
+/// `输出速度`, under the pool's two charts: its title and the speed now, the span to show, and each window's speed over
+/// it; where none of the pool's calls was timed in the span, says so in the chart's place.
+fn ov_speed_node(parent : @view.View, active_pool : () -> ModelPool?) -> Unit {
+  let points_now = @signals.computed(fn(_) { active_pool().map(ov_speed_points).unwrap_or([]) }, same=fn(a, b) { a == b })
+  let points = fn() { points_now.get() }
+  parent.box(fn(col) {
+    col.gap(Is(6.0)).padding(Is((0.0, 16.0, 0.0, 0.0))) |> ignore
+    ug_line_node(col, fn(h) {
+      @sf.words_node(h, fn() { if ov_en() { "Output speed" } else { "输出速度" } }, fn() { ug_named_title })
+      .grow(Is(1.0))
+      .basis(Is(Some(0.0)))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .allow_ellipsis(Is(true))
+      |> ignore
+      @sf.words_node(
+        h,
+        fn() {
+          match points().last() {
+            Some(v) if v >= 0.0 => ov_tps(v)
+            _ => "—"
+          }
+        },
+        fn() {
+          match points().last() {
+            Some(v) if v >= 0.0 => ug_peak.then(@ui.text_style(color=AccentText))
+            _ => ug_peak.then(@ui.text_style(color=Data(@sf.theme().p.subtle)))
+          }
+        },
+      )
+      .shrink(Is(0.0))
+      |> ignore
+    })
+    col.box(fn(slot) { @sf.segmented_node(slot, ov_speed_spans, fn() { ov_speed_span.get() }, fn(i) { ov_speed_span.set(i) }) })
+    |> ignore
+    col.show(fn() { ov_speed_known(points()) }, at_once=true, fn(known) {
+      known.gap(Is(6.0)) |> ignore
+      known.box(fn(plot) {
+        plot.row(Is(true)).gap(Is(6.0)) |> ignore
+        let top = fn() { ov_speed_top(points()) }
+        plot.box(fn(ys) {
+          ys.min_width(Is(Some(ov_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
+          @sf.words_node(ys, fn() { ov_rate_number(top()) }, fn() { ug_scale_label }) |> ignore
+          @sf.words_node(ys, fn() { ov_rate_number(top() / 2.0) }, fn() { ug_scale_label }) |> ignore
+          @sf.words_node(ys, fn() { "0" }, fn() { ug_scale_label }) |> ignore
+        })
+        |> ignore
+        plot.box(fn(cv) {
+          cv.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+          cv.by_room(fn(canvas, room) {
+            canvas.height(Is(Some(ov_chart_h))).shapes(By(fn() { ov_speed_shapes(points(), top(), room.width(), ov_chart_h) }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      ov_time_axis_node(known, ov_axis_w, ov_speed_hours, 4)
+    })
+    col.show(fn() { !ov_speed_known(points()) }, at_once=true, fn(none) {
+      @sf.words_node(
+        none,
+        fn() {
+          if ov_en() {
+            "No timed calls of these models in this span"
+          } else {
+            "这段时间里没有这类模型的计时调用"
+          }
+        },
+        fn() { @ui.text_style(size=Meta, leading=L5, wrap=true, w=Full, color=Data(@sf.theme().p.subtle)) },
+      )
+      |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
+/// A speed's scale label: whole tokens a second.
+fn ov_rate_number(v : Double) -> String {
+  v.round().to_int().to_string()
 }
 
 ///|

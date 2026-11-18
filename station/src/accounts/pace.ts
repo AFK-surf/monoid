@@ -2,12 +2,31 @@
 // views/profiles-overview.ts): what its allowance said in each hour, and what its calls spent in each, as dollars at
 // list prices by the window they count against (`scope`, as the allowance names its models' windows: Fable's, an
 // Antigravity account's "gemini" and "3p"). Read of the two statistics kept at write (store/profile-hours.ts).
-import { HOUR_MS, PACE_HOURS, type HourWindow, type SpendHour } from "../store/profile-hours.ts";
+import { HOUR_MS, PACE_HOURS, type HourWindow, type SpeedQuarter, type SpendHour } from "../store/profile-hours.ts";
 import { price } from "../read/usage.ts";
 
 export type PaceQuota = { hour: number; at: number; windows: HourWindow[] };
 export type PaceSpend = { hour: number; scope: string; weight: number };
-export type PaceView = { nowAt: number; fromHour: number; profiles: Record<string, { quotas: PaceQuota[]; spend: PaceSpend[] }> };
+/// What the calls of one model whose time is known took (ms) and wrote in an hour (`at` its index) or a quarter hour, of
+/// the accounts shown together: Profile overview's 输出速度 (usage/speed).
+export type PaceSpeed = { at: number; model: string; output: number; ms: number };
+export type PaceView = {
+  nowAt: number; fromHour: number; profiles: Record<string, { quotas: PaceQuota[]; spend: PaceSpend[] }>;
+  speedHours: PaceSpeed[]; speedQuarters: PaceSpeed[];
+};
+
+/// The calls' times of the profiles `shown` keeps, added up by `at` and model, in their order.
+function speedOf(rows: { at: number; profile: string; model: string | null; genMs: number; genOutput: number }[], shown: (profile: string) => boolean): PaceSpeed[] {
+  const by = new Map<string, PaceSpeed>();
+  for (const r of rows) {
+    if (!shown(r.profile) || r.model === null || r.model === "" || !(r.genMs > 0)) continue;
+    const key = `${r.at}\u0000${r.model}`;
+    const was = by.get(key);
+    if (was !== undefined) { was.output += r.genOutput; was.ms += r.genMs; }
+    else by.set(key, { at: r.at, model: r.model, output: r.genOutput, ms: r.genMs });
+  }
+  return [...by.values()].sort((a, b) => a.at - b.at || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
+}
 
 /// What an hour of one model's calls weighs: what they would cost at its list price, or for a model with none, what
 /// they would at a middling one (input $1, cache read 0.1×, a cache write 1.25×, output $5 a million).
@@ -40,7 +59,7 @@ export function spendScopes(runtime: string, model: string | null): string[] {
 }
 
 /// The view of what the store read, for the profiles `shown` keeps (the viewer's workspace's).
-export function paceView(nowAt: number, read: { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[] },
+export function paceView(nowAt: number, read: { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[]; speed?: SpeedQuarter[] },
   shown: (profile: string) => boolean): PaceView {
   const nowHour = Math.floor(nowAt / HOUR_MS);
   const profiles: PaceView["profiles"] = {};
@@ -66,5 +85,7 @@ export function paceView(nowAt: number, read: { quotas: { profile: string; hour:
     }
     list.sort((a, b) => a.hour - b.hour || (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
   }
-  return { nowAt, fromHour: nowHour - PACE_HOURS, profiles };
+  const speedHours = speedOf(read.spend.map((s) => ({ at: s.hour, profile: s.profile, model: s.model, genMs: s.genMs ?? 0, genOutput: s.genOutput ?? 0 })), shown);
+  const speedQuarters = speedOf((read.speed ?? []).map((s) => ({ at: s.quarter, profile: s.profile, model: s.model, genMs: s.genMs, genOutput: s.genOutput })), shown);
+  return { nowAt, fromHour: nowHour - PACE_HOURS, profiles, speedHours, speedQuarters };
 }

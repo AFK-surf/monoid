@@ -4,7 +4,7 @@
 // before (no GET /profiles/pace) giving the overview of the allowances alone.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FUTURE_HOURS, PAST_HOURS, profilesOverview } from "../src/views/profiles-overview.ts";
+import { FUTURE_HOURS, PAST_HOURS, profilesOverview, speedPool } from "../src/views/profiles-overview.ts";
 import { apply, subscribe, v } from "./helpers.ts";
 import { base, overview, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -286,4 +286,42 @@ test("the overview is of the stations' hours as they come, and of the allowances
     assert.ok(asked >= 1, "asked while the overview is shown");
     core.close();
   }
+});
+
+test("each pool's models' speed: what their timed calls wrote over the time they took, in sliding windows, of every station", () => {
+  const Q = H / 4;
+  const q0 = Math.floor(NOW / Q);
+  // Two stations: Opus and Fable on one, Opus and GPT on another; an hour back and now.
+  const one = { nowAt: NOW, profiles: {}, speedHours: [
+    { at: HOUR0 - 1, model: "claude-opus-5-5", output: 6000, ms: 100_000 },
+    { at: HOUR0, model: "claude-opus-5-5", output: 3000, ms: 50_000 },
+    { at: HOUR0, model: "claude-fable-5-2[1m]", output: 1000, ms: 50_000 },
+  ], speedQuarters: [{ at: q0, model: "claude-opus-5-5", output: 3000, ms: 50_000 }, { at: q0, model: "claude-fable-5-2[1m]", output: 1000, ms: 50_000 }] };
+  const two = { nowAt: NOW, profiles: {}, speedHours: [
+    { at: HOUR0, model: "anthropic/claude-opus-5-5", output: 6000, ms: 50_000 },
+    { at: HOUR0, model: "gpt-6.1-sol", output: 2000, ms: 20_000 },
+    { at: HOUR0, model: "some-other-model", output: 2000, ms: 20_000 },
+  ], speedQuarters: [{ at: q0 - 4, model: "anthropic/claude-opus-5-5", output: 6000, ms: 50_000 }] };
+  const items = [
+    account("a", [week(10, 100), five(0, null)], { members: [{ station: "ws/one", profileId: "a" }, { station: "ws/two", profileId: "a" }] }),
+    account("f", [week(10, 100, "Fable"), week(10, 100), five(0, null)], { members: [{ station: "ws/one", profileId: "f" }] }),
+    account("c", [week(10, 100), five(0, null)], { group: "chatgpt", members: [{ station: "ws/two", profileId: "c" }] }),
+  ];
+  const pools = profilesOverview(items, (s) => (s === "ws/one" ? one : s === "ws/two" ? two : undefined), NOW, 0).pools;
+  const of = (title: string) => pools.find((p) => p.title === title)?.speed;
+  const opus = of("Claude")!;
+  // The 3 hours to an hour back (6000 over 100 s), and to now: both stations' with the hour before (15000 over 200 s).
+  assert.deepEqual(opus.hours.slice(-2), [60, 75]);
+  assert.equal(opus.hours.length, 24);
+  assert.equal(opus.hours[0], -1, "nothing timed then");
+  // The last 6 hours a quarter apart, each of the hour before: four quarters back (6000 over 50 s) in the four windows
+  // that hold it, and now's alone (3000 over 50 s).
+  assert.equal(opus.quarters.length, 24);
+  assert.deepEqual(opus.quarters.slice(-6), [-1, 120, 120, 120, 120, 60]);
+  assert.equal(opus.days.length, 28);
+  assert.equal(opus.days.at(-1), 75);
+  assert.deepEqual(of("Fable")!.hours.at(-1), 20);
+  assert.deepEqual(of("Codex")!.hours.at(-1), 100);
+  assert.equal(of("Gemini"), undefined);
+  assert.deepEqual(["claude-sonnet-5-5", "claude-mythos-5", "gemini-4-hydrogen-high", "gpt-6-luna", "o4-mini", "grok-5"].map(speedPool), ["Claude", "Fable", "Gemini", "Codex", "Codex", null]);
 });

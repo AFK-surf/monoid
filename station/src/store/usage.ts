@@ -9,14 +9,17 @@ import { usage15mQuery, usage15mSince } from "./usage-15m.ts";
 
 /// A model call read from a transcript (or a turn's calls, told at once: `calls` of them). Tokens as the provider bills
 /// them. `context`: of a main-thread call, what its session's context held after it (null: not told); `window`: the
-/// model's context window, where the runtime tells it.
+/// model's context window, where the runtime tells it. `genMs`: how long it took, from when it was asked to its last
+/// word written, where the transcript tells it (usage/speed: 0 or none, not known).
 export type UsageCall = {
   id: string; at: number; model: string | null; subagent: boolean; fast: boolean; input: number; cacheRead: number;
   cacheWrite: number; cacheWriteLong: number; output: number; calls: number; context: number | null; window: number | null;
+  genMs?: number;
 };
 
-/// How far a transcript has been read, and for which session (null: none of the station's).
-export type UsageFile = { session: string | null; offset: number; model: string | null };
+/// How far a transcript has been read, and for which session (null: none of the station's). `speed`: where its reading
+/// stood of when its model was asked and wrote (usage/speed `speedText`), for the read after; none, nothing known.
+export type UsageFile = { session: string | null; offset: number; model: string | null; speed?: string | null };
 
 /// What a call was for: the turn it was in, and whom that worked for, where, on what.
 export type UsageFor = { turn: string | null; person: string | null; thread: number | null; profile: string | null };
@@ -40,7 +43,7 @@ export function installUsageCounter(db: DatabaseSync, now: number): void {
   const has = (name: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
   const columnsOf = () => new Set((db.prepare("PRAGMA table_info(usage_files)").all() as { name: string }[]).map((row) => row.name));
   const columns = columnsOf();
-  if (has("usage_counter") && columns.has("counter_cutoff") && columns.has("counter_anchor")) return;
+  if (has("usage_counter") && columns.has("counter_cutoff") && columns.has("counter_anchor") && columns.has("speed")) return;
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec("CREATE TABLE IF NOT EXISTS usage_counter (id INTEGER PRIMARY KEY CHECK (id = 1), since INTEGER NOT NULL, through INTEGER NOT NULL)");
@@ -48,6 +51,7 @@ export function installUsageCounter(db: DatabaseSync, now: number): void {
     const current = columnsOf();
     if (!current.has("counter_cutoff")) db.exec("ALTER TABLE usage_files ADD COLUMN counter_cutoff INTEGER");
     if (!current.has("counter_anchor")) db.exec("ALTER TABLE usage_files ADD COLUMN counter_anchor TEXT");
+    if (!current.has("speed")) db.exec("ALTER TABLE usage_files ADD COLUMN speed TEXT");
     db.exec("COMMIT");
   } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
@@ -62,28 +66,34 @@ export function usageCounterFile(db: DatabaseSync, path: string): CounterFile | 
 
 /// Save the boundary and position together before reading. A replaced file must not inherit the old position after a crash.
 export function beginUsageCounterFile(db: DatabaseSync, path: string, file: UsageFile, counter: CounterFile, reset: boolean): CounterFile {
-  db.prepare(`INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+  db.prepare(`INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
     ON CONFLICT(path) DO UPDATE SET
       session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
       offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
       model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
+      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
       counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
       counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END`)
-    .run(path, file.session, file.offset, file.model, counter.cutoff, counter.anchor, reset ? 1 : 0);
+    .run(path, file.session, file.offset, file.model, counter.cutoff, counter.anchor, reset ? 1 : 0, file.speed ?? null);
   return usageCounterFile(db, path)!;
 }
 
 /// usage_files: every transcript read for usage so far, by path.
 export function usageFiles(db: DatabaseSync): Map<string, UsageFile> {
-  const rows = db.prepare("SELECT path, session, offset, model FROM usage_files").all() as Json[];
-  return new Map(rows.map((r) => [r.path, { session: r.session, offset: r.offset, model: r.model }]));
+  const rows = db.prepare("SELECT path, session, offset, model, speed FROM usage_files").all() as Json[];
+  return new Map(rows.map((r) => [r.path, { session: r.session, offset: r.offset, model: r.model, speed: r.speed }]));
 }
 
 /// One transcript's saved position, by its path's primary key.
 export function usageFile(db: DatabaseSync, path: string): UsageFile | undefined {
-  return db.prepare("SELECT session, offset, model FROM usage_files WHERE path = ?").get(path) as UsageFile | undefined;
+  return db.prepare("SELECT session, offset, model, speed FROM usage_files WHERE path = ?").get(path) as UsageFile | undefined;
 }
+
+/// A call's time grown with what it wrote then: the longer of the two (a later line of a response, or a read of a
+/// transcript the counter had not timed), and its output where that is known (usage/speed).
+const GEN_GROWN = `gen_ms = MAX(gen_ms, excluded.gen_ms),
+  gen_output = CASE WHEN MAX(gen_ms, excluded.gen_ms) > 0 THEN MAX(output, excluded.output) ELSE 0 END`;
 
 export type UsageWriteOptions = { minNewAt?: number; changed?: { from: number }; counter?: CounterFile };
 
@@ -99,28 +109,30 @@ export function recordUsage(db: DatabaseSync, path: string, file: UsageFile, run
     let snapshot: ContextSnapshot | null = null;
     // (counted in its quarter as it is written: store/usage-15m.ts)
     const insert = db.prepare(
-      `INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted${compact ? ", compact_counted" : ""})
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1${compact ? ", 1" : ""})
-       ${compact ? "" : "ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output)"}`,
+      `INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, gen_ms, gen_output, rollup_counted${compact ? ", compact_counted" : ""})
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, CASE WHEN ?20 > 0 THEN ?16 ELSE 0 END, 1${compact ? ", 1" : ""})
+       ${compact ? "" : `ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output), ${GEN_GROWN}`}`,
     );
-    const known = db.prepare("SELECT output FROM usage WHERE id = ?");
-    const grow = compact ? db.prepare("UPDATE usage SET output = ?1 WHERE id = ?2 AND output < ?1") : null;
+    const known = db.prepare("SELECT output, gen_ms FROM usage WHERE id = ?");
+    const grow = compact ? db.prepare(`UPDATE usage SET output = MAX(output, ?1), ${GEN_GROWN.replaceAll("excluded.output", "?1").replaceAll("excluded.gen_ms", "?3")}
+      WHERE id = ?2 AND (output < ?1 OR gen_ms < ?3)`) : null;
     for (const [c, of] of calls) {
-      const was = known.get(c.id) as { output: number } | undefined;
+      const was = known.get(c.id) as { output: number; gen_ms: number } | undefined;
+      const genMs = c.genMs ?? 0;
       // An old call may grow after the cutover, but an unseen old call is not historical work to fill in.
       if (was === undefined && options?.minNewAt !== undefined && c.at < options.minNewAt) continue;
       // The same response can occur in several transcript lines or be replayed after an interrupted read.
-      if (was !== undefined && c.output <= was.output) continue;
+      if (was !== undefined && c.output <= was.output && genMs <= was.gen_ms) continue;
       // Seed from the saved summary before the first real change, including a subagent's. A replay that changes no
       // call must neither read nor write the context, and seeding after a write could mistake the saved total for stale.
       if (compact && !seeded) {
         seeded = true;
         if (usageTotalsComplete(db, file.session)) snapshot = seedCompactContext(db, file.session);
       }
-      if (was !== undefined && grow !== null) grow.run(c.output, c.id);
+      if (was !== undefined && grow !== null) grow.run(c.output, c.id, genMs);
       else insert.run(
         c.id, c.at, file.session, of.turn, of.thread, of.person, of.profile, runtime, c.model, c.subagent ? 1 : 0, c.fast ? 1 : 0,
-        c.input, c.cacheRead, c.cacheWrite, c.cacheWriteLong, c.output, c.calls, c.context, c.window,
+        c.input, c.cacheRead, c.cacheWrite, c.cacheWriteLong, c.output, c.calls, c.context, c.window, genMs,
       );
       if (was === undefined) { added++; if (compact && !c.subagent) recent.push([c, of]); }
       if (options?.changed !== undefined) options.changed.from = Math.min(options.changed.from, c.at);
@@ -128,13 +140,15 @@ export function recordUsage(db: DatabaseSync, path: string, file: UsageFile, run
     if (recent.length > 0) noteCompactContexts(db, file.session, runtime, recent, snapshot);
   }
   db.prepare(
-    `INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    `INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
      ON CONFLICT (path) DO UPDATE SET session = excluded.session, offset = excluded.offset, model = excluded.model,
        counter_cutoff = COALESCE(excluded.counter_cutoff, usage_files.counter_cutoff),
-       counter_anchor = CASE WHEN excluded.counter_cutoff IS NULL THEN usage_files.counter_anchor ELSE excluded.counter_anchor END
+       counter_anchor = CASE WHEN excluded.counter_cutoff IS NULL THEN usage_files.counter_anchor ELSE excluded.counter_anchor END,
+       speed = excluded.speed
      WHERE usage_files.session IS NOT excluded.session OR usage_files.offset IS NOT excluded.offset OR usage_files.model IS NOT excluded.model
+       OR usage_files.speed IS NOT excluded.speed
        OR (excluded.counter_cutoff IS NOT NULL AND (usage_files.counter_cutoff IS NOT excluded.counter_cutoff OR usage_files.counter_anchor IS NOT excluded.counter_anchor))`,
-  ).run(path, file.session, file.offset, file.model, options?.counter?.cutoff ?? null, options?.counter?.anchor ?? null);
+  ).run(path, file.session, file.offset, file.model, options?.counter?.cutoff ?? null, options?.counter?.anchor ?? null, file.speed ?? null);
   return added;
 }
 

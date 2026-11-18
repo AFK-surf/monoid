@@ -17,6 +17,8 @@ pub(all) struct Call {
   calls : Double
   context : Double?
   window : Double?
+  /// How long it took (ms; speed.mbt): 0, not known.
+  mut gen_ms : Double
 }
 
 ///|
@@ -26,6 +28,8 @@ pub(all) struct CallState {
   mut model : String?
   mut codex_id : String?
   mut window : Double?
+  /// Where its reading stands of its model's time (speed.mbt).
+  mut speed : Speed
 }
 
 ///|
@@ -295,6 +299,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
     let stop = if end > start && text[end - 1] == b'\r' { end - 1 } else { end }
     let line = text[start:stop]
     start = next
+    speed_line(runtime, line, state.speed)
     if !wanted(runtime, line) {
       continue
     }
@@ -324,6 +329,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           calls: max_d(1.0, n(get(usage, "calls"))),
           context: told(get(rec, "context")),
           window: told(get(rec, "window")),
+          gen_ms: 0.0,
         })
       }
       "cursor" | "devin" | "hermes" | "agy" => {
@@ -346,6 +352,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           calls: max_d(1.0, n(get(rec, "calls"))),
           context: told(get(rec, "context")),
           window: told(get(rec, "window")),
+          gen_ms: 0.0,
         })
       }
       "pi" => {
@@ -378,6 +385,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           calls: 1.0,
           context: if subagent { None } else { Some(input + cache_read + cache_write) },
           window: state.window,
+          gen_ms: 0.0,
         })
       }
       "dsh" => {
@@ -410,6 +418,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           calls: 1.0,
           context: if subagent { None } else { Some(input + cache_read + cache_write) },
           window: state.window,
+          gen_ms: 0.0,
         })
       }
       "claude" => {
@@ -432,6 +441,11 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
         let side = subagent || get(rec, "isSidechain") is Some(True)
         let input = n(get(usage, "input_tokens"))
         let cache_read = n(get(usage, "cache_read_input_tokens"))
+        // Its time: from when it was asked (as its first line came) to its line (a block written), a sidechain's untold.
+        if !side && state.speed.open_id != Some(id) {
+          state.speed.open_id = Some(id)
+          state.speed.open_start = state.speed.since
+        }
         let call : Call = {
           id,
           at,
@@ -446,9 +460,13 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           calls: 1.0,
           context: if side { None } else { Some(input + cache_read + written) },
           window: None,
+          gen_ms: if side { 0.0 } else { gen_of(state.speed.open_start, Some(at)) },
         }
         match at_index.get(id) {
-          Some(i) => out[i].output = max_d(out[i].output, call.output)
+          Some(i) => {
+            out[i].output = max_d(out[i].output, call.output)
+            out[i].gen_ms = max_d(out[i].gen_ms, call.gen_ms)
+          }
           None => {
             at_index[id] = out.length()
             out.push(call)
@@ -477,6 +495,11 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           let total = if totals is None { at } else { n(get(totals, "total_tokens")) }
           let sent = n(get(last, "input_tokens"))
           let cached = min_d(n(get(last, "cached_input_tokens")), sent)
+          // Its time: from when it was asked to the last item it wrote; the next is asked from here on.
+          let gen_ms = gen_of(state.speed.open_start, state.speed.ended)
+          state.speed.open_start = None
+          state.speed.ended = None
+          state.speed.since = Some(at)
           out.push({
             id: "codex:" + state.codex_id.unwrap_or("") + ":" + js_number(total),
             at,
@@ -491,6 +514,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
             calls: 1.0,
             context: if subagent { None } else { Some(sent) },
             window: told(get(info, "model_context_window")),
+            gen_ms,
           })
         }
       }

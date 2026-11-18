@@ -18,6 +18,8 @@ priv struct File {
   session : String?
   offset : Double
   model : String?
+  /// Where its reading stood of its model's time (speed.mbt `speed_text`).
+  speed : String?
 }
 
 ///|
@@ -605,20 +607,21 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
     let mut snapshot : Snapshot? = None
     let insert = if compact {
       (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted, compact_counted)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1, 1)
+        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, gen_ms, gen_output, rollup_counted, compact_counted)
+        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, CASE WHEN ?20 > 0 THEN ?16 ELSE 0 END, 1, 1)
       )
     } else {
       (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1)
-        #|       ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output)
+        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, gen_ms, gen_output, rollup_counted)
+        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, CASE WHEN ?20 > 0 THEN ?16 ELSE 0 END, 1)
+        #|       ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output), gen_ms = MAX(gen_ms, excluded.gen_ms),
+        #|  gen_output = CASE WHEN MAX(gen_ms, excluded.gen_ms) > 0 THEN MAX(output, excluded.output) ELSE 0 END
       )
     }
     for pair in w.calls {
       let (c, of) = pair
-      let was = match one(db, "SELECT output FROM usage WHERE id = ?", [Json::string(c.id)]) {
-        Some(r) => Some(num_of(field(r, "output")).unwrap_or(0.0))
+      let was = match one(db, "SELECT output, gen_ms FROM usage WHERE id = ?", [Json::string(c.id)]) {
+        Some(r) => Some((num_of(field(r, "output")).unwrap_or(0.0), num_of(field(r, "gen_ms")).unwrap_or(0.0)))
         None => None
       }
       // An old call may grow after the cutover, but an unseen old call is not historical work to fill in.
@@ -626,7 +629,7 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
         continue
       }
       // The same response can occur in several lines or be replayed after an interrupted read.
-      if was is Some(o) && c.output <= o {
+      if was is Some((o, g)) && c.output <= o && c.gen_ms <= g {
         continue
       }
       if compact && !seeded {
@@ -637,7 +640,14 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
       }
       if was is Some(_) && compact {
         ignore(
-          db.run("UPDATE usage SET output = ?1 WHERE id = ?2 AND output < ?1", [Json::number(c.output), Json::string(c.id)]),
+          db.run(
+            (
+              #|UPDATE usage SET output = MAX(output, ?1), gen_ms = MAX(gen_ms, ?3),
+              #|  gen_output = CASE WHEN MAX(gen_ms, ?3) > 0 THEN MAX(output, ?1) ELSE 0 END
+              #|      WHERE id = ?2 AND (output < ?1 OR gen_ms < ?3)
+            ),
+            [Json::number(c.output), Json::string(c.id), Json::number(c.gen_ms)],
+          ),
         )
       } else {
         ignore(
@@ -661,6 +671,7 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
             Json::number(c.calls),
             opt_num(c.context),
             opt_num(c.window),
+            Json::number(c.gen_ms),
           ]),
         )
       }
@@ -681,11 +692,13 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
   ignore(
     db.run(
       (
-        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         #|     ON CONFLICT (path) DO UPDATE SET session = excluded.session, offset = excluded.offset, model = excluded.model,
         #|       counter_cutoff = COALESCE(excluded.counter_cutoff, usage_files.counter_cutoff),
-        #|       counter_anchor = CASE WHEN excluded.counter_cutoff IS NULL THEN usage_files.counter_anchor ELSE excluded.counter_anchor END
+        #|       counter_anchor = CASE WHEN excluded.counter_cutoff IS NULL THEN usage_files.counter_anchor ELSE excluded.counter_anchor END,
+        #|       speed = excluded.speed
         #|     WHERE usage_files.session IS NOT excluded.session OR usage_files.offset IS NOT excluded.offset OR usage_files.model IS NOT excluded.model
+        #|       OR usage_files.speed IS NOT excluded.speed
         #|       OR (excluded.counter_cutoff IS NOT NULL AND (usage_files.counter_cutoff IS NOT excluded.counter_cutoff OR usage_files.counter_anchor IS NOT excluded.counter_anchor))
       ),
       [
@@ -695,6 +708,7 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
         opt_str(w.file.model),
         Json::number(w.cutoff),
         Json::string(w.anchor),
+        opt_str(w.file.speed),
       ],
     ),
   )
@@ -737,12 +751,13 @@ fn counter_file(db : @sql.Db, path : String) -> CounterFile? raise {
 ///|
 /// store/usage.ts `usageFile`.
 fn usage_file(db : @sql.Db, path : String) -> File? raise {
-  match one(db, "SELECT session, offset, model FROM usage_files WHERE path = ?", [Json::string(path)]) {
+  match one(db, "SELECT session, offset, model, speed FROM usage_files WHERE path = ?", [Json::string(path)]) {
     Some(r) =>
       Some({
         session: text_of(field(r, "session")),
         offset: num_of(field(r, "offset")).unwrap_or(0.0),
         model: text_of(field(r, "model")),
+        speed: text_of(field(r, "speed")),
       })
     None => None
   }
@@ -757,12 +772,13 @@ fn begin_counter_file(db : @sql.Db, path : String, file : File, cutoff : Double,
   ignore(
     db.run(
       (
-        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor)
-        #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
+        #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
         #|    ON CONFLICT(path) DO UPDATE SET
         #|      session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
         #|      offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
         #|      model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
+        #|      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
         #|      counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
         #|      counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END
       ),
@@ -774,6 +790,7 @@ fn begin_counter_file(db : @sql.Db, path : String, file : File, cutoff : Double,
         Json::number(cutoff),
         Json::string(anchor),
         Json::number(if reset { 1.0 } else { 0.0 }),
+        opt_str(file.speed),
       ],
     ),
   )

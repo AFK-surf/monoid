@@ -6,6 +6,10 @@
 let pace_hours : Double = 192.0
 
 ///|
+/// profile-hours.ts SPEED_QUARTER_HOURS.
+let speed_quarter_hours : Double = 8.0
+
+///|
 let hour_ms : Double = 3600000.0
 
 ///|
@@ -170,8 +174,19 @@ pub fn Store::profile_hours(self : Store, now_hour : Double) -> Json raise {
       "cacheWrite": col(r, "cache_write"),
       "cacheWriteLong": col(r, "cache_write_long"),
       "output": col(r, "output"),
+      "genMs": col(r, "gen_ms"),
+      "genOutput": col(r, "gen_output"),
     })
-  { "quotas": Json::array(quotas), "spend": Json::array(spend) }
+  let speed : Array[Json] = self
+    .all(speed_quarters_read, [jnum((now_hour - speed_quarter_hours) * 4.0)])
+    .map(r => {
+      "quarter": col(r, "quarter"),
+      "profile": col(r, "profile"),
+      "model": col(r, "model"),
+      "genMs": col(r, "gen_ms"),
+      "genOutput": col(r, "gen_output"),
+    })
+  { "quotas": Json::array(quotas), "spend": Json::array(spend), "speed": Json::array(speed) }
 }
 
 ///|

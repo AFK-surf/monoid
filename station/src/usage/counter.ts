@@ -1,7 +1,9 @@
 // What the agents spent, counted (the Rust station's usage.rs `Usage`): every model call their runtimes write to a transcript
 // (Claude Code's message usage, Codex's token counts) is recorded once in the store (store/usage.ts), with the turn it
-// was in and whom that turn worked for. The transcripts are read as they grow, from where the last read stopped: all of
-// them as sessions run, from the counter's installation onward; older transcripts are not backfilled.
+// was in and whom that turn worked for, and how long it took where the transcript tells it (mb/src/usagecount speed.mbt).
+// The transcripts are read as they grow, from where the last read stopped: all of them as sessions run, from the
+// counter's installation onward; older transcripts are not backfilled, but for the time the calls of the last
+// TIMED_BACK_MS read before it was kept took, read once as the counter starts.
 //
 // Pushed rather than polled (the Rust reads every minute): a read when the counter starts, one shortly after a turn
 // ends (the store's session changes say so), one of a session alone shortly after its transcript grew while it works
@@ -25,6 +27,9 @@ import type { Store } from "../store/store.ts";
 export const SETTLE_MS = 2_000;
 /// How often everything that ran is read anyway, for what no turn's end told.
 export const SAFETY_MS = 10 * 60_000;
+/// How far back the calls read before their time was kept are timed as the counter starts (mb/src/usagecount
+/// speed.mbt): Profile overview's 输出速度 a week back, each point the day before it.
+export const TIMED_BACK_MS = 8 * 24 * 3_600_000;
 
 /// What the counter reads of the station's config: where its data is, and each profile's home (absolute).
 export type UsageConfig = { dataDir: string; profiles: readonly { home: string }[] };
@@ -125,8 +130,15 @@ export class UsageCounter {
       me.#asked.clear();
       return me.#readLogged(only);
     });
+    // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too:
+    // the transcripts read so already are read on from where they are, a file's own first)
+    const timeBack = Effect.promise(async () => {
+      const from = me.#clock.currentTimeMillisUnsafe() - TIMED_BACK_MS;
+      await me.#readLogged(undefined, from);
+      await me.#readLogged(new Set(me.#store.usageActiveSessions(from)), from);
+    });
     const loop = Effect.gen(function* () {
-      yield* readNow;
+      yield* timeBack;
       let due = (yield* Clock.currentTimeMillis) + me.#safetyMs;
       while (true) {
         const woken = yield* Effect.raceFirst(
@@ -171,31 +183,32 @@ export class UsageCounter {
     return this.#first || this.#last === 0;
   }
 
-  async #readLogged(only?: ReadonlySet<string>): Promise<void> {
+  async #readLogged(only?: ReadonlySet<string>, timeFrom?: number): Promise<void> {
     try {
-      await this.read(only);
+      await this.read(only, timeFrom);
     } catch (e) {
       if (!(e instanceof MbCounterStopped)) log.warn("usage", "usage not read", { error: (e as Error).message });
     }
   }
 
   /// One read: the transcripts of sessions that ran since the last sweep; `only`: of those sessions alone (it says
-  /// nothing of when the last sweep was). How many calls were new. Reads queue behind one another.
-  read(only?: ReadonlySet<string>): Promise<number> {
-    const next = this.#reading.catch(() => {}).then(() => this.#read(only ?? null));
+  /// nothing of when the last sweep was). How many calls were new. Reads queue behind one another. `timeFrom`: what a
+  /// transcript had been read of before its calls were timed is read again, its calls from then on (ms) timed.
+  read(only?: ReadonlySet<string>, timeFrom?: number): Promise<number> {
+    const next = this.#reading.catch(() => {}).then(() => this.#read(only ?? null, timeFrom ?? null));
     this.#reading = next;
     return next;
   }
 
   /// A read by the program: what it found written there, told here.
-  async #read(only: ReadonlySet<string> | null): Promise<number> {
+  async #read(only: ReadonlySet<string> | null, timeFrom: number | null): Promise<number> {
     const started = this.#clock.currentTimeMillisUnsafe();
     const last = this.#last;
     if (only === null) this.#first = last === 0;
     const config = this.#config();
     const answer = await this.#mb.read({
       only: only === null ? null : [...only], started, last, dataDir: config.dataDir, homes: config.profiles.map((p) => p.home),
-      hints: allTranscriptHints(),
+      hints: allTranscriptHints(), ...(timeFrom === null ? {} : { timeFrom }),
     });
     takeTranscriptHints(answer.hints);
     if (only === null) {

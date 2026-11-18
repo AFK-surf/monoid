@@ -206,6 +206,7 @@ const SQL: [string, string][] = [
   ["up_jobs_before_upgrade", active.UP_JOBS_BEFORE_UPGRADE], ["remote_queue_before_upgrade", active.REMOTE_QUEUE_BEFORE_UPGRADE],
   ["remote_queue_prepared", upgrade.REMOTE_QUEUE_PREPARED], ["delete_expired_remote_runs", remote.DELETE_EXPIRED_REMOTE_RUNS],
   ["quota_hours_read", hours.QUOTA_HOURS_READ], ["spend_hours_read", hours.SPEND_HOURS_READ],
+  ["speed_quarters_read", hours.SPEED_QUARTERS_READ],
   ["active_sessions", usage.ACTIVE_SESSIONS], ["turns_from", usage.TURNS_FROM], ["turns_between", usage.TURNS_BETWEEN], ["taken_since", usage.TAKEN_SINCE],
   ["last_contexts", usage.LAST_CONTEXTS],
 ];

@@ -24,6 +24,7 @@ priv struct Counted {
   session : String?
   offset : Double
   model : String?
+  speed : String?
   cutoff : Double?
   anchor : String?
   path : String
@@ -65,6 +66,9 @@ pub struct Counter {
   /// The sessions the read under way recorded new calls of (in order), and when the earliest was made.
   priv counted : Array[String]
   priv mut from : Double
+  /// The read under way times again the calls from then on (ms) of what each transcript it reads had been read of
+  /// before its calls were timed (`timed_again`); none, it times only what it reads anew.
+  priv mut time_from : Double?
 }
 
 ///|
@@ -81,6 +85,7 @@ pub fn Counter::new(host : @host.Host, db : @sql.Db, sep : String) -> Counter {
     pending_calls: 0,
     counted: [],
     from: @double.infinity,
+    time_from: None,
   }
 }
 
@@ -144,11 +149,12 @@ fn Counter::position(self : Counter, known : Map[String, Counted], name : String
   if file is None && counter is None {
     return None
   }
-  let f = file.unwrap_or({ session: None, offset: 0.0, model: None })
+  let f = file.unwrap_or({ session: None, offset: 0.0, model: None, speed: None })
   let saved : Counted = {
     session: f.session,
     offset: f.offset,
     model: f.model,
+    speed: f.speed,
     cutoff: counter.map(c => c.cutoff),
     anchor: match counter {
       Some(c) => c.anchor
@@ -284,9 +290,9 @@ async fn Counter::read_file(
     None => false
   }
   let before : File = match was {
-    Some(w) if replaced => { session: w.session, offset: 0.0, model: None }
-    Some(w) => { session: w.session, offset: w.offset, model: w.model }
-    None => { session: None, offset: 0.0, model: None }
+    Some(w) if replaced => { session: w.session, offset: 0.0, model: None, speed: None }
+    Some(w) => { session: w.session, offset: w.offset, model: w.model, speed: w.speed }
+    None => { session: None, offset: 0.0, model: None, speed: None }
   }
   if replaced {
     anchor = b""
@@ -313,6 +319,7 @@ async fn Counter::read_file(
       session: before.session,
       offset: before.offset,
       model: before.model,
+      speed: before.speed,
       cutoff: Some(cut),
       anchor: Some(hex_of(anchor[:])),
       path,
@@ -321,7 +328,7 @@ async fn Counter::read_file(
   if archived && !replaced && sized == before.offset {
     return 0
   }
-  let state : CallState = { model: before.model, codex_id: None, window: None }
+  let state : CallState = { model: before.model, codex_id: None, window: None, speed: speed_of(before.speed) }
   // A session created after the counter began can have its first call timestamped just before that boundary.
   let first_new_at = if session.created_at >= since { min_d(since, session.created_at - skew_ms) } else { since }
   let mut added = 0
@@ -330,6 +337,18 @@ async fn Counter::read_file(
   // something to read, as counter.ts reads it with the first part).
   if runtime == "codex" && (archived || sized != before.offset) {
     state.codex_id = codex_meta(host, path)
+  }
+  // Read before its calls were timed: those from `time_from` on timed now, its reading on from where that left.
+  if self.time_from is Some(time_from) &&
+    was is Some(w) &&
+    w.speed is None &&
+    !replaced &&
+    before.offset > 0.0 &&
+    (runtime == "claude" || runtime == "codex") {
+    state.speed = self.timed_again(path, runtime, subagent, session.key, before.offset, cut, time_from)
+    if self.files is Some(files) && files.get(path) is Some(f) {
+      files[path] = { ..f, speed: speed_text(state.speed) }
+    }
   }
   // Each part recorded as it is read, before the next is read.
   read_from(host, path, before.offset.to_int64(), part => {
@@ -349,6 +368,7 @@ async fn Counter::read_file(
         }
       }
       let model_before = state.model
+      let speed_before = speed_text(state.speed)
       let from_known_suffix = was is Some(_) && !replaced && from.to_double() >= known_suffix_from
       let calls = calls_of(runtime, bytes, subagent, state).filter(c => c.at >= session.created_at - skew_ms &&
         (followed || c.at >= first_new_at || from_known_suffix))
@@ -382,6 +402,7 @@ async fn Counter::read_file(
           session: Some(session.key),
           offset: if complete { offset.to_double() } else { from.to_double() },
           model: if complete { state.model } else { model_before },
+          speed: if complete { speed_text(state.speed) } else { speed_before },
         }
         let end = if i + write_batch < with_for.length() { i + write_batch } else { with_for.length() }
         let batch = if i < end { with_for[i:end].to_array() } else { [] }
@@ -403,6 +424,7 @@ async fn Counter::read_file(
             session: file.session,
             offset: file.offset,
             model: file.model,
+            speed: file.speed,
             cutoff: Some(cut),
             anchor: Some(saved_anchor),
             path,
@@ -417,6 +439,87 @@ async fn Counter::read_file(
     }
   })
   added
+}
+
+///|
+/// What stops a read of what was read before at its end.
+priv suberror ReadEnough
+
+///|
+/// reference `timedAgain`: a transcript read again up to `upto`, where it was read to before its calls were timed:
+/// each of its calls made from `time_from` on given the time it took (only longer, never a call more), and where its
+/// reading of that stands kept with its position, in one write. Where its reading stands at `upto`.
+async fn Counter::timed_again(
+  self : Counter,
+  path : String,
+  runtime : String,
+  subagent : Bool,
+  session : String,
+  upto : Double,
+  cut : Double,
+  time_from : Double,
+) -> Speed raise {
+  let state : CallState = {
+    model: None,
+    codex_id: if runtime == "codex" { codex_meta(self.host, path) } else { None },
+    window: None,
+    speed: no_speed(),
+  }
+  let timed : Array[(String, Double, Double)] = []
+  read_from(self.host, path, 0L, part => {
+    for section in sections_of(part, cut) {
+      let (bytes, from, offset, _) = section
+      if from.to_double() >= upto {
+        raise ReadEnough
+      }
+      let upto_here = if offset.to_double() > upto { bytes[0:(upto - from.to_double()).to_int()] } else { bytes }
+      for c in calls_of(runtime, upto_here, subagent, state) {
+        if c.gen_ms > 0.0 && c.at >= time_from {
+          timed.push((c.id, c.at, c.gen_ms))
+        }
+      }
+    }
+  }) catch {
+    ReadEnough => ()
+    e => raise e
+  }
+  let db = self.db
+  db.exec("BEGIN IMMEDIATE")
+  errdefer (db.exec("ROLLBACK") catch { _ => () })
+  let mut earliest = @double.infinity
+  for t in timed {
+    let (id, at, gen_ms) = t
+    let changed = db.run(
+      (
+        #|UPDATE usage SET gen_ms = ?2, gen_output = CASE WHEN ?2 > 0 THEN output ELSE 0 END
+        #|  WHERE id = ?1 AND gen_ms < ?2
+      ),
+      [Json::string(id), Json::number(gen_ms)],
+    )
+    if changed > 0 && at < earliest {
+      earliest = at
+    }
+  }
+  ignore(
+    db.run("UPDATE usage_files SET speed = ?1 WHERE path = ?2 AND offset = ?3", [
+      match speed_text(state.speed) {
+        Some(t) => Json::string(t)
+        None => Json::null()
+      },
+      Json::string(path),
+      Json::number(upto),
+    ]),
+  )
+  db.exec("COMMIT")
+  if earliest != @double.infinity {
+    if !self.counted.contains(session) {
+      self.counted.push(session)
+    }
+    if earliest < self.from {
+      self.from = earliest
+    }
+  }
+  state.speed
 }
 
 ///|
@@ -478,6 +581,10 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
     _ => None
   }
   self.finder.use_hints(ask.value("hints").unwrap_or(Json::null()))
+  self.time_from = match ask {
+    { "timeFrom": Number(t, ..), .. } => Some(t)
+    _ => None
+  }
   let db = self.db
   let cursor = one(db, "SELECT since, through FROM usage_counter WHERE id = 1", [])
   let since = match cursor {

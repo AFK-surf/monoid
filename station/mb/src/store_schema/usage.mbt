@@ -18,6 +18,16 @@ fn joined(parts : Array[String], sep : String) -> String {
 let metrics : Array[String] = ["calls", "input", "cache_read", "cache_write", "cache_write_long", "output"]
 
 ///|
+/// The quarters' (usage-15m.ts METRICS): gen_ms and gen_output, how long the calls whose time is known took and what
+/// they wrote (usagecount/speed.mbt).
+let q15_metrics : Array[String] = [..metrics, "gen_ms", "gen_output"]
+
+///|
+fn each_q15_metric(f : (String) -> String) -> String {
+  joined(q15_metrics.map(f), ", ")
+}
+
+///|
 let dimensions : Array[String] = ["scope", "quarter", "session", "thread", "person", "profile", "runtime", "model", "fast"]
 
 ///|
@@ -87,9 +97,9 @@ fn q15_key_of(r : String) -> String {
 /// A call added to its quarter (an upsert).
 fn q15_add(r : String, when : String) -> String {
 (
-  $|INSERT INTO usage_15m (\{dimensions_list}, records, \{metrics_list})
-  $|  SELECT \{joined(q15_values(r), ", ")}, 1, \{each_metric(m => r + "." + m)} WHERE \{when}
-  $|  ON CONFLICT (\{dimensions_list}) DO UPDATE SET records = records + 1, \{each_metric(m => m + " = " + m + " + excluded." + m)};
+  $|INSERT INTO usage_15m (\{dimensions_list}, records, \{joined(q15_metrics, ", ")})
+  $|  SELECT \{joined(q15_values(r), ", ")}, 1, \{each_q15_metric(m => r + "." + m)} WHERE \{when}
+  $|  ON CONFLICT (\{dimensions_list}) DO UPDATE SET records = records + 1, \{each_q15_metric(m => m + " = " + m + " + excluded." + m)};
 )
 }
 
@@ -97,7 +107,7 @@ fn q15_add(r : String, when : String) -> String {
 /// A call taken out of its quarter, the quarter's row gone with its last call.
 fn q15_remove(r : String, when : String) -> String {
 (
-  $|UPDATE usage_15m SET records = records - 1, \{each_metric(m => m + " = " + m + " - " + r + "." + m)}
+  $|UPDATE usage_15m SET records = records - 1, \{each_q15_metric(m => m + " = " + m + " - " + r + "." + m)}
   $|  WHERE (\{when}) AND \{q15_key_of(r)};
   $|  DELETE FROM usage_15m WHERE (\{when}) AND \{q15_key_of(r)} AND records = 0;
 )
@@ -105,7 +115,7 @@ fn q15_remove(r : String, when : String) -> String {
 
 ///|
 let q15_adjust : String = "UPDATE usage_15m SET " +
-  each_metric(m => m + " = " + m + " + NEW." + m + " - OLD." + m) +
+  each_q15_metric(m => m + " = " + m + " + NEW." + m + " - OLD." + m) +
   " WHERE " +
   q15_key_of("NEW") +
   ";"
@@ -117,10 +127,10 @@ let place : Array[String] = ["at", "session", "thread", "person", "profile", "ru
 let q15_place_changed : String = joined(place.map(c => "OLD.\{c} IS NOT NEW.\{c}"), " OR ")
 
 ///|
-let q15_values_changed : String = joined(metrics.map(c => "OLD.\{c} IS NOT NEW.\{c}"), " OR ")
+let q15_values_changed : String = joined(q15_metrics.map(c => "OLD.\{c} IS NOT NEW.\{c}"), " OR ")
 
 ///|
-let staged_columns : Array[String] = ["id", ..place, ..metrics]
+let staged_columns : Array[String] = ["id", ..place, ..q15_metrics]
 
 ///|
 let q15_staged : String = "(SELECT * FROM usage_15m_replace WHERE id = NEW.id AND counted = 1)"
@@ -129,7 +139,7 @@ let q15_staged : String = "(SELECT * FROM usage_15m_replace WHERE id = NEW.id AN
 let q15_remove_staged : String =
 (
   $|UPDATE usage_15m SET records = usage_15m.records - 1,
-  $|    \{each_metric(m => m + " = usage_15m." + m + " - x." + m)}
+  $|    \{each_q15_metric(m => m + " = usage_15m." + m + " - x." + m)}
   $|  FROM \{q15_staged} x WHERE \{joined(dimensions.mapi((i, d) => "usage_15m." + d + " = " + q15_values("x")[i]), " AND ")};
   $|  DELETE FROM usage_15m WHERE records = 0 AND (\{dimensions_list}) IN (SELECT \{joined(q15_values("x"), ", ")} FROM \{q15_staged} x);
 )
@@ -164,43 +174,16 @@ fn q15_move_session(key : String, ws : String) -> String {
 }
 
 ///|
-let usage_15m_schema : String =
+/// The staging of a call an INSERT meets and the triggers on `usage` that keep its quarters (usage-15m.ts USAGE_KEPT):
+/// made again whole where the metrics grew (`install_usage_15m_gen`).
+let usage_15m_kept : String =
 (
   $|
-  $|CREATE TABLE usage_15m (scope TEXT NOT NULL, quarter INTEGER NOT NULL, session TEXT NOT NULL, thread INTEGER NOT NULL,
-  $|  person TEXT NOT NULL, profile TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, fast INTEGER NOT NULL,
-  $|  records INTEGER NOT NULL, calls INTEGER NOT NULL, input INTEGER NOT NULL, cache_read INTEGER NOT NULL,
-  $|  cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL, output INTEGER NOT NULL,
-  $|  PRIMARY KEY (\{dimensions_list})) WITHOUT ROWID;
-  $|CREATE INDEX usage_15m_session ON usage_15m (session, scope, quarter);
-  $|CREATE INDEX usage_15m_quarter ON usage_15m (quarter, scope);
-  $|CREATE TABLE usage_quarter_totals (scope TEXT NOT NULL, quarter INTEGER NOT NULL, calls INTEGER NOT NULL, tokens INTEGER NOT NULL,
-  $|  PRIMARY KEY (scope, quarter)) WITHOUT ROWID;
-  $|CREATE TABLE usage_scope_totals (scope TEXT PRIMARY KEY, calls INTEGER NOT NULL, tokens INTEGER NOT NULL) WITHOUT ROWID;
-  $|-- since: from when every call is counted (ms); NULL, from the first.
-  $|CREATE TABLE usage_15m_meta (id INTEGER PRIMARY KEY CHECK (id = 1), since INTEGER);
   $|-- The call an INSERT is about to meet, as it is, and its workspace: an INSERT OR REPLACE removes it without its DELETE
   $|-- triggers (unless recursive_triggers is on), and the insert's own trigger takes it out of its quarter then, the new
   $|-- call counted where it was. An upsert or an ignored insert leaves it, taken away by the next write.
   $|CREATE TABLE usage_15m_replace (\{joined(staged_columns.map(c => if c == "id" { c + " TEXT PRIMARY KEY" } else { c }), ", ")}, counted INTEGER NOT NULL,
   $|  scope TEXT NOT NULL) WITHOUT ROWID;
-  $|
-  $|CREATE TRIGGER usage_15m_totals_add AFTER INSERT ON usage_15m BEGIN \{q15_totals_add("NEW", "")} END;
-  $|CREATE TRIGGER usage_15m_totals_grow AFTER UPDATE ON usage_15m WHEN OLD.scope = NEW.scope AND OLD.quarter = NEW.quarter BEGIN
-  $|  UPDATE usage_quarter_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + \{q15_tokens_of("NEW")} - \{q15_tokens_of("OLD")}
-  $|    WHERE scope = NEW.scope AND quarter = NEW.quarter;
-  $|  UPDATE usage_scope_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + \{q15_tokens_of("NEW")} - \{q15_tokens_of("OLD")}
-  $|    WHERE scope = NEW.scope;
-  $|END;
-  $|CREATE TRIGGER usage_15m_totals_move AFTER UPDATE ON usage_15m WHEN OLD.scope <> NEW.scope OR OLD.quarter <> NEW.quarter BEGIN
-  $|  \{q15_totals_add("OLD", "-")}
-  $|  \{q15_totals_add("NEW", "")}
-  $|  \{q15_totals_clean("OLD")}
-  $|END;
-  $|CREATE TRIGGER usage_15m_totals_drop AFTER DELETE ON usage_15m BEGIN
-  $|  \{q15_totals_add("OLD", "-")}
-  $|  \{q15_totals_clean("OLD")}
-  $|END;
   $|
   $|CREATE TRIGGER usage_15m_before_add BEFORE INSERT ON usage
   $|  WHEN EXISTS (SELECT 1 FROM usage_15m_replace) OR EXISTS (SELECT 1 FROM usage WHERE id = NEW.id) BEGIN
@@ -231,6 +214,44 @@ let usage_15m_schema : String =
   $|  UPDATE usage_15m_replace SET counted = 0 WHERE id = OLD.id;
   $|END;
   $|
+)
+
+///|
+let usage_15m_schema : String =
+(
+  $|
+  $|CREATE TABLE usage_15m (scope TEXT NOT NULL, quarter INTEGER NOT NULL, session TEXT NOT NULL, thread INTEGER NOT NULL,
+  $|  person TEXT NOT NULL, profile TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, fast INTEGER NOT NULL,
+  $|  records INTEGER NOT NULL, calls INTEGER NOT NULL, input INTEGER NOT NULL, cache_read INTEGER NOT NULL,
+  $|  cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL, output INTEGER NOT NULL,
+  $|  PRIMARY KEY (\{dimensions_list})) WITHOUT ROWID;
+  $|ALTER TABLE usage_15m ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0;
+  $|ALTER TABLE usage_15m ADD COLUMN gen_output INTEGER NOT NULL DEFAULT 0;
+  $|CREATE INDEX usage_15m_session ON usage_15m (session, scope, quarter);
+  $|CREATE INDEX usage_15m_quarter ON usage_15m (quarter, scope);
+  $|CREATE TABLE usage_quarter_totals (scope TEXT NOT NULL, quarter INTEGER NOT NULL, calls INTEGER NOT NULL, tokens INTEGER NOT NULL,
+  $|  PRIMARY KEY (scope, quarter)) WITHOUT ROWID;
+  $|CREATE TABLE usage_scope_totals (scope TEXT PRIMARY KEY, calls INTEGER NOT NULL, tokens INTEGER NOT NULL) WITHOUT ROWID;
+  $|-- since: from when every call is counted (ms); NULL, from the first.
+  $|CREATE TABLE usage_15m_meta (id INTEGER PRIMARY KEY CHECK (id = 1), since INTEGER);
+  $|CREATE TRIGGER usage_15m_totals_add AFTER INSERT ON usage_15m BEGIN \{q15_totals_add("NEW", "")} END;
+  $|CREATE TRIGGER usage_15m_totals_grow AFTER UPDATE ON usage_15m WHEN OLD.scope = NEW.scope AND OLD.quarter = NEW.quarter BEGIN
+  $|  UPDATE usage_quarter_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + \{q15_tokens_of("NEW")} - \{q15_tokens_of("OLD")}
+  $|    WHERE scope = NEW.scope AND quarter = NEW.quarter;
+  $|  UPDATE usage_scope_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + \{q15_tokens_of("NEW")} - \{q15_tokens_of("OLD")}
+  $|    WHERE scope = NEW.scope;
+  $|END;
+  $|CREATE TRIGGER usage_15m_totals_move AFTER UPDATE ON usage_15m WHEN OLD.scope <> NEW.scope OR OLD.quarter <> NEW.quarter BEGIN
+  $|  \{q15_totals_add("OLD", "-")}
+  $|  \{q15_totals_add("NEW", "")}
+  $|  \{q15_totals_clean("OLD")}
+  $|END;
+  $|CREATE TRIGGER usage_15m_totals_drop AFTER DELETE ON usage_15m BEGIN
+  $|  \{q15_totals_add("OLD", "-")}
+  $|  \{q15_totals_clean("OLD")}
+  $|END;
+  $|
+  $|\{usage_15m_kept}
   $|CREATE TRIGGER usage_15m_session_add AFTER INSERT ON sessions BEGIN \{q15_move_session("NEW.key", "NEW.ws")} END;
   $|CREATE TRIGGER usage_15m_session_move AFTER UPDATE OF key, ws ON sessions
   $|  WHEN OLD.key IS NOT NEW.key OR OLD.ws IS NOT NEW.ws BEGIN \{q15_move_session("NEW.key", "NEW.ws")} END;
@@ -253,6 +274,7 @@ fn install_usage_15m(db : @sql.Db, now : Int64) -> Unit raise {
     if !columns(db, "usage").contains("rollup_counted") {
       db.exec("ALTER TABLE usage ADD COLUMN rollup_counted INTEGER NOT NULL DEFAULT 0")
     }
+    add_gen_columns(db)
     db.exec(usage_15m_schema)
     let old = some_row(db, "SELECT 1 FROM usage LIMIT 1")
     let since = if old {
@@ -268,6 +290,40 @@ fn install_usage_15m(db : @sql.Db, now : Int64) -> Unit raise {
       Json::null()
     }
     ignore(db.run("INSERT INTO usage_15m_meta (id, since) VALUES (1, ?)", [since]))
+  })
+}
+
+///|
+/// A call's time taken and what it wrote then (usage-15m.ts `addGenColumns`): 0 where its time is not known.
+fn add_gen_columns(db : @sql.Db) -> Unit raise {
+  let have = columns(db, "usage")
+  if !have.contains("gen_ms") {
+    db.exec("ALTER TABLE usage ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0")
+  }
+  if !have.contains("gen_output") {
+    db.exec("ALTER TABLE usage ADD COLUMN gen_output INTEGER NOT NULL DEFAULT 0")
+  }
+}
+
+///|
+/// The quarters of a database from before a call's time was kept given its two metrics (usage-15m.ts
+/// `installUsage15mGen`), in one short write as the store opens.
+fn install_usage_15m_gen(db : @sql.Db) -> Unit raise {
+  let done = () => columns(db, "usage_15m").contains("gen_ms")
+  if !has_usage_15m(db) || done() {
+    return
+  }
+  immediate(db, () => if !done() {
+    add_gen_columns(db)
+    db.exec(
+      (
+        $|ALTER TABLE usage_15m ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0;
+        $|        ALTER TABLE usage_15m ADD COLUMN gen_output INTEGER NOT NULL DEFAULT 0;
+        $|        DROP TRIGGER usage_15m_before_add; DROP TRIGGER usage_15m_add; DROP TRIGGER usage_15m_change; DROP TRIGGER usage_15m_grow;
+        $|        DROP TRIGGER usage_15m_updated; DROP TRIGGER usage_15m_drop; DROP TABLE usage_15m_replace;
+        $|        \{usage_15m_kept}
+      ),
+    )
   })
 }
 
@@ -433,7 +489,7 @@ fn install_profile_hours(db : @sql.Db) -> Unit raise {
 fn install_usage_counter(db : @sql.Db, now : Int64) -> Unit raise {
   let had = exists(db, "table", "usage_counter")
   let files = columns(db, "usage_files")
-  if had && files.contains("counter_cutoff") && files.contains("counter_anchor") {
+  if had && files.contains("counter_cutoff") && files.contains("counter_anchor") && files.contains("speed") {
     return
   }
   immediate(db, () => {
@@ -446,6 +502,9 @@ fn install_usage_counter(db : @sql.Db, now : Int64) -> Unit raise {
     }
     if !current.contains("counter_anchor") {
       db.exec("ALTER TABLE usage_files ADD COLUMN counter_anchor TEXT")
+    }
+    if !current.contains("speed") {
+      db.exec("ALTER TABLE usage_files ADD COLUMN speed TEXT")
     }
   })
 }

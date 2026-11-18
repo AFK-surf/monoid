@@ -34,7 +34,49 @@ type Runtime = RuntimeKind;
 
 /// What reading a transcript carries from line to line and from read to read: the model it last named (Codex), its
 /// session's id (Codex's first line), and the model's window as last told (dsh's request/context, before its calls).
-export type CallState = { model: string | null; codexId: string | null; window?: number | null };
+export type CallState = { model: string | null; codexId: string | null; window?: number | null; speed?: Speed };
+
+/// Where a transcript's reading stands of its model's time (mb/src/usagecount/speed.mbt, which the program reads with):
+/// when it was last asked (`since`: a person's message, a tool's result, a request sent), and of the response under
+/// way when it was asked (`openStart`), which (`openId`, Claude Code's message) and when it last wrote (`ended`, Codex).
+export type Speed = { since: number | null; openStart: number | null; openId: string | null; ended: number | null };
+/// The longest a call is taken to have run: one longer is no call's alone (a pause the transcript does not tell).
+export const GEN_MOST = 1_800_000;
+export const noSpeed = (): Speed => ({ since: null, openStart: null, openId: null, ended: null });
+/// usage_files.speed: the four, comma-separated, empty for none; null where none is known.
+export function speedText(s: Speed): string | null {
+  if (s.since === null && s.openStart === null && s.openId === null && s.ended === null) return null;
+  const n = (v: number | null) => (v === null ? "" : String(v));
+  return `${n(s.since)},${n(s.openStart)},${n(s.ended)},${s.openId ?? ""}`;
+}
+export function speedOf(text: string | null | undefined): Speed {
+  if (text == null) return noSpeed();
+  const [a = "", b = "", c = "", ...d] = text.split(",");
+  const n = (v: string) => (/^-?[0-9]+$/.test(v) ? Number(v) : null);
+  const id = d.join(",");
+  return { since: n(a), openStart: n(b), ended: n(c), openId: id === "" ? null : id };
+}
+/// A line's own time (its first "timestamp"), where it says one.
+function stampOf(line: string): number | null {
+  const key = '"timestamp":"';
+  const at = line.indexOf(key);
+  if (at < 0) return null;
+  const end = line.indexOf('"', at + key.length);
+  return end < 0 ? null : parseIso(line.slice(at + key.length, end));
+}
+/// The time from `start` to `end` as a call's, or 0: not known, or none a call takes alone.
+const genOf = (start: number | null, end: number | null) =>
+  start === null || end === null || end <= start || end - start > GEN_MOST ? 0 : end - start;
+/// A Codex line's item, as its payload's type says it.
+function payloadType(line: string): string | null {
+  const key = '"payload":{"type":"';
+  const at = line.indexOf(key);
+  if (at < 0) return null;
+  const end = line.indexOf('"', at + key.length);
+  return end < 0 ? null : line.slice(at + key.length, end);
+}
+const CODEX_ASKED = new Set(["task_started", "user_message", "function_call_output", "custom_tool_call_output", "local_shell_call_output"]);
+const CODEX_WRITES = new Set(["reasoning", "function_call", "custom_tool_call", "local_shell_call", "web_search_call"]);
 
 const get = (v: unknown, k: string): unknown =>
   v !== null && typeof v === "object" && !Array.isArray(v) && Object.hasOwn(v, k) ? (v as Record<string, unknown>)[k] : undefined;
@@ -44,14 +86,36 @@ const n = (v: unknown): number => (typeof v === "number" && Number.isInteger(v) 
 
 /// A count a turn's line tells apart (its context, the model's window): none when it says none.
 const told = (v: unknown): number | null => (n(v) > 0 ? n(v) : null);
+const parsed = (line: string): unknown => {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+};
 
 /// calls_of: a transcript's lines read into calls; `state` carries the model, Codex id and window on (the program's
 /// mb/src/usagecount reads them so).
 export function callsOf(runtime: Runtime, text: string, subagent: boolean, state: CallState): UsageCall[] {
   const out: UsageCall[] = [];
   const atIndex = new Map<string, number>();
+  const speed = (state.speed ??= noSpeed());
   for (let line of text.split("\n")) {
     if (line.endsWith("\r")) line = line.slice(0, -1);
+    // When the model was asked, and (Codex) when it wrote: read of lines that hold no usage too.
+    if (runtime === "claude") {
+      if (line.startsWith('{"type":"api-request"') || line.includes('"type":"user","message":{"role":"user"')) speed.since = stampOf(line) ?? speed.since;
+    } else if (runtime === "codex") {
+      const type = payloadType(line);
+      if (type !== null && CODEX_ASKED.has(type)) speed.since = stampOf(line) ?? speed.since;
+      else if (type !== null && (CODEX_WRITES.has(type) || (type === "message" && line.includes('"type":"response_item"') && str(get(get(parsed(line), "payload"), "role")) === "assistant"))) {
+        const t = stampOf(line);
+        if (t !== null) {
+          if (speed.openStart === null) speed.openStart = speed.since;
+          speed.ended = t;
+        }
+      }
+    }
     // Most lines are something else: only those that may hold usage are parsed.
     const wanted =
       runtime === "claude" ? line.includes('"usage"')
@@ -128,13 +192,22 @@ export function callsOf(runtime: Runtime, text: string, subagent: boolean, state
       const input = n(get(usage, "input_tokens"));
       const cacheRead = n(get(usage, "cache_read_input_tokens"));
       // The main thread's prompt is its context; a subagent's is its own.
+      // Its time: from when it was asked (as its first line came) to its line (a block written), a sidechain's untold.
+      if (!side && speed.openId !== id) {
+        speed.openId = id;
+        speed.openStart = speed.since;
+      }
       const call: UsageCall = {
         id, at, model: name, subagent: side, fast: get(usage, "speed") === "fast", input, cacheRead, cacheWrite: short,
         cacheWriteLong: long, output: n(get(usage, "output_tokens")), calls: 1, context: side ? null : input + cacheRead + written, window: null,
+        genMs: side ? 0 : genOf(speed.openStart, at),
       };
       // One response is written as several lines (a block each), each with its usage: counted once, at its fullest.
       const i = atIndex.get(id);
-      if (i !== undefined) out[i]!.output = Math.max(out[i]!.output, call.output);
+      if (i !== undefined) {
+        out[i]!.output = Math.max(out[i]!.output, call.output);
+        out[i]!.genMs = Math.max(out[i]!.genMs ?? 0, call.genMs ?? 0);
+      }
       else {
         atIndex.set(id, out.length);
         out.push(call);
@@ -154,10 +227,15 @@ export function callsOf(runtime: Runtime, text: string, subagent: boolean, state
         const total = totals === undefined ? at : n(get(totals, "total_tokens"));
         const sent = n(get(last, "input_tokens"));
         const cached = Math.min(n(get(last, "cached_input_tokens")), sent);
+        // Its time: from when it was asked to the last item it wrote; the next is asked from here on.
+        const genMs = genOf(speed.openStart, speed.ended);
+        speed.openStart = null;
+        speed.ended = null;
+        speed.since = at;
         out.push({
           id: `codex:${state.codexId ?? ""}:${total}`, at, model: state.model, subagent, fast: false,
           input: sent - cached, cacheRead: cached, cacheWrite: 0, cacheWriteLong: 0, output: n(get(last, "output_tokens")), calls: 1,
-          context: subagent ? null : sent, window: told(get(info, "model_context_window")),
+          context: subagent ? null : sent, window: told(get(info, "model_context_window")), genMs,
         });
       }
     }
@@ -565,12 +643,54 @@ export class ReferenceUsageCounter {
     return this.#first || this.#last === 0;
   }
 
+  /// The read under way times again the calls from then on (ms) of what each transcript it reads had been read of
+  /// before its calls were timed (`#timedAgain`); null, it times only what it reads anew.
+  #timeFrom: number | null = null;
+
   /// One read: the transcripts of sessions that ran since the last sweep; `only`: of those sessions alone. How many
-  /// calls were new. Reads queue behind one another.
-  read(only?: ReadonlySet<string>): Promise<number> {
-    const next = this.#reading.catch(() => {}).then(() => this.#read(only ?? null));
+  /// calls were new. Reads queue behind one another. `timeFrom`: what was read before calls were timed is timed again
+  /// from then on (counter.ts `timeFrom`).
+  read(only?: ReadonlySet<string>, timeFrom?: number): Promise<number> {
+    const next = this.#reading.catch(() => {}).then(() => {
+      this.#timeFrom = timeFrom ?? null;
+      return this.#read(only ?? null);
+    });
     this.#reading = next;
     return next;
+  }
+
+  /// A transcript read again up to `upto`, where it was read to before its calls were timed: each of its calls made
+  /// from `timeFrom` on given the time it took (only longer, never a call more), and where its reading of that stands
+  /// kept with its position, in one write. Where its reading stands at `upto` (mb/src/usagecount counter.mbt).
+  async #timedAgain(path: string, runtime: Runtime, subagent: boolean, session: string, upto: number, cutoff: number, timeFrom: number): Promise<Speed> {
+    const state: CallState = { model: null, codexId: runtime === "codex" ? (await codexMeta(path))?.[0] ?? null : null, speed: noSpeed() };
+    const timed: [string, number, number][] = [];
+    reading: for await (const part of readFrom(path, 0)) {
+      if (this.#abort.signal.aborted) throw new Stopped();
+      for (const section of sectionsOf(part, cutoff)) {
+        if (section.from >= upto) break reading;
+        const bytes = section.offset > upto ? section.bytes.subarray(0, upto - section.from) : section.bytes;
+        for (const c of callsOf(runtime, bytes.toString("utf8"), subagent, state)) {
+          if ((c.genMs ?? 0) > 0 && c.at >= timeFrom) timed.push([c.id, c.at, c.genMs!]);
+        }
+      }
+    }
+    const db = this.#store.db;
+    let earliest = Infinity;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const update = db.prepare("UPDATE usage SET gen_ms = ?2, gen_output = CASE WHEN ?2 > 0 THEN output ELSE 0 END WHERE id = ?1 AND gen_ms < ?2");
+      for (const [id, at, genMs] of timed) {
+        if (Number(update.run(id, genMs).changes) > 0) earliest = Math.min(earliest, at);
+      }
+      db.prepare("UPDATE usage_files SET speed = ?1 WHERE path = ?2 AND offset = ?3").run(speedText(state.speed!), path, upto);
+      db.exec("COMMIT");
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+    if (Number.isFinite(earliest)) {
+      this.#counted.add(session);
+      this.#from = Math.min(this.#from, earliest);
+    }
+    return state.speed!;
   }
 
   async #read(only: ReadonlySet<string> | null): Promise<number> {
@@ -615,7 +735,7 @@ export class ReferenceUsageCounter {
         const file = store.usageFile(name);
         const counter = store.usageCounterFile(name);
         if (file === undefined && counter === null) return undefined;
-        const saved = { ...(file ?? { session: null, offset: 0, model: null }), cutoff: counter?.cutoff ?? null, anchor: counter?.anchor ?? null, path: name };
+        const saved = { ...(file ?? { session: null, offset: 0, model: null, speed: null }), cutoff: counter?.cutoff ?? null, anchor: counter?.anchor ?? null, path: name };
         known.set(name, saved);
         return saved;
       };
@@ -759,7 +879,7 @@ export class ReferenceUsageCounter {
       anchor = found;
     }
     const replaced = was !== undefined && (shortened || (was.anchor !== null && anchor !== was.anchor));
-    const before = replaced ? { session: was.session, offset: 0, model: null } : (was ?? { session: null, offset: 0, model: null });
+    const before: UsageFile = replaced ? { session: was.session, offset: 0, model: null, speed: null } : (was ?? { session: null, offset: 0, model: null, speed: null });
     if (replaced) anchor = "";
     let cutoff = was?.cutoff ?? null;
     if (replaced || cutoff === null || was?.anchor === null || was?.path !== path) {
@@ -767,7 +887,13 @@ export class ReferenceUsageCounter {
     }
     this.#files?.set(path, { ...before, cutoff, anchor, path });
     if (archived && !replaced && size === before.offset) return 0;
-    const state: CallState = { model: before.model, codexId: null };
+    const state: CallState = { model: before.model, codexId: null, speed: speedOf(before.speed) };
+    // Read before its calls were timed: those from `timeFrom` on timed now, its reading on from where that left.
+    if (this.#timeFrom !== null && was !== undefined && (was.speed ?? null) === null && !replaced && before.offset > 0 && (runtime === "claude" || runtime === "codex")) {
+      state.speed = await this.#timedAgain(path, runtime, subagent, session.key, before.offset, cutoff, this.#timeFrom);
+      const kept = this.#files?.get(path);
+      if (kept !== undefined) this.#files!.set(path, { ...kept, speed: speedText(state.speed) });
+    }
     // A session created after the counter began can have its first call timestamped just before that boundary when
     // the runtime's clock is behind. Use the same clock-skew allowance already used to attribute calls to a session.
     const firstNewAt = session.createdAt >= since ? Math.min(since, session.createdAt - SKEW_MS) : since;
@@ -785,6 +911,7 @@ export class ReferenceUsageCounter {
           : Buffer.concat([Buffer.from(anchor, "hex"), section.bytes]).subarray(-ANCHOR)).toString("hex");
         // What ran before the station had the session (a terminal's, continued here) is not the station's.
         const modelBefore = state.model;
+        const speedBefore = speedText(state.speed!);
         const fromKnownSuffix = was !== undefined && !replaced && section.from >= before.offset;
         const calls = callsOf(runtime, section.text, subagent, state).filter((c) => c.at >= session.createdAt - SKEW_MS && (section.followed || c.at >= firstNewAt || fromKnownSuffix));
         // The turns they were made in, those alone (store/usage.ts usageTurns).
@@ -808,7 +935,8 @@ export class ReferenceUsageCounter {
         for (let i = 0; i < Math.max(1, withFor.length); i += WRITE_BATCH) {
           if (this.#abort.signal.aborted) throw new Stopped();
           const complete = i + WRITE_BATCH >= withFor.length;
-          const file = { session: session.key, offset: complete ? section.offset : section.from, model: complete ? state.model : modelBefore };
+          const file = { session: session.key, offset: complete ? section.offset : section.from, model: complete ? state.model : modelBefore,
+            speed: complete ? speedText(state.speed!) : speedBefore };
           const batch = withFor.slice(i, i + WRITE_BATCH);
           const changed = { from: Infinity };
           const savedAnchor = complete ? nextAnchor : anchor;

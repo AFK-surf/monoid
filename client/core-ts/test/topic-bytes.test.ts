@@ -144,7 +144,10 @@ const chatEmpty = (older: boolean, compact: boolean): Record<string, string> => 
   // (compact sends a chat's jobs as `chatJobs` does: output.ts compactChat)
   ...(compact ? { "agents[].jobs": ASKED_SO } : {}),
 });
+/// What only the stations' hours say (GET /profiles/pace, the `profilePace` topic), which the fixture's stations keep none of.
+const NO_HOURS = "what the stations' hours say (GET /profiles/pace), which the fixture's stations keep none of";
 const EMPTY: Record<string, Record<string, string>> = {
+  "profilesOverview": { "pools[].speed.quarters": NO_HOURS, "pools[].speed.hours": NO_HOURS, "pools[].speed.days": NO_HOURS },
   "station": {
     problems: WELL, profileStates: WELL, "overview.profiles[].modelsSaving": SAVING,
     // (a decision-only provider's, Jev's; the workspaces the station joined, it joined none)

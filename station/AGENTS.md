@@ -122,7 +122,11 @@
   database from before counts from its opening and takes its older calls in afterwards (the MoonBit builder's,
   `mb/src/usagefill`); the statistics of before are dropped once the station before has gone
   (`src/store/usage-retire.ts`).
-  `test/usage-15m.test.ts` holds the quarters to the calls through every way of writing them.
+  `test/usage-15m.test.ts` holds the quarters to the calls through every way of writing them. How long a call took
+  (`usage.gen_ms`, with what it wrote then, `gen_output`) is the usage counter's, read of its transcript's lines
+  (`mb/src/usagecount/speed.mbt`, where a reading stands kept with its position, `usage_files.speed`), and is two of
+  the quarters' metrics: Profile overview's 输出速度 (GET /profiles/pace's `speedHours`, `speedQuarters`). Calls read
+  before it was kept are timed once, the last `TIMED_BACK_MS`, as the counter starts (`src/usage/counter.ts`).
 - A session can take part in thousands of threads (a chat that posts each release to Slack starts one each time):
   what its agent is told, its turns, its tools and the archive look at its recent ones (store `recentSessionThreads`,
   readers' `recentThreadRows`), never a loop over `sessionThreads`, which is for what must see every one (a share, an

@@ -139,6 +139,8 @@ pub(all) struct SpendHour {
   cache_write : Double
   cache_write_long : Double
   output : Double
+  gen_ms : Double
+  gen_output : Double
 }
 
 ///|
@@ -158,7 +160,46 @@ pub fn SpendHour::of_jv(v : JV) -> SpendHour {
     cache_write: n("cacheWrite"),
     cache_write_long: n("cacheWriteLong"),
     output: n("output"),
+    gen_ms: match v.get("genMs") {
+      Some(Num(x)) => x
+      _ => 0.0
+    },
+    gen_output: match v.get("genOutput") {
+      Some(Num(x)) => x
+      _ => 0.0
+    },
   }
+}
+
+///|
+/// pace.ts `speedOf`: the calls' times of the profiles `shown` keeps (`at`, profile, model, ms, output each), added up by
+/// `at` and model, in their order.
+fn speed_of(rows : Array[(Double, String, String?, Double, Double)], shown : (String) -> Bool) -> JV {
+  let by : Array[(Double, String, Double, Double)] = []
+  for r in rows {
+    let (at, profile, model, ms, output) = r
+    guard shown(profile) && model is Some(m) && m != "" && ms > 0.0 else { continue }
+    match by.search_by(e => e.0 == at && e.1 == m) {
+      Some(i) => by[i] = (at, m, by[i].2 + output, by[i].3 + ms)
+      None => by.push((at, m, output, ms))
+    }
+  }
+  let list = by.map(e => jobj([("at", jnum(e.0)), ("model", js(e.1)), ("output", jnum(e.2)), ("ms", jnum(e.3))]))
+  stable_sort(list, (a, b) => {
+    let d = to_number(a.get("at")) - to_number(b.get("at"))
+    if d != 0.0 && !d.is_nan() {
+      return d
+    }
+    let c = js_compare(js_string(a.get("model")), js_string(b.get("model")))
+    if c < 0 {
+      -1.0
+    } else if c > 0 {
+      1.0
+    } else {
+      0.0
+    }
+  })
+  jarr(list)
 }
 
 ///|
@@ -345,9 +386,31 @@ pub fn pace_view(
       jobj([("quotas", jarr(quotas[p])), ("spend", jarr(spends[p]))]),
     )
   }
+  let speed_hours = speed_of(
+    jitems(read.get("spend")).map(raw => {
+      let s = SpendHour::of_jv(raw)
+      (s.hour, s.profile, s.model, s.gen_ms, s.gen_output)
+    }),
+    shown,
+  )
+  let speed_quarters = speed_of(
+    jitems(read.get("speed")).map(q => (
+      to_number(q.get("quarter")),
+      js_string(q.get("profile")),
+      match q.get("model") {
+        Some(Str(m)) => Some(m)
+        _ => None
+      },
+      to_number(q.get("genMs")),
+      to_number(q.get("genOutput")),
+    )),
+    shown,
+  )
   jobj([
     ("nowAt", jnum(now_at)),
     ("fromHour", jnum(now_hour - pace_hours)),
     ("profiles", profiles),
+    ("speedHours", speed_hours),
+    ("speedQuarters", speed_quarters),
   ])
 }

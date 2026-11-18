@@ -46,12 +46,13 @@ pub fn Store::begin_usage_counter_file(
     ignore(
       self.run(
         (
-          #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor)
-          #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+          #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
+          #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
           #|    ON CONFLICT(path) DO UPDATE SET
           #|      session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
           #|      offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
           #|      model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
+          #|      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
           #|      counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
           #|      counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END
         ),
@@ -63,6 +64,7 @@ pub fn Store::begin_usage_counter_file(
           nullish(field(counter, "cutoff")),
           nullish(field(counter, "anchor")),
           flag(reset),
+          nullish(field(file, "speed")),
         ],
       ),
     )
@@ -73,12 +75,13 @@ pub fn Store::begin_usage_counter_file(
 ///|
 pub fn Store::usage_files(self : Store) -> Json raise {
   let out : Array[(String, Json)] = []
-  for r in self.all("SELECT path, session, offset, model FROM usage_files", []) {
+  for r in self.all("SELECT path, session, offset, model, speed FROM usage_files", []) {
     let k = js_string(col(r, "path"))
     let v : Json = {
       "session": col(r, "session"),
       "offset": col(r, "offset"),
       "model": col(r, "model"),
+      "speed": col(r, "speed"),
     }
     let mut at = -1
     for i, e in out {
@@ -98,7 +101,7 @@ pub fn Store::usage_files(self : Store) -> Json raise {
 ///|
 pub fn Store::usage_file(self : Store, path : Json) -> Json raise {
   match
-    self.one("SELECT session, offset, model FROM usage_files WHERE path = ?", [
+    self.one("SELECT session, offset, model, speed FROM usage_files WHERE path = ?", [
       path,
     ]) {
     Some(r) => row_json(r)
@@ -141,6 +144,7 @@ fn call_of(c : Json) -> Call {
     calls: num("calls"),
     context: num_of(nullish(field(c, "context"))),
     window: num_of(nullish(field(c, "window"))),
+    gen_ms: num("genMs"),
   }
 }
 
@@ -176,29 +180,30 @@ fn Store::record_usage_in(
     let mut snapshot : Snapshot? = None
     let insert = if compact {
       (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted, compact_counted)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1, 1)
+        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, gen_ms, gen_output, rollup_counted, compact_counted)
+        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, CASE WHEN ?20 > 0 THEN ?16 ELSE 0 END, 1, 1)
         #|
       )
     } else {
       (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1)
-        #|       ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output)
+        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, gen_ms, gen_output, rollup_counted)
+        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, CASE WHEN ?20 > 0 THEN ?16 ELSE 0 END, 1)
+        #|       ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output), gen_ms = MAX(gen_ms, excluded.gen_ms),
+        #|  gen_output = CASE WHEN MAX(gen_ms, excluded.gen_ms) > 0 THEN MAX(output, excluded.output) ELSE 0 END
       )
     }
     for pair in calls {
       let c = call_of(arr(pair)[0])
       let of = for_of(arr(pair)[1])
       let was = match
-        self.one("SELECT output FROM usage WHERE id = ?", [jstr(c.id)]) {
-        Some(r) => Some(num_of(col(r, "output")).unwrap_or(0.0))
+        self.one("SELECT output, gen_ms FROM usage WHERE id = ?", [jstr(c.id)]) {
+        Some(r) => Some((num_of(col(r, "output")).unwrap_or(0.0), num_of(col(r, "gen_ms")).unwrap_or(0.0)))
         None => None
       }
       if was is None && min_new_at is Some(min) && c.at < min {
         continue
       }
-      if was is Some(o) && c.output <= o {
+      if was is Some((o, g)) && c.output <= o && c.gen_ms <= g {
         continue
       }
       if compact && !seeded {
@@ -210,8 +215,12 @@ fn Store::record_usage_in(
       if was is Some(_) && compact {
         ignore(
           self.run(
-            "UPDATE usage SET output = ?1 WHERE id = ?2 AND output < ?1",
-            [jnum(c.output), jstr(c.id)],
+            (
+              #|UPDATE usage SET output = MAX(output, ?1), gen_ms = MAX(gen_ms, ?3),
+              #|  gen_output = CASE WHEN MAX(gen_ms, ?3) > 0 THEN MAX(output, ?1) ELSE 0 END
+              #|      WHERE id = ?2 AND (output < ?1 OR gen_ms < ?3)
+            ),
+            [jnum(c.output), jstr(c.id), jnum(c.gen_ms)],
           ),
         )
       } else {
@@ -236,6 +245,7 @@ fn Store::record_usage_in(
             jnum(c.calls),
             opt_num(c.context),
             opt_num(c.window),
+            jnum(c.gen_ms),
           ]),
         )
       }
@@ -263,11 +273,13 @@ fn Store::record_usage_in(
   ignore(
     self.run(
       (
-        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         #|     ON CONFLICT (path) DO UPDATE SET session = excluded.session, offset = excluded.offset, model = excluded.model,
         #|       counter_cutoff = COALESCE(excluded.counter_cutoff, usage_files.counter_cutoff),
-        #|       counter_anchor = CASE WHEN excluded.counter_cutoff IS NULL THEN usage_files.counter_anchor ELSE excluded.counter_anchor END
+        #|       counter_anchor = CASE WHEN excluded.counter_cutoff IS NULL THEN usage_files.counter_anchor ELSE excluded.counter_anchor END,
+        #|       speed = excluded.speed
         #|     WHERE usage_files.session IS NOT excluded.session OR usage_files.offset IS NOT excluded.offset OR usage_files.model IS NOT excluded.model
+        #|       OR usage_files.speed IS NOT excluded.speed
         #|       OR (excluded.counter_cutoff IS NOT NULL AND (usage_files.counter_cutoff IS NOT excluded.counter_cutoff OR usage_files.counter_anchor IS NOT excluded.counter_anchor))
       ),
       [
@@ -277,6 +289,7 @@ fn Store::record_usage_in(
         nullish(field(file, "model")),
         nullish(field(counter, "cutoff")),
         nullish(field(counter, "anchor")),
+        nullish(field(file, "speed")),
       ],
     ),
   )

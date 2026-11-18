@@ -19,7 +19,9 @@
 import type { DatabaseSync } from "node:sqlite";
 
 export const QUARTER_MS = 900_000;
-const METRICS = ["calls", "input", "cache_read", "cache_write", "cache_write_long", "output"] as const;
+/// gen_ms and gen_output: how long the calls whose time it took is known took (ms) and what they wrote (the usage
+/// counter's, usage/speed: what Profile overview's 输出速度 is read of, `SPEED_READ`).
+const METRICS = ["calls", "input", "cache_read", "cache_write", "cache_write_long", "output", "gen_ms", "gen_output"] as const;
 const DIMENSIONS = ["scope", "quarter", "session", "thread", "person", "profile", "runtime", "model", "fast"] as const;
 
 /// The quarter hour `r.at` is in, rounded down (also before 1970).
@@ -72,41 +74,14 @@ const totalsClean = (r: string) => `
 const moveSession = (key: string, ws: string) => `UPDATE usage_15m SET scope = COALESCE(${ws}, '')
   WHERE session = ${key} AND scope <> COALESCE(${ws}, '');`;
 
-const SCHEMA = `
-CREATE TABLE usage_15m (scope TEXT NOT NULL, quarter INTEGER NOT NULL, session TEXT NOT NULL, thread INTEGER NOT NULL,
-  person TEXT NOT NULL, profile TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, fast INTEGER NOT NULL,
-  records INTEGER NOT NULL, calls INTEGER NOT NULL, input INTEGER NOT NULL, cache_read INTEGER NOT NULL,
-  cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL, output INTEGER NOT NULL,
-  PRIMARY KEY (${DIMENSIONS.join(", ")})) WITHOUT ROWID;
-CREATE INDEX usage_15m_session ON usage_15m (session, scope, quarter);
-CREATE INDEX usage_15m_quarter ON usage_15m (quarter, scope);
-CREATE TABLE usage_quarter_totals (scope TEXT NOT NULL, quarter INTEGER NOT NULL, calls INTEGER NOT NULL, tokens INTEGER NOT NULL,
-  PRIMARY KEY (scope, quarter)) WITHOUT ROWID;
-CREATE TABLE usage_scope_totals (scope TEXT PRIMARY KEY, calls INTEGER NOT NULL, tokens INTEGER NOT NULL) WITHOUT ROWID;
--- since: from when every call is counted (ms); NULL, from the first.
-CREATE TABLE usage_15m_meta (id INTEGER PRIMARY KEY CHECK (id = 1), since INTEGER);
+/// The staging of a call an INSERT meets and the triggers on \`usage\` that keep its quarters: made again whole where the
+/// metrics grew (installUsage15mGen).
+const USAGE_KEPT = `
 -- The call an INSERT is about to meet, as it is, and its workspace: an INSERT OR REPLACE removes it without its DELETE
 -- triggers (unless recursive_triggers is on), and the insert's own trigger takes it out of its quarter then, the new
 -- call counted where it was. An upsert or an ignored insert leaves it, taken away by the next write.
 CREATE TABLE usage_15m_replace (${STAGED.map((c) => `${c}${c === "id" ? " TEXT PRIMARY KEY" : ""}`).join(", ")}, counted INTEGER NOT NULL,
   scope TEXT NOT NULL) WITHOUT ROWID;
-
-CREATE TRIGGER usage_15m_totals_add AFTER INSERT ON usage_15m BEGIN ${totalsAdd("NEW", "")} END;
-CREATE TRIGGER usage_15m_totals_grow AFTER UPDATE ON usage_15m WHEN OLD.scope = NEW.scope AND OLD.quarter = NEW.quarter BEGIN
-  UPDATE usage_quarter_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + ${tokensOf("NEW")} - ${tokensOf("OLD")}
-    WHERE scope = NEW.scope AND quarter = NEW.quarter;
-  UPDATE usage_scope_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + ${tokensOf("NEW")} - ${tokensOf("OLD")}
-    WHERE scope = NEW.scope;
-END;
-CREATE TRIGGER usage_15m_totals_move AFTER UPDATE ON usage_15m WHEN OLD.scope <> NEW.scope OR OLD.quarter <> NEW.quarter BEGIN
-  ${totalsAdd("OLD", "-")}
-  ${totalsAdd("NEW", "")}
-  ${totalsClean("OLD")}
-END;
-CREATE TRIGGER usage_15m_totals_drop AFTER DELETE ON usage_15m BEGIN
-  ${totalsAdd("OLD", "-")}
-  ${totalsClean("OLD")}
-END;
 
 CREATE TRIGGER usage_15m_before_add BEFORE INSERT ON usage
   WHEN EXISTS (SELECT 1 FROM usage_15m_replace) OR EXISTS (SELECT 1 FROM usage WHERE id = NEW.id) BEGIN
@@ -137,6 +112,41 @@ CREATE TRIGGER usage_15m_drop AFTER DELETE ON usage BEGIN
   UPDATE usage_15m_replace SET counted = 0 WHERE id = OLD.id;
 END;
 
+`;
+
+const SCHEMA = `
+CREATE TABLE usage_15m (scope TEXT NOT NULL, quarter INTEGER NOT NULL, session TEXT NOT NULL, thread INTEGER NOT NULL,
+  person TEXT NOT NULL, profile TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, fast INTEGER NOT NULL,
+  records INTEGER NOT NULL, calls INTEGER NOT NULL, input INTEGER NOT NULL, cache_read INTEGER NOT NULL,
+  cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL, output INTEGER NOT NULL,
+  PRIMARY KEY (${DIMENSIONS.join(", ")})) WITHOUT ROWID;
+ALTER TABLE usage_15m ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE usage_15m ADD COLUMN gen_output INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX usage_15m_session ON usage_15m (session, scope, quarter);
+CREATE INDEX usage_15m_quarter ON usage_15m (quarter, scope);
+CREATE TABLE usage_quarter_totals (scope TEXT NOT NULL, quarter INTEGER NOT NULL, calls INTEGER NOT NULL, tokens INTEGER NOT NULL,
+  PRIMARY KEY (scope, quarter)) WITHOUT ROWID;
+CREATE TABLE usage_scope_totals (scope TEXT PRIMARY KEY, calls INTEGER NOT NULL, tokens INTEGER NOT NULL) WITHOUT ROWID;
+-- since: from when every call is counted (ms); NULL, from the first.
+CREATE TABLE usage_15m_meta (id INTEGER PRIMARY KEY CHECK (id = 1), since INTEGER);
+CREATE TRIGGER usage_15m_totals_add AFTER INSERT ON usage_15m BEGIN ${totalsAdd("NEW", "")} END;
+CREATE TRIGGER usage_15m_totals_grow AFTER UPDATE ON usage_15m WHEN OLD.scope = NEW.scope AND OLD.quarter = NEW.quarter BEGIN
+  UPDATE usage_quarter_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + ${tokensOf("NEW")} - ${tokensOf("OLD")}
+    WHERE scope = NEW.scope AND quarter = NEW.quarter;
+  UPDATE usage_scope_totals SET calls = calls + NEW.calls - OLD.calls, tokens = tokens + ${tokensOf("NEW")} - ${tokensOf("OLD")}
+    WHERE scope = NEW.scope;
+END;
+CREATE TRIGGER usage_15m_totals_move AFTER UPDATE ON usage_15m WHEN OLD.scope <> NEW.scope OR OLD.quarter <> NEW.quarter BEGIN
+  ${totalsAdd("OLD", "-")}
+  ${totalsAdd("NEW", "")}
+  ${totalsClean("OLD")}
+END;
+CREATE TRIGGER usage_15m_totals_drop AFTER DELETE ON usage_15m BEGIN
+  ${totalsAdd("OLD", "-")}
+  ${totalsClean("OLD")}
+END;
+
+${USAGE_KEPT}
 CREATE TRIGGER usage_15m_session_add AFTER INSERT ON sessions BEGIN ${moveSession("NEW.key", "NEW.ws")} END;
 CREATE TRIGGER usage_15m_session_move AFTER UPDATE OF key, ws ON sessions
   WHEN OLD.key IS NOT NEW.key OR OLD.ws IS NOT NEW.ws BEGIN ${moveSession("NEW.key", "NEW.ws")} END;
@@ -157,11 +167,38 @@ export function installUsage15m(db: DatabaseSync, now: number): void {
     if (!hasUsage15m(db)) {
       const columns = new Set((db.prepare("PRAGMA table_info(usage)").all() as { name: string }[]).map((c) => c.name));
       if (!columns.has("rollup_counted")) db.exec("ALTER TABLE usage ADD COLUMN rollup_counted INTEGER NOT NULL DEFAULT 0");
+      addGenColumns(db, columns);
       db.exec(SCHEMA);
       const old = db.prepare("SELECT 1 FROM usage LIMIT 1").get() !== undefined;
       // (a call recorded ahead of the clock is one of those to take in too: its time by the index, one entry)
       const latest = old ? (db.prepare("SELECT MAX(at) AS at FROM usage INDEXED BY usage_at").get() as { at: number }).at : null;
       db.prepare("INSERT INTO usage_15m_meta (id, since) VALUES (1, ?)").run(old ? Math.max(now, latest! + 1) : null);
+    }
+    db.exec("COMMIT");
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
+}
+
+/// A call's time taken and what it wrote then (usage/speed): 0 where its time is not known.
+function addGenColumns(db: DatabaseSync, columns: Set<string>): void {
+  if (!columns.has("gen_ms")) db.exec("ALTER TABLE usage ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("gen_output")) db.exec("ALTER TABLE usage ADD COLUMN gen_output INTEGER NOT NULL DEFAULT 0");
+}
+
+/// The quarters of a database from before a call's time was kept given its two metrics, in one short write as the
+/// store opens: the columns added (0 for every call and quarter there, none read) and the staging and the triggers on
+/// `usage` made again with them, as a new database makes them (`installUsage15m`).
+export function installUsage15mGen(db: DatabaseSync): void {
+  const has15m = () => (db.prepare("PRAGMA table_info(usage_15m)").all() as { name: string }[]).some((c) => c.name === "gen_ms");
+  if (!hasUsage15m(db) || has15m()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!has15m()) {
+      addGenColumns(db, new Set((db.prepare("PRAGMA table_info(usage)").all() as { name: string }[]).map((c) => c.name)));
+      db.exec(`ALTER TABLE usage_15m ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE usage_15m ADD COLUMN gen_output INTEGER NOT NULL DEFAULT 0;
+        DROP TRIGGER usage_15m_before_add; DROP TRIGGER usage_15m_add; DROP TRIGGER usage_15m_change; DROP TRIGGER usage_15m_grow;
+        DROP TRIGGER usage_15m_updated; DROP TRIGGER usage_15m_drop; DROP TABLE usage_15m_replace;
+        ${USAGE_KEPT}`);
     }
     db.exec("COMMIT");
   } catch (error) { db.exec("ROLLBACK"); throw error; }

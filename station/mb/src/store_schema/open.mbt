@@ -72,6 +72,7 @@ pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive
   }
   install_usage_compactions(db)
   install_usage_15m(db, now)
+  install_usage_15m_gen(db)
   install_profile_hours(db)
   install_incremental_usage_totals(db)
   install_usage_counter(db, now)
