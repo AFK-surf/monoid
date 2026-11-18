@@ -407,6 +407,8 @@ pub fn ShakeWay::new(amplitude? : Double, duration_ms? : Double, cycles? : Doubl
 pub fn ShakeWay::offset_at(Self, Double, reduced_motion? : Bool) -> Double
 #callsite(autofill(loc))
 pub fn ShakeWay::shake(Self, at~ : Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn ShakeWay::shakes(Self, @view.View, reduced_motion? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub struct SheetWay {
   // private fields

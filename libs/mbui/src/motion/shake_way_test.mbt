@@ -1,6 +1,6 @@
 // A shake (shake_way.mbt): where it is at a moment a function of when it was set off and that moment alone, 0 at both
-// ends, none with motion reduced, set off again from a new cause's moment; drawn by a node, the clock followed only
-// while it goes.
+// ends, none with motion reduced, set off again from a new cause's moment; drawn by a node (ShakeWay::shakes), the
+// clock followed only while it goes, its turning back no jolt along its row on a display's frames at 60 or 120.
 
 ///|
 let shake_from : Double = 1000.0
@@ -92,12 +92,8 @@ test "a node shaken as it is pressed: drawn off by the shake at the moment drawn
       .ground(Is(0x336699FFL))
       .says(Is(Some(@view.said(Button, label="Send"))))
       .on_press(fn() { way.shake(at=b.cause_at()) })
-      .offset(
-        By(fn() {
-          (way.offset_at(b.drawn_while(fn(at) { way.active_at(at, reduced_motion=false) }), reduced_motion=false), 0.0)
-        }),
-      )
       |> ignore
+      way.shakes(b, reduced_motion=false) |> ignore
     })
     |> ignore
   })
@@ -114,4 +110,47 @@ test "a node shaken as it is pressed: drawn off by the shake at the moment drawn
   assert_eq(still, 0.0)
   assert_true(said.abs() > 0.5 && (mid - said).abs() < 1.0e-9, msg="mid-way \{mid}, the shake there \{said}")
   assert_eq((x(), t.at_rest()), (0.0, true))
+}
+
+///|
+test "a node shaken, on a display's every frame at 60 and 120 a second: there and back across, its sizes held steady all the way, at rest at its end" {
+  // (frames it walks itself, judged by the default run alone: @ui.test_at_a_rate)
+  if @ui.test_at_a_rate() {
+    return
+  }
+  for period in [1000.0 / 60.0, 1000.0 / 120.0] {
+    let t = @ui.Tester::new(fn(_c) {  }, w=200.0, h=200.0)
+    t.check_looks(false)
+    let way = @motion.ShakeWay::new()
+    let node : Ref[@view.View?] = Ref(None)
+    @ui.set_view_app(fn(root) {
+      root.box(fn(b) {
+        node.val = Some(b)
+        b
+        .width(Is(Some(80.0)))
+        .height(Is(Some(40.0)))
+        .ground(Is(0x336699FFL))
+        .says(Is(Some(@view.said(Button, label="Send"))))
+        .on_press(fn() { way.shake(at=b.cause_at()) })
+        |> ignore
+        way.shakes(b, reduced_motion=false) |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    let tree = @ui.view_tree().unwrap()
+    let id = node.val.unwrap().id()
+    // (where it is drawn across on each frame: the Tester holds sizes steady on each, down and across)
+    let xs : Array[Double] = []
+    t.set_frame_period(period)
+    t.each_frame(Some(fn() { xs.push(tree.drawn_of(id).unwrap().x) }))
+    t.tap(40.0, 20.0)
+    t.run_for(way.duration_ms + 50.0)
+    t.each_frame(None)
+    let least = xs.fold(init=0.0, fn(a, x) { if x < a { x } else { a } })
+    let most = xs.fold(init=0.0, fn(a, x) { if x > a { x } else { a } })
+    assert_true(xs.length() >= (way.duration_ms / period).to_int(), msg="frames drawn at \{period} ms: \{xs.length()}")
+    assert_true(least < -1.0 && most > 1.0, msg="there and back at \{period} ms: \{least} to \{most}")
+    assert_eq((tree.drawn_of(id).unwrap().x, t.at_rest()), (0.0, true))
+  }
 }

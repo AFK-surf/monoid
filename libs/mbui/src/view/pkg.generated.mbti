@@ -1105,6 +1105,7 @@ pub struct Tree {
   mut behind_set : Int32
   mut defaults_set : Int32
   laid_said : Map[Int32, Double]
+  shakes_said : Map[Int32, (Double) -> Bool]
   downs : Array[Int32]
   changed : Array[NodeId]
   composed : Array[NodeId]
@@ -1373,6 +1374,7 @@ pub fn Tree::seen_bounds(Self, NodeId) -> (Double, Double, Double, Double)
 pub fn Tree::set_pixel_grid(Self, Double) -> Unit
 pub fn Tree::set_rows_grid(Self, Double) -> Unit
 pub fn Tree::settle(Self, Double) -> Unit
+pub fn Tree::shakes_at(Self, Int32, Double) -> Bool
 pub fn Tree::show_in_sight(Self, NodeId, within? : () -> (Double, Double)?, holds? : () -> Bool) -> Unit
 pub fn Tree::source_of(Self, NodeId) -> (String, String)
 pub fn Tree::sources_of(Self, NodeId) -> Array[SourceStep]
@@ -1702,6 +1704,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(Self, Scroll, () -> Array[K], (Self, 
 pub fn[T : Eq] View::sets_together(Self, () -> T, (T) -> Unit) -> Self
 #callsite(autofill(loc))
 pub fn View::shadow(Self, Live[(Double, Double, Int64)], loc~ : SourceLoc) -> Self
+pub fn View::shakes_while(Self, (Double) -> Bool) -> Self
 #callsite(autofill(loc))
 pub fn View::shapes(Self, Live[Array[@paint.Shape]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))

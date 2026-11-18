@@ -1244,6 +1244,9 @@ pub struct Tree {
   /// the width each node that says it lays what it holds out at (View::lays_anew), by node: what a Tester's steadiness
   /// judges take a step of as that node's own, in the frame it steps
   laid_said : Map[Int, Double]
+  /// what says each node that shakes across (View::shakes_while) shakes at a moment, by node: where a Tester's
+  /// steadiness judges take its left edge as that way's while it goes
+  shakes_said : Map[Int, (Double) -> Bool]
   /// the fingers down on it (each by its id: Drag's `finger`), in the order they went down
   downs : Array[Int]
   /// what the last frame changed: the nodes whose content it made again, those placed or faded otherwise
@@ -1657,6 +1660,7 @@ pub fn Tree::new(
     behind_set: 0,
     defaults_set: 0,
     laid_said: Map([]),
+    shakes_said: Map([]),
     downs: [],
     changed: [],
     composed: [],
