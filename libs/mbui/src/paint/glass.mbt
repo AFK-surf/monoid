@@ -125,7 +125,9 @@ pub fn Glass::liquid(
 
 
 ///|
-/// A single rounded Backdrop lens with Kyant’s circular refraction and optional dispersion.
+/// A single rounded Backdrop lens with Kyant’s circular refraction and optional dispersion; `inner_shadow` the
+/// radius of its InnerShadow (black at 15% times `highlight`, a sixth of the radius lower; 0 none), carried where a
+/// group's merge is (a lens of its own merges with nothing).
 pub fn Glass::backdrop_lens(
   height~ : Double,
   amount~ : Double,
@@ -135,10 +137,11 @@ pub fn Glass::backdrop_lens(
   highlight~ : Double,
   ambient? : Bool = false,
   dispersion? : Bool = false,
+  inner_shadow? : Double = 0.0,
 ) -> Glass {
   {
     ..Glass::liquid(blur~, tint~, solid~, saturation=1.0, rim=highlight, bezel=height,
-      refraction=amount, chroma=if dispersion { 1.0 } else { 0.0 }, merge=0.0, adaptive=false),
+      refraction=amount, chroma=if dispersion { 1.0 } else { 0.0 }, merge=inner_shadow, adaptive=false),
     backdrop_highlight: if ambient { 2 } else { 1 },
   }
 }
