@@ -34,6 +34,9 @@ export function key(id: string): string {
     if (!isAlpha(head) || rest === "") break;
     m = rest;
   }
+  // Claude's version said with a dot (OpenRouter's anthropic/claude-opus-5.5) is Anthropic's claude-opus-5-5: apart,
+  // a session's model was found on no gateway account, and none took it on once its subscriptions ran out.
+  if (m.startsWith("claude-")) m = m.replace(/(\d)\.(?=\d)/g, "$1-");
   const v = m.lastIndexOf("-v");
   if (v >= 0 && stamp(m.slice(v + 2))) m = m.slice(0, v);
   const parts = m.split("-");
