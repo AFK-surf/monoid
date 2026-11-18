@@ -37,6 +37,9 @@ pub(all) struct LiveBus {
   control_say : (Json) -> Unit
   stop_station : (String) -> Unit
   restart_front : (() -> Unit)?
+  /// ops/launcher.ts `runInstaller` (`--launcher-installer`): the release's installer started by the launcher, where
+  /// this process could not start it itself (updates.ts `startPlanned`).
+  run_installer : ((String, Map[String, String]) -> Unit)?
   // ── Config & Own (owned by P5-1; defaults read/write config.json directly for standalone slice tests) ──
   config_raw : Ref[() -> Json]
   config_update : Ref[async ((Json) -> Json) -> Json]
@@ -105,6 +108,7 @@ pub fn LiveBus::new(
   control_say : (Json) -> Unit,
   stop_station : (String) -> Unit,
   restart_front? : () -> Unit,
+  run_installer? : (String, Map[String, String]) -> Unit,
 ) -> LiveBus {
   let cfg_checks : Array[(Json) -> String?] = []
   let cfg_listeners : Array[(Int, (Json) -> Unit)] = []
@@ -172,6 +176,7 @@ pub fn LiveBus::new(
     control_say,
     stop_station,
     restart_front,
+    run_installer,
     config_raw: Ref(read_cfg),
     config_update: Ref(default_update),
     config_listen: Ref(fn(f) {

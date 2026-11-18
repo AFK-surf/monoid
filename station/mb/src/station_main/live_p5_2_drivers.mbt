@@ -163,6 +163,8 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
   let m = pump.machine()
   let lp = pump.lp
   let host = ctx.host
+  let mac = platform() == "darwin"
+  let stub : Ref[String?] = Ref(None)
   let logins : @agent_drivers.ClaudeLogins = {
     // (the machine's own login: its credentials file, or the keychain's item, renewed where it ran out)
     machine_token: _rejected => pump.later("machine's Claude login", async fn() {
@@ -191,10 +193,22 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
         _ => raise @agent_drivers.Failed("the lent sign-in is not there")
       }
     })),
-    has_keychain: false,
-    stub_dir: () => @agent_drivers.Later::ok(lp, ""),
-    take_back: _ => @agent_drivers.done(lp),
-    take_back_missing: _ => @agent_drivers.Later::ok(lp, false),
+    // (claude.ts, no-keychain.ts: on macOS a profile's Claude Code keeps its login in its home's file, not the user's
+    // keychain: the keychain's stub put first on its PATH, a login it moved there taken back)
+    has_keychain: mac,
+    stub_dir: () => match stub.val {
+      Some(dir) => @agent_drivers.Later::ok(lp, dir)
+      None =>
+        pump.later("keychain stub", async fn() {
+          let dir = @agent_runtimes.stub_dir_soon(host, tmpdir(), @drive.uid(), "\{@drive.pid()}")
+          stub.val = Some(dir)
+          dir
+        })
+    },
+    take_back: home => pump.later("Claude login taken back", async fn() { @agent_runtimes.take_back(host, home, mac) }),
+    take_back_missing: home => pump.later("Claude login taken back", async fn() {
+      @agent_runtimes.take_back_missing(host, home, mac)
+    }),
   }
   let d = @agent_drivers.ClaudeDriver::new(
     m,
@@ -365,7 +379,10 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
         _ => None
       }
     }),
-    missing_host: (_, _) => @agent_drivers.Later::ok(lp, false),
+    // (codex-repair.ts `findMissingCodexHost`: a code-mode host the installed Codex lacks)
+    missing_host: (command, env) => pump.later("codex host", async fn() {
+      @updates.find_missing_codex_host(station_updates_world(ctx.bus), command, env.pairs) is Some(_)
+    }),
     incomplete_installation: () => ignore(host.rt.fork(name="codex check", async fn() { ignore((ctx.bus.coord_ask.val)("updates.check", Json::null())) })),
     link_auth: dir => pump.later("codex auth", async fn() {
       let fields = @agent_runtimes.Fields::new()
@@ -374,8 +391,18 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
       }
       @agent_runtimes.link_codex_auth_soon(host, dir, fields)
     }),
-    remember_rollout: (_id, _dirs, _at) => (),
-    update_matches: _ => @agent_drivers.Later::ok(lp, true),
+    // (read/transcript.ts `rememberCodexRolloutLooking`: the rollout a running thread said, the locator's hint)
+    remember_rollout: (id, dirs, suffix) => remember_said_rollout(id, dirs, suffix),
+    // (codex.ts `updateMatchesStation`: the agents' `codex` and the station's the same command)
+    update_matches: _ => pump.later("codex matches", async fn() {
+      let agent_env = with_shell_command(host, "codex", agent_env(ctx))
+      let station_env = with_shell_command(host, "codex", env_all())
+      match (find_command("codex", agent_env), find_command("codex", station_env)) {
+        (Some(a), Some(b)) =>
+          a == b && attempt(() => @drive.realpath(a)).unwrap_or(a) == attempt(() => @drive.realpath(b)).unwrap_or(b)
+        _ => false
+      }
+    }),
     taken_up: Some(codex_taken_up(lp)),
     taking: () => (ctx.bus.control_say)({ "taking": jb(true) }),
     output_limit: 64 * 1024 * 1024,
@@ -484,8 +511,21 @@ fn agy_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Wo
   let host = ctx.host
   let world : @agent_drivers.AgyWorld = {
     raw_env: @agent_drivers.Env::new(agent_env(ctx)),
-    has_keychain: false,
-    keychain_read: () => @agent_drivers.Later::ok(lp, None),
+    // (agy.ts `agyKeychain`: the user's one keychain item `agy` kept a sign-in in before AGY_FILE_TOKENS)
+    has_keychain: platform() == "darwin",
+    keychain_read: () => pump.later("agy keychain", async fn() {
+      let child = spawn(host, "/usr/bin/security", ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"], stdout=Piped, stderr=Ignored) catch {
+        _ => return None
+      }
+      match @effect.timeout(5000, async fn() { child.finished() }) { // timer: a deadline to a process
+        Some((Some(0), _, out, _)) => Some(@utf8.decode_lossy(out).trim().to_owned())
+        Some(_) => None
+        None => {
+          ignore(kill(child.pid, "SIGKILL"))
+          None
+        }
+      }
+    }),
     lent_borrowed: Some(p => borrowed_profile(ctx, p52_json_of_jv(p))),
     lent_write: Some(p => pump.later("lent Antigravity login", async fn() {
       match (ctx.bus.jobs_ask.val)("sharing.lendAgy", { "profile": p52_json_of_jv(p) }) {
