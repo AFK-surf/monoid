@@ -36,11 +36,13 @@ fn outgoing(
   error? : String = "",
   waits? : String = "",
   held? : Bool = false,
+  unsure? : Bool = false,
   at? : Double = 0.0,
   quotes? : Array[Json] = [],
 ) -> Json {
   {
     "held": Json::boolean(held),
+    "unsure": Json::boolean(unsure),
     "id": "o-1",
     "text": "这条还在路上",
     "quotes": Json::array(quotes),
@@ -230,4 +232,17 @@ test "what is on its way and not held (its station updating) has nothing beside 
   assert_true(outbox_seen(t, "station 更新完后发出"))
   assert_true(t.query(Button, label="删除") is None)
   assert_true(t.query(Button, label="编辑") is None)
+}
+
+///|
+test "what did not go after it went out with no answer (it may be the station's already) has 重试 and no 删除, on both pages" {
+  for nodes in [false, true] {
+    let calls : Array[Made] = []
+    let t = outbox_chat(calls, outgoing("failed", error="连接断开", unsure=true), nodes~)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("未发送") is Some(_), msg="nodes=\{nodes}")
+    assert_true(t.query(Button, label="删除") is None, msg="nodes=\{nodes}")
+    unsent_press(t, "重试")
+    assert_eq(named(calls, "chat.retry").length(), 1, msg="nodes=\{nodes}")
+  }
 }

@@ -9,6 +9,7 @@ import type { Call } from "../core/calls.ts";
 import * as chatTabs from "../chat-tabs.ts";
 import * as decisions from "../decisions.ts";
 import { CoreError, asCoreError } from "../error.ts";
+import * as looks from "../looks.ts";
 import { t } from "../i18n.ts";
 import * as ops from "../ops.ts";
 import * as prefs from "../prefs.ts";
@@ -406,6 +407,8 @@ export class ViewCalls {
         const entry = local.outboxGet(c.station, c.thread, c.id);
         // Its POST out and not answered yet: the station may take it, so it is not dropped here.
         if (entry !== undefined && entry.queued === false && entry.state === "sending") return Effect.fail(CoreError.invalid(t("core-misc.call.discard_sending")));
+        // Out and never answered: the station may have it, so it is only sent again (looks.ts outboxUnsure).
+        if (entry !== undefined && looks.outboxUnsure(entry)) return Effect.fail(CoreError.invalid(t("core-misc.call.discard_unsure")));
         const uploads = entry?.uploads;
         local.outboxRemove(c.station, c.thread, c.id);
         // its files no longer going up for it, nor kept

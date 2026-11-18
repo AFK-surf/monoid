@@ -1785,7 +1785,7 @@ export class Views implements Owner {
     v.tabs = chatTabs.tabsOf(kept, arr(v.agents), v.noChat === true, session);
     const dismissed = get(get(prefs, "stationUpdatesDismissed"), station);
     v.stationUpdate = looks.stationUpdate(overview, v, typeof dismissed === "string" ? dismissed : null, this.#noticeOpen(station), manager, this.stationName(station));
-    if (Array.isArray(v.outbox)) v.outbox = looks.outboxWaits(v.outbox, v.stationUpdate);
+    if (Array.isArray(v.outbox)) v.outbox = looks.outboxWaits(looks.outboxShown(v.outbox), v.stationUpdate);
     // The screens of the machine it runs on, a press away from its bar: its own display first (screens.ts screensView),
     // each marked while an agent drives it; and whether a browser tab or terminal may be opened there (`canBrowser`, `canTerminal`).
     const screensHeld = this.ok({ topic: "screens", station });

@@ -461,7 +461,7 @@ test("a_new_chat_whose_station_went_down_stays_said_down_and_is_asked_for_once_t
   }
 });
 
-type Shown = { offline: boolean; offlineNote?: string; outbox: { id: string; text: string; state: string; waits?: string; error?: string; held?: boolean }[] };
+type Shown = { offline: boolean; offlineNote?: string; outbox: { id: string; text: string; state: string; waits?: string; error?: string; held?: boolean; unsure?: boolean }[] };
 type Listed = { trouble: { text: string; state: string } | null; stations: { station: string }[]; days: { items: { id: string; station: string; offline?: string }[] }[] };
 
 /// A row of the list as it is shown: as its station's state makes it (said once for the station, not on the row).
@@ -599,6 +599,55 @@ test("a_message_whose_post_went_out_and_was_not_answered_is_not_taken_back_and_g
     s.gate.stream = "open";
     await reopens(s, 20 * 60_000);
     await s.host.time.pass(2000, 250);
+    assert.deepEqual(posted, [first]);
+  } finally {
+    s.core.close();
+  }
+});
+
+test("a_message_whose_post_went_out_unanswered_while_its_station_is_up_is_sent_again_and_never_deleted", async () => {
+  // 未发送 after a POST that went out with no answer: 重试 sends it once by its key, 删除 would not unsay it there.
+  const row7 = { id: "k1", session: "k1", thread: 7, title: "部署", agents: [], last: null, unread: false, mine: true, lastActiveAt: 1, connect: null, origin: null };
+  const s = await started({ ...base(), "GET /chats": [row7] });
+  const key = (req: { headers: [string, string][] }) => req.headers.find(([k]) => k.toLowerCase() === "idempotency-key")?.[1];
+  const posted: (string | undefined)[] = [];
+  let n = 3;
+  stationReplies(s.host, (req) => {
+    if (req.method !== "POST" || !req.url.endsWith("/threads/7/messages")) return undefined;
+    posted.push(key(req));
+    return { n: ++n };
+  });
+  let first: string | undefined;
+  stationLater(s.host, (req) => {
+    // its first POST: out, and cut before its answer
+    if (req.method === "POST" && req.url.endsWith("/threads/7/messages") && first === undefined) {
+      first = key(req);
+      return Promise.reject(new HostError("connection lost"));
+    }
+    return undefined;
+  });
+  try {
+    const values = new Map<number, unknown>();
+    subscribe(s.core, 1, 1, { topic: "chat", station: ST, thread: 7 });
+    await s.host.time.pass(1000, 250);
+    apply(s.host, values);
+    const chat = () => values.get(1) as Shown;
+    call(s.core, 1, 2, "chat.send", { station: ST, thread: 7, text: "一" });
+    await s.host.time.pass(500, 250);
+    apply(s.host, values);
+    assert.notEqual(first, undefined, "its POST went out");
+    assert.equal(chat().offline, false);
+    assert.deepEqual(chat().outbox.map((o) => [o.text, o.state, o.unsure, o.held]), [["一", "failed", true, undefined]]);
+    const id = chat().outbox[0]!.id;
+    call(s.core, 1, 3, "chat.discard", { station: ST, thread: 7, id });
+    await s.host.time.pass(250, 250);
+    const emitted = s.host.takeEmitted();
+    assert.equal((answers(emitted, 3)?.error as { message?: string } | undefined)?.message, t("core-misc.call.discard_unsure"));
+    apply({ takeEmitted: () => emitted } as never, values);
+    assert.deepEqual(chat().outbox.map((o) => o.text), ["一"]);
+    call(s.core, 1, 4, "chat.retry", { station: ST, thread: 7, id });
+    await s.host.time.pass(1000, 250);
+    apply(s.host, values);
     assert.deepEqual(posted, [first]);
   } finally {
     s.core.close();

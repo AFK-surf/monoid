@@ -247,8 +247,9 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
 }
 
 ///|
-/// Under what did not go (msgUnsent): 未发送 (why in its tip), then 重试 or 编辑, then 删除; each turning while it is
-/// done (the core's doing), a red mark there a few seconds if it failed.
+/// Under what did not go (msgUnsent): 未发送 (why in its tip), then 重试 or 编辑, then 删除 (not where it may be the
+/// station's already: `unsure`); each turning while it is done (the core's doing), a red mark there a few seconds if it
+/// failed.
 fn outbox_unsent(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Unit {
   let p = @sf.theme().p
   let locked = here.view.offline
@@ -294,17 +295,20 @@ fn outbox_unsent(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) ->
         on_press=fn() { outbox_call(src, here, "chat.retry", id) },
       )
     }
-    let id = o.id
-    unsent_button(
-      c,
-      "unsent/drop/" + o.id,
-      "trash",
-      @sf.t("common.delete"),
-      !busy,
-      dropping,
-      core_failed(src, ["chat.discard"], on),
-      on_press=fn() { outbox_call(src, here, "chat.discard", id) },
-    )
+    // (one that may be the station's already is only sent again: deleted here it would not be unsaid there)
+    if !o.unsure {
+      let id = o.id
+      unsent_button(
+        c,
+        "unsent/drop/" + o.id,
+        "trash",
+        @sf.t("common.delete"),
+        !busy,
+        dropping,
+        core_failed(src, ["chat.discard"], on),
+        on_press=fn() { outbox_call(src, here, "chat.discard", id) },
+      )
+    }
   })
   |> ignore
 }

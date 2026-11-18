@@ -1723,6 +1723,16 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         o => [o]
       }
     "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    // chat-unsure: did not go after it went out with no answer, so it may be the station's already: 重试, no 删除
+    "chat-unsure" =>
+      match outgoing_json("o-seed", words, "failed", "连接断开") {
+        Object(m) => {
+          let o = m.copy()
+          o["unsure"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
     // chat-held: sent while its station is not reached, held till it is (looks.ts outboxHeld), 编辑 and 删除 beside it
     "chat-held" =>
       match outgoing_json("o-seed", words, "sending", "") {
