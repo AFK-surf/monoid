@@ -230,8 +230,8 @@ pub fn HoldGate::go(
 
 ///|
 fn HoldGate::start_collected(self : HoldGate, run : HoldRun) -> Unit {
-  run.conds = self.staged
-  self.staged = []
+  // Keep the sealed reads so an interrupted transition can go again without collecting them anew.
+  run.conds = self.staged.copy()
   self.start(run)
 }
 

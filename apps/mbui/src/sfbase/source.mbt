@@ -216,13 +216,9 @@ fn Source::topic_said(
   params : Map[String, Json],
   said : String,
 ) -> @signals.Computed[TopicState] {
-  // (read as a card, a panel or a sheet is made: waited for by it before it comes in, @sf.OpenGate)
-  let legacy_collecting = @sf.open_gate_collecting() && (src.gates_opens)()
+  let collecting = @view.hold_collecting() && (src.gates_opens)()
   let sig = topic_read_by(src, name, params, said)
-  if legacy_collecting {
-    @sf.open_gate_note(fn() { topic_told(sig.get()) })
-  }
-  if @view.hold_collecting() {
+  if collecting {
     @view.hold_note(fn() { topic_told(sig.get()) })
   }
   sig

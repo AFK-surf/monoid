@@ -205,3 +205,51 @@ test "HoldGate: once passes straight through after readiness or timeout, never a
     tree.dispose()
   }
 }
+
+///|
+test "HoldGate: stop preserves sealed reads for the next go" {
+  for answered in [true, false] {
+    let tree = @view.Tree::new(fn(_) {  })
+    let v = tree.root()
+    let gate = @view.HoldGate::new(once=true)
+    let ready = @signals.signal(false)
+    let done : Array[Double] = []
+    let go = fn() { done.push(v.cause_at()) }
+    tree.event(hold_start_ms, fn() {
+      gate.collect(fn() { @view.hold_note(fn() { ready.get() }) })
+      gate.seal(v)
+      gate.go(v, most=hold_budget_ms, go)
+    })
+    assert_true(gate.is_pending())
+    tree.event(hold_start_ms + hold_answer_ms, fn() { gate.stop(give_up=false) })
+    assert_false(gate.is_pending())
+    assert_eq(tree.due_count(), 0)
+    assert_eq(done, [])
+
+    let reopened = hold_start_ms + 2.0 * hold_answer_ms
+    tree.event(reopened, fn() { gate.go(v, most=hold_budget_ms, go) })
+    assert_true(gate.is_pending())
+    assert_eq(done, [])
+    let released = reopened + (if answered { hold_answer_ms } else { hold_budget_ms })
+    if answered {
+      tree.event(released, fn() { ready.set(true) })
+    } else {
+      tree.advance(hold_start_ms + hold_budget_ms)
+      assert_eq(done, [])
+      tree.advance(released)
+    }
+    assert_eq(done, [released])
+    assert_false(gate.is_pending())
+    assert_eq(tree.due_count(), 0)
+
+    let opened_again = released + hold_answer_ms
+    let synchronous = Ref(false)
+    tree.event(opened_again, fn() {
+      ready.set(false)
+      gate.go(v, most=hold_budget_ms, go)
+      synchronous.val = done == [released, opened_again]
+    })
+    assert_true(synchronous.val)
+    tree.dispose()
+  }
+}
