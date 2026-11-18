@@ -323,10 +323,11 @@ fn board_archive_settled(src : Source, items : Array[ChatItem]) -> Unit {
     asked.push(params)
     @sfbase.act(src, @sf.t("android-chat.archive.verb"), "", "chat.archive", Json::object(params), at_once=true)
   }
-  // (one toast for all of them, its 撤销 asking each back: what one row's archive says, for the whole press)
+  // (one toast for all of them, its 撤销 asking each back: what one row's archive says, for the whole press; no 撤销
+  // where 归档后可撤销 is off)
   @sfbase.toast_later(
     @sf.t("web-main.board.archived_read", args=[("n", gone.length().to_string())]),
-    action=@sf.t("android-chat.archived.undo"),
+    action=@sfbase.archive_undo_words(src),
     run=fn() {
       for k, params in asked {
         let back = params.copy()

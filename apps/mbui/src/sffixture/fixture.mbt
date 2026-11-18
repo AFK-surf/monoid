@@ -21,6 +21,8 @@ pub(all) struct Fixture {
   mut motion : String
   /// haptics chosen (the prefs' `haptics`: off; "" on)
   mut haptics : String
+  /// 归档后可撤销 chosen (the prefs' `archiveUndo`: off; "" on)
+  mut archive_undo : String
   /// automatic updates chosen (the prefs' `appUpdate`: off; "" on)
   mut app_update : String
   /// how the composer sends (prefs `sendKey`): `mod`, or "" Enter
@@ -1469,6 +1471,10 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
           _ => Json::null()
         },
       }
+      // 归档后可撤销 turned off (none kept: on)
+      if f.archive_undo != "" {
+        o["archiveUndo"] = Json::string(f.archive_undo)
+      }
       // the board's (board_fixture.mbt)
       board_prefs_into(o)
       // the drive's ways, the files' page's tabs and favourites (browse_fixture.mbt)
@@ -2120,6 +2126,7 @@ fn made_fixture(mode : String) -> Fixture {
     motion: "",
     window_zoom: "",
     haptics: "",
+    archive_undo: "",
     app_update: "",
     send_key: "",
     test_channel: !fixture_stable_mode(mode),
@@ -2572,6 +2579,11 @@ pub fn fixture(mode : String) -> Source {
           match field(Some(params), "haptics") {
             Some(String(h)) => f.haptics = h
             Some(Null) => f.haptics = ""
+            _ => ()
+          }
+          match field(Some(params), "archiveUndo") {
+            Some(String(u)) => f.archive_undo = u
+            Some(Null) => f.archive_undo = ""
             _ => ()
           }
           match field(Some(params), "appUpdate") {

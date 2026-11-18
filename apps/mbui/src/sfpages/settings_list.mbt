@@ -367,6 +367,7 @@ fn settings_search_children(row : SettingsRow, core : Core) -> Array[SettingsRow
     "decisions" => [("completion", @sf.t("web-pages.automaticDecisions.completion"), AutoCompletion)]
     "archiving" => [
       ("suggest", @sf.t("web-pages.appearance.archive.title"), Archiving),
+      ("undo", @sf.t("web-pages.archiving.undo.title"), Archiving),
       ("automatic", @sf.t("web-pages.archiving.auto.title"), Archiving),
     ]
     "appearance" => {

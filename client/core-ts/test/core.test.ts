@@ -815,6 +815,28 @@ test("a_screen_s_picture_size_is_kept_on_the_device", async () => {
   assert.equal(v(values, 1).screenMouse, undefined);
 });
 
+test("archive_undo_is_off_or_none", async () => {
+  const { host, core } = await stationCore();
+  const ui = core.connect();
+  subscribe(core, ui, 1, { topic: "prefs" });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  // None kept: 撤销 offered after an archive.
+  assert.equal(v(values, 1).archiveUndo, undefined);
+  call(core, ui, 2, "prefs.set", { archiveUndo: "off" });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).archiveUndo, "off");
+  call(core, ui, 3, "prefs.set", { archiveUndo: "on" });
+  await host.settle();
+  assert.equal(host.takeEmitted().filter(([, m]) => "error" in m && m.id === 3).length, 1);
+  call(core, ui, 4, "prefs.set", { archiveUndo: null });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).archiveUndo, undefined);
+});
+
 test("the_language_is_as_chosen_else_as_the_device_is", async () => {
   const { host, core } = await stationCore();
   const ui = core.connect();

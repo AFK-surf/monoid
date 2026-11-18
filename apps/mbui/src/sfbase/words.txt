@@ -1886,6 +1886,9 @@ web-pages.archive.restored
 web-pages.archive.search
 web-pages.archive.title
 web-pages.archiving.title
+web-pages.archiving.undo.description
+web-pages.archiving.undo.section
+web-pages.archiving.undo.title
 web-pages.automaticDecisions.title
 web-pages.changelog.build
 web-pages.changelog.empty

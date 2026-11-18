@@ -146,7 +146,8 @@ fn permission_row_node(
 ///|
 /// 归档 (ArchivingPage, ArchivingScreen) made once as nodes in node `v`, laid out by the `width` its frame gives it:
 /// whether a done chat suggests archiving it (its choice, what the one chosen means, the stations' reviews and the way to
-/// 自动决策 where some or none review, what it is for), then each station's own archiving, a row each (in their bones while they are read the first time, its core
+/// 自动决策 where some or none review, what it is for), whether a chat archived here offers its 撤销 (归档后可撤销),
+/// then each station's own archiving, a row each (in their bones while they are read the first time, its core
 /// quiet for them), what that is for; all followed as the core says it. `here`: who and where, as that changes; `stint`:
 /// the page's time on top, what a station's picture is asked for on.
 pub fn archiving_node(
@@ -170,8 +171,21 @@ pub fn archiving_node(
   }
   let read = fn() { @settings.stations_of(core, here()).value }
   let said = fn() { (core.topic)("settings", { "scope": str(here().workspace) }).get().value }
-  @sf.page_node(v, fn() { @sf.t("web-pages.archiving.title") }, on_back~, frame~, said?=told, width?, fn() { ["hint", "auto"] }, fn(b, key) {
+  @sf.page_node(v, fn() { @sf.t("web-pages.archiving.title") }, on_back~, frame~, said?=told, width?, fn() { ["hint", "undo", "auto"] }, fn(b, key) {
     match key {
+      // 归档后可撤销: a chat archived on this device offers its 撤销 a moment (on unless turned off: sfbase's
+      // archive_undo_on)
+      "undo" =>
+        @sf.section_node(b, fn() { @sf.t("web-pages.archiving.undo.section") }, about=fn() { @sf.t("web-pages.archiving.undo.description") }, fn(sec) {
+          @sf.group_node(sec, fn(g) {
+            @sf.switch_row_node(
+              g,
+              fn() { @sf.t("web-pages.archiving.undo.title") },
+              fn() { pref(core, "archiveUndo") != "off" },
+              fn(on) { set_pref(core, "archiveUndo", if on { "" } else { "off" }) },
+            )
+          })
+        })
       "hint" =>
         @sf.section_node(b, fn() { @sf.t("web-pages.appearance.archive.title") }, about=fn() { @sf.t("web-pages.appearance.archive.description") }, fn(sec) {
           @sf.page_choice_node(

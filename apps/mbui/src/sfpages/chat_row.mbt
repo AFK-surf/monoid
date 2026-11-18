@@ -1092,7 +1092,8 @@ let listed : Ref[Array[ChatItem]] = Ref([])
 /// one keeping watch only once asked, in the core's words (its swipe also one at work: `ask`, the core's swipeAsk). Its chat in view goes to
 /// the chat after it in the list (else before it; else the list alone) at once. `here` (from a row of a list made
 /// once): said where its row was, by what its swipe uncovers there, with its 撤销 (archived_here: the core's list has it
-/// gone), felt as something done; else said at once in a toast with its 撤销. Why not, when not (`failed` told then).
+/// gone), felt as something done; else said at once in a toast with its 撤销. With 归档后可撤销 off (sfbase's
+/// archive_undo_on), never its 撤销: gone at once from anywhere, said in a toast. Why not, when not (`failed` told then).
 fn archive_row(
   src : Source,
   item : ChatItem,
@@ -1113,8 +1114,9 @@ fn archive_row(
   let run = fn() {
     then()
     leave_archived(item)
-    // (one its station never made: the core gives it up here, and there is nothing to ask back, so no 撤销)
-    if item.pending {
+    // (one its station never made: the core gives it up here, and there is nothing to ask back, so no 撤销; nor where
+    // 归档后可撤销 is off: its row goes at once, said by a toast with nothing to undo)
+    if item.pending || !@sfbase.archive_undo_on(src) {
       act(
         src,
         @sf.t("android-chat.archive.verb"),

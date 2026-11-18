@@ -1809,6 +1809,11 @@ export interface PrefsView {
 	 */
 	archiveHint?: string;
 	/**
+	 * Whether a chat archived on this device offers 撤销 for a moment (in its row's place, or in the toast that
+	 * says it): `off`, archived at once with nothing to undo; or (none) offered.
+	 */
+	archiveUndo?: string;
+	/**
 	 * How a finger drives a station's screen on a phone: `direct` (a tap clicks where it is), or (none) as a
 	 * trackpad (the finger moves the pointer, a tap clicks where it points).
 	 */

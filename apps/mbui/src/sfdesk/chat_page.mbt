@@ -293,10 +293,10 @@ fn archive(src : Source, w : Workspace, r : ChatRef, v : ChatView) -> Unit {
     Some(th) => p["thread"] = Json::number(th)
     None => ()
   }
-  // said at once, by its title (the core's list has it gone); why not, when not
+  // said at once, by its title (the core's list has it gone), its 撤销 where 归档后可撤销 is on; why not, when not
   toast_later(
     @sf.t("web-main.chat.archivedNamed", args=[("title", v.title)]),
-    action=@sf.t("android-chat.archived.undo"),
+    action=@sfbase.archive_undo_words(src),
     run=@sfbase.archive_undo(src, p),
   )
   (src.call)("chat.archive", Json::object(p), fn(res) {

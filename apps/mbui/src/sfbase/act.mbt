@@ -199,6 +199,23 @@ fn doing_of(d : Json, calls : Array[String], on : Array[(String, String)]) -> Bo
 }
 
 ///|
+/// Whether a chat archived here offers its 撤销 for a moment (归档's 归档后可撤销, the prefs' `archiveUndo`: on unless
+/// turned off): off, it goes at once, said by a toast with no 撤销 (as one its station never made is).
+pub fn archive_undo_on(src : Source) -> Bool {
+  @signals.untracked(fn() { @settings.pref_from(src.topic("prefs", {}).get().value, "archiveUndo") != "off" })
+}
+
+///|
+/// The words of the 撤销 on the toast saying a chat went into the archive: none where archive_undo_on says no.
+pub fn archive_undo_words(src : Source) -> String {
+  if archive_undo_on(src) {
+    @sf.t("android-chat.archived.undo")
+  } else {
+    ""
+  }
+}
+
+///|
 /// What the toast saying a chat went into the archive offers (its 撤销): the chat archived by `params` (the
 /// `chat.archive` asked) back in the list, said at once (the core's list has it back), or why not.
 pub fn archive_undo(src : Source, params : Map[String, Json]) -> () -> Unit {

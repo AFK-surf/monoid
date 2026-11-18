@@ -40,7 +40,8 @@ fn decide_reset() -> Unit {
 
 ///|
 /// The chat into the archive (its bar's 归档, the one under its last 做完了, its sheet's): Home at
-/// once, the chat gone from the list (the core's), said at once by its title, or why not.
+/// once, the chat gone from the list (the core's), said at once by its title (with its 撤销 where 归档后可撤销 is on),
+/// or why not.
 fn archive_chat(src : Source, r : ChatRef, v : ChatView) -> Unit {
   home()
   let p : Map[String, Json] = {
@@ -59,7 +60,7 @@ fn archive_chat(src : Source, r : ChatRef, v : ChatView) -> Unit {
     "chat.archive",
     Json::object(p),
     done=@sf.t("web-main.chat.archivedNamed", args=[("title", v.title)]),
-    done_action=tr("android-chat.archived.undo"),
+    done_action=@sfbase.archive_undo_words(src),
     done_run=@sfbase.archive_undo(src, p),
     at_once=true,
   )
