@@ -144,11 +144,14 @@ pub trait Os {
     /// listens on sockets handed down to it (Unix), they are its already, and nothing is to be done.
     fn route(&mut self, _name: &str, _port: Option<u16>) {}
     /// Before a handover, with the Node serving (`version`, serving on `served`, saying it is alive: `heartbeats`) and
-    /// nothing else running: where the release at --app has a launcher unlike this one, this process becomes it (Unix:
-    /// exec), keeping its pid, lock, ports and that Node, and does not return; the new launcher goes on with the
-    /// handover (`adopt`). Else (none, the same, one that cannot take over from this; Windows) it returns and this one
-    /// hands over.
-    fn renew(&mut self, _serving: &Self::Node, _version: &str, _served: &[(String, u16)], _heartbeats: bool) {}
+    /// nothing else running: where the release at --app has a launcher unlike this one, it takes this one's place,
+    /// keeping its lock, ports and that Node, and goes on with the handover (`adopt`). Unix: this process becomes it
+    /// (exec, its pid kept) and does not return. Windows, which has no exec: a process of its own is handed them, and
+    /// this returns true: this launcher only lingers for what it still carries and ends (run_windows.rs). Else (none,
+    /// the same, one that cannot take over from this) it returns false and this one hands over.
+    fn renew(&mut self, _serving: &Self::Node, _version: &str, _served: &[(String, u16)], _heartbeats: bool) -> bool {
+        false
+    }
     /// Whether a front (front.rs) runs for the Nodes.
     fn has_front(&self) -> bool {
         false
@@ -245,6 +248,11 @@ pub struct Lifecycle<O: Os> {
     probing: Option<(u64, Instant)>,
     probes: u64,
     front_misses: u32,
+    /// Its place taken by the release's launcher, a process of its own (Windows' `Os::renew`): nothing more is done here.
+    renewed: bool,
+    /// This launcher took the place of the one of this pid (Windows' renew): said in station.json (`renewedFrom`), so
+    /// the installer takes the pid's change for a handover.
+    renewed_from: Option<u32>,
 }
 
 impl<O: Os> Lifecycle<O> {
@@ -269,6 +277,8 @@ impl<O: Os> Lifecycle<O> {
             front_gone: false,
             front_retry_at: None,
             front_retries: 0,
+            renewed: false,
+            renewed_from: None,
             front_probe_at,
             probing: None,
             probes: 0,
@@ -344,6 +354,18 @@ impl<O: Os> Lifecycle<O> {
         self.current = Some(Node { process, ready: Some(now), version, served, take_by: None, taken: true, handed: false, given_up: false, heartbeats, heartbeat_at: heartbeats.then_some(now), hung: false });
     }
 
+    /// Whether the release's launcher took this one's place (Windows' `Os::renew`): it does nothing more.
+    #[cfg_attr(unix, allow(dead_code))]
+    pub fn renewed(&self) -> bool {
+        self.renewed
+    }
+
+    /// This launcher took the place of the one of `pid` (Windows): station.json says so from the next Node's start.
+    #[cfg_attr(unix, allow(dead_code))]
+    pub fn renewed_from(&mut self, pid: u32) {
+        self.renewed_from = Some(pid);
+    }
+
     /// Starts the Node that serves (at first, after a crash).
     pub fn start(&mut self) {
         self.restart_at = None;
@@ -384,7 +406,7 @@ impl<O: Os> Lifecycle<O> {
     /// station.json says this Node's start: the installer takes a new startedAt with the same pid for "handed over".
     fn say_started(&mut self) {
         let Some(node) = &self.current else { return };
-        let text = data::station_json(std::process::id(), now_ms(), &node.version);
+        let text = data::station_json(std::process::id(), now_ms(), &node.version, self.renewed_from);
         if let Err(error) = write_whole(&self.run.join("station.json"), &text) {
             log::warn(&format!("station.json not written: {error}"));
         }
@@ -586,8 +608,12 @@ impl<O: Os> Lifecycle<O> {
         // An update brings a new launcher with the new release, and only a handover is the time to become it: else the
         // one started at the machine's start would run until its next start, and nothing it is changed in would come
         // (a handover's carrying the vault's grants did not: 2026-10-30).
-        if let Some(node) = self.current.as_ref().filter(|n| n.taken) {
-            self.os.renew(&node.process, &node.version, &node.served, node.heartbeats);
+        if let Some(node) = self.current.as_ref().filter(|n| n.taken)
+            && self.os.renew(&node.process, &node.version, &node.served, node.heartbeats)
+        {
+            log::info("the release's launcher took this one's place and goes on with the handover");
+            self.renewed = true;
+            return;
         }
         match self.os.spawn() {
             Ok(process) => {
@@ -957,6 +983,7 @@ mod tests {
         routes: Vec<(String, Option<u16>)>,
         /// The Nodes serving when the launcher was asked to become the release's (with their versions and ports).
         renewed: Vec<(u32, String, Vec<(String, u16)>)>,
+        takes_place: bool,
         /// Whether a front runs; whether the next ones started listen (none said: they do); the asks of it; its kills.
         front: bool,
         front_starts: Vec<bool>,
@@ -992,8 +1019,10 @@ mod tests {
         fn program(&self) -> String {
             "node".into()
         }
-        fn renew(&mut self, serving: &FakeNode, version: &str, served: &[(String, u16)], _heartbeats: bool) {
+        fn renew(&mut self, serving: &FakeNode, version: &str, served: &[(String, u16)], _heartbeats: bool) -> bool {
             self.renewed.push((serving.pid, version.to_string(), served.to_vec()));
+            // (Windows': the release's launcher took this one's place)
+            self.takes_place
         }
         fn has_front(&self) -> bool {
             self.front
@@ -1041,7 +1070,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, installers: vec![] };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, installers: vec![] };
         let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
@@ -1289,6 +1318,29 @@ mod tests {
         assert_eq!(station.os.renewed, [(node, "0.1.0".to_string(), vec![("admin".to_string(), 5002), ("mcp".to_string(), 5001)])]);
         // Not renewed (none new in the release): the handover goes on here.
         assert_ne!(station.last(), node);
+    }
+
+    #[test]
+    fn a_launcher_whose_place_the_release_s_takes_in_a_process_of_its_own_starts_nothing_more() {
+        let mut station = station("renewed", false);
+        let node = station.last();
+        station.said(Slot::Current, ready("0.1.0"));
+        station.serves(Slot::Current, 5000);
+        station.os.takes_place = true;
+        station.start_next();
+        // (Windows: the release's launcher goes on with the handover; this one starts no Node beside the one serving)
+        assert!(station.renewed());
+        assert_eq!(station.last(), node);
+        assert!(station.next.is_none());
+    }
+
+    #[test]
+    fn a_launcher_that_took_another_s_place_says_so_in_station_json() {
+        let mut station = station("renewedfrom", false);
+        station.renewed_from(4242);
+        station.up(Slot::Current, "0.1.0", 5000);
+        assert_eq!(station.station_json()["renewedFrom"], 4242);
+        assert_eq!(station.station_json()["pid"], std::process::id());
     }
 
     #[test]

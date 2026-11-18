@@ -6,8 +6,9 @@
 //! SIGUSR2 and letting the old one go once the new one is ready. Every other command is the station's: exec'd with the
 //! same arguments. The station's process is the MoonBit station (`<app>/station/stillfail-reader`) where the release
 //! has no `station/main.js`; where it has one (a release from before, rolled back to) Node running that script, as
-//! before (`station`). `handoff-version` says 3: a Rust station asked to hand over to this binary does not exec it (it does only
-//! for 1); a launcher before this one does, to take its place at a handover (from 3: run.rs `renew`).
+//! before (`station`). `handoff-version` says 4: a Rust station asked to hand over to this binary does not exec it (it does only
+//! for 1); a launcher before this one does, to take its place at a handover (from 3: run.rs `renew`; on Windows from 4:
+//! run_windows.rs `renew`).
 
 mod data;
 #[cfg(unix)]
@@ -41,8 +42,9 @@ const READER_IN_APP: &str = "station/stillfail-reader";
 const READER_IN_APP: &str = "station/stillfail-reader.exe";
 /// Node to run instead of the release's (tests, development).
 const NODE_VAR: &str = "STILLFAIL_NODE";
-/// The handoff this binary reads: none of the Rust station's (which is 1); from 3, a running launcher's (`--resume`).
-const HANDOFF_VERSION: u32 = 3;
+/// The handoff this binary reads: none of the Rust station's (which is 1); from 3, a running launcher's (`--resume`) on
+/// Unix; from 4 on Windows too (run_windows.rs `renew`: a pipe's name, which a Windows launcher from before cannot read).
+const HANDOFF_VERSION: u32 = 4;
 /// `run`'s exit when another station runs the data directory (the desktop app reads it: apps/desktop/src/station.ts).
 const HELD: i32 = 3;
 

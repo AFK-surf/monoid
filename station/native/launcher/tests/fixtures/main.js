@@ -9,7 +9,8 @@
 // directory's first Node asks for the front to be started anew once it has taken over, as a station's page does). What
 // happens is appended to <data>/fake.log: "<ms> <pid> <what>", among it "ports <mcp> <admin>" once both serve (the
 // launcher binds them where it finds them free), "malloc <MallocSpaceEfficient>" and "front <STILLFAIL_MESH_FRONT>"
-// as it starts.
+// as it starts. On Windows (`--launcher-pipe`, `--launcher-ports`) it listens itself on free ports of 127.0.0.1, which
+// the launcher carries its own to, and speaks on the named pipe.
 "use strict";
 const fs = require("fs");
 const net = require("net");
@@ -44,20 +45,21 @@ if (conf.start === "crash") {
   process.exit(1);
 }
 
-const [mcp, admin, control] = flag("--launcher-fds").split(",").map(Number);
+const fds = flag("--launcher-fds");
+const [mcp, admin, control] = fds ? fds.split(",").map(Number) : [];
 let serving = 0;
 const servers = [
   [mcp, "mcp"],
   [admin, "admin"],
 ].map(([fd, name]) => {
   const server = net.createServer((socket) => socket.end(`${process.pid} ${name}\n`));
-  server.listen({ fd }, () => {
+  server.listen(fd === undefined ? { port: 0, host: "127.0.0.1" } : { fd }, () => {
     if (++serving === 2) log(`ports ${servers[0].address().port} ${servers[1].address().port}`);
   });
   return server;
 });
 
-const pipe = new net.Socket({ fd: control, readable: true, writable: true });
+const pipe = fds ? new net.Socket({ fd: control, readable: true, writable: true }) : net.connect(flag("--launcher-pipe"));
 const say = (message) => pipe.write(JSON.stringify(message) + "\n");
 let pending = "";
 pipe.on("data", (chunk) => {

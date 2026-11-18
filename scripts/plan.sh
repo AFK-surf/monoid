@@ -70,6 +70,10 @@ decide() {
   # change to what they are made of.
   windows_natives=false
   if has '^(client/shell/|libs/mesh-transport/|client/Cargo\.(toml|lock)$|vendor/|apps/mbui/engine/|scripts/native\.ts$)'; then windows_natives=true; fi
+  # The launcher's tests on Windows (launcher-windows: its own code there, a renew under stillfail-station-w), for a
+  # change to it, to the Windows installer that hands over through it, or to CI's own files.
+  launcher_windows=false
+  if has '^(station/native/launcher/|cloud/src/install-windows\.ts$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$|side\.yml$)'; then launcher_windows=true; fi
   # The component library's page (apps/mbui/scripts/kit-web.sh, monoid's alone: cloud/wrangler.kit.jsonc), built by
   # mbui-web and deployed by monoid-kit, for a change to what it is made of (the app's code and mbui's, mbui's web host)
   # or to how it is built and served.
@@ -123,6 +127,7 @@ print() {
     echo "mac_beta=$mac_beta"
     echo "win_beta=$win_beta"
     echo "windows_natives=$windows_natives"
+    echo "launcher_windows=$launcher_windows"
     echo "kit=$kit"
     echo "mbui=$mbui"
     echo "comma_ui=$comma_ui"

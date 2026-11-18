@@ -11,7 +11,9 @@
 // - runs the station at sign-in: a scheduled task of the user's (no administrator needed), started now, which runs the
 //   launcher with no window (stillfail-station-w.exe) and starts it again should it end;
 // - an update (no token, a station already in a workspace) hands the running station over to the new release as
-//   install.sh does (the launcher stays; it starts the new station beside the old one); the release before is put back
+//   install.sh does (the launcher stays, or, where the release's launcher is another, that one takes its place and
+//   stillfail-station-w follows it: station/native/launcher/src/run_windows.rs `renew`; it starts the new station beside the old
+//   one); the release before is put back
 //   when the new one does not take over. Else (a new task, no handover to be had) it is drained, stopped and started
 //   again. One already on this release is left as it is.
 // The script uses no backtick and no "${" (it is a template here): PowerShell's escapes are not needed in it.
@@ -289,8 +291,9 @@ if (-not $Token -and $station -and $sameTask -and $said.handoff -eq 1) {
       Start-Sleep 1
       $now = Said
       if ($now -and $now.startedAt -ne $started) {
-        # The same launcher: handed over. Another: it went down mid-way and its task started the new release.
-        $handed = if ($now.pid -eq $said.pid) { 'yes' } else { 'restarted' }
+        # The same launcher, or the release's that took its place (renewedFrom: station/native/launcher/src/run_windows.rs):
+        # handed over. Another: it went down mid-way and its task started the new release.
+        $handed = if ($now.pid -eq $said.pid -or $now.renewedFrom -eq $said.pid) { 'yes' } else { 'restarted' }
         break
       }
       if (Test-Path (Join-Path $run 'handoff-failed')) { break }

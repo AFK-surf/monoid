@@ -320,11 +320,11 @@ impl Os for System {
         }
     }
 
-    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)], heartbeats: bool) {
+    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)], heartbeats: bool) -> bool {
         let release = self.options.app.join(LAUNCHER_IN_APP);
-        let Some(theirs) = hash_of(&release) else { return };
+        let Some(theirs) = hash_of(&release) else { return false };
         if self.own == Some(theirs) {
-            return;
+            return false;
         }
         // Before this one goes on (a launcher from before it could take over), or becomes one of a release without it.
         self.end_front_not_in_release();
@@ -333,7 +333,7 @@ impl Os for System {
         let version_said = takes.ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok());
         if version_said.is_none_or(|v| v < TAKES_OVER) {
             log::warn(&format!("the release's launcher ({}) cannot take this one's place; this one hands over", release.display()));
-            return;
+            return false;
         }
         let state = json!({
             "lock": self.lock.as_raw_fd(),
@@ -346,7 +346,7 @@ impl Os for System {
         let mut args = vec![release.as_os_str().to_owned()];
         args.extend(resumed_args(std::env::args_os().skip(1)));
         args.extend([OsString::from("--resume"), OsString::from(state.to_string())]);
-        let Ok(argv) = args.iter().map(|a| CString::new(a.as_bytes())).collect::<std::result::Result<Vec<_>, _>>() else { return };
+        let Ok(argv) = args.iter().map(|a| CString::new(a.as_bytes())).collect::<std::result::Result<Vec<_>, _>>() else { return false };
         let mut pointers: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
         pointers.push(std::ptr::null());
         log::info(&format!("the release has a new launcher; this one becomes it ({})", release.display()));
@@ -360,6 +360,7 @@ impl Os for System {
         inheritable(&fds, false);
         hold_signals(false);
         log::warn(&format!("the release's launcher did not run ({error}); this one hands over"));
+        false
     }
 }
 
