@@ -40,6 +40,8 @@ pub fn quiet(String, (@json.Json) -> Bool) -> Unit
 
 pub fn receive(String, Bytes?) -> Unit
 
+pub fn receive_ahead(Array[(String, Bytes?)?]) -> Unit
+
 pub fn receive_said(String, Bytes?) -> Bool
 
 pub fn refresh_topic(String, params? : Map[String, @json.Json]) -> Unit

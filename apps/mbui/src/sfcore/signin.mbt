@@ -89,6 +89,7 @@ pub fn listen(taking : (Array[String], Array[String], Array[(String, (Json) -> B
   let (said, unread, quiet) = taking
   @ui.on_message("core", @core.receive)
   @ui.on_message_said("core", @core.receive_said)
+  @ui.on_messages_ahead("core", @core.receive_ahead)
   for q in quiet {
     @core.quiet(q.0, q.1)
   }

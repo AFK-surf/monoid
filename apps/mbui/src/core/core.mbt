@@ -294,6 +294,8 @@ pub fn fatal() -> String? {
 /// frame sees depends on frames, not on when the core's thread answered. A kept conversation given again (replay.mbt)
 /// comes this way too.
 pub fn receive(text : String, bytes : Bytes?) -> Unit {
+  // (what a take let be and nothing undid, though nothing leaves it so: taken first, in the order it came)
+  voided_flush()
   // (for an id nothing holds: let be, unread; for one let go of, kept unread)
   if unheld(text, bytes) {
     return
@@ -441,6 +443,135 @@ pub fn perf_said(span : Double) -> String {
 /// answer nobody reads), before the frame decides what it does: what read the topic is built again, nothing else
 /// (@ui.on_message_said, "core"). Whether it was; else it is left for `receive`, as the frame is built.
 pub fn receive_said(text : String, bytes : Bytes?) -> Bool {
+  // (one a whole value of its topic after it in the same take undoes: let be, unread, receive_ahead)
+  if voids(text, bytes) {
+    return true
+  }
+  receive_said_now(text, bytes)
+}
+
+///|
+/// What the core said in one take of mbui's (all that came between two frames, or as a frame begins), as the core's
+/// channel sees it (another channel's message None), before any of it is offered to `receive_said`
+/// (@ui.on_messages_ahead, "core"): each of the core's messages a whole value of its topic undoes, later in the take, is
+/// let be unread as it comes. A topic's value, or what changed of it, for one held past its first answer
+/// (Client::voidable) followed by such a whole value, with nothing between them but more of the same for others
+/// (Client::reads_no_other) and none from elsewhere: read, applied and told, a chat's or a list's took 15 to 45 ms on a
+/// phone, and in the one change the take is (mbui's view_event: one batch of signals, nothing that reads them run
+/// before its end) nothing reads what it did before the whole value is taken in its place. Not while a conversation is
+/// recorded or given again, whose trace and clock say each message as it is read (tracer, receive_hook).
+pub fn receive_ahead(came : Array[(String, Bytes?)?]) -> Unit {
+  voided_flush()
+  ahead_void.clear()
+  ahead_at.val = 0
+  if tracer.val is Some(_) || receive_hook.val is Some(_) {
+    return
+  }
+  let n = came.length()
+  let flags = Array::make(n, false)
+  // (the subscriptions a whole value comes for later in the take, with nothing but what reads no other till then)
+  let whole_after : Map[Int, Bool] = Map([])
+  for k = n - 1; k >= 0; k = k - 1 {
+    match came[k] {
+      Some((text, None)) =>
+        match head_of(text) {
+          Some((id, whole)) if client.reads_no_other(id) =>
+            if client.voidable(id) {
+              if whole_after.contains(id) {
+                flags[k] = true
+              }
+              if whole {
+                whole_after[id] = true
+              }
+            }
+          _ => whole_after.clear()
+        }
+      _ => whole_after.clear()
+    }
+  }
+  for k, m in came {
+    match m {
+      Some((text, _)) => ahead_void.push((text, flags[k]))
+      None => ()
+    }
+  }
+}
+
+///|
+/// The core's messages of the take receive_ahead was shown, in order, and whether each is undone by a whole value
+/// after it; the next to come at `ahead_at`.
+// kept across runs: said anew by each take (receive_ahead)
+let ahead_void : Array[(String, Bool)] = []
+
+///|
+// kept across runs: said anew by each take (receive_ahead)
+let ahead_at : Ref[Int] = Ref(0)
+
+///|
+/// The messages let be so far, by their subscriptions' ids, in the order they came: dropped as the whole value that
+/// undoes them comes, taken in order before anything else that comes first (voided_flush).
+// kept across runs: none left once a take's whole values have come
+let voided : Array[(Int, String)] = []
+
+///|
+/// Whether message `text` is let be unread as it comes (receive_ahead's). What was let be before it is dropped where it
+/// is the whole value that undoes it, kept where it reads nothing of it, and else taken first, in the order it came.
+fn voids(text : String, bytes : Bytes?) -> Bool {
+  let undone = match ahead_void.get(ahead_at.val) {
+    Some((t, f)) if physical_equal(t, text) => {
+      ahead_at.val += 1
+      f
+    }
+    // (not the take it was shown: none of it let be)
+    _ => {
+      ahead_void.clear()
+      ahead_at.val = 0
+      false
+    }
+  }
+  let head = if bytes is None { head_of(text) } else { None }
+  if undone &&
+    @signals.batch_depth() > 0 &&
+    tracer.val is None &&
+    receive_hook.val is None &&
+    head is Some((id, _)) &&
+    client.voidable(id) {
+    voided.push((id, text))
+    if perf_counts() {
+      perf_in(client.voided_name(id), text, None, 0.0)
+    }
+    return true
+  }
+  if voided.length() > 0 {
+    let waits = fn(id) { voided.iter().any(fn(v) { v.0 == id }) }
+    match head {
+      Some((id, true)) if waits(id) && client.voidable(id) => voided.retain(fn(v) { v.0 != id })
+      Some((id, _)) if !waits(id) && client.reads_no_other(id) => ()
+      _ => voided_flush()
+    }
+  }
+  false
+}
+
+///|
+/// What was let be and is not undone after all (what came before its whole value reads it, or another take came):
+/// taken now, in the order it came, as it would have been; one no longer taken as it comes, as `receive` takes it.
+fn voided_flush() -> Unit {
+  if voided.length() == 0 {
+    return
+  }
+  let was = voided.copy()
+  voided.clear()
+  for v in was {
+    if !receive_said_now(v.1, None) {
+      receive(v.1, None)
+    }
+  }
+}
+
+///|
+/// receive_said's, of a message not let be.
+fn receive_said_now(text : String, bytes : Bytes?) -> Bool {
   // (for an id nothing holds: taken as it comes, unread, nothing built for it; for one let go of, kept unread)
   if unheld(text, bytes) {
     return true

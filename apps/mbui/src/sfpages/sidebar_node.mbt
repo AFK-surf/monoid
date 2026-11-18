@@ -175,7 +175,10 @@ fn chats_pane_node(
   // its days in the order shown, and its rows by their names: worked out once as what is read, or the hand on it,
   // changes (held_order), what its lines and rows read
   let ordered : @signals.Signal[Array[ChatDay]] = @signals.signal([])
-  let rows : @signals.Signal[Map[String, ChatItem]] = @signals.signal({})
+  // (by name, each row told only as its own chat changes, comes or goes: one row's words changed wake no other row)
+  let rows : @signals.KeyedList[String, ChatItem] = @signals.keyed_list(same=fn(a, b) { physical_equal(a, b) || a == b })
+  // (its days' lines by their keys, told only as a row or a day comes, goes or moves: not as a row's words change)
+  let day_lines : @signals.Signal[Array[String]] = @signals.signal([])
   // (how many times the order shown has been said: what follows it told as it changes)
   let revision : @signals.Signal[Int] = @signals.signal(0)
   let seen : Ref[Array[ChatDay]] = Ref([])
@@ -215,18 +218,24 @@ fn chats_pane_node(
       said_hold.val = hold
       let shown = @sfbase.held_order(key, days, hold)
       let by_name : Map[String, ChatItem] = Map([])
+      let names : Array[String] = []
       for d in shown {
         for item in d.items {
-          by_name[@sfbase.row_name(item)] = item
+          let name = @sfbase.row_name(item)
+          if !by_name.contains(name) {
+            names.push(name)
+          }
+          by_name[name] = item
         }
       }
+      let lines = day_keys(shown)
       if @hostapi.perf_recording() && by_name.length() != recorded_rows.val {
         recorded_rows.val = by_name.length()
         @hostapi.perf_line("chat-list: filter=\{filter} rows=\{recorded_rows.val}")
       }
       motion.said(
         v,
-        shown,
+        lines,
         by_name,
         @signals.untracked(current),
         @signals.untracked(current) && @signals.untracked(frame.watched) && !let_go,
@@ -235,13 +244,16 @@ fn chats_pane_node(
         at.3,
       )
       ordered.set(shown)
-      rows.set(by_name)
+      rows.reset(names, by_name)
+      day_lines.set(lines)
       revision.set(revision.untracked() + 1)
     },
   )
   let days = fn() { ordered.get() }
-  // its lines' keys: its room under the bar, what the frame puts at its top, its states, its days, its foot
-  let keys = fn() {
+  // its lines' keys before its days (its room under the bar, what the frame puts at its top, its states) and whether
+  // its days follow: worked out anew as what is read changes, what follows it told only where these do, not as a row's
+  // words or state do
+  let lead_lines = @signals.computed(fn(_) {
     let (view, _) = read()
     let out = ["top"]
     if search_tucked(view) {
@@ -251,7 +263,10 @@ fn chats_pane_node(
       out.push("part/" + p.key)
     }
     match view {
-      None => out.push("wait")
+      None => {
+        out.push("wait")
+        (out, false)
+      }
       Some(v) => {
         match v.note {
           Some(n) if v.days.length() == 0 && (n.reading || n.failing.length() > 0) => out.push("wait")
@@ -264,14 +279,22 @@ fn chats_pane_node(
         for p in (frame.after)(filter, Some(v)) {
           out.push("part/" + p.key)
         }
-        out.append(motion.lines(days()))
+        (out, true)
       }
+    }
+  })
+  // its lines' keys: those before its days, its days, its foot
+  let keys = fn() {
+    let (lead, has_days) = lead_lines.get()
+    let out = lead.copy()
+    if has_days {
+      out.append(motion.lines(day_lines.get()))
     }
     out.push("foot")
     out
   }
-  // (each row's chat by its name, as the days have it now)
-  let item_of = fn(name : String) -> ChatItem? { rows.get().get(name) }
+  // (each row's chat by its name, as the days have it now: what reads it told only as that row's chat changes)
+  let item_of = fn(name : String) -> ChatItem? { rows.get(name) }
   // (the shown one's rows: those an archived chat's neighbour is looked for in)
   v.reacts(fn() { (current(), revision.get()) }, fn(_) {
     if @signals.untracked(current) {
@@ -661,7 +684,7 @@ fn day_line(key : String) -> Bool {
 }
 
 ///|
-/// The list's days now said (`shown`, its rows `by_name`) in node `v`'s timeline, `current` whether it is the list in view,
+/// The list's days now said (their lines `lines`, day_keys', its rows `by_name`) in node `v`'s timeline, `current` whether it is the list in view,
 /// `watched` whether it is the list shown, in its page's stay on top `stint`, the window its list was last told it grows
 /// to `asked` (chats_window_asked): whether what came, went and went ahead makes its way. What changed while its page was
 /// off the top (on 小屏 kept on the stack's shelf at rest, its list said again only as it is taken back: a new stint) is
@@ -673,7 +696,7 @@ fn day_line(key : String) -> Bool {
 fn RowsMotion::said(
   self : RowsMotion,
   v : @view.View,
-  shown : Array[ChatDay],
+  lines : Array[String],
   by_name : Map[String, ChatItem],
   current : Bool,
   watched : Bool,
@@ -681,7 +704,6 @@ fn RowsMotion::said(
   asked : Int,
   live : Bool,
 ) -> Unit {
-  let lines = day_keys(shown)
   let was = self.last
   self.quiet.clear()
   // (archived here and come back (撤销, or its archive refused): the list's again, in the line it kept, no way in)
@@ -786,14 +808,14 @@ fn RowsMotion::moves(self : RowsMotion, key : String) -> Bool {
 }
 
 ///|
-/// The days `days` as lines with the rows archived here whose line is kept among them, each after the line it came
-/// after (the first, before all).
-fn RowsMotion::lines(self : RowsMotion, days : Array[ChatDay]) -> Array[String] {
+/// The days' lines `lines` (day_keys') with the rows archived here whose line is kept among them, each after the line
+/// it came after (the first, before all).
+fn RowsMotion::lines(self : RowsMotion, lines : Array[String]) -> Array[String] {
   self.told.get() |> ignore
-  let out = day_keys(days)
   if self.undo_lines.is_empty() {
-    return out
+    return lines
   }
+  let out = lines.copy()
   let order = self.undo_lines.to_array()
   order.sort_by(fn(a, b) { a.0.compare(b.0) })
   for g in order {

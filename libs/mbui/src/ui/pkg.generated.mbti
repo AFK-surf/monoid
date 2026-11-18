@@ -521,6 +521,8 @@ pub fn on_message(String, (String, Bytes?) -> Unit) -> Unit
 
 pub fn on_message_said(String, (String, Bytes?) -> Bool) -> Unit
 
+pub fn on_messages_ahead(String, (Array[(String, Bytes?)?]) -> Unit) -> Unit
+
 pub fn on_reset(() -> Unit) -> Unit
 
 pub fn open_tab(String) -> Bool

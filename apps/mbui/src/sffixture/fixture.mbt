@@ -1901,6 +1901,7 @@ pub fn round_trip_again(
       // the calls whose answers change only signals; what more a run said there kept)
       @ui.on_message("core", @core.receive)
       @ui.on_message_said("core", @core.receive_said)
+      @ui.on_messages_ahead("core", @core.receive_ahead)
       for name in @sfbase.calls_said() {
         @core.said(name)
       }
