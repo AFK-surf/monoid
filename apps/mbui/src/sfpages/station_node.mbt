@@ -2064,6 +2064,10 @@ fn software_row_node(
   let switches = fn() { own && manager && ((beta() && has(v(), "channel")) || has(v(), "auto")) }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
+    // (its mark on its first line, never centred on the lines under it (its version, what an update says, its switches):
+    // the row's parts from its top, and its first line at least as tall as the mark, across whose middle the name and
+    // what stands at its end are)
+    r.lines_up(Is(Some(Start))) |> ignore
     r.box(fn(m) {
       @sf.style_node(m, fn() { sw_mark }, in_row=true)
       if own {
@@ -2076,6 +2080,7 @@ fn software_row_node(
     })
     |> ignore
     @sf.row_lines_node(r, spaced=true, fn(h) {
+      h.min_height(Is(Some(sw_mark_d))) |> ignore
       h.box(fn(n) {
         @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow) }, in_row=true)
         n.min_width(Is(Some(0.0))) |> ignore

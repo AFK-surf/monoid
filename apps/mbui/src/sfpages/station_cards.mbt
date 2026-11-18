@@ -231,6 +231,10 @@ let sw_progress_w : Double = 60.0
 let sw_mark : @ui.Style = @ui.css("w=S9 h=S9 radius=Full bg=Neutral align=ACenter justify=JCenter")
 
 ///|
+/// How wide and tall a software row's mark is (sw_mark's S9): its first line is at least this tall.
+let sw_mark_d : Double = @ui.Space::S9.px()
+
+///|
 // kept across runs: a value (no field of it changes)
 let sw_name_line : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
