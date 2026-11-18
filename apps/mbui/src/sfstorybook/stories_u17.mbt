@@ -18,7 +18,7 @@ fn stories_u17() -> Array[Story] {
         ("workspace_row_node.mbt", "invitation_line_node"),
       ],
       play: None,
-      about: "切换工作区的列表：当前工作区在卡片上、打勾；其他工作区一行一个，前面是它的标记（没有就用名字首字母），后面是它待处理的数；邀请一行一个，带加入和忽略。卡片上的行与其他行的标记和文字落在同一条线上。",
+      about: "切换工作区的列表：当前工作区在卡片上、打勾；其他工作区一行一个，前面是它的标记（没有就用名字首字母），后面是它待处理的数；邀请一行一个，带加入和忽略：文案折成多行时按钮对齐第一行，窄到放不下时整组折到文案下面。卡片上的行与其他行的标记和文字落在同一条线上。",
       cases: [
         (
           "当前、其他与操作",
@@ -68,6 +68,21 @@ fn stories_u17() -> Array[Story] {
               ignoring=fn() { false },
             )
             @sf.words_node(card, fn() { answered.get() }, fn() { story_fact_words }) |> ignore
+          },
+        ),
+        (
+          "邀请（文案多行：按钮对齐首行，放不下折到下面）",
+          fn(card) {
+            @sf.workspace_label_node(card, fn() { "邀请" })
+            @sf.invitation_line_node(
+              card,
+              fn() { "左子健 邀请你加入 Initech Research Lab 的工作区，一起处理还没合并的修复和本周的发布计划" },
+              fn() { "zuozijian@cue.surf" },
+              fn() {  },
+              fn() {  },
+              joining=fn() { false },
+              ignoring=fn() { false },
+            )
           },
         ),
       ],
