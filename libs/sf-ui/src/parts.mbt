@@ -1036,9 +1036,10 @@ pub fn tip(
 
 ///|
 /// A tip as the web draws it (parts.css.ts tooltip), as tip_node's tip_look_node draws one, said in the theme's roles:
-/// small words on the primary ink, 5 by 10 in, 8 round, a soft shadow; in the dark not that ink (the light grey, a glare
-/// of a block) but the raised grey lifted a step toward the words, its line round it. Its keys, where it says any, each
-/// a cap of its own after its words (key_caps), the tip then 4 over and under them and 8 from either side.
+/// small words on the primary ink, 5 by 10 in, 10 round, a small shadow; in the dark not that ink (the light grey, a
+/// glare of a block) but the raised grey lifted a step toward the words, a faint line round it. Its keys, where it says
+/// any, each a cap of its own after its words (key_caps), the tip then 4 over, under and after them (concentric with
+/// them, 6 round), its words 10 from its start.
 pub fn tip_look(c : @ui.Ctx, words : String, keys : String) -> Unit {
   let caps = key_caps(keys)
   // (the tip: the surface of the look it comes in by: Ctx::surface)
@@ -1068,15 +1069,15 @@ let tip_box : @ui.Style = @ui.style(
   px=S2_5,
   py=S1_25,
   bg=Primary,
-  radius=Lg,
+  radius=rounded(small_corner),
   max_w=tip_max,
-  shadow=Md,
-  dark=@ui.patch(bg=Over(Raised, A(Fg, O5)), border=B1, border_color=A(Fg, O20)),
+  shadow=Sm,
+  dark=@ui.patch(bg=Over(Raised, A(Fg, O5)), border=B1, border_color=A(Fg, O10)),
 )
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tip_key_box : @ui.Style = tip_box.then(@ui.css("px=S2 py=S1"))
+let tip_key_box : @ui.Style = tip_box.then(@ui.css("pl=S2_5 pr=S1 py=S1"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1105,7 +1106,7 @@ let tip_caps_row : @ui.Style = @ui.css("row gap=S0_5")
 ///|
 // kept across runs: a value (no field of it changes)
 let tip_cap_box : @ui.Style = @ui.css((
-  #|row h=S5 min_w=S5 px=S1_25 radius=Base border=B1 bg=Over(Primary,A(OnPrimary,O10)) border_color=Over(Primary,A(OnPrimary,O20)) align=ACenter justify=JCenter dark{bg=Over(Over(Raised,A(Fg,O5)),A(Fg,O10)) border_color=Over(Over(Raised,A(Fg,O5)),A(Fg,O20))}
+  #|row h=S5 min_w=S5 px=S1_25 radius=Md bg=Over(Primary,A(OnPrimary,O10)) align=ACenter justify=JCenter dark{bg=Over(Over(Raised,A(Fg,O5)),A(Fg,O10))}
 ))
 
 ///|
@@ -1133,26 +1134,11 @@ pub fn panel_ground() -> Int64 {
 }
 
 ///|
-/// The line round what floats (panel_ground's): the line in light; in the dark the line seen `float_edge_seen` times as
-/// much (20% of the ink, and as much more again as the line is where more contrast is asked), a lit rim that cuts it off
-/// what it floats over, as a dark ground swallows a shadow.
+/// The line round what floats (panel_ground's): the theme's line, light or dark (in the dark 12% of the ink, as much
+/// more as more contrast is asked: contrasted). Seen twice as much it was a white frame round every menu; what cuts what
+/// floats off a dark card is its lifted ground and its shadow.
 pub fn panel_edge() -> Int64 {
-  let t = theme()
-  if t.dark {
-    seen_times(t.p.line, float_edge_seen)
-  } else {
-    t.p.line
-  }
-}
-
-///|
-let float_edge_seen : Double = 2.0
-
-///|
-/// `c` `times` as opaque, opaque at most.
-fn seen_times(c : Int64, times : Double) -> Int64 {
-  let a = ((c & 0xFFL).to_double() * times).round().to_int64()
-  (c & 0xFFFFFF00L) | (if a > 255L { 255L } else { a })
+  theme().p.line
 }
 
 ///|

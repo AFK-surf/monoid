@@ -1,6 +1,7 @@
 // A tip's keys, each a cap of its own (key_caps, tip_cap_node), the tip 4 in from them and concentric with them, as
-// tall as a tip of words alone; in the dark on a lifted ground with a lit rim, not the light primary ink. What floats
-// over a card in the dark (panel_ground, panel_edge, float_shadow_ink) stands off it; light, as it was.
+// tall as a tip of words alone; in the dark on a lifted ground with a faint line, not the light primary ink. What
+// floats over a card in the dark (panel_ground, panel_edge, float_shadow_ink) stands off it by its ground and a tight
+// shadow, its line the theme's.
 
 ///|
 test "key caps: an Apple keyboard's marks one a cap each, the key after them one; elsewhere parts between +" {
@@ -27,26 +28,24 @@ fn caps_light_of(c : Int64) -> Double {
 }
 
 ///|
-test "what floats: light as it was; in the dark the raised grey with a lit rim and a deeper shadow, a tip lifted over it" {
+test "what floats: its line the theme's; in the dark the raised grey with a tight shadow, a tip lifted over it" {
   let _ = @ui.Tester::new(fn(_c) {  }, w=200.0, h=160.0, platform=0)
   set_dark(Some(false))
   assert_eq(panel_ground(), theme().p.canvas)
   assert_eq(panel_edge(), theme().p.line)
-  assert_eq(float_shadow(), (16.0, 12.0, theme().p.shadow))
+  assert_eq(float_shadow(), (12.0, 8.0, theme().p.shadow))
   assert_eq(tip_ground(), theme().p.primary)
+  assert_eq(tip_edge(), (0.0, 0L))
   set_dark(Some(true))
   let p = theme().p
   let ground = panel_ground()
   assert_eq(ground, p.raised)
-  // (its rim: 20% of the ink, twice as seen as the line)
-  let rim = panel_edge() & 0xFFL
-  assert_eq(rim, ((p.line & 0xFFL).to_double() * float_edge_seen).round().to_int64())
-  assert_true(rim > (p.line & 0xFFL), msg="its rim no more seen than the line")
-  // (more contrast asked: the rim as much more seen as the line is)
-  let more = seen_times(contrasted(dark_palette, true).line, float_edge_seen) & 0xFFL
-  assert_true(more >= rim * 2L - 1L, msg="more contrast: its rim \{more} against \{rim}")
-  let (_, _, ink) = float_shadow()
-  assert_true((ink & 0xFFL) > (p.shadow & 0xFFL), msg="its shadow \{ink} no deeper than the palette's \{p.shadow}")
+  // (its line: the theme's, no lit rim; more contrast asked, the theme's more seen one)
+  assert_eq(panel_edge(), p.line)
+  assert_eq(float_shadow(), (8.0, 6.0, alpha(0x000000FFL, 0.34)))
+  assert_eq(float_shadow_ink(), alpha(0x000000FFL, 0.34))
+  // (a tip's line: fainter than what floats has)
+  assert_eq(tip_edge(), (1.0, alpha(p.text, 0.09)))
   // (a tip: not the light primary ink, a step over what floats)
   assert_true(tip_ground() != p.primary, msg="a tip on the primary ink in the dark")
   assert_true(caps_light_of(tip_ground()) > caps_light_of(ground), msg="a tip \{tip_ground()} under a menu \{ground}")
@@ -99,7 +98,9 @@ fn caps_drawn(t : @ui.Tester) -> ((Double, Double, Double, Double)?, Array[(Doub
 }
 
 ///|
-test "a tip's keys each a cap at its end, 4 in from its top and foot, as far from its end as its words from its start, as tall as a tip of words" {
+test "a tip's keys each a cap at its end, 4 in from its top, foot and end, concentric with its corners, its words 10 from its start, as tall as a tip of words" {
+  assert_eq(tip_round, small_corner)
+  assert_eq(tip_cap_round, @ui.concentric(tip_round, tip_key_in))
   for dark in [false, true] {
     let words_alone = {
       let t = caps_tester(dark, "")
@@ -119,7 +120,8 @@ test "a tip's keys each a cap at its end, 4 in from its top and foot, as far fro
       assert_eq(ty + th - (c.1 + c.3), tip_key_in)
     }
     let last = caps[caps.length() - 1]
-    assert_eq(tx + tw - (last.0 + last.2), tip_key_side)
+    assert_eq(tx + tw - (last.0 + last.2), tip_key_in)
+    assert_eq(last.1 - ty, tip_key_in)
     assert_eq(th, words_alone)
     let faults = t.audit()
     assert_true(faults.is_empty(), msg="dark \{dark}: \{Repr(faults)}")
