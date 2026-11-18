@@ -595,6 +595,52 @@ describe("updates", { concurrency: true }, () => {
     assert.equal(readFileSync(join(dir, "installer-ran"), "utf8"), "ran\n");
   });
 
+  // An update after an update: the one before left its copy of the installer in run/, which the next must replace. The
+  // MoonBit station's copy made a new file only, so every station that had updated once never started an installer
+  // again ("the station's installer not started", 0.1.9984 to 0.1.9996) and no later release could reach it.
+  test("the station updates itself again after an update, the installer the update before left in run/ replaced", shInstaller, async (t) => {
+    const dir = temp();
+    let latest = 1310;
+    const asked: string[] = [];
+    const [origin, server] = await serve((path) => {
+      asked.push(path);
+      if (path === "/releases/station.json") return { body: JSON.stringify(feedOf(latest)) };
+      if (path === "/download") return { type: "text/plain", body: "" };
+      return null;
+    });
+    t.after(() => server.close());
+    // (the release's installer: it puts the build the feed says, as installing that release would)
+    const installer = `#!/bin/sh
+set -eu
+curl -fsS "${origin}/download" > /dev/null
+echo "$STILLFAIL_RELEASE_SHA256" >> "$STILLFAIL_DATA/installer-ran"
+cat "$STILLFAIL_DATA/next-build" > "$STILLFAIL_DATA/app/BUILD"
+`;
+    const time = testClock();
+    const updates = installed(dir, "1300", null, { origin: () => origin, env: { PATH: "/usr/bin:/bin" }, timing: { followLook: 200 }, clock: time.clock }, installer);
+    t.after(() => updates.close());
+    new ConfigFile(dir).update((raw) => (raw.autoUpdate = true));
+    const steps = async (ms: number, f: () => boolean) => {
+      while (!f()) {
+        t.signal.throwIfAborted();
+        await time.adjust(ms);
+        await sleep(10, undefined, { signal: t.signal });
+      }
+    };
+    const ran = () => (existsSync(join(dir, "installer-ran")) ? readFileSync(join(dir, "installer-ran"), "utf8").trim().split("\n").length : 0);
+    writeFileSync(join(dir, "next-build"), "1310\n");
+    updates.start();
+    await steps(200, () => ran() === 1 && station(updates).version === "0.1.1310");
+    assert.ok(existsSync(join(dir, "run", "install.sh")), "the update left its copy of the installer in run/");
+    // The next release: the same station, the copy still there, updates again.
+    latest = 1320;
+    writeFileSync(join(dir, "next-build"), "1320\n");
+    // (still.fail cloud tells it a release is out: it reads what is out, as agents.ts has it on the plane's `release`)
+    await updates.check();
+    await steps(200, () => ran() === 2 && station(updates).version === "0.1.1320");
+    assert.equal(readFileSync(join(dir, "app", "BUILD"), "utf8"), "1320\n");
+  });
+
   test("an installer that puts the next release in place before its start is answered says it updated from the release before", async (t) => {
     const dir = temp();
     const [origin, server] = await cloudWithRelease("0.1.1310", "1310");
