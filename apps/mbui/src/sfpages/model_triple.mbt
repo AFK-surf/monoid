@@ -445,9 +445,11 @@ pub fn model_triple(
       let name = if model == "" {
         @sf.t("web-main.model.pick")
       } else {
-        match text(vo, "name") {
-          "" => model
-          n => n
+        // (a model not among those listed here: the name the core knows it by, never its id)
+        match (text(vo, "name"), text(v, "modelText")) {
+          ("", "") => model
+          ("", n) => n
+          (n, _) => n
         }
       }
       // (within the room it has, the most it can say: what matters least left out first, as the web's DROPS: who

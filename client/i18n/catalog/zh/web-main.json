@@ -774,7 +774,7 @@
   "web-main.model.allModels": "全部模型",
   "web-main.model.here": "本机",
   "web-main.model.everywhere": "所有 station",
-  "web-main.model.noneHere": "本机没有可用的模型，切到「所有 station」可以用其他 station 的",
+  "web-main.model.noneHere": "本机没有可用的模型",
   "web-main.model.likeModel": "喜欢 {model}",
   "web-main.model.forgetCombo": "从常用搭配移除 {name}",
   "web-main.model.noMatch": "没有匹配的模型",

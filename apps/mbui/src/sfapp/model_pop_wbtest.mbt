@@ -57,7 +57,7 @@ test "a model panel with none of this station's says so, and still shows those a
     let t = screen_in("newchat-station-empty", win, "zh")
     // (none of this station's: said so, the way to the others' beside it)
     assert_eq(t.get(Radio, label="本机").check, Some(On))
-    assert_true(t.find("本机没有可用的模型，切到「所有 station」可以用其他 station 的") is Some(_))
+    assert_true(t.find("本机没有可用的模型") is Some(_))
     assert_true(t.query(Button, label="Opus 5.5") is None && t.query(Button, label="GPT-6") is None)
     t.click(Radio, label="所有 station")
     t.run_for(squeeze_opening)

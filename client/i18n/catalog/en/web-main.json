@@ -792,7 +792,7 @@
   "web-main.model.allModels": "All models",
   "web-main.model.here": "This station",
   "web-main.model.everywhere": "All stations",
-  "web-main.model.noneHere": "No models on this station. Switch to All stations to use another station’s.",
+  "web-main.model.noneHere": "No models on this station",
   "web-main.model.likeModel": "Star {model}",
   "web-main.model.forgetCombo": "Remove {name} from frequent",
   "web-main.model.noMatch": "No models match",
