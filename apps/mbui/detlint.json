@@ -125,6 +125,7 @@
     "files": [
       "src/sfapp/app.mbt",
       "src/sfapp/bar.mbt",
+      "src/sfapp/bar_node.mbt",
       "src/sfapp/bar_timing.mbt",
       "src/sfapp/bars.mbt",
       "src/sfapp/home_node.mbt",
@@ -251,7 +252,6 @@
     "style-literal": {
       "src/coredemo/main.mbt": 39,
       "src/sfapp/app.mbt": 2,
-      "src/sfapp/bar.mbt": 28,
       "src/sfapp/chat.mbt": 46,
       "src/sfapp/home.mbt": 3,
       "src/sfapp/settings/parts.mbt": 2,
@@ -269,7 +269,6 @@
     "box-loose": {
       "src/coredemo/main.mbt": 20,
       "src/sfapp/app.mbt": 1,
-      "src/sfapp/bar.mbt": 16,
       "src/sfapp/chat.mbt": 30,
       "src/sfapp/home.mbt": 2,
       "src/sfapp/settings/parts.mbt": 3,
@@ -353,7 +352,6 @@
     "frame-number": {},
     "ui-current": {
       "src/sfapp/app.mbt": 5,
-      "src/sfapp/bar.mbt": 4,
       "src/sfapp/bars.mbt": 2,
       "src/sfapp/narrow_shell.mbt": 1,
       "src/sfbase/fresh.mbt": 1,
@@ -363,9 +361,7 @@
       "src/sfdesk/tape_view.mbt": 3,
       "src/sfpages/search.mbt": 2
     },
-    "build-clock": {
-      "src/sfapp/bar.mbt": 1
-    },
+    "build-clock": {},
     "build-motion": {
       "src/sfapp/chat.mbt": 1,
       "src/sfbase/chat_list.mbt": 4,
@@ -395,9 +391,8 @@
       "src/sfpages/history_steps_node.mbt": 1
     },
     "old-island": {
-      "src/sfapp/app.mbt": 2,
-      "src/sfapp/entry_tree.mbt": 1,
-      "src/sfapp/narrow_shell.mbt": 2,
+      "src/sfapp/app.mbt": 1,
+      "src/sfapp/narrow_shell.mbt": 1,
       "src/sfapp/tape_shell.mbt": 4,
       "src/sfdesk/tape_view.mbt": 1
     },

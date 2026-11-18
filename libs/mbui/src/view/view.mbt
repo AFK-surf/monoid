@@ -3811,6 +3811,10 @@ priv enum Prop {
   FocusRing
   BesideOf
   EdgeDashed
+  Notch
+  ShadowOut
+  CutAcross
+  Magnifies
 }
 
 ///|
@@ -3919,6 +3923,10 @@ impl Show for Prop with output(self, logger) {
       FocusRing => "FocusRing"
       BesideOf => "BesideOf"
       EdgeDashed => "EdgeDashed"
+      Notch => "Notch"
+      ShadowOut => "ShadowOut"
+      CutAcross => "CutAcross"
+      Magnifies => "Magnifies"
     },
   )
 }
@@ -4051,6 +4059,10 @@ fn Prop::ord(self : Prop) -> Int {
     FocusRing => 93
     BesideOf => 97
     EdgeDashed => 94
+    Notch => 98
+    ShadowOut => 99
+    CutAcross => 100
+    Magnifies => 101
   }
 }
 
@@ -5181,6 +5193,134 @@ pub fn dashed_edges_kept() -> Map[NodeId, Bool] {
 /// Whether node `id`'s edge is drawn as dashes (View::edge_dashed).
 pub fn Tree::edge_dashed_of(self : Tree, id : NodeId) -> Bool {
   self.alive_id(id) && dashed_edges.get(id).unwrap_or(false)
+}
+
+///|
+/// The notch cut into its top, as it changes: a circle about the middle of its top, its middle `y` below the edge
+/// (above it when negative), of radius `r`, met by the edge through fillets of `f` (a radius of 0 or less: none); its
+/// ground, its frosted glass and its edge cut alike, none of its shadow, as an old view's box's (Ctx::box `notch_y`,
+/// `notch_r`, `notch_fillet`): paint's.
+#callsite(autofill(loc))
+pub fn View::notch(self : View, notch : Live[(Double, Double, Double)], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { notches.remove(id) }) |> ignore
+  self.bind(loc~, Notch, notch, Paint, fn(n) { if n.1 > 0.0 { notches[id] = n } else { notches.remove(id) } })
+  self
+}
+
+///|
+/// Its shadow (View::shadow) cast outside its outline only, none under it (what is under it seen through it), as an old
+/// view's box's `shadow_out`, as it changes: paint's.
+#callsite(autofill(loc))
+pub fn View::shadow_outside(self : View, out : Live[Bool], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { shadows_out.remove(id) }) |> ignore
+  self.bind(loc~, ShadowOut, out, Paint, fn(o) { if o { shadows_out[id] = true } else { shadows_out.remove(id) } })
+  self
+}
+
+///|
+/// Where across it cuts what it holds, where it clips (View::clips), as it changes (from and to in its own terms; none
+/// between them: nothing of what it holds drawn; None: all of it), as an old view's Ctx::cut_across_by: paint's.
+#callsite(autofill(loc))
+pub fn View::cut_across(self : View, across : Live[(Double, Double)?], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { cuts_across.remove(id) }) |> ignore
+  self.bind(loc~, CutAcross, across, Paint, fn(a) {
+    match a {
+      Some(a) => cuts_across[id] = a
+      None => cuts_across.remove(id)
+    }
+  })
+  self
+}
+
+///|
+/// What the frame drew before it round (`x`, `y`) in the window (points), `zoom` times as large, shown in it over its
+/// ground, cut to it (None: nothing), as it changes, as an old view's Ctx::magnified (a loupe over what a finger hides):
+/// drawn anew each frame it is drawn, what is under it drawn before it (said last of what the root holds:
+/// View::over_all). Paint's.
+#callsite(autofill(loc))
+pub fn View::magnifies(self : View, m : Live[(Double, Double, Double)?], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { magnifiers.remove(id) }) |> ignore
+  self.bind(loc~, Magnifies, m, Paint, fn(m) {
+    match m {
+      Some(m) => magnifiers[id] = m
+      None => magnifiers.remove(id)
+    }
+  })
+  self
+}
+
+///|
+/// The nodes cut by a notch (View::notch), cast a shadow outside alone (View::shadow_outside), cut across
+/// (View::cut_across) and magnifying (View::magnifies), kept beside the tree as dashed edges are (only a few nodes ever
+/// say them), each the window's own (ui's window_kept).
+let notches : Map[NodeId, (Double, Double, Double)] = Map([])
+
+///|
+let shadows_out : Map[NodeId, Bool] = Map([])
+
+///|
+let cuts_across : Map[NodeId, (Double, Double)] = Map([])
+
+///|
+let magnifiers : Map[NodeId, (Double, Double, Double)] = Map([])
+
+///|
+/// What ui keeps of each window's of those (its window_kept), as one window or another comes in.
+pub fn notches_kept() -> Map[NodeId, (Double, Double, Double)] {
+  notches
+}
+
+///|
+pub fn shadows_out_kept() -> Map[NodeId, Bool] {
+  shadows_out
+}
+
+///|
+pub fn cuts_across_kept() -> Map[NodeId, (Double, Double)] {
+  cuts_across
+}
+
+///|
+pub fn magnifiers_kept() -> Map[NodeId, (Double, Double, Double)] {
+  magnifiers
+}
+
+///|
+/// Node `id`'s notch (View::notch): where its circle's middle is below its top, its radius, its fillets' (a radius of
+/// 0: none).
+pub fn Tree::notch_of(self : Tree, id : NodeId) -> (Double, Double, Double) {
+  if notches.is_empty() || !self.alive_id(id) {
+    return (0.0, 0.0, 0.0)
+  }
+  notches.get(id).unwrap_or((0.0, 0.0, 0.0))
+}
+
+///|
+/// Whether node `id`'s shadow is cast outside its outline alone (View::shadow_outside).
+pub fn Tree::shadow_outside_of(self : Tree, id : NodeId) -> Bool {
+  !shadows_out.is_empty() && self.alive_id(id) && shadows_out.get(id).unwrap_or(false)
+}
+
+///|
+/// Where across node `id` cuts what it holds (View::cut_across; None: all of it).
+pub fn Tree::cut_across_of(self : Tree, id : NodeId) -> (Double, Double)? {
+  if cuts_across.is_empty() || !self.alive_id(id) {
+    return None
+  }
+  cuts_across.get(id)
+}
+
+///|
+/// What node `id` magnifies (View::magnifies): round where in the window, how many times as large.
+pub fn Tree::magnifies_of(self : Tree, id : NodeId) -> (Double, Double, Double)? {
+  if magnifiers.is_empty() || !self.alive_id(id) {
+    return None
+  }
+  magnifiers.get(id)
 }
 
 ///|

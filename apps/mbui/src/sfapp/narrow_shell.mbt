@@ -8,7 +8,8 @@
 //   - the pages: the stack (app.nav) a node, each page on it a node of its own made as it is put on and let go as it
 //     leaves (what it made forgotten), the page in it built while it shows (an island), where it is drawn bound to its
 //     slide, which sets out at its cause's moment, once the core has given what the page shows (mbui's nav_view.mbt);
-//   - over them, the bottom bar, what is open over the pages and the presenters (narrow_over, signed_in_over).
+//   - over them, the bottom bar (bar_glass_node, bar_node.mbt) and what is open over the pages, nodes too (the
+//     presenters and the loupe over all of it: app_tree's).
 //
 // Still the old frame's (the way there): which island takes a press where they lie one over another (all of them are
 // told of it), the back the islands take (a page's own, a menu's, a sheet's: said by them as they are built, in the
@@ -190,32 +191,20 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     @sfpages.search_over_ground_node(k)
     @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window().0) }, Whole)
   })
-  @ui.old(v, fn(c) {
-    match workspace_in_view(src).0 {
-      Some(w) => {
-        narrow_over(c, src, w)
-        signed_in_over(c)
-      }
-      None => ()
-    }
-  })
-  .over(Is(true))
-  // (a press where it has nothing of its own its pages', a page made once as nodes among them: entry_tree's over's)
-  |> @ui.old_takes_own
-  |> ignore
+  // the bottom bar over the pages: its glass, a finger on it the bar's at each event's moment, the bar drawn in it
+  // (bar_node.mbt); on a place's top page with nothing over it (narrow_bar_shown); none while this device waits to be
+  // confirmed in the workspace's safe mode (its Home is the wait: lock_gate)
+  bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
   // ⌘K's panel over the pages (sfdesk's switcher.mbt), over what the old view puts over them
   @sfdesk.switcher_node(v, src)
   // ⌘/'s shortcuts, presented as the shell's keys_open says (sfdesk's shortcuts.mbt)
   @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
-  // the bottom bar's glass, where the bar is laid out: a finger on it the bar's at each event's moment (drawn by the old
-  // view over the pages; what the old frame puts over all of it at its root, its notch's key, menus and sheets, first)
-  bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
   // the chat being shared as a picture, and a visualization over the whole screen, over the bar: nodes of the tree's of
   // their own (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
   viz_full_layer_node(v, src)
   // an image opened over the pages, over the bar: nodes of the tree's of its own (sfbase's viewer_tree.mbt); what is
-  // opened otherwise, the old view's over them (narrow_over's preview)
+  // opened otherwise, nodes of their own over them
   // (its stage the box it is laid out in, this node's: the window's less the system's bars beside it, as the root's
   // sides say it, followed)
   @sfbase.viewer_node(v, src, fn() {
@@ -351,16 +340,6 @@ fn narrow_page_key(c : @ui.Ctx, w : Workspace) -> String {
 }
 
 ///|
-/// Over the pages laid out Small: the bottom bar (a file open over them, the chat being shared as a picture and a
-/// visualization over the whole screen are the window's tree's: sfbase viewer_tree.mbt, sfpages' publish.mbt, sfbase's
-/// viz_page.mbt).
-fn narrow_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  // the bottom bar: on a place's top page with nothing over it; none while this device waits to be confirmed in the
-  // workspace's safe mode (its Home is the wait: lock_gate)
-  bottom_bar(c, src, w, place_of(app.nav.top()), narrow_bar_shown(src, w))
-}
-
-///|
 /// Whether the bottom bar shows: on a place's top page with nothing over it; not while this device waits to be
 /// confirmed in the workspace's safe mode (its Home is the wait: lock_gate).
 fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
@@ -370,12 +349,12 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 }
 
 ///|
-/// Over the frame with a workspace in view, in every tier: the presenters, the loupe (what the devices waiting on this
-/// one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction, panels_frame).
+/// Over the tape's frame with a workspace in view (tape_shell's island): the presenters told the app is under them
+/// (what they put up is the window's tree's: presented_nodes; the loupe over all of it too, app_tree's; what the devices
+/// waiting on this one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction,
+/// panels_frame).
 fn signed_in_over(c : @ui.Ctx) -> Unit {
-  // the library's menus, picks, panels, confirms and questions (src/sf presenters.mbt), over all of those
   @sf.presented(c)
-  finger_loupe(c)
 }
 
 ///|

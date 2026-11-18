@@ -499,6 +499,8 @@ pub fn update_again(c : @ui.Ctx, src : Source) -> Unit {
   let n = update_again_n.val
   if @kit.after(c, "update-again/\{n}", true, update_again_ms, later=true) {
     update_again_n.val = n + 1
+    // (the next hour asked for now, not as a later build of this frame happens to come: none may)
+    @kit.after(c, "update-again/\{n + 1}", true, update_again_ms, later=true) |> ignore
     c.tell("update-again", fn() { update_check(src, false) })
   }
 }

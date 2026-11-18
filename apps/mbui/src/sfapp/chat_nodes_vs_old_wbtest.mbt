@@ -332,11 +332,14 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// card's nodes up: 1643, 1319 and 1256 before); every bar brought to what is counted now, rounded up, the most of the
 /// five rates: before it (1643, 979), (1329, 936), (1662, 983), (1639, 943), (1319, 1184), (1368, 1150), (1256, 1110),
 /// (1306, 1097).
+/// Again 2026-11-18 once 小屏's bottom bar is made as nodes: the old page's shell no longer hosts the bar as an old
+/// island, so the old one counted is a node fewer, the new page as it was: phone card's, plp_narrow card's and plp_narrow
+/// md's nodes up (1645, 1659 and 1384 before), the same at the five rates, rounded up.
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
-  "phone card": (1645, 930),
+  "phone card": (1648, 930),
   "phone md": (1051, 884),
-  "plp_narrow card": (1659, 944),
-  "plp_narrow md": (1384, 905),
+  "plp_narrow card": (1662, 944),
+  "plp_narrow md": (1386, 905),
   "tape card": (1347, 1126),
   "tape md": (1272, 1014),
   "wide card": (1281, 1071),

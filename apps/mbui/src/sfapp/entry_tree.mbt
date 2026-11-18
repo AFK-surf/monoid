@@ -1,8 +1,8 @@
 // The ways in as nodes of the window's tree (app_state_tree's): signed out, the sign-in page (sfpages' sign_in_node);
 // signed in with no workspace yet, the landing (sfpages' no_workspace_node). Each inside the system's bars (under the
 // status bar, over the navigation bar and the keyboard over it, as within_bars keeps them), on the window's ground;
-// where the window's buttons are in the app's top row, its top drags it, under all of it; over it, the old view's
-// sheets, the library's presenters (and the toasts, signed in), as the old frame built them over the page.
+// where the window's buttons are in the app's top row, its top drags it, under all of it; over it, nodes of the
+// window's tree (app_tree's): the library's presenters, the toasts and, signed in, the finger's loupe.
 
 ///|
 /// What the frame is told of the app at a way in drawn by the window's tree's nodes, as the frame begins (view_in's):
@@ -26,42 +26,30 @@ fn landing_now(src : Source) -> Bool {
 }
 
 ///|
-/// A way in in node `v`: `page` made in the room the system's bars leave, `over` (an old view's build) over all of it,
-/// taking a finger only where what it builds takes one.
-fn entry_tree(v : @view.View, page : (@view.View) -> Unit, over : (@ui.Ctx) -> Unit) -> Unit {
+/// A way in in node `v`: `page` made in the room the system's bars leave (what is presented over it, and the loupe, the
+/// window's tree's over all of it: app_tree's).
+fn entry_tree(v : @view.View, page : (@view.View) -> Unit) -> Unit {
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
   v.show(fn() { @ui.window_inset_now() }, fn(o) {
     o.over(Is(true)) |> ignore
     o.box(fn(b) { b.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore }) |> ignore
   })
   within_bars_tree(v, page)
-  @ui.old(v, over).over(Is(true)) |> @ui.old_takes_own |> ignore
 }
 
 ///|
-/// Signed out (app_state's SignedOut) in node `v`: the sign-in page; over it, an invitation's link opened signed out
-/// (its sheet saying to sign in first) and the library's presenters.
+/// Signed out (app_state's SignedOut) in node `v`: the sign-in page; an invitation's link opened signed out, its sheet
+/// saying to sign in first (signed_out_links), as one is given.
 fn signed_out_tree(v : @view.View, src : Source) -> Unit {
-  entry_tree(v, fn(body) { @sfpages.sign_in_node(body, src) |> ignore }, fn(c) {
-    if links_wait() {
-      c.tell("links", fn() { signed_out_links(src) })
-    }
-    @sf.presented(c)
-  })
+  entry_tree(v, fn(body) { @sfpages.sign_in_node(body, src) |> ignore })
+  v.reacts(fn() { links_wait() }, fn(waits) { if waits { signed_out_links(src) } })
 }
 
 ///|
-/// Signed in with no workspace yet (signed_in's landing) in node `v`: the landing; over it, an invitation's link pasted
-/// (用邀请链接加入: its sheet), the library's presenters, the toasts and the finger's loupe.
+/// Signed in with no workspace yet (signed_in's landing) in node `v`: the landing; an invitation's link pasted
+/// (用邀请链接加入: its sheet).
 fn landing_tree(v : @view.View, src : Source) -> Unit {
-  entry_tree(
-    v,
-    fn(body) {
-      @sfpages.no_workspace_node(body, src, fn() { src.topic("workspaces", {}).get().value }, open_invite_link) |> ignore
-    },
-    fn(c) {
-      @sf.presented(c)
-      finger_loupe(c)
-    },
-  )
+  entry_tree(v, fn(body) {
+    @sfpages.no_workspace_node(body, src, fn() { src.topic("workspaces", {}).get().value }, open_invite_link) |> ignore
+  })
 }

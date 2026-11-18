@@ -68,8 +68,6 @@ fn fresh_app() -> Unit {
 fn reset() -> Unit {
   files_cornered.val = false
   image_quoted_at.val = -1
-  bar_glyph.val = None
-  bar_stations_said.val = ""
   // the stack and what the app keeps of it (src/sfbase)
   @sfbase.reset()
   // the desktop's own (src/sfdesk)
@@ -699,6 +697,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sf.presented_nodes(root)
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
+    // what a finger hides as it drags a field's caret or what is picked, shown larger over all of it, signed in (the
+    // library's loupe_node: a switch's knob held's glass)
+    @sf.loupe_node(root, fn() { !share_over.get() && app_is(src) is SignedIn })
   }
 }
 
@@ -906,12 +907,6 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
       }
     },
   )
-  @ui.old(v, fn(c) {
-    @sf.presented(c)
-  })
-  .over(Is(true))
-  |> @ui.old_takes_own
-  |> ignore
 }
 
 ///|
@@ -1235,13 +1230,6 @@ fn toast_bottom_now(v : @view.View) -> Double {
   } else {
     bar_room
   }
-}
-
-///|
-/// What a finger hides as it drags a field's caret or what is picked (@ui.Ctx::finger_reads), shown larger over it:
-/// kit's loupe, of the glass a switch's knob held is (@sf.glass_knob), over everything.
-fn finger_loupe(c : @ui.Ctx) -> Unit {
-  @kit.loupe(c, "loupe", c.finger_reads(), glass=@sf.glass_knob())
 }
 
 ///|

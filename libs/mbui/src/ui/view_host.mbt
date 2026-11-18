@@ -1905,6 +1905,17 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
       }
       clipping.push(c.id)
+      // (and across only between where it says, as it is painted, View::cut_across: a second cut, straight, let go with its
+      // own as what it holds ends)
+      match tree.cut_across_of(c.id) {
+        Some((from, to)) => {
+          let from = dclamp(from, 0.0, c.w)
+          let to = dclamp(to, 0.0, c.w)
+          push_clip(x + from * s, y, x + dmax(from, to) * s, y + ch)
+          clipping.push(c.id)
+        }
+        None => ()
+      }
     }
     // (what it draws, and an old view it hosts, faded out towards the edges of each that holds it so, each pixel by
     // where it is; then what it holds towards its own, not its own drawing: View::fades)
@@ -2099,6 +2110,16 @@ fn Ctx::view_drawn(
   if s != 1.0 {
     let (outer, outer_r, outer_s) = clip_at(clip_top())
     self.transform_insts(i0, self.ninst, x, y, s, s, 0.0, 0.0, outer, outer_r, outer_s)
+  }
+  // (what the frame drew before it round where it says, larger, over its ground: View::magnifies; drawn anew each
+  // frame, as a field is: no row it is in kept, nor a list drawn whole as one it is in)
+  match tree.magnifies_of(c.id) {
+    Some(m) => {
+      ride_spoil()
+      list_drawn_anew()
+      self.view_magnified(c, x, y, s, a, m, i0, ground_drawn)
+    }
+    None => ()
   }
   // (its picture, each frame where it is drawn and as big, over what its block draws: its decode the one for that
   // size, asked for as an old view's is, its own kept as one shown this frame, View::image; not in its block, whose
@@ -2561,6 +2582,14 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       None => ()
     }
   }
+  // (its notch, View::notch, on its frosted glass, its fill and its edge as each is emitted, none on its shadow, as an old
+  // view's box's: Ctx::notch_last)
+  let (ny, nr, nf) = tree.notch_of(c.id)
+  let notched = fn() {
+    if nr > 0.0 {
+      self.notch_last_at(ny, nr, nf)
+    }
+  }
   match (if bone_whole { None } else { c.glass }) {
     Some(gl) if solid => {
       if blur > 0.0 {
@@ -2568,11 +2597,15 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         each()
       }
       self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, gl.solid, 0.0, 0L, 1.0)
+      notched()
       each()
     }
     Some(gl) => {
       glass_at = self.ninst - start
       self.glass_inst(0.0, 0.0, c.w, c.h, c.radius, gl, 1.0)
+      if !gl.liquid {
+        notched()
+      }
       each()
       if blur > 0.0 {
         self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, 1.0, dy, 0.0, 0.0)
@@ -2581,7 +2614,9 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     }
     None =>
       if blur > 0.0 {
-        self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, 0.0, 0.0, 0.0, 0.0)
+        // (outside its outline alone where it says so, View::shadow_outside: as an old view's box's `shadow_out`)
+        let out = tree.shadow_outside_of(c.id)
+        self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, if out { 1.0 } else { 0.0 }, if out { dy } else { 0.0 }, 0.0, 0.0)
         each()
       }
   }
@@ -2597,12 +2632,14 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   if ew > 0.0 && edge_after {
     if (ground_c & 0xFFL) != 0L {
       self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, ground_c, ew, 0L, 1.0)
+      notched()
       each()
     }
     ring_at = self.ninst - start
     // (as it shows over its own ground, whatever is under it: one colour all along it, as border_over's)
     let ec = if (ground_c & 0xFFL) != 0L { over(ground_c, ec) } else { ec }
     self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, 0L, ew, ec, 1.0)
+    notched()
     each()
   } else if edged && tree.edge_dashed_of(c.id) {
     // (its edge as dashes round its ground, as an old view's box's `dashed` border: its ground filled alone, then them)
@@ -2614,6 +2651,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   } else if (ground_c & 0xFFL) != 0L || edged {
     // (its edge's colour as it says it, drawn or not, as an old view's box's border_color is given whatever its border)
     self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, ground_c, if edged { ew } else { 0.0 }, ec, 1.0)
+    notched()
     each()
   }
   // (its ground's instances: its shadow, its glass, its fill and edge, drawn off and bigger as it says, View::ground_drawn)

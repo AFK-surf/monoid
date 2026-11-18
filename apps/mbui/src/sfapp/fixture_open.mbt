@@ -737,7 +737,7 @@ pub fn open_mode(mode : String) -> Unit {
       _ => ()
     }
   } else if mode == "home-bars" {
-    bar.open_panel(true)
+    bar.open_panel(true, at=0.0)
   } else if mode == "place" {
     app.nav.replace(Files)
   } else if mode == "archived" {

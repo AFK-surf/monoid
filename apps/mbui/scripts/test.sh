@@ -202,6 +202,8 @@ for t in $targets; do
     cp "$(bash "$D/testexe" path)" "$PKGS_BUILD_OUT/testexe" || exit 1
     ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PKGS_BUILD_OUT/testexe" || true
     echo "test.sh: the packages' test programs put in $PKGS_BUILD_OUT ($(du -sh "$PKGS_BUILD_OUT" | cut -f1))"
+    # (and run from there side by side, pkgs_run, on the runner of their own (APP_GROUP=pkgs) as at a rate)
+    PKGS_EXE=$PKGS_BUILD_OUT
   fi
   # (MBUI_BUILT_MARK: that file written once every program this run builds is built and put where it goes, whatever
   # their tests say after: check-mbui keeps a branch's units only from a build that came to its end, never one cut or
@@ -235,7 +237,7 @@ for t in $targets; do
           load[best] += $1; print best, $2 }'
   }
   # Moon runs each test program serially; shard sfapp alongside the other packages.
-  runs=("$pkgs")
+  if [ "${APP_GROUP:-}" = pkgs ] && [ -n "${PKGS_EXE:-}" ]; then runs=("@pkgs"); else runs=("$pkgs"); fi
   if [ "${APP_FILES:-}" = none ] && [[ " $pkgs " = *" -p stillfail/sfapp "* ]]; then
     # (no sfapp file: a branch that changed only the small packages' test files, mbui-check.yml's rates-changed)
     runs=("$(echo " $pkgs " | sed 's| -p stillfail/sfapp | |')")
@@ -844,12 +846,15 @@ for t in $targets; do
   # pkgs_run DIR: the small packages' programs put there (PKGS_BUILD_OUT), side by side, each on two processes taking
   # its next file (exe_run's): a process of all a package's files, as moon test runs it, was the first group's longest
   # run at every rate on main's 14 runs of 2026-11-12, 124-246 s at 120 a second, its pages ending 30-93 s before it
-  # with its four cores to spare, app 1/4 at 120 fps 265 s of its 5 minutes (main 89fc703f 43324051783). The default
-  # rate's run on a runner of its own (APP_GROUP=pkgs) is moon test's still, one process a package.
+  # with its four cores to spare, app 1/4 at 120 fps 265 s of its 5 minutes (main 89fc703f 43324051783). On a runner
+  # of their own (APP_GROUP=pkgs) at the default rate too, each program on four: as moon test, one process a package,
+  # sfpages' 683 tests ran on one of its four cores and were cut at its deadline after a build of 130 s (#7244,
+  # 2026-11-18).
   # (testexe says each file's seconds of its package: scripts/page-seconds.sh takes sfapp's alone)
   # (PKGS_FILES: only those of a package's files, a package with none of them not run)
   pkgs_run() {
-    local e q k i=0 c=0 pids=() o f mine
+    local e q k i=0 c=0 pids=() o f mine j=2
+    [ "${APP_GROUP:-}" = pkgs ] && j=4
     o=$(mktemp -d)
     for e in $(cd "$1" && find . -name '*_test.exe' | sed 's|^\./||' | LC_ALL=C sort); do
       q=$(dirname "$e") k=${e%_test.exe}
@@ -860,7 +865,7 @@ for t in $targets; do
         for f in $PKGS_FILES; do [ "$(dirname "$f")" = "src/$q" ] && mine+=("$f"); done
         [ ${#mine[@]} != 0 ] || continue
       fi
-      exe_run "$1/$e" "$1/$q/__${k}_test_info.json" 2 "stillfail/$q" "${mine[@]}" > "$o/$i" 2>&1 &
+      exe_run "$1/$e" "$1/$q/__${k}_test_info.json" "$j" "stillfail/$q" "${mine[@]}" > "$o/$i" 2>&1 &
       pids+=($!) i=$((i + 1))
     done
     for e in "${pids[@]}"; do wait $e || c=1; done
@@ -883,7 +888,8 @@ for t in $targets; do
         f=_build/$t/release/test/stillfail/sfreplay/flows
         exe_run "$fx" "${REPLAY_INFO:-$f/__blackbox_test_info.json}" ${REPLAY_SHARDS:-3} stillfail/sfreplay/flows \
           ${runs[i]#@flows } > "$out.$i" 2>&1
-      # (the packages' programs built elsewhere, PKGS_EXE: at a rate; at the default rate their run is moon test's)
+      # (the packages' programs where PKGS_EXE says: built elsewhere, at a rate; put there by this run's build on their
+      # own runner, APP_GROUP=pkgs)
       elif [ "${runs[i]}" = @pkgs ]; then
         pkgs_run "$PKGS_EXE" > "$out.$i" 2>&1
       elif [ "${runs[i]%% *}" = @pages ]; then

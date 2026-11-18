@@ -600,6 +600,15 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
         None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
       }
       clipping.push(c.id)
+      match tree.cut_across_of(c.id) {
+        Some((from, to)) => {
+          let from = dclamp(from, 0.0, c.w)
+          let to = dclamp(to, 0.0, c.w)
+          push_clip(x + from * s, y, x + dmax(from, to) * s, y + c.h * s)
+          clipping.push(c.id)
+        }
+        None => ()
+      }
     }
     if outer_ring_at >= 0 && outer_ring_at < self.ninst {
       rings.push((c.id, self.shot_ring_take(outer_ring_at)))

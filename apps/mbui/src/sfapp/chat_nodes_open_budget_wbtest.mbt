@@ -94,7 +94,11 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
   // (5 bindings more on a phone, 2026-11-19: what the chat's list's place watches as it is taken back, waiting for the
   // chat's first answer to set it where it was left (sfpages chat_body_node's reopen_gen); the same at 60, 120, 24 and 7)
-  "phone again": (4, 3, 62, 0, 144),
+  // (2026-11-18: 小屏's bottom bar made as nodes, its old island's build each frame no longer the old view's: as a chat
+  // comes over Home the bar's parts that go with it (its holder going down, the notch closing, the ball fading, the
+  // places dimming) are bindings worked out again, each part only as its own ways are told: phone again 38 more
+  // bindings, the same at 60, 120, 24 and 7; before it 144)
+  "phone again": (4, 3, 62, 0, 182),
   "wide cold": (2473, 503, 1914, 217, 2470),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2

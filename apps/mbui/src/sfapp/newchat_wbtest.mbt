@@ -181,13 +181,13 @@ test "the bar: drawn up, the panel of the other bar; let go on its first place, 
 ///|
 test "the bar: hidden under a page pushed, back as it comes back" {
   let t = tester("home")
-  assert_true(bar.vis.value > 0.99)
+  assert_true(bar.vis.at(t.time()).0 > 0.99)
   t.tap_text("夜里的构建又失败了")
   t.run_for(bar_hide_ms)
-  assert_true(bar.vis.value < 0.01)
+  assert_true(bar.vis.at(t.time()).0 < 0.01)
   t.back()
   t.run_for(@ui.move_most_ms)
-  assert_true(bar.vis.value > 0.99)
+  assert_true(bar.vis.at(t.time()).0 > 0.99)
 }
 
 ///|
@@ -359,16 +359,16 @@ test "the notch's icon swaps with a short scale and fade while it stays open; cl
   t.frame()
   t.frame()
   assert_eq((m_face.val, bar.icon_was), ("plus", "ling"))
-  let p = bar.icon_swap.value
+  let p = bar.icon_swap.at(t.time()).0
   assert_true(p > 0.0 && p < 1.0, msg="\{p}")
   t.run_for(icon_swap_ms)
-  assert_true(bar.icon_swap.value == 1.0)
+  assert_true(bar.icon_swap.at(t.time()).0 == 1.0)
   // the notch closed (a place with no action), then another action: nothing to see, at once
   ignore(@sfbase.go_place(none))
   t.run_for(bar_rest() - t.time())
   ignore(@sfbase.go_place("chats"))
   t.frame()
-  assert_eq((m_face.val, bar.icon_swap.value), ("ling", 1.0))
+  assert_eq((m_face.val, bar.icon_swap.at(t.time()).0), ("ling", 1.0))
   t.run_for(bar_rest() - t.time())
   t.assert_idle()
 }
@@ -392,7 +392,7 @@ test "the bar chosen in the panel slides down into the bar's place, its places l
     t.frame()
     match bar.swap_at(t.time()) {
       Some(s) => {
-        let k = s.t(bar.o.x)
+        let k = s.t(bar.o.at(t.time()).0)
         assert_true(k >= last)
         last = k
         if k > 0.05 && k < 0.95 {

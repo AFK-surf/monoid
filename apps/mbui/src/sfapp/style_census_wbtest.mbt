@@ -90,10 +90,12 @@ test "styles: how many values of each kind the app's screens use" {
   // nav bar, section heads, empty and waiting rows): text 35 to 32, space 23 to 21, radius 23 to 22.
   // The glass controls share a neutral track colour, one for each theme.
   // One fewer once 设置 › 安全 was made of the library's rows (its own Web/Mobile rows' sizes gone): text 32 to 31.
+  // Fewer once 小屏's bottom bar is made as nodes and its old view gone (its slots and offsets said by the tree, not as an
+  // old box's padding and gap): space 21 to 19.
   inspect(counts.to_string(), content=(
     #|text 31
     #|weight 4
-    #|space 21
+    #|space 19
     #|radius 22
     #|color 83
     #|

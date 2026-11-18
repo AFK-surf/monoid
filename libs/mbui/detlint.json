@@ -258,7 +258,6 @@
       "src/ui/sideways.mbt": 2
     },
     "build-motion": {
-      "src/kit/loupe.mbt": 2,
       "src/kit/media.mbt": 1,
       "src/kit/progress.mbt": 1,
       "src/kit/sheet.mbt": 1,

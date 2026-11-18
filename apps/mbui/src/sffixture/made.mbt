@@ -5,7 +5,11 @@
 ///|
 fn init {
   @sfbase.made_reset.val = fixture_reset
-  @sfbase.made_frame.val = fn(c) { fix_ctx.val = Some(c) }
+  @sfbase.made_frame.val = fn(c) {
+    fix_ctx.val = Some(c)
+    // (what was said for later before a frame was given: put on its clock as the first is)
+    fix_tick()
+  }
 }
 
 ///|
