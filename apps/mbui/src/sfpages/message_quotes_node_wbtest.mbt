@@ -410,7 +410,7 @@ fn qt_own_tester(a : Attachment, width : @signals.Signal[Double]) -> @ui.Tester 
         jump: None,
         picture: None,
       }
-      let col = root.box(fn(v) { v.width(By(fn() { Some(width.get()) })) |> ignore })
+      let col = root.box(fn(v) { v.width(By(fn() { Some(width.get()) })).lays_anew(By(fn() { width.get() })) |> ignore })
       quote_picture_node(col, src, here, files_place(), fn() { Some(a) }, fn() { "ts5/q:0" })
       @sf.presented_nodes(root)
     },
@@ -425,7 +425,8 @@ test "a quote's own picture and video: the card's room narrower sizes them again
   for a in [cmp_picture("here.png", 800.0, 600.0), cmp_picture("clip.mp4", 1280.0, 720.0)] {
     let width = @signals.signal(400.0)
     let t = qt_own_tester(a, width)
-    t.run_for(@ui.move_most_ms)
+    // (come in whole first: the picture's reveal moves till reveal_ms)
+    t.run_for(@sf.reveal_ms + @ui.move_most_ms)
     let wide = t.drawn_images()
     assert_true(wide.length() > 0, msg=a.name)
     t.tree_frames_from_now()

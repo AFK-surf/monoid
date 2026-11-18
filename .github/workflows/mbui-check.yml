@@ -3,8 +3,8 @@
 # they hold nothing back (the preview app is preview.yml's, done waits for neither) and were the last of its pipeline run
 # in half of them: as part of it, the run after waited for them, 16 of 40 runs a median 88 s (2026-10-20).
 # The tests at 120, 60, 24 and 7 frames a second too (app-rates, replay-fps) on main after a merge, in main's own run,
-# and in the day's run; a branch's pushes at the default rate, and only the sfapp test files the branch changed at 120,
-# 60 and 24 (rates-changed, below; pipeline.yml's call, rates: no): the rates were
+# and in the day's run; a branch's pushes at the default rate, and only the test files of sfapp and of the small packages
+# the branch changed at 120, 60 and 24 (rates-changed, below; pipeline.yml's call, rates: no): the rates were
 # about 20 of a push's 47 jobs on GitHub's Linux runners and four fifths of its runner time, and two or three branches
 # pushing at once filled the account's 60, their tests waiting 285-479 s for a runner (the user, 2026-11-11: 帧率只在
 # 合并前跑). A pull request merges once its own checks passed, no queue before it; the rates run on what merged and red
@@ -252,7 +252,10 @@ jobs:
           r=$GITHUB_REPOSITORY
           from=${FROM##*-}
           [ ${#from} = 40 ] || from=$BEFORE
-          shas=$(gh api "repos/$r/compare/$from...$GITHUB_SHA" --jq '.commits[].sha' | tail -4)
+          # (the commits by git's own history where main's last 20 hold it, GitHub's compare where not: its REST quota)
+          shas=$({ git fetch -q --no-tags --depth=20 origin main && git rev-list --reverse "$from..$GITHUB_SHA"; } 2>/dev/null) ||
+            shas=$(gh api "repos/$r/compare/$from...$GITHUB_SHA" --jq '.commits[].sha')
+          shas=$(echo "$shas" | tail -4)
           mkdir -p "$MBC_STORE" "$RUNNER_TEMP/branches"
           n0=$(find "$MBC_STORE" -mindepth 2 -maxdepth 2 -type d | wc -l)
           got=0 t0=$(date +%s)
@@ -355,8 +358,8 @@ jobs:
         with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test", retention-days: 1, compression-level: 6 }
       # (the small packages' test programs and their tests' lists, for app-rates' 1/4's runs: after red tests too, the
       # programs put there before they ran, so the rates' runs still say what they find; none put, the build failed.
-      # None where app-rates does not run)
-      - if: always() && env.GROUP == 'pkgs' && github.event_name != 'workflow_run' && inputs.rates != 'no'
+      # A branch's too, for rates-changed's runs of the packages' test files it changed: some 2 s of upload)
+      - if: always() && env.GROUP == 'pkgs' && github.event_name != 'workflow_run'
         uses: actions/upload-artifact@v4
         with: { name: "mbui-pkgs-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pkgs-test", retention-days: 1, compression-level: 6, if-no-files-found: ignore }
       # (the flows' test program and its tests' list, for the replay-fps job's runs)
@@ -806,12 +809,15 @@ jobs:
           - { group: 4/4, fps: "7" }
     env: *app-env
     steps: *app-steps
-  # A branch's own test files of sfapp at 120, 60 and 24 frames a second
+  # A branch's own test files of sfapp and of the small packages (sfpages, settings, gallery, player, sfgraphic) at 120,
+  # 60 and 24 frames a second
   # (the user, 2026-11-14: 「PR 上也跑改到文件的帧率检查」): main's runs at the rates found what a pull request's own changed test files did at them, after it merged,
   # four times in three days (#5783, #5829, #5902, #5909: a test the pull request changed, red at a rate alone). Only
   # the files it changed, not the whole set, which stays main's (the file's head): no runner is taken by a push that
   # changed none, three by one that did, beside app's on app-build's program. Its files are the ones the branch changed
-  # from main (GitHub's compare of the two), not of its newest push alone.
+  # from main (git's diff from where the two part, not GitHub's compare: its REST quota ran out and failed it), not of
+  # its newest push alone. The small packages' on what native built (#7308's sfpages test, red at 60 and 120 on main
+  # alone: rates-changed then took sfapp's files only).
   rates-files:
     name: native (the branch's changed test files)
     if: github.event_name != 'workflow_run' && inputs.rates == 'no'
@@ -819,19 +825,23 @@ jobs:
     timeout-minutes: 5
     outputs:
       files: ${{ steps.files.outputs.files }}
+      pkg_files: ${{ steps.files.outputs.pkg_files }}
     steps:
+      - uses: actions/checkout@v5
+      - run: bash scripts/git-history.sh main
       - id: files
-        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          files=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --paginate \
-            --jq '.files[] | select(.status != "removed") | .filename' |
-            sed -n 's|^apps/mbui/\(src/sfapp/[^/]*_wbtest\.mbt\)$|\1|p' | LC_ALL=C sort -u | tr '\n' ' ')
+          changed=$(git diff --name-only --diff-filter=d "$(git merge-base origin/main HEAD)" HEAD)
+          files=$(echo "$changed" | sed -n 's|^apps/mbui/\(src/sfapp/[^/]*_wbtest\.mbt\)$|\1|p' | LC_ALL=C sort -u | tr '\n' ' ')
+          pkg_files=$(echo "$changed" | sed -n -E 's#^apps/mbui/(src/(sfpages|sfapp/settings|gallery|player|sfgraphic)/[^/]*test\.mbt)$#\1#p' | LC_ALL=C sort -u | tr '\n' ' ')
           echo "files: ${files:-(none)}"
+          echo "the packages' files: ${pkg_files:-(none)}"
           echo "files=$files" >> "$GITHUB_OUTPUT"
+          echo "pkg_files=$pkg_files" >> "$GITHUB_OUTPUT"
   rates-changed:
     name: native (the branch's changed test files at ${{ matrix.fps }} fps)
-    needs: [app-build, rates-files]
-    if: ${{ !cancelled() && needs.app-build.result == 'success' && needs.rates-files.outputs.files != '' }}
+    needs: [app-build, native, rates-files]
+    if: ${{ !cancelled() && (needs.rates-files.outputs.files != '' || needs.rates-files.outputs.pkg_files != '') && (needs.rates-files.outputs.files == '' || needs.app-build.result == 'success') && (needs.rates-files.outputs.pkg_files == '' || needs.native.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
@@ -842,18 +852,27 @@ jobs:
       FPS: ${{ matrix.fps }}
       MBUI_TEST_MOTION: ${{ (matrix.fps == '120' || matrix.fps == '60') && 'count' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
-      APP_FILES: ${{ needs.rates-files.outputs.files }}
+      # (none: no sfapp file, test.sh's APP_FILES=none)
+      APP_FILES: ${{ needs.rates-files.outputs.files || 'none' }}
+      PKGS_FILES: ${{ needs.rates-files.outputs.pkg_files }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - if: env.APP_FILES != 'none'
+        uses: actions/download-artifact@v4
         with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test" }
-      - name: The branch's changed test files (native, at ${{ matrix.fps }} frames a second, on app-build's program)
+      - if: env.PKGS_FILES != ''
+        uses: actions/download-artifact@v4
+        with: { name: "mbui-pkgs-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pkgs-test" }
+      - name: The branch's changed test files (native, at ${{ matrix.fps }} frames a second, on app-build's and native's programs)
         run: |
           set -o pipefail
-          chmod +x "$RUNNER_TEMP/app-test/sfapp.whitebox_test.exe" "$RUNNER_TEMP/app-test/testexe"
-          echo "=== $APP_FILES"
-          MBUI_TEST_FPS=$FPS TESTEXE="$RUNNER_TEMP/app-test/testexe" \
-          APP_EXE="$RUNNER_TEMP/app-test/sfapp.whitebox_test.exe" APP_INFO="$RUNNER_TEMP/app-test/__whitebox_test_info.json" \
+          app="$RUNNER_TEMP/app-test" pk="$RUNNER_TEMP/pkgs-test"
+          find "$app" "$pk" -type f \( -name '*.exe' -o -name testexe \) -exec chmod +x {} + 2>/dev/null || true
+          if [ "$APP_FILES" != none ]; then t=$app/testexe; e=$app/sfapp.whitebox_test.exe; else t=$pk/testexe; e=none; fi
+          [ -n "$PKGS_FILES" ] && p=$pk || p=
+          echo "=== $APP_FILES $PKGS_FILES"
+          MBUI_TEST_FPS=$FPS TESTEXE="$t" PKGS_EXE="$p" \
+          APP_EXE="$e" APP_INFO="$app/__whitebox_test_info.json" \
             TIMES=1 TARGETS=native PARTS=app APP_GROUP=1/1 SFAPP_SHARDS=4 LINES_OUT=40 \
             bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log"
       - name: How what moves goes
@@ -870,7 +889,7 @@ jobs:
             echo "### check-mbui (the branch's changed test files at $FPS fps) failed"
             echo
             echo "main runs these at every rate after a merge; here only the files this branch changed. Run one here:"
-            echo "\`cd apps/mbui && . scripts/env.sh && MBUI_TEST_FPS=$FPS moon test --target wasm-gc --release src/sfapp/<file>_wbtest.mbt\`"
+            echo "\`cd apps/mbui && . scripts/env.sh && MBUI_TEST_FPS=$FPS moon test --target wasm-gc --release src/<package>/<file>_wbtest.mbt\`"
             echo '```'
             printf '%s\n' "${failed:-(no test named: see the log)}"
             echo '```'

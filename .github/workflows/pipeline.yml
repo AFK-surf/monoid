@@ -1676,6 +1676,9 @@ jobs:
       # The beta app built in the background from here on (MBUI_WIN_CORE=0: its core put beside it below), as the
       # release builds it (MBUI_VARIANT, MBUI_BUILD: release.sh takes it as built, MBUI_WIN_BUILT); "Build, pack and sign"
       # waits for it
+      # (each file of the app, mbui, the library and Farview's client given its content's mtime, so moon builds over the
+      # build restored only what changed, as desktop-build's: apps/mbui/scripts/moon-mtimes.sh)
+      - run: bash apps/mbui/scripts/moon-mtimes.sh
       - name: Build (the beta Windows app), started
         id: started
         run: |

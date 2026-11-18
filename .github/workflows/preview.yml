@@ -223,6 +223,15 @@ jobs:
           node scripts/native.ts fetch engine linux-${{ matrix.arch }}
           node scripts/native.ts fetch shell linux-${{ matrix.arch }}
           node scripts/native.ts fetch ghostty-vt linux-${{ matrix.arch }}
+      # core.hbc by its inputs (HBC_CACHE) in a cache of its own, as the windows job's, not of the image's: GitHub giving
+      # the runs two images in turn, the store of the other image held no core.hbc made with the same hermesc, and pnpm and
+      # Hermes ran again, ~25 s (x64 44367062557, arm64 44369994771, 2026-11-18). The names in it are their contents' keys.
+      - uses: actions/cache/restore@v4
+        id: hbc
+        with:
+          path: .ci/hbc
+          key: mbui-linux-hbc-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: mbui-linux-hbc-${{ matrix.arch }}-
       # (the core's packages only for a core.hbc not kept for this commit's inputs, as the ios job's: asked with the
       # hermesc linux.sh's core step makes it with. Kept, pnpm's install and its store's restore were time taken from the
       # build's own limit for nothing it used: Linux x64's build cut at 163 s, core.hbc kept, 44040854948, 2026-11-17)
@@ -245,10 +254,13 @@ jobs:
             libs/mbui/out/linux/app
             !libs/mbui/out/linux/**/*.mbc
             !libs/mbui/out/linux/**/*.mbc/**
-          key: mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-${{ github.sha }}
-          restore-keys: |
-            mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-
-            mbui-linux-moon-${{ matrix.arch }}-
+          # (of no image, as the ios job's: moonc and its C the same on each)
+          key: mbui-linux-moon-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: mbui-linux-moon-${{ matrix.arch }}-
+      # (each file of the app, mbui, the library and Farview's client given its content's mtime, so moon builds over the
+      # build restored only what changed: without it every checkout's new mtimes had moon build sf-ui's and farview's
+      # packages and all over them again, 75-90 s of moonc, Linux cut at its 5 minutes, 44365395131, 2026-11-18)
+      - run: bash apps/mbui/scripts/moon-mtimes.sh
       - run: touch "$RUNNER_TEMP/start"
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: the store saved over what was
       # restored, nothing taken out, so the next run goes on from there. Saved only at the job's end, a store too far
@@ -289,6 +301,9 @@ jobs:
             done
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
             [ "$GITHUB_REF" = refs/heads/main ] || { echo "a branch's build that did not go through: its store not saved"; exit 0; }
+            # (a cut run's store keeps what no run used for four hours no longer, as mbui-check.yml's: saved whole, a cut
+            # store grew run after run, its save 29 s, 44370994879)
+            [ ! -d .ci/mbc-store ] || find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
           fi
           echo "STORE_KEY=mbui-linux-${{ matrix.arch }}-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
@@ -298,6 +313,15 @@ jobs:
             .ci/mbc-store
             .ci/hbc
           key: ${{ env.STORE_KEY }}
+      # (main's core.hbc kept on its own, read by every image's runs: hbc above)
+      - name: The core's bytecode's key
+        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
+        run: '[ -z "$(ls -A .ci/hbc 2>/dev/null)" ] || echo "HBC_KEY=mbui-linux-hbc-${{ matrix.arch }}-$(sh apps/mbui/scripts/held.sh .ci/hbc)" >> "$GITHUB_ENV"'
+      - if: always() && !cancelled() && github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: .ci/hbc
+          key: ${{ env.HBC_KEY }}
       - name: Tarred with its installer
         run: bash apps/mbui/scripts/beta.sh linux
       - name: Put it, check it, then its feed
@@ -317,7 +341,7 @@ jobs:
           left=$(( JOB_END - $(date +%s) ))
           if [ -s "$c" ] && [ "$left" -gt 25 ]; then
             find libs/mbui/out/linux -type d -name '*.mbc' -prune -exec rm -rf {} +
-            echo "key=mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+            echo "key=mbui-linux-moon-${{ matrix.arch }}-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
             echo "moon's build not saved: stillfail.c=${c} (${left} s left)"
           fi
@@ -428,6 +452,14 @@ jobs:
             ~/Library/Caches/stillfail-build
             apps/mbui/out/core/hermesc
           key: mbui-hermes-apple-${{ steps.hermes.outputs.key }}
+      # core.hbc in a cache of its own, not of the image's, as the linux and windows jobs keep it: the other image's
+      # store held none made with the same hermesc, ~32 s of pnpm and Hermes again (main fa3e94723, 44370994879)
+      - uses: actions/cache/restore@v4
+        id: hbc
+        with:
+          path: .ci/hbc
+          key: mbui-ios-hbc-${{ github.sha }}
+          restore-keys: mbui-ios-hbc-
       # (the core's packages only for a core.hbc not kept for this commit's inputs: they are only esbuild's and Babel's,
       # and the core is unchanged in most runs)
       - id: core
@@ -471,10 +503,10 @@ jobs:
           path: |
             apps/mbui/out/ios-device/_build
             !apps/mbui/out/ios-device/_build/**/*.mbc
-          key: mbui-ios-moon-${{ env.IMG }}-${{ github.sha }}
-          restore-keys: |
-            mbui-ios-moon-${{ env.IMG }}-
-            mbui-ios-moon-
+          # (of no image: moonc is the same program on each, its C the same; keyed by the image, a run on the other
+          # image found none and did moonc's work again, main fa3e94723, 44370994879)
+          key: mbui-ios-moon-${{ github.sha }}
+          restore-keys: mbui-ios-moon-
       - run: bash apps/mbui/scripts/moon-mtimes.sh
       - id: start
         run: touch "$RUNNER_TEMP/start"
@@ -545,6 +577,9 @@ jobs:
               sleep 1
             done
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+            # (a cut run's store keeps what no run used for four hours no longer, as mbui-check.yml's: saved whole, a cut
+            # store grew run after run, its save 29 s, 44370994879)
+            [ ! -d .ci/mbc-store ] || find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
           fi
           echo "STORE_KEY=mbui-ios-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key
@@ -554,6 +589,15 @@ jobs:
             .ci/mbc-store
             .ci/hbc
           key: ${{ env.STORE_KEY }}
+      # (main's core.hbc kept on its own, read by every image's runs: hbc above)
+      - name: The core's bytecode's key
+        if: always() && github.ref == 'refs/heads/main' && steps.start.outcome == 'success'
+        run: '[ -z "$(ls -A .ci/hbc 2>/dev/null)" ] || echo "HBC_KEY=mbui-ios-hbc-$(sh apps/mbui/scripts/held.sh .ci/hbc)" >> "$GITHUB_ENV"'
+      - if: always() && !cancelled() && github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: .ci/hbc
+          key: ${{ env.HBC_KEY }}
       # (moon's build kept once moonc has made the app's C (stillfail.c), a cut build's too, as the linux job's moon-room:
       # saved only of a build that went through, every run cut in its -O2 C did moonc's ~90-120 s again and was cut again
       # (44334978946, 2026-11-18). Keyed by that C: one the same is not saved again; mbc's units are the store's.)
@@ -564,7 +608,7 @@ jobs:
           left=$(( JOB_END - $(date +%s) ))
           if [ -s "$c" ] && [ "$left" -gt 20 ]; then
             find apps/mbui/out/ios-device/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
-            echo "key=mbui-ios-moon-${{ env.IMG }}-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+            echo "key=mbui-ios-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
             echo "moon's build not saved: stillfail.c=${c} (${left} s left)"
           fi
@@ -743,6 +787,9 @@ jobs:
         run: |
           mkdir -p .ci/mbc-store && cp -a -n "$RUNNER_TEMP/store-main/." .ci/mbc-store/ && rm -rf "$RUNNER_TEMP/store-main"
           echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d | wc -l)"
+      # (each file of the app, mbui, the library and Farview's client given its content's mtime, as the other jobs do
+      # before moon builds over a build restored: apps/mbui/scripts/moon-mtimes.sh)
+      - run: bash apps/mbui/scripts/moon-mtimes.sh
       - run: touch "$RUNNER_TEMP/start"
       # The app (APP=stillfail) built in the background from here on: cl /O2 of its C (some 46 MB) is ~55 s on the
       # runner's four cores, and needs nothing of what the steps after it do (pnpm, the packages, the core's bytecode),

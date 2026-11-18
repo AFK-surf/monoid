@@ -17,7 +17,9 @@
 # core's tests run where it is built (REPLAY_BUILD_OUT), after it is put there. PKGS_BUILD_OUT (APP_GROUP=pkgs): the
 # small packages' test programs and their tests' lists put there as they are built, then run here at the default rate;
 # PKGS_EXE: that directory, its programs run beside sfapp's pages (@pkgs, check-mbui's app 1/4 at each rate).
-# APP_FILES: of sfapp's test files only these (with APP_EXE and APP_GROUP=1/1: a branch's changed files at a rate).
+# APP_FILES: of sfapp's test files only these (with APP_EXE and APP_GROUP=1/1: a branch's changed files at a rate);
+# none, no sfapp file at all (APP_EXE then not run), only the packages' (PKGS_EXE). PKGS_FILES: of the small packages'
+# test files only these (with PKGS_EXE: a branch's changed files of sfpages, settings, gallery, player, sfgraphic).
 D="$(cd "$(dirname "$0")" && pwd)"
 . "$D/env.sh"
 # (the whole suite is CI's, a PR's: on Studio or a laptop it is half an hour of wasm-gc in a row where CI's native runs
@@ -234,7 +236,11 @@ for t in $targets; do
   }
   # Moon runs each test program serially; shard sfapp alongside the other packages.
   runs=("$pkgs")
-  if [[ " $pkgs " = *" -p stillfail/sfapp "* ]]; then
+  if [ "${APP_FILES:-}" = none ] && [[ " $pkgs " = *" -p stillfail/sfapp "* ]]; then
+    # (no sfapp file: a branch that changed only the small packages' test files, mbui-check.yml's rates-changed)
+    runs=("$(echo " $pkgs " | sed 's| -p stillfail/sfapp | |')")
+    [ -z "${PKGS_EXE:-}" ] || runs+=("@pkgs")
+  elif [[ " $pkgs " = *" -p stillfail/sfapp "* ]]; then
     files=(src/sfapp/*_wbtest.mbt)
     # (APP_FILES: those of sfapp's test files alone, sweeps among them as ever: a branch's run of the files it changed at
     # the rates, mbui-check.yml's rates-changed)
@@ -811,13 +817,20 @@ for t in $targets; do
   # with its four cores to spare, app 1/4 at 120 fps 265 s of its 5 minutes (main 89fc703f 43324051783). The default
   # rate's run on a runner of its own (APP_GROUP=pkgs) is moon test's still, one process a package.
   # (testexe says each file's seconds of its package: scripts/page-seconds.sh takes sfapp's alone)
+  # (PKGS_FILES: only those of a package's files, a package with none of them not run)
   pkgs_run() {
-    local e q k i=0 c=0 pids=() o
+    local e q k i=0 c=0 pids=() o f mine
     o=$(mktemp -d)
     for e in $(cd "$1" && find . -name '*_test.exe' | sed 's|^\./||' | LC_ALL=C sort); do
       q=$(dirname "$e") k=${e%_test.exe}
       k=${k##*.}
-      exe_run "$1/$e" "$1/$q/__${k}_test_info.json" 2 "stillfail/$q" src/$q/*.mbt > "$o/$i" 2>&1 &
+      mine=(src/$q/*.mbt)
+      if [ -n "${PKGS_FILES:-}" ]; then
+        mine=()
+        for f in $PKGS_FILES; do [ "$(dirname "$f")" = "src/$q" ] && mine+=("$f"); done
+        [ ${#mine[@]} != 0 ] || continue
+      fi
+      exe_run "$1/$e" "$1/$q/__${k}_test_info.json" 2 "stillfail/$q" "${mine[@]}" > "$o/$i" 2>&1 &
       pids+=($!) i=$((i + 1))
     done
     for e in "${pids[@]}"; do wait $e || c=1; done
