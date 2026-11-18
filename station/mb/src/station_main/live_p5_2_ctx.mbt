@@ -1021,14 +1021,34 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       }
     }
     "untitled" =>
+      // titles.ts `untitledChat`: the chat session `key` last heard from, as its address, when it still has no name
+      // (neither people nor an agent named it: its thread's title and autoTitle), is shown, a person has said something
+      // there, and none of its other agents is at work. The session row has no title of the chat's: read there, every
+      // chat was untitled however often it was named, and its agent was asked again at each turn's end.
       if jfield(self.config, "askToName") is True {
-        match self.store("getSession", [a(0)]) {
-          Null => Json::null()
-          row =>
-            match (jtext(row, "title"), self.store("latestThread", [a(0)])) {
-              (None, Object(_) as t) => jstr(@agent_runtimes.thread_address(jtext(jfield(t, "thread"), "channel").unwrap_or(""), jtext(jfield(t, "thread"), "threadTs").unwrap_or("")))
-              _ => Json::null()
-            }
+        let thread = jfield(self.store("latestThread", [a(0)]), "thread")
+        let named = (k : String) => match jtext(thread, k) { Some(t) => t.trim() != ""; None => false }
+        if !(thread is Object(_)) || !(jfield(thread, "hiddenAt") is Null) || named("title") || !(jfield(thread, "autoTitle") is Null) {
+          return Json::null()
+        }
+        let id = jfield(thread, "id")
+        if self.store("firstText", [id]) is Null {
+          return Json::null()
+        }
+        let at_work = jitems(self.store("threadSessions", [id])).iter().any(m => {
+          let session = jtext(m, "session").unwrap_or("")
+          if session == "" || session == s(0) {
+            return false
+          }
+          let last = self.store("lastTurn", [jstr(session)])
+          hub.process_state(session) == "running" ||
+          self.store("hasPending", [jstr(session)]) is True ||
+          (last is Object(_) && (jfield(last, "endedAt") is Null || jtext(last, "declared") == Some("waiting")))
+        })
+        if at_work {
+          Json::null()
+        } else {
+          jstr(@agent_runtimes.thread_address(jtext(thread, "channel").unwrap_or(""), jtext(thread, "threadTs").unwrap_or("")))
         }
       } else {
         Json::null()
