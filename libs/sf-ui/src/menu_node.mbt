@@ -45,6 +45,97 @@ pub fn menu_node(
   side? : @ui.Side = Bottom,
   modal? : Bool = true,
 ) -> Unit {
+  menu_node_by(
+    parent,
+    open,
+    anchor,
+    content,
+    title,
+    along,
+    offset,
+    by_key,
+    keep_field,
+    choose,
+    cancel,
+    shown~,
+    gone~,
+    extras~,
+    min_w~,
+    side~,
+    modal~,
+    false,
+  )
+}
+
+///|
+/// `menu_node` whose `chosen` items are checkboxes that may be ticked several at once (read out as `MenuItemCheckbox`,
+/// the menu left open after `choose` unless the caller closes `open`). `check_end`: each ticked one's check at its row's
+/// end, no column before its words for it, its own mark (where it has one) first.
+pub fn menu_ticks_node(
+  parent : @view.View,
+  open : () -> Bool,
+  anchor : (@view.View) -> @view.View,
+  content : () -> Array[MenuItem?],
+  title : String,
+  along : @ui.Along,
+  offset : Double,
+  by_key : Bool,
+  keep_field : Bool,
+  choose : (MenuItem) -> Unit,
+  cancel : () -> Unit,
+  shown? : () -> Unit = fn() {  },
+  gone? : () -> Unit = fn() {  },
+  extras? : (Int) -> MenuExtra = fn(_) { menu_no_extra },
+  min_w? : Double = menu_w,
+  side? : @ui.Side = Bottom,
+  modal? : Bool = true,
+  check_end? : Bool = false,
+) -> Unit {
+  menu_node_by(
+    parent,
+    open,
+    anchor,
+    content,
+    title,
+    along,
+    offset,
+    by_key,
+    keep_field,
+    choose,
+    cancel,
+    shown~,
+    gone~,
+    extras~,
+    min_w~,
+    side~,
+    modal~,
+    true,
+    check_end~,
+  )
+}
+
+///|
+fn menu_node_by(
+  parent : @view.View,
+  open : () -> Bool,
+  anchor : (@view.View) -> @view.View,
+  content : () -> Array[MenuItem?],
+  title : String,
+  along : @ui.Along,
+  offset : Double,
+  by_key : Bool,
+  keep_field : Bool,
+  choose : (MenuItem) -> Unit,
+  cancel : () -> Unit,
+  shown? : () -> Unit = fn() {  },
+  gone? : () -> Unit = fn() {  },
+  extras? : (Int) -> MenuExtra = fn(_) { menu_no_extra },
+  min_w? : Double = menu_w,
+  side? : @ui.Side = Bottom,
+  modal? : Bool = true,
+  ticks : Bool,
+  check_end? : Bool = false,
+) -> Unit {
   // (no line at either end, none twice: menu_clean_items)
   let content = fn() { menu_clean_items(content()) }
   parent.show(
@@ -95,7 +186,10 @@ pub fn menu_node(
         // (what it holds now: what the row pressed shows)
         match @signals.untracked(content).get(i) {
           Some(Some(item)) if !item.disabled && !item.heading && !said.val => {
-            said.val = true
+            // (one taken closes it; one of several ticked leaves it open to tick the next: said again)
+            if !ticks {
+              said.val = true
+            }
             choose(item)
           }
           _ => ()
@@ -250,7 +344,8 @@ pub fn menu_node(
       opener.val = Some(at)
       // (a column before every item's words where one has an icon or is one of a choice: the web's dropdown)
       let iconed = fn() { content().iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" }) }
-      let lead = fn() { iconed() || content().iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) }) }
+      // (none for a check said to go at its row's end)
+      let lead = fn() { iconed() || (!check_end && content().iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) })) }
       let gap = fn() { if lead() && !iconed() { chooser_gap } else { menu_gap } }
       // (how far in a heading's words are: past the check's or icon's column, and a mark's where a row has one, as the
       // dropdown's heading_look has them)
@@ -260,7 +355,7 @@ pub fn menu_node(
         let items = content()
         for i in 0..<n {
           let leads = match items[i] {
-            Some(it) => menu_mark_leads(it, extras(i))
+            Some(it) => menu_mark_leads(it, extras(i), check_end~)
             None => false
           }
           if extras(i).mark is Some(_) && !(leads && lead()) {
@@ -332,7 +427,7 @@ pub fn menu_node(
                 0 => menu_rule_node(cell, reach)
                 1 => menu_heading_node(cell, fn() { item().label }, past, reach)
                 _ => {
-                  rows[i] = menu_row_node(cell, item, i, lead, gap, reach, go, current, stop, extras(i))
+                  rows[i] = menu_row_node(cell, item, i, lead, gap, reach, go, current, stop, extras(i), ticks, check_end~)
                   cell.owns(fn() { rows.remove(i) }) |> ignore
                 }
               }
@@ -363,9 +458,9 @@ pub fn menu_node(
 
 ///|
 /// Whether a row's own mark goes in the menu's column before its words (where the menu has one): it has a mark and
-/// neither a check nor an icon of its own for that column.
-fn menu_mark_leads(item : MenuItem, extra : MenuExtra) -> Bool {
-  extra.mark is Some(_) && item.chosen is None && item.icon == ""
+/// neither a check nor an icon of its own for that column (a check said to go at its row's end takes none of it).
+fn menu_mark_leads(item : MenuItem, extra : MenuExtra, check_end? : Bool = false) -> Bool {
+  extra.mark is Some(_) && (item.chosen is None || check_end) && item.icon == ""
 }
 
 ///|
@@ -408,6 +503,8 @@ fn menu_row_node(
   current : @signals.Signal[Int],
   stop : () -> Int,
   extra : MenuExtra,
+  ticks : Bool,
+  check_end? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let t = theme()
@@ -434,7 +531,12 @@ fn menu_row_node(
         let actions : Array[@view.Action] = if it.disabled { [] } else { [Activate] }
         Some(
           match it.chosen {
-            Some(on) => @view.said(if it.checkbox { MenuItemCheckbox } else { MenuItemRadio }, label=it.label, check=if on { On } else { Off }, actions~)
+            Some(on) =>
+              @view.said(if it.checkbox || ticks { MenuItemCheckbox } else { MenuItemRadio }, label=it.label, check=if on {
+                On
+              } else {
+                Off
+              }, actions~)
             None => @view.said(MenuItem, label=it.label, actions~)
           },
         )
@@ -457,7 +559,7 @@ fn menu_row_node(
     |> ignore
     // (its own mark in that column where it has no check nor icon of its own to go there: a Slack account among kinds
     // of secret by their icons; one beside a check or an icon goes after it)
-    let mark_leads = fn() { menu_mark_leads(item(), extra) && lead() }
+    let mark_leads = fn() { menu_mark_leads(item(), extra, check_end~) && lead() }
     // (that mark, as wide as the check's column, where it goes)
     let mark_in = fn(at : @view.View, m : ChoiceMark) { choice_mark_node(at, m, menu_check_w) }
     // (its first line: its column before its words, where the menu has one (a choice's check, or its icon, else its
@@ -466,13 +568,14 @@ fn menu_row_node(
       into.show(lead, fn(col) {
         col.width(Is(Some(menu_check_w))).lines_up(Is(Some(Middle))) |> ignore
         match extra.mark {
-          Some(m) if menu_mark_leads(@signals.untracked(item), extra) => mark_in(col, m)
+          Some(m) if menu_mark_leads(@signals.untracked(item), extra, check_end~) => mark_in(col, m)
           _ => ()
         }
         let mark = fn() {
           let it = item()
           match it.chosen {
-            Some(true) => "\u{1}check"
+            // (at its row's end where the menu says so: none here)
+            Some(true) => if check_end { "" } else { "\u{1}check" }
             Some(false) => ""
             None => it.icon
           }
@@ -515,6 +618,14 @@ fn menu_row_node(
           |> ignore
         })
         |> ignore
+      }
+      // (ticked, its check at its end where the menu says so (a chat's 抄送: 左子健's), what it is shown in stretching
+      // to the row's end)
+      if check_end {
+        into.show(fn() { item().chosen == Some(true) }, fn(at) {
+          at.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
+          icon_node(at, "check", 14.0, By(fn() { library_theme().p.text })) |> ignore
+        })
       }
       // (one that asks more first: its chevron at its end, after its value where it has one)
       // (what it is shown in stretches to the row's end, as the menu is wide)

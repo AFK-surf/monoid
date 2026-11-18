@@ -274,10 +274,10 @@ fn composing_reset() -> Unit {
   composing.hint_shown.set("")
   composing.taking.set(false)
   composing.corners.clear()
-  warmed_at.clear()
   // (what its box was last shaped for: a run's, never the next's, whose first build would take the one before's as
   // its ground set out, its list's foot going that way: composer_foot_told)
   composer_shaped_by.val = ""
+  composing_node_reset()
 }
 
 ///|

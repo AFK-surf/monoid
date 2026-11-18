@@ -1244,9 +1244,44 @@ pub fn flight_hint_away(c : @ui.Ctx, chat : String) -> Bool {
     None =>
       match sent_out_of.get(chat) {
         Some(a) => !way_reaches(c, a, fn(p) { flight_up(p, true) >= 0.5 })
-        None => false
+        None =>
+          // (sent from a composer made as nodes: away from the moment they were sent for sent_out_away_ms)
+          match sent_out_told_at.get(chat) {
+            Some(at) => c.moment() >= at && c.moment() - at < sent_out_away_ms()
+            None => false
+          }
       }
   }
+}
+
+///|
+/// Words sent from a chat's composer made as nodes, by the chat (its composer's key): the moment they were sent
+/// (sent_out_told), its field's hint and caret away from then for sent_out_away_ms (flight_hint_away).
+let sent_out_told_at : Map[String, Double] = Map([])
+
+///|
+/// Words sent from chat `chat`'s composer made as nodes at `at` (its node's cause's moment): its field's hint and caret
+/// away for sent_out_away_ms from then, as the old flight's (flight_hint_away).
+pub fn sent_out_told(chat : String, at : Double) -> Unit {
+  sent_out_told_at[chat] = at
+}
+
+///|
+/// How long the field's hint and caret are away as words are sent from a chat's page made as nodes: till their flight
+/// (flight_desk_ms, linear from the press, as sent_out_said's) is half way up and out of it (flight_up at 0.5), the first
+/// moment it is, as near as the clock's numbers tell.
+pub fn sent_out_away_ms() -> Double {
+  let mut lo = 0.0
+  let mut hi = 1.0
+  for _ in 0..<60 {
+    let mid = lo + (hi - lo) / 2.0
+    if flight_up(mid, true) >= 0.5 {
+      hi = mid
+    } else {
+      lo = mid
+    }
+  }
+  hi * flight_desk_ms
 }
 
 ///|
@@ -1290,6 +1325,7 @@ pub fn sent_out_now(c : @ui.Ctx, chat : String) -> Double? {
 pub fn sent_out_reset() -> Unit {
   sent_out_of.clear()
   sent_out_at.clear()
+  sent_out_told_at.clear()
 }
 
 ///|

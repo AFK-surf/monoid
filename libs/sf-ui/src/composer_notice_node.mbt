@@ -67,6 +67,11 @@ pub fn composer_notice_node(
   }
   parent.box(made_for=loc, fn(b) {
     style_node(b, fn() { if with_x { notice_box_x } else { notice_box } })
+    // (with a choice at its end: that choice's capsule as far in as makes it concentric with the notice's round end, as
+    // the old one's inline_end)
+    if with_choice {
+      b.padding(By(fn() { (0.0, notice_pad, (outer() - @ui.Space::S7.px()) / 2.0, notice_pad) })) |> ignore
+    }
     b
     .margin(By(fn() { (inset(), 0.0, inset(), notice_over) }))
     .radius(By(fn() { outer() / 2.0 }))
@@ -109,6 +114,9 @@ pub fn composer_notice_node(
           words.padding(By(fn() { (0.0, (head() - theme().t.meta_line) / 2.0, 0.0, 0.0) })) |> ignore
           words.pick(fn() { summary.map(fn(f) { f() is Some(_) }).unwrap_or(false) }, fn(w, parts) {
             if parts {
+              // (side by side, the line wrapping under them where it has not the room: the status and its detail
+              // together, as the words' box lays what it holds; the pick's own box a row as that one is)
+              w.row(Is(true)).wraps(Is(Some(@ui.Space::S1.px()))).gap(Is(@ui.Space::S2.px())).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               words_node(w, fn() { summary.bind(fn(f) { f() }).map(fn(s) { s.0 }).unwrap_or("") }, fn() { notice_status })
               |> ignore
               words_node(w, fn() { summary.bind(fn(f) { f() }).map(fn(s) { s.1 }).unwrap_or("") }, fn() { notice_words })
@@ -155,10 +163,11 @@ pub fn composer_notice_node(
             // (wrapped under what it says: its words where those begin)
             at.margin(By(fn() { (outer() - @ui.Space::S2.px(), 0.0, 0.0, 0.0) })) |> ignore
             on_head(at)
-            chooser_button_node(at, fn() {
+            // (a quiet choice, round as a capsule concentric with the notice's round end: the old one's `capsule`)
+            capsule_chooser_node(at, fn() {
               let id = now()
               cs().iter().find_first(fn(c) { c.0 == id }).map(fn(c) { c.1 }).unwrap_or("")
-            }, cs, now, fn(id) { if !held() { f(id) } }, side=Top) |> ignore
+            }, cs, now, fn(id) { if !held() { f(id) } }, side=Top, disabled=held) |> ignore
           })
           |> ignore
         _ => ()

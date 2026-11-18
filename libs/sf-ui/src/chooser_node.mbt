@@ -12,7 +12,8 @@
 /// it, then `choose` is given its value; Escape, back and a press outside close it alone, the focus back on the chooser.
 /// Read out a button named by its words, expanded while its menu is open. `press`: what it does as it is pressed (or
 /// Down given it), in place of opening a menu (a panel of its own it opens: chooser's `set_open(true)` with no entries).
-/// While `disabled()`: no press nor the focus, never lit, read out so (the old one's look kept: not faded).
+/// While `disabled()`: no press nor the focus, never lit, read out so (the old one's look kept: not faded). Opened by a
+/// finger with a field focused, that field keeps its keyboard (menu_node's `keep_field`).
 #callsite(autofill(loc))
 pub fn chooser_node(
   parent : @view.View,
@@ -28,8 +29,27 @@ pub fn chooser_node(
 }
 
 ///|
+/// chooser_node's choice round as a capsule, its words as far in as a plain one's (a notice's over the composer,
+/// concentric in its round end, as the old one's `capsule` there): `disabled` as chooser_node's; its menu on `side` of
+/// it (a notice's over the composer: over it).
+#callsite(autofill(loc))
+pub fn capsule_chooser_node(
+  parent : @view.View,
+  words : () -> String,
+  choices : () -> Array[(String, String)],
+  chosen : () -> String,
+  choose : (String) -> Unit,
+  disabled? : () -> Bool = fn() { false },
+  side? : @ui.Side = Bottom,
+  loc~ : SourceLoc,
+) -> @view.View {
+  chooser_by(loc~, parent, words, choices, chosen, choose, true, None, disabled, at_foot=false, side~)
+}
+
+///|
 /// chooser_node's choice; `capsule`: round as a capsule, its words as far in as a card's foot corner leaves them
-/// (foot_chooser_node's: at a card's foot, as the old one is there); `press`, `disabled`: chooser_node's.
+/// (foot_chooser_node's: at a card's foot, as the old one is there), or where not `at_foot` as far in as a plain one's
+/// (capsule_chooser_node's: the old one's `capsule` off a card's foot); `press`, `disabled`: chooser_node's.
 #callsite(autofill(loc))
 fn chooser_by(
   parent : @view.View,
@@ -40,6 +60,8 @@ fn chooser_by(
   capsule : Bool,
   press : (() -> Unit)?,
   disabled : () -> Bool,
+  at_foot? : Bool = true,
+  side? : @ui.Side = Bottom,
   loc~ : SourceLoc,
 ) -> @view.View {
   // (over all of the panel it is in, as what a field offers is: offers_layer_lent, a sheet's, a dialog's, a small
@@ -49,13 +71,16 @@ fn chooser_by(
     None => parent.tree.root()
   }
   let open = @signals.signal(false, same=fn(a, b) { a == b })
-  // (opened by the keyboard: its first row's the focus as it opens)
+  // (opened by the keyboard: its first row's the focus as it opens; by a finger with a field focused, that field keeps
+  // its input method, menu_node's `keep_field`)
   let by_key = Ref(false)
+  let keep_field = Ref(false)
   let opens = fn(b : @view.View, down : Bool) {
     match press {
       Some(f) => f()
       None => {
         by_key.val = down || b.focus_shown()
+        keep_field.val = !by_key.val && @ui.pointing() is Finger && @ui.field_has_focus()
         open.set(down || !open.untracked())
       }
     }
@@ -84,7 +109,7 @@ fn chooser_by(
       .row(Is(true))
       .height(Is(Some(chooser_h)))
       .padding(By(fn() {
-        let x = if capsule { card_foot_words_in(chooser_h) } else { chooser_x }
+        let x = if capsule && at_foot { card_foot_words_in(chooser_h) } else { chooser_x }
         (x, 0.0, x, 0.0)
       }))
       .gap(Is(chooser_gap_in))
@@ -109,7 +134,7 @@ fn chooser_by(
   b.reacts(fn() { open.get() }, fn(on) {
     guard on && !made.val else { return }
     made.val = true
-    chooser_menu_node(layer, b, open, by_key, choices, chosen, choose, loc~)
+    chooser_menu_node(layer, b, open, by_key, keep_field, choices, chosen, choose, side~, loc~)
   })
   b
 }
@@ -123,9 +148,11 @@ fn chooser_menu_node(
   b : @view.View,
   open : @signals.Signal[Bool],
   by_key : Ref[Bool],
+  keep_field : Ref[Bool],
   choices : () -> Array[(String, String)],
   chosen : () -> String,
   choose : (String) -> Unit,
+  side? : @ui.Side = Bottom,
   loc~ : SourceLoc,
 ) -> Unit {
   let holder = layer.box(made_for=loc, fn(h) { h.over(Is(true)) |> ignore }).lives_with(b)
@@ -144,13 +171,14 @@ fn chooser_menu_node(
       Start,
       chooser_menu_off,
       by_key.val,
-      false,
+      keep_field.val,
       fn(item) {
         open.set(false)
         (item.select)()
       },
       fn() { open.set(false) },
       min_w=chooser_menu_w,
+      side~,
     )
   })
 }

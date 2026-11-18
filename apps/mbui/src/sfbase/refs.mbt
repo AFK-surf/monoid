@@ -529,7 +529,43 @@ pub fn refs_pick(
   // (the caret as it is now: the words typed after the `@` since its menu was built are the `@`'s too)
   let caret = input.selection().1
   f.closed.set(start)
-  c.tell("refs/pick/" + key, fn() {
+  c.tell("refs/pick/" + key, fn() { refs_put_picked(src, key, input, start, caret, into, station, id, title, failed) })
+}
+
+///|
+/// refs_pick's, taken in a handler (a menu's row picked, made as nodes): asked of the core at once.
+pub fn refs_pick_now(
+  src : Source,
+  key : String,
+  input : @ui.Field,
+  start : Int,
+  into : String,
+  station : String,
+  id : String,
+  title : String,
+  failed : (String) -> Unit,
+) -> Unit {
+  let caret = input.selection().1
+  ref_field(key).closed.set(start)
+  refs_put_picked(src, key, input, start, caret, into, station, id, title, failed)
+}
+
+///|
+/// The mark the core makes of a chat picked for the `@` at `start` (the caret at `caret` then) asked of it, and put in
+/// the `@words`' place as it answers (refs_pick's).
+fn refs_put_picked(
+  src : Source,
+  key : String,
+  input : @ui.Field,
+  start : Int,
+  caret : Int,
+  into : String,
+  station : String,
+  id : String,
+  title : String,
+  failed : (String) -> Unit,
+) -> Unit {
+  {
     (src.call)(
       "chat.ref",
       {
@@ -559,7 +595,7 @@ pub fn refs_pick(
         }
       },
     )
-  })
+  }
 }
 
 ///|
@@ -670,8 +706,23 @@ fn trimmed(o : String) -> String {
 }
 
 ///|
-/// From how many characters words pasted at once go as a file (the core's: `paste.info`, asked once; 0 till it has
-/// answered, none taken so).
+/// From how many characters words pasted at once go as a file (the core's: `paste.info`, asked once, at once, where no
+/// frame is built to ask it after: a field of the window's tree; 0 till it has answered, none taken so).
+pub fn paste_threshold_now(src : Source) -> Int {
+  if !paste_bound_asked.val {
+    paste_bound_asked.val = true
+    (src.call)("paste.info", { "text": Json::string("") }, fn(r) {
+      match r {
+        Ok(v) => paste_bound.set(number(Some(v), "threshold").to_int())
+        Err(_) => paste_bound_asked.val = false
+      }
+    })
+  }
+  paste_bound.get()
+}
+
+///|
+/// paste_threshold_now's, asked as the frame that asks it is over (`c`'s tell).
 pub fn paste_threshold(c : @ui.Ctx, src : Source) -> Int {
   if !paste_bound_asked.val {
     paste_bound_asked.val = true

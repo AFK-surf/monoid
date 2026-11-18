@@ -56,3 +56,56 @@ test "大屏, a chat's page made as nodes: a 文件 tab's row held over the mess
   assert_eq(draft_files(), "")
   assert_eq(calls.filter(fn(c) { c.0 == "composer.add" }).length(), 0)
 }
+
+///|
+/// The composer's glass as the last frame drew it, where it is at rest (`at`), or else the lowest drawn on the page: its
+/// rect and what it was drawn with.
+fn drop_nodes_composer_glass(
+  t : @ui.Tester,
+  at? : (Double, Double, Double, Double)? = None,
+) -> ((Double, Double, Double, Double), Array[Double]) raise {
+  let (x, y, w, h) = match at {
+    Some(r) => r
+    None => {
+      let glass = t.drawn_glass()
+      guard glass.length() > 0 else { fail("no glass drawn") }
+      let mut foot = glass[0]
+      for g in glass {
+        if g.1 + g.3 > foot.1 + foot.3 {
+          foot = g
+        }
+      }
+      (foot.0, foot.1, foot.2, foot.3)
+    }
+  }
+  let drawn = t
+    .drawn_instances()
+    .iter()
+    .find_first(fn(i) { i[0] == x && i[1] == y && i[2] == w && i[3] == h && (i[5] == 5.0 || i[5] == 6.0) })
+  guard drawn is Some(i) else { fail("its glass not drawn") }
+  ((x, y, w, h), i)
+}
+
+///|
+test "大屏, a chat's page made as nodes: a 文件 tab's row held over the composer tints its glass with the accent's (the old composer's drag_tint) and back as it leaves; let go on it, into the draft once by its path" {
+  let calls : Array[(String, Json)] = []
+  let t = drop_nodes_open(calls)
+  guard t.find("首页截图.png") is Some((x, y)) else { fail("no tab row") }
+  let (rect, still) = drop_nodes_composer_glass(t)
+  let (gx, gy, gw, gh) = rect
+  let on = (gx + gw / 2.0, gy + gh / 2.0)
+  t.hold_drag(x, y, 500.0, 600.0)
+  let (_, beside) = drop_nodes_composer_glass(t, at=Some(rect))
+  assert_eq(beside, still, msg="tinted while the row is not over it")
+  t.hold_move(on.0, on.1)
+  let (_, over) = drop_nodes_composer_glass(t, at=Some(rect))
+  assert_true(over != still, msg="not tinted with the row over it")
+  t.hold_move(500.0, 600.0)
+  let (_, left) = drop_nodes_composer_glass(t, at=Some(rect))
+  assert_eq(left, still, msg="still tinted once the row left it")
+  t.hold_move(on.0, on.1)
+  t.release(on.0, on.1)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(draft_files(), "首页截图.png/path")
+  assert_eq(calls.filter(fn(c) { c.0 == "composer.add" }).length(), 1)
+}

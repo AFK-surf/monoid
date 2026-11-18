@@ -99,6 +99,8 @@ fn chat_vs_again(
       None => {
         reset()
         @sfbase.chat_page_nodes.set(nodes)
+        // (its composer made as nodes too, 试用新输入框: what the bars below were raised for)
+        @sfbase.composer_nodes.set(nodes)
         // (Home as these bars were counted on it, its 看板 key on: 实验性功能's 对话列表看板视图, off by default since, takes
         // the key off Home under both pages alike)
         @sfbase.board_feature.set(true)
@@ -284,15 +286,22 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// Each card's nodes raised, 2026-11-17 (phone 2613, plp_narrow 2646, tape 1318, wide 1254; moving phone 1639,
 /// plp_narrow 1658 before; wide md's 1305 in both), once what lights a message whole is the list's band, drawn under all its rows once
 /// (View::scrolls_window's `bands`): its each's slot one node more of the page, its rows' grounds bound no more.
+/// Again 2026-11-17 once the chat's composer is made as nodes on the new page (sfpages composer_node, in its list's
+/// foot; 试用新输入框, on here), the old page's still an old view: on the old page it is built as the shell's old islands
+/// are at rest at Home (none of it over `idle`), on the new one its nodes at rest are made, so the new page counts what
+/// it made where it counted none (phone card's, plp_narrow card's, tape card's and wide card's nodes up: 2621, 2654,
+/// 1319 and 1256 before), and lays out less; every bar brought to what is counted now, rounded up, the most of the
+/// default rate and 60, 120, 24 and 7: before it (2621, 979), (1707, 930), (2654, 983), (2125, 943), (1319, 1184),
+/// (1368, 1150), (1256, 1110), (1306, 1097).
 let chat_vs_bars : Map[String, (Int, Int)] = {
-  "phone card": (2621, 979),
-  "phone md": (1707, 930),
-  "plp_narrow card": (2654, 983),
-  "plp_narrow md": (2125, 943),
-  "tape card": (1319, 1184),
-  "tape md": (1368, 1150),
-  "wide card": (1256, 1110),
-  "wide md": (1306, 1097),
+  "phone card": (2768, 930),
+  "phone md": (1408, 884),
+  "plp_narrow card": (2792, 944),
+  "plp_narrow md": (1856, 905),
+  "tape card": (1347, 1126),
+  "tape md": (1272, 1014),
+  "wide card": (1281, 1071),
+  "wide md": (1218, 996),
 }
 
 ///|
@@ -318,15 +327,20 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// is left up long: the most of the five rates, the default's, each rounded up.
 /// Each brought down, 2026-11-17, as chat_vs_bars' are. Wide md's up as chat_vs_bars' (1245, 1062 before): a code
 /// block's keys over its code with a mouse, more of the chat shown.
+/// Each brought down, 2026-11-17, as chat_vs_bars' are.
+/// Again 2026-11-17 once the chat's composer is made as nodes, as chat_vs_bars' are (phone card's, tape card's and wide
+/// card's nodes up: 1643, 1319 and 1256 before); every bar brought to what is counted now, rounded up, the most of the
+/// five rates: before it (1643, 979), (1329, 936), (1662, 983), (1639, 943), (1319, 1184), (1368, 1150), (1256, 1110),
+/// (1306, 1097).
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
-  "phone card": (1643, 979),
-  "phone md": (1329, 936),
-  "plp_narrow card": (1662, 983),
-  "plp_narrow md": (1639, 943),
-  "tape card": (1319, 1184),
-  "tape md": (1368, 1150),
-  "wide card": (1256, 1110),
-  "wide md": (1306, 1097),
+  "phone card": (1645, 930),
+  "phone md": (1051, 884),
+  "plp_narrow card": (1659, 944),
+  "plp_narrow md": (1384, 905),
+  "tape card": (1347, 1126),
+  "tape md": (1272, 1014),
+  "wide card": (1281, 1071),
+  "wide md": (1218, 996),
 }
 
 ///|

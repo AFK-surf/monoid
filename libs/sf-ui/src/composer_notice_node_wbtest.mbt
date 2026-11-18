@@ -115,3 +115,48 @@ test "composer notice: what it offers on the first line of what it says, not in 
   let first_mid = said.2 + line / 2.0
   assert_true((offer_mid - first_mid).abs() < 1.0, msg="offer's middle at \{offer_mid}, the first line's at \{first_mid}")
 }
+
+///|
+test "composer notice: a choice among a few, a quiet capsule concentric with its round end; held, out of reach, not opened" {
+  let tt = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, platform=0)
+  set_dark(Some(false))
+  @ui.set_tree_theme(ui_theme_now)
+  let chosen = @signals.signal("go_on", same=fn(a, b) { a == b })
+  let held = @signals.signal(false, same=fn(a, b) { a == b })
+  let picked : Array[String] = []
+  let tips = TipLayer::new(fn() { None })
+  let made : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.pad(Is(20.0)).width(Is(Some(380.0))).lies_along(Is(@view.Lies::End)).height(Is(Some(160.0))) |> ignore
+      made.val = Some(
+        composer_notice_node(
+          page,
+          tips,
+          fn() { "wait" },
+          fn() { "缓存已过期" },
+          fn() { 24.5 },
+          choices=fn() { [("go_on", "接着聊"), ("afresh", "换新上下文")] },
+          chosen=fn() { chosen.get() },
+          choose=fn(v) { picked.push(v) },
+          held=fn() { held.get() },
+        ),
+      )
+    })
+    |> ignore
+  })
+  tt.draw()
+  // (the chooser's capsule, 28 high, its end as far in from the notice's as makes the two concentric: 8)
+  let notice = made.val.unwrap().placed_window_now()
+  let choice = tt.get(Button, label="接着聊")
+  assert_eq(choice.rect.3, @ui.Space::S7.px())
+  let (nx, _, nw, _) = notice
+  let (cx, _, cw, _) = choice.rect
+  assert_true((nx + nw - (cx + cw) - (notice.3 - @ui.Space::S7.px()) / 2.0).abs() < 0.5, msg="\{Repr(notice)} \{Repr(choice.rect)}")
+  tt.click(Button, label="接着聊")
+  tt.click(MenuItemRadio, label="换新上下文")
+  assert_eq(picked, ["afresh"])
+  held.set(true)
+  tt.draw()
+  assert_true(tt.get(Button, label="接着聊").disabled, msg="held: out of reach")
+}

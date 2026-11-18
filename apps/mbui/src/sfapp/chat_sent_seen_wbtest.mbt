@@ -284,6 +284,7 @@ fn ss_quoting(screen : (String, Double, Double, Int), file? : Json) -> (@ui.Test
   let (_, w, h, platform) = screen
   new_run()
   @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
@@ -298,10 +299,18 @@ fn ss_quoting(screen : (String, Double, Double, Int), file? : Json) -> (@ui.Test
 /// The quote's words drawn now: in the composer's card (an old view's: Tester::words not of the tree) and in their row
 /// (the tree's, at full ink).
 fn ss_quote_seen(t : @ui.Tester) -> (Bool, Bool) {
+  // (the composer's card: an old view's words, or the composer made as nodes' own, within its box)
+  let composer = @sfpages.composer_node_shown(t.time())
+  let in_composer = fn(d : @view.Drawn) {
+    match composer {
+      Some((x, y, w, h)) => d.x >= x && d.x < x + w && d.y >= y && d.y < y + h
+      None => false
+    }
+  }
   let tree_n = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words.contains(quote_passage) && d.bones == 0L })
-  let row = tree_n.iter().any(fn(d) { d.alpha > 0.999 })
+  let row = tree_n.iter().any(fn(d) { d.alpha > 0.999 && !in_composer(d) })
   let all = t.words().filter(fn(w) { w.0.contains(quote_passage) && w.5 > 0.0 }).length()
-  (all > tree_n.length(), row)
+  (all > tree_n.length() || tree_n.iter().any(fn(d) { d.alpha > 0.0 && in_composer(d) }), row)
 }
 
 ///|

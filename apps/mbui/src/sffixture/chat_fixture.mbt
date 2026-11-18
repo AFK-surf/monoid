@@ -527,8 +527,6 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_message(rich_chat(f.older), peeks_answer)
           } else if f.mode == "chat-letters" && f.older == 0 {
             with_none_shown(rich_chat(f.older))
-          } else if f.mode == "chat-cc" {
-            with_cc(rich_chat(f.older))
           } else if f.mode == "chat-need" {
             with_need(rich_chat(f.older))
           } else if f.mode == "chat-working" {
@@ -566,6 +564,9 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
           }
           _ => base
         }
+        // chat-cc: the threads it is copied to as ticked here (chat.cc), outside the memo too, so a tick shows at the
+        // change that says it
+        let base = if f.mode == "chat-cc" { with_cc(base) } else { base }
         // chat-done-live: a chat whose agent's turn is over, saying where the chat stands as the core does: not while
         // words sent are on their way or its agent works (scripts/instrbench.sh's `send`)
         let sent = with_sent(base, session)
@@ -1382,6 +1383,16 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     // the places the station's bots are in, for a chat relayed (relay.mbt, sfdesk relay.mbt)
     "chat.relayPlaces" => Some(Ok(fix_relay_places()))
     "chat.relay" => Some(Ok({ "place": "#dev" }))
+    // (chat-cc: a thread its words are copied to ticked or not, as the core keeps it: with_cc reads it)
+    "chat.cc" => {
+      match (field(p, "to"), field(p, "on")) {
+        (Some(Number(to, ..)), Some(True)) => fix_cc[to.to_int()] = true
+        (Some(Number(to, ..)), Some(False)) => fix_cc[to.to_int()] = false
+        _ => ()
+      }
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
     "chat.send" => {
       fix_serial.val += 1
       let id = "out\{fix_serial.val}"
@@ -3383,14 +3394,18 @@ pub fn with_none_shown(v : Json) -> Json {
 }
 
 ///|
+/// chat-cc: which of its threads are ticked by chat.cc here, by thread (none: as with_cc has them at first).
+let fix_cc : Map[Int, Bool] = Map([])
+
+///|
 /// chat-cc: the chat linked to a Slack thread and a Feishu chat, its words copied to the Slack one (Chat.tsx CcChooser).
 pub fn with_cc(v : Json) -> Json {
   match v {
     Object(m) => {
       let o = m.copy()
       o["cc"] = [
-        { "thread": 21, "place": "#still-fail", "via": "slack", "on": true },
-        { "thread": 22, "place": "产品讨论", "via": "feishu", "on": false },
+        { "thread": 21, "place": "#still-fail", "via": "slack", "on": Json::boolean(fix_cc.get(21).unwrap_or(true)) },
+        { "thread": 22, "place": "产品讨论", "via": "feishu", "on": Json::boolean(fix_cc.get(22).unwrap_or(false)) },
       ]
       Json::object(o)
     }

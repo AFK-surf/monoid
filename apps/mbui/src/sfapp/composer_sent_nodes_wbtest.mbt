@@ -28,6 +28,11 @@ let sent_nodes_look_ms : Double = 10.0
 ///|
 /// The composer's box as laid out (composer/content): its top and height.
 fn sent_nodes_box(t : @ui.Tester) -> (Double, Double) {
+  // (made as nodes: its box as the tree lays it out; an old view's, as it measured it)
+  match @sfpages.composer_node_shown(t.time()) {
+    Some((_, y, _, h)) => return (y, h)
+    None => ()
+  }
   match @motion.measured_rect(t.ctx(), "composer/content") {
     Some((_, y, _, h)) => (y, h)
     None => @halt.saying("the composer's box not measured at \{t.time()}")
@@ -83,7 +88,11 @@ fn sent_nodes_foot(t : @ui.Tester, w : String, at : String) -> Double {
 ///|
 /// The composer's room under the list (what the list leaves it at its foot).
 fn sent_nodes_room(t : @ui.Tester, draft : String) -> Double {
-  @sfpages.composer_room(t.ctx(), draft)
+  // (made as nodes: its foot as the tree lays it out; an old view's, as it says it)
+  match @sfpages.composer_node_room(draft, t.time()) {
+    Some(room) => room
+    None => @sfpages.composer_room(t.ctx(), draft)
+  }
 }
 
 ///|
@@ -136,6 +145,7 @@ fn sent_nodes_held(at : String, seen : Array[(Double, Double, Double, Double)], 
 fn sent_nodes_chat(scale : Double) -> @ui.Tester {
   new_run()
   @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -193,6 +203,7 @@ test "a new chat on a page made as nodes, 小屏, a finger's: its first three li
     }
     let t = tester("home")
     @sfbase.chat_page_nodes.set(true)
+    @sfbase.composer_nodes.set(true)
     t.set_font_scale(scale)
     t.set_rows_on_pixels(true)
     t.draw()
@@ -227,6 +238,7 @@ test "a new chat on a page made as nodes, 小屏, a finger's: its first three li
 fn back_round_chat(w : Double, h : Double, platform : Int, lines : Int) -> @ui.Tester {
   new_run()
   @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

@@ -10,6 +10,12 @@
 /// of Large, else a dialog in the middle), put up once as it opens, what it says bound to what it asks;
 /// taken down once it is decided.
 fn outside_dialog(_c : @ui.Ctx, src : Source, key : String) -> Unit {
+  outside_shown(src, key)
+}
+
+///|
+/// outside_dialog's, as what it asks changes (a composer made as nodes: what watches its asking, outside any build).
+fn outside_shown(src : Source, key : String) -> Unit {
   guard @sfbase.outside_asking(key) is Some(s) else { return }
   match outside_up.get(key) {
     None if s.open.get() => {
