@@ -239,15 +239,51 @@ export class MeshWire implements StationWire {
 
   screen(station: StationAddr, head: RequestHead, screen: ScreenAsk): Effect.Effect<WireSocket, CoreError, import("effect").Scope.Scope> {
     const env = this.#env;
+    const workspace = station.workspace;
+    const key = station.toString();
+    const address = { station: key };
     return Effect.gen(function* () {
-      const status = env.status(station.workspace);
+      const status = env.status(workspace);
+      const credentials = env.credentials(workspace);
+      const theirs = env.relays(workspace);
+      const off = env.off?.(workspace);
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
-      const link = yield* waiting(status, { station: station.toString() }, t("station.core.connecting"), mesh.link(station.toString(), env.credentials(station.workspace), env.relays(station.workspace), env.off?.(station.workspace), "screen"));
+      const link = yield* waiting(status, address, t("station.core.connecting"), mesh.link(key, credentials, theirs, off, "screen"));
       // (its own main id: the link it goes over may be one made for a LAN or a relay, under another; its sound as Opus
       // where what taps the view decodes it, a twentieth of PCM's bytes)
-      const [reply, send] = yield* link.duplex(head, { screen: { ...screen, ...(screen.audio && mesh.decodesOpus() ? { opus: true } : {}), self: mesh.deviceId() } });
+      const ask = (l: Link) =>
+        Effect.map(
+          l.duplex(head, { screen: { ...screen, ...(screen.audio && mesh.decodesOpus() ? { opus: true } : {}), self: mesh.deviceId() } }),
+          ([reply, send]) => [l, reply, send] as [Link, Reply, import("./wire.ts").SocketOut],
+        );
+      const late = ([, reply]: [Link, Reply, import("./wire.ts").SocketOut]) => reply.cancel();
+      const asked = yield* Effect.forkChild(Effect.result(ask(link)));
+      const first = yield* Effect.raceFirst(
+        Effect.map(Fiber.join(asked), (r) => ({ asked: r }) as const),
+        Effect.as(mesh.replaced(key, link), { replaced: true } as const),
+      );
+      let answered: [Link, Reply, import("./wire.ts").SocketOut];
+      if ("asked" in first) {
+        const r = first.asked;
+        if (r._tag === "Success") answered = r.success;
+        else if (r.failure.code === "mesh") {
+          answered = yield* Effect.gen(function* () {
+            for (let tries = 1; ; tries++) {
+              const l = yield* waiting(status, address, t("station.core.connecting"), mesh.link(key, credentials, theirs, off, "screen"));
+              const again = yield* Effect.result(ask(l));
+              if (again._tag === "Success") return again.success;
+              if (again.failure.code !== "mesh" || l.closed() === null || tries >= LOST_TRIES) return yield* Effect.fail(again.failure);
+            }
+          });
+        } else return yield* Effect.fail(r.failure);
+      } else {
+        // Replaced while opening (the old link stalled): ask on the new link at once rather than waiting out SOCKET_OPEN_MS.
+        const again = Effect.flatMap(mesh.link(key, credentials, theirs, off, "screen"), ask);
+        answered = yield* firstAnswer(asked, again, late);
+      }
+      const [l, reply, send] = answered;
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
-      return { reply: { status: reply.status, headers: reply.headers, body: reply.body, via: link.path() }, send, tap: reply.tap };
+      return { reply: { status: reply.status, headers: reply.headers, body: reply.body, via: l.path() }, send, tap: reply.tap, replaced: () => mesh.replaced(key, l) };
     });
   }
   terminal(station: StationAddr, head: RequestHead, terminal: TerminalAsk): Effect.Effect<WireSocket, CoreError, import("effect").Scope.Scope> {

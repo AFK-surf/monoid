@@ -153,8 +153,9 @@ export interface ScreenView {
   watchChild?(heard: (screenId: string) => void): () => void;
 }
 
-/// A login field in focus: the site's host (as the browser has its address, not as the page says it), and which field.
-export type LoginField = { host: string; field: "username" | "password" };
+/// A login field in focus: the site's host (as the browser has its address, not as the page says it), which field, and
+/// whether it already holds a value.
+export type LoginField = { host: string; field: "username" | "password"; filled?: boolean };
 /// A login form filled from a person's app: for `host`, its account and password (either may be absent).
 export type LoginFill = { host: string; username?: string; password?: string };
 /// A page's ask to sign in with a passkey: `id` its own; the site's host and the relying party it names (the host, or

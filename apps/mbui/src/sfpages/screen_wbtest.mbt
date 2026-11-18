@@ -1975,3 +1975,131 @@ test "beside its chat on its side with touch (an iPhone Duo's side panel): a bro
   assert_eq(r.t.audit(), [])
   screen_done(r.t)
 }
+
+///|
+test "用 1Password 填入: always has a close button, closing dismisses the focused field on its page until focus moves, and filled fields do not prompt" {
+  let r = screen_rig()
+  r.live(others=[])
+  screen_fix_one_password()
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "password" },
+    },
+  )
+  let card_closes = fn() {
+    r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+  }
+  let dismiss_card = fn() raise {
+    let cs = card_closes()
+    assert_eq(cs.length(), 1)
+    let (x, y, w, h) = cs[0].rect
+    r.t.tap(x + w / 2.0, y + h / 2.0)
+    r.t.draw()
+  }
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+  assert_eq(card_closes().length(), 1)
+  assert_eq(r.t.audit(), [])
+
+  // Closing hides the offer for this field on this page, even across unrelated state updates.
+  dismiss_card()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state(
+    "live",
+    others=["李雷"],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "password" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is None)
+
+  // Moving focus to another login field offers again; dismissing it and leaving focus resets dismissal.
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "username" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+  dismiss_card()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state("live", others=[], more={ "address": "https://account.line.biz/login" })
+  r.t.draw()
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "username" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+
+  // Dismissing on one URL re-offers if the tab navigates to another URL.
+  dismiss_card()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/reauth",
+      "login": { "host": "account.line.biz", "field": "username" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+
+  // A field that already holds a value (filled by an agent or typed) does not prompt.
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/reauth",
+      "login": { "host": "account.line.biz", "field": "password", "filled": true },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/reauth",
+      "login": { "host": "account.line.biz", "field": "password" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+  screen_done(r.t)
+  @ui.fake_op.val = None
+}
+
+///|
+test "a screen left covered by a background tab opens at once when mounted in another tab" {
+  let r = screen_rig(in_tab=true)
+  let s = r.sess()
+  assert_eq(r.told("screen.view").length(), 1)
+  // Simulate a backgrounded remote workbench tab leaving covered=true on the shared ScreenUi.
+  screen_covered(s.src, "ws-1/st-1", "browser:tab-1", true)
+  r.t.draw()
+  assert_eq(r.cancelled.length(), 1)
+  assert_true(r.ui().covered.get())
+  // Mounting the screen in a tab clears stale covered state and opens screen.view immediately.
+  app.nav.push(Screen({ station: "ws-1/st-1", screen: "browser:tab-2", title: "Other", until_gone: false }))
+  nav_rested(r.t)
+  screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).covered.set(true)
+  app.nav.pop() |> ignore
+  nav_rested(r.t)
+  assert_false(screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).covered.get())
+  assert_eq(r.told("screen.view").length(), 3)
+  screen_done(r.t)
+}

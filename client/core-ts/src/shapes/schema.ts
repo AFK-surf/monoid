@@ -2640,6 +2640,7 @@ export const SHAPES: Record<string, Shape> = {
   ScreenLogin: struct([
     ["host", "String", { doc: "The site's host, as the station's browser has the tab's address (not as the page says it)." }],
     ["field", "String", { doc: "`username` or `password`: which of its fields the focus is in." }],
+    ["filled", opt("bool"), { doc: "Whether the field in focus already holds a value." }],
   ], { doc: "A login field in focus on a screen (a tab of the station's browser)." }),
   ScreenPasskey: struct([
     ["id", "String", { doc: "The page's own, answered with `screen.input` `{t: \"passkey\", id, …}`." }],
