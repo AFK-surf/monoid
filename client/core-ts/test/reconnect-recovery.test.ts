@@ -461,7 +461,7 @@ test("a_new_chat_whose_station_went_down_stays_said_down_and_is_asked_for_once_t
   }
 });
 
-type Shown = { offline: boolean; offlineNote?: string; outbox: { text: string; state: string; waits?: string; error?: string }[] };
+type Shown = { offline: boolean; offlineNote?: string; outbox: { id: string; text: string; state: string; waits?: string; error?: string; held?: boolean }[] };
 type Listed = { trouble: { text: string; state: string } | null; stations: { station: string }[]; days: { items: { id: string; station: string; offline?: string }[] }[] };
 
 /// A row of the list as it is shown: as its station's state makes it (said once for the station, not on the row).
@@ -508,8 +508,18 @@ test("a_station_down_says_why_as_the_device_can_tell_and_its_chat_takes_messages
     call(s.core, 1, 3, "chat.send", { station: ST, thread: 7, text: "一" });
     await s.host.time.pass(1000, 250);
     apply(s.host, values);
-    assert.deepEqual(chat().outbox.map((o) => [o.text, o.state, o.waits, o.error]), [["一", "sending", t("core-logic.looks.outbox.held"), undefined]]);
+    assert.deepEqual(chat().outbox.map((o) => [o.text, o.state, o.waits, o.error, o.held]), [["一", "sending", t("core-logic.looks.outbox.held"), undefined, true]]);
     assert.equal(tried, 0, "not tried while it is down");
+    // One more, taken back while it is held (held: deleted here): it never goes.
+    call(s.core, 1, 4, "chat.send", { station: ST, thread: 7, text: "二" });
+    await s.host.time.pass(1000, 250);
+    apply(s.host, values);
+    const second = chat().outbox.find((o) => o.text === "二");
+    assert.equal(second?.held, true);
+    call(s.core, 1, 5, "chat.discard", { station: ST, thread: 7, id: second!.id });
+    await s.host.time.pass(500, 250);
+    apply(s.host, values);
+    assert.deepEqual(chat().outbox.map((o) => o.text), ["一"]);
     // The device's network goes too: still.fail cloud is not reached either, and that is what is said.
     s.host.refuseSockets = true;
     s.host.socketClose("/v1/events");

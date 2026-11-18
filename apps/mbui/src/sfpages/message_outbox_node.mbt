@@ -212,6 +212,28 @@ fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : 
 }
 
 ///|
+/// Beside what is held till its station is reached (outbox_take_back's, as nodes) in `v`: 编辑 (its words back in the
+/// composer, the entry dropped) and 删除, each pressed whether or not the station is reached, none while one is done.
+fn outbox_take_back_node(v : @view.View, src : Source, here : MessageNodeHere, o : () -> Outgoing) -> Unit {
+  let on = fn() { [("station", here.station), ("id", o().id)] }
+  let dropping = fn() { core_doing(src, ["chat.discard"], on()) }
+  unsent_button_node(v, here.tips, "edit", @sf.t("common.edit"), fn() { !dropping() }, fn() { false }, fn() { None }, fn() {
+    let now = @signals.untracked(o)
+    outbox_edit(src, here.station + ":" + here.session, now, fn() { outbox_node_call(src, here, "chat.discard", now.id) })
+  })
+  unsent_button_node(
+    v,
+    here.tips,
+    "trash",
+    @sf.t("common.delete"),
+    fn() { !dropping() },
+    dropping,
+    fn() { core_failed(src, ["chat.discard"], on()) },
+    fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
+  )
+}
+
+///|
 /// What is asked of the core of an entry of the outbox (outbox_call's): by the chat's thread, else its session.
 fn outbox_node_call(src : Source, here : MessageNodeHere, call : String, id : String) -> Unit {
   let p : Map[String, Json] = { "station": Json::string(here.station), "id": Json::string(id) }

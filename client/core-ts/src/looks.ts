@@ -290,12 +290,13 @@ export function outboxWaits(outbox: J[], notice: J): J[] {
 }
 
 /// The outbox while its station is taken for down: what failed as the station was not reached (and is sent once it is:
-/// calls.ts `stationBack`) waits for it, said under it (`waits`) in place of 未发送; what the station refused stays failed.
+/// calls.ts `stationBack`) waits for it, said under it (`waits`) in place of 未发送, and may still be taken back (`held`:
+/// edited or deleted before it goes); what the station refused stays failed.
 export function outboxHeld(outbox: J[]): J[] {
   return outbox.map((e) => {
     if (get(e, "state") !== "failed" || get(e, "unreached") !== true || get(e, "final") === true) return e;
     const { error: _error, ...rest } = e as Record<string, unknown>;
-    return { ...rest, state: "sending", waits: t("core-logic.looks.outbox.held") };
+    return { ...rest, state: "sending", waits: t("core-logic.looks.outbox.held"), held: true };
   });
 }
 
