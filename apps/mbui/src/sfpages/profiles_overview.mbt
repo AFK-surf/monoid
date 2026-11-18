@@ -229,6 +229,7 @@ let ov_picked_pool : @signals.Signal[String] = @signals.signal("", same=fn(a, b)
 ///|
 fn profiles_overview_reset() -> Unit {
   ov_picked_pool.set("")
+  ov_speed_span.set(1)
 }
 
 ///|
