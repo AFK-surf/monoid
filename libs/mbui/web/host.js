@@ -887,6 +887,14 @@
           }
         }
         c = mix(c, col.rgb, col.a);
+        // InnerShadow (Kyant's): the shape's outside blurred into it by pad.w (its radius: a deviation of half of it), a
+        // sixth of it lower, black at 15% times the highlight's strength (c2.x, the press); none where pad.w is 0
+        if (v_pad.w > 0.0) {
+          vec2 sc = abs(centeredCoord - vec2(0.0, v_pad.w / 6.0)) - (halfSize - radius);
+          float ssd = length(max(sc, 0.0)) - radius + min(max(sc.x, sc.y), 0.0);
+          float inner = 0.5 * (1.0 + mb_erf(ssd * 0.70710678 / (v_pad.w * 0.5)));
+          c = mix(c, vec3(0.0, 0.0, 0.0), 0.15 * v_c2.x * inner);
+        }
         bool ambient = v_c2.z == -2.0;
         float w = ambient ? 0.5 / 1.5 : 0.5;
         // HighlightModifier uses a clipped stroke, with its width ceiled in device pixels.

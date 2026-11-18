@@ -417,6 +417,7 @@ pub struct Accounts {
   rt : @effect.Runtime
   background : Background
   mut config_raw : JV
+  mut hub_cache : HubConfig?
   catalog : Catalog
   checks : Map[String, JV]
   quotas : Map[String, JV]

@@ -183,9 +183,9 @@ let bar_drop : Double = 120.0
 let bar_hide_ms : Double = 250.0
 
 ///|
-/// The lens: a capsule over the ball's place, as large as it is drawn.
+/// The lens: a capsule over the ball's place, as large as it is drawn, its shadow LiquidBottomTabs' (@sf.tab_lens_raised).
 // kept across runs: a value (no field of it changes)
-let lens_box : @ui.Style = @ui.css("w=Full h=Full radius=Full")
+let lens_box : @ui.Style = @ui.css("w=Full h=Full radius=Full").then(@ui.style(shadow=@sf.tab_lens_raised.cast()))
 
 ///|
 /// How much larger than the ball its lens is, held (liquid glass over the places, iOS 26's tab bar's).

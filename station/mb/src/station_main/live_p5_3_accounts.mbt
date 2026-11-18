@@ -74,7 +74,16 @@ fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
   let ctx : @accounts_pool.Ctx = {
     io: @accounts_pool.Io::new(backend),
     words: @accounts_pool.Words::new(p53_jv(p53_get(zh, "station")).or_obj(p53_jv(zh)), p53_jv(p53_get(en, "station")).or_obj(p53_jv(en))),
-    urls: p53_jv(p53_obj([("console", p53_s(@accounts_oauth.console_url))])),
+    // profiles.ts `URLS`: with only the console here every Claude allowance was read at "/api/oauth/usage" (0.1.9984).
+    urls: p53_jv(
+      p53_obj([
+        ("opencode", p53_s(@agent_runtimes.opencode)),
+        ("anthropic", p53_s("https://api.anthropic.com")),
+        ("chatgpt", p53_s("https://chatgpt.com")),
+        ("claudeToken", p53_s("https://platform.claude.com/v1/oauth/token")),
+        ("console", p53_s(@accounts_oauth.console_url)),
+      ]),
+    ),
     station_lang: (bus.lang.val)(),
     tz_offset_ms: _ => 0.0,
   }

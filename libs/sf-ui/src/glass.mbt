@@ -106,14 +106,20 @@ fn backdrop_slider(press : Double) -> @ui.Glass {
 }
 
 ///|
-/// AndroidLiquidGlass’s LiquidBottomTabs selection lens.
+/// AndroidLiquidGlass’s LiquidBottomTabs selection lens, its InnerShadow 8 at its fullest (its Shadow is its box's:
+/// tab_lens_raised). Without the two it hardly showed on the bar's white, nothing under it to bend.
 pub fn backdrop_tab(press : Double) -> @ui.Glass {
   let p = dclamp(press, 0.0, 1.0)
   let idle = if theme().dark { 0xFFFFFFFFL } else { 0x000000FFL }
   let tint = over(alpha(idle, 0.1 * (1.0 - p)), alpha(0x000000FFL, 0.03 * p))
   @ui.Glass::backdrop_lens(height=10.0 * p, amount=14.0 * p, blur=0.0,
-    tint~, solid=theme().p.raised, highlight=p, dispersion=true)
+    tint~, solid=theme().p.raised, highlight=p, dispersion=true, inner_shadow=8.0 * p)
 }
+
+///|
+/// The shadow under the bottom bar's lens (LiquidBottomTabs' Shadow: Backdrop's own, a blur of radius 24, a
+/// deviation of 12, 4 down, black at 10%): the lens's look fades it in with the lens as it is pressed.
+pub let tab_lens_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
 
 ///|
 fn backdrop_track_ink() -> Int64 {

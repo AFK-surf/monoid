@@ -87,6 +87,7 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
   let check = jset(check, "checkedAt", jnum(self.background.now()))
   let before = self.checks.get(id)
   self.checks[id] = check
+  self.hub_cache = None
   self.background.track(async fn() {
     ignore(self.ask("store.setProfileCheck", [js(id), check]))
   })

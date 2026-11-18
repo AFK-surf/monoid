@@ -134,6 +134,10 @@ while IFS= read -r line; do
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > "$FAKE_OUT/list-$n.json"
   /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the fake","kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/post-$n.json"
+  # (and its state recorded again by chat_state: what it reads first is the store's changes (store.subscribe), and an
+  # all_done sets the archive's review going (hub.fork))
+  /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"chat_state","arguments":{"kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/state-$n.json"
   say '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m'$n'","role":"assistant","content":[]}},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"a'$n'"}'
   say '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"b'$n'"}'
   say '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"posted"}},"parent_tool_use_id":null,"session_id":"'"$sid"'","uuid":"c'$n'"}'
@@ -336,6 +340,8 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   void ended;
   const posted = JSON.parse(readFileSync(join(out, "post-1.json"), "utf8"));
   assert.notEqual(posted.result.isError, true, JSON.stringify(posted));
+  const stated = JSON.parse(readFileSync(join(out, "state-1.json"), "utf8"));
+  assert.notEqual(stated.result.isError, true, JSON.stringify(stated));
   const agentSaid = store.messagesBefore(t1.id, null, 20).filter((m) => m.authorKind === "agent");
   assert.deepEqual(agentSaid.map((m) => [m.author, m.text]), [["chat:c-to", "posted by the fake"]]);
   const itsList = JSON.parse(readFileSync(join(out, "list-1.json"), "utf8")).result.tools.map((t: any) => t.name);

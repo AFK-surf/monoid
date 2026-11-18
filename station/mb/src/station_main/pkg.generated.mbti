@@ -27,6 +27,10 @@ pub async fn before_store_p5_1(@host.Host, String, String) -> Unit
 
 pub fn catalogs_json() -> (@json.Json, @json.Json)
 
+pub fn claude_tui_of(Array[String]) -> String?
+
+pub fn claude_tui_shell() -> String
+
 pub async fn cmd_channel(@host.Host, Array[String], String, String) -> Int32
 
 pub async fn cmd_enroll(@host.Host, Array[String], String, String) -> Int32
@@ -57,6 +61,8 @@ pub fn env_unset(String) -> Unit
 
 pub fn err_write(String) -> Unit
 
+pub fn executable(String) -> Bool
+
 pub fn fd_close(Int32) -> Unit
 
 pub fn fd_write(Int32, Bytes) -> Bool
@@ -86,6 +92,8 @@ pub fn is_station(Array[String]) -> Bool
 pub fn is_windows() -> Bool
 
 pub fn iso_time(Double) -> String
+
+pub async fn join_workspace(@host.Host, String, String, String?, String, () -> Bool) -> @json.Json
 
 pub fn json_reply(Int32, @json.Json) -> Reply
 
@@ -137,6 +145,8 @@ pub fn remove_tree(String) -> Bool
 
 pub fn repo_rules_hook(RulesWorld, String) -> String
 
+pub async fn run_claude_tui(@host.Host, String, Array[String]) -> Int32
+
 pub async fn run_command(@host.Host, String, Array[String]) -> Int32
 
 pub async fn run_hook(@host.Host, String, Array[String]) -> Int32
@@ -163,7 +173,7 @@ pub async fn start_live_p5_2(LiveBus) -> Unit
 
 pub async fn start_live_p5_3(LiveBus) -> Unit
 
-pub async fn start_live_p5_4(LiveBus) -> Unit
+pub async fn start_live_p5_4(LiveBus, rig? : Bool) -> Unit
 
 pub async fn start_live_p5_5(LiveBus) -> Unit
 
@@ -215,14 +225,20 @@ pub fn write_text_mode(String, String, Int32) -> Bool
 pub(all) suberror BusError {
   BusError(String)
 }
+pub impl Show for BusError
 
 pub(all) suberror CommandMissing {
   CommandMissing(String)
 }
 
+pub(all) suberror JoinRefused {
+  JoinRefused(String, String)
+}
+
 pub(all) suberror LiveError {
   LiveError(String)
 }
+pub impl Show for LiveError
 
 pub(all) suberror P54Refused {
   P54Refused(String, @json.Json)
@@ -316,6 +332,7 @@ pub(all) struct LiveBus {
   ui_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   coord_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
 }
+pub fn LiveBus::as_rig(Self) -> Bool
 pub async fn LiveBus::call_peer(Self, String, String?, String, @json.Json, bytes? : Bytes) -> (@json.Json, Bytes?)
 pub async fn LiveBus::dispatch_peer(Self, String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?)
 pub fn LiveBus::new(@host.Host, String, Array[String], String, String, String, @cloud_lock.StationKey, @sql.Db, @store_sessions.Store, StationParts, @effect.Deferred[String], Bool, String, Int32?, (@json.Json) -> Unit, (String) -> Unit, restart_front? : () -> Unit) -> Self
@@ -394,7 +411,9 @@ pub struct StationParts {
 pub fn StationParts::all_routes(Self, @json.Json) -> Array[PartRoute]
 pub fn StationParts::all_tools(Self) -> Array[PartTool]
 pub fn StationParts::card_choice(Self, String, CardChoice) -> Unit raise PartTwice
+pub fn StationParts::card_choice_named(Self, String) -> CardChoice?
 pub fn StationParts::card_choice_of(Self, @json.Json) -> CardChoice?
+pub fn StationParts::card_key_of(Self, @json.Json) -> String?
 pub async fn StationParts::carried(Self) -> Map[String, @json.Json]
 pub fn StationParts::carry(Self, String, async () -> @json.Json, (@json.Json) -> Unit) -> Unit raise PartTwice
 pub fn StationParts::connected(Self) -> Unit
