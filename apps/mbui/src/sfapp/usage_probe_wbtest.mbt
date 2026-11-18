@@ -271,3 +271,39 @@ test "usage probe: kept and woken, then a row picked" {
     uprobe_at(t, "E\{mode} back down 400")
   }
 }
+
+///|
+test "usage probe: on a device's pixels" {
+  for case in [(1, "none"), (1, "late"), (2, "none"), (2, "late")] {
+    let (platform, mode) = case
+    new_run()
+    let pending = @signals.signal(false, same=fn(a, b) { a == b })
+    let base = fixture("home")
+    let src = { ..base, topic_read: fn(name, params) {
+      let answer = base.topic(name, params).get().snapshot()
+      if name == "usage" && params.get("only") is Some(_) && pending.get() { { ..answer, value: None } } else { answer }
+    } }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform~, scale=3.0)
+    t.set_rows_on_pixels(true)
+    bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(kept_switch_over_ms)
+    kept_go(t, "usage", true)
+    t.run_for(kept_switch_over_ms)
+    uprobe_tap(t, "人")
+    t.run_for(kept_switch_over_ms)
+    uprobe_at(t, "F\{platform}\{mode} people")
+    pending.set(mode != "none")
+    uprobe_tap(t, "林")
+    t.run_for(150.0)
+    pending.set(false)
+    t.run_for(kept_switch_over_ms)
+    match (t.rect_of("只看 林"), t.rect_of("花费明细")) {
+      (Some(c), Some(h)) => println("dev \{platform} \{mode}: chip→head \{h.1 - c.1}")
+      (c, h) => println("dev \{platform} \{mode}: chip \{c is Some(_)} head \{h is Some(_)}")
+    }
+    uprobe_end(t, "F\{platform}\{mode}")
+    t.drag(180.0, 200.0, 180.0, 600.0, steps=20)
+    t.run_for(kept_glide_over_ms)
+    uprobe_at(t, "F\{platform}\{mode} back down 400")
+  }
+}
