@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"live","station":"ws/maple","key":"k-maple-0"}
   let value =
-    #|{"activity":{"now":{"key":"think","text":"思考中","mono":null,"important":null}}}
+    #|{"activity":{"now":{"key":"think","text":"思考中","mono":null,"important":null,"since":1791277180000}}}
   put(asked, value)
 }

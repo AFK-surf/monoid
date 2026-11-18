@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"live","station":"ws/maple","key":"k-maple-0"}
   let messages =
-    #|[{"value":{"activity":{"now":{"key":"call-160","text":"运行","mono":true,"important":null}}}}]
+    #|[{"value":{"activity":{"now":{"key":"call-160","text":"运行","mono":true,"important":null,"since":1791277200650}}}}]
   put_changes(asked, "step", messages)
 }

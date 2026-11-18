@@ -319,7 +319,8 @@ test "activity: what its agent's stream changes beside the line builds nothing i
 ///|
 /// The line's clock counts what the line says, from when the core says it began (`activity.now.since`: the request
 /// sent, the call started), as the history's latest row does; not the whole turn, which said 请求中 43m 34s beside a
-/// request of 20 s (2026-11-18). Where the core says nothing, the turn's.
+/// request of 20 s (2026-11-18). Where the core says nothing, the turn's. (Its request 37m 3s old: no clock of the
+/// fixture's says that by chance.)
 test "activity: its clock counts what it does now, not its whole turn" {
   let at = fn(since : Double?) -> Json {
     let now : Map[String, Json] = { "key": Json::string("requesting"), "text": Json::string("请求中") }
@@ -332,9 +333,10 @@ test "activity: its clock counts what it does now, not its whole turn" {
   let clock : Ref[() -> Double] = Ref(fn() { 0.0 })
   let t = activity_live_chat(live, clock~)
   let now = (clock.val)()
-  let own = fn() { elapsed((clock.val)() - (now - 20000.0)) }
+  let sent = now - 2223000.0
+  let own = fn() { elapsed((clock.val)() - sent) }
   assert_true(t.find(own()) is None, msg="where the core says nothing, the turn's clock, not \{own()}")
-  live.set(at(Some(now - 20000.0)))
+  live.set(at(Some(sent)))
   t.run_for(@ui.move_most_ms)
   assert_true(t.find(own()) is Some(_), msg="the request's own clock: \{own()}")
 }
