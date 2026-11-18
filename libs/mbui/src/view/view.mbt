@@ -8961,14 +8961,9 @@ pub fn View::show(
         match gone.val {
           Some(g) if g.alive() && slot.tree.nodes[g.at].left_at >= 0.0 => {
             slot.come_back(g)
-            // (under a page's list, drawn by its way back: pick_leave.mbt's head; back at once, its way done (an
-            // answer's: View::comes), whole, not drawn as the way it went by had it)
+            // (under a page's list, drawn by its way back: pick_leave.mbt's head)
             if !at_once && slot.tree.pick_held(g) {
-              if slot.tree.nodes[g.at].coming {
-                held_on_way(g, false)
-              } else {
-                g.alpha(Is(1.0)).scale(Is(1.0), about=DrawnSide(0.0)) |> ignore
-              }
+              held_on_way(g, false)
             }
             had.val = Some(g)
           }
@@ -9759,23 +9754,13 @@ fn View::comes(
     !@signals.untracked(tree.motion_reduced) &&
     tree.makes_way(v.at) &&
     !tree.holds_shared(v.at) &&
-    // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt)
-    !answered.val &&
-    !tree.answer_holds(v.at) else {
+    // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
+    // way a cause set it on, turned back by an answer (a show's shown again as it closes), turns back on that way as
+    // it would for a cause: that way is the cause's still, and stopped dead or done at once it jumps)
+    ((n.coming && n.flex.style.come_to <= 0.0 && to > 0.0) || (!answered.val && !tree.answer_holds(v.at))) else {
     // (made or let go at once as an answer told it: marked so, for what judges how what moves goes)
     if answered.val || tree.answer_holds(v.at) {
       tree.answer_mark(v.at)
-    }
-    // (one closing its way, come back at once (a show's shown again by an answer as it went): whole now, its way done,
-    // never left laid out as that way had it, taking none of its room while it is drawn whole)
-    match v.live() {
-      Some(m) if to >= 1.0 && m.coming => {
-        (m.come_off)()
-        // (its way ended here, not where it was going to: come_done would wait for that end)
-        m.flex.style.come_ends = tree.cause_now()
-        come_done(tree, v, m)
-      }
-      _ => ()
     }
     return false
   }

@@ -165,7 +165,7 @@ test "answering: in one change an answer told within a part comes at once there,
 }
 
 ///|
-test "answering: a show going by an event, shown again by an answer as it closes its way, takes its room whole at once" {
+test "answering: a show going by an event, shown again by an answer as it closes its way, turns back on that way to all its room" {
   for period in answer_periods {
     let clock = Ref(0.0)
     let on = @signals.signal(true)
@@ -196,10 +196,12 @@ test "answering: a show going by an event, shown again by an answer as it closes
     on.set(false)
     clock.val += period
     tree.frame(390.0, 844.0, now=clock.val) |> ignore
-    // (back by an answer before that way ends: whole at once, the line under it where it was)
+    // (back by an answer before that way ends: the way the event set it on turned back, the line under it where it was
+    // at that moment, not jumping)
+    let was = top()
     @view.answering(fn() { on.set(true) })
     tree.frame(390.0, 844.0, now=clock.val) |> ignore
-    assert_eq(top(), 100.0, msg="at \{period} ms a frame: shown again by the answer")
+    assert_true((top() - was).abs() < 0.5, msg="at \{period} ms a frame: the line at \{was}, at \{top()} as it is shown again")
     while clock.val + period <= 2400.0 {
       clock.val += period
       tree.frame(390.0, 844.0, now=clock.val) |> ignore
