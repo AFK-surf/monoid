@@ -1,5 +1,6 @@
 // What a notification says ( table), apart from push.ts so the tests can load it outside
 // Workers.
+import { plainText } from "../../client/core-ts/src/plain.ts";
 import { tr, type Lang } from "./i18n.ts";
 
 /** How long a text of a notification may be, in characters, the ellipsis included. */
@@ -11,8 +12,10 @@ export function line(text: string): string {
   return chars.length <= MAX_TEXT ? chars.join("") : chars.slice(0, MAX_TEXT - 1).join("").trimEnd() + "…";
 }
 
-/** A notification's text, by its kind ( table), in the language of the device it goes to. */
-export function noticeBody(kind: string, text: string, by?: string, lang: Lang = "zh"): string {
+/** A notification's text, by its kind ( table), in the language of the device it goes to: what was said as plain
+ * words, Markdown's marks out, as a chat's row shows it (client/core-ts/src/plain.ts). */
+export function noticeBody(kind: string, said: string, by?: string, lang: Lang = "zh"): string {
+  const text = plainText(said, { link: tr(lang, "cloud.notice.plain.link"), image: tr(lang, "cloud.notice.plain.image"), file: tr(lang, "cloud.notice.plain.file") });
   if (kind === "block") return line(tr(lang, "cloud.notice.block", { text }));
   if (kind === "failed") return line(tr(lang, "cloud.notice.failed", { text }));
   return line(by ? `${by}: ${text}` : text);

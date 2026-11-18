@@ -1246,6 +1246,7 @@ pub fn profiles_overview_node(
   frame~ : () -> PageFrame,
   open_profile? : (String, String) -> Unit,
   on_show_accounts? : () -> Unit,
+  tabs_thumb? : @sf.SegThumb,
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
   bar_add? : Bool = true,
   said? : (@sf.PageSaid) -> Unit,
@@ -1351,6 +1352,7 @@ pub fn profiles_overview_node(
               }
             }
           },
+          thumb?=tabs_thumb,
         )
       } else if key == "pools" {
         b.box(fn(sec) {

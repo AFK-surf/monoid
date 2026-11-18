@@ -25,6 +25,10 @@ runs:
         echo "STILLFAIL_NATIVE_CACHE_MAX_BYTES=10737418240" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
+        # The station reader's MBC_STORE (station/mb/build.sh): an entry is <store>/<2 of its key>/<key>, said used as
+        # mbc takes or keeps it (mbc.mbt's c_touch); those unused for 3 days go, the store grew without end before
+        # (a write into it failed on Mini1, 44243874638, 2026-11-18).
+        find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mtime +3 -exec rm -rf {} + 2>/dev/null || true
         echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
         echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
         sh .github/actions/setup-linux/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"

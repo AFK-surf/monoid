@@ -256,7 +256,7 @@ pub struct RadioGroup[K] {
 }
 pub fn[K] RadioGroup::disabled(Self[K]) -> Bool
 #callsite(autofill(loc))
-pub fn[K : Eq] RadioGroup::item(Self[K], @view.View, () -> K, () -> String, (@view.View, RadioItem) -> Unit, disabled? : () -> Bool, space_only? : Bool, slop? : Double, slide? : (K?) -> Unit, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[K : Eq] RadioGroup::item(Self[K], @view.View, () -> K, () -> String, (@view.View, RadioItem) -> Unit, disabled? : () -> Bool, space_only? : Bool, slop? : Double, slide? : (Double, (@view.Drag?) -> K?), made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub struct RadioItem {
   // private fields

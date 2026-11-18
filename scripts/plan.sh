@@ -37,7 +37,7 @@ decide() {
   # (and what cloud/src takes from outside cloud/: the lock's rules through the station's lock, how the station keeps
   # a lock's forks, the client's words and limits; none of them deployed it, so a change to the rules alone reached no
   # cloud, 2026-11-05)
-  if has '^(rules/js/|station/src/cloud/(lock|log-keep)\.ts$|client/(i18n/|limits\.ts$|core-ts/src/(picture-relay|lock-form)\.ts$))'; then api=true; fi
+  if has '^(rules/js/|station/src/cloud/(lock|log-keep)\.ts$|client/(i18n/|limits\.ts$|core-ts/src/(picture-relay|lock-form|plain)\.ts$))'; then api=true; fi
   relay=false
   if has '^cloud/(src/(relay|relay-worker|limits|auth)\.ts|Dockerfile|relay-entrypoint\.sh|wrangler\.relay\.jsonc)$'; then relay=true; fi
   station=false
