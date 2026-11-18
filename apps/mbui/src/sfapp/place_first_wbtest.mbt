@@ -57,7 +57,7 @@ test "the pages of the stack come in the same way the first time and again" {
     "settings-security-pending", "settings-security-open", "settings-vault", "settings-vault-items", "settings-vault-item", "settings-stations", "settings-station",
     "settings-profiles", "settings-profile", "settings-new-profile", "settings-connects", "settings-connect",
     "settings-memories", "settings-memory", "settings-memory-doc", "settings-usage", "settings-archive", "settings-kept",
-    "settings-adb-chats", "settings-decisions", "settings-completion", "settings-policy", "settings-bars", "settings-run",
+    "settings-adb-chats", "settings-decisions", "settings-completion", "settings-policy", "settings-bars",
     "settings-about", "settings-changelog", "settings-prices", "settings-notify", "settings-notify-off", "settings-permissions",
     "settings-archiving", "settings-shortcuts", "settings-local-station",
   ] {

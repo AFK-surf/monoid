@@ -410,12 +410,173 @@ async fn keys_in_memory() -> Unit raise {
   assert_eq(no_key, "failed: no key")
 }
 
+// HTTP (`fetch`, `stream.*`) against a `fetch` of the test's: every answer a microtask's, as iroh's above.
+
+///|
+#external
+priv type Http
+
+///|
+/// The page's `fetch` taken: what each request was asked with told in `http.log`; at `/echo` a 201 whose headers say
+/// the method and whose body is what was sent (`none` where nothing was); at `/chunks` a body read in pieces, `ab`,
+/// one empty, `c`; at `/nobody` none; at `/hang` nothing, till the request is aborted.
+extern "js" fn http_take() -> Http =
+  #|() => {
+  #|  const http = { was: globalThis.fetch, log: [] };
+  #|  const text = (t) => Uint8Array.from(t, (c) => c.charCodeAt(0));
+  #|  const reader = (pieces) => ({
+  #|    read: async () => (pieces.length > 0 ? { done: false, value: pieces.shift() } : { done: true, value: undefined }),
+  #|    cancel: async () => { http.log.push("reader cancelled"); },
+  #|  });
+  #|  globalThis.fetch = (url, init) => {
+  #|    const body = init.body === undefined ? "-" : Array.from(init.body, (b) => b.toString(16).padStart(2, "0")).join("");
+  #|    http.log.push(init.method + " " + url + " " + JSON.stringify([...init.headers.entries()]) + " " + body);
+  #|    const path = new URL(url).pathname;
+  #|    if (path === "/hang") {
+  #|      return new Promise((_, fail) => init.signal.addEventListener("abort", () => { http.log.push("aborted"); fail(new Error("AbortError")); }));
+  #|    }
+  #|    const pieces = path === "/echo" ? [init.body === undefined ? text("none") : Uint8Array.from(init.body)] : path === "/chunks" ? [text("ab"), new Uint8Array(0), text("c")] : null;
+  #|    const whole = pieces === null ? new Uint8Array(0) : Uint8Array.from(pieces.flatMap((p) => [...p]));
+  #|    return Promise.resolve({
+  #|      status: path === "/echo" ? 201 : 200,
+  #|      headers: new Headers(path === "/echo" ? [["X-Method", init.method], ["Content-Type", "application/octet-stream"]] : []),
+  #|      arrayBuffer: async () => whole.buffer,
+  #|      body: pieces === null ? null : { getReader: () => reader(pieces) },
+  #|    });
+  #|  };
+  #|  return http;
+  #|}
+
+///|
+extern "js" fn http_back(http : Http) -> Unit =
+  #|(http) => { globalThis.fetch = http.was; }
+
+///|
+extern "js" fn http_log(http : Http) -> FixedArray[String] =
+  #|(http) => http.log.slice()
+
+///|
+/// What `op` is answered on the page: its JSON, and its bytes in hex where it carries any; or what it failed with.
+async fn page_hex(rt : @effect.Runtime, shell : Shell, op : String, args : Json, bytes? : Bytes) -> String {
+  on_page(rt, () => {
+    let answer = shell.call(op, args, bytes?)
+    match answer.bytes {
+      Some(b) => {
+        let digits = "0123456789abcdef".to_array()
+        let out = StringBuilder()
+        for x in b {
+          out.write_char(digits[x.to_int() / 16])
+          out.write_char(digits[x.to_int() % 16])
+        }
+        "\{answer.json.stringify()} \{out.to_string()}"
+      }
+      None => answer.json.stringify()
+    }
+  })
+}
+
+///|
+/// `op` of `args` asked as a fiber of `rt` and given up (`fetch.cancel`) once it is under way: what it was answered.
+async fn given_up(rt : @effect.Runtime, shell : Shell, op : String, args : Json) -> String {
+  let id = Ref(0L)
+  let got = Ref("(not done)")
+  ignore(
+    rt.fork(() => {
+      got.val = {
+        ignore(shell.call(op, args, called=i => id.val = i))
+        "answered"
+      } catch {
+        ShellError(e) => e
+        e => "\{e}"
+      }
+    }),
+  )
+  settled()
+  shell.give_up(id.val)
+  settled()
+  settled()
+  got.val
+}
+
+///|
+/// A request asked whole and as a body read in pieces, with its headers and its bytes; one given up under way; a
+/// body read to its end and one let go of before it.
+async fn http_in_a_page() -> Unit raise {
+  let http = http_take()
+  let rt = @effect.Runtime::live(() => 1_000L)
+  let shell = Shell::start_with(rt, fake_module(fake_make()))
+  let got = page_hex(rt, shell, "fetch", { "url": "https://h/echo", "headers": [["x-a", "1"], ["x-a", "2"]] })
+  let posted = page_hex(rt, shell, "fetch", { "url": "https://h/echo", "method": "POST", "headers": [["x-b", "b"]] }, bytes=b"\x00\xff\x01")
+  let empty_get = page_hex(rt, shell, "fetch", { "url": "https://h/echo", "method": "GET" }, bytes=b"")
+  let empty_put = page_hex(rt, shell, "fetch", { "url": "https://h/echo", "method": "PUT" }, bytes=b"")
+  let no_url = page_hex(rt, shell, "fetch", { "method": "GET" })
+  let cancelled = given_up(rt, shell, "fetch", { "url": "https://h/hang" })
+  let open_cancelled = given_up(rt, shell, "stream.open", { "url": "https://h/hang" })
+  let late = shell.ask("fetch.cancel", { "id": 999 })
+  // Read to its end, the empty piece read past: let go of then, and closed after that, nothing.
+  let opened = Ref(0L)
+  let open = on_page(rt, () => {
+    let answer = shell.call("stream.open", { "url": "https://h/chunks" })
+    opened.val = handle(answer)
+    answer.json.stringify()
+  })
+  let id : Json = { "id": id_of(opened.val) }
+  let pieces = [
+    page_hex(rt, shell, "stream.read", id),
+    page_hex(rt, shell, "stream.read", id),
+    page_hex(rt, shell, "stream.read", id),
+    page_hex(rt, shell, "stream.read", id),
+    page_hex(rt, shell, "stream.close", id),
+  ]
+  // Let go of after its first piece: its reader cancelled, and read after, none.
+  let early = Ref(0L)
+  ignore(on_page(rt, () => {
+    early.val = handle(shell.call("stream.open", { "url": "https://h/chunks" }))
+    ""
+  }))
+  let early_id : Json = { "id": id_of(early.val) }
+  let first = page_hex(rt, shell, "stream.read", early_id)
+  let closed = page_hex(rt, shell, "stream.close", early_id)
+  let after = page_hex(rt, shell, "stream.read", early_id)
+  // No body at all: its end at once.
+  let bodiless = Ref(0L)
+  ignore(on_page(rt, () => {
+    bodiless.val = handle(shell.call("stream.open", { "url": "https://h/nobody" }))
+    ""
+  }))
+  let none = page_hex(rt, shell, "stream.read", { "id": id_of(bodiless.val) })
+  http_back(http)
+  assert_eq(
+    got,
+    "{\"status\":201,\"headers\":[[\"content-type\",\"application/octet-stream\"],[\"x-method\",\"GET\"]]} 6e6f6e65",
+  )
+  assert_eq(
+    posted,
+    "{\"status\":201,\"headers\":[[\"content-type\",\"application/octet-stream\"],[\"x-method\",\"POST\"]]} 00ff01",
+  )
+  assert_true(empty_get.has_suffix(" 6e6f6e65"))
+  assert_true(empty_put.has_suffix("]]} "))
+  assert_eq(no_url, "failed: no url")
+  assert_eq((cancelled, open_cancelled), ("cancelled", "cancelled"))
+  assert_eq(late, Json::boolean(false))
+  assert_eq(open, "{\"status\":200,\"headers\":[],\"id\":\{opened.val}}")
+  assert_eq(pieces, ["{} 6162", "{} 63", "{\"end\":true}", "failed: not a response", "{}"])
+  assert_eq((first, closed, after), ("{} 6162", "{}", "failed: not a response"))
+  assert_eq(none, "{\"end\":true}")
+  assert_eq(Array::from_fixed_array(http_log(http)), [
+    "GET https://h/echo [[\"x-a\",\"1, 2\"]] -", "POST https://h/echo [[\"x-b\",\"b\"]] 00ff01", "GET https://h/echo [] -",
+    "PUT https://h/echo [] ", "GET https://h/hang [] -", "aborted", "GET https://h/hang [] -", "aborted",
+    "GET https://h/chunks [] -", "GET https://h/chunks [] -", "reader cancelled", "GET https://h/nobody [] -",
+  ])
+}
+
 ///|
 /// (one test, these one after the other: a page has one shell, and Node runs async tests at once)
-async test "iroh given: as what loads it, then as the module itself in a worker; keys kept where there is no IndexedDB" {
+async test "iroh given: as what loads it, then as the module itself in a worker; keys kept where there is no IndexedDB; HTTP by the page's fetch" {
   given_a_loader()
   given_the_module()
   keys_in_memory()
+  http_in_a_page()
 }
 
 // A tab's claim (tab.mbt) against a browser of the test's: Web Locks and BroadcastChannel as a page has them, in this

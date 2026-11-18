@@ -304,3 +304,17 @@ pub fn row_presses_node(
   )
   |> ignore
 }
+
+///|
+/// A press's look on a button over mbui's headless button, handed it by that button's Hold (its press going down, a tap
+/// a finger let go before it showed), never by a gesture of the look's own (headless.mbt: a look takes no press):
+/// `kept` the look's, made as it draws; told only while `live`. A press held however long is still its press.
+fn ripple_hold(kept : Ref[PressLook?], live : () -> Bool) -> @headless.Hold {
+  @headless.Hold::new(
+    @ui.touch_slop(),
+    @ui.long_press_ms,
+    fn() { false },
+    down=fn(d) { if live() && kept.val is Some(r) { (r.down)(d) } },
+    tapped=fn(d) { if live() && kept.val is Some(r) { (r.tapped)(d) } },
+  )
+}

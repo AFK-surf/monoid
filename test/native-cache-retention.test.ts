@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-test("the native cache removes cold versions while retaining recently used and locked versions", (t) => {
+test("the native cache removes cold versions, then those over budget, while retaining recently used and locked versions", (t) => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const tmp = mkdtempSync(join(tmpdir(), "native-cache-test-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -41,7 +41,8 @@ syncBuiltinESMExports();\n`);
   const recent = join(part, `darwin-arm64-${"3".repeat(24)}`);
   const legacy = join(part, `darwin-arm64-${"4".repeat(24)}`);
   const unused = join(part, `darwin-arm64-${"5".repeat(24)}`);
-  const protectedVersion = join(part, `darwin-arm64-${"6".repeat(24)}`);
+  const overBudget = join(part, `darwin-arm64-${"6".repeat(24)}`);
+  const protectedVersion = join(part, `darwin-arm64-${"7".repeat(24)}`);
   const longAgo = new Date("2020-01-01T00:00:00Z");
   const entry = (dir: string, used: "old" | "recent" | "legacy") => {
     mkdirSync(dir);
@@ -61,12 +62,15 @@ syncBuiltinESMExports();\n`);
   entry(recent, "recent");
   entry(legacy, "legacy");
   entry(unused, "recent");
+  entry(overBudget, "recent");
   entry(protectedVersion, "recent");
   const marker = (dir: string) => join(cache, ".access", "shell-apple", basename(dir));
   const sevenHoursAgo = new Date(now - 7 * 60 * 60 * 1000);
   const fiveHoursAgo = new Date(now - 5 * 60 * 60 * 1000);
+  const tenMinutesAgo = new Date(now - 10 * 60 * 1000);
   utimesSync(marker(unused), sevenHoursAgo, sevenHoursAgo);
-  utimesSync(marker(protectedVersion), fiveHoursAgo, fiveHoursAgo);
+  utimesSync(marker(overBudget), fiveHoursAgo, fiveHoursAgo);
+  utimesSync(marker(protectedVersion), tenMinutesAgo, tenMinutesAgo);
   mkdirSync(`${locked}.lock`);
   writeFileSync(join(`${locked}.lock`, "pid"), String(process.pid));
 
@@ -75,9 +79,52 @@ syncBuiltinESMExports();\n`);
   assert.equal(result.stdout.trim(), current);
   assert.equal(existsSync(old), false, "an unused old version should be removed");
   assert.equal(existsSync(unused), false, "versions unused for over six hours should be removed when over budget");
-  assert.equal(existsSync(protectedVersion), true, "versions used within six hours must remain usable");
+  assert.equal(existsSync(overBudget), false, "versions unused for a quarter of an hour go too while still over budget");
+  assert.equal(existsSync(protectedVersion), true, "versions used within a quarter of an hour must remain usable");
   assert.equal(existsSync(current), true, "the requested version must remain usable");
   assert.equal(existsSync(recent), true, "a recently requested version may still be in use");
   assert.equal(existsSync(locked), true, "another process is working on this version");
   assert.equal(existsSync(legacy), true, "versions from before use tracking must first be observed");
+});
+
+// A burst of merges: every version used within six hours, together over the budget (Mini1's ENOSPC, 44253499545,
+// 2026-11-18). The cold go first, then those unused for a quarter of an hour, oldest first, and the trim stops once the
+// cache is within its budget; one used in the last quarter of an hour stays whatever the total.
+test("the native cache trims a burst of versions to its budget, oldest first, never one used in the last quarter of an hour", (t) => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const cache = mkdtempSync(join(tmpdir(), "native-trim-test-"));
+  t.after(() => rmSync(cache, { recursive: true, force: true }));
+  const MB = 1 << 20, MIN = 60 * 1000, now = Date.now();
+  // a hex digit (its key that digit 24 times) and minutes since its last use; each version 1 MB
+  const versions: [string, number][] = [["a", 8 * 60], ["b", 3 * 60], ["c", 2 * 60], ["d", 60], ["e", 30], ["f", 10], ["0", 5], ["1", 1]];
+  const dirOf = (n: string) => join(cache, "iroh-wasm", `wasm32-${n.repeat(24)}`);
+  const recordOf = (n: string) => join(cache, ".access", "iroh-wasm", `wasm32-${n.repeat(24)}`);
+  mkdirSync(join(cache, ".access", "iroh-wasm"), { recursive: true });
+  for (const [n, ago] of versions) {
+    mkdirSync(dirOf(n), { recursive: true });
+    writeFileSync(join(dirOf(n), "data"), Buffer.alloc(MB, 1));
+    writeFileSync(recordOf(n), "");
+    const at = new Date(now - ago * MIN);
+    utimesSync(recordOf(n), at, at);
+  }
+  const trim = (budget: string) => {
+    const r = spawnSync(process.execPath, [join(root, "scripts/native.ts"), "trim"], {
+      cwd: root, encoding: "utf8", env: { ...process.env, STILLFAIL_NATIVE_CACHE: cache, STILLFAIL_NATIVE_CACHE_MAX_BYTES: budget },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stderr;
+  };
+  const left = () => versions.map(([n]) => n).filter((n) => existsSync(dirOf(n))).join("");
+
+  trim("");
+  assert.equal(left(), "abcdef01", "no budget, nothing goes");
+  // 5.5 MB and a little: a (cold) goes, then b and c of those unused for a quarter of an hour; d and e stay.
+  const said = trim(String(Math.round(5.5 * MB) + 64 * 1024));
+  assert.equal(left(), "def01");
+  assert.match(said, /removed cold cache iroh-wasm\/wasm32-a{24}/);
+  assert.match(said, /removed over-budget cache iroh-wasm\/wasm32-b{24}/);
+  // 1 byte: all unused for a quarter of an hour go; f, 0 and 1 (10, 5 and 1 minutes) stay over the budget.
+  trim("1");
+  assert.equal(left(), "f01");
+  assert.equal(["a", "b", "c", "d", "e"].filter((n) => existsSync(recordOf(n))).join(""), "", "their access records go with them");
 });

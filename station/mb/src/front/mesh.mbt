@@ -75,9 +75,10 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     clients: [],
     binds: 0,
   }
-  // `streams`: how it hands Node the streams the other end opens (front.rs `STREAMS`): 4, each with its index, a route
-  // Node gave it (`route`, a segment `*` any one) to what answers it.
-  host.say(({ "listening": Json::string(path), "streams": 4 } : Json).stringify())
+  // `streams`: how it hands Node the streams the other end opens and what it does (front.rs `STREAMS`): 5, each with
+  // its index, a route Node gave it (`route`, a segment `*` any one) to what answers it, and the mesh's scopes and
+  // leaves (`meshConfigure`, `meshRemove`, `meshAttachLeaf`, `meshDetachLeaf`).
+  host.say(({ "listening": Json::string(path), "streams": 5 } : Json).stringify())
   // Its stdin is the launcher's: ended (the launcher gone, or stopping the station), the endpoint goes with it.
   ignore(
     host.rt.fork(name="mesh parent", () => {

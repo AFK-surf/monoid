@@ -1244,6 +1244,9 @@ pub struct Tree {
   /// the width each node that says it lays what it holds out at (View::lays_anew), by node: what a Tester's steadiness
   /// judges take a step of as that node's own, in the frame it steps
   laid_said : Map[Int, Double]
+  /// what says each node that shakes across (View::shakes_while) shakes at a moment, by node: where a Tester's
+  /// steadiness judges take its left edge as that way's while it goes
+  shakes_said : Map[Int, (Double) -> Bool]
   /// the fingers down on it (each by its id: Drag's `finger`), in the order they went down
   downs : Array[Int]
   /// what the last frame changed: the nodes whose content it made again, those placed or faded otherwise
@@ -1657,6 +1660,7 @@ pub fn Tree::new(
     behind_set: 0,
     defaults_set: 0,
     laid_said: Map([]),
+    shakes_said: Map([]),
     downs: [],
     changed: [],
     composed: [],
@@ -8028,7 +8032,7 @@ fn Tree::fingers_off(self : Tree) -> Array[Int] {
 /// from it that takes one, as were it not there; held still within the slop as long as its hold, the finger its from
 /// then, what had it told Off (no tap, no press of it), its hold told at once (hold_in.mbt). Not in a top row that moves
 /// the window (the window's drag begins as the press goes down) nor over an old view: a finger held on it there is
-/// theirs.
+/// theirs. With `hold_yields`, an ancestor can still take the drag after the hold callback runs.
 pub fn View::gesture(
   self : View,
   slop : Double,
@@ -8038,6 +8042,7 @@ pub fn View::gesture(
   drag? : (Drag) -> Unit,
   through? : Double,
   held_first? : (Drag) -> Bool,
+  hold_yields? : Bool = false,
 ) -> View {
   // (a hold told, or handed through: one way of a hold, its moment the one recognizer's)
   let hold_ms = match (hold, through) {
@@ -8122,10 +8127,11 @@ pub fn View::gesture(
                 match hold {
                   Some((_, f)) => {
                     held.val = true
-                    // (held: the hold its own from now)
-                    match self.live() {
-                      Some(n) => n.yields = false
-                      None => ()
+                    if !hold_yields {
+                      match self.live() {
+                        Some(n) => n.yields = false
+                        None => ()
+                      }
                     }
                     word(f, { ..o, at: due }, o)
                   }
@@ -13977,10 +13983,11 @@ pub fn Tree::lists_feel(self : Tree, f : () -> (ListFeel, Double)) -> Unit {
 }
 
 ///|
-/// Whether the pointer now drags what scrolls up or down (a page's list, a plain column) as a finger does, as it is
-/// asked: not where a desktop's page says the mouse drags no list (the wheel and the trackpad scroll it, a drag is the
-/// pointer's own: words picked), its column then taking over no hold to scroll (View::scrolls' `claims`); one scrolled
-/// across (a code block, a table) still dragged along its row, as an old view's sideways box is. None said, it does.
+/// Whether the pointer now drags what scrolls (a page's list, a plain column, a row scrolled across) as a finger does,
+/// as it is asked: not where a desktop's page says the mouse drags no list (the wheel and the trackpad scroll it, a
+/// drag is the pointer's own: words picked), its column then taking over no hold to scroll (View::scrolls' `claims`),
+/// nor one scrolled across (a code block, a table), as an old view's sideways box is not (ui's claim_down): the wheel,
+/// the trackpad and its bar scroll it. None said, it does.
 /// The bridge of the old frames' saying (ui's Ctx::mouse_drags_lists, the last said holding): once the frames are
 /// nodes, the tree's own.
 pub fn Tree::pointer_drags_scroll(self : Tree, f : () -> Bool) -> Unit {

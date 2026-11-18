@@ -72,7 +72,13 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     window: v.window,
     reveal: v.reveal,
     watch_login: v.watch_login.map(w => (k : (Json) -> Unit) => w(f => k(match f {
-      Some(l) => { "host": Json::string(l.host), "field": Json::string(l.field) }
+      Some(l) => {
+        let m : Map[String, Json] = { "host": Json::string(l.host), "field": Json::string(l.field) }
+        if l.filled {
+          m["filled"] = Json::boolean(true)
+        }
+        Json::object(m)
+      }
       None => Json::null()
     }))),
     fill: v.fill.map(f => async fn(j) {

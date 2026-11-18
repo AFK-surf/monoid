@@ -22,7 +22,9 @@
 // and width, and where words start, are measured by the same rule as its top and height, from the left of the
 // row they are in where they are in one (a list's, what scrolls). Words whose own words change are new words there: where
 // they stand along their line is laid out anew at once for them. Its faults are counted apart (`sizes_across_known`, the
-// check `sizes_across`), each file's bar only falling, as they were found when it came.
+// check `sizes_across`), each file's bar only falling, as they were found when it came. What shakes across on purpose
+// (View::shakes_while: a control refusing a press) is not judged by where its left edge is drawn while it shakes, nor is
+// what it holds: there and back is that way's; its top and its sizes are, and its left edge once it is over.
 
 ///|
 priv struct SizesSteady {
@@ -459,6 +461,9 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // to in that frame's layout, as it does in a frame the hand scrolled it (the coordinator of the migration,
     // 2026-11-13: a thumb says where the reader is in what the column holds, which the keys changing changes at once))
     let put_now = Array::make(k, false)
+    // (and whether it shakes across now, itself or what holds it (View::shakes_while, motion's ShakeWay::shakes): where
+    // its left edge is drawn is that way's while it goes, turning back on purpose; its top and its sizes judged as ever)
+    let shaken = Array::make(k, false)
     let puts_now : Map[Int, (Double, Double)] = Map([])
     let laids_now : Map[Int, Double] = Map([])
     // (what holds each before it: a node of the window's tree put among the frame's may come after what it holds)
@@ -528,6 +533,11 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       if p >= 0 && p < k && put_now[p] {
         put_now[i] = true
       }
+      shaken[i] = (p >= 0 && p < k && shaken[p]) ||
+        (match (tree, tree_frame_ids.get(i)) {
+          (Some(tr), Some(id)) => tr.shakes_at(id.at, now)
+          _ => false
+        })
       if p >= 0 && p < k {
         let pn = self.nodes[p]
         c_top[i] = c_top[p]
@@ -749,6 +759,13 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // frame its column was put at once, or its list's keys changed by data, as far as that took it)
         if gap || resized || !shows || self.down || view_holds() || (hand_now && by_scroll[i]) || put_now[i] {
           seen.clear()
+          continue
+        }
+        // (its left edge while it shakes across: the shake's, there and back on purpose; seen anew from its first frame
+        // at rest, as one never seen)
+        if shaken[i] && m.0 == MEASURE_LEFT {
+          seen.clear()
+          ns.turned[slot] = -1.0e9
           continue
         }
         if seen.length() > 0 && now - seen[seen.length() - 1].0 < 0.5 * period {

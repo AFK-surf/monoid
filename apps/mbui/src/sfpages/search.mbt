@@ -394,35 +394,23 @@ pub fn search_page_node(
       // (from where it stood in the list: its top in the window then, to where it rests)
       .offset(By(fn() { (0.0, (search.from - inset() - search_bar_top) * (1.0 - u())) }))
       |> ignore
-      slot.box(fn(f) {
-        @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
-        f.height(By(fn() { Some(@sf.theme().chat_list.band_h) })) |> ignore
-        @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-        let field = @ui.field(
-          f,
-          finder_field(),
-          placeholder=@sf.t("android-chat.search.field"),
-          shorter=search_field_shorter(),
-          max_lines=1,
-          enter_sends=true,
-          ime_action=@hostapi.ime_action_search,
-          size_by=fn() { @sf.theme().t.ui },
-          colors_by=fn() {
-            let p = @sf.theme().p
-            (p.text, p.muted, p.accent)
-          },
-          // the keyboard's search key, as a keyboard's Enter: the line chosen opened where one is shown chosen
-          submitted=fn(typed) {
-            finder_typed(typed)
-            finder_enter(close)
-          },
-        )
-        field.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        v.focus_opens(field) |> ignore
-        // (what is typed, as it is: what the finder looks for)
-        f.reacts(fn() { finder_field().text() }, fn(words) { finder_typed(words) })
-      })
-      |> ignore
+      // (the library's field to look through a list by, as the one in the list it came up from looks: its clear key
+      // while it holds words)
+      let field = @sf.search_input_node(
+        slot,
+        finder_field(),
+        fn() { @sf.t("android-chat.search.field") },
+        at~,
+        shorter=search_field_shorter(),
+        // the keyboard's search key, as a keyboard's Enter: the line chosen opened where one is shown chosen
+        submitted=fn(typed) {
+          finder_typed(typed)
+          finder_enter(close)
+        },
+      )
+      v.focus_opens(field) |> ignore
+      // (what is typed, as it is: what the finder looks for)
+      slot.reacts(fn() { finder_field().text() }, fn(words) { finder_typed(words) })
     })
     |> ignore
     bar.box(fn(k) {

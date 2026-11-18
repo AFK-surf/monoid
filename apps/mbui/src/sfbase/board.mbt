@@ -121,6 +121,7 @@ pub fn board_reset() -> Unit {
   board_groups_here.clear()
   board_empty_here.clear()
   board_drafts_here.clear()
+  board_writing_here.clear()
   board_titles_here.clear()
   board_seen_here.clear()
   board_written.val = 0
@@ -347,6 +348,40 @@ pub fn board_next_id() -> String {
 }
 
 ///|
+/// The task being written in 待派发 of each workspace: its key, kept while the board is away (a chat or the list shown
+/// in its place, the board made again as it comes back), so that its words and pictures, the core's composer's under
+/// it, are there again; a new one only once it is added or put away (board_writing_renew).
+// kept across runs: put back by board_reset as a run starts
+let board_writing_here : Map[String, String] = Map([])
+
+///|
+/// The key of the task being written in 待派发 of workspace `ws` (board_writing_here's).
+pub fn board_writing_id(ws : String) -> String {
+  match board_writing_here.get(ws) {
+    Some(id) => id
+    None => board_writing_renew(ws)
+  }
+}
+
+///|
+/// The task being written in 待派发 of workspace `ws` done with (added, or put away): the next one's key.
+pub fn board_writing_renew(ws : String) -> String {
+  let id = board_next_id()
+  board_writing_here[ws] = id
+  id
+}
+
+///|
+/// Whether something is written in 待派发's line of workspace `ws`: words or pictures, not yet added.
+pub fn board_writing_kept(src : Source, ws : String) -> Bool {
+  guard board_writing_here.get(ws) is Some(id) else { return false }
+  @signals.untracked(fn() {
+    let w = writing(src, board_file_key(ws, id))
+    w.field.text().trim(chars=" \n\r\t").to_owned() != "" || !w.files.get().is_empty()
+  })
+}
+
+///|
 /// The task's composer, kept separately in the workspace's draft store; `id` stays with its board card.
 pub fn board_file_key(ws : String, id : String) -> String {
   "new:" + ws + ":board:" + id
@@ -507,12 +542,13 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
 pub let board_listed : Ref[() -> Unit] = Ref(fn() {  })
 
 ///|
-/// The board shown or the list in the workspace in view: what is open beside it closed, what is being written put
-/// away.
+/// The board shown or the list in the workspace in view: what is open beside it closed; what is being written in
+/// 待派发 kept, open again as the board is shown.
 pub fn board_set(src : Source, on : Bool) -> Unit {
   guard @signals.untracked(fn() { workspace_in_view(src).0 }) is Some(w) else { return }
   board_pick.set(None)
-  board_adding.set(false)
+  // (open again on what was being written in 待派发 and left for a chat or the list: its words kept, not put away)
+  board_adding.set(on && board_writing_kept(src, w.id))
   // (the board narrows to all or mine alone: shown as watching, its 监控中 column; hidden, all of them)
   if on {
     match filter_of(src, w.id) {

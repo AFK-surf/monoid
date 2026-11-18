@@ -2594,3 +2594,58 @@ test("a desktop's windows: as the helper says them (its info, then as they chang
   assert.equal(parseWindowPick({ t: "window", id: -3 }), undefined);
   assert.equal(parseWindowPick({ t: "key" }), undefined);
 });
+
+test("unsent pointer moves of the same buttons coalesce to the latest while clicks, drags, wheel and keys keep their order", async () => {
+  class SlowInputView extends FakeView {
+    gates: (() => void)[] = [];
+    override async input(event: ScreenInput) {
+      this.inputs.push(event);
+      this.asks.push({ input: event });
+      await new Promise<void>((resolve) => this.gates.push(resolve));
+    }
+  }
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  const slow = new SlowInputView();
+  source.make = () => slow;
+  hub.add(source);
+  const v = await open(hub, member);
+  await until(v.frames, KIND.video);
+  const send = (e: object) => v.stream.write(frame(KIND.input, Buffer.from(JSON.stringify(e))));
+
+  // First move enters view.input() and blocks on gates[0], simulating a 20–150 ms CDP round-trip.
+  await send({ t: "pointer", kind: "move", x: 0.1, y: 0.1, buttons: 0 });
+  while (slow.gates.length < 1) await settle();
+
+  // Rapid hover moves arrive while the first move is still in flight, followed by a click + drag + wheel + key.
+  await send({ t: "pointer", kind: "move", x: 0.2, y: 0.2, buttons: 0 });
+  await send({ t: "pointer", kind: "move", x: 0.3, y: 0.3, buttons: 0 });
+  await send({ t: "pointer", kind: "move", x: 0.4, y: 0.4, buttons: 0 });
+  await send({ t: "pointer", kind: "down", x: 0.4, y: 0.4, buttons: 1 });
+  await send({ t: "pointer", kind: "move", x: 0.5, y: 0.5, buttons: 1 });
+  await send({ t: "pointer", kind: "move", x: 0.6, y: 0.6, buttons: 1 });
+  await send({ t: "pointer", kind: "up", x: 0.6, y: 0.6, buttons: 0 });
+  await send({ t: "wheel", x: 0.6, y: 0.6, dx: 0, dy: -12 });
+  await send({ t: "key", kind: "down", key: "a", code: "KeyA", mods: 0 });
+  await settle();
+
+  while (slow.inputs.length < 7) {
+    const next = slow.gates.shift();
+    if (next) next();
+    await settle();
+  }
+  while (slow.gates.length > 0) slow.gates.shift()!();
+  await settle();
+
+  assert.deepEqual(slow.inputs, [
+    { t: "pointer", kind: "move", x: 0.1, y: 0.1, buttons: 0 },
+    { t: "pointer", kind: "move", x: 0.4, y: 0.4, buttons: 0 },
+    { t: "pointer", kind: "down", x: 0.4, y: 0.4, buttons: 1 },
+    { t: "pointer", kind: "move", x: 0.6, y: 0.6, buttons: 1 },
+    { t: "pointer", kind: "up", x: 0.6, y: 0.6, buttons: 0 },
+    { t: "wheel", x: 0.6, y: 0.6, dx: 0, dy: -12 },
+    { t: "key", kind: "down", key: "a", code: "KeyA", mods: 0 },
+  ]);
+  await v.stream.finish();
+  await v.served;
+});

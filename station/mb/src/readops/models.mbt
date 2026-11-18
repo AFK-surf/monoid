@@ -150,6 +150,7 @@ pub fn model_key(id : String) -> String {
     }
     m = rest
   }
+  m = claude_dashed(m)
   if last_index(m, "-v") is Some(v) && version_stamp(from_at(m, v + 2)) {
     m = sub(m, 0, v)
   }
@@ -325,4 +326,27 @@ fn price_table(models : Array[Json]) -> Json {
     })
   }
   { "rows": Json::array(rows) }
+}
+
+///|
+/// model.ts `key`: Claude's version said with a dot (OpenRouter's claude-opus-5.5) is Anthropic's claude-opus-5-5.
+fn claude_dashed(m : String) -> String {
+  if !m.has_prefix("claude-") {
+    return m
+  }
+  let cs = m.iter().collect()
+  let n = cs.length()
+  let digit = (j : Int) => j >= 0 && j < n && cs[j] >= '0' && cs[j] <= '9'
+  let buf = StringBuilder::new()
+  for i in 0..<n {
+    buf.write_char(if cs[i] == '.' && digit(i - 1) && digit(i + 1) { '-' } else { cs[i] })
+  }
+  buf.to_string()
+}
+
+///|
+test "a Claude version said with a dot is the dashed one" {
+  assert_eq(model_key("anthropic/claude-opus-5.5"), "claude-opus-5-5")
+  assert_eq(model_key("claude-opus-5-5"), "claude-opus-5-5")
+  assert_eq(model_key("gpt-5.1"), "gpt-5.1")
 }

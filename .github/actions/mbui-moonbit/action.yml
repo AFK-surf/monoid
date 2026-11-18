@@ -12,6 +12,18 @@ inputs:
 runs:
   using: composite
   steps:
+    # Disk upkeep on a self-hosted Mac (setup-mac/upkeep.sh), as setup-mac does, for the mbui jobs that do not use
+    # setup-mac (mbui-host-ios, -mac, render-mac): once an hour, or at each job start below 15 GiB free.
+    - if: runner.environment == 'self-hosted' && runner.os == 'macOS'
+      shell: bash
+      run: |
+        [ -f "$GITHUB_WORKSPACE/.github/actions/setup-mac/upkeep.sh" ] || exit 0
+        upkeep="$HOME/stillfail-ci/.upkeep"
+        free_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+        if [ "${free_kb:-0}" -lt 15728640 ] || [ -z "$(find "$upkeep" -mmin -60 2>/dev/null)" ]; then
+          mkdir -p "$HOME/stillfail-ci" && touch "$upkeep"
+          sh "$GITHUB_WORKSPACE/.github/actions/setup-mac/upkeep.sh" "$GITHUB_WORKSPACE" || echo "::warning::macos-ci disk upkeep failed"
+        fi
     # The newest release put in, looked up only: nothing downloaded yet
     - uses: actions/cache/restore@v4
       id: newest

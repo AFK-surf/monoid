@@ -298,13 +298,30 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
   let crypto = @vault_crypto.Crypto::of_host(host)
   let db_path = path([bus.data, "stillfail.db"])
   let db = @vault_crypto.Db::attach(crypto, db_path, wait=5000)
+  let world = p54_vault_world(bus, cloud, threads, crypto, Some(db))
+  p54_vault_live(bus, cloud, world, crypto, db)
+}
+
+///|
+/// What the vault asks of the station (vault/module.ts's deps): its chats' store, the hub, the machine, the mesh. With
+/// the vault's own connection (`db`), a decided card's outcome is queued for the agents' side's worker; a rig, which
+/// keeps no cards, has none.
+fn p54_vault_world(
+  bus : LiveBus,
+  cloud : P54Cloud,
+  threads : @store_threads.Store,
+  crypto : @vault_crypto.Crypto,
+  db : @vault_crypto.Db?,
+) -> @vault_service.World {
+  let host = bus.host
+  let db_path = path([bus.data, "stillfail.db"])
   let previous_gone = match bus.previous_pid {
     Some(_) => Some(bus.previous_gone)
     None => None
   }
   let hub_ask = async fn(op : String, args : Json) -> Json { (bus.hub_ask.val)(op, args) }
   let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
-  let world : @vault_service.World = {
+  ({
     hub: {
       store: p54_vault_store(bus, threads),
       prepare_latest_threads: Some(async fn(keys) { ignore(hub_ask("store.prepareLatestThreads", [Json::array(keys.map(Json::string))])) }),
@@ -336,7 +353,7 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
       },
       identity: _ => None,
     },
-    card_outcomes: None,
+    card_outcomes: db.map(db => p54_vault_outcomes(bus, threads, db)),
     home: () => p54_home(bus),
     title: Some(session => p54_text(p54_session_row(bus, session), "title")),
     title_if_ready: None,
@@ -384,7 +401,20 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
     backfill_take: () => true,
     backfill_give: () => (),
     foreground: _ => (),
-  }
+  } : @vault_service.World)
+}
+
+///|
+/// The vault made on its world and its part said (module.ts `VaultLive`).
+async fn p54_vault_live(
+  bus : LiveBus,
+  cloud : P54Cloud,
+  world : @vault_service.World,
+  crypto : @vault_crypto.Crypto,
+  db : @vault_crypto.Db,
+) -> P54Vault {
+  let host = bus.host
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
   let vault = @vault_service.Vault::new(world, db, crypto, {
     tell: (ev, data, key, to) => (bus.events_tell.val)(ev, data, key, to),
     tabs: session => p54_browser_tabs(session),
@@ -897,4 +927,71 @@ fn p54_testing() -> Bool {
     Some(t) => t != ""
     None => false
   }
+}
+
+///|
+/// secrets.ts and signin.ts `cardOutcomes`: a decided card's request written on the vault's own connection in its own
+/// write, then its outcome queued on the chats' (the card closed there where asked, the close told), and the agents'
+/// side's worker woken to restate it. Two connections, so two writes: one write would wait on the other's lock.
+fn p54_vault_outcomes(bus : LiveBus, threads : @store_threads.Store, db : @vault_crypto.Db) -> @vault_service.CardOutcomes {
+  {
+    save: (item, tx) => {
+      let nested = db.in_transaction()
+      db.exec(if nested { "SAVEPOINT vault_outcome" } else { "BEGIN IMMEDIATE" })
+      (fn() raise {
+        tx()
+        db.exec(if nested { "RELEASE vault_outcome" } else { "COMMIT" })
+      })() catch {
+        e => {
+          db.exec(if nested { "ROLLBACK TO vault_outcome; RELEASE vault_outcome" } else { "ROLLBACK" }) catch {
+            _ => ()
+          }
+          raise e
+        }
+      }
+      // (the request is written: its card left as it is where its outcome is not queued, said, not undone)
+      threads.set_now(wall_ms().to_double())
+      ignore(threads.save_card_outcome(@store_threads.CardOutcome::from_json(p54_jv(item)), () => ())) catch {
+        e => slice_log("warn", "vault", "a card's outcome was not queued", { "error": Json::string(p54_message(e)) })
+      }
+      p54_told_threads(bus, threads)
+      ignore(
+        bus.host.rt.fork(name="card outcome", async fn() {
+          ignore((bus.hub_ask.val)("cardOutcomes.wake", Json::array([]))) catch {
+            _ => ()
+          }
+        }),
+      )
+    },
+  }
+}
+
+///|
+/// rig/main.ts `Incoming`: on a station that only runs tasks, a command another station sends to run here with a
+/// secret one of its chats was granted (`vault.run`, `vault.capture`, `vault.revoke`, `vault.capabilities`), the
+/// secret in no file; asked in the workspace the request says, else the station's home.
+fn p54_rig_incoming(bus : LiveBus, cloud : P54Cloud, threads : @store_threads.Store) -> Unit {
+  let crypto = @vault_crypto.Crypto::of_host(bus.host)
+  let world = p54_vault_world(bus, cloud, threads, crypto, None)
+  let runs = @vault_service.Incoming::new(
+    world,
+    @vault_service.Proxy::new(world.machine, path([bus.data, "vault"]), () => wall_ms().to_double()),
+  )
+  bus.on_peer_prefix("vault.", async fn(peer, ws, meth, params, _bytes) {
+    let request = match params {
+      Object(m) => {
+        let c = m.copy()
+        if !c.contains("method") {
+          c["method"] = Json::string(meth)
+        }
+        Json::object(c)
+      }
+      _ => { "method": Json::string(meth) }
+    }
+    let workspace = match ws {
+      Some(w) => w
+      None => p54_home(bus).unwrap_or("")
+    }
+    (runs.heard(peer, workspace, request), None)
+  })
 }

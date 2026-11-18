@@ -36,6 +36,7 @@ import { receiveFile, sendGathered } from "../src/replica/sending.ts";
 import { lackingIn } from "../src/replica/pack.ts";
 import { floorOf, movedHere, Handover } from "../src/replica/handover.ts";
 import { Copies, tell as copiesTell } from "../src/replica/copies.ts";
+import { hearLines } from "../src/ops/log.ts";
 import { Retire } from "../src/replica/retire.ts";
 import { RetireAsks } from "../src/replica/retire-asks.ts";
 import { afterOf, newCtx } from "../src/store/handover.ts";
@@ -94,6 +95,8 @@ class Side {
   readonly root: string;
   readonly data: string;
   readonly told: Told[] = [];
+  /// What it warned of in its log (part, words, fields).
+  readonly warned: Json[] = [];
   now = NOW;
   timers: { due: number; n: number; f: () => void; off: boolean }[] = [];
   n = 0;
@@ -253,6 +256,7 @@ class Program {
       }
       if (said.log !== undefined) {
         if (said.log === "defect") this.side.told.push(["defect", said.words]);
+        if (said.log === "warn") this.side.warned.push([said.part, said.words, said.fields]);
         return;
       }
       if (said.ready === true) return;
@@ -808,6 +812,124 @@ test("the copies brought to the stations that keep them, as the TypeScript bring
   await p.call("copies", "close");
   sameTold("copies", ts, mb);
   sameFiles("copies", ts, mb);
+});
+
+test("a keeper from before copies: said old, not warned of or tried again until it is heard from, the next one holding the copy, as the TypeScript does", { skip }, async () => {
+  const ts = new Side("ts");
+  const mb = new Side("mb");
+  const p = new Program(mb);
+  await p.init();
+  const gen = "lz5x0-0123abcd";
+  const b1 = "0000000001-0000000004-00000000.ndjson.zst";
+  const roster = { [WS]: [{ id: A, name: "a" }, { id: B, name: "b" }, { id: C, name: "c" }, { id: D, name: "d" }] };
+  const places = { home: WS, workspaces: [{ workspace: WS, name: "a" }] };
+  const [first, second] = keepers(WS, A, [A, B, C, D]);
+  const third = [B, C, D].find((x) => x !== first && x !== second)!;
+  // (a station from before copies refuses every `replica.*` as its default handler did)
+  const old = new Set<string>([first!]);
+  for (const s of [ts, mb]) {
+    s.state = { here: A, home: WS, places, rosters: roster };
+    const there = peers(s, new Set());
+    s.peer = (async (station: string, request: Json, bytes: Buffer | null) => {
+      if (old.has(station)) throw new Refused("session and task key are required (at most 256 / 128 bytes)");
+      return there(station, request, bytes);
+    }) as Peer;
+    const own = join(s.data, "replica", "own", WS, gen, "log");
+    mkdirSync(own, { recursive: true });
+    writeFileSync(join(own, b1), "one");
+    s.parts = (name) => {
+      switch (name) {
+        case "runner.places":
+        case "runner.newGenerations":
+        case "runner.close":
+          return null;
+        case "runner.pass":
+          return { heads: { [WS]: { v: 1, origin: A, workspace: WS, gen, name: "a", dataDir: "/d", made: 3, to: 4, batches: [b1], files: {}, chats: 1, messages: 1, bytes: 3, runs: [{ run: "r1", from: 1 }] } }, more: false, wrote: 1, read: 1, empty: false };
+        case "runner.sources":
+          return {};
+        case "restart":
+          return false;
+      }
+      throw new Error(`no part ${name}`);
+    };
+  }
+  const tsCopies = new Copies({
+    data: ts.data, here: () => ts.state.here, places: () => ts.state.places, roster: (ws) => ts.roster(ws),
+    ask: async (station, request) => {
+      const bytes = bytesOf(request);
+      const got = await ts.ask(station, request, bytes === null ? null : await readBytes(bytes, 1 << 30), false).catch((e) => Promise.reject(throwing(e)));
+      return got.bytes === undefined ? got.value : withBytes(got.value, oneBytes(got.bytes));
+    },
+    runner: {
+      places: async (pl) => void ts.part("runner.places", [pl]),
+      pass: async (t) => ts.part("runner.pass", [t]),
+      newGenerations: async (a) => void ts.part("runner.newGenerations", [a]),
+      sources: async (h) => ts.part("runner.sources", [h]),
+      close: async () => void ts.part("runner.close", []),
+    },
+    fibers: ts.fibers as Json,
+    changed: () => void ts.told.push(["tell:changed"]),
+    restart: async () => null,
+    taking: () => new Set(),
+  });
+  hearLines((l) => void (l.level === "WARN" && ts.warned.push([l.at, l.message, l.fields])));
+  try {
+    for (const [k, v] of Object.entries(mb.state)) await p.set(k, v);
+    await p.send("make", { part: "copies", deps: { data: mb.data } });
+    const step = async (label: string, a: () => Json, b: () => Promise<Json>) => {
+      ts.told.push(["step", label]);
+      mb.told.push(["step", label]);
+      const x = await outcome(ts, a);
+      await settle();
+      await tsCopies.settle();
+      await settle();
+      const y = await outcome(mb, b);
+      await p.settle();
+      await p.call("copies", "settle");
+      await p.settle();
+      ts.told.push(["outcome", label, x]);
+      mb.told.push(["outcome", label, y]);
+      assert.deepStrictEqual(y, x, `${label}: the answers differ`);
+      return x;
+    };
+    const asked = (s: Side) => s.told.filter((t) => t[0] === "ask" && t[1] === first).length;
+    await step("start", () => tsCopies.start(), () => p.call("copies", "start"));
+    await step("settle", () => tsCopies.settle(), () => p.call("copies", "settle"));
+    const o = (await step("overview", () => tsCopies.overview(WS, true), () => p.call("copies", "overview", [WS, true]))).value;
+    const keeping = (o: Json, s: string) => o.keepers.find((k: Json) => k.station === s);
+    assert.equal(keeping(o, first!).reason, "old");
+    assert.match(keeping(o, first!).error, /are required/);
+    assert.equal(keeping(o, third).error, null, "the next one holds it in the old one's place");
+    assert.equal(keeping(o, second!).error, null);
+    const before = [asked(ts), asked(mb)];
+    assert.ok(before[0]! > 0, "it was asked once");
+    // a pass, and an hour on the clock: nothing asked of it again
+    await step("told", () => tsCopies.told({ type: "session", key: "s1" } as Json), () => p.call("copies", "told", [{ type: "session", key: "s1" }]));
+    for (let i = 0; i < 6; i++) {
+      await step(`10 min on (${i})`, async () => {
+        ts.advance(10 * 60_000);
+        return null;
+      }, async () => {
+        await p.advance(10 * 60_000);
+        return null;
+      });
+    }
+    assert.deepEqual([asked(ts), asked(mb)], before, "no retry of a station from before copies");
+    for (const s of [ts, mb]) assert.deepEqual(s.warned.filter((w) => w[1] === "a place not brought level"), [], `${s.name}: no warning of it`);
+    // updated, it says it is up: brought level at once
+    old.delete(first!);
+    await step("heard", () => tsCopies.heard(first!, WS, []), () => p.call("copies", "heard", [first!, WS, []]));
+    await step("settle after heard", () => tsCopies.settle(), () => p.call("copies", "settle"));
+    const after = (await step("overview after", () => tsCopies.overview(WS, true), () => p.call("copies", "overview", [WS, true]))).value;
+    assert.equal(keeping(after, first!).error, null);
+    assert.equal(keeping(after, first!).reason, null);
+    await tsCopies.close();
+    await p.call("copies", "close");
+    sameTold("copies-old", ts, mb);
+    sameFiles("copies-old", ts, mb);
+  } finally {
+    hearLines(null);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------------

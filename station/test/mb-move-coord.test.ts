@@ -574,7 +574,12 @@ test("scheduler: a turn under way, read as it goes (held, its plan shown, GET /m
   s.p.parked = (call, args) => call === "mod.chats.move" && (args[0] as Json)?.id === "c2";
   const tsRun = s.tsS.move("ws", "B", { module: "chats", item: "c2", arriveStopped: true, follow: ["jobs"] }, "p@x");
   const mbTurn = await s.sched("moveSoon", "ws", "B", { module: "chats", item: "c2", arriveStopped: true, follow: ["jobs"] }, "p@x");
-  await turns();
+  // (the TypeScript's turn at its gate as the program's is: by what it did, not a count of turns, which its plan's
+  // reads and its turn's file outrun on a loaded machine)
+  for (let i = 0; !s.tw.log.some((l) => l.startsWith("move chats/c2")); i++) {
+    if (i > 100_000) assert.fail(`the TypeScript's turn never came to the chat: ${JSON.stringify(s.tw.log)}`);
+    await new Promise((r) => setImmediate(r));
+  }
   await s.p.quiet();
   assert.equal(await s.sched("busy"), s.tsS.busy(), "busy");
   assert.deepEqual(await s.sched("current"), plain(s.tsS.current()), "what it is at");

@@ -64,17 +64,10 @@ fn chooser_by(
   side? : @ui.Side = Bottom,
   loc~ : SourceLoc,
 ) -> @view.View {
-  // (over all of the panel it is in, as what a field offers is: offers_layer_lent, a sheet's, a dialog's, a small
-  // panel's; else over the window)
-  let layer = match parent.lent(offers_layer_lent) {
-    Some(l) => l
-    None => parent.tree.root()
-  }
-  let open = @signals.signal(false, same=fn(a, b) { a == b })
-  // (opened by the keyboard: its first row's the focus as it opens; by a finger with a field focused, that field keeps
-  // its input method, menu_node's `keep_field`)
-  let by_key = Ref(false)
-  let keep_field = Ref(false)
+  let menu = ChooserMenu::new(parent)
+  let open = menu.open
+  let by_key = menu.by_key
+  let keep_field = menu.keep_field
   let opens = fn(b : @view.View, down : Bool) {
     match press {
       Some(f) => f()
@@ -94,15 +87,7 @@ fn chooser_by(
     disabled~,
     fn(b, d) {
       let lit = fn() { !d.disabled() && (lit_node(b) || d.open() || d.focus_shown()) }
-      b.on_key(fn(k) {
-        if k.mods == 0 && k.code == @ui.key_code_down && b.focused() && !open.untracked() && !@signals.untracked(disabled) {
-          opens(b, true)
-          true
-        } else {
-          false
-        }
-      })
-      |> ignore
+      menu.keys(b, fn() { !@signals.untracked(disabled) }, fn() { opens(b, true) })
       // (disabled while its menu is open: closed, as the old one's)
       b.reacts(disabled, fn(off) { if off { open.set(false) } })
       b
@@ -121,65 +106,110 @@ fn chooser_by(
       words_node(b, words, fn() { if lit() { chooser_words_lit } else { chooser_words } }) |> ignore
       icon_node(b, "chevron-down", chooser_chevron, By(fn() { if lit() { theme().p.text } else { theme().p.muted } }))
       |> ignore
-      // (closed as it starts leaving, and as it is let go)
-      b.on_leaving(fn() { open.set(false) }) |> ignore
-      b.owns(fn() { open.set(false) }) |> ignore
     },
   )
-  // (its menu made as it opens, in the layer, living as long as the chooser does; the focus given back to it as it goes.
-  // What holds it in the layer made as it first opens, not with the chooser: made with it, as a card's choosers are
-  // made in what is laid out by its room (View::by_room), it was made outside that room, and the tree laid out all of it
-  // again in the same frame for it, a pass more for a menu not open (a vault's ask's three, opening a chat))
-  let made = Ref(false)
-  b.reacts(fn() { open.get() }, fn(on) {
-    guard on && !made.val else { return }
-    made.val = true
-    chooser_menu_node(layer, b, open, by_key, keep_field, choices, chosen, choose, side~, loc~)
-  })
+  menu.menu(b, choices, chosen, choose, side, false, loc~)
   b
 }
 
 ///|
-/// What holds chooser `b`'s menu in `layer` (chooser_by's: as it first opens), living as long as `b` does, and its menu
-/// while `open`: chooser_by's `by_key`, `choices`, `chosen`, `choose`; asked for at `loc` (the chooser's).
-#callsite(autofill(loc))
-fn chooser_menu_node(
-  layer : @view.View,
+/// What every choice that opens a menu of what it can be keeps (chooser_node's, foot_chooser_node's,
+/// chooser_button_node's: one way for all of them): the layer its menu is made in (over all of the panel it is in, as
+/// what a field offers is: offers_layer_lent, a sheet's, a dialog's, a small panel's; else over the window), whether
+/// its menu is open, whether the keyboard opened it (its first row's the focus as it opens), and whether a finger opened
+/// it with a field focused (that field keeps its input method, menu_node's `keep_field`).
+priv struct ChooserMenu {
+  layer : @view.View
+  open : @signals.Signal[Bool]
+  by_key : Ref[Bool]
+  keep_field : Ref[Bool]
+}
+
+///|
+fn ChooserMenu::new(parent : @view.View) -> ChooserMenu {
+  {
+    layer: match parent.lent(offers_layer_lent) {
+      Some(l) => l
+      None => parent.tree.root()
+    },
+    open: @signals.signal(false, same=fn(a, b) { a == b }),
+    by_key: Ref(false),
+    keep_field: Ref(false),
+  }
+}
+
+///|
+/// Its choice's node `v` (the disclosure's, in its look) opened by Down with the focus on it while `can` says so
+/// (`opens` given it, as a press is, the keyboard's: by_key), and its menu closed as `v` starts leaving and as it is let go.
+fn ChooserMenu::keys(self : ChooserMenu, v : @view.View, can : () -> Bool, opens : () -> Unit) -> Unit {
+  v.on_key(fn(k) {
+    if k.mods == 0 && k.code == @ui.key_code_down && v.focused() && !self.open.untracked() && can() {
+      opens()
+      true
+    } else {
+      false
+    }
+  })
+  |> ignore
+  v.on_leaving(fn() { self.open.set(false) }) |> ignore
+  v.owns(fn() { self.open.set(false) }) |> ignore
+}
+
+///|
+/// Choice `b`'s menu (menu_node's) while it is open, on `side` of it, `chooser_menu_off` off, lined up with its start,
+/// chooser_menu_w wide at least: `choices()` (each its value and its words), the one `chosen()` checked; one chosen
+/// closes it, then `choose` is given its value; Escape, back and a press outside close it alone, the focus given back to
+/// `b`. What holds it in the layer, living as long as `b` does, is made with the choice where `eager` (a bar's choice:
+/// chooser_button_node's, as it always was), else as it first opens: made with it, as a card's choosers are made in
+/// what is laid out by its room (View::by_room), it was made outside that room, and the tree laid out all of it again
+/// in the same frame for it, a pass more for a menu not open (a vault's ask's three, opening a chat). Asked for at `loc`
+/// (the choice's).
+fn ChooserMenu::menu(
+  self : ChooserMenu,
   b : @view.View,
-  open : @signals.Signal[Bool],
-  by_key : Ref[Bool],
-  keep_field : Ref[Bool],
   choices : () -> Array[(String, String)],
   chosen : () -> String,
   choose : (String) -> Unit,
-  side? : @ui.Side = Bottom,
+  side : @ui.Side,
+  eager : Bool,
   loc~ : SourceLoc,
 ) -> Unit {
-  let holder = layer.box(made_for=loc, fn(h) { h.over(Is(true)) |> ignore }).lives_with(b)
-  holder.show(fn() { open.get() }, at_once=true, fn(m) {
-    m.over(Is(true)).opened_by(@view.ByNode(b.id())) |> ignore
-    let now = chosen()
-    let items = choices().map(fn(c) {
-      Some(menu_item_of(c.1, chosen=c.0 == now, fn() { choose(c.0) }))
+  let open = self.open
+  let hold = fn() {
+    let holder = self.layer.box(made_for=loc, fn(h) { h.over(Is(true)) |> ignore }).lives_with(b)
+    holder.show(fn() { open.get() }, at_once=true, fn(m) {
+      m.over(Is(true)).opened_by(@view.ByNode(b.id())) |> ignore
+      let now = chosen()
+      let items = choices().map(fn(c) { Some(menu_item_of(c.1, chosen=c.0 == now, fn() { choose(c.0) })) })
+      menu_node(
+        m,
+        fn() { true },
+        fn(_) { b },
+        fn() { items },
+        "",
+        Start,
+        chooser_menu_off,
+        self.by_key.val,
+        self.keep_field.val,
+        fn(item) {
+          open.set(false)
+          (item.select)()
+        },
+        fn() { open.set(false) },
+        min_w=chooser_menu_w,
+        side~,
+      )
     })
-    menu_node(
-      m,
-      fn() { true },
-      fn(_) { b },
-      fn() { items },
-      "",
-      Start,
-      chooser_menu_off,
-      by_key.val,
-      keep_field.val,
-      fn(item) {
-        open.set(false)
-        (item.select)()
-      },
-      fn() { open.set(false) },
-      min_w=chooser_menu_w,
-      side~,
-    )
+  }
+  if eager {
+    hold()
+    return
+  }
+  let made = Ref(false)
+  b.reacts(fn() { open.get() }, fn(on) {
+    guard on && !made.val else { return }
+    made.val = true
+    hold()
   })
 }
 

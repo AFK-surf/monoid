@@ -140,7 +140,6 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     Me => me_node(p, core, here, on_back=core.pop, frame~, stint=fn() { 0 }, width~)
     KeptFiles => @settings.kept_node(p, core, on_back=core.pop, frame~, width~)
     KeptChat(s, thread) => @settings.kept_chat_node(p, core, s, thread, on_back=core.pop, frame~, width~)
-    RunSettings(s, key) => @settings.run_settings_node(p, core, s, key, on_back=core.pop, frame~, width~)
     AdbShare(focus) => @settings.adb_node(p, core, focus, on_back=core.pop, frame~, width~)
     Vault => vault_node(p, core, here, on_back=core.pop, frame~, width~)
     VaultItem(v, item) => vault_item_node(p, core, here, v, item, on_back=core.pop, frame~, width~)

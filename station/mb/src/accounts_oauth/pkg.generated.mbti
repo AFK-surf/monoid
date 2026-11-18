@@ -334,6 +334,7 @@ pub fn LoginManager::attach(Self, LoginPages) -> Unit
 pub fn LoginManager::cancel(Self, String) -> Unit
 pub fn LoginManager::changes(Self, (String) -> Unit) -> () -> Unit
 pub fn LoginManager::get(Self, String) -> LoginJob?
+pub fn LoginManager::job_state_file(Self, String) -> String?
 pub fn LoginManager::new(Io, LoginDeps, Words, String, commands? : LoginCommands, console? : String) -> Self
 pub async fn LoginManager::open_page(Self, String, String) -> String
 pub fn LoginManager::set_state_file(Self, (String) -> String?) -> Unit

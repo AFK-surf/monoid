@@ -1105,7 +1105,7 @@ fn turn_off_node(parent : @view.View, core : Core, ws : () -> String, here : () 
     Narrow =>
       parent.box(fn(f) {
         @sf.style_node(f, fn() { acc_narrow_foot })
-        @sf.group_node(f, fn(g) { @sf.danger_row_node(g, label, press, busy=off) })
+        @sf.group_node(f, fn(g) { @sf.link_row_node(g, label, press, danger=true, acts=true, busy=off) })
       })
       |> ignore
   }

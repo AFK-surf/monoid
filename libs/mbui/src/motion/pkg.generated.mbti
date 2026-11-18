@@ -43,6 +43,8 @@ pub fn clamp(Double, Double, Double) -> Double
 
 pub fn compose_to_motion(Double, Double) -> (Double, Double, Double)
 
+pub let cover_damped_spring : Spec
+
 pub let cover_spring : Spec
 
 pub fn cubic_bezier(Double, Double, Double, Double) -> (Double) -> Double
@@ -395,6 +397,20 @@ pub fn PushWay::shown_on(Self, @view.View) -> Double
 pub fn PushWay::target(Self) -> Double
 #callsite(autofill(loc))
 pub fn PushWay::under_pushed(Self, @view.View, loc~ : SourceLoc) -> Unit
+
+pub struct ShakeWay {
+  amplitude : Double
+  duration_ms : Double
+  cycles : Double
+  // private fields
+}
+pub fn ShakeWay::active_at(Self, Double, reduced_motion? : Bool) -> Bool
+pub fn ShakeWay::new(amplitude? : Double, duration_ms? : Double, cycles? : Double) -> Self
+pub fn ShakeWay::offset_at(Self, Double, reduced_motion? : Bool) -> Double
+#callsite(autofill(loc))
+pub fn ShakeWay::shake(Self, at~ : Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn ShakeWay::shakes(Self, @view.View, reduced_motion? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub struct SheetWay {
   // private fields

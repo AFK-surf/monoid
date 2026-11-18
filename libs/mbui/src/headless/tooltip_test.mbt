@@ -22,7 +22,8 @@ let quiet_ms : Double = 1000.0
 
 ///|
 /// What a case keeps: its window, the tip shown (the caller's), whether 丙 is disabled and whether it is there, the
-/// keys Escape came to below the tips (the root's own keys), and the group.
+/// keys Escape came to below the tips (the root's own keys), the group, and each trigger's node by its name (the last
+/// made of it).
 struct TipCase {
   t : @ui.Tester
   shown : @signals.Signal[String?]
@@ -30,6 +31,7 @@ struct TipCase {
   there : @signals.Signal[Bool]
   escapes : Ref[Int]
   group : @headless.TooltipGroup[String]
+  ids : Map[String, @view.NodeId]
 }
 
 ///|
@@ -42,6 +44,7 @@ fn tip_case(pointing? : @ui.Pointing = Mouse) -> TipCase raise {
   let shown : @signals.Signal[String?] = @signals.signal(None)
   let (off, there) = (flag(false), flag(true))
   let escapes = Ref(0)
+  let ids : Map[String, @view.NodeId] = Map([])
   let group = @headless.TooltipGroup::new(
     fn() { shown.get() },
     fn(k) { shown.set(k) },
@@ -51,6 +54,7 @@ fn tip_case(pointing? : @ui.Pointing = Mouse) -> TipCase raise {
   let button = fn(parent : @view.View, name : String, disabled : () -> Bool) {
     @headless.button(parent, fn() { name }, fn(_) {  }, disabled~, fn(v, _) {
       v.width(Is(Some(100.0))).height(Is(Some(40.0))) |> ignore
+      ids[name] = v.id()
       group.trigger(v, name, disabled~)
     })
     |> ignore
@@ -87,7 +91,7 @@ fn tip_case(pointing? : @ui.Pointing = Mouse) -> TipCase raise {
       |> ignore
     })
   })
-  { t, shown, off, there, escapes, group }
+  { t, shown, off, there, escapes, group, ids }
 }
 
 ///|
@@ -288,4 +292,85 @@ test "the tip's bubble takes no press: a press where it is lands on nothing" {
   k.t.run_for(open_ms)
   let (x, y, w, h) = k.t.get(Tooltip).rect
   assert_eq(k.t.press_lands_at(x + w / 2.0, y + h / 2.0), "")
+}
+
+///|
+/// Where the tip shown now came from, as the trigger's name and the moment from the case's start (`at0`); none where it
+/// came from nowhere. (The moment to the nearest ms: the clock's start is no round number, so a difference of it is
+/// not either.)
+fn TipCase::glided(self : TipCase, at0 : Double) -> (String, Int)? {
+  self.group
+  .glided_from()
+  .map(fn(g) {
+    let name = self.ids.iter().find_first(fn(e) { e.1 == g.0 }).map(fn(e) { e.0 }).unwrap_or("?")
+    (name, (g.1 - at0 + 0.5).floor().to_int())
+  })
+}
+
+///|
+test "where a tip came from: cold, from nowhere; gone straight on from 甲 to 乙, from 甲 at that moment; closed, none" {
+  let k = tip_case()
+  let at0 = k.t.time()
+  k.onto("甲")
+  k.t.run_for(open_ms)
+  let cold = k.glided(at0)
+  k.t.run_for(tick_ms)
+  k.onto("乙")
+  let warm = (k.shown.get(), k.glided(at0))
+  k.away()
+  assert_eq((cold, warm, k.shown.get(), k.glided(at0)), (None, (Some("乙"), Some(("甲", (open_ms + tick_ms).to_int()))), None, None))
+}
+
+///|
+test "where a tip came from across a gap: under warmup_ms from the one before; past it, from nowhere; the same trigger again, from nowhere" {
+  let k = tip_case()
+  let at0 = k.t.time()
+  k.onto("甲")
+  k.t.run_for(open_ms)
+  // (off, and onto 乙 100 ms later: from 甲)
+  k.away()
+  k.t.run_for(warm_ms / 3.0)
+  k.onto("乙")
+  let brief = (k.shown.get(), k.glided(at0))
+  // (off, and onto 甲 301 ms later: cold)
+  k.away()
+  k.t.run_for(warm_ms + tick_ms)
+  k.onto("甲")
+  k.t.run_for(open_ms)
+  let cooled = (k.shown.get(), k.glided(at0))
+  // (off, and back onto 甲 100 ms later: at once, but from nowhere)
+  k.away()
+  k.t.run_for(warm_ms / 3.0)
+  k.onto("甲")
+  let same = (k.shown.get(), k.glided(at0))
+  assert_eq(
+    (brief, cooled, same),
+    (
+      (Some("乙"), Some(("甲", (open_ms + warm_ms / 3.0).to_int()))),
+      (Some("甲"), None),
+      (Some("甲"), None),
+    ),
+  )
+}
+
+///|
+test "where a tip came from by the keyboard: Tab from 甲's to 乙's, from 甲; the first by Tab, from nowhere" {
+  let k = tip_case()
+  k.t.tab()
+  let at0 = k.t.time()
+  let first = (k.shown.get(), k.glided(at0))
+  k.t.tab()
+  assert_eq((first, k.shown.get(), k.glided(at0)), ((Some("甲"), None), Some("乙"), Some(("甲", 0))))
+}
+
+///|
+test "a trigger let go is where no tip comes from: 丙's tip, 丙 let go, 甲's within warmup_ms opens at once from nowhere" {
+  let k = tip_case()
+  k.onto("丙")
+  k.t.run_for(open_ms)
+  let open = k.shown.get()
+  k.there.set(false)
+  k.t.draw()
+  k.onto("甲")
+  assert_eq((open, k.shown.get(), k.group.glided_from()), (Some("丙"), Some("甲"), None))
 }

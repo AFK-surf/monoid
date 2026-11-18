@@ -145,6 +145,8 @@ priv struct ScreenSess {
   /// `choosing`, `getting`, `said`; "" nothing under way), the run of it under way, the logins to pick from, what it
   /// said where it did not fill, and the site it is for
   fill_step : @signals.Signal[String]
+  /// the `(host, field, address)` login prompt dismissed by `×`, cleared once focus leaves or moves elsewhere
+  fill_dismissed : @signals.Signal[(String, String, String)?]
   mut fill_run : @hostapi.OpRun?
   mut fill_choices : Array[@hostapi.PasswordLogin]
   mut fill_note : String
@@ -238,6 +240,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         asked_bounds: (0, 0),
         stage_px: (0, 0),
         fill_step: @signals.signal(""),
+        fill_dismissed: @signals.signal(None),
         fill_run: None,
         fill_choices: [],
         fill_note: "",
@@ -1080,6 +1083,10 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
       }
       self.state = Some(s)
       self.heard = true
+      match self.fill_dismissed.untracked() {
+        Some(was) if login_slot_of(self.state) != Some(was) => self.fill_dismissed.set(None)
+        _ => ()
+      }
       if layered {
         self.pointer_moved()
       } else if alone {

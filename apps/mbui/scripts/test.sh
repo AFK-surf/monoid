@@ -118,6 +118,13 @@ for t in $targets; do
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
   done
   export MBC_LIGHT_TESTS="$light"
+  # sfapp's program built alone (APP_GROUP=build) and light keeps mbui's and the library's units at its own level
+  # (mbc's MBC_LIGHT_KEEP): they run in every frame of its 491 tests, at -O0 2.5 times as long, and a branch that changed
+  # them, taking them from no store, ran the app's shards past five minutes (44243493008, 2026-11-18). Not with the
+  # small packages' programs (APP_GROUP=pkgs), which would each compile them again (40127533069).
+  case " $light " in
+    *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+  esac
   out=$(mktemp)
   # Built first on its own (TIMES=1, as CI's: each said with how long it took; its errors shown by the run), then run.
   s=$(date +%s)

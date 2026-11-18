@@ -400,7 +400,8 @@ export class Copies {
   /// Why `error` kept a place from being brought level, as the settings say it.
   #reason(peer: string, error: unknown): Reason {
     if (this.#old.has(peer)) return "old";
-    if (error instanceof Refused) return /no such replica request|is required|unknown/.test(error.message) ? "old" : "error";
+    // (a station from before copies answers `replica.*` as a task's request: "session and task key are required")
+    if (error instanceof Refused) return /no such replica request|is required|are required|unknown/.test(error.message) ? "old" : "error";
     return "offline";
   }
 
@@ -415,6 +416,8 @@ export class Copies {
       return;
     }
     if (k.again !== null && !now) return;
+    // (one from before copies, found so: asked again only once it is heard from, `heard`, never by a pass or a retry)
+    if (!now && k.error !== null && k.reason === "old" && this.#old.has(peer)) return;
     k.again?.();
     k.again = null;
     const head = this.#passed?.heads[ws];
@@ -457,16 +460,22 @@ export class Copies {
         keeping.error = null;
         keeping.tries = 0;
       } catch (e) {
-        if (keeping.error === null) log.warn("copies", "a place not brought level", { ws, place: peer, error: (e as Error).message });
+        const reason = this.#reason(peer, e);
+        // (one from before copies, which knows no `replica.*`: nothing to say or retry until it says it is up, as
+        // share/memory.ts does; 15 stations said so 49 times an hour, 2026-11-18)
+        if (reason === "old") this.#old.add(peer);
+        else if (keeping.error === null) log.warn("copies", "a place not brought level", { ws, place: peer, error: (e as Error).message });
         keeping.error = (e as Error).message;
-        keeping.reason = this.#reason(peer, e);
+        keeping.reason = reason;
         keeping.known = null;
-        const wait = Math.min(RETRY_MS * 2 ** keeping.tries, RETRY_MOST_MS);
-        keeping.tries++;
-        if (!this.#closed) keeping.again = this.#d.fibers.after(wait, () => { // timer: a retry after a failure
-          keeping.again = null;
-          this.#level(ws, peer, { now: true, fresh: true });
-        });
+        if (reason !== "old") {
+          const wait = Math.min(RETRY_MS * 2 ** keeping.tries, RETRY_MOST_MS);
+          keeping.tries++;
+          if (!this.#closed) keeping.again = this.#d.fibers.after(wait, () => { // timer: a retry after a failure
+            keeping.again = null;
+            this.#level(ws, peer, { now: true, fresh: true });
+          });
+        }
         // (one not reached: the next station after those this one's copies fall to holds them meanwhile)
         if (wasError === null) this.#levelAll(ws);
       } finally {

@@ -144,7 +144,7 @@ fn xshare_body(v : @view.View, share : () -> Json?) -> Unit {
   |> ignore
   v.box(fn(w) {
     @sf.style_node(w, fn() { xshare_write })
-    @sf.panel_switch_noted_node(
+    @sf.panel_switch_row_node(
       w,
       fn() { @sf.t("web-pages.chat.xshare.write") },
       fn() { xsharing.write.get() },

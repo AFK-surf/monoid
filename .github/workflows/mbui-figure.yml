@@ -65,6 +65,7 @@ jobs:
       contents: write # On main only, publish the tested part to the existing native-artifacts release.
     steps:
       - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/mbui-moonbit
       - name: Build and check the renderer
@@ -88,6 +89,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/mbui-moonbit
       - name: Build and check the scene renderer

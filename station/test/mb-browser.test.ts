@@ -1047,7 +1047,7 @@ test("a view's clipboard, login fields and passkey sign-ins: each heard through 
   const stopLoginTs = ts.watchLogin((l) => tsEntries.push(["login", plain(l)]));
   const stopLoginMb = await p.call("view3", "watchLogin");
   await settleBoth(p);
-  for (const payload of ['{"field":"password"}', "null", '{"field":"other"}', "bad json", '{"field":"username"}']) {
+  for (const payload of ['{"field":"password"}', '{"field":"password","filled":true}', "null", '{"field":"other"}', "bad json", '{"field":"username","filled":false}']) {
     await emitBoth(p, "v3", "Runtime.bindingCalled", { name: "__stillfailLogin", payload }, "S1");
     await settleBoth(p);
   }

@@ -155,6 +155,60 @@ let spin_stroke : Double = 2.0
 pub let spinner_turn_ms : Double = 800.0
 
 ///|
+let spin_pi : Double = 3.141592653589793
+
+///|
+/// The ring every wait turns or fills (spinner, spinner_node, progress_spinner, progress_spinner_node: one ring, worked
+/// out here once): `size` across, its line `stroke` wide, its middle half the line in from the edge.
+priv struct SpinRing {
+  mid : Double
+  r : Double
+  stroke : Double
+}
+
+///|
+fn SpinRing::new(size : Double, stroke : Double) -> SpinRing {
+  let mid = size / 2.0
+  { mid, r: mid - stroke / 2.0, stroke }
+}
+
+///|
+/// Its whole round (the track, in line_strong).
+fn SpinRing::round(self : SpinRing) -> Array[(Double, Double)] {
+  @ui.arc(self.mid, self.mid, self.r, from=0.0, sweep=2.0 * spin_pi)
+}
+
+///|
+/// The arc a spinner turns: `sweep` of a turn from a quarter before the top (the web's: a border whose top is the arc).
+fn SpinRing::turning(self : SpinRing, sweep : Double) -> Array[(Double, Double)] {
+  @ui.arc(self.mid, self.mid, self.r, from=-0.75 * spin_pi, sweep=sweep * 2.0 * spin_pi)
+}
+
+///|
+/// What a progress spinner draws `shown` (0 to 1) of the way: the track `round` (its own, worked out once) in
+/// line_strong, and the accent from the top clockwise as far round as that, none at 0.
+fn SpinRing::come_lines(self : SpinRing, round : Array[(Double, Double)], shown : Double, p : Palette) -> Array[@paint.Line] {
+  let lines = [@ui.line(round, width=self.stroke, color=p.line_strong)]
+  if shown > 0.0 {
+    let arc = @ui.arc(self.mid, self.mid, self.r, from=-0.5 * spin_pi, sweep=shown * 2.0 * spin_pi)
+    lines.push(@ui.line(arc, width=self.stroke, color=p.accent))
+  }
+  lines
+}
+
+///|
+/// How far a wait has come, said by what it waits on, kept to 0 to 1.
+fn spin_part(k : Double) -> Double {
+  if k < 0.0 {
+    0.0
+  } else if k > 1.0 {
+    1.0
+  } else {
+    k
+  }
+}
+
+///|
 /// The spinner (styles/spinner.css.ts): a ring of line_strong, a quarter of it in the accent,
 /// turning in 0.8s; 14, or 12 in a line of small text. `sweep` (of a turn) and `period` for other rings that turn (a
 /// chat's mark at work: three quarters, 1.2s). Its lines drawn once (mbui's Ctx::lines), turned by the clock as each
@@ -172,20 +226,14 @@ pub fn spinner(
   let t = theme()
   let ring = ring.unwrap_or(t.p.line_strong)
   let arc = arc.unwrap_or(t.p.accent)
-  let pi = 3.141592653589793
-  // the line's middle 1 in from the edge; the arc from a quarter before the top (the web's: a border whose top is
-  // the arc), the two turned by the clock about the ring's middle
-  let mid = size / 2.0
-  let r = mid - stroke / 2.0
+  // (SpinRing's: the arc from a quarter before the top, the two turned by the clock about the ring's middle)
+  let at = SpinRing::new(size, stroke)
   let node = c.lines(
-    [
-      @ui.line(@ui.arc(mid, mid, r, from=0.0, sweep=2.0 * pi), width=stroke, color=ring),
-      @ui.line(@ui.arc(mid, mid, r, from=-0.75 * pi, sweep=sweep * 2.0 * pi), width=stroke, color=arc),
-    ],
+    [@ui.line(at.round(), width=stroke, color=ring), @ui.line(at.turning(sweep), width=stroke, color=arc)],
     w=Px(size),
     h=Px(size),
   )
-  c.cycle_look(node, period, fn(f) { @ui.look(rot=f * 2.0 * pi) })
+  c.cycle_look(node, period, fn(f) { @ui.look(rot=f * 2.0 * spin_pi) })
   node
 }
 
@@ -205,21 +253,19 @@ pub fn spinner_node(
   period? : Double = spinner_turn_ms,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let pi = 3.141592653589793
-  let mid = size / 2.0
-  let r = mid - stroke / 2.0
   let ring = ring.unwrap_or(fn() { theme().p.line_strong })
   let arc = arc.unwrap_or(fn() { theme().p.accent })
   // (its points worked out once: only its colours change as it lives)
-  let round = @ui.arc(mid, mid, r, from=0.0, sweep=2.0 * pi)
-  let part = @ui.arc(mid, mid, r, from=-0.75 * pi, sweep=sweep * 2.0 * pi)
+  let at = SpinRing::new(size, stroke)
+  let round = at.round()
+  let part = at.turning(sweep)
   parent.box(made_for=loc, fn(v) {
     v
     .width(Is(Some(size)))
     .height(Is(Some(size)))
     .lines(By(fn() { [@ui.line(round, width=stroke, color=ring()), @ui.line(part, width=stroke, color=arc())] }))
     // (about the middle of what its pieces cover, as the old one's cycle look turns it)
-    .turn(By(fn() { v.cycle(period) * 2.0 * pi }), drawn=true)
+    .turn(By(fn() { v.cycle(period) * 2.0 * spin_pi }), drawn=true)
     |> ignore
   })
 }
@@ -246,7 +292,7 @@ pub fn updating_mark(c : @ui.Ctx, size : Double, color : Int64) -> Int {
   // under it, out of sight until the first is going
   let length = 8.0 * k
   let pitch = window + length
-  let arrow = fn(top : Double) -> Array[@ui.Line] {
+  let arrow = fn(top : Double) -> Array[@paint.Line] {
     [
       @ui.line([(wmid, top), (wmid, top + length)], width=stroke, color~),
       @ui.line([(wmid - 3.0 * k, top + 3.0 * k), (wmid, top), (wmid + 3.0 * k, top + 3.0 * k)], width=stroke, color~),
@@ -302,19 +348,9 @@ pub fn progress_spinner(
   match coming {
     None => spinner(c, size~, stroke~)
     Some(k) => {
-      let t = theme()
-      let pi = 3.141592653589793
-      let mid = size / 2.0
-      let r = mid - stroke / 2.0
-      let k = if k < 0.0 { 0.0 } else if k > 1.0 { 1.0 } else { k }
-      let shown = @motion.animate(c, key + "/coming", k, spec=@motion.tween(@kit.progress_ms, ease=Out))
-      let ring = @ui.arc(mid, mid, r, from=0.0, sweep=2.0 * pi)
-      let lines = [@ui.line(ring, width=stroke, color=t.p.line_strong)]
-      if shown > 0.0 {
-        let arc = @ui.arc(mid, mid, r, from=-0.5 * pi, sweep=shown * 2.0 * pi)
-        lines.push(@ui.line(arc, width=stroke, color=t.p.accent))
-      }
-      c.lines(lines, w=Px(size), h=Px(size))
+      let at = SpinRing::new(size, stroke)
+      let shown = @motion.animate(c, key + "/coming", spin_part(k), spec=@motion.tween(@kit.progress_ms, ease=Out))
+      c.lines(at.come_lines(at.round(), shown, theme().p), w=Px(size), h=Px(size))
     }
   }
 }

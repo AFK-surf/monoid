@@ -2227,6 +2227,32 @@ fn transport(congestion: &str) -> Result<QuicTransportConfig, String> {
         .build())
 }
 
+/// How long a connection coming in may take over its handshake, as the station's addon has it (station/native/mesh
+/// HANDSHAKE_TIMEOUT, which says why): unbounded, the idle timeout above kept the station's half of a handshake whose
+/// device let go of it sending through the relay for ten minutes, all dropped there.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A connection's handshake as it comes in, given up after `limit` (dropped, so it sends no more); one that fails or
+/// is given up is said, where it came from and how long it took (the station's addon's `handshake`).
+async fn handshake<C, E: std::fmt::Display>(
+    from: impl std::fmt::Debug,
+    incoming: impl std::future::IntoFuture<Output = Result<C, E>>,
+    limit: std::time::Duration,
+) -> Option<C> {
+    let started = tokio::time::Instant::now();
+    match tokio::time::timeout(limit, incoming).await {
+        Ok(Ok(conn)) => Some(conn),
+        Ok(Err(error)) => {
+            crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()));
+            None
+        }
+        Err(_) => {
+            crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: given up, not done in {} s", started.elapsed().as_millis(), limit.as_secs()));
+            None
+        }
+    }
+}
+
 /// A way of finding stations (mDNS, the DHT) that could not be made leaves a station's endpoint without it, said, as
 /// the station's addon has it: mDNS binds UDP 5353, which fails with no network up yet or the port held by another
 /// program, and the endpoint failing left the station off the mesh until it was restarted.
@@ -3128,15 +3154,9 @@ impl Inner {
                             }
                             let tx = tx.clone();
                             tokio::spawn(async move {
-                                // One whose handshake fails is said, where it came from and how long it took (the
-                                // station's addon's, which says why).
                                 let from = incoming.remote_addr();
-                                let started = std::time::Instant::now();
-                                match incoming.await {
-                                    Ok(conn) => {
-                                        let _ = tx.send(conn);
-                                    }
-                                    Err(error) => crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis())),
+                                if let Some(conn) = handshake(from, incoming, HANDSHAKE_TIMEOUT).await {
+                                    let _ = tx.send(conn);
                                 }
                             });
                         }
@@ -5676,6 +5696,33 @@ mod tests {
             assert!(inner.run("iroh.connect", json!({ "id": id, "addr": addr }), Some(b"stillfail/test".to_vec())).await.is_err());
             assert!(inner.run("iroh.close", json!({ "id": id }), None).await.is_ok());
         });
+    }
+
+    /// A handshake that never ends (the device gone half way) is given up at its limit and dropped, which closes it;
+    /// one that fails is said, and one that ends is taken. On the test's clock (paused: it moves when nothing else can).
+    #[tokio::test(start_paused = true)]
+    async fn a_handshake_never_done_is_given_up() {
+        use std::sync::atomic::{AtomicBool, Ordering as O};
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, O::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let never = {
+            let dropped = Dropped(dropped.clone());
+            async move {
+                let _held = dropped;
+                std::future::pending::<Result<(), String>>().await
+            }
+        };
+        let started = tokio::time::Instant::now();
+        assert!(handshake("nowhere", never, HANDSHAKE_TIMEOUT).await.is_none());
+        assert_eq!(started.elapsed(), HANDSHAKE_TIMEOUT);
+        assert!(dropped.load(O::SeqCst), "the handshake given up was kept");
+        assert_eq!(handshake::<u8, String>("here", async { Ok(1) }, HANDSHAKE_TIMEOUT).await, Some(1));
+        assert!(handshake::<u8, String>("here", async { Err("refused".into()) }, HANDSHAKE_TIMEOUT).await.is_none());
     }
 
     #[cfg(unix)]

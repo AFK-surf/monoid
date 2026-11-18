@@ -106,7 +106,7 @@ let corner_modes : Array[String] = {
     "settings-vault-editor", "settings-vault-recover", "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people",
     "settings-workspace-mark", "settings-local-fonts", "settings-policy", "settings-policy-text",
     "settings-policy-option", "settings-security-join", "settings-security-off", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices",
-    "settings-run", "settings-run-models", "settings-run-accounts", "settings-fonts", "settings-fonts-code",
+    "settings-fonts", "settings-fonts-code",
     "settings-decisions", "settings-completion", "settings-bars", "settings-about", "settings-changelog", "settings-prices",
     "settings-notify-off", "settings-notify-denied",
     // (the stations' newer releases waiting: their key over Home, their dialog open: sfpages station_updates.mbt)

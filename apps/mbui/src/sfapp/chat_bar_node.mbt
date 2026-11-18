@@ -470,10 +470,9 @@ fn bar_middle_node(
         }
       }
       if people.length() > 0 {
-        mid.box(fn(p) {
-          p.drops(Is(bar_drop_people)).laid_nowhere(By(expanded)) |> ignore
-          people_stack_node(p, src, people, 16.0, stint)
-        })
+        @sf.avatar_stack_node(mid, stack_faces(src, people, stint), 16.0, fn() { @sf.theme().p.bg })
+        .drops(Is(bar_drop_people))
+        .laid_nowhere(By(expanded))
         |> ignore
       }
       for i, ag in v.agents {
@@ -747,45 +746,17 @@ fn via_dot_in(d : @view.View, via : () -> String, size : Double, ring : Double) 
 }
 
 ///|
-/// People overlapping a little, each ringed in the page's ground (people_stack's, as nodes; or `ring`: what they stand
-/// on, a sheet's): side by side, each drawn 5 over the one before it, the first over them all.
-fn people_stack_node(
-  v : @view.View,
-  src : Source,
-  people : Array[Person],
-  size : Double,
-  stint : () -> Int,
-  ring? : () -> Int64 = fn() { @sf.theme().p.bg },
-) -> Unit {
-  let step = size + 3.0
-  let n = people.length()
-  v.width(Is(Some(step * n.to_double()))).height(Is(Some(step))) |> ignore
-  // (the last made first, each under the one after it in the tree's order)
-  for j in 0..<n {
-    let i = n - 1 - j
-    let p = people[i]
-    v.box(fn(d) {
-      d
-      .over(Is(true))
-      .width(Is(Some(step)))
-      .height(Is(Some(step)))
-      .radius(Is(step / 2.0))
-      .offset(Is(((step - 5.0) * i.to_double(), 0.0)))
-      .ground(By(ring))
-      .row(Is(true))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      |> ignore
-      @sf.avatar_node(
-        d,
-        fn() { p.id },
-        fn() { p.display },
-        fn() { if p.picture != "" { (src.picture)(p.picture, stint()) } else { "" } },
-        size,
-      )
-    })
-    |> ignore
-  }
+/// `people` as the faces of a stack (@sf.avatar_stack_node's): their pictures as the core gives them (Source.picture)
+/// on the time on top of the page they are on (`stint`).
+fn stack_faces(src : Source, people : Array[Person], stint : () -> Int) -> Array[@sf.StackFace] {
+  people.map(fn(p) {
+    {
+      id: p.id,
+      name: p.display,
+      pictured: p.picture != "",
+      picture: fn() { if p.picture != "" { (src.picture)(p.picture, stint()) } else { "" } },
+    }
+  })
 }
 
 ///|

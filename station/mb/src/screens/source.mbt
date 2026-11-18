@@ -337,10 +337,11 @@ pub fn clip_fits(clip : Clip) -> Bool {
 }
 
 ///|
-/// A login field in focus: the site's host, and which field ("username", "password").
+/// A login field in focus: the site's host, which field ("username", "password"), and whether it already holds a value.
 pub(all) struct LoginField {
   host : String
   field : String
+  filled : Bool
 }
 
 ///|

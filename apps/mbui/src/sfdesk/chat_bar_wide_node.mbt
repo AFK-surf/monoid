@@ -424,9 +424,10 @@ fn wide_via_dot(d : @view.View, via : () -> String) -> Unit {
 }
 
 ///|
-/// People overlapping a little (people_stack's): `most` of them at most, each a 16 circle ringed in the sidebar's
-/// ground (their picture, or their initial on the paper), each over the one before; more, +n after them; their names in
-/// its tip.
+/// People overlapping a little (people_stack's): the library's stack (@sf.avatar_stack_node), `most` of them at most,
+/// each a 16 face ringed 1.5 in the sidebar's ground (their picture, or their initial on the paper), each ringed face 7
+/// along the one before it and drawn over it, the first's ring standing out of where the stack starts; more, +n after them;
+/// their names in its tip.
 fn wide_people(
   parent : @view.View,
   src : Source,
@@ -435,55 +436,32 @@ fn wide_people(
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
-  let shown = if people.length() > most { people[:most].to_owned() } else { people }
-  parent.box(fn(row) {
-    @sf.style_node(row, fn() { people_row }, in_row=true)
-    for i, p in shown {
-      row.box(fn(ring) {
-        @sf.style_node(
-          ring,
-          fn() {
-            let t = @sf.theme()
-            people_ring.then(@ui.style(bg=Data(t.p.sidebar))).then(if i == 0 { person_first } else { person_next })
-          },
-          in_row=true,
-        )
-        if p.picture != "" {
-          // (the picture as the core gives it: Source.picture)
-          @sf.avatar_node(ring, fn() { p.id }, fn() { p.display }, fn() { (src.picture)(p.picture, stint()) }, person_side)
-        } else {
-          // its initial on the paper, 600
-          ring.box(fn(l) {
-            @sf.style_node(l, fn() { people_letter_box.then(@ui.style(bg=Data(@sf.theme().p.paper))) })
-            @sf.words_node(l, fn() { person_initial(p.display) }, fn() { people_letter }) |> ignore
-          })
-          |> ignore
-        }
-      })
-      |> ignore
+  let faces = people.map(fn(p) {
+    let face : @sf.StackFace = {
+      id: p.id,
+      name: p.display,
+      pictured: p.picture != "",
+      picture: fn() { if p.picture != "" { (src.picture)(p.picture, stint()) } else { "" } },
     }
-    if people.length() > most {
-      row.box(fn(n) {
-        @sf.style_node(n, fn() { people_more_box }, in_row=true)
-        @sf.words_node(n, fn() { "+\{people.length() - most}" }, fn() { people_more }) |> ignore
-      })
-      |> ignore
-    }
-    // (read out as a group named by what it shows, each one's letter and the more after them, as the old row's box was:
-    // nothing pressed in it)
-    let named = shown.map(fn(p) { person_initial(p.display) }) +
-      (if people.length() > most { ["+\{people.length() - most}"] } else { [] })
-    row.says(Is(Some(@view.said(Group, label=named.join(" "))))) |> ignore
-    @sf.tip_node(
-      tips,
-      row,
-      fn() {
-        @sf.t("web-main.people.in", args=[("names", people.map(fn(p) { p.display }).join(@sf.t("web-main.list.separator")))])
-      },
-      within=true,
-    )
-    |> ignore
+    face
   })
+  @sf.avatar_stack_node(
+    parent,
+    faces,
+    person_side,
+    fn() { @sf.theme().p.sidebar },
+    over=7.0,
+    // (each over the one before, one with no picture its initial on the paper: the old page's people_stack, drawn the
+    // same as it beside it)
+    first_over=false,
+    letter=(fn() { @sf.theme().p.paper }, fn() { people_letter }),
+    most~,
+    tips~,
+    tip=fn() {
+      @sf.t("web-main.people.in", args=[("names", people.map(fn(p) { p.display }).join(@sf.t("web-main.list.separator")))])
+    },
+  )
+  .margin(Is((-1.5, 0.0, 0.0, 0.0)))
   |> ignore
 }
 

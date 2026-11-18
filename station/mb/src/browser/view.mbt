@@ -862,10 +862,15 @@ pub fn TabView::watch_login(self : TabView, heard : (J) -> Unit) -> () -> Unit {
       heard(Null)
       return
     }
+    let filled = is_true(at(said, "filled"))
     (self.p.clock.spawn)(async fn() {
       let host = self.host(target_id)
       if on.val {
-        heard(if host == "" { Null } else { jo([("host", js(host)), ("field", js(f))]) })
+        let fields : Array[(String, J)] = [("host", js(host)), ("field", js(f))]
+        if filled {
+          fields.push(("filled", jb(true)))
+        }
+        heard(if host == "" { Null } else { jo(fields) })
       }
     })
   })

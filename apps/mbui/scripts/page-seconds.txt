@@ -270,7 +270,6 @@ message_lines_wbtest.mbt 0 1 2 0
 message_menu_lit_wbtest.mbt 1 1 2 0
 message_time_wbtest.mbt 0 0 1 0
 model_accounts_wbtest.mbt 2 2 5 1
-model_list_wbtest.mbt 0 0 0 0
 model_pop_wbtest.mbt 7 9 13 5
 motion_wbtest.mbt 1 3 7 2
 narrow_back_moment_wbtest.mbt 1 3 6 1

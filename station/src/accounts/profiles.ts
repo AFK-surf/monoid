@@ -108,7 +108,8 @@ export type Urls = {
 
 export const URLS: Urls = {
   opencode: OPENCODE,
-  anthropic: "https://api.anthropic.com",
+  // ($STILLFAIL_ANTHROPIC_API: a test's stand-in, as $STILLFAIL_SLACK_API is Slack's)
+  anthropic: process.env.STILLFAIL_ANTHROPIC_API || "https://api.anthropic.com",
   chatgpt: "https://chatgpt.com",
   claudeToken: "https://platform.claude.com/v1/oauth/token",
   console: CONSOLE,

@@ -791,6 +791,10 @@ async fn Harness::run_op(self : Harness, w : World, c : J) -> J {
         jb(replaced),
       ]))
       ignore(u.changes(() => w.now("listener.changed", [])))
+      // (updates.ts `launcherInstaller`, where the test's station has a launcher that starts the installer)
+      if get(Some(o), "launcherInstaller") is Some(Bool(true)) {
+        u.on_launcher_installer((script, env) => w.now("opts.launcherInstaller", [js(script), env_j(env)]))
+      }
       self.updates = Some(u)
       Null
     }

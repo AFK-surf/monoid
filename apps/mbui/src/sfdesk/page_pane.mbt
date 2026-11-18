@@ -333,6 +333,11 @@ fn pane_made(
                 start_pad=fn() { dmax(12.0, (ends.start)()) },
                 end_pad=fn() { (ends.end)(false, false) },
                 width~,
+                shown=pane_shows(k),
+                keep_screen=fn(st, sc) {
+                  side_screen_shown(src, st, sc) ||
+                  (app.nav.top() is Screen(top) && top.station == st && top.screen == sc)
+                },
               )
             })
           },
@@ -503,11 +508,6 @@ fn pane_made(
     Setting(KeptChat(station, thread)) =>
       made("kept/" + station + "/" + thread.to_string(), fn(a, core, _here, _stint, frame, width) {
         @settings.kept_chat_node(a, core, station, thread, on_back=core.pop, frame~, width~, tips~)
-      })
-    // (by its station and session: another's another page)
-    Setting(RunSettings(station, key)) =>
-      made("run/" + station + "/" + key, fn(a, core, _here, _stint, frame, width) {
-        @settings.run_settings_node(a, core, station, key, on_back=core.pop, frame~, width~, tips~)
       })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) =>

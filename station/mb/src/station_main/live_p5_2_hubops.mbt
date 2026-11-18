@@ -393,6 +393,35 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "hub.reposDir" => Json::string(self.repos_dir())
       "hub.agentHome" => Json::string(self.agent_home())
       "hub.prepareCardPosts" => (self.bus.reader_ask.val)("$cardPosts", arg_or_null(args, 0), "zh")
+      // (what the other parts ask of the hub by its fields (`hub.prepareCardPosts != null`): the readers' builders are
+      // this side's; the rest as the conversations' world answers it)
+      "hub.has" if ["prepareCardPosts", "prepareLatestThreads"].contains(arg_text(args, 0)) => Json::boolean(true)
+      // (card-place.ts `postCard`'s `hub.actors.get(session)?.messageIdentity()`: who the card is said by)
+      "hub.identity" => p52_json_of_jv(self.chats_answer("actor.messageIdentity", args.map(jv_of), args))
+      // (agents.ts `cardOutcomes.save`: a decided card's outcome queued, the request written by its part before)
+      "cardOutcomes.save" => self.outcome_save(arg_or_null(args, 0))
+      // (a part that queued one itself, on a connection of its own: the vault)
+      "cardOutcomes.wake" => {
+        match self.card_outcomes {
+          Some(worker) => {
+            worker.wake()
+            self.outcomes_follow()
+          }
+          None => ()
+        }
+        Json::null()
+      }
+      // ── card-place.ts and adb/title.ts, as the rigs ask them (requests.ts `hub`) ──
+      "dep.postCard" =>
+        p52_json_of_jv(
+          @session_chats.post_card(w(), arg_text(args, 0), jv_of(arg_or_null(args, 1)), arg_text(args, 2), jv_of(arg_or_null(args, 3)), None, None),
+        )
+      "dep.cardPlace" =>
+        match @session_chats.card_place(w(), arg_text(args, 0), jv_of(arg_or_null(args, 1)), jv_of(arg_or_null(args, 2))) {
+          Some(p) => p52_json_of_jv(p)
+          None => undef_json()
+        }
+      "dep.grantChatTitle" => jopt(self.grant_chat_title(arg_or_null(args, 0)))
       "hub.presets.list" => Json::array(@session_chats.presets_list(w(), jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
       "hub.presets.listed" =>
         Json::array(@session_chats.presets_listed(w(), jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
@@ -770,3 +799,41 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
 ///|
 /// The archive's locks the routes hold (archive.ts `withLock`), by room: what lets each go, in the order taken.
 let archive_locks : Map[String, Array[() -> Unit]] = Map([])
+
+///|
+/// adb/title.ts `grantChatTitle`: a grant named by the chat it was asked in where that chat is still the session's,
+/// else by the session's latest; None where it has none.
+fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
+  let session = jtext(r, "session").unwrap_or("")
+  let chat = jtext(r, "chat").unwrap_or("")
+  let own = match chat.find("/") {
+    Some(i) =>
+      jfield(
+        self.store("sessionThread", [jstr(session), jstr(chat[:i].to_owned()), jstr(chat[i + 1:].to_owned())]),
+        "thread",
+      )
+    None => Json::null()
+  }
+  if own is Object(_) {
+    let without = self.title_of(own, None, None)
+    // (a given name and a still.fail chat's name do not depend on the session's most recent chat)
+    let surface = jtext(own, "surface")
+    if @adb_devices.given_title(jv_of(own)) is Some(_) || surface == Some("ember") || surface == Some("stillfail") {
+      return Some(without)
+    }
+    let first = match self.store("firstText", [jfield(own, "id")]) {
+      String(t) => Some(t)
+      _ => None
+    }
+    let with_text = self.title_of(own, first, None)
+    if with_text == without {
+      return Some(without)
+    }
+    let latest = jfield(jfield(self.store("sessionChat", [jstr(session)]), "thread"), "id")
+    return Some(if latest == jfield(own, "id") { with_text } else { without })
+  }
+  match self.store("sessionChat", [jstr(session)]) {
+    Object(_) as latest => Some(self.title_of(jfield(latest, "thread"), jtext(latest, "firstText"), None))
+    _ => None
+  }
+}

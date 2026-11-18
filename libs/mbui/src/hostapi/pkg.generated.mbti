@@ -209,11 +209,15 @@ pub fn image_pixels(Int32, FixedArray[Byte]) -> Bool
 
 pub fn ime_action(Int32) -> Unit
 
+pub let ime_action_email : Int32
+
 pub let ime_action_go : Int32
 
 pub let ime_action_none : Int32
 
 pub let ime_action_number : Int32
+
+pub let ime_action_plain : Int32
 
 pub let ime_action_search : Int32
 

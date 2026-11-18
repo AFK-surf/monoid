@@ -137,7 +137,9 @@ pub fn way_in_button_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let bare = native_input() is Mouse
-  @headless.button(made_for=loc, body, label, fn(_) { press() }, disabled=busy, fn(v, b) {
+  let rippled : Ref[PressLook?] = Ref(None)
+  let hold = ripple_hold(rippled, fn() { !busy() })
+  @headless.button(made_for=loc, body, label, fn(_) { press() }, disabled=busy, hold~, fn(v, b) {
     v.focus_ring_theme() |> ignore
     let theme = fn() { @ui.tree_theme() }
     let lit = fn() { b.hovered() || b.pressed() }
@@ -196,28 +198,8 @@ pub fn way_in_button_node(
     })
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     // (a press's ripple from where it went down, the pill sinking under it: SignIn.kt's clip(CircleShape).clickable)
-    let rippled = press_look(v, Is(sign_in_button_h / 2.0), fn() { true })
-    v.gesture(
-      @ui.touch_slop(),
-      press=fn(d) {
-        if !b.disabled() {
-          (rippled.down)(d)
-        }
-      },
-      tap=fn(d) {
-        (rippled.tapped)(d)
-        if v.finger_target(d.wx, d.wy) {
-          b.press()
-        }
-      },
-      drag=fn(d) {
-        // (a mouse's moved on it past the slop: still a press as it is let go on it, as a click is)
-        if d.kind == Up && @ui.pointing() is Mouse && v.finger_target(d.wx, d.wy) {
-          b.press()
-        }
-      },
-    )
-    |> ignore
+    // (handed it by the headless button's hold: ripple_hold)
+    rippled.val = Some(press_look(v, Is(sign_in_button_h / 2.0), fn() { true }))
     // (its words changed, 登录或注册 to 正在登录: gone to their new place, not at once)
     @motion.moves_for(v, label, spec=button_reshape).moves_with(words)
   })

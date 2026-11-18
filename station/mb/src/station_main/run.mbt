@@ -44,6 +44,8 @@ priv struct Control {
   ports : (Int, Int)?
   carries : Bool
   heartbeats : Bool
+  /// `--launcher-installer`: the launcher starts the release's installer where this process cannot.
+  installer : Bool
 }
 
 ///|
@@ -686,6 +688,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     },
     carries: args.contains("--launcher-carries"),
     heartbeats: args.contains("--launcher-heartbeat"),
+    installer: args.contains("--launcher-installer"),
   }
   let token_bytes = @drive.random_bytes(24)
   let s : Station = {
@@ -805,6 +808,23 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     previous_pid,
     v => control.say(v),
     why => s.stop(why),
+    // ops/launcher.ts: the front started again by the launcher, only where it handed its sockets down (Unix's, which
+    // keeps a front) and hears this one's heartbeat.
+    restart_front?=if control_fd is Some(_) && control.heartbeats {
+      Some(() => control.say({ "restartFront": Json::boolean(true) }))
+    } else {
+      None
+    },
+    run_installer?=if control.handed && control.installer {
+      Some((script, env) => control.say({
+        "installer": {
+          "script": Json::string(script),
+          "env": Json::object(env.map((_, v) => Json::string(v))),
+        },
+      }))
+    } else {
+      None
+    },
   )
   s.bus = Some(bus)
   start_live_p5_1(bus) catch {
@@ -830,6 +850,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   if bus.as_rig() {
     start_live_p5_3(bus)
     start_live_p5_4(bus, rig=true)
+    // (rig/main.ts: its own release kept up to date, by itself and as `stillfail update` asks)
+    start_rig_updates(bus)
   } else {
     start_live_p5_2(bus)
     start_live_p5_3(bus)
@@ -967,6 +989,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   ignore(why)
   // (what the live parts started let go of before the process ends: their processes, what they hand over)
   stop_live_p5_1()
+  live_p5_1_handed()
   // (what the agents' side ends as the station stops, not handing over: its sessions' processes)
   match s.bus {
     Some(b) => ignore(@effect.timeout(10_000, async fn() { ignore((b.hub_ask.val)("shutdown", Json::null())) }))

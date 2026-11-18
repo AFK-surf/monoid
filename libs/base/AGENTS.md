@@ -17,7 +17,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   runs the runtime until nothing is ready, never waiting, and says when its next timer is due. On js iroh is loaded from an address (`Shell::start`) or given, the
   module or what loads it (`Shell::start_with`, `IrohJs`); a worker has no localStorage, so `storage.*` fails there.
   A page keeps keys and their bytes past localStorage's few MB in IndexedDB (`idb.*`, `shell_js.mbt`'s head), in a map
-  of its own where there is none (Node): no other shell has those ops. A program whose core must run in one tab of
+  of its own where there is none (Node): no other shell has those ops. A page's HTTP (`fetch`, `stream.open`,
+  `stream.read`, `stream.close`, given up by `fetch.cancel`) is its `fetch`, with the Rust shell's JSON and bytes; no
+  `entry` there, and a body read to its end lets go of its handle. A program whose core must run in one tab of
   a browser at a time asks for a tab's claim (`claim_tab`, `tab.mbt`): on a page a Web Lock of its name, taken over
   on a BroadcastChannel of the same (`TabClaim::take_over`: the tab holding it is told `Yielded` before it lets go);
   natively, and on a page without either, `Held` at once. What a tab does as it yields is its program's.
@@ -107,14 +109,15 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   line is worked out only while `Recorder.on`; a place is observed (paths, `conn ways`, `dht`) once a tick, by the
   ways' fiber while they are steered, by its link's otherwise.
 - `Mesh::sign` asks the shell (`ed25519.sign`, the Rust shell's) and signs in `sign.mbt` only where it cannot (a
-  page): that code is TweetNaCl's, not constant-time beyond what it was, and signs nothing it is not given.
+  page): that code is TweetNaCl's, not constant-time beyond what it was, and signs nothing it is not given. Its
+  check (`double_scalarmult`) is not constant-time at all, being of public bytes alone: never sign with it.
   `Mesh::verify` asks the shell (`crypto.verify`) and checks in `sign.mbt` (`ed25519_verify`) where it cannot, which
   refuses what the Rust shell's libcrux refuses (`S` past the order, a point not written once only): change both
   together.
   `Mesh::migrate` binds the endpoint anew on the key given and lets go of everything on the one before at once.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
-  it. `shell.c` has been compiled and run on macOS on arm64 alone.
+  it. `shell.c` has been run on macOS on arm64 alone (compiled for Linux, glibc 2.28, too).
 
 ## Known, and left
 
@@ -169,5 +172,6 @@ left is another part's:
   - After every wait in `ways.mbt` the mesh, the place in `links` and the entry in `pinned` are looked at anew; what a
     dial brings is a way or closed in the step it comes (`Mesh::adopt_way`); `release_pinned` closes nothing while
     `dialing`. A ping not late yet is not counted again (`Mesh::remeasure` pings links their ticks ping too).
-  - Native device keys written by the Rust shell are `0600` (`create_private`), and `shell.c` requires POSIX (`pthread`,
-    `arc4random_buf`, glibc >= 2.36 on Linux).
+  - Native device keys written by the Rust shell are `0600` (`create_private`), and `shell.c` requires POSIX (`pthread`)
+    and the system's randomness: `getrandom` on Linux (glibc >= 2.25, so a build for glibc 2.28 links), `arc4random_buf`
+    on Apple's systems and the BSDs.

@@ -62,8 +62,12 @@ pub let login_binding : String = "__stillfailLogin"
 ///|
 let login_hook_text : String =
   #|(() => {
-  #|  if (window !== window.top || window.__stillfailLoginHook) return;
-  #|  window.__stillfailLoginHook = true;
+  #|  if (window !== window.top) return;
+  #|  if (typeof window.__stillfailLoginTell === "function") {
+  #|    window.__stillfailLoginTell();
+  #|    return;
+  #|  }
+  #|  const deep = (root) => { let el = root.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement; return el; };
   #|  const kind = (el) => {
   #|    if (!el || el.tagName !== "INPUT" || el.disabled || el.readOnly) return null;
   #|    const type = (el.type || "text").toLowerCase();
@@ -74,18 +78,25 @@ let login_hook_text : String =
   #|    if (el.form && el.form.querySelector("input[type=password]")) return "username";
   #|    return /user|email|login|account|identifier/i.test((el.name || "") + " " + (el.id || "")) ? "username" : null;
   #|  };
-  #|  const focused = (e) => (e && e.composedPath ? e.composedPath()[0] : document.activeElement);
+  #|  const focused = (e) => (e && e.composedPath ? e.composedPath()[0] : deep(document));
   #|  let said = "";
-  #|  const say = (field) => {
-  #|    const now = field ? JSON.stringify({ field }) : "null";
+  #|  const say = (el) => {
+  #|    const field = kind(el);
+  #|    const now = field ? JSON.stringify(el.value ? { field, filled: true } : { field }) : "null";
   #|    if (now === said) return;
   #|    said = now;
   #|    try { if (typeof window.@BINDING === "function") window.@BINDING(now); } catch {}
   #|  };
-  #|  document.addEventListener("focusin", (e) => say(kind(focused(e))), true);
+  #|  window.__stillfailLoginTell = () => {
+  #|    said = "";
+  #|    say(deep(document));
+  #|  };
+  #|  document.addEventListener("focusin", (e) => say(focused(e)), true);
   #|  // (where the focus goes: none, or one a focusin then says itself)
-  #|  document.addEventListener("focusout", (e) => say(kind(e.relatedTarget)), true);
-  #|  say(kind(document.activeElement));
+  #|  document.addEventListener("focusout", (e) => say(e.relatedTarget), true);
+  #|  document.addEventListener("input", () => say(deep(document)), true);
+  #|  document.addEventListener("change", () => say(deep(document)), true);
+  #|  say(deep(document));
   #|})()
 
 ///|

@@ -153,3 +153,57 @@ test "ed25519_verify refuses what is not of a key's and a signature's lengths, a
   assert_true(ed25519_verify(unhex("01" + "00".repeat(31)), message, unhex("01" + "00".repeat(31)) + s0))
   assert_false(ed25519_verify(unhex("01" + "00".repeat(31)), message, unhex("ee" + "ff".repeat(30) + "7f") + s0))
 }
+
+///|
+test "ed25519_verify refuses a y at or past the field's prime, an S at or past the group's order, and x = 0 with its sign set, in a key and in R alike" {
+  let one = rfc8032[0]
+  let (key, message, signature) = (unhex(one.2), unhex(one.1), unhex(one.3))
+  let (sig_r, sig_s) = (signature[0:32].to_owned(), signature[32:64].to_owned())
+  // y = p (ed ff .. ff 7f), y = p + 18 (ff .. ff 7f), and each with its sign bit set.
+  let prime = unhex("ed" + "ff".repeat(30) + "7f")
+  let top = unhex("ff".repeat(31) + "7f")
+  for y in [prime, top, flipped(prime, 31, 7), flipped(top, 31, 7)] {
+    assert_false(ed25519_verify(y, message, signature))
+    assert_false(ed25519_verify(key, message, y + sig_s))
+  }
+  // S = L, S = 2^256 - 1, and S with its top bit set: none below the order.
+  let order = Bytes::from_array(Array::makei(32, i => order_l[i].to_byte()))
+  for s in [order, Bytes::make(32, b'\xff'), flipped(sig_s, 31, 7)] {
+    assert_false(ed25519_verify(key, message, sig_r + s))
+  }
+  // y = p - 1 is x = 0 too: written with its sign set it is none, under the identity's signature as under any.
+  let base = unhex("58" + "66".repeat(31))
+  let s1 = unhex("01" + "00".repeat(31))
+  assert_false(ed25519_verify(unhex("ec" + "ff".repeat(30) + "ff"), message, base + s1))
+  assert_false(ed25519_verify(key, message, unhex("ec" + "ff".repeat(30) + "ff") + sig_s))
+  // (and the signature itself still checks: nothing above was refused for another reason)
+  assert_true(ed25519_verify(key, message, signature))
+}
+
+///|
+test "ed25519_verify refuses every one bit turned over of the key, the message and the signature" {
+  let one = rfc8032[1]
+  let (key, message, signature) = (unhex(one.2), unhex(one.1), unhex(one.3))
+  let mut taken = 0
+  for at in 0..<64 {
+    for bit in 0..<8 {
+      if ed25519_verify(key, message, flipped(signature, at, bit)) {
+        taken += 1
+      }
+    }
+  }
+  for at in 0..<32 {
+    for bit in 0..<8 {
+      if ed25519_verify(flipped(key, at, bit), message, signature) {
+        taken += 1
+      }
+    }
+  }
+  for bit in 0..<8 {
+    if ed25519_verify(key, flipped(message, 0, bit), signature) {
+      taken += 1
+    }
+  }
+  assert_eq(taken, 0)
+  assert_true(ed25519_verify(key, message, signature))
+}
