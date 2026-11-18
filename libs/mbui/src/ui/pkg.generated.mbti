@@ -192,6 +192,8 @@ pub fn feel_as(Int32) -> Unit
 
 pub fn field(@view.View, Field, placeholder? : String, font_size? : Double, line? : Double, min_lines? : Int32, max_lines? : Int32, color? : Int64, placeholder_color? : Int64, caret_color? : Int64, enter_sends? : Bool, shorter? : Array[String], trim? : Bool, leaves? : Array[Int32], ime_action? : Int32, paste_limit? : Int32, secret? : Bool, words? : Bool, look? : (String) -> (String, Array[(Int32, Int32, Int64)]), submitted? : (String) -> Unit, pasted? : (String) -> Unit, edited? : (String) -> Unit, files? : (Array[(String, Bytes)]) -> Unit, size_by? : () -> Double, colors_by? : () -> (Int64, Int64, Int64), placeholder_by? : () -> String, label? : String) -> @view.View
 
+pub fn files_into(@view.View, Field, (Array[@hostapi.Picked]) -> Unit, takes? : () -> Bool) -> @view.View
+
 pub fn finger_target() -> Double
 
 pub fn first_difference(Array[Int64], Array[Int64]) -> Int32?
@@ -1353,6 +1355,7 @@ pub fn Ctx::field_focused(Self) -> Bool
 pub fn Ctx::field_focused_here(Self) -> Bool
 pub fn Ctx::field_paste(Self, Int32) -> Unit
 pub fn Ctx::field_right_clicked(Self) -> (Int32, Double, Double)?
+pub fn Ctx::files_into(Self, Int32, String, (Array[@hostapi.Picked]) -> Unit) -> Unit
 pub fn Ctx::finger_reads(Self) -> (Double, Double)?
 pub fn Ctx::fitting_width(Self, Double, Array[Double]) -> Double
 pub fn Ctx::floats_over(Self, Int32) -> Unit

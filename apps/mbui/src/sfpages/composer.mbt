@@ -450,15 +450,26 @@ pub fn composer(
   }
   // words dragged in from another app and let go on it beside its field (its ＋, send, its edge: on the field they go
   // where they were let go): into its field at its caret, as a paste's
-  // files from this machine's Finder let go on it (or on its field) where it is a station: by its station and path,
-  // named so or sent as files as the chat takes what is dragged in; elsewhere into its field as their paths, as words
-  if !no_files && @sfbase.finder_by_station() {
+  // files from this machine's Finder let go on it (or on its field) where it is a station of the chat's workspace: by
+  // its station and path, named so or sent as files as the chat takes what is dragged in; elsewhere (or where the host
+  // says no paths, as Windows' does) read and put in as files picked are (take_in says why where none goes up now)
+  if @sfbase.finder_by_station_in(ws.id) {
     match c.paths_into(cap, composer_field_key) {
       Some(paths) =>
-        writing_drop(src, w, spec.station, @sfbase.finder_dragged(src, paths).map(dropped_of), drops_as_files(src, w.key))
+        if no_files {
+          let why = if spec.offline {
+            @sf.t("web-main.composer.filesOffline")
+          } else {
+            @sf.t("web-main.composer.filesLocked")
+          }
+          c.tell("composer/files-refused/" + w.key, fn() { toast_later(why) })
+        } else {
+          writing_drop(src, w, spec.station, @sfbase.finder_dragged(src, paths).map(dropped_of), drops_as_files(src, w.key))
+        }
       None => ()
     }
   }
+  c.files_into(cap, composer_field_key, fn(files) { @sfbase.picked_files_into(w.key, files) })
   if !spec.locked {
     c.words_into(cap, composer_field_key)
   }
@@ -707,11 +718,18 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   // writes to the core told after the build (Ctx::tell) but what the system's picker answered, taken in before the
   // box is laid out (the host's word that it answered brings this frame)
   let dropped : Array[Dragged] = []
+  // (files read as they were let go on the chat, or picked, where none goes up now: said why below)
+  let mut picked_refused = false
   for g in @sfbase.draft_taken(w.key) {
     match g {
       // (the system's picker's answer taken in before the box is laid out: the host's word that it answered brings
       // this frame)
-      Picked(_) => @signals.untracked(fn() { given_into(src, spec.station, w, no_files, g) })
+      Picked(list) => {
+        if no_files && !list.is_empty() {
+          picked_refused = true
+        }
+        @signals.untracked(fn() { given_into(src, spec.station, w, no_files, g) })
+      }
       // words a visualization of this chat asked to send (sfbase viz_page.mbt): after what is written, the cursor in it
       Followed(words) => {
         let said = followed_words(w, words)
@@ -736,7 +754,7 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   }
   // the videos waiting that the host has no picture of: their first frames, made from their bytes
   @sfbase.writing_stills(c)
-  if !dropped.is_empty() {
+  if !dropped.is_empty() || picked_refused {
     if no_files {
       // (not taken in where none goes up now: said why, and what to do, never let go of with nothing said)
       let why = if spec.offline {

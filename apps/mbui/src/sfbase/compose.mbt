@@ -976,6 +976,26 @@ pub fn finder_by_station() -> Bool {
 }
 
 ///|
+/// Whether files from this machine's Finder let go on a chat of workspace `ws` are taken by where they are
+/// (finder_dragged): where this machine is a station of that workspace, which the chat's agent can read them from.
+/// Elsewhere they are read and sent as the chat's files (picked_files_into).
+pub fn finder_by_station_in(ws : String) -> Bool {
+  let here = this_machine()
+  here != "" && ws != "" && workspace_of(here) == ws
+}
+
+///|
+/// Files from outside let go on a chat and read (@ui.files_into, @ui.Ctx::files_into), by the chat's draft's key: put
+/// into its message as files picked are, the folders they were in left out (each named with a "/" at its end, empty);
+/// taken by its composer (compose_given.mbt), which says where it takes no files.
+pub fn picked_files_into(chat : String, files : Array[@hostapi.Picked]) -> Unit {
+  let regular = files.filter(fn(f) { !f.name.has_suffix("/") })
+  if !regular.is_empty() {
+    draft_give(chat, Picked(regular))
+  }
+}
+
+///|
 /// Files from this machine's Finder let go on a chat (@ui.Ctx::paths_into), as a 文件 row of this machine's station
 /// carries them: each by its station and path, for the chat's message to name so or send as a file as it takes what is
 /// dragged in (prefs `dropFiles`, `dropAs`), the station reading it from where it is. None where this machine is no

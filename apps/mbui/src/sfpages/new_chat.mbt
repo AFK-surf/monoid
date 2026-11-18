@@ -81,9 +81,13 @@ pub fn new_chat_opens(ws : String, ask : (String, Map[String, Json]) -> @sfbase.
 pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFrame) -> Unit {
   let topic = src.topic("newChat", new_chat_asked(w.id)).get().snapshot()
   let v = topic.value
+  // (named to know where it is, not pressed: what is let go on it from outside, beside its composer, is its composer's)
+  let room = c.id("new/room")
+  // (whether a composer is drawn on it, its draft the workspace's new chat's: new_composer_place)
+  let composes = Ref(false)
   c.box(style=new_ground, fn() {
     c.box(style=new_bar_room, fn() { (frame.bar)(c) }) |> ignore
-    c.box(style=new_room, fn() {
+    c.box(style=new_room, id=room, taps=false, points=true, fn() {
       match field(v, "stations") {
         Some(Array(_)) =>
           match field(v, "station") {
@@ -93,6 +97,7 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFr
               if text(v, "blocked") != "" {
                 new_blocked(c, src, w, v, station)
               } else {
+                composes.val = true
                 new_on(c, src, w, frame, v, station, Here)
               }
             }
@@ -107,6 +112,7 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFr
               }
             e => e
           }
+          composes.val = text(v, "kept") != ""
           new_on(c, src, w, frame, v, None, Held(error))
         }
       }
@@ -115,6 +121,24 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFr
     list_space(c, frame.foot)
   })
   |> ignore
+  // what is let go from outside on it beside its composer (its scene, its picture, the room round them), as on a chat's
+  // page: files from this machine's Finder where it is a station of this workspace into the draft by their station and
+  // path; elsewhere (or where the host says no paths) read and put in as files picked are; words into its field at its
+  // caret. Its composer's own box takes what is let go on it first (composer.mbt's cap).
+  if composes.val {
+    let draft = new_chat_drafts + w.id
+    if @sfbase.finder_by_station_in(w.id) {
+      match c.paths_into(room, composer_field_key) {
+        Some(paths) =>
+          for d in @sfbase.finder_dragged(src, paths) {
+            @sfbase.files_into(draft, d)
+          }
+        None => ()
+      }
+    }
+    c.files_into(room, composer_field_key, fn(files) { @sfbase.picked_files_into(draft, files) })
+    c.words_into(room, composer_field_key)
+  }
   // the first words sent, where they were typed, while the chat is made (flight.mbt)
   @sfbase.flight_carry_waiting(c)
 }

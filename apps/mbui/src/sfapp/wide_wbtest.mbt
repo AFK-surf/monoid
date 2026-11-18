@@ -369,17 +369,67 @@ test "wide: words dragged in from another app and let go anywhere on the chat go
 }
 
 ///|
-test "wide: where this machine is no station, files from the Finder let go on the chat go into its composer as their paths, a line each, not as files" {
+test "wide: where this machine is no station of the chat's workspace, files from the Finder (or Windows' Explorer, which says no paths) let go on the chat, its field or a new chat go up as files, read, its folders left out; the field's words untouched" {
+  // (each where this machine is: no station; a station of another workspace)
+  for here in [None, Some("ws2/st9")] {
+    let calls : Array[Made] = []
+    let t = wide_tester(calls, mode="chat")
+    @sfbase.machine_here.val = here
+    let said = here.unwrap_or("none")
+    let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "", station_name: "" }
+    // (what the draft holds: each its name, the bytes read that go up with it, and whether it is named by a path
+    // instead; the bytes go to the core by call_bytes, which this source does not count)
+    let went = fn() {
+      @sfbase.writings
+      .get(draft_key(r))
+      .map(fn(d) { d.files.get() })
+      .unwrap_or([])
+      .map(fn(f) {
+        let one = Some(f)
+        let bytes = match @sfbase.writing_went_to(text(one, "id")) {
+          Some((_, _, b)) => b
+          None => b""
+        }
+        (text(one, "name"), bytes, field(one, "ref") is None)
+      })
+    }
+    // on a message
+    let (x, y) = t.find("做完了：").unwrap()
+    t.drop_files(x, y, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=["/Users/lin/报告.pdf", "/Users/lin/截图"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(went(), [("报告.pdf", b"%PDF", true)], msg="\{said}: on a message")
+    assert_eq(t.ime().1, "", msg="\{said}: on a message")
+    // on the composer's field itself
+    let (fx, fy) = t.find("发消息").unwrap()
+    t.drop_files(fx, fy, [("a.txt", b"a")], paths=["/Users/lin/a.txt"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(went().map(fn(f) { f.0 }), ["报告.pdf", "a.txt"], msg="\{said}: on its field")
+    // with no paths (Windows' Explorer): the same
+    let (x, y) = t.find("做完了：").unwrap()
+    t.drop_files(x, y, [("b.log", b"log")])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(went().map(fn(f) { f.0 }), ["报告.pdf", "a.txt", "b.log"], msg="\{said}: no paths")
+    assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some(""), msg="\{said}")
+    assert_eq(t.ime().1, "", msg="\{said}")
+  }
+  @sfbase.machine_here.val = None
+}
+
+///|
+test "wide: files from the Finder let go on a new chat's page beside its composer go up as its draft's files, read, where this machine is no station" {
   let calls : Array[Made] = []
-  let t = wide_tester(calls, mode="chat")
-  let (x, y) = t.find("做完了：").unwrap()
-  t.drop_files(x, y, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=["/Users/lin/报告.pdf", "/Users/lin/截图"])
-  t.frame()
-  t.frame()
-  assert_true(t.ime().0)
-  assert_eq(t.ime().1, "/Users/lin/报告.pdf\n/Users/lin/截图")
-  // (nothing went up: they were not taken as files)
-  assert_eq(named(calls, "composer.add").length(), 0)
+  let t = wide_tester(calls, mode="newchat")
+  @sfbase.machine_here.val = None
+  // (on the page's room, well over its composer: its scene's)
+  guard t.find("做任何事") is Some((fx, fy)) else { fail("no new chat's composer") }
+  t.drop_files(fx, fy - 120.0, [("esp32.log", b"boot"), ("logs/", b"")], paths=["/Users/lin/esp32.log", "/Users/lin/logs"])
+  t.run_for(@ui.move_most_ms)
+  let names = @sfbase.writings
+    .get("new:ws1")
+    .map(fn(d) { d.files.get().map(fn(f) { text(Some(f), "name") + (if field(Some(f), "ref") is None { "" } else { "/ref" }) }) })
+    .unwrap_or([])
+  assert_eq(names, ["esp32.log"], msg="the field \{Repr(t.ime())}")
+  assert_eq(t.ime().1, "")
 }
 
 ///|

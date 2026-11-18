@@ -375,3 +375,106 @@ test "files let go beside a box that takes files only on its folders are left to
   assert_eq(took.length(), 1)
   assert_eq(f.text(), "/Users/lin/a.txt")
 }
+
+///|
+test "a box that reads files for its field (Ctx::files_into), taking none by their paths, reads those let go on it and on its field, the field as it was; one let go on another field in it is that field's, as their paths" {
+  let f = @ui.Field::new(text="")
+  let g = @ui.Field::new(text="")
+  let read : Array[String] = []
+  let t = @ui.Tester::new(
+    fn(c) {
+      let cap = c.id("cap")
+      c.takes_presses(cap)
+      c.files_into(cap, "e", fn(fs) {
+        for x in fs {
+          read.push(x.name)
+        }
+      })
+      c.words_into(cap, "e")
+      c.box(id=cap, w=Fill(1.0), pad=40.0, fn() {
+        c.editor("e", field=f, placeholder="the field", font_size=10.0, plain=true, enter_sends=false) |> ignore
+        c.editor("g", field=g, placeholder="another field", font_size=10.0, plain=true, enter_sends=false) |> ignore
+      })
+      |> ignore
+    },
+    w=300.0,
+    h=300.0,
+  )
+  t.draw()
+  let (ex, ey, ew, eh) = t.rect_of("the field").unwrap()
+  // on its field: read
+  t.drop_files(ex + ew / 2.0, ey + eh / 2.0, [("a.pdf", b"%PDF")], paths=["/Users/lin/a.pdf"])
+  t.frame()
+  t.frame()
+  let on_field = (read.copy(), f.text())
+  // on the box beside its fields: read
+  t.drop_files(ex + 50.0, ey - 36.0, [("b.txt", b"b")], paths=["/Users/lin/b.txt"])
+  t.frame()
+  t.frame()
+  let beside = (read.copy(), f.text())
+  // with no paths (Windows' host says none), on the box and on its field: read
+  t.drop_files(ex + 50.0, ey - 36.0, [("c.txt", b"c")])
+  t.frame()
+  t.frame()
+  t.drop_files(ex + ew / 2.0, ey + eh / 2.0, [("d.txt", b"d")])
+  t.frame()
+  t.frame()
+  let no_paths = (read.copy(), f.text())
+  // on another field in it: that field's, as their paths, unread
+  let (gx, gy, gw, gh) = t.rect_of("another field").unwrap()
+  t.drop_files(gx + gw - 4.0, gy + gh / 2.0, [("e.txt", b"e")], paths=["/Users/lin/e.txt"])
+  t.frame()
+  t.frame()
+  assert_eq(
+    (on_field, beside, no_paths, read, g.text(), f.text()),
+    (
+      (["a.pdf"], ""),
+      (["a.pdf", "b.txt"], ""),
+      (["a.pdf", "b.txt", "c.txt", "d.txt"], ""),
+      ["a.pdf", "b.txt", "c.txt", "d.txt"],
+      "/Users/lin/e.txt",
+      "",
+    ),
+  )
+}
+
+///|
+test "a box that takes files by their paths takes them so before it reads them (Ctx::paths_into, Ctx::files_into); files with no paths it reads" {
+  let f = @ui.Field::new(text="")
+  let took : Array[String] = []
+  let read : Array[String] = []
+  let t = @ui.Tester::new(
+    fn(c) {
+      let cap = c.id("cap")
+      c.takes_presses(cap)
+      match c.paths_into(cap, "e") {
+        Some(paths) =>
+          for p in paths {
+            took.push(p.path)
+          }
+        None => ()
+      }
+      c.files_into(cap, "e", fn(fs) {
+        for x in fs {
+          read.push(x.name)
+        }
+      })
+      c.words_into(cap, "e")
+      c.box(id=cap, w=Fill(1.0), pad=40.0, fn() {
+        c.editor("e", field=f, placeholder="the field", font_size=10.0, plain=true, enter_sends=false) |> ignore
+      })
+      |> ignore
+    },
+    w=300.0,
+    h=300.0,
+  )
+  t.draw()
+  let (ex, ey, _, _) = t.rect_of("the field").unwrap()
+  t.drop_files(ex + 50.0, ey - 36.0, [("a.txt", b"a")], paths=["/Users/lin/a.txt"])
+  t.frame()
+  t.frame()
+  t.drop_files(ex + 50.0, ey - 36.0, [("b.txt", b"b")])
+  t.frame()
+  t.frame()
+  assert_eq((took, read, f.text()), (["/Users/lin/a.txt"], ["b.txt"], ""))
+}

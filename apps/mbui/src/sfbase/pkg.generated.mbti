@@ -564,6 +564,8 @@ pub fn filter_of(Source, String) -> String
 
 pub fn finder_by_station() -> Bool
 
+pub fn finder_by_station_in(String) -> Bool
+
 pub fn finder_dragged(Source, Array[@ui.DroppedPath]) -> Array[Dragged]
 
 pub fn first_frame(@ui.Ctx, Source, String, String, Attachment, String) -> String
@@ -1321,6 +1323,8 @@ pub let picked : @signals.Signal[Picked]
 pub let picked_alpha : Double
 
 pub let picked_none : Picked
+
+pub fn picked_files_into(String, Array[@hostapi.Picked]) -> Unit
 
 pub fn picked_sig(@json.Json?) -> String
 

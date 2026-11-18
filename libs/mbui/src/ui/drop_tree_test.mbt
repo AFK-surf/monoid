@@ -233,3 +233,119 @@ test "files let go on a page that takes them by their paths only while it says s
   t.frame()
   assert_eq((first, (taken, f.text())), ((["/a.txt"], ""), (["/a.txt"], "/b.txt")))
 }
+
+///|
+/// A node 300 wide round a field of the tree's holding `f` ("the field"), 40 in, and another field in it, `g` ("another
+/// field"), that takes files by their paths for `f` while `by_path` says so (their paths put in `paths`), else reads them
+/// for it (files_into: their names put in `read`), and words for it; under it a node taking nothing ("beside it").
+fn tree_files_tester(
+  f : @ui.Field,
+  g : @ui.Field,
+  by_path : Bool,
+  paths : Array[String],
+  read : Array[String],
+) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(_c) {  }, w=300.0, h=300.0)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(Some(300.0))) |> ignore
+      col.box(fn(cap) {
+        cap.padding(Is((40.0, 40.0, 40.0, 40.0))).on_press(fn() { f.focus() }) |> ignore
+        @ui.field(cap, f, placeholder="the field", font_size=10.0, max_lines=1) |> ignore
+        @ui.field(cap, g, placeholder="another field", font_size=10.0, max_lines=1) |> ignore
+        @ui.paths_into(
+          cap,
+          f,
+          fn(ps) {
+            for p in ps {
+              paths.push(p.path)
+            }
+          },
+          takes=fn() { by_path },
+        )
+        |> @ui.files_into(f, fn(fs) {
+          for x in fs {
+            read.push(x.name)
+          }
+        })
+        |> @ui.words_into(f)
+        |> ignore
+      })
+      |> ignore
+      col.box(fn(b) { b.height(Is(Some(40.0))).on_press(fn() {  }) |> ignore }) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "files let go on a node that reads them for its field (files_into), where it takes none by their paths: read, on its field or beside it, the field as it was; on another field in it, their paths in that field, unread" {
+  let f = @ui.Field::new(text="")
+  let g = @ui.Field::new(text="")
+  let paths : Array[String] = []
+  let read : Array[String] = []
+  let t = tree_files_tester(f, g, false, paths, read)
+  let (ex, ey, ew, eh) = t.rect_of("the field").unwrap()
+  // (on its field itself)
+  t.drop_files(ex + ew / 2.0, ey + eh / 2.0, [("a.pdf", b"%PDF")], paths=["/Users/me/a.pdf"])
+  t.frame()
+  t.frame()
+  let on_field = (read.copy(), f.text())
+  // (beside it, on its padding)
+  t.drop_files(ex + 50.0, ey - 30.0, [("b.txt", b"b")], paths=["/Users/me/b.txt"])
+  t.frame()
+  t.frame()
+  let beside = (read.copy(), f.text())
+  // (on another field in it: that field's, by their paths as words)
+  let (gx, gy, gw, gh) = t.rect_of("another field").unwrap()
+  t.drop_files(gx + gw - 4.0, gy + gh / 2.0, [("c.txt", b"c")], paths=["/Users/me/c.txt"])
+  t.frame()
+  t.frame()
+  assert_eq(
+    (on_field, beside, read, g.text(), f.text(), paths),
+    ((["a.pdf"], ""), (["a.pdf", "b.txt"], ""), ["a.pdf", "b.txt"], "/Users/me/c.txt", "", []),
+  )
+}
+
+///|
+test "files let go with no paths (Windows' host says none) on a node that reads them for its field (files_into): read, on its field or beside it; by their paths where it takes them so it is not asked" {
+  let f = @ui.Field::new(text="")
+  let g = @ui.Field::new(text="")
+  let paths : Array[String] = []
+  let read : Array[String] = []
+  let t = tree_files_tester(f, g, true, paths, read)
+  let (ex, ey, ew, eh) = t.rect_of("the field").unwrap()
+  t.drop_files(ex + ew / 2.0, ey + eh / 2.0, [("a.pdf", b"%PDF")])
+  t.frame()
+  t.frame()
+  t.drop_files(ex + 50.0, ey - 30.0, [("b.txt", b"b"), ("pics/", b"")])
+  t.frame()
+  t.frame()
+  // (with their paths, where it takes them so: by their paths, unread)
+  t.drop_files(ex + 50.0, ey - 30.0, [("c.txt", b"c")], paths=["/Users/me/c.txt"])
+  t.frame()
+  t.frame()
+  assert_eq((read, paths, f.text()), (["a.pdf", "b.txt", "pics/"], ["/Users/me/c.txt"], ""))
+}
+
+///|
+test "a script's drop (drive 13) lets files go on the window with their paths, as Tester::drop_files does: what its picks said read" {
+  let f = @ui.Field::new(text="")
+  let g = @ui.Field::new(text="")
+  let paths : Array[String] = []
+  let read : Array[String] = []
+  let t = tree_files_tester(f, g, false, paths, read)
+  let (ex, ey, ew, eh) = t.rect_of("the field").unwrap()
+  // (no picks said: a file each, named as its path ends)
+  let done = @hostapi.drive(13, "\{ex + ew / 2.0} \{ey + eh / 2.0} /Users/me/esp32.log|/Users/me/logs/")
+  t.frame()
+  t.frame()
+  // (picks said: those)
+  let said = @hostapi.script_step("picks", "esp32.log:4096")
+  let again = @hostapi.drive(13, "\{ex + 50.0} \{ey - 30.0} /Users/me/Desktop/esp32.log")
+  t.frame()
+  t.frame()
+  assert_eq((done, said, again, read, f.text(), paths), (true, "", true, ["esp32.log", "logs/", "esp32.log"], "", []))
+}

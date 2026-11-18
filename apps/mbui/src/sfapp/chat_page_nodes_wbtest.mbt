@@ -85,10 +85,13 @@ fn chat_nodes_calling(
   long_md? : Bool = false,
   scale? : Double = 2.0,
   on_pixels? : Bool = false,
+  composer_nodes? : Bool = false,
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
   @sfbase.chat_page_nodes.set(true)
+  // (its composer made as nodes too where said: 试用新输入框)
+  @sfbase.composer_nodes.set(composer_nodes)
   let base = fixture(fixture_mode)
   let src : Source = {
     ..base,
@@ -1180,6 +1183,56 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: files from
       msg="\{name}: the words drawn in the field at \{Repr((nx, ny, nw, nh))}: \{Repr(drawn.map(fn(r) { (r.x0, r.top, r.bottom) }))}",
     )
   }
+}
+
+///|
+test "a chat's page and its composer made as nodes, on 小屏 and 大屏, where this machine is no station: files from the Finder let go on a message, on the composer's capsule or on its field go up as files, read, the field's words untouched; on ⌘F's field, their paths in it" {
+  for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = screen
+    let calls : Array[(String, Json)] = []
+    let (t, _) = chat_nodes_calling(w, h, platform, calls, composer_nodes=true)
+    @sfbase.machine_here.val = None
+    // (what the draft holds, each by its name and how it goes: read, its bytes going up, it has no `ref`; the bytes go
+    // to the core by call_bytes, which this source does not count)
+    let added = fn() { draft_files() }
+    let typed = fn() { @sfbase.writings.get("ws1/st1:s-c1").map(fn(d) { d.field.text() }).unwrap_or("") }
+    guard t.rect_of("做完了：列表、跳到最新的按钮") is Some((mx, my, mw, mh)) else { fail("\{name}: its last message not drawn") }
+    t.drop_files(mx + mw / 2.0, my + mh / 2.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+      "/Users/lin/报告.pdf", "/Users/lin/截图",
+    ])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(added(), "报告.pdf/", msg="\{name}: on a message")
+    guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("\{name}: no composer's field") }
+    guard composer_capsule(t) is Some((cx, cy, _, ch)) else { fail("\{name}: no composer's capsule") }
+    // (on the capsule, beside its field: its ＋'s side)
+    t.drop_files(cx + 4.0, cy + ch / 2.0, [("纪要.txt", b"txt")], paths=["/Users/lin/纪要.txt"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(added(), "报告.pdf/ 纪要.txt/", msg="\{name}: on the capsule")
+    t.drop_files(fx + fw / 2.0, fy + fh / 2.0, [("图.png", b"PNG")], paths=["/Users/lin/图.png"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(added(), "报告.pdf/ 纪要.txt/ 图.png/", msg="\{name}: on its field")
+    assert_eq(typed(), "", msg="\{name}: the field's words")
+  }
+  // ⌘F's field takes them as their paths, as any field does
+  let calls : Array[(String, Json)] = []
+  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, calls, composer_nodes=true)
+  @sfbase.machine_here.val = None
+  t.key(@ui.key_of_char('f'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  // (the field that is not the composer's)
+  let composer_label = @sf.t("web-main.composer.placeholder")
+  guard t.semantics().filter(fn(s) { s.role == @ui.Role::TextField && s.label != composer_label }) is [find] else {
+    fail("no ⌘F field: \{Repr(t.semantics().filter(fn(s) { s.role == @ui.Role::TextField }).map(fn(s) { (s.label, s.value) }))}")
+  }
+  let (sx, sy, sw, sh) = find.rect
+  let before = find.value
+  t.drop_files(sx + sw - 4.0, sy + sh / 2.0, [("a.txt", b"a")], paths=["/Users/lin/a.txt"])
+  // (looked at as the drop is taken, before the find's typing pause asks the core for what it says)
+  t.frame()
+  t.frame()
+  let now = t.semantics().filter(fn(s) { s.role == @ui.Role::TextField && s.rect.1 == sy })
+  assert_true(now.iter().any(fn(s) { s.value.contains("/Users/lin/a.txt") && s.value != before }), msg="⌘F's field: \{Repr(now.map(fn(s) { s.value }))}")
+  assert_eq(draft_files(), "")
 }
 
 ///|

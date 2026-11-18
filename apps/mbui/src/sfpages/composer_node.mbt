@@ -628,22 +628,21 @@ fn composer_box_node(
     |> ignore
     // words dragged in from another app and let go on it beside its field (its ＋, send, its edge: on the field they
     // go where they were let go): into its field at its caret, as a paste's; files from this machine's Finder let go on
-    // it (or on its field) where it is a station: by its station and path, named so or sent as files as the chat takes
-    // what is dragged in (the old composer's cap: c.paths_into, c.words_into); elsewhere, the page's (chat_page_node)
+    // it (or on its field) where it is a station of the chat's workspace: by its station and path, named so or sent as
+    // files as the chat takes what is dragged in (the old composer's cap: c.paths_into, c.words_into); elsewhere (or
+    // where the host says no paths, as Windows' does) read and put in as files picked are (c.files_into); either way
+    // given to the draft, whose taker says where it takes no files (take_in_node)
     @ui.paths_into(
       box,
       w.field,
       fn(paths) {
-        writing_drop(
-          src,
-          w,
-          r.station,
-          @sfbase.finder_dragged(src, paths).map(dropped_of),
-          drops_as_files(src, w.key),
-        )
+        for d in @sfbase.finder_dragged(src, paths) {
+          @sfbase.files_into(w.key, d)
+        }
       },
-      takes=fn() { !no_files() && @sfbase.finder_by_station() },
+      takes=fn() { @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
     )
+    |> @ui.files_into(w.field, fn(files) { @sfbase.picked_files_into(w.key, files) })
     |> @ui.words_into(w.field)
     |> ignore
     // (its ground the floating glass, the accent's over it while a file is dragged over: a 文件 tab's row, files from
@@ -2073,7 +2072,7 @@ fn take_in_node(v : @view.View, src : Source, r : ChatRef, w : Writing, no_files
     let off_files = @signals.untracked(no_files)
     let mut refused = false
     for g in @sfbase.draft_taken(w.key) {
-      if off_files && g is Dropped(_) {
+      if off_files && (g is Dropped(_) || (g is Picked(list) && !list.is_empty())) {
         refused = true
       }
       given_into(src, r.station, w, off_files, g)
