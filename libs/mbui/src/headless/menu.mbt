@@ -73,7 +73,8 @@ fn Menu::live(self : Menu) -> Array[MenuEntry] {
 fn Menu::stop_at(self : Menu) -> @view.NodeId? {
   guard self.stop is Some(st) else { return None }
   st.made.get() |> ignore
-  let live = self.items.filter(fn(e) { !(e.off)() })
+  // (an item still leaving, made another kind or let go as the menu stays open, is none to stop on)
+  let live = self.items.filter(fn(e) { e.node.takes_input() && !(e.off)() })
   match st.last.get() {
     Some(id) if live.iter().any(fn(e) { e.node.id() == id }) => Some(id)
     _ =>
@@ -230,7 +231,10 @@ pub fn menu(
           _ => return false
         }
       }
-      if !focus_in(v, true) {
+      // (from nowhere, the focus on no node of the tree's (one opened by the keys); never so for one that takes the
+      // focus itself, which has it while its keys are its: the focus elsewhere, held outside the tree (an old view's
+      // field kept as the menu opened beside it), the keys are that one's)
+      if !focus_in(v, !takes_focus) {
         return false
       }
       let live = m.live()
