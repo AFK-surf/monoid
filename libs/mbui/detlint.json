@@ -321,7 +321,9 @@
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
-    "headless-on-drag": {}
+    "headless-on-drag": {},
+    "page-headless": {},
+    "page-control-by-hand": {}
   },
   "excused": {
     "frame-request": {},
@@ -415,7 +417,9 @@
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
-    "headless-on-drag": {}
+    "headless-on-drag": {},
+    "page-headless": {},
+    "page-control-by-hand": {}
   },
   "tester": {
     "names": [

@@ -75,3 +75,31 @@ pub fn Raised::cast(self : Raised) -> @ui.Shadow {
 ///|
 /// What a finger holds and moves along its row (a place on a bottom bar's card): lifted 6, black at 14% both.
 pub let held_raised : Raised = raised(6.0, ambient=0.14, spot=0.14)
+
+///|
+/// What floats over a card (a menu, a popover, a hover card, a small panel): blurred 16, 12 down, in float_shadow_ink.
+pub fn float_shadow() -> (Double, Double, Int64) {
+  (float_blur, float_fall, float_shadow_ink())
+}
+
+///|
+let float_blur : Double = 16.0
+
+///|
+let float_fall : Double = 12.0
+
+///|
+/// The ink of what floats' shadow, as the theme is now: the palette's in light (the lights above, as clear as it was);
+/// in the dark black at `dark_float_shadow`, the palette's 45% all but lost on a ground as dark as the shadow itself,
+/// so what floats is seen over what it floats on, with its lifted ground and lit rim (panel_ground, panel_edge).
+pub fn float_shadow_ink() -> Int64 {
+  let t = theme()
+  if t.dark {
+    alpha(0x000000FFL, dark_float_shadow)
+  } else {
+    t.p.shadow
+  }
+}
+
+///|
+let dark_float_shadow : Double = 0.62

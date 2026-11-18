@@ -51,10 +51,12 @@ pub fn Options::chosen_model(self : Options) -> String? {
 }
 
 ///|
-/// A runtime's environment: the station's less what it scrubs, the profile's for `runtime` with its route.
+/// A runtime's environment: the station's less what it scrubs, the profile's for `runtime` with its route, this
+/// machine kept out of a proxy either names (`keepLocal`).
 fn runtime_env(base : Fields, scrubbed : Array[String], options : Options, runtime : String) -> Fields {
   let env = clean_env(base, scrubbed)
   spread_env(env, expand_route(profile_env(options.profile, runtime), options.route))
+  keep_local_fields(env)
   env
 }
 
@@ -1236,6 +1238,7 @@ pub async fn hermes_env(host : @host.Host, options : Options, base : Fields, use
     }
   }
   spread_env(env, expand_route(profile_env(options.profile, "hermes"), options.route))
+  keep_local_fields(env)
   let configured = match configured_home(str_of(env.get("HERMES_HOME")), hermes_home(options.home()), user_home) {
     Ok(h) => h
     Err(why) => raise FsError(why)

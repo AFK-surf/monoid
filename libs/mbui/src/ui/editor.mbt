@@ -1014,6 +1014,8 @@ pub fn Ctx::editor(
   }
   st.color = color
   st.ph_color = placeholder_color
+  // (how far its placeholder shows by its paint: said again after it each build that has one, Ctx::placeholder_by)
+  st.ph_alpha_by = None
   st.caret_color = caret_color
   st.sel_color = (caret_color & 0xFFFFFF00L) | 0x40L
   let focused = self.has_focus(id)
@@ -1471,7 +1473,8 @@ fn Ctx::paint_float_caret(
   if f.let_go < 0.0 {
     let (ax, ay) = (fx - lx, fy - ly)
     if ax * ax + ay * ay >= float_caret_apart * float_caret_apart {
-      let grey = if (st.ph_color & 0xFFL) != 0L { st.ph_color } else { (st.color & 0xFFFFFF00L) | 0x66L }
+      let ph = st.ph_shown()
+      let grey = if (ph & 0xFFL) != 0L { ph } else { (st.color & 0xFFFFFF00L) | 0x66L }
       self.emit_rect(gx, gy, gw, gh, gw / 2.0, grey, 0.0, 0L, alpha)
     }
   }
@@ -1627,8 +1630,9 @@ fn Ctx::paint_field(
   }
   if st.text.length() == 0 && ml == 0 && fb.hint.length() > 0 {
     // (a placeholder in no ink at all, hidden for now, is not drawn: nothing there to be seen or read)
-    if (st.ph_color & 0xFFL) != 0L {
-      self.emit_text(fb.hint_shown(), st.ox, st.oy, st.ph_color, alpha)
+    let ph = st.ph_shown()
+    if (ph & 0xFFL) != 0L {
+      self.emit_text(fb.hint_shown(), st.ox, st.oy, ph, alpha)
     }
   } else {
     let spans = if st.secret { [] } else { st.look_shown().1 }
@@ -1874,6 +1878,7 @@ fn EditorState::fresh(text : String, now : Double) -> EditorState {
     ime_action: 0,
     color: 0L,
     ph_color: 0L,
+    ph_alpha_by: None,
     caret_color: 0L,
     sel_color: 0L,
     secret: false,
@@ -2056,6 +2061,30 @@ pub fn Field::colors(self : Field, placeholder~ : Int64, caret~ : Int64) -> Unit
   self.st.ph_color = placeholder
   self.st.caret_color = caret
   self.st.sel_color = (caret & 0xFFFFFF00L) | 0x40L
+}
+
+///|
+/// The placeholder of the editor keyed `key` (Ctx::editor, built just before in this scope) shown as far as `alpha`
+/// says (0 → 1, of its `placeholder_color`'s own), worked out as it is painted, not as it is built (as Ctx::look_by): a
+/// fade of what it says while empty. What `alpha` reads (where a motion is, read by the clock) paints the frame again
+/// as it changes, nothing built or laid out (frame_watch.mbt). Said again each build, or it shows as its colour says.
+pub fn Ctx::placeholder_by(self : Ctx, key : String, alpha : () -> Double) -> Unit {
+  match self.editors.get(self.id(key)) {
+    Some(st) => st.ph_alpha_by = Some(alpha)
+    None => ()
+  }
+}
+
+///|
+/// Its placeholder's colour as it is painted now: `ph_color`, as far as Ctx::placeholder_by says (read now).
+fn EditorState::ph_shown(self : EditorState) -> Int64 {
+  match self.ph_alpha_by {
+    Some(f) => {
+      let a = (self.ph_color & 0xFFL).to_double() * dmax(0.0, dmin(1.0, f()))
+      (self.ph_color & 0xFFFFFF00L) | a.round().to_int64()
+    }
+    None => self.ph_color
+  }
 }
 
 ///|

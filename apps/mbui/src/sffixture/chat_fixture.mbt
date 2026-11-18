@@ -517,6 +517,16 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_cache_cold(with_message(rich_chat(f.older), screens_answer))
           } else if f.mode == "chat-archived" {
             with_flag(rich_chat(f.older), "archived")
+          } else if f.mode == "chat-held" {
+            // its station not reached: what is sent is held till it is (looks.ts offlineNote)
+            match with_flag(rich_chat(f.older), "offline") {
+              Object(m) => {
+                let o = m.copy()
+                o["offlineNote"] = Json::string("暂时连不上「Willow」：当前显示的是之前读取的内容，发出的消息会在连上后送达")
+                Json::object(o)
+              }
+              v => v
+            }
           } else if f.mode == "chat-cold-offline" {
             with_flag(with_cache_cold(rich_chat(f.older)), "offline")
           } else if f.mode == "chat-actions-run" {
@@ -1713,6 +1723,27 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         o => [o]
       }
     "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    // chat-unsure: did not go after it went out with no answer, so it may be the station's already: 重试, no 删除
+    "chat-unsure" =>
+      match outgoing_json("o-seed", words, "failed", "连接断开") {
+        Object(m) => {
+          let o = m.copy()
+          o["unsure"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
+    // chat-held: sent while its station is not reached, held till it is (looks.ts outboxHeld), 编辑 and 删除 beside it
+    "chat-held" =>
+      match outgoing_json("o-seed", words, "sending", "") {
+        Object(m) => {
+          let o = m.copy()
+          o["waits"] = Json::string("连上后发出")
+          o["held"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
     // chat-refused: refused as it is (a file the station cannot have), its words and a quote with it, 编辑 under it
     "chat-refused" => {
       let quote : Json = { "author": "Claude", "text": "高度先按 90 估，量过一次就记住。", "ts": "ts8", "role": "agent", "comment": "这个值得再确认" }
@@ -1834,6 +1865,10 @@ pub let fix_phone : Ref[String] = Ref("")
 ///|
 /// The length chat-phone's request was last allowed for (`adb.decide`'s scope): "" none yet.
 pub let fix_phone_scope : Ref[String] = Ref("")
+
+///|
+/// chat-phone-multi's 发送批准请求 pressed (`adb.personalJoin`): its trusted device shows the code to type.
+pub let fix_phone_join : Ref[Bool] = Ref(false)
 
 ///|
 /// Granted, how its station's adb holds the phone, as the station says it on the card ("": not said).
@@ -2000,7 +2035,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
     fix_rig.val = f.mode.unsafe_substring(start="chat-rig-".length(), end=f.mode.length())
   }
   let stepped = f.mode.has_prefix("chat-phone-step-")
-  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
+  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-multi" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
   // (chat-phone-granted: its request approved already; chat-phone-lacks: waiting, on a phone without Developer options;
   // chat-phone-linked-<link>[-desk]: approved, its station holding the phone as <link> says, on the phone or (-desk)
   // on a computer; chat-phone-step-<what>: approved, on a phone that lacks <what> first, its station holding it as
@@ -2213,6 +2248,12 @@ pub fn fixture_card_call(f : Fixture, name : String, params : Json) -> Result[Js
     "adb.decide" if text(p, "request") == "p-1" => {
       fix_phone_scope.val = text(p, "scope")
       fix_phone.val = if text(p, "scope") != "" { "granted" } else { "denied" }
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
+    // chat-phone-multi's device asking to be approved on its account's lock: a trusted device of theirs shows the code
+    "adb.personalJoin" if f.mode == "chat-phone-multi" => {
+      fix_phone_join.val = true
       f.changed()
       Some(Ok(Json::object({})))
     }

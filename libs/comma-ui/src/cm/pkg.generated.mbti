@@ -260,8 +260,6 @@ pub let ms_tooltip_handoff : Double
 
 pub fn popup_node(Layer, @view.View, @signals.Signal[Bool], (@view.View) -> Unit, label? : String, width? : Double) -> Unit
 
-pub fn presses_node(@view.View, () -> Unit, on? : () -> Bool) -> Unit
-
 #callsite(autofill(loc))
 pub fn radio_group_node(@view.View, Array[(String, String)], @signals.Signal[Int32], label? : String, loc~ : SourceLoc) -> @view.View
 
@@ -751,6 +749,7 @@ pub struct Toaster {
   shown : @signals.Signal[Array[ToastSaid]]
   mut next : Int32
   at : @ref.Ref[@view.View?]
+  // private fields
 }
 pub fn Toaster::dismiss(Self, Int32) -> Unit
 pub fn Toaster::new() -> Self

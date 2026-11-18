@@ -448,6 +448,24 @@ impl @hostapi.Host for FakeHost with text_key(self, text, size, weight, style) {
 }
 
 ///|
+/// The keys a Tester's host was asked to draw ahead (@hostapi.glyphs_ahead), in the order asked, where a test keeps
+/// them (Some): it draws none ahead, each drawn as it is asked for, as ever.
+// kept across runs: a test's own, set by it before it looks and put back after
+let fake_ahead : Ref[Array[Int]?] = Ref(None)
+
+///|
+impl @hostapi.Host for FakeHost with glyphs_ahead(self, keys, n) {
+  if fake_ahead.val is Some(asked) {
+    for i in 0..<n {
+      asked.push(keys[i])
+    }
+  }
+  if self.live is Some(l) {
+    l.host.glyphs_ahead(keys, n)
+  }
+}
+
+///|
 impl @hostapi.Host for FakeHost with glyph(self, key, out) {
   if self.live is Some(l) {
     l.host.glyph(key, out)

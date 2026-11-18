@@ -16,6 +16,8 @@ test("a failure is told apart by what it means to people", () => {
   assert.equal(failureOf("403: OAuth token does not meet scope requirement"), "auth");
   assert.equal(failureOf('{"error":{"code":"unsupported_country_region_territory"}}'), "refused");
   assert.equal(failureOf("429 Too Many Requests"), "rate_limit");
+  // An API key's prepaid credits run out (a 400, no limit named): another account may have room, so it is a limit.
+  assert.equal(failureOf("400 Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."), "rate_limit");
   assert.equal(failureOf("the model is overloaded"), "overloaded");
   assert.equal(failureOf("stream disconnected before completion: error sending request"), "network");
   assert.equal(failureOf("request failed: ECONNRESET"), "network");

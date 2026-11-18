@@ -121,17 +121,14 @@ fn transfers_list(
 }
 
 ///|
-/// Their list from the rail's key of them (rail_transfers_node), drawn over the frame (rail_overlays): beside the key
-/// where it was as the list was opened from it (else where it is now), its foot level with the key's, as the
-/// workspaces' menu under it is.
+/// Their list from the rail's key of them (rail_transfers_node, as the list is opened or shut): beside the key where it
+/// was as the list was opened from it (else beside the key's node, where it is drawn: opened before it was pressed, a
+/// fixture's), its foot level with the key's, as the workspaces' menu under it is.
 fn rail_transfers_list(src : Source, w : Workspace) -> Unit {
   let all = coming(src, w.id)
   let from : @sf.Anchor = match (transfers_from.val, rail_transfers_key.val) {
     (Some((x, y, aw, ah)), _) => At(x, y, aw, ah)
-    (None, Some(v)) if v.alive() => {
-      let (x, y, aw, ah) = v.placed_window_now()
-      At(x, y, aw, ah)
-    }
+    (None, Some(v)) if v.alive() => Node(v)
     _ => Unanchored
   }
   transfers_list(src, w.id, from, fn(at) { open_page(Drive(at)) }, all.none(), side=Right, along=End)

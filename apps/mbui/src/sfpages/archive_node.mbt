@@ -210,6 +210,29 @@ fn archive_row_node(r : @view.View, core : Core, it : () -> Json, tips? : @sf.Ti
       None => @settings.failed_of(core, ["session.delete"], [("station", station()), ("key", session())])
     }
   }
+  // (its menu where the pointer's other button is pressed on it: its chat opened, restored as its 恢复 does, and where
+  // it can be, deleted for good as its 删除 does, after a line and in red; restoring and deleting not while one is
+  // under way)
+  r.on_menu(fn(m) {
+    let i = @signals.untracked(v)
+    let doing = @signals.untracked(busy)
+    let items : Array[@sf.MenuItem?] = [
+      Some(
+        @sf.menu_item_of(
+          @sf.t("web-pages.rowMenu.openChat"),
+          fn() { (core.open_chat)(text(i, "station"), text(i, "session"), text(i, "title")) },
+          icon="chat",
+        ),
+      ),
+      Some(@sf.menu_item_of(@sf.t("web-pages.rowMenu.restore"), fn() { archive_restore_from(core, i) }, icon="retry", disabled=doing)),
+    ]
+    if flag(i, "deletable") {
+      items.push(None)
+      items.push(Some(@sf.menu_item_of(@sf.t("common.delete"), fn() { archive_delete_from(core, i) }, icon="trash", danger=true, disabled=doing)))
+    }
+    @sf.menu(items, from=@sf.at_point(m.wx, m.wy))
+  })
+  |> ignore
   // (on the page's ground, no card under it: its words on the page's title's line, as the day's heading's are)
   @sf.ground_row_node(r, fn(row) {
     @sf.link_row_node(

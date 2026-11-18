@@ -631,15 +631,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1/4, 3/4, contrast]
+        group: [1/4, 2/4, 3/4, 4/4, contrast]
         fps: [""]
-        # Groups 2 and 4 reached the job limit in 44250614119. Each runner takes half.
-        # Keep the two corners parts from 44236112180.
+        # The Chinese odd-window sweep exceeded the job limit in run 44236112180.
         include:
-          - { group: 2/4, fps: "", part: 1/2 }
-          - { group: 2/4, fps: "", part: 2/2 }
-          - { group: 4/4, fps: "", part: 1/2 }
-          - { group: 4/4, fps: "", part: 2/2 }
           - { group: corners, fps: "", part: 1/2 }
           - { group: corners, fps: "", part: 2/2 }
     env: &app-env
@@ -897,7 +892,10 @@ jobs:
         run: |
           # (the app's jobs' alone: mbui's own, motion-mbui-*, are mbui-ci's)
           find "$RUNNER_TEMP/motion" -mindepth 1 -maxdepth 1 -type d ! -name 'motion-mbui-*' -exec find {} -type f \; | xargs -r cat > "$RUNNER_TEMP/motion.txt"
-          MOTION_BARS_FAIL=$STRICT bash libs/mbui/scripts/motion_bars.sh "$RUNNER_TEMP/motion.txt" "the app's bars against what 60, 120 and the default rate found" >> "$GITHUB_STEP_SUMMARY" ||
+          # (pipefail after the find, where an empty download still leaves an empty motion.txt: tee puts the lines to
+          # change in the log too, and the script's own status still fails the step)
+          set -o pipefail
+          MOTION_BARS_FAIL=$STRICT bash libs/mbui/scripts/motion_bars.sh "$RUNNER_TEMP/motion.txt" "the app's bars against what 60, 120 and the default rate found" | tee -a "$GITHUB_STEP_SUMMARY" ||
             { echo "::error title=$NAME::a bar to fall or a file to leave motion_counted: this job's summary says which, and the one line to change for each"; exit 1; }
 
   # On main, after a merge: what failed, at the rates or the default's, and what merged since the last run that went

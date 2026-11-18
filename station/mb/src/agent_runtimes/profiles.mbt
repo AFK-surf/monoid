@@ -461,7 +461,10 @@ pub fn profile_env(p : J, runtime : String) -> Fields {
   }
   let custom = get(Some(p), "env")
   if is_object(custom) {
-    env.spread(spread_of(custom))
+    // A borrowed profile's without the proxy its host's machine went through (`customEnv`).
+    let share = get(Some(p), "share")
+    let borrowed = is_object(share) && get(share, "borrowed") is Some(Bool(true))
+    env.spread(spread_of(custom).filter(e => !(borrowed && machine_proxy(e.0))))
   }
   env
 }

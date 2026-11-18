@@ -669,6 +669,21 @@ export function ensureSlackSaid(sql: Sql): boolean {
   return !had || added;
 }
 
+/// The Slack people a station's agents heard from (`slack_said`'s rows heard with a name), one row a person by their
+/// Slack id (a bot's mention, `<@U…>`, its id out of it): when they were first heard, and their name as last heard and
+/// when. Kept as `slack_said` is written (account.ts `#heardWho`), so naming them reads these rows, never what was said
+/// (every message a station's agents ever heard, read whole as each chat was shown). Made where missing at every open;
+/// answers whether it was made now (to be filled from `slack_said`). The index finds a person's rows in `slack_said`
+/// again as some of them go.
+export function ensureSlackWho(sql: Sql): boolean {
+  const had = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'slack_who'").length > 0;
+  sql.exec(`CREATE TABLE IF NOT EXISTS slack_who (
+    station TEXT NOT NULL, user TEXT NOT NULL, first INTEGER NOT NULL, who TEXT NOT NULL, at INTEGER NOT NULL,
+    PRIMARY KEY (station, user)
+  ) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS slack_said_user ON slack_said (station, user)`);
+  return !had;
+}
+
 /// The full-text index an earlier core kept of `said` (`said_index`, FTS5) taken away: a row's words went from it only
 /// as its segments merged, so a chat's messages let go and read again over and over left it some 200 times the words it
 /// found (86 MB for 0.46 MB on a Mac), the room it took letting go the messages themselves.

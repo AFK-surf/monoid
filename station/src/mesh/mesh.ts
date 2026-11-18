@@ -11,7 +11,7 @@ import { closePeerRelays } from "./peer-relays.ts";
 import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
-import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
+import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
 import { DeviceTools, accessOf } from "../device/tools.ts";
 import { TOOLS_ALPN, adminSessions, presenceTools, serveTools } from "./tools.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, STOPPING, peerCall, servePeer } from "./peer.ts";
@@ -55,6 +55,7 @@ export const MeshLive = Layer.effectDiscard(
     const config = yield* StationConfig;
     const screens = yield* ScreenRegistry;
     const events = yield* Events;
+    const { restartFront } = yield* Paths;
     const run = Effect.gen(function* () {
       // Not in a workspace yet: on the mesh once `enroll` writes cloud.json.
       if (!cloud.state.state) yield* cloud.changes.pipe(Stream.filter(() => cloud.state.state !== null), Stream.runHead);
@@ -111,7 +112,7 @@ export const MeshLive = Layer.effectDiscard(
       const call = peerCall(endpoint, cloud.state, undefined, { reaches: (target, workspace) => side.outside?.reaches(target, workspace) === true }, undefined, {},
         (target, workspace) => meshDirectory?.scopeFor(target, workspace));
       if (endpoint.meshConfigure && endpoint.meshRemove && endpoint.meshListen) {
-        meshDirectory = new ScopeSync(endpoint, store.db, cloud.state, key, call, (args) => admin.readers.read("internalMeshControl", args, "en"));
+        meshDirectory = new ScopeSync(endpoint, store.db, cloud.state, key, call, (args) => admin.readers.read("internalMeshControl", args, "en"), undefined, restartFront);
         const relayControl = { list: (workspace: string) => meshDirectory!.relays(workspace), revoke: (workspace: string, node: string) => meshDirectory!.revoke(workspace, node) };
         side.relayControl = relayControl;
         yield* Effect.addFinalizer(() => Effect.promise(async () => {

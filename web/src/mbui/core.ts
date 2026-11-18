@@ -8,6 +8,7 @@ import { BETA } from "../channel.ts";
 import { PREVIEW_ORIGIN } from "../previewOrigin.ts";
 import { takeShare } from "./share.ts";
 import { putBack, take } from "../login/signin.ts";
+import { bootGoesWithFirstFrame, bootMarkOut, fetchedAhead } from "./boot.ts";
 // the app's words' face in a browser: the web's own Inter (its Latin, as the web's pages have it), not the whole face
 // the native hosts carry (apps/mbui src/sfbase/inter_face_js.mbt)
 import interLatin from "@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url";
@@ -161,9 +162,14 @@ const fetchCarried = (name: string, url = `/mbui/assets/${name}?b=${BUILT_AT}`) 
   fetch(url).then((r) => (r.ok ? r.arrayBuffer() : null), () => null)
     .then((b) => { if (b) assets[name] = new Uint8Array(b); });
 const starting = fetchCarried("inter.woff2", interLatin);
+// the app's script fetched beside the host's, run only once the mark has gone (boot.ts)
+const appScript = `/mbui/app.js?b=${BUILT_AT}`;
+const appFetched = fetchedAhead(appScript);
 
 // (named by this build: a page of a newer build never runs an older app's script from the browser's cache)
 await load(`/mbui/host.js?b=${BUILT_AT}`);
+// mbui.html's mark while the app comes, taken away with the app's first frame (boot.ts)
+bootGoesWithFirstFrame(host() as never);
 // where a web service's page is shown (cloud/src/preview.ts, the host's site view)
 (host() as { siteFrame?: string } | undefined)!.siteFrame = `${PREVIEW_ORIGIN}/_stillfail/frame`;
 // what /share was given, for the app to take (share.ts), said before the app runs
@@ -173,7 +179,9 @@ takeShare((channel, json) => host()?.post(channel, json), (open) => {
 });
 await starting;
 await handOver;
-await load(`/mbui/app.js?b=${BUILT_AT}`);
+await appFetched;
+await bootMarkOut();
+await load(appScript);
 for (const name of ["jetbrains_mono.ttf", "math_glyphs.gz", "share_400.gz", "share_600.gz"])
   void fetchCarried(name).then(() => (host() as { requestFrame?(): void } | undefined)?.requestFrame?.());
 

@@ -644,6 +644,8 @@ pub fn AgyDriver::env_for(self : AgyDriver, options : JValue) -> Env {
   let profile = get(o, "profile").unwrap_or(Null)
   let env = start_env(self.world.raw_env, agy_scrubbed)
   env.merge(expand_route((self.profiles.env)(profile, "agy"), str_at(o, "route").unwrap_or("")))
+  // The profile's own proxy too leaves this machine out (`keepLocal`).
+  let env = keep_local(env)
   env.set("ANTIGRAVITY_GEMINI_DIR", gemini_dir(self.m(), profile_home(profile)))
   if self.world.has_keychain {
     env.set("SSH_CLIENT", "127.0.0.1 0 0")
@@ -1684,7 +1686,7 @@ pub fn AgyDriver::adopt(
           }
       }
       x.acp.replayed(r, str_at(o, "resume"))
-      x.acp.own.tools_url = str_at(o, "mcpUrl")
+      x.acp.own.tools_url = crashed_tools_url(o)
       made.val = Some(x)
       Later::ok(lp, x.acp.own)
     },

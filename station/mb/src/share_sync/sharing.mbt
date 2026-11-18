@@ -223,7 +223,25 @@ pub fn portable(p : Json) -> Json {
   if out.get("access") is Some(Object(a)) && !keyed(a.get("kind")) {
     a.remove("key")
   }
+  // A proxy is this machine's, not the profile's: the other station has its own way out, or none.
+  if out.get("env") is Some(Object(e)) {
+    for k in e.keys().collect() {
+      if machine_proxy(k) {
+        e.remove(k)
+      }
+    }
+  }
   Json::object(out)
+}
+
+///|
+/// `/^(https?|all|no)_proxy$/i.test(name)` (profiles.ts `machineProxy`).
+fn machine_proxy(name : String) -> Bool {
+  let folded = StringBuilder::new()
+  for c in name {
+    folded.write_char(if c >= 'A' && c <= 'Z' { (c.to_int() + 32).unsafe_to_char() } else { c })
+  }
+  ["http_proxy", "https_proxy", "all_proxy", "no_proxy"].contains(folded.to_string())
 }
 
 ///|

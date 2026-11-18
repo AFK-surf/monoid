@@ -7,7 +7,8 @@
   (`<app>/station/stillfail-reader`), the launcher, the runner, the Helper and what `package.json`'s `build` lays out
   (`../scripts/station-bundle.sh`). The MoonBit program can be the whole station (`mb/src/station_main`, its
   `mb-live-*.test.ts`), and the launcher runs it so for a release with no `main.js`
-  (`native/launcher/src/main.rs` `station`). Releases ran it so as 0.1.9984 to 0.1.9996 and came back to Node: alone it
+  (`native/launcher/src/main.rs` `station`), or for a station whose config.json says `"engine": "moonbit"` (`station_of`,
+  read at each start of its process: a switch of one station's, turned on first for still.fail's own). Releases ran it so as 0.1.9984 to 0.1.9996 and came back to Node: alone it
   fell short of the TypeScript in the chats' events, files, peers and the accounts, so a release runs it alone again
   only once it does all the TypeScript does, held by those tests.
 - Processes: the launcher (`native/launcher`, Rust) keeps the pid, the data directory's lock and the ports, and on an

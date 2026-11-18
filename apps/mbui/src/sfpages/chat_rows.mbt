@@ -208,7 +208,8 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
     |> ignore
     if failed {
       outbox_unsent(c, src, here, o)
-    } else if o.followed {
+    } else if o.followed && !o.held {
+      // (one held is taken back on its own: what takes it back under each)
       ()
     } else if o.state == "sent" {
       // the station took it: its time under it, as its message has it, until the message takes its place
@@ -231,6 +232,10 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
       let w = c.box(style=msg_waiting, fn() {
         @sf.progress_spinner(c, "sending/" + o.id, o.progress, size=waiting_spin) |> ignore
         c.text(words, style=msg_time) |> ignore
+        // held here till its station is reached: nothing of it gone, so it may still be taken back
+        if o.held {
+          c.box(style=held_buttons, fn() { outbox_take_back(c, src, here, o) }) |> ignore
+        }
       })
       // (while its words fly here, its room kept and nothing of it seen)
       if !shows || flight_here(here) is Some(_) {
@@ -242,8 +247,9 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
 }
 
 ///|
-/// Under what did not go (msgUnsent): 未发送 (why in its tip), then 重试 or 编辑, then 删除; each turning while it is
-/// done (the core's doing), a red mark there a few seconds if it failed.
+/// Under what did not go (msgUnsent): 未发送 (why in its tip), then 重试 or 编辑, then 删除 (not where it may be the
+/// station's already: `unsure`); each turning while it is done (the core's doing), a red mark there a few seconds if it
+/// failed.
 fn outbox_unsent(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Unit {
   let p = @sf.theme().p
   let locked = here.view.offline
@@ -289,19 +295,46 @@ fn outbox_unsent(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) ->
         on_press=fn() { outbox_call(src, here, "chat.retry", id) },
       )
     }
-    let id = o.id
-    unsent_button(
-      c,
-      "unsent/drop/" + o.id,
-      "trash",
-      @sf.t("common.delete"),
-      !busy,
-      dropping,
-      core_failed(src, ["chat.discard"], on),
-      on_press=fn() { outbox_call(src, here, "chat.discard", id) },
-    )
+    // (one that may be the station's already is only sent again: deleted here it would not be unsaid there)
+    if !o.unsure {
+      let id = o.id
+      unsent_button(
+        c,
+        "unsent/drop/" + o.id,
+        "trash",
+        @sf.t("common.delete"),
+        !busy,
+        dropping,
+        core_failed(src, ["chat.discard"], on),
+        on_press=fn() { outbox_call(src, here, "chat.discard", id) },
+      )
+    }
   })
   |> ignore
+}
+
+///|
+/// Beside what is held till its station is reached (连上后发出): 编辑 (its words back in the composer, the entry
+/// dropped) and 删除, each pressed whether or not the station is reached (neither asks it anything), none while one is
+/// done.
+fn outbox_take_back(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Unit {
+  let on = [("station", here.station), ("id", o.id)]
+  let dropping = core_doing(src, ["chat.discard"], on)
+  let draft = here.station + ":" + here.session
+  let id = o.id
+  unsent_button(c, "held/edit/" + o.id, "edit", @sf.t("common.edit"), !dropping, false, None, on_press=fn() {
+    outbox_edit(src, draft, o, fn() { outbox_call(src, here, "chat.discard", id) })
+  })
+  unsent_button(
+    c,
+    "held/drop/" + o.id,
+    "trash",
+    @sf.t("common.delete"),
+    !dropping,
+    dropping,
+    core_failed(src, ["chat.discard"], on),
+    on_press=fn() { outbox_call(src, here, "chat.discard", id) },
+  )
 }
 
 ///|
@@ -900,6 +933,11 @@ let unsent_row : @ui.Style = @ui.css("row pt=S1 gap=SPx align=ACenter")
 ///|
 // kept across runs: a value (no field of it changes)
 let unsent_note : @ui.Style = @ui.css("row pr=S1_5 gap=S1 align=ACenter")
+
+///|
+/// What takes back what is held till its station is reached, after 连上后发出 in its line (outbox_row's).
+// kept across runs: a value (no field of it changes)
+let held_buttons : @ui.Style = @ui.css("row gap=SPx align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

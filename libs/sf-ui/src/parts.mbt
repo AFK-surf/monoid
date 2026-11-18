@@ -740,7 +740,7 @@ pub fn small_panel(
   max_w? : Double,
   body : () -> Unit,
 ) -> Int {
-  let t = theme()
+  let (blur, fall, shade) = float_shadow()
   let panel = c.box(
     w~,
     h~,
@@ -750,10 +750,10 @@ pub fn small_panel(
     bg=panel_ground(),
     radius=r_menu,
     border=1.0,
-    border_color=t.p.line,
-    shadow=16.0,
-    shadow_y=12.0,
-    shadow_color=t.p.shadow,
+    border_color=panel_edge(),
+    shadow=blur,
+    shadow_y=fall,
+    shadow_color=shade,
     clip=true,
     body,
   )
@@ -1035,15 +1035,26 @@ pub fn tip(
 }
 
 ///|
-/// A tip as the web draws it (parts.css.ts tooltip): small words on the primary ink, 5 by 10 in, 8 round, a soft
-/// shadow; the keys 8 after the words at 60% (tipKeys).
+/// A tip as the web draws it (parts.css.ts tooltip), as tip_node's tip_look_node draws one, said in the theme's roles:
+/// small words on the primary ink, 5 by 10 in, 8 round, a soft shadow; in the dark not that ink (the light grey, a glare
+/// of a block) but the raised grey lifted a step toward the words, its line round it. Its keys, where it says any, each
+/// a cap of its own after its words (key_caps), the tip then 4 over and under them and 8 from either side.
 pub fn tip_look(c : @ui.Ctx, words : String, keys : String) -> Unit {
+  let caps = key_caps(keys)
   // (the tip: the surface of the look it comes in by: Ctx::surface)
-  let tip = c.box(style=tip_box, fn() {
-    c.box(style=tip_line, fn() {
-      c.text(words, style=tip_words) |> ignore
-      if keys != "" {
-        c.box(style=tip_quiet, fn() { c.text(keys, style=tip_keys) |> ignore }) |> ignore
+  let tip = c.box(style=if caps.is_empty() { tip_box } else { tip_key_box }, fn() {
+    c.box(style=if caps.is_empty() { tip_line } else { tip_key_line }, fn() {
+      c.box(style=if caps.is_empty() { tip_words_box } else { tip_key_words }, fn() {
+        c.text(words, style=tip_words_style) |> ignore
+      })
+      |> ignore
+      if !caps.is_empty() {
+        c.box(style=tip_caps_row, fn() {
+          for cap in caps {
+            c.box(style=tip_cap_box, fn() { c.text(cap, style=tip_cap_words) |> ignore }) |> ignore
+          }
+        })
+        |> ignore
       }
     })
     |> ignore
@@ -1053,7 +1064,19 @@ pub fn tip_look(c : @ui.Ctx, words : String, keys : String) -> Unit {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tip_box : @ui.Style = @ui.style(px=S2_5, py=S1_25, bg=Primary, radius=Lg, max_w=tip_max, shadow=Md)
+let tip_box : @ui.Style = @ui.style(
+  px=S2_5,
+  py=S1_25,
+  bg=Primary,
+  radius=Lg,
+  max_w=tip_max,
+  shadow=Md,
+  dark=@ui.patch(bg=Over(Raised, A(Fg, O5)), border=B1, border_color=A(Fg, O20)),
+)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tip_key_box : @ui.Style = tip_box.then(@ui.css("px=S2 py=S1"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1061,18 +1084,45 @@ let tip_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tip_words : @ui.TextStyle = @ui.text_style(size=Meta, color=OnPrimary)
+let tip_key_line : @ui.Style = @ui.css("row gap=S2 align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tip_keys : @ui.TextStyle = @ui.text_style(size=Meta, color=OnPrimary, wrap=false)
+let tip_words_box : @ui.Style = @ui.css("")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tip_quiet : @ui.Style = @ui.css("opacity=O60")
+let tip_key_words : @ui.Style = @ui.css("py=SPx")
 
 ///|
-/// A small panel's ground (glass.ts panel): the canvas in light, the raised grey in dark, a hairline round it.
+// kept across runs: a value (no field of it changes)
+let tip_words_style : @ui.TextStyle = @ui.text_style(size=Meta, color=OnPrimary, dark=@ui.text_patch(color=Fg))
+
+///|
+// kept across runs: a value (no field of it changes)
+let tip_caps_row : @ui.Style = @ui.css("row gap=S0_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tip_cap_box : @ui.Style = @ui.css((
+  #|row h=S5 min_w=S5 px=S1_25 radius=Base border=B1 bg=Over(Primary,A(OnPrimary,O10)) border_color=Over(Primary,A(OnPrimary,O20)) align=ACenter justify=JCenter dark{bg=Over(Over(Raised,A(Fg,O5)),A(Fg,O10)) border_color=Over(Over(Raised,A(Fg,O5)),A(Fg,O20))}
+))
+
+///|
+// kept across runs: a value (no field of it changes)
+let tip_cap_words : @ui.TextStyle = @ui.text_style(
+  size=Caption,
+  weight=Medium,
+  color=OnPrimary,
+  wrap=false,
+  dark=@ui.text_patch(color=Fg),
+)
+
+///|
+/// A small panel's ground (glass.ts panel), what floats over a card (a menu, a popover, a hover card, ⌘K): the canvas
+/// in light, the raised grey in the dark. Not lifted further: the chips, tracks and empty cells in it are a step off
+/// it as they are (contrast_wbtest); what cuts it off a card in the dark is its line (panel_edge) and its shadow
+/// (float_shadow).
 pub fn panel_ground() -> Int64 {
   let t = theme()
   if t.dark {
@@ -1080,6 +1130,29 @@ pub fn panel_ground() -> Int64 {
   } else {
     t.p.canvas
   }
+}
+
+///|
+/// The line round what floats (panel_ground's): the line in light; in the dark the line seen `float_edge_seen` times as
+/// much (20% of the ink, and as much more again as the line is where more contrast is asked), a lit rim that cuts it off
+/// what it floats over, as a dark ground swallows a shadow.
+pub fn panel_edge() -> Int64 {
+  let t = theme()
+  if t.dark {
+    seen_times(t.p.line, float_edge_seen)
+  } else {
+    t.p.line
+  }
+}
+
+///|
+let float_edge_seen : Double = 2.0
+
+///|
+/// `c` `times` as opaque, opaque at most.
+fn seen_times(c : Int64, times : Double) -> Int64 {
+  let a = ((c & 0xFFL).to_double() * times).round().to_int64()
+  (c & 0xFFFFFF00L) | (if a > 255L { 255L } else { a })
 }
 
 ///|

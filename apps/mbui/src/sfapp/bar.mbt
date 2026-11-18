@@ -2158,8 +2158,10 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
   let px = d.x
   let py = d.y
   let o_at = m.o.value_at(t)
-  // another place chosen is felt, unless the finger already felt it getting there (a drag let go on it)
-  let on_tab = fn(place : String) {
+  // another place chosen is felt, unless the finger already felt it getting there (a drag let go on it); the place shown
+  // tapped again (`again`: a tap, not a slide let go on it), its list back to its top where it is away from it (the bar
+  // shows only over a place's root: sfdesk's list_back_to_top)
+  let on_tab = fn(place : String, again : Bool) {
     // a bar chosen landing: the ball rides this place as it lands (where it rides is where it stays: nothing tells it
     // again once it has landed)
     match m.swap_at(t) {
@@ -2173,6 +2175,8 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
         m.felt = at
       }
       go_place(t, place, l.sets, l.cur)
+    } else if again {
+      @sfdesk.list_back_to_top() |> ignore
     }
   }
   // another bar chosen (and a place in it, when one was tapped): it is the bar, and the place opens, now; the panel
@@ -2224,7 +2228,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
         if m.mode.get() {
           m.open_panel(false, at=t)
         }
-        on_tab(l.items[j])
+        on_tab(l.items[j], true)
       }
     }
   }
@@ -2327,6 +2331,9 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
     Ended => {
       let had = m.holds
       let final_cs = bar_centres(l.w, m.k_at(t), l.items.length())
+      // (let go still moving across: the place it was going to, as it carried on (bar_flung); the ball, chasing the
+      // finger, goes on there at the speed it had, never turned back short of it)
+      let to_px = bar_flung(px, d.vx(), l.w)
       ended()
       if d.kind == Off {
         // called off: the panel where the finger left it, nothing chosen
@@ -2342,21 +2349,21 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
           pick(l.others[n], Some(set[nearest(bar_centres(l.w, 0.0, set.length()), set.length(), px)]))
         } else {
           let j = if py >= l.row_top - 4.0 && l.items.length() > 0 {
-            imin(l.items.length() - 1, nearest(final_cs, 4, px))
+            imin(l.items.length() - 1, nearest(final_cs, 4, to_px))
           } else {
             -1
           }
           m.open_panel(m.open, at=t)
           if !m.open && j >= 0 {
-            on_tab(l.items[j])
+            on_tab(l.items[j], false)
           }
         }
       } else if l.items.length() > 0 {
-        let j = imin(l.items.length() - 1, nearest(final_cs, 4, px))
+        let j = imin(l.items.length() - 1, nearest(final_cs, 4, to_px))
         if m.mode.get() {
           m.open_panel(false, at=t)
         }
-        on_tab(l.items[j])
+        on_tab(l.items[j], false)
       }
     }
     Tapped => {
@@ -2606,4 +2613,18 @@ fn place_top_bar(c : @ui.Ctx, place : String) -> Unit {
   })
   // over what runs under it: the scroll bar there keeps clear of it
   c.floats_over(glass_top)
+}
+
+///|
+/// A slide let go while the finger still moves across: the place chosen is where the finger would be this long on at
+/// the speed it was let go at (a flick's way projected on, as a list's fling carries its speed), never further than one
+/// place's room past where it is let go; let go still, where it is (bar_flung).
+let bar_fling_ms : Double = 100.0
+
+///|
+/// Where a slide let go at `px` across a bar `w` wide, the finger moving at `vx` (points a ms), chooses its place by
+/// (bar_fling_ms on, within one place's room of `px`): `px` itself where it was still.
+fn bar_flung(px : Double, vx : Double, w : Double) -> Double {
+  let slot = (w - 2.0 * c0) / 3.0
+  px + dclamp(vx * bar_fling_ms, -slot, slot)
 }

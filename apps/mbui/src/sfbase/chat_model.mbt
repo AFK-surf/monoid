@@ -700,6 +700,10 @@ pub(all) struct Outgoing {
   /// refused as it is (sent again it would be again: its words go back to the composer)
   created_at : Double
   refused : Bool
+  /// held here till its station is reached (`waits` says so): nothing of it gone, so it may still be edited or deleted
+  held : Bool
+  /// failed after it went out with no answer: the station may have it, so it is sent again (重试), never deleted
+  unsure : Bool
 }
 
 ///|
@@ -1006,6 +1010,8 @@ fn chat_outbox_of(s : Json?) -> Array[Outgoing] {
       }),
       created_at: number(s, "createdAt"),
       refused: flag(s, "final"),
+      held: flag(s, "held"),
+      unsure: flag(s, "unsure"),
     }
   })
 }

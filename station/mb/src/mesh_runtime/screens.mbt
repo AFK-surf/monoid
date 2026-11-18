@@ -281,11 +281,11 @@ fn letters(s : String, most : Int) -> Bool {
 }
 
 ///|
-fn b64url(x : Json?) -> Bool {
+fn b64url(x : Json?, most? : Int = 8192) -> Bool {
   match x {
     Some(String(s)) =>
       s != "" &&
-      s.length() <= 8192 &&
+      s.length() <= most &&
       s.iter().all(c => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
     _ => false
   }
@@ -303,12 +303,12 @@ pub fn parse_passkey(v : Json) -> Json? {
       _ => None
     }
   }
-  let opt = (k : String) => m.get(k) is None || b64url(m.get(k))
+  let opt = (k : String, most : Int) => m.get(k) is None || b64url(m.get(k), most~)
   if !b64url(m.get("credential")) ||
     !b64url(m.get("authenticatorData")) ||
     !b64url(m.get("signature")) ||
-    !opt("userHandle") ||
-    !opt("clientData") {
+    !opt("userHandle", 8192) ||
+    !opt("clientData", 49152) {
     return None
   }
   let out = [("id", jstr(id))]

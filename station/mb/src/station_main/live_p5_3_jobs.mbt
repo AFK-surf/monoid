@@ -597,10 +597,10 @@ async fn P53Jobs::stop_all(self : P53Jobs, session : String?, why? : String, onl
 }
 
 ///|
-/// A session archived or deleted: its jobs stopped, those over taken off with their files (jobs.ts `clearEnded`).
+/// A session archived or deleted: its jobs that run stopped. Those over keep their rows and logs, as Node keeps them:
+/// only `DELETE /sessions/:key/jobs` (`clear_ended`) or the session's deletion (the store's) takes them off.
 async fn P53Jobs::session_ended(self : P53Jobs, session : String) -> Unit {
   ignore(self.stop_all(Some(session)))
-  ignore(self.clear_ended(session))
 }
 
 ///|

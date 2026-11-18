@@ -62,48 +62,45 @@ fn lists_foot_node(o : @view.View, src : Source, workspace : () -> Workspace?, a
         // (what the band's row leaves to the chip at its end is the trouble's: its row w=Full in it, as the old foot's)
         k.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         let words = fn() { text(trouble(), "text") }
-        @headless.button(k, words, fn(_) { @sfbase.go_place("stations") |> ignore }, fn(r, _) {
-          @sf.style_node(r, fn() { foot_trouble })
-          r
-          .radius(By(fn() { @ui.tree_theme().corner(@sf.side_row_radius) }))
-          |> ignore
-          @sf.hover_ground_node(r)
-          @sf.station_glyph_node(
-            r,
-            fn() {
-              match workspace() {
-                Some(w) => @sfbase.stations_at_glance(src, w.id).0
-                None => { online: 0, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
-              }
-            },
-            foot_glyph,
-            fn() { @sf.theme().p.text },
-            fn() { @sf.theme().p.red },
-          )
-          |> ignore
-          @sf.words_node(r, words, fn() {
-            if text(trouble(), "state") == "error" {
-              foot_trouble_red
-            } else {
-              foot_trouble_words
-            }
-          })
-          .grow(Is(1.0))
-          .min_width(Is(Some(0.0)))
-          |> ignore
-        })
+        // (@sf.count_chip_node's Row: the stations' glyph and the words, red while one fails, the pointer's ground under
+        // the hand)
+        @sf.count_chip_node(
+          k,
+          words,
+          fn(_) { @sfbase.go_place("stations") |> ignore },
+          lead=fn(r) {
+            @sf.station_glyph_node(
+              r,
+              fn() {
+                match workspace() {
+                  Some(w) => @sfbase.stations_at_glance(src, w.id).0
+                  None => { online: 0, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
+                }
+              },
+              foot_glyph,
+              fn() { @sf.theme().p.text },
+              fn() { @sf.theme().p.red },
+            )
+            |> ignore
+          },
+          alarm=fn() { text(trouble(), "state") == "error" },
+          look=Row,
+        )
         |> ignore
       })
       band.show(at_once=true, fn() { jobs() > 0 }, fn(k) {
-        // (mbui's headless button: its press opens or closes the 运行中 list beside it, presented over it)
-        @headless.button(k, fn() { @sf.t("web-main.jobs.long") }, fn(_) { wide.jobs_open.set(!wide.jobs_open.untracked()) }, fn(chip, _) {
-          @sf.style_node(chip, fn() { foot_chip })
-          chip.box(fn(d) { @sf.style_node(d, fn() { foot_chip_dot }) }) |> ignore
-          @sf.words_node(chip, fn() { @sf.t("web-main.jobs.chip", args=[("n", jobs().to_string())]) }, fn() { foot_chip_words })
-          |> ignore
-          open_jobs_pop_node(chip, src, workspace)
-        })
-        |> ignore
+        // (@sf.count_chip_node's Small, a plain button: its press opens or closes the 运行中 list beside it, presented
+        // over it; its dot the online green)
+        let chip = @sf.count_chip_node(
+          k,
+          fn() { @sf.t("web-main.jobs.chip", args=[("n", jobs().to_string())]) },
+          fn(_) { wide.jobs_open.set(!wide.jobs_open.untracked()) },
+          dot=fn() { "online" },
+          look=Small,
+          // (read out as what it opens, as it was: the long-running services and jobs)
+          named=fn() { @sf.t("web-main.jobs.long") },
+        )
+        open_jobs_pop_node(chip, src, workspace)
       })
     })
     |> ignore
@@ -170,32 +167,6 @@ let foot_glyph : Double = 18.0
 /// 8 in, its line and the chip 6 apart (Sidebar.css.ts navFoot, navFootStatus).
 // kept across runs: a value (no field of it changes)
 let foot_band : @ui.Style = @ui.css("row w=Full p=S2 gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let foot_trouble : @ui.Style = @ui.css("row w=Full min_h=S8 px=S2_5 gap=S2 align=ACenter hovered{bg=Hover}").then(
-  @ui.style(radius=@sf.side_row_radius),
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let foot_trouble_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let foot_trouble_red : @ui.TextStyle = @ui.text_style(size=Ui, color=Danger, wrap=false, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let foot_chip : @ui.Style = @ui.css("row h=S6 px=S2 gap=S1_5 align=ACenter bg=Hover radius=Full hovered{bg=Hover}")
-
-///|
-// kept across runs: a value (no field of it changes)
-let foot_chip_dot : @ui.Style = @ui.css("w=S1_5 h=S1_5 bg=Positive radius=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let foot_chip_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
 
 ///|
 /// An archived chat's page beside the list: over the archive, in place of another's.

@@ -444,7 +444,11 @@ fn side_adb_node(q : @view.View, src : Source, station : String) -> Unit {
       guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
       p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       let core = settings_core(src, w)
-      @settings.adb_node(p, core, station, on_back=fn() {  }, frame=fn() { { back: None, top: 0.0, foot: 0.0, named: false } })
+      // (the step of the account the workspace is reached through: another signed in here lends it nothing)
+      let here = fn() { @settings.here_of(core, w.id, w.name) }
+      @settings.adb_node(p, core, station, on_back=fn() {  }, frame=fn() { { back: None, top: 0.0, foot: 0.0, named: false } }, sub=fn() {
+        here().sub
+      })
     })
   })
   |> ignore

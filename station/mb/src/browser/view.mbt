@@ -913,13 +913,13 @@ pub async fn TabView::fill(self : TabView, f : J) -> Unit {
 }
 
 ///|
-/// Whether `v` is base64url a device's answer may hold (`/^[A-Za-z0-9_-]+$/`, at most 1366).
-fn b64_ok(v : J?) -> Bool {
+/// Whether `v` is base64url (`/^[A-Za-z0-9_-]+$/`, at most `most`).
+fn b64_ok(v : J?, most? : Int = 1366) -> Bool {
   match v {
     Some(Str(u)) => {
       let s = @jsjson.text(u)
       s != "" &&
-      s.length() <= 1366 &&
+      s.length() <= most &&
       s.iter().all(c => is_ascii_alpha(c) || is_ascii_digit(c) || c == '_' || c == '-')
     }
     _ => false
@@ -992,7 +992,7 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
         _ => []
       }
       guard at(said, "rpId") is Some(Str(ru)) &&
-        b64_ok(at(said, "challenge")) &&
+        b64_ok(at(said, "challenge"), most=32768) &&
         allow.iter().all(a => b64_ok(Some(a))) else {
         return
       }

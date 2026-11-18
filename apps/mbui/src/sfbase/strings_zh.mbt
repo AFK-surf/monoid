@@ -2468,6 +2468,12 @@ let zh : Map[String, String] = {
   "web-pages.profiles.usedBy": "使用它的连接",
   "web-pages.profiles.verifiedAdded": "已验证并添加 Profile",
   "web-pages.profiles.workspaces.lead": "此 station 也属于其他 workspace；Profile 默认同时用于这些 workspace",
+  "web-pages.rowMenu.copied": "已复制「{name}」",
+  "web-pages.rowMenu.copyAddress": "复制地址",
+  "web-pages.rowMenu.copyName": "复制名称",
+  "web-pages.rowMenu.open": "打开",
+  "web-pages.rowMenu.openChat": "打开对话",
+  "web-pages.rowMenu.restore": "恢复对话",
   "web-pages.screen.again": "重新打开",
   "web-pages.screen.linuxSetup": "安装说明",
   "web-pages.screen.debug.appRunning": "运行中",
@@ -2974,4 +2980,5 @@ let zh : Map[String, String] = {
   "web-pages.remote.newViewOn": "在 {station} 新建视图",
   "core-views.screen.kind.desktop": "桌面",
   "core-views.screen.kind.simulator": "iOS 模拟器",
+  "web-pages.screen.heldBy": "{who} 正在操作此画面，点「接管」后可操作",
 }

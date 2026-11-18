@@ -169,7 +169,7 @@ sources() {
     for p in cloud station client/core-ts; do
       (cd $E/$p && pnpm install --frozen-lockfile >>$WORK/install.log 2>&1) || die "install of $p failed"
     done
-    (cd $E/station && pnpm run build >>$WORK/install.log 2>&1) || die "station build failed"
+    (cd $E/station && pnpm run build:node >>$WORK/install.log 2>&1) || die "station build failed"
     echo $want > $WORK/stillfail.ready
   fi
 }

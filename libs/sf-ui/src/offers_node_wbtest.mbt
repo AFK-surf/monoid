@@ -1,8 +1,9 @@
 // What a field offers as it is typed in (offers_node), held to what the old @ menu under the relay's note and over the
 // composer kept (kit's popover with its focus left in the field, Ctx::on_key before the field): under the field and as
 // wide, the focus in the field all the while; ↓ ↑ round, Enter and Tab take the one chosen, closed they are the
-// field's; the pointer moving onto a row chooses it; ↓ ↑ bring the one chosen into sight; Escape and a press outside
-// close it alone; one taken, the next key is not its.
+// field's; its rows a combobox's options (@headless.combobox), the one chosen selected; the pointer moving onto a row
+// chooses it; ↓ ↑ bring the one chosen into sight; Escape and a press outside close it alone; one taken, the next key
+// is not its.
 
 ///|
 /// What an offers tester holds: the Tester, the field's frame, what is open, the one chosen, what was taken, how
@@ -133,8 +134,8 @@ test "offers: under its field, 6 off, lined up with its start, as wide as it; it
   assert_eq((dx, dy, dw), (fx, fy + fh + 6.0, fw))
   assert_true(x.t.find("可以选的") is Some(_))
   assert_true(x.t.find("x") is Some(_))
-  x.t.get(Button, label="甲", selected=true) |> ignore
-  x.t.get(Button, label="乙", selected=false) |> ignore
+  x.t.get(Option, label="甲", selected=true) |> ignore
+  x.t.get(Option, label="乙", selected=false) |> ignore
   assert_true(offers_in_field(x.t))
   // (what is typed the field's, a space and a letter alike)
   x.t.type_text("a b")
@@ -150,7 +151,7 @@ test "offers: ↓ and ↑ choose round, Enter takes the one chosen, the focus in
   x.t.key(@ui.key_code_up)
   x.t.key(@ui.key_code_up)
   assert_eq(x.current.get(), 2)
-  x.t.get(Button, label="丙", selected=true) |> ignore
+  x.t.get(Option, label="丙", selected=true) |> ignore
   x.t.key(@ui.key_code_enter)
   assert_eq((x.taken, x.sent.val), ([2], 0))
   assert_true(offers_in_field(x.t))
@@ -176,7 +177,7 @@ test "offers: Tab takes the one chosen, the focus staying; closed, Tab moves the
 ///|
 test "offers: the pointer moving onto a row chooses it; a press on one takes it" {
   let x = offers_tester()
-  let (rx, ry, rw, rh) = x.t.get(Button, label="丙").rect
+  let (rx, ry, rw, rh) = x.t.get(Option, label="丙").rect
   x.t.move_to(rx + rw / 2.0, ry + rh / 2.0)
   assert_eq(x.current.get(), 2)
   x.t.tap(rx + rw / 2.0, ry + rh / 2.0)
@@ -229,7 +230,7 @@ test "offers: many, past its most: ↑ from the first to the last, round, brings
   x.t.key(@ui.key_code_up)
   x.t.run_for(@ui.move_most_ms)
   assert_eq(x.current.get(), 19)
-  let (_, ry, _, rh) = x.t.get(Button, label="第19").rect
+  let (_, ry, _, rh) = x.t.get(Option, label="第19").rect
   assert_true(ry >= dy && ry + rh <= dy + dh + 0.5, msg="\{Repr((ry, rh, dy, dh))}")
 }
 
@@ -269,6 +270,6 @@ test "offers: a mouse's pointer over its ground (its head's words, its padding) 
   let points = [(dx + 3.0, dy + dh / 2.0), (dx + dw / 2.0, dy + 3.0), (dx + dw / 2.0, dy + dh - 3.0), (dx + dw - 3.0, dy + dh / 2.0)]
   let grounds = points.map(fn(p) { shape_on(p.0, p.1) })
   assert_eq(grounds, points.map(fn(_) { Arrow }), msg="its ground at \{Repr(points)}, it \{Repr((dx, dy, dw, dh))}")
-  let (rx, ry, rw, rh) = x.t.get(Button, label="乙", selected=false).rect
+  let (rx, ry, rw, rh) = x.t.get(Option, label="乙", selected=false).rect
   assert_eq(shape_on(rx + rw / 2.0, ry + rh / 2.0), Hand, msg="a row")
 }

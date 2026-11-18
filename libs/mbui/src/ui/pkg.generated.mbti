@@ -1373,6 +1373,7 @@ pub fn Ctx::frame_number(Self) -> Int32
 pub fn Ctx::gives_way(Self, Int32) -> Unit
 pub fn Ctx::glass_solid(Self) -> Bool
 pub fn Ctx::glyphs_by(Self, Int32, (@view.GlyphAt) -> @view.GlyphLook) -> Unit
+pub fn Ctx::grounds_by(Self, Int64, () -> Int64, () -> Unit) -> Unit
 pub fn Ctx::hand_lit(Self, Bool) -> Bool
 pub fn Ctx::hand_on(Self, Int32) -> Bool
 pub fn Ctx::hand_shown(Self, Bool, () -> Unit) -> Unit
@@ -1507,6 +1508,7 @@ pub fn Ctx::picture(Self, String, x~ : Double, y~ : Double, w~ : Double, h~ : Do
 pub fn Ctx::place(Self, (Double, Double, Double, Double), Double, Double, side? : @view.Side, along? : @view.Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool) -> (Double, Double, @view.Side)
 pub fn Ctx::place_by_size(Self, Int32, (Double, Double) -> (Double, Double)) -> Unit
 pub fn Ctx::place_most(Self, padding? : Double) -> Double
+pub fn Ctx::placeholder_by(Self, String, () -> Double) -> Unit
 pub fn Ctx::pointer(Self) -> (Double, Double, Bool)
 pub fn Ctx::pointer_after_keys(Self) -> Bool
 pub fn Ctx::pointer_at(Self) -> Double

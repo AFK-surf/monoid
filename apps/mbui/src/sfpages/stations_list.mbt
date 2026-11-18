@@ -113,6 +113,19 @@ pub fn stations_list_node(
             let address = k.untracked()
             // (its own station of the list, read by its address: told only as that one changes)
             sl_station_card_node(row, core, fn() { stations_by.get(address) }, fn() { (core.push)(Station(address)) }, shown~)
+            // (its menu where the pointer's other button is pressed on it: opened, its name or its address copied)
+            row.on_menu(fn(m) {
+              let name = text(@signals.untracked(fn() { stations_by.get(address) }), "name")
+              @sf.menu(
+                [
+                  Some(@sf.menu_item_of(@sf.t("web-pages.rowMenu.open"), fn() { (core.push)(Station(address)) }, icon="arrow-up-right")),
+                  copy_item("web-pages.rowMenu.copyName", name),
+                  copy_item("web-pages.rowMenu.copyAddress", address),
+                ].filter(fn(i) { i is Some(_) }),
+                from=@sf.at_point(m.wx, m.wy),
+              )
+            })
+            |> ignore
           })
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
@@ -211,6 +224,20 @@ fn sl_first_node(b : @view.View, core : Core, here : () -> Here, add : () -> Boo
       })
       |> ignore
     },
+  )
+}
+
+///|
+/// A row menu's item that copies `words` (its name, its address), said copied in the toast; none where there is nothing
+/// to copy, so the menu never shows an item that does nothing.
+fn copy_item(label : String, words : String) -> @sf.MenuItem? {
+  guard words != "" else { return None }
+  Some(
+    @sf.menu_item_of(
+      @sf.t(label),
+      fn() { @sfbase.copy_out(words, said=@sf.t("web-pages.rowMenu.copied", args=[("name", words)])) },
+      icon="copy",
+    ),
   )
 }
 

@@ -2360,6 +2360,8 @@ test("a session leaves an account whose five hours are nearly full for one with 
   assert.ok(first.disposed);
   assert.equal(r.session(key).profile, other);
   assert.equal(r.claude.last().options.profile.id, other);
+  // Its own could still run it: the station's choice, not said in its chat.
+  assert.deepEqual(r.chat.texts().filter((t) => t.startsWith("已切换账号：")), [], r.chat.texts().join("\n"));
   await done();
   // Both nearly full: it stays where it is, compacted or not.
   used[other] = 90;

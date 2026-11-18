@@ -213,3 +213,14 @@ test "Claude Code's compact_boundary, automatic or by hand, says it compacted" {
   }
   assert_eq(told, ["{\"type\":\"compacted\"}", "{\"type\":\"compacted\"}"])
 }
+
+///|
+test "an API key's credits run out: a limit, so another account takes the session on" {
+  for text in [
+    "Credit balance is too low",
+    "API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}",
+  ] {
+    assert_eq(@claude.classify_result(@jsjson.units(text)), "rate_limit", msg=text)
+    assert_eq(@claude.failure_of(@jsjson.units(text)), "rate_limit", msg=text)
+  }
+}

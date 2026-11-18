@@ -1801,6 +1801,24 @@ async function main() {
     }
   });
 
+  test("a helper LaunchServices will not start: why said once, not by the addresses in it, never with its token; again once the reason changes or it answered between", async () => {
+    const { ts, mb } = await both("grantsRefused", grantsRefusedScenario);
+    for (const side of [ts, mb]) {
+      const tokens: string[] = side.trace.filter((e: Json) => e.t === "exec" && e.file === "open").flatMap((e: Json) => (e.args as string[]).filter((a) => a.startsWith("STILLFAIL_HELPER_TOKEN=")).map((a) => a.slice(a.indexOf("=") + 1)));
+      assert.ok(tokens.length > 0 && tokens[0]!.length === 64, "the app was started with its token");
+      const logs = side.trace.filter((e: Json) => e.t === "log");
+      for (const token of new Set(tokens)) assert.ok(!JSON.stringify(logs).includes(token), "no log says the token");
+      assert.ok(!JSON.stringify(logs).includes("--env"), "no log says the command line");
+      const said = logs.filter((e: Json) => e.message === "still.fail Helper did not answer").map((e: Json) => e.fields.error);
+      assert.deepEqual(said, [
+        LS_REFUSED("0x7a68c38ff0"),
+        "LSOpenURLsWithRole() failed with error -610",
+        LS_REFUSED("0x7a68c3dff0"),
+        "open was ended (SIGTERM)",
+      ]);
+    }
+  });
+
   test("the Mac's desktop: its grants asked for, a view through the helper, started again for a grant, refused when it cannot be seen", async () => {
     await both("desktop", desktopScenario);
   });
@@ -2222,7 +2240,7 @@ async function grantsScenario(s: Play) {
 async function grantsStuckScenario(s: Play) {
   helperWorld(s.w);
   // (LaunchServices refuses with no one signed in to the desktop: the app never comes up)
-  s.w.execRules.unshift((file, args) => (file === "open" && args[0] === "-n" ? { error: { message: "LSOpenURLsWithRole() failed with error -610", code: 1, signal: null, stdout: "", stderr: "" } } : undefined));
+  s.w.execRules.unshift((file, args) => (file === "open" && args[0] === "-n" ? { error: { message: "LSOpenURLsWithRole() failed with error -610", code: 1, signal: null, stdout: "", stderr: "LSOpenURLsWithRole() failed with error -610\n" } } : undefined));
   await s.new("helper", { inst: "h", app: APP, dir: "/data/helper" });
   await s.new("grants", { inst: "g", helper: "h" });
   await s.call("g", "view");
@@ -2241,6 +2259,44 @@ async function grantsStuckScenario(s: Play) {
   await s.call("g", "refresh", { force: true });
   await s.call("g", "request", { grant: "documents", words: {} });
   await s.call("g", "view");
+  await s.settle();
+}
+
+/// What `open` says where no one is signed in to the desktop: an NSError at an address new at each try.
+const LS_REFUSED = (at: string) =>
+  `The application cannot be opened for an unexpected reason, error=Error Domain=RBSRequestErrorDomain Code=5 "Launch failed." UserInfo={NSLocalizedFailureReason=Launch failed., NSUnderlyingError=${at} {Error Domain=OSLaunchdErrorDomain Code=125 "Domain does not support specified action" UserInfo={NSLocalizedFailureReason=Domain does not support specified action}}}`;
+
+async function grantsRefusedScenario(s: Play) {
+  const helper = helperWorld(s.w);
+  // (as Node's execFile fails: its message the command line, the token's `--env` in it, then what `open` said)
+  let refusal: ((n: number) => Json) | null = (n) => ({ stderr: `${LS_REFUSED(`0x${(0x7a68c38ff0 + n * 0x1000).toString(16)}`)}\n` });
+  let tries = 0;
+  s.w.execRules.unshift((file, args) => {
+    if (file !== "open" || args[0] !== "-n" || refusal === null) return undefined;
+    const r = refusal(tries++);
+    return { error: { message: `Command failed: open ${args.join(" ")}\n${r.stderr ?? ""}`, code: r.signal ? null : 1, signal: r.signal ?? null, stdout: "", stderr: r.stderr ?? "" } };
+  });
+  await s.new("helper", { inst: "h", app: APP, dir: "/data/helper" });
+  await s.new("grants", { inst: "g", helper: "h" });
+  // Refused again and again, each at an address of its own: said once.
+  for (let i = 0; i < 3; i++) await s.call("g", "refresh", { force: true });
+  // Another reason: said; and the first again after it.
+  refusal = () => ({ stderr: "LSOpenURLsWithRole() failed with error -610\n" });
+  await s.call("g", "refresh", { force: true });
+  await s.call("g", "refresh", { force: true });
+  refusal = (n) => ({ stderr: `${LS_REFUSED(`0x${(0x7a68c38ff0 + n * 0x1000).toString(16)}`)}\n` });
+  await s.call("g", "refresh", { force: true });
+  await s.call("g", "refresh", { force: true });
+  // It started and answered; then it is refused again: said again.
+  refusal = null;
+  await s.call("g", "refresh", { force: true });
+  await s.settle();
+  refusal = () => ({ stderr: "", signal: "SIGTERM" });
+  helper.stop();
+  await s.settle();
+  await s.advance(3500);
+  await s.call("g", "refresh", { force: true });
+  await s.call("g", "refresh", { force: true });
   await s.settle();
 }
 

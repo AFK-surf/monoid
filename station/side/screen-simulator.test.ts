@@ -40,8 +40,10 @@ function device(): { runtime: string; type: string } {
 }
 
 test("a simulator, seen and driven through still.fail Helper", { skip: !hasSimctl && "no Xcode simulators here" }, async () => {
-  const { runtime, type } = device();
-  const udid = simctl("create", `still.fail side ${process.pid}`, type, runtime);
+  // (SIM_SHARED_UDID: the run's iPhone of the newest runtime, set booting before and shared by the side tests in turn,
+  // .github/workflows/side.yml: used where no runtime or type is asked for, kept booted and left as it was found)
+  const shared = !process.env.SIM_RUNTIME && !process.env.SIM_TYPE ? process.env.SIM_SHARED_UDID : undefined;
+  const udid = shared ?? (() => { const { runtime, type } = device(); return simctl("create", `still.fail side ${process.pid}`, type, runtime); })();
   const helper = new HelperApp({ app: process.env.STILLFAIL_HELPER ?? execFileSync(process.execPath, [join(ROOT, "scripts/native.ts"), "file", "helper"], { encoding: "utf8" }).trim(), dir: join(OUT, "data", "helper") });
   const hub = new ScreenHub();
   const simulators = new Simulators({ screens: hub, helper });
@@ -112,8 +114,10 @@ test("a simulator, seen and driven through still.fail Helper", { skip: !hasSimct
     view?.close();
     simulators.close();
     await helper.quit();
-    simctl("shutdown", udid);
-    simctl("delete", udid);
+    if (!shared) {
+      simctl("shutdown", udid);
+      simctl("delete", udid);
+    }
   }
   console.log(`kept in ${OUT}`);
 });

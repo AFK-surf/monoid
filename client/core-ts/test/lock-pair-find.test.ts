@@ -374,6 +374,24 @@ test("a personal lock's code disappears during the search: another device can st
   assert.deepEqual([w.dials[PHONE_APP], w.dials[LAPTOP_APP]], [1, 2]);
 });
 
+test("two accounts signed in, asking both their locks: a trusted device that shows the code for one of them is where to look for that one alone, never the other's", async () => {
+  const w = await waiting({ [PHONE_APP]: "code", [LAPTOP_APP]: "away" });
+  w.core.inner.adb.personal = () => ({
+    makeKey: () => Effect.succeed(`ed25519:${"11".repeat(32)}`),
+    // (the same machine known to both accounts' locks)
+    approvers: () => [{ id: PHONE_APP, label: "phone" }, { id: LAPTOP_APP, label: "laptop" }],
+    standing: () => "none", root: () => null,
+    refresh: () => Effect.void, entries: () => [], mayBeginQuietly: () => false,
+    pendingShown: () => [], stationsChanged: () => {},
+  }) as never;
+  await Effect.runPromise(personalBegin(w.core.inner, ["s1", "s2"]));
+  await w.host.time.pass(1_000);
+  // (the phone answers for s1's lock alone: `code {workspaces: ["person:s1"]}`)
+  assert.equal(personalPairState(w.core.inner, "s1").state, "code");
+  assert.deepEqual(personalPairState(w.core.inner, "s1").showing, ["phone"]);
+  assert.deepEqual(personalPairState(w.core.inner, "s2")?.showing ?? [], [], JSON.stringify(personalPairState(w.core.inner, "s2")));
+});
+
 test("a personal lock's code disappears while it is checked: another device can still show one", async () => {
   const w = await waiting({ [PHONE_APP]: "code-ends-on-proof", [LAPTOP_APP]: "away" });
   w.core.inner.adb.personal = () => ({

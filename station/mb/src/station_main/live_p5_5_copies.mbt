@@ -298,7 +298,12 @@ async fn P55::start_copies(self : P55) -> Unit {
       },
     },
   ])
-  self.closing(async fn() { copies.close() })
+  // (the export's process ended with them, waited for: left to see its stdin close as the station exits, it went on
+  // writing in the data directory after the station had stopped)
+  self.closing(async fn() {
+    copies.close()
+    (runner.close)()
+  })
   self.closing(async fn() { retire.close() })
   // The other stations' requests: a retirement's (`retire.`), the copies' (`replica.`).
   bus.on_peer_prefix("retire.", async fn(from, ws, meth, params, bytes) {

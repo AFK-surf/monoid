@@ -37,6 +37,9 @@ pub(all) struct LiveBus {
   control_say : (Json) -> Unit
   stop_station : (String) -> Unit
   restart_front : (() -> Unit)?
+  /// ops/launcher.ts `runInstaller` (`--launcher-installer`): the release's installer started by the launcher, where
+  /// this process could not start it itself (updates.ts `startPlanned`).
+  run_installer : ((String, Map[String, String]) -> Unit)?
   // ── Config & Own (owned by P5-1; defaults read/write config.json directly for standalone slice tests) ──
   config_raw : Ref[() -> Json]
   config_update : Ref[async ((Json) -> Json) -> Json]
@@ -105,6 +108,7 @@ pub fn LiveBus::new(
   control_say : (Json) -> Unit,
   stop_station : (String) -> Unit,
   restart_front? : () -> Unit,
+  run_installer? : (String, Map[String, String]) -> Unit,
 ) -> LiveBus {
   let cfg_checks : Array[(Json) -> String?] = []
   let cfg_listeners : Array[(Int, (Json) -> Unit)] = []
@@ -126,9 +130,13 @@ pub fn LiveBus::new(
   }
   let cloud_listeners : Array[(Int, (Json?) -> Unit)] = []
   let next_cloud = Ref(0)
+  // (previous.ts `previousProcess`: the process before is gone once its pid is, not once run/hub.json is: Node lets go
+  // of hub.json as its agents stop and writes run/events.json after; PREVIOUS_LIMIT_MS at most)
   let wait_prev = async fn() -> Unit {
-    while held_by_hub(data) is Some(_) && !stopped.is_done() {
-      @effect.sleep(100)
+    let mut waited = 0
+    while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 400 && !stopped.is_done() {
+      waited += 1
+      @effect.sleep(100) // timer: a retry until the process before is gone (it says nothing when it ends)
     }
   }
   let peer_handlers : Map[String, async (String, String?, Json, Bytes?) -> (Json, Bytes?)] = Map([])
@@ -152,7 +160,7 @@ pub fn LiveBus::new(
     }
     raise BusError("mesh transport not attached for \{target}: \{meth}")
   }
-  {
+  let b : LiveBus = {
     host,
     argv0,
     args,
@@ -172,6 +180,7 @@ pub fn LiveBus::new(
     control_say,
     stop_station,
     restart_front,
+    run_installer,
     config_raw: Ref(read_cfg),
     config_update: Ref(default_update),
     config_listen: Ref(fn(f) {
@@ -220,6 +229,10 @@ pub fn LiveBus::new(
     ui_ask: Ref(async fn(_op, _arg) { Json::null() }),
     coord_ask: Ref(async fn(_op, _arg) { Json::null() }),
   }
+  // (the store's own writes told on the bus too, as the program's changes are: one stream of changes, as store.ts's
+  // `subscribe` gives every part of the TypeScript)
+  ignore(b.store.subscribe(c => b.notify_store(c)))
+  b
 }
 
 ///|
