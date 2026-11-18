@@ -29,9 +29,6 @@ priv struct Recent {
   mut reading : @ui.GalleryRead?
   /// how many reads were begun (what takes a read follows it: recent_reads_node)
   reading_said : @signals.Signal[Int]
-  /// what a read gave, taken as its host said it and not yet put in the strip; how many were taken
-  mut took : Array[@hostapi.GalleryPhoto]?
-  mut took_n : Int
   /// read again once the read under way is taken (asked for while it read)
   mut again : Bool
   photos : @sf.LiveArray[@hostapi.GalleryPhoto]
@@ -45,8 +42,6 @@ let recent : Recent = {
   access: @signals.signal(NoGallery),
   reading: None,
   reading_said: @signals.signal(0),
-  took: None,
-  took_n: 0,
   again: false,
   photos: @sf.LiveArray::new(),
   chosen: @sf.LiveArray::new(),
@@ -57,7 +52,6 @@ fn recent_reset() -> Unit {
   recent.answers = (-1, -1, NoGallery)
   recent.access.set(NoGallery)
   recent.reading = None
-  recent.took = None
   recent.again = false
   recent.photos.clear()
   recent.chosen.clear()
@@ -172,37 +166,17 @@ fn recent_reads_node(v : @view.View, src : Source) -> Unit {
     },
   )
   v.reacts(
-    fn() {
-      recent.reading_said.get() |> ignore
-      // (taken as it is told: a read's photos are the host's to give once)
-      match recent.reading {
-        Some(r) =>
-          match r.photos() {
-            Some(all) => {
-              recent.reading = None
-              recent.took = Some(all)
-              recent.took_n += 1
-            }
-            None => ()
-          }
-        None => ()
-      }
-      recent.took_n
-    },
+    fn() { (recent.reading_said.get(), @ui.gallery_reads_told()) },
     fn(_) {
-      match recent.took {
-        Some(all) => {
-          recent.took = None
-          recent.photos.replace(latest_photos(all, ((src.now)() / 1000.0).to_int64(), recent_most))
-          // (one chosen and gone from the gallery since: not chosen)
-          recent.chosen.retain(fn(s) { recent.photos.iter().any(fn(p) { p.src == s }) })
-          @hostapi.log("recent photos: \{recent.photos.length()} of \{all.length()}")
-          if recent.again {
-            recent.again = false
-            recent_read()
-          }
-        }
-        None => ()
+      guard recent.reading is Some(read) && read.photos() is Some(all) else { return }
+      recent.reading = None
+      recent.photos.replace(latest_photos(all, ((src.now)() / 1000.0).to_int64(), recent_most))
+      // Keep selections for photos that are still in the gallery.
+      recent.chosen.retain(fn(s) { recent.photos.iter().any(fn(p) { p.src == s }) })
+      @hostapi.log("recent photos: \{recent.photos.length()} of \{all.length()}")
+      if recent.again {
+        recent.again = false
+        recent_read()
       }
     },
   )

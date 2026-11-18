@@ -529,6 +529,7 @@ pub fn Tester::new(
     keeps: [],
     gallery: None,
     gallery_limited: false,
+    gallery_frame: 0,
     gallery_reads: [],
     reads: [],
     read_ids: 0,
@@ -1269,6 +1270,8 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   // (what was said to move since the frame before, between frames (an input's handler): seen before this frame lets
   // go of what is over by its moment, tester_time.mbt)
   tester_rests_seen()
+  // Gallery reads complete on the next frame, including frames that reuse the view.
+  self.fake.gallery_frame += 1
   on_frame(self.w, self.h, self.fake.scale, if shown > at { shown } else { at })
   // (a bench's measured frame ends here: what follows is the Tester's own checks of it, which a device runs not)
   bench_frame_ends()

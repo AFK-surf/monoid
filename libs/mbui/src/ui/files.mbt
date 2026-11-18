@@ -217,6 +217,12 @@ pub fn gallery_changes() -> Int {
 }
 
 ///|
+/// How many gallery reads the host has answered, without taking their photos.
+pub fn gallery_reads_told() -> Int {
+  answers_told[outside_gallery].get()
+}
+
+///|
 /// The gallery's photos read (@hostapi.gallery_read): None where there is no gallery. A Tester's is what the test says
 /// it is (Tester::gallery), read as a host reads it, from the next frame.
 pub fn gallery_read() -> GalleryRead? {
@@ -261,7 +267,7 @@ fn FakeHost::gallery_read(self : FakeHost) -> Int {
           "\{p.id}\t\{p.src}\t\{p.added}\t\{p.modified}\t\{p.taken}\t\{if p.video { 1 } else { 0 }}\n",
         )
       }
-      self.gallery_reads.push({ rows: rows.to_string(), frame: g().frame_no, ended: false })
+      self.gallery_reads.push({ rows: rows.to_string(), frame: self.gallery_frame, ended: false })
       self.wants = true
       self.gallery_reads.length()
     }
@@ -273,7 +279,7 @@ fn FakeHost::gallery_read(self : FakeHost) -> Int {
 /// How read `id` goes, as a host says it: 0 reading (until the frame after it was asked), 1 read, -1 let go of or none.
 fn FakeHost::gallery_read_state(self : FakeHost, id : Int) -> Int {
   match self.gallery_reads.get(id - 1) {
-    Some(r) if !r.ended => if g().frame_no <= r.frame { 0 } else { 1 }
+    Some(r) if !r.ended => if self.gallery_frame <= r.frame { 0 } else { 1 }
     _ => -1
   }
 }

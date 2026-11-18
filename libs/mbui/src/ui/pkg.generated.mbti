@@ -216,6 +216,8 @@ pub fn gallery_changes() -> Int
 
 pub fn gallery_read() -> GalleryRead?
 
+pub fn gallery_reads_told() -> Int
+
 pub fn gaps_steady_known(Array[(String, Int32)]) -> Unit
 
 pub fn gif_frame_count(Bytes) -> Int32

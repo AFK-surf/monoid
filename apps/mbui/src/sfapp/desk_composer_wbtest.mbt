@@ -847,6 +847,7 @@ test "iOS: the open attachment sheet refreshes after the limited Photos selectio
   for photo in [old, added] {
     t.add_image(photo.src, 1080, 2400)
   }
+  t.check_looks(false)
   t.gallery([old], limited=true)
   t.draw()
   t.click(Button, label=@sf.t("web-main.composer.attach"))

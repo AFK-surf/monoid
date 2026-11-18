@@ -241,6 +241,7 @@ struct FakeHost {
   /// and the reads of it asked (files.mbt)
   mut gallery : Array[@hostapi.GalleryPhoto]?
   mut gallery_limited : Bool
+  mut gallery_frame : Int
   gallery_reads : Array[FakeGalleryRead]
   /// what its players ask of the app's bytes and let go of, not taken yet (Tester::view_reads, view_lets_go), and what
   /// the app gave, piece by piece: the view, the read, how many bytes, the whole's length, whether more comes
