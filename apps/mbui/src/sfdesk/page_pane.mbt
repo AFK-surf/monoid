@@ -767,7 +767,7 @@ fn pane_fold_held(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnL
   let (_, now) = fold_target(src, w, ww)
   let t = fold_drawn_at(n)
   let pane = ww - fold_along(t, now).col
-  guard app.nav.page_of(serial) is Some((Chat(_), _)) else { return { by: 0.0, across: 0.0, laid: pane } }
+  guard app.nav.page_of(serial) is Some((Chat(_), _)) else { return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 } }
   // (what of the pane the chat's page does not have: its side panel's column beside it, as it is at that moment)
   let beside = pane - pane_page_w(src, n, serial, pane)
   match (fold_goes.from, fold_goes.to) {
