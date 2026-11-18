@@ -394,7 +394,7 @@ for t in $targets; do
           # minutes on main 7b8ad5f2 43493491412 and dd870393 43496129988, where the first's was 183 and the second's
           # 137-165. Reckoned 1000: by the table its pages all go to the others (the first +45 s on its four programs,
           # the second +40 on its four, the fourth +131 on its twelve), which have the room)
-          60) specs="4,4,700,1 4,4,120,1 1,4,1000,1 12,12,100,1" ;;
+          60) specs="4,4,520,1 4,4,120,1 1,4,1000,1 12,12,120,1" ;;
           # (the first's packages' programs at 120 275 s beside its pages' 263, the job 295 s of its 5 minutes, main
           # 436755fc 43074044573, 2026-11-11: reckoned 160 s of its cores, they take some 500 now)
           # (the second's and the fourth's on three runners each at 120, twelve programs (mbui-check.yml's app-rates
@@ -404,7 +404,7 @@ for t in $targets; do
           # the fourth's part 1/3 ran 0.8-1.0: app 1/4 at 120 fps 223-275 s of its 5 minutes on main ec512e53 43542799229,
           # 93c11f44 43543602427, 64ef3c14 43546815737, the second's and fourth's parts 102-197. Reckoned 800: by the
           # table its pages 400 s to 242, the second's twelve programs +120, the fourth's +18, the third's +20)
-          120) specs="4,4,800,1 12,12,26,1 2,8,930,1 12,12,400,1" ;;
+          120) specs="4,4,420,1 12,12,26,1 2,8,850,1 12,12,460,1" ;;
           # (the first's other runs at 24 and 7, the packages' programs, 105-133 s and 85-106 beside its pages, not the
           # 46 and 43 they were reckoned at: its job 235-266 s of its 5 minutes on main's runs of 2026-11-12, a3e59ea9
           # 43157398527, 36b56f21 43159426488, c9f8f144 43159891701; reckoned 300 of its cores, the third's 900 so that
@@ -506,7 +506,7 @@ for t in $targets; do
           # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
           # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
           # Account for the real_size and kept_rows sweeps on groups 1 and 4.
-          *) specs="4,4,260,1 3,4,580,1 4,4,260,1 4,4,350,1" ;;
+          *) specs="4,4,290,1 3,4,490,1 4,4,430,1 4,4,380,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -611,19 +611,18 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      # At the default rate, contrast runs the wide real_size sweep, two kept_rows ranges, and both duo_side runs.
+      # At the default rate, contrast runs the wide real_size sweep, three kept_rows ranges, and both duo_side runs.
       "src/sfapp/duo_side_wbtest.mbt "*) echo contrast ;;
       "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo contrast ;; *) echo 4 ;; esac ;;
-      # At the default rate, group 1 takes the small-screen real_size sweep and kept_rows 5-8.
-      # Group 4 takes kept_rows 2-3 and 3-4. These runs share group 3 at explicit rates.
+      # At the default rate, group 1 takes the small-screen real_size sweep and group 4 kept_rows 3-4.
+      # These runs, and contrast's kept_rows ranges, share group 3 at explicit rates.
       "src/sfapp/real_size_wbtest.mbt --index 1-2") [ -z "${MBUI_TEST_FPS:-}" ] && echo 1 || echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
+      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 2-3" | \
+        "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
         if [ -z "${MBUI_TEST_FPS:-}" ]; then echo contrast; else echo 3; fi ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 5-8") [ -z "${MBUI_TEST_FPS:-}" ] && echo 1 || echo 3 ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 2-3" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 3-4")
-        [ -z "${MBUI_TEST_FPS:-}" ] && echo 4 || echo 3 ;;
+      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 3-4") [ -z "${MBUI_TEST_FPS:-}" ] && echo 4 || echo 3 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its
       # two halves one; at 24 and at 7 the fourth has a runner for each. At the default rate and at 60 on the first:
@@ -710,7 +709,7 @@ for t in $targets; do
           # second's 714 to 817, the first's 743 to 716)
           # (chat_page_nodes' two on the third at 120 since (app_group_of): the first's other runs preview_tree's 0-54, the
           # second's its 54-121, the third's none but send_steady's moment)
-          [ "${APP_GROUP:-}" = 4/4 ] && [ "${MBUI_TEST_FPS:-}" = 120 ] && [ "${APP_PART#*/}" = 3 ] && specs="4,4,140,1 4,4,320,1 4,4,0,1"
+          [ "${APP_GROUP:-}" = 4/4 ] && [ "${MBUI_TEST_FPS:-}" = 120 ] && [ "${APP_PART#*/}" = 3 ] && specs="4,4,250,1 4,4,280,1 4,4,0,1"
           while read -r g f; do [ "$g" = "${APP_PART%/*}" ] && kept+=("$f"); done < <(page_deal "$specs" "${words[@]:3}")
           [ ${#kept[@]} = 0 ] || mine+=("${words[0]} ${words[1]} ${words[2]} ${kept[*]}")
         else
