@@ -402,12 +402,15 @@ export class ViewCalls {
     };
     handlers.chatDiscard = (_inner, call) => {
       const c = call as Of<"chatDiscard">;
-      return Effect.sync(() => {
-        const uploads = local.outboxGet(c.station, c.thread, c.id)?.uploads;
+      return Effect.suspend(() => {
+        const entry = local.outboxGet(c.station, c.thread, c.id);
+        // Its POST out and not answered yet: the station may take it, so it is not dropped here.
+        if (entry !== undefined && entry.queued === false && entry.state === "sending") return Effect.fail(CoreError.invalid(t("core-misc.call.discard_sending")));
+        const uploads = entry?.uploads;
         local.outboxRemove(c.station, c.thread, c.id);
         // its files no longer going up for it, nor kept
         if (uploads?.length) inner.composers.release(uploads);
-        return null;
+        return Effect.succeed(null);
       });
     };
     handlers.chatRetryIn = (_inner, call, progress, at, ctx) => {

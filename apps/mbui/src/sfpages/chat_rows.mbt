@@ -932,6 +932,7 @@ let unsent_note : @ui.Style = @ui.css("row pr=S1_5 gap=S1 align=ACenter")
 
 ///|
 /// What takes back what is held till its station is reached, after 连上后发出 in its line (outbox_row's).
+// kept across runs: a value (no field of it changes)
 let held_buttons : @ui.Style = @ui.css("row gap=SPx align=ACenter")
 
 ///|
