@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.81 | 123.09 |
 | [6122dc262](https://github.com/AFK-surf/monoid/commit/6122dc2629ec4ca2f73e5673f582c4667ccf61d4) fix(mbui): add LiquidBottomTabs shadows to the bot | 2.54 | 3.42 | 13.99 | 35.92 | 53.81 | 31.49 | 63.36 | 96.95 | 123.09 |
 | [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
 | [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 | [2a690a24c](https://github.com/AFK-surf/monoid/commit/2a690a24c1d279c850706f58b9eb198e9d0c707d) Show workflow progress and step logs on GitHub Act | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 | [78e0e3bc4](https://github.com/AFK-surf/monoid/commit/78e0e3bc45acac13f84ba9f1517239a74e428f0f) app: open notified chats in the current board or c | 2.57 | 3.63 | 15.93 | 37.27 | 63.38 | 32.51 | 68.98 | 96.26 | 123.64 |
-| [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 120.55 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [6122dc262](https://github.com/AFK-surf/monoid/commit/6122dc2629ec4ca2f73e5673f582c4667ccf61d4) fix(mbui): add LiquidBottomTabs shadows to the bot | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.25 |
 | [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
 | [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [2a690a24c](https://github.com/AFK-surf/monoid/commit/2a690a24c1d279c850706f58b9eb198e9d0c707d) Show workflow progress and step logs on GitHub Act | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [78e0e3bc4](https://github.com/AFK-surf/monoid/commit/78e0e3bc45acac13f84ba9f1517239a74e428f0f) app: open notified chats in the current board or c | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
-| [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
