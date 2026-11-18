@@ -10,7 +10,7 @@ import {
 pub fn anchor_place((Double, Double, Double, Double), (Double, Double), (Double, Double), placement? : Placement, gap? : Double, insets? : (Double, Double, Double, Double)) -> AnchorPlaced
 
 #callsite(autofill(loc))
-pub fn button(@view.View, () -> String, (@view.View) -> Unit, (@view.View, Button) -> Unit, disabled? : () -> Bool, default_on? : () -> Bool, hold? : Hold, focusable? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn button(@view.View, () -> String, (@view.View) -> Unit, (@view.View, Button) -> Unit, disabled? : () -> Bool, default_on? : () -> Bool, hold? : Hold, focusable? : Bool, value? : () -> String, range? : () -> (Double, Double, Double)?, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn choice(@view.View, ChoiceKind, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, Choice) -> Unit, disabled? : () -> Bool, focusable? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
