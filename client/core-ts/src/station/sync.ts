@@ -303,9 +303,18 @@ export class StationsSync {
     if (how.away || how.restored) this.checkRestores(address);
     if (how.away || how.restored) this.#catchingFrom(address);
     if (how.away) this.#catchUpShown(address);
+    // Its jobs' list: what the stream told since its cursor is told again (RETOLD), so a list held of before is as
+    // current as a read of it once the stream goes on; read only where none was ever answered here.
+    const link = this.#links.get(address);
+    if (link && !link.jobsRead) {
+      if (this.#core.data.listed(address, "jobs")) {
+        link.jobsRead = true;
+        this.onChange(address, "link");
+      } else this.#enqueue(address, "jobs", Priority.shown, this.#read(address, { topic: "jobs", station: address }, JOBS));
+    }
     // Its screens and its logins are held in its link's memory, not its log of events (what was kept of them shows
     // meanwhile): its screens read again whenever the stream was not there to hear them change, both once a run.
-    const memory = this.#links.get(address)?.memory;
+    const memory = link?.memory;
     if (how.away || how.restored || memory?.fresh("screens") !== true) this.#enqueue(address, "screens", Priority.background, this.#screens(address));
     // Its terminals: once a run; a stream that comes back is told the list it missed (the station keeps its latest).
     if (memory?.fresh("terminals") !== true) this.#enqueue(address, "terminals", Priority.background, this.#terminals(address));
