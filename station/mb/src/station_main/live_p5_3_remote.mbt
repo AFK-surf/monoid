@@ -292,6 +292,10 @@ async fn P53Remote::ask(self : P53Remote, station : String, request : Json, byte
   self.bus.call_peer(station, Some(p53_text(request, "workspace")), meth, request, bytes?) catch {
     @jobs_host.Refused(m) => raise @jobs_host.Refused(m)
     @jobs_host.NoBytes(m) => raise @jobs_host.NoBytes(m)
+    // (the mesh's own: the other station answered with an error, or its transport carries no bytes)
+    @gate.PeerRefused(m) | @gate.Refused(m) | @gate.LockRefusal(m) | @gate.WaysRefusal(m) | @gate.MarkRefusal(m) =>
+      raise @jobs_host.Refused(m)
+    @gate.NoBytes(m) => raise @jobs_host.NoBytes(m)
     BusError(m) => raise @jobs_host.Unreached(m)
     e => raise @jobs_host.Unreached(p53_words(e))
   }

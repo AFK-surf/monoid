@@ -103,6 +103,16 @@ fn p55_said_of(e : Error) -> String {
     @comma.Thrown(_, _) => @comma.message_of(e)
     @session_chats.Thrown(_, m) => m
     @api_routes.Thrown(_, _) | @api_routes.Refused(_, _) => @api_routes.message_of(e)
+    @gate.PeerRefused(_)
+    | @gate.Refused(_)
+    | @gate.LockRefusal(_)
+    | @gate.NoLink(_)
+    | @gate.NoBytes(_)
+    | @gate.WaysRefusal(_)
+    | @gate.MarkRefusal(_)
+    | @gate.PeerGone(_, _)
+    | @gate.HttpRefusal(_, _, _)
+    | @gate.DeviceRefused(_, _) => @gate.words_of(e)
     e => @move_coord.message_of(e)
   }
 }

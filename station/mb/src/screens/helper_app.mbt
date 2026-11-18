@@ -332,20 +332,29 @@ async fn HelperApp::revive(self : HelperApp) -> Unit {
 
 ///|
 async fn HelperApp::ensure_up(self : HelperApp) -> Unit {
-  // The installed copy is compared with the release's once a process: up since, each request only asks it.
-  if self.installed is Some(_) && self.hello() {
-    return
-  }
-  let (path, replaced) = install(self.io, self.app, self.dir)
-  self.installed = Some(path)
-  let up = self.hello()
-  // Its code changed: the one running is the old one.
-  if up && replaced {
-    ignore(self.ask(jo([("op", js("quit"))]))) catch {
-      _ => ()
+  // The installed copy is compared with the release's once a process: up since, each request only asks it. Installed
+  // and not answering, the copy is started again as it is, not compared again.
+  let path = match self.installed {
+    Some(inst) => {
+      if self.hello() {
+        return
+      }
+      inst
     }
-  } else if up {
-    return
+    None => {
+      let (path, replaced) = install(self.io, self.app, self.dir)
+      self.installed = Some(path)
+      let up = self.hello()
+      // Its code changed: the one running is the old one.
+      if up && replaced {
+        ignore(self.ask(jo([("op", js("quit"))]))) catch {
+          _ => ()
+        }
+      } else if up {
+        return
+      }
+      path
+    }
   }
   // The token stays what it is: an app started by macOS itself reads it beside it.
   if self.token is None {

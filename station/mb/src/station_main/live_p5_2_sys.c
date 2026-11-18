@@ -73,6 +73,33 @@ int32_t sflive_write(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode) {
   return 0;
 }
 
+int32_t sflive_write_flags(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode, int32_t excl) {
+  (void)mode;
+  wchar_t *w = sfl_wide((const char *)path);
+  HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, excl ? CREATE_NEW : CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, NULL);
+  free(w);
+  if (h == INVALID_HANDLE_VALUE) {
+    DWORD e = GetLastError();
+    if (e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS) return 17; // EEXIST
+    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return 2; // ENOENT
+    if (e == ERROR_ACCESS_DENIED) return 13; // EACCES
+    return e == 0 ? 5 : (int32_t)e;
+  }
+  size_t len = (size_t)Moonbit_array_length(data), at = 0;
+  while (at < len) {
+    DWORD n = 0;
+    if (!WriteFile(h, data + at, (DWORD)(len - at), &n, NULL)) {
+      int32_t e = sfl_err();
+      CloseHandle(h);
+      return e;
+    }
+    at += n;
+  }
+  CloseHandle(h);
+  return 0;
+}
+
 int32_t sflive_symlink(moonbit_bytes_t target, moonbit_bytes_t path) {
   wchar_t *t = sfl_wide((const char *)target), *p = sfl_wide((const char *)path);
   DWORD attrs = GetFileAttributesW(t);
@@ -199,6 +226,16 @@ int32_t sflive_append(moonbit_bytes_t path, moonbit_bytes_t data) {
 
 int32_t sflive_write(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode) {
   int fd = open((const char *)path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode > 0 ? (mode_t)mode : 0644);
+  if (fd < 0) return errno;
+  if (mode > 0) fchmod(fd, (mode_t)mode);
+  int32_t e = sfl_write_all(fd, data, (size_t)Moonbit_array_length(data));
+  close(fd);
+  return e;
+}
+
+int32_t sflive_write_flags(moonbit_bytes_t path, moonbit_bytes_t data, int32_t mode, int32_t excl) {
+  int flags = O_WRONLY | O_CREAT | O_CLOEXEC | (excl ? O_EXCL : O_TRUNC);
+  int fd = open((const char *)path, flags, mode > 0 ? (mode_t)mode : 0644);
   if (fd < 0) return errno;
   if (mode > 0) fchmod(fd, (mode_t)mode);
   int32_t e = sfl_write_all(fd, data, (size_t)Moonbit_array_length(data));

@@ -327,6 +327,29 @@ function harness() {
   return { child, send, ok, stderr: () => stderr };
 }
 
+test("the release's installer started as an update asks it, the copy an update before left in run/ replaced", { skip: skip || (process.platform !== "darwin" && process.platform !== "linux" ? "the installer's shell is Unix's" : false) }, async () => {
+  const { data, app, id } = station({ updateChannel: "stable" });
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(cloudOf(id, "http://127.0.0.1:9")));
+  const h = harness();
+  await h.ok({ step: "start", data, app });
+  const run = join(data, "run");
+  // (what the update before left: its copy of the installer, its exit)
+  writeFileSync(join(run, "install.sh"), "echo the old installer > \"$(dirname \"$0\")/ran.txt\"\n");
+  const script = join(fresh("release"), "install.sh");
+  writeFileSync(script, "echo the new installer > \"$(dirname \"$0\")/ran.txt\"\n");
+  assert.equal(await h.ok({ step: "platform", name: "platform.startInstaller", args: [script, run, { PATH: "/usr/bin:/bin" }, app] }), true);
+  assert.equal(readFileSync(join(run, "install.sh"), "utf8"), readFileSync(script, "utf8"), "the copy is the release's installer");
+  // (it runs in the background, nobody's child: its exit written beside it)
+  const until = Date.now() + 20_000;
+  while (!existsSync(join(run, "update.exit")) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(readFileSync(join(run, "update.exit"), "utf8").trim(), "0");
+  assert.equal(readFileSync(join(run, "ran.txt"), "utf8"), "the new installer\n");
+  await h.ok({ step: "stop" });
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});
+
 test("the parts as the admin API asks them: the overview's features, updates, move and copies; the routes of the updates, the moves and the copies; what the admin API's own routes ask of Slack, Feishu, Comma and the updates; the mesh's methods answered", { skip }, async () => {
   const feed = await feedStandIn();
   const { data, app, id } = station({ updateChannel: "stable" });

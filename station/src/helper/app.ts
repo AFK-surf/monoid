@@ -228,14 +228,22 @@ export class HelperApp {
   async #ensure() {
     // The installed copy is compared with the release's (its code read, megabytes) once a process: the release is this
     // process's own and only this replaces the copy. Up since, each request only asks it (the comparison, at every
-    // request, held the station's thread for a second on a machine short of memory, 2026-10-25).
-    if (this.#installed !== null && (await this.#hello())) return;
-    const { path, replaced } = await install(this.app, this.dir);
-    this.#installed = path;
-    const up = await this.#hello();
-    // Its code changed: the one running is the old one.
-    if (up && replaced) await this.#ask({ op: "quit" }).catch(() => {});
-    else if (up) return;
+    // request, held the station's thread for a second on a machine short of memory, 2026-10-25). Installed and not
+    // answering, the copy is started again as it is, not compared again (a Mac where it cannot start read its 1.8 MB
+    // twice at every try).
+    let path: string;
+    if (this.#installed !== null) {
+      if (await this.#hello()) return;
+      path = this.#installed;
+    } else {
+      const installed = await install(this.app, this.dir);
+      path = installed.path;
+      this.#installed = path;
+      const up = await this.#hello();
+      // Its code changed: the one running is the old one.
+      if (up && installed.replaced) await this.#ask({ op: "quit" }).catch(() => {});
+      else if (up) return;
+    }
     // The token stays what it is: an app started by macOS itself reads it beside it.
     if (this.#token === null) {
       const token = randomBytes(32).toString("hex");

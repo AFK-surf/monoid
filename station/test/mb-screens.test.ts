@@ -1792,6 +1792,15 @@ async function main() {
     await both("grants", grantsScenario);
   });
 
+  test("a helper that cannot start (no one signed in to the Mac's desktop): tried again only SHOWN_MS after the last try as pages read the grants, at once when asked, its copy not compared again", async () => {
+    const { ts, mb } = await both("grantsStuck", grantsStuckScenario);
+    for (const side of [ts, mb]) {
+      const opens = side.trace.filter((e: Json) => e.t === "exec" && e.file === "open").length;
+      assert.equal(opens, 4, "started once at the first read, once SHOWN_MS after, once a refresh, once a request");
+      assert.equal(Buffer.from(side.files[`/data/helper/${APP.slice(APP.lastIndexOf("/") + 1)}/Contents/MacOS/stillfail-helper`].data, "base64").toString(), "release Contents/MacOS/stillfail-helper");
+    }
+  });
+
   test("the Mac's desktop: its grants asked for, a view through the helper, started again for a grant, refused when it cannot be seen", async () => {
     await both("desktop", desktopScenario);
   });
@@ -2208,6 +2217,31 @@ async function grantsScenario(s: Play) {
   await s.call("g3", "request", { grant: "documents", words: {} });
   await s.advance(16_000);
   await s.call("g3", "show", { grant: "desktop", words: {} });
+}
+
+async function grantsStuckScenario(s: Play) {
+  helperWorld(s.w);
+  // (LaunchServices refuses with no one signed in to the desktop: the app never comes up)
+  s.w.execRules.unshift((file, args) => (file === "open" && args[0] === "-n" ? { error: { message: "LSOpenURLsWithRole() failed with error -610", code: 1, signal: null, stdout: "", stderr: "" } } : undefined));
+  await s.new("helper", { inst: "h", app: APP, dir: "/data/helper" });
+  await s.new("grants", { inst: "g", helper: "h" });
+  await s.call("g", "view");
+  await s.settle();
+  // The release's code changed meanwhile: the copy installed is started again as it is.
+  s.w.file(`${APP}/Contents/MacOS/stillfail-helper`, "release 2");
+  for (let i = 0; i < 5; i++) await s.call("g", "view");
+  await s.settle();
+  s.w.now += 29_999;
+  await s.call("g", "view");
+  await s.settle();
+  s.w.now += 1;
+  await s.call("g", "view");
+  await s.call("g", "view");
+  await s.settle();
+  await s.call("g", "refresh", { force: true });
+  await s.call("g", "request", { grant: "documents", words: {} });
+  await s.call("g", "view");
+  await s.settle();
 }
 
 async function desktopScenario(s: Play) {

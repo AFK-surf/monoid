@@ -325,7 +325,8 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
       let text = @session_chats.thread_history(self.chats_world(), s(0), jv_of(a(1)), s(2), s(3), jv_of(a(4)), seen)
       match seen {
         Some(got) => { "text": Json::string(text), "seen": Json::array(got.map(p52_json_of_jv)) }
-        None => Json::string(text)
+        // (session_storage reads `text` of it either way: a bare string read as "", every chat_read empty)
+        None => { "text": Json::string(text) }
       }
     }
     "policy.mine" =>

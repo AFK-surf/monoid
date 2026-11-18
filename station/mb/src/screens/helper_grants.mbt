@@ -2,7 +2,8 @@
 // desktop seen and driven), the folders macOS protects (Documents, Desktop, Downloads, removable and network disks),
 // and whether the station may reach the LAN it is on (macOS's Local Network). One look at them (the helper's
 // `status`) is kept for whatever asks; at most FRESH_MS old where it matters, looked at again when the helper says a
-// grant changed or comes back, and in the background once a page reads it SHOWN_MS after the last look.
+// grant changed or comes back, and in the background once a page reads it SHOWN_MS after the last look, or after the
+// last try where the helper did not answer.
 //
 // The helper's window asks for a grant on this Mac, once: not again (nor brought forward) while it is up asking for
 // it, nor for AGAIN_MS after it was shown for it; a person's own ask (`again`) puts it up again however lately it was
@@ -113,6 +114,8 @@ pub struct HelperGrants {
   priv now : () -> Double
   priv mut status_ : J?
   priv mut checked : Double
+  // (when a look was last tried, answered or not)
+  priv mut attempted : Double
   priv checking : Shared[Unit]
   priv asked : Map[String, Double]
   priv listeners : Array[(Int, () -> Unit)]
@@ -143,6 +146,7 @@ pub fn HelperGrants::new(
     now: now.unwrap_or(() => io.clock.ms()),
     status_: None,
     checked: @double.neg_infinity,
+    attempted: @double.neg_infinity,
     checking: Shared::new(),
     asked: {},
     listeners: [],
@@ -199,6 +203,10 @@ pub async fn HelperGrants::refresh(self : HelperGrants, force? : Bool = false) -
   }
   self.checking
   .start(self.io, async fn() {
+    self.attempted = (self.now)()
+    defer {
+      self.attempted = (self.now)()
+    }
     ignore(
       @effect.all([
         async fn() {
@@ -246,6 +254,7 @@ pub fn HelperGrants::state(self : HelperGrants, grant : String) -> String {
 ///|
 fn HelperGrants::learn(self : HelperGrants, status : J) -> Unit {
   self.checked = (self.now)()
+  self.attempted = self.checked
   let before = match self.status_ {
     Some(s) => stringify(s)
     None => "null"
@@ -264,7 +273,8 @@ fn status_screen(s : J?) -> Bool {
 ///|
 /// What the station's page shows, as last looked at (none before the first look: looked at now, told when known).
 pub fn HelperGrants::view(self : HelperGrants) -> J? {
-  if (self.now)() - self.checked >= SHOWN_MS {
+  let last = if self.attempted > self.checked { self.attempted } else { self.checked }
+  if (self.now)() - last >= SHOWN_MS {
     self.io.go(async fn() { self.refresh() })
   }
   guard self.status_ is Some(s) else { return None }

@@ -8,8 +8,8 @@
 // stops with no process of its left behind.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { createPublicKey, verify } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, createPublicKey, verify } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer, type Server } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import { tmpdir } from "node:os";
@@ -277,6 +277,94 @@ test("an enrolled station on the plane: its presence, its config, the machine, t
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0, a.err());
   for (const k of kids) await given(`its child ${k} gone`, () => { try { process.kill(k, 0); return false; } catch { return true; } });
+});
+
+/// A request of the admin API with a body of bytes: its status and bytes.
+function askBytes(port: number, path: string, o: { method?: string; body?: Buffer } = {}): Promise<{ status: number; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path, method: o.method ?? (o.body === undefined ? "GET" : "POST"), headers: { "content-type": "application/octet-stream" } }, (res) => {
+      const got: Buffer[] = [];
+      res.on("data", (d: Buffer) => got.push(d));
+      res.on("end", () => resolve({ status: res.statusCode!, body: Buffer.concat(got) }));
+    });
+    req.on("error", reject);
+    req.end(o.body);
+  });
+}
+
+test("the admin API's files as bytes: an image uploaded whole and in parts, one kept already cloned, a folder's entries and an image read back", { skip }, async () => {
+  const plane = await controlPlane();
+  const data = fresh("files");
+  const app = fresh("app");
+  const work = fresh("work");
+  writeFileSync(join(app, "BUILD"), "9502\n");
+  const id = stationId(data);
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+    origin: plane.origin, station: id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: {}, peers: [], revocations: [],
+  }));
+  writeFileSync(join(data, "config.json"), `${JSON.stringify({ language: "en" })}\n`);
+  // A PNG (its bytes no UTF-8) and a file of every byte, past what one part carries in a test of two.
+  const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000" + "1f15c4890000000d49444154789c6360f8cfc0f01f0005000201" + "e5274de80000000049454e44ae426082", "hex");
+  const every = Buffer.concat(Array.from({ length: 8 }, () => Buffer.from(Array.from({ length: 256 }, (_, i) => 255 - i))));
+  // A session whose workspace holds a folder (a file, a folder, a link) and an image sent in it.
+  mkdirSync(join(work, "uploads"), { recursive: true });
+  writeFileSync(join(work, "uploads", "shot.png"), png);
+  mkdirSync(join(work, "sub", "Inner"), { recursive: true });
+  writeFileSync(join(work, "sub", "a.txt"), "a\n");
+  symlinkSync(join(work, "sub", "a.txt"), join(work, "sub", "link"));
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  store.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: work, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+  store.close();
+
+  const a = await launch(data, app, { STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const mcp = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+
+  // ── an upload whole: its bytes on the disk as they were sent ──
+  const whole = await askBytes(mcp, "/admin-api/uploads?name=shot.png", { body: png });
+  assert.equal(whole.status, 200, whole.body.toString());
+  const sent = JSON.parse(whole.body.toString());
+  assert.equal(sent.size, png.length);
+  assert.deepEqual(readFileSync(sent.path), png, "the image's bytes as they were");
+
+  // ── in parts: the first, the first again (taken once), the rest; then the same content kept already, cloned ──
+  const part = (q: string, body: Buffer) => askBytes(mcp, `/admin-api/uploads/parts?${q}`, { body }).then((r) => {
+    assert.equal(r.status, 200, r.body.toString());
+    return JSON.parse(r.body.toString());
+  });
+  const q = `id=parts-0001&name=every.bin&size=${every.length}`;
+  assert.deepEqual(await part(`${q}&offset=0`, every.subarray(0, 1000)), { have: 1000 });
+  assert.deepEqual(await part(`${q}&offset=0`, every.subarray(0, 1000)), { have: 1000 }, "a part asked again is not added again");
+  const done = await part(`${q}&offset=1000`, every.subarray(1000));
+  assert.equal(done.have, every.length);
+  assert.deepEqual(readFileSync(done.file.path), every, "the parts' bytes as they were, in order");
+  const sha256 = createHash("sha256").update(every).digest("hex");
+  const kept = await part(`id=parts-0002&name=every.bin&size=${every.length}&offset=0&sha256=${sha256}`, Buffer.alloc(0));
+  assert.equal(kept.have, every.length, "kept already: nothing to send");
+  assert.notEqual(kept.file.path, done.file.path, "a copy of its own");
+  assert.deepEqual(readFileSync(kept.file.path), every, "the copy's bytes as the file's");
+
+  // ── a folder of the session's: its entries by kind (a link neither), folders first ──
+  const peek = await ask(mcp, `/admin-api/sessions/s1/peek?path=${encodeURIComponent(join(work, "sub"))}`);
+  assert.equal(peek.status, 200, peek.body);
+  const folder = JSON.parse(peek.body);
+  assert.equal(folder.kind, "dir", peek.body);
+  assert.deepEqual(folder.entries, ["Inner/", "a.txt", "link"]);
+  assert.equal(folder.count, 3);
+  // ── the image sent in it, read back whole, and as a preview ──
+  const file = await askBytes(mcp, "/admin-api/sessions/s1/files?name=shot.png");
+  assert.equal(file.status, 200, file.body.toString());
+  assert.deepEqual(file.body, png);
+  const shown = await ask(mcp, `/admin-api/sessions/s1/peek?path=${encodeURIComponent(join(work, "uploads", "shot.png"))}`);
+  assert.equal(shown.status, 200, shown.body);
+  assert.deepEqual(Buffer.from(JSON.parse(shown.body).image.data, "base64"), png);
+  // ── what is not there: its code kept (the route's words for it) ──
+  const gone = await ask(mcp, "/admin-api/sessions/s1/files?name=gone.png");
+  assert.equal(gone.status, 404, gone.body);
+
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
 });
 
 test("a machine enrolled as a rig starts as one, answers as one, and stops with nothing of it left", { skip }, async () => {

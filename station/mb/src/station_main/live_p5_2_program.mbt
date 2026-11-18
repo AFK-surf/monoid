@@ -277,7 +277,7 @@ fn runner_copy(source : String, dir : String) -> String {
   }
   ignore(attempt(() => @drive.mkdir(dir, true)))
   let part = copy + ".\{@drive.pid()}.part"
-  match attempt(() => @drive.copy_file(source, part)) {
+  match attempt(() => copy_file_over(source, part)) {
     Ok(_) =>
       match attempt(() => @drive.rename(part, copy)) {
         Ok(_) => copy

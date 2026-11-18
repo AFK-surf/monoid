@@ -12,6 +12,7 @@ import { type AddressInfo, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSocket } from "node:dgram";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
@@ -492,6 +493,60 @@ exec /bin/sh -c "$cmd"
   const keygen = binOf("ssh-keygen");
   if (keygen !== "") symlinkSync(keygen, join(dir, "ssh-keygen"));
 }
+
+/// The program's id of a data directory (`stillfail-reader id`): its key made there.
+function stationId(data: string): string {
+  const r = spawnSync(binary!, ["id", "--data", data], { env: noNode(), encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim();
+}
+
+/// A UDP port free on 127.0.0.1 (a station's mesh bound there).
+const freeUdpPort = () => new Promise<number>((resolve) => {
+  const s = createSocket("udp4");
+  s.bind(0, "127.0.0.1", () => {
+    const port = s.address().port;
+    s.close(() => resolve(port));
+  });
+});
+
+test("a task another station refuses: its words told the agent as that station said them, over the mesh", { skip }, async () => {
+  const [dataA, dataB] = [fresh("p53ra"), fresh("p53rb")];
+  const app = fresh("app");
+  const work = fresh("work");
+  writeFileSync(join(app, "BUILD"), "9503\n");
+  const [idA, idB] = [stationId(dataA), stationId(dataB)];
+  const [portA, portB] = [await freeUdpPort(), await freeUdpPort()];
+  const peers = [{ id: idA, name: "alpha", ips: [`127.0.0.1:${portA}`] }, { id: idB, name: "beta", ips: [`127.0.0.1:${portB}`] }];
+  for (const [data, id, name] of [[dataA, idA, "alpha"], [dataB, idB, "beta"]] as const) {
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "http://127.0.0.1:9", station: id, workspace: "w1", workspace_name: "W", name, relay_url: "", relay_urls: [], grant_keys: null, peers, revocations: [] }));
+  }
+  const env = (port: number) => ({ STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${port}` });
+  const [a, b] = [await launch(dataA, app, env(portA)), await launch(dataB, app, env(portB))];
+  await a.next("ready", (m) => m.ready === true);
+  await b.next("ready", (m) => m.ready === true);
+  const door = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(dataA, "stillfail.db"), join(dataA, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    store.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: work, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+    const task = { station: idB, key: "k1", action: "prepare", name: "rt" };
+    await within("beta prepared the task", 30_000, async () => {
+      const r = await tool(door, "t1", "station_task", { ...task, command: "echo one" });
+      return r.error ? null : r;
+    });
+    // The same key for other work: beta refuses it, and says why; the agent is told those words, not the error's name.
+    const refused = await tool(door, "t1", "station_task", { ...task, command: "echo two" });
+    assert.equal(refused.error, true, refused.text);
+    assert.match(refused.text, /task key already used with different inputs; choose a new key for new work/);
+    assert.doesNotMatch(refused.text, /PeerRefused|mesh_door/);
+  } finally {
+    store.close();
+  }
+  for (const s of [a, b]) s.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+  assert.equal(await b.ended, 0, b.err());
+});
 
 test("a sandbox's task through the program's own bridge, skill_read and skill.read, workspace_limit, and jobs_ask as the other slices ask it: under a PATH with no Node", { skip }, async () => {
   const data = fresh("p53c");

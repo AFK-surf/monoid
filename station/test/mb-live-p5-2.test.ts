@@ -344,6 +344,11 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   assert.notEqual(stated.result.isError, true, JSON.stringify(stated));
   const agentSaid = store.messagesBefore(t1.id, null, 20).filter((m) => m.authorKind === "agent");
   assert.deepEqual(agentSaid.map((m) => [m.author, m.text]), [["chat:c-to", "posted by the fake"]]);
+  // Another chat of this station read (chat_read): its messages with their words (a letter is not one of them).
+  const read = (await mcp(door.port, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "chat_read", arguments: { chat: "chat:c-to" } } }, "t0")).json.result;
+  assert.notEqual(read.isError, true, JSON.stringify(read));
+  const readText = read.content[0].text as string;
+  assert.match(readText, /posted by the fake/, readText);
   const itsList = JSON.parse(readFileSync(join(out, "list-1.json"), "utf8")).result.tools.map((t: any) => t.name);
   assert.ok(itsList.includes("chat_post"), "the runtime asked the door's tools with its own token");
   assert.ok(!store.getSession("chat:c-to")!.running);
@@ -377,6 +382,12 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   assert.match(readFileSync(join(out, "tui-prompt-1"), "utf8"), /^<station_message>\n[\s\S]*tui, answer[\s\S]*\n<\/station_message>$/);
   assert.ok(Array.isArray(JSON.parse(readFileSync(join(out, "tui-tools.json"), "utf8").split("\n")[0]!).result.tools), "its tools listed through the bridge");
 
+  // A chat this session leads (chat_create for: me): its agent's turn ends all_done, and the one that opened it is told
+  // so, a turn of its own (opened.ts `settled`, through the hub's `settled`).
+  assert.equal(store.listTurns("chat:c-from").length, 0, "the opener has had no turn of its own yet");
+  const opened = (await mcp(door.port, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "chat_create", arguments: { for: "me", key: "lead-1", text: "do the led work", runtime: "claude" } } }, "t0")).json.result;
+  assert.notEqual(opened.isError, true, `${JSON.stringify(opened)}\n${a.err()}`);
+  await until("the opener woken as the chat it leads ended its turn", () => store.listTurns("chat:c-from").some((t) => t.summary.endedAt != null), () => `${JSON.stringify(store.listTurns("chat:c-from").map((t) => t.summary))}\n${a.err()}`);
   // The status socket says the agents.
   // A handover: the next process takes the sessions up and serves the door; the one before ends.
   const b = await launch(data, app, bin, out);

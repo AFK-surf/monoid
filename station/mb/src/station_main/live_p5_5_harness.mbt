@@ -6,6 +6,7 @@
 // - {step: "overview", viewer, lang}; {step: "route", method, path, body, viewer, lang};
 // - {step: "tools"}; {step: "call", name, args, context}; {step: "coord", name, arg}; {step: "config", config};
 // - {step: "peers"}: the mesh's methods answered; {step: "peer", from, workspace, method, params}: one asked;
+// - {step: "platform", name, args}: what the updates ask of this machine (updates_platform.mbt), as they ask it;
 // - {step: "stop"}.
 
 ///|
@@ -65,6 +66,13 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
         "peer" => {
           let (v, _) = bus.dispatch_peer(p55_jtext(ask, "from"), p55_jstr(ask, "workspace"), p55_jtext(ask, "method"), p55_jfield(ask, "params"), None)
           v
+        }
+        "platform" => {
+          let args = match p55_jfield(ask, "args") {
+            Array(xs) => xs
+            _ => []
+          }
+          updates_platform(bus.host, bus.data, p55_jtext(ask, "name"), args).unwrap_or(Json::null())
         }
         "config" => {
           let next = p55_jfield(ask, "config")

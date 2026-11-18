@@ -922,8 +922,12 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
   let hub = self.the_hub()
   match op {
     "settled" => {
-      // (a turn ended as its opener is told: opened.ts `settled`)
-      ignore(arg)
+      // (a turn ended as its opener is told: opened.ts `settled`, an agent that opened the chat woken by it)
+      let words = match jfield(arg, "words") {
+        String(w) => Some(w)
+        _ => None
+      }
+      @session_chats.settled(self.chats_world(), jtext(arg, "key").unwrap_or(""), jtext(arg, "state").unwrap_or(""), words)
       Json::null()
     }
     "processes" =>

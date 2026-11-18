@@ -14,6 +14,12 @@ extern "C" fn live_append_ffi(path : Bytes, data : Bytes) -> Int = "sflive_appen
 extern "C" fn live_write_ffi(path : Bytes, data : Bytes, mode : Int) -> Int = "sflive_write"
 
 ///|
+/// A file written whole as `sflive_write`, or only where none is (`excl`: O_EXCL, Win32's CREATE_NEW): 0, else the
+/// system's error number (EEXIST where it is there).
+#borrow(path, data)
+extern "C" fn live_write_flags_ffi(path : Bytes, data : Bytes, mode : Int, excl : Int) -> Int = "sflive_write_flags"
+
+///|
 #borrow(target, path)
 extern "C" fn live_symlink_ffi(target : Bytes, path : Bytes) -> Int = "sflive_symlink"
 
@@ -224,7 +230,7 @@ fn said_of(e : Error) -> String {
     @wire.ShellError(m) => m
     @api_routes.Refused(_, m) => m
     Failure(m) => m
-    _ => "\{e}"
+    _ => @gate.words_of(e)
   }
 }
 

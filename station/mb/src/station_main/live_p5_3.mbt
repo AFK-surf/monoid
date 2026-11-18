@@ -151,8 +151,10 @@ fn p53_words(e : Error) -> String {
     BusError(s) => s
     @jobs_host.HostError(s) => s
     @accounts_pool.Thrown(_, _) => @accounts_pool.message_of(e)
+    @jobs_host.Refused(m) | @jobs_host.Unreached(m) | @jobs_host.NoBytes(m) | @jobs_host.NoLink(m) => m
     _ => {
-      let s = e.to_string()
+      // (the mesh's errors their words; anything else as it shows)
+      let s = @gate.words_of(e)
       // (a suberror's show: its name and its words in quotes)
       match s.find("(\"") {
         Some(i) if s.has_suffix("\")") =>
