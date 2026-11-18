@@ -29,6 +29,7 @@ import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession, type T
 import { PI_KEY, expandRoute, piRoute, profileEnv, profileModel, type PiRoute } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
 import { cleanEnv, uuid, type OpenOptions } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 
@@ -166,7 +167,7 @@ export class PiDriver extends OwnProcessDriver<PiSession> {
     }
     const { args, setup } = piSetup(piRoute(options.profile), options.model ?? profileModel(options.profile), options, file, instructions, this.bridge);
 
-    const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "pi"), options.route) };
+    const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "pi"), options.route) });
     env.PI_CODING_AGENT_DIR = dir;
     // Nothing of a session goes to Pi's telemetry; the station updates it (updates/runtimes.ts), not Pi itself.
     env.PI_TELEMETRY = "0";
@@ -198,7 +199,7 @@ export class PiDriver extends OwnProcessDriver<PiSession> {
   protected crashed(options: OpenOptions, replayed: Replayed, _info: RunnerInfo, events: Events) {
     const turn: Turn = { busy: false, prompted: false, aborting: false, ...(replayed.turn ?? {}), closed: false };
     const session = new PiSession(this, options.resume ?? "", turn, replayed.live ?? null, events);
-    session.toolsUrl = options.mcpUrl;
+    session.toolsUrl = options.mcpUrl || null;
     return session;
   }
 }

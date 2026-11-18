@@ -791,6 +791,7 @@ async function claudeCase(name: string, setup: (data: string) => { profiles: Jso
   const said = await runMb(c);
   compare(name, said, trace);
   assert.deepEqual(said.asked, asked, `${name}: the logins asked`);
+  return trace;
 }
 
 const cc = (home: string, extra: Json = {}) => ({ id: "cc", runtime: "claude", home, access: { kind: "opencode-go", key: "k1" }, env: { EXTRA: "1" }, ...extra });
@@ -911,6 +912,23 @@ test("Claude Code: a session resumed, its transcript brought to where --resume l
   });
 });
 
+/// A profile's own proxy, its NO_PROXY naming only what it knows: this machine, where the station's tools are, left out.
+const PROFILE_PROXY = { HTTPS_PROXY: "http://127.0.0.1:7890", NO_PROXY: "corp.example" };
+const KEPT_LOCAL = "corp.example,localhost,127.0.0.1,::1";
+const keptLocal = (trace: Json, name: string) => {
+  const started = trace.starts.filter((st: Json) => st.env !== undefined);
+  assert.ok(started.length > 0, `${name}: a process started`);
+  for (const st of started) assert.deepEqual([st.env.NO_PROXY, st.env.no_proxy], [KEPT_LOCAL, KEPT_LOCAL], `${name}: this machine left out of the profile's proxy`);
+};
+
+test("Claude Code: a profile's own proxy leaves this machine out of it", { skip }, async () => {
+  const trace = await claudeCase("claude proxied", (data) => {
+    const p = cc(join(data, "hp"), { env: { EXTRA: "1", ...PROFILE_PROXY } });
+    return { profiles: [p], steps: [{ do: "open", options: claudeOptions(data, p) }] };
+  });
+  keptLocal(trace, "claude proxied");
+});
+
 // ── Codex ──
 
 const codexProfile = (home: string, extra: Json = {}) => ({ id: "cx", runtime: "codex", home, access: { kind: "subscription" }, ...extra });
@@ -1011,6 +1029,7 @@ async function codexCase(name: string, setup: (data: string) => { profiles: Json
   const said = await runMb(c);
   compare(name, said, trace);
   assert.deepEqual(said.asked, asked, `${name}: what the driver asked`);
+  return trace;
 }
 
 test("Codex: an app-server started and initialized, a thread started with the station's tools, a turn on a subscription's speeds, steer, interrupt, compact, retune, its end", { skip }, async () => {
@@ -1219,6 +1238,19 @@ test("Codex: a thread taken up handed over, and after a crash from what the stat
   });
 });
 
+test("Codex: a profile's own proxy leaves this machine out of its app-server's", { skip }, async () => {
+  const trace = await codexCase("codex proxied", (data) => {
+    const p = codexProfile(join(data, "cp"), { env: PROFILE_PROXY });
+    const o = { key: "chat:1", profile: p, cwd: data, instructions: "x", mcpToken: "tok", mcpUrl: "http://127.0.0.1:4750/mcp", route: "r" };
+    return {
+      profiles: [p],
+      replies: { ...INIT, "thread/start": [thread("t1")], "mcpServerStatus/list": [{ result: { data: [{ name: "stillfail", runtimeStatus: "ready" }] } }] },
+      steps: [{ do: "open", options: o }],
+    };
+  });
+  keptLocal(trace, "codex proxied");
+});
+
 // ── Antigravity CLI ──
 
 const agyProfile = (home: string, extra: Json = {}) => ({ id: "ag", runtime: "agy", home, access: { kind: "subscription" }, ...extra });
@@ -1309,6 +1341,7 @@ async function agyCase(name: string, setup: (data: string) => { profiles: Json[]
   const said = await runMb(c);
   compare(name, said, trace);
   assert.deepEqual(said.asked, asked, `${name}: what the driver asked`);
+  return trace;
 }
 
 test("Antigravity CLI: opened in ACP with its files, hooks, skills and model; a turn, a steer that takes it over, a permission, a request refused, its usage kept, an interrupt, retuned", { skip }, async () => {
@@ -1377,8 +1410,21 @@ test("Antigravity CLI: a process with no models opened again after its waits; on
   });
 });
 
+test("Antigravity CLI: a profile's own proxy leaves this machine out of it", { skip }, async () => {
+  const trace = await agyCase("agy proxied", (data) => {
+    const p = agyProfile(join(data, "ap"), { env: PROFILE_PROXY });
+    const o = { key: "chat:p", profile: p, cwd: data, instructions: "x", mcpToken: "tok", mcpUrl: "http://127.0.0.1:4750/mcp", route: "r" };
+    return {
+      profiles: [p],
+      replies: { initialize: [{ result: { authMethods: [] } }], "session/new": [{ result: { sessionId: "conv1", ...MODELS } }] },
+      steps: [{ do: "open", options: o }],
+    };
+  });
+  keptLocal(trace, "agy proxied");
+});
+
 test("Antigravity CLI: taken up handed over and after a crash, its conversation looked for; its email noted; its hooks kept", { skip }, async () => {
-  await agyCase("agy adopt", (data) => {
+  const trace = await agyCase("agy adopt", (data) => {
     const p = agyProfile(join(data, "ag"));
     const conv = join(p.home, "agy", ".gemini", "antigravity-cli", "conversations");
     put(join(conv, "conv1.db"), "db");
@@ -1393,12 +1439,17 @@ test("Antigravity CLI: taken up handed over and after a crash, its conversation 
     const id2 = `agy-${keyPart(key2)}`;
     const sock2 = join(runners, `${id2}.sock`);
     put(join(runners, `${id2}.json`), JSON.stringify({ id: id2, runner: 7500, pid: 7501, pgid: 7502, startedAt: 0, program: "agy", args: [], socket: sock2 }));
+    // (one taken up after a crash before the station's door opened: no address of its tools known, mcpUrl "")
+    const key3 = "chat:c";
+    const id3 = `agy-${keyPart(key3)}`;
+    const sock3 = join(runners, `${id3}.sock`);
+    put(join(runners, `${id3}.json`), JSON.stringify({ id: id3, runner: 7600, pid: 7601, pgid: 7602, startedAt: 0, program: "agy", args: [], socket: sock3 }));
     const snapshot = { runtime: "agy", id: "conv1", runner: id1, turn: { busy: true, aborting: false }, tools: "http://old/mcp", live: { open: [], said: null, n: 2, phase: "working" }, model: "gemini-4-carbon", owner: "prompt:x", steering: [], said: null, calls: [], saidLast: "", children: [], availableModels: ["gemini-4-carbon-low"], currentModelId: "gemini-4-carbon-low", defaultModelId: null, context: { used: 5, size: 9 }, signInUntil: null };
     const o = (extra: Json = {}) => ({ key: key1, profile: p, cwd: data, instructions: "x", mcpToken: "t", mcpUrl: "http://h/mcp", route: "r", ...extra });
     return {
       profiles: [p],
-      alive: [7400, 7500],
-      sockets: { [sock1]: [], [sock2]: [JSON.stringify({ op: "attached", out: 30 })] },
+      alive: [7400, 7500, 7600],
+      sockets: { [sock1]: [], [sock2]: [JSON.stringify({ op: "attached", out: 30 })], [sock3]: [JSON.stringify({ op: "attached", out: 30 })] },
       replayOwn: { session: "conv2", turn: { busy: true }, live: { live: { open: [], said: null, n: 0, phase: null } }, opened: MODELS, usages: [{ sessionUpdate: "usage_update", used: 7, size: 70 }] },
       replies: {},
       steps: [
@@ -1407,10 +1458,15 @@ test("Antigravity CLI: taken up handed over and after a crash, its conversation 
         { do: "adopt", options: o({ key: key2, resume: "conv2", model: "gemini-4-carbon" }) },
         { do: "snapshot", s: 1 },
         { do: "adopt", options: o({ key: "chat:none", resume: "conv3" }) },
+        { do: "adopt", options: o({ key: key3, resume: "conv2", mcpUrl: "" }) },
         { do: "noteEmail", profile: p, text: JSON.stringify({ id_token_email: "a@b.c" }) },
         { do: "noteEmail", profile: p, text: "[1]" },
         { do: "hooks", profile: p },
       ],
     };
   });
+  // After a crash a process keeps the address it was told unless the station's door was not open yet: then none is known,
+  // and the door opening on its port is no other address to end it for (hub.ts `toolsAt`).
+  assert.equal(trace.results[2].ok.mcpUrl, "http://h/mcp");
+  assert.equal(trace.results[5].ok.mcpUrl, null);
 });

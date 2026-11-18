@@ -84,3 +84,25 @@ test "paths in Rust's order, a version read" {
     #|Some(0.162.1)
   ))
 }
+
+///|
+test "a process taken up after a crash before the door opened knows no address of the station's tools" {
+  inspect(crashed_tools_url(Some(obj([("mcpUrl", s(""))]))), content="None")
+  inspect(crashed_tools_url(Some(obj([]))), content="None")
+  inspect(crashed_tools_url(Some(obj([("mcpUrl", s("http://127.0.0.1:4750/mcp"))]))), content=(
+    #|Some(http://127.0.0.1:4750/mcp)
+  ))
+}
+
+///|
+test "a profile's own proxy leaves this machine out too" {
+  let env = Env::new([("PATH", "/bin")])
+  env.merge([("HTTPS_PROXY", "http://127.0.0.1:7890"), ("NO_PROXY", "corp.example")])
+  let kept = keep_local(env)
+  inspect(kept.get("NO_PROXY"), content=(
+    #|Some(corp.example,localhost,127.0.0.1,::1)
+  ))
+  inspect(kept.get("no_proxy"), content=(
+    #|Some(corp.example,localhost,127.0.0.1,::1)
+  ))
+}

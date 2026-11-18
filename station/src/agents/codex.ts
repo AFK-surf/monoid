@@ -9,7 +9,7 @@ import type { ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // - threads need sandbox "danger-full-access" with approvalPolicy "never", or MCP tool calls are refused.
 import { access, mkdir, open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { agentEnv } from "../ops/agent-env.ts";
+import { agentEnv, keepLocal } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
 import { walkBounded } from "../ops/walk.ts";
 import { rememberCodexRolloutSoon } from "../read/transcript-soon.ts";
@@ -300,7 +300,7 @@ class Host {
     await mkdir(profile.home, { recursive: true });
     if (isMachine(profile)) await linkCodexAuthSoon(profile.home, env);
     const until = lent?.borrowed(profile) ? await lent.write(profile) : null;
-    const childEnv: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) };
+    const childEnv: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) });
     childEnv.CODEX_HOME = profile.home;
     await withCaBundle(childEnv, caBundle);
     const host = new Host(profile.id, hostSignature(profile), 1, false, key);
@@ -651,7 +651,7 @@ export class CodexDriver implements AgentDriver {
 
   async updateMatchesStation(profile: Profile): Promise<boolean> {
     if (this.command !== "codex") return false;
-    const env = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) };
+    const env = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) });
     const [agentEnv, stationEnv] = await Promise.all([withShellCommand(this.command, env), withShellCommand(this.command, this.env)]);
     const [agent, station] = await Promise.all([findCommandSoon(this.command, agentEnv), findCommandSoon(this.command, stationEnv)]);
     return agent !== null && station !== null && agent.onPath === station.onPath && agent.real === station.real;
@@ -1142,7 +1142,7 @@ export class CodexDriver implements AgentDriver {
   async open(options: OpenOptions, events: (event: RuntimeEvent) => void): Promise<AgentSession> {
     // A text-only request uses no tools.
     if (!options.textOnly) {
-      const env = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "codex"), options.profile.id), CODEX_HOME: options.profile.home };
+      const env = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "codex"), options.profile.id), CODEX_HOME: options.profile.home });
       const missing = await (this.options.missingHost ?? findMissingCodexHost)(this.command, env);
       if (missing) {
         this.options.incompleteInstallation?.();

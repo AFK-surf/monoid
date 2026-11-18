@@ -24,6 +24,7 @@ import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession, type T
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { CommandMissing, type RunnerInfo } from "./runner.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type TurnOutcome } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 
@@ -145,7 +146,7 @@ export class CursorDriver extends OwnProcessDriver<CursorSession> {
 
   /// Its environment: the profile's key, the SDK's home and package, the station's tools' token.
   private async env(options: OpenOptions, sdk: string): Promise<Record<string, string>> {
-    const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "cursor"), options.route) };
+    const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "cursor"), options.route) });
     const key = await cursorKey(options.profile.home);
     if (key !== null && env.CURSOR_API_KEY === undefined) env.CURSOR_API_KEY = key;
     env.STILLFAIL_CURSOR_SDK = sdk;
@@ -199,7 +200,7 @@ export class CursorDriver extends OwnProcessDriver<CursorSession> {
   protected crashed(options: OpenOptions, replayed: Replayed, _info: RunnerInfo, events: Events) {
     const turn: TurnState = { busy: false, aborting: false, ...(replayed.turn ?? {}), closed: false };
     const session = new CursorSession(this, replayed.session ?? options.resume ?? "", turn, replayed.live ?? null, events, options.model ?? profileModel(options.profile) ?? null);
-    session.toolsUrl = options.mcpUrl;
+    session.toolsUrl = options.mcpUrl || null;
     return session;
   }
 }

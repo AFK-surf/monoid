@@ -12,6 +12,7 @@ import { fileCredentialsSoon } from "./no-keychain.ts";
 import type { Events } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 
@@ -77,7 +78,7 @@ export type HermesDriverOptions = {
 
 export async function hermesEnv(options: OpenOptions): Promise<Record<string, string>> {
   const inherited = Object.fromEntries(Object.entries(cleanEnv([])).filter(([key]) => INHERITED.has(key.toUpperCase()) || /^LC_[A-Z_]+$/i.test(key)));
-  const env = { ...inherited, ...expandRoute(profileEnv(options.profile, "hermes"), options.route) };
+  const env = keepLocal({ ...inherited, ...expandRoute(profileEnv(options.profile, "hermes"), options.route) });
   env.HERMES_HOME = await sessionHome(options, configuredHome(env.HERMES_HOME, hermesHome(options.profile.home)));
   // Hermes treats a borrowed Claude/Codex login as a configured provider. Keep those readers inside this profile,
   // unless the profile explicitly names a credential directory, and never borrow macOS's shared Claude login.

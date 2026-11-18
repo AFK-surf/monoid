@@ -18,6 +18,7 @@ import { AcpDriver, AcpSession, STEER, type AcpStart } from "./acp.ts";
 import type { Events } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 
@@ -99,7 +100,7 @@ export function grokArgs(model: string | undefined, effort: string | undefined):
 
 /// Its environment: the profile's home as Grok Build's, its key where it has one; no updating itself, no telemetry.
 export function grokEnv(options: OpenOptions): Record<string, string> {
-  const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "grok"), options.route) };
+  const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "grok"), options.route) });
   env.GROK_HOME = grokHome(options.profile.home);
   env.GROK_DISABLE_AUTOUPDATER = "1";
   env.GROK_TELEMETRY_ENABLED ??= "0";
