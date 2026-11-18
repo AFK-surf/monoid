@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dde626684](https://github.com/AFK-surf/monoid/commit/dde626684c75622e82debae47ca8e3c0a00f0816) revert(station): a release carries the TypeScript  | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.42 | 117.45 |
 | [c8401bba3](https://github.com/AFK-surf/monoid/commit/c8401bba37ffa2bd7704e9449c472a53817f780a) fix(core): open visited chats at their latest page | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.73 | 117.45 |
 | [78d07191c](https://github.com/AFK-surf/monoid/commit/78d07191c23e61450c732d005c57cc38ccb40787) fix(station): the MoonBit station's file ops, inst | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.62 | 123.09 |
 | [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.81 | 123.09 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [319f56e71](https://github.com/AFK-surf/monoid/commit/319f56e71cc8f72ea1f6319aef10d5aff0381166) core: only the opener is reminded of a long-runnin | 2.57 | 3.64 | 15.96 | 37.31 | 63.51 | 32.51 | 68.98 | 96.26 | 123.8 |
 | [50c369b3a](https://github.com/AFK-surf/monoid/commit/50c369b3a932b2457cb0b15f22497a1a58ce1d92) mbui: pick and structured compiled once, not once  | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 | [b1ca91efa](https://github.com/AFK-surf/monoid/commit/b1ca91efaeee3bf1d5a27f78125ddf4cfda615d4) mbui: two-finger swipe back and scrollable executi | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
-| [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dde626684](https://github.com/AFK-surf/monoid/commit/dde626684c75622e82debae47ca8e3c0a00f0816) revert(station): a release carries the TypeScript  | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [c8401bba3](https://github.com/AFK-surf/monoid/commit/c8401bba37ffa2bd7704e9449c472a53817f780a) fix(core): open visited chats at their latest page | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [78d07191c](https://github.com/AFK-surf/monoid/commit/78d07191c23e61450c732d005c57cc38ccb40787) fix(station): the MoonBit station's file ops, inst | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [319f56e71](https://github.com/AFK-surf/monoid/commit/319f56e71cc8f72ea1f6319aef10d5aff0381166) core: only the opener is reminded of a long-runnin | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
 | [50c369b3a](https://github.com/AFK-surf/monoid/commit/50c369b3a932b2457cb0b15f22497a1a58ce1d92) mbui: pick and structured compiled once, not once  | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
 | [b1ca91efa](https://github.com/AFK-surf/monoid/commit/b1ca91efaeee3bf1d5a27f78125ddf4cfda615d4) mbui: two-finger swipe back and scrollable executi | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.33 |
-| [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
