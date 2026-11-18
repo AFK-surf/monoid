@@ -245,6 +245,15 @@ test("a whole station: the plane's models read at once, config.json and cloud.js
   await given("the catalog the plane named asked for", () => plane.asked.includes(`/v1/models?v=${encodeURIComponent('"m-2"')}`), () => `${JSON.stringify(plane.asked)}; ${a.err()}`);
   await given("model-catalog.json written anew", () => readJson(join(data, "model-catalog.json"))?.etag === '"m-2"', a.err);
   assert.deepEqual(Object.keys(readJson(join(data, "model-catalog.json")).models), ["m-2"]);
+  // ── the readers price by the catalog as well (read/pool.ts `give`): a price it says is the usage page's ──
+  const prices = async () => (JSON.parse((await ask(door, "/admin-api/usage")).body)?.prices?.rows ?? []) as { model: string; input: number }[];
+  assert.equal((await prices()).find((p) => p.model === "claude-opus-5-5")?.input, 4, "the station's own table before the catalog names it");
+  plane.catalog.etag = '"m-3"';
+  plane.catalog.models = { "claude-opus-5-5": { name: "Opus", cost: { input: 7, output: 35, cacheRead: 0.7 } } };
+  plane.push({ type: "models", etag: '"m-3"' });
+  await given("model-catalog.json written with a price", () => readJson(join(data, "model-catalog.json"))?.etag === '"m-3"', a.err);
+  let pricedNow: unknown = null;
+  await given("the usage page priced by the catalog", async () => (pricedNow = await prices(), (pricedNow as { model: string; input: number }[]).find((p) => p.model === "claude-opus-5-5")?.input === 7), () => `${JSON.stringify(pricedNow)}; ${a.err()}`);
 
   // ── the event streams told the overview again as config.json and cloud.json change ──
   const stream = events(door, "/admin-api/events");
