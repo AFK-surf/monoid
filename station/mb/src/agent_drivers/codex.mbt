@@ -311,6 +311,8 @@ pub struct Host {
   mut login_stale : Bool
   mut runtime_stale : Bool
   mut draining : Bool
+  /// the station's tools at this address failed for a thread of its, opened with them (`toolsFailedUrl`)
+  mut tools_failed_url : String?
   mut version : String?
   mut ready : Bool
   mut readying : Later[Unit]?
@@ -351,6 +353,7 @@ pub fn Host::new(
     login_stale: false,
     runtime_stale: false,
     draining: false,
+    tools_failed_url: None,
     version: None,
     ready,
     readying: None,
@@ -1710,9 +1713,10 @@ pub fn[T] CodexDriver::lease(
   profile : JValue,
   work : (Host) -> Later[T],
   cwd? : String,
+  mcp_url? : String,
 ) -> Later[T] {
   self
-  .host(profile, cwd?=cwd)
+  .host(profile, cwd?=cwd, mcp_url?=mcp_url)
   .bind(host => work(host).always(() => self.let_go(host)))
 }
 
@@ -1724,7 +1728,12 @@ pub fn CodexDriver::let_go(self : CodexDriver, host : Host) -> Unit {
 
 ///|
 /// A profile's app-server, counted as opening on it (`host`).
-pub fn CodexDriver::host(self : CodexDriver, profile : JValue, cwd? : String) -> Later[Host] {
+pub fn CodexDriver::host(
+  self : CodexDriver,
+  profile : JValue,
+  cwd? : String,
+  mcp_url? : String,
+) -> Later[Host] {
   let lp = self.lp()
   let taken_up = match self.world.taken_up {
     Some(t) => t
@@ -1739,17 +1748,35 @@ pub fn CodexDriver::host(self : CodexDriver, profile : JValue, cwd? : String) ->
       .bind(_ => {
         let mut replaced : Host? = None
         let current = self.host_at(key)
+        // a thread of its could not reach the station's tools at the address this one is opened with (`host`)
+        let unreachable = match (current, mcp_url) {
+          (Some(c), Some(u)) => u != "" && c.tools_failed_url == Some(u)
+          _ => false
+        }
         match current {
-          Some(c) if c.alive() && (c.login_stale || c.runtime_stale) => {
-            self.info(
-              "login changed or codex reinstalled; new turns go to a new app-server, its own end there",
-              obj([
-                ("profile", s(c.profile)),
-                ("key", s(key)),
-                ("turns", n(c.turns.length())),
-                ("login", b(c.login_stale)),
-              ]),
-            )
+          Some(c) if c.alive() &&
+            (c.login_stale || c.runtime_stale || unreachable) => {
+            if unreachable {
+              self.warn(
+                "its codex app-server could not reach the station's tools; new turns go to a new one",
+                obj([
+                  ("profile", s(c.profile)),
+                  ("key", s(key)),
+                  ("turns", n(c.turns.length())),
+                  ("url", s(mcp_url.unwrap_or(""))),
+                ]),
+              )
+            } else {
+              self.info(
+                "login changed or codex reinstalled; new turns go to a new app-server, its own end there",
+                obj([
+                  ("profile", s(c.profile)),
+                  ("key", s(key)),
+                  ("turns", n(c.turns.length())),
+                  ("login", b(c.login_stale)),
+                ]),
+              )
+            }
             c.draining = true
             self.host_delete(key)
             self.draining_add(c)
@@ -2250,7 +2277,12 @@ pub fn CodexDriver::open(self : CodexDriver, options : JValue, events : (JValue)
       done(lp)
     })
   }
-  check.bind(_ => self.lease(profile, host => self.open_on(host, options, events), cwd=str_at(o, "cwd").unwrap_or("")))
+  check.bind(_ => self.lease(
+    profile,
+    host => self.open_on(host, options, events),
+    cwd=str_at(o, "cwd").unwrap_or(""),
+    mcp_url=str_at(o, "mcpUrl").unwrap_or(""),
+  ))
 }
 
 ///|
@@ -2926,7 +2958,15 @@ pub fn CodexSession::prompt(self : CodexSession, text : String) -> Later[Unit] {
   .bind(_ => station_tools_failed(self.host, self.thread_id))
   .bind(failed => {
     if failed {
+      // opened with the address its process failed to reach: the next thread opened with it goes to a new one
+      match self.tools_url {
+        Some(u) if u != "" => self.host.tools_failed_url = Some(u)
+        _ => ()
+      }
       raise Failed("codex thread's connection to the station's tools failed")
+    }
+    if self.tools_url is Some(_) && self.host.tools_failed_url == self.tools_url {
+      self.host.tools_failed_url = None
     }
     if self.closed {
       raise Failed("codex session is closed")
