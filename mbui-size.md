@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3db36a227](https://github.com/AFK-surf/monoid/commit/3db36a227d053592a4b2e1a13fc1476daad9ff67) fix(mbui): background Android test activity via HO | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.51 | 63.46 | 96.75 | 117.45 |
 | [88d08d335](https://github.com/AFK-surf/monoid/commit/88d08d3354e8f4899fbda352f14ca5641515bf68) fix(station): a chat named is not asked to name it | 2.55 | 3.42 | 14.02 | 35.94 | 53.91 | 31.5 | 63.41 | 96.77 | 117.45 |
 | [089f33f94](https://github.com/AFK-surf/monoid/commit/089f33f94c8f48ec0c8d9f616c3ef3bd032efe2e) fix(ci): replace undici fetch in release-deltas to | 2.55 | 3.42 | 14.02 | 35.95 | 53.9 | 31.5 | 63.41 | 96.77 | 117.45 |
 | [96fae6be6](https://github.com/AFK-surf/monoid/commit/96fae6be63bc71ff0c9597648b9af1ff6b008928) mbui: a chat's words broken anew as the side panel | 2.54 | 3.42 | 14 | 35.93 | 53.86 | 31.5 | 63.41 | 96.77 | 117.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [74df55c40](https://github.com/AFK-surf/monoid/commit/74df55c407cd82a8379c7bef1499a94390822ac8) sf-ui: extract still.fail's src/sf component libra | 2.57 | 3.63 | 15.19 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
 | [4f66be198](https://github.com/AFK-surf/monoid/commit/4f66be1980197550f5bc486dc30d19acd4c592fd) Let new Claude chats default to TUI on this device | 2.57 | 3.63 | 15.19 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
 | [77ebdfed6](https://github.com/AFK-surf/monoid/commit/77ebdfed6d4bf3be3b6a97810364a552e77d3209) Fix unresponsive context menus when switching card | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
-| [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.42 | 120.63 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3db36a227](https://github.com/AFK-surf/monoid/commit/3db36a227d053592a4b2e1a13fc1476daad9ff67) fix(mbui): background Android test activity via HO | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
 | [88d08d335](https://github.com/AFK-surf/monoid/commit/88d08d3354e8f4899fbda352f14ca5641515bf68) fix(station): a chat named is not asked to name it | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.79 |
 | [089f33f94](https://github.com/AFK-surf/monoid/commit/089f33f94c8f48ec0c8d9f616c3ef3bd032efe2e) fix(ci): replace undici fetch in release-deltas to | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.79 |
 | [96fae6be6](https://github.com/AFK-surf/monoid/commit/96fae6be63bc71ff0c9597648b9af1ff6b008928) mbui: a chat's words broken anew as the side panel | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [74df55c40](https://github.com/AFK-surf/monoid/commit/74df55c407cd82a8379c7bef1499a94390822ac8) sf-ui: extract still.fail's src/sf component libra | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.51 |
 | [4f66be198](https://github.com/AFK-surf/monoid/commit/4f66be1980197550f5bc486dc30d19acd4c592fd) Let new Claude chats default to TUI on this device | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
 | [77ebdfed6](https://github.com/AFK-surf/monoid/commit/77ebdfed6d4bf3be3b6a97810364a552e77d3209) Fix unresponsive context menus when switching card | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
-| [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
