@@ -332,6 +332,10 @@ pub fn code_ink_told(String, String) -> String??
 
 pub let columns : Columns
 
+pub fn combo_node(@view.View, () -> String, () -> Array[String], @signals.Signal[Int32], (Int32, Bool) -> Unit, (@view.View) -> Unit, (String) -> String, (@view.View, String, () -> Bool) -> Unit, list? : (@view.View) -> Unit, foot? : (@view.View) -> Unit) -> @view.View
+
+pub fn combobox_bindings() -> Array[@view.Binding]
+
 pub fn coming_mark(@ui.Ctx, String, Double?, Double, Int64) -> Unit
 
 pub fn coming_mark_node(@view.View, () -> Double, Double, () -> Int64) -> Unit

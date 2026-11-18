@@ -1,12 +1,14 @@
 // A long pick of the presenters' (the web's chooser with its search) as nodes of the window's
 // tree: a modal layer over the window, nothing under it dimmed, its small panel beside what opened it (as menu_node's:
 // View::beside, grown out of that side as it comes, gone at once as it closes, as the old presenter lets it go), chooser
-// wide. Over its list its search, the library's line (input_node), the keyboard's as it opens; what is typed finds
-// by the words (pick_found: a choice's label, note and value), Enter in it picks the first found, none found said so
-// (common.noMatch). Its list scrolls past pick_list_most (View::scrolls), each choice a row of its own as menu_item
-// draws it (its mark or icon in a column before its words, its value after them, its note under them, the one chosen
-// in the accent): pressed, chosen. Escape clears what is typed in its search, then closes it; back and a press outside
-// close it.
+// wide. Its search and its list are a combobox (@headless.combobox: what it is to the keys and a screen reader): over
+// its list its search, the library's line (input_node), the keyboard's as it opens; what is typed finds by the words
+// (pick_found: a choice's label, note and value), none found said so (common.noMatch). The keys stay in the search: ↓
+// and ↑ move what is active among the choices found that may be chosen (the one chosen as it opens), bringing it into
+// sight, Enter picks it; the pointer moving onto a row makes it active. Its list scrolls past pick_list_most
+// (View::scrolls), each choice an option drawn as menu_item draws it (its mark or icon in a column before its words,
+// its value after them, its note under them, the one chosen in the accent, the active one on the hover's ground):
+// pressed, chosen. Escape clears what is typed in its search, then closes it; back and a press outside close it.
 
 ///|
 /// A long pick in `parent` while `open()` (let go of at once once not): `title` (what it is called), `choices`, the one
@@ -102,67 +104,102 @@ pub fn pick_node(
       // (a press on it its own: on what of it takes none, nothing, not outside it)
       |> ground_node
       |> ignore
-      // (its search, a capsule in its top corners, the library's line: Enter in it picks the first found)
+      // (which of what is found the keys are on: the one chosen as it opens, where it is found and to be chosen, else
+      // the first found that is; ↓ ↑ moving it bring it into sight: `keyed`)
+      let active : @signals.Signal[String?] = @signals.signal(
+        if choices.iter().any(fn(x) { x.key == chosen && !x.disabled }) { Some(chosen) } else { None },
+        same=fn(a, b) { a == b },
+      )
+      let keyed : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+      let off_of : Map[String, Bool] = Map([])
+      for x in choices {
+        if !off_of.contains(x.key) {
+          off_of[x.key] = x.disabled
+        }
+      }
       let search : Ref[@view.View?] = Ref(None)
-      p.box(fn(s) {
-        // (as far in as all else it holds, past the panel's own ground: Look's `words`)
-        s.alpha(By(words_in)) |> ignore
-        search.val = Some(
-          input_node(s, line, placeholder_by=fn() { t("common.search") }, small=true, submitted=fn(_) {
-            match @signals.untracked(found).iter().find_first(fn(x) { !x.disabled }) {
-              Some(x) => go(x.key)
-              None => ()
-            }
-          }),
-        )
-      })
-      |> ignore
-      // (none found: said so)
-      p.show(fn() { found().is_empty() }, fn(e) {
-        e.alpha(By(words_in)) |> ignore
-        e.padding(Is((@ui.Space::px(S2_5) + reach, @ui.Space::px(S2), @ui.Space::px(S2_5) + reach, @ui.Space::px(S2)))) |> ignore
-        e.box(fn(w) {
-          w
-          .words(Is(t("common.noMatch")), look=toast_words_look(Meta, L5, 400, true))
-          .ink(By(fn() { @ui.tree_theme().color(Muted) }))
-          |> ignore
-        })
-        |> ignore
-      })
-      // (its list, scrolling past its most)
-      p.box(fn(l) {
-        // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
-        // grounds, icons and words, the same, Look's `words` as a surface's are)
-        l.max_height(Is(Some(pick_list_most))).alpha(By(words_in)) |> ignore
-        l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
-          // (its choices by key, once: they are what it was given, the same while it is open; the first of a key the one)
-          let by_key : Map[String, Choice] = Map([])
-          for x in choices {
-            if !by_key.contains(x.key) {
-              by_key[x.key] = x
-            }
-          }
-          // (the last found, by member: a change of it tells the two rows it concerns)
-          let last_is = b.selected(fn() { found().last().map(fn(l) { l.key }) })
-          b.each(fn() { found().map(fn(x) { x.key }) }, fn(k) { k }, fn(cell, k) {
-            let k = k.untracked()
-            match by_key.get(k) {
-              Some(x) => {
-                // (the last found reaching into the panel's padding at its foot, as menu_item's at_foot)
-                let last = fn() { last_is(x.key) }
-                pick_row_node(cell, x, x.key == chosen, fn() { go(x.key) }, last, reach)
-              }
-              None => ()
-            }
+      // (a combobox (@headless.combobox): its search keeps the keyboard, ↓ ↑ move what is active among what is found,
+      // Enter picks it, Escape clears what is typed first, then closes it; what it is to a screen reader its own)
+      @headless.combobox(
+        p,
+        fn() { title },
+        fn() { found().map(fn(x) { x.key }) },
+        fn() { active.get() },
+        fn(k) {
+          active.set(k)
+          keyed.set(keyed.untracked() + 1)
+        },
+        go,
+        chosen=fn() { if chosen == "" { None } else { Some(chosen) } },
+        key_disabled=fn(k) { off_of.get(k).unwrap_or(false) },
+        on_close=fn() { if line.text() != "" { line.set("") } else { cancel() } },
+        fn(cv, cb) {
+          // (what it holds, as the panel held it: no room of its own)
+          cv.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          // (its search, a capsule in its top corners, the library's line: Enter in it picks the active one)
+          cv.box(fn(s) {
+            // (as far in as all else it holds, past the panel's own ground: Look's `words`)
+            s.alpha(By(words_in)) |> ignore
+            search.val = Some(
+              input_node(s, line, placeholder_by=fn() { t("common.search") }, small=true, submitted=fn(_) {
+                match @signals.untracked(fn() { cb.active() }) {
+                  Some(k) => go(k)
+                  None => ()
+                }
+              }),
+            )
           })
-        })
-        // (cut at its box while what it holds is taller than it, as @kit.in_room's held list: else what reaches past
-        // it, its last row into the panel's padding, drawn whole; what it paints alone, nothing laid out by it)
-        .clips(By(fn() { list.goes() }))
-        // (and taking presses within its box alone then too: else its last row's reach its own, as drawn)
-        .bounds_input(By(fn() { list.goes() }))
-        |> ignore
-      })
+          |> ignore
+          // (none found: said so)
+          cv.show(fn() { found().is_empty() }, fn(e) {
+            e.alpha(By(words_in)) |> ignore
+            e.padding(Is((@ui.Space::px(S2_5) + reach, @ui.Space::px(S2), @ui.Space::px(S2_5) + reach, @ui.Space::px(S2)))) |> ignore
+            e.box(fn(w) {
+              w
+              .words(Is(t("common.noMatch")), look=toast_words_look(Meta, L5, 400, true))
+              .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+              |> ignore
+            })
+            |> ignore
+          })
+          // (its list, scrolling past its most)
+          cb.listbox(cv, fn(l) {
+            // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
+            // grounds, icons and words, the same, Look's `words` as a surface's are)
+            l.max_height(Is(Some(pick_list_most))).shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(words_in)) |> ignore
+            l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+              // (its choices by key, once: they are what it was given, the same while it is open; the first of a key the one)
+              let by_key : Map[String, Choice] = Map([])
+              for x in choices {
+                if !by_key.contains(x.key) {
+                  by_key[x.key] = x
+                }
+              }
+              // (the last found, and the one the keys are on, by member: a change of either tells the two rows it concerns)
+              let last_is = b.selected(fn() { found().last().map(fn(l) { l.key }) })
+              let active_is = b.selected(fn() { cb.active() })
+              b.each(fn() { found().map(fn(x) { x.key }) }, fn(k) { k }, fn(cell, k) {
+                let k = k.untracked()
+                match by_key.get(k) {
+                  Some(x) => {
+                    // (the last found reaching into the panel's padding at its foot, as menu_item's at_foot)
+                    let last = fn() { last_is(x.key) }
+                    pick_row_node(cb, cell, x, x.key == chosen, fn() { active_is(x.key) }, keyed, fn() { active.set(Some(x.key)) }, last, reach)
+                  }
+                  None => ()
+                }
+              })
+            })
+            // (cut at its box while what it holds is taller than it, as @kit.in_room's held list: else what reaches past
+            // it, its last row into the panel's padding, drawn whole; what it paints alone, nothing laid out by it)
+            .clips(By(fn() { list.goes() }))
+            // (and taking presses within its box alone then too: else its last row's reach its own, as drawn)
+            .bounds_input(By(fn() { list.goes() }))
+            |> ignore
+          })
+          |> ignore
+        },
+      )
       |> ignore
       // (the focus its search's as it opens; what had it given back as it goes)
       layer.focus_opens(search.val.unwrap()) |> ignore
@@ -173,15 +210,19 @@ pub fn pick_node(
 }
 
 ///|
-/// A choice of a long pick's (menu_item's look) in `b`: its mark or icon in a column before its words, its value after
-/// them, its note under them, in the accent where it is the one chosen; lit under the pointer or the keyboard's focus;
-/// pressed, `go`.
+/// A choice of a long pick's (menu_item's look), an option of `cb` in `b`: its mark or icon in a column before its words,
+/// its value after them, its note under them, in the accent where it is the one chosen (`on`); on the hover's ground
+/// while `lit` (the keys on it), brought into sight as the keys move onto it (`keyed`), made active as the pointer moves
+/// onto it (`point`); pressed, chosen (the combobox's).
 #callsite(autofill(loc))
 fn pick_row_node(
+  cb : @headless.Combobox[String],
   b : @view.View,
   x : Choice,
   on : Bool,
-  go : () -> Unit,
+  lit : () -> Bool,
+  keyed : @signals.Signal[Int],
+  point : () -> Unit,
   last : () -> Bool,
   reach : Double,
   loc~ : SourceLoc,
@@ -190,7 +231,7 @@ fn pick_row_node(
   let panel = x.icon != "" || x.mark is Some(_)
   let gap = if panel { panel_row_gap } else { menu_row_gap }
   let said = [x.label, x.value, x.note].filter(fn(s) { s != "" })
-  b.box(made_for=loc, fn(r) {
+  cb.option(b, made_for=loc, fn() { x.key }, fn() { said.join(" ") }, fn(r, _) {
     r
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
@@ -199,16 +240,14 @@ fn pick_row_node(
     .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
     .gap(Is(gap))
     .radius(Is(small_panel_inner(r_menu)))
-    // det-ok(raw-hover-ground): roving radio picker bar moves at once across items without trailing fade
-    .ground(By(fn() {
-      if !x.disabled && (r.pointed() || (r.focused() && r.focus_shown())) { library_theme().p.hover } else { 0L }
-    }))
-    // (one not to be chosen: faint, taking no press and no focus, its note saying why)
-    .presses(Is(!x.disabled))
-    .focusable(Is(!x.disabled))
-    .on_press(fn() { if !x.disabled { go() } })
-    .says(Is(Some(@view.said(MenuItemRadio, label=said.join(" "), check=if on { On } else { Off }))))
+    // (the one the keys are on, the pointer's too as it moves onto it: on the hover's ground, moving at once across the
+    // rows as a menu's bar does; one not to be chosen never, faint, taking no press, its note saying why)
+    .ground(By(fn() { if !x.disabled && lit() { library_theme().p.hover } else { 0L } }))
+    // (the pointer moving onto it: the one the keys are on)
+    .on_pointer_moved(fn() { if !x.disabled { point() } })
     |> ignore
+    // (made active by the keys: in sight where the list scrolls)
+    r.reacts(fn() { keyed.get() }, at_start=false, fn(_) { if @signals.untracked(lit) { r.tree.show_in_sight(r.id()) } })
     let first_line = fn(into : @view.View) {
       if panel {
         into.box(fn(col) {
