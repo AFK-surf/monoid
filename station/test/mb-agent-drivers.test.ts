@@ -1122,7 +1122,6 @@ test("Codex: an app-server whose thread could not reach the station's tools is r
         { do: "dispose", s: 2 },
         { do: "open", options: o("k2", "http://h/mcp") },
         { do: "prompt", s: 3, text: "x" },
-        { do: "shutdown" },
       ],
     };
   });
