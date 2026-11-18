@@ -692,24 +692,6 @@ fn wide_bar_keys(
       }
     }
     let chat = fn() { @sfbase.chat_head_json(src, r) }
-    // the side panel's switch shows while the panel is closed; as the panel slides closed, the row is drawn eased
-    // right of where it is laid out by the room the switch takes that the panel has not given yet (side_closed_part),
-    // so nothing in it steps that room in the closing's first frame (a place drawn, nothing laid out again)
-    let panel_closed_with_switch = fn() {
-      own() &&
-      (match view() {
-        Some(v) => side_of(v).0.length() == 0 && v.agents.length() > 0
-        None => false
-      })
-    }
-    let slide_in = fn() {
-      if panel_closed_with_switch() {
-        (1.0 - side_closed_part(src, k, r, false)) * (@sf.bar_key_side + @sf.keys_apart())
-      } else {
-        0.0
-      }
-    }
-    k.offset(By(fn() { (slide_in(), 0.0) })) |> ignore
     // nothing left in it (the core's `archivable`): archived with one press
     k.show(
       fn() {
@@ -811,12 +793,37 @@ fn wide_bar_keys(
         }, tips~, linked=ends.linked),
       )
     })
-    // the side panel's switch while it is closed: the first agent's history in it; as the panel slides closed, it comes
-    // with the row from under the panel, fading in
+    // the side panel's switch while it is closed: the first agent's history in it; made as the panel slides closed
+    // (side_leaving), the row is drawn eased right of where it is laid out by the room the switch takes that the panel
+    // has not given yet (side_closed_part), so nothing in it steps that room in the closing's first frame, and the switch
+    // comes with the row from under the panel, fading in (nothing bound where the chat opens with its panel closed)
+    let panel_closed_with_switch = fn() {
+      own() &&
+      (match view() {
+        Some(v) => side_of(v).0.length() == 0 && v.agents.length() > 0
+        None => false
+      })
+    }
     k.show(
       panel_closed_with_switch,
       fn(b) {
-        b.alpha(By(fn() { if panel_closed_with_switch() { side_closed_part(src, b, r, false) } else { 1.0 } })) |> ignore
+        if @signals.untracked(fn() { side_leaving(chat_key(r)) is Some(_) }) {
+          let part = fn() {
+            if panel_closed_with_switch() {
+              side_closed_part(src, b, r, false)
+            } else {
+              1.0
+            }
+          }
+          k.offset(By(fn() { ((1.0 - part()) * (@sf.bar_key_side + @sf.keys_apart()), 0.0) })) |> ignore
+          b.alpha(By(part)) |> ignore
+          b.owns(fn() {
+            if k.alive() {
+              k.offset(Is((0.0, 0.0))) |> ignore
+            }
+          })
+          |> ignore
+        }
         @sf.icon_button_node(b, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
           match @signals.untracked(view) {
             Some(v) if v.agents.length() > 0 => side_change(src, r, "open", Some(v.agents[0].key))
