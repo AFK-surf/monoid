@@ -397,11 +397,7 @@ fn station_switch_node(
     }
   }
   let open = fn() { switching.get() != 0 && @sf.presented_drawn_of(switching.get()) }
-  parent.box(fn(b) {
-    @sf.style_node(b, fn() { switch_button }, in_row=true)
-    @sf.hover_ground_node(b)
-    b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    @sf.presses_node(b, fn() {
+  @sf.action_box_node(parent, fn() { @sf.t("web-pages.files.switchStation") }, expanded=open, fn(b) {
       front_it()
       // the stations with a drive (this machine, the one shown, one away said beside each), the one shown chosen: the
       // library's pick under it
@@ -422,8 +418,10 @@ fn station_switch_node(
       })
       @sf.pick(@sf.t("web-pages.files.switchNote"), choices, at.station, picked, from=Node(b))
       switching.set(@sf.last_presented())
-    })
-    b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.files.switchStation"), expanded=open())) })) |> ignore
+  }, fn(b) {
+    @sf.style_node(b, fn() { switch_button }, in_row=true)
+    @sf.hover_ground_node(b)
+    b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     station_mark_of_node(b, st, switch_icon, here)
     @sf.words_node(b, fn() { st().name }, fn() { switch_words }) |> ignore
     @sf.icon_node(b, "chevron-down", switch_chevron, By(fn() { @sf.theme().p.muted })) |> ignore

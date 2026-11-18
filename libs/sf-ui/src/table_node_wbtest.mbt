@@ -506,3 +506,94 @@ test "a table's copy key in a list's block taken for another key's table: copied
   assert_true(first.alive() && key_now != 0, msg="the first's block taken for another's: \{key_now}")
   assert_eq((copied_first, taken, after, back), (1, (0, 0), (0, 0), (0, 1)))
 }
+
+///|
+/// A table as agents write them: a file's path in code, a bare link to a chat, a formula, code with a bar in it (the
+/// core's reading of it, a chip's path and line said as markdown.ts says them).
+let tn_cells_href : String = "https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b"
+
+///|
+fn tn_cells_tree() -> Json {
+  let s = fn(w : String) { Json::string(w) }
+  let el = fn(name : String, kids : Array[Json]) { Json::array([s(name), Json::array(kids)]) }
+  let code = fn(attrs : Map[String, Json]) { Json::array([s("code"), Json::object(attrs)]) }
+  let chip = code({ "content": s("libs/sf-ui/src/table_node.mbt:152"), "path": s("libs/sf-ui/src/table_node.mbt"), "line": Json::number(152.0) })
+  let chat = Json::array([s("a"), Json::array([s(tn_cells_href)]), Json::object({ "href": s(tn_cells_href), "bare": Json::boolean(true), "to": Json::object({ "chat": Json::boolean(true) }) })])
+  let formula = code({ "content": s("|x| \\le 1"), "math": Json::boolean(true) })
+  Json::array([
+    el("table", [
+      el("tr", [el("th", [s("文件")]), el("th", [s("对话")]), el("th", [s("式")]), el("th", [s("类型")])]),
+      el("tr", [el("td", [chip]), el("td", [chat]), el("td", [formula]), el("td", [code({ "content": s("\"whole\" | \"tasks\"") })])]),
+    ]),
+  ])
+}
+
+///|
+/// tn_cells_tree's table in a message 390 wide, its paths marked and its chat's title said, drawn by an old view's
+/// markdown or as nodes (`tree`): the window's Tester and what its links told.
+fn tn_cells_tester(tree : Bool, led : Array[String]) -> @ui.Tester {
+  let text = "（tn_cells_tree 的原文）"
+  let title = fn(href : String) { if href == tn_cells_href { Some("新架构 chat 表格问题") } else { None } }
+  let on_link = fn(href : String) { led.push(href) }
+  let tt = if tree {
+    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=400.0, platform=2)
+  } else {
+    @ui.Tester::new(
+      fn(c) {
+        begin(c) |> ignore
+        c.with_theme(ui_theme(), fn() {
+          markdown(c, text, tree=Some(tn_cells_tree()), paths=true, chat_title=title, copy=false, on_link~) |> ignore
+        })
+      },
+      w=390.0,
+      h=400.0,
+      platform=2,
+    )
+  }
+  if tree {
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        markdown_node(b, fn() { text }, tree=fn() { Some(tn_cells_tree()) }, paths=true, chat_title=title, copy=false, on_link~)
+        |> ignore
+      })
+      |> ignore
+    })
+  }
+  tt.draw()
+  tt.draw()
+  tt
+}
+
+///|
+test "a table's cells as a message's words, old view and nodes alike: a file's chip whole on one line, a bare chat link its title, columns as wide as what they draw" {
+  let drawn = fn(tree : Bool) raise {
+    let led = []
+    let tt = tn_cells_tester(tree, led)
+    let words = tt.words()
+    let glyphs = tt.drawn_glyphs()
+    // (the chip: drawn on one line, its path and line whole; pressed, where it leads told)
+    let chip = words.filter(fn(w) { w.0 == "libs/sf-ui/src/table_node.mbt:152" })
+    guard chip is [(_, x, y, w, h, _)] else { fail("the chip drawn once whole: \{Repr(words.map(fn(w) { w.0 }))}") }
+    tt.tap(x + w / 2.0, y + h / 2.0)
+    tt.run_for(@ui.move_most_ms)
+    let x0 = glyphs.fold(init=1.0e9, fn(m, g) { if g.0 < m { g.0 } else { m } })
+    let y0 = glyphs.fold(init=1.0e9, fn(m, g) { if g.1 < m { g.1 } else { m } })
+    (
+      h,
+      words.filter(fn(w) { w.0.contains("新架构") || w.0.contains("whole") }).map(fn(w) { w.0 }),
+      led,
+      glyphs.map(fn(g) { (g.0 - x0, g.1 - y0, g.2) }),
+    )
+  }
+  let (old_h, old_words, old_led, old_glyphs) = drawn(false)
+  let (made_h, made_words, made_led, made_glyphs) = drawn(true)
+  // (one line of 13's words: under two)
+  assert_true(old_h < 13.0 * 1.65 * 1.5 && made_h < 13.0 * 1.65 * 1.5, msg="chip \{old_h} old, \{made_h} made")
+  assert_eq(old_words, ["@新架构 chat 表格问题", "\"whole\" | \"tasks\""])
+  assert_eq(made_words, old_words)
+  assert_eq(old_led, [path_link("libs/sf-ui/src/table_node.mbt", Some(152))])
+  assert_eq(made_led, old_led)
+  // (and every glyph where the other draws it: the same columns)
+  assert_eq(made_glyphs, old_glyphs)
+}

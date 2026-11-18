@@ -2024,10 +2024,10 @@ fn software_list_node(
       })
       foot.show(fn() { checked() is Some(_) }, fn(w) {
         let checking = fn() { is_doing(core, ["software.check"], [("station", station)]) }
-        w.box(fn(k) {
+        @sf.action_box_node(w, fn() { @sf.t("web-main.versions.check") }, disabled=checking, fn(_) {
+          software_call(core, station, "software.check", [])
+        }, fn(k) {
           @sf.style_node(k, fn() { sw_check })
-          @sf.presses_node(k, fn() { software_call(core, station, "software.check", []) }, on=fn() { !checking() })
-          k.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.versions.check"))) })) |> ignore
           @sf.words_node(k, fn() {
             if checking() {
               @sf.t("web-main.versions.checking")

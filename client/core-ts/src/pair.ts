@@ -28,7 +28,8 @@ export function pairCode(randomBytes: (into: Uint8Array) => void): string {
 
 /// A code as typed (spaces and dashes are the person's): its six digits, or null when it is not one.
 export function typedCode(typed: string): string | null {
-  const digits = typed.replace(/[\s\-–—]/g, "");
+  // (full-width digits, as a Chinese input method types them, are the digits they are)
+  const digits = typed.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xff10 + 48)).replace(/[\s\-–—]/g, "");
   return /^[0-9]{6}$/.test(digits) ? digits : null;
 }
 

@@ -287,6 +287,8 @@ function hoursOf(item: J, pace: (station: string) => J): Hours {
 }
 
 type PoolSpec = { title: string; slots: Slot[] };
+/// A pool's rows (what `pooled` keeps its pool by) and its slots made of them with their hours as asked (`poolOf`'s).
+type PoolRows = { title: string; items: J[]; slots: (h: (i: J) => Hours) => Slot[] };
 
 /// A window as the list's rows keep it (what is left, whole; no length) made exact by its account's hour kept within
 /// the last two (the same window, the same left): its length and its percent as read. None kept: as the row has it.
@@ -315,58 +317,58 @@ function slot(item: J, hours: Hours, now: number, scope: string, long: Win | nul
 const gatedTogether = (long: Win | null, gate: Win | null): boolean =>
   long !== null && gate !== null && gate.resetsAt !== null && long.resetsAt !== null && Math.abs(gate.resetsAt - long.resetsAt) < 3 * HOUR_MS;
 
-/// Each pool's accounts.
-function poolSpecs(items: J[], pace: (station: string) => J, now: number): PoolSpec[] {
-  const hours = new Map<J, Hours>(items.map((i) => [i, hoursOf(i, pace)]));
-  const h = (i: J) => hours.get(i)!;
+/// Each pool's accounts (`items`), and its slots made of them as asked, with their hours (`h`): a pool kept
+/// (`poolKept`) reads none of its accounts' hours.
+function poolSpecs(items: J[], now: number): PoolRows[] {
   const main = (i: J): [Win | null, Win | null] => {
     const ws = windowsOf(i);
     return [find(ws, "", "long"), find(ws, "", "short")];
   };
   const groupOf = (i: J) => str(i?.group);
-  const specs: PoolSpec[] = [];
+  const specs: PoolRows[] = [];
   // (an Antigravity account's Claude / GPT serve no Claude Code or Codex session: the station's pool never runs one
   // of those on it, sessions/pool.ts, so it is none of their pools')
   const own = (group: string, title: string) => {
-    const slots = items.filter((i) => groupOf(i) === group).map((i) => {
+    const mine = items.filter((i) => groupOf(i) === group);
+    specs.push({ title, items: mine, slots: (h) => mine.map((i) => {
       const [long, short] = main(i);
       return slot(i, h(i), now, "", long, short);
-    });
-    specs.push({ title, slots });
+    }) });
   };
   own("claude", "Claude");
   // Fable: a model's own week, on accounts whose week of their own must have room too.
-  const fable: Slot[] = [];
-  for (const i of items) {
-    const ws = windowsOf(i);
-    const mine = ws.find((w) => w.scope === "Fable") ?? null;
-    if (mine === null && !(groupOf(i) === "claude" && needsFix(i))) continue;
+  const fableOf = (i: J): Win | null => windowsOf(i).find((w) => w.scope === "Fable") ?? null;
+  const fable = items.filter((i) => fableOf(i) !== null || (groupOf(i) === "claude" && needsFix(i)));
+  specs.push({ title: "Fable", items: fable, slots: (h) => fable.map((i) => {
+    const mine = fableOf(i);
     const [week, short] = main(i);
     // (its account's week reset with it is a gate, the less of the two left; one reset apart and spent holds it till then)
     const locked = !gatedTogether(mine, week) && week !== null && week.used >= 100 ? Math.max(0, ((week.resetsAt ?? now) - now) / HOUR_MS) : 0;
-    fable.push(slot(i, h(i), now, "Fable", mine, short, { lockedHours: locked, gate: week }));
-  }
-  if (fable.length > 0) specs.push({ title: "Fable", slots: fable });
+    return slot(i, h(i), now, "Fable", mine, short, { lockedHours: locked, gate: week });
+  }) });
   own("chatgpt", "Codex");
-  const gemini: Slot[] = [];
-  for (const i of items) {
-    if (groupOf(i) !== "agy") continue;
+  const geminiOf = (i: J): [Win | null, Win | null] => {
     const ws = windowsOf(i);
-    const long = find(ws, "gemini", "long");
-    const short = find(ws, "gemini", "short");
+    return [find(ws, "gemini", "long"), find(ws, "gemini", "short")];
+  };
+  const gemini = items.filter((i) => {
+    if (groupOf(i) !== "agy") return false;
+    const [long, short] = geminiOf(i);
     // (an allowance read that has no Gemini window: an account of none, not one to wait for)
-    if (long === null && short === null && i?.profile?.quota?.state === "ok" && !needsFix(i)) continue;
-    gemini.push(slot(i, h(i), now, "gemini", long, short));
-  }
-  specs.push({ title: "Gemini", slots: gemini });
+    return !(long === null && short === null && i?.profile?.quota?.state === "ok" && !needsFix(i));
+  });
+  specs.push({ title: "Gemini", items: gemini, slots: (h) => gemini.map((i) => {
+    const [long, short] = geminiOf(i);
+    return slot(i, h(i), now, "gemini", long, short);
+  }) });
   for (const [group, title] of [["grok", "SuperGrok"], ["kimi", "Kimi Code"], ["opencode", "OpenCode Go"], ["cursor", "Cursor"], ["devin", "Devin"]] as const) {
-    const slots = items.filter((i) => groupOf(i) === group).map((i) => {
+    const mine = items.filter((i) => groupOf(i) === group);
+    specs.push({ title, items: mine, slots: (h) => mine.map((i) => {
       const [long, short] = main(i);
       return slot(i, h(i), now, "", long, short, { weight: 1 });
-    });
-    specs.push({ title, slots });
+    }) });
   }
-  return specs.filter((s) => s.slots.length > 0);
+  return specs.filter((s) => s.items.length > 0);
 }
 
 /// An account's long window through the hours: its percent used `k` hours back (k = 0..HISTORY_HOURS), and in each hour
@@ -781,15 +783,69 @@ function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank
   return hi;
 }
 
+/// What a pool made of its rows reads of each (`poolSpecs`, `slot`, `windowsOf`, `needsFix`, `planWeight`: its kind,
+/// whether it needs fixing, its plan, whether it can be used, its allowance as read, the profiles it is on), in words.
+function rowRead(i: J): string {
+  const members = Array.isArray(i?.members) ? i.members : [];
+  return JSON.stringify([str(i?.group), needsFix(i), str(i?.profile?.planText), i?.usable === true, i?.profile?.quota ?? null, members.map((m: J) => [str(m?.station), str(m?.profileId)])]);
+}
+
+/// The pools made last (`poolOf`), each by what it was made of: its name, its rows as it reads them (`rowRead`), its
+/// accounts' hours as their stations said them (the objects: `hoursOf` reads each member's profile of its station's
+/// pace and nothing else of it), the viewer's offset and the minute of `now`. A pool none of whose accounts changed is
+/// the one made before within the minute: each station's overview or hours coming made every pool again (6-18 times
+/// in a row as stations came back, 154-903 ms each on a phone, 0.1.10103-10130), each a week's simulation searched over
+/// a dozen times. The last `POOLS_KEPT` (a few workspaces' pools).
+type Pooled = { hours: unknown[]; pool: OverviewPool };
+const pooled = new Map<string, Pooled>();
+const POOLS_KEPT = 48;
+
+/// Frozen all through (util.ts `deepFreeze`, this file importing nothing).
+function deepFreeze(v: unknown): void {
+  if (v === null || typeof v !== "object" || Object.isFrozen(v)) return;
+  Object.freeze(v);
+  for (const k of Object.keys(v)) deepFreeze((v as Record<string, unknown>)[k]);
+}
+
+/// A pool kept is frozen all through as it is kept: every call that finds it hands the same object.
+function poolKept(rows: PoolRows, pace: (station: string) => J, now: number, offsetMin: number, h: (i: J) => Hours): OverviewPool {
+  const hours: unknown[] = [];
+  for (const i of rows.items) for (const m of Array.isArray(i?.members) ? i.members : []) hours.push(pace(str(m?.station))?.profiles?.[str(m?.profileId)]);
+  const key = JSON.stringify([rows.title, Math.floor(now / 60_000), offsetMin, rows.items.map(rowRead)]);
+  const was = pooled.get(key);
+  if (was !== undefined && was.hours.length === hours.length && was.hours.every((x, i) => x === hours[i])) {
+    pooled.delete(key);
+    pooled.set(key, was);
+    return was.pool;
+  }
+  const pool = poolOf({ title: rows.title, slots: rows.slots(h) }, now, offsetMin);
+  deepFreeze(pool);
+  pooled.delete(key);
+  pooled.set(key, { hours, pool });
+  if (pooled.size > POOLS_KEPT) pooled.delete(pooled.keys().next().value!);
+  return pool;
+}
+
 /// The overview's pools of the workspace's accounts (`profilesWhole`'s items), with their stations' hours (`pace`,
 /// by a station's address: what it said of GET /profiles/pace; nothing said, none), at `now` in the viewer's offset.
-export function profilesOverview(items: J[], pace: (station: string) => J, now: number, offsetMin: number): { pools: OverviewPool[] } {
+/// `fresh`: every pool made anew, none kept (what the kept ones are held to: profiles-overview-kept.test.ts).
+export function profilesOverview(items: J[], pace: (station: string) => J, nowMs: number, offsetMin: number, fresh = false): { pools: OverviewPool[] } {
+  // (as of the minute `nowMs` is in: what is made within it is the same whenever in it, so a pool kept is what one
+  // made anew would be)
+  const now = Math.floor(nowMs / 60_000) * 60_000;
   const speeds = speedsOf(items, pace);
+  // (an account's hours read as a pool not kept first needs them: the pools kept read none)
+  const hours = new Map<J, Hours>();
+  const h = (i: J): Hours => {
+    let made = hours.get(i);
+    if (made === undefined) hours.set(i, made = hoursOf(i, pace));
+    return made;
+  };
   return {
-    pools: poolSpecs(items, pace, now).map((spec) => {
-      const pool = poolOf(spec, now, offsetMin);
-      const speed = speedOf(speeds.get(spec.title), now);
-      return speed === undefined ? pool : { ...pool, speed };
+    pools: poolSpecs(items, now).map((rows) => {
+      const pool = fresh ? poolOf({ title: rows.title, slots: rows.slots(h) }, now, offsetMin) : poolKept(rows, pace, now, offsetMin, h);
+      const speed = speedOf(speeds.get(rows.title), now);
+      return speed === undefined ? pool : Object.freeze({ ...pool, speed });
     }),
   };
 }

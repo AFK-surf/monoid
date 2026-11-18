@@ -1131,12 +1131,9 @@ async fn P52::dep(
       Obj(pairs.map(p => (@jsjson.units(p.0), j_s(p.1))))
     }
     "usable" => J::Bool(@session_hub.usable(a(0), None))
-    "shownFactsSoon" =>
-      match thumbhash(s(0), None) {
-        Some((hash, w, h)) =>
-          jv_of({ "thumbhash": jstr(hash), "width": jn(w), "height": jn(h) })
-        None => Null
-      }
+    // (image-size.ts `shownFactsSoon`: a film's or a GIF's size, length and frames read from its head as hubops'
+    // and the world's; the picture's ThumbHash is `keep`'s, made in its one decode)
+    "shownFactsSoon" => jv_of(shown_facts(self.host, s(0)))
     "makeReadStore" => j_s("readStore")
     "readStateQuestion" =>
       jv_of(

@@ -15,6 +15,7 @@ import { Store } from "../src/store.ts";
 import { FakeHost } from "../src/testing.ts";
 import { forgetVerifiedHere, keepVerified, verifies } from "../src/vault/verified.ts";
 import { personalStub } from "./adb-personal-stub.ts";
+import { t } from "../src/i18n.ts";
 
 const SUB = "s1";
 const STATION = "ws/st";
@@ -116,6 +117,45 @@ test("the first signature begins the lock; it asks the person and signs what hol
     await assert.rejects(a.runner.run(a.lock.signGrant(SUB, body(), "why")));
   } finally {
     a.runner.shutdown();
+  }
+});
+
+test("the system's prompt turned down, not shown (the app not in front) or with no screen lock: the person's own lock says so in the host's word, and forgetting it goes on where there is no screen lock", async () => {
+  const words: [string, string][] = [
+    ["user_cancelled", t("core-misc.call.cancelled")],
+    ["not_in_front", t("core-misc.secure.notInFront")],
+    ["no_device_lock", t("core-misc.secure.noDeviceLock")],
+    ["key_invalidated", t("core-misc.secure.keyInvalidated")],
+  ];
+  const failed = async <A>(a: ReturnType<typeof device>, e: Effect.Effect<A, CoreError>) => {
+    const r = await a.runner.run(Effect.result(e));
+    assert.equal(r._tag, "Failure");
+    return r._tag === "Failure" ? { code: r.failure.code, message: r.failure.message } : null;
+  };
+  for (const [said, word] of words) {
+    const c = cloud();
+    // (its key read: #unseal)
+    const a = device(c, "a");
+    // (its key made, the person asked first: #madeKey's secureAsk; then kept: its secureSet)
+    const b = device(c, "b");
+    const k = device(c, "k");
+    try {
+      await a.runner.run(a.lock.signGrant(SUB, body(), "why"));
+      a.host.secureGet = () => Effect.fail(new HostError(said));
+      assert.deepEqual(await failed(a, a.lock.signGrant(SUB, body(), "why")), { code: said, message: word });
+      b.host.secureAsk = () => Effect.fail(new HostError(said));
+      assert.deepEqual(await failed(b, b.lock.begin(SUB, "why")), { code: said, message: word });
+      k.host.secureSet = () => Effect.fail(new HostError(said));
+      assert.deepEqual(await failed(k, k.lock.makeKey()), { code: said, message: word });
+      // (forgetting the lock pinned: no screen lock asks nobody and goes on; anything else said as it is)
+      a.host.secureAsk = () => Effect.fail(new HostError(said));
+      if (said === "no_device_lock") assert.equal(await a.runner.run(a.lock.forget(SUB, "why")), null);
+      else assert.deepEqual(await failed(a, a.lock.forget(SUB, "why")), { code: said, message: word });
+    } finally {
+      a.runner.shutdown();
+      b.runner.shutdown();
+      k.runner.shutdown();
+    }
   }
 });
 

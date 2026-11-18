@@ -271,15 +271,13 @@ fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
         Whole => search_field_line.then(@ui.style(px=@sf.room_of(band.band_in)))
       }
     })
-    l.box(fn(f) {
+    @sf.action_box_node(l, fn() { @sf.t("android-chat.search.field") }, fn(f) {
+      let (_, y, _, _) = f.placed_window_now()
+      search_open_from(y)
+    }, fn(f) {
       field.val = Some(f)
       @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
       f.alpha(By(fn() { if search_read().open { 0.0 } else { 1.0 } })) |> ignore
-      @sf.presses_node(f, fn() {
-        let (_, y, _, _) = f.placed_window_now()
-        search_open_from(y)
-      })
-      f.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-chat.search.field"))) })) |> ignore
       @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
       @sf.words_node(f, fn() { @sf.t("android-chat.search.field") }, fn() {
         @sf.theme().chat_list.band_words.then(search_field_words)
@@ -416,13 +414,11 @@ pub fn search_page_node(
       slot.reacts(fn() { finder_field().text() }, fn(words) { finder_typed(words) })
     })
     |> ignore
-    bar.box(fn(k) {
+    @sf.action_box_node(bar, fn() { @sf.t("android-chat.search.cancel") }, fn(_) { if !search.leaving { search_close_now() } }, fn(k) {
       k
       .alpha(By(u))
       .offset(By(fn() { (cancel_w() * (1.0 - u()), 0.0) }))
       |> ignore
-      @sf.presses_node(k, fn() { if !search.leaving { search_close_now() } })
-      k.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-chat.search.cancel"))) })) |> ignore
       @sf.words_node(k, fn() { @sf.t("android-chat.search.cancel") }, fn() { search_cancel }) |> ignore
     })
     |> ignore

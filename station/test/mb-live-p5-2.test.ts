@@ -14,10 +14,12 @@ import { request } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
+import { exif, film, jpeg } from "../../client/core-ts/test/media-bytes.ts";
 
 const binary = mbReaderBinary();
 const runner = process.env.STILLFAIL_RUNNER ?? "";
@@ -270,6 +272,35 @@ async function until<T>(what: string, look: () => T | null | undefined | false |
   }
 }
 
+/// A PNG of `width` by `height` grey pixels, whole: what the station decodes for its ThumbHash.
+function png(width: number, height: number): Uint8Array {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, body: Buffer) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(body.length);
+    const typed = Buffer.concat([Buffer.from(type, "ascii"), body]);
+    const tail = Buffer.alloc(4);
+    tail.writeUInt32BE(crc(typed));
+    return Buffer.concat([head, typed, tail]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const rows = Buffer.alloc((width * 3 + 1) * height, 128);
+  for (let y = 0; y < height; y++) rows[y * (width * 3 + 1)] = 0;
+  return new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]));
+}
+
 /// A session of the station's own chat, its thread, as the store keeps them (lifecycle.ts `newSession`'s rows).
 function session(store: Store, data: string, key: string, runtime: string, token: string, ts: string, ws?: string, tui?: boolean) {
   const workspace = join(data, "sessions", "chat", key.slice(5), "workspace");
@@ -314,7 +345,6 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   session(store, data, "chat:c-away", "claude", "t3", "1790000000.000004", "w-left");
   const t4 = session(store, data, "chat:c-dsh", "dsh", "t4", "1790000000.000005");
   const t5 = session(store, data, "chat:c-tui", "claude", "t5", "1790000000.000006", undefined, true);
-  void t0;
 
   // A session's own token: the endpoint's methods, its tools as Claude Code takes them (the turn's two loaded).
   const init = await mcp(door.port, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }, "t0");
@@ -402,6 +432,24 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   assert.equal(JSON.parse(tuiArgv[tuiArgv.indexOf("--mcp-config") + 1]!).mcpServers.stillfail.type, "stdio");
   assert.match(readFileSync(join(out, "tui-prompt-1"), "utf8"), /^<station_message>\n[\s\S]*tui, answer[\s\S]*\n<\/station_message>$/);
   assert.ok(Array.isArray(JSON.parse(readFileSync(join(out, "tui-tools.json"), "utf8").split("\n")[0]!).result.tools), "its tools listed through the bridge");
+
+  // Files a session posts (chat_post files): a film keeps its size as shown (its turn applied), its length and frames,
+  // read of its head (image-size.ts `shownFactsSoon`); a picture its size and the ThumbHash `keep` made of it.
+  const t0Workspace = join(data, "sessions", "chat", "c-from", "workspace");
+  writeFileSync(join(t0Workspace, "recording.mp4"), film(1140, 2616, { at: "end", turn: 90, ms: 61_000, frames: 1830 }));
+  writeFileSync(join(t0Workspace, "photo.jpg"), jpeg(4032, 3024, exif(6, true)));
+  writeFileSync(join(t0Workspace, "dot.png"), png(40, 20));
+  const withFiles = (await mcp(door.port, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "chat_post", arguments: { to: "CHAT/1790000000.000001", text: "with files", files: ["recording.mp4", "photo.jpg", "dot.png"].map((f) => join(t0Workspace, f)) } } }, "t0")).json.result;
+  assert.notEqual(withFiles.isError, true, `${JSON.stringify(withFiles)}\n${a.err()}`);
+  const withFilesRow = store.messagesBefore(t0.id, null, 20).find((m) => m.text === "with files")!;
+  const facts = (name: string) => {
+    const f = withFilesRow.attachments.find((x) => x.name === name) as any;
+    return { width: f.width, height: f.height, duration: f.duration, frames: f.frames };
+  };
+  assert.deepEqual(facts("recording.mp4"), { width: 2616, height: 1140, duration: 61_000, frames: 1830 });
+  assert.deepEqual(facts("photo.jpg"), { width: 3024, height: 4032, duration: undefined, frames: undefined });
+  const dot = withFilesRow.attachments.find((x) => x.name === "dot.png") as any;
+  assert.deepEqual([dot.width, dot.height, typeof dot.thumbhash, (dot.thumbhash ?? "").length > 0], [40, 20, "string", true]);
 
   // A chat this session leads (chat_create for: me): its agent's turn ends all_done, and the one that opened it is told
   // so, a turn of its own (opened.ts `settled`, through the hub's `settled`).

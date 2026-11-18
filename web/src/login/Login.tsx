@@ -4,9 +4,10 @@
 // own, and was stuck at 正在登录… for good (2026-10-09).
 import { useEffect, useState } from "preact/hooks";
 import { t } from "@stillfail/ui/i18n.ts";
+import { Button } from "@stillfail/ui/button.tsx";
+import { StandPage, type Illustration } from "@stillfail/ui/standPage.tsx";
 import { NAME } from "../channel.ts";
 import { begin, complete, deviceName, returnTo, SignInError } from "./signin.ts";
-import * as css from "./login.css.ts";
 
 /** How long the sign-in's last step may take before the page offers a way out: it takes a second or two. */
 const SIGNING_IN_MS = 8000;
@@ -15,19 +16,12 @@ export const name = () => deviceName((browser, os) => t("web-login.device", { br
 
 export const start = (to: string) => begin(to, name());
 
-export function Page({ title, lead, children }: { title: string; lead?: string | undefined; children?: preact.ComponentChildren }) {
-  return (
-    <main className={css.page}>
-      <img className={css.illus} src="/illus-sign-in.svg" alt="" width={360} height={200} />
-      <h1 className={css.title}>{title}</h1>
-      {lead && <p className={css.lead}>{lead}</p>}
-      {children && <div className={css.actions}>{children}</div>}
-    </main>
-  );
-}
+/** The sign-in pages' picture, over each of them (the admin's console's too). */
+export const SIGN_IN: Illustration = { src: "/illus-sign-in.svg", width: 360, height: 200 };
 
-export function Button({ primary = false, onClick, children }: { primary?: boolean; onClick(): void; children: string }) {
-  return <button type="button" className={`${css.button}${primary ? ` ${css.primary}` : ""}`} onClick={onClick}>{children}</button>;
+/** A sign-in page: its picture, what is happening, what to do next and its buttons. */
+export function Page({ title, lead, children }: { title: string; lead?: string | undefined; children?: preact.ComponentChildren }) {
+  return <StandPage illustration={SIGN_IN} title={title} lead={lead} actions={children} />;
 }
 
 /** /login: on to still.fail cloud's sign-in at once; should that fail, a way to try again. */
@@ -40,7 +34,7 @@ export function SignIn() {
   if (error === null) return <Page title={title} lead={lead} />;
   return (
     <Page title={title} lead={t("web-login.unreachable", { name: NAME, error })}>
-      <Button primary onClick={() => { setError(null); start(to).catch((e: unknown) => setError(String(e))); }}>{t("web-login.start")}</Button>
+      <Button variant="primary" onClick={() => { setError(null); start(to).catch((e: unknown) => setError(String(e))); }}>{t("web-login.start")}</Button>
     </Page>
   );
 }
@@ -57,12 +51,12 @@ export function Callback() {
     return () => clearTimeout(timer);
   }, []);
   if (error !== null) {
-    return <Page title={t("web-login.failed")} lead={error}><Button primary onClick={() => void start("/")}>{t("web-login.again")}</Button></Page>;
+    return <Page title={t("web-login.failed")} lead={error}><Button variant="primary" onClick={() => void start("/")}>{t("web-login.again")}</Button></Page>;
   }
   if (!slow) return <Page title={t("web-login.signingIn")} />;
   return (
     <Page title={t("web-login.signingIn")} lead={t("web-login.slow")}>
-      <Button primary onClick={() => location.reload()}>{t("web-login.reload")}</Button>
+      <Button variant="primary" onClick={() => location.reload()}>{t("web-login.reload")}</Button>
       <Button onClick={() => location.replace("/")}>{t("web-login.again")}</Button>
     </Page>
   );

@@ -28,12 +28,6 @@ pub fn open_gate_collecting() -> Bool {
 }
 
 ///|
-/// Register a readiness condition with the current gate.
-pub fn open_gate_note(ready : () -> Bool) -> Unit {
-  @view.hold_note(ready)
-}
-
-///|
 /// Wait for the decode of a picture if the device already has its bytes.
 pub fn open_gate_picture(key : String) -> Unit {
   if key != "" && @view.hold_collecting() && @ui.has_image(key) && !@ui.image_any_ready(key) {

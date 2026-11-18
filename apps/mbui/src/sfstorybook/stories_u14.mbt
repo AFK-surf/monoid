@@ -14,7 +14,7 @@ fn u14_net(path : String, loss : String, rtt : String, level : String) -> Json {
 
 ///|
 /// Their stories, after the others.
-fn stories_u14(_tips : @sf.TipLayer) -> Array[Story] {
+fn stories_u14() -> Array[Story] {
   [
     {
       key: "station-net",

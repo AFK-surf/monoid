@@ -42,7 +42,7 @@
 import { CLOUD_ORIGIN, CloudTransport, cloudEntry } from "../cloud/transport.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { access, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { type FSWatcher, createReadStream, createWriteStream, watch } from "node:fs";
+import { type FSWatcher, createReadStream, createWriteStream, realpathSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { type Clock, Effect, Fiber, Schedule } from "effect";
@@ -246,6 +246,28 @@ const refused = (lang: Lang, key: string, args?: Record<string, unknown>) => new
 
 const canonical = (p: string): Promise<string | null> => realpath(p).catch(() => null);
 
+/// `canonical` as the part is made, before it serves.
+const canonicalNow = (p: string): string | null => {
+  try {
+    return realpathSync(p); // sync: read once as the station starts, before it serves (Updates' first line)
+  } catch {
+    return null;
+  }
+};
+
+/// Why the station cannot be updated from here (none where it can): its release is not the one the installer put in
+/// <data>/app, or it is in no still.fail cloud.
+function stationNote(app: string, real: string | null, installed: string | null, origin: string | null): Words | null {
+  const note: Words | null =
+    real !== null && real === installed ? null
+    : app.includes(".app/Contents") ? { key: "station.updates.withDesktop" }
+    : { key: "station.updates.notInstaller" };
+  return note === null && origin === null ? { key: "station.updates.notJoined" } : note;
+}
+
+/// How long the first reading waits to be tried again after it failed (a later one waits `every`).
+const FIRST_RETRY_MS = 60_000;
+
 export class Updates {
   readonly app: string;
   readonly data: string;
@@ -275,6 +297,8 @@ export class Updates {
   private items: Record<Kind, Item> = { station: empty(), claude: empty(), codex: empty(), dsh: empty(), grok: empty(), cursor: empty(), devin: empty(), hermes: empty(), agy: empty(), pi: empty() };
   private checkedAt: number | null = null;
   private checking: Promise<void> | null = null;
+  /// The reading asked for while one went on, after it (`check`).
+  private again: Promise<void> | null = null;
   /// Version refusals from several conversations join one update of the machine's Codex.
   private codexRecovery: Promise<void> | null = null;
   private codexUpdateSerial = 0;
@@ -335,6 +359,14 @@ export class Updates {
     // Read before an update can replace the release.
     this.release = releaseChannel(this.app);
     this.installed = this.release ?? channelFrom(this.config.raw(), null);
+    // The station itself is there from the start: what it runs and whether it is updated from here are its own, read
+    // now (the pages said 未安装 until every runtime's version was read, and for good where one of those never ended).
+    this.items.station = {
+      ...empty(),
+      installed: true,
+      version: stationVersion(this.app) ?? null,
+      note: stationNote(this.app, canonicalNow(this.app), canonicalNow(join(this.data, "app")), this.origin() || null),
+    };
     this.fibers = new Fibers("updates", o.clock);
   }
 
@@ -438,7 +470,9 @@ export class Updates {
   private schedule() {
     if (this.closed || !this.started) return;
     if (this.tick) void Effect.runFork(Fiber.interrupt(this.tick));
-    const due = this.lastCheck === null ? 0 : Math.max(0, this.lastCheck + this.timing.every - this.fibers.now());
+    // Not read yet (the first reading failed): tried again within a minute, not hours later.
+    const every = this.checkedAt === null ? Math.min(FIRST_RETRY_MS, this.timing.every) : this.timing.every;
+    const due = this.lastCheck === null ? 0 : Math.max(0, this.lastCheck + every - this.fibers.now());
     this.tick = this.fibers.fork(Effect.sleep(due).pipe(Effect.andThen(Effect.promise(() => this.look()))));
   }
 
@@ -446,16 +480,20 @@ export class Updates {
     this.tick = null;
     try {
       const every = this.timing.every;
-      // A reading under way (asked from a page) is waited for, not looked at again and again. The first reads the
-      // station's release too; those after, the runtimes'.
+      // A reading under way (asked from a page) is waited for, not looked at again and again. Until the station's release
+      // was read (the first reading, or one that failed), it is read too; those after, the runtimes'.
       if (this.checking) await this.checking;
-      else if (this.lastCheck === null) await this.check();
+      else if (this.lastCheck === null || this.items.station.channel === null) await this.check();
       else if (this.fibers.now() - this.lastCheck >= every) await this.check(false);
       this.autoUpdate("a newer release read");
     } catch (e) {
-      // Not read: tried again when the next reading is due, not at once.
+      // Not read: tried again when the next reading is due (within a minute while none was), not at once.
       this.lastCheck = this.fibers.now();
       log.warn("updates", "the updates not looked at", { error: (e as Error).message });
+      // Always: `tick` may still name the fiber this look runs in (one due at once runs it as it is forked, before
+      // `schedule` keeps it), and a first reading that failed was then never looked at again.
+      this.schedule();
+      return;
     }
     if (this.tick === null) this.schedule();
   }
@@ -525,28 +563,41 @@ export class Updates {
     return backTo(item.earlier, buildOf(item.version), platform()).map((r) => r.version);
   }
 
-  /// Reads every version and what is out, now (once at a time: asked while a reading goes on, it is that reading);
-  /// a newer release of the station's channel is installed when it updates itself. `station`: its own release read
-  /// too (at the start, asked from a page, a release said to be out), else the runtimes' only.
+  /// Reads every version and what is out, now (once at a time); a newer release of the station's channel is installed
+  /// when it updates itself. `station`: its own release read too (at the start, asked from a page, a release said to
+  /// be out, an update ended), else the runtimes' only. Asked while a reading goes on: the runtimes' alone is that
+  /// reading; with the station's, one more after it (that reading took the station's release as it began, maybe before
+  /// what this is asked for, and goes on while the runtimes' versions come), every such ask meanwhile the same one.
   check(station = true): Promise<void> {
-    if (this.checking) return Promise.resolve();
+    if (this.checking) {
+      if (!station) return Promise.resolve();
+      this.again ??= this.checking.catch(() => {}).then(() => {
+        this.again = null;
+        return this.check();
+      });
+      return this.again;
+    }
     forgetShellPaths();
     this.checking = this.read(station).finally(() => (this.checking = null));
     return this.checking;
   }
 
   private async read(withStation: boolean) {
-    const held = this.items.station;
-    let [station, ...runtimes] = await Promise.all([withStation ? this.readStation(this.channel()) : Promise.resolve(held), ...this.kinds.map((kind) => this.readRuntime(kind))]);
-    // Put on another channel while it was read: read from that one.
-    while (station.channel !== this.channel()) station = await this.readStation(this.channel());
-    for (const [kind, read] of [["station", station] as const, ...this.kinds.map((kind, i) => [kind, runtimes[i]!] as const)]) {
-      const item = this.items[kind];
-      // One that is updating keeps what it was until it is done; but one not yet read (an update this process took
-      // over following) is read.
-      if (item.updating === null) this.items[kind] = { ...read, failed: item.failed, done: item.done };
-      else if (!item.installed) this.items[kind] = { ...read, updating: item.updating, progress: item.progress, step: item.step, percent: item.percent };
-    }
+    // The station's release is taken as soon as it is read, and updated to where it updates itself: a runtime whose
+    // version is slow to come (a command that hangs) holds back neither it nor the pages.
+    const station = withStation
+      ? (async () => {
+          let read = await this.readStation(this.channel());
+          // Put on another channel while it was read: read from that one.
+          while (read.channel !== this.channel()) read = await this.readStation(this.channel());
+          this.applyRead("station", read);
+          this.changed();
+          await this.resumeAuto();
+          this.autoUpdate("a newer release out");
+        })()
+      : Promise.resolve();
+    const [, ...runtimes] = await Promise.all([station, ...this.kinds.map((kind) => this.safeReadRuntime(kind))]);
+    for (const [i, kind] of this.kinds.entries()) this.applyRead(kind, runtimes[i]!);
     this.checkedAt = this.fibers.now();
     this.lastCheck = this.fibers.now();
     this.changed();
@@ -555,15 +606,29 @@ export class Updates {
     this.schedule();
   }
 
+  /// What was read of `kind` taken: one that is updating keeps what it was until it is done; but one not yet read (an
+  /// update this process took over following) is read.
+  private applyRead(kind: Kind, read: Item) {
+    const item = this.items[kind];
+    if (item.updating === null) this.items[kind] = { ...read, failed: item.failed, done: item.done };
+    else if (!item.installed) this.items[kind] = { ...read, updating: item.updating, progress: item.progress, step: item.step, percent: item.percent };
+  }
+
+  /// `readRuntime`, where it fails what it was before: one runtime that cannot be read does not end the reading.
+  private async safeReadRuntime(kind: Kind): Promise<Item> {
+    try {
+      return await this.readRuntime(kind);
+    } catch (e) {
+      log.warn("updates", "the runtime's version not read", { runtime: kind, error: (e as Error).message });
+      return { ...this.items[kind] };
+    }
+  }
+
   private async readStation(channel: Channel): Promise<Item> {
     const version = (await stationVersionSoon(this.app)) ?? null;
     const app = await canonical(this.app);
-    let note: Words | null =
-      app !== null && app === (await canonical(join(this.data, "app"))) ? null
-      : this.app.includes(".app/Contents") ? { key: "station.updates.withDesktop" }
-      : { key: "station.updates.notInstaller" };
     const origin = this.origin() || null;
-    if (note === null && origin === null) note = { key: "station.updates.notJoined" };
+    const note = stationNote(this.app, app, app === null ? null : await canonical(join(this.data, "app")), origin);
     let latest: string | null = null;
     let earlier: Release[] = [];
     if (origin !== null) {

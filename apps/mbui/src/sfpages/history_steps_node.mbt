@@ -327,21 +327,21 @@ fn steps_run(
 }
 
 ///|
-/// A row pressed as a whole in `b`: `press` done as it is, read out a button named `label` (one that `folds` open
-/// as `open` says, or shut).
-fn steps_pressed(
-  b : @view.View,
+/// A row pressed as a whole made in `parent` and laid out by `look`: `press` done as it is, read out a button named
+/// `label` (one that `folds` open as `open` says, or shut, a disclosure). The node.
+fn steps_press_box(
+  parent : @view.View,
   press : () -> Unit,
+  look : (@view.View) -> Unit,
   label? : () -> String = fn() { "" },
   folds? : Bool = false,
   open? : () -> Bool = fn() { false },
-) -> Unit {
-  @sf.presses_node(b, press)
-  b
-  .says(By(fn() {
-    Some(if folds { @view.said(Button, label=label(), expanded=open()) } else { @view.said(Button, label=label()) })
-  }))
-  |> ignore
+) -> @view.View {
+  if folds {
+    @sf.action_box_node(parent, label, fn(_) { press() }, look, expanded=open)
+  } else {
+    @sf.action_box_node(parent, label, fn(_) { press() }, look)
+  }
 }
 
 ///|
@@ -889,12 +889,8 @@ fn one_line_ev_node(
       rail_next=fn() { rail_next },
       fn(ev) {
         ev_node(ev, icon, "", ev_tone, row=true, fn(b) {
-          b.box(fn(r) {
+          steps_press_box(b, fn() { steps_flip(key) }, label=fn() { line }, folds=true, open~, fn(r) {
             @sf.style_node(r, fn() { h_one_press })
-            @sf.presses_node(r, fn() { steps_flip(key) })
-            r
-            .says(By(fn() { Some(@view.said(Button, label=line, expanded=open())) }))
-            |> ignore
             lead(r)
             if line != "" {
               r.box(fn(l) {
@@ -1199,7 +1195,10 @@ fn message_fold_stack_node(
             same=fn(a, b) { a == b },
           )
           let words = fn() { words_sig.get() }
-          steps_pressed(t, fn() { steps_flip(@signals.untracked(key_fn)) }, label=words, folds=true, open~)
+          // (the show's own node the button, by hand: a node of its own would be one more in every long message's head,
+          // over the chat's page's bar)
+          @sf.presses_node(t, fn() { steps_flip(@signals.untracked(key_fn)) })
+          t.says(By(fn() { Some(@view.said(Button, label=words(), expanded=open())) })) |> ignore
           @sf.words_node(t, words, fn() {
             if @sf.lit_node(t) { h_msg_toggle_hot } else { h_msg_toggle_words }
           })
@@ -1543,12 +1542,8 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
     rail_next=fn() { rail || rail_last },
     fn(ev) {
       ev_node(ev, icon, "", tone, row=true, fn(b) {
-        b.box(fn(r) {
+        steps_press_box(b, fn() { steps_flip(key) }, label=fn() { first_title }, folds=true, open~, fn(r) {
           @sf.style_node(r, fn() { h_one_press })
-          @sf.presses_node(r, fn() { steps_flip(key) })
-          r
-          .says(By(fn() { Some(@view.said(Button, label=first_title, expanded=open())) }))
-          |> ignore
           r.box(fn(l) {
             l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             @sf.words_node(l, fn() { first_title }, fn() {
@@ -1623,9 +1618,8 @@ fn mark_node(v : @view.View, src : Source, key : String, mark : Json?, rail : Bo
       what + @sf.t("web-main.activity.waiting") + " " + waited
     }
     if expandable {
-      b.box(fn(r) {
+      steps_press_box(b, fn() { steps_flip(key) }, label=fn() { what_first }, folds=true, open~, fn(r) {
         @sf.style_node(r, fn() { h_one_press })
-        steps_pressed(r, fn() { steps_flip(key) }, label=fn() { what_first }, folds=true, open~)
         r.box(fn(l) {
           l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           @sf.words_node(l, words_fn, fn() { if @sf.lit_node(r) { h_one_hot } else { h_state_words_line } })
@@ -1770,9 +1764,8 @@ fn ended_node(v : @view.View, key : String, ends : String, words : String, rail 
       rail_next=fn() { rail },
       fn(ev) {
         ev_node(ev, icon, state, "", row=true, fn(b) {
-          b.box(fn(r) {
+          steps_press_box(b, fn() { steps_flip(key) }, label=fn() { first }, folds=true, open~, fn(r) {
             @sf.style_node(r, fn() { h_one_press })
-            steps_pressed(r, fn() { steps_flip(key) }, label=fn() { first }, folds=true, open~)
             r.box(fn(l) {
               l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               ended_words_node(l, state, fn() { first }, cut=true, fn() { @sf.lit_node(r) })
@@ -1884,11 +1877,10 @@ fn group_node(
     v,
     rail_next=fn() { rail },
     fn(gv) {
-      gv.box(fn(h) {
+      steps_press_box(gv, fn() { steps_flip(gk) }, label=fn() { text(g, "summary") }, folds=true, open~, fn(h) {
         @sf.style_node(h, fn() { h_group_head })
         let hot = fn() { @sf.lit_node(h) }
         @sf.hover_ground_node(h, lit=Some(fn() { @sf.lit_in_node(h) }))
-        steps_pressed(h, fn() { steps_flip(gk) }, label=fn() { text(g, "summary") }, folds=true, open~)
         let g_icon = group_icon(g)
         h.box(fn(i) {
           @sf.style_node(i, fn() { h_icon })
@@ -2396,11 +2388,10 @@ fn steps_reused_row_node(
                   b.by_room(fn(gv, room) {
                     @sf.style_node(gv, fn() { h_group })
                     let body_ref : Ref[@view.View?] = Ref(None)
-                    gv.box(fn(h) {
+                    steps_press_box(gv, fn() { steps_flip(@signals.untracked(gk)) }, label=summary, folds=true, open~, fn(h) {
                       @sf.style_node(h, fn() { h_group_head })
                       let hot = fn() { @sf.lit_node(h) }
                       @sf.hover_ground_node(h, lit=Some(fn() { @sf.lit_in_node(h) }))
-                      steps_pressed(h, fn() { steps_flip(@signals.untracked(gk)) }, label=summary, folds=true, open~)
                       let icon_sig = @signals.computed(fn(_) { group_icon(content()) }, same=fn(a, b) { a == b })
                       let icon_fn = fn() { icon_sig.get() }
                       h.box(fn(i) {
@@ -2855,10 +2846,9 @@ fn opened_node(
 ) -> Unit {
   let open = fn() { steps_own.opened.contains(rk) }
   steps_box_node(v, h_step, fn(s) {
-    s.box(fn(line) {
+    steps_press_box(s, fn() { steps_flip(rk) }, folds=true, open~, fn(line) {
       @sf.style_node(line, fn() { h_step_summary })
       @sf.hover_ground_node(line, on=fn() { !open() }, lit=Some(fn() { @sf.lit_in_node(line) }))
-      steps_pressed(line, fn() { steps_flip(rk) }, folds=true, open~)
       summary(line)
       steps_chevron_node(
         line,
@@ -3261,9 +3251,8 @@ fn open_tool_reader(title : String, raw_copy : String, body : (@view.View) -> Un
 ///|
 /// Compact action chip that opens `open_tool_reader` for a long field, dispatch card, or code/output block.
 fn tool_expand_btn_node(parent : @view.View, title : String, raw_copy : String, body : (@view.View) -> Unit) -> Unit {
-  parent.box(fn(btn) {
+  steps_press_box(parent, fn() { open_tool_reader(title, raw_copy, body) }, label=fn() { "全屏查看" }, fn(btn) {
     @sf.style_node(btn, fn() { tool_expand_btn })
-    steps_pressed(btn, fn() { open_tool_reader(title, raw_copy, body) }, label=fn() { "全屏查看" })
     let ink = fn() { if @sf.lit_node(btn) { @sf.theme().p.accent } else { @sf.theme().p.blue } }
     @sf.icon_node(btn, "expand", 11.0, By(ink)) |> ignore
     @sf.words_node(btn, fn() { "全屏查看" }, fn() {
@@ -3510,13 +3499,8 @@ fn tool_part_node(
         steps_box_node(v, tool_field_stack, fn(stack) {
           steps_box_node(stack, tool_block_bar, fn(bar) {
             if target != "" {
-              bar.box(fn(badge) {
+              steps_press_box(bar, fn() { jump_to_dispatch_target(src, station, key, rk, nav_target) }, label=fn() { "→ " + target }, fn(badge) {
                 @sf.style_node(badge, fn() { tool_dispatch_badge })
-                steps_pressed(
-                  badge,
-                  fn() { jump_to_dispatch_target(src, station, key, rk, nav_target) },
-                  label=fn() { "→ " + target },
-                )
                 let ink = fn() { if @sf.lit_node(badge) { @sf.theme().p.blue } else { @sf.theme().p.accent_text } }
                 @sf.icon_node(badge, "agent", 12.0, By(ink)) |> ignore
                 @sf.words_node(badge, fn() { "→ " + target }, fn() {

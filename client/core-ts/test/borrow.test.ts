@@ -58,13 +58,23 @@ test("a_station_offers_its_own_models_says_which_are_borrowed_and_lists_what_oth
   assert.deepEqual(borrowable(ws.map((s) => (s.id === STUDIO ? { ...s, overview: { ...s.overview, sharing: false } } : s)), `ws/${HERE}`, own, null, 0), []);
 });
 
+/// What the core's store says of the stations of `ws` that a model control reads (`values`): each one's overview, its
+/// profiles as its page has them and its link, the workspace's list of them and their rows (never their pages).
+function stand(ws: J[], values: Map<string, unknown>): void {
+  for (const s of ws) {
+    values.set(`overview ${s.station}`, s.overview);
+    values.set(`stationPart ${s.station}`, s.overview.profiles);
+    values.set(`link ${s.station}`, { state: s.online ? "online" : "offline" });
+  }
+  values.set("stations", ws);
+  values.set("workspace", { stations: ws.map((s) => ({ id: s.id, name: s.name, ...(s.emoji ? { emoji: s.emoji } : {}), ...(s.joined ? { joined: true } : {}) })) });
+}
+
 /// A model control on the first station of `ws`, its core's store and records stood in for (`values`, `records`).
 function control(ws: J[], role: string, values = new Map<string, unknown>(), records = new Map<string, unknown>()) {
-  for (const s of ws) values.set(`overview ${s.station}`, s.overview);
-  values.set("stations", ws);
-  values.set("stationsWhole", ws);
-  const keyOf = (t: Topic) => (t.topic === "overview" ? `overview ${t.station}` : String(t.topic));
-  const store: J = { get: (t: Topic) => values.get(keyOf(t)), value: (t: Topic) => (values.has(keyOf(t)) ? { ok: values.get(keyOf(t)) } : undefined), watch: () => ({ drop() {} }), invalidate() {} };
+  stand(ws, values);
+  const keyOf = (t: Topic) => (t.topic === "overview" || t.topic === "link" || (t.topic === "stationPart" && t.part === "profiles") ? `${t.topic} ${t.station}` : String(t.topic));
+  const store: J = { get: (t: Topic) => values.get(keyOf(t)), value: (t: Topic) => (values.has(keyOf(t)) ? { ok: values.get(keyOf(t)) } : undefined), select: (t: Topic, pick: (v: J) => unknown) => pick(store.value(t)), watch: () => ({ drop() {} }), invalidate() {} };
   const data: J = { record: (_: string, k: string) => records.get(k), put: (_: string, k: string, v: unknown) => records.set(k, v), shared: (t: Topic) => (t.topic === "workspace" ? { role } : undefined), mes: () => [] };
   return new Choose({ store, data, now: () => 0, agent: () => null });
 }
@@ -172,6 +182,7 @@ test("a_model_borrowed_from_a_controls_panel_is_that_controls_once_borrowed_not_
   const { picks } = choose.borrow(at, "new");
   // Office took the share; the panel shuts, its draft let go of with it.
   ws[1] = { ...ws[1], overview: { ...ws[1].overview, profiles: ws[1].overview.profiles.map((p: J) => (p.id === "ds" ? { ...p, share: { ...p.share, allow: [MINI, HERE] } } : p)) } };
+  stand(ws, values);
   choose.lent(at, "new", picks);
   choose.stop({ topic: "pick", station: at, of: "new" });
   // On its way: the control says the model borrowed, its panel opened again picks it, and a chat is not made on another.
@@ -182,8 +193,7 @@ test("a_model_borrowed_from_a_controls_panel_is_that_controls_once_borrowed_not_
   // Its copy come: saved as it was picked, and the station's choice is it from now.
   const copy = { ...ws[1].overview.profiles[2], share: { id: "sh-ds", role: "user", host: STUDIO } };
   ws[0] = { ...ws[0], overview: { ...ws[0].overview, profiles: [...ws[0].overview.profiles, copy] } };
-  values.set(`overview ${at}`, ws[0].overview);
-  values.set("stationsWhole", ws);
+  stand(ws, values);
   assert.deepEqual(choose.lentNow(at), [], "a new chat's pick is the device's own");
   assert.equal(choose.lentOn(at), false);
   assert.equal(ofPick("new").value.model, "deepseek-v4-pro");

@@ -2225,6 +2225,7 @@ export const SHAPES: Record<string, Shape> = {
     ["error", opt("String"), { said: true, doc: "Why it `failed`; `wrong`, what to say of it (that code not it, or the device showing it gone)." }],
     ["until", opt("i64"), { client: opt("I54"), doc: "While a code is typed: when the last trusted device's code is too old (ms)." }],
     ["untilText", opt("String"), { said: true, doc: "That, in words (14:05 前有效)." }],
+    ["checkingText", opt("String"), { said: true, doc: "While `checking`, once the trusted device took the code and asks its person there: where to look\n(请在显示安全码的设备上完成身份验证)." }],
     ["approvers", opt(vec("LockApprover")), { doc: "The trusted devices it dials here: open still.fail on one of those (none from a core of before)." }],
   ], { doc: "This device's try to be approved face to face (views/pair.ts)." }),
   LockDraftDevice: struct([
@@ -2424,6 +2425,7 @@ export const SHAPES: Record<string, Shape> = {
     ["error", opt("String"), { said: true }],
     ["until", opt("i64"), { client: opt("I54") }],
     ["untilText", opt("String"), { said: true }],
+    ["checkingText", opt("String"), { said: true, doc: "While `checking`, once the trusted device asks its person there: where to look." }],
     ["showing", vec("String"), { default: true, said: true, doc: "The devices showing the code, by name." }],
   ], { doc: "How far this device's try to join the person's own lock got." }),
   AdbPersonal: struct([

@@ -94,6 +94,7 @@ play(){want=true;v.play().catch(()=>{});say()},
 pause(){want=false;v.pause();say()},
 seek(ms,near){if(near&&v.fastSeek)v.fastSeek(ms/1000);else v.currentTime=ms/1000;say()},
 rate(r){if(r>0)v.playbackRate=r;say()},
+volume(n){v.volume=Math.max(0,Math.min(1,n))},
 grab(ms){const g=document.createElement('video');g.muted=true;g.preload='auto';
 const done=png=>{post({t:'g',png});g.removeAttribute('src');g.load()};
 g.addEventListener('error',()=>done(''),{once:true});
@@ -1253,6 +1254,8 @@ extern "C" void mb_host_view_control(int32_t vid, int32_t op, double value) {
       case 3: swprintf(js, 128, L"mbuiPlayer.seek(%.3f,false)", value); page_script(v, js); break;
       case 11: swprintf(js, 128, L"mbuiPlayer.seek(%.3f,true)", value); page_script(v, js); break;
       case 4: swprintf(js, 128, L"mbuiPlayer.rate(%.4f)", value); page_script(v, js); break;
+      // how loud, 0 to 1 (NativeView::volume)
+      case 10: swprintf(js, 128, L"mbuiPlayer.volume(%.4f)", value); page_script(v, js); break;
       // a frame at `value` ms, grabbed (its page's second <video>): told as a grab
       case 21:
         v->still_state = 1;

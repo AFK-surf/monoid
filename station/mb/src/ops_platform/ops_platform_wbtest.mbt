@@ -16,3 +16,20 @@ test "a command's output and the log as it may leave" {
   inspect(scrub_text("alice@example.com at /Users/alice/x", ""), content="<email> at ~/x")
   inspect(sha1_hex(b"abc"), content="a9993e364706816aba3e25717850c26c9cd0d89d")
 }
+
+///|
+test "a command on Windows is found with PATHEXT, never as the POSIX script beside it" {
+  let env = [("Path", "C:\\npm;C:\\bin"), ("PATHEXT", ".COM;.EXE;.BAT;.CMD")]
+  let join = (parts : Array[String]) => parts.join("\\")
+  // npm's `codex` (a `#!/bin/sh` script) and `codex.cmd` side by side: the .cmd, which Windows runs.
+  let files = ["C:\\npm\\codex", "C:\\npm\\codex.cmd", "C:\\bin\\git.exe"]
+  let there = (p : String) => files.contains(p)
+  assert_eq(win_find_command("codex", env, ";", join, there), Some("C:\\npm\\codex.cmd"))
+  // A name with its extension already is found as it is.
+  assert_eq(win_find_command("git.exe", env, ";", join, there), Some("C:\\bin\\git.exe"))
+  assert_eq(win_find_command("git", env, ";", join, there), Some("C:\\bin\\git.exe"))
+  // The script alone is no command on Windows.
+  assert_eq(win_find_command("codex", env, ";", join, p => p == "C:\\npm\\codex"), None)
+  // No PATH, nothing found.
+  assert_eq(win_find_command("codex", [], ";", join, there), None)
+}

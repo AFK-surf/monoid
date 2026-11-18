@@ -83,6 +83,11 @@ logs; what each chat keeps (`cache.usage`) is read of counts triggers keep (`log
 never summed of the rows, and so are the files kept (`part_bytes`, drive-kept.ts ensurePartBytes, never `part`), and
 that call, which changes nothing, lets the first values of the page it is asked with go first (store.ts `turn`); a call
 that changes something never waits so (rule 5).
+A chat opened first in a run is held there too, as a page that waits on writes it need not do is slow: up to its first
+values it writes nothing (what showing notes, a tree of Markdown read or shown, a log opened, is pending in `Data` and
+written in one transaction after them, data.ts `flushMd` at store.ts `turn`, and as the core closes), reads its replies'
+trees in one statement (`MdStore.preload`), and runs as many statements with five times the chats. Its replies read
+ahead (md-ahead.ts) are read afresh by nothing as it opens.
 What the views, the store and what goes out walk in memory is held the same way (`test/view-work.test.ts`): work.ts
 `walked` counts reads tracked, values made again, `share`'s and `equal`'s walks, keyed lists' diffs and the items put
 together, copied and fitted as they go out, each to the topic made or sent then, past the items found the same objects

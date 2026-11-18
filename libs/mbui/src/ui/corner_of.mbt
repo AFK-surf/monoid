@@ -77,7 +77,8 @@ let tree_theme_of : Ref[@signals.Signal[(() -> Theme)?]] = Ref(@signals.signal_b
 
 ///|
 /// The theme the window's tree is drawn in, as the app has it (what its old views are built in: Ctx::with_theme's),
-/// read where it is drawn so it follows as it changes (a signal read in `f`): told as the tree is made.
+/// read where it is drawn so it follows as it changes (a signal read in `f`): told as the tree is made, before its
+/// first node is (run_tree's, Tester::tree's and set_view_app's `theme` tell it so).
 pub fn set_tree_theme(f : () -> Theme) -> Unit {
   tree_theme_of.val.set(Some(f))
 }

@@ -83,7 +83,8 @@ describe("jobs' files", { concurrency: true }, () => {
     const done = await r.jobs.start("s1", "done", "echo done", r.work, null, false);
     const g = gate(r.dir);
     const live = await r.jobs.start("s1", "live", g.wait, r.work, null, false);
-    await until(() => r.store.getJob(done.id)!.state === "exited");
+    // The store says it ended before its end is taken in: until then its files are still a running job's.
+    await until(() => r.store.getJob(done.id)!.state === "exited" && !r.jobs.isRunning(done.id));
     const endedAt = r.store.getJob(done.id)!.endedAt!;
     const logs = join(r.dir, "jobs", "logs");
     const exits = join(r.dir, "jobs", "exit");
@@ -110,6 +111,25 @@ describe("jobs' files", { concurrency: true }, () => {
     assert.equal(r.store.getJob(done.id)!.state, "exited");
     await g.open();
     await r.jobs.stop(live.id);
+  });
+
+  test("a job whose end the store has just kept is collected whole, though the program has yet to answer its end", async () => {
+    const r = rig();
+    // (collected the moment its end is kept, inside the program's `store.jobEnded`: before it tells its agent and
+    // answers `exited`, while Node's own end of it is still waiting)
+    let collected: Promise<string[]> | null = null;
+    const jobEnded = r.store.jobEnded.bind(r.store);
+    r.store.jobEnded = ((id: string, ...rest: unknown[]) => {
+      const said = (jobEnded as (...a: unknown[]) => unknown)(id, ...rest);
+      const job = r.store.getJob(id);
+      if (collected === null && job?.endedAt != null) collected = r.jobs.collect(job.endedAt + JOB_LOGS_KEPT_MS + 1);
+      return said;
+    }) as typeof r.store.jobEnded;
+    const done = await r.jobs.start("s1", "done", "echo done", r.work, null, false);
+    await until(() => collected !== null);
+    assert.deepEqual(await collected!, [done.id]);
+    assert.ok(!existsSync(done.log), "its log went, as its exit file did");
+    assert.ok(!existsSync(join(r.dir, "jobs", "exit", done.id)));
   });
 
   test("collecting goes through many kept jobs' files giving the loop back as it goes, and reads no job up", async () => {

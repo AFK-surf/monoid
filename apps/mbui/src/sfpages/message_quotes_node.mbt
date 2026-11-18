@@ -79,7 +79,7 @@ fn message_quotes_node(
           pictured=fn() { own() is Some(_) },
           picture=fn(b) {
             let n = @signals.untracked(i)
-            quote_picture_node(b, src, here, place, own, @signals.untracked(at) + "/q:" + n.to_string(), fly~, part=@sfbase.quote_picture_key(n), flies_of=fn() {
+            quote_picture_node(b, src, here, place, own, fn() { at() + "/q:" + n.to_string() }, fly~, part=@sfbase.quote_picture_key(n), flies_of=fn() {
               flies_of(@sfbase.quote_picture_key(n))
             })
           },
@@ -114,7 +114,7 @@ fn quote_picture_node(
   here : MessageNodeHere,
   place : MessageFilesAt,
   own : () -> Attachment?,
-  at : String,
+  at : () -> String,
   flies_of? : () -> (Double, Double, Double, Double)? = fn() { None },
   fly? : SentFly = sent_fly_alone,
   part? : String = "",
@@ -135,25 +135,25 @@ fn quote_picture_node(
       let made_at = r.cause_at()
       let from_now = fn(v : @view.View) { if v.cause_at() == made_at { from } else { None } }
       r.pick(at_once=true, fn() { file_kind(a().name) }, fn(p, kind) {
+        // (its box as its data and the card's room have it, bound: the room changing (the window, the side panel)
+        // sizes it again, never makes it again; message_files_node's)
         match kind {
-          "image" =>
-            p.pick(at_once=true, fn() { media_size(a(), image_least, image_min_side, room.width()) }, fn(q, size) {
-              message_image_node(q, src, place, a, by, fn() { at }, fn() { size.0 }, fn() { size.1 }, corner=@sf.quote_picture_corner, flies=sent_flies(fly, part, from_now(q)))
+          "image" => {
+            let size = fn() { media_size(a(), image_least, image_min_side, room.width()) }
+            message_image_node(p, src, place, a, by, at, fn() { size().0 }, fn() { size().1 }, corner=@sf.quote_picture_corner, flies=sent_flies(fly, part, from_now(p)))
+          }
+          "video" => {
+            let size = fn() { media_size(a(), video_least, 0.0, room.width()) }
+            // (made again only for another file: its still, its player's place)
+            p.pick(at_once=true, fn() { @sfbase.file_key(a()) }, fn(q, _) {
+              message_video_node(q, src, here.tips, place, a, by, at, fn() { size().0 }, fn() { size().1 }, corner=@sf.quote_picture_corner, flies_from=from_now(q), fly~, part~)
             })
             |> ignore
-          "video" =>
-            p.pick(
-              at_once=true,
-              fn() { (@sfbase.file_key(a()), media_size(a(), video_least, 0.0, room.width())) },
-              fn(q, made) {
-                message_video_node(q, src, here.tips, place, a, by, fn() { at }, fn() { made.1.0 }, fn() { made.1.1 }, corner=@sf.quote_picture_corner, flies_from=from_now(q), fly~, part~)
-              },
-            )
-            |> ignore
+          }
           _ =>
             p.box(fn(item) {
               item.max_width(By(fn() { Some(room.width()) })).shrink(Is(0.0)) |> ignore
-              message_file_card_node(item, src, here.tips, place, a, by, fn() { at }) |> ignore
+              message_file_card_node(item, src, here.tips, place, a, by, at) |> ignore
             })
             |> ignore
         }

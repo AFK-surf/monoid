@@ -64,7 +64,8 @@ fn landing_words(size : @ui.TextSize, weight : Int) -> @view.WordsLook {
 ///|
 /// 切换账号 in `body` (switch_account_button's).
 fn switch_account_node(body : @view.View, src : Source) -> Unit {
-  @sf.way_in_link_node(body, fn() { @sf.t("android-misc.account.switch") }, fn() { (src.sign_in)() }, busy=fn() {
+  // (what the way in offers last, quietly: a button of words alone, the page's ink, a ground under the pointer)
+  @sf.button_node(body, fn() { @sf.t("android-misc.account.switch") }, fn() { (src.sign_in)() }, tone=Ghost, busy=fn() {
     (src.signing_in)()
   })
   |> ignore

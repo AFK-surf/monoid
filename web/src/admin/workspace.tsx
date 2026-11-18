@@ -5,12 +5,11 @@ import { useState } from "preact/hooks";
 import { Link, useLocation } from "wouter-preact";
 import { ChevronRight, Close, Plus, UserPlus } from "@stillfail/ui/icons.tsx";
 import { useToast } from "@stillfail/ui/toast.tsx";
-import * as controlsCss from "@stillfail/ui/styles/controls.css.ts";
 import { stamp } from "../api.ts";
 import type { Account } from "../cloud/accounts.ts";
 import { admin, useAction } from "../cloud/api.ts";
 import { Avatar } from "../cloud/gate.tsx";
-import { Button, Confirm, CopyCommand, Dialog, Field, ICON, IconButton, Segmented, StatusDot, Time } from "../ui.tsx";
+import { Button, Confirm, CopyCommand, Dialog, Field, ICON, IconButton, Segmented, StatusDot, Time, ErrorLine, TextInput } from "../ui.tsx";
 import * as shellCss from "../styles/shell.css.ts";
 import { t } from "../i18n.ts";
 import { STATIONS_PER_WORKSPACE } from "../../../client/limits.ts";
@@ -129,10 +128,10 @@ function LimitFields({ members, setMembers, submit }: { members: string; setMemb
   return (
     <>
       <Field label={t("web-pages.admin.ws.memberLimit")} htmlFor="limit-members" hint={t("web-pages.admin.ws.limitHint", { max: MAX.members })}>
-        <input id="limit-members" className={controlsCss.input} inputMode="numeric" value={members} onChange={(e) => setMembers(e.currentTarget.value)} onKeyDown={enter} />
+        <TextInput id="limit-members" inputMode="numeric" value={members} onChange={(e) => setMembers(e.currentTarget.value)} onKeyDown={enter} />
       </Field>
       <Field label={t("web-pages.admin.ws.stationLimit")} htmlFor="limit-stations" hint={t("web-pages.admin.ws.stationFixed", { n: STATIONS_PER_WORKSPACE })}>
-        <input id="limit-stations" className={controlsCss.input} value={STATIONS_PER_WORKSPACE} readOnly />
+        <TextInput id="limit-stations" value={STATIONS_PER_WORKSPACE} readOnly />
       </Field>
     </>
   );
@@ -161,15 +160,15 @@ export function NewWorkspaceDialog({ account, search, onClose }: { account: Acco
         <Button variant="primary" busy={create.busy} disabled={!ready} onClick={submit}>{t("web-pages.admin.ws.create")}</Button>
       </>}>
       <Field label={t("web-pages.admin.ws.name")} htmlFor="ws-name">
-        <input id="ws-name" className={controlsCss.input} value={name} autoFocus maxLength={80} onChange={(e) => setName(e.currentTarget.value)}
+        <TextInput id="ws-name" value={name} autoFocus maxLength={80} onChange={(e) => setName(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing) submit(); }} />
       </Field>
       <Field label={t("web-pages.admin.ws.owners")} htmlFor="ws-owners" hint={t("web-pages.admin.ws.ownersHint")}>
-        <input id="ws-owners" className={controlsCss.input} inputMode="email" autoComplete="off" spellcheck={false} value={owners} placeholder="name@example.com" onChange={(e) => setOwners(e.currentTarget.value)}
+        <TextInput id="ws-owners" inputMode="email" autoComplete="off" spellcheck={false} value={owners} placeholder="name@example.com" onChange={(e) => setOwners(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing) submit(); }} />
       </Field>
       <LimitFields members={members} setMembers={setMembers} submit={submit} />
-      {create.error && <p className={controlsCss.fieldError} role="alert">{create.error.message}</p>}
+      {create.error && <ErrorLine>{create.error.message}</ErrorLine>}
     </Dialog>
   );
 }
@@ -198,7 +197,7 @@ function LimitsDialog({ account, workspace, limits, custom, onClose }: { account
           <Button busy={reset.busy} disabled={save.busy} onClick={() => reset.run()}>{t("web-pages.admin.ws.resetLimits")}</Button>
         </div>
       )}
-      {error && <p className={controlsCss.fieldError} role="alert">{error.message}</p>}
+      {error && <ErrorLine>{error.message}</ErrorLine>}
     </Dialog>
   );
 }
@@ -221,10 +220,10 @@ function AddOwnersDialog({ account, workspace, onClose }: { account: Account; wo
         <Button variant="primary" busy={add.busy} disabled={!ready} onClick={submit}>{t("web-pages.admin.pending.addShort")}</Button>
       </>}>
       <Field label={t("web-pages.admin.ws.owners")} htmlFor="ws-add-owners" hint={t("web-pages.admin.ws.ownersHint")}>
-        <input id="ws-add-owners" className={controlsCss.input} inputMode="email" autoComplete="off" spellcheck={false} autoFocus value={owners} placeholder="name@example.com"
+        <TextInput id="ws-add-owners" inputMode="email" autoComplete="off" spellcheck={false} autoFocus value={owners} placeholder="name@example.com"
           onChange={(e) => setOwners(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing) submit(); }} />
       </Field>
-      {add.error && <p className={controlsCss.fieldError} role="alert">{add.error.message}</p>}
+      {add.error && <ErrorLine>{add.error.message}</ErrorLine>}
     </Dialog>
   );
 }
@@ -260,11 +259,11 @@ function EnrollDialog({ account, workspace, onClose }: { account: Account; works
         </>
       ) : (
         <Field label={t("web-pages.admin.ws.stationName")} htmlFor="station-name">
-          <input id="station-name" className={controlsCss.input} value={name} autoFocus maxLength={80} placeholder="Mac mini" onChange={(e) => setName(e.currentTarget.value)}
+          <TextInput id="station-name" value={name} autoFocus maxLength={80} placeholder="Mac mini" onChange={(e) => setName(e.currentTarget.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && ready) make.run(); }} />
         </Field>
       )}
-      {make.error && <p className={controlsCss.fieldError} role="alert">{make.error.message}</p>}
+      {make.error && <ErrorLine>{make.error.message}</ErrorLine>}
     </Dialog>
   );
 }

@@ -211,10 +211,9 @@ fn button_by(
       let (_, _, ink) = looks()
       if solid { alpha(ink, 0.3) } else { theme().p.line_strong }
     }
-    // (a spinner in `room`, `size` across, as far in as `shown` says: faded and grown from `about`)
+    // (a spinner in `room`, as far in as `shown` says: faded and grown from `about`, gone as the tick comes)
     let spinner_in = fn(room : @view.View, shown : () -> Double, about : @view.Pivot) {
-      spinner_node(room, size=button_icon, ring=ring_ink, arc=mark_ink).alpha(By(fn() { turning.shown(v) * (1.0 - tick.shown(v)) * seen_at(shown()) })).scale(By(fn() { dmax(shown(), 0.0) }), about~)
-      |> ignore
+      spinner_shown_node(room, ring_ink, mark_ink, fn() { turning.shown(v) * (1.0 - tick.shown(v)) }, shown, about) |> ignore
     }
     // (the tick in `room`, drawn by its stroke as far as its way has it)
     let tick_in = fn(room : @view.View) {
@@ -229,10 +228,7 @@ fn button_by(
       // as it is open, the spinner growing from its start as it opens, the tick drawn where it turned; none of it, and
       // nothing turning, at rest)
       v.show(fn() { marked() || open.shown(v) > 0.0 }, fn(room) {
-        room
-        .width(By(fn() { Some((button_icon + gap()) * dmax(open.shown(v), 0.0)) }))
-        .height(Is(Some(button_icon)))
-        |> ignore
+        spin_room_node(room, gap, fn() { open.shown(v) })
         room.show(fn() { busy() || turning.shown(v) > 0.0 }, at_once=true, fn(o) {
           o.over(Is(true)) |> ignore
           spinner_in(o, fn() { open.shown(v) }, At(0.0, 0.5))
@@ -287,6 +283,27 @@ fn button_by(
     m.reshapes(v)
     m.moves_with(words)
   })
+}
+
+///|
+/// A spinner's room before a button's words (button_node's, way_in_button_node's): as wide as the spinner and `gap`
+/// after it as far as `open` says it is open, as tall as the spinner.
+fn spin_room_node(room : @view.View, gap : () -> Double, open : () -> Double) -> Unit {
+  room.width(By(fn() { Some((button_icon + gap()) * dmax(open(), 0.0)) })).height(Is(Some(button_icon))) |> ignore
+}
+
+///|
+/// A button's spinner in `room` (button_node's, way_in_button_node's), its ring and arc in those inks: as far in as
+/// `shown` says, faded by it and by how far it turns (`turning`), grown from `about`. The spinner's node.
+fn spinner_shown_node(
+  room : @view.View,
+  ring : () -> Int64,
+  arc : () -> Int64,
+  turning : () -> Double,
+  shown : () -> Double,
+  about : @view.Pivot,
+) -> @view.View {
+  spinner_node(room, size=button_icon, ring~, arc~).alpha(By(fn() { turning() * seen_at(shown()) })).scale(By(fn() { dmax(shown(), 0.0) }), about~)
 }
 
 ///|

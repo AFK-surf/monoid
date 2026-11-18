@@ -114,8 +114,8 @@ priv struct ScreenUi {
   /// the files' panel over the stage's foot and the mouse's floating buttons, as last made
   mut drops_card : @view.View?
   mut mouse_pair : @view.View?
-  /// shown over the stage's foot when the person presses on the picture while another operates it
-  held_hint : @signals.Signal[Bool]
+  /// bumped when the person presses on the picture while another operates it, shaking the 接管 capsule
+  held_nudge : @signals.Signal[Int]
 }
 
 ///|
@@ -173,7 +173,7 @@ fn screen_ui(key : String) -> ScreenUi {
         stage_node: None,
         drops_card: None,
         mouse_pair: None,
-        held_hint: @signals.signal(false, same=fn(a, b) { a == b }),
+        held_nudge: @signals.signal(0),
       }
       screen_uis[key] = u
       u
@@ -625,7 +625,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
     // while it is looked at, the device stays awake: a screen is watched more than touched
     if u.awake != shown {
       u.awake = shown
-      @ui.keep_awake(shown)
+      @sfbase.keep_awake_by("screen:" + key, shown)
       // (into the device's performance record while it is kept: what warms a phone is mostly a screen looked at)
       @hostapi.perf_line("app: screen " + (if shown { "shown " } else { "hidden " }) + key)
     }
@@ -916,7 +916,7 @@ pub fn screen_covered(src : Source, station : String, screen : String, covered :
   }
   if u.awake {
     u.awake = false
-    @ui.keep_awake(false)
+    @sfbase.keep_awake_by("screen:" + key, false)
     @hostapi.perf_line("app: screen hidden " + key)
   }
   if u.turnable {
@@ -959,7 +959,7 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
         @hostapi.set_sideways(false)
       }
       if u.awake {
-        @ui.keep_awake(false)
+        @sfbase.keep_awake_by("screen:" + key, false)
         @hostapi.perf_line("app: screen closed " + key)
       }
       if u.turnable {

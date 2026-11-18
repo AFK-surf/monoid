@@ -294,7 +294,9 @@ let view_paint_work : ViewPaintWork = { made: 0, copied: 0, handed: 0 }
 
 ///|
 /// The window made once by `make` (its root given: put the old view in it with View::hosted), from this frame on.
-pub fn set_view_app(make : (@view.View) -> Unit, around? : (Ctx) -> Unit) -> Unit {
+/// `theme`: the theme its nodes are drawn in (set_tree_theme), told before any of them is made, so its first frame
+/// lays them out once, in it.
+pub fn set_view_app(make : (@view.View) -> Unit, around? : (Ctx) -> Unit, theme? : () -> Theme) -> Unit {
   // (the same window's tree made anew: what the old views held of the one before called off at once, as it goes, the
   // rest of each nobody's (a press's till it is let go, a back gesture's till it ends), all else of it let go)
   view_captures_off(view_moment(), fn(_) { true })
@@ -307,6 +309,12 @@ pub fn set_view_app(make : (@view.View) -> Unit, around? : (Ctx) -> Unit) -> Uni
   g().back_off = back_off
   // (its own number: what its words picked are known by, none of the one before's)
   view_tree_made.val = view_tree_made.val + 1
+  // (after view_forget, which lets the theme of the tree before go: the new one's in place as its first node is made
+  // and as what follows its words' style begins following it)
+  match theme {
+    Some(f) => @signals.untracked(fn() { set_tree_theme(f) })
+    None => ()
+  }
   view_made_now(make)
   // (the focus on a node of the tree before: none's now, its id nobody's)
   focus_told_tree(g())
@@ -458,7 +466,7 @@ fn view_drawn_by(t : @view.Tree) -> Unit {
   t.drawn_by(
     words_scale=fn() { font_scale() },
     pixel_scale=fn() { g().scale },
-    glass_solid=fn() { glass_paint.solid },
+    glass_solid=fn() { g().glass_solid() },
     keyboard_inset=fn() { ime_said.get() },
     image_ready=fn(src, _) { image_ready_asking_none(src) },
     image_ask=fn(src, px) { g().image_ready(src, px) |> ignore },
@@ -848,6 +856,20 @@ fn view_runs_least(runs : Array[@text.Run], look : @view.WordsLook, set : @view.
 }
 
 ///|
+/// How narrow words in pieces may wrap and their width on one line (a browser's min- and max-content), measured as a node
+/// of the window's tree draws them (view_runs_least, view_runs_measure) at the system's size of words this frame: what
+/// an old view lays out round such words by (a table's columns, as a node's table measures its cells: View::tracks).
+pub fn Ctx::runs_extent(
+  self : Ctx,
+  runs : Array[@text.Run],
+  look : @view.WordsLook,
+  set : @view.RunsLook,
+) -> (Double, Double) {
+  let scale = self.sp(1.0)
+  (view_runs_least(runs, look, set, scale), view_runs_measure(runs, look, set, -1.0, scale).0)
+}
+
+///|
 /// How words are shaped changed for all of them (the system's size of words, Ctx::font_scale, as a frame begins; the
 /// faces given, faces.mbt words_forgotten; lines set as a browser sets them or not, set_web_lines): the words of the window's tree measured and drawn again so, as an old
 /// view's are laid out anew.
@@ -1095,11 +1117,25 @@ fn view_told_as_built(c : Ctx) -> Unit {
   // (the theme the old views were built in, set as they built (Ctx::set_theme, the first frame's too), told the tree's
   // nodes now: drawn in it by this frame, not a frame late as the next one's begins (view_frame). Untracked: told, not
   // read, by what watches the frame's build)
-  @signals.untracked(fn() { tree_theme_said.val.set(Some(c.theme_for(c.window_w))) })
+  // (and so the rest of what view_frame told the tree as the frame began that a build may have changed: the window
+  // made to fill the screen or back (Ctx::set_full_screen) and its corner and buttons with it, the pixels its list's
+  // rows are put on)
+  @signals.untracked(fn() {
+    inset_said.arrive()
+    tree_theme_said.val.set(Some(c.theme_for(c.window_w)))
+    tree_window_corner.val.set(window_corner())
+    tree_inset_said.val.set(Some(window_inset()))
+    match view_app.val {
+      Some(tree) => tree.set_rows_grid(c.rows_grid_of(c.scale))
+      None => ()
+    }
+  })
   match view_app.val {
     Some(tree) if view_owes(tree) => {
       let was = view_island_said()
       view_brought(tree)
+      // (what it shaped laying itself out again handed to the host to draw ahead, as view_frame's: on_frame)
+      glyphs_ahead()
       // (what a still pointer is over, the tree laid out again as told: view_arrived's)
       view_pointed_again()
       if view_island_said() != was {
@@ -2170,9 +2206,17 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
   }
   match c.image_in {
     // (the picture and its matte as one, cut once at the node's edge, as Ctx::picture's matte is)
+    // (filling its rect, or covering it where it says so: View::image_covers, View::image_covers_at)
     Some(((ix, iy, iw, ih), matte)) => {
       let before = self.ninst
-      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, FitFill, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)))
+      let fit = if c.image_cover_at is Some((across, down)) {
+        FitCoverFrom(across, down)
+      } else if c.image_cover {
+        FitCover
+      } else {
+        FitFill
+      }
+      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, fit, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)))
       // (its corners each, where it says them (View::corners), as big as it is drawn: the frame's)
       match c.corners {
         Some((tl, tr, br, bl)) if self.ninst > before => self.corners_last_each(tl * s, tr * s, br * s, bl * s)

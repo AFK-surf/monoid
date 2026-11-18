@@ -1,5 +1,5 @@
 // A tip by a part of what a panel's body or foot is made of (a key a page makes itself there), in the layer of tips the
-// panel is lent: the one way each of them shows its name by it (panel_icon_button_node's too).
+// panel is lent: the one way each of them shows its name by it (an icon button's in a panel too, by panel_tips_of).
 
 ///|
 /// `label`'s tip by `anchor`, a part of what a panel's body or foot is made of, on its foot's side, in the layer of tips

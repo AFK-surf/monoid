@@ -17,7 +17,7 @@ test("a failed automatic update gets one delayed retry, still waiting for vault 
   const config = new ConfigFile(data);
   config.update((raw) => (raw.autoUpdate = true));
   const time = testClock();
-  const updates = new Updates({ app, data, config, origin: () => null, stationOnly: true, clock: time.clock });
+  const updates = new Updates({ app, data, config, origin: () => "http://127.0.0.1:1", stationOnly: true, clock: time.clock });
   const letGo = hold();
   t.after(async () => { letGo(); await updates.close(); rmSync(data, { recursive: true, force: true }); });
   const attempts: string[] = [];
@@ -94,7 +94,7 @@ test("a retry survives an unavailable release feed before the installer starts",
   const config = new ConfigFile(data);
   config.update((raw) => (raw.autoUpdate = true));
   const time = testClock();
-  const updates = new Updates({ app, data, config, origin: () => null, stationOnly: true, clock: time.clock });
+  const updates = new Updates({ app, data, config, origin: () => "http://127.0.0.1:1", stationOnly: true, clock: time.clock });
   t.after(async () => { await updates.close(); rmSync(data, { recursive: true, force: true }); });
   let reads = 0, plans = 0, started = 0;
   updates.check = async () => {

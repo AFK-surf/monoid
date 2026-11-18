@@ -128,6 +128,9 @@ test("parses_each_call", () => {
   // (kept only with its size, and never a thumbnail: kept as it is)
   assert.equal((parseCall("station.file", { station: "w/s", key: "k", name: "a.pdf", keep: true }) as { keep: unknown }).keep, null);
   assert.equal((parseCall("station.file", { station: "w/s", key: "k", name: "a.png", thumb: true, keep: true, size: 9 }) as { keep: unknown }).keep, null);
+  // `preview` only with `keep` (an image whose size its message says): what the whole-window viewer shows first.
+  assert.equal((parseCall("station.file", { station: "w/s", key: "k", name: "a.png", keep: true, size: 9, preview: true }) as { preview?: true }).preview, true);
+  assert.equal("preview" in parseCall("station.file", { station: "w/s", key: "k", name: "a.png", preview: true }), false);
   assert.deepEqual(parseCall("drive.read", { station: "w/s", root: "/r", path: "/r/a", offset: 4, length: 4, progress: true }), { kind: "driveRead", station: "w/s", root: "/r", path: "/r/a", offset: 4, length: 4, progress: true, stream: false, keep: null, mtime: null, size: null });
   assert.deepEqual(parseCall("drive.read", { station: "w/s", root: "/r", path: "/r/a", offset: 4, length: 4, stream: true }), { kind: "driveRead", station: "w/s", root: "/r", path: "/r/a", offset: 4, length: 4, progress: false, stream: true, keep: null, mtime: null, size: null });
   assert.deepEqual(parseCall("drive.read", { station: "w/s", root: "/r", path: "/r/a", offset: 0, length: 4, keep: "played", mtime: 9, size: 40 }), { kind: "driveRead", station: "w/s", root: "/r", path: "/r/a", offset: 0, length: 4, progress: false, stream: false, keep: "played", mtime: 9, size: 40 });

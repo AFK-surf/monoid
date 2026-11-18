@@ -608,7 +608,7 @@ fn screen_ended_node(b : @view.View, pg : ScreenPage) -> Unit {
 /// A capsule under what happened (重新打开, 前往权限设置) in `parent`, light on the screen's dark: the solid one in the
 /// dark theme, the soft one in the light; `press` as it is pressed.
 fn again_key_node(parent : @view.View, words : String, press : () -> Unit) -> Unit {
-  @headless.button(parent, fn() { words }, fn(_) { press() }, fn(b, _) {
+  @sf.action_box_node(parent, fn() { words }, fn(_) { press() }, fn(b) {
     let dark = fn() { @ui.tree_theme().dark }
     @sf.style_node(b, fn() { if dark() { again_solid } else { again_soft } }, in_row=true)
     @sf.hover_ground_node(b)
@@ -625,11 +625,6 @@ fn again_key_node(parent : @view.View, words : String, press : () -> Unit) -> Un
 fn screen_stage_foot(st : @view.View, pg : ScreenPage, pair : () -> Bool) -> Unit {
   let s = pg.s
   let u = pg.u
-  st.reacts(fn() { s.taking_over_now() }, fn(on) {
-    if !on {
-      u.held_hint.set(false)
-    }
-  })
   st.pick(at_once=true, pair, fn(f, paired) {
     f.over(Is(true)) |> ignore
     let notes = fn(n : @view.View) {
@@ -645,21 +640,7 @@ fn screen_stage_foot(st : @view.View, pg : ScreenPage, pair : () -> Bool) -> Uni
         c.pick(at_once=true, fn() {
           s.said.get() |> ignore
           s.pad_set.get() |> ignore
-          let hinted = u.held_hint.get()
-          match s.undriven() {
-            Some(why) => Some(why)
-            None =>
-              if hinted && !s.driving() && s.can_take_over() {
-                let who = strings(s.state, "controllers").join(@sf.t("web-main.list.separator"))
-                if who != "" {
-                  Some(@sf.t("web-pages.screen.heldBy", args=[("who", who)]))
-                } else {
-                  None
-                }
-              } else {
-                None
-              }
-          }
+          s.undriven()
         }, fn(w, why) {
           guard why is Some(why) else { return }
           w.box(fn(b) {
@@ -865,7 +846,7 @@ fn drop_row_node(r : @view.View, s : ScreenSess, d : ScreenDropItem) -> Unit {
 /// A button that is not the main one in `parent` (soft_button_box's: the chip under the ink's words), named `label`;
 /// pressed, `press`.
 fn soft_button_node(parent : @view.View, label : () -> String, press : () -> Unit) -> Unit {
-  @headless.button(parent, label, fn(_) { press() }, fn(b, _) {
+  @sf.action_box_node(parent, label, fn(_) { press() }, fn(b) {
     @sf.style_node(b, fn() { soft_button_box }, in_row=true)
     @sf.hover_ground_node(b)
     @sf.words_node(b, label, fn() { soft_button_words }) |> ignore
@@ -1447,11 +1428,10 @@ fn MouseDrive::move_to(self : MouseDrive, s : ScreenSess, at : (Double, Double),
 }
 
 ///|
-/// Shows a notice over the stage's foot when the person presses on the picture while another (e.g. an agent) operates
-/// it, pointing them to 接管; cleared immediately once they take control or the controller leaves.
+/// Shakes the bar's 接管 capsule when the person presses on the picture while another (e.g. an agent) operates it.
 fn screen_held_by_hint(s : ScreenSess, u : ScreenUi) -> Unit {
-  if !s.driving() && s.can_take_over() && !strings(s.state, "controllers").is_empty() {
-    u.held_hint.set(true)
+  if !s.driving() && s.can_take_over() {
+    u.held_nudge.set(u.held_nudge.untracked() + 1)
   }
 }
 

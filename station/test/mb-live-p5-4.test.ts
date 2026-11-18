@@ -15,6 +15,7 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { connect as tlsConnect } from "node:tls";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
@@ -212,6 +213,61 @@ test("run: the vault, the drive, the screens, the browser, the devices, the term
   assert.deepEqual((await ask(bDoor, "vault.carried")).answer, carry.carry.vault, "taken up as it was given");
   b.tell({ op: "stop" });
   assert.equal(await b.ended, 0);
+});
+
+test("run: the vault's and the phones' cards posted in a still.fail chat (hub.post, chat.post), said by the session's agent", { skip }, async () => {
+  const data = fresh("p54c");
+  const app = fresh("app");
+  writeFileSync(join(app, "BUILD"), "9500\n");
+  config(data, { updateChannel: "stable" });
+  const a = await launch(data, app);
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
+
+  // two sessions, each in a still.fail chat of its own that alice started
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  const chats = new Map<string, number>();
+  for (const [key, ts] of [["vault", "1795000000.000100"], ["phone", "1795000000.000200"]] as const) {
+    store.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: fresh("ws"), token: `t-${key}`, createdBy: "alice@x.com", ws: "ws1", createdAt: Date.now(), lastActiveAt: Date.now() });
+    const thread = store.openThread("chat", "CHAT", ts, null, "alice@x.com");
+    store.joinThread(thread.id, key, "chat");
+    chats.set(key, thread.id);
+  }
+  store.close();
+  const call = async (token: string, name: string, args: unknown) => {
+    const got = (await mcp(door, token, "tools/call", { name, arguments: args })).result;
+    const text = got.content.map((c: any) => c.text).join("\n");
+    assert.doesNotMatch(text, /no hub call/, text);
+    assert.notEqual(got.isError, true, text);
+    return text;
+  };
+  const cards = (thread: number) => {
+    const db = new DatabaseSync(join(data, "stillfail.db"), { readOnly: true });
+    try {
+      return (db.prepare("SELECT ts, text, card FROM entries WHERE thread = ? AND kind = 'message' AND card IS NOT NULL ORDER BY n").all(thread) as { ts: string; text: string; card: string }[])
+        .map((r) => ({ ts: r.ts, text: r.text, card: JSON.parse(r.card) }));
+    } finally {
+      db.close();
+    }
+  };
+
+  // secret_save, typed in on its card: the vault's card said through `hub.post` in the chat it was asked in
+  await call("t-vault", "secret_save", { kind: "token", name: "Test API token", about: "for the test", reason: "the test keeps it" });
+  const vault = cards(chats.get("vault")!);
+  assert.equal(vault.length, 1, JSON.stringify(vault));
+  assert.equal(typeof vault[0]!.card.vault, "object", JSON.stringify(vault[0]));
+  assert.equal(vault[0]!.card.assignee, "alice@x.com");
+  assert.match(vault[0]!.ts, /^\d+\.\d+$/, "a still.fail chat's own ts");
+
+  // phone_use: the phones' card said through `chat.post`
+  await call("t-phone", "phone_use", { reason: "the test debugs the app" });
+  const phone = cards(chats.get("phone")!);
+  assert.equal(phone.length, 1, JSON.stringify(phone));
+  assert.equal(typeof phone[0]!.card.adb, "object", JSON.stringify(phone[0]));
+  assert.equal(phone[0]!.card.assignee, "alice@x.com");
+
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0);
 });
 
 /// An SSH agent's message (RFC draft-miller-ssh-agent): its length, its type, its payload.

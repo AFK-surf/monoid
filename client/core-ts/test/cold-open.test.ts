@@ -17,18 +17,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
+import { Core } from "../src/core.ts";
 import { holds } from "../src/data.ts";
 import { handlers } from "../src/core/execute.ts";
 import { DriveKept, chatKeptId, keptId } from "../src/drive-kept.ts";
 import { NodeSql } from "../src/hosts/node-sql.ts";
+import { forgetMarkdownHere, readAfresh } from "../src/markdown.ts";
 import { parseTopic, type Topic } from "../src/protocol.ts";
 import { install } from "../src/station/calls.ts";
+import { HostWire } from "../src/station/wire.ts";
 import { FakeHost } from "../src/testing.ts";
 import { work } from "../src/work.ts";
 import { held } from "./real-size-asked.ts";
 import { DOWN, PLAIN_WORKSPACE, UP, fixture, more } from "./real-size.ts";
 import { call, subscribe } from "./helpers.ts";
-import { started } from "./station-fixture.ts";
+import { type Answers, base, entry, started, threadView } from "./station-fixture.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -37,6 +40,8 @@ install();
 
 // ── the instrument: statements run (NodeSql's, as the test's host makes them) ──
 let statements = 0;
+/// The statements that write (`run`, `exec`: a write, a transaction begun or committed).
+let writes = 0;
 /// The statements' text, while a page opens.
 let said: string[] | null = null;
 {
@@ -49,11 +54,13 @@ let said: string[] | null = null;
   };
   proto.run = function (...a: J[]) {
     statements++;
+    writes++;
     said?.push(String(a[0]));
     return run.apply(this, a);
   };
   proto.exec = function (...a: J[]) {
     statements++;
+    writes++;
     said?.push(String(a[0]));
     return exec.apply(this, a);
   };
@@ -225,4 +232,119 @@ test("the_settings_first_screen_has_its_values_out_before_cache_usage_answers_th
   assert.deepEqual([...order].sort(), [20, 21, 22, 23, 24, 25], "every one answered");
   assert.equal(order.at(-1), 20, `cache.usage answered last: ${order.join(", ")}`);
   t.core.close();
+});
+
+// ── a chat opened first (对话) ──
+// A chat opened for the first time since the app started (the owner: 「第一次进一个 chat 还是很卡」), as the app opens
+// it: its window told first (`chat.window`, 30 rows), then its page's topics. Up to its first values:
+// - D: nothing is written (no transaction, no statement that writes): what reading its agents' Markdown would note
+//   (a tree read afresh, one shown again) is written after them (data.ts `flushMd`, store.ts `turn`).
+// - E: its replies' Markdown read ahead (md-ahead.ts) and the app started anew, nothing is read afresh and their trees
+//   are read in one statement.
+// - F: it runs as many statements with five times the chats, their logs and transcripts on the device.
+// Its replies' trees not yet read ahead (the sync just brought them), D and F hold too, and what was read is on the
+// device once the page has its values.
+const CHAT_ST = "ws/st";
+/// The chat's messages: a person's and an agent's Markdown (a list, a link, code) in turn.
+const CHAT_SAID = 30;
+
+function chatAnswers(salt: string): Answers {
+  const answers = base();
+  const reply = (n: number) => `## 第 ${n} 步 ${salt}\n\n改了 \`src/a${n}.ts\`，**测试**过了，见 [文档](https://example.com/${n})。\n\n- 一\n- 二 ${n}\n\n\`\`\`ts\nconst x = ${n};\n\`\`\``;
+  const said = Array.from({ length: CHAT_SAID }, (_, i) => (i % 2 === 1 ? { ...entry(i + 1, reply(i + 1)), authorKind: "agent", author: "k1" } : entry(i + 1, `第 ${i + 1} 条 ${salt}`)));
+  answers["GET /threads"] = [{ ...threadView(7, CHAT_SAID), title: "部署" }];
+  answers["GET /threads/7/entries?limit=50"] = { last: CHAT_SAID, entries: said };
+  return answers;
+}
+
+/// A device holding the chat, and `k` times the other chats' logs; its replies' trees read ahead, or (`read` false)
+/// not yet: as the sync has just brought them.
+async function chatDevice(k: number, read: boolean): Promise<FakeHost> {
+  const { host, core } = await started(chatAnswers(`${k}-${read}-${Math.random()}`));
+  const data = core.inner.data;
+  for (let i = 0; i < LOGS.threads * k; i++) {
+    const id = 50_000 + i;
+    const session = `logs-${i}`;
+    data.putThread(CHAT_ST, { id, title: `对话 ${i}`, surface: "chat", channel: "CHAT", firstText: `第一句 ${i}`, sessions: [{ session }] });
+    data.putItems("entry", CHAT_ST, String(id), Array.from({ length: LOGS.entries }, (_, n) => [n + 1, { kind: "message", authorKind: "person", text: `消息 ${n} `.repeat(10) }]));
+    data.putItems("transcript", CHAT_ST, session, Array.from({ length: LOGS.transcript }, (_, n) => [n, { type: "tool_result", content: "输出 ".repeat(200) + n }]));
+    if (i % 100 === 99) await host.time.pass(50);
+  }
+  await host.time.pass(10_000, 100);
+  await core.close();
+  if (!read) for (const sql of host.sqls.values()) if (sql.all("SELECT 1 FROM sqlite_master WHERE name = 'md_kept'").length > 0) sql.run("DELETE FROM md_kept");
+  forgetMarkdownHere();
+  return host;
+}
+
+type ChatOpened = { statements: number; writes: number; mdReads: number; afresh: number; unanswered: number[]; wrote: string[]; keptAfter: number; all: string[] };
+
+/// The chat opened on a core started anew on `host`, at rest, as the app opens it.
+async function openChat(host: FakeHost): Promise<ChatOpened> {
+  const core = await Core.create(host, { clock: host.time.clock, sample: 0, wire: () => new HostWire(host) });
+  try {
+    // (something shown already, as Home is: what goes out has put the clock's minute (present.ts clockAt), a module's
+    // own, at this core's time, not left it at the last core's in this process, which would make the chat again as it
+    // goes out; then at rest, before what is read ahead as the core starts: md-ahead.ts AHEAD_AFTER_MS)
+    const ui = core.connect();
+    subscribe(core, ui, 99, { topic: "prefs" });
+    await host.time.pass(1000, 100);
+    for (let i = 0; i < 100; i++) {
+      const before = statements;
+      await host.settle();
+      if (host.takeEmitted().length === 0 && statements === before) break;
+    }
+    const from = { statements, writes, afresh: readAfresh.chars };
+    said = [];
+    call(core, ui, 1, "chat.window", { station: CHAT_ST, thread: 7, rows: 30 });
+    const topics: Topic[] = [
+      { topic: "chat", station: CHAT_ST, thread: 7, session: null },
+      { topic: "draft", station: CHAT_ST, chat: "k1" },
+      { topic: "stations", scope: "ws" },
+      { topic: "chatJobs", station: CHAT_ST, session: "k1", compact: true, summary: true },
+    ];
+    topics.forEach((topic, i) => subscribe(core, ui, 2 + i, topic));
+    const answered = new Set<number>();
+    let at: { statements: number; writes: number; said: string[]; afresh: number } | null = null;
+    for (let i = 0; i < 200 && at === null; i++) {
+      await host.time.pass(1, 1);
+      for (const [, m] of host.takeEmitted()) if (typeof (m as J).id === "number" && ("value" in (m as J) || "error" in (m as J))) answered.add((m as J).id);
+      if (topics.every((_, i) => answered.has(2 + i))) at = { statements: statements - from.statements, writes: writes - from.writes, said: [...said], afresh: readAfresh.chars - from.afresh };
+    }
+    said = null;
+    const done = at ?? { statements: statements - from.statements, writes: writes - from.writes, said: [], afresh: readAfresh.chars - from.afresh };
+    // (what was read written after the page's values)
+    await host.time.pass(1000, 100);
+    let keptAfter = 0;
+    for (const sql of host.sqls.values()) if (sql.all("SELECT 1 FROM sqlite_master WHERE name = 'md_kept'").length > 0) keptAfter += Number(sql.all("SELECT count(*) FROM md_kept")[0]?.[0] ?? 0);
+    return {
+      statements: done.statements,
+      writes: done.writes,
+      mdReads: done.said.filter((q) => /\bmd_kept\b/.test(q) && /^\s*SELECT/i.test(q)).length,
+      afresh: done.afresh,
+      unanswered: topics.map((_, i) => 2 + i).filter((id) => !answered.has(id)),
+      wrote: done.said.filter((q) => !/^\s*SELECT/i.test(q)),
+      keptAfter,
+      all: done.said.map((q) => q.replace(/\s+/g, " ").slice(0, 140)),
+    };
+  } finally {
+    await core.close();
+  }
+}
+
+test("a_chat_opened_first_writes_nothing_before_its_values_and_reads_no_more_with_five_times_the_chats", { timeout: 600_000 }, async () => {
+  const found: string[] = [];
+  for (const read of [true, false]) {
+    const [a, b] = [await openChat(await chatDevice(1, read)), await openChat(await chatDevice(5, read))];
+    const name = read ? "read ahead" : "not read yet";
+    if (process.env.COLD_OPEN_PRINT === "1") console.log("对话", name, JSON.stringify(a), JSON.stringify(b));
+    if (process.env.COLD_OPEN_PRINT === "2") console.log("对话", name, "\n" + a.all.join("\n"), "\n----\n" + b.all.join("\n"));
+    assert.deepEqual([a.unanswered, b.unanswered], [[], []], `${name}: answered`);
+    if (a.writes + b.writes > 0) found.push(`${name}: ${a.writes} and ${b.writes} statements written before its values: ${[...new Set([...a.wrote, ...b.wrote])].map((q) => q.slice(0, 80)).join(" | ")}`);
+    if (a.statements !== b.statements) found.push(`${name}: ${a.statements} statements, ${b.statements} with five times the chats`);
+    if (read && a.afresh + b.afresh > 0) found.push(`${name}: ${a.afresh} and ${b.afresh} characters of Markdown read afresh`);
+    if (read && Math.max(a.mdReads, b.mdReads) > 1) found.push(`${name}: its trees read in ${a.mdReads} and ${b.mdReads} statements`);
+    if (!read && Math.min(a.keptAfter, b.keptAfter) === 0) found.push(`${name}: what was read not kept after its values`);
+  }
+  assert.deepEqual(found, []);
 });
