@@ -19,6 +19,7 @@ pub let said_paths : Map[String, Array[String]] = {
     "personal.*.devices.*.label",
     "personal.*.pair.error",
     "personal.*.pair.untilText",
+    "personal.*.pair.checkingText",
     "personal.*.pair.showing.*",
     "personal.*.pending.*.text",
     "personal.*.pending.*.stations.*",
@@ -685,6 +686,7 @@ pub let said_paths : Map[String, Array[String]] = {
   "lock": [
     "me.pair.error",
     "me.pair.untilText",
+    "me.pair.checkingText",
     "me.pair.approvers.*.nameText",
     "me.outText",
     "me.needsAppText",

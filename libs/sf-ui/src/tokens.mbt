@@ -363,7 +363,7 @@ pub fn capsule_fit(corner : Double, height : Double, alone : Double) -> Double {
 ///|
 /// Whether a capsule `height` high may stand concentric in a corner `corner` round (capsule_fit: corner_fit lets it
 /// stand as far in as that takes).
-pub fn capsule_fits(corner : Double, height : Double) -> Bool {
+fn capsule_fits(corner : Double, height : Double) -> Bool {
   place_fits(@ui.capsule_in(corner, height))
 }
 
@@ -2665,7 +2665,7 @@ pub let menu_row_end : @ui.Style = @ui.style(
 pub let rule_line : @ui.Style = @ui.css("w=Full h=SPx")
 
 ///|
-pub fn rule_ink(c : @ui.Ctx) -> Int64 {
+fn rule_ink(c : @ui.Ctx) -> Int64 {
   @ui.alpha(c.theme().fg, 0.12)
 }
 

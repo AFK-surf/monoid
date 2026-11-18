@@ -626,6 +626,9 @@ struct Node {
   /// whether a drag anywhere on it is its own, whole (View::on_drag's `whole`): nothing drawn over it reached from round
   /// where it is drawn by a press on it (reach.mbt)
   mut drags_whole : Bool
+  /// whether, held, it alone is pointed at (View::on_drag's `captures`: a slider's or a scrollbar's thumb, as a captured
+  /// pointer's on the web): what the pointer passes over meanwhile is not (Tree::pointed_of)
+  mut drag_captures : Bool
   /// which saying of its on_drag it is (each said anew, or let go, another): what was told by one is that one's alone
   mut drag_said : Int
   /// where in it a finger is taken at a moment (View::takes, View::hosted_takes; none: all of it)
@@ -1305,6 +1308,7 @@ pub struct Tree {
   /// what lays out alone (View::lays_out_alone) with something under it to be laid out again, nothing above it: laid
   /// out from it as the rest is (Tree::alone_laid_out)
   alone_due : Array[Int]
+  priv mut alone_at : Int
   /// those laid out so and not yet placed by, each with its compute's number
   alone_laid : Array[(Int, Int)]
   /// what is asked of one laid out alone once it is (View::scrolls_window's slots: whether what it shows came out
@@ -1689,6 +1693,7 @@ pub fn Tree::new(
     measuring: false,
     binding_reading: -1,
     alone_due: [],
+    alone_at: 0,
     alone_laid: [],
     alone_asks: {},
     rows_named: {},
@@ -1967,6 +1972,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.wheel_said = 0
       n.on_drag = None
       n.drags_whole = false
+      n.drag_captures = false
       n.takes = None
       if n.takes_units.length() > 0 {
         n.takes_units = []
@@ -2114,6 +2120,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         on_drag: None,
         fingers: 1,
         drags_whole: false,
+        drag_captures: false,
         drag_said: 0,
         takes: None,
         takes_units: [],
@@ -2823,7 +2830,7 @@ fn Tree::layout_marked_at(self : Tree, at : Int, within? : Bool = false) -> Unit
     // (in what lays out alone, laid out as big as it was asked before: laid out again from it, nothing above it)
     if (i != at || within) && n.alone && n.flex.laid_given() {
       // (once a pass however much under it is marked: what is made in it marks each node it makes)
-      if !self.alone_due.contains(i) {
+      if !self.alone_due[self.alone_at:].contains(i) {
         self.alone_due.push(i)
       }
       return
@@ -2848,10 +2855,9 @@ fn Tree::laid_over_alone(self : Tree, at : Int, holder : Int) -> Int {
 /// it is unless what holds it asks it otherwise now.
 fn Tree::alone_laid_out(self : Tree) -> Unit {
   // (by its index: one that what it holds asks to be laid out again (below) put after the rest, laid out in turn)
-  let mut j = 0
-  while j < self.alone_due.length() {
-    let at = self.alone_due[j]
-    j = j + 1
+  while self.alone_at < self.alone_due.length() {
+    let at = self.alone_due[self.alone_at]
+    self.alone_at += 1
     let n = self.nodes[at]
     if n.live && n.flex.dirty {
       let mut anc_dirty = false
@@ -2921,6 +2927,7 @@ fn Tree::alone_laid_out(self : Tree) -> Unit {
     }
   }
   self.alone_due.clear()
+  self.alone_at = 0
   // (what what was asked told meanwhile (a list's block measured as tall as it was counted, what shows under it worked
   // out by that) worked out once all of it is laid out, and laid out in this same pass)
   if !self.bindings_due.is_empty() {
@@ -7625,11 +7632,21 @@ pub(all) struct Drag {
 /// any tracking. One let go meanwhile is told nothing more. Up to `fingers` held on it at once, each told by its own
 /// events (Drag's `finger`); one more down calls the hold off (each of those down told Off), the rest of it nobody's.
 /// `whole`: a drag anywhere on it is its own (a picture a drag pans, as the old view's `capture`): a press on it takes
-/// nothing drawn over it smaller than its room from round where that is drawn (reach.mbt).
-pub fn View::on_drag(self : View, f : (Drag) -> Unit, fingers? : Int = 1, whole? : Bool = false) -> View {
+/// nothing drawn over it smaller than its room from round where that is drawn (reach.mbt). `captures`: while held, it
+/// alone is pointed at, and only while the pointer is over it (a slider's or a scrollbar's thumb: the controls the
+/// pointer passes over meanwhile take no hover, show no tip), as the web's setPointerCapture; not for what is dragged
+/// onto something that should answer it being over it (a file onto a folder).
+pub fn View::on_drag(
+  self : View,
+  f : (Drag) -> Unit,
+  fingers? : Int = 1,
+  whole? : Bool = false,
+  captures? : Bool = false,
+) -> View {
   guard self.live() is Some(n) else { return self }
   n.fingers = if fingers < 1 { 1 } else { fingers }
   n.drags_whole = whole
+  n.drag_captures = captures
   n.drag_said = n.drag_said + 1
   // (a raw on_drag, or a gesture said anew: answering a hold alone only where the gesture says so after it)
   n.hold_only = None
@@ -8606,6 +8623,7 @@ fn View::let_go(self : View) -> Unit {
   self.drag_ended()
   n.on_drag = None
   n.drags_whole = false
+  n.drag_captures = false
   n.drag_said = n.drag_said + 1
   n.takes = None
   // (what holds it holds one taking a point the fewer: what it held let go of already, each so)
@@ -9861,7 +9879,11 @@ fn View::comes(
       match tree.flip_lists.get(p) {
         Some(tell) => {
           // (made or let go as an answer told it: at once, nothing set out, answering.mbt)
-          if v.live() is Some(_) && !@signals.untracked(tree.motion_reduced) && !answered.val && !tree.answer_holds(v.at) {
+          if v.live() is Some(_) &&
+            !@signals.untracked(tree.motion_reduced) &&
+            !answered.val &&
+            !tree.answer_holds(v.at) &&
+            !tree.nowhere_at(self.at) {
             tell(v.at)
           } else if answered.val || tree.answer_holds(v.at) {
             tree.answer_mark(v.at)
@@ -9877,6 +9899,8 @@ fn View::comes(
     v.live() is Some(n) &&
     tree.last_w >= 0.0 &&
     !@signals.untracked(tree.motion_reduced) &&
+    // (in what is laid out nowhere (a page under the one on top): there at once, as it is shown again (Tree::nowhere_at))
+    !tree.nowhere_at(self.at) &&
     tree.makes_way(v.at) &&
     !tree.holds_shared(v.at) &&
     // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
@@ -10363,10 +10387,34 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   // again or laid out as it said it is)
   st.come_k = 1.0
   m.look.clips = m.clips_said
+  // (what is drawn by the way (held_on_way, a pick's place held by it) told it is over: worked out again, whole, even
+  // where it never read the clock, its end unmeasured as it was laid out nowhere)
+  match m.come_said {
+    Some(s) => s.set(s.untracked() + 1)
+    None => ()
+  }
   m.come_said = None
   m.prop_stop(Comes.ord())
   tree.layout_marked_at(v.at)
   tree.look_marked_at(v.at)
+}
+
+///|
+/// Whether node `at` lies in what is laid out nowhere (View::laid_nowhere: a page under the one on top), as
+/// Tree::alone_laid_out has it: what is made or let go there comes or goes at once, no way set out, so that it is there
+/// as it is, at rest, when it is shown again (nowhere_changed_test.mbt), and nothing hidden asks for frames meanwhile.
+/// Not what was left out of its row as it was last laid out (Node's `out`): a box gone_empty holding nothing is so, and
+/// what comes into it opens it on its way (gone_empty_test.mbt).
+fn Tree::nowhere_at(self : Tree, at : Int) -> Bool {
+  let mut p = at
+  while p >= 0 {
+    let pn = self.nodes[p]
+    if !pn.slot && pn.flex.style.display == @flex.DisplayNone {
+      return true
+    }
+    p = pn.parent
+  }
+  false
 }
 
 ///|
@@ -10377,6 +10425,11 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
 fn View::goes(self : View, v : View, ms : Double, at_once : Bool, swaps? : Bool = false) -> Bool {
   // (it and what it holds told it starts leaving before any of it is put to rest (View::rests, below))
   self.tree.tell_leaving(v.at)
+  // (in what is laid out nowhere: gone at once, nothing of it left behind to fade or wait (Tree::nowhere_at))
+  if self.tree.nowhere_at(self.at) {
+    self.leave(v, 0.0)
+    return false
+  }
   if !at_once && v.live() is Some(n) {
     // (as tall as it is at this moment: on its way, where that way has it (flex's come_state), whether a frame has laid
     // it out since or not; else as it was laid out last)
@@ -13877,6 +13930,18 @@ fn Tree::target_in(self : Tree, x : Double, y : Double, tracked~ : Bool) -> (Tar
 /// and what hosts it say it: what says it is pointed at alone over all that takes it there (View::points); else what
 /// takes a press or a hold there; else nothing.
 pub fn Tree::pointed_of(self : Tree, t : Target) -> NodeId? {
+  // (while a node held captures the pointer (View::on_drag's `captures`) it alone is pointed at, and only while the
+  // pointer is over it: what the pointer passes over meanwhile is not, its hover and its tip not told, as a captured
+  // pointer's are not on the web (setPointerCapture); let go, what is under a still pointer is pointed at again:
+  // Tree::held_to)
+  match self.held {
+    Some(h) if self.alive_id(h) && self.nodes[h.at].drag_captures =>
+      return match t {
+        Pressed(id) | Dragged(id) if id == h => Some(id)
+        _ => None
+      }
+    _ => ()
+  }
   match self.points_hover {
     Some(id) => Some(id)
     None =>
@@ -14359,6 +14424,9 @@ fn Tree::held_to(self : Tree, h : NodeId?) -> Unit {
     self.pressing = h
     self.hand_told(was, fn(n) { n.pressed_cell }, false)
     self.hand_told(h, fn(n) { n.pressed_cell }, true)
+    // (what a still pointer is over worked out again: held by what captures it, nothing else is pointed at; let go, what
+    // is under it is again: Tree::pointed_of)
+    self.hits_bump()
   }
 }
 
@@ -15120,6 +15188,20 @@ fn Tree::holds_hosted(self : Tree, at : Int) -> Bool {
     return true
   }
   n.kids.iter().any(fn(k) { self.holds_hosted(k) })
+}
+
+///|
+/// Whether node `at` or what it holds is an old view hosted in the tree as tall as what it holds (ui's `old`, `natural`)
+/// whose height the old frame has not laid out yet (as tall as nothing till then, its height said by no number): a
+/// list's pinned foot holding one does not end where it will (View::scrolls_window's `foot_unbuilt`), whatever frame
+/// was painted since it was made (a page made while it waits to be drawn: its old view built by no frame yet).
+fn Tree::holds_unlaid_hosted(self : Tree, at : Int) -> Bool {
+  guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return false }
+  let n = self.nodes[at]
+  if n.hosted && n.flex.style.height_kind() == @flex.LEN_AUTO {
+    return true
+  }
+  n.kids.iter().any(fn(k) { self.holds_unlaid_hosted(k) })
 }
 
 ///|

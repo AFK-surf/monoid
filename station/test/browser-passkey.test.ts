@@ -207,7 +207,7 @@ test("silent conditional mediation is not intercepted, while large Google-sized 
 
 test("a viewer without host passkeys never hangs credentials.get, settles pending device asks, and reports platform availability from vault passkeys alone", async () => {
   const p = page();
-  p.run(`window.location = { hostname: "accounts.google.com" };
+  p.run(`window.location = { hostname: "login.example.org" };
     window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);`);
   // 1. Start with a passkey-capable viewer that leaves an assertion pending, then switch to a viewer without host passkeys.
   const desktop = p.viewer({ passkeys: true });
@@ -225,26 +225,31 @@ test("a viewer without host passkeys never hangs credentials.get, settles pendin
   assert.equal(p.run("result"), "NotAllowedError", "pending request from earlier viewer settles instead of hanging");
 
   // 2. Without a vault passkey for the site, platform availability is false (even if Chrome's empty virtual authenticator says true)
-  // and credentials.get falls straight through to Chrome's native implementation without hanging.
+  // and credentials.get rejects with NotAllowedError without invoking headful Chrome's OS WebAuthn dialog (nativeCalls === 0).
   p.run(`PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(v => window.uvpa = v)`);
   await p.settle();
   assert.equal(p.run("uvpa"), false);
   p.run("ask()");
   await p.settle();
-  assert.equal(p.run("result"), "native");
-  assert.equal(p.run("nativeCalls"), 1);
+  assert.equal(p.run("result"), "NotAllowedError");
+  assert.equal(p.run("nativeCalls"), 0, "must never trigger headful Chrome's hidden OS WebAuthn dialog");
   assert.equal(phoneNoPasskey.heard.length, 0);
 
   phoneNoPasskey.stop();
   desktop.stop();
   await p.settle();
 
-  // 3. With a vault passkey on the parent domain (google.com for accounts.google.com), platform availability is true.
-  const withVault = p.viewer({ passkeys: false, ownPasskey: (rp) => rp === "google.com" });
+  // 3. With a vault passkey on the parent domain (example.org for login.example.org), platform availability is true
+  // and credentials.get delegates to Chrome's virtual authenticator (`{ browser: true }`).
+  const withVault = p.viewer({ passkeys: false, ownPasskey: (rp) => rp === "example.org" });
   await p.settle();
   p.run(`window.uvpa = "pending"; PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(v => window.uvpa = v)`);
   await p.settle();
   assert.equal(p.run("uvpa"), true);
+  p.run("ask()");
+  await p.settle();
+  assert.equal(p.run("result"), "native");
+  assert.equal(p.run("nativeCalls"), 1);
   withVault.stop();
   await p.settle();
 });

@@ -55,3 +55,46 @@ test "shown and let go along a row, said so: what is after it where its way has 
 ///|
 /// How long the test runs before it shows it (any while: at rest by then).
 let along_row_before : Double = 100.0
+
+///|
+test "shown along a row while laid out nowhere (a page under the one on top): no way, nothing asked meanwhile, there at once and whole as it shows again" {
+  for back_ms in [50.0, 1000.0] {
+    let on = @signals.signal(false)
+    let hide = @signals.signal(false)
+    let t = Tester::new(fn(_c) {  })
+    set_view_app(fn(root) {
+      root.box(fn(page) {
+        page.laid_nowhere(By(fn() { hide.get() })) |> ignore
+        page.box(fn(r) {
+          r.row(Is(true)) |> ignore
+          r.box(fn(b) { b.width(Is(Some(20.0))).words(Is("左")) |> ignore }) |> ignore
+          r.show(along_row=true, fn() { on.get() }, fn(v) {
+            v.width(Is(Some(30.0))) |> ignore
+            v.box(fn(w) { w.words(Is("旁")) |> ignore }) |> ignore
+          })
+          r.box(fn(b) { b.width(Is(Some(20.0))).words(Is("右")) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    t.run_for(along_row_before)
+    let x0 = along_row_at(t, "左").unwrap().0
+    hide.set(true)
+    t.run_for(along_row_before)
+    on.set(true)
+    t.draw()
+    // (made where nothing is laid out: no way set out, no frame asked for it)
+    assert_true(t.at_rest(), msg="at rest as it is made laid out nowhere, back after \{back_ms}: \{t.rest_why()}")
+    t.run_for(back_ms)
+    hide.set(false)
+    t.draw()
+    // (shown again: where it rests, whole, from the first frame)
+    assert_eq(along_row_at(t, "右").map(fn(d) { d.0 }), Some(x0 + 50.0), msg="back after \{back_ms}")
+    assert_true(
+      t.words().iter().any(fn(d) { d.0 == "旁" && d.5 >= 1.0 }),
+      msg="旁 drawn whole, back after \{back_ms}",
+    )
+    t.assert_idle()
+  }
+}

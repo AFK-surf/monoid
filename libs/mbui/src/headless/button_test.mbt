@@ -536,3 +536,32 @@ test "a button given a hold whose presses count only while it says so: asked as 
   t.enter()
   assert_eq((counted, turned_while_held, as_it_went_down, pressed.val), (1, 1, 2, 3))
 }
+
+///|
+test "a button given its value and range: read out with them besides its name, each as it changes; none given, none said" {
+  let part = @signals.signal(25.0)
+  let t = window(fn(root) {
+    @headless.button(
+      root,
+      fn() { "资源加载" },
+      fn(_) {  },
+      value=fn() { "资源加载 \{part.get().to_int()}%" },
+      range=fn() { Some((0.0, part.get(), 100.0)) },
+      fn(v, _) { v.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore },
+    )
+    |> ignore
+    @headless.button(root, fn() { "平常的" }, fn(_) {  }, fn(v, _) {
+      v.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+    })
+    |> ignore
+  })
+  let at_first = t.get(Button, label="资源加载")
+  part.set(75.0)
+  t.draw()
+  let later = t.get(Button, label="资源加载")
+  let plain = t.get(Button, label="平常的")
+  assert_eq(
+    (at_first.value, at_first.range, later.value, later.range, plain.value, plain.range),
+    ("资源加载 25%", Some((0.0, 25.0, 100.0)), "资源加载 75%", Some((0.0, 75.0, 100.0)), "", None),
+  )
+}

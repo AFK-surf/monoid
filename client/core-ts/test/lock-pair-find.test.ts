@@ -631,11 +631,12 @@ test("where its person bound a lock of their own that this device is not on, it 
   await w.ask("lock.pair", { workspace: "w2" });
   await w.host.time.pass(1_000);
   assert.deepEqual(w.hellos.map((h) => (h as { workspaces: { ws: string }[] }).workspaces.map((x) => x.ws)), [["w2"]]);
-  // Asked from this one's page: its person's own lock is what it asks to join, and the page shows how that goes.
+  // Asked from this one's page: its person's own lock is what it asks to join, on the same code as the other workspace it
+  // still waits in (one code for all of it), and the page shows how that goes.
   await w.ask("lock.pair", { workspace: "ws" });
   await w.host.time.pass(1_000);
-  const hello = w.hellos.at(-1) as { workspaces: unknown[]; personal?: { subs: string[] } };
-  assert.deepEqual([hello.workspaces, hello.personal?.subs], [[], ["s1"]]);
+  const hello = w.hellos.at(-1) as { workspaces: { ws: string }[]; personal?: { subs: string[] } };
+  assert.deepEqual([hello.workspaces.map((x) => x.ws), hello.personal?.subs], [["w2"], ["s1"]]);
   assert.equal((await w.pair()).state, "code", "the page that waits here has the boxes for the code");
 
   // In the workspace's lock all the same (approved the old way): it waits still, to join their own.

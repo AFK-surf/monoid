@@ -122,7 +122,7 @@ let desk_first_top : Double = 16.0
 #callsite(autofill(loc))
 fn lane_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(lane) {
-    // (in a panel of its own none in from its sides, its blocks' own 16 there its cards' panel_card_in: desk_lane_now)
+    // (in a panel of its own none in from its sides, its blocks' own 16 there its cards' panel_card_in)
     let side = if in_pane_node(parent) { 0.0 } else { desk_lane_in }
     lane.row(Is(true)).padding(Is((side, 0.0, side, 0.0))).lies_along(Is(Middle)) |> ignore
     lane.box(fn(col) {
@@ -271,11 +271,26 @@ fn desk_back_node(parent : @view.View, label : () -> String, back : () -> Unit, 
 /// muted.
 #callsite(autofill(loc))
 pub fn section_none_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
+  none_said_node(loc~, parent, words, fn() { said_narrow }, section_none_x, section_none_foot)
+}
+
+///|
+/// What is said in place of what is listed where there is none (page_none_node's, section_none_node's), `words` as it
+/// says it now: narrow in `narrow`'s words, `x` from the sides and `foot` under it; wide, as it is, the UI's muted.
+#callsite(autofill(loc))
+fn none_said_node(
+  parent : @view.View,
+  words : () -> String,
+  narrow : () -> @ui.TextStyle,
+  x : Double,
+  foot : Double,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(n) {
     match look_node(n) {
       Narrow => {
-        n.padding(Is((section_none_x, 0.0, section_none_x, section_none_foot))) |> ignore
-        words_node(n, words, fn() { said_narrow }) |> ignore
+        n.padding(Is((x, 0.0, x, foot))) |> ignore
+        words_node(n, words, narrow) |> ignore
       }
       Wide => words_node(n, words, fn() { desk_muted }) |> ignore
     }
@@ -945,23 +960,10 @@ pub fn count_section_node(
     Narrow => section_node(parent, fn() { title() + " · " + count().to_string() }, body, loc~)
     Wide =>
       section_node(parent, title, body, title_after=fn(a) {
-        a.box(fn(n) {
-          style_node(n, fn() { section_count })
-          words_node(n, fn() { count().to_string() }, fn() { section_count_words }) |> ignore
-        })
-        |> ignore
+        count_badge_node(a, count~, look=Inline, tone=CountAccent) |> ignore
       }, loc~)
   }
 }
-
-///|
-/// A section's count beside its title, wide (count_section_node's): the accent's, round.
-// kept across runs: a value (no field of it changes)
-let section_count : @ui.Style = @ui.css("px=S1_5 radius=Full bg=AccentBg")
-
-///|
-// kept across runs: a value (no field of it changes)
-let section_count_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=AccentText, wrap=false)
 
 ///|
 /// What a page is for, by its ⓘ at the end of its narrow title's line (`about`; a page's actions there): wide none, the
@@ -972,25 +974,3 @@ pub fn narrow_about_node(parent : @view.View, about : () -> String, tips : TipLa
     about_mark_node(parent, about, fn() { t("web-main.about") }, tips, loc~) |> ignore
   }
 }
-
-///|
-/// What stands on the page's ground under a section's heading (section_heading_node's), not on a card, made by `body` in
-/// `parent`: narrow as far in as the heading's words (12 in from the page's block) with 16 under it; wide flush with the
-/// heading, the section's foot (28) under it.
-#callsite(autofill(loc))
-pub fn under_heading_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
-  let wide = part_of(parent).look is Wide
-  parent.box(made_for=loc, fn(u) {
-    style_node(u, fn() { if wide { under_heading_wide } else { under_heading_narrow } })
-    body(u)
-  })
-  |> ignore
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let under_heading_narrow : @ui.Style = @ui.css("w=Full px=S3 pb=S4")
-
-///|
-// kept across runs: a value (no field of it changes)
-let under_heading_wide : @ui.Style = @ui.css("w=Full pb=S7")

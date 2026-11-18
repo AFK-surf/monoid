@@ -111,3 +111,52 @@ test "scrolls beside another, the bar under the second alone (bar_here): the whe
   assert_eq(moved_tall, [40.0, 40.0])
   assert_true(shown_first is Some((_, y, _, _, alpha)) && y > 30.0 && y < 40.0 && alpha == 1.0, msg="\{Repr(shown_first)}")
 }
+
+///|
+/// When the hand comes down on the second row, 40 ms after the first was let go flinging (at 120): on its way.
+let beside_held_at : Double = 160.0
+
+///|
+test "scrolls beside another: flung on the first and held on the second on its way, both stay where the hand stopped them, the fling's end come and gone" {
+  let shared = @view.Scroll::across()
+  let a = shared.beside()
+  let b = shared.beside()
+  let now = Ref(0.0)
+  let tree = @view.Tree::new(
+    fn(root) {
+      root.box(fn(col) {
+        col.width(Is(Some(300.0))) |> ignore
+        let cells = fn(rh : @view.View) {
+          rh.row(Is(true)) |> ignore
+          for _ in 0..<10 {
+            rh.box(fn(c) { c.width(Is(Some(60.0))).height(Is(Some(40.0))).ground(Is(0x101010FFL)) |> ignore }) |> ignore
+          }
+        }
+        col.box(fn(r) { r.scrolls(a, cells) |> ignore }) |> ignore
+        col.box(fn(r) { r.scrolls(b, cells) |> ignore }) |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { now.val },
+  )
+  tree.frame(390.0, 844.0, now=now.val) |> ignore
+  // (flung on the first: let go moving at 2 a ms)
+  let first = tree.claimer_of(tree.claimers_at(150.0, 20.0), -20.0, 0.0).unwrap()
+  tree.drag_at(first, Down, 170.0, 20.0, 100.0) |> ignore
+  tree.drag_at(first, Moved, 150.0, 20.0, 110.0) |> ignore
+  tree.drag_at(first, Moved, 130.0, 20.0, 120.0) |> ignore
+  tree.drag_at(first, Up, 130.0, 20.0, 120.0) |> ignore
+  // (on its way, the hand down on the second: both stopped there)
+  now.val = beside_held_at
+  tree.advance(beside_held_at)
+  tree.frame(390.0, 844.0, now=now.val) |> ignore
+  let second = tree.claimer_of(tree.claimers_at(150.0, 60.0), -20.0, 0.0).unwrap()
+  tree.drag_at(second, Down, 150.0, 60.0, beside_held_at) |> ignore
+  let held = b.at(tree)
+  // (long after where the fling would have come to rest: still there)
+  now.val = fling_long_after_at
+  tree.advance(fling_long_after_at)
+  tree.frame(390.0, 844.0, now=now.val) |> ignore
+  assert_true(held > 40.0 && held < 300.0, msg="stopped on its way: \{held}")
+  assert_eq((a.at(tree), b.at(tree)), (held, held))
+}

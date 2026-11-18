@@ -570,6 +570,14 @@ pub let stations_slow_ms : Double
 
 pub let table_images_answer : String
 
+pub let table_cells_answer : String
+
+pub let table_long_answer : String
+
+pub fn table_long_md() -> Json
+
+pub let table_cells_md : Json
+
 pub let table_images_md : Json
 
 pub fn text_of(Json, String) -> String
@@ -611,6 +619,8 @@ pub fn with_sent(Json, String) -> Json
 pub fn with_state(Json, (String, String, String)) -> Json
 
 pub fn with_station_update(Json) -> Json
+
+pub fn with_table_cells(Json) -> Json
 
 pub fn with_table_images(Json) -> Json
 

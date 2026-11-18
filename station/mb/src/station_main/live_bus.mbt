@@ -57,6 +57,9 @@ pub(all) struct LiveBus {
   store_listeners : Array[(Int, (Json) -> Unit)]
   mut next_listener : Int
   reader_ask : Ref[async (String, Json, String) -> Json]
+  /// What the model catalog says now, as catalog.ts `catalog()` gives it ({ version, models }): set by the model
+  /// catalog's part (P5-3), given to the readers as it changes (read/pool.ts `give`).
+  model_catalog : Ref[() -> Json]
   events_tell : Ref[(String, Json, String, Json) -> Unit]
   overview_changed : Ref[() -> Unit]
   host_sample : Ref[async () -> Json]
@@ -216,6 +219,7 @@ pub fn LiveBus::new(
     store_listeners: [],
     next_listener: 0,
     reader_ask: Ref(async fn(_op, _q, _lang) { Json::null() }),
+    model_catalog: Ref(() => { "version": Json::number(0.0), "models": Json::object({}) }),
     events_tell: Ref(fn(_ev, _data, _key, _to) { () }),
     overview_changed: Ref(() => ()),
     host_sample: Ref(async fn() { machine() }),

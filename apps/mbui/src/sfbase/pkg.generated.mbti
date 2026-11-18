@@ -544,6 +544,8 @@ pub fn file_serve(FilePage, @ui.SiteRequest, @ui.SiteReply) -> Unit
 
 pub fn file_type(String) -> String
 
+pub fn film_letterboxed(Attachment) -> Bool
+
 pub fn first_window(Double) -> Int
 
 pub fn file_viewer_reset() -> Unit
@@ -2045,6 +2047,10 @@ pub fn writing_paste(Source, Writing, String, String) -> Unit
 
 pub fn writing_paste_again(Source, Writing, String) -> Unit
 
+pub fn writing_picture_put(String, String) -> Unit
+
+pub fn writing_picture_told(String) -> String?
+
 pub let writing_pictures : Map[String, String]
 
 pub fn writing_put_here(String) -> Bool
@@ -3442,6 +3448,7 @@ pub(all) struct Source {
   reads_ahead : () -> Bool
   asks_outline : () -> Bool
 }
+pub fn Source::draft_picture_told(Self, String, String) -> String
 pub fn Source::lease_topic(Self, String, Map[String, @json.Json]) -> TopicLease
 pub fn Source::owned_by(Self, @view.View) -> Self
 pub fn Source::prefetch(Self, String, Map[String, @json.Json]) -> Topic

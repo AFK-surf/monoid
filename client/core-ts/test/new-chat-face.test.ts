@@ -107,8 +107,11 @@ test("a_new_chats_control_says_of_what_it_runs_on_what_its_panel_says", async ()
 function pageOf(profiles: J[], joined = false): { page: J; pick: J; made: ReturnType<typeof workSince> } {
   const overview = { sharing: true, profiles };
   const row = { station: "ws/st", id: "st", name: "Willow", online: true, ...(joined ? { joined: true, home: "Home" } : {}), overview: { counts: { running: 0 } } };
-  const value = (t: J): unknown => (t.topic === "overview" ? overview : t.topic === "station" ? { ...row, overview } : t.topic === "stations" ? [row] : t.topic === "stationsWhole" ? [{ ...row, overview }] : undefined);
-  const store: J = { get: value, value: (t: J) => (value(t) === undefined ? undefined : { ok: value(t) }), watch: () => ({ drop() {} }), invalidate() {} };
+  // (what the core's choice reads: the station's row, its overview and its profiles as its page has them, the
+  // workspace's list and its link; never its page nor the stations whole)
+  const workspace = { stations: [{ id: "st", name: "Willow", ...(joined ? { joined: true } : {}) }] };
+  const value = (t: J): unknown => (t.topic === "overview" ? overview : t.topic === "stationPart" && t.part === "profiles" ? profiles : t.topic === "stations" ? [row] : t.topic === "workspace" ? workspace : t.topic === "link" ? { state: "online" } : undefined);
+  const store: J = { get: value, value: (t: J) => (value(t) === undefined ? undefined : { ok: value(t) }), select: (t: J, pick: (v: J) => unknown) => pick(store.value(t)), watch: () => ({ drop() {} }), invalidate() {} };
   const data: J = { record: () => undefined, put() {}, shared: () => undefined, mes: () => [] };
   const choose = new Choose({ store, data, now: () => 0, agent: () => null });
   const from = { ...work };

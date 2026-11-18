@@ -9,7 +9,7 @@ import { linkTarget } from "../src/asks.ts";
 import { parseCall } from "../src/core/calls.ts";
 import { CoreError } from "../src/error.ts";
 import { CLIP_PNG_MAX, CLIP_TEXT_MAX, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, inputFrame, keyframeFrame, lookFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
-import { LOOK_MS, accessOf, checkInput, othersOf } from "../src/screens.ts";
+import { LOOK_MS, accessOf, checkInput, othersOf, personShown } from "../src/screens.ts";
 import { HostWire, type RequestHead, type ScreenAsk, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
 import { base64 } from "../src/util.ts";
@@ -125,6 +125,11 @@ test("a_persons_input_is_checked_and_put_in_the_frame", () => {
     assert.throws(() => checkInput(bad), (e: J) => e.code === "invalid_params");
   }
   assert.deepEqual(othersOf(["a@x.com", "Bob", "a@x.com", "Bob"], ["a@x.com"]), ["Bob", "a@x.com"], "one of the viewer's own is theirs; the others are another window");
+  assert.equal(personShown("agent: chat:c-4875092722e075a9b20ae199ec3f9144"), "Agent");
+  assert.equal(personShown("agent: c-29ca08a674"), "Agent");
+  assert.equal(personShown("agent:   "), "Agent");
+  assert.equal(personShown("agent: 查询账号"), "Agent「查询账号」");
+  assert.equal(personShown("agent: 这是一个超过十八个字符的聊天标题用来测试截断不丢右引号"), "Agent「这是一个超过十八个字符的聊天标题用来…」");
   const view = parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", maxWidth: 99999, codecs: ["vp9", "jpeg"] }) as J;
   assert.deepEqual(view.call.ask, { maxWidth: 7680, maxHeight: 1080, codecs: ["jpeg"], control: true });
   assert.equal(view.call.auto, true, "no mode asked: decided as it opens");

@@ -562,7 +562,9 @@ fn js_text(v : @jsjson.JValue) -> String {
 
 ///|
 /// The updates' parts set up for this machine: their words and language, its paths and Node (none: this program).
-pub fn updates_setup(data : String, argv0 : String) -> Unit {
+pub fn updates_setup(data : String, argv0 : String, app? : String = "") -> Unit {
+  updates_runner_from.val = (app, argv0, data)
+  updates_runner.val = None
   let (zh, en) = catalogs_json()
   @updates.set_words(zh, en)
   @updates.set_station_lang(station_lang(data))

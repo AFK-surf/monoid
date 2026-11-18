@@ -93,31 +93,6 @@ pub fn tab_bar_node(
   tip? : (String) -> Bool = fn(_) { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  // (each tab's node by its key, to give the keyboard to the tab in front once a tab it was on closed)
-  let nodes : Map[String, @view.View] = Map([])
-  let refocus = Ref(false)
-  let hand_on = fn() {
-    if refocus.val {
-      let k = @signals.untracked(front)
-      match nodes.get(k) {
-        Some(n) if n.alive() => {
-          refocus.val = false
-          n.ask_focus(visible=true) |> ignore
-        }
-        _ => ()
-      }
-    }
-  }
-  let closing = fn(key : String, had : Bool) {
-    match close {
-      Some(f) => {
-        refocus.val = had
-        f(key)
-        hand_on()
-      }
-      None => ()
-    }
-  }
   // (the one in front held as its key, told on only as the key changes: what `front` reads besides, a chat's view
   // in a side panel's, wakes none of the bar's bindings, the radio group's own included)
   let front_given = front
@@ -139,8 +114,6 @@ pub fn tab_bar_node(
       if look is Chip {
         g.wraps(Is(Some(tab_chip_gap))) |> ignore
       }
-      // (the keyboard given to the one in front as it comes, once a tab it was on closed: its node made by then)
-      g.reacts(fn() { (front(), keys().length()) }, fn(_) { hand_on() }, at_start=false)
       g.each(at_once~, keys, fn(k) { k }, fn(slot, k) {
         let key = k.untracked()
         let shut : Ref[@view.View?] = Ref(None)
@@ -151,6 +124,7 @@ pub fn tab_bar_node(
           }
         }
         let item_ref : Ref[@view.View?] = Ref(None)
+        let item_said : Ref[@headless.RadioItem?] = Ref(None)
         let on_item = fn() {
           match item_ref.val {
             Some(x) => lit_node(x)
@@ -179,10 +153,16 @@ pub fn tab_bar_node(
         if look is Chip {
           hover_ground_node(slot, on=fn() { !is_front() }, lit=Some(lit))
         }
-        let item = rg.item(slot, fn() { key }, fn() { title(key) }, fn(v, _) {
+        // (Delete or Backspace on a tab that closes closes it, as its × does, the keyboard handed to the tab then in
+        // front where it was on it: the tab list's, @headless.radio_group's on_close)
+        let on_close = close.map(fn(f) { fn() { f(key) } })
+        let item = rg.item(slot, fn() { key }, fn() { title(key) }, on_close?, closes=can_close, fn(v, s) {
           item_ref.val = Some(v)
-          nodes[key] = v
-          v.owns(fn() { if nodes.get(key).map(fn(n) { n.id() == v.id() }).unwrap_or(false) { nodes.remove(key) } }) |> ignore
+          item_said.val = Some(s)
+          // (the one in front brought into sight as it comes in front)
+          if scrolls {
+            v.reacts(is_front, fn(f) { if f { v.tree.show_in_sight(v.id()) } }, at_start=false)
+          }
           style_node(v, fn() { tab_body_look(look, can_close()) }, in_row=true)
           // (its words cut short as its row keeps them, its least never more than its tab's: View::fits)
           v.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
@@ -191,16 +171,6 @@ pub fn tab_bar_node(
           } else {
             v.fits(Is(true)) |> ignore
           }
-          // (Delete or Backspace on a tab that closes closes it, as its × does)
-          v.on_key(fn(e) {
-            if e.mods == 0 && (e.code == @ui.key_code_delete || e.code == @ui.key_code_backspace) && v.focused() && can_close() {
-              closing(key, true)
-              true
-            } else {
-              false
-            }
-          })
-          |> ignore
           // (in the groove, its words in its middle: as wide a room before them as its × takes after them)
           if look is Groove {
             let room = fn(r : @view.View) { r.box(fn(b) { style_node(b, fn() { tab_close_room(look) }, in_row=true) }) |> ignore }
@@ -233,12 +203,9 @@ pub fn tab_bar_node(
         let shut_node = fn(c : @view.View) {
           let (side, icon) = tab_close_sizes(look)
           let x = icon_button_node(c, "close", fn() { close_label(key) }, fn() {
-            // (the keyboard given on only where it was on the tab)
-            let had = (match item_ref.val {
-              Some(n) => n.focused()
-              None => false
-            })
-            closing(key, had)
+            if item_said.val is Some(s) {
+              s.close()
+            }
           }, size=side, icon_size=icon)
           // (no stop of Tab's: the tab list is one, Delete on a tab closing it as its × does)
           x.focusable(Is(false)).shrink(Is(0.0)) |> ignore
@@ -279,13 +246,6 @@ pub fn tab_bar_node(
         held.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
         tabs_in(held, None) |> ignore
         trail_in(held)
-        // (the one in front brought into sight as it comes in front)
-        held.reacts(front, fn(k) {
-          match nodes.get(k) {
-            Some(n) if n.alive() => n.tree.show_in_sight(n.id())
-            _ => ()
-          }
-        }, at_start=false)
       })
       |> ignore
     } else {

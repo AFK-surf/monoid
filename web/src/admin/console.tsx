@@ -10,7 +10,7 @@ import { Link, Redirect, Route, Switch as Routes, useLocation, useParams, useRou
 import { Wordmark } from "../brand.tsx";
 import { stamp } from "../api.ts";
 import { failure, useToast } from "@stillfail/ui/toast.tsx";
-import { Button, Confirm, CopyCommand, Dialog, Field, FilterPills, IconButton, Menu, MobileBack, ResizeHandle, SearchInput, Select, StatusDot, SwitchRow, Time, ICON, type Presence, Waiting } from "../ui.tsx";
+import { Button, Confirm, CopyCommand, Dialog, Field, FilterPills, IconButton, Menu, MobileBack, ResizeHandle, SearchInput, Select, StatusDot, SwitchRow, Time, ICON, type Presence, Waiting, ErrorLine, TextInput } from "../ui.tsx";
 import { useSignOut, type Account } from "../cloud/accounts.ts";
 import { admin, useAction } from "../cloud/api.ts";
 import { Avatar } from "../cloud/gate.tsx";
@@ -18,7 +18,6 @@ import * as nav from "../Sidebar.css.ts";
 import * as shellCss from "../styles/shell.css.ts";
 import * as css from "./console.css.ts";
 import * as pagesCss from "../styles/pages.css.ts";
-import * as controlsCss from "@stillfail/ui/styles/controls.css.ts";
 import { t } from "../i18n.ts";
 import { NAME } from "../channel.ts";
 import { Detail, Failed, Marks, narrow, PATH, PENDING, SAMPLE_OVERVIEW, SAMPLE_USER, sampleRows, useKept } from "./shared.tsx";
@@ -369,7 +368,7 @@ function UserShown({ account, id, close, search, u, bones = false }: { account: 
             <Button busy={remove.busy} onClick={() => remove.run()}>{t("web-pages.admin.pending.remove")}</Button>
           </div>
         )}
-        {block.error && <p className={controlsCss.fieldError} role="alert">{block.error.message}</p>}
+        {block.error && <ErrorLine>{block.error.message}</ErrorLine>}
       </>}
       {/* Closes at once: the block button turns until the cloud has it, a failure said by toast. */}
       <Confirm open={blocking} onClose={() => setBlocking(false)} onConfirm={() => { setBlocking(false); void block.run(true); }}
@@ -408,7 +407,7 @@ function NewCodeDialog({ account, onClose }: { account: Account; onClose(): void
       ) : (
         <>
           <Field label={t("web-pages.admin.code.note")} htmlFor="code-note" hint={t("web-pages.admin.code.noteHint")}>
-            <input id="code-note" className={controlsCss.input} value={note} autoFocus maxLength={200} onChange={(e) => setNote(e.currentTarget.value)} placeholder={t("web-pages.admin.code.notePlaceholder")}
+            <TextInput id="code-note" value={note} autoFocus maxLength={200} onChange={(e) => setNote(e.currentTarget.value)} placeholder={t("web-pages.admin.code.notePlaceholder")}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && !make.busy) make.run(); }} />
           </Field>
           <Field label={t("web-pages.admin.code.validity")}>
@@ -417,7 +416,7 @@ function NewCodeDialog({ account, onClose }: { account: Account; onClose(): void
           <SwitchRow title={t("web-pages.admin.code.beta")} description={t("web-pages.admin.code.betaHint")} checked={beta} onChange={setBeta} />
         </>
       )}
-      {make.error && <p className={controlsCss.fieldError} role="alert">{make.error.message}</p>}
+      {make.error && <ErrorLine>{make.error.message}</ErrorLine>}
     </Dialog>
   );
 }
@@ -443,12 +442,12 @@ function PendingDialog({ account, search, onClose }: { account: Account; search:
         <Button variant="primary" busy={add.busy} disabled={!ready} onClick={() => add.run()}>{t("web-pages.admin.pending.addShort")}</Button>
       </>}>
       <Field label={t("web-pages.admin.pending.email")} htmlFor="pending-email">
-        <input id="pending-email" className={controlsCss.input} type="email" value={email} autoFocus maxLength={255} placeholder="name@example.com" onChange={(e) => setEmail(e.currentTarget.value)}
+        <TextInput id="pending-email" type="email" value={email} autoFocus maxLength={255} placeholder="name@example.com" onChange={(e) => setEmail(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && ready) add.run(); }} />
       </Field>
       <SwitchRow title={t("web-pages.admin.user.beta")} description={t("web-pages.admin.user.betaHint")} checked={beta} onChange={setBeta} />
       <SwitchRow title={t("web-pages.admin.user.mayCreate")} description={t("web-pages.admin.pending.mayCreateHint")} checked={mayCreate} onChange={setMayCreate} />
-      {add.error && <p className={controlsCss.fieldError} role="alert">{add.error.message}</p>}
+      {add.error && <ErrorLine>{add.error.message}</ErrorLine>}
     </Dialog>
   );
 }

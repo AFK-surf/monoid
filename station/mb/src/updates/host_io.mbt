@@ -213,6 +213,14 @@ async fn host_hash(host : @host.Host, path : String) -> (String, Double) {
 }
 
 ///|
+/// How long an answer's head may take to come (fetchJson's and readFeed's `AbortSignal.timeout(15_000)`).
+let fetch_head_ms : Double = 15000.0
+
+///|
+/// How long an answer's body may stay silent (a download's stall: updates.ts `download`'s minute).
+let fetch_stall_ms : Double = 60000.0
+
+///|
 /// What is written as it comes (`createWriteStream`, `openSync`/`writeSync`): kept here, written whole at its end.
 priv struct Writing {
   files : Map[Int, (String, Buffer)]
@@ -239,10 +247,16 @@ pub fn host_world(
           Some(Obj(ps)) => Json::array(ps.map(p => Json::array([sj(@jsjson.text(p.0)), sj(js_string(p.1))])))
           _ => Json::array([])
         }
+        // The TypeScript's signals are a deadline of 15 s to a read (`AbortSignal.timeout(15_000)`) and a minute with
+        // nothing coming in to a download: none reaches the shell, so it is told them here (an answer's head within
+        // `fetch_head_ms`, its body never silent `fetch_stall_ms`), else a network that never answers held a reading
+        // of the updates for good.
         let args : Json = {
           "url": sj(sarg(a, 0)),
           "method": sj(text(get(Some(init), "method")).unwrap_or("GET")),
           "headers": headers,
+          "timeoutMs": Json::number(fetch_head_ms),
+          "stallMs": Json::number(fetch_stall_ms),
         }
         let (answer, bytes) = host.shell("fetch", args) catch {
           e => raise thrown("TypeError", "fetch failed", more=[("cause", js(shell_error(e)))])

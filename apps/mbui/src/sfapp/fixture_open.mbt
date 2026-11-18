@@ -159,7 +159,7 @@ pub fn open_fixture(mode : String) -> Unit {
     // (chat-outline-long: one of 240 said by people, its list holding the last forty, its outline open)
     "chat-outline-away" | "chat-outline" | "chat-outline-find" | "chat-outline-bringing" | "chat-outline-long" => {
       let top = if mode == "chat-outline-long" { @sffixture.outline_long_away_seq } else { @sffixture.outline_away_seq }
-      @sfbase.kept_places[side_key(r)] = { top, offset: 0.0, bottom: -1.0 }
+      @sfbase.kept_places[side_key(r)] = { top, offset: 0.0, bottom: -1.0, piece: -1, piece_offset: 0.0 }
       match mode {
         "chat-outline" | "chat-outline-bringing" | "chat-outline-long" => @sfpages.outline_preset(side_key(r), "")
         "chat-outline-find" => @sfpages.outline_preset(side_key(r), "签名")
@@ -401,9 +401,10 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   }
   // the search open over Home, words typed (search_fixture.mbt)
   @sfpages.open_search_mode(mode)
-  // a device not yet confirmed in the workspace's safe mode: lock-waiting, lock-finding, lock-code, lock-wrong (its
-  // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
-  // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
+  // a device not yet confirmed in the workspace's safe mode: lock-waiting, lock-finding, lock-code and lock-wrong
+  // (its waiting page in the chats' place), lock-confirming (the trusted device asks for verification),
+  // lock-security (its security page), lock-upgrade (in the lock without its key: the code typed on its security page);
+  // lock-needs-app (a web page nobody can approve: its waiting page saying so),
   // lock-needs-app-security (its security page); lock-out-security (its person taken out: its security page)
   // lock-restart-security, lock-rebound-security, lock-replaced-security (its person's own lock: its security page)
   if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" || mode == "lock-restart-security" || mode == "lock-rebound-security" || mode == "lock-replaced-security" {

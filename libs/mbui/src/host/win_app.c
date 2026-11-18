@@ -73,6 +73,10 @@ typedef struct WinSlot {
   double caret[4];
   int marked_len;
   WCHAR high_surrogate;
+  // the kind of field it is (mb_host_ime_action: @hostapi.ime_action_*), and whether the system's input method is
+  // given the window now (ime_sync): never while a field of digits or a secret has the keys
+  int32_t ime_action;
+  int ime_associated;
   // the pointer's shape (@hostapi.set_cursor), whether its leaving is asked to be told (TrackMouseEvent), whether the
   // right button is down
   int cursor_kind, tracking_leave, right_down;
@@ -374,6 +378,38 @@ static int frames_round(void) {
 }
 
 // ---- input method ----
+
+static void ime_compose(const WCHAR *s, int n, int cursor);
+static int key_catching;  // (win_keys.h: a key catcher has the focus, whatever field had it before)
+
+// The system's input method given the window while a field takes the keys, but one of digits (a code) or a secret (a
+// password; @hostapi.ime_action_number, ime_action_secret): an input method there catches the digits and letters
+// typed (a Chinese one, on by default, turned 1 into a candidate), and a secret's words would go through it. Without
+// one the keys still come as WM_CHAR, as a keyboard's own. Taken away, what it was composing is let go.
+static void ime_sync(void) {
+  int want = ws->ime_active && (key_catching || (ws->ime_action != 3 && ws->ime_action != 4));
+  if (want == ws->ime_associated) return;
+  if (want) {
+    ImmAssociateContextEx(ws->h, NULL, IACE_DEFAULT);
+  } else {
+    HIMC imc = ImmGetContext(ws->h);
+    if (imc) {
+      ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+      ImmReleaseContext(ws->h, imc);
+    }
+    ImmAssociateContextEx(ws->h, NULL, 0);
+    // (a field still taking the keys is told its composition went)
+    if (ws->ime_active && ws->marked_len) ime_compose(NULL, 0, 0);
+    ws->marked_len = 0;
+  }
+  ws->ime_associated = want;
+}
+
+// the kind of field taking the keys (@hostapi.ime_action_*), said just before set_ime (editor.mbt)
+void mb_host_ime_action(int32_t kind) {
+  ws->ime_action = kind;
+  ime_sync();
+}
 
 static void ime_place(void) {
   if (!ws->ime_active) return;
@@ -1345,18 +1381,13 @@ void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moo
   ws->caret[2] = w;
   ws->caret[3] = h;
   if (ws->ime_active && !was) {
-    ImmAssociateContextEx(ws->h, NULL, IACE_DEFAULT);
     if (GetFocus() == ws->h) CreateCaret(ws->h, NULL, 1, (int)lround(h * ws->scale));
   } else if (!ws->ime_active && was) {
-    HIMC imc = ImmGetContext(ws->h);
-    if (imc) {
-      ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
-      ImmReleaseContext(ws->h, imc);
-    }
-    ImmAssociateContextEx(ws->h, NULL, 0);
     DestroyCaret();
-    ws->marked_len = 0;
   }
+  // (the input method given or taken by the field's kind too: mb_host_ime_action, said just before this)
+  ime_sync();
+  if (!ws->ime_active) ws->marked_len = 0;
   ime_place();
 }
 

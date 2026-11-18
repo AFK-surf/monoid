@@ -150,7 +150,7 @@ fn lang_arg(arg : Json) -> String {
 /// the agents' hands on it (it serves no device and runs no agent).
 async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   let bus = self.bus
-  updates_setup(bus.data, bus.argv0)
+  updates_setup(bus.data, bus.argv0, app=bus.app)
   let w = p5_5_updates_world(bus)
   let config = @updates.Config::new(of_core((bus.config_raw.val)()))
   // (the station's own release only, until the agents' part says which runtimes it runs: their versions are its)

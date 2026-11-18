@@ -113,6 +113,25 @@ describe("jobs' files", { concurrency: true }, () => {
     await r.jobs.stop(live.id);
   });
 
+  test("a job whose end the store has just kept is collected whole, though the program has yet to answer its end", async () => {
+    const r = rig();
+    // (collected the moment its end is kept, inside the program's `store.jobEnded`: before it tells its agent and
+    // answers `exited`, while Node's own end of it is still waiting)
+    let collected: Promise<string[]> | null = null;
+    const jobEnded = r.store.jobEnded.bind(r.store);
+    r.store.jobEnded = ((id: string, ...rest: unknown[]) => {
+      const said = (jobEnded as (...a: unknown[]) => unknown)(id, ...rest);
+      const job = r.store.getJob(id);
+      if (collected === null && job?.endedAt != null) collected = r.jobs.collect(job.endedAt + JOB_LOGS_KEPT_MS + 1);
+      return said;
+    }) as typeof r.store.jobEnded;
+    const done = await r.jobs.start("s1", "done", "echo done", r.work, null, false);
+    await until(() => collected !== null);
+    assert.deepEqual(await collected!, [done.id]);
+    assert.ok(!existsSync(done.log), "its log went, as its exit file did");
+    assert.ok(!existsSync(join(r.dir, "jobs", "exit", done.id)));
+  });
+
   test("collecting goes through many kept jobs' files giving the loop back as it goes, and reads no job up", async () => {
     // (1,043 reads of the store in one turn of the loop held a station's main thread 4.5 s, 2026-11-18)
     const r = rig();

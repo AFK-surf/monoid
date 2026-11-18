@@ -856,6 +856,20 @@ fn view_runs_least(runs : Array[@text.Run], look : @view.WordsLook, set : @view.
 }
 
 ///|
+/// How narrow words in pieces may wrap and their width on one line (a browser's min- and max-content), measured as a node
+/// of the window's tree draws them (view_runs_least, view_runs_measure) at the system's size of words this frame: what
+/// an old view lays out round such words by (a table's columns, as a node's table measures its cells: View::tracks).
+pub fn Ctx::runs_extent(
+  self : Ctx,
+  runs : Array[@text.Run],
+  look : @view.WordsLook,
+  set : @view.RunsLook,
+) -> (Double, Double) {
+  let scale = self.sp(1.0)
+  (view_runs_least(runs, look, set, scale), view_runs_measure(runs, look, set, -1.0, scale).0)
+}
+
+///|
 /// How words are shaped changed for all of them (the system's size of words, Ctx::font_scale, as a frame begins; the
 /// faces given, faces.mbt words_forgotten; lines set as a browser sets them or not, set_web_lines): the words of the window's tree measured and drawn again so, as an old
 /// view's are laid out anew.
