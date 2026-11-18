@@ -560,7 +560,7 @@ fn pane_made(
                 p,
                 src,
                 k,
-                fn(c, s, page) { pane_page_one(c, s, page, held=true) },
+                fn(c, s, page) { pane_page_one(c, s, page, held=page is Chat(_)) },
                 key=tape_island_key,
                 drawn=fn(serial) { pane_page_wait.draws(serial) },
                 over=fn(o, src, page, stint) {
@@ -592,12 +592,14 @@ fn pane_made(
                 },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
                 narrower=fn(n) { side_narrower(src, n, k) },
-                // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's)
-                aside=fn(n) { pane_aside_at(src, n) },
-                // (its old view held at the width the block's move ends at all the way, moved across by its node)
+                // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's;
+                // a new chat's old view, not held, moved aside inside itself as before, pane_page_one's)
+                aside=fn(n) { if app.nav.page_of(k) is Some((Chat(_), _)) { pane_aside_at(src, n) } else { 0.0 } },
+                // (a chat's old view held at the width the block's move ends at all the way, moved across by its node)
                 held=fn(n) { pane_fold_held(src, n, k) },
-                // (bound once the block's move has first set off: nothing of it at rest before)
-                held_from=pane_fold_set_off,
+                // (bound once the block's move has first set off with a chat on the page: nothing of it at rest before,
+                // nor while a new chat, whose old view is laid out anew at each width of the move as before)
+                held_from=fn() { pane_fold_set_off() && app.nav.page_of(k) is Some((Chat(_), _)) },
               )
             })
             |> ignore
@@ -757,13 +759,15 @@ fn pane_aside_at(src : Source, n : @view.View) -> Double {
 /// while the block's move goes, at the width the page has where the move ends all the way, moved across as far as its
 /// rows' words stood further in at the width it set off from, less as much as the move has come (laid_toward, as the
 /// side panel's way has it), so the old view is built as the move sets off and not again at each frame of it, its words
-/// going with the page; at rest, as wide as it is.
+/// going with the page; at rest, and while a new chat (laid out anew as the move goes, its words not a chat's rows), as
+/// wide as it is.
 fn pane_fold_held(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
   let ww = n.window().0
   guard @sfbase.workspace_in_view(src).0 is Some(w) else { return { by: 0.0, across: 0.0, laid: ww } }
   let (_, now) = fold_target(src, w, ww)
   let t = fold_drawn_at(n)
   let pane = ww - fold_along(t, now).col
+  guard app.nav.page_of(serial) is Some((Chat(_), _)) else { return { by: 0.0, across: 0.0, laid: pane } }
   // (what of the pane the chat's page does not have: its side panel's column beside it, as it is at that moment)
   let beside = pane - pane_page_w(src, n, serial, pane)
   match (fold_goes.from, fold_goes.to) {

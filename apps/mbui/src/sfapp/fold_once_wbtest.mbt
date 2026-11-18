@@ -93,3 +93,38 @@ test "大屏: the chats key pressed twice, the chat's old view built only as eac
   assert_false(@sfdesk.wide.folded.get())
   assert_eq(built, [])
 }
+
+///|
+/// The rail's chats key pressed on 大屏 over the new chat (platform 0, or 1 beside the system's bars), the sidebar
+/// folded and then shown again: the new chat's old view is laid out anew at each width of both ways as before, not held
+/// where the way ends as a chat's is (pane_fold_held), so its prompt goes with the pane and steps nowhere (the
+/// Tester's sizes_steady, on the frames drawn along run_for at 60 and 120 fps).
+fn fold_new_chat(platform : Int) -> Unit raise {
+  // (made here, not by wide_tester: its file's motion is counted, this file's held to steady)
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform~)
+  t.run_for(@ui.move_most_ms)
+  let prompt = "想让 agent 做什么？"
+  assert_true(t.rect_of(prompt) is Some(_), msg="no new chat: \{Repr(t.words())}")
+  let keys = t.all(Button).filter(fn(b) { b.rect.0 < 70.0 })
+  guard keys.search_by(fn(b) { b.label == "对话" || b.label == "全部对话" || b.label == "全部" }) is Some(i) else {
+    fail("no chats' key in the rail: \{keys.map(fn(b) { b.label }).join(", ")}")
+  }
+  let (x, y, w, h) = keys[i].rect
+  for folded in [true, false] {
+    t.tap(x + w / 2.0, y + h / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq((@sfdesk.side_folded(), t.rect_of(prompt) is Some(_)), (folded, true))
+  }
+}
+
+///|
+test "大屏: the chats key pressed twice over the new chat, its prompt going with the pane both ways" {
+  fold_new_chat(0)
+}
+
+///|
+test "大屏 beside the system's bars: the chats key pressed twice over the new chat, its prompt going with the pane both ways" {
+  fold_new_chat(1)
+}
