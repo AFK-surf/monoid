@@ -2170,9 +2170,17 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
   }
   match c.image_in {
     // (the picture and its matte as one, cut once at the node's edge, as Ctx::picture's matte is)
+    // (filling its rect, or covering it where it says so: View::image_covers, View::image_covers_at)
     Some(((ix, iy, iw, ih), matte)) => {
       let before = self.ninst
-      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, FitFill, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)))
+      let fit = if c.image_cover_at is Some((across, down)) {
+        FitCoverFrom(across, down)
+      } else if c.image_cover {
+        FitCover
+      } else {
+        FitFill
+      }
+      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, fit, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)))
       // (its corners each, where it says them (View::corners), as big as it is drawn: the frame's)
       match c.corners {
         Some((tl, tr, br, bl)) if self.ninst > before => self.corners_last_each(tl * s, tr * s, br * s, bl * s)
