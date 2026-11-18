@@ -899,6 +899,9 @@ pub fn input_node(@view.View, @ui.Field, placeholder? : String, label? : String,
 
 pub let inset_room : @ui.Space
 
+#callsite(autofill(loc))
+pub fn invitation_line_node(@view.View, () -> String, () -> String, () -> Unit, () -> Unit, joining~ : () -> Bool, ignoring~ : () -> Bool, loc~ : SourceLoc) -> Unit
+
 pub fn item_row(@ui.Ctx, () -> Unit) -> Unit
 
 pub let job_action_h : @ui.Len
@@ -1757,6 +1760,12 @@ pub fn progress_ring_node(@view.View, Double, () -> Double, () -> Int64) -> @vie
 pub fn progress_spinner(@ui.Ctx, String, Double?, size? : Double, stroke? : Double) -> Int32
 
 pub fn progress_spinner_node(@view.View, () -> Double?, size? : Double, stroke? : Double) -> @view.View
+
+#callsite(autofill(loc))
+pub fn provider_badge_node(@view.View, String, String, Double, mark? : String, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn provider_mark_node(@view.View, () -> (String, String, String), Double, loc~ : SourceLoc) -> Unit
 
 pub let quiet : @ui.TextStyle
 
@@ -2638,7 +2647,19 @@ pub fn workspace_badge(@ui.Ctx, String, String, String, Double, still? : Bool) -
 
 pub fn workspace_badge_node(@view.View, () -> String, () -> String, () -> String, Double, stint? : () -> Int) -> Unit
 
+#callsite(autofill(loc))
+pub fn workspace_card_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn workspace_label_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
+
 pub let workspace_letter : @ui.TextStyle
+
+#callsite(autofill(loc))
+pub fn workspace_mark_node(@view.View, () -> String, () -> String, () -> String, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn workspace_row_node(@view.View, () -> String, () -> String, () -> Unit, checked? : Bool, lead? : (@view.View) -> Unit, icon? : String, after? : (@view.View) -> Unit, on_card? : Bool, loc~ : SourceLoc) -> Unit
 
 pub let workspace_tile_mark : Double
 

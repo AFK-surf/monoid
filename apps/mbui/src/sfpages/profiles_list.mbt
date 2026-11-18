@@ -403,9 +403,7 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
         lacks=amber,
         note_cut=true,
         lead=LeadLine(fn(l) {
-          l.pick(fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, fn(m, of) {
-            @sf.provider_logo_node(m, of.0, of.1, pl_logo, of.2) |> ignore
-          })
+          @sf.provider_mark_node(l, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, pl_logo)
         }),
         title_cut=true,
         title_after=fn(a) {
@@ -624,11 +622,7 @@ fn pl_machine_offers_node(
               // (how it is signed in: a dot in its tone, then whose)
               c.box(fn(line) {
                 @sf.style_node(line, fn() { pl_offer_signed })
-                line.box(fn(d) {
-                  @sf.style_node(d, fn() { pl_offer_dot })
-                  d.ground(By(fn() { if blocked() { @sf.theme().p.red } else { @sf.theme().p.online } })) |> ignore
-                })
-                |> ignore
+                @sf.state_dot_node(line, fn() { if blocked() { "error" } else { "online" } }, size=pl_offer_dot)
                 @sf.words_node(line, fn() {
                   let how = @sf.t(if blocked() { "android-settings.quota.blocked" } else { "android-settings.machine.signedIn" })
                   how +
@@ -894,9 +888,8 @@ let pl_offer_under : @ui.Style = @ui.css("w=Full gap=S0_5")
 let pl_offer_signed : @ui.Style = @ui.css("row w=Full gap=S1_25 align=ACenter")
 
 ///|
-/// How a machine's login is signed in, its dot.
-// kept across runs: a value (no field of it changes)
-let pl_offer_dot : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full")
+/// How a machine's login is signed in, its dot across.
+let pl_offer_dot : Double = 6.0
 
 ///|
 // kept across runs: a value (no field of it changes)

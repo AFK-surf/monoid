@@ -153,7 +153,7 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
   let block = fn(b : @view.View, k : WsBlock) {
     match k {
       InUse => ws_in_use_node(b, src, fn() { in_view().0 }, close)
-      OthersLabel => ws_label_node(b, fn() { @sf.t("android-misc.workspace.others") })
+      OthersLabel => @sf.workspace_label_node(b, fn() { @sf.t("android-misc.workspace.others") })
       Other(id) => {
         let find = fn() { others().iter().find_first(fn(x) { x.id == id }) }
         // (listed no more, it closes its way down the list showing what it showed last, not a blank row: as the
@@ -170,12 +170,12 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
             None => seen.val
           }
         }
-        workspace_row_node(
+        @sf.workspace_row_node(
           b,
           fn() { w().name },
           fn() { w().email },
-          lead=w,
-          mark=fn() { field(marks(), id).unwrap_or(Json::null()) },
+          lead=fn(l) { ws_mark_node(l, w) },
+          after=fn(r) { ws_mark_counts_node(r, fn() { field(marks(), id).unwrap_or(Json::null()) }) },
           // (the sheet closed as the switch is done, with it, showing till then what it showed at the press:
           // sfbase's switch_workspace_to)
           fn() {
@@ -221,11 +221,11 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
     // (a line between the list and what follows it, where the list's rows' grounds reach: there is always the one in
     // use over it and these under it, so it is never one of two side by side nor at an end)
     foot.box(fn(r) {
-      @sf.style_node(r, fn() { ws_row_in.then(@sf.panel_card_out_node(r)) })
+      @sf.style_node(r, fn() { ws_rule_in.then(@sf.panel_card_out_node(r)) })
       @sf.panel_rule_node(r)
     })
     |> ignore
-    workspace_row_node(
+    @sf.workspace_row_node(
       foot,
       fn() { @sf.t("android-misc.workspace.addAccount") },
       fn() { @sf.t("android-misc.workspace.addAccount.sub") },
@@ -236,7 +236,7 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
       },
     )
     // (in place of the list: one over another is not stacked)
-    workspace_row_node(foot, fn() { @sf.t("android-misc.workspace.new") }, fn() { "" }, icon="plus", fn() {
+    @sf.workspace_row_node(foot, fn() { @sf.t("android-misc.workspace.new") }, fn() { "" }, icon="plus", fn() {
       close()
       open_new_workspace(src)
     })
@@ -265,119 +265,18 @@ fn ws_in_use_node(b : @view.View, src : Source, now : () -> Workspace?, close : 
       None => seen.val
     }
   }
-  ws_label_node(b, fn() { @sf.t("android-misc.workspace.current") })
-  b.box(fn(out) {
-    @sf.style_node(out, fn() { ws_current.then(@sf.panel_card_out_node(out)) })
-    out.box(fn(card) {
-      @sf.style_node(card, fn() { ws_card.then(@ui.style(bg=Data(@sf.theme().p.chip))) })
-      workspace_row_node(card, fn() { w().name }, fn() { w().email }, checked=true, lead=w, on_card=true, close)
-    })
-    |> ignore
+  @sf.workspace_label_node(b, fn() { @sf.t("android-misc.workspace.current") })
+  @sf.workspace_card_node(b, fn(card) {
+    @sf.workspace_row_node(card, fn() { w().name }, fn() { w().email }, checked=true, lead=fn(l) { ws_mark_node(l, w) }, on_card=true, close)
   })
-  |> ignore
   ws_invitations_node(b, src, close)
 }
 
 ///|
-/// A part's label (13, muted) in `parent`, `label` as it is said now: as far in as the panel's words, 6 over it and 2
-/// under.
-fn ws_label_node(parent : @view.View, label : () -> String) -> Unit {
-  parent.box(fn(l) {
-    @sf.style_node(l, fn() { ws_label_box.then(@sf.panel_words_in_node(l)) })
-    @sf.words_node(l, label, fn() { ws_label_words }) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A row in `parent`: what (`label`), a line under it (`sub`, none where ""), a check on the one in use (`checked`);
-/// before it a workspace's mark or its letter (`lead`) or an icon; after it what a workspace has waiting (`mark`: its
-/// marks), each as it is now, each on the first line of its words, never across both (its line under it besides).
-/// `press` done as it is pressed, rippling as Workspaces.kt's row does (clip(Smooth(
-/// LIST_ROW_CORNER)).clickable); read out a button named `label`. `on_card`: the one in use's, on its card.
-fn workspace_row_node(
-  parent : @view.View,
-  label : () -> String,
-  sub : () -> String,
-  checked? : Bool = false,
-  lead? : () -> Workspace,
-  icon? : String = "",
-  mark? : () -> Json = fn() { Json::null() },
-  on_card? : Bool = false,
-  press : () -> Unit,
-) -> Unit {
-  // (in a panel: on its card (the one in use), or a row of the panel's own `panel_card_in` from its sides; either way
-  // its mark and words on the panel's words' line, every row's on one)
-  parent.box(fn(o) {
-    @sf.style_node(o, fn() { if on_card { ws_row_on_card } else { ws_row_in.then(@sf.panel_card_out_node(o)) } })
-    o.box(fn(r) {
-      @sf.style_node(r, fn() { if on_card { ws_row_card } else { ws_row } })
-      // (what stands beside its words on their first line, under a line under it as well: from its top, each on that
-      // line (@sf.first_line_node); a row of one line in its middle, its least height's)
-      r.lines_up(By(fn() { Some(if sub() != "" { Start } else { Middle }) })) |> ignore
-      @sf.rippled_node(r, press, if on_card { @sf.row_corner } else { @sf.card_corner }, label)
-      match lead {
-        Some(w) =>
-          @sf.first_line_node(r, Ui, fn(f) {
-            f.box(fn(l) {
-              @sf.style_node(l, fn() { ws_row_lead })
-              l.shrink(Is(0.0)) |> ignore
-              ws_mark_node(l, w)
-            })
-            |> ignore
-          })
-          |> ignore
-        None => ()
-      }
-      // (an icon in the same square a mark stands in: the rows' words on one line, a workspace's or an action's)
-      if icon != "" {
-        @sf.first_line_node(r, Ui, fn(f) {
-          f.box(fn(l) {
-            @sf.style_node(l, fn() { ws_row_lead })
-            l.shrink(Is(0.0)) |> ignore
-            @sf.icon_node(l, icon, ws_row_icon, By(fn() { @sf.theme().p.text })) |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-      }
-      r.box(fn(words) {
-        @sf.style_node(words, fn() { @sf.full_width }, in_row=true)
-        @sf.words_node(words, label, fn() { ws_row_label }) |> ignore
-        // (as wide as it says, cut short where the row has not the room: ws_row_sub's w=Cut; under the label, down the
-        // words' column: making its way in as it comes to say something, closing it as it says nothing)
-        words.show(fn() { sub() != "" }, fn(s) {
-          s.lines_up(Is(Some(Start))) |> ignore
-          @sf.words_node(s, sub, fn() { ws_row_sub }) |> ignore
-        })
-      })
-      |> ignore
-      ws_mark_counts_node(r, mark)
-      if checked {
-        @sf.first_line_node(r, Ui, fn(c) {
-          @sf.icon_node(c, "check", ws_row_check, By(fn() { @sf.theme().p.accent })) |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A workspace's mark (`w`'s, as it is now) in `parent`, ws_row_mark across in the words' ink, else its first letter
-/// (ws_row_letter, part of the mark: at its size whatever the system's size of words, mark_words_node), one in the
-/// other's place (a pick: its way from as tall as the other was).
+/// A workspace's mark (`w`'s, as it is now) in `parent`: the library's (@sf.workspace_mark_node), its mark else its
+/// first letter.
 fn ws_mark_node(parent : @view.View, w : () -> Workspace) -> Unit {
-  parent.pick(fn() { workspace_marked(w()) }, fn(m, marked) {
-    if marked {
-      let ink = fn() { @sf.theme().p.text }
-      @sf.station_mark_node(m, fn() { w().emoji }, fn() { w().icon }, ws_row_mark, ink, fn() { 0 })
-    } else {
-      @sf.mark_words_node(m, fn() { @sf.initial(w().name) }, fn() { ws_row_letter }) |> ignore
-    }
-  })
+  @sf.workspace_mark_node(parent, fn() { w().emoji }, fn() { w().icon }, fn() { w().name })
 }
 
 ///|
@@ -422,78 +321,15 @@ let ws_list_row : @ui.Style = @ui.css("w=Full")
 let ws_list_compact : @ui.Style = @ui.css("w=Full pb=S1")
 
 ///|
-/// The one in use: on a card 12 in from the sides, 4 under its label, 16 over what follows.
-// kept across runs: a value (no field of it changes)
-let ws_current : @ui.Style = @ui.css("w=Full pt=S1 pb=S4")
-
-///|
-/// A list card: its rows list_pad in, the list card's corner, on the chips' grey.
-// kept across runs: a value (no field of it changes)
-let ws_card : @ui.Style = @ui.style(w=Full, p=@sf.room_of(@sf.corner_inset), radius=@sf.card_radius, clip=true)
-
-///|
 /// Signing in another account and a new one: under a line from the list (@sf.panel_rule_node: its own room over and under
 /// it), 8 over the foot.
 // kept across runs: a value (no field of it changes)
 let ws_foot : @ui.Style = @ui.css("w=Full pb=S2")
 
 ///|
+/// The line over the foot: as far as the list's rows' grounds reach.
 // kept across runs: a value (no field of it changes)
-let ws_label_box : @ui.Style = @ui.css("pt=S1_5 pb=S0_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ws_label_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, leading=Font)
-
-///|
-/// On a sheet: 12 in from its sides; the row 8 more in, 12 over and under, 12 apart.
-// kept across runs: a value (no field of it changes)
-let ws_row_in : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ws_row_on_card : @ui.Style = @ui.css("w=Full")
-
-///|
-/// A row: 12 over and under its words, 48 at least (a row of one line as tall as one beside its mark), its mark, words,
-/// marks and check 12 apart, each by its words' first line (workspace_row_node).
-// kept across runs: a value (no field of it changes)
-let ws_row : @ui.Style = @ui.css("row w=Full min_h=S12 py=S3 gap=S3").then(@ui.style(px=@sf.room_of(@sf.panel_words - @sf.panel_card_in)))
-
-///|
-/// On the card (the one in use, among the rows of the others): its mark and words where the other rows' are, on the
-/// panel's words' line; the card `panel_card_in` from the panel's sides and `corner_inset` in already, as far as the
-/// rows' grounds reach, the rest of the way here (2026-11-07: a row's room more put its mark 16 past the others').
-// kept across runs: a value (no field of it changes)
-let ws_row_card : @ui.Style = @ui.css("row w=Full min_h=S12 py=S3 gap=S3").then(@ui.style(px=@sf.room_of(@sf.panel_words - @sf.panel_card_in - @sf.corner_inset)))
-
-///|
-/// A workspace's mark or its letter in a square 24 across: the mark 22, the letter 15 semibold, muted; an icon 20 in
-/// the same square (an action's: 登录其他账号, 新建 workspace), the check 14.
-// kept across runs: a value (no field of it changes)
-let ws_row_lead : @ui.Style = @ui.css("w=S6 h=S6 align=ACenter justify=JCenter")
-
-///|
-let ws_row_mark : Double = 22.0
-
-///|
-let ws_row_icon : Double = 20.0
-
-///|
-let ws_row_check : Double = 14.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let ws_row_letter : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, color=Muted, wrap=false, leading=Font)
-
-///|
-/// What, 15 on 21; the line under it 12 on 17, muted.
-// kept across runs: a value (no field of it changes)
-let ws_row_label : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let ws_row_sub : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut, leading=@sf.pick_sub_line)
+let ws_rule_in : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -546,50 +382,28 @@ pub fn invited_you(inv : Json) -> String {
 /// 忽略; each made as the core lists it, let go as it lists it no more. 加入 done, `close` first.
 fn ws_invitations_node(b : @view.View, src : Source, close : () -> Unit) -> Unit {
   let pending = fn() { invitations_waiting(src) }
-  b.show(fn() { pending().length() > 0 }, fn(l) { ws_label_node(l, fn() { @sf.t("android-misc.invite.label") }) })
+  b.show(fn() { pending().length() > 0 }, fn(l) { @sf.workspace_label_node(l, fn() { @sf.t("android-misc.invite.label") }) })
   // (each in a box of no padding of its own: what comes and goes down a column closes its way to none of what it
   // holds, its padding not)
   b.each(pending, fn(p) { text(Some(p.1), "id") }, fn(row, p) {
     let id = text(Some(p.untracked().1), "id")
-    row.box(fn(line) {
-      @sf.style_node(line, fn() { invite_line })
-      line.box(fn(w) {
-        @sf.style_node(w, fn() { @sf.full_width }, in_row=true)
-        @sf.words_node(w, fn() { invited_you(p.get().1) }, fn() { invite_line_words }) |> ignore
-        @sf.words_node(w, fn() { text(p.get().0, "email") }, fn() { invite_line_email }) |> ignore
-      })
-      |> ignore
-      let answer = fn(join : Bool) {
-        if new_ws.responding.get() == "" {
-          let (account, inv) = p.get()
-          answer_invitation(src, account, id, join, text(Some(inv), "name"), if join { close } else { fn() {  } })
-        }
+    let answer = fn(join : Bool) {
+      if new_ws.responding.get() == "" {
+        let (account, inv) = p.get()
+        answer_invitation(src, account, id, join, text(Some(inv), "name"), if join { close } else { fn() {  } })
       }
-      @sf.button_node(line, fn() { @sf.t("android-misc.invite.join") }, fn() { answer(true) }, tone=Primary, busy=fn() {
-        new_ws.responding.get() == "+" + id
-      })
-      |> ignore
-      @sf.button_node(line, fn() { @sf.t("android-misc.invite.ignore") }, fn() { answer(false) }, busy=fn() {
-        new_ws.responding.get() == "-" + id
-      })
-      |> ignore
-    })
-    |> ignore
+    }
+    @sf.invitation_line_node(
+      row,
+      fn() { invited_you(p.get().1) },
+      fn() { text(p.get().0, "email") },
+      fn() { answer(true) },
+      fn() { answer(false) },
+      joining=fn() { new_ws.responding.get() == "+" + id },
+      ignoring=fn() { new_ws.responding.get() == "-" + id },
+    )
   })
 }
-
-///|
-/// An invitation: 20 in, 8 over and under, 8 apart; its words the body's, the account under them small and muted.
-// kept across runs: a value (no field of it changes)
-let invite_line : @ui.Style = @ui.css("row w=Full px=S5 py=S2 gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let invite_line_words : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let invite_line_email : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
 
 ///|
 /// An invitation joined (its workspace the one in view, what showed it closed as that is done: `joined`) or ignored, said and

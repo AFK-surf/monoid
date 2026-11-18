@@ -337,7 +337,7 @@ fn provider_group_node(b : @view.View, g : () -> Json?, pick : (String) -> Unit)
           None => None
         }
       }
-      provider_mark_node(m, fn() {
+      @sf.provider_mark_node(m, fn() {
         (
           match text(pv(), "runtime") {
             "" => "claude"
@@ -353,13 +353,6 @@ fn provider_group_node(b : @view.View, g : () -> Json?, pick : (String) -> Unit)
     },
     pick,
   )
-}
-
-///|
-/// A provider's mark (provider_logo_node's) in node `m`, `size` across, by its runtime, its kind and its own mark as
-/// `of` says them now.
-fn provider_mark_node(m : @view.View, of : () -> (String, String, String), size : Double) -> Unit {
-  m.pick(of, fn(l, k) { @sf.provider_logo_node(l, k.0, k.1, size, k.2) |> ignore })
 }
 
 ///|
@@ -386,7 +379,7 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
     fn() { items(d(), "choices").map(fn(c) { (text(Some(c), "id"), text(Some(c), "title"), text(Some(c), "hint")) }) },
     choose,
     mark=fn(m, id) {
-      provider_mark_node(m, fn() {
+      @sf.provider_mark_node(m, fn() {
         let t = tile()
         let kind = if (id == "plan" || id == "enterprise") && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
           "subscription"
@@ -706,11 +699,7 @@ fn machine_offers_node(
         @sf.style_node(c, fn() { if blocked { ap_offer } else { ap_offer_footed_style() } })
         c.box(fn(h) {
           @sf.style_node(h, fn() { ap_offer_head })
-          h.box(fn(m) {
-            @sf.style_node(m, fn() { ap_offer_mark })
-            @sf.provider_logo_node(m, rt, "subscription", ap_offer_glyph, "") |> ignore
-          })
-          |> ignore
+          @sf.provider_badge_node(h, rt, "subscription", ap_offer_glyph)
           // (short of room, its name kept: whether it is signed in leaves its line first, then its plan)
           h.box(fn(w) {
             @sf.style_node(w, fn() { ap_offer_text }, in_row=true)
@@ -948,14 +937,6 @@ fn ap_offer_footed_style() -> @ui.Style {
 ///|
 // kept across runs: a value (no field of it changes)
 let ap_offer_head : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
-
-///|
-/// An offer's mark: 32 on the neutral ground in the card's corner, where the ladder's small block's corner (10) is
-/// concentric with the card's (@sf.card_mark_out).
-// kept across runs: a value (no field of it changes)
-let ap_offer_mark : @ui.Style = @ui.css("w=S8 h=S8 bg=Neutral align=ACenter justify=JCenter").then(
-  @ui.style(radius=@sf.small_radius),
-).then(@sf.card_mark_out)
 
 ///|
 /// What leaves a machine's login's line first, short of room: whether it is signed in, then its plan.
