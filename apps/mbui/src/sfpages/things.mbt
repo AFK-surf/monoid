@@ -231,12 +231,12 @@ fn thing_words(kind : String, t : Json?) -> (String, String) {
 ///|
 /// What pressing a file's, a link's or a pull request's row does (thing_row_node's): a file in the preview, a link and a pull
 /// request in the browser.
-fn thing_open(src : Source, r : ChatRef, kind : String, t : Json?) -> Unit {
+fn thing_open(r : ChatRef, kind : String, t : Json?) -> Unit {
   if kind == "files" {
     let a = @sfbase.attachment_of(field(t, "file").unwrap_or(Json::object({})))
     @sfbase.open_preview(r.station, if a.owner != "" { a.owner } else { r.session }, a)
   } else {
-    @sfbase.open_link_in(src, text(t, "url"))
+    @sfbase.open_link(text(t, "url"))
   }
 }
 
@@ -894,7 +894,7 @@ fn thing_row_node(row : @view.View, src : Source, r : ChatRef, kind : String, t 
     if kind != "files" {
       web_peek_node(b, src, r.station, fn() { text(t(), "url") }, fn() { words().0 }, side=Left, peek=fn() { text(t(), "peek") })
     }
-    @sf.presses_held_node(b, fn() { thing_open(src, r, kind, @signals.untracked(t)) }, @ui.long_press_ms, fn(d) {
+    @sf.presses_held_node(b, fn() { thing_open(r, kind, @signals.untracked(t)) }, @ui.long_press_ms, fn(d) {
       let tn = @signals.untracked(t)
       thing_held_at(d.wx, d.wy, number(tn, "seq"), text(tn, "url"), away, beside=thing_beside(r, kind, tn))
     })

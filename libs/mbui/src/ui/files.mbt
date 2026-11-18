@@ -207,6 +207,16 @@ pub struct GalleryRead {
 }
 
 ///|
+// kept across runs: counts library changes from the host
+let gallery_changed : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// How many library changes the host reported. A view can follow this signal while it shows photos.
+pub fn gallery_changes() -> Int {
+  gallery_changed.get()
+}
+
+///|
 /// The gallery's photos read (@hostapi.gallery_read): None where there is no gallery. A Tester's is what the test says
 /// it is (Tester::gallery), read as a host reads it, from the next frame.
 pub fn gallery_read() -> GalleryRead? {
@@ -229,10 +239,14 @@ priv struct FakeGalleryRead {
 }
 
 ///|
-/// The device's gallery from now on, as `photos` (Tester::new's has none, the app not let read one): all of it the app
-/// may read, each read of it what it is when asked, from the next frame, as a host reads it off the app's thread.
-pub fn Tester::gallery(self : Tester, photos : Array[@hostapi.GalleryPhoto]) -> Unit {
+/// Set the photos the app can read. `limited` restricts access to the chosen photos.
+/// `changed` sends the same library change event as the host.
+pub fn Tester::gallery(self : Tester, photos : Array[@hostapi.GalleryPhoto], limited? : Bool = false, changed? : Bool = false) -> Unit {
   self.fake.gallery = Some(photos.copy())
+  self.fake.gallery_limited = limited
+  if changed {
+    on_outside(outside_gallery, 0, 1)
+  }
 }
 
 ///|

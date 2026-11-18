@@ -469,7 +469,7 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
       b,
       fn() {
         close()
-        @sfbase.open_link_in(src, @signals.untracked(url))
+        @sfbase.open_link(@signals.untracked(url))
       },
       fn(x, y, _) {
         let p = @signals.untracked(pull)

@@ -3151,7 +3151,25 @@ static void gallery_answered(void) {
   dispatch_async(dispatch_get_main_queue(), ^{
     gallery_answers_n++;
     say([NSString stringWithFormat:@"gallery: answered, access %d", mb_host_gallery_access()]);
-    [the_view requestFrame];
+    mb_host_outside(MB_OUTSIDE_GALLERY, 0, 1);
+  });
+}
+
+@interface MBGalleryObserver : NSObject <PHPhotoLibraryChangeObserver>
+@end
+
+@implementation MBGalleryObserver
+- (void)photoLibraryDidChange:(PHChange *)change {
+  gallery_answered();
+}
+@end
+
+static void gallery_observe(void) {
+  static MBGalleryObserver *observer;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    observer = [MBGalleryObserver new];
+    [PHPhotoLibrary.sharedPhotoLibrary registerChangeObserver:observer];
   });
 }
 
@@ -3162,10 +3180,9 @@ void mb_host_gallery_ask(void) {
       [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite
                                                  handler:^(PHAuthorizationStatus s) { gallery_answered(); }];
     } else if (st == PHAuthorizationStatusLimited && the_controller) {
-      [PHPhotoLibrary.sharedPhotoLibrary presentLimitedLibraryPickerFromViewController:the_controller
-                                                                     completionHandler:^(NSArray<NSString *> *ids) {
-        gallery_answered();
-      }];
+      // Photos notifies the observer when the new selection takes effect.
+      gallery_observe();
+      [PHPhotoLibrary.sharedPhotoLibrary presentLimitedLibraryPickerFromViewController:the_controller];
     } else if (st != PHAuthorizationStatusAuthorized) {
       say(@"gallery: refused, the app's settings");
       [UIApplication.sharedApplication openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString]

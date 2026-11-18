@@ -92,7 +92,7 @@ enum {
   MB_OUTSIDE_IMAGE = 1,
   MB_OUTSIDE_VIEW = 2,
   MB_OUTSIDE_PICK = 3,
-  MB_OUTSIDE_GALLERY = 4,
+  MB_OUTSIDE_GALLERY = 4, // id 0: the library changed; other ids: completed reads
   MB_OUTSIDE_MARKS = 5,
   MB_OUTSIDE_GRAB = 6,
   MB_OUTSIDE_UPDATE = 7,

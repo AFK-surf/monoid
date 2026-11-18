@@ -212,6 +212,8 @@ pub let frame_period_default : Double
 
 pub fn full_screen() -> Bool
 
+pub fn gallery_changes() -> Int
+
 pub fn gallery_read() -> GalleryRead?
 
 pub fn gaps_steady_known(Array[(String, Int32)]) -> Unit
@@ -2952,7 +2954,7 @@ pub fn Tester::frames_on(Self) -> Int32
 pub fn Tester::frames_owed(Self) -> Unit
 pub fn Tester::frames_paced(Self) -> Double
 pub fn Tester::frames_unjudged(Self, Bool) -> Unit
-pub fn Tester::gallery(Self, Array[@hostapi.GalleryPhoto]) -> Unit
+pub fn Tester::gallery(Self, Array[@hostapi.GalleryPhoto], limited? : Bool, changed? : Bool) -> Unit
 pub fn Tester::gap_faults(Self) -> Array[String]
 pub fn Tester::get(Self, @view.Role, label? : String, has? : String, checked? : @view.Check, selected? : Bool, expanded? : Bool, disabled? : Bool, within? : SemNode) -> SemNode raise
 pub fn Tester::glyph_box(Self, Double, Double) -> Unit

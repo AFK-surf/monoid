@@ -103,6 +103,19 @@ test "大屏: the chat's info says how much else was said in it (图片、文件
 }
 
 ///|
+test "iOS: a PR in chat info opens its GitHub URL through the system" {
+  new_run()
+  let mode = "chat-info-pulls"
+  let src = fixture(mode)
+  open_fixture_over(mode, src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=1)
+  t.run_for(@ui.move_most_ms)
+  t.click(Link, label="列表里的图片按需解码")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.opened(), ["https://github.com/acme/shop/pull/131"])
+}
+
+///|
 test "大屏: a service chosen in the chat's services' popover opens 任务 beside the chat; a job there opens and closes in place" {
   let calls : Array[Made] = []
   let t = bar_chat(calls, mode="chat-jobs-pop")

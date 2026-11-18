@@ -1678,13 +1678,10 @@ impl @hostapi.Host for FakeHost with cs_decode(_, data, charset) {
 }
 
 ///|
-/// (a Tester's gallery, Tester::gallery: all of it; none given, as a host the app may read none of: 0)
+/// The access level of a Tester's gallery (Tester::gallery).
 impl @hostapi.Host for FakeHost with ga_access(self) {
-  if self.gallery is Some(_) {
-    1
-  } else {
-    0
-  }
+  guard self.gallery is Some(_) else { return 0 }
+  if self.gallery_limited { 2 } else { 1 }
 }
 
 ///|

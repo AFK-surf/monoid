@@ -528,6 +528,7 @@ pub fn Tester::new(
     pick_asks: [],
     keeps: [],
     gallery: None,
+    gallery_limited: false,
     gallery_reads: [],
     reads: [],
     read_ids: 0,
