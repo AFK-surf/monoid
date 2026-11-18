@@ -105,6 +105,9 @@ pub struct Config {
     pub port: u16,
     pub named: bool,
     pub english: bool,
+    /// Whether this station runs the release's MoonBit station alone where the release has Node's too
+    /// (`"engine": "moonbit"`): a switch of one station's own, read at each start of its process (`crate::station_of`).
+    pub moonbit: bool,
 }
 
 impl Config {
@@ -127,7 +130,8 @@ impl Config {
         };
         // As client/i18n's Lang::from_locale: none, empty or zh… is Chinese, anything else English.
         let english = raw["language"].as_str().map(|l| l.trim().to_ascii_lowercase()).is_some_and(|l| !l.is_empty() && !l.starts_with("zh"));
-        Ok(Config { port: port.unwrap_or(4750), named: port.is_some(), english })
+        let moonbit = raw["engine"].as_str() == Some("moonbit");
+        Ok(Config { port: port.unwrap_or(4750), named: port.is_some(), english, moonbit })
     }
 }
 
@@ -161,8 +165,12 @@ mod tests {
     #[test]
     fn the_config_names_the_mcp_port_or_leaves_the_usual_one() {
         let of = |s: &str| Config::of(&serde_json::from_str(s).unwrap());
-        assert_eq!(of("null").unwrap(), Config { port: 4750, named: false, english: false });
-        assert_eq!(of(r#"{"http":{"host":"0.0.0.0","port":5000},"language":"en-US"}"#).unwrap(), Config { port: 5000, named: true, english: true });
+        assert_eq!(of("null").unwrap(), Config { port: 4750, named: false, english: false, moonbit: false });
+        assert_eq!(of(r#"{"http":{"host":"0.0.0.0","port":5000},"language":"en-US"}"#).unwrap(), Config { port: 5000, named: true, english: true, moonbit: false });
+        // (the MoonBit station alone, this station's switch: only its own word turns it on)
+        assert!(of(r#"{"engine":"moonbit"}"#).unwrap().moonbit);
+        assert!(!of(r#"{"engine":"node"}"#).unwrap().moonbit);
+        assert!(!of(r#"{"engine":true}"#).unwrap().moonbit);
         assert!(!of(r#"{"language":"zh-CN"}"#).unwrap().english);
         assert!(of(r#"{"http":{"port":70000}}"#).is_err());
     }
