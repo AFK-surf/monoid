@@ -797,6 +797,11 @@ fn md_block_node(
           None => None
         },
         cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
+        // (its cells' words as the message's are, measured as they are drawn: its files' chips, a bare link's title)
+        cell_runs=fn(cell) { md_inlines_runs(md, cell, 0) },
+        line_share=md.line,
+        link_cards=md.link_cards,
+        on_link_shown=md.on_link_shown,
       )
     20 => {
       // (by what it links to, as it is now: another's card made again in its place)
@@ -898,6 +903,51 @@ fn md_block_node(
 }
 
 ///|
+/// Words `now` of a message as the pieces they are drawn in (`weight`: 600 or more bold), as md_words_node and a table's
+/// cell draw them: a bare link to a screen or a chat read as its title, a file's chip where the message marks paths,
+/// what a find found in its weight, in the faces tried and the serif face where the message is told them (Md::words').
+fn md_inlines_runs(md : MdNode, now : Array[MdInline], weight : Int) -> Array[@ui.Run] {
+  let titles : Map[String, String] = Map([])
+  // (a bare link to a screen reads as its title, a chat's too where the message says it: Md::words')
+  match md.screens {
+    Some(sc) => {
+      let bare = []
+      bare_screens(now, bare)
+      for b in bare {
+        titles[b.0] = (sc.title)(b.0, b.1)
+      }
+    }
+    None => ()
+  }
+  let chats = []
+  bare_chats(now, chats)
+  for href in chats {
+    match (md.chat_title)(href) {
+      Some(title) => titles[href] = title
+      None => ()
+    }
+  }
+  let out = []
+  runs_of(now, out, weight >= 600, false, false, "", theme().p.accent_text, titles, md.paths)
+  let runs = found_weight(out, (md.found)())
+  // (in the faces tried, where it is told them: Md::words')
+  let text_face = (md.text_face)()
+  let code_face = (md.code_face)()
+  let runs = if (md.serif)() { runs.map(fn(x) { if x.mono || x.code { x } else { { ..x, serif: true } } }) } else { runs }
+  if text_face is None && code_face is None {
+    runs
+  } else {
+    runs.map(fn(run) {
+      let face = if run.code || run.mono { code_face } else { text_face }
+      match face {
+        Some(_) => { ..run, face }
+        None => run
+      }
+    })
+  }
+}
+
+///|
 /// A block's words (`xs`, as they change) as one paragraph of pieces (Md::words'): `size` and `weight` (0: 400), on
 /// Markdown's lines, in the block's ink; links in blue pressed where they lead, code in its ink at 0.9; a bare link to
 /// a chat its title; words found in bold.
@@ -913,47 +963,7 @@ fn md_words_node(
   loc~ : SourceLoc,
 ) -> Unit {
   // (worked out once as what they are worked out of changes, what reads them many times over reading that)
-  let runs_now = @signals.computed(fn(_) {
-    let now = xs()
-    let titles : Map[String, String] = Map([])
-    // (a bare link to a screen reads as its title, a chat's too where the message says it: Md::words')
-    match md.screens {
-      Some(sc) => {
-        let bare = []
-        bare_screens(now, bare)
-        for b in bare {
-          titles[b.0] = (sc.title)(b.0, b.1)
-        }
-      }
-      None => ()
-    }
-    let chats = []
-    bare_chats(now, chats)
-    for href in chats {
-      match (md.chat_title)(href) {
-        Some(title) => titles[href] = title
-        None => ()
-      }
-    }
-    let out = []
-    runs_of(now, out, weight >= 600, false, false, "", theme().p.accent_text, titles, md.paths)
-    let runs = found_weight(out, (md.found)())
-    // (in the faces tried, where it is told them: Md::words')
-    let text_face = (md.text_face)()
-    let code_face = (md.code_face)()
-    let runs = if (md.serif)() { runs.map(fn(x) { if x.mono || x.code { x } else { { ..x, serif: true } } }) } else { runs }
-    if text_face is None && code_face is None {
-      runs
-    } else {
-      runs.map(fn(run) {
-        let face = if run.code || run.mono { code_face } else { text_face }
-        match face {
-          Some(_) => { ..run, face }
-          None => run
-        }
-      })
-    }
-  })
+  let runs_now = @signals.computed(fn(_) { md_inlines_runs(md, xs(), weight) })
   let runs = fn() { runs_now.get() }
   let look = fn() -> @view.WordsLook {
     let size = size()

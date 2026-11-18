@@ -510,6 +510,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_file_links(rich_chat(f.older))
           } else if f.mode == "chat-table-images" {
             with_table_images(rich_chat(f.older))
+          } else if f.mode == "chat-table-cells" {
+            with_table_cells(rich_chat(f.older))
           } else if f.mode == "chat-screens" || f.mode == "chat-screens-pc" {
             // (its tree with it, as a station sends it: what the chat opens on reads its links' cards of it)
             with_message(rich_chat(f.older), screens_answer, md=@sf.kept_md(screens_answer))
@@ -2682,6 +2684,38 @@ pub let table_images_md : Json = [
     },
   ],
 ]
+
+///|
+/// MBUI_FIXTURE=chat-table-cells: a last message whose table holds what agents put in cells (files' paths, a bare link to
+/// a chat, a formula, code with bars in it), its Markdown tree with it (table_cells_md) and the chat it links to titled.
+pub fn with_table_cells(v : Json) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let all = match m.get("messages") {
+        Some(Array(a)) => a.copy()
+        _ => []
+      }
+      all.push(
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), table_cells_answer, "1 分钟前", {
+          "md": table_cells_md,
+          "chats": [{ "href": "https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b", "title": "新架构 chat 表格问题" }],
+          "ending": "all_done",
+        }),
+      )
+      o["messages"] = Json::array(all)
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+pub let table_cells_answer : String = "表格渲染修复核对：\n\n| 场景 | 文件 | 引用 | 说明 |\n|---|---|---|---|\n| 联合类型 | `client/core-ts/src/mdRead.ts:195` | https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b | `\"whole\" | \"tasks\"` 不再拆格 |\n| 逻辑或与管道 | `libs/sf-ui/src/table_node.mbt:152` | 绝对值 \\(|x| \\le 1\\) | ``a || b`` 和 `curl -s x | sh` |"
+
+///|
+/// table_cells_answer's tree as the core reads it: its words by where they are in it.
+pub let table_cells_md : Json = [["p", [[0, 9]]], ["table", [["tr", [["th", [[13, 15]]], ["th", [[18, 20]]], ["th", [[23, 25]]], ["th", [[28, 30]]]]], ["tr", [["td", [[53, 57]]], ["td", [["code", { "content": [61, 93], "path": [61, 89], "line": 195 }]]], ["td", [["a", [[97, 255]], { "href": "https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b", "bare": true, "to": { "chat": true } }]]], ["td", [["code", { "content": [259, 276] }], [277, 282]]]]], ["tr", [["td", [[287, 293]]], ["td", [["code", { "content": [297, 330], "path": [297, 326], "line": 152 }]]], ["td", [[334, 338], ["code", { "content": [340, 349], "math": true, "drawing": { "font": "tex-4.1.3", "width": 2961.6, "height": 999.5, "baseline": 750, "draw": [["5e0f2c33", 1, -1, 0, 750.5], ["53e30bf3", 1, -1, 278, 750], ["5e0f2c33", 1, -1, 850, 750], ["8cdc6915", 1, -1, 1405.8, 750], ["ef45c95b", 1, -1, 2461.6, 750]], "rects": [], "text": [] } }]]], ["td", [["code", { "content": [356, 362] }], [364, 367], ["code", { "content": [368, 382] }]]]]]], { "align": [Json::null(), Json::null(), Json::null(), Json::null()], "md": "| 场景 | 文件 | 引用 | 说明 |\n| --- | --- | --- | --- |\n| 联合类型 | `client/core-ts/src/mdRead.ts:195` | https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b | `\"whole\" \\| \"tasks\"` 不再拆格 |\n| 逻辑或与管道 | `libs/sf-ui/src/table_node.mbt:152` | 绝对值 \\(\\|x\\| \\le 1\\) | ``a \\|\\| b`` 和 `curl -s x \\| sh` |", "csv": "场景,文件,引用,说明\n联合类型,client/core-ts/src/mdRead.ts:195,https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b,\"\"\"whole\"\" | \"\"tasks\"\" 不再拆格\"\n逻辑或与管道,libs/sf-ui/src/table_node.mbt:152,绝对值 |x| \\le 1,a || b 和 curl -s x | sh" }]]
 
 ///|
 /// MBUI_FIXTURE=chat-viz's visualization: a fragment, as the viz skill has agents write them.

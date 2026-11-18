@@ -224,6 +224,10 @@ fn md_table_body_node(
   rows? : (Int, Int)? = None,
   across? : @view.Scroll = @view.Scroll::across(),
   tracks_kept? : @view.TracksKept,
+  cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
+  line_share? : () -> Double,
+  link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
+  on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
   // (said once, bound as such: no binding run for what never changes (table_node's); a chat's message's by its list's
@@ -266,7 +270,7 @@ fn md_table_body_node(
             match cell_images.bind(fn(f) { f(cell) }) {
               // (a cell of images as wide as their row: Md::table's)
               Some(images) => Wide(cell_images_node_width(images))
-              None => Said(table_cell_runs(cell), table_words_look(r == 0, 1.0), table_runs_look())
+              None => Said(cell_runs(cell), table_words_look(r == 0, 1.0), table_runs_look())
             }
           })
         })
@@ -309,7 +313,20 @@ fn md_table_body_node(
             .points(Is(copy))
             .margin(by_bleed(fn(b) { (0.0, 0.0, if copy && b >= table_key_room { -table_key_room } else { 0.0 }, 0.0) }))
             |> ignore
-            table_frame_node(beside, table, widths, head_h~, on_link~, on_link_hold~, cell_images?, rows~)
+            table_frame_node(
+              beside,
+              table,
+              widths,
+              head_h~,
+              on_link~,
+              on_link_hold~,
+              cell_images?,
+              rows~,
+              cell_runs~,
+              line_share?,
+              link_cards~,
+              on_link_shown~,
+            )
             if copy && has_head {
               table_key_node(beside, key, fn() { table() }, fn() {
                 match head_h.val {
@@ -368,6 +385,10 @@ fn md_table_body_node(
           on_link_hold~,
           cell_images?,
           rows~,
+          cell_runs~,
+          line_share?,
+          link_cards~,
+          on_link_shown~,
         )
       })
       |> ignore
@@ -388,6 +409,18 @@ fn table_words_look(head : Bool, scale : Double) -> @view.WordsLook {
     tracking: @view.letters_own,
     balance: false,
     max_lines: 0,
+  }
+}
+
+///|
+/// How a table's cell's words are set (table_words_look), on lines `line_share` of their size where that is said (more
+/// than 0: a message's, as its words are, Md::words' `line_em`).
+fn table_words_look_line(head : Bool, scale : Double, line_share : Double) -> @view.WordsLook {
+  let look = table_words_look(head, scale)
+  if line_share > 0.0 {
+    { ..look, line: -line_share }
+  } else {
+    look
   }
 }
 
@@ -413,6 +446,10 @@ fn table_frame_node(
   scale? : (() -> Double)? = None,
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
   rows? : (Int, Int)? = None,
+  cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
+  line_share? : () -> Double,
+  link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
+  on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
   let some = rows
@@ -483,25 +520,49 @@ fn table_frame_node(
             // words_links_node)
             let words_box = fn(cell : @view.View) {
               // (its pieces worked out once as its words change, what draws them and what presses their links reading that)
-              let runs_now = @signals.computed(fn(_) { table_cell_runs(words()) })
+              let runs_now = @signals.computed(fn(_) { cell_runs(words()) })
               let runs = fn() { runs_now.get() }
-              let look = fn() { table_words_look(head, scale()) }
+              let look = fn() {
+                table_words_look_line(head, scale(), match line_share {
+                  Some(f) => f()
+                  None => 0.0
+                })
+              }
               let w = cell.box(fn(w) {
                 // (its pieces first: saying them says the words' look and ink plain, what follows says them)
                 w.words_runs(By(runs)) |> ignore
-                // (its look said once where it is drawn at 1; how its pieces are set and in what ink, all from the theme:
-                // one binding for both)
-                if scale_by is None {
-                  w.words_look(Is(look())) |> ignore
+                // (its look said once where it is drawn at 1 on lines of its own; how its pieces are set and in what
+                // ink, all from the theme: one binding for both; on the message's lines as they change, one binding for
+                // the three, as a message's words have them: md_words_node)
+                if line_share is Some(_) {
+                  w.sets_together(fn() { (look(), table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
+                    w.words_look(Is(s.0)).runs_look(Is(s.1)).ink(Is(s.2)) |> ignore
+                  })
+                  |> ignore
                 } else {
-                  w.words_look(By(look)) |> ignore
+                  if scale_by is None {
+                    w.words_look(Is(look())) |> ignore
+                  } else {
+                    w.words_look(By(look)) |> ignore
+                  }
+                  w.sets_together(fn() { (table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
+                    w.runs_look(Is(s.0)).ink(Is(s.1)) |> ignore
+                  })
+                  |> ignore
                 }
-                w.sets_together(fn() { (table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
-                  w.runs_look(Is(s.0)).ink(Is(s.1)) |> ignore
-                })
-                |> ignore
               })
-              words_links_node(cell, w, runs, on_link, hold=on_link_hold)
+              // (its links pressed and their cards, told as they are shown, as a message's words: md_words_node)
+              let told = on_link_shown is Some(_) || link_cards is Some(_)
+              words_links_node(cell, w, runs, on_link, hold=on_link_hold, cards=link_cards, shown=if told {
+                Some(fn(now) {
+                  match on_link_shown {
+                    Some(f) => f(w, now)
+                    None => ()
+                  }
+                })
+              } else {
+                None
+              })
             }
             // its images in a row where it is only the message's images (CellImageRow: 6 apart, 4 over and under, each
             // cell_image_width wide), else its words, made again only as it comes to hold images or no longer does; where
