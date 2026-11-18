@@ -337,8 +337,8 @@ pub fn answered_in_place(c : @ui.Ctx, key : String, ended : (Bool, Array[@ui.Run
     ended is None,
     exit=@motion.trans(fade=0.0, spec=@motion.tween(answered_fade_ms, ease=Leave)),
   )
-  c.box(style=answered_whole, fn() {
-    let a = c.box(style=answered_room, answer)
+  c.box(style=@sf.answered_whole, fn() {
+    let a = c.box(style=@sf.answered_room, answer)
     match ended {
       None => ()
       Some((granted, words)) => {
@@ -353,9 +353,9 @@ pub fn answered_in_place(c : @ui.Ctx, key : String, ended : (Bool, Array[@ui.Run
             initial=true,
           )
           c.layer(fn() {
-            let o = c.box(style=answered_over, fn() {
-              c.box(style=if granted { ask_dot_on } else { ask_dot }, fn() {  }) |> ignore
-              c.rich(words, style=ask_ended_words) |> ignore
+            let o = c.box(style=@sf.answered_over, fn() {
+              c.box(style=if granted { @sf.ask_dot_on } else { @sf.ask_dot }, fn() {  }) |> ignore
+              c.rich(words, style=@sf.ask_ended_words) |> ignore
             })
             c.look(o, now.unwrap_or(@ui.look()))
           })
@@ -369,7 +369,7 @@ pub fn answered_in_place(c : @ui.Ctx, key : String, ended : (Bool, Array[@ui.Run
 
 ///|
 /// How long a card's answer takes to fade out once answered where it shows, and how it went to fade in after it.
-pub let answered_fade_ms : Double = 200.0
+pub let answered_fade_ms : Double = @sf.answered_fade_ms
 
 ///|
 /// What is asked as its card alone, with no answer at its foot (AskCard without children: where nothing is answered).
@@ -494,22 +494,22 @@ pub fn ask_outcome(c : @ui.Ctx, granted : Bool, words : Array[@ui.Run], inline? 
   // the dot in the middle of the words' first line, not of all of them (on two lines it stays by the first); under the
   // message's picture, as wide as it, laid over the line as the picture is over its head (message.mbt: inline at the
   // head's start, the words past it where the name is; else out in the margin, the words at the row's start)
-  let line = c.sp(c.theme().leading(ask_ended_leading).unwrap_or(c.text_size(ask_ended_size).1))
-  c.box(style=ask_ended, fn() {
-    let base_style = if inline { ask_ended_past } else { ask_ended_at }
-    c.box(style=if history is Some(_) { base_style.then(ask_ended_start) } else { base_style }, fn() {
+  let line = c.sp(c.theme().leading(@sf.ask_ended_leading).unwrap_or(c.text_size(@sf.ask_ended_size).1))
+  c.box(style=@sf.ask_ended, fn() {
+    let base_style = if inline { @sf.ask_ended_past } else { @sf.ask_ended_at }
+    c.box(style=if history is Some(_) { base_style.then(@sf.ask_ended_start) } else { base_style }, fn() {
       match history {
         Some((key, show)) => {
-          let id = @sf.ask_history_trigger(c, key, words, ask_ended_words, line)
+          let id = @sf.ask_history_trigger(c, key, words, @sf.ask_ended_words, line)
           show(id)
         }
-        None => c.rich(words, style=ask_ended_words) |> ignore
+        None => c.rich(words, style=@sf.ask_ended_words) |> ignore
       }
     })
     |> ignore
     c.layer(fn() {
-      c.box(style=(if inline { ask_dot_line } else { ask_dot_line_out }).then(@ui.style(h=Fixed(line))), fn() {
-        c.box(style=if granted { ask_dot_on } else { ask_dot }, fn() {  }) |> ignore
+      c.box(style=(if inline { @sf.ask_dot_line } else { @sf.ask_dot_line_out }).then(@ui.style(h=Fixed(line))), fn() {
+        c.box(style=if granted { @sf.ask_dot_on } else { @sf.ask_dot }, fn() {  }) |> ignore
       })
       |> ignore
     })
@@ -850,74 +850,6 @@ let ask_room : @ui.Style = @ui.css("w=Full")
 let ask_over : @ui.Style = @ui.css("row mb=S2")
 
 ///|
-/// How it ended: a dot and its words, a little under what is over it.
-// kept across runs: a value (no field of it changes)
-let ask_ended : @ui.Style = @ui.css("w=Full mt=S0_5")
-
-///|
-/// Its words inline: past the message's picture, where its name is (message.mbt msg_head_inline).
-// kept across runs: a value (no field of it changes)
-let ask_ended_past : @ui.Style = @ui.style(w=Full, pl=@sf.message_head_in)
-
-///|
-/// Its words with the picture out in the margin: at the row's start, as the name is.
-// kept across runs: a value (no field of it changes)
-let ask_ended_at : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_ended_start : @ui.Style = @ui.css("align=AStart")
-
-///|
-/// Where the dot stands: as wide as the message's picture (18) and under it, the dot in its middle; as high as a line
-/// of the words, the theme's (ask_outcome).
-// kept across runs: a value (no field of it changes)
-let ask_dot_line : @ui.Style = @ui.css("row w=S4_5 align=ACenter justify=JCenter")
-
-///|
-/// The same out in the margin, where the picture is then (message_avatar_out).
-// kept across runs: a value (no field of it changes)
-let ask_dot_line_out : @ui.Style = ask_dot_line.then(@ui.style(ml=@sf.message_avatar_out))
-
-///|
-/// A card's answer's room at its foot (answered_in_place): the card's width, what is in it as far apart as in the card
-/// (@sf.card's 14).
-// kept across runs: a value (no field of it changes)
-let answered_room : @ui.Style = @ui.css("w=Full gap=S3_5")
-
-///|
-/// What holds a card's answer and how it went over it (answered_in_place): the card's width.
-// kept across runs: a value (no field of it changes)
-let answered_whole : @ui.Style = @ui.css("w=Full")
-
-///|
-/// How it went over a card's answer's room: its dot and its words on a line in the middle of the room's height.
-// kept across runs: a value (no field of it changes)
-let answered_over : @ui.Style = @ui.css("row w=Full h=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_ended_words : @ui.TextStyle = @ui.text_style(size=ask_ended_size, leading=ask_ended_leading, color=Muted)
-
-///|
-/// Its words' size and line (ask_ended_words), the line the dot beside them stands in the middle of.
-// kept across runs: a value (no field of it changes)
-let ask_ended_size : @ui.TextSize = Meta
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_ended_leading : @ui.Leading = L5
-
-///|
-/// Its dot, 6 round: green once granted, else quiet.
-// kept across runs: a value (no field of it changes)
-let ask_dot : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Subtle")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_dot_on : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Positive")
-
-///|
 /// The length of use of request `request` chosen in a panel (授权时限, a form: in the window's middle, a sheet with a
 /// finger), as `minutes` (at most `max_minutes`) and `scope` (once, idle, fixed) say it now: 时长, one of the presets or
 /// 自定义 (its minutes or hours typed, the unit at the head's end: a choice of the two, what is typed turned into the
@@ -1030,3 +962,13 @@ fn vault_timeout_open(request : String, minutes : Int, max_minutes : Int, scope 
     },
   )
 }
+
+///|
+/// How it ended, its words inline (past the message's picture) or at the row's start: the library's, by the names the
+/// phone's card's line calls.
+// kept across runs: a value (no field of it changes)
+let ask_ended_past : @ui.Style = @sf.ask_ended_past
+
+///|
+// kept across runs: a value (no field of it changes)
+let ask_ended_at : @ui.Style = @sf.ask_ended_at

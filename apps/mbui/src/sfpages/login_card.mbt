@@ -8,6 +8,9 @@
 // browser of its own the same step there in a ⋯ beside it (seldom used: the step itself only where this device cannot
 // do it); while its agent answers the command or it is checked, how it stands. Ended, one quiet line saying how. What it shows is the core's
 // (`machineLogins`, `machineLogin`); what is done goes through its calls, under way on its button (the core's `doing`).
+// How it looks, made once as nodes, is the library's (libs/sf-ui login_step_card_node.mbt: its card, lines, code, step
+// and pasted code, and their looks, which the old view here draws with too): this file works out what it says and
+// does what is pressed.
 
 ///|
 /// What was pressed here, by login (a step's button plain grey once pressed: the eye on to what follows; followed, the
@@ -76,38 +79,13 @@ fn login_ended(l : Json?) -> (String, Bool) {
 }
 
 ///|
-/// A line of how a login stands or what to do (login_said's): red, what kept this device from the callback; busy, a
-/// spinner before it; last, as far from the card's foot as the title from its top.
-priv struct LoginSaid {
-  words : String
-  red : Bool
-  busy : Bool
-  last : Bool
-}
-
-///|
-fn said_line(words : String, red? : Bool = false, busy? : Bool = false, last? : Bool = false) -> LoginSaid {
+/// A line of how a login stands or what to do (@sf.LoginSaid): red, busy, last as it says.
+fn said_line(words : String, red? : Bool = false, busy? : Bool = false, last? : Bool = false) -> @sf.LoginSaid {
   { words, red, busy, last }
 }
 
 ///|
-/// A step's button (login_step's): by its key, its words, solid while it is the next thing to do, spinning while it is
-/// under way, ↗ for a page opened elsewhere, the other ways of doing it in a ⋯ beside it, last in the card; `press` what
-/// it does, at once; `told`: in an old view, told by that key once the frame's builds are over (what is pressed as it
-/// is built: Ctx::tell), else done as it is pressed.
-priv struct LoginStep {
-  key : String
-  label : String
-  solid : Bool
-  busy : Bool
-  external : Bool
-  more : Array[@sf.MenuItem]
-  last : Bool
-  press : () -> Unit
-  told : String?
-}
-
-///|
+/// A step's button (@sf.LoginStep), as its words, solid and what it does say; the rest as it is mostly.
 fn step_of(
   key : String,
   label : String,
@@ -118,7 +96,7 @@ fn step_of(
   more? : Array[@sf.MenuItem] = [],
   last? : Bool = true,
   told? : String,
-) -> LoginStep {
+) -> @sf.LoginStep {
   { key, label, solid, busy, external, more, last, press: on_press, told }
 }
 
@@ -126,9 +104,9 @@ fn step_of(
 /// What a login under way shows, for one who may finish it (ActiveCard's): its lines, the device code, the step's own
 /// button. One whose page gives a code to paste back is login_paste_shows'.
 priv struct LoginShows {
-  said : Array[LoginSaid]
+  said : Array[@sf.LoginSaid]
   code : String
-  step : LoginStep?
+  step : @sf.LoginStep?
 }
 
 ///|
@@ -171,7 +149,7 @@ fn login_shows(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
     // browser, which can, is the step (this device's again in its ⋯), else what is wrong is said; the page's host all
     // the same
     "loopback" if elsewhere.length() > 0 && (!relay || text(l, "relayText") != "") => {
-      let said : Array[LoginSaid] = []
+      let said : Array[@sf.LoginSaid] = []
       if text(l, "relayText") != "" && relay {
         said.push(said_line(text(l, "relayText"), red=true))
       }
@@ -208,7 +186,7 @@ fn login_shows(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
       { said, code: "", step: Some(go) }
     }
     "loopback" if !relay => {
-      let said : Array[LoginSaid] = [said_line(@sf.t("web-main.logins.needsDesktop"), last=domain == "")]
+      let said : Array[@sf.LoginSaid] = [said_line(@sf.t("web-main.logins.needsDesktop"), last=domain == "")]
       if domain != "" {
         said.push(said_line(domain, last=true))
       }
@@ -216,7 +194,7 @@ fn login_shows(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
     }
     "loopback" => {
       let opened = flag(l, "listening")
-      let said : Array[LoginSaid] = []
+      let said : Array[@sf.LoginSaid] = []
       if opened {
         said.push(said_line(@sf.t("web-main.logins.waitingBrowser"), busy=true))
       } else if text(l, "relayText") != "" {
@@ -266,8 +244,8 @@ fn login_shows(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
 /// then 打开登录页 (solid until pressed here or a code is in: `typed`), and whether what is typed is sent or checked
 /// (`busy`: 完成 turning, nothing more sent).
 priv struct LoginPaste {
-  lead : LoginSaid
-  step : LoginStep
+  lead : @sf.LoginSaid
+  step : @sf.LoginStep
   busy : Bool
 }
 
@@ -366,30 +344,30 @@ pub fn login_card(
   let all = logins_of(core, station)
   let in_sheet = place == "sheet"
   let room = if in_sheet {
-    lc_room_sheet.then(@sf.panel_card_out()).then(@sf.panel_card_last())
+    @sf.login_room_sheet.then(@sf.panel_card_out()).then(@sf.panel_card_last())
   } else {
-    lc_room
+    @sf.login_room
   }
   let card = if in_sheet {
     if marked { lc_card_sheet_marked } else { lc_card_sheet }
   } else {
-    if marked { lc_card_marked } else { lc_card }
+    if marked { lc_card_marked } else { @sf.login_card }
   }
   c.box(style=room, fn() {
     c.box(style=card, fn() {
       if flag(all, "canLogin") {
         if in_sheet {
-          c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
+          c.box(style=@sf.login_title_room, fn() { c.text(text(l, "title"), style=@sf.login_title) |> ignore }) |> ignore
         } else {
-          c.box(style=lc_head, fn() {
-            c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
+          c.box(style=@sf.login_head, fn() {
+            c.box(style=@sf.login_title_room, fn() { c.text(text(l, "title"), style=@sf.login_title) |> ignore }) |> ignore
             login_cancel(c, core, station, id)
           })
           |> ignore
         }
         login_active(c, core, station, l, flag(all, "canRelay"), place)
       } else {
-        c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
+        c.box(style=@sf.login_title_room, fn() { c.text(text(l, "title"), style=@sf.login_title) |> ignore }) |> ignore
         login_said(c, said_line(text(l, "statusText"), last=true))
       }
     })
@@ -410,12 +388,12 @@ pub fn step_card(c : @ui.Ctx, key : String, title : String, line : String, go? :
     Some(go) => c.on_press(x, fn() { go() })
     None => ()
   }
-  c.box(style=lc_room, fn() {
-    let b = c.box(style=if go is Some(_) { lc_card_step } else { lc_card }, id=x, fn() {
-      c.box(style=lc_head, fn() {
-        c.box(style=if line == "" { lc_title_alone } else { lc_title_room }, fn() { c.text(title, style=lc_title) |> ignore }) |> ignore
+  c.box(style=@sf.login_room, fn() {
+    let b = c.box(style=if go is Some(_) { lc_card_step } else { @sf.login_card }, id=x, fn() {
+      c.box(style=@sf.login_head, fn() {
+        c.box(style=if line == "" { @sf.login_title_alone } else { @sf.login_title_room }, fn() { c.text(title, style=@sf.login_title) |> ignore }) |> ignore
         if go is Some(_) {
-          c.box(style=lc_cancel, fn() { @sf.icon(c, "chevron-right", size=lc_icon, color=@sf.theme().p.muted) |> ignore }) |> ignore
+          c.box(style=@sf.login_cancel, fn() { @sf.icon(c, "chevron-right", size=@sf.login_icon, color=@sf.theme().p.muted) |> ignore }) |> ignore
         }
       })
       |> ignore
@@ -438,11 +416,11 @@ fn login_cancel(c : @ui.Ctx, core : Core, station : String, id : String) -> Unit
   c.on_press(x, fn() {
     login_cancel_now(core, station, id)
   })
-  let b = c.box(style=lc_cancel, id=x, fn() {
+  let b = c.box(style=@sf.login_cancel, id=x, fn() {
     if busy {
-      @sf.spinner(c, size=lc_spin) |> ignore
+      @sf.spinner(c, size=@sf.login_spin) |> ignore
     } else {
-      @sf.icon(c, "close", size=lc_icon, color=@sf.theme().p.muted) |> ignore
+      @sf.icon(c, "close", size=@sf.login_icon, color=@sf.theme().p.muted) |> ignore
     }
   })
   c.semantics(b, Button, id=x, label=@sf.t("web-main.logins.cancelWhat"))
@@ -451,12 +429,12 @@ fn login_cancel(c : @ui.Ctx, core : Core, station : String, id : String) -> Unit
 ///|
 /// A line of how it stands or what to do (cardStatus: 12 on 18, grey; red what kept this device from the callback), a
 /// spinner 6 before it while it waits; `last`, as far from the card's foot as the title from its top.
-fn login_said(c : @ui.Ctx, s : LoginSaid) -> Unit {
-  c.box(style=if s.last { lc_said_last } else { lc_said }, fn() {
+fn login_said(c : @ui.Ctx, s : @sf.LoginSaid) -> Unit {
+  c.box(style=if s.last { @sf.login_said_last } else { @sf.login_said }, fn() {
     if s.busy {
-      @sf.spinner(c, size=lc_spin) |> ignore
+      @sf.spinner(c, size=@sf.login_spin) |> ignore
     }
-    c.text(s.words, style=if s.red { lc_said_red } else { lc_said_words }) |> ignore
+    c.text(s.words, style=if s.red { @sf.login_said_red } else { @sf.login_said_words }) |> ignore
   })
   |> ignore
 }
@@ -464,33 +442,33 @@ fn login_said(c : @ui.Ctx, s : LoginSaid) -> Unit {
 ///|
 /// A step's button (StepButton): the card's width, solid while it is the next thing to do, a plain grey one once it has
 /// been; a spinner while it is under way, ↗ for a page opened elsewhere; the other ways in a ⋯ beside it.
-fn login_step(c : @ui.Ctx, s : LoginStep) -> Unit {
+fn login_step(c : @ui.Ctx, s : @sf.LoginStep) -> Unit {
   let p = @sf.theme().p
   let id = if s.busy { 0 } else { c.id(s.key) }
   let ink = if s.solid { p.on_primary } else { p.text }
   let step = fn(style : @ui.Style) {
     c.box(style~, id~, fn() {
       if s.busy {
-        @sf.spinner(c, size=lc_spin, arc=ink) |> ignore
+        @sf.spinner(c, size=@sf.login_spin, arc=ink) |> ignore
       }
-      c.text(s.label, style=if s.solid { lc_step_words_solid } else { lc_step_words }) |> ignore
+      c.text(s.label, style=if s.solid { @sf.login_step_words_solid } else { @sf.login_step_words }) |> ignore
       if s.external {
-        @sf.icon(c, "arrow-up-right", size=lc_icon, color=ink) |> ignore
+        @sf.icon(c, "arrow-up-right", size=@sf.login_icon, color=ink) |> ignore
       }
     })
     |> ignore
   }
-  let foot = fn(style : @ui.Style) { if s.last { style.then(lc_foot_reach) } else { style } }
+  let foot = fn(style : @ui.Style) { if s.last { style.then(@sf.login_foot_reach) } else { style } }
   if s.more.is_empty() {
-    step(foot(if s.solid { lc_step_solid } else { lc_step }).then(lc_inner_round))
+    step(foot(if s.solid { @sf.login_step_solid } else { @sf.login_step }).then(@sf.login_inner_round))
   } else {
     // the other ways of doing the step, seldom used, in a ⋯ at the row's end (sf/align.mbt: what is used least
     // goes into the row's ⋯)
-    c.box(style=foot(lc_step_row), fn() {
-      step((if s.solid { lc_step_solid_in_row } else { lc_step_in_row }).then(lc_inner_round))
+    c.box(style=foot(@sf.login_step_row), fn() {
+      step((if s.solid { lc_step_solid_in_row } else { lc_step_in_row }).then(@sf.login_inner_round))
       let mid = c.id(s.key + "/more")
       let what = @sf.t("common.login.otherWays")
-      let b = c.box(style=lc_more.then(lc_inner_round), id=mid, fn() { @sf.icon(c, "more", size=lc_icon, color=p.text) |> ignore })
+      let b = c.box(style=@sf.login_more.then(@sf.login_inner_round), id=mid, fn() { @sf.icon(c, "more", size=@sf.login_icon, color=p.text) |> ignore })
       c.semantics(b, Button, id=mid, label=what)
       c.on_press(mid, fn() {
         @sf.menu(s.more.map(fn(i) { Some(i) }), from=Of(mid), along=End)
@@ -616,8 +594,8 @@ fn login_code(c : @ui.Ctx, core : Core, code : String) -> Unit {
     c.copy_text(code)
     (core.say)(@sf.t("web-main.logins.codeCopied"))
   })
-  c.box(style=lc_code_room, id~, label=@sf.t("web-main.logins.copyCode") + " " + code, fn() {
-    c.rich([@ui.span(code, mono=true)], style=lc_code) |> ignore
+  c.box(style=@sf.login_code_room, id~, label=@sf.t("web-main.logins.copyCode") + " " + code, fn() {
+    c.rich([@ui.span(code, mono=true)], style=@sf.login_code) |> ignore
   })
   |> ignore
 }
@@ -654,14 +632,14 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
     c.blur()
     c.tell("login-answer/" + id, fn() { login_answer(core, station, id, code) })
   }
-  c.box(style=lc_paste.then(lc_inner_round), fn() {
+  c.box(style=@sf.login_paste.then(@sf.login_inner_round), fn() {
     let mut words = ""
-    c.box(style=lc_paste_words, fn() {
+    c.box(style=@sf.login_paste_words, fn() {
       let r = c.editor(
         "login-paste/" + id,
         placeholder=@sf.t("web-main.logins.pasteCode"),
-        font_size=lc_paste_size,
-        line=lc_paste_line,
+        font_size=@sf.login_paste_size,
+        line=@sf.login_paste_line,
         max_lines=1,
         plain=true,
         color=p.text,
@@ -684,12 +662,12 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
           send(words)
         }
       })
-      c.box(style=lc_done.then(lc_done_round), id=go, fn() {
+      c.box(style=@sf.login_done.then(@sf.login_done_round), id=go, fn() {
         // busy: a spinner over its word, as wide as before
-        let w = c.text(@sf.t("web-main.logins.finish"), style=lc_done_words)
+        let w = c.text(@sf.t("web-main.logins.finish"), style=@sf.login_done_words)
         if busy {
           c.look(w, @ui.look(alpha=0.0))
-          c.layer(fn() { c.box(style=lc_done_spin, fn() { @sf.spinner(c, size=lc_spin, arc=p.on_primary) |> ignore }) |> ignore })
+          c.layer(fn() { c.box(style=@sf.login_done_spin, fn() { @sf.spinner(c, size=@sf.login_spin, arc=p.on_primary) |> ignore }) |> ignore })
           |> ignore
         }
       })
@@ -713,7 +691,7 @@ fn login_card_last(station : String, id : String, l : Json?) -> Json? {
   }
 }
 
-// ── the card, made once ─────────────────────────────────────────────────
+// ── the card, made once (the library's: @sf.login_step_card_node) ──────────────
 
 ///|
 /// Login `id` of `station` as its card (login_card's, as nodes of a page made once), all of it as the core says it now:
@@ -742,101 +720,38 @@ pub fn login_card_node(
     }
   }
   p.pick(stands, fn(x, k) {
+    let in_sheet = place == "sheet"
+    let title = fn() { text(l(), "title") }
     match k {
       0 => ()
-      1 =>
-        @sf.words_node(x, fn() { login_ended(l()).0 }, fn() { if login_ended(l()).1 { lc_ended_failed } else { lc_ended } })
-        |> ignore
-      _ =>
-        x.box(fn(room) {
-          // (in a panel's body (its login sheet): all of its width, concentric with its sides and its foot)
-          let in_sheet = place == "sheet"
-          @sf.style_node(room, fn() {
-            if in_sheet {
-              lc_room_sheet.then(@sf.panel_card_out_node(room)).then(@sf.panel_card_last_node(room))
-            } else {
-              lc_room
-            }
-          })
-          room.box(fn(card) {
-            @sf.style_node(card, fn() {
-              match (in_sheet, marked) {
-                (true, true) => lc_card_body_marked.then(lc_card_across)
-                (true, false) => lc_card_body.then(lc_card_across)
-                (false, true) => lc_card_body_marked
-                (false, false) => lc_card_body
-              }
-            })
-            // (what is on it as wide as it, a step's button the card's width: its own lines up at the start)
-            card.lines_up(Is(None)) |> ignore
-            // (as wide as what it holds, 360 at least where there is the room: within the width its place gives it)
-            card.min_width(Is(Some(lc_card_least)), within=true).max_width(Is(Some(lc_card_most)), within=true) |> ignore
-            let title = fn(t : @view.View) {
-              t.box(fn(r) {
-                @sf.style_node(r, fn() { lc_title_room }, in_row=k == 2 && !in_sheet)
-                @sf.words_node(r, fn() { text(l(), "title") }, fn() { lc_title }) |> ignore
-              })
-              |> ignore
-            }
-            if k == 2 && in_sheet {
-              // (in its login sheet its title alone: the sheet's own close is how it is put away)
-              title(card)
-              login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place)
-            } else if k == 2 {
-              card.box(fn(h) {
-                @sf.style_node(h, fn() { lc_head })
-                title(h)
-                login_cancel_node(h, core, station, id)
-              })
-              |> ignore
-              login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place)
-            } else {
-              title(card)
-              login_said_node(card, fn() { said_line(text(l(), "statusText"), last=true) })
-            }
-          })
-          |> ignore
+      1 => @sf.login_ended_node(x, fn() { login_ended(l()).0 }, fn() { login_ended(l()).1 })
+      // (in its login sheet its title alone: the sheet's own close is how it is put away)
+      2 if in_sheet =>
+        @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
+          login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place)
         })
-        |> ignore
+      2 =>
+        @sf.login_step_card_node(
+          x,
+          title,
+          in_sheet~,
+          marked~,
+          cancel=(fn() { login_cancelling(core, station, id) }, fn() { login_cancel_now(core, station, id) }),
+          fn(card) { login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place) },
+        )
+      _ =>
+        @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
+          @sf.login_said_node(card, fn() { said_line(text(l(), "statusText"), last=true) })
+        })
     }
   })
-}
-
-///|
-/// 取消 as the card's × (login_cancel's), spinning while it is done.
-fn login_cancel_node(h : @view.View, core : Core, station : String, id : String) -> Unit {
-  let busy = fn() { login_cancelling(core, station, id) }
-  @sf.action_box_node(h, fn() { @sf.t("web-main.logins.cancelWhat") }, fn(_) { login_cancel_now(core, station, id) }, disabled=fn() { busy() }, fn(b) {
-    @sf.style_node(b, fn() { if @sf.lit_node(b) && !busy() { lc_cancel_lit } else { lc_cancel } }, in_row=true)
-    b.pick(busy, fn(m, spins) {
-      if spins {
-        @sf.spinner_node(m, size=lc_spin) |> ignore
-      } else {
-        @sf.icon_node(m, "close", lc_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-      }
-    })
-  })
-  |> ignore
-}
-
-///|
-/// A line of how it stands (login_said's), as `s` says it now.
-fn login_said_node(p : @view.View, s : () -> LoginSaid) -> Unit {
-  p.box(fn(b) {
-    @sf.style_node(b, fn() { if s().last { lc_said_last } else { lc_said } })
-    b.show(fn() { s().busy }, fn(x) { @sf.spinner_node(x, size=lc_spin) |> ignore })
-    @sf.words_node(b, fn() { s().words }, fn() { if s().red { lc_said_red } else { lc_said_words } }) |> ignore
-  })
-  |> ignore
 }
 
 ///|
 /// What a login under way shows (login_active's), as the core says it now: a code to paste back, else
 /// login_shows' lines, its code and its step.
 fn login_active_node(card : @view.View, core : Core, station : String, l : () -> Json?, relay : () -> Bool, place : String) -> Unit {
-  card.pick(fn() { flag(l(), "paste") && text(l(), "url") != "" }, fn(x, paste) {
-    // (its lines, its code and its step as far apart as the card's own: lc_card_body's)
-    @sf.style_node(x, fn() { lc_active })
+  @sf.login_active_node(card, fn() { flag(l(), "paste") && text(l(), "url") != "" }, fn(x, paste) {
     if paste {
       login_paste_node(x, core, station, l, place)
       return
@@ -844,97 +759,16 @@ fn login_active_node(card : @view.View, core : Core, station : String, l : () ->
     // (by the one it made: its step's press is a function made with it, no value to compare)
     let shows = @signals.computed_ref(fn(_) { login_shows(core, station, l(), relay()) })
     let shows = fn() { shows.get() }
-    x.each(fn() { shows().said.mapi(fn(i, _) { i }) }, fn(i) { i }, fn(r, i) {
-      let i = i.untracked()
-      login_said_node(r, fn() { shows().said.get(i).unwrap_or(said_line("")) })
-    })
-    x.show(fn() { shows().code != "" }, fn(r) { login_code_node(r, core, fn() { shows().code }) })
-    x.show(fn() { shows().step is Some(_) }, fn(r) {
-      login_step_node(r, fn() { shows().step.unwrap_or(step_of("", "", false, on_press=fn() {  })) })
-    })
-  })
-}
-
-///|
-/// The device code (login_code's), as `code` says it now: pressed, copied, said so.
-fn login_code_node(p : @view.View, core : Core, code : () -> String) -> Unit {
-  @sf.action_box_node(p, fn() { @sf.t("web-main.logins.copyCode") + " " + code() }, fn(_) {
-      @sfbase.copy_out(code())
+    @sf.login_lines_node(x, fn() { shows().said }, fn() { shows().code }, fn() { shows().step }, fn(code) {
+      @sfbase.copy_out(code)
       (core.say)(@sf.t("web-main.logins.codeCopied"))
-    }, fn(b) {
-    @sf.style_node(b, fn() { lc_code_room })
-    b.box(fn(w) {
-      w
-      .words_runs(By(fn() { [@ui.span(code(), mono=true)] }))
-      .words_look(Is(@ui.style_words(lc_code)))
-      .ink(By(fn() { @ui.style_ink(lc_code) }))
-      |> ignore
     })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A step's button (login_step's), as `s` says it now: solid while it is the next thing to do, lit under the hand; its
-/// other ways in a ⋯ beside it.
-fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
-  let foot = fn(style : @ui.Style) { if s().last { style.then(lc_foot_reach) } else { style } }
-  let button = fn(at : @view.View, in_row : Bool) {
-    @sf.action_box_node(at, fn() { s().label }, fn(_) { (s().press)() }, disabled=fn() { s().busy }, fn(b) {
-      @sf.style_node(
-        b,
-        fn() {
-          let now = s()
-          let lit = @sf.lit_node(b) && !now.busy
-          let look = match (now.solid, lit) {
-            (true, true) => lc_step_solid_lit
-            (true, false) => lc_step_solid
-            (false, true) => lc_step_lit
-            (false, false) => lc_step
-          }
-          let step = if in_row {
-            look.then(lc_in_row)
-          } else {
-            foot(look)
-          }
-          step.then(lc_inner_round)
-        },
-        in_row~,
-      )
-      let ink = fn() { if s().solid { @sf.theme().p.on_primary } else { @sf.theme().p.text } }
-      b.show(fn() { s().busy }, fn(x) { @sf.spinner_node(x, size=lc_spin, arc=ink) |> ignore })
-      @sf.words_node(b, fn() { s().label }, fn() { if s().solid { lc_step_words_solid } else { lc_step_words } }) |> ignore
-      b.show(fn() { s().external }, fn(x) { @sf.icon_node(x, "arrow-up-right", lc_icon, By(ink)) |> ignore })
-    })
-    |> ignore
-  }
-  p.pick(fn() { s().more.is_empty() }, fn(x, alone) {
-    if alone {
-      button(x, false)
-      return
-    }
-    // the other ways of doing the step, seldom used, in a ⋯ at the row's end
-    x.box(fn(r) {
-      @sf.style_node(r, fn() { foot(lc_step_row) })
-      button(r, true)
-      @sf.action_box_node(r, fn() { @sf.t("common.login.otherWays") }, fn(m) {
-          let (wx, wy, ww, wh) = m.placed_window_now()
-          @sf.menu(s().more.map(fn(i) { Some(i) }), from=At(wx, wy, ww, wh), along=End)
-        }, fn(m) {
-        @sf.style_node(m, fn() { (if @sf.lit_node(m) { lc_more_lit } else { lc_more }).then(lc_inner_round) }, in_row=true)
-        @sf.icon_node(m, "more", lc_icon, By(fn() { @sf.theme().p.text })) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
   })
 }
 
 ///|
 /// A login whose page gives a code to paste back (login_paste's), as the core says it now: its line and its step, then
-/// the field (this place's: login_field), 完成 at its end once a code is in (Enter too); sent, the keyboard goes, the
-/// code stays and 完成 turns while it is checked.
+/// the field (this place's: login_field), 完成 at its end once a code is in (Enter too), sent as the code pasted back.
 fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Json?, place : String) -> Unit {
   let id = text(@signals.untracked(l), "id")
   let field = login_field(place + "\u{1}" + station + "\u{1}" + id)
@@ -942,375 +776,56 @@ fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Jso
   // (by the one it made: its step's press is a function made with it, no value to compare)
   let shows = @signals.computed_ref(fn(_) { login_paste_shows(core, station, l(), words() != "") })
   let shows = fn() { shows.get() }
-  login_said_node(x, fn() { shows().lead })
-  login_step_node(x, fn() { shows().step })
-  // sent, nothing is left to type: the keyboard goes (the code stays in the field as it is checked)
-  let send = fn(code : String) {
-    // (let go of on either side of what hosts the tree, its keyboard with it: View::focus_let_go)
-    x.focus_let_go()
+  @sf.login_paste_node(x, fn() { shows().lead }, fn() { shows().step }, field, fn() { shows().busy }, fn(code) {
     login_answer(core, station, id, code)
-  }
-  x.box(fn(b) {
-    @sf.style_node(b, fn() { lc_paste.then(lc_inner_round) })
-    b.box(fn(w) {
-      @sf.style_node(w, fn() { lc_paste_words }, in_row=true)
-      @ui.field(
-        w,
-        field,
-        placeholder=@sf.t("web-main.logins.pasteCode"),
-        font_size=lc_paste_size,
-        line=lc_paste_line,
-        max_lines=1,
-        enter_sends=true,
-        colors_by=fn() {
-          let p = @sf.theme().p
-          (p.text, p.muted, p.accent)
-        },
-        submitted=fn(sent) {
-          let code = sent.trim(chars=" \n").to_owned()
-          if code != "" && !shows().busy {
-            send(code)
-          }
-        },
-      )
-      |> ignore
-    })
-    |> ignore
-    b.show(fn() { words() != "" || shows().busy }, fn(d) {
-      @sf.action_box_node(d, fn() { @sf.t("web-main.logins.finish") }, fn(_) { send(words()) }, disabled=fn() { shows().busy }, fn(go) {
-        @sf.style_node(go, fn() { (if @sf.lit_node(go) && !shows().busy { lc_done_lit } else { lc_done }).then(lc_done_round) }, in_row=true)
-        // busy: a spinner over its word, as wide as before
-        @sf.words_node(go, fn() { @sf.t("web-main.logins.finish") }, fn() { lc_done_words }).alpha(By(fn() {
-          if shows().busy {
-            0.0
-          } else {
-            1.0
-          }
-        }))
-        |> ignore
-        go.show(fn() { shows().busy }, fn(s) {
-          s.over(Is(true)) |> ignore
-          @sf.style_node(s, fn() { lc_done_spin })
-          @sf.spinner_node(s, size=lc_spin, arc=fn() { @sf.theme().p.on_primary }) |> ignore
-        })
-      })
-      |> ignore
-    })
   })
-  |> ignore
 }
 
 ///|
-/// The card (card): under the agent's message as a decision's options are, as wide as what it holds and at least 360
-/// where there is the room (minWidth: min(100%, 360px)), 560 at most and never wider than where it is (min(100%,
-/// 560px), as a vault item's card: not drawn across a wide chat's column), 8 in all round, its parts 2
-/// apart, on the ink at 5%; its corner its padding and its × pill's; the accent at 10% when it is the one a link
-/// pointed to.
+/// The old view's card (login_card's): as wide as the library's says, across a panel's body (its login sheet), lit
+/// under the pointer as a step left (step_card), the accent at 10% when it is the one a link pointed to.
 // kept across runs: a value (no field of it changes)
-let lc_card : @ui.Style = lc_card_body.then(@ui.style(min_w=@sf.login_card_least, max_w=@sf.login_card_most))
-
-///|
-/// The card but how wide it is (its node's: that by where it is, as laid out).
-// kept across runs: a value (no field of it changes)
-let lc_card_body : @ui.Style = @ui.style(w=Cut, p=@sf.inset_room, gap=S0_5, radius=@sf.login_card_corner, bg=A(Fg, O5), align=AStart)
-
-///|
-/// What a login under way shows in its card (login_active_node's): its lines, code and step as far apart as the card's.
-// kept across runs: a value (no field of it changes)
-let lc_active : @ui.Style = @ui.css("gap=S0_5")
+let lc_card_sheet : @ui.Style = @sf.login_card_body.then(@ui.css("w=Full"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let lc_card_body_marked : @ui.Style = lc_card_body.then(@ui.css("bg=A(Accent,O10)"))
-
-///|
-/// How wide the card is at least and at most where there is the room (login_card_least's, login_card_most's).
-let lc_card_least : Double = 360.0
-
-///|
-let lc_card_most : Double = 560.0
-
-///|
-/// Where it is: all of the column's width, 8 under what is above it (the card in it as wide as it says).
-// kept across runs: a value (no field of it changes)
-let lc_room : @ui.Style = @ui.css("w=Full pt=S2 align=AStart")
-
-///|
-/// In a panel's body (place="sheet"): full width, concentric with the panel's sides and foot; its card across it.
-// kept across runs: a value (no field of it changes)
-let lc_room_sheet : @ui.Style = @ui.css("w=Full align=AStart")
+let lc_card_sheet_marked : @ui.Style = @sf.login_card_body_marked.then(@ui.css("w=Full"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let lc_card_across : @ui.Style = @ui.css("w=Full")
+let lc_card_step : @ui.Style = @sf.login_card.then(@ui.css("hovered{bg=Hover}"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let lc_card_sheet : @ui.Style = lc_card_body.then(@ui.css("w=Full"))
+let lc_card_marked : @ui.Style = @sf.login_card.then(@ui.css("bg=A(Accent,O10)"))
+
+///|
+/// An ended login's line (the library's: decision.mbt's too), failed in red.
+// kept across runs: a value (no field of it changes)
+let lc_ended : @ui.TextStyle = @sf.login_ended
 
 ///|
 // kept across runs: a value (no field of it changes)
-let lc_card_sheet_marked : @ui.Style = lc_card_body_marked.then(@ui.css("w=Full"))
+let lc_ended_failed : @ui.TextStyle = @sf.login_ended_failed
 
 ///|
-/// A step's card (step_card): pressed as a whole, lit under a pointer.
+/// The old view's step's button beside its ⋯: none of its own room round it.
 // kept across runs: a value (no field of it changes)
-let lc_card_step : @ui.Style = lc_card.then(@ui.css("hovered{bg=Hover}"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_card_marked : @ui.Style = lc_card.then(@ui.css("bg=A(Accent,O10)"))
-
-///|
-/// Ended: 12 on 18 in the subtle ink; failed, red.
-// kept across runs: a value (no field of it changes)
-let lc_ended : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle)
+let lc_step_in_row : @ui.Style = @sf.login_step.then(@sf.login_in_row)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let lc_ended_failed : @ui.TextStyle = lc_ended.then(@ui.text_style(color=Danger))
+let lc_step_solid_in_row : @ui.Style = @sf.login_step_solid.then(@sf.login_in_row)
 
 ///|
-/// Its title and its × (cardHead): the title takes the row, the × in the card's top corner, 4 apart.
-// kept across runs: a value (no field of it changes)
-let lc_head : @ui.Style = @ui.css("row w=Full gap=S1 align=AStart")
-
-///|
-/// Its title (cardTitle): 13 on 20, medium, 10 in and 10 down (a small panel's row).
-// kept across runs: a value (no field of it changes)
-let lc_title_room : @ui.Style = @ui.css("w=Full px=S2_5 pt=S2_5")
-
-///|
-/// Its title with no line under it (step_card's): as far from the card's foot as from its top, as a last line is.
-// kept across runs: a value (no field of it changes)
-let lc_title_alone : @ui.Style = lc_title_room.then(@ui.css("pb=S2_5"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, leading=L5)
-
-///|
-/// 取消 (PanelIconButton): 24, round, its ground under the pointer, in the card's top end corner as far in as makes it
-/// concentric with it (capsule_in: the card's corner less its half), past the card's padding.
-// kept across runs: a value (no field of it changes)
-let lc_cancel : @ui.Style = @ui.css("w=S6 h=S6 radius=Full align=ACenter justify=JCenter hovered{bg=Hover}").then(
-  @ui.style(mt=@sf.room_of(lc_cancel_off), mr=@sf.room_of(lc_cancel_off)),
-)
-
-///|
-/// 取消 under the hand (its node's: lc_cancel's hovered).
-// kept across runs: a value (no field of it changes)
-let lc_cancel_lit : @ui.Style = lc_cancel.then(@ui.css("bg=Hover"))
-
-///|
-/// How far past the card's padding 取消 stands (lc_cancel), and its side (S6).
-let lc_cancel_off : Double = @ui.capsule_in(@sf.card_corner, lc_cancel_side) - @sf.corner_inset
-
-///|
-let lc_cancel_side : Double = 24.0
-
-///|
-/// A line of how it stands (cardStatus): 12 on 18, grey, 10 in, a spinner 6 before it; last, 10 over the card's foot.
-// kept across runs: a value (no field of it changes)
-let lc_said : @ui.Style = @ui.css("row px=S2_5 gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_said_last : @ui.Style = lc_said.then(@ui.css("pb=S2_5"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_said_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_said_red : @ui.TextStyle = lc_said_words.then(@ui.text_style(color=Danger))
-
-///|
-/// The device code (cardCode): 10 in, 4 over and under; its words the heading's size, semibold, in the code face.
-// kept across runs: a value (no field of it changes)
-let lc_code_room : @ui.Style = @ui.css("px=S2_5 py=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_code : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold, color=Fg, wrap=false)
-
-///|
-/// A step's button (cardStep): the card's width, 32 high, 8 under what is above it, 12 in, its corner the card's less
-/// its padding; the ink at 5% (the pointer's over it, mbui ui/hand_moves.mbt), solid (the primary's, a step towards
-/// the page under the pointer) while it is the next thing to do; its words 13 medium, a spinner or ↗ 6 beside them.
-// kept across runs: a value (no field of it changes)
-let lc_step : @ui.Style = @ui.css(
-  "row w=Full h=S8 mt=S2 px=S3 gap=S1_5 radius=Inner bg=A(Fg,O5) align=ACenter justify=JCenter hovered{bg=Hover}",
-).then(@ui.style(mx=@sf.room_of(-lc_step_reach)))
-
-///|
-/// How far past the card's padding a step's button (a capsule 32 high, in the card's foot corners where it is last, a
-/// pasted code's field so: lc_paste) reaches,
-/// to stand concentric with them (capsule_in: 8.87 in, the card's padding 10).
-let lc_step_reach : Double = @sf.corner_inset - @ui.capsule_in(@sf.card_corner, 32.0)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_step_solid : @ui.Style = lc_step.then(@ui.css("bg=Primary hovered{bg=Over(Primary, A(Bg, O15))}"))
-
-///|
-/// A step's button under the hand (its node's: lc_step's and lc_step_solid's hovered).
-// kept across runs: a value (no field of it changes)
-let lc_step_lit : @ui.Style = lc_step.then(@ui.css("bg=Hover"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_step_solid_lit : @ui.Style = lc_step_solid.then(@ui.css("bg=Over(Primary, A(Bg, O15))"))
-
-///|
-/// A step's button with its ⋯ (login_step's `more`): the row 8 under what is over it, the button the rest of it, the ⋯
-/// a round one as high, 6 after it, on the step's grey.
-// kept across runs: a value (no field of it changes)
-let lc_step_row : @ui.Style = @ui.css("row w=Full mt=S2 gap=S1_5 align=ACenter").then(
-  @ui.style(mx=@sf.room_of(-lc_step_reach)),
-)
-
-///|
-/// What is last in the card reaching its foot as far as its sides (lc_step_reach).
-// kept across runs: a value (no field of it changes)
-let lc_foot_reach : @ui.Style = @ui.style(mb=@sf.room_of(-lc_step_reach))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_step_in_row : @ui.Style = lc_step.then(lc_in_row)
-
-///|
-/// A step's button beside its ⋯: none of its own room round it.
-// kept across runs: a value (no field of it changes)
-let lc_in_row : @ui.Style = @ui.css("mt=S0 mx=S0 mb=S0")
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_step_solid_in_row : @ui.Style = lc_step_solid.then(lc_in_row)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_more : @ui.Style = @ui.css("w=S8 h=S8 radius=Inner bg=A(Fg,O5) align=ACenter justify=JCenter hovered{bg=Hover}")
-
-///|
-/// The ⋯ under the hand (its node's).
-// kept across runs: a value (no field of it changes)
-let lc_more_lit : @ui.Style = lc_more.then(@ui.css("bg=Hover"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_step_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_step_words_solid : @ui.TextStyle = lc_step_words.then(@ui.text_style(color=OnPrimary))
-
-///|
-/// The code pasted back (cardPaste): the card's width, 32 high, 6 under the step, 12 in on the left and 4 on the right,
-/// on the canvas, its corner the step's; 完成 at its end (cardPasteDone): 24 high, 12 in, solid, its corner the field's
-/// less 4, its words 12 medium.
-// kept across runs: a value (no field of it changes)
-let lc_paste : @ui.Style = @ui.css("row w=Full h=S8 mt=S1_5 pl=S3 pr=S1 gap=S1 radius=Inner bg=Bg align=ACenter").then(
-  @ui.style(mx=@sf.room_of(-lc_step_reach), mb=@sf.room_of(-lc_step_reach)),
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_paste_words : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_done : @ui.Style = @ui.css(
-  "row h=S6 px=S3 radius=Inner bg=Primary align=ACenter justify=JCenter hovered{bg=Over(Primary, A(Bg, O15))}",
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_done_lit : @ui.Style = lc_done.then(@ui.css("bg=Over(Primary, A(Bg, O15))"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_done_spin : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_done_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=OnPrimary, wrap=false)
-
-///|
-/// The field's words (cardPasteInput): the ui's 13 on 20.
-let lc_paste_size : Double = 13.0
-
-///|
-let lc_paste_line : Double = 20.0
-
-///|
-/// The spinner's and the icons' sizes (Spinner inline, Close 14, ArrowUpRight 14).
-let lc_spin : Double = 12.0
-
-///|
-let lc_icon : Double = 14.0
-
-///|
-/// The corner of what stands in the card's corners as a step's button does (Inner, its node's: concentric with the
-/// card, as far in as lc_step_reach leaves it), and 完成's in the pasted code's field (4 in from its end).
-let lc_inner_corner : Double = @ui.concentric(@sf.card_corner, @ui.capsule_in(@sf.card_corner, 32.0))
-
-///|
-let lc_done_corner : Double = @ui.concentric(lc_inner_corner, 4.0)
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_inner_round : @ui.Style = @ui.style(radius=@sf.radius_between(lc_inner_corner))
-
-///|
-// kept across runs: a value (no field of it changes)
-let lc_done_round : @ui.Style = @ui.style(radius=@sf.radius_between(lc_done_corner))
-
-///|
-/// A step left of something under an agent's message (step_card's, as nodes), as it says it now: its title, a line
-/// under it where there is one, the whole card the way to it (`go`) with a › in its corner; none to go by, the card
-/// alone, taking no press.
+/// A step left of something under an agent's message (step_card's, as nodes: the library's step_card_node), as it says
+/// it now: its title, a line under it where there is one, the whole card the way to it (`go`) with a › in its corner;
+/// none to go by, the card alone, taking no press.
 pub fn step_card_node(
   v : @view.View,
   title : () -> String,
   line : () -> String,
   go : () -> (() -> Unit)?,
 ) -> Unit {
-  v.box(fn(room) {
-    @sf.style_node(room, fn() { lc_room })
-    let goes = fn() { go() is Some(_) }
-    @sf.action_box_while_node(room, goes, title, fn(_) {
-      match @signals.untracked(go) {
-        Some(f) => f()
-        None => ()
-      }
-    }, fn(card) {
-      @sf.style_node(card, fn() { if goes() && @sf.lit_node(card) { lc_card_step_lit } else { lc_card } })
-      card.box(fn(h) {
-        @sf.style_node(h, fn() { lc_head })
-        h.box(fn(t) {
-          @sf.style_node(t, fn() { if line() == "" { lc_title_alone } else { lc_title_room } }, in_row=true)
-          @sf.words_node(t, title, fn() { lc_title }) |> ignore
-        })
-        |> ignore
-        h.show(goes, fn(s) {
-          s.box(fn(b) {
-            @sf.style_node(b, fn() { lc_cancel }, in_row=true)
-            @sf.icon_node(b, "chevron-right", lc_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-          })
-          |> ignore
-        })
-      })
-      |> ignore
-      card.show(fn() { line() != "" }, fn(s) { login_said_node(s, fn() { said_line(line(), last=true) }) })
-    })
-    |> ignore
-  })
-  |> ignore
+  @sf.step_card_node(v, title, line, go)
 }
-
-///|
-/// A step's card (step_card_node) under the pointer: lit, as lc_card_step's hovered.
-// kept across runs: a value (no field of it changes)
-let lc_card_step_lit : @ui.Style = lc_card.then(@ui.css("bg=Hover"))

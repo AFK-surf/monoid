@@ -51,6 +51,16 @@ pub let agent_station_most : @ui.Len
 
 pub fn alpha(Int64, Double) -> Int64
 
+pub let answered_fade_ms : Double
+
+pub fn answered_in_place_node(@view.View, () -> (Bool, Array[@text.Run])?, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub let answered_over : @ui.Style
+
+pub let answered_room : @ui.Style
+
+pub let answered_whole : @ui.Style
+
 pub fn apart(@ui.Ctx, () -> Unit) -> Unit
 
 pub fn apart_node(@view.View, (@view.View) -> Unit) -> @view.View
@@ -89,6 +99,28 @@ pub fn ask_card_node(@view.View, (@view.View) -> Unit) -> @view.View
 
 pub let ask_card_room_most : @ui.Style
 
+pub let ask_dot : @ui.Style
+
+pub let ask_dot_line : @ui.Style
+
+pub let ask_dot_line_out : @ui.Style
+
+pub let ask_dot_on : @ui.Style
+
+pub let ask_ended : @ui.Style
+
+pub let ask_ended_at : @ui.Style
+
+pub let ask_ended_leading : @ui.Leading
+
+pub let ask_ended_past : @ui.Style
+
+pub let ask_ended_size : @ui.TextSize
+
+pub let ask_ended_start : @ui.Style
+
+pub let ask_ended_words : @ui.TextStyle
+
 pub let ask_foot : @ui.Style
 
 pub fn ask_foot_chosen_end() -> @ui.Style
@@ -120,6 +152,8 @@ pub fn ask_line_words(@ui.TextStyle) -> @ui.TextStyle
 pub fn ask_node(@view.View, () -> Bool, String, @ui.Field, String, String, String, String, Bool, Bool, () -> Unit, (String) -> Unit, shown? : () -> Unit, gone? : () -> Unit, dims? : () -> Bool, covered? : () -> Bool) -> Unit
 
 pub let ask_note : @ui.TextStyle
+
+pub fn ask_outcome_node(@view.View, () -> Bool, () -> Array[@text.Run], () -> Bool, history? : ((@view.View) -> Unit)?, loc~ : SourceLoc) -> Unit
 
 pub let ask_title : @ui.TextStyle
 
@@ -1048,11 +1082,101 @@ pub let lit_reach : Double
 
 pub let local_ms : Double
 
+pub fn login_active_node(@view.View, () -> Bool, (@view.View, Bool) -> Unit) -> Unit
+
+pub let login_cancel : @ui.Style
+
+pub let login_card : @ui.Style
+
+pub let login_card_body : @ui.Style
+
+pub let login_card_body_marked : @ui.Style
+
 pub let login_card_corner : @ui.Radius
 
 pub let login_card_least : @ui.Len
 
 pub let login_card_most : @ui.Len
+
+pub let login_code : @ui.TextStyle
+
+pub fn login_code_node(@view.View, () -> String, (String) -> Unit) -> Unit
+
+pub let login_code_room : @ui.Style
+
+pub let login_done : @ui.Style
+
+pub let login_done_round : @ui.Style
+
+pub let login_done_spin : @ui.Style
+
+pub let login_done_words : @ui.TextStyle
+
+pub let login_ended : @ui.TextStyle
+
+pub let login_ended_failed : @ui.TextStyle
+
+pub fn login_ended_node(@view.View, () -> String, () -> Bool) -> Unit
+
+pub let login_foot_reach : @ui.Style
+
+pub let login_head : @ui.Style
+
+pub let login_icon : Double
+
+pub let login_in_row : @ui.Style
+
+pub let login_inner_round : @ui.Style
+
+pub fn login_lines_node(@view.View, () -> Array[LoginSaid], () -> String, () -> LoginStep?, (String) -> Unit) -> Unit
+
+pub let login_more : @ui.Style
+
+pub let login_paste : @ui.Style
+
+pub let login_paste_line : Double
+
+pub fn login_paste_node(@view.View, () -> LoginSaid, () -> LoginStep, @ui.Field, () -> Bool, (String) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub let login_paste_size : Double
+
+pub let login_paste_words : @ui.Style
+
+pub let login_room : @ui.Style
+
+pub let login_room_sheet : @ui.Style
+
+pub let login_said : @ui.Style
+
+pub let login_said_last : @ui.Style
+
+pub fn login_said_node(@view.View, () -> LoginSaid, loc~ : SourceLoc) -> Unit
+
+pub let login_said_red : @ui.TextStyle
+
+pub let login_said_words : @ui.TextStyle
+
+pub let login_spin : Double
+
+pub let login_step : @ui.Style
+
+pub fn login_step_card_node(@view.View, () -> String, (@view.View) -> Unit, in_sheet? : Bool, marked? : Bool, cancel? : (() -> Bool, () -> Unit), loc~ : SourceLoc) -> Unit
+
+pub fn login_step_node(@view.View, () -> LoginStep) -> Unit
+
+pub let login_step_row : @ui.Style
+
+pub let login_step_solid : @ui.Style
+
+pub let login_step_words : @ui.TextStyle
+
+pub let login_step_words_solid : @ui.TextStyle
+
+pub let login_title : @ui.TextStyle
+
+pub let login_title_alone : @ui.Style
+
+pub let login_title_room : @ui.Style
 
 pub fn look() -> Look
 
@@ -2207,6 +2331,8 @@ pub fn status_dot(@ui.Ctx, String) -> Unit
 
 pub let status_ring : Double
 
+pub fn step_card_node(@view.View, () -> String, () -> String, () -> (() -> Unit)?, loc~ : SourceLoc) -> Unit
+
 pub fn step_circle_button_node(@view.View, () -> String, () -> String, (@view.View) -> Unit, look? : StepLook, loc~ : SourceLoc) -> @view.View
 
 pub fn step_circle_node(@view.View, () -> String, look? : StepLook, first_line? : @ui.TextSize, leading? : @ui.Leading, loc~ : SourceLoc) -> @view.View
@@ -3045,6 +3171,25 @@ pub fn[K : Hash + Eq, V] LiveMap::set(Self[K, V], K, V, loc~ : SourceLoc) -> Uni
 #callsite(autofill(loc))
 pub fn[K, V] LiveMap::touched(Self[K, V], loc~ : SourceLoc) -> Unit
 pub fn[K, V] LiveMap::values(Self[K, V]) -> Iter[V]
+
+pub(all) struct LoginSaid {
+  words : String
+  red : Bool
+  busy : Bool
+  last : Bool
+}
+
+pub(all) struct LoginStep {
+  key : String
+  label : String
+  solid : Bool
+  busy : Bool
+  external : Bool
+  more : Array[MenuItem]
+  last : Bool
+  press : () -> Unit
+  told : String?
+}
 
 #derive(Eq, Show)
 pub(all) enum Look {
