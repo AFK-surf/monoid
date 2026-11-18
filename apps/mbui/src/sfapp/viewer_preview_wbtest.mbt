@@ -53,8 +53,8 @@ test "viewer preview: a big image opens as its station's preview; zoomed into, t
   assert_eq(asked, [true])
   assert_true(v.previewed.get())
   assert_true(v.bytes.get() is Some(_))
-  // fitted and still: nothing more read
-  t.run_for(1000.0)
+  // fitted and still past the longest move: nothing more read
+  t.run_for(@ui.move_most_ms)
   assert_eq(asked, [true])
   zoom_in(t, v)
   t.run_for(@ui.move_most_ms)
