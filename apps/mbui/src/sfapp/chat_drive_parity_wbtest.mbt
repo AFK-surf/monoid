@@ -1112,11 +1112,6 @@ let pa_why_lift : String = "a picture held to quote it: its lift (the picture's 
 ///|
 let pa_why_quote_flight : String = "a quote sent with its own picture: as nodes its card flies from where it stood in the composer at its own width, from the height it stood at there to its own, and its picture from its 56 square in it (View::flies_in, sent_part_flight: the words' flight), the old flight on its own curves and a frame later; the old page holds the composer's box as tall as the card till they let go, as nodes laid out at its line at once under its ground held (sent_out_hold_ms); the video's length seen as it lands (message_video_node's marks)"
 
-
-///|
-/// The time under one's own words, laid where it rests from the first and grown there as it comes (mbui's pick_leave).
-let pa_why_time_end : String = "the time under one's own words: as nodes laid where it rests from the first and grown there as it comes (mbui's pick_leave: a place laid out at once as the change has it, never held as wide as what it took the place of; the user, 2026-11-17: 「81-82 帧」, it had come in from the start of such a place and jumped to its end); the old page draws it whole at once"
-
 ///|
 /// An agent's line gone, the old page goes on drawing its ring where the line was for as long as its ring's layer is
 /// drawn (chat_rows' work_ring in a layer of its own, which the face's fading does not reach); as nodes the ring is the
