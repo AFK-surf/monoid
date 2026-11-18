@@ -165,7 +165,7 @@ pub fn chat_row(
   // its chat's whole row (what its menu, its swipe's question, its time read: the list's row is made without them),
   // held while the hand is on it (pointed at, down on it, its menu open), let go of after; what reads it waits for it
   let whole_scope = "row-whole/" + key
-  let wants_whole = !@sfbase.whole_already(src, item) && !item.pending &&
+  let wants_whole = !@sfbase.whole_already(src, item) && (!item.pending || item.unsent) &&
     (down || parts.iter().any(fn(p) { c.hovered(p) }) || c.hovered(archive) || row_menu_open(item) || c.held_down(c.id("swipe/" + key)))
   let whole : ChatItem? = if @sfbase.whole_already(src, item) {
     Some(item)
@@ -176,7 +176,7 @@ pub fn chat_row(
     None
   }
   // (what it asks again waits on the station)
-  let menu = item.offline is None && !item.pending && !found
+  let menu = row_menu_offered(item) && !found
   // right clicked, or held long by a finger (Ctx::menu_asked, each part asked once): its menu
   let asked = parts.fold(init=None, fn(at, p) { if at is Some(_) { at } else { c.menu_asked(p) } })
   match asked {
@@ -683,6 +683,18 @@ let kind_glyph : Double = 16.0
 let row_icon : Double = 16.0
 
 ///|
+/// Whether a row offers its menu (right clicked, held, its 归档 key): a chat its station has, while that station is
+/// there; one asked for here that did not go (its first message unsent, nobody making it now), whatever its station:
+/// archived here alone (chat_menu_items), its station never having had it. One still being made offers none.
+fn row_menu_offered(item : ChatItem) -> Bool {
+  if item.pending {
+    item.unsent
+  } else {
+    item.offline is None
+  }
+}
+
+///|
 /// A row's menu, from row `id` at (`x`, `y`): 固定 / 取消固定 (a
 /// station from before pins says nothing: none), 重命名, 保留 / 取消保留 (a chat of its own: a thread; pinned, none: a
 /// pin keeps it out of the archive already), 归档; 打开「…」 (one an agent opened: the chat it opened it from), 分享
@@ -717,6 +729,19 @@ fn chat_menu_items(
 ) -> Array[@sf.MenuItem?] {
   let r = row_ref(item)
   let items : Array[@sf.MenuItem?] = []
+  // a chat asked for here that its station has not made (its first message did not go): its station knows nothing of
+  // it to pin, rename or share, so it is only archived, here alone (the core drops it: archive_row says no 撤销)
+  if item.pending {
+    items.push(
+      Some(
+        @sf.menu_item_of(@sf.t("web-main.chat.archive"), icon="archive", fn() {
+          archived()
+          archive_row(src, item, here~)
+        }),
+      ),
+    )
+    return items
+  }
   match item.pinned {
     Some(p) =>
       items.push(
@@ -1088,6 +1113,20 @@ fn archive_row(
   let run = fn() {
     then()
     leave_archived(item)
+    // (one its station never made: the core gives it up here, and there is nothing to ask back, so no 撤销)
+    if item.pending {
+      act(
+        src,
+        @sf.t("android-chat.archive.verb"),
+        "",
+        "chat.archive",
+        Json::object(params),
+        done=@sf.t("web-main.chat.archivedNamed", args=[("title", item.title)]),
+        at_once=true,
+        failed~,
+      )
+      return
+    }
     if here {
       // (one at a time: another's 撤销 over as this one is said)
       archived_n.val += 1

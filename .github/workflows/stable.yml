@@ -459,7 +459,7 @@ jobs:
       id-token: write # the clouds believe it as it tells them a release is out (scripts/release-told.sh)
     steps:
       - uses: actions/checkout@v5
-        with: { persist-credentials: false, ref: '${{ needs.plan.outputs.sha }}' }
+        with: { persist-credentials: false, ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0 }
       - name: Record the fully published stable revision
         env:
           RELEASE_REVISION: ${{ needs.plan.outputs.sha }}

@@ -147,7 +147,8 @@ pub fn haptic(kind : Int) -> Unit {
 ///|
 /// What the input method's action key does for the field it is about to type in (`ime_action_*`): Android's
 /// EditorInfo action and input type (IME_ACTION_SEARCH, _GO, _DONE: its Enter that key, the field one line), iOS's
-/// keyboard and return key; nothing elsewhere yet. Said before the field takes the keyboard; Enter comes as a key, as
+/// keyboard and return key, the web page's textarea's inputmode and Enter key's word (host.js imeAction); nothing on a
+/// desktop. Said before the field takes the keyboard; Enter comes as a key, as
 /// any.
 pub fn ime_action(kind : Int) -> Unit {
   dv_ime_action(kind)
@@ -175,6 +176,18 @@ pub let ime_action_number : Int = 3
 /// nor spelling). Said for
 /// every secret field, whatever its own action (Ctx::sync_ime).
 pub let ime_action_secret : Int = 4
+
+///|
+/// An email address's: the keyboard's for addresses with @ (iOS's UIKeyboardTypeEmailAddress, Android's
+/// TYPE_TEXT_VARIATION_EMAIL_ADDRESS, a page's inputmode=email), nothing corrected nor capitalised; its Enter as the
+/// field's own.
+pub let ime_action_email : Int = 5
+
+///|
+/// Words taken as they are typed (a server's id, a code, an address written out whole): the plain keyboard, nothing
+/// corrected, spelled, capitalised or suggested (Android's TYPE_TEXT_FLAG_NO_SUGGESTIONS, iOS's no corrections, a page's
+/// autocorrect=off); its Enter as the field's own.
+pub let ime_action_plain : Int = 6
 
 ///|
 /// A long press taking something (Android LONG_PRESS, Compose's HapticFeedbackType.LongPress).

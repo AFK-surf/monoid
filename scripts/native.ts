@@ -16,6 +16,7 @@
 //   node scripts/native.ts key <part> [target]         its key
 //   node scripts/native.ts fetch <part> [target]       into the cache, never building (fails when not prebuilt)
 //   node scripts/native.ts build <part> [target]       built here, into the cache, whatever is there
+//   node scripts/native.ts trim                        the cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES (unset: nothing)
 //   node scripts/native.ts run <part>… -- <command…>   the command, with each part's variable set (STILLFAIL_MESH_NATIVE, …)
 //   node scripts/native.ts iroh-pkg [dir]              the web's iroh (iroh-wasm) put in web/src/core/iroh-pkg
 //   node scripts/native.ts status                      every part and target: key, and whether cached / published
@@ -941,9 +942,9 @@ const CACHE = process.env.STILLFAIL_NATIVE_CACHE ??
 const cached = (part: string, target: Target, k: string) => join(CACHE, part, `${target}-${k}`);
 const log = (msg: string) => process.stderr.write(`native: ${msg}\n`);
 
-// A path handed to a caller may be used after native.ts exits. On the CI Mac, CI sets a budget and only versions not
-// requested for six hours may be evicted (the renderer jobs time out after five minutes). A day's grace let hundreds of
-// renderer versions fill the disk. Older caches without a usage record are first marked now, so jobs started before
+// A path handed to a caller may be used after native.ts exits. On the CI Mac, CI sets a budget and versions not
+// requested for six hours are evicted first (the renderer jobs time out after five minutes; trimCache says what goes
+// after them). A day's grace let hundreds of renderer versions fill the disk. Older caches without a usage record are first marked now, so jobs started before
 // tracking was introduced get the same grace period. Records live outside artifacts: they must not become part of
 // published archives.
 const accessRecord = (dir: string) => join(CACHE, ".access", basename(dirname(dir)), basename(dir));
@@ -1007,11 +1008,14 @@ function allocated(dir: string): number {
   return s.blocks * 512 + readdirSync(dir).reduce((n, name) => n + allocated(join(dir, name)), 0);
 }
 
+// Over the budget after that, versions unused for a quarter of an hour go too, oldest first: a burst of merges makes
+// a renderer version per commit, and versions all used within six hours held 7-10 GiB with the budget at 5 (Mini1's
+// ENOSPC, 44253499545, 2026-11-18). A quarter of an hour is three jobs' five minutes: no running job still holds one.
+const COLD_MS = 6 * 60 * 60 * 1000, OVER_BUDGET_MS = 15 * 60 * 1000;
 function trimCache(limit: number) {
   // Serialize the accounting, so concurrent jobs do not each remove enough versions to reach the budget.
   const release = acquire(join(CACHE, ".prune"));
   try {
-    const cutoff = Date.now() - 6 * 60 * 60 * 1000;
     const entries: { dir: string; bytes: number; used: number }[] = [];
     for (const [part, spec] of Object.entries(PARTS)) {
       const parent = join(CACHE, part);
@@ -1032,20 +1036,25 @@ function trimCache(limit: number) {
       }
     }
     let total = entries.reduce((n, e) => n + e.bytes, 0);
-    for (const e of entries.sort((a, b) => a.used - b.used)) {
-      if (total <= limit) break;
-      if (e.used >= cutoff) continue;
-      const unlock = tryAcquire(e.dir);
-      if (!unlock) continue;
-      try {
-        // A caller may have requested it since the accounting pass.
-        const record = accessRecord(e.dir);
-        if (!existsSync(record) || statSync(record).mtimeMs >= cutoff) continue;
-        rmSync(e.dir, { recursive: true, force: true });
-        rmSync(record, { force: true });
-        total -= e.bytes;
-        log(`removed cold cache ${basename(dirname(e.dir))}/${basename(e.dir)}`);
-      } finally { unlock(); }
+    entries.sort((a, b) => a.used - b.used);
+    const gone = new Set<string>();
+    for (const cutoff of [Date.now() - COLD_MS, Date.now() - OVER_BUDGET_MS]) {
+      for (const e of entries) {
+        if (total <= limit) return;
+        if (e.used >= cutoff || gone.has(e.dir)) continue;
+        const unlock = tryAcquire(e.dir);
+        if (!unlock) continue;
+        try {
+          // A caller may have requested it since the accounting pass.
+          const record = accessRecord(e.dir);
+          if (!existsSync(record) || statSync(record).mtimeMs >= cutoff) continue;
+          rmSync(e.dir, { recursive: true, force: true });
+          rmSync(record, { force: true });
+          total -= e.bytes;
+          gone.add(e.dir);
+          log(`removed ${Date.now() - e.used > COLD_MS ? "cold" : "over-budget"} cache ${basename(dirname(e.dir))}/${basename(e.dir)}`);
+        } finally { unlock(); }
+      }
     }
   } finally { release(); }
 }
@@ -1333,6 +1342,9 @@ async function getKey(part: string, target: Target, k: string, mode: "any" | "fe
   const policy = process.env.STILLFAIL_NATIVE ?? "";
   const result = await lockedAsync(dir, async () => {
     if (mode !== "build" && complete(dir, part, target)) { noteUse(dir); return dir; }
+    // Room before a download or a build writes tens of MB: on a disk near full the write failed (ENOSPC) before the
+    // trim after it was reached (44253499545, 2026-11-18).
+    if (budget) try { trimCache(budget); } catch (e) { log(`could not trim the cache: ${(e as Error).message}`); }
     if (mode !== "build" && policy !== "build" && policy !== "offline") {
       const got = await download(part, target, k);
       if (got) { noteUse(got); return got; }
@@ -1562,6 +1574,8 @@ async function main(argv: string[]) {
       return;
     }
     case "fetch": { const [p, t] = pair(args); console.log(await get(p, t, "fetch")); return; }
+    // The cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES, for jobs that get no part (.github/actions/setup-mac/prune-disk.sh).
+    case "trim": { const budget = cacheBudget(); if (budget) trimCache(budget); return; }
     case "build": { const [p, t] = pair(args); console.log(await get(p, t, "build")); return; }
     case "run": {
       const at = args.indexOf("--");

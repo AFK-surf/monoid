@@ -1,8 +1,8 @@
-// Where the pointer drags nothing that scrolls up or down (Tree::pointer_drags_scroll false: a desktop's page, the mouse
-// dragging no list, as an old view's are not), a hold moved past the slop on a page's list or on a plain column is
-// taken over by neither: what it holds stays where it was and no glide is set off, the wheel still scrolls them, and
-// a row scrolled across still takes a hold moved along it as its own. Said true (none said), as ever. In one jump and at
-// 60, 120, 24 and 7 a second.
+// Where the pointer drags nothing that scrolls (Tree::pointer_drags_scroll false: a desktop's page, the mouse dragging
+// no list, as an old view's are not), a hold moved past the slop on a page's list or on a plain column is taken over by
+// neither, nor one moved along a row scrolled across (a table, a code block: the pointer picks words there): what it
+// holds stays where it was and no glide is set off, the wheel still scrolls them. Said true (none said), as ever. In
+// one jump and at 60, 120, 24 and 7 a second.
 
 ///|
 /// A hold down at (x, y) on `tree` at `at`, moved by (dx, dy) in three steps 10 ms apart and let go there: what took it
@@ -50,7 +50,7 @@ test "a page's list where the pointer drags nothing that scrolls: a hold moved u
 }
 
 ///|
-test "a plain column where the pointer drags nothing that scrolls: a hold moved up past the slop is not taken over, the column where it was, no glide; a row in it scrolled across still takes a hold moved along it; the wheel scrolls the column; where it drags, as ever; at every rate" {
+test "a plain column where the pointer drags nothing that scrolls: a hold moved up past the slop is not taken over, the column where it was, no glide; nor one moved along a row in it scrolled across; the wheel scrolls both; where it drags, as ever; at every rate" {
   for rate in rc_rates {
     for drags in [false, true] {
       let now = Ref(0.0)
@@ -65,7 +65,7 @@ test "a plain column where the pointer drags nothing that scrolls: a hold moved 
       let held = k.column.at(k.tree)
       rc_walk(k.tree, [], [at + 1000.0], rate, fn() { () }, from=at) |> ignore
       let after = k.column.at(k.tree)
-      // (along the row, in the column where it was: the row's, either way)
+      // (along the row, in the column where it was: the row's where the pointer drags, else no one's)
       let r = across_case()
       r.tree.pointer_drags_scroll(fn() { drags })
       r.tree.wheel_at(150.0, 50.0, 0.0, 100.0, 0, 5.0) |> ignore
@@ -76,10 +76,15 @@ test "a plain column where the pointer drags nothing that scrolls: a hold moved 
       if drags {
         assert_true(up is Some(_), msg="at \{rate} a second: dragging, not taken over")
         assert_true(held > 100.0 && after > held, msg="at \{rate} a second: dragged to \{held}, flung on to \{after}")
+        assert_true(along is Some(_) && across > 0.0, msg="at \{rate} a second: along the row, \{across}")
       } else {
         assert_eq((up, held, after), (None, 100.0, 100.0), msg="at \{rate} a second")
+        assert_eq((along, across), (None, 0.0), msg="at \{rate} a second: along the row")
+        // (the wheel across scrolls the row as ever)
+        r.tree.wheel_at(160.0, 70.0, 60.0, 0.0, 0, at + 5000.0) |> ignore
+        rc_walk(r.tree, [], [at + 6000.0], rate, fn() { () }, from=at + 5000.0) |> ignore
+        assert_true(r.across.at(r.tree) > 0.0, msg="at \{rate} a second: the wheel scrolled the row nothing")
       }
-      assert_true(along is Some(_) && across > 0.0, msg="at \{rate} a second, dragging \{drags}: along the row, \{across}")
     }
   }
 }

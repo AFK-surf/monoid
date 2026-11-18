@@ -8,6 +8,9 @@
 /// first read while it is so), `on`; or, `on` false, each as the hand has it (Tree's `pointed`, `pressing`).
 pub fn Tree::lit_all(self : Tree, on : Bool) -> Unit {
   self.lit_every = on
+  // (one change, at one moment: what each node's cell wakes settled together once all are set, not a settle a node, the
+  // tree laid out again for each: a screen of a dozen things the hand lights went past tester_passes' most)
+  @signals.start_batch()
   for at in 0..<self.nodes.length() {
     let n = self.nodes[at]
     if !n.live {
@@ -27,6 +30,7 @@ pub fn Tree::lit_all(self : Tree, on : Bool) -> Unit {
       None => ()
     }
   }
+  @signals.end_batch()
 }
 
 ///|

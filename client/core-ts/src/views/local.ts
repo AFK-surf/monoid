@@ -257,6 +257,20 @@ export class Local {
     return gone;
   }
 
+  /// Gives up a chat asked for here that its station has not made and is not being asked to make (archived from its
+  /// row): it and what waited for it are dropped, the files those messages carried answered to be let go of. Its
+  /// station never knew it, so nothing is asked of the station. Undefined when it is no such chat.
+  pendingGiveUp(key: string): { id: string }[] | undefined {
+    const chat = this.#pending.get(key);
+    if (!chat || chat.made || chat.making) return undefined;
+    const uploads = chat.queue.flatMap((m) => arr(get(m, "uploads")) as { id: string }[]);
+    this.#pending.delete(key);
+    this.#pendingDb.delete(key);
+    this.#data.putLocal(PENDING, chat.station, key, undefined);
+    this.#changed({ kind: "pending", key });
+    return uploads;
+  }
+
   pendingFailedNow(key: string): boolean {
     this.#seen.pending.read(key);
     const chat = this.#pending.get(key);

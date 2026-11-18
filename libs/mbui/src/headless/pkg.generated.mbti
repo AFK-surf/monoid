@@ -55,8 +55,16 @@ pub fn disclosure(@view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@
 
 pub fn edge_scroll_speed(Double, Double, Double, zone~ : Double, max_speed~ : Double) -> Double
 
+pub fn format_chord(Array[@view.Stroke], apple~ : Bool) -> String
+
+pub fn format_stroke(@view.Stroke, apple~ : Bool) -> String
+
+pub fn hover_reveal(@view.View, @view.View, also? : Array[@view.View], always? : () -> Bool) -> HoverReveal
+
 #callsite(autofill(loc))
 pub fn menu(@view.View, (@view.View, Menu) -> Unit, label? : () -> String, on_close? : () -> Unit, close_key? : Int32, wraps? : Bool, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn platform_stroke(@view.Stroke, apple~ : Bool) -> @view.Stroke
 
 #callsite(autofill(loc))
 pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@view.View, RadioGroup[K]) -> Unit, kind? : GroupKind, axis? : GroupAxis, shown? : () -> Bool, selected? : Bool, in_node? : Bool, disabled? : () -> Bool, manual? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -66,6 +74,8 @@ pub fn slider(@view.View, () -> String, () -> Double, min~ : Double, max~ : Doub
 
 #callsite(autofill(loc))
 pub fn split(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Split) -> Unit, axis? : SplitAxis, span? : () -> Double, reset? : () -> Unit, said_value? : (Double) -> String, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn stroke_caps(@view.Stroke, apple~ : Bool) -> Array[String]
 
 #callsite(autofill(loc))
 pub fn table(@view.View, (@view.View, Table) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -209,6 +219,11 @@ pub(all) struct Hold {
 }
 pub fn Hold::new(Double, Double, () -> Bool, on_hold? : () -> Unit, on_lift? : () -> Unit, on_cancel? : () -> Unit, down? : (@view.Drag) -> Unit, tapped? : (@view.Drag) -> Unit, taps? : () -> Bool) -> Self
 
+pub struct HoverReveal {
+  // private fields
+}
+pub fn HoverReveal::shown(Self) -> Bool
+
 pub struct Menu {
   // private fields
 }
@@ -332,6 +347,7 @@ pub(all) enum ToggleKind {
 pub struct TooltipGroup[K] {
   // private fields
 }
+pub fn[K] TooltipGroup::glided_from(Self[K]) -> (@view.NodeId, Double)?
 pub fn[K : Eq] TooltipGroup::is_open(Self[K], K) -> Bool
 pub fn[K] TooltipGroup::new(() -> K?, (K?) -> Unit, open_delay_ms? : Double, warmup_ms? : Double) -> Self[K]
 pub fn[K] TooltipGroup::shown(Self[K]) -> K?

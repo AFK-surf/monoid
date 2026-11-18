@@ -443,8 +443,28 @@ export class ViewCalls {
       return Effect.gen(function* () {
         if (!("station" in c.op.target)) return yield* Effect.fail(CoreError.invalid(t("core-misc.params.station")));
         const station = c.op.target.station;
-        const change = local.changing(station, c.thread, c.session, {}, c.archived);
-        const result = yield* Effect.result(self.#archiveInOrder(station, c.thread, c.session, handlers.op!(inner, { kind: "op", op: c.op }, progress, at, ctx)));
+        let [thread, session, op] = [c.thread, c.session, c.op];
+        // A chat asked for here (its row's key `new:…`): its station knows it only once it is made, by the session and
+        // thread it gave; before that it is this device's alone, and so is archiving it.
+        if (session.startsWith(PENDING_PREFIX)) {
+          const pending = local.pending(session);
+          if (pending?.made) {
+            [session, thread] = pending.made;
+            op = yield* request("chat.archive", { station, thread, session, archived: c.archived });
+          } else if (pending?.making) return yield* Effect.fail(CoreError.invalid(t("core-misc.call.pending_making")));
+          else if (!c.archived) {
+            // Nothing to restore of one never archived; one given up here is gone, its station never had it.
+            if (pending === undefined) return yield* Effect.fail(CoreError.invalid(t("core-misc.call.pending_gone")));
+            return null;
+          } else {
+            // What did not go (or was dropped already): given up here, with the files its messages carried.
+            const uploads = local.pendingGiveUp(session);
+            if (uploads?.length) inner.composers.release(uploads);
+            return null;
+          }
+        }
+        const change = local.changing(station, thread, session, {}, c.archived);
+        const result = yield* Effect.result(self.#archiveInOrder(station, thread, session, handlers.op!(inner, { kind: "op", op }, progress, at, ctx)));
         local.changed(change, result._tag === "Success", inner.data.rowsRev(station));
         if (!c.archived && result._tag === "Success") inner.stations.checkRestores(station, { change });
         return yield* settle(result);

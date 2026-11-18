@@ -44,7 +44,7 @@ pub fn chat_row_node(
   rows.swiped_off.remove(swiped_key(first))
   let r = fn() { row_ref(item()) }
   let offline = fn() { item().offline is Some(_) }
-  let menu_ok = fn() { item().offline is None && !item().pending }
+  let menu_ok = fn() { row_menu_offered(item()) }
   let menu_on = fn() { row_menu_open(item()) }
   // (its title a field in its place, from a mouse's 重命名: rename_node)
   let renaming = fn() { row_renaming.get() == key() }

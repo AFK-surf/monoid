@@ -97,8 +97,11 @@ test("spellings_of_one_model_share_a_key", () => {
     ["us.anthropic.claude-opus-5-5-v1:0", "claude-opus-5-5"], ["anthropic.claude-opus-5-5-v1:0", "claude-opus-5-5"], ["claude-opus-5-5@20260101", "claude-opus-5-5"],
     ["claude-haiku-4-5-20251001", "claude-haiku-4-5"], ["gpt-4o-2024-08-06", "gpt-4o"], ["gpt-5.1", "gpt-5.1"], ["gpt-5.1-codex", "gpt-5.1-codex"],
     ["claude-sonnet-5[1m]", "claude-sonnet-5[1m]"], ["openai/gpt-oss-20b:free", "gpt-oss-20b:free"], ["qwen3:32b", "qwen3:32b"], ["deepseek-v4-pro", "deepseek-v4-pro"],
-    ["deepseek-v4", "deepseek-v4"], ["o3", "o3"],
+    ["deepseek-v4", "deepseek-v4"], ["o3", "o3"], ["anthropic/claude-opus-5.5", "claude-opus-5-5"], ["anthropic/claude-sonnet-4.5", "claude-sonnet-4-5"],
   ]) assert.equal(key(id), want, id);
+  // OpenRouter spells Claude's version with a dot: one model with Anthropic's (a session moves to it once its
+  // subscriptions run out).
+  assert.ok(same("anthropic/claude-opus-5.5", "claude-opus-5-5"));
   assert.ok(same("openai/gpt-6-astra", "gpt-6-astra"));
   assert.ok(!same("claude-sonnet-5[1m]", "claude-sonnet-5"));
   assert.ok(!same("gpt-5", "gpt-5.1"));
