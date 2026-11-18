@@ -85,6 +85,10 @@ for (const mode of ["admit", "web", "personal", "carried"] as Mode[]) {
   });
 }
 
+// (On this stable release: lock.restartOwn, lock.forgetOwn and a station reset letting the lock go came with #7059,
+// after its base.)
+const NEEDS_7059 = "needs #7059, not in this release";
+
 test("a newcomer let in, then taken out: the station refuses it and its page is not confirmed, saying so", async () => {
   const w = await world("admit");
   await asks(w, "waiting");
@@ -99,7 +103,7 @@ test("a newcomer let in, then taken out: the station refuses it and its page is 
   assert.equal(out.me.confirmed, false, `out (${w.why()})`);
 });
 
-test("every other device of a member's lost: offered to make this their only trusted device; made so, it says who is to take them out and add them again; taken out it asks an owner and is in: both laws at each step", async () => {
+test("every other device of a member's lost: offered to make this their only trusted device; made so, it says who is to take them out and add them again; taken out it asks an owner and is in: both laws at each step", { skip: NEEDS_7059 }, async () => {
   const w = await world("personal");
   w.faults.set(w.theirs[0]!, { kind: "never" });
   await lawful(w, "at first");
@@ -134,7 +138,7 @@ test("a web page of someone the list names with no app: told to install one, ask
   assert.equal(typeof page.me.needsAppText, "string", JSON.stringify(page.me));
 });
 
-test("its lock of before replaced by one begun elsewhere, which the workspace binds them by: refused and not confirmed, offered to take the new one as theirs; taken, it joins it face to face and is in, signing: both laws at each step", async () => {
+test("its lock of before replaced by one begun elsewhere, which the workspace binds them by: refused and not confirmed, offered to take the new one as theirs; taken, it joins it face to face and is in, signing: both laws at each step", { skip: NEEDS_7059 }, async () => {
   const w = await world("personal", 1, { replaced: true });
   const replaced = await lawful(w, "its lock begun anew elsewhere");
   assert.equal(w.inner.adb.personal().standing("s1"), "replaced", w.why());
@@ -203,7 +207,7 @@ test("another owner of a workspace moved by the root's person: told who alone tu
   assert.equal(offPage.locked, false, JSON.stringify(offPage).slice(0, 300));
 });
 
-test("every station of a moved workspace reset on its machine (stillfail lock reset): the lock let go here, never brought back by a read, the cloud's copy dropped, and turned on again anew: both laws", async () => {
+test("every station of a moved workspace reset on its machine (stillfail lock reset): the lock let go here, never brought back by a read, the cloud's copy dropped, and turned on again anew: both laws", { skip: NEEDS_7059 }, async () => {
   const w = await setUp({ early: true });
   assert.equal((await w.hand()).error, undefined);
   await lawfulOwner(w, "moved, on", true);

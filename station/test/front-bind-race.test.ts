@@ -72,10 +72,12 @@ const asked = (key: Buffer, alpns: Buffer[]) => ({ streams: "/nonexistent/stream
 
 test("two binds of a fresh front at once are given one endpoint, not one each", { skip, timeout: 60_000 }, async () => {
   // Both asks in one write: the front reads them together and starts both before either is bound, every time.
+  // (On this release the front binds a new endpoint for other protocols, letting the old one go: #7153, which takes
+  // them on the same endpoint, came after its base. So both ask the same protocols here.)
   const here = await front("once");
   const key = Buffer.alloc(32, 7);
   const { conn, answer } = await link(here);
-  conn.write(`${JSON.stringify({ id: 1, op: "bind", ...asked(key, [station]) })}\n${JSON.stringify({ id: 2, op: "bind", ...asked(key, [station, added]) })}\n`);
+  conn.write(`${JSON.stringify({ id: 1, op: "bind", ...asked(key, [station]) })}\n${JSON.stringify({ id: 2, op: "bind", ...asked(key, [station]) })}\n`);
   const [one, two] = await Promise.all([answer(1), answer(2)]);
   assert.ok(one.ok && two.ok, `both bound: ${JSON.stringify([one, two])}`);
   assert.deepEqual(two.ok, one.ok, "the same endpoint, not a second of the same key beside it");
