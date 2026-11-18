@@ -44,7 +44,7 @@ final class MBText {
         final int style;  // 1 italic, 2 the code face
         // drawn ahead (under `lock`), by phase (bit `sub`: glyphSub): the phases asked and not begun (`want`), being
         // drawn by a thread ahead (`drawing`), drawn and not taken (`have`, their pictures in `drawn`); of those asked,
-        // the one drawn before any other phase of any glyph (`first`: askedFirst); whether it is in askedFirst, in
+        // those drawn before any other phase of any glyph (`first`: askedFirst); whether it is in askedFirst, in
         // askedRest and in drawnAhead; the scale and the faces it is to be drawn at. Asked ahead (counted in
         // aheadCount) while any of the three is not none
         int want, drawing, have, first;
@@ -735,10 +735,11 @@ final class MBText {
     }
 
     // ---- drawing ahead: the glyphs shaped and not drawn yet (text.mbt glyphs_ahead), on threads of their own ----
-    // A phase at a time: each glyph asked by a frame first at phase 0 (where a line's first glyph and a quarter of the
-    // rest are drawn), every glyph's before any other phase of any (askedFirst), so a page's few hundred new glyphs are
-    // each drawn once before one is drawn four times; the other phases after (askedRest), for where words move to next.
-    // A phase the app's thread asks for is taken drawn, waited for while a thread ahead draws it, else drawn there.
+    // A phase at a time: each glyph asked by a frame first at the phases its key says (bits 26..27: where its line put
+    // it, text.mbt laid_ahead; phase 0 for one shaped and not laid out), every glyph's before any other phase of any
+    // (askedFirst), so a page's few hundred new glyphs are each drawn as they will be painted before one is drawn four
+    // times; the other phases after (askedRest), for where words move to next. A phase the app's thread asks for is
+    // taken drawn, waited for while a thread ahead draws it, else drawn there.
 
     /** The most glyphs asked for or drawn ahead and not placed yet (the oldest drawn let go past it). */
     static final int AHEAD_MOST = 1024;
@@ -767,26 +768,40 @@ final class MBText {
     }
 
     /**
-     * The glyphs of keys[0..n) to draw ahead at the phases of each not drawn or asked yet, at the scale and in the faces
-     * of now, phase 0 first. The app's thread.
+     * The glyphs of keys[0..n) (each with the phase to draw first: glyphSub) to draw ahead at the phases of each not
+     * drawn or asked yet, at the scale and in the faces of now. A glyph asked again at another phase not begun has that
+     * phase drawn first too. The app's thread.
      */
     static void ahead(int[] ks, int n) {
         float sc = density();
         boolean any = false;
         synchronized (lock) {
             for (int i = 0; i < n; i++) {
-                int k = ks[i];
+                int k = ks[i] >= 0 ? ks[i] & 0x03FFFFFF : -1;
                 if (k < 0 || k >= entries.size()) continue;
                 Entry e = entries.get(k);
+                int bit = 1 << glyphSub(ks[i]);
                 if (e.queuedScale != sc || e.queuedFaces != faces) {
                     e.subsQueued = 0;
                     e.queuedScale = sc;
                     e.queuedFaces = faces;
                 }
+                if (asked(e)) {
+                    // (asked already, this phase not begun: drawn first too)
+                    if ((e.want & bit) != 0 && (e.first & bit) == 0) {
+                        e.first |= bit;
+                        if (!e.inFirst) {
+                            e.inFirst = true;
+                            askedFirst.add(e);
+                        }
+                        any = true;
+                    }
+                    continue;
+                }
                 int want = SUB_ALL & ~e.subsQueued;
-                if (want == 0 || asked(e)) continue;
+                if (want == 0) continue;
                 if (!roomAhead()) break;
-                ask(e, want, want & 1, sc);
+                ask(e, want, want & bit, sc);
                 any = true;
             }
             if (any) lock.notifyAll();
@@ -796,7 +811,7 @@ final class MBText {
 
     /**
      * `e` asked of the threads ahead at the phases of `want` (under lock; none of them asked before, `e` not asked), the
-     * phase of `first` (one, or none) before any other phase of any glyph.
+     * phases of `first` before any other phase of any glyph.
      */
     static void ask(Entry e, int want, int first, float sc) {
         e.want = want;
@@ -943,7 +958,13 @@ final class MBText {
                     e = askedFirst.poll();
                     if (e != null) {
                         e.inFirst = false;
-                        bit = e.want & e.first;
+                        int firsts = e.want & e.first;
+                        bit = Integer.lowestOneBit(firsts);
+                        // (its other first phases next: its place in the queue kept)
+                        if ((firsts & ~bit) != 0) {
+                            e.inFirst = true;
+                            askedFirst.addFirst(e);
+                        }
                     } else {
                         e = askedRest.poll();
                         if (e == null) {

@@ -208,6 +208,7 @@ fn glyphs_forget() -> Unit {
   glyph_moves.val += 1
   text_cache.glyphs.clear()
   text_cache.fresh.clear()
+  glyphs_laid.clear()
   text_cache.atlas = None
   text_cache.colour_atlas = None
 }
@@ -1235,25 +1236,66 @@ fn glyph_drawn_any_sub(k : Int) -> Bool {
 }
 
 ///|
-/// The glyphs of what the frame shaped and did not draw yet (a page pushed, still off the screen; the lines below what a
-/// list shows; what the frame is about to paint), handed to the host to draw them ahead, off the frames' thread: as the
-/// window's tree is laid out, as the painting begins and as it is over (app.mbt), so what was laid out is drawn on the
-/// host's other cores while the frame goes on, and the rest is there when it comes into view, a frame or more later.
-/// What is drawn is the same; only when and where the work is done changes (@hostapi.glyphs_ahead).
+/// The glyphs of words just laid out (layout_text, layout_rich) not drawn yet, each with the quarter-pixel phase it is
+/// drawn at (glyph_sub_at) where what holds the words stands on a whole pixel, its pen `x(c)` points into its line: for
+/// the host to draw first at that phase (glyphs_ahead). Most words stand so (a list's rows, a page's columns); one that
+/// does not (centred, or at a padding of no whole pixels) has its glyphs at another phase, drawn on the frame's thread
+/// as before.
+fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
+  let sc = g().scale
+  let z = words_zoom.val
+  for c in 0..<keys.length() {
+    if glyphs_laid.length() >= glyphs_ahead_most {
+      break
+    }
+    let k = keys[c]
+    if k >= 0 && !glyph_drawn_any_sub(k) {
+      glyphs_laid.push(glyph_sub_at(k, x(c), sc, z))
+    }
+  }
+}
+
+///|
+/// The glyphs of what was laid out since they were last handed to the host, each at its phase (laid_ahead).
+// kept across runs: emptied as each frame hands them on (glyphs_ahead) and with the glyphs (glyphs_forget)
+let glyphs_laid : Array[Int] = []
+
+///|
+/// The glyphs of what the frame shaped and laid out and did not draw yet (a page pushed, still off the screen; the lines
+/// below what a list shows; what the frame is about to paint), handed to the host to draw them ahead, off the frames'
+/// thread: as the window's tree is laid out, as the painting begins and as it is over (app.mbt), so what was laid out is
+/// drawn on the host's other cores while the frame goes on, and the rest is there when it comes into view, a frame or
+/// more later. Each at the phase its line put it at (glyphs_laid: bits 26..27 of its key, glyph_sub_at), the host
+/// drawing that phase first; one shaped and not laid out at phase 0. What is drawn is the same; only when and where the
+/// work is done changes (@hostapi.glyphs_ahead).
 fn glyphs_ahead() -> Unit {
   let fresh = text_cache.fresh
-  if fresh.is_empty() {
+  let laid = glyphs_laid
+  if fresh.is_empty() && laid.is_empty() {
     return
   }
-  let keys = FixedArray::make(fresh.length(), 0)
+  let keys = FixedArray::make(fresh.length() + laid.length(), 0)
   let mut n = 0
+  // (each key once; a glyph laid out at a phase not asked again at phase 0 for having been shaped)
+  let asked : Map[Int, Bool] = Map([])
+  for k in laid {
+    let base = k & 0x03FFFFFF
+    if !asked.contains(k) && !glyph_drawn_any_sub(base) {
+      asked[k] = true
+      asked[base | (1 << 30)] = true
+      keys[n] = k
+      n = n + 1
+    }
+  }
   for k in fresh {
-    if !glyph_drawn_any_sub(k) {
+    if !asked.contains(k | (1 << 30)) && !glyph_drawn_any_sub(k) {
+      asked[k | (1 << 30)] = true
       keys[n] = k
       n = n + 1
     }
   }
   fresh.clear()
+  laid.clear()
   if n > 0 {
     h_glyphs_ahead(keys, n)
   }
@@ -1704,6 +1746,8 @@ fn layout_text(
     line_h,
     lv,
   }
+  // (its glyphs not drawn yet, at the phases its lines put them at: drawn ahead so, glyphs_ahead)
+  laid_ahead(s.keys, fn(c) { xs[c] + s.pad })
   if indent == 0.0 {
     s.lay = Some(tl)
     s.lay_max = max_w
