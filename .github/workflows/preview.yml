@@ -733,7 +733,7 @@ jobs:
           # (the cloud and the test station: the e2e flow's alone)
           [ -n "$E2E" ] || exit 0
           (cd cloud && quiet pnpm install --frozen-lockfile --prefer-offline)
-          (cd station && quiet pnpm install --frozen-lockfile --prefer-offline && quiet pnpm run build)
+          (cd station && quiet pnpm install --frozen-lockfile --prefer-offline && quiet pnpm run build:node)
       # The test station's natives (e2e/win.sh: mesh, runner and reader, win32-x64), by their keys. A change to one of them is in
       # no release yet and is built only by the pipeline's natives job (a Mac's cross-build: this machine has no zig):
       # then its end is waited for (an outside wait, its job's own state), and a branch takes what it built (its run's
