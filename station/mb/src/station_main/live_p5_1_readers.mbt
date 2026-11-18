@@ -691,6 +691,11 @@ fn Requested::run(self : Requested) -> Unit {
             }
           }
         }
+        // (the station stopping while it answered: `close` already told everyone waiting and emptied the queue, so
+        // what it said last, a done or not, is nobody's)
+        if self.readers.closed || self.waiting.length() == 0 {
+          return
+        }
         self.last = @host.now()
         match result {
           { "done": True, .. } | { "complete": True, .. } | { "id": _, "error": Null, .. } => {
@@ -774,6 +779,43 @@ fn Requested::close(self : Requested) -> Unit {
     Some(p) => p.stop()
     None => ()
   }
+}
+
+///|
+/// The readers closed while a builder's process is on an item (the harness's `requestedCloseInFlight`): `program` is
+/// run as the builder `said`, asked one item, and the readers closed the moment that ask is written, so what the
+/// process says after (its `take`, then `said` once its stdin is closed) comes to a builder whose queue `close`
+/// emptied. What the ask was answered, and whether the builder came to its end with nothing left waiting.
+async fn p51_requested_close_in_flight(host : @host.Host, data : String, program : String, said : String) -> Json {
+  let readers = Readers::new(host, program, data)
+  let asked : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let b = readers.builder(
+    "close-in-flight",
+    k => {
+      ignore(asked.succeed(()))
+      { "session": k }
+    },
+    program=said,
+  )
+  let answered : @effect.Deferred[String] = @effect.Deferred::new()
+  ignore(
+    host.rt.fork(name="close-in-flight ask", async fn() {
+      let what = b.ready([Json::string("s1")]) catch { e => "\{e}" } noraise { _ => "ready" }
+      ignore(answered.succeed(what))
+    }),
+  )
+  asked.wait()
+  readers.close()
+  let answer = answered.wait()
+  // (the builder's process ends once it said its last; the builder's fiber is let run to its end after)
+  match b.proc {
+    Some(p) => p.ended.wait()
+    None => ()
+  }
+  while b.running {
+    @effect.pause()
+  }
+  { "answer": Json::string(answer), "waiting": Json::number(b.waiting.length().to_double()) }
 }
 
 ///|

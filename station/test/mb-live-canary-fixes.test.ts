@@ -4,7 +4,9 @@
 // `p51_log`, `noted`), a tree's size measured by the footprint builder in a process of its own (live_p5_3_remote.mbt
 // `p53_tree_bytes`), and still.fail Helper asked over the shell's Unix socket (screens/host_io.mbt: a connection's close
 // told after its owner took its answer), one left holding its lock with no socket ended before the next is launched
-// (live_p5_4_screens.mbt `p54_helper_launch`). A job followed again through a restart (its start as the system says
+// (live_p5_4_screens.mbt `p54_helper_launch`), and a builder whose process answers after the station began to stop
+// (live_p5_1_readers.mbt `Requested::run`: its queue emptied by `close`, what it said last is nobody's, never a
+// panic). A job followed again through a restart (its start as the system says
 // it, against the wall's time it was kept at) is mb-live-p5-3.test.ts's, beside the station's other jobs.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
@@ -199,3 +201,28 @@ const lsof = spawnSync("lsof", ["-v"], { stdio: "ignore" }).error === undefined;
 test("one from before holding an empty lock is found by lsof and ended", { skip: skip || (lsof ? false : "no lsof here") }, async () => {
   await helperCase("held-empty");
 });
+
+// A builder of old state that says `take` and, once its stdin is closed, what it was asked to say last ($2, as the
+// builder's name): the station's stop (SIGTERM) let by, so what it says comes after the readers closed, every time.
+const CLOSING_BUILDER = `#!/bin/sh
+trap '' TERM
+read -r ask
+printf '{"take":true}\\n'
+read -r permit || true
+cat >/dev/null
+printf '{"%s":true}\\n' "$2"
+`;
+
+for (const said of ["complete", "partial"]) {
+  test(`a builder that says ${said} after the station began to stop is let go, nothing panics or waits again`, { skip }, async () => {
+    const dir = fresh("close");
+    const program = join(dir, "builder.sh");
+    writeFileSync(program, CLOSING_BUILDER, { mode: 0o755 });
+    const { child, ok } = harness();
+    const answered = await ok("requestedCloseInFlight", { data: dir, program, said });
+    assert.deepEqual(answered, { answer: "503 station stopping", waiting: 0 });
+    // (the program goes on answering: the builder's fiber ended, the process with it)
+    assert.equal(await ok("iso", { ms: 0 }), "1970-01-01T00:00:00.000Z");
+    assert.equal(ended(child), false);
+  });
+}

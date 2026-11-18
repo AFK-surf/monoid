@@ -11,7 +11,8 @@
 // - "loopback" {path, query, ready, place, lang}: what the loopback port says;
 // - "p5_5" {step, …}: P5-5's live parts on a data directory of the test's (live_p5_5_harness.mbt);
 // - "saidOf" {key, lang}, "log" {level, at, message}, "noted" {text}, "treeBytes" {program, path}, "helperEvict"
-//   {dir}, "helperRequest" {program, app, dir, launch, ask}: what station/test/mb-live-canary-fixes.test.ts holds of the parts live canaries found wrong.
+//   {dir}, "helperRequest" {program, app, dir, launch, ask}, "requestedCloseInFlight" {data, program, said}: what
+//   station/test/mb-live-canary-fixes.test.ts holds of the parts live canaries found wrong.
 
 ///|
 pub async fn harness(host : @host.Host) -> Unit {
@@ -230,6 +231,8 @@ pub async fn harness(host : @host.Host) -> Unit {
         }
         Ok(said)
       }
+      // (the readers closed while a builder's process answers an item: live_p5_1_readers.mbt `Requested::run`)
+      "requestedCloseInFlight" => Ok(p51_requested_close_in_flight(host, s("data"), s("program"), s("said")))
       // (P5-5's live parts made on a data directory of the test's: live_p5_5_harness.mbt)
       "p5_5" => p5_5_harness(host, ask)
       "loopback" => {

@@ -33,7 +33,6 @@ fn init {
     // begins now, a frame sooner, so its end is among the frames judged. Taken away with the old chat's page: the row
     // made as nodes goes there by the list's own way)
     ("src/sfapp/viz_wbtest.mbt", 2),
-    ("src/sfapp/wide_rail_wbtest.mbt", 4),
     ("src/sfapp/wide_wbtest.mbt", 2),
   ])
 }

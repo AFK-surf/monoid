@@ -27,7 +27,6 @@ fn init {
     "src/sfapp/stations_now_wbtest.mbt",
     "src/sfapp/tape_moment_wbtest.mbt",
     "src/sfapp/tape_wbtest.mbt",
-    "src/sfapp/wide_rail_wbtest.mbt",
     "src/sfapp/wide_wbtest.mbt",
   ])
 }
