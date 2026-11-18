@@ -611,6 +611,15 @@ pub fn open_mode(mode : String) -> Unit {
   if mode == "settings-connect-borrow" {
     @sffixture.new_fix.borrow = true
   }
+  // (a 待派发 draft being split by 先理清: its tasks being made, or come; board-clarify alone, the board before it)
+  if mode == "board-clarify-organizing" || mode == "board-clarify-split" {
+    let clarify = @sfbase.clarify
+    clarify.draft.set(@sffixture.fix_clarify_id)
+    clarify.words.set(@sffixture.fix_clarify_words)
+    if mode == "board-clarify-split" {
+      @sfbase.clarify_fill(@sffixture.fix_clarify_tasks())
+    }
+  }
   // (someone else's preset picked: so before its page asks its new chat)
   if mode == "newchat-preset-theirs" || mode == "newchat-preset-theirs-long" {
     @sffixture.new_fix.preset = "p-ops"
@@ -638,19 +647,6 @@ pub fn open_mode(mode : String) -> Unit {
       n.runtime = "dsh"
       n.d_model = n.model
       n.d_runtime = n.runtime
-    }
-    // (its words clarified first: typed, being made a brief, the brief come, one of its parts edited)
-    if mode.has_prefix("newchat-clarify") {
-      let clarify = @sfbase.clarify
-      clarify.on.set(true)
-      if mode != "newchat-clarify" {
-        clarify.words.set(@sffixture.fix_clarify_words)
-        clarify.step.set(if mode == "newchat-clarify-organizing" { Organizing } else { Ready })
-        @sfbase.clarify_fill(@sffixture.fix_clarify_brief())
-      }
-      if mode == "newchat-clarify-edited" {
-        clarify.scope.set(clarify.scope.text() + "\n不改动现有的分享链接功能。")
-      }
     }
     if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
     if mode == "newchat-ultrafast-model" {

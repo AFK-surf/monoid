@@ -7,6 +7,8 @@
 // list shown). The made-up station goes on as a person does: a decision made or words sent in a chat that waited, it
 // is at work again; a draft started, its chat made under its key (`newChat.create`: a pending row, as the core's) and
 // its words sent into it (`chat.send`: at work at once, the station's row keeping the key it was made under).
+// board-clarify…: a third draft first, one paragraph of three things, to be split by 先理清 (`board.clarify`: its
+// tasks after fix_clarify_ms; board-clarify-organizing never answered, -split shown answered, sfapp's open_mode).
 
 ///|
 /// Whether `mode` is one of the board's.
@@ -43,7 +45,12 @@ pub fn board_prefs_seed(mode : String) -> Unit {
   if mode != "board-off" {
     board_prefs["boardViews"]["ws1"] = Json::string("board")
   }
-  board_prefs["boardDrafts"]["ws1"] = [
+  let clarified : Array[Json] = if mode.has_prefix("board-clarify") {
+    [{ "id": Json::string(fix_clarify_id), "title": Json::string(fix_clarify_words), "station": "ws1/st1", "stationName": "Willow" }]
+  } else {
+    []
+  }
+  board_prefs["boardDrafts"]["ws1"] = Json::array(clarified + [
     { "id": "new:board-seed-1", "title": "给导出加上按月份筛选", "station": "ws1/st1", "stationName": "Willow" },
     {
       "id": "new:board-seed-2",
@@ -51,7 +58,7 @@ pub fn board_prefs_seed(mode : String) -> Unit {
       "station": "ws1/st2",
       "stationName": "Maple",
     },
-  ]
+  ])
 }
 
 ///|
@@ -552,5 +559,46 @@ pub fn board_marks() -> Json {
     },
     "badge": 4,
     "badgeKinds": { "on": true, "wait": true, "failed": true, "done": true, "message": true, "services": true },
+  }
+}
+
+///|
+/// The draft board-clarify… clarifies (its key, its words: one paragraph of three things), and the tasks the made-up
+/// agent splits any draft into (`board.clarify`, after fix_clarify_ms): `{tasks: [{title, goal, scope, accept, ask}]}`,
+/// as the core is to answer.
+pub let fix_clarify_id : String = "new:board-clarify-1"
+
+///|
+pub let fix_clarify_words : String = "给设置页加导出对话记录，同时把导入也做了，顺便补测试"
+
+///|
+pub let fix_clarify_ms : Double = 1200.0
+
+///|
+pub fn fix_clarify_tasks() -> Json {
+  {
+    "tasks": [
+      {
+        "title": "设置页导出对话记录",
+        "goal": "在设置页把对话记录导出成 Markdown 文件，便于归档。",
+        "scope": "设置 › 数据 新增「导出对话记录」；可选时间范围；只导出当前 workspace。",
+        "accept": "1. 能导出并打开 .md\n2. 按对话分节，带时间和发言人",
+        "ask": "附件要不要一起打包？",
+      },
+      {
+        "title": "导入对话记录",
+        "goal": "把导出的 Markdown 再导入回来，恢复成对话记录。",
+        "scope": "设置 › 数据 新增「导入对话记录」；只认本应用导出的格式。",
+        "accept": "1. 导出再导入，内容一致\n2. 格式不对时说明原因",
+        "ask": "重复导入时覆盖还是跳过？",
+      },
+      {
+        "title": "补导出导入的测试",
+        "goal": "给导出和导入补上自动化测试。",
+        "scope": "导出格式、导入还原、空记录和格式错误。",
+        "accept": "测试覆盖以上四种情况并在 CI 通过",
+        "ask": "",
+      },
+    ],
   }
 }

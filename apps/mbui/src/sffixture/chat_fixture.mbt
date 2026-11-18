@@ -1651,10 +1651,6 @@ pub fn seeded_draft(mode : String, key : String) -> Json {
       "files": [file("compare.png", 1600, 900, 402000)],
     }
   }
-  // (a new chat clarified first, its words typed: newchat-clarify…)
-  if mode.has_prefix("newchat-clarify") && key.has_prefix("new:") {
-    return { "text": Json::string(fix_clarify_words), "quotes": [], "files": [] }
-  }
   if key != "ws1/st1:s-c1" {
     return Json::null()
   }

@@ -32,7 +32,7 @@ function boardDraftsOf(v: unknown): Map_[] | null {
   const out: Map_[] = [];
   for (const d of v) {
     if (!isObject(d)) return null;
-    const { id, title, station, stationName, files } = d;
+    const { id, title, station, stationName, files, group } = d;
     if (typeof id !== "string" || id === "" || id.length > 120) return null;
     const attached: Map_[] = [];
     if (files !== undefined) {
@@ -45,7 +45,8 @@ function boardDraftsOf(v: unknown): Map_[] | null {
     if (typeof title !== "string" || (title.trim() === "" && !attached.length) || title.length > 4000) return null;
     if (typeof station !== "string" || station === "" || station.length > 200) return null;
     if (typeof stationName !== "string" || stationName.length > 200) return null;
-    out.push({ id, title, station, stationName, ...(attached.length ? { files: attached } : {}) });
+    if (group !== undefined && (typeof group !== "string" || group.length > 4000)) return null;
+    out.push({ id, title, station, stationName, ...(attached.length ? { files: attached } : {}), ...(group ? { group } : {}) });
   }
   return out.slice(0, BOARD_DRAFTS_KEPT);
 }

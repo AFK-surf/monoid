@@ -42,7 +42,9 @@ let board_chat_key : String = "\nboardChat"
 
 ///|
 /// A line written down to start later (待派发): its key (`new:board-…`, the key its chat is made under), its words, the
-/// station it is to run on, that station's name and the files held in its own composer.
+/// station it is to run on, that station's name and the files held in its own composer; `group`, where it is one of the
+/// tasks a draft was split into by 先理清 (board_drafts_split), the words that draft had ("" none): the cards of one
+/// split say so alike and stand together.
 #derive(Eq, Debug)
 pub(all) struct BoardFile {
   id : String
@@ -57,6 +59,7 @@ pub(all) struct BoardDraft {
   station : String
   station_name : String
   files : Array[BoardFile]
+  group : String
 }
 
 ///|
@@ -303,6 +306,7 @@ fn board_drafts_kept(src : Source, ws : String) -> Array[BoardDraft] {
               station: text(one, "station"),
               station_name: text(one, "stationName"),
               files: items(one, "files").map(fn(f) { { id: text(Some(f), "id"), name: text(Some(f), "name") } }),
+              group: text(one, "group"),
             }
           })
           .filter(fn(d) { d.id != "" && (d.title != "" || !d.files.is_empty()) })
@@ -326,6 +330,9 @@ fn board_drafts_put(src : Source, ws : String, drafts : Array[BoardDraft]) -> Un
       }
       if !d.files.is_empty() {
         one["files"] = Json::array(d.files.map(fn(f) { { "id": Json::string(f.id), "name": Json::string(f.name) } }))
+      }
+      if d.group != "" {
+        one["group"] = Json::string(d.group)
       }
       Json::object(one)
     }),
@@ -403,8 +410,47 @@ pub fn board_draft_add(
   let id = if id == "" { board_next_id() } else { id }
   // (newest first, as the board's chats are: where it was written, at 待派发's top)
   let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
-  board_drafts_put(src, ws, [{ id, title: words, station, station_name, files }] + was)
+  board_drafts_put(src, ws, [{ id, title: words, station, station_name, files, group: "" }] + was)
   Some(id)
+}
+
+///|
+/// Draft `id` of workspace `ws` split into `parts` (先理清's tasks, each its words), in its place and in their order,
+/// each on its station and of group `group` (its words: board_drafts_split's cards say so alike): the first keeps its
+/// key and its files, the others are new. The drafts as they now are, in their order (empty where `id` is none).
+pub fn board_drafts_split(src : Source, ws : String, id : String, parts : Array[String], group : String) -> Array[BoardDraft] {
+  let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
+  guard was.search_by(fn(d) { d.id == id }) is Some(at) else { return [] }
+  let d = was[at]
+  let made : Array[BoardDraft] = []
+  for words in parts {
+    let words = words.trim(chars=" \n\r\t").to_owned()
+    guard words != "" else { continue }
+    let first = made.is_empty()
+    made.push({
+      ..d,
+      id: if first { d.id } else { board_next_id() },
+      title: words,
+      files: if first { d.files } else { [] },
+      group,
+    })
+  }
+  guard !made.is_empty() else { return [] }
+  board_drafts_put(src, ws, was[:at].to_owned() + made + was[at + 1:].to_owned())
+  made
+}
+
+///|
+/// A draft of words `words` put right after draft `id` of workspace `ws`, on its station, of group `group`
+/// (先理清's task taken out of a split alone): the draft made, None where `id` is none or nothing was said.
+pub fn board_draft_after(src : Source, ws : String, id : String, words : String, group : String) -> BoardDraft? {
+  let words = words.trim(chars=" \n\r\t").to_owned()
+  guard words != "" else { return None }
+  let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
+  guard was.search_by(fn(d) { d.id == id }) is Some(at) else { return None }
+  let made : BoardDraft = { ..was[at], id: board_next_id(), title: words, files: [], group }
+  board_drafts_put(src, ws, was[:at + 1].to_owned() + [made] + was[at + 1:].to_owned())
+  Some(made)
 }
 
 ///|

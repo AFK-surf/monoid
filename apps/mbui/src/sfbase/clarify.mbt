@@ -1,129 +1,171 @@
-// A new chat clarified before it is dispatched (先理清再派发, an opt-in of the new chat's page): with it on, the first
-// words are not sent; the agent is asked to turn them into a task brief first (`newChat.clarify`), shown to be edited
-// (目标, 范围, 验收标准, 需要确认的问题), and the chat starts only once it is confirmed, the brief its first message (or the
-// words as they were). What the page keeps of it while it is a new chat; the page draws it (sfpages new_chat.mbt).
+// A 待派发 draft clarified before it is dispatched (先理清, its card's menu: sfpages board_node.mbt draft_clarify_card):
+// the agent is asked to turn its words into tasks (`board.clarify`), each a short title and its brief (目标, 范围,
+// 验收标准, 需要确认的问题); they show in the draft's card's place to be edited, one deleted or one added by hand, and
+// leave as 待派发 cards of one group (放入待派发) or each its own chat (全部派发, or one at a time). What the board keeps of
+// it while it is open; the board draws it.
 //
-// A preview: the core has no `newChat.clarify` yet, and only the made-up core answers it (sffixture newchat_fixture.mbt,
-// with a brief of its own after a beat). The core's will take the words and the station and answer the brief's four
-// parts as text, `{goal, scope, accept, ask}` (client/core-ts/src/shapes/schema.ts beside NewChatView, with its call
-// in newChat's calls); this app reads only those, here. Whether it is on is the page's own for now; the core's picks
-// (`newChat.pick`) will keep it once it is more than a preview.
+// A preview: the core has no `board.clarify` yet, and only the made-up core answers it (sffixture newchat_fixture.mbt,
+// with tasks of its own after a beat). The core's will take the draft's words and its station and answer
+// `{tasks: [{title, goal, scope, accept, ask}]}`, each part plain text (client/core-ts/src/shapes/schema.ts beside
+// BoardDraft, with its call among the board's); this app reads only that, here. Merging two tasks is not offered yet.
 
 ///|
-/// Where a new chat being clarified stands: being written (its composer, as without it); its words with the agent,
-/// the brief to come; the brief come, to be edited and confirmed.
+/// Where the draft being clarified stands: its words with the agent, the tasks to come; the tasks come, to be edited.
 #derive(Eq)
 pub(all) enum ClarifyStep {
-  Writing
   Organizing
   Ready
 }
 
 ///|
-/// What the page keeps of it: whether it is on, where it stands, the words it was asked of, the brief's four parts
-/// as they are edited (each a field of its own), and what went wrong asking it ("" nothing).
-pub(all) struct Clarify {
-  on : @signals.Signal[Bool]
-  step : @signals.Signal[ClarifyStep]
-  words : @signals.Signal[String]
+/// One task of the split, each part a field of its own as it is edited; `id` its own while the split is open (the
+/// node made for it stays its own as others are added or deleted).
+pub(all) struct ClarifyTask {
+  id : Int
+  title : @ui.Field
   goal : @ui.Field
   scope : @ui.Field
   accept : @ui.Field
   ask : @ui.Field
-  /// counts the asks: an answer to one asked before the page went back to its words touches nothing
+}
+
+///|
+/// A task is the same task by its id (its fields are its own, edited in place).
+pub impl Eq for ClarifyTask with equal(self, other) {
+  self.id == other.id
+}
+
+///|
+/// What the board keeps of it: the draft clarified (its id, "" none open), where it stands, the words it was asked of,
+/// the tasks as they are edited.
+pub(all) struct Clarify {
+  draft : @signals.Signal[String]
+  step : @signals.Signal[ClarifyStep]
+  words : @signals.Signal[String]
+  tasks : @signals.Signal[Array[ClarifyTask]]
+  /// counts the asks: an answer to one asked before the split was closed touches nothing
   mut asked : Int
+  /// counts the tasks made, each its id
+  mut made : Int
 }
 
 ///|
-// kept across runs: put back by clarify_reset (the brief started from, and the app's reset), its switch kept: a new chat
-// left while its brief is made or edited shows it again as it is come back to
+// kept across runs: put back by clarify_reset (closed, and the app's reset)
 pub let clarify : Clarify = {
-  on: @signals.signal(false, same=fn(a, b) { a == b }),
-  step: @signals.signal(Writing, same=fn(a, b) { a == b }),
+  draft: @signals.signal("", same=fn(a, b) { a == b }),
+  step: @signals.signal(Organizing, same=fn(a, b) { a == b }),
   words: @signals.signal("", same=fn(a, b) { a == b }),
-  goal: @ui.Field::new(),
-  scope: @ui.Field::new(),
-  accept: @ui.Field::new(),
-  ask: @ui.Field::new(),
+  tasks: @signals.signal([]),
   asked: 0,
+  made: 0,
 }
 
 ///|
-/// Back to its words, no brief (whether it is on stays as it was): the chat started from it, or the app reset.
+/// No draft being clarified: what was open let go, an answer still to come touching nothing.
 pub fn clarify_reset() -> Unit {
   clarify.asked += 1
-  clarify.step.set(Writing)
+  @signals.start_batch()
+  clarify.draft.set("")
+  clarify.step.set(Organizing)
   clarify.words.set("")
-  clarify_fill({})
+  clarify.tasks.set([])
+  @signals.end_batch()
 }
 
 ///|
-/// The brief's four parts as the core answers them (`{goal, scope, accept, ask}`), each into its field.
-pub fn clarify_fill(brief : Json) -> Unit {
-  let b = Some(brief)
-  clarify.goal.set(text(b, "goal"))
-  clarify.scope.set(text(b, "scope"))
-  clarify.accept.set(text(b, "accept"))
-  clarify.ask.set(text(b, "ask"))
+/// A task of parts `t` (`{title, goal, scope, accept, ask}`, each "" where it says none), its fields holding them.
+pub fn clarify_task_of(t : Json) -> ClarifyTask {
+  clarify.made += 1
+  let o = Some(t)
+  {
+    id: clarify.made,
+    title: @ui.Field::new(text=text(o, "title")),
+    goal: @ui.Field::new(text=text(o, "goal")),
+    scope: @ui.Field::new(text=text(o, "scope")),
+    accept: @ui.Field::new(text=text(o, "accept")),
+    ask: @ui.Field::new(text=text(o, "ask")),
+  }
 }
 
 ///|
-/// Words `words` to be clarified on `station`: the page shows the brief being organized from now, the agent asked
-/// for it (`newChat.clarify`); answered, the brief to edit; not, the page its words again, saying why and what is left
-/// to do (send them as they are, or ask again).
-pub fn clarify_start(src : Source, station : String, words : String) -> Unit {
+/// The tasks the core answered (`{tasks: [...]}`), each into fields: the split shown to be edited.
+pub fn clarify_fill(answer : Json) -> Unit {
+  clarify.tasks.set(items(Some(answer), "tasks").map(clarify_task_of))
+  clarify.step.set(Ready)
+}
+
+///|
+/// Draft `draft` (its words `words`, on `station`) to be clarified: its card the split being made from now, the agent
+/// asked for it (`board.clarify`); answered, the tasks to edit; not, the card as it was, saying why and what is left to
+/// do (dispatch it as it is, or ask again).
+pub fn clarify_start(src : Source, draft : String, station : String, words : String) -> Unit {
   if src.read_only {
     toast_later(read_only_words)
     return
   }
   clarify.asked += 1
   let asked = clarify.asked
+  @signals.start_batch()
+  clarify.draft.set(draft)
   clarify.words.set(words)
-  clarify_fill({})
+  clarify.tasks.set([])
   clarify.step.set(Organizing)
-  (src.call)("newChat.clarify", { "station": Json::string(station), "words": Json::string(words) }, fn(res) {
-    // (asked again, or gone back to its words, since: nothing of it shown)
+  @signals.end_batch()
+  (src.call)("board.clarify", { "station": Json::string(station), "words": Json::string(words) }, fn(res) {
+    // (closed, or another asked, since: nothing of it shown)
     guard asked == clarify.asked else { return }
     match res {
-      Ok(brief) => {
-        clarify_fill(brief)
-        clarify.step.set(Ready)
-      }
+      Ok(answer) => clarify_fill(answer)
       Err(e) => {
-        clarify.step.set(Writing)
-        toast_later(@sf.t("web-main.newChat.clarify.failed", args=[("error", text(Some(e), "message"))]))
+        clarify_reset()
+        toast_later(@sf.t("web-main.board.clarify.failed", args=[("error", text(Some(e), "message"))]))
       }
     }
   })
 }
 
 ///|
-/// Back to the words it was asked of (返回修改): they are still in the composer, the brief let go.
-pub fn clarify_back() -> Unit {
-  clarify.asked += 1
-  clarify.step.set(Writing)
+/// A task added by hand, empty, at the split's end.
+pub fn clarify_add() -> Unit {
+  clarify.tasks.set(clarify.tasks.untracked() + [clarify_task_of(Json::object({}))])
 }
 
 ///|
-/// The brief as the chat's first message: each part that says something under its heading, in Markdown.
-pub fn clarify_brief_text() -> String {
+/// Task `id` taken out of the split.
+pub fn clarify_remove(id : Int) -> Unit {
+  clarify.tasks.set(clarify.tasks.untracked().filter(fn(t) { t.id != id }))
+}
+
+///|
+/// Task `t` as a 待派发 draft's words, plain text: its title, then each part that says something under its name
+/// (目标：…), a blank line between them ("" where it says nothing at all).
+pub fn clarify_task_text(t : ClarifyTask) -> String {
   let parts = [
-    ("web-main.newChat.clarify.goal", clarify.goal),
-    ("web-main.newChat.clarify.scope", clarify.scope),
-    ("web-main.newChat.clarify.accept", clarify.accept),
-    ("web-main.newChat.clarify.ask", clarify.ask),
+    ("web-main.board.clarify.goal", t.goal),
+    ("web-main.board.clarify.scope", t.scope),
+    ("web-main.board.clarify.accept", t.accept),
+    ("web-main.board.clarify.ask", t.ask),
   ]
-  let out = StringBuilder()
+  let out : Array[String] = []
+  let title = t.title.text().trim(chars=" \n\t").to_owned()
+  if title != "" {
+    out.push(title)
+  }
   for part in parts {
     let (key, f) = part
     let words = f.text().trim(chars=" \n\t").to_owned()
     if words == "" {
       continue
     }
-    if out.to_string() != "" {
-      out.write_string("\n\n")
-    }
-    out.write_string("## " + @sf.t(key) + "\n\n" + words)
+    // (a part of several lines starts on the line after its name)
+    let sep = if words.contains("\n") { "\n" } else { "" }
+    out.push(@sf.t(key) + "：" + sep + words)
   }
-  out.to_string()
+  out.join("\n\n")
+}
+
+///|
+/// The split's tasks as their words (clarify_task_text), those that say something.
+pub fn clarify_texts() -> Array[String] {
+  clarify.tasks.untracked().map(clarify_task_text).filter(fn(w) { w != "" })
 }

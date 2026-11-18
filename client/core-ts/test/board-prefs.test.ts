@@ -69,6 +69,12 @@ test("a_workspaces_drafts_are_kept_whole_the_newest_200_none_left_as_an_empty_li
   await ask(host, core, ui, 20, "prefs.set", { boardDrafts: { w1: [pictured] } });
   apply(host, values);
   assert.deepEqual(v(values, 1).boardDrafts.w1, [pictured]);
+  // (the tasks one draft was split into by 先理清 keep the words they came from, alike)
+  const split = [draft(4, { group: "从一段话拆出" }), draft(5, { group: "从一段话拆出" })];
+  await ask(host, core, ui, 21, "prefs.set", { boardDrafts: { w1: split } });
+  apply(host, values);
+  assert.deepEqual(v(values, 1).boardDrafts.w1, split);
+  assert.equal((await ask(host, core, ui, 22, "prefs.set", { boardDrafts: { w1: [draft(6, { group: 7 })] } })).error.code, "invalid_params");
   // (newest first: the 200 newest kept)
   const many = Array.from({ length: 230 }, (_, i) => draft(230 - i));
   await ask(host, core, ui, 3, "prefs.set", { boardDrafts: { w1: many } });

@@ -1498,6 +1498,8 @@ export interface BoardDraft {
 	station: string;
 	stationName: string;
 	files?: BoardFile[];
+	/** The words of the task it was split from by 先理清, the same on each of that split's tasks; absent for a task written whole. */
+	group?: string;
 }
 
 /** What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档). */

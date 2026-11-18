@@ -137,6 +137,7 @@ fn board_words(key : String) -> String {
     "empty" => @sf.t("web-main.board.empty")
     "empty-draft" => @sf.t("web-main.board.empty_draft")
     "pinned" => @sf.t("web-main.board.pinned")
+    "clarify" => @sf.t("web-main.board.clarify.clarify")
     _ => key
   }
 }
@@ -1387,6 +1388,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       station: st,
       station_name: name,
       files: attached,
+      group: "",
     }
     own.start_from = from.map(fn(r) { (st + "/" + @sfbase.board_key_of(draft), r) })
     @sfbase.board_start(own.src, ws, draft)
@@ -1826,8 +1828,9 @@ fn CardHand::up(self : CardHand) -> Unit {
 
 ///|
 /// A draft's card (待派发's): its words, where it is to run, 开始 at its top end; pressed, its words are edited in
-/// place; held long (or right clicked), its menu (立即派发, 删除). Never dragged, wide or narrow: a finger on it scrolls
-/// its column.
+/// place; held long (or right clicked), its menu (立即派发, 先理清, 删除). Never dragged, wide or narrow: a finger on it
+/// scrolls its column. One of the tasks a draft was split into by 先理清 says so (its group's tag, the words it came
+/// from); being split, the split in its place (draft_clarify_card).
 fn draft_card(
   row : @view.View,
   src : Source,
@@ -1868,6 +1871,13 @@ fn draft_card(
     }
   }
   let delete = fn() { @sfbase.board_draft_remove(src, @signals.untracked(own.ws), id) }
+  // (its words split into tasks by the agent, the split in its place: sfbase's clarify.mbt)
+  let clarify = fn() {
+    match @signals.untracked(d) {
+      Some(d) => @sfbase.clarify_start(src, id, d.station, d.title)
+      None => ()
+    }
+  }
   let hand = CardHand::new()
   let lift = CardLift::new()
   // (its menu: start it now, delete it; held long, from the card, felt as it opens, the card lifted over its scrim)
@@ -1886,6 +1896,7 @@ fn draft_card(
     @sf.menu(
       [
         Some(@sf.menu_item_of(board_words("start-now"), start, icon="play")),
+        Some(@sf.menu_item_of(board_words("clarify"), clarify, icon="sparks")),
         Some(@sf.menu_item_of(board_words("delete"), delete, icon="trash", danger=true)),
       ],
       from~,
@@ -1897,9 +1908,21 @@ fn draft_card(
     let st = d().map(fn(d) { d.station }).unwrap_or("")
     own.stations_by.get(st)
   }
-  row.pick(fn() { editing.get() }, at_once=true, fn(w, is_editing) {
-  if is_editing {
+  // (its card, its words being edited, or its split: one at a time)
+  let shown = fn() {
+    if editing.get() {
+      DraftEditing
+    } else if @sfbase.clarify.draft.get() == id {
+      DraftSplit
+    } else {
+      DraftShown
+    }
+  }
+  row.pick(shown, at_once=true, fn(w, now) {
+  if now is DraftEditing {
     draft_edit_card(w, src, edit_ws.val, id, edit_field, editing)
+  } else if now is DraftSplit {
+    draft_clarify_card(w, src, tips, own, id, start, edit)
   } else {
   let lifted = lift.node(w)
   w.box(fn(card) {
@@ -1952,6 +1975,10 @@ fn draft_card(
       head.padding(Is((0.0, 0.0, card_title_end(), 0.0))) |> ignore
     })
     |> ignore
+    // (one of the tasks a draft was split into: its group's tag, alike on each of them)
+    card.show(fn() { d().map(fn(d) { d.group != "" }).unwrap_or(false) }, fn(g) {
+      draft_group_tag(g, fn() { d().map(fn(d) { d.group }).unwrap_or("") })
+    })
     board_files_node(card, src, fn() { @sfbase.board_file_key((own.ws)(), id) }, fn() {
       d().map(fn(d) { d.files }).unwrap_or([])
     })
@@ -1977,6 +2004,256 @@ fn draft_card(
   }
   })
   ignore(lane)
+}
+
+///|
+/// What a draft's place shows: its card, its words being edited, or its split (先理清).
+#derive(Eq)
+priv enum DraftShows {
+  DraftShown
+  DraftEditing
+  DraftSplit
+}
+
+///|
+/// The tag of a task split from a draft by 先理清, in `parent` (a draft's card): the spark and the words it came from
+/// (`words`), cut short on its one line, on the accent's ground as the board's chip on is; alike on each task of one split.
+fn draft_group_tag(parent : @view.View, words : () -> String) -> Unit {
+  parent.box(fn(row) {
+    row.row(Is(true)).lines_up(Is(Some(Start))) |> ignore
+    row.box(fn(tag) {
+      tag
+      .row(Is(true))
+      .gap(Is(4.0))
+      .lines_up(Is(Some(Middle)))
+      .padding(Is((2.0, 8.0, 2.0, 6.0)))
+      .radius(Is(10.0))
+      .ground(By(fn() { @sf.theme().p.accent_bg }))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      |> ignore
+      @sf.icon_node(tag, "sparks", 12.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      @sf.words_node(tag, words, fn() { group_tag_look }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Draft `id`'s split (先理清: sfbase's clarify.mbt) in its card's place: 先理清 and the words it was asked of; while the
+/// agent makes the tasks, a wait and their bones breathing; then each task (its title, 目标, 范围, 验收标准, 需要确认的问题,
+/// each to edit; 派发这项, 删除这项 at its head), 添加任务 under them; at its foot 返回修改 (its words edited again), 按原话派发
+/// (`start`: the draft as it is), 放入待派发 (each task a draft of one group in its place) and 全部派发 (each task its own
+/// chat, through board_start, to 进行中).
+fn draft_clarify_card(
+  parent : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  own : BoardOwn,
+  id : String,
+  start : () -> Unit,
+  edit : () -> Unit,
+) -> Unit {
+  let clarify = @sfbase.clarify
+  let ws = fn() { @signals.untracked(own.ws) }
+  let ready = fn() { clarify.step.get() == Ready }
+  let has_words = fn() { clarify.tasks.get().iter().any(fn(t) { @sfbase.clarify_task_text(t) != "" }) }
+  let place = fn() {
+    let texts = @sfbase.clarify_texts()
+    guard !texts.is_empty() else { return }
+    let group = clarify.words.untracked()
+    @sfbase.clarify_reset()
+    @sfbase.board_drafts_split(src, ws(), id, texts, group) |> ignore
+  }
+  let start_all = fn() {
+    let texts = @sfbase.clarify_texts()
+    guard !texts.is_empty() else { return }
+    let group = clarify.words.untracked()
+    @sfbase.clarify_reset()
+    for d in @sfbase.board_drafts_split(src, ws(), id, texts, group) {
+      @sfbase.board_start(src, ws(), d)
+    }
+  }
+  let start_one = fn(t : @sfbase.ClarifyTask) {
+    match @sfbase.board_draft_after(src, ws(), id, @sfbase.clarify_task_text(t), clarify.words.untracked()) {
+      Some(d) => {
+        @sfbase.clarify_remove(t.id)
+        // (the last of its tasks gone to work: the draft it was split from is done with)
+        if clarify.tasks.untracked().is_empty() {
+          @sfbase.clarify_reset()
+          @sfbase.board_draft_remove(src, ws(), id)
+        }
+        @sfbase.board_start(src, ws(), d)
+      }
+      None => ()
+    }
+  }
+  let foot_in = fn() { @sf.card_corner - @sf.theme().control_h / 2.0 }
+  let save_in = fn() { (@sf.theme().control_h - @sf.button_height()).max(0.0) / 2.0 }
+  parent.box(fn(card) {
+    card
+    .ground(By(fn() { @sf.theme().p.card }))
+    .radius(Is(@sf.card_corner))
+    .padding(By(fn() { (foot_in(), card_pad, foot_in(), foot_in()) }))
+    .gap(Is(12.0))
+    |> ignore
+    card.says(By(fn() { Some(@view.said(Group, label=board_words("clarify"))) })) |> ignore
+    // (what is not the foot: as far in from the end as the card's words)
+    card.box(fn(body) {
+      body.gap(Is(12.0)).padding(By(fn() { (card_pad - foot_in(), 0.0, card_pad - foot_in(), 0.0) })) |> ignore
+      // 先理清, and the words it was asked of
+      body.box(fn(head) {
+        head.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+        @sf.icon_node(head, "sparks", 16.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+        @sf.words_node(head, fn() { board_words("clarify") }, fn() { card_title_look }) |> ignore
+      })
+      |> ignore
+      body.box(fn(said) {
+        said.gap(Is(2.0)) |> ignore
+        @sf.words_node(said, fn() { @sf.t("web-main.board.clarify.said") }, fn() { card_meta_look }) |> ignore
+        @sf.words_node(said, fn() { clarify.words.get() }, fn() { clarify_said_look }) |> ignore
+      })
+      |> ignore
+      body.pick(ready, at_once=true, fn(b, is_ready) {
+        if !is_ready {
+          // (the tasks being made: a wait, and their bones breathing as tall as a task's head)
+          b.box(fn(w) {
+            w.gap(Is(12.0)) |> ignore
+            @sf.wait_line_node(w, fn() { @sf.t("web-main.board.clarify.organizing") }) |> ignore
+            clarify_bones_node(w)
+          })
+          |> ignore
+        } else {
+          b.box(fn(list) {
+            list.gap(Is(12.0)) |> ignore
+            // (kept by its id, each with its place in the split: a row told only as its own task comes, goes or moves)
+            let keyed = list.keyed_by(fn() { clarify.tasks.get().mapi(fn(i, t) { (t, i + 1) }) }, fn(p) { p.0.id })
+            list.each(fn() { keyed.keys() }, fn(k) { k }, fn(slot, k) {
+              guard @signals.untracked(fn() { keyed.get(k.get()) }) is Some((t, n)) else { return }
+              let at = fn() { keyed.get(k.get()).map(fn(p) { p.1 }).unwrap_or(n) }
+              clarify_task_node(slot, tips, t, at, fn() { start_one(t) }, fn() { @sfbase.clarify_remove(t.id) })
+            })
+            // (none left: what to do)
+            list.show(fn() { clarify.tasks.get().is_empty() }, fn(n) {
+              @sf.words_node(n, fn() { @sf.t("web-main.board.clarify.none") }, fn() { card_meta_look }) |> ignore
+            })
+            list.box(fn(add) {
+              add.row(Is(true)) |> ignore
+              @sf.button_node(add, fn() { @sf.t("web-main.board.clarify.add") }, fn() { @sfbase.clarify_add() }, tone=Ghost, icon="plus") |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        }
+      })
+    })
+    |> ignore
+    // its ways out: back to its words, as they are; into 待派发, or to work, as tasks
+    card.box(fn(quiet) {
+      quiet.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+      quiet.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
+      @sf.button_node(quiet, fn() { @sf.t("web-main.board.clarify.back") }, fn() {
+        @sfbase.clarify_reset()
+        edit()
+      }, tone=Ghost)
+      |> ignore
+      @sf.button_node(quiet, fn() { @sf.t("web-main.board.clarify.as_is") }, fn() {
+        @sfbase.clarify_reset()
+        start()
+      })
+      |> ignore
+    })
+    |> ignore
+    card.box(fn(foot) {
+      foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+      foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
+      @sf.button_node(foot, fn() { @sf.t("web-main.board.clarify.place") }, place, disabled=fn() { !ready() || !has_words() }) |> ignore
+      foot.box(fn(k) {
+        k.margin(By(fn() { (0.0, 0.0, save_in(), save_in()) })).shrink(Is(0.0)) |> ignore
+        @sf.button_node(k, fn() { @sf.t("web-main.board.clarify.dispatch_all") }, start_all, tone=Primary, disabled=fn() {
+          !ready() || !has_words()
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+
+///|
+/// The tasks of a split being made, in `parent`: three bones breathing, each of three bars (a task's head, its title,
+/// a line of its brief), each a little shorter than the one before's.
+fn clarify_bones_node(parent : @view.View) -> Unit {
+  for n in [0, 1, 2] {
+    parent.box(fn(bone) {
+      bone.gap(Is(6.0)) |> ignore
+      @sf.breathe_node(bone)
+      for share in [0.5, 0.9, 0.7] {
+        bone.box(fn(bar) {
+          bar
+          .height(Is(Some(10.0)))
+          .max_width(Is(Some(share * 300.0 - n.to_double() * 20.0)))
+          .radius(Is(5.0))
+          .ground(By(fn() { @sf.theme().p.hover }))
+          |> ignore
+        })
+        |> ignore
+      }
+    })
+    |> ignore
+  }
+}
+
+///|
+/// Task `t` of a split in `slot`: a line over it, 任务 n (`n`) with 派发这项 (`start`) and 删除这项 (`remove`) at its
+/// head's end, its title, then each of its parts under its name, each to edit.
+fn clarify_task_node(
+  slot : @view.View,
+  tips : @sf.TipLayer,
+  t : @sfbase.ClarifyTask,
+  n : () -> Int,
+  start : () -> Unit,
+  remove : () -> Unit,
+) -> Unit {
+  slot.box(fn(task) {
+    task.gap(Is(8.0)) |> ignore
+    task.box(fn(line) { line.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore }) |> ignore
+    task.box(fn(head) {
+      head.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))) |> ignore
+      @sf.words_node(head, fn() { @sf.t("web-main.board.clarify.task", args=[("n", n().to_string())]) }, fn() {
+        clarify_task_look
+      })
+      .grow(Is(1.0))
+      |> ignore
+      @sf.icon_button_node(head, "play", fn() { @sf.t("web-main.board.clarify.dispatch_one") }, start, tips~, size=card_key, icon_size=14.0)
+      |> ignore
+      @sf.icon_button_node(head, "trash", fn() { @sf.t("web-main.board.clarify.remove_one") }, remove, tips~, size=card_key, icon_size=14.0)
+      |> ignore
+    })
+    |> ignore
+    @sf.input_node(task, t.title, placeholder=@sf.t("web-main.board.clarify.title"), label=@sf.t("web-main.board.clarify.title"), small=true)
+    |> ignore
+    let parts = [
+      ("web-main.board.clarify.goal", t.goal, 2),
+      ("web-main.board.clarify.scope", t.scope, 2),
+      ("web-main.board.clarify.accept", t.accept, 2),
+      ("web-main.board.clarify.ask", t.ask, 1),
+    ]
+    for part in parts {
+      let (key, field, rows) = part
+      task.box(fn(p) {
+        p.gap(Is(4.0)) |> ignore
+        @sf.words_node(p, fn() { @sf.t(key) }, fn() { card_meta_look }) |> ignore
+        @sf.textarea_node(p, field, rows~, most=8, placeholder=@sf.t("web-main.board.clarify.empty"), label=@sf.t(key)) |> ignore
+      })
+      |> ignore
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -2741,3 +3018,16 @@ fn board_shared(own : BoardOwn, lane : String, id : String) -> String {
   "board/" + group + "/" + (if lane.has_prefix("person:") { lane + "/" } else { "" }) + id
 }
 
+///|
+/// A split task's group tag's words: the accent's, one line, cut short.
+// kept across runs: a value (no field of it changes)
+let group_tag_look : @ui.TextStyle = @ui.text_style(size=Meta, color=AccentText, wrap=false, w=Cut)
+
+///|
+/// The words a split was asked of, as written; a task's head (任务 n).
+// kept across runs: a value (no field of it changes)
+let clarify_said_look : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, wrap=true, max_lines=3)
+
+///|
+// kept across runs: a value (no field of it changes)
+let clarify_task_look : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false)

@@ -1983,6 +1983,7 @@ export const SHAPES: Record<string, Shape> = {
     ["station", "String"],
     ["stationName", "String"],
     ["files", opt(vec("BoardFile"))],
+    ["group", opt("String"), { doc: "The words of the task it was split from by 先理清, the same on each of that split's tasks; absent for a task written whole." }],
   ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
   KeptTabs: struct([

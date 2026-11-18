@@ -3,9 +3,7 @@
 // (`newChat.pick`, `pick.set`, `pick.save`), a chat made at once (`newChat.create`). MBUI_FIXTURE=newchat opens it,
 // newchat-station with its station's sheet, newchat-model with what it runs on, newchat-reading while its stations
 // are read, newchat-profiles while its station's profiles are, newchat-crowded with what it runs on as crowded as a
-// person's (newchat-crowded-model its panel open); newchat-clarify… with its words clarified first (sfbase's
-// clarify.mbt: newchat-clarify its words typed, -organizing the brief being made of them, -brief the brief come,
-// -edited one of its parts edited; a brief made after a beat, `newChat.clarify`); home-bars opens the bar's panel of
+// person's (newchat-crowded-model its panel open); home-bars opens the bar's panel of
 // the other bars, place the 文件 place (drive.mbt's page at the root).
 
 ///|
@@ -1479,20 +1477,3 @@ pub fn fix_split_tabs() -> Json {
 /// still.fail's web/public/apple-touch-icon.png, as a data URL.
 let fix_sf_icon : String = "data:image/png;base64,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"
 
-///|
-/// The words a new chat clarified first was typed with (newchat-clarify…: its draft's), and the brief the made-up
-/// agent makes of any (`newChat.clarify`, after fix_clarify_ms): `{goal, scope, accept, ask}`, as the core is to answer.
-pub let fix_clarify_words : String = "给设置页加一个导出对话记录的入口，导出成 Markdown"
-
-///|
-pub let fix_clarify_ms : Double = 1200.0
-
-///|
-pub fn fix_clarify_brief() -> Json {
-  {
-    "goal": "让用户能在设置页把对话记录导出成 Markdown 文件，便于归档和分享。",
-    "scope": "设置 › 数据 新增「导出对话记录」一行；可选时间范围；只导出当前 workspace 的对话；附件只保留文件名，不打包原文件。",
-    "accept": "1. 设置页能看到入口并打开导出面板\n2. 导出的 .md 按对话分节，带时间和发言人\n3. 没有记录时给出提示，不导出空文件\n4. 中英文文案齐全",
-    "ask": "1. 要不要支持一次导出多个 workspace？\n2. 附件是否需要打包成 zip？",
-  }
-}
