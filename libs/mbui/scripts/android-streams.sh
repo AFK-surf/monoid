@@ -108,7 +108,7 @@ judge reopen
 log_from_now away
 run
 wait_line away 'STREAM shown 500'
-$ADB -s $SERIAL shell input keyevent KEYCODE_HOME
+$ADB -s $SERIAL shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null
 wait_line away 'wm_on_stop_called.*dev\.mbui\.MainActivity'
 $ADB -s $SERIAL shell am start -n $APP_ID/dev.mbui.MainActivity >/dev/null
 wait_line away 'STREAM done'
@@ -133,7 +133,7 @@ log_from_now anew
 $ADB -s $SERIAL shell settings put secure font_weight_adjustment 0
 run "MBUI_STREAM_HOLD_DECODER=1500"
 wait_line anew 'STREAM shown 300'
-$ADB -s $SERIAL shell input keyevent KEYCODE_HOME
+$ADB -s $SERIAL shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null
 wait_line anew 'wm_on_stop_called.*dev\.mbui\.MainActivity'
 $ADB -s $SERIAL shell settings put secure font_weight_adjustment 300
 $ADB -s $SERIAL shell am start -n $APP_ID/dev.mbui.MainActivity >/dev/null
