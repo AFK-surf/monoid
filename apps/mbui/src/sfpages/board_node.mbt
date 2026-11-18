@@ -180,7 +180,7 @@ let card_key : Double = 28.0
 
 ///|
 /// A split's (先理清's) spacing: between its blocks (its head, its words, its lines, ＋ 添加, its keys), between its lines.
-let clarify_block_gap : Double = 16.0
+let clarify_block_gap : Double = 20.0
 
 ///|
 let clarify_item_gap : Double = 8.0
@@ -193,8 +193,8 @@ let clarify_num_w : Double = 18.0
 let clarify_text_in : Double = 24.0
 
 ///|
-/// A split's ⋯: one icon's width, pressed in its own row's height.
-let clarify_key : Double = 24.0
+/// A split's ⋯: little more than its icon's width, so a line's words take the rest of it.
+let clarify_key : Double = 20.0
 
 ///|
 fn card_key_in() -> Double {
@@ -2206,7 +2206,8 @@ fn draft_clarify_card(
     |> ignore
     // its ways out: into 待派发, or to work
     outer.box(fn(foot) {
-      foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+      // (its keys a little further from what is above them than the blocks are from each other: their own block)
+      foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 4.0, 0.0, 0.0))) |> ignore
       foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
       @sf.button_node(foot, fn() { @sf.t("web-main.board.clarify.place") }, place, disabled=fn() { !ready() || !has_words() }) |> ignore
       foot.box(fn(k) {
