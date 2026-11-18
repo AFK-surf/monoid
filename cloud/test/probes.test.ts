@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LOCATIONS, probeRelays, SETTLE_MS } from "../src/probes.ts";
+import { endpointOf, LOCATIONS, probeRelays, SETTLE_MS } from "../src/probes.ts";
 
 // Globalping as the probes see it: a measurement made for each relay, its results read once the probes had time.
 function fakeGlobalping(fail: string[] = []) {
-  const made: { target: string; locations: unknown }[] = [];
+  const made: { target: string; port: number; locations: unknown }[] = [];
   const fetch = async (input: string, init?: RequestInit): Promise<Response> => {
     if (init?.method === "POST") {
       const body = JSON.parse(String(init.body));
-      made.push({ target: body.target, locations: body.locations });
+      made.push({ target: body.target, port: body.measurementOptions.port, locations: body.locations });
       if (fail.includes(body.target)) return new Response("{}", { status: 429 });
       return Response.json({ id: `m-${body.target}`, probesCount: 2 }, { status: 202 });
     }
@@ -34,9 +34,9 @@ test("the relays are probed from the same probes in China's networks", async () 
   const waited: number[] = [];
   const found = await probeRelays(["https://app.still.fail", "https://47.76.247.168", "https://120.24.233.158"], g.fetch, async (ms) => void waited.push(ms));
   assert.deepEqual(g.made, [
-    { target: "app.still.fail", locations: LOCATIONS },
-    { target: "47.76.247.168", locations: "m-app.still.fail" },
-    { target: "120.24.233.158", locations: "m-app.still.fail" },
+    { target: "app.still.fail", port: 443, locations: LOCATIONS },
+    { target: "47.76.247.168", port: 443, locations: "m-app.still.fail" },
+    { target: "120.24.233.158", port: 443, locations: "m-app.still.fail" },
   ]);
   assert.deepEqual(waited, [SETTLE_MS]);
   assert.deepEqual([...found.keys()], ["https://app.still.fail", "https://47.76.247.168", "https://120.24.233.158"]);
@@ -57,4 +57,23 @@ test("a relay whose measurement was refused has no lines", async () => {
   let waited = false;
   assert.equal((await probeRelays(["https://app.still.fail"], none.fetch, async () => void (waited = true))).size, 0);
   assert.equal(waited, false);
+});
+
+// Relays on the list listen on 24444 and 8445: each is probed on the port its URL names (443 there was whatever else the
+// machine serves), an IPv6 one by its bare address, from the first measurement's probes; what is no relay's URL is
+// skipped, asked of nobody.
+test("each relay is probed on the port it listens on", async () => {
+  const g = fakeGlobalping();
+  const relays = ["https://app.monoid.build", "https://216.152.148.168:24444", "https://relay.pvg.office.afk.surf:8445", "https://[2001:db8::1]:8445", "http://192.0.2.7", "not a url", "ftp://192.0.2.8:21", "https://192.0.2.9:0"];
+  const found = await probeRelays(relays, g.fetch, async () => {});
+  assert.deepEqual(g.made, [
+    { target: "app.monoid.build", port: 443, locations: LOCATIONS },
+    { target: "216.152.148.168", port: 24444, locations: "m-app.monoid.build" },
+    { target: "relay.pvg.office.afk.surf", port: 8445, locations: "m-app.monoid.build" },
+    { target: "2001:db8::1", port: 8445, locations: "m-app.monoid.build" },
+    { target: "192.0.2.7", port: 80, locations: "m-app.monoid.build" },
+  ]);
+  assert.deepEqual([...found.keys()], relays.slice(0, 5));
+  assert.deepEqual(endpointOf("https://147.93.128.125:24444"), { target: "147.93.128.125", port: 24444 });
+  assert.equal(endpointOf("https://:443"), null);
 });
