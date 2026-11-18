@@ -157,6 +157,24 @@ fn last_name(name : String) -> String {
 }
 
 ///|
+/// Whether the tokens at these indices are an anonymous function with nothing in its body (`fn(_c) {  }`, its
+/// parameters' types and what it gives back said or not, a body of only `()` too)
+fn MbtFile::empty_fn(self : MbtFile, a : Array[Int]) -> Bool {
+  let toks = self.toks
+  if a.length() < 4 || toks[a[0]].text != "fn" || toks[a[1]].text != "(" || toks[a[1]].end < 0 {
+    return false
+  }
+  let last = a[a.length() - 1]
+  let open = self.open_of(last)
+  if toks[last].text != "}" || open <= toks[a[1]].end || toks[open].text != "{" {
+    return false
+  }
+  let inner = last - open - 1
+  inner == 0 ||
+  (inner == 2 && toks[open + 1].text == "(" && toks[open + 2].text == ")")
+}
+
+///|
 fn lint_mbt(
   f : MbtFile,
   cfg : Config,
@@ -705,6 +723,23 @@ fn lint_mbt(
     // what is made once, waiting for its part as nodes, which only goes
     if c.name == "old" && c.kind == "pkg" && c.qual == "@ui" && app && !in_t {
       add("old-island", c.at, f.line_text(c.at))
+    }
+    // the theme said by an old view as its frame is built (`c.set_theme(theme)`): a tree's window says it once as it
+    // starts (run_tree's theme, set_tree_theme), what is left only goes
+    if c.name == "set_theme" && c.kind == "method" && app && !in_t {
+      add("old-set-theme", c.at, f.line_text(c.at))
+    }
+    // a tree's window run through the old view's entry with an empty frame round it (`@ui.run(t, fn(_) {  }, tree=w)`):
+    // run_tree runs it alone, what is left only goes (one passing its frame on, `tree?`, or a frame that builds, not)
+    if c.name == "run" &&
+      ((c.kind == "pkg" && c.qual == "@ui") || c.kind == "bare") &&
+      app &&
+      !in_t &&
+      c.args.iter().any(fn(a) { a.0 == Some("tree") }) {
+      let plain = c.args.filter(fn(a) { a.0 is None })
+      if plain.length() >= 2 && f.empty_fn(plain[1].1) {
+        add("old-empty-around", c.at, f.line_text(c.at))
+      }
     }
     // a panel presented with an old body (`@sf.panel(title, body, ...)`): what is left of them, which only goes
     if c.name == "panel" && c.kind == "pkg" && c.qual == "@sf" && app && !in_t {

@@ -2304,6 +2304,45 @@ test "old-island" {
 }
 
 ///|
+test "old-set-theme" {
+  // the theme said by an old view as its frame is built (`c.set_theme(…)`): counted (a call each); in a test, in the
+  // framework (src/host here), a package's call of a like name (set_theme_color) not
+  let fs = found(
+    [
+      (
+        "src/sfpages/page.mbt",
+        "fn p(c : @ui.Ctx) -> Unit {\n  c.set_theme(@ui.Theme::ios_light())\n  @webpage.set_theme_color(0xFFFFFFFFL)\n  c.set_theme(theme)\n}\n",
+      ),
+      ("src/kit/x_wbtest.mbt", "test \"t\" {\n  c.set_theme(@ui.Theme::ios_light())\n}\n"),
+      ("src/host/y.mbt", "fn y(c : Ctx) -> Unit {\n  c.set_theme(@ui.Theme::ios_light())\n}\n"),
+    ],
+    "old-set-theme",
+    2,
+  )
+  assert_eq(lines(fs), [2, 4])
+}
+
+///|
+test "old-empty-around" {
+  // a tree's window run with an empty old frame round it (`@ui.run(t, fn(_c) {  }, tree=w)`, a bare `run` too):
+  // counted (a call each); one whose frame builds, one passing its frame on (`view, tree?`), run_tree, one in a test,
+  // in the framework (src/host here) not
+  let fs = found(
+    [
+      (
+        "src/sfpages/page.mbt",
+        "fn main {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n  @ui.run(\"title\", fn(c) { @ui.old_views_here(c) }, tree=window)\n  @ui.run(\"title\", view, tree?)\n  @ui.run_tree(\"title\", window)\n  run(\"t\", fn(_ : @ui.Ctx) -> Unit { () }, tree=fn(root) { page(root) })\n  @ui.run(\"title\", fn(_c) {  })\n}\n",
+      ),
+      ("src/kit/x_wbtest.mbt", "test \"t\" {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n}\n"),
+      ("src/host/y.mbt", "fn y() -> Unit {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n}\n"),
+    ],
+    "old-empty-around",
+    2,
+  )
+  assert_eq(lines(fs), [2, 6])
+}
+
+///|
 test "old-panel" {
   // a panel presented with an old body (@sf.panel): counted (a call each); one whose body is nodes (@sf.panel_nodes),
   // one in a test, the library's own name for something else (a bare `panel`), and the framework's not

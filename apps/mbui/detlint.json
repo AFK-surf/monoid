@@ -402,6 +402,13 @@
       "src/sfdesk/tape_view.mbt": 1
     },
     "old-panel": {},
+    "old-set-theme": {
+      "src/sfgraphic/alignment.mbt": 1,
+      "src/sfgraphic/clean.mbt": 1,
+      "src/sfgraphic/scene.mbt": 1,
+      "src/sfgraphic/wrap.mbt": 1
+    },
+    "old-empty-around": {},
     "click-read": {},
     "key-read": {},
     "submitted-read": {
@@ -686,6 +693,8 @@
     "list-comes-off": {},
     "old-island": {},
     "old-panel": {},
+    "old-set-theme": {},
+    "old-empty-around": {},
     "click-read": {},
     "key-read": {},
     "submitted-read": {},
