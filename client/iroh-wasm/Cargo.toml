@@ -9,7 +9,8 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring"] }
+mesh-transport = { path = "../../libs/mesh-transport", default-features = false }
+iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring", "unstable-custom-transports"] }
 noq-proto = { version = "1", default-features = false }
 # Must match the wasm-bindgen CLI that build.sh runs.
 wasm-bindgen = "=0.2.129"

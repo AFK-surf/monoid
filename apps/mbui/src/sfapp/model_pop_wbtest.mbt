@@ -3,38 +3,48 @@
 
 ///|
 /// The fixture's `mode` in a desktop's window, its model's panel open beside its control.
-fn model_pop(mode : String) -> @ui.Tester {
+fn model_pop(mode : String, font_scale? : Double = 1.0) -> @ui.Tester {
   let src = fixture_app(mode)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  if font_scale != 1.0 {
+    t.set_font_scale(font_scale)
+  }
   t.run_for(squeeze_opening)
   t
 }
 
 ///|
 test "the station's own and shared models are shown first; other stations are asked for and hidden again on reopening" {
-  for win in [corner_windows[0], corner_windows[5]] {
-    for scale in [1.0, 1.3] {
-      let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
-      let held = screen_in("newchat", win, "zh", font_scale=scale).audit().map(bare)
-      let t = screen_in("newchat-station-models", win, "zh", font_scale=scale)
-      let label = "显示其他 station 的模型"
-      assert_eq(t.get(Switch, label~).check, Some(Off))
-      assert_true(t.query(Button, label="Opus 5.5") is Some(_))
-      assert_true(t.query(Button, label="Sonnet 5") is Some(_), msg="already shared here")
-      assert_true(t.query(Button, label="GPT-6") is None)
-      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
-      t.click(Switch, label~)
-      t.run_for(squeeze_opening)
-      assert_eq(t.get(Switch, label~).check, Some(On))
-      assert_true(t.query(Button, label="GPT-6") is Some(_))
-      assert_eq(new_fix.model, "claude-opus-5-5", msg="the filter never selects a model")
-      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
-      t.click(Button, label="Opus 5.5")
-      t.run_for(squeeze_opening)
-      t.tap_text("Opus 5.5")
-      t.run_for(squeeze_opening)
-      assert_eq(t.get(Switch, label~).check, Some(Off))
-      assert_true(t.query(Button, label="GPT-6") is None)
+  for win in corner_windows {
+    for lang in ["zh", "en"] {
+      for scale in [1.0, 1.3] {
+        let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+        let held = screen_in("newchat", win, lang, font_scale=scale).audit().map(bare)
+        let t = screen_in("newchat-station-models", win, lang, font_scale=scale)
+        let label = @sf.t("web-main.model.otherStations")
+        assert_eq(t.get(Switch, label~).check, Some(Off))
+        assert_true(t.query(Button, label="Opus 5.5") is Some(_))
+        assert_true(t.query(Button, label="Sonnet 5") is Some(_), msg="already shared here")
+        assert_true(t.query(Button, label="GPT-6") is None)
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{win.0}-\{lang} \{scale}: \{t.audit().join("\n")}")
+        t.click(Switch, label~)
+        t.run_for(squeeze_opening)
+        assert_eq(t.get(Switch, label~).check, Some(On))
+        assert_true(t.query(Button, label="GPT-6") is Some(_))
+        assert_eq(new_fix.model, "claude-opus-5-5", msg="the filter never selects a model")
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{win.0}-\{lang} \{scale}: \{t.audit().join("\n")}")
+        t.click(Button, label="Opus 5.5")
+        t.run_for(squeeze_opening)
+        // The Medium fixture keeps its sidebar over the new chat. Close it before opening the model panel again.
+        if t.query(Button, has="Opus 5.5") is None {
+          t.click(Button, label=@sf.t("web-main.sidebar.close"))
+          t.run_for(squeeze_opening)
+        }
+        t.click(Button, has="Opus 5.5")
+        t.run_for(squeeze_opening)
+        assert_eq(t.get(Switch, label~).check, Some(Off))
+        assert_true(t.query(Button, label="GPT-6") is None)
+      }
     }
   }
 }
@@ -407,6 +417,21 @@ test "wide, models of many makers: each a row of its own in the list of them, no
 }
 
 ///|
+test "wide, all models: the open panel makes room for a model and how it runs on one line" {
+  let t = model_pop("newchat-providers-model", font_scale=1.5)
+  t.click(Button, label="全部模型")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="OpenAI")
+  t.run_for(@ui.move_most_ms)
+  let panel = t.get(@ui.Role::Dialog).rect
+  let model = t.get(Button, label="GPT-6 Astra").rect
+  let name = words_whole(t, "GPT-6 Astra", model)
+  let runtime = words_whole(t, "Codex · 中 · Ultrafast · 1.1M", model)
+  assert_true(name is Some(n) && runtime is Some(r) && (n.1 - r.1).abs() < 4.0, msg="\{Repr((model, name, runtime))}")
+  assert_true(panel.0 >= 0.0 && panel.0 + panel.2 <= 1280.0 && panel.2 < 960.0, msg="\{Repr(panel)}")
+}
+
+///|
 test "wide, many models and Codex's efforts and speeds: the models, how hard it thinks a column beside them, the runtime and how fast at the foot" {
   let t = model_pop("newchat-tall-model")
   let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
@@ -546,6 +571,32 @@ test "Ultrafast can be selected and cleared on small and large screens with larg
       t.run_for(squeeze_opening)
       assert_eq(new_fix.speed, "standard")
       assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+    }
+  }
+}
+
+///|
+test "Claude run mode can be changed in the model settings on small and large screens" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    let t = screen_in("newchat-tui-model", win, "zh")
+    let item : @view.Role = if win.0 == "phone" { Button } else { MenuItemRadio }
+    for mode in ["TUI", "Print"] {
+      t.click(Button, label=if mode == "TUI" { "Print" } else { "TUI" })
+      t.run_for(squeeze_opening)
+      t.click(item, label=mode)
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.tui, Some(mode == "TUI"))
+    }
+    let checkbox : @view.Role = if win.0 == "phone" { Button } else { MenuItemCheckbox }
+    for enabled in [true, false] {
+      t.click(Button, label="Print")
+      t.run_for(squeeze_opening)
+      if win.0 != "phone" {
+        assert_eq(t.get(checkbox, label="新对话默认使用 TUI").check, Some(if enabled { Off } else { On }))
+      }
+      t.click(checkbox, label="新对话默认使用 TUI")
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.default_tui, enabled)
     }
   }
 }

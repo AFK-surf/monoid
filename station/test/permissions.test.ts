@@ -5,7 +5,7 @@
 // client then opens it) or the person has to go to the Mac. The helper is a fake in this process speaking main.swift's
 // `status`, `permissions.show`, `files.access` and `watch`; the station's clock is the test's.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,8 +35,14 @@ class FakeHelper {
   #watches = new Set<net.Socket>();
   #closed = false;
 
+  /// How many times it was started, and whether it cannot be (a Mac with no one signed in to its desktop).
+  launches = 0;
+  failing = false;
+
   launch = async (_app: string, env: Record<string, string>) => {
     if (this.#closed) throw new Error("the test is over");
+    this.launches++;
+    if (this.failing) throw new Error("LSOpenURLsWithRole() failed with error -610");
     this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token: env.STILLFAIL_HELPER_TOKEN! };
     rmSync(this.#where.path, { force: true });
     const server = net.createServer((c) => this.#serve(c));
@@ -170,6 +176,46 @@ test("the grants as the page sees them: none before the first look, then each in
   s.fake.tell();
   await until(() => s.changes() > again);
   assert.equal(permissionsView(s.grants, member)!.screen, true);
+  await s.end();
+});
+
+test("a helper that cannot start: tried again once SHOWN_MS went by as pages read the grants, not at each read; at once when asked; its copy not compared again", { skip: WINDOWS }, async () => {
+  const s = station();
+  s.fake.failing = true;
+  // (each look asks the helper for its status, at once as it starts)
+  let looks = 0;
+  const request = s.helper.request.bind(s.helper);
+  s.helper.request = (op) => (op.op === "status" && looks++, request(op));
+  assert.equal(s.grants.view(), null);
+  assert.equal(looks, 1);
+  await s.grants.refresh();
+  assert.equal(s.fake.launches, 1);
+  // The release's code changed meanwhile: the copy installed is started again as it is.
+  writeFileSync(join(s.base, "release", HELPER_APP, "Contents/MacOS/stillfail-helper"), "code 2");
+  // Read again and again (each client's overview): not tried again.
+  for (let i = 0; i < 5; i++) assert.equal(s.grants.view(), null);
+  s.clock.now += 29_999;
+  assert.equal(s.grants.view(), null);
+  assert.equal(looks, 1);
+  // SHOWN_MS after the last try: tried again, once.
+  s.clock.now += 1;
+  assert.equal(s.grants.view(), null);
+  assert.equal(s.grants.view(), null);
+  assert.equal(looks, 2);
+  await s.grants.refresh();
+  assert.equal(s.fake.launches, 2);
+  // Asked for: tried at once, however lately it was.
+  assert.equal((await ask(s.grants, "documents")).status, 503);
+  assert.equal(looks, 3);
+  assert.equal(s.fake.launches, 3);
+  await s.grants.refresh(true);
+  assert.equal(s.fake.launches, 4);
+  assert.equal(readFileSync(join(s.base, "helper", HELPER_APP, "Contents/MacOS/stillfail-helper"), "utf8"), "code");
+  // It can start now: looked at, and the copy it runs is the one installed.
+  s.fake.failing = false;
+  await s.grants.refresh(true);
+  assert.equal(s.fake.launches, 5);
+  assert.equal(s.grants.view()!.screen, true);
   await s.end();
 });
 

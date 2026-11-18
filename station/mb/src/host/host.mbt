@@ -35,6 +35,23 @@ pub struct Host {
   /// The shell's calls not answered yet, by their ids.
   priv waiting : Map[Int64, @effect.Deferred[(Json, Bytes?)]]
   priv mut next : Int64
+  /// What the program's own C tells (host.c `sfh_push_sys`), by the id it was given: each told as it comes.
+  priv sys : Map[Int64, (Bytes) -> Unit]
+}
+
+///|
+/// An id for what the program's own C will tell (`sfh_push_sys`), each told to `told` until `Host::sys_done`.
+pub fn Host::sys_listen(self : Host, told : (Bytes) -> Unit) -> Int64 {
+  self.next += 1L
+  let id = self.next
+  self.sys[id] = told
+  id
+}
+
+///|
+/// Nothing more is told of `id`.
+pub fn Host::sys_done(self : Host, id : Int64) -> Unit {
+  self.sys.remove(id)
 }
 
 ///|
@@ -91,6 +108,13 @@ pub async fn Host::line(self : Host) -> String? {
 }
 
 ///|
+/// What stdin said after its last newline: once it has ended, its last line where that had none (a hook's input, as a
+/// program writes it whole and closes its stdin).
+pub fn Host::unended(self : Host) -> String {
+  self.input.unended()
+}
+
+///|
 /// Writes `text` and a newline to stdout, U+2028 and U+2029 written as JSON escapes (`\u2028`, `\u2029`): the station
 /// reads each line with node:readline, which ends a line at either of them too, so a chat's text with one cut the
 /// answer that held it in two, neither JSON, and its read was never answered (2026-11-14). A line said here is JSON,
@@ -134,6 +158,16 @@ pub fn note(text : String) -> Unit {
 
 ///|
 fn Host::dispatch(self : Host, e : Bytes) -> Unit {
+  if e.length() >= 9 && e[0] == b'\x04' {
+    let mut id = 0L
+    for i = 8; i >= 1; i = i - 1 {
+      id = (id << 8) | e[i].to_int64()
+    }
+    if self.sys.get(id) is Some(told) {
+      told(e[9:].to_owned())
+    }
+    return
+  }
   match @wire.Event::read(e) {
     Input(data) => for line in self.input.push(data) { ignore(self.lines.try_offer(line)) }
     End => self.lines.shutdown()
@@ -176,6 +210,7 @@ pub fn run(shell_dir? : String, main : async (Host) -> Unit) -> Int {
     input: @wire.Lines::new(),
     waiting: Map([]),
     next: 0L,
+    sys: Map([]),
   }
   let fiber = rt.fork(() => main(host), name="main")
   while true {

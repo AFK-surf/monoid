@@ -48,7 +48,7 @@ screen=; [ "$platform" = win32-x64 ] && screen="$(native screen)"
 tree=; [ "$platform" = win32-x64 ] && tree="$(native agent-desktop)"
 # The build's output is the complete set of station files for this release, not a previous build's leftover workers.
 rm -rf "$root/station/dist"
-(cd "$root/station" && pnpm run build >&2)
+(cd "$root/station" && pnpm run build:node >&2)
 app="$out/stillfail"
 rm -rf "$app"
 mkdir -p "$app/bin" "$app/mesh/target/release" "$app/dist" "$app/station"

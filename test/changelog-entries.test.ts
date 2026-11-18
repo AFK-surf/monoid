@@ -71,6 +71,10 @@ test("the mbui app reaches Android and the desktop; its desktop's own pages and 
   assert.deepEqual(partsOf([...desk, ...nothing]), ["desktop"]);
   assert.deepEqual(partsOf(["apps/mbui/src/sfapp/chat.mbt", ...nothing]), ["android", "desktop"]);
   assert.deepEqual(partsOf(["libs/mbui/src/ui/text.mbt"]), ["android", "desktop"]);
+  // still.fail's component library (libs/sf-ui) as the app it is built into; its tests, check and lint add nothing
+  const sfNothing = ["libs/sf-ui/detlint.json", "libs/sf-ui/src/avatar_wbtest.mbt", "libs/sf-ui/scripts/check.sh"];
+  assert.deepEqual(partsOf(["libs/sf-ui/src/button_node.mbt"]), ["android", "desktop"]);
+  assert.deepEqual(partsOf([...desk, ...sfNothing]), ["desktop"]);
   assert.deepEqual(partsOf(["apps/mbui/android/app/src/main/java/dev/mbui/Crashes.java", "libs/mbui/src/host/android_host.c"]), ["android"]);
   assert.deepEqual(partsOf(["libs/mbui/src/host/mac_app.m", "apps/mbui/src/host/win_core.c"]), ["desktop"]);
   assert.deepEqual(partsOf(["libs/mbui/src/host/ios_app.m", "apps/mbui/ios/Info.plist"]), []);

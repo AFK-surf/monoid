@@ -366,9 +366,30 @@ fn inst_rgb(a : FixedArray[Double], b : Int) -> Rgb {
 }
 
 ///|
-/// Whether (`px`, `py`) is inside what cuts instance `b` (its clip's rect).
+/// Whether (`px`, `py`) is inside what cuts instance `b` as the renderers cut it (smooth.mbt sd_clip): its clip, a
+/// rounded rect (16-19, its corners 24-27, their smoothness 28-31), and the rounded clip outside it that it cuts through
+/// (40-51), where it has one. A point in a clip's rect but past its rounded corner is not cut to: a picture flying in a
+/// frame rounded round it covers nothing there.
 fn in_inst_clip(a : FixedArray[Double], b : Int, px : Double, py : Double) -> Bool {
-  px >= a[b + 16] && px <= a[b + 18] && py >= a[b + 17] && py <= a[b + 19]
+  let outer = a[b + 44] > 0.0 || a[b + 45] > 0.0 || a[b + 46] > 0.0 || a[b + 47] > 0.0
+  px >= a[b + 16] &&
+  px <= a[b + 18] &&
+  py >= a[b + 17] &&
+  py <= a[b + 19] &&
+  inst_in_round(a, b + 16, b + 24, px, py) &&
+  (!outer || inst_in_round(a, b + 40, b + 44, px, py))
+}
+
+///|
+/// Whether (`px`, `py`) is within the rounded rect x0 y0 x1 y1 at `at` of instance numbers `a`, its corners' radii at
+/// `radii` and their smoothness the four after them, as the renderers cut it (sd_clip).
+fn inst_in_round(a : FixedArray[Double], at : Int, radii : Int, px : Double, py : Double) -> Bool {
+  let r = (a[radii], a[radii + 1], a[radii + 2], a[radii + 3])
+  if r.0 <= 0.0 && r.1 <= 0.0 && r.2 <= 0.0 && r.3 <= 0.0 {
+    return true
+  }
+  sd_clip(px, py, a[at], a[at + 1], a[at + 2], a[at + 3], r, (a[radii + 4], a[radii + 5], a[radii + 6], a[radii + 7])) <=
+  0.0
 }
 
 ///|
@@ -691,9 +712,10 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
   let tree_lines : Map[(@view.NodeId, Int), (Double, String)] = Map([])
   let tree_order : Array[(@view.NodeId, Int)] = []
   // (what a node of the window's tree said disabled holds, as an old view's in a widget said disabled: asked nothing;
-  // its own presses off, not what a modal layer over it takes them from)
+  // its own presses off, under a modal layer as well (a send with nothing to send behind a menu opened over it), not
+  // what is only a modal layer's taking them from it)
   let tree_off : Array[@view.NodeId] = match view_app.val {
-    Some(tree) => tree.said_order().filter(fn(s) { s.disabled && s.allowed }).map(fn(s) { s.id })
+    Some(tree) => tree.said_order().filter(fn(s) { tree.node_pressless_own(s.id) }).map(fn(s) { s.id })
     None => []
   }
   let tree_off_holds = fn(id : @view.NodeId) {

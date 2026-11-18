@@ -138,6 +138,67 @@ fn fn_units(files : Map[String, String]) -> Array[String] {
 }
 
 ///|
+test "data and selected units share compile commands across optimization levels" {
+  let env_name = b"MBC_LIGHT_UNITS"
+  let previous = getenv("MBC_LIGHT_UNITS").unwrap_or(b"")
+  defer ignore(c_setenv(env_name, previous))
+  assert_true(is_data(b"data.c"))
+  assert_true(is_data(b"data_layout.c"))
+  assert_false(is_data(b"database.c"))
+  assert_false(is_data(b"init.c"))
+  assert_eq(c_setenv(env_name, b" \t "), 1)
+  assert_false(is_light_unit(b"fixture_4.c"))
+  assert_eq(c_setenv(env_name, b"  demo_\tfixture_\n"), 1)
+  assert_true(is_light_unit(b"demo_1.c"))
+  assert_true(is_light_unit(b"fixture_4.c"))
+  assert_false(is_light_unit(b"other_fixture_4.c"))
+
+  let c = prelude_src + "\n" + items_src
+  let (files, _) = sp(c)
+  let function_unit = utf8(fn_units(files)[0])
+  assert_eq(c_setenv(env_name, function_unit), 1)
+  let dir = tmp_path("light units")
+  makedirs(dir)
+  defer rmtree(dir)
+  let src = path_join(dir, b"sample.c")
+  let objs = path_join(dir, b"objects")
+  assert_true(write_file(src, utf8(c)))
+  makedirs(objs)
+  let cc = [b"clang"]
+  let flags0 = [b"-O2", b"-Wall"]
+  let flags = [b"-Wall", b"-O0"]
+  let gen_flags = [b"-DGEN=1"]
+  let (main_jobs, _) = split_jobs(src, objs, cc, flags0, gen_flags, [b"-O0"], false, false)
+  let (branch_jobs, _) = split_jobs(
+    src, objs, cc, flags, gen_flags, [b"-O0"], false, false, alt_flags=Some(flags0),
+  )
+  let mut checked = 0
+  for i, main_job in main_jobs {
+    let name = basename(main_job.src)
+    if is_data(name) || name == function_unit {
+      let branch_job = branch_jobs[i]
+      assert_eq(branch_job.src, main_job.src)
+      assert_eq(
+        main_job.argv,
+        compile_args(cc, [b"-Wall", b"-O0", b"-DGEN=1"], main_job.src, main_job.obj, false).0,
+      )
+      assert_eq(branch_job.argv, main_job.argv)
+      let fallback = compile_args(
+        cc, [b"-O2", b"-Wall", b"-DGEN=1"], main_job.src, main_job.obj, false,
+      ).0
+      assert_eq(main_job.alt_argv, Some(fallback))
+      assert_eq(branch_job.alt_argv, Some(fallback))
+      checked += 1
+    }
+  }
+  assert_true(checked >= 3)
+  assert_eq(
+    unopt_flags([b"/GL", b"/O2", b"-Os", b"/W4"], [b"/Od"], true),
+    [b"/GL", b"/W4", b"/Od"],
+  )
+}
+
+///|
 test "kinds" {
   let (files, m) = sp(prelude_src + "\n" + items_src)
   assert_eq(m.functions, 5)
@@ -817,4 +878,140 @@ test "function types the same are one type, a new one beside them renaming none"
   assert_false(has(unit_named(one, "b"), "_x"))
   assert_eq(occurs(one["decls.h"], "(* code)"), 1) // (defined once)
   assert_eq(occurs(two["decls.h"], "(* code)"), 1)
+}
+
+///|
+/// blank as it was written in MoonBit, a byte at a time: io.c's mbc_blank is held to it
+fn blank_ref(t : BytesView) -> Bytes {
+  let n = t.length()
+  let out : FixedArray[Byte] = FixedArray::make(n, b'\x00')
+  let mut last = 0
+  let mut p = 0
+  while p < n {
+    let me = if may_blank(t, p) { blank_end(t, p) } else { -1 }
+    if me < 0 {
+      p += 1
+      continue
+    }
+    let c = t[p]
+    out.blit_from_bytesview(last, t[last:p])
+    if c == b'"' || c == b'\'' {
+      // (a literal: its quotes kept)
+      out[p] = c
+      write_spaces(out, t, p + 1, me - 1)
+      out[me - 1] = t[me - 1]
+    } else {
+      write_spaces(out, t, p, me)
+    }
+    last = me
+    p = me
+  }
+  out.blit_from_bytesview(last, t[last:n])
+  made_text(out)
+}
+
+///|
+/// (blank_ref's)
+fn write_spaces(out : FixedArray[Byte], t : BytesView, i : Int, j : Int) -> Unit {
+  for k in i..<j {
+    out[k] = if t[k] == b'\n' { b'\n' } else { b' ' }
+  }
+}
+
+///|
+test "blank in C is blank_ref" {
+  let texts = [
+    prelude_src, items_src, "a /* b */ c // d\n  # e\nf", "x = \"a\\\"b\" + 'c' + \"un\nend\";", "/* open",
+    "'\\", "#\n#x\n  #y", "s = \"\\\n\"", "/*/ x */ y", "\"\"''//", "", "a",
+  ]
+  for t in texts {
+    let b = utf8(t)
+    assert_eq(blank(b), blank_ref(b))
+    // (a view not at its text's start: what a line or an item is)
+    for k in 0..<imin(b.length(), 12) {
+      assert_eq(blank(b[k:]), blank_ref(b[k:]))
+      assert_eq(blank(b[0:b.length() - k]), blank_ref(b[0:b.length() - k]))
+    }
+  }
+}
+
+///|
+/// line_starts as it was written in MoonBit: io.c's mbc_line_starts is held to it
+fn line_starts_ref(t : Bytes) -> Array[Int] {
+  let n = t.length()
+  let out = [0]
+  let mut i = 0
+  while i < n {
+    let c = t[i]
+    let e = if c == b'\n' ||
+      c == b'\x0b' ||
+      c == b'\x0c' ||
+      c == b'\x1c' ||
+      c == b'\x1d' ||
+      c == b'\x1e' {
+      i + 1
+    } else if c == b'\r' {
+      if i + 1 < n && t[i + 1] == b'\n' {
+        i + 2
+      } else {
+        i + 1
+      }
+    } else if c == b'\xc2' && i + 1 < n && t[i + 1] == b'\x85' {
+      i + 2
+    } else if c == b'\xe2' &&
+      i + 2 < n &&
+      t[i + 1] == b'\x80' &&
+      (t[i + 2] == b'\xa8' || t[i + 2] == b'\xa9') {
+      i + 3
+    } else {
+      -1
+    }
+    if e >= 0 {
+      out.push(e)
+      i = e
+    } else {
+      i += 1
+    }
+  }
+  if out[out.length() - 1] != n {
+    out.push(n)
+  }
+  out
+}
+
+///|
+test "line_starts in C is line_starts_ref" {
+  let texts : Array[Bytes] = [
+    utf8(prelude_src),
+    utf8(items_src),
+    b"",
+    b"a",
+    b"\n",
+    b"a\r\nb\rc\x0bd\x0ce\x1cf\x1dg\x1eh",
+    b"x\xc2\x85y\xe2\x80\xa8z\xe2\x80\xa9",
+    b"end\r",
+    b"\xe2\x80",
+    b"\xc2",
+    b"no break at its end",
+  ]
+  for b in texts {
+    assert_eq(line_starts(b), line_starts_ref(b))
+  }
+}
+
+///|
+test "clen in C is the characters" {
+  for t in ["", "abc", "\u{e9}t\u{e9}", "\u{1F600}x", "\u{4E2D}\u{6587}"] {
+    let b = utf8(t)
+    assert_eq(clen(b), t.length() - (t.iter().filter(fn(c) { c.to_int() > 0xFFFF }).count()))
+    for k in 0..<b.length() {
+      let mut n = 0
+      for i in k..<b.length() {
+        if (b[i].to_int() & 0xC0) != 0x80 {
+          n += 1
+        }
+      }
+      assert_eq(clen(b[k:]), n)
+    }
+  }
 }

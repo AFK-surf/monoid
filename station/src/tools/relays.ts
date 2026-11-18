@@ -36,6 +36,9 @@ export type RelayToolsDeps = {
   workspaceOf: (session: string) => string | null;
   /// Who a session's change is said to be by: its chat's name.
   by: (session: string) => string;
+  meshList?: (workspace: string) => unknown[];
+  revoke?: (workspace: string, node: string) => Promise<unknown>;
+  enroll?: (workspace: string, name: string, by: string) => unknown;
   probe?: (url: string) => Promise<Probed>;
 };
 
@@ -43,11 +46,13 @@ export function relayTools(deps: RelayToolsDeps): Tool[] {
   const probe = deps.probe ?? probeRelay;
   return [{
     name: "relays",
-    description: `List, add or remove the relays of this chat's workspace of its own: the relays its members' devices and its stations use besides still.fail's (say, one in an office in mainland China, where still.fail's are slow). action list shows them, still.fail's, and the ways the workspace turned off. action add (url: https://host[:port][/path] of an iroh relay, still.fail's build of it) first reaches it from this station: it must answer as a relay over https with a valid certificate; one that does not is not added, and why is said. Nobody approves: it is the workspace's at once, told to its other stations and its members' devices, which measure it and use it where it is faster; the app's 连接方式 shows each relay and which chat added it, and a person takes one away there. action remove takes one away. At most ${MAX_OWN_RELAYS} of its own.`,
+    description: `Manage this workspace's relays. list shows relay URLs, disabled routes and registered mesh nodes. add probes an https iroh relay URL before sharing it with workspace stations and devices; no approval needed. remove removes a URL; at most ${MAX_OWN_RELAYS} own URLs. enroll (name) issues a private one-use token valid for 24 hours, granting forwarding only. revoke (node) removes a mesh relay through its issuing station, which must be reachable.`,
     inputSchema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["list", "add", "remove"] },
+        action: { type: "string", enum: ["list", "add", "remove", "enroll", "revoke"] },
+        node: { type: "string", description: "Mesh relay public key from list (revoke)." },
+        name: { type: "string", description: "Name for a new mesh relay (enroll)." },
         url: { type: "string", description: "The relay's URL (add, remove)." },
       },
       required: ["action"],
@@ -62,7 +67,17 @@ export function relayTools(deps: RelayToolsDeps): Tool[] {
         const v = ways.view(ws);
         return { workspace: ws, own: v.relays, still_fail: stillFails(ways.cloud), off: v.off };
       };
-      if (action === "list") return JSON.stringify(list());
+      if (action === "list") return JSON.stringify({ ...list(), ...(deps.meshList ? { mesh: deps.meshList(ws) } : {}) });
+      if (action === "revoke") {
+        if (!deps.revoke) throw new Error("mesh relay revocation is not available on this station");
+        if (typeof args.node !== "string" || !/^[0-9a-f]{64}$/.test(args.node)) throw new Error("node must be a mesh relay public key from list");
+        return JSON.stringify(await deps.revoke(ws, args.node));
+      }
+      if (action === "enroll") {
+        if (!deps.enroll) throw new Error("mesh relay enrollment is not available on this station");
+        if (typeof args.name !== "string") throw new Error("name is required for mesh relay enrollment");
+        return JSON.stringify(deps.enroll(ws, args.name, deps.by(session)));
+      }
       const raw = typeof args.url === "string" ? args.url : "";
       if (action === "add") {
         const url = relayUrl(raw, (ways.cloud.state?.origin ?? "").startsWith("http:"));
@@ -86,7 +101,7 @@ export function relayTools(deps: RelayToolsDeps): Tool[] {
         }
         return JSON.stringify({ removed: relayUrl(raw, true) ?? raw, ...list() });
       }
-      throw new Error("action: list, add or remove");
+      throw new Error("action: list, add, remove, enroll or revoke");
     },
   }];
 }

@@ -278,12 +278,12 @@ fn Agents::codex_tell(
 
 ///|
 /// A session's thread (`codexThread`), its live steps as Node has them: what was held for it read now, as it came.
-fn Agents::add_thread(self : Agents, h : Hosted, thread : String, state : Json?) -> Unit {
+fn Agents::add_thread(self : Agents, h : Hosted, thread : String, state : Json?, routed? : Bool = false) -> Unit {
   let live = match state {
     Some(Null) | None => @codex.Live::new()
     Some(s) => @codex.Live::of_state(@jsjson.parse(s.stringify()) catch { _ => Null })
   }
-  let t = { id: @jsjson.units(thread), live, routed: false }
+  let t = { id: @jsjson.units(thread), live, routed }
   h.codex.threads[thread] = t
   guard h.codex.orphans is Some(o) && o.get(thread) is Some(held) else { return }
   o.remove(thread)

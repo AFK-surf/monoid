@@ -1,3 +1,6 @@
+import { RelayEnrollment } from "../mesh/enrollment.ts";
+import { workspaceScope } from "../mesh/enrollment-door.ts";
+import { stationAddr } from "../mesh/relays.ts";
 // The agents' side of the station (server.rs `App::start`): the hub with its drivers, background jobs, tasks for other
 // stations, the agents' tools and their door (/mcp). Made here and given to the rest; nothing else starts an agent.
 //
@@ -87,7 +90,7 @@ import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
 import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
-import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
+import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
 import { chatsTouched, forPeer, READ } from "./others.ts";
 import { FILE, fileForPeer, PUT, putForPeer } from "./peer-files.ts";
@@ -471,6 +474,7 @@ export const AgentsLive = (control: Control) =>
           case CREATE:
           case CREATE_PRESET:
           case CREATE_SPEED:
+          case CREATE_PRESET_TUI:
           case CREATE_PRESET_SPEED:
             return createForPeer(hub, peer, request, ws);
           case ARCHIVE:
@@ -550,6 +554,18 @@ export const AgentsLive = (control: Control) =>
         // The relays of the chat's workspace of its own (mesh/ways.ts), added by the agents themselves.
         ...relayTools({
           ways: () => (plane.state.state === null ? null : waysOf(plane.state)),
+          meshList: (workspace) => meshSide.relayControl?.list(workspace) ?? [],
+          revoke: async (workspace, node) => {
+            if (!meshSide.relayControl) throw new Error("native mesh relay control is not available");
+            return meshSide.relayControl.revoke(workspace, node);
+          },
+          enroll: (workspace, name, by) => {
+            if (!meshSide.relayControl) throw new Error("native mesh relay enrollment is not available");
+            const state = plane.state.state;
+            if (!state || !plane.state.membership(workspace)) throw new Error("this station is not in the relay's workspace");
+            const registry = new RelayEnrollment(store.db, key.id, wall.now);
+            return { ...registry.issue(workspaceScope(state.origin, workspace), name, by), endpoint: stationAddr(plane.state, key.id, workspace) };
+          },
           workspaceOf: (session) => store.sessionWs(session) ?? plane.state.home(),
           by: (session) => {
             try {
@@ -608,7 +624,7 @@ export const AgentsLive = (control: Control) =>
         data, store, config, hub, reviewUndecided: () => startReview(hub), codex: () => codex as any, hermes: () => hermes, agy: () => agy, following: () => events.inUse() || hub.anyRunning(), checkOnStart: true,
         workspaces: () => hub.workspaces(),
         claudeVersion: () => updates.get().find((v) => v.id === "claude")?.version ?? null,
-        shared: { status: (p) => sharing!.status(p), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p) => sharing?.profileView(p) ?? null, hostName },
+        shared: { status: (p) => sharing!.status(p), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
       });
       found = accounts.found;
       accounts.start();

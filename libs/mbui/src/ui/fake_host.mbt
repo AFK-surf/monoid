@@ -21,9 +21,16 @@ impl @hostapi.Host for FakeHost with reduce_motion(self) {
 }
 
 ///|
-/// A scripted run's step given to it to send as its own (drive.mbt): the window resized (8: "<w>x<h>", the Tester's
-/// next frames that size); none of the others (the script sends them to the app itself).
-impl @hostapi.Host for FakeHost with drive(_, kind, text) {
+/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), or resize the next frame (8).
+impl @hostapi.Host for FakeHost with drive(self, kind, text) {
+  if kind == 6 || kind == 7 {
+    guard self.find_notice(text) is Some(index) else { return false }
+    if kind == 6 {
+      self.open_notice(index)
+      self.wants = true
+    }
+    return true
+  }
   if kind != 8 {
     return false
   }
@@ -1148,7 +1155,7 @@ fn fake_scripts_flush(f : FakeHost, id : Int) -> Unit {
 ///|
 /// A request's body: as the run recorded it (Tester::view_said); else none.
 impl @hostapi.Host for FakeHost with view_site_body(self, id, req) {
-  self.site_bodies.get((id, req)).unwrap_or(Bytes::new(0))
+  self.site_bodies.get((id, req)).unwrap_or(Bytes::make(0, b'\x00'))
 }
 
 ///|
@@ -1671,13 +1678,10 @@ impl @hostapi.Host for FakeHost with cs_decode(_, data, charset) {
 }
 
 ///|
-/// (a Tester's gallery, Tester::gallery: all of it; none given, as a host the app may read none of: 0)
+/// The access level of a Tester's gallery (Tester::gallery).
 impl @hostapi.Host for FakeHost with ga_access(self) {
-  if self.gallery is Some(_) {
-    1
-  } else {
-    0
-  }
+  guard self.gallery is Some(_) else { return 0 }
+  if self.gallery_limited { 2 } else { 1 }
 }
 
 ///|
@@ -1946,7 +1950,7 @@ impl @hostapi.Host for FakeHost with cl_picture(self, id) {
 impl @hostapi.Host for FakeHost with cl_png(self, id) {
   match self.clip_given(id) {
     Some({ picture: Png(b), .. }) => b
-    _ => Bytes::new(0)
+    _ => Bytes::make(0, b'\x00')
   }
 }
 
@@ -1970,13 +1974,23 @@ impl @hostapi.Host for FakeHost with cl_file_name(self, id, i) {
 impl @hostapi.Host for FakeHost with cl_file(self, id, i) {
   match self.clip_given(id) {
     Some(c) if i >= 0 && i < c.files.length() => c.files[i].1
-    _ => Bytes::new(0)
+    _ => Bytes::make(0, b'\x00')
   }
 }
 
 // The system's notifications (@hostapi notify.mbt) as a test has them: those shown kept (Tester::notices), one tapped
 // as the test says (Tester::tap_notice), what the system lets the app show and what the person answers when asked
 // (Tester::set_notice_permission, set_notice_reply).
+
+///|
+fn FakeHost::find_notice(self : FakeHost, text : String) -> Int? {
+  self.notices.search_by(fn(n) { n.title.contains(text) || n.body.contains(text) })
+}
+
+///|
+fn FakeHost::open_notice(self : FakeHost, index : Int) -> Unit {
+  self.notice_opened = self.notices.remove(index).opens
+}
 
 ///|
 /// A notification shown: kept, one of the same tag replaced.
@@ -2293,7 +2307,7 @@ impl @hostapi.Host for FakeHost with post_next(_) {
     return None
   }
   let (channel, json, b) = fake_posted.remove(0)
-  Some((channel, json, b.unwrap_or(Bytes::new(0))))
+  Some((channel, json, b.unwrap_or(Bytes::make(0, b'\x00'))))
 }
 
 // The app's own calls of its host (@hostapi native.mbt; @ui's native_call.mbt) as a test has them: each waits until

@@ -86,6 +86,19 @@ priv struct SettingsFixture {
   /// what the upgrade of safe mode waits for, as the core's `upgrade` says it on the owner's device that is to finish it
   /// (settings-security-upgrade-…: `fx_upgrade`), "" none
   mut upgrade : String
+  /// how an upgraded workspace's safe mode stands for this device and person (security.mbt, vault.mbt, lock_prompts.mbt):
+  /// "confirm" this device to verify once on its person's own lock (not signing meanwhile: not a signer, not trusted,
+  /// removing none of its person's other devices), "syncing" not signing for what comes by itself,
+  /// "root" on and "root-off" off by another person alone, "again" off by this person, "role" the new device's prompt
+  /// saying the role approving lets them in as; "" none
+  mut lock_case : String
+  /// what a press made of a device waiting on its person's own lock (lock-restart, lock-replaced): "rebound" made its
+  /// person's only trusted device (`lock.restartOwn`), "asked" the lock begun anew elsewhere confirmed theirs
+  /// (`lock.forgetOwn`); "" as its mode says
+  mut own_after : String
+  /// safe mode's change of this device at work (`lock.confirmSigner`, `lock.open`) and the workspace it is of, "" none
+  mut lock_doing : String
+  mut lock_doing_ws : String
   /// how its prompt went: "deny" (turned away), "hide" (closed, the code still good), "" while it is up
   mut pair_ended : String
   /// a device of lin's (Pixel 9) set up without the key to 林的库, waiting on this one for it (settings-vault-prompt),
@@ -190,6 +203,10 @@ let fx : SettingsFixture = {
   protecting: false,
   pending: [],
   upgrade: "",
+  lock_case: "",
+  own_after: "",
+  lock_doing: "",
+  lock_doing_ws: "",
   pair_ended: "",
   key_ask: false,
   key_ask_ended: "",
@@ -322,6 +339,12 @@ let fx_new_login_done : Ref[Bool] = Ref(false)
 let fx_google_profiles : Ref[Bool] = Ref(false)
 
 ///|
+/// Claude 主账号 named by an email as long as an account's (settings-profiles-long-name): its plan leaves its row's line
+/// in the sidebar before its name is cut short.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_long_name : Ref[Bool] = Ref(false)
+
+///|
 /// 连接 (MBUI_FIXTURE=settings-connects): a Slack app made and not connected yet over the connects, one connect with its
 /// own picture and one with its platform's mark.
 let fx_connects_waiting : Ref[Bool] = Ref(false)
@@ -380,6 +403,7 @@ fn fixture_reset() -> Unit {
   fx.elevation = None
   fx.copies = None
   fixture_retire_asked.clear()
+  fx_remote_made.clear()
   fx.gpus = false
   fx.more_gpus = false
   fx.low_meters = false
@@ -400,6 +424,10 @@ fn fixture_reset() -> Unit {
   fx.protecting = false
   fx.pending.clear()
   fx.upgrade = ""
+  fx.lock_case = ""
+  fx.own_after = ""
+  fx.lock_doing = ""
+  fx.lock_doing_ws = ""
   fx.pair_ended = ""
   fx.key_ask = false
   fx.key_ask_ended = ""
@@ -436,6 +464,7 @@ fn fixture_reset() -> Unit {
   fx_google_login.val = ""
   fx_new_login_done.val = false
   fx_google_profiles.val = false
+  fx_long_name.val = false
   fx_connects_waiting.val = false
 }
 
@@ -561,6 +590,32 @@ pub fn fixture_prompts_now(pairing~ : Bool, more? : Bool = false, key_ask~ : Boo
 }
 
 ///|
+/// Safe mode's change of this device asked (`lock.confirmSigner` verifying it once, `lock.open` turning it on again as it
+/// was), where the mode's `lock_case` is the one it ends: at work from now (the core's `doing`), told to what follows its
+/// topics; false where it ends none, the call the settings' own (fixture_call).
+pub fn fixture_lock_doing(name : String, params : Json) -> Bool {
+  let ends = match (name, fx.lock_case) {
+    ("lock.confirmSigner", "confirm") | ("lock.open", "again") => true
+    _ => false
+  }
+  if ends {
+    fx.lock_doing = name
+    fx.lock_doing_ws = text(Some(params), "workspace")
+    fx_changed()
+  }
+  ends
+}
+
+///|
+/// What fixture_lock_doing set going done: this device verified, or safe mode on again, told to what follows its topics.
+pub fn fixture_lock_done() -> Unit {
+  fx.lock_doing = ""
+  fx.lock_doing_ws = ""
+  fx.lock_case = ""
+  fx_changed()
+}
+
+///|
 /// The bot being made by scanning (MBUI_FIXTURE=settings-new-connect-scan) made: the wizard done on its own, the
 /// connect added (`k1`), told to what follows its topics.
 pub fn fixture_scanned() -> Unit {
@@ -572,6 +627,60 @@ pub fn fixture_scanned() -> Unit {
 /// Willow a Windows station, running as administrator as `v` says (the core's `StationElevation`), or not.
 pub fn fixture_elevation(v : Json?) -> Unit {
   fx.elevation = v
+}
+
+///|
+/// 远程's place-remote modes: Maple online beside Willow, each under its heading with its ＋ (Willow's screens and
+/// terminals, Maple's display and a terminal).
+pub fn fixture_place_remote() -> Unit {
+  fx.mba_online = true
+}
+
+///|
+/// What 远程's ＋ made this run (place-remote modes), by station: its terminals (`terminal.view` of `new`) and its
+/// browser's tabs (`screen.openBrowser`), as the station would list them after (fixture_remote_made_said).
+// kept across runs: emptied by fixture_reset
+let fx_remote_made : Map[String, Array[String]] = Map([])
+
+///|
+/// 远程's ＋ made `id` (a terminal's, or a tab's screen `browser:<id>`) on station `station`: listed from now on, told
+/// to what follows the made-up core's topics.
+pub fn fixture_remote_made_said(station : String, id : String) -> Unit {
+  let made = match fx_remote_made.get(station) {
+    Some(a) => a
+    None => {
+      let a : Array[String] = []
+      fx_remote_made[station] = a
+      a
+    }
+  }
+  if !made.contains(id) {
+    made.push(id)
+    fx_changed()
+  }
+}
+
+///|
+/// What 远程's ＋ made this run on station `station` (fixture_remote_made_said), in the order made.
+pub fn fixture_remote_made(station : String) -> Array[String] {
+  fx_remote_made.get(station).unwrap_or([])
+}
+
+///|
+/// Station `station`'s `screens` as listed (`listed`), then the tabs 远程's ＋ made on it: a new tab each, blank.
+fn fx_remote_listed(listed : Json, station : String) -> Json {
+  match listed {
+    Array(a) => Json::array(a + fx_remote_tabs(station))
+    _ => listed
+  }
+}
+
+///|
+/// The tabs 远程's ＋ made on station `station`, as its `screens` lists them: a new tab each, blank.
+fn fx_remote_tabs(station : String) -> Array[Json] {
+  fixture_remote_made(station).filter(fn(id) { id.has_prefix("browser:") }).map(fn(id) {
+    obj([("id", str(id)), ("kind", str("browser")), ("userTab", Json::boolean(true)), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("site", str("")), ("title", str("新标签页")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("空白标签页")), ("link", str(""))])
+  })
 }
 
 ///|
@@ -800,6 +909,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-quota-failed" => fx.trouble = "quota"
     "settings-profile-quota-login" => fx.trouble = "quota-login"
     "settings-profile-quota-expiry" => fx.reset_expiry = true
+    "settings-profiles-long-name" => fx_long_name.val = true
     "settings-profile-quota-kinds" => fx.reset_kinds = true
     "settings-profile-blocked" => fx.trouble = "blocked"
     "settings-profile-signin" => fx.trouble = "login"
@@ -815,6 +925,14 @@ pub fn fixture_page(mode : String) -> String {
       fx.pairing = true
       fx.pairing_personal = true
     }
+    // (someone's first device in an upgraded workspace: the role approving lets them in as)
+    "settings-lock-prompt-role" => {
+      fx.pairing = true
+      fx.lock_case = "role"
+    }
+    // 密钥 before the library, this device not signing: verified once by a press, or what it waits for
+    "settings-vault-confirm" => fx.lock_case = "confirm"
+    "settings-vault-syncing" => fx.lock_case = "syncing"
     "settings-vault-prompt" => fx.key_ask = true
     "settings-vault-words" => recovery_words["ws1"] = fx_words()
     "settings-vault-add" => fixture_open.desk = "vault-add"
@@ -832,8 +950,14 @@ pub fn fixture_page(mode : String) -> String {
     "settings-security-off" => fixture_open.desk = "lock-off"
     "settings-security-protecting" => fx.protecting = true
     "settings-security-pending" => fx.pending.append(["p1", "p2", "p3"])
+    // an upgraded workspace's: this device to verify once on its person's own lock; on, or off, by another person
+    // alone; off by this person, to turn on again as it was
+    "settings-security-confirm" => fx.lock_case = "confirm"
+    "settings-security-root" => fx.lock_case = "root"
+    "settings-security-root-off" => fx.lock_case = "root-off"
+    "settings-security-again" => fx.lock_case = "again"
     // what the upgrade of safe mode waits for (security.mbt upgrade_keys): a station this person may update, one they
-    // may not, a member, a device, more than six, only their ask, a station of another workspace, a station updating
+    // may not, a member, a device, more than six, a station of another workspace, a station updating
     m if m.has_prefix("settings-security-upgrade-") => fx.upgrade = m.unsafe_substring(start=26, end=m.length())
     // the run's models listed (model_list.mbt): more than 8, by series, one of another station's to borrow
     "settings-run-models" => {
@@ -887,8 +1011,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-connect-comma" | "settings-connect-feishu" | "settings-connect-group" => "connect:ws1/st1#k1"
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
-    "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits" =>
-      "vault"
+    "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
+    | "settings-vault-confirm" | "settings-vault-syncing" => "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
     "settings-vault-item" => "vault-item:v1#it1"
     "settings-decisions" => "decisions-settings"
@@ -906,13 +1030,15 @@ pub fn fixture_page(mode : String) -> String {
     "settings-connects-motion" => "connects"
     "settings-vault-motion" => "vault-items"
     "settings-local-fonts" => "fonts"
-    "settings-security-join" | "settings-security-off" | "settings-security-protecting" | "settings-security-pending" => "security"
+    "settings-security-join" | "settings-security-off" | "settings-security-protecting" | "settings-security-pending"
+    | "settings-security-confirm" | "settings-security-root" | "settings-security-root-off" | "settings-security-again" => "security"
     m if m.has_prefix("settings-security-upgrade-") => "security"
     "settings-stations-tasks" | "settings-stations-tasks-outside" | "settings-stations-tasks-theirs" | "settings-stations-devices" => "stations"
     "settings-station-devices" => "station:ws1/st1"
     "settings-station-tasks" | "settings-station-tasks-locked" => "station:ws1/aa11"
     "settings-station-tasks-other" => "station:ws1/bb22"
-    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-vault-prompt" => "home"
+    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-lock-prompt-role" | "settings-vault-prompt" =>
+      "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
     "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" => "station:ws1/st1"
@@ -935,7 +1061,7 @@ pub fn fixture_page(mode : String) -> String {
     // (its prices of the same workspace's: usage_real's)
     "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
-    | "settings-profiles-google" | "settings-profiles-sum-a" => "profiles"
+    | "settings-profiles-google" | "settings-profiles-sum-a" | "settings-profiles-long-name" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {
@@ -1078,9 +1204,19 @@ pub fn fixture_profiles() -> Array[Json] {
 }
 
 ///|
+/// Claude 主账号's name: an email as long as an account's where fx.long_name says (settings-profiles-long-name).
+fn fx_cc_name() -> String {
+  if fx_long_name.val {
+    "someone.with.a.long.name@company.example"
+  } else {
+    "Claude 主账号"
+  }
+}
+
+///|
 fn fx_profiles() -> Array[Json] {
   let profiles = [
-    fx_profile("cc", "Claude 主账号", "subscription", fx_cc_tone(), "可用", "claude", "Claude 订阅", fx_cc_with([
+    fx_profile("cc", fx_cc_name(), "subscription", fx_cc_tone(), "可用", "claude", "Claude 订阅", fx_cc_with([
       ("share", obj([("id", str("sh1")), ("role", str("host")), ("host", str("st1")), ("users", ["st2"])])),
       ("fast", Json::boolean(false)),
       ("backgroundOnMessage", Json::boolean(true)),
@@ -1162,23 +1298,28 @@ pub fn fixture_overview() -> Json {
 }
 
 ///|
+fn fx_window(label : String, mark : String, left : Int, refills : String, scope : String, short? : String) -> Json {
+  let level = if left <= 10 { "red" } else if left <= 25 { "amber" } else { "ok" }
+  let fields : Array[(String, Json)] = [
+    ("label", str(label)),
+    ("usedPercent", Json::number((100 - left).to_double())),
+    ("mark", str(mark)),
+    ("left", Json::number(left.to_double())),
+    ("level", str(level)),
+    ("refills", str(refills)),
+  ]
+  if short is Some(s) {
+    fields.push(("refillShort", str(s)))
+  }
+  if scope != "" {
+    fields.push(("scope", str(scope)))
+  }
+  obj(fields)
+}
+
+///|
 /// Realistic multi-account pool across four provider groups for the profiles overview designs.
 fn fx_summary_profiles() -> Array[Json] {
-  let win = fn(label : String, mark : String, left : Int, refills : String, scope : String) -> Json {
-    let level = if left <= 10 { "red" } else if left <= 25 { "amber" } else { "ok" }
-    let fields : Array[(String, Json)] = [
-      ("label", str(label)),
-      ("usedPercent", Json::number((100 - left).to_double())),
-      ("mark", str(mark)),
-      ("left", Json::number(left.to_double())),
-      ("level", str(level)),
-      ("refills", str(refills)),
-    ]
-    if scope != "" {
-      fields.push(("scope", str(scope)))
-    }
-    obj(fields)
-  }
   let ok_q = fn(ws : Array[Json]) -> Json {
     obj([("state", str("ok")), ("windows", Json::array(ws)), ("checkedAt", Json::number(0.0)), ("time", obj([("checkedAt", stamp_of("2 分钟前"))]))])
   }
@@ -1199,7 +1340,7 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q_reset(
-          [win("5 小时", "5H", 48, "2 小时后恢复", ""), win("每周", "W", 28, "5 天后恢复", ""), win("每周 · Fable", "Fable", 52, "5 天后恢复", "Fable")],
+          [fx_window("5 小时", "5H", 48, "2 小时后恢复", ""), fx_window("每周", "W", 28, "5 天后恢复", ""), fx_window("每周 · Fable", "Fable", 52, "5 天后恢复", "Fable")],
           1,
           "剩余 1 次重置 · 28 小时后过期",
         ),
@@ -1208,17 +1349,17 @@ fn fx_summary_profiles() -> Array[Json] {
     fx_profile("cc2", "afkdev1@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
       ("email", str("afkdev1@proton.me")),
       ("planText", str("Max 20x")),
-      ("quota", ok_q([win("5 小时", "5H", 36, "3 小时后恢复", ""), win("每周", "W", 22, "5 天后恢复", ""), win("每周 · Fable", "Fable", 45, "5 天后恢复", "Fable")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 36, "3 小时后恢复", ""), fx_window("每周", "W", 22, "5 天后恢复", ""), fx_window("每周 · Fable", "Fable", 45, "5 天后恢复", "Fable")])),
     ]),
     fx_profile("cc3", "afkdev2@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
       ("email", str("afkdev2@proton.me")),
       ("planText", str("Max 5x")),
-      ("quota", ok_q([win("5 小时", "5H", 0, "42 分钟后恢复", ""), win("每周", "W", 40, "4 天后恢复", ""), win("每周 · Fable", "Fable", 80, "4 天后恢复", "Fable")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 0, "42 分钟后恢复", "", short="42m"), fx_window("每周", "W", 40, "4 天后恢复", ""), fx_window("每周 · Fable", "Fable", 80, "4 天后恢复", "Fable")])),
     ]),
     fx_profile("cc4", "cuesurf4@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
       ("email", str("cuesurf4@proton.me")),
       ("planText", str("Max 20x")),
-      ("quota", ok_q([win("每周", "W", 0, "2 天后恢复", ""), win("每周 · Fable", "Fable", 100, "2 天后恢复", "Fable")])),
+      ("quota", ok_q([fx_window("每周", "W", 0, "2 天后恢复", "", short="2d"), fx_window("每周 · Fable", "Fable", 100, "2 天后恢复", "Fable")])),
     ]),
     fx_profile("cc5", "cuesurf2@proton.me", "subscription", "red", "需要登录", "claude", "Claude 订阅", [
       ("email", str("cuesurf2@proton.me")),
@@ -1229,17 +1370,17 @@ fn fx_summary_profiles() -> Array[Json] {
     // ChatGPT 订阅 (3): comfortable pace, and jiachen@cue.surf resets in 14h with 84% weekly quota untouched
     fx_profile("cx", "ChatGPT 团队", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
       ("planText", str("Pro 200")),
-      ("quota", ok_q([win("5 小时", "5H", 82, "3 小时后恢复", ""), win("每周", "W", 68, "3 天后恢复", "")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 82, "3 小时后恢复", ""), fx_window("每周", "W", 68, "3 天后恢复", "")])),
     ]),
     fx_profile("cx2", "jiachen@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
       ("email", str("jiachen@cue.surf")),
       ("planText", str("Pro 200")),
-      ("quota", ok_q([win("5 小时", "5H", 92, "4 小时后恢复", ""), win("每周", "W", 84, "14 小时后恢复", "")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 92, "4 小时后恢复", ""), fx_window("每周", "W", 84, "14 小时后恢复", "")])),
     ]),
     fx_profile("cx3", "yangjinfei@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
       ("email", str("yangjinfei@cue.surf")),
       ("planText", str("Plus")),
-      ("quota", ok_q([win("5 小时", "5H", 100, "5 小时后恢复", ""), win("每周", "W", 0, "2 天后恢复", "")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 100, "5 小时后恢复", ""), fx_window("每周", "W", 0, "2 天后恢复", "", short="2d")])),
     ]),
     // Google 订阅 (2): provides both Gemini and Claude / GPT independent pools
     fx_profile("ag1", "zover.v@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
@@ -1249,9 +1390,9 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q([
-          win("5 小时 · Gemini", "5H", 76, "3 小时后恢复", "Gemini"),
-          win("每周 · Gemini", "W", 68, "3 天后恢复", "Gemini"),
-          win("每周 · Claude / GPT", "W", 80, "3 天后恢复", "Claude / GPT"),
+          fx_window("5 小时 · Gemini", "5H", 76, "3 小时后恢复", "Gemini"),
+          fx_window("每周 · Gemini", "W", 68, "3 天后恢复", "Gemini"),
+          fx_window("每周 · Claude / GPT", "W", 80, "3 天后恢复", "Claude / GPT"),
         ]),
       ),
     ]),
@@ -1262,9 +1403,9 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q([
-          win("5 小时 · Gemini", "5H", 64, "1 小时后恢复", "Gemini"),
-          win("每周 · Gemini", "W", 62, "4 天后恢复", "Gemini"),
-          win("每周 · Claude / GPT", "W", 68, "4 天后恢复", "Claude / GPT"),
+          fx_window("5 小时 · Gemini", "5H", 64, "1 小时后恢复", "Gemini"),
+          fx_window("每周 · Gemini", "W", 62, "4 天后恢复", "Gemini"),
+          fx_window("每周 · Claude / GPT", "W", 68, "4 天后恢复", "Claude / GPT"),
         ]),
       ),
     ]),
@@ -2843,7 +2984,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                   ("created_at", Json::number(0.0)),
                   ("untilText", str("14:05 前有效")),
                   ("workspaces", if fx.pairing_personal { [] } else { Json::array(pairing_places()) }),
-                ]),
+                ] +
+                (if fx.lock_case == "role" { [("roleText", str("「星火工作室」：批准后以管理员身份加入"))] } else { [] })),
               ]
             } else {
               []
@@ -2871,6 +3013,22 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    // (远程's Maple, online beside Willow: its display, its browser to make a tab of)
+    "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" && mode.has_prefix("place-remote") =>
+      Some(
+        obj([
+          (
+            "screens",
+            [
+              obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Maple 的屏幕")), ("width", Json::number(2560.0)), ("height", Json::number(1440.0)), ("line", str("2560 × 1440 · 无人在看")), ("link", str(""))]),
+            ] |> fx_remote_listed("ws1/st2"),
+          ),
+          ("browser", Json::boolean(true)),
+          ("outdated", Json::boolean(false)),
+          ("control", Json::boolean(true)),
+          ("known", Json::boolean(true)),
+        ]),
+      )
     // (Willow's: Maple is away, none of its own known)
     "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" =>
       Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true))]))
@@ -2887,6 +3045,25 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 obj([("id", str("browser:u_gh")), ("kind", str("browser")), ("userTab", Json::boolean(true)), ("sleeping", Json::boolean(true)), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("site", str("github.com")), ("title", str("GitHub")), ("width", Json::number(0.0)), ("height", Json::number(0.0)), ("line", str("github.com")), ("link", str(""))]),
                 obj([("id", str("browser:tab-1")), ("kind", str("browser")), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("title", str("Sign in · Anthropic")), ("width", Json::number(1280.0)), ("height", Json::number(720.0)), ("line", str("浏览器标签页 · 1280 × 720")), ("link", str(""))]),
               ],
+            ),
+            ("browser", Json::boolean(true)),
+            ("outdated", Json::boolean(false)),
+            ("control", Json::boolean(true)),
+            ("known", Json::boolean(true)),
+          ]),
+        )
+      } else if m.has_prefix("place-remote") {
+        // (远程: Willow's display, an iOS simulator, a tab an agent drives and one of its own)
+        Some(
+          obj([
+            (
+              "screens",
+              [
+                obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Willow 的屏幕")), ("width", Json::number(3024.0)), ("height", Json::number(1964.0)), ("line", str("3024 × 1964 · 无人在看")), ("link", str(""))]),
+                obj([("id", str("sim:iphone")), ("kind", str("simulator")), ("title", str("iPhone 17 Pro")), ("width", Json::number(1206.0)), ("height", Json::number(2622.0)), ("line", str("iOS 26 · 1206 × 2622")), ("link", str(""))]),
+                obj([("id", str("browser:T1")), ("kind", str("browser")), ("agent", Json::boolean(true)), ("closable", Json::boolean(true)), ("site", str("localhost:5173")), ("title", str("发布清单 - localhost:5173")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("浏览器标签页 · 1280 × 800")), ("link", str(""))]),
+                obj([("id", str("browser:u_mail")), ("kind", str("browser")), ("userTab", Json::boolean(true)), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("site", str("mail.proton.me")), ("title", str("收件箱 - Proton Mail")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("mail.proton.me")), ("link", str(""))]),
+              ] |> fx_remote_listed("ws1/st1"),
             ),
             ("browser", Json::boolean(true)),
             ("outdated", Json::boolean(false)),
@@ -3181,14 +3358,14 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       Some(
         obj([
           ("available", Json::boolean(true)),
-          ("locked", Json::boolean(true)),
+          ("locked", Json::boolean(fx.lock_case != "root-off" && fx.lock_case != "again")),
           ("notice", Json::boolean(false)),
           ("role", str("owner")),
           ("manages", Json::boolean(true)),
           ("owner", Json::boolean(true)),
           ("canSign", Json::boolean(true)),
-          ("signs", Json::boolean(true)),
-          ("signers", Json::number(5.0)),
+          ("signs", Json::boolean(fx.lock_case != "confirm")),
+          ("signers", Json::number(if fx.lock_case == "confirm" { 4.0 } else { 5.0 })),
           ("protected", Json::number(1.0)),
           ("attention", Json::number(0.0)),
           (
@@ -3208,26 +3385,26 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                     obj([
                       ("appText", str("still.fail Android")),
                       ("devices", [
-                        obj([("id", str("d1")), ("kind", str("app")), ("label", str("still.fail Android · Pixel 9")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(true)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1760000000.0)), ("removable", Json::boolean(false)), ("nameText", str("Pixel 9")), ("fullText", str("Pixel 9 · still.fail Android")), ("metaText", str("此设备 · 受信任"))]),
+                        obj([("id", str("d1")), ("kind", str("app")), ("label", str("still.fail Android · Pixel 9")), ("signs", Json::boolean(fx.lock_case != "confirm")), ("older", Json::boolean(false)), ("mine", Json::boolean(true)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1760000000.0)), ("removable", Json::boolean(false)), ("nameText", str("Pixel 9")), ("fullText", str("Pixel 9 · still.fail Android")), ("metaText", str(if fx.lock_case == "confirm" { "此设备" } else { "此设备 · 受信任" }))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("still.fail 桌面版")),
                       ("devices", [
-                        obj([("id", str("d4")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 林的 MacBook Pro")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759990000.0)), ("removable", Json::boolean(true)), ("nameText", str("林的 MacBook Pro")), ("fullText", str("林的 MacBook Pro · still.fail 桌面版")), ("metaText", str("一天内使用过 · 受信任"))]),
-                        obj([("id", str("d6")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 示例工作站")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759700000.0)), ("removable", Json::boolean(true)), ("nameText", str("示例工作站")), ("fullText", str("示例工作站 · still.fail 桌面版")), ("metaText", str("3 天前使用过 · 受信任"))]),
+                        obj([("id", str("d4")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 林的 MacBook Pro")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759990000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("林的 MacBook Pro")), ("fullText", str("林的 MacBook Pro · still.fail 桌面版")), ("metaText", str("一天内使用过 · 受信任"))]),
+                        obj([("id", str("d6")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 示例工作站")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759700000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("示例工作站")), ("fullText", str("示例工作站 · still.fail 桌面版")), ("metaText", str("3 天前使用过 · 受信任"))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("still.fail 网页版")),
                       ("devices", [
-                        obj([("id", str("d2")), ("kind", str("web")), ("label", str("still.fail 网页版 · Chrome · macOS")), ("signs", Json::boolean(false)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("daysLeft", Json::number(4.0)), ("renewSoon", Json::boolean(true)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759800000.0)), ("removable", Json::boolean(true)), ("nameText", str("Chrome · macOS")), ("fullText", str("Chrome · macOS · still.fail 网页版")), ("metaText", str("2 天前使用过 · 剩余 4 天"))]),
+                        obj([("id", str("d2")), ("kind", str("web")), ("label", str("still.fail 网页版 · Chrome · macOS")), ("signs", Json::boolean(false)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("daysLeft", Json::number(4.0)), ("renewSoon", Json::boolean(true)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759800000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("Chrome · macOS")), ("fullText", str("Chrome · macOS · still.fail 网页版")), ("metaText", str("2 天前使用过 · 剩余 4 天"))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("其他")),
                       ("devices", [
-                        obj([("id", str("d5")), ("kind", str("app")), ("label", str("")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("removable", Json::boolean(true)), ("nameText", str("客户端")), ("fullText", str("客户端")), ("metaText", str("超过一个月未使用 · 受信任"))]),
+                        obj([("id", str("d5")), ("kind", str("app")), ("label", str("")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("客户端")), ("fullText", str("客户端")), ("metaText", str("超过一个月未使用 · 受信任"))]),
                       ]),
                     ]),
                   ],
@@ -3265,14 +3442,15 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ("renew", []),
         ] +
         fx_pending_fields() +
-        fx_upgrade_fields()),
+        fx_upgrade_fields() +
+        fx_lock_case_fields()),
       )
     "vaults" =>
       Some(
         obj([
           ("available", Json::boolean(true)),
           ("locked", Json::boolean(true)),
-          ("canSign", Json::boolean(true)),
+          ("canSign", Json::boolean(fx.lock_case != "confirm" && fx.lock_case != "syncing")),
           ("setUp", Json::boolean(!fx.vault_off)),
           ("plainLeft", Json::number(fx.plain_left.to_double())),
           (
@@ -3304,7 +3482,13 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           // (the core's words of it: its one request waits)
           ("statusText", str("1 个待批准")),
           ("statusBad", Json::boolean(true)),
-        ]),
+        ] +
+        (match fx.lock_case {
+          // (not signing for a reason of its own: the core's words, and 验证 where a press ends it)
+          "confirm" => [("stateText", str("此设备需完成一次验证后才能使用密钥库")), ("confirmText", str("验证"))]
+          "syncing" => [("stateText", str("正在同步安全模式的成员名单，同步完成后即可使用"))]
+          _ => []
+        })),
       )
     "vaultItems" =>
       Some(
@@ -3468,6 +3652,21 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
     }
     "stationMove" => Some(fx_move_view(params))
     "doing" if fx_move.refused is Some(_) => Some(obj([("doing", Json::array(fx_move_doing()))]))
+    "doing" if fx.lock_doing != "" =>
+      Some(
+        obj([
+          (
+            "doing",
+            [
+              obj([
+                ("call", str(fx.lock_doing)),
+                ("stage", str("running")),
+                ("params", obj([("workspace", str(fx.lock_doing_ws))])),
+              ]),
+            ],
+          ),
+        ]),
+      )
     "doing" => Some(obj([("doing", if fx.protecting {
       [obj([("call", str("lock.joinStation")), ("stage", str("running")), ("params", obj([("workspace", str("ws1")), ("station", str("st2"))]))])]
     } else if fx.key_giving {
@@ -3515,6 +3714,13 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
 /// take.
 pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
   let p = Some(params)
+  // (a device waiting on its person's own lock: made their only trusted device, or the lock begun anew elsewhere said
+  // theirs, as the core then says it: waiting_lock)
+  if name == "lock.restartOwn" || name == "lock.forgetOwn" {
+    fx.own_after = if name == "lock.restartOwn" { "rebound" } else { "asked" }
+    fx_changed()
+    return Some(Ok(Json::null()))
+  }
   match rigs_fixture_call(name, p) {
     Some(r) => return Some(r)
     None => ()
@@ -3632,12 +3838,6 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
           ]),
         ),
       )
-    // the upgrade finished by the person's ask: none left to show
-    "lock.handOver" => {
-      fx.upgrade = ""
-      fx_changed()
-      Some(Ok(Json::null()))
-    }
     // a failed pending change read, dropped (a waiting one stays)
     "lock.pendingDismiss" => {
       let id = text(p, "id")
@@ -3665,6 +3865,7 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
             ("token", str("made-up")),
             ("install", str("curl -fsSL https://still.fail/install.sh | sh -s -- 4f7c2a9e1b")),
             ("installWindows", str("& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b")),
+            ("installDocker", str("docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=https://still.fail ghcr.io/afk-surf/stillfail-station 4f7c2a9e1b")),
             ("command", str("stillfail station enroll https://still.fail 4f7c2a9e1b")),
           ]),
         ),
@@ -3922,10 +4123,28 @@ fn waiting_approvers(code : Bool) -> Json {
 /// its code yet; its security page): this device waiting, not a signer. lock-upgrade: in the lock but not signing (its key lost), the code being typed on its
 /// security page. lock-needs-app, lock-needs-app-security: a web page left out of an upgraded workspace that nobody can
 /// approve there (its person has no app in it): the core's `needsAppText` in place of the ask, on its waiting page and
-/// on its security page.
+/// on its security page. lock-out, lock-out-security: its person taken out of an upgraded workspace, by whom, when and
+/// whom to ask (the core's `outText`), the ask there for once they are added back. lock-restart, lock-restart-security:
+/// its person's own lock to join, none of their devices answering, 我的其它设备都不在了 offered (`restartText`); lock-rebound,
+/// lock-rebound-security: made their only trusted device, the workspace binding the lock of before, whom to ask
+/// (`reboundText`), nothing to press; lock-replaced, lock-replaced-security: their own lock begun anew on another device,
+/// what happened and 是我做的，继续 (`forgetText`). What a press makes of them: `fx.own_after`.
 fn waiting_lock(mode : String) -> Json {
   let mode = if mode.has_suffix("-dark") { mode.unsafe_substring(start=0, end=mode.length() - 5) } else { mode }
+  let own = if fx.own_after != "" {
+    fx.own_after
+  } else if mode.has_prefix("lock-restart") {
+    "restart"
+  } else if mode.has_prefix("lock-rebound") {
+    "rebound"
+  } else if mode.has_prefix("lock-replaced") {
+    "replaced"
+  } else {
+    ""
+  }
   let pair = match mode {
+    _ if own == "restart" => obj([("state", str("none")), ("approvers", waiting_approvers(false))])
+    _ if own != "" => Json::null()
     // (the devices it dials, the core's rows; one showing the code, once it does)
     "lock-finding" => obj([("state", str("finding")), ("approvers", waiting_approvers(false))])
     "lock-code" | "lock-upgrade" =>
@@ -3954,8 +4173,30 @@ fn waiting_lock(mode : String) -> Json {
     ("unsigned", Json::boolean(upgrade)),
     ("pair", pair),
   ]
+  if mode.has_prefix("lock-out") {
+    me.push(("outText", str("Ana 于 11月15日 14:05 将你移出了此 workspace 的安全模式。需要继续使用的话，请联系 Ana 或其他管理员重新添加")))
+  }
   if needs_app {
     me.push(("needsAppText", str("此 workspace 的安全模式要求每位成员至少有一台客户端。请安装桌面或手机客户端并登录，由管理员批准后，再用客户端批准此网页版")))
+  }
+  // (the core's words, core-misc.lock.* and android-misc.personal.*)
+  match own {
+    "restart" | "asked" => me.push(("ownLock", Json::boolean(true)))
+    _ => ()
+  }
+  match own {
+    "restart" => {
+      me.push(("restartText", str("我的其它设备都不在了")))
+      me.push(("restartNoteText", str("选「我的其它设备都不在了」后，这台设备会成为你唯一的受信任设备；已开启安全模式的 workspace 需先将你移出再重新添加，你的其它设备也需重新获批。")))
+    }
+    "rebound" =>
+      me.push(("reboundText", str("已将这台设备设为你唯一的受信任设备。请此 workspace 的另一位 owner 先将你移出再重新添加；若只有你一位 owner，请在各台 station 所在的机器上运行 stillfail lock reset 后重新开启安全模式。")))
+    "replaced" => {
+      me.push(("replacedTitleText", str("你的受信任设备被重新设置过")))
+      me.push(("replacedNoteText", str("只有你自己在另一台设备上选过「我的其它设备都不在了」才会这样。如果不是你做的，不要继续，你的账号可能已经被盗。")))
+      me.push(("forgetText", str("是我做的，继续")))
+    }
+    _ => ()
   }
   obj([
     ("available", Json::boolean(true)),
@@ -4037,6 +4278,7 @@ fn fixture_sheet(core : Core, here : Here) -> Unit {
           (
             "curl -fsSL https://still.fail/install.sh | sh -s -- 4f7c2a9e1b",
             "& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b",
+            "docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=https://still.fail ghcr.io/afk-surf/stillfail-station 4f7c2a9e1b",
           ),
         ))
       }
@@ -5083,14 +5325,10 @@ fn fx_upgrade() -> Json? {
           ("percent", Json::number(40.0)),
         ]),
       ]
-    "ask" => []
     _ => return None
   }
   Some(
-    obj(
-      [("titleText", str("安全模式有一项升级尚未完成")), ("lines", Json::array(lines))] +
-      (if fx.upgrade == "ask" { [("askText", str("验证并完成升级"))] } else { [] }),
-    ),
+    obj([("titleText", str("安全模式有一项升级尚未完成")), ("lines", Json::array(lines))]),
   )
 }
 
@@ -5100,6 +5338,19 @@ fn fx_upgrade_fields() -> Array[(String, Json)] {
   match fx_upgrade() {
     Some(u) => [("upgrade", u)]
     None => []
+  }
+}
+
+///|
+/// The `lock` topic's fields of how an upgraded workspace stands (`fx.lock_case`): this device to verify once (`me`'s
+/// `stateText`, `confirmText`), on or off by another person alone (`rootText`), off by this person (`onAgainText`).
+fn fx_lock_case_fields() -> Array[(String, Json)] {
+  let root = "安全模式由 Ana 开启，只有其本人可以关闭或重新开启。其本人无法操作时，可在 station 所在的电脑上运行 stillfail lock reset"
+  match fx.lock_case {
+    "confirm" => [("me", obj([("stateText", str("此设备需完成一次验证后才能成为受信任设备")), ("confirmText", str("验证"))]))]
+    "root" | "root-off" => [("rootText", str(root))]
+    "again" => [("onAgainText", str("重新开启安全模式"))]
+    _ => []
   }
 }
 

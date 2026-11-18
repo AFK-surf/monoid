@@ -395,6 +395,9 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
         return
       }
       let words = tree_sel_at(x, y, finger=true)
+      if tree_finger_menu(tree, x, y, words) {
+        return
+      }
       match view_held.val {
         // (a column it scrolls held it: called off, as a hold handed on calls its cover's off)
         Some(Dragging(id)) if tree.claims_scroll(id) =>
@@ -419,6 +422,35 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
       g().finger_pick(t, x, y)
     }),
   )
+}
+
+///|
+/// A finger held still as long as a long press at (x, y), on what asks for a menu there (View::on_menu, Tree::menu_at):
+/// its menu, as the secondary button's press asks it, and the rest of the press nobody's (a node's press let go
+/// unpressed, no tap as it is let go; a column it was to scroll told Off), felt. Not where what takes the hold is
+/// another's: a node's own gesture (a hold of its own, @headless.Hold), a gesture answering a hold alone there
+/// (Tree::hold_at, its hold due at the same moment), a field the press went down on (view_down let go by it), an old
+/// view, a cover whose hold goes through, words a finger picks there (their hold picks them, as ever). Whether it did.
+fn tree_finger_menu(tree : @view.Tree, x : Double, y : Double, words : SelTarget?) -> Bool {
+  guard view_down.val is Some(_) else { return false }
+  let call_off : () -> Unit = match view_held.val {
+    Some(Node(id)) => fn() { tree.hold_lost_in(id.at) }
+    Some(Dragging(id)) if tree.claims_scroll(id) && words is None =>
+      fn() { tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore }
+    Some(Nowhere) if words is None => fn() {  }
+    _ => return false
+  }
+  if tree.hold_at(x, y) is Some(_) {
+    return false
+  }
+  guard tree.menu_at(x, y, view_moment()) else { return false }
+  call_off()
+  view_down.val = None
+  view_nothing_down.val = None
+  view_held.val = Some(Nowhere)
+  haptic(LongPress)
+  h_frame_owed()
+  true
 }
 
 ///|

@@ -25,6 +25,7 @@ pub fn screen_links_node(src : Source, message? : String = "") -> @sf.ScreensNod
     card: fn(v, href, to, words) {
       match to.card {
         "service" => service_link_card_node(v, src, href, to, words)
+        "terminal" => terminal_link_card_node(v, src, href, to, words)
         _ => screen_link_card_node(v, src, message + "\n" + href, href, to, words)
       }
     },
@@ -33,6 +34,11 @@ pub fn screen_links_node(src : Source, message? : String = "") -> @sf.ScreensNod
         adb_title(src, to)
       } else if to.card == "service" {
         service_card_of(src, to).0
+      } else if to.card == "terminal" {
+        match terminal_card_of(src, to) {
+          Some((title, _, _)) => title
+          None => @sf.t("core-views.terminal.title")
+        }
       } else {
         match screen_card_of(src, to) {
           Some(card) => card.title
@@ -41,6 +47,35 @@ pub fn screen_links_node(src : Source, message? : String = "") -> @sf.ScreensNod
       }
     },
   }
+}
+
+///|
+fn terminal_link_card_node(v : @view.View, src : Source, href : String, to : @sf.LinkTo, words : String?) -> Unit {
+  let card = fn() { terminal_card_of(src, to) }
+  link_card_node(
+    v,
+    href,
+    fn() { Some(terminal_mark) },
+    fn() {
+      match (words, card()) {
+        (Some(w), _) => w
+        (None, Some((title, _, _))) => title
+        (None, None) => @sf.t("core-views.terminal.title")
+      }
+    },
+    fn() {
+      match card() {
+        Some((_, line, _)) => line
+        None => ""
+      }
+    },
+    fn() {
+      match card() {
+        Some((_, _, gone)) => gone
+        None => false
+      }
+    },
+  )
 }
 
 ///|

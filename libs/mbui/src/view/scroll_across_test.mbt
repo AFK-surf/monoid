@@ -14,7 +14,7 @@ priv struct AcrossCase {
 
 ///|
 /// The row in the column, its cells `cells` of them, with its bar along its foot where `bar` says.
-fn across_case(bar? : Bool = false, now? : Ref[Double] = Ref(0.0)) -> AcrossCase {
+fn across_case(bar? : Bool = false, now? : Ref[Double] = Ref(0.0), round? : Double = 0.0) -> AcrossCase {
   let across = @view.Scroll::across()
   let column = @view.Scroll::new()
   let cells = @signals.signal(10, same=fn(a, b) { a == b })
@@ -30,6 +30,9 @@ fn across_case(bar? : Bool = false, now? : Ref[Double] = Ref(0.0)) -> AcrossCase
           oh.box(fn(gap) { gap.height(Is(Some(150.0))) |> ignore }) |> ignore
           oh.box(fn(r) {
             row.val = Some(r.id())
+            if round > 0.0 {
+              r.radius(Is(round)).clips(Is(true)) |> ignore
+            }
             // (its cells side by side)
             let held = fn(rh : @view.View) {
               rh.row(Is(true)) |> ignore
@@ -147,7 +150,7 @@ test "scrolls across: the focus come to its last cell, out of the sight of the r
 }
 
 ///|
-test "scrolls across, with its bar: room under its cells for it while it can go, its thumb along its foot, 10 in from either end; its cells made narrower than it: no room, no bar; wider again, both" {
+test "scrolls across, with its bar: no room under its cells for it, its thumb over their foot, 10 in from either end; its cells made narrower than it: no bar; wider again, its bar" {
   let now = Ref(0.0)
   let k = across_case(bar=true, now~)
   let tall = fn() {
@@ -162,15 +165,32 @@ test "scrolls across, with its bar: room under its cells for it while it can go,
   let narrow = tall()
   k.cells.set(10)
   let again = tall()
-  // (the column scrolled to show the row, 50 to 97 of the window; the row scrolled across: its bar out)
+  // (the column scrolled to show the row, 50 to 90 of the window; the row scrolled across: its bar out)
   k.tree.wheel_at(150.0, 50.0, 0.0, 100.0, 0, 5.0) |> ignore
   k.tree.frame(390.0, 844.0, now=now.val) |> ignore
   k.tree.wheel_at(150.0, 70.0, 100.0, 0.0, 0, 10.0) |> ignore
   now.val = 500.0
   k.tree.frame(390.0, 844.0, now=500.0) |> ignore
   let thumb = k.tree.drawn().iter().find_first(fn(d) { d.h == 3.0 && d.alpha > 0.0 }).map(fn(d) { (d.y, d.x >= 10.0, d.x + d.w <= 290.0) })
-  // (40 and its bar's 3 with 2 either side; its thumb 2 above its foot: 50 + 47 - 2 - 3)
-  assert_eq((wide, narrow, again, thumb), (47.0, 40.0, 47.0, Some((92.0, true, true))))
+  // (40 tall, as its cells are; its thumb 2 above their foot: 50 + 40 - 2 - 3)
+  assert_eq((wide, narrow, again, thumb), (40.0, 40.0, 40.0, Some((85.0, true, true))))
+}
+
+///|
+test "scrolls across, cut round by itself: its bar clear of its round corners, in from either end as far as they are round, more than its own 10" {
+  let now = Ref(0.0)
+  let k = across_case(bar=true, now~, round=16.0)
+  k.tree.wheel_at(150.0, 50.0, 0.0, 100.0, 0, 5.0) |> ignore
+  k.tree.frame(390.0, 844.0, now=now.val) |> ignore
+  k.tree.wheel_at(150.0, 70.0, 100.0, 0.0, 0, 10.0) |> ignore
+  now.val = 500.0
+  k.tree.frame(390.0, 844.0, now=500.0) |> ignore
+  // (scrolled to its end: its thumb at the end of its track, 16 in from the row's right)
+  k.tree.wheel_at(150.0, 70.0, 1000.0, 0.0, 0, 510.0) |> ignore
+  now.val = 1000.0
+  k.tree.frame(390.0, 844.0, now=1000.0) |> ignore
+  let thumb = k.tree.drawn().iter().find_first(fn(d) { d.h == 3.0 && d.alpha > 0.0 }).map(fn(d) { d.x + d.w })
+  assert_eq(thumb, Some(300.0 - 16.0 - 2.0))
 }
 
 ///|

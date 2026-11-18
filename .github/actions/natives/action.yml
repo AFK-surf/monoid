@@ -15,3 +15,6 @@ runs:
         pattern: natives*-${{ github.sha }}
         merge-multiple: true
         path: ${{ runner.temp }}/natives
+    - if: github.ref != 'refs/heads/main'
+      shell: bash
+      run: node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA"

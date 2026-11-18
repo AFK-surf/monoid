@@ -574,3 +574,82 @@ test("workspaces the admin made for companies do not count against the admin's o
     await h.close();
   }
 });
+
+/** A device's events socket on `host`; `take`: the events since the last take (h.heard), as JSON, sorted. */
+async function listen(h: Awaited<ReturnType<typeof harness>>, token: string, host: "main" | "admin" = "main") {
+  const response = await (host === "admin" ? h.fetchAdmin : h.fetch)("/v1/events", { headers: { upgrade: "websocket", "sec-websocket-protocol": `stillfail-events, stillfail-token.${token}` } });
+  assert.equal(response.status, 101, `events socket on ${host}`);
+  const ws = response.webSocket!;
+  ws.accept();
+  const got: unknown[] = [];
+  ws.addEventListener("message", (event) => void (event.data === "pong" || got.push(JSON.parse(event.data as string))));
+  return {
+    async take(): Promise<string[]> {
+      await h.heard(ws);
+      return got.splice(0).map((e) => JSON.stringify(e)).sort();
+    },
+  };
+}
+
+test("the console's host serves the calls its client core makes: the events socket, signing in with a password, and /v1/me saying it is the console", async () => {
+  const h = await harness({ reviewAccounts: JSON.stringify([{ email: "review@example.test", password: "correct horse battery", name: "App Review" }]) });
+  try {
+    const aliceTokens = await h.login("alice");
+    await listen(h, aliceTokens.access_token, "admin");
+    const signIn = await h.fetchAdmin("/v1/auth/password", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "review@example.test", password: "correct horse battery", name: "Console" }) });
+    assert.equal(signIn.status, 200);
+    // On the console's host `/v1/me` says so (its core then asks nothing of workspaces there); elsewhere it says nothing of it.
+    const onConsole = (await (await h.as(aliceTokens, "admin")("GET", "/v1/me")).json()) as Record<string, unknown>;
+    assert.equal(onConsole.console, true);
+    const onMain = (await (await h.as(aliceTokens)("GET", "/v1/me")).json()) as Record<string, unknown>;
+    assert.equal("console" in onMain, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("with Cloudflare Access, everyone who opened the console hears its lists change; nobody else does", async () => {
+  const h = await harness({ access: true });
+  try {
+    const bobTokens = await h.login("bob");
+    const carolTokens = await h.login("carol");
+    const bobConsole = async (method: string, path: string, value?: unknown) =>
+      h.fetchAdmin(path, { method, headers: { authorization: `Bearer ${bobTokens.access_token}`, "cf-access-jwt-assertion": await h.accessToken("bob@team.example"), ...(value === undefined ? {} : { "content-type": "application/json" }) }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
+    // bob (not ADMIN_EMAIL) opens the console: its /v1/me says he is its operator.
+    const me = (await (await bobConsole("GET", "/v1/me")).json()) as Record<string, unknown>;
+    assert.deepEqual([me.operator, me.console], [true, true]);
+    const bob = await listen(h, bobTokens.access_token, "admin");
+    const carol = await listen(h, carolTokens.access_token);
+    await bob.take();
+    await carol.take();
+    // The minute's sample of the relays.
+    await (await h.object("DIRECTORY", "primary")).tellAdmins({ type: "relays" });
+    assert.deepEqual(await bob.take(), [JSON.stringify({ type: "relays" })]);
+    // A code made, a report sent and marked: the console's lists read again.
+    assert.equal((await bobConsole("POST", "/v1/admin/invite-codes", {})).status, 200);
+    // (and its 操作记录, which the change is noted in: told apart, in no order of the two)
+    assert.deepEqual((await bob.take()).sort(), [JSON.stringify({ type: "admin", lists: ["audit"] }), JSON.stringify({ type: "admin", lists: ["invite-codes"] })]);
+    assert.equal((await h.as(carolTokens)("POST", "/v1/feedback", { key: "k1", title: "列表不动", body: "拉宽后页面没动", area: "station", reporter: "carol" })).status, 201);
+    assert.deepEqual(await bob.take(), [JSON.stringify({ type: "admin", lists: ["feedback"] })]);
+    const listed = (await (await bobConsole("GET", "/v1/admin/feedback")).json()) as { feedback: { id: string }[] };
+    assert.equal((await bobConsole("POST", `/v1/admin/feedback/${listed.feedback[0]!.id}/status`, { status: "triaged" })).status, 200);
+    assert.deepEqual((await bob.take()).sort(), [JSON.stringify({ type: "admin", lists: ["audit"] }), JSON.stringify({ type: "admin", lists: ["feedback"] })]);
+    assert.deepEqual(await carol.take(), [], "not an operator");
+  } finally {
+    await h.close();
+  }
+});
+
+test("with Cloudflare Access, an operator blocks neither their own account nor the admin's", async () => {
+  const h = await harness({ access: true });
+  try {
+    const bobTokens = await h.login("bob");
+    const alice = (await h.login("alice")).subject;
+    const carol = (await h.login("carol")).subject;
+    const block = async (sub: string) =>
+      (await h.fetchAdmin(`/v1/admin/users/${sub}/block`, { method: "POST", headers: { authorization: `Bearer ${bobTokens.access_token}`, "cf-access-jwt-assertion": await h.accessToken("bob@team.example"), "content-type": "application/json" }, body: JSON.stringify({ on: true }) })).status;
+    assert.deepEqual([await block(bobTokens.subject), await block(alice), await block(carol)], [403, 403, 200]);
+  } finally {
+    await h.close();
+  }
+});

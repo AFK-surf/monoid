@@ -184,10 +184,11 @@ export class PeerHttp implements PeerRoute {
   /// transport's too); null where it holds none (a connection through a relay turned off closed instead).
   private relaysHeld: PeerRelays | null;
 
-  constructor(endpoint: Endpoint, cloud: Cloud, addr?: (id: string, workspace?: string | null) => Addr, connectMs = CONNECT_MS) {
+  constructor(endpoint: Endpoint, cloud: Cloud, addr?: (id: string, workspace?: string | null) => Addr, connectMs = CONNECT_MS, meshScope?: (id: string, workspace: string | null) => string | undefined) {
     this.endpoint = endpoint;
     this.cloud = cloud;
-    this.addr = addr ?? ((id, workspace) => stationAddr(cloud, id, workspace ?? null));
+    const address = addr ?? ((id: string, workspace?: string | null) => stationAddr(cloud, id, workspace ?? null));
+    this.addr = (id, workspace) => ({ ...address(id, workspace), meshScope: meshScope?.(id, workspace ?? null) });
     this.relaysHeld = addr === undefined ? peerRelaysOf(endpoint, cloud) : null;
     // A relay turned off: the connections kept through it let go at once, not as the next request comes.
     this.stopSweeping = addr === undefined ? onRelaysChanged(cloud, () => this.sweep()) : () => {};

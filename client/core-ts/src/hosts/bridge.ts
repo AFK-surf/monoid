@@ -9,7 +9,8 @@
 // Operations (`op`, its JSON → its answer):
 //   fetch {url, method, headers} + body → {status, headers} + body
 //   stream.open {url, method, headers} + body → {status, headers, id}; stream.read {id} → bytes, or {end}; stream.close {id}
-//   ws.open {url, protocols} → {id}; ws.next {id} → {text} or {end}; ws.send {id, text}; ws.close {id}
+//   ws.open {url, protocols, binary?} → {id}; ws.next {id} → {text}, {binary} and its bytes (only where `binary` was
+//   asked: else such a frame is let go), or {end}; ws.send {id, text} or {id} and its bytes; ws.close {id}
 //   storage.get {key} → bytes or {none}; storage.set {key} + value; storage.delete {key}
 //   kept.read {at, start, end} → bytes or {none} — a file the app saved where the person keeps files, read back
 //     (`at` as the system named it: a path; on Android a content address), answered by the app (Apple: apple_core.mm;
@@ -60,7 +61,7 @@ import { Core } from "../core.ts";
 import { FileSource } from "../file-source.ts";
 import { HostError } from "../error.ts";
 import type { CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohPath, IrohStream } from "../iroh.ts";
-import { accessOf } from "../iroh-bindings.ts";
+import { accessOf } from "../iroh-access.ts";
 import { SOCKET_PING, SOCKET_PING_MS, type DbRange, type Host, type HttpRequest, type HttpResponse, type LoopbackRequest, type Pull, type Sql, type SqlRow, type SqlValue, type StreamResponse, type TcpConnection, type SqlError, type Unzstd, sqlError } from "../host.ts";
 import type { ClientId, CoreMessage } from "../protocol.ts";
 import { t } from "../i18n.ts";
@@ -510,6 +511,10 @@ export function bridgeIroh(bridge: Bridge): Iroh {
     networkChange: () => Effect.ignore(bridge.call("iroh.networkChange", { id }), { log: "Unhandled", message: "network change told" }),
     relayStatus: () => (bridge.sync("iroh.relayStatus", { id }) as { url: string; connected: boolean }[]) ?? [],
     dhtSaid: (keep) => (bridge.sync("dht.said", { keep }) as ReturnType<NonNullable<IrohEndpoint["dhtSaid"]>> | null) ?? { lines: [], dropped: 0 },
+    meshUseLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshUseLeaf", {id,...value})),
+    meshDetachLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshDetachLeaf", {id,...value})),
+    meshConfigure: (scope) => Effect.map(bridge.call("iroh.meshConfigure", { id, ...scope }), (a) => a.json as import("../iroh.ts").IrohMeshDescriptor),
+    meshRemove: (scope) => Effect.asVoid(bridge.call("iroh.meshRemove", { id, scope })),
     setRelayEntries: (entries) => Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })),
     // (a shell from before says no such op: PCM)
     opus: () => {

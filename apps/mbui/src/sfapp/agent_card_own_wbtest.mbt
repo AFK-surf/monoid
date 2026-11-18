@@ -69,7 +69,7 @@ test "wide: an agent's card with its model's own week: three chips whole, beside
       }
     }
     // each chip its mark and its figure on one line, the model's own after the account's
-    let chips = [("5H", "62%"), ("W", "18%"), ("Fable", "46%")].map(fn(c) { (one(c.0), one(c.1)) })
+    let chips = [("5h", "62%"), ("W", "18%"), ("Fable", "46%")].map(fn(c) { (one(c.0), one(c.1)) })
     assert_true(chips.iter().all(fn(c) { c.0.2 == chips[0].0.2 && c.1.1 > c.0.1 }), msg="\{name}: \{Repr(chips)}")
     assert_true(chips[1].0.1 > chips[0].1.1 && chips[2].0.1 > chips[1].1.1, msg="\{name}: \{Repr(chips)}")
     // its account's name whole: before them on their line, or on the line over them

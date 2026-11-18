@@ -137,6 +137,11 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   assert.ok(v.borrow.lines[2].includes("环境"), v.borrow.lines[2]);
   // Not saved till borrowed.
   assert.throws(() => choose.save(at, of), /请先借用/);
+  choose.set(at, of, { otherStations: false });
+  const hidden: J = (choose.compute({ topic: "pick", station: at, of }) as J).ok;
+  assert.ok(!hidden.options.some((o: J) => o.model === "deepseek-v4-pro"));
+  assert.deepEqual(hidden.draft, v.draft, "hiding other stations keeps the pending choice");
+  assert.deepEqual(hidden.borrow, v.borrow, "the pending borrow keeps its checks");
   // Borrowed: Office is asked to share the profile with this station too, as a manager may.
   const { op } = choose.borrow(at, of) as J;
   assert.equal(op.target.station, `ws/${STUDIO}`);

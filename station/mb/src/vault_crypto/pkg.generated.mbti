@@ -140,6 +140,7 @@ pub impl Show for Refused
 pub suberror UnaccountedSchema {
   UnaccountedSchema(String)
 }
+pub fn UnaccountedSchema::to_string(Self) -> String
 pub impl Show for UnaccountedSchema
 
 // Types and methods

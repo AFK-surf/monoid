@@ -66,9 +66,20 @@ pub let ground_read_focus : Int32
 
 pub let ground_read_hand : Int32
 
+pub fn hold_collecting() -> Bool
+
+pub fn hold_marks_left() -> Bool
+
+#callsite(autofill(loc))
+pub fn hold_note(() -> Bool, loc~ : SourceLoc) -> Unit
+
+pub fn hold_reset() -> Unit
+
 pub let ios_decel : Double
 
 pub let letters_own : Spacing
+
+pub let long_hold_ms : Double
 
 pub fn place_beside((Double, Double, Double, Double), Double, Double, Double, Double, side? : Side, along? : Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool, on? : Side, rtl? : Bool, clear? : (Double, Double, Double, Double)) -> (Double, Double, Side)
 
@@ -118,6 +129,8 @@ pub let scroll_page_up : String
 
 pub let scroll_top : String
 
+pub let silent_hold_ms : Double
+
 pub fn source_place(SourceLoc) -> String
 
 pub fn spline_at(Double, Double) -> (Double, Double)
@@ -135,6 +148,14 @@ pub let tracker_gap_ms : Double
 pub let tracker_horizon_ms : Double
 
 pub fn unrubber(Double, Double) -> Double
+
+pub fn untracked_read_fault(String, Array[String], String) -> String?
+
+pub fn untracked_read_known(Array[(String, Int32)]) -> Unit
+
+pub fn untracked_read_marks_left() -> Bool
+
+pub fn untracked_read_reset() -> Unit
 
 pub let wheel_ease_ms : Double
 
@@ -466,6 +487,22 @@ pub(all) enum Handed {
   Moved(Double, Double)
 }
 
+pub struct HoldGate {
+  // private fields
+}
+pub fn HoldGate::acknowledge(Self) -> Unit
+pub fn HoldGate::cancel(Self, give_up? : Bool) -> Unit
+pub fn HoldGate::collect(Self, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn HoldGate::go(Self, View, most~ : Double, while_still? : () -> Bool, on_give_up? : () -> Unit, () -> Unit, loc~ : SourceLoc) -> Unit
+pub fn HoldGate::is_pending(Self) -> Bool
+#callsite(autofill(loc))
+pub fn HoldGate::new(acknowledged? : Bool, once? : Bool, loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn HoldGate::open_when(Self, View, most~ : Double, () -> Bool, while_still? : () -> Bool, on_give_up? : () -> Unit, () -> Unit, loc~ : SourceLoc) -> Unit
+pub fn HoldGate::seal(Self, View) -> Unit
+pub fn HoldGate::stop(Self, give_up? : Bool) -> Unit
+
 type HoldIn
 
 #derive(Eq, @debug.Debug)
@@ -698,7 +735,12 @@ pub(all) enum Role {
   Form
   Heading
   ScrollArea
+  Table
+  Row
+  ColumnHeader
+  Cell
 }
+pub fn Role::named_by_held(Self) -> Bool
 pub impl Show for Role
 
 pub struct Room {
@@ -887,6 +929,11 @@ pub(all) enum Target {
 }
 
 type Through
+
+pub struct TracksKept {
+  // private fields
+}
+pub fn TracksKept::new() -> Self
 
 pub struct Tracker {
   // private fields
@@ -1133,6 +1180,7 @@ pub fn Tree::claimer_of(Self, Array[(NodeId, Int32)], Double, Double) -> NodeId?
 pub fn Tree::claimers_at(Self, Double, Double, from? : NodeId, there? : (NodeId) -> Bool) -> Array[(NodeId, Int32)]
 pub fn Tree::claims_scroll(Self, NodeId) -> Bool
 pub fn Tree::clear_of(Self, Double, Double, Double, Double) -> Unit
+pub fn Tree::clock_brought(Self) -> Double
 pub fn Tree::clock_read(Self) -> Bool
 pub fn Tree::composed(Self) -> Array[NodeId]
 pub fn Tree::cursor_of(Self, NodeId) -> Cursor
@@ -1190,6 +1238,7 @@ pub fn Tree::held_under_by(Self, () -> Int32) -> Unit
 pub fn Tree::held_walked(Self) -> Int32
 pub fn Tree::hits_said(Self) -> Int32
 pub fn Tree::hold_at(Self, Double, Double) -> NodeId?
+pub fn Tree::hold_faults(Self) -> Array[String]
 pub fn Tree::hold_goes_through(Self, NodeId) -> Bool
 pub fn Tree::hold_in_found(Self, Double, Double, Double) -> Unit
 pub fn Tree::hold_in_let_go(Self) -> Unit
@@ -1267,7 +1316,7 @@ pub fn Tree::on_offset(Self, (NodeId) -> Unit) -> Unit
 pub fn Tree::on_old_scroll(Self, () -> Bool, there? : (NodeId, Double, Double) -> Bool) -> Unit
 pub fn Tree::on_target(Self, (Target, Array[Target], Double, Double) -> Target) -> Unit
 pub fn Tree::on_through(Self, (Target, Double, Double, Double, Handed) -> Unit) -> Unit
-pub fn Tree::on_way_at(Self, Int32, Double) -> Bool
+pub fn Tree::on_way_at(Self, Int32, Double, within? : Int32) -> Bool
 pub fn Tree::opener_of(Self, NodeId) -> Opener?
 pub fn Tree::opens_first(Self, NodeId) -> Bool
 pub fn Tree::opens_first_takes(Self, NodeId) -> ((Said) -> Bool)?
@@ -1355,10 +1404,12 @@ pub fn Tree::turns_about_drawn(Self, NodeId) -> Bool
 pub fn Tree::twice_within(Self, () -> (Double, Double)) -> Unit
 pub fn Tree::typing_left_under(Self) -> Bool
 pub fn Tree::unfollow(Self) -> Unit
+pub fn Tree::untracked_read_faults(Self) -> Array[String]
 pub fn Tree::view_of(Self, NodeId) -> View?
 pub fn Tree::wake(Self) -> Double?
 pub fn Tree::wake_waited(Self) -> Double?
 pub fn Tree::wake_waited_by(Self) -> String
+pub fn Tree::waterfall_faults(Self) -> Array[String]
 pub fn Tree::ways_end(Self) -> Double
 pub fn Tree::ways_set_out(Self) -> Array[WaySet]
 pub fn Tree::went_down(Self, Double, x? : Double, y? : Double) -> Unit
@@ -1391,6 +1442,7 @@ pub fn View::bar_near(Self, Double, across? : Bool) -> Bool
 #callsite(autofill(loc))
 pub fn View::basis(Self, Live[Double?], loc~ : SourceLoc) -> Self
 pub fn View::beside(Self, NodeId, side? : Side, along? : Along, offset? : Double, padding? : Double, at_pointer? : Bool, width? : BesideWidth, piece? : (Double, Double) -> (Double, Double, Double, Double)?, along_offset? : Double, holds_side? : Bool) -> Self
+pub fn View::beside_by(Self, Live[NodeId], side? : Side, along? : Along, offset? : Double, padding? : Double, at_pointer? : Bool, width? : BesideWidth, piece? : (Double, Double) -> (Double, Double, Double, Double)?, along_offset? : Double, holds_side? : Bool, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::bone_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::bones(Self, Live[Int64]) -> Self
@@ -1480,7 +1532,6 @@ pub fn View::grid(Self, () -> Int32, min_col_w~ : Double, gap? : Double, row_gap
 pub fn View::ground(Self, Live[Int64], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::ground_drawn(Self, Live[GroundShape], loc~ : SourceLoc) -> Self
-pub fn View::ground_lit(Self, Live[(Int64, GroundShape)], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::grow(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn View::grows_now(Self) -> (Double, Double)
@@ -1557,6 +1608,7 @@ pub fn View::max_height(Self, Live[Double?], loc~ : SourceLoc) -> Self
 pub fn View::max_width(Self, Live[Double?], within? : Bool, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn[K : Eq] View::measured(Self, Live[K], (K, Double?) -> (Double, Double), loc~ : SourceLoc) -> Self
+pub fn View::menu_behind(Self, Menu) -> Unit
 #callsite(autofill(loc))
 pub fn View::min_height(Self, Live[Double?], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
@@ -1578,6 +1630,7 @@ pub fn View::on_leaving(Self, () -> Unit) -> Self
 pub fn View::on_menu(Self, (Menu) -> Unit) -> Self
 pub fn View::on_pointer_moved(Self, () -> Unit) -> Self
 pub fn View::on_press(Self, () -> Unit) -> Self
+pub fn View::on_reused(Self, () -> Unit) -> Unit
 pub fn View::on_step(Self, (Int32) -> Unit) -> Self
 pub fn View::on_wheel(Self, (Wheel) -> Unit) -> Self
 pub fn View::on_wheel_moves(Self, (Wheel) -> Bool) -> Self
@@ -1621,6 +1674,7 @@ pub fn[T : Eq] View::reacts(Self, () -> T, (T) -> Unit, at_start? : Bool) -> Uni
 pub fn View::read_from(Self) -> Self
 pub fn View::rect(Self) -> (Double, Double, Double, Double)
 pub fn View::resizes(Self, spec? : (Double, (Double) -> Double), foot? : Bool) -> Self
+pub fn View::reused_bool(Self, default? : Bool) -> @signals.Signal[Bool]
 #callsite(autofill(loc))
 pub fn View::row(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::row_order(Self) -> Int32?
@@ -1641,7 +1695,7 @@ pub fn View::says(Self, Live[Said?], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::scale(Self, Live[Double], about? : Pivot, loc~ : SourceLoc) -> Self
 pub fn View::scroll_holding(Self, across? : Bool) -> Scroll?
-pub fn View::scrolls(Self, Scroll, (Self) -> Unit, slop? : Double, bar? : ScrollBar, bar_in? : Double, top_covered? : () -> Double, bar_clear? : () -> (Double, Double)) -> Self
+pub fn View::scrolls(Self, Scroll, (Self) -> Unit, slop? : Double, bar? : ScrollBar, bar_in? : Double, top_covered? : () -> Double, bar_clear? : () -> (Double, Double), bar_here? : () -> Bool) -> Self
 pub fn[K : Hash + Eq] View::scrolls_window(Self, Scroll, () -> Array[K], (Self, K) -> Unit, est? : Double, slop? : Double, bar? : ScrollBar, top_covered? : () -> Double, bar_clear? : () -> (Double, Double), holds? : (K) -> Bool, follows? : () -> Bool, from_end? : Bool, comes? : (K) -> Bool, goes? : (K) -> Bool, leaves_room? : (K) -> Bool, comes_whole? : (K) -> Bool, comes_way? : (K) -> (Double, (Double) -> Double)?, at_once? : Bool, place? : ListPlace[K], near_foot? : (Double, () -> Bool, () -> Unit), near_top? : (Double, () -> Bool, () -> Unit), reused? : (K) -> Int32?, make_reused? : (Self, () -> K) -> Unit, head? : (Self) -> Unit, foot? : (Self) -> Unit) -> Self
 pub fn[T : Eq] View::sets_together(Self, () -> T, (T) -> Unit) -> Self
 #callsite(autofill(loc))
@@ -1671,6 +1725,8 @@ pub fn View::stacked(Self, Live[Int32], loc~ : SourceLoc) -> Self
 pub fn View::steps(Self, Int32, Int32, (Int32, Double) -> Unit) -> () -> Unit
 #callsite(autofill(loc))
 pub fn View::stretches(Self, Live[Double], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn[K : Eq] View::switch_by(Self, () -> K, (Self, K) -> Unit, leave? : Double, loc~ : SourceLoc) -> Unit
 pub fn View::tab_stop(Self, Live[Bool]) -> Self
 pub fn View::takes(Self, (Double, Double, Double) -> Array[(Double, Double, Double, Double)]) -> Self
 pub fn View::takes_back(Self, () -> Unit) -> Self

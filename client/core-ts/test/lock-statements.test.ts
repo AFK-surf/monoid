@@ -25,7 +25,7 @@ import { jsonResponse } from "../src/testing.ts";
 import { hex, utf8 } from "../src/util.ts";
 import { HostWire } from "../src/station/wire.ts";
 import { ME, committed, genesis, givesTo, grant, rig, stationState, withoutMesh } from "./lock-rig.ts";
-import { stationLater } from "./station-fixture.ts";
+import { Status, stationLater, stationReplies } from "./station-fixture.ts";
 
 const A = "aa".repeat(32);
 const C = "cc".repeat(32);
@@ -676,4 +676,122 @@ test("the root's person's app begun anew, approved by another owner: the removal
   o.st.rootout = true;
   await o.run(read(o.inner, "ws"));
   assert.equal(movedWorks(o.inner, "ws", "s1", meant), true, "every station said rootout");
+});
+
+/// The requests to station `id` of `ws` for its lock (GET and POST /lock, the rest as the rig answers), as `keeps`
+/// says: none (reset on its machine, `stillfail lock reset`) until a POST /lock brings it one, `other` another lock's
+/// head, `down` not reached. What was POSTed to it, by what it brought.
+function resetStation(w: { inner: any }, id: string) {
+  const s = { keeps: "none" as "none" | "other" | "rig", down: false, posts: [] as Entry[][] };
+  const through = w.inner.stations.requests.call.bind(w.inner.stations.requests);
+  const other = { seq: 0, hash: "ee".repeat(32), genesis: "ee".repeat(32) };
+  w.inner.stations.requests.call = ((addr: { toString(): string }, method: string, path: string, body: unknown, ...rest: unknown[]) => {
+    if (addr.toString().endsWith(`/${id}`) && path.startsWith("/lock") && !path.startsWith("/lock/person") && s.keeps !== "rig") {
+      if (s.down) return Effect.fail(new CoreError("station_offline", "not reached"));
+      if (method === "POST" && path === "/lock") {
+        s.posts.push(((body as { entries?: Entry[] })?.entries ?? []) as Entry[]);
+        s.keeps = "rig";
+        return Effect.succeed({ taken: 2, head: null });
+      }
+      if (method === "GET" && (path === "/lock" || path.startsWith("/lock?"))) return Effect.succeed({ head: s.keeps === "other" ? other : null, entries: [], takes: ["person"], serves: ["person", "devices", "told", "forks", "bodies", "logs"] });
+      if (method === "GET" && path === "/lock/logs") return Effect.succeed({ chains: [] });
+      if (method === "GET" && path === "/lock/bodies") return Effect.succeed({ bodies: [], lacking: [] });
+      if (method === "GET" && path === "/lock/devices") return Effect.succeed({ devices: [] });
+    }
+    return (through as (...x: unknown[]) => Effect.Effect<unknown, CoreError>)(addr, method, path, body, ...rest);
+  }) as typeof w.inner.stations.requests.call;
+  return s;
+}
+
+// 2026-11-17: a station of an upgraded workspace reset on its machine (`stillfail lock reset`) was brought the lock
+// again by the next read of an app left open (`bringMoved`), so the reset never held; and 保护 beside it, as 设置 › 安全
+// showed it unprotected, did nothing (`stationMoved` answered at once: the list names it already).
+test("a station reset on its machine after the move: never brought the lock again by a read; 保护 brings it back, one keeping another lock is refused", async () => {
+  const w = await setUp();
+  const inC = await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.joinStation", { workspace: "ws", station: C }), catch: (e) => e as CoreError }));
+  assert.equal(inC.error, undefined, inC.error?.message);
+  await w.run(read(w.inner, "ws"));
+  // C, then A (the chain named it as it moved), reset on their machines: each read of the lock after brings them nothing.
+  for (const [name, id] of [["C", C], ["A", A]] as const) {
+    const s = resetStation(w, id);
+    await w.run(read(w.inner, "ws"));
+    // (and something said since, the chain's logs moved on: what a read brought before, it would bring again)
+    const role = name === "C" ? "member" : "admin";
+    assert.equal((await w.run(roster(w.inner, "s1", "ws", { member: "r2", role }))).error, undefined);
+    await w.run(read(w.inner, "ws"));
+    await w.r.host.time.pass(1000);
+    assert.deepEqual(s.posts.length, 0, `${name} brought nothing by the reads`);
+    assert.ok(held(w.inner, "ws")?.head, `${name}: the lock still held, the other station keeping it`);
+    const page = (await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.state", { workspace: "ws" }), catch: (e) => e as CoreError }))).ok as any;
+    assert.equal(page.stations.find((x: any) => x.id === id)?.protected, false, `${name} shown not protected`);
+    const again = await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.joinStation", { workspace: "ws", station: id }), catch: (e) => e as CoreError }));
+    assert.equal(again.error, undefined, again.error?.message);
+    assert.equal(s.posts.length, 1, `${name} brought the lock as 保护 was pressed`);
+    assert.equal(s.posts[0]!.at(-1)?.kind, "moved", "the chain as it moved");
+    const shown = (await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.state", { workspace: "ws" }), catch: (e) => e as CoreError }))).ok as any;
+    assert.equal(shown.stations.find((x: any) => x.id === id)?.protected, true, `${name} shown protected again`);
+  }
+  const s = resetStation(w, C);
+  s.keeps = "other";
+  await w.run(read(w.inner, "ws"));
+  const other = await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.joinStation", { workspace: "ws", station: C }), catch: (e) => e as CoreError }));
+  assert.equal(other.error?.code, "lock_other", `another lock: reset first (${other.error?.message})`);
+  assert.equal(s.posts.length, 0);
+});
+
+// A workspace upgraded on A whose stations since are C alone (A taken out, retired): every station of it reset, the
+// lock held for good here, as the read went by the chain's own (A, not reached); and only A keeping none, C still
+// keeping it, the lock let go.
+test("the stations in force reset, those the chain named as it moved gone: the lock let go and the cloud's copy dropped; one gone keeping none lets nothing go", async () => {
+  const w = await setUp();
+  assert.equal((await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.joinStation", { workspace: "ws", station: C }), catch: (e) => e as CoreError }))).error, undefined);
+  assert.equal((await w.run(roster(w.inner, "s1", "ws", { station: A }))).error, undefined);
+  assert.deepEqual([...inForceOf(w.inner, "ws").f.stations.keys()], [C]);
+  const a = resetStation(w, A);
+  const c = resetStation(w, C);
+  // Only A, which the list names no more, keeps none (C not reached): nothing let go.
+  c.keeps = "rig";
+  c.down = true;
+  a.keeps = "none";
+  await w.run(read(w.inner, "ws"));
+  assert.ok(held(w.inner, "ws")?.head, "held: a station gone keeping none says nothing of the lock");
+  // Every one in force (C) keeps none, A not reached: let go, and the owner's device drops the cloud's copy.
+  a.down = true;
+  c.down = false;
+  c.keeps = "none";
+  const deletes = () => w.r.host.requests.filter((q) => q.method === "DELETE" && /\/v1\/workspaces\/ws\/lock$/.test(q.url)).length;
+  const before = deletes();
+  await w.run(read(w.inner, "ws"));
+  await w.r.host.time.pass(1000);
+  assert.equal(held(w.inner, "ws")?.head ?? null, null, "let go: every station in force keeps none");
+  assert.equal(deletes() - before, 1, "the cloud's copy dropped");
+});
+
+// 2026-11-17: every station reset and the cloud keeping the lock of before (nothing told it), turning safe mode on
+// again failed for good with `lock_exists`.
+test("turned on anew where the cloud keeps the lock of before: it is let go of there and the genesis taken", async () => {
+  const o = await setUp({ root: "alice" });
+  o.st.reset = true;
+  o.inner.data.update({ topic: "workspace", workspace: "ws" }, (v: any) => ({ ...v, locked: true }));
+  await o.run(read(o.inner, "ws"));
+  assert.equal(held(o.inner, "ws")?.head ?? null, null);
+  let keeps = true;
+  const told: string[] = [];
+  stationReplies(o.r.host, (req) => {
+    if (/\/v1\/workspaces\/ws\/lock$/.test(req.url) && (req.method === "POST" || req.method === "DELETE")) {
+      told.push(`${req.method}${req.method === "POST" && keeps ? " lock_exists" : ""}`);
+      if (req.method === "DELETE") {
+        keeps = false;
+        o.r.cloud.chains.delete("ws");
+        return { ok: true };
+      }
+      if (keeps) return new Status(409, { error: "lock_exists" });
+    }
+    return o.r.cloud.reply(req);
+  });
+  const on = await o.run(Effect.tryPromise({ try: () => o.r.ask("lock.open", { workspace: "ws" }), catch: (e) => e as CoreError }));
+  assert.equal(on.error, undefined, on.error?.message);
+  await o.r.host.time.pass(1000);
+  assert.deepEqual(told, ["POST lock_exists", "DELETE", "POST"], `let go of, then taken: ${told}`);
+  assert.equal(o.r.cloud.chains.get("ws")?.[0]?.kind, "genesis");
 });

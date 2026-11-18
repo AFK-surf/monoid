@@ -42,7 +42,7 @@ pub fn fixture_play_read(params : Json, done : (Result[(Json, Bytes), Json]) -> 
     let whole = @utf8.encode(fix_srt)
     let offset = number(Some(params), "offset").to_int()
     let part = if offset >= whole.length() {
-      Bytes::new(0)
+      Bytes::make(0, b'\x00')
     } else {
       Bytes::makei(whole.length() - offset, fn(i) { whole[offset + i] })
     }

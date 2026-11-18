@@ -149,6 +149,8 @@ struct Box {
   // same in any containing block
   mut of_cb_w : Bool
   mut of_cb_h : Bool
+  // In the box a root keeps, the pixel grid of its last unrounded compute.
+  mut laid_grid : Double
 }
 
 ///|
@@ -256,6 +258,7 @@ fn box_of(
       max_h,
       of_cb_w,
       of_cb_h,
+      laid_grid: undef,
     }
   }
 }
@@ -437,7 +440,11 @@ pub fn compute(
   grid? : Double = 0.0,
 ) -> Unit {
   generation.val = generation.val + 1
-  reusing.val = reuse && !round && grid == placing_grid.val
+  // The old views and the window tree alternate on Android, each on its own grid.
+  reusing.val = reuse && !round && (match root.box_memo {
+    Some(box) => grid == box.laid_grid
+    None => grid == 0.0
+  })
   placing_grid.val = grid
   absolute_seen.val = false
   let b = box_of(root.style, width, height)
@@ -472,6 +479,9 @@ pub fn compute(
   }
   if round {
     round_layout(root, 0.0, 0.0)
+  }
+  if root.box_memo is Some(box) {
+    box.laid_grid = if round { undef } else { grid }
   }
 }
 
@@ -2608,7 +2618,8 @@ fn basis_said(cs : Style, cb : Box, row : Bool, inner_main : Double) -> Double {
 
 ///|
 /// The least a row `c` comes to along it from what it holds (Style's wrap_least), in a container `cb_w` × `cb_h`: its
-/// padding and border, its gaps and each of its items at the least compute's line may bring it to, with their margins:
+/// padding and border and the least its contents need on one line. A wrapping row can put each item on its own
+/// line, so only the widest counts; a single-line row needs every item and the gaps between them. Each item includes its margins:
 /// what never gives way (shrink 0) at its HYP as least_hyp has it; the rest at their least (row_item_min: min-width,
 /// padding and border, min_held), and, a row, no less than what they hold at its least. 0 for what is not a row: its
 /// items go across it, its least its own (row_item_min).
@@ -2617,7 +2628,8 @@ fn least_held(c : Node, cb_w : Double, cb_h : Double) -> Double {
     return 0.0
   }
   let b = box_for(c, cb_w, cb_h)
-  let mut w = b.pbw()
+  let wraps = c.style.wrap != NoWrap
+  let mut content = 0.0
   let mut n = 0
   for k in flow_children(c) {
     if k.style.position == Absolute {
@@ -2629,13 +2641,14 @@ fn least_held(c : Node, cb_w : Double, cb_h : Double) -> Double {
     } else {
       fmax(or_else(row_item_min(k, kb, undef, undef), 0.0), least_held(k, undef, undef))
     }
-    w = w + least + kb.mar_l + kb.mar_r
+    let outer = least + kb.mar_l + kb.mar_r
+    content = if wraps { fmax(content, outer) } else { content + outer }
     n = n + 1
   }
-  if n > 1 {
-    w = w + edge_of(c.style.gap_col_k, c.style.gap_col_v, undef) * (n - 1).to_double()
+  if !wraps && n > 1 {
+    content = content + edge_of(c.style.gap_col_k, c.style.gap_col_v, undef) * (n - 1).to_double()
   }
-  w
+  b.pbw() + content
 }
 
 ///|

@@ -38,6 +38,7 @@ import { presentHistory } from "../history.ts";
 import { sentFrom, sentHead } from "../sent-from.ts";
 export { sentFrom };
 import { archiveHintOf, badgeKindsOf, failsGoneOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
+import { stationFeature } from "../features.ts";
 import { markdown, type MdStore } from "../markdown.ts";
 import { heardFiles } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
@@ -50,6 +51,7 @@ import * as marks from "./marks.ts";
 import { lineForViewer, stageFields } from "../chat-stage.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
+import { agentRates } from "./agent-rates.ts";
 import { fleetView } from "./fleet.ts";
 import { stationUpdates } from "./station-updates.ts";
 import { chatsCard, usageCard } from "./rail-cards.ts";
@@ -96,7 +98,7 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -366,7 +368,7 @@ function profileRowsOf(shown: J): J {
 /// refillsOf), nothing else of it walked.
 function windowShown(w: J, c: present.Clock): J {
   const { resetsAt, ...rest } = w;
-  return { ...rest, refills: typeof resetsAt === "number" ? present.refillsOf(resetsAt, c) : null };
+  return { ...rest, ...present.rowRefillsOf(resetsAt, w.left, c.now) };
 }
 
 /// Where a row's chat came from, for one from a connect (`connect`): its mark's kind and its words (Slack · team ·
@@ -1029,6 +1031,8 @@ export class Views implements Owner {
   readonly #chatWindows = new Map<string, number>();
   /// The latest chats' things read (`#things`), by station and thread, with what they were read from.
   readonly #thingsKept = new Map<string, Derived<{ messages: J[]; things: ReturnType<typeof thingsOf>; whole: boolean; title: unknown } | null>>();
+  /// Names of the sessions shown in live rates, recomputed only when the underlying chat or session changes.
+  readonly #rateNames = new Map<string, Derived<{ title: string | null; model: string | null; chat: string | null }>>();
   /// A chat's outline's rows (`outlineRows`), by the message each was made of, and what else it was made with.
   readonly #outlineMade = new WeakMap<object, { by: unknown; offset: number; item: J }>();
   /// A chat's outline's message's day and whether it is the viewer's (`#chatOutline`), by the message, and what else
@@ -1331,6 +1335,7 @@ export class Views implements Owner {
         perStation = (s) => [
           { topic: "jobs", station: s },
           { topic: "screens", station: s },
+          { topic: "terminals", station: s },
           ...arr(this.ok({ topic: "jobs", station: s })).flatMap((j) => {
             const owner = jobs.remoteOwner(str(get(j, "session")) ?? "");
             return owner === null ? [] : [{ topic: "chatRows", station: owner.station }];
@@ -1341,6 +1346,10 @@ export class Views implements Owner {
         scope = view.scope as string;
         // (and its accounts, as the profiles page reads them: each subscription's allowance)
         perStation = (s) => [{ topic: "stationUsage", station: s }, { topic: "link", station: s }, { topic: "overview", station: s }];
+        break;
+      case "agentRates":
+        scope = view.scope as string;
+        perStation = (s) => [{ topic: "stationRates", station: s }];
         break;
       case "fleet":
         // (the card shared of the agents at work: views/fleet.ts)
@@ -1566,6 +1575,23 @@ export class Views implements Owner {
     return kept.get();
   }
 
+  /// Rate events are frequent, while names change rarely. Keep the reads separate from the rate's computation, so an
+  /// update does not query every displayed session again or push the other views' reads out of the chat cache.
+  #rateName(station: string, key: string): { title: string | null; model: string | null; chat: string | null } {
+    const id = JSON.stringify([station, key]);
+    let kept = this.#rateNames.get(id);
+    if (kept === undefined) kept = computed(() => {
+      const chat = this.#core.data.chatNamedOfAgent(station, key);
+      const session = this.#core.data.listedSummary(station, key);
+      const model = str(get(session, "model"));
+      return { title: chat?.title ?? str(get(session, "title")), model: model === null ? null : format.agentLabel(model, null), chat: chat?.id ?? null };
+    });
+    this.#rateNames.delete(id);
+    this.#rateNames.set(id, kept);
+    if (this.#rateNames.size > 64) this.#rateNames.delete(this.#rateNames.keys().next().value!);
+    return kept.get();
+  }
+
   /// The station a link names now (`<workspace>/<station>`): one that took a lost one's place, where that is the one
   /// named (its overview's `copies.formerly`, kept beside it: data.ts overviewFormerly); the one named otherwise.
   stationNow(address: string): string {
@@ -1761,9 +1787,12 @@ export class Views implements Owner {
     v.stationUpdate = looks.stationUpdate(overview, v, typeof dismissed === "string" ? dismissed : null, this.#noticeOpen(station), manager, this.stationName(station));
     if (Array.isArray(v.outbox)) v.outbox = looks.outboxWaits(v.outbox, v.stationUpdate);
     // The screens of the machine it runs on, a press away from its bar: its own display first (screens.ts screensView),
-    // each marked while an agent drives it.
-    const screens = arr(get(this.ok({ topic: "screens", station }), "screens")).map((s) => ({ id: s.id, kind: s.kind, title: s.title, line: s.line, ...(s.agent === true ? { agent: true } : {}) }));
+    // each marked while an agent drives it; and whether a browser tab or terminal may be opened there (`canBrowser`, `canTerminal`).
+    const screensHeld = this.ok({ topic: "screens", station });
+    const screens = arr(get(screensHeld, "screens")).map((s) => ({ id: s.id, kind: s.kind, title: s.title, line: s.line, ...(s.agent === true ? { agent: true } : {}) }));
     if (screens.length > 0) v.screens = screens;
+    if (v.offline !== true && get(screensHeld, "browser") === true && get(screensHeld, "control") === true) v.canBrowser = true;
+    if (v.offline !== true && stationFeature(overview, "terminal") && role !== "viewer") v.canTerminal = true;
     if (v.offline === true) {
       v.offlineNote = looks.offlineNote(v.link, this.stationName(station));
       if (get(v.link, "cause") === "updating") v.updating = true;
@@ -1983,6 +2012,14 @@ export class Views implements Owner {
         const summary = usageSummary(sources, now, offset, String(get(this.ok({ topic: "workspace", workspace: scope }), "name") ?? ""));
         return { ok: { ...usageView(sources, typeof view.days === "number" ? view.days : 7, now, offset, this.me(scope), members_, { split: view.split, only: view.only, day: view.day }, accounts), ...(summary !== null ? { summary } : {}) } };
       }
+      case "agentRates": {
+        const stations = this.#stationsOr(view.scope as string);
+        if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
+        return { ok: agentRates(stations.map((s) => ({
+          address: s.address, name: s.name, value: this.ok({ topic: "stationRates", station: s.address }),
+          named: (key: string) => this.#rateName(s.address, key),
+        }))) };
+      }
       case "fleet": {
         const scope = view.scope as string;
         const stations = this.#stationsOr(scope);
@@ -2072,37 +2109,69 @@ export class Views implements Owner {
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
         const several = stations.length > 1;
-        // Each in the chat its session's row is, from the sidebar held, listed or archived (the station names it no more).
+        // Whose each is (jobs.ts `mineOf`): in a workspace of one, all the viewer's; where others are members, what
+        // the viewer's own chats run (`mine` of their columns) and their own views, a shared station's others' (its
+        // simulators the viewer's where a view of theirs is on it). (Machines that only run tasks, a member's own, are
+        // no station of the list: the workspace's `rigs`.)
+        const members = arr(get(this.ok({ topic: "workspace", workspace: view.scope as string }), "members"));
+        const multi = members.length > 1;
+        const email = this.#core.emailOf(view.scope as string)?.toLowerCase();
+        // Each in the chat its session's row is, from the sidebar held, listed or archived (the station names it no
+        // more), the chat it is among the agents of where it has none of its own (`chat_agent`).
         const named = (address: string, j: J): J => {
-          if (get(j, "chat") !== undefined && get(j, "chat") !== null) return j;
+          const chat = get(j, "chat");
+          if (chat !== undefined && chat !== null) {
+            if (!multi) return j;
+            // (the station named its chat: whose it is, of that row's columns)
+            const id = str(get(chat, "id"));
+            return { ...j, mine: id !== null && this.#core.data.chatOfJob(address, id)?.mine === true };
+          }
           const session = str(get(j, "session"));
-          // (its id, title and whether it is archived alone, of their columns)
-          const found = session === null ? undefined : this.#core.data.chatTitled(address, session);
-          return found === undefined ? j : { ...j, chat: { id: found.id, title: found.title, archived: found.archived } };
+          // (its id, title, whether it is archived and the viewer's, of their columns alone)
+          const found = session === null ? undefined : this.#core.data.chatOfJob(address, session);
+          const mine = !multi || found?.mine === true;
+          return found === undefined ? (mine ? j : { ...j, mine }) : { ...j, chat: { id: found.id, title: found.title, archived: found.archived }, ...(mine ? {} : { mine }) };
         };
         const open = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(this.ok({ topic: "jobs", station: s.address })).map((j) => named(s.address, j as J))] as [string, string | null, J[]]);
-        // Their simulators and the views of their screens too (jobs.ts `longScreens`).
-        const screens = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(get(this.ok({ topic: "screens", station: s.address }), "screens"))] as jobs.HeldScreens);
+        // Their simulators, open terminals and the views of their screens too (jobs.ts `longScreens`, `longTerminals`).
+        const screens = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(get(this.ok({ topic: "screens", station: s.address }), "screens")), !multi] as jobs.HeldScreens);
+        const terminals = stations.filter((s) => s.online).map((s) => [
+          s.address,
+          several ? s.name : null,
+          arr(get(this.ok({ topic: "terminals", station: s.address }), "terminals")).map((item) => {
+            const chat = str(get(item, "chat"));
+            const found = chat === null ? undefined : this.#core.data.chatTitled(s.address, chat);
+            // Old runners only kept a display name. Attribute it only when the roster identifies one opener.
+            const recorded = str(get(item, "byEmail"));
+            const by = str(get(item, "by"));
+            const matches = !recorded && by ? members.filter((m) => (m.name || m.email) === by) : [];
+            const opener = recorded || (matches.length === 1 ? str(matches[0].email) : null);
+            const mine = members.length === 1 || (!!email && opener?.toLowerCase() === email);
+            return { ...item, mine, ...(found ? { chatObj: { id: found.id, title: found.title, archived: found.archived } } : {}) };
+          }),
+        ] as jobs.HeldTerminals);
         const prefs = this.ok({ topic: "prefs" }) ?? null;
         const bell = { on: badgeKindsOf(prefs).services, seen: jobsSeenOf(prefs, view.scope as string) };
         const clock = this.#clock();
-        // Asked again as the next of them has been up an hour (nothing else would say it).
-        const next = jobs.longNext(open, screens, clock.now);
+        // Asked again as the next of them has been up an hour, or as how long one has says something else (nothing else
+        // would say it: present.ts NO_TICK).
+        const next = jobs.longNext(open, screens, clock.now, terminals);
         if (next !== null) this.#againIn(next);
-        return { ok: jobs.longJobs(open, clock, (session) => this.#ranFrom(stations, session), bell, screens) };
+        return { ok: jobs.longJobs(open, clock, (session) => this.#ranFrom(stations, session, multi), bell, screens, terminals) };
       }
     }
     return undefined;
   }
 
   /// The chat on another of the scope's stations a task here runs for (`jobs.remoteOwner`), as that station's sidebar
-  /// has it: the session's own chat over one it only takes part in (as the station names its own jobs' chats).
-  #ranFrom(stations: StationInfo[], session: string): jobs.From | null {
+  /// has it: the one its session names, else one it takes part in (data.ts chatOfJob); the viewer's where that chat is
+  /// (`multi`: others are members) or where nobody else is.
+  #ranFrom(stations: StationInfo[], session: string, multi: boolean): jobs.From | null {
     const owner = jobs.remoteOwner(session);
     const station = owner && stations.find((s) => s.address === owner.station);
     if (!owner || !station) return null;
-    const row = this.#core.data.chatNamedOfAgent(station.address, owner.session);
-    return { name: station.name, chat: row === undefined ? null : { id: row.id, title: row.title, archived: false, station: station.address } };
+    const row = this.#core.data.chatOfJob(station.address, owner.session);
+    return { name: station.name, chat: row === undefined ? null : { id: row.id, title: row.title, archived: row.archived, station: station.address }, mine: !multi || row?.mine === true };
   }
 
   /// When the chats of `stations` marked archived were, from `from` on (their `archived_at`: the mark's moment, else their
@@ -4265,6 +4334,9 @@ export class Views implements Owner {
       const agent = { name: str(get(a.session, "agentText")) ?? "agent", agent: key, maker: get(a.session, "maker") ?? null, runtime: get(a.session, "runtime") ?? null };
       const pictures = slackPictures(a.session, threads, connects);
       for (const s of said) {
+        // What the tool refused on its way to a thread its session is not in went nowhere (a chat_post to a mistyped
+        // address, `CHT/…` for `CHAT/…`): it is not shown as sent to Slack.
+        if (s.out && s.refused && !threads.some((th) => `${str(get(th, "channel"))}/${str(get(th, "threadTs"))}` === s.to)) continue;
         if (!s.out) {
           const id = `${s.user ?? ""} ${s.to} ${s.at}`;
           if (heard.has(id)) continue;

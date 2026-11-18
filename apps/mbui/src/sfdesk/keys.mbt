@@ -35,8 +35,13 @@ pub fn frame_actions(v : @view.View, src : Source) -> Unit {
     true
   })
   act("chat.new", fn(_) {
-    new_chat()
-    true
+    // Home's board takes this action itself, including when the focus is elsewhere in the frame.
+    if @sfbase.board_on_now(src) && app.nav.top() is Home {
+      false
+    } else {
+      new_chat()
+      true
+    }
   })
   act("sidebar.toggle", fn(_) {
     guard framed() else { return false }
@@ -105,8 +110,9 @@ pub fn frame_actions(v : @view.View, src : Source) -> Unit {
 
 ///|
 /// Esc to what the frame opened, the one on top first: the rail changed, ⌘K (one kind's list back to all of them,
-/// else closed), ⌘/, 待处理's panel, a row's title renamed (what is presented over the frame has Escape before it:
-/// overlay.mbt); the keyboard let go (`blur`) where what had it closes. Whether it took it.
+/// else closed), ⌘/, a tab over the whole window back in its panel (tab_full_node.mbt), 待处理's panel, a row's title
+/// renamed (what is presented over the frame has Escape before it: overlay.mbt); the keyboard let go (`blur`) where
+/// what had it closes. Whether it took it.
 fn frame_escape(blur : () -> Unit) -> Bool {
   let open = fn(s : @signals.Signal[Bool]) { s.untracked() }
   if open(wide.editing) {
@@ -115,6 +121,8 @@ fn frame_escape(blur : () -> Unit) -> Bool {
     ()
   } else if open(wide.keys_open) {
     wide.keys_open.set(false)
+  } else if @sfbase.tab_full.untracked() is Some(_) {
+    @sfbase.tab_full_close()
   } else if open(wide.attention_open) {
     attention_set(false)
   } else if @sfpages.rename_escape(blur) {

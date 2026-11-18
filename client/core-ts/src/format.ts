@@ -148,6 +148,16 @@ export function preciseTimeUntil(ms: number, now: number): string {
   return hours % 24 === 0 ? tr(lang, "core-logic.format.until.days", { n: days }) : tr(lang, "core-logic.format.until.days_hours", { n: days, h: hours % 24 });
 }
 
+/// The figure on a spent quota chip. Its tip carries the exact refill in words.
+export function refillShort(ms: number, now: number): string {
+  const minutes = Math.max(0, round((ms - now) / MINUTE));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours}h${minutes % 60}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days}d${hours % 24}h` : `${days}d`;
+}
+
 /// When a quota window refills, in words.
 export function refillsIn(ms: number, now: number): string {
   return refillsInLang(current(), ms, now);

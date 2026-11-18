@@ -1,6 +1,36 @@
 // A reminder in an agent's history: its label stays readable beside a long first line, and its whole text opens below.
 
 ///|
+test "a web call's history row names the tool and the pages opened" {
+  for case in [("zh", "联网", "打开 2 个网页"), ("en", "Web", "Opening 2 web pages")] {
+    let (lang, label, said) = case
+    for w in [390.0, 900.0] {
+      steps_reset()
+      @sf.set_words(@sfbase.fill)
+      let src = @sffixture.fixture("history")
+      let step : Json = {
+        "name": "WebSearch",
+        "said": Json::string(said),
+        "hint": "",
+        "meta": "",
+        "call": "{\"open\":[{\"ref_id\":\"turn8search2\"},{\"ref_id\":\"turn6search1\"}]}",
+        "result": "",
+        "failed": false,
+      }
+      let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, h=160.0, env=[("MBUI_LOCALE", lang)], tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        root.box(fn(v) { step_node(v, src, "ws1/st1", "s-c1", "web", Some(step)) }) |> ignore
+      })
+      t.draw()
+      assert_true(t.rect_of(label) is Some(_), msg="\{lang}, \{w}: web tool label")
+      assert_true(t.rect_of(said) is Some(_), msg="\{lang}, \{w}: page count")
+      assert_eq(t.audit(), [])
+    }
+  }
+  steps_reset()
+}
+
+///|
 test "history reminder keeps its label on one line beside a long note and opens it whole" {
   let first = "This is a new conversation: your earlier one in this session is no longer available."
   let note = first + "\nThe agent can continue here."
@@ -514,7 +544,7 @@ test "history turn divider shows deduplicated time only, breaks rail on silent t
   assert_eq(cont1, false, msg="empty turn {} still breaks the previous turn's vertical rail")
   guard rows[3] is Item(_, cont2) else { fail("expected Item at index 3") }
   assert_eq(cont2, false, msg="timed turn breaks the previous turn's vertical rail")
-  assert_true(steps_row_shape(Some(rows[1])) != steps_row_shape(Some(rows[3])), msg="timed turn and deduplicated turn have distinct reuse shapes")
+  assert_true(steps_row_shape(Some(rows[1]), "ws1/st1", "s-c1") != steps_row_shape(Some(rows[3]), "ws1/st1", "s-c1"), msg="timed turn and deduplicated turn have distinct reuse shapes")
 
   steps_reset()
   @sf.set_words(@sfbase.fill)
@@ -557,7 +587,7 @@ test "history turn divider shows deduplicated time only, breaks rail on silent t
   assert_true(t.rect_of("未发消息") is None, msg="redundant silent summary is gone")
   t.tap_text(limit_line)
   t.run_for(@ui.move_most_ms)
-  assert_true(!steps_own.opened.contains("t1-txt/text"), msg="50-char proportional English line fits in 390px phone room without chevron")
+  assert_true(!steps_own.opened.contains(steps_item_key("ws1/st1", "s-c1", "t1-txt") + "/text"), msg="50-char proportional English line fits in 390px phone room without chevron")
   assert_eq(t.corner_faults(), [])
   assert_eq(t.lit_all_faults(), [])
   steps_reset()
@@ -683,8 +713,149 @@ test "sent messages, received messages, and long turn-state reasons share statio
   assert_eq(done_rect.3, 20.0)
   t.tap(done_rect.0 + 40.0, done_rect.1 + 10.0)
   t.run_for(@ui.move_most_ms)
-  assert_true(steps_own.opened.contains("k-done/mark"), msg="tapping long done mark toggles its card open")
+  assert_true(steps_own.opened.contains(steps_item_key("ws1/st1", "s-c1", "k-done") + "/mark"), msg="tapping long done mark toggles its card open")
   assert_eq(t.corner_faults(), [])
   assert_eq(t.lit_all_faults(), [])
+  steps_reset()
+}
+
+///|
+test "全屏查看's reader: what is longer than its room scrolls in it, its last line reached between its title and its foot" {
+  for case in [(390.0, 2), (900.0, 0)] {
+    let (w, platform) = case
+    @sf.presenters_reset()
+    let t = @ui.Tester::new(
+      fn(c) {
+        @sf.begin(c) |> ignore
+        c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+      },
+      w~,
+      h=600.0,
+      platform~,
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        @sf.presented_nodes(root)
+      },
+    )
+    t.draw()
+    open_tool_reader("输出", "", fn(rb) {
+      for i in 0..<120 {
+        @sf.words_node(rb, fn() { "第\{i}行" }, fn() { @sf.paragraph }) |> ignore
+      }
+    })
+    t.run_for(@ui.move_most_ms * 2.0)
+    // (the last line drawn whole between the title's foot and the foot's button's top)
+    let shown = fn(s : String) {
+      let over = t.words().filter(fn(x) { x.0 == "输出" }).map(fn(x) { x.2 + x.4 }).last().unwrap_or(0.0)
+      let under = t.query(Button, label=@sf.t("common.done")).map(fn(r) { r.rect.1 }).unwrap_or(600.0)
+      t.words().any(fn(x) { x.0 == s && x.2 >= over && x.2 + x.4 <= under })
+    }
+    assert_true(shown("第0行"), msg="\{w}: its first line at first")
+    assert_true(!shown("第119行"), msg="\{w}: its last line not yet")
+    guard t.query(Dialog, label="输出") is Some(d) else {
+      // (on 小屏 a sheet: the wheel over its middle all the same)
+      for _ in 0..<40 {
+        t.wheel(w / 2.0, 400.0, 300.0)
+      }
+      t.run_for(@ui.move_most_ms * 2.0)
+      assert_true(shown("第119行"), msg="\{w}: its last line reached")
+      continue
+    }
+    for _ in 0..<40 {
+      t.wheel(d.rect.0 + d.rect.2 / 2.0, d.rect.1 + d.rect.3 / 2.0, 300.0)
+    }
+    t.run_for(@ui.move_most_ms * 2.0)
+    assert_true(shown("第119行"), msg="\{w}: its last line reached")
+    assert_eq(t.corner_faults(), [])
+  }
+  @sf.presenters_reset()
+}
+
+///|
+test "opening a record reads the selected session even when two histories use the same entry numbers" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("history")
+  let reads : Array[String] = []
+  let tester = fn(station : String, key : String, name : String) {
+    let row : Json = {
+      "kind": "step",
+      "content": { "name": "Read", "said": Json::string(name), "call": "{}", "brief": true, "entries": [1, 2] },
+    }
+    let history : Json = {
+      "items": [{ "key": "e1", "entries": [1, 2], "body": { "kind": "group", "content": {
+        "summary": Json::string("读取文件组 " + key), "rows": [row],
+      } } }], "edge": "", "loaded": true, "more": false,
+    }
+    let src : @sfbase.Source = {
+      ..base,
+      topic_read: fn(n, params) {
+        if n == "history" { { value: Some(history), error: None, version: 1 } } else { (base.topic_read)(n, params) }
+      },
+      topic_keyed: fn(_, _, _, _) { None },
+      call: fn(n, params, reply) {
+        if n == "history.detail" {
+          reads.push(text(Some(params), "station") + "/" + text(Some(params), "key"))
+          reply(Ok(Json::null()))
+        } else {
+          (base.call)(n, params, reply)
+        }
+      },
+    }
+    @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      history_steps_node(root, src, station, key, tips)
+    }, w=390.0, h=700.0, platform=2)
+  }
+  for (station, key, name) in [("ws/st1", "a", "alpha.mbt"), ("ws/st1", "b", "beta.mbt"), ("ws/st2", "a", "gamma.mbt")] {
+    let t = tester(station, key, name)
+    t.draw()
+    assert_true(t.rect_of(name) is None, msg="another history's row was expanded in " + name)
+    t.tap_text("读取文件组 " + key)
+    t.run_for(@ui.move_most_ms)
+    t.tap_text(name)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(reads.last(), Some(station + "/" + key))
+  }
+  steps_reset()
+}
+
+///|
+test "a record stays open on its own output when an earlier step is inserted" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("history")
+  let src : @sfbase.Source = {
+    ..base,
+    call: fn(n, params, reply) {
+      if n == "history.tool" {
+        reply(Ok({ "call": [], "result": [{ "kind": "output", "text": Json::string(text(Some(params), "result")) }] }))
+      } else {
+        (base.call)(n, params, reply)
+      }
+    },
+  }
+  let row = fn(entry : Int, name : String, result : String) -> Json {
+    { "kind": "step", "content": {
+      "name": "Bash", "said": Json::string(name), "result": Json::string(result),
+      "entries": [Json::number(entry.to_double()), Json::number((entry + 1).to_double())],
+    } }
+  }
+  let earlier = row(2, "检查配置", "配置存在")
+  let selected = row(4, "检查版本", "版本一致")
+  let rows = @signals.signal([selected])
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    group_rows_each_node(root, src, "ws/st1", "b", fn() { "test group" }, fn() { rows.get() })
+  }, w=390.0, h=560.0, platform=2)
+  t.draw()
+  t.tap_text("检查版本")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.rect_of("版本一致") is Some(_))
+  rows.set([earlier, selected])
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.rect_of("版本一致") is Some(_), msg="the selected step still shows its output")
+  assert_true(t.rect_of("配置存在") is None, msg="the preceding step stays closed")
   steps_reset()
 }

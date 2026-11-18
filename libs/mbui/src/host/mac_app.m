@@ -34,6 +34,7 @@ static int back_on;
 static int event_wid(void);
 static void win_use(int wid);
 static int win_active;
+static void window_modifiers(int wid, BOOL active);
 static void go_back(void) {
   if (!back_cb || !back_on) return;
   int back = win_active;
@@ -155,6 +156,16 @@ static void win_wheel(double x, double y, double dx, double dy, int32_t ph) {
 }
 static void win_key(int32_t k, int32_t m) { IN_EVENT_WINDOW(app_cb.key(k, m)); }
 static void win_text(int32_t k, moonbit_string_t s, int32_t a, int32_t b) { IN_EVENT_WINDOW(app_cb.text(k, s, a, b)); }
+// A focus notice names its window explicitly; the current NSEvent may belong to a different one.
+static void window_modifiers(int wid, BOOL active) {
+  NSEventModifierFlags m = active ? [NSEvent modifierFlags] : 0;
+  int mods = ((m & NSEventModifierFlagShift) ? 1 : 0) | ((m & NSEventModifierFlagControl) ? 2 : 0) |
+             ((m & NSEventModifierFlagOption) ? 4 : 0) | ((m & NSEventModifierFlagCommand) ? 8 : 0);
+  int back = win_active;
+  win_use(wid);
+  app_cb.key(0, mods);
+  win_use(back);
+}
 // the pointer's shape (@hostapi.set_cursor), and the press under way (what @hostapi.window_drag drags the window with)
 static int cursor_kind;
 static NSEvent *down_event;
@@ -713,6 +724,14 @@ static NSCursor *cursor_of(int kind) {
 }
 
 // ---- keys ----
+
+// Modifier changes are input of their own: the app can change a control before another key is pressed.
+- (void)flagsChanged:(NSEvent *)e {
+  NSEventModifierFlags m = e.modifierFlags;
+  int mods = ((m & NSEventModifierFlagShift) ? 1 : 0) | ((m & NSEventModifierFlagControl) ? 2 : 0) |
+             ((m & NSEventModifierFlagOption) ? 4 : 0) | ((m & NSEventModifierFlagCommand) ? 8 : 0);
+  mb_cb.key(0, mods);
+}
 
 // A key with ⌘ is the view's first, as it was before the app had a menu bar (the app's shortcuts, a field's editing
 // keys, a key catcher's): only those the menu bar keeps for the system go on to it (⌘Q, ⌘W, ⌘H, ⌥⌘H, ⌘M, ⌃⌘F).
@@ -1456,6 +1475,11 @@ static int win_open(NSString *what) {
   if (first) [w setFrameTopLeftPoint:NSMakePoint(NSMinX(first.frame) + 32 * wid, NSMaxY(first.frame) - 32 * wid)];
   else [w center];
   slot.observers = [NSMutableArray new];
+  for (NSNotificationName name in @[ NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification ])
+    [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:name object:w queue:nil
+                                                                            usingBlock:^(NSNotification *n) {
+                                                                              window_modifiers(wid, [n.name isEqualToString:NSWindowDidBecomeKeyNotification]);
+                                                                            }]];
   [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification
                                                                               object:w queue:nil
                                                                           usingBlock:^(NSNotification *n) { win_closed(wid); }]];
@@ -1935,7 +1959,12 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
                                        NSWindowDidMiniaturizeNotification, NSWindowDidDeminiaturizeNotification,
                                        NSWindowDidChangeOcclusionStateNotification ]) {
       [[NSNotificationCenter defaultCenter] addObserverForName:name object:w queue:nil
-                                                    usingBlock:^(NSNotification *n) { tell_state(); }];
+                                                    usingBlock:^(NSNotification *n) {
+                                                      if ([n.name isEqualToString:NSWindowDidBecomeKeyNotification] ||
+                                                          [n.name isEqualToString:NSWindowDidResignKeyNotification])
+                                                        window_modifiers(0, [n.name isEqualToString:NSWindowDidBecomeKeyNotification]);
+                                                      tell_state();
+                                                    }];
     }
     for (NSNotificationName name in @[ NSApplicationDidBecomeActiveNotification, NSApplicationDidResignActiveNotification ]) {
       [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil queue:nil
@@ -2380,6 +2409,8 @@ static void a11y_ask(MBA11yNode *n, NSString *action, NSString *text) {
       @"Combobox" : NSAccessibilityComboBoxRole, @"Toolbar" : NSAccessibilityToolbarRole,
       @"Image" : NSAccessibilityImageRole, @"TextField" : NSAccessibilityTextFieldRole,
       @"ScrollArea" : NSAccessibilityScrollAreaRole,
+      @"Table" : NSAccessibilityTableRole, @"Row" : NSAccessibilityRowRole,
+      @"ColumnHeader" : NSAccessibilityCellRole, @"Cell" : NSAccessibilityCellRole,
     };
   return roles[self.node.role] ?: NSAccessibilityGroupRole;
 }
@@ -2439,6 +2470,27 @@ static void a11y_ask(MBA11yNode *n, NSString *action, NSString *text) {
 }
 - (NSArray *)accessibilityChildren {
   return a11y_elements_of(a11y_shown_kids(self.nid));
+}
+// a table's rows, and a table's or a row's header cells, as AppKit asks a table for them (its kids said so)
+- (NSArray *)a11y_kids_said:(NSString *)role {
+  NSMutableArray *out = [NSMutableArray array];
+  for (NSNumber *k in a11y_shown_kids(self.nid)) {
+    MBA11yNode *kid = a11y_nodes[k];
+    MBA11yElement *e = [kid.role isEqualToString:role] ? a11y_element(k.intValue) : nil;
+    if (e) [out addObject:e];
+  }
+  return out;
+}
+- (NSArray *)accessibilityRows {
+  return [self.node.role isEqualToString:@"Table"] ? [self a11y_kids_said:@"Row"] : nil;
+}
+- (NSArray *)accessibilityColumnHeaderUIElements {
+  NSString *r = self.node.role;
+  if ([r isEqualToString:@"Row"]) return [self a11y_kids_said:@"ColumnHeader"];
+  if (![r isEqualToString:@"Table"]) return nil;
+  NSMutableArray *out = [NSMutableArray array];
+  for (MBA11yElement *row in [self a11y_kids_said:@"Row"]) [out addObjectsFromArray:[row a11y_kids_said:@"ColumnHeader"]];
+  return out;
 }
 // what may be asked of it: what its node takes
 - (BOOL)isAccessibilitySelectorAllowed:(SEL)sel {

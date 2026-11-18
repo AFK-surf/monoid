@@ -77,8 +77,21 @@ jobs:
           sha=$(git rev-parse HEAD)
           run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pipeline.yml --commit "$sha" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
           if [ -n "$run" ]; then
-            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern "natives*-$sha" --dir "$RUNNER_TEMP/natives" ||
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern "natives*-$sha" --dir "$RUNNER_TEMP/natives"; then
+              # Patterns extract each artifact to its own directory. Old runs have the archives themselves.
+              for native in "$RUNNER_TEMP"/natives/natives*-"$sha"; do
+                [ -d "$native" ] || continue
+                if [ -f "$native/natives.r2.json" ] || [ -f "$native/natives-mac.r2.json" ]; then
+                  git show "$GITHUB_SHA:scripts/native-handoff.mjs" > "$RUNNER_TEMP/native-handoff.mjs"
+                  node "$RUNNER_TEMP/native-handoff.mjs" get "$native" "$sha"
+                fi
+                for archive in "$native"/*.tar.gz; do
+                  [ ! -f "$archive" ] || mv "$archive" "$RUNNER_TEMP/natives/"
+                done
+              done
+            else
               echo "The pipeline has no native artifact ready; the native store will be used."
+            fi
           fi
       - name: The shell prebuilt for these sources
         env:

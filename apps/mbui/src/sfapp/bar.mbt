@@ -183,9 +183,9 @@ let bar_drop : Double = 120.0
 let bar_hide_ms : Double = 250.0
 
 ///|
-/// The lens: a capsule over the ball's place, as large as it is drawn.
+/// The lens: a capsule over the ball's place, as large as it is drawn, its shadow LiquidBottomTabs' (@sf.tab_lens_raised).
 // kept across runs: a value (no field of it changes)
-let lens_box : @ui.Style = @ui.css("w=Full h=Full radius=Full")
+let lens_box : @ui.Style = @ui.css("w=Full h=Full radius=Full").then(@ui.style(shadow=@sf.tab_lens_raised.cast()))
 
 ///|
 /// How much larger than the ball its lens is, held (liquid glass over the places, iOS 26's tab bar's).
@@ -1296,6 +1296,8 @@ fn bar_place_add(src : Source, ws : Workspace, active : String?) -> ((@sf.Beside
         None => None
       }
     }
+    // (远程: none, each station's heading has its own ＋, sfpages' remote_station_head_node)
+    Some("remote") => None
     Some(a) => @settings.place_action(settings_core(src, ws), @settings.here_of(settings_core(src, ws), ws.id, ws.name), a)
     None => None
   }
@@ -1453,7 +1455,7 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let row_top = bar_row_top(told.sets.length())
   let sliding = m.drag >= 0.0
   // The bar rises and the notch closes together while a finger has it, returning together on release.
-  m.held.go(if sliding { 1.0 } else { 0.0 }, 420.0, 16.0, at~)
+  m.held.go(if sliding { 1.0 } else { 0.0 }, 1000.0, 2.0 * 1000.0.sqrt(), at~)
   m.up.go(if m.holds || sliding { 1.0 } else { 0.0 }, ball_down, raise_damping, at~)
   if w > 0.0 {
     match m.swap_at(at) {
@@ -1656,6 +1658,9 @@ fn bar_drawn(c : @ui.Ctx, src : Source, ws : Workspace, active : String?, shown 
   match field(chats.value, "trouble") {
     Some(Object(_)) => dots["stations"] = t.p.red
     _ => ()
+  }
+  if @sfpages.remote_agent_lit(src, ws.id) {
+    dots["remote"] = t.p.primary
   }
   // the stations at a glance in Station's place, and in words
   let (glyph, said) = stations_at_glance(src, ws.id)
@@ -1903,7 +1908,7 @@ fn bar_drawn(c : @ui.Ctx, src : Source, ws : Workspace, active : String?, shown 
         let lw = sw * grow
         let lh = sh * grow
         let lens = at(c, bcx - lw / 2.0, m.ball_y.x - lh / 2.0, lw, lh, body=fn() {
-          c.box(style=lens_box, glass=@sf.glass_lens(), fn() {  }) |> ignore
+          c.box(style=lens_box, glass=@sf.backdrop_tab(m.held.x), fn() {  }) |> ignore
         })
         if ball_going {
           let (ba, bs, held) = (m.ball_alpha, m.ball_scale, dmin(1.0, m.held.x))

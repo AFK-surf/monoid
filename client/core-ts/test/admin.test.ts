@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { holdLanguage } from "../src/i18n.ts";
-import { admin, feedback, list, overview, user, workspace } from "../src/views/admin.ts";
+import { admin, feedback, list, overview, sources, user, workspace } from "../src/views/admin.ts";
 import { CoreError } from "../src/error.ts";
 import { relays } from "../src/views/admin-relays.ts";
 
@@ -270,7 +270,7 @@ test("the_relays_page_keeps_the_clouds_list_each_relay_removable_but_its_own_wit
     ["东京", true, "tokyo.example:8445 · 用令牌接入"],
     ["首尔", true, "seoul.example · ops@x.io 添加 · 负载按来源 IP 认定"],
   ]);
-  assert.deepEqual(v.relays[1].entries, [{ url: "https://39.105.157.122/", name: "北京", host: "39.105.157.122" }]);
+  assert.deepEqual(v.relays[1].entries, [{ url: "https://39.105.157.122/", name: "北京", host: "39.105.157.122", target: "https://47.76.247.168" }]);
   assert.deepEqual(v.tokens.map((k: J) => [k.name, k.line]), [["大阪", "地址由 relay 接入时自报 · 3 小时后过期"], ["首尔2", "seoul2.example · 10 分钟后过期"]]);
   // A still.fail cloud from before says nothing of its list: nothing to keep from here.
   const before = relays({ relays: answer.relays }, null, now, 480);
@@ -285,4 +285,181 @@ test("a_bug_making_a_view_is_thrown_for_the_store_to_report_and_a_core_error_is_
   // A bug is not passed off as a CoreError (the web host sends one by its toJSON: a TypeError has none, and took the
   // whole core down as "t.error.toJSON is not a function"): it is thrown, for the store to fail this topic with.
   assert.throws(() => admin(view("feedback", "F1"), () => ({ ok: { get feedback(): J { throw new TypeError("a bug"); } } }), NOW * 1000, 0), TypeError);
+});
+
+// ── the console's operations (D3) ──
+
+const replied = (): J => {
+  const r = reports();
+  r.feedback[0].replies = [
+    { id: "r1", from: "team", by: "ops@x.io", text: "能再说说步骤吗？", created_at: NOW - 50, delivery: "delivered", delivered_at: NOW - 40 },
+    { id: "r2", from: "reporter", by: "session:chat:c-1", text: "刷新后复现", created_at: NOW - 30, delivery: null, delivered_at: null },
+  ];
+  r.feedback[0].updated_at = NOW - 30;
+  r.feedback[1].replies = [{ id: "r3", from: "team", by: "feedback-monitor", text: "已修复", created_at: NOW - 20, delivery: "pending", delivered_at: null }];
+  return r;
+};
+
+test("a_report_the_reporter_answered_last_awaits_the_team_and_the_overview_says_so", () => {
+  const all = list("feedback", replied(), "", null, null, null, NOW);
+  // Those whose last word is the reporter's: one to answer.
+  assert.equal(count(all, "replied"), 1);
+  assert.deepEqual(ids(list("feedback", replied(), "", "replied", null, null, NOW)), ["F2"]);
+  assert.deepEqual(all.rows[0].marks.map((m: J) => [m.label, m.tone]), [["新反馈", "amber"], ["待跟进", "amber"], ["测试版", "accent"]]);
+  assert.deepEqual(all.rows[1].marks.map((m: J) => m.label), ["已修复"]);
+  assert.ok(all.rows[1].line.endsWith(" · 1 条回复"), all.rows[1].line);
+  // The default order is still when each came; by when each last changed on asking.
+  assert.deepEqual(all.sorts.map((s: J) => s.id), ["created", "updated"]);
+  assert.deepEqual(ids(list("feedback", replied(), "", null, "updated", null, NOW)), ["F1", "F2"]);
+  // What was said in a reply is found too.
+  assert.deepEqual(ids(list("feedback", replied(), "刷新后", null, null, null, NOW)), ["F2"]);
+  const v = overview(users(), workspaces(), { codes: [] }, replied(), NOW, 480);
+  assert.deepEqual(v.todo.slice(0, 2).map((x: J) => [x.text, x.filter]), [["1 个新反馈", "new"], ["1 个反馈待跟进", "replied"]]);
+});
+
+test("reports_are_narrowed_by_area_after_their_tab_and_each_area_counts_what_the_words_found", () => {
+  const plain = list("feedback", reports(), "", "fixed", null, null, NOW);
+  assert.equal(plain.filter, "fixed");
+  assert.equal(plain.area, "");
+  const v = list("feedback", reports(), "", "all@web", null, null, NOW);
+  assert.deepEqual([ids(v), v.filter, v.area], [["F2"], "all", "web"]);
+  assert.equal(v.areas[0].count, 2);
+  assert.deepEqual(v.areas.filter((a: J) => a.count > 0).map((a: J) => [a.id, a.label, a.count]), [["", "全部范围", 2], ["android", "Android", 1], ["web", "Web", 1]]);
+  // The tab's counts are of the area's.
+  assert.deepEqual([count(v, "new"), count(v, "fixed")], [1, 0]);
+  assert.deepEqual(ids(list("feedback", reports(), "", "fixed@web", null, null, NOW)), []);
+  assert.deepEqual(ids(list("feedback", reports(), "", "@android", null, null, NOW)), ["F1"]);
+});
+
+test("a_reports_page_has_its_replies_whether_the_team_can_reply_and_its_own_read_whole", () => {
+  const page = feedback("F2", replied());
+  assert.deepEqual(page.replies.map((r: J) => [r.from, r.authorLabel, r.deliveryLabel]), [["team", "ops@x.io", "已送达"], ["reporter", "反馈方", null]]);
+  assert.equal(page.canReply, true);
+  assert.ok(page.text.includes("## 回复\n\nops@x.io: 能再说说步骤吗？\n反馈方: 刷新后复现\n"), page.text);
+  // An account's report has no chat to reply in.
+  const mine = feedback("F1", replied());
+  assert.deepEqual([mine.canReply, mine.replies[0].authorLabel, mine.replies[0].deliveryLabel], [false, "反馈机器人", "待送达"]);
+  assert.ok(mine.replyHint.includes("账号"));
+  // The list carries no logs: its row shown while the report's own is read, said to be coming; then its own, whole.
+  const slim = replied();
+  slim.feedback[0].logs = null;
+  slim.feedback[0].has_logs = true;
+  const view = { topic: "adminItem", account: "a", list: "feedback", id: "FB-2" };
+  assert.deepEqual(sources(view), [{ topic: "admin", account: "a", list: "feedback" }, { topic: "admin", account: "a", list: "feedback/FB-2" }]);
+  const lists: Record<string, J> = { feedback: { ok: slim } };
+  const read = (_: string, l: string) => lists[l];
+  let shown: J = admin(view, read, NOW * 1000, 0);
+  assert.deepEqual([shown.ok.id, shown.ok.logs, shown.ok.logsLoading], ["F2", null, true]);
+  lists["feedback/FB-2"] = { ok: { item: replied().feedback[0] } };
+  shown = admin(view, read, NOW * 1000, 0);
+  assert.deepEqual([shown.ok.id, shown.ok.logs, shown.ok.logsLoading], ["F2", "line 1\nline 2", false]);
+  // Any report by its number, though the list holds it no more.
+  const old = { ...replied().feedback[1], id: "F0", number: 0 };
+  lists["feedback/FB-0"] = { ok: { item: old } };
+  assert.equal((admin({ ...view, id: "FB-0" }, read, NOW * 1000, 0) as J).ok.number, "FB-0");
+});
+
+test("a_machine_in_several_workspaces_is_counted_once_and_those_that_only_run_tasks_count_too", () => {
+  const v = workspaces();
+  // s1 is in both; a rig of Ann's in the second.
+  v.workspaces[1].stations = [{ id: "s1", name: "studio", version: "0.1.1212", last_seen: NOW - 60 }];
+  v.workspaces[1].rigs = [{ id: "r1", name: "ci-runner", owner: "a", owner_email: "ann@x.io", owner_name: "Ann", version: "0.1.1213", last_seen: NOW - 120, enrolled_at: 1 }];
+  const o = overview(users(), v, { codes: [] }, null, NOW, 480);
+  const stations = o.stats.find((s: J) => s.label === "Station");
+  // s1, s2 and r1: three machines, two of them seen today.
+  assert.deepEqual([stations.value, stations.note], [3, "2 台今天已连接"]);
+  // A rig is a machine: the workspace is not bare, and its version is the newest.
+  assert.equal(count(list("workspaces", v, "", null, null, null, NOW), "bare"), 0);
+  const page = workspace("w2", v, users(), NOW);
+  assert.deepEqual(page.rigs.map((r: J) => [r.name, r.ownerTitle, r.version, r.outdated, r.state]), [["ci-runner", "Ann", "0.1.1213", false, "online"]]);
+  assert.equal(page.stationCount, "2");
+  assert.equal(workspace("w1", v, users(), NOW).stations[0].outdated, true);
+  assert.deepEqual(ids(list("workspaces", v, "ci-runner", null, null, null, NOW)), ["w2"]);
+});
+
+test("a_workspaces_plan_is_said_in_words_and_its_own_limits_can_be_given_back", () => {
+  const v = workspaces();
+  v.workspaces[0].plan = "enterprise";
+  v.workspaces[1].plan = "standard";
+  assert.deepEqual([workspace("w1", v, users(), NOW).plan, workspace("w1", v, users(), NOW).customLimits], ["企业版", true]);
+  assert.deepEqual([workspace("w2", v, users(), NOW).plan, workspace("w2", v, users(), NOW).customLimits], ["标准版", false]);
+  // A cloud from before plans says none.
+  assert.equal(workspace("w1", workspaces(), users(), NOW).plan, null);
+});
+
+test("the_operators_changes_are_listed_by_kind_in_words_and_found_by_who_and_what", () => {
+  const audit = {
+    audit: [
+      { id: "a3", created_at: NOW - 10, actor: "ops@x.io", action: "relay.token", target: "东京 2", detail: "https://tokyo2.example" },
+      { id: "a2", created_at: NOW - 20, actor: "feedback-monitor", action: "feedback.status", target: "FB-12", detail: "fixed" },
+      { id: "a1", created_at: NOW - 30, actor: "ann@x.io", action: "user.beta", target: "bob@y.io", detail: "on" },
+    ],
+  };
+  const all = list("audit", audit, "", null, null, null, NOW);
+  assert.deepEqual(all.rows.map((r: J) => [r.title, r.line]), [
+    ["签发中继令牌 · 东京 2", "ops@x.io · https://tokyo2.example"],
+    ["标记反馈 · FB-12", "feedback-monitor · 已修复"],
+    ["开通测试版 · bob@y.io", "ann@x.io"],
+  ]);
+  assert.deepEqual(all.filters.map((f: J) => [f.id, f.count]), [["all", 3], ["users", 1], ["workspaces", 0], ["codes", 0], ["feedback", 1], ["relays", 1]]);
+  assert.deepEqual(ids(list("audit", audit, "", "relays", null, null, NOW)), ["a3"]);
+  assert.deepEqual(ids(list("audit", audit, "bob", null, null, null, NOW)), ["a1"]);
+  assert.deepEqual(ids(list("audit", audit, "测试版", null, null, null, NOW)), ["a1"]);
+});
+
+test("what_the_cloud_notes_of_rights_given_by_email_and_of_an_invite_code_is_said_in_words", () => {
+  const audit = {
+    audit: [
+      { id: "b2", created_at: NOW - 10, actor: "ops@x.io", action: "code.create", target: "2Y2R-Z4YW-4VWK", detail: "给星河科技 CEO · days=14 · beta" },
+      { id: "b1", created_at: NOW - 20, actor: "ops@x.io", action: "pending.set", target: "new@y.io", detail: "beta=on may_create=off" },
+    ],
+  };
+  assert.deepEqual(list("audit", audit, "", null, null, null, NOW).rows.map((r: J) => r.line), [
+    "ops@x.io · 给星河科技 CEO · 14 天内有效 · 测试版",
+    "ops@x.io · 开通测试版 · 改回免费版",
+  ]);
+});
+
+test("the_relays_page_charts_what_was_dropped_says_what_the_probes_found_and_keeps_the_clouds_own_relay", () => {
+  const now = NOW - (NOW % 3600);
+  const day = { start: now - 287 * 300, step: 300, sent: Array.from({ length: 288 }, () => 10), recv: [], open: [], dropped: Array.from({ length: 288 }, (_, i) => (i < 200 ? null : i === 250 ? 0.12 : 0.01)) };
+  const line = (network: string, country: string, rtt: number | undefined, loss: number) => ({ probe_country: country, probe_region: "", probe_city: "", probe_asn: 1, probe_network: network, ...(rtt === undefined ? {} : { rtt_avg: rtt }), loss, status: "finished" });
+  const answer = {
+    relays: [{
+      url: "https://app.still.fail", name: "Cloudflare", at: now - 30, now: { sent: 1, recv: 1, dropped: 0, rx: null, tx: null }, open: 1, load1: null, today: { bytes: 0, frames: 0 }, day, week: day,
+      probes: { at: now - 600, lines: [line("China Mobile communications", "CN", 80, 0), line("China Mobile", "CN", 100, 0), line("Chinanet", "CN", 320, 10), line("China Unicom", "CN", undefined, 100), line("HKBN", "HK", 9.6, 0), line("Aliyun", "CN", 40, 0)] },
+    }],
+    registry: {
+      own: "https://app.still.fail",
+      // The cloud's own named from here: a row of its own, and still never taken off.
+      relays: [{ url: "https://app.still.fail", name: "Cloudflare", target: null, added_at: now - 9, added_by: "ops@x.io", enrolled: false }],
+      tokens: [{ id: "0123456789abcdef", name: "北京入口", url: null, target: "https://app.still.fail", expires_at: now + 3600 }],
+    },
+  };
+  const v = relays(answer, null, now, 480);
+  const cf: J = v.relays[0];
+  assert.deepEqual([cf.removable, cf.editable, cf.how], [false, true, ["云自带的中继，不能删除"]]);
+  const dropped: J = cf.charts.find((c: J) => c.id === "dropped");
+  assert.deepEqual([dropped.label, dropped.peak, dropped.series[0].values[250]], ["丢包率", "峰值 12.0%", 12]);
+  assert.deepEqual(cf.probes.items, [
+    { label: "移动", value: "90 ms" },
+    { label: "电信", value: "320 ms · 丢包 10.0%", tone: "amber" },
+    { label: "联通", value: "不通", tone: "red" },
+    { label: "香港", value: "10 ms" },
+    { label: "国内其他", value: "40 ms" },
+  ]);
+  assert.equal(cf.probes.seen, "10 分钟前探测");
+  assert.deepEqual(v.tokens.map((k: J) => [k.id, k.line]), [["0123456789abcdef", "入口 → Cloudflare · 地址由 relay 接入时自报 · 1 小时后过期"]]);
+  // Nothing sampled of what was dropped (the tests' and the clouds' from before): no chart, no probes said.
+  const quiet: J = relays({ relays: [{ ...answer.relays[0], probes: undefined, day: { ...day, dropped: [] } }] }, null, now, 480).relays[0];
+  assert.deepEqual([quiet.charts.map((c: J) => c.id), quiet.probes], [["rate", "open"], undefined]);
+});
+
+test("a_codes_row_carries_each_products_sign_up_link", () => {
+  const codes = { codes: [{ code: "AAAA-BBBB-CCCC", note: "", created_at: NOW - 10, expires_at: NOW + DAY, revoked_at: null, used_at: null, used_by: null, workspace: null, url: "https://app.monoid.build/?invite=AAAA-BBBB-CCCC",
+    links: [{ product: "monoid", url: "https://app.monoid.build/?invite=AAAA-BBBB-CCCC" }, { product: "still.fail", url: "https://app.still.fail/?invite=AAAA-BBBB-CCCC" }] }] };
+  const row = list("invite-codes", codes, "", null, null, null, NOW).rows[0];
+  assert.deepEqual(row.links.map((l: J) => l.product), ["monoid", "still.fail"]);
+  delete (codes.codes[0] as J).links;
+  assert.equal("links" in list("invite-codes", codes, "", null, null, null, NOW).rows[0], false);
 });

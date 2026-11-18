@@ -498,6 +498,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_run_change(rich_chat(f.older))
           } else if f.mode == "chat-md" {
             with_md_message(rich_chat(f.older))
+          } else if f.mode == "chat-pieces" {
+            with_long_pieces(rich_chat(f.older))
           } else if f.mode == "chat-viz" {
             with_viz_message(rich_chat(f.older))
           } else if f.mode == "chat-mbui" || f.mode == "chat-mbui-dark" || f.mode == "chat-view-side-mbui" || f.mode == "chat-preview-mbui" {
@@ -517,6 +519,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_flag(rich_chat(f.older), "archived")
           } else if f.mode == "chat-cold-offline" {
             with_flag(with_cache_cold(rich_chat(f.older)), "offline")
+          } else if f.mode == "chat-actions-run" {
+            let url = "https://github.com/acme/shop/actions/runs/9001"
+            let md : Json = [["p", [["a", [[1, 5]], { "href": url, "to": { "peek": "run" } }]]]]
+            with_message(rich_chat(f.older), "[当前发布](" + url + ")", md=Some(md))
           } else if f.mode == "chat-peeks" {
             with_message(rich_chat(f.older), peeks_answer)
           } else if f.mode == "chat-letters" && f.older == 0 {
@@ -531,6 +537,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_station_update(rich_chat(f.older))
           } else if f.mode == "chat-station-screen" || f.mode == "chat-station-screens" || f.mode == "chat-agent-screens" {
             with_chat_screens(rich_chat(f.older), f.mode != "chat-station-screen")
+          } else if f.mode == "chat-remote" || f.mode == "chat-terminal-side" {
+            with_chat_remote(rich_chat(f.older), f.mode == "chat-terminal-side", f.test_channel)
           } else if f.mode == "chat-cache-cold" {
             with_cache_cold(rich_chat(f.older))
           } else if f.mode == "chat-done" {
@@ -546,15 +554,18 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
           } else {
             rich_chat(f.older)
           }
-          match (v, seeded_outbox(f.mode)) {
-            (Object(m), out) if out.length() > 0 => {
-              let o = m.copy()
-              o["outbox"] = Json::array(out)
-              Json::object(o)
-            }
-            _ => v
-          }
+          v
         })
+        // (what this mode's outbox holds, as it is now: outside the memo, so one 编辑 or discarded is gone at the change
+        // that drops it, not kept by the memo's value)
+        let base = match (base, seeded_outbox(f.mode).filter(fn(o) { !fix_seed_gone.contains(text(Some(o), "id")) })) {
+          (Object(m), out) if out.length() > 0 => {
+            let o = m.copy()
+            o["outbox"] = Json::array(out)
+            Json::object(o)
+          }
+          _ => base
+        }
         // chat-done-live: a chat whose agent's turn is over, saying where the chat stands as the core does: not while
         // words sent are on their way or its agent works (scripts/instrbench.sh's `send`)
         let sent = with_sent(base, session)
@@ -1389,6 +1400,7 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     "chat.discard" => {
       let id = text(p, "id")
       fix_chat(session).outbox.retain(fn(o) { text(Some(o), "id") != id })
+      fix_seed_gone[id] = true
       f.changed()
       Some(Ok(Json::object({})))
     }
@@ -1465,7 +1477,24 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
         }),
       )
     }
-    "session.warm" | "client.focus" | "chat.place" | "chat.around" => Some(Ok(Json::object({})))
+    "session.warm" | "client.focus" | "chat.place" => Some(Ok(Json::object({})))
+    // the made-up chat's window about a message (topics.ts around): all of it held, its number; by its time (a
+    // quote's), the message said then, none where it has none
+    "chat.around" => {
+      let ts = text(p, "ts")
+      if ts == "" {
+        return Some(Ok({ "seq": Json::number(number(p, "seq")) }))
+      }
+      let all = items(Some(rich_chat(f.older)), "messages")
+      Some(
+        Ok({
+          "seq": match all.iter().find_first(fn(m) { text(Some(m), "ts") == ts }) {
+            Some(m) => Json::number(number(Some(m), "seq"))
+            None => Json::null()
+          },
+        }),
+      )
+    }
     // where its runtime keeps the session's transcript
     "session.transcript" => Some(Ok({ "path": "/Users/lin/.claude/projects/release/7c1e5b2a-4f0d-4c8e-9a61-3b2f.jsonl" }))
     // the messages of the made-up chat that have every word (topics.ts find): all of it on the device
@@ -1650,6 +1679,18 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         o => [o]
       }
     "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    // chat-refused: refused as it is (a file the station cannot have), its words and a quote with it, 编辑 under it
+    "chat-refused" => {
+      let quote : Json = { "author": "Claude", "text": "高度先按 90 估，量过一次就记住。", "ts": "ts8", "role": "agent", "comment": "这个值得再确认" }
+      match outgoing_json("o-seed", { "text": "好，就按这个改，顺便把深色模式的截图也换掉", "quotes": [quote] }, "failed", "a.jpg 的上传源已丢失") {
+        Object(m) => {
+          let o = m.copy()
+          o["final"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
+    }
     // chat-uploading-files: files other than pictures going up before it goes, no words with them, each one's card
     // saying how much of it the station has (views.ts uploads)
     "chat-uploading-files" =>
@@ -1687,6 +1728,11 @@ pub let fix_decided : Map[Int, Json] = Map([])
 ///|
 /// The answers given here, by the card's seq: the viewer's message the core posts with each (said as the chat shows).
 pub let fix_replied : Map[Int, String] = Map([])
+
+///|
+/// What of a mode's seeded outbox was discarded here (`chat.discard`), by its id: gone from it, as from the core's.
+// kept across runs: let go by fixture_reset (made.mbt)
+pub let fix_seed_gone : Map[String, Bool] = Map([])
 
 ///|
 /// The agent's answers to those answers, after them (fixture_card_call).
@@ -1884,10 +1930,32 @@ pub fn ask_end_post() -> Json {
 }
 
 ///|
+/// chat-ask-text's last post: an agent asking for words (a text card: a field to write the answer in, its hint the
+/// agent's), waiting; answered, as the core says it (decisions.ts: replied).
+pub fn ask_text_post() -> Json {
+  msg(63, "agent", by_agent("Anthropic", "claude", "s-c1"), "发布说明的开头想写一句话概括这次改动，你来定这句话？", "刚刚", {
+    "ending": "need_decision",
+    "card": {
+      "type": "text",
+      "assigneeText": "等 林 决定",
+      "placeholder": "比如：对话页更顺滑了",
+    },
+    "decision": fix_decided.get(63).unwrap_or({ "resolved": false }),
+    "asked": Json::boolean(!fix_decided.contains(63)),
+    "createdAt": Json::number(1.0e9),
+  })
+}
+
+///|
 /// The chat `v` with what was answered here in it.
 pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
   let seeded = f.mode == "chat-cards"
   let ask_end = f.mode == "chat-ask-end"
+  let ask_text = f.mode == "chat-ask-text"
+  // (chat-notice-many: its login's notice said three times, folded as one, its words long enough to open on lines)
+  let notice_many = f.mode == "chat-notice-many"
+  // (chat-file-alone: its last message a file of its agent's, no words with it)
+  let file_alone = f.mode == "chat-file-alone"
   let vault = f.mode == "chat-vault" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
   let linked = f.mode.has_prefix("chat-phone-linked-")
   let signin = f.mode.has_prefix("chat-signin")
@@ -1923,7 +1991,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       None => rest
     }
   }
-  if session != "s-c1" || (fix_decided.is_empty() && !seeded && !vault && !phone && !signin && !ask_end && !rig) {
+  if session != "s-c1" || (fix_decided.is_empty() && !seeded && !vault && !phone && !signin && !ask_end && !ask_text && !notice_many && !file_alone && !rig) {
     return v
   }
   match v {
@@ -1935,6 +2003,23 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       }
       for i, x in all {
         let seq = number(Some(x), "seq").to_int()
+        match x {
+          Object(xm) if notice_many && seq == 9 => {
+            let y = xm.copy()
+            let words = "Willow 上 codex 的登录已失效：请在设置里重新登录。登录之前，这个对话里交给 codex 的事都会停下等着，登录以后会自动接着做。"
+            y["text"] = Json::string("⚠️ " + words)
+            y["notice"] = { "failed": true, "words": Json::string(words), "count": 3 }
+            all[i] = Json::object(y)
+          }
+          Object(xm) if file_alone && seq == 11 => {
+            let y = xm.copy()
+            y["text"] = Json::string("")
+            y.remove("md") |> ignore
+            y["attachments"] = [file("发布说明.pdf", 0, 0, 245760)]
+            all[i] = Json::object(y)
+          }
+          _ => ()
+        }
         let decided = match fix_decided.get(seq) {
           Some(d) => Some(d)
           None if seeded && seq == 8 => Some(decided_json("一起换"))
@@ -1979,6 +2064,12 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       // at the end, words sent under it came to stand over it once the station had them, a whole row up in one frame)
       if ask_end {
         let card = ask_end_post()
+        let at = all.search_by(fn(x) { number(Some(x), "seq") > number(Some(card), "seq") }).unwrap_or(all.length())
+        all.insert(at, card)
+      }
+      // chat-ask-text's card, the same way
+      if ask_text {
+        let card = ask_text_post()
         let at = all.search_by(fn(x) { number(Some(x), "seq") > number(Some(card), "seq") }).unwrap_or(all.length())
         all.insert(at, card)
       }
@@ -2067,6 +2158,15 @@ pub fn fixture_card_call(f : Fixture, name : String, params : Json) -> Result[Js
           }),
         )
       })
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
+    // (a text card answered: its words said in the chat as the viewer's, the card replied, as the core says it)
+    "decision.reply" => {
+      let words = text(p, "text").trim(chars=" \n\t").to_owned()
+      fix_decided[seq] = { "resolved": true, "text": "你 已回复" }
+      fix_replied[seq] = words
+      fix_reply_at["r:\{seq}"] = (fix_reply_at.length(), fix_chat("s-c1").sent.length())
       f.changed()
       Some(Ok(Json::object({})))
     }
@@ -2693,6 +2793,60 @@ pub fn with_md_message(v : Json) -> Json {
 }
 
 ///|
+/// The paragraphs of a long answer about `said` (`n` of them, each saying which it is), as the core reads them: its
+/// words and its tree, a paragraph a block.
+fn long_paragraphs(said : String, n : Int) -> (String, Json) {
+  let ps = Array::makei(n, fn(i) { "\{said}第\{i + 1}段：这一段讲清单里的一项，写得长一些，好让一屏放不下整条消息的所有段落。" })
+  (ps.join("\n\n"), Json::array(ps.map(fn(p) { Json::array([Json::string("p"), Json::array([Json::string(p)])]) })))
+}
+
+///|
+/// The rich chat with its two agents' answers before the end long, a block a piece as a list draws them (chat-pieces):
+/// the first (3) of 30 paragraphs, its 22nd quoted by the viewer's own at the chat's end (12); the one waiting to be
+/// decided (8) of 30 paragraphs over its card.
+pub fn with_long_pieces(v : Json) -> Json {
+  guard v is Object(m) else { return v }
+  let o = m.copy()
+  let (t3, md3) = long_paragraphs("", 30)
+  let (t8, md8) = long_paragraphs("截图", 30)
+  let quoted = "第22段：这一段讲清单里的一项，写得长一些"
+  let all = match m.get("messages") {
+    Some(Array(a)) => a.map(fn(j) {
+      guard j is Object(was) else { return j }
+      let n = was.copy()
+      match was.get("seq") {
+        Some(Number(3.0, ..)) => {
+          n["text"] = Json::string(t3)
+          n["md"] = md3
+        }
+        Some(Number(8.0, ..)) => {
+          n["text"] = Json::string(t8)
+          n["md"] = md8
+        }
+        _ => ()
+      }
+      Json::object(n)
+    })
+    _ => []
+  }
+  // (the viewer's own at the end, quoting it)
+  match all.iter().find_first(fn(j) { j is Object(m) && m.get("seq") is Some(Number(7.0, ..)) }) {
+    Some(Object(seven)) => {
+      let n = seven.copy()
+      n["seq"] = Json::number(12.0)
+      n["ts"] = Json::string("ts12")
+      n["text"] = Json::string("这一段再展开说说？")
+      n["joined"] = Json::boolean(false)
+      n["quotes"] = [{ "author": "Claude", "text": Json::string(quoted), "comment": "", "ts": "ts3" }]
+      all.push(Json::object(n))
+    }
+    _ => ()
+  }
+  o["messages"] = Json::array(all)
+  Json::object(o)
+}
+
+///|
 /// The chat with an agent's answer of `words` at its end.
 pub fn with_message(v : Json, words : String, md? : Json? = None) -> Json {
   match v {
@@ -3103,6 +3257,34 @@ pub fn fixture_link_card(name : String, params : Map[String, Json]) -> Json? {
   if name == "adbCard" {
     return Some({ "title": "共享调试", "line": "未共享", "sharing": false, "lendable": true })
   }
+  if name == "terminalCard" {
+    let tid = match params.get("terminal") {
+      Some(String(t)) => t
+      _ => "term-2"
+    }
+    let cwd = if tid == "term-1" {
+      "~/still.fail/station"
+    } else if tid == "term-3" {
+      "~"
+    } else {
+      "~/still.fail"
+    }
+    let title = if tid == "term-1" {
+      "station"
+    } else if tid == "term-3" {
+      "~"
+    } else {
+      "still.fail"
+    }
+    return Some({
+      "title": Json::string(title),
+      "cwd": Json::string(cwd),
+      "line": Json::string(if tid == "term-1" { "左子健 正在输入 · " + cwd } else { "运行中 · " + cwd }),
+      "link": Json::string("/w/ws1/s/st1/terminal/" + tid),
+      "gone": Json::boolean(tid == "term-gone"),
+      "ended": Json::boolean(tid == "term-ended"),
+    })
+  }
   let screen = match params.get("screen") {
     Some(String(s)) => s
     _ => ""
@@ -3123,6 +3305,11 @@ pub fn fixture_link_card(name : String, params : Map[String, Json]) -> Json? {
     "desktop" => Some(card("desktop", "桌面", "Ana 正在查看", false, false, 3024, 1964))
     "browser:T1" => Some(card("browser", "发布清单 - localhost:5173", "林 正在查看", false, true, 1280, 800))
     "browser:T0" => Some(card("browser", "浏览器标签页", "此屏幕已不存在", true, false, 0, 0))
+    // (远程's own: the simulator and the tab of its own place-remote shows, each its own card as the station's)
+    "sim:iphone" => Some(card("simulator", "iPhone 17 Pro", "iOS 26 · 1206 × 2622", false, false, 1206, 2622))
+    "browser:u_mail" => Some(card("browser", "收件箱 - Proton Mail", "mail.proton.me", false, false, 1280, 800))
+    // (a tab 远程's ＋ made: blank)
+    _ if screen.has_prefix("browser:u_") => Some(card("browser", "新标签页", "空白标签页", false, false, 1280, 800))
     _ => Some(card("desktop", "桌面", "远程屏幕", false, false, 0, 0))
   }
 }
@@ -3221,6 +3408,26 @@ pub fn with_chat_screens(v : Json, more : Bool) -> Json {
       Json::object(o)
     }
     _ => v
+  }
+}
+
+///|
+pub fn with_chat_remote(v : Json, with_side_terminal : Bool, test_channel : Bool) -> Json {
+  match with_chat_screens(v, true) {
+    Object(m) => {
+      let o = m.copy()
+      o["canBrowser"] = Json::boolean(true)
+      // (a terminal only where its station is on the test channel: `terminal` is a station's beta feature)
+      if test_channel {
+        o["canTerminal"] = Json::boolean(true)
+      }
+      if with_side_terminal {
+        let tkey = "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]"
+        o["tabs"] = { "open": [Json::string(tkey), "s-c1"], "shown": Json::string(tkey) }
+      }
+      Json::object(o)
+    }
+    other => other
   }
 }
 

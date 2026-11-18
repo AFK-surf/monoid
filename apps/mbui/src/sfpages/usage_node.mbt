@@ -39,7 +39,9 @@ let ug_card_gap : Double = 20.0
 let ug_body_gap : Double = 16.0
 
 ///|
-/// How it is counted (usage_notes'): the core's notes, then its basis, 4 apart, the meta's subtle.
+/// How it is counted (usage_notes'): the core's notes, then its basis, 4 apart, the meta's subtle. Each line a row by
+/// its words: a line said otherwise is that one going and the other coming in its place, one way down the column, not
+/// a row by its place given other words at once as another makes its way under it (all of it dipping and growing back).
 fn usage_notes_node(parent : @view.View, v : () -> Json?) -> Unit {
   parent.box(fn(n) {
     n.gap(Is(4.0)) |> ignore
@@ -47,10 +49,10 @@ fn usage_notes_node(parent : @view.View, v : () -> Json?) -> Unit {
       fn() {
         let lines = strings(v(), "notes")
         lines.push(text(v(), "basis"))
-        lines.filter(fn(l) { l != "" }).mapi(fn(i, l) { (i, l) })
+        lines.filter(fn(l) { l != "" })
       },
-      fn(l) { l.0 },
-      fn(row, l) { @sf.words_node(row, fn() { l.get().1 }, fn() { ug_note }) |> ignore },
+      fn(l) { l },
+      fn(row, l) { @sf.words_node(row, fn() { l.get() }, fn() { ug_note }) |> ignore },
     )
   })
   |> ignore
@@ -813,6 +815,37 @@ fn usage_narrowed_node(parent : @view.View, v : () -> Json?, chart : () -> Json?
 }
 
 ///|
+/// Live output in the workspace: the total includes every session, the rows show the fastest ones as the core says them.
+/// Its card is the page's last, under what was spent, so the period's figures, legends and chart stand where they did
+/// without it; the total on the title's line, as a row's cost, where a hero's figure would be cut on a phone.
+fn usage_rates_node(parent : @view.View, rates : () -> Json?) -> Unit {
+  parent.show(fn() { rates() is Some(Object(_)) }, fn(at) {
+    ug_card_node(at, fn(k) {
+      k.box(fn(summary) {
+        summary.gap(Is(4.0)) |> ignore
+        ug_line_node(summary, fn(line) {
+          ug_grow_words(line, fn() { text(rates(), "title") }, ug_named_title) |> ignore
+          @sf.words_node(line, fn() { text(rates(), "total") }, fn() { ug_cost }) |> ignore
+        }, first=true)
+        @sf.words_node(summary, fn() { text(rates(), "status") }, fn() { ug_row_sub_lines }) |> ignore
+      }) |> ignore
+      k.each(fn() { items(rates(), "rows") }, fn(r) { text(Some(r), "key") }, fn(row, r) {
+        row.gap(Is(2.0)) |> ignore
+        ug_line_node(row, fn(line) {
+          ug_grow_words(line, fn() { text(Some(r.get()), "title") }, ug_row_title) |> ignore
+          @sf.words_node(line, fn() { text(Some(r.get()), "rate") }, fn() { ug_cost }) |> ignore
+        }, first=true)
+        @sf.words_node(row, fn() { text(Some(r.get()), "sub") }, fn() { ug_row_sub_lines }) |> ignore
+      })
+      k.show(fn() { text(rates(), "more") != "" }, fn(m) {
+        @sf.words_node(m, fn() { text(rates(), "more") }, fn() { ug_note }) |> ignore
+      })
+      usage_notes_node(k, rates)
+    })
+  })
+}
+
+///|
 /// The page's body under its head: for `7 天` / `30 天`, the period overview + daily trend card first, then the
 /// 4-tab spending breakdown card (`对话 | 人 | 模型 | 账号`), then basis notes; for `累计`, the clean all-time summary
 /// & 12-month heatmap card.
@@ -821,6 +854,7 @@ fn usage_body_node(
   core : Core,
   v : () -> Json?,
   chart : () -> Json?,
+  rates : () -> Json?,
   error : () -> Json?,
   page_w : () -> Double,
   press : UsagePress,
@@ -869,6 +903,7 @@ fn usage_body_node(
         usage_notes_node(body, v)
       }
     })
+    usage_rates_node(b, rates)
   })
   |> ignore
 }
@@ -1178,6 +1213,14 @@ pub fn usage_node(
   let chart_ask = fn() { usage_ask(here(), usage_pick.days.get(), usage_pick.split.get()) }
   let chart_read = fn() { read_of(chart_ask()) }
   let chart = fn() { chart_read().value }
+  // A separate live topic keeps fast rate updates from rebuilding the historical usage view.
+  let rates = fn() {
+    if (src.asks_agent_rates)() {
+      (core.topic)("agentRates", { "scope": str(here().workspace) }).get().value
+    } else {
+      None
+    }
+  }
   // (a choice pressed and what waits for what it reads: one at a time)
   let pressed : @signals.Signal[(Int, String)?] = @signals.signal(None)
   let waiting : Ref[@sfbase.PressWait?] = Ref(None)
@@ -1282,7 +1325,7 @@ pub fn usage_node(
         },
         fn(p, state) {
           match state {
-            0 => usage_body_node(p, core, value, chart, fn() { read().error }, page_w, choice, tips~)
+            0 => usage_body_node(p, core, value, chart, rates, fn() { read().error }, page_w, choice, tips~)
             1 =>
               @sf.words_node(p, fn() {
                 match chart_read().error {
@@ -1294,7 +1337,7 @@ pub fn usage_node(
             _ => {
               let quiet = core.quiet()
               let sample = fn() { Some(usage_sample()) }
-              @sf.waiting_node(p, fn(s) { usage_body_node(s, quiet, sample, sample, fn() { None }, page_w, choice) })
+              @sf.waiting_node(p, fn(s) { usage_body_node(s, quiet, sample, sample, fn() { None }, fn() { None }, page_w, choice) })
             }
           }
         },

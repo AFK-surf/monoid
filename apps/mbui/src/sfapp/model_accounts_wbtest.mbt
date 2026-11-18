@@ -119,7 +119,7 @@ test "model accounts: 全不选 + 点一个, subset toggling, single-line quota 
   assert_eq(crowded_gap, @sf.panel_offset, msg="crowded: 账号 stands panel_offset from 模型")
 
   let phone = phone_agent_card()
-  phone.click(Button, label="账号 林的 Max · 自动 5H 62% W 18%")
+  phone.click(Button, label="账号 林的 Max · 自动 5h 62% W 18%")
   phone.run_for(@ui.move_most_ms)
   phone.run_for(@ui.move_most_ms)
   check_model_accounts(phone, "phone", 66.0)

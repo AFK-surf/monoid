@@ -55,7 +55,11 @@ yet and you can add one, add it.
   2026-11-09). A way turned back slows at one rate to rest and from there sets back out still and gaining as it slowed,
   its place, speed and gain going on where the two meet (flex's `come_turned`, `come_back_path`). Along a row it is the
   same way on its width (flex's `come_across`, `src/view/along_row.mbt`). What makes its way, down a column or along a
-  row, is cut to itself as it goes (`Content::clips_self`).
+  row, is cut to itself as it goes, along its way alone, never across where nothing goes (`Content::clips_self`,
+  `clips_way`). What is laid out is where things rest; how they get there is drawn: no structure holds a size while it
+  changes (a pick's place is laid out at once as the change has it, what it showed drawn where it stood as it fades:
+  `src/view/pick_leave.mbt`; the user, 2026-11-17, after 刚刚 came in from the start of a place held as wide as what it
+  took the place of and jumped to its end).
 - A structure can keep what it switches off, at rest: `View::each`'s `keeps` puts a row whose key left by
   (`View::park`: held by no node, so not laid out, drawn, pressed, focused or read out; what it binds `@signals.rest`ed)
   and takes the same nodes in again as the key comes back, at once, no way in (`src/view/each_kept.mbt`); a stack's
@@ -63,6 +67,13 @@ yet and you can add one, add it.
   what it reads lets go of it and reads it anew as it wakes, but a `View::at_moment` still comes due and a way read by
   the clock is where the clock has it on waking (`src/view/at_rest_today_wbtest.mbt`), and a bare `@signals.effect`
   rests not at all: what a kept part holds is held by watches (`View::reacts`, a binding), never by an effect.
+- A block of a page's list taken for another key (`View::scrolls_window`'s `reused`) is a new block to everything but
+  the allocator, what its parts keep of their own too (the coordinator of the migration, 2026-11-17: 「复杂性由框架扛，
+  应用层只写外观」): how far a row or column in it is scrolled (`View::scrolls`, but one scrolled beside others as one,
+  `Scroll::beside`), a switch it keeps (`View::reused_bool`) and what it calls off as the block is taken
+  (`View::on_reused`) are its key's, kept by the list as the block leaves that key and given back as one shows it again
+  (`src/view/reused_state.mbt`), a part passing no key down for it. Never by a closure looked up as a frame reads where
+  it is (`Scroll::where_at` is each row's own as ever), never by making the part again for the key.
 - A page's list holds its head (`View::scrolls_window`'s `head`: over its keys, in what scrolls, never the anchor, where
   its keys start) and its foot (`foot`: pinned over the foot of what shows, as tall as it is laid out the room under
   the last block, nothing to the hand but what it holds that takes it). A page puts no row of room among its keys and
@@ -79,6 +90,10 @@ yet and you can add one, add it.
   in a pass that can do it as asked: one that cannot make the rows that show there, or that a way still going under
   it would leave short, keeps the ask for the next pass. Asked back to its foot, the list ends at its foot as the foot
   is when it gets there (`src/view/list_to_end_lands_test.mbt`).
+- What lights a thing a page's list holds in several blocks (a long message a block a piece, gone to or its menu
+  open) is one ground the list draws under them (`View::scrolls_window`'s `bands`), never a piece of it each block's:
+  blocks are set on the host's pixels by their tops, not their heights, so pieces drawn by each part a pixel apart
+  (the user, 2026-11-17: 「一个消息的高亮能分几段」).
 - A page's list (`View::scrolls_window`) is not made in a row of another: its rows are put on the host's grid by the
   list the tree's walk last came to, so the outer's after it would not be; it is a fault, said as the inner is made
   (`Tree::rows_list_nested_said`).
@@ -104,14 +119,29 @@ yet and you can add one, add it.
   key once (`View::keyed_by`) is read by each row by its key and a choice of one (the one picked, the one in the hand)
   by member (`View::selected`), so a change tells the rows it is about alone (`src/view/keyed_by.mbt`); a size or a
   room of the layout worked out of a way as it is drawn (`layout-drawn-while`: `drawn_while`, `shown_on` in `width`,
-  `padding`…), laid out again and its words broken again every frame it goes, where what is drawn moves instead. What
-  truly is so says why on its line (`det-ok`).
+  `padding`…), laid out again and its words broken again every frame it goes, where what is drawn moves instead; a pick
+  or a show switched by the width its room is given (`width-structure`), where a binding follows the width; a reused
+  block reading its key untracked as it is made (`reused-untracked-key`), keeping the key it was first made for; a
+  part faded out by hand, its own `EdgeWay`, `at_moment` and `show` (`manual-fade-way`, an app's pages and library),
+  where a structure leaves over its time (`View::show`'s `leave`). What truly is so says why on its line (`det-ok`).
 - State that what is made reads is a signal: a mutable value read by a binding that is not one is never seen to
   change. No check finds such a read: detlint's `built-by-hand` only refuses the two ways of covering one by hand
   (`Ctx::forget_parts`, `built_from_changed`). What shows one is the Tester keeping rows and parts as a device does
   (`Tester::frame`; a pass that kept rows compared with one built whole, `src/ui/tester_rows.mbt`): a test that changes
   the value and looks sees what a device would, the old (sfdesk's `wide.tape`, a plain field read by the rail's
   corners till 2026-11-11).
+- A writable derivation is `@signals.derived_signal`: an override lasts until its inputs change. A pending edit
+  over an authoritative answer is `@signals.optimistic`: remove the edit with the authority update in one batch.
+- A transition waits through `@view.HoldGate`, with a finite `most` on the tree's timeline. Collect independent local
+  reads together. A remote wait opens into `View::bones` at once. A pending binding or optimistic change gives the
+  person feedback while a local hold is pending.
+- A bare `.get()` as a box is made is `[STRICT_READ_UNTRACKED]` on a tree that keeps sources. Bind what changes or say
+  a one-time snapshot with `.untracked()`. The app's legacy places are counted by file and only fall.
+- `Tester::hold_faults` says `[SILENT_HOLD]` and `[LONG_HOLD]`. `Tester::waterfall_faults` says
+  `[ASYNC_WATERFALL]` where reads started one after another. `Tester::set_fanout_limit` enables `[FAN_OUT]` to find
+  a write that wakes too many readers.
+- `[EFFECT_IN_WATCH]` and `[EFFECT_IN_COMPUTED]` name effects made inside a frame's watch or a computed getter.
+  Put the action in a handler or a reaction with a lifetime of its own.
 - A signal or a computed tells what follows it only as its value changes (the user, 2026-11-15: 性能差的代码难以被写出来):
   `signal` and `computed` (and what an app keeps over them) ask `T : Eq` and take a value made anew but equal as no change
   (`@signals.same_value`). What has no value to compare (a handle, functions, a record mutated in place, a read made
@@ -201,7 +231,8 @@ yet and you can add one, add it.
   `scripts/fps_check.sh`; on `main` after merge, and on PR branches for changed app test files at 120/60/24 via
   `rates-changed`), and must produce identical results. Screen sweeps at rest (`screens`, `squeeze_said`, `words_large`,
   `corners`, `contrast`) run at the default rate only.
-- Frame-to-frame motion smoothness (`sizes_steady`, `rows_steady`, `words_over`, `gaps_steady`) is checked on the
+- Frame-to-frame motion smoothness (`sizes_steady`, down and across: `sizes_across`; `rows_steady`, `words_over`,
+  `gaps_steady`) is checked on the
   default run and via `MBUI_TEST_MOTION` at 60/120 fps (`src/ui/tester_fps.mbt`, `scripts/motion_bars.sh`). The
   `*_known` bars and `@ui.motion_counted` list may only shrink as faults are fixed; never add a file to
   `motion_counted` or raise a bar. Immediate data answers (`@view.answering`, `src/view/answer_marked.mbt`) are treated
@@ -360,6 +391,11 @@ yet and you can add one, add it.
 
 ## Before a PR
 
+- MoonBit's C compiles a generic function once for every type it is called with, its closures too: a structure or a
+  list of the framework that pages call with their own key types (`View::pick`, `Tree::structured`, `View::scrolls_window`)
+  is a thin generic shell over one body that knows no type (`Picked`, `Tree::structured_by`; a page's list's keys by
+  their numbers, `ListKeys`, `View::scrolls_window_ids`). Before, their copies were 48 MB and the list's 11 some 26 MB of
+  the 751 MB of C of sfapp's whitebox test program, all built again at every change of mbui's view (2026-11-17).
 - A compiler warning is an error or off, never left a warning: `moon.mod`'s `warnings` is the app's line
   (`apps/mbui/AGENTS.md`, Warnings).
 

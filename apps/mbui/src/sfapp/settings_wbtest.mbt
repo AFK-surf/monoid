@@ -289,10 +289,14 @@ test "the archive: its chats by day; one restored leaves it" {
   assert_true(t.query(Button, label="删除「整理上个月的发票」") is Some(_))
   let (x, y, w, h) = t.query(Button, label="恢复「整理上个月的发票」").unwrap().rect
   t.tap(x + w / 2.0, y + h / 2.0)
+  // (its row closing its way, the list's: gone once that is over)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("整理上个月的发票") is None)
   assert_true(t.find("周会纪要") is Some(_))
   // the bottom bar going out of the way, on its own springs and glides, to where it rests
-  t.run_for(bar.rest() - t.time())
+  if bar.rest() > t.time() {
+    t.run_for(bar.rest() - t.time())
+  }
   // the last tap's ripple shown whole, its way in and out
   t.run_for(@motion.ripple_tap_ms)
   t.assert_idle()
@@ -526,8 +530,7 @@ test "profiles on a phone: an allowance of three windows said one way for all, e
   // (on one line 5 小时剩余 62%, 本周剩余 19% and 每月剩余 97% were cut to 5 小时剩…, 本周剩余…, 每月剩余…, 2026-10-31)
   // a phone's 390 has the room for all three in full: each its name and what is left, whole
   let shown = t.words().filter(fn(w) { w.5 > 0.5 }).map(fn(w) { w.0 })
-  // (a name run on into what is left, 5 小时剩 62%: one line of words, fill_chip's chip_joined)
-  for words in ["5 小时剩 62%", "本周剩 19%", "每月剩 97%"] {
+  for words in ["5h", "62%", "本周", "19%", "每月", "97%"] {
     assert_true(shown.contains(words), msg="\{words}: \{Repr(shown)}")
     assert_eq(t.lines_of(words), [words], msg=words)
   }
@@ -539,15 +542,12 @@ test "a model's own week (Fable's) is a chip and a dial of its own, after the ac
   let t = settings_tester("profiles", shows="settings-profiles-fable")
   // (its chips one way for all, the longest the row has the room for: each its name whole, then what is left)
   let shown = fn(t : @ui.Tester) { t.words().filter(fn(w) { w.5 > 0.5 }) }
-  // (the account's week its name run on into what is left on its chip, 每周剩 …: fill_chip's chip_joined; Fable's
-  // not, its name ending in a Latin letter; a dial's name alone)
-  let means = fn(w : String, words : String) { w == words || (words == "每周" && w.has_prefix("每周剩")) }
-  let at = fn(t : @ui.Tester, words : String) { shown(t).filter(fn(w) { means(w.0, words) })[0] }
-  for words in ["每周", "每周 · Fable"] {
-    assert_eq(shown(t).filter(fn(w) { means(w.0, words) }).length(), 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
+  let at = fn(t : @ui.Tester, words : String) { shown(t).filter(fn(w) { w.0 == words })[0] }
+  for words in ["每周", "每周 Fable"] {
+    assert_eq(shown(t).filter(fn(w) { w.0 == words }).length(), 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
   }
-  assert_true(shown(t).iter().any(fn(w) { w.0.has_suffix("46%") && w.1 > at(t, "每周 · Fable").1 }))
-  assert_true(at(t, "每周 · Fable").1 > at(t, "每周").1 && at(t, "每周 · Fable").2 == at(t, "每周").2)
+  assert_true(shown(t).iter().any(fn(w) { w.0.has_suffix("46%") && w.1 > at(t, "每周 Fable").1 }))
+  assert_true(at(t, "每周 Fable").1 > at(t, "每周").1 && at(t, "每周 Fable").2 == at(t, "每周").2)
   assert_eq(t.squeeze_faults(), [])
   // on its page a dial after the account's, under the same heading: beside them, or on the line under where one
   // line has not the room for all three whole (dials_node's `lines`)
@@ -1039,14 +1039,15 @@ test "adding an Anthropic subscription asks before opening its authorization pag
   let t = settings_tester("new-profile:ws1/st1", shows="settings-new-profile-login", platform=2)
   t.click(Button, label="打开授权页面")
   sheet_rested(t, "sf-present")
-  assert_true(t.find("打开 Claude 授权页面？") is Some(_))
+  assert_true(t.find("请确认登录环境") is Some(_))
+  assert_true(t.find(@sf.t("common.login.confirmClaudeWarning")) is Some(_))
   assert_true(t.opened().is_empty(), msg="nothing opened before confirmation")
   t.back()
   sheet_rested(t, "sf-present")
   assert_true(t.opened().is_empty(), msg="cancelling leaves the page closed")
   t.click(Button, label="打开授权页面")
   sheet_rested(t, "sf-present")
-  t.tap_text("继续打开")
+  t.tap_text("确认并登录")
   assert_eq(t.opened().length(), 1)
 }
 
@@ -1089,7 +1090,8 @@ test "本机缓存 with many chats: the ones keeping most first, all when asked,
   t.scroll_to_end()
   t.draw()
   t.tap_text("显示全部 203 个")
-  t.draw()
+  // (the rows it brings make their way, the list's: looked at once that is over)
+  t.run_for(@ui.move_most_ms)
   // a block each: of 203 rows a screen's (one block of them all was built whole each frame, every row's words with it)
   t.scroll_to_end()
   t.draw()
@@ -1130,8 +1132,8 @@ test "本机缓存: a chat's files opened, each let go by its bin; those of no c
   // its bin: let go, read again
   let (x, y, w, h) = t.query(Button, label="删除「季度报告.pdf」").unwrap().rect
   t.tap(x + w / 2.0, y + h / 2.0)
-  t.draw()
-  t.draw()
+  // (its row closing its way, the list's: gone once that is over)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("季度报告.pdf") is None)
   assert_true(t.find("1 个 · 12 MB") is Some(_))
 }

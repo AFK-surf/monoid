@@ -791,14 +791,18 @@ export class Hub {
     const ranOn = (row.runtimeSessionId ? this.store.ranOn(row.key, row.runtimeSessionId) : null) ?? row.profile;
     let agent: AgentSession | null = null;
     if (withProcess) {
+      const generation = actor.nextGeneration();
+      const router = actor.beginAdopt(generation);
       try {
         const driver = this.sessionDriver(snap.runtime);
-        const generation = actor.nextGeneration();
         const memory = await this.deps.linkSkills(row);
-        agent = await driver.adopt(await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory), snap.agent, actor.listener(generation));
+        const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory);
+        agent = await driver.adopt({ ...options, router }, snap.agent, actor.listener(generation));
       } catch (error) {
+        actor.cancelAdopt(generation);
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });
       }
+      if (!agent) actor.cancelAdopt(generation);
     }
     // Its runtime not taken up: a turn it had is resumed the usual way (recover).
     if (withProcess && !agent) return;
@@ -1308,13 +1312,26 @@ export class Hub {
     }
   }
 
-  /// A profile was deleted: the sessions on it are taken on by another of their runtime's (their process ends now if
-  /// idle, else when its turn is over); those no other profile can run are stopped, and their process ends.
+  /// A profile was deleted (disabled, moved away): a session on it with a turn under way is taken on by another of its
+  /// runtime's (its process ends when the turn is over), or stopped where no other profile can run it; one whose
+  /// process is idle only has it ended. A session with no process is left as it is: no one is using it, and its next
+  /// turn, if it ever has one, picks another account then (accounts.ts `runOn`), said in its chat as it goes on (the
+  /// user, 2026-11-17: 「没人用的 session 为啥要切」「这种系统消息不应该给很久没活跃的 thread 发」, after an account
+  /// deleted on the admin page moved every session it had ever run, 554 chats told 已切换账号 in a second, months-old
+  /// Slack and group threads among them).
   /// A chat handed to another station as this one is retired is left as it is: it goes on there, and its account moving
   /// away from here (share/index.ts `moveProfile`) says nothing in it.
   async profileGone(id: string) {
     for (const row of this.store.listSessions()) {
       if (row.profile !== id || this.handedOver(row.key)) continue;
+      const actor = this.actors.get(row.key);
+      const state = actor?.processState() ?? "cold";
+      if (!actor || state === "cold") continue;
+      if (state === "warm") {
+        log.info("hub", "profile deleted under an idle session", { session: row.key, profile: id });
+        await actor.changed();
+        continue;
+      }
       let movable = true;
       try {
         this.accounts.runOn(row.key);
@@ -1322,8 +1339,6 @@ export class Hub {
         movable = false;
       }
       log.info("hub", "profile deleted under a session", { session: row.key, profile: id, movedTo: movable ? (this.store.getSession(row.key)?.profile ?? "") : "" });
-      const actor = this.actors.get(row.key);
-      if (!actor) continue;
       if (!movable) await actor.stop();
       await actor.changed();
     }

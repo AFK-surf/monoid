@@ -180,7 +180,7 @@ fn profile_found_node(
       ["sign-in", "trouble", "quota", "station", "settings"]
     },
     fn(b, key) {
-      b.show(at_once=true, fn() { profile_keys(core, here, o, p, entry).contains(key) }, fn(r) {
+      b.show(fn() { profile_keys(core, here, o, p, entry).contains(key) }, fn(r) {
         profile_block_node(r, core, here, address, id, s, o, p, entry, open, stint, tips, key)
       })
     },
@@ -588,7 +588,7 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
             @sf.menu_item_of(@sf.t("web-pages.profiles.manual"), icon="terminal", fn() {
               @sf.panel_nodes(
                 @sf.t("web-pages.profiles.manual"),
-                fn(v, _) { @sf.copy_command_node(v, fn() { command }, copy=@sf.t("common.copy"), copied=@sf.t("common.copied")) },
+                fn(v, _) { v.box(fn(b) { @sf.code_block_node(b, fn() { command }, fn() { "" }, fn() { None }, command=true) }) |> ignore },
                 from=Unanchored,
               )
             }),
@@ -670,7 +670,7 @@ fn profile_sign_in_node(
           bad=fn() { if state() == "failed" { @sf.t("web-pages.profiles.lastFailed", args=[("error", text(job(), "error"))]) } else { "" } },
         )
         q.show(fn() { open.command.get() && command() != "" }, fn(x) {
-          @sf.copy_command_node(x, command, copy=@sf.t("common.copy"), copied=@sf.t("common.copied"))
+          x.box(fn(b) { @sf.code_block_node(b, command, fn() { "" }, fn() { None }, command=true) }) |> ignore
         })
         @sf.card_foot_node(q, fn(f) {
           // (登录 at the foot's start, the way on the machine at its end; where the two have not the room on one line,
@@ -1028,7 +1028,7 @@ fn profile_trouble_node(
       bad=fn() { failed_of(core, ["profile.check", "profile.quota"], on).unwrap_or("") },
     )
     k.show(at_once=true, fn() { action() == "command" }, fn(x) {
-      @sf.copy_command_node(x, fn() { text(p(), "loginCommand") }, copy=@sf.t("common.copy"), copied=@sf.t("common.copied"))
+      x.box(fn(b) { @sf.code_block_node(b, fn() { text(p(), "loginCommand") }, fn() { "" }, fn() { None }, command=true) }) |> ignore
     })
     @sf.card_foot_node(k, fn(f) {
       @sf.button_node(

@@ -38,6 +38,7 @@ export const CREATE = "session.create";
 export const CREATE_PRESET = "session.create.preset";
 /// Explicit speed must not be silently discarded by a station from before the three speed choices.
 export const CREATE_SPEED = "session.create.speed";
+export const CREATE_PRESET_TUI = "session.create.preset.tui";
 export const CREATE_PRESET_SPEED = "session.create.preset.speed";
 /// The method a station tells the opener of a chat how one of its turns ended.
 export const NOTICE = "session.notice";
@@ -105,7 +106,7 @@ function starterOf(hub: Hub, key: string): string {
 async function makeChat(
   hub: Hub,
   o: { runtime: RuntimeName; model: string | null; effort: string | null; inherited: boolean; title: string | null; createdBy: string; ws: string | null; bound?: boolean },
-  more: Partial<Pick<NewChat, "preset" | "presetCopy" | "fast" | "speed" | "context" | "profile" | "profiles">> = {},
+  more: Partial<Pick<NewChat, "preset" | "presetCopy" | "fast" | "speed" | "tui" | "context" | "profile" | "profiles">> = {},
 ) {
   const usual = o.effort === null && o.bound !== true ? usualEffort(hub, o.createdBy, o.runtime, o.model) : null;
   const options: NewChat = { ...more, runtime: o.runtime, model: o.model, effort: o.effort ?? usual, title: o.title, createdBy: o.createdBy, ws: o.ws };
@@ -145,7 +146,7 @@ function boundHere(hub: Hub, ws: string | null, pm: PresetModel, name: string) {
   if (runtime === undefined || !RUNTIMES.includes(runtime as RuntimeName)) throw new Error(`the preset ${name} runs ${pm.model}, which no account on the station it is opened on runs`);
   return {
     choice: { runtime: runtime as RuntimeName, model: pm.model, effort: pm.effort ?? null, bound: true },
-    more: { ...(pm.speed ? { speed: pm.speed } : {}), fast: pm.fast ?? null, context: pm.context ?? null, profile: pm.profile ?? null, profiles: pm.profiles ?? null },
+    more: { ...(pm.tui ? { tui: true } : {}), ...(pm.speed ? { speed: pm.speed } : {}), fast: pm.fast ?? null, context: pm.context ?? null, profile: pm.profile ?? null, profiles: pm.profiles ?? null },
   };
 }
 
@@ -347,7 +348,7 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   // runtime's default there.
   // With a preset, its copy (`presetCopy`), whose model configuration, where it names one, the station there runs.
   const request: Json = {
-    method: preset !== null ? (speed !== null || preset.model?.speed ? CREATE_PRESET_SPEED : CREATE_PRESET) : speed !== null ? CREATE_SPEED : CREATE,
+    method: preset?.model?.tui ? CREATE_PRESET_TUI : preset !== null ? (speed !== null || preset.model?.speed ? CREATE_PRESET_SPEED : CREATE_PRESET) : speed !== null ? CREATE_SPEED : CREATE,
     session: key, key: k, title, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink }, led,
     ...(fast !== null ? { fast } : {}),
     ...(speed !== null ? { speed } : {}),
@@ -406,7 +407,7 @@ async function createForPeerNow(hub: Hub, peer: string, request: Json, ws: strin
   const createdBy = given(request, "createdBy") ?? `${peer}/${parent}`;
   const model = given(request, "model");
   // With a preset (CREATE_PRESET): its copy, and the model configuration it names run as it says.
-  const copy = request?.method === CREATE_PRESET || request?.method === CREATE_PRESET_SPEED ? presetCopyInput(request?.presetCopy) : null;
+  const copy = request?.method === CREATE_PRESET || request?.method === CREATE_PRESET_SPEED || request?.method === CREATE_PRESET_TUI ? presetCopyInput(request?.presetCopy) : null;
   const bound = copy?.model ? boundHere(hub, ws, copy.model, copy.name) : null;
   // Its opener named no model: what its starter uses most here (an opener from before this sends its own, inherited).
   const chosen = bound !== null ? bound.choice

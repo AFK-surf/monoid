@@ -1,11 +1,15 @@
 // Signs releases with the key in $RELEASE_SIGNING_KEY (Ed25519, PKCS#8 PEM: CI's
 // `production` environment), as the station (station/src/updates/signed.ts) and the apps' core
 // (client/core-ts/src/app-release.ts) verify them.
-//   release-sign.ts station OUT --build N --commit SHA --node VERSION PLATFORM=ARCHIVE,NODE_DIST …
+//   release-sign.ts station OUT --build N --commit SHA [--node VERSION] PLATFORM=ARCHIVE[,NODE_DIST] …
 //       the station's feed (station.json): its version, and the signed words naming each platform's archive, its raw
 //       form (rawSha256, rawSize: what a delta to it makes, scripts/delta.ts rawOf: the tar in the .tar.gz, the .zip
 //       with every entry stored), and the Node binary in its Node (scripts/node-dist.sh's: bin/node in the tarball,
-//       node.exe in nodejs.org's zip). The feed's `deltas` are not signed (what a delta makes is checked against these)
+//       node.exe in nodejs.org's zip). The feed's `deltas` are not signed (what a delta makes is checked against these).
+//       A release with no Node (the MoonBit station: no NODE_VERSION in it, scripts/station-bundle.sh) gives no
+//       NODE_DIST: its words say `node` "" and a `nodeSha256` of 64 zeros, which every station from before takes (it
+//       asks for 64 hex digits) and hands its installer, which hands the release to the release's own installer before
+//       any Node, which, finding no NODE_VERSION, fetches none (cloud/src/install.ts).
 //   release-sign.ts file FILE --kind stillfail-desktop-win --build N [--raw RAW]
 //       FILE.sig: the signed words naming FILE (the Windows desktop app's installer) and, given RAW (its raw form:
 //       `FILE --raw RAW`, apps/mbui/windows/setup.c), `raw` {sha256, size}: what a delta to it makes, which the apps'
@@ -37,7 +41,7 @@ const fail = (why: string): never => {
   process.exit(1);
 };
 const usage = (): never => {
-  console.error("usage: release-sign.ts station OUT --build N --commit SHA --node VERSION PLATFORM=ARCHIVE,NODE_DIST… | file FILE --kind KIND --build N [--raw RAW] | keygen PRIVATE_FILE");
+  console.error("usage: release-sign.ts station OUT --build N --commit SHA [--node VERSION] PLATFORM=ARCHIVE[,NODE_DIST]… | file FILE --kind KIND --build N [--raw RAW] | keygen PRIVATE_FILE");
   process.exit(2);
 };
 
@@ -78,6 +82,9 @@ async function hashOut(program: string, list: string[]): Promise<string> {
 /// The Node binary in a Node of scripts/node-dist.sh: bin/node in its tarball; node.exe in nodejs.org's zip.
 const nodeBinarySha = (dist: string, version: string) =>
   dist.endsWith(".zip") ? hashOut("unzip", ["-p", dist, `node-v${version}-win-x64/node.exe`]) : hashOut("tar", ["-xzOf", dist, "bin/node"]);
+
+/// What a build with no Node says of its Node binary: 64 hex digits, as stations from before require of every build.
+const NO_NODE = "0".repeat(64);
 
 /// The key to sign with, and its public half (raw, base64); none when $RELEASE_SIGNING_KEY is not set.
 function signingKey(): { key: ReturnType<typeof createPrivateKey>; raw: string } | null {
@@ -121,13 +128,14 @@ switch (positional[0]) {
     const out = positional[1] ?? usage();
     const n = build();
     const commit = flag("--commit") ?? usage();
-    const node = flag("--node") ?? usage();
+    const given = positional.slice(2).map((g) => /^([a-z0-9-]+)=([^,]+)(?:,(.+))?$/.exec(g) ?? usage());
+    const withNode = given.some(([, , , dist]) => dist !== undefined);
+    // (the version of the Node the release runs on: only a release that carries one says it)
+    const node = withNode ? (flag("--node") ?? usage()) : "";
     const version = `0.1.${n}`;
     const builds: Record<string, Required<Build>> = {};
-    for (const given of positional.slice(2)) {
-      const m = /^([a-z0-9-]+)=([^,]+),(.+)$/.exec(given) ?? usage();
-      const [, platform, archive, dist] = m;
-      const [file, raw, nodeSha256] = await Promise.all([hashFile(archive!), hashRaw(archive!), nodeBinarySha(dist!, node)]);
+    for (const [, platform, archive, dist] of given) {
+      const [file, raw, nodeSha256] = await Promise.all([hashFile(archive!), hashRaw(archive!), dist === undefined ? NO_NODE : nodeBinarySha(dist, node)]);
       if (file.size !== statSync(archive!).size) fail(`${archive} changed while it was read`);
       builds[platform!] = { ...file, nodeSha256, rawSha256: raw.sha256, rawSize: raw.size };
     }

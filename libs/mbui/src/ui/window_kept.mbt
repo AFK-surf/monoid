@@ -117,11 +117,13 @@ fn window_kept_ui() -> Array[WindowKept] {
 fn window_kept_ui_0() -> Array[WindowKept] {
   [
     kept_ref(the_ctx, fn() { Ctx::new() }),
+    kept_ref(modifiers_said, fn() { @signals.signal(0) }),
     kept_ref(g_view, fn() { fn(_c) { () } }),
     kept_ref(frame_afters, fn() { [] }),
     kept_ref(building, fn() { false }),
     kept_ref(wheel_went, fn() { 0 }),
     kept_ref(wheel_old_target, fn() { 0 }),
+    kept_ref(wheel_back, wheel_back_fresh),
     kept_set(bone_insts),
     kept_map(code_fields),
     kept_array(code_clears, fn() { [] }),
@@ -368,6 +370,7 @@ fn window_kept_ui_4() -> Array[WindowKept] {
     kept_ref(presented_share, fn() { 1.0 }),
     kept_ref(presented_ms, fn() { 0.0 }),
     kept_ref(inputs_since, fn() { false }),
+    kept_ref(press_moment, fn() { -1.0 }),
     kept_ref(inputs_taken, fn() { false }),
     kept_map(kept_nodes),
     kept_struct(fn() { let held = { ..nodes_run }; fn() { nodes_run.window_put(held) } }, fn() { nodes_run.window_put({
@@ -443,6 +446,8 @@ fn window_kept_ui_5() -> Array[WindowKept] {
   hand: -1.0e9,
   judged: -1.0e9,
   laids: {},
+  tree_gens: {},
+  anchors: {},
 })
       rows_steady.held = held
       rows_steady.file = file
@@ -457,9 +462,10 @@ fn window_kept_ui_5() -> Array[WindowKept] {
   held: true,
   file: "",
   seen: {},
-  turned: {},
   found: Set([]),
+  found_across: Set([]),
   window: (-1.0, -1.0),
+  bars: (-1.0, -1.0, -1.0, -1.0),
   words: -1.0,
   hand: -1.0e9,
   puts: {},
@@ -503,6 +509,8 @@ fn window_kept_ui_6() -> Array[WindowKept] {
     kept_ref(last_touch_x, fn() { 0.0 }),
     kept_ref(last_touch_y, fn() { 0.0 }),
     kept_map(tree_fields),
+    kept_map(tree_field_focus_told),
+    kept_map(@view.dashed_edges_kept()),
     kept_ref(tree_fields_rev, fn() { 0 }),
     kept_ref(tree_fields_drawn, fn() { @signals.signal(0) }),
     kept_ref(tree_field_hovered, fn() { None }),
@@ -874,6 +882,8 @@ fn RowsSteady::window_put(self : RowsSteady, o : RowsSteady) -> Unit {
   self.hand = o.hand
   self.judged = o.judged
   self.laids = o.laids
+  self.tree_gens = o.tree_gens
+  self.anchors = o.anchors
 }
 
 ///|
@@ -881,9 +891,10 @@ fn SizesSteady::window_put(self : SizesSteady, o : SizesSteady) -> Unit {
   self.held = o.held
   self.file = o.file
   self.seen = o.seen
-  self.turned = o.turned
   self.found = o.found
+  self.found_across = o.found_across
   self.window = o.window
+  self.bars = o.bars
   self.words = o.words
   self.hand = o.hand
   self.puts = o.puts

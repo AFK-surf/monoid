@@ -81,6 +81,7 @@ export class ModelCatalog {
   efforts = new Map<string, string[]>();
   /// Each model's own reasoning level, where it says one (model/list's defaultReasoningEffort).
   defaults = new Map<string, string>();
+  ultrafastModels?: string[];
 
   extend(answer: Json) {
     const rows = answer?.data;
@@ -89,6 +90,13 @@ export class ModelCatalog {
       const id = typeof m?.id === "string" ? m.id : typeof m?.model === "string" && m?.id === undefined ? m.model : undefined;
       if (!id) continue;
       this.models.push(id);
+      const tiers: unknown = Array.isArray(m.serviceTiers)
+        ? m.serviceTiers.map((tier: Json) => tier?.id)
+        : m.additionalSpeedTiers;
+      if (Array.isArray(tiers)) {
+        this.ultrafastModels ??= [];
+        if (tiers.includes("ultrafast") && !this.ultrafastModels.includes(id)) this.ultrafastModels.push(id);
+      }
       if (Array.isArray(m.supportedReasoningEfforts)) {
         const efforts: string[] = [];
         for (const level of m.supportedReasoningEfforts) {
@@ -264,7 +272,7 @@ class Host {
       const router = t.batch !== undefined ? this.routers.get(t.thread) : undefined;
       sink({ kind: "events", events: t.events, live: t.live, routed: router !== undefined });
       if (router === undefined) continue;
-      if (router.took(t.batch!)) taken = true;
+      if (router.took(t.batch!, this.proc.n)) taken = true;
       // (its actor not there to take it: told here only from now on, the program letting go of what it keeps of it)
       else this.route(t.thread, null);
     }
@@ -276,7 +284,7 @@ class Host {
   private attached() {
     // (none yet as it is first attached: `proc` is set after)
     if (this.proc === undefined) return;
-    for (const thread of this.threads.keys()) this.proc.thread(thread, this.lives.get(thread) ?? NO_LIVE);
+    for (const thread of this.threads.keys()) this.proc.thread(thread, this.lives.get(thread) ?? NO_LIVE, this.routers.has(thread));
     for (const [thread, router] of this.routers) this.proc.routeThread(thread, router, true);
   }
 
@@ -329,10 +337,12 @@ class Host {
 
   /// A thread's sink, its live steps as they stand: the program reads its notifications for it from now on, and what
   /// came for it before it was taken up.
-  addThread(threadId: string, sink: Sink, live: CodexLiveState) {
+  addThread(threadId: string, sink: Sink, live: CodexLiveState, router: Router | null = null) {
     this.threads.set(threadId, sink);
     this.lives.set(threadId, live);
-    this.proc.thread(threadId, live);
+    const valid = router !== null && this.proc.acceptsRouter(router) ? router : null;
+    if (valid !== null) this.routers.set(threadId, valid);
+    this.proc.thread(threadId, live, valid !== null);
   }
 
   /// A thread no longer a session's here: the program reads no more for it.
@@ -1316,7 +1326,7 @@ export class CodexDriver implements AgentDriver {
       // A turn is running that this station did not start.
       if (r?.busy) events({ type: "turnStarted" });
     }
-    host.addThread(session.id(), session.sink(), session.liveNow());
+    host.addThread(session.id(), session.sink(), session.liveNow(), options.router ?? null);
     session.recoverTranscript();
     if (session.busy()) {
       host.turns.add(session.id());

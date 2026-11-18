@@ -262,6 +262,7 @@ const received = (conn: Connection): number | null => {
 export function peerCall(
   endpoint: Endpoint, cloud: Cloud, given?: (id: string, workspace?: string | null) => Addr, outside?: Outside, answerMs = ANSWER_MS,
   timing: { checkMs?: number; heardMs?: number; idleMs?: number } = {},
+  meshScope?: (target: string, workspace: string | null) => string | undefined,
 ): StationCall {
   const addr = given ?? ((id: string, workspace?: string | null) => stationAddr(cloud, id, workspace ?? null));
   // The relays each station is not reached through, held by the endpoint itself (peer-relays.ts), set before it is
@@ -271,7 +272,7 @@ export function peerCall(
   const holds = () => held !== null && held.supported;
   /// Where a station is dialed: the endpoint holding its disabled relays, the dial says none (it would set them over).
   const dialAddr = (target: string, ws: string | null): Addr => {
-    const a = addr(target, ws);
+    const a = { ...addr(target, ws), meshScope: meshScope?.(target, ws) };
     if (!holds()) return a;
     const { disabledRelays: _, ...rest } = a as Addr & { disabledRelays?: string[] };
     return rest;
@@ -556,7 +557,7 @@ export function peerCall(
 /// was not current yet (this station just started) was taken for an outsider's for its whole life, every request of
 /// the workspace's own stations refused as sharing no chat until it idled out (2026-10-17). While the roster is not
 /// current a request is refused as that, and the caller asks again.
-export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<PeerBus, "handle" | "handleOutside" | "hearsOutside">) {
+export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<PeerBus, "handle" | "handleOutside" | "hearsOutside">, meshDirectory?: (peer: string, workspace: string, request: any) => Promise<unknown>) {
   const peer = conn.remoteId();
   const outsider = (error: unknown) =>
     cloud.peersCurrent && remote.hearsOutside?.() === true && cloud.state !== null && cloud.home() !== null && peer !== cloud.state.station ? false : error;
@@ -648,6 +649,7 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
           : typeof method === "string" && method.startsWith("ways.") ? answerWays(waysOf(cloud), envelope.request, envelope.workspace ?? cloud.home() ?? "")
           // The stations' names and marks (mesh/station-marks.ts), a copy of each kept by the others.
           : typeof method === "string" && method.startsWith("stationMarks.") ? answerMarks(stationMarksOf(cloud), envelope.request, envelope.workspace ?? cloud.home() ?? "")
+          : (method === "meshScopes.exchange" || method === "meshRelays.exchange" || method === "meshRelays.revoke") && meshDirectory ? await meshDirectory(peer, envelope.workspace ?? cloud.home() ?? "", envelope.request)
           : await remote.handle(envelope.workspace, peer, envelope.request ?? null);
         // (a person's chain it took answered once it is on disk: person-chains.ts `written`)
         if (method === "lock.person.put" || method === "lock.person.offer") await personChainsOf(cloud).written();

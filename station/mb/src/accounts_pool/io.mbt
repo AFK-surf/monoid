@@ -100,6 +100,12 @@ pub struct Io {
 }
 
 ///|
+/// The station's parts as the accounts ask them, through `b` (the station that composes the accounts makes one).
+pub fn Io::new(b : Backend) -> Io {
+  { b, }
+}
+
+///|
 /// A request made: its answer, or the failure Node gave (a TimeoutError, a TypeError "fetch failed", a socket's).
 pub async fn Io::fetch(self : Io, r : Request) -> Response {
   let fields = [("url", js(r.url))]

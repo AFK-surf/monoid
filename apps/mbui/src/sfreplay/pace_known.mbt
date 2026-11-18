@@ -10,6 +10,9 @@
 ///
 /// It rises only where the measure came truer (the coordinator of the migration, 2026-11-11), never for the app: each
 /// flow so added shows the app unchanged and the split a device's already, and the migration's coordinator agrees.
+/// A cause mended takes flows out too: 2026-11-17 (the owner: 「不登记，去改框架」), a press between two frames on what
+/// the old view drew has it drawn at the press's moment first (ui's frame_at_press), so a sheet's button coming in is
+/// where it is then, not where a sparser display's frame before it drew it: 22 flows out at 7 a second.
 /// Once so: #5519 (the fake host tells what is posted at the moment it is posted, as a device's host does, no longer as
 /// the next frame begins; not a line of what a device runs changed) took 120 a second from 10 flows to 11: share and
 /// station-files out, glass, settings-run-settings and wide-answer-reply in (each says why where it is).
@@ -19,38 +22,18 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // (the first tap on a chat's row comes before the frame that builds Home's list and sends its reads (they go
   // out as a frame is built): at 7 a second it falls on the bar under it, Station's tab (glass: Home's
   // subscriptions at 1159 here, 1033-1050 in the strict pass; the tap at 1150))
-  "agent-reply": [7],
-  "answer-option": [7],
-  "bar-going-down": [7],
   "card-motion": [7],
-  "close-option": [7],
   "delete-failed": [7],
-  "glass": [7],
-  "history": [7],
-  "markdown": [7],
-  "open-link": [7],
   "pick-words": [7],
   "quote": [7],
-  "send-flying": [7],
-  "send-paced": [7],
   "service-page": [7],
-  "station-file-sent": [7],
   // 6: sub {"topic":"workspace","workspace":…} | strict sub {"topic":"doing"}
   "drive-lend": [7],
   "drive-play": [7],
-  "drive-rename": [7],
-  "drive-zip": [7],
-  // 6: unsub {"topic":"status"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
-  "dismiss": [7],
-  "paste-long": [7],
-  "paste-short": [7],
-  "pin": [7],
-  "station-files": [7],
   // 5: sub {"query":…,"scope":…,"topic":"search"} | strict call cache.usage {}
   "settings-profile": [7],
   "settings-station-settings": [7],
   "settings-workspace-people": [7],
-  "station-rename": [7],
   // 4: - | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "notice-looking": [7],
   // wide-answer-reply at 120 (#5519): the new chat page sends its composer, machineSessions.list and status's
@@ -62,8 +45,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict sub
   // {"topic":"chat","compact":true,"session":…,"station":…}
   "viewer": [7],
-  // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call cache.usage {}
-  "settings-connect": [7],
   // 3: sub {"query":…,"scope":…,"topic":"shareIn","source":…} | strict sub {"topic":"notify"}
   // (120, seen once its rows were held: shareIn let go of before driveTransfers in the strict pass, after it at 120.
   // shareIn is read by the share sheet's old view as its frame builds (src/sfapp/share.mbt:445, share_parts,
@@ -80,13 +61,8 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "lock-wait": [7],
   // 1: sub {"scope":…,"topic":"stations"} | strict sub {"scope":…,"topic":"newChat"}
   "new-chat": [7],
-  // 1: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call notify.permission
-  "notice-cancel": [7],
   // 1: - | strict call link.parse {"url":…}
   "notice-failed": [7],
-  // 1: - | strict sub {"topic":"stationNet","station":…}
-  // 1: unsub {"topic":"doing"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
-  "settings-run-settings": [7],
   // 1: - | strict call composer.starting {"key":…,"starting":true}
   "wide-new-chat": [7],
   // 1: - | strict call session.warm {"key":…,"station":…}
@@ -95,16 +71,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "wide-places": [7],
   // 1: sub {"topic":"workspaceMarks","workspace":…} | strict sub {"scope":…,"topic":"longJobs"}
   "wide-resize": [7, 120],
-  // 1: - | strict call chat.pin {"pinned":true,"session":…,"station":…}
-  "wide-row-menu": [7],
-  // 1: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict sub {"limit":60,"scope":…,"topic":"archive"}
-  // (the replay's rig, not the app (#5589, measured): the strict pass's tap on the filter key at 1983.3 ms draws the
-  // frames it leaves owed at once, its clock on to 2016.7, the pace pass's draws none till the display's next; at 7 a
-  // second the menu is not up where 已归档 was at 2150, the tap on it falls on nothing, 已归档 never opens and 还原's at
-  // 2733.3 falls on Home's chat row. The menu itself stands the same at every rate a moment after its press (the
-  // library's presenters and Home's own, 60, 120, 24, 7). Taken out by the PR that gives the strict pass its inputs as
-  // the pace pass's are given, at their moments, frames drawn only as the clock passes them)
-  "archive-restore": [7],
   // 1: sub {"query":…,"scope":…,"topic":"search"} | strict call notify.permission {"state":"unknown"}
   "wide-switcher": [7],
 }
@@ -260,7 +226,7 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "draft",
     (
-      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3290.177388696544 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:362:7-362:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:912:5-912:105@stillfail (at rest at 3066.6666666666665 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:912:5-912:105@stillfail (at rest at 3100 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1011:14-1011:124@stillfail (at rest at 2740 ms) | Anim \"layout composer/box\" to 1, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/extras\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/part/words\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/notices/01M6W4XGV9R8EP2T8MEXHXRZSC/0542fc65aeac537e7b415361c87bd78e6109b4bc5957f0c782439cd3a4cff4a6:chat:c-4d386bcc584806fc879106a02c56a9a4\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | a list's rows' heights, told at src/ui/list.mbt:1005:5-1005:92@mbui (at rest at 2900 ms)",
+      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3290.177388696544 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:377:7-377:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1043:5-1043:105@stillfail (at rest at 3066.6666666666665 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1043:5-1043:105@stillfail (at rest at 3100 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1142:14-1142:124@stillfail (at rest at 2740 ms) | Anim \"layout composer/box\" to 1, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/extras\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/part/words\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/notices/01M6W4XGV9R8EP2T8MEXHXRZSC/0542fc65aeac537e7b415361c87bd78e6109b4bc5957f0c782439cd3a4cff4a6:chat:c-4d386bcc584806fc879106a02c56a9a4\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | a list's rows' heights, told at src/ui/list.mbt:1005:5-1005:92@mbui (at rest at 2900 ms)",
       "untraced: the bar's springs, the stack's slide and the composer's ways still moving as the run's next step came",
     ),
   ),

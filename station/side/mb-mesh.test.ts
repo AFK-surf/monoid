@@ -17,8 +17,10 @@ import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Front, Incoming, withFront } from "../src/mesh/front.ts";
 import { createServer } from "node:net";
 import { hearLines } from "../src/ops/log.ts";
+import { wall } from "../src/ops/fibers.ts";
 import type { Socket } from "node:net";
 import { type Connection, type Endpoint, type Mesh, type Stream, loadMesh } from "../src/mesh/native.ts";
+import type { MeshDescriptor } from "../src/mesh/endpoint.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program is not built here (station/mb/build.sh)" : false;
@@ -116,45 +118,128 @@ test("the front's endpoint is seen as the addon's, step for step", { skip }, asy
   }
 });
 
-test("a Node binding again takes what comes from then on; the first keeps its own until it closes", { skip }, async () => {
+test("a Node binding again takes what comes from then on; the first keeps its own until it closes", { skip, timeout: 30_000 }, async () => {
   const addon = loadMesh();
   const f = await front();
   const key = randomBytes(32);
+  const endpoints: Endpoint[] = [];
+  const bind = async (mesh: Mesh, secret: Buffer) => {
+    const endpoint = await bindOn(mesh, secret);
+    endpoints.push(endpoint);
+    return endpoint;
+  };
   try {
-    const first = await bindOn(withFront(addon, f.socket), key);
-    const device = await bindOn(addon, randomBytes(32));
-    const one = first.accept();
-    const dialedOne = await device.connect(addrOf(first), ALPN);
-    const conn1 = (await one)!;
-    assert.equal(conn1.remoteId(), device.id());
+    await wall.within(25_000, (async () => {
+      const first = await bind(withFront(addon, f.socket), key);
+      const device = await bind(addon, randomBytes(32));
+      const one = first.accept();
+      const dialedOne = await device.connect(addrOf(first), ALPN);
+      const conn1 = (await one)!;
+      assert.equal(conn1.remoteId(), device.id());
 
-    // the next Node: the same endpoint (its id and where it listens), the next connection its own
-    const second = await bindOn(withFront(addon, f.socket), key);
-    assert.equal(second.id(), first.id());
-    assert.deepEqual(second.sockets(), first.sockets());
-    const device2 = await bindOn(addon, randomBytes(32));
-    const two = second.accept();
-    const dialedTwo = await device2.connect(addrOf(second), ALPN);
-    const conn2 = (await two)!;
-    assert.equal(conn2.remoteId(), device2.id());
+      // Only the resident front can forward between these two non-transit endpoints.
+      // Neither device has the other's neighbor address or any root address lookup.
+      const device2 = await bind(addon, randomBytes(32));
+      const scope = randomBytes(32).toString("hex");
+      const scoped = [device, first, device2];
+      const descriptors: MeshDescriptor[] = [];
+      for (const [i, endpoint] of scoped.entries()) {
+        assert.ok(endpoint.meshConfigure);
+        descriptors.push(await endpoint.meshConfigure({ scope, transit: i === 1, peers: [], relayUrls: [] }));
+      }
+      const reachable = (descriptor: MeshDescriptor, yes: boolean): MeshDescriptor => {
+        const address = descriptor.address as { id: string; addrs: { Ip?: string }[] };
+        const port = address.addrs.find(a => a.Ip && !a.Ip.startsWith("["))?.Ip?.split(":").at(-1);
+        assert.ok(port, "the scoped neighbor has an IPv4 socket");
+        return { ...descriptor, address: { id: address.id, addrs: yes ? [{ Ip: `127.0.0.1:${port}` }] : [] } };
+      };
+      const configurations = scoped.map((_, i) => ({ scope, transit: i === 1, relayUrls: [],
+        peers: descriptors.flatMap((d, j) => i === j ? [] : [reachable(d, i === 1 || j === 1)]),
+      }));
+      for (const [i, endpoint] of scoped.entries()) await endpoint.meshConfigure!(configurations[i]!);
+      const overlayAccepted = device2.accept();
+      const overlay = await device.connect({ id: device2.id(), meshScope: scope }, ALPN);
+      const overlayPeer = (await overlayAccepted)!;
+      assert.equal(overlay.remoteId(), device2.id(), "inner QUIC authenticates the target root");
+      assert.equal(overlayPeer.remoteId(), device.id(), "the target sees the source root, not the front");
+      const opened = await overlay.openBi();
+      await opened.write(Buffer.from("scoped"));
+      const received = (await overlayPeer.acceptBi())!;
+      const readExact = async (stream: Stream, size: number): Promise<Buffer> => {
+        const chunks: Buffer[] = [];
+        let length = 0;
+        while (length < size) {
+          const chunk = await stream.read();
+          assert.ok(chunk, "the existing overlay stream has not ended");
+          chunks.push(chunk);
+          length += chunk.length;
+        }
+        assert.equal(length, size);
+        return Buffer.concat(chunks);
+      };
+      assert.equal((await readExact(received, 6)).toString(), "scoped");
+      const exchange = async (stage: string) => {
+        const bytes = randomBytes(1 << 16);
+        await opened.write(bytes);
+        assert.deepEqual(await readExact(received, bytes.length), bytes, `${stage}: forward`);
+        const back = Buffer.from(bytes).reverse();
+        await received.write(back);
+        assert.deepEqual(await readExact(opened, back.length), back, `${stage}: reverse`);
+        assert.equal(overlay.isClosed(), false);
+        assert.equal(overlayPeer.isClosed(), false);
+        const path = overlay.paths!().find(p => p.selected);
+        assert.ok(path && path.txPackets > 0, `${stage}: the overlay carries packets`);
+        assert.ok(path.ip == null, "no direct root path bypasses the front");
+        assert.ok(path.relay == null, "the root path is the scoped custom transport");
+      };
+      await exchange("before handover");
 
-    // the first's connection still carries; closing the first's endpoint closes it alone
-    const s = await dialedOne.openBi();
-    await s.write(Buffer.from("still here"));
-    await s.finish();
-    assert.equal((await readAll((await conn1.acceptBi())!)).toString(), "still here");
-    await first.close();
-    await dialedOne.closed();
-    assert.equal(dialedTwo.isClosed(), false);
-    const t = await dialedTwo.openBi();
-    await t.write(Buffer.from("on the second"));
-    await t.finish();
-    assert.equal((await readAll((await conn2.acceptBi())!)).toString(), "on the second");
-    await device.close();
-    await device2.close();
-    await second.close();
+      // the next Node: the same endpoint (its id and where it listens), the next connection its own
+      const second = await bind(withFront(addon, f.socket), key);
+      assert.equal(second.id(), first.id());
+      assert.deepEqual(second.sockets(), first.sockets());
+      await exchange("after the second Node binds");
+      assert.ok(second.meshListen);
+      let off = () => {};
+      const kept = await new Promise<MeshDescriptor>(resolve => {
+        off = second.meshListen!(scopes => {
+          const found = scopes.find(s => s.scope === scope);
+          if (found) resolve(found.descriptor);
+        });
+      });
+      off();
+      assert.deepEqual(kept.binding, descriptors[1]!.binding, "the front retains the scoped identity across ownership");
+      await second.meshConfigure!(configurations[1]!);
+      await exchange("after the new Node reconciles the scope");
+      const two = second.accept();
+      const dialedTwo = await device2.connect(addrOf(second), ALPN);
+      const conn2 = (await two)!;
+      assert.equal(conn2.remoteId(), device2.id());
+
+      // the first's connection still carries; closing the first's endpoint closes it alone
+      const s = await dialedOne.openBi();
+      await s.write(Buffer.from("still here"));
+      await s.finish();
+      assert.equal((await readAll((await conn1.acceptBi())!)).toString(), "still here");
+      await first.close();
+      await dialedOne.closed();
+      assert.equal(dialedTwo.isClosed(), false);
+      const t = await dialedTwo.openBi();
+      await t.write(Buffer.from("on the second"));
+      await t.finish();
+      assert.equal((await readAll((await conn2.acceptBi())!)).toString(), "on the second");
+      await exchange("after the old Node closes");
+      await opened.finish();
+      assert.equal(await received.read(), null);
+      await received.finish();
+      assert.equal(await opened.read(), null);
+      console.log(JSON.stringify({ scopedHandover: true, source: overlayPeer.remoteId(), target: overlay.remoteId(),
+        transit: second.id(), stages: 4, bytesEachDirection: 4 * (1 << 16), sameStream: true }));
+      await second.meshRemove!(scope);
+    })(), "the resident front's scoped stream did not survive Node handover");
   } finally {
-    await f.stop();
+    try { await Promise.all(endpoints.map(endpoint => endpoint.close())); }
+    finally { await f.stop(); }
   }
 });
 

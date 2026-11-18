@@ -126,8 +126,9 @@ fn mine_bubble_node(
 /// list's Entry::id; `side`, `top`; `over`), as `m` says it as it changes: at the column's end, its words in their
 /// bubble; under it, unless their next message soon after says it under that one (`followed`), the runtime it waits
 /// for where its station lacks it (blocked_line_node), else that its agents have yet to take it (agent_waiting_node),
-/// else its time: one in the other's place as that changes. Where it offers itself (`share`), its bubble right clicked
-/// offers that (message_menu_node: the old bubble's pickable's; no ⋯, as the old row had none).
+/// else its time: one in the other's place as that changes. Where it offers itself (`share`), any of it right clicked
+/// (its bubble, or its pictures, files or film where it has no words) offers that (message_menu_node: the old bubble's
+/// pickable's; no ⋯, as the old row had none).
 ///
 /// What was sent from here and is not the chat's yet is the same row (`out`: Some while it is on its way, `m` then
 /// outgoing_said's), one row to a person as the core's message takes it over: its words' node made once and kept, so
@@ -149,7 +150,6 @@ fn mine_said_node(
   found_at? : () -> Int? = fn() { None },
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   share? : MessageShare? = None,
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
   out? : () -> Outgoing? = fn() { None },
   since? : () -> Double = fn() { 0.0 },
   flying? : () -> Bool = fn() { false },
@@ -164,7 +164,7 @@ fn mine_said_node(
   let lands = flies_from.map(fn(_) { v.cause_at() + @sfbase.flight_desk_ms })
   // (and its quotes' cards from where they stood in the composer: message_quotes_node's)
   let quotes_from = @sfbase.sent_quotes_from_take(@signals.untracked(key))
-  message_row_frame_node(v, key, side, top, over~, fn(r) {
+  message_row_frame_node(v, key, side, top, fn(r) {
     r.box(fn(col) {
       @sf.style_node(col, fn() { mine_column })
       // (what it quotes ahead of its files and words, in the order the composer held them: mine_message's; its place
@@ -182,12 +182,25 @@ fn mine_said_node(
       // (sent from here a moment ago: each of its files flying from where it stood in the composer, as its words do:
       // sfbase's sent_part_take, by its row's key)
       let flies_of = fn(part : String) { @sfbase.sent_part_take(@signals.untracked(key), part) }
+      // (a right click on any of it offered once it is the chat's, by the message it is then: its words' bubble, and
+      // where it has none, its pictures, files or film alone; what of it offers its own (a file's card) its own)
+      match share {
+        Some(s) =>
+          col.on_menu(fn(e) {
+            if said() {
+              @sfbase.share_offer(e.wx, e.wy, s.go, @signals.untracked(s.link), @signals.untracked(s.words), (s.key)())
+            }
+          })
+          |> ignore
+        None => ()
+      }
       message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from, flies_of~)
       message_files_node(
         col,
         src,
         here.tips,
-        message_files_at(here, fn() { m().said }),
+        // (once it is the chat's, by the message it is then)
+        message_files_at(here, fn() { m().said }, share=fn() { if said() { share } else { None } }),
         fn() {
           let now = m()
           beside_quotes(now.quotes, now.attachments)
@@ -222,17 +235,6 @@ fn mine_said_node(
           cards=(here.tips, fn(l) { if said() { cards(l) } else { None } }),
           flies_from~,
         )
-        // (offered once it is the chat's, by the message it is then)
-        match share {
-          Some(s) =>
-            b.on_menu(fn(e) {
-              if said() {
-                @sfbase.share_offer(e.wx, e.wy, s.go, @signals.untracked(s.link), @signals.untracked(s.words), "m:" + @signals.untracked(m).ts)
-              }
-            })
-            |> ignore
-          None => ()
-        }
       })
       let under = fn() {
         match out() {
@@ -364,10 +366,9 @@ fn person_said_node(
   found_at? : () -> Int? = fn() { None },
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   share? : MessageShare? = None,
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   let menu_on : Ref[() -> Bool] = Ref(fn() { false })
-  let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
+  let row = message_row_frame_node(v, key, side, top, fn(r) {
     let (_, on) = message_others_node(
       r,
       here,
@@ -397,7 +398,7 @@ fn person_said_node(
           b,
           src,
           here.tips,
-          message_files_at(here, fn() { m().said }),
+          message_files_at(here, fn() { m().said }, share=fn() { share }),
           fn() {
             let now = m()
             beside_quotes(now.quotes, now.attachments)
@@ -435,9 +436,9 @@ fn message_share_of(src : Source, here : MessageNodeHere, m : () -> Message) -> 
 
 ///|
 /// Where a message's files are (MessageFilesAt) in the chat `here` is: its station, its session, its view as it
-/// changes; whether the message was said while the chat shows (`said`).
-fn message_files_at(here : MessageNodeHere, said : () -> Bool) -> MessageFilesAt {
-  { station: fn() { here.station }, session: fn() { here.session }, view: here.view, said, picture: here.picture }
+/// changes; whether the message was said while the chat shows (`said`); what it offers of itself as it is now (`share`).
+fn message_files_at(here : MessageNodeHere, said : () -> Bool, share? : () -> MessageShare? = fn() { None }) -> MessageFilesAt {
+  { station: fn() { here.station }, session: fn() { here.session }, view: here.view, said, picture: here.picture, share }
 }
 
 ///|

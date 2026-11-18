@@ -4,6 +4,7 @@
 // presents them, the device's claim for a workspace's lock said with them (lock.ts); a station's refusals for that
 // lock; what an app's main endpoint takes (a trusted device met face to face); a station's protocol and what the
 // mesh is made with for it (`STATION_MESH`); the core's own mesh, brought up on first use.
+import { LeafLinks } from "./mesh-leaf.ts";
 import { Deferred, Effect, Fiber, type Result } from "effect";
 import type { Credential } from "../cloud.ts";
 import type { Inner } from "../core.ts";
@@ -366,7 +367,8 @@ function takes(inner: Inner): Pick<MeshEnv, "takes" | "incoming"> {
 /// an app's endpoint takes, and what a station refuses a link for besides its credential (a workspace's lock: without
 /// it a device waiting to be confirmed is told its credential was refused, and asks the cloud for another at each try).
 export function meshEnv(inner: Inner, iroh: Iroh): MeshEnv {
-  return { host: inner.host, runner: inner.runner, tracer: inner.tracer, iroh, wakes: inner.wakes, ...STATION_MESH, ...takes(inner), refusal: refusedForLock };
+  const leaves=new LeafLinks();
+  return { prepare:leaves.prepare, linked:leaves.linked, host: inner.host, runner: inner.runner, tracer: inner.tracer, iroh, wakes: inner.wakes, ...STATION_MESH, ...takes(inner), refusal: refusedForLock };
 }
 
 /// The core's mesh: brought up on first use with the relays any account's `/v1/me` names, the credentials from

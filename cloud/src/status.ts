@@ -5,7 +5,7 @@
 // and end by closing them, with no deploy and nothing else to sign in to. Only the repository's own can label an issue,
 // and a workflow sends them here when one changes (receiveIncidents).
 import { DurableObject } from "cloudflare:workers";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { bearerToken, denied, nowSeconds, reply } from "./auth";
 import type { Env } from "./env";
 import { relayName, relayUrls, type Relays } from "./relays";
@@ -133,12 +133,27 @@ const MAX_ISSUES = 2 * 1024 * 1024;
  * undefined where no repository is set. The repository is known by its id, which its renaming leaves as it was (the
  * name in `repository` and `workflow_ref` is then the new one).
  */
-async function repositoryClaims(request: Request, env: Env): Promise<{ repository: string; workflow_ref: unknown } | null | undefined> {
+async function repositoryClaims(request: Request, env: Env): Promise<({ repository: string } & JWTPayload) | null | undefined> {
   if (!env.STATUS_REPO_ID) return undefined;
   const token = bearerToken(request);
   const claims = token ? await jwtVerify(token, githubKeys, { issuer: GITHUB_ACTIONS, audience: env.PUBLIC_ORIGIN }).then((v) => v.payload, () => null) : null;
   if (!claims || claims.repository_id !== env.STATUS_REPO_ID || typeof claims.repository !== "string") return null;
-  return { repository: claims.repository, workflow_ref: claims.workflow_ref };
+  return { ...claims, repository: claims.repository };
+}
+
+/** A push of this repository's pipeline can stage a chunk for its other runners. The read receipt names only that chunk. */
+export async function stageNative(request: Request, env: Env): Promise<Response> {
+  const claims = await repositoryClaims(request, env);
+  if (claims === undefined || !env.RELEASES) return reply({ error: "not_found" }, 404);
+  if (!claims || typeof claims.ref !== "string" || !claims.ref.startsWith("refs/heads/") || claims.ref === "refs/heads/main" ||
+    (claims.event_name !== "push" && claims.event_name !== "workflow_dispatch") ||
+    claims.workflow_ref !== `${claims.repository}/.github/workflows/pipeline.yml@${claims.ref}` ||
+    typeof claims.sha !== "string" || !/^[0-9a-f]{40}$/.test(claims.sha)) return denied();
+  const length = Number(request.headers.get("content-length"));
+  if (!request.body || !Number.isSafeInteger(length) || length <= 0 || length > 32 * 1024 * 1024) return reply({ error: "invalid_length" }, 400);
+  const receipt = `${nowSeconds()}-${claims.sha}/${crypto.randomUUID()}`;
+  await env.RELEASES.put(`staged/ci-natives/${receipt}`, request.body);
+  return reply({ receipt }, 201, { "cache-control": "no-store" });
 }
 
 /**

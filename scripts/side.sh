@@ -17,6 +17,8 @@ for part in $parts; do
     # (side/mesh-explore.test.ts, SIM_EXPLORE of them); a new device approved face to face over two real endpoints
     # (side/lock-pair-iroh.test.ts).
     core-ts) (cd client/core-ts && pnpm side) || status=1 ;;
+    # Real browser/WASM mesh, on a machine with Chrome (CHROME_BIN can name it).
+    browser-mesh) (cd client/core-ts && pnpm side:browser) || status=1 ;;
     # The station's of real processes and the file system as they take their time (station/side): a lock across
     # processes, logs followed by fs.watch, two endpoints on one station's key at a real iroh-relay.
     station) (cd station && pnpm test:side) || status=1 ;;

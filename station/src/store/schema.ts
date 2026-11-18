@@ -1,5 +1,6 @@
 // The store's schema (once the Rust station's store.rs `// ── schema`): the tables as CREATE … IF NOT EXISTS, and the
 // columns that came after, added in place on open (add_*_columns).
+import { ENROLLMENT_TABLES, ANNOUNCEMENT_TABLE, RELAY_RECORD_TABLE } from "./mesh-schema.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { hasLegacySaid, installLegacySaid } from "./legacy-said-build.ts";
 import { hasLegacyAgent, installLegacyAgent } from "./legacy-agent-build.ts";
@@ -15,6 +16,9 @@ import { incrementalTotalsDecided } from "./usage-totals-source.ts";
 export const SCHEMA_VERSION = 13;
 
 export const SCHEMA = `
+${ENROLLMENT_TABLES}
+${ANNOUNCEMENT_TABLE}
+${RELAY_RECORD_TABLE}
 CREATE TABLE IF NOT EXISTS archive_suggestions (
   thread INTEGER PRIMARY KEY,
   version INTEGER NOT NULL,
@@ -54,6 +58,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   effort TEXT,
   fast INTEGER,
   speed TEXT,
+  tui INTEGER,
   afresh INTEGER,
   context INTEGER,
   context_before INTEGER,
@@ -569,7 +574,7 @@ export function hasRuntimeOrderIndex(db: DatabaseSync): boolean {
 /// add_archive_columns: columns archiving came with, added to a database made before them. When they come, each
 /// session's first chat on the page is taken as its own, and chats of sessions archived then as archived with them.
 export function addArchiveColumns(db: DatabaseSync): void {
-  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"]]) {
+  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["tui", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"]]) {
     if (!has(db, "sessions", column!)) db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${kind}`);
   }
   // Came with waiting's limit, after the turns table.

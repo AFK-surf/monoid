@@ -154,3 +154,23 @@ test("a ways change during the first policy is applied before its waiting dial",
     closePeerRelays(a.endpoint);
   }
 });
+
+test("mesh candidates preserve shared disabled-relay enforcement for RPC and HTTP", async () => {
+  const cloud = twoWorkspaces();
+  const a = dialing(null, (alpn: Buffer) => alpn.equals(PEER_HTTP_ALPN) ? { status: 200 } : { result: { ok: true } }, () => ({ ip: "192.168.1.9:4433" }), true);
+  const scope = "ef".repeat(32);
+  const resolve = (target: string, workspace: string | null) => target === P1 && workspace === W1 ? scope : undefined;
+  const call = peerCall(a.endpoint, cloud, undefined, undefined, undefined, {}, resolve);
+  const web = new PeerHttp(a.endpoint, cloud, undefined, undefined, resolve);
+  try {
+    await call(P1, W1, { method: "describe" });
+    await web.tunnel(P1, 8080, true);
+    assert.equal(a.dialed.length, 2);
+    for (const addr of a.dialed) {
+      assert.equal(addr.meshScope, scope);
+      assert.deepEqual(addr.relays, [OWN]);
+      assert.equal(addr.disabledRelays, undefined, "the live policy owns disabled relays");
+    }
+    assert.deepEqual(a.policies.get(P1), { relays: [...OURS].sort(), noPublic: true });
+  } finally { call.close?.(); web.close(); closePeerRelays(a.endpoint); }
+});

@@ -29,6 +29,8 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
   viz_full_layer_node(v, src)
+  // a tab of the side panel over the whole window (sfdesk's tab_full_node.mbt)
+  @sfdesk.tab_full_layer_node(v, src)
   // ⌘K's panel over the frame (sfdesk's switcher.mbt), ⌘/'s shortcuts as the shell's keys_open says (shortcuts.mbt)
   @sfdesk.switcher_node(v, src)
   @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
@@ -55,6 +57,8 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
   // (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
   viz_full_layer_node(v, src)
+  // a tab of the side panel over the whole window (sfdesk's tab_full_node.mbt)
+  @sfdesk.tab_full_layer_node(v, src)
   // ⌘K's panel over the frame (sfdesk's switcher.mbt), ⌘/'s shortcuts as the shell's keys_open says (shortcuts.mbt)
   @sfdesk.switcher_node(v, src)
   @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
@@ -65,12 +69,13 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// What a wide frame shows over all of it while it is on top: a station's screen (screen_node), its terminal
-/// (terminal_node), a drive's text read (sfpages' reader_page_node) or its video or song played (sfpages'
-/// play_page_node).
+/// What a wide frame shows over all of it while it is on top: a station's screen (screen_node; a Farview tab, while
+/// 实验性功能's Farview 原生标签页渲染 is on, drawn by sfpages' farview_tab_node), its terminal (terminal_node), a drive's
+/// text read (sfpages' reader_page_node) or its video or song played (sfpages' play_page_node).
 #derive(Eq)
 priv enum WideTop {
   Scr(ScreenAt)
+  Far(ScreenAt)
   Term(@sfbase.TerminalAt)
   Read(DriveAt)
   Play(DriveAt)
@@ -85,6 +90,7 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
     at_once=true,
     fn() {
       match app.nav.top() {
+        Screen(at) if @sfpages.farview_native_screen(at.screen) => Some(Far(at))
         Screen(at) => Some(Scr(at))
         Terminal(at) => Some(Term(at))
         DriveRead(at) => Some(Read(at))
@@ -99,15 +105,42 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
           n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Screen(at)) |> ignore }) |> ignore
           @sfpages.screen_node(n, src, at, fn() { system_frame() })
         }
+        Some(Far(at)) => {
+          let close = fn() { @sfbase.close_page(Screen(at)) |> ignore }
+          n.over(Is(true)).modal(Is(true)).takes_back(close) |> ignore
+          let back = fn() {
+            let pages = app.nav.pages()
+            if pages.length() >= 2 { @sfbase.back_label(pages[pages.length() - 2]) } else { @sf.t("common.back") }
+          }
+          @sfpages.farview_pane_node(
+            n,
+            src,
+            at.station,
+            at.screen,
+            title=at.title,
+            back~,
+            on_back=close,
+            on_switch=fn(next) { app.nav.replace(next) },
+            on_close=close,
+            top=window_band_now,
+          )
+        }
         Some(Term(at)) => {
           n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Terminal(at)) |> ignore }) |> ignore
           let back = fn() {
             let pages = app.nav.pages()
             if pages.length() >= 2 { @sfbase.back_label(pages[pages.length() - 2]) } else { @sf.t("common.back") }
           }
-          @sfpages.terminal_node(n, src, at, back~, on_back=fn() { @sfbase.close_page(Terminal(at)) |> ignore }, top=fn() {
-            0.0
-          }, width=fn() { n.window().0 })
+          @sfpages.terminal_pane_node(
+            n,
+            src,
+            at,
+            back~,
+            on_back=fn() { @sfbase.close_page(Terminal(at)) |> ignore },
+            top=fn() { 0.0 },
+            width=fn() { n.window().0 },
+            on_switch_page=fn(next) { app.nav.replace(next) },
+          )
         }
         Some(Read(at)) => {
           n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(DriveRead(at)) |> ignore }) |> ignore

@@ -243,7 +243,7 @@ export function setRelays(ways: Ways, ws: string, raws: unknown[], by: string | 
     const off = keepRelayOn(
       ours,
       relays,
-      now.off.filter((w) => !URL.canParse(w) || urls.some((u) => sameUrl(u) === sameUrl(w)) || ours.some((u) => sameUrl(u) === sameUrl(w))),
+      now.off.filter((w) => /^mesh:[0-9a-f]{64}$/.test(w) || !URL.canParse(w) || urls.some((u) => sameUrl(u) === sameUrl(w)) || ours.some((u) => sameUrl(u) === sameUrl(w))),
     );
     return { relays, off };
   });
@@ -257,8 +257,9 @@ export function setWay(ways: Ways, ws: string, way: string, on: boolean): WaysRe
   const own = ways.view(ws).relays.map((r) => r.url);
   const relays = [...ours, ...own];
   const isKind = (WAY_KINDS as readonly string[]).includes(way);
+  const isMesh = /^mesh:[0-9a-f]{64}$/.test(way) && (ways.cloud.state?.mesh_relays ?? []).some(r => `mesh:${r.node}` === way);
   const relay = isKind ? null : relays.find((u) => sameUrl(u) === sameUrl(way)) ?? null;
-  if (!isKind && relay === null) throw new WaysRefusal("no such way: a relay of the workspace's, or ours, lan, tailnet, direct");
+  if (!isKind && !isMesh && relay === null) throw new WaysRefusal("no such way: a registered relay, or ours, lan, tailnet, direct");
   const id = relay ?? way;
   return ways.change(ws, (now) => {
     // `ours` on takes back, with it, what the apps of before its one switch turned off alone and the panel no longer

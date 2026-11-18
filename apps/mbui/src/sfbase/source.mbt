@@ -188,6 +188,8 @@ pub(all) struct Source {
   /// whether a station's terminals are asked for (`terminals`, among its screens: sfpages station_terminals_node.mbt):
   /// not of a run seen again that was recorded before the app did
   asks_terminals : () -> Bool
+  /// Whether the usage page asks for the workspace's live output rates (not in older recorded runs).
+  asks_agent_rates : () -> Bool
   /// whether a page's, a panel's or a card's own view reads what makes it whole at once (a chat's services' pop its
   /// bar's summary till its own comes, an agent's card what its model's menu lists, asked ahead): not of a run seen
   /// again that was recorded before the app did (MBUI_SWR_VIEWS)
@@ -214,13 +216,12 @@ fn Source::topic_said(
   params : Map[String, Json],
   said : String,
 ) -> @signals.Computed[TopicState] {
-  // (read as a card, a panel or a sheet is made: waited for by it before it comes in, @sf.OpenGate)
-  if @sf.open_gate_collecting() && (src.gates_opens)() {
-    let sig = topic_read_by(src, name, params, said)
-    @sf.open_gate_note(fn() { topic_told(sig.get()) })
-    return sig
+  let collecting = @view.hold_collecting() && (src.gates_opens)()
+  let sig = topic_read_by(src, name, params, said)
+  if collecting {
+    @view.hold_note(fn() { topic_told(sig.get()) })
   }
-  topic_read_by(src, name, params, said)
+  sig
 }
 
 ///|
@@ -368,7 +369,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
 // what Home's bar shows of the stations' newer releases (`stationUpdates`: its key made again as Home was taken back).
 // kept across runs: a value (nothing of it changes)
 let lasting : Array[String] = [
-  "workspace", "stations", "stationNet", "profiles", "connects", "vaults", "usage", "archive", "chats", "longJobs", "changelog",
+  "workspace", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "vaults", "usage", "archive", "chats", "longJobs", "changelog",
   "stationUpdates",
 ]
 
@@ -449,6 +450,7 @@ let chats_kept_before : Int = 4
 /// (`pick`), a drive's place, a chat's outline.
 // kept across runs: a value (nothing of it changes)
 let views_kept : Array[(String, Int)] = [
+  ("agentRates", 4),
   ("chatRow", 32),
   ("chatJobs", 16),
   ("agentCard", 16),
@@ -882,6 +884,7 @@ pub fn made_source(
     asks_station_updates: fn() { true },
     asks_station_move: fn() { true },
     asks_terminals: fn() { true },
+    asks_agent_rates: fn() { true },
     swr_views: fn() { true },
     gates_opens: fn() { true },
   }

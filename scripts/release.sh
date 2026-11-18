@@ -23,8 +23,9 @@
 # promote: the test channel's station release becomes the stable one: its tarballs and station.json copied to the
 # stable names, nothing built (the signed words name no channel: they hold for both). (The beta apps are other apps: a released app is released by release.sh desktop/android.
 # The web app is promoted by cloud/deploy.py promote-web.)
-# A station's release names the Node it runs on (its NODE_VERSION), which is not in it: that Node goes beside the releases, once
-# per version (node/node-v<version>-<platform>.tar.gz and its .sha256: scripts/node-dist.sh), when they lack it.
+# A station's release is the MoonBit station, with no Node (scripts/station-bundle.sh). One that names a Node it runs on
+# (its NODE_VERSION, a release from before) has that Node put beside the releases, once per version
+# (node/node-v<version>-<platform>.tar.gz and its .sha256: scripts/node-dist.sh), when they lack it.
 # RELEASE_DIR=dir: into that directory instead of the bucket (the dev cloud serves them from dist/releases: cloud/test/dev.ts).
 # RELEASES=<url>: where the releases are read from, to see whether a Node is there already (still.fail cloud's; "" with
 # RELEASE_DIR: only that directory is looked in).
@@ -245,18 +246,23 @@ for platform in $platforms; do
         [ -z "$beta" ] || program=monoid.zone
       fi
       exe="$product${beta:+-beta}-0.1.$build-x64-win.exe"
-      MBUI_VARIANT=$variant MBUI_BUILD=$build bash "$root/apps/mbui/scripts/win.sh" build
-      MBUI_VARIANT=$variant MBUI_BUILD=$build MBUI_SETUP_NAME=$exe bash "$root/apps/mbui/scripts/win.sh" setup
+      # (MBUI_WIN_BUILT, <variant>:<build>: the app built so already, the core's bytecode, the engine and the shell put
+      # beside it (CI's desktop-win, its build begun in the background before this): not built again)
+      [ "${MBUI_WIN_BUILT:-}" = "$variant:$build" ] || MBUI_VARIANT=$variant MBUI_BUILD=$build bash "$root/apps/mbui/scripts/win.sh" build
       setup_out=$root/apps/mbui/out/setup
+      # (its raw form written as it is packed, from the files as read: win.sh setup's MBUI_SETUP_RAW; setup takes
+      # out/setup away first, so no raw form of before is left there)
+      MBUI_VARIANT=$variant MBUI_BUILD=$build MBUI_SETUP_NAME=$exe MBUI_SETUP_RAW="$setup_out/$exe.raw" bash "$root/apps/mbui/scripts/win.sh" setup
       # what is in it checked before anything is uploaded: the app it replaces (its id, its program), its build
       grep -qx "APP_ID=$id" "$setup_out/setup.env" && grep -qx "EXE=$program" "$setup_out/setup.env" &&
         grep -qx "VERSION=0.1.$build" "$setup_out/setup.env" || { echo "release.sh: $exe is not $id 0.1.$build: not released" >&2; cat "$setup_out/setup.env" >&2; exit 1; }
-      rm -f "$setup_out/$exe.sig" "$setup_out/$exe.raw" "$setup_out/$exe.raw.zst"
+      rm -f "$setup_out/$exe.sig" "$setup_out/$exe.raw.zst"
       # its raw form (what it carries stored: setup.c --raw), what deltas to it make and later ones are made from; its hash
       # in the signed words (the apps' core takes it from there alone), it beside the installer zstd'd (a few seconds of
-      # this job's: the deltas are made after, elsewhere). Without it the release goes out all the same, with no deltas.
+      # this job's: the deltas are made after, elsewhere). Made by setup above; by --raw, which unpacks the installer
+      # again, where an older setup.c made none. Without it the release goes out all the same, with no deltas.
       raw=""
-      if "$setup_out/$exe" --raw "$setup_out/$exe.raw" && [ -s "$setup_out/$exe.raw" ]; then raw="$setup_out/$exe.raw"
+      if [ -s "$setup_out/$exe.raw" ] || { "$setup_out/$exe" --raw "$setup_out/$exe.raw" && [ -s "$setup_out/$exe.raw" ]; }; then raw="$setup_out/$exe.raw"
       else echo "release.sh: warning: $exe --raw made nothing: released without its raw form (no deltas to it)" >&2; fi
       node "$root/scripts/release-sign.ts" file "$setup_out/$exe" --kind stillfail-desktop-win --build "$build" ${raw:+--raw "$raw"} ${RELEASE_DIR:+--unsigned-ok}
       put "$setup_out/$exe" "desktop/$exe" application/vnd.microsoft.portable-executable
@@ -324,7 +330,7 @@ for platform in $platforms; do
     *)
       sh "$root/scripts/station-bundle.sh" "$out/$platform" "$platform"
       # Packed and put beside the next platform's bundling (each ~20 s, one after another before 2026-10-04).
-      # Windows' a zip (install.ps1 opens it with Expand-Archive), its Node nodejs.org's own zip (node-dist.sh).
+      # Windows' a zip (install.ps1 opens it with Expand-Archive).
       if [ "$platform" = win32-x64 ]; then
         file="stillfail-station-$platform.zip"
         station_files="${station_files:-} ${beta:+beta/}$file=$out/$file"
@@ -337,14 +343,19 @@ for platform in $platforms; do
         node_file="node/node-v$(cat "$root/.node-version")-$platform.tar.gz"
       fi
       putting="${putting:-} $!"
-      # Its Node (cached by node-dist.sh): its binary's hash is in the signed words; put unless the releases have that
-      # version already.
-      dist=$(sh "$root/scripts/node-dist.sh" "$out/node-$platform" "$platform")
-      signing="${signing:-} $platform=$out/$file,$dist"
-      if ! released "$node_file"; then
-        node_type=application/gzip; [ "$platform" = win32-x64 ] && node_type=application/zip
-        put "$dist" "$node_file" "$node_type"
-        put "$dist.sha256" "$node_file.sha256" "text/plain; charset=utf-8"
+      if [ -f "$out/$platform/stillfail/NODE_VERSION" ]; then
+        # Its Node (cached by node-dist.sh; nodejs.org's own zip on Windows): its binary's hash is in the signed words;
+        # put unless the releases have that version already.
+        dist=$(sh "$root/scripts/node-dist.sh" "$out/node-$platform" "$platform")
+        signing="${signing:-} $platform=$out/$file,$dist"
+        if ! released "$node_file"; then
+          node_type=application/gzip; [ "$platform" = win32-x64 ] && node_type=application/zip
+          put "$dist" "$node_file" "$node_type"
+          put "$dist.sha256" "$node_file.sha256" "text/plain; charset=utf-8"
+        fi
+      else
+        # No Node: the signed words name none (release-sign.ts: a node hash of zeros, as stations from before take).
+        signing="${signing:-} $platform=$out/$file"
       fi
       station=yes
       ;;
@@ -352,7 +363,7 @@ for platform in $platforms; do
 done
 for pid in ${putting:-}; do wait "$pid" || { echo "a station release was not put" >&2; exit 1; }; done
 # What stations read to say a newer release is out (station/src/updates/updates.ts), once its files are there: its
-# version, and the words naming each archive and its Node, signed with $RELEASE_SIGNING_KEY (scripts/release-sign.ts,
+# version, and the words naming each archive and its Node (where it has one), signed with $RELEASE_SIGNING_KEY (scripts/release-sign.ts,
 # scripts/release-sign.ts). Not signing is an error but into RELEASE_DIR outside CI (a dev cloud's), where it warns.
 if [ -n "${station:-}" ]; then
   node "$root/scripts/release-sign.ts" station "$out/station.json" --build "$build" --commit "$(git -C "$root" rev-parse HEAD)" \

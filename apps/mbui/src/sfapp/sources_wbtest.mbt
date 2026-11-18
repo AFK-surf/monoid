@@ -16,10 +16,17 @@ test "sources: a screen's words found back to the app's lines, the library's par
   assert_true(said.length() > 0)
   // (made in the app's pages, or in the library asked for by them)
   assert_true(said.any(fn(s) { s.contains(": made at stillfail/src/") }))
-  let asked = said.filter(fn(s) { s.has_prefix("asked for at: stillfail/src/") })
+  let asked = said.filter(fn(s) {
+    s.has_prefix("asked for at: stillfail/src/") || s.has_prefix("asked for at: stillfail/sf/src/")
+  })
   assert_true(asked.length() > 0)
   // (the innermost node's look said with where each of it was)
-  assert_true(said.any(fn(s) { s.contains("\n  box ") && s.contains("(said at stillfail/src/") }))
+  assert_true(
+    said.any(fn(s) {
+      s.contains("\n  box ") &&
+      (s.contains("(said at stillfail/src/") || s.contains("(said at stillfail/sf/src/"))
+    }),
+  )
   println(asked[0])
 }
 
@@ -29,7 +36,11 @@ test "sources: a fault a check finds names where the node it names was made" {
   let faults = t.audit()
   for f in faults {
     if f.contains("window's tree") || f.contains("window tree") {
-      assert_true(f.contains("made at stillfail/src/") || f.contains("made at mbui/src/"))
+      assert_true(
+        f.contains("made at stillfail/src/") ||
+        f.contains("made at stillfail/sf/src/") ||
+        f.contains("made at mbui/src/"),
+      )
     }
   }
 }

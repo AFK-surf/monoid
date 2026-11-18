@@ -330,3 +330,11 @@ pub fn ControlPlane::release_base(self : ControlPlane) -> String? {
 pub fn ControlPlane::credential(self : ControlPlane) -> Accepted {
   self.spec().credential
 }
+
+///|
+/// A body posted to the control plane at `path`, signed under `tag` (signed.ts `signedPost`, the feedback's): its
+/// answer's JSON, None for none.
+pub async fn ControlPlane::signed(self : ControlPlane, path : String, tag : String, value : Json) -> Json? {
+  let plane = self.spec()
+  signed_post(self.state, self.sign, (self.now_secs)(), path, tag, value, plane.name, req => self.request(plane, req))
+}

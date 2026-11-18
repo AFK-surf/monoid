@@ -215,6 +215,13 @@ export class StationsSync {
       event: (address, name, raw, again) => this.onEvent(address, name, raw, again),
       toldMissed: (address) => this.#tally(address),
       changed: (address, what) => this.onChange(address, what),
+      ratesOpened: (address, supported) => {
+        const link = this.#links.get(address);
+        if (!link) return;
+        link.rates.clear();
+        link.ratesSupported = supported;
+        this.seen.touch(address, "rates");
+      },
       gone: (address) => this.channels.forget(address),
     });
     // A thread caught up on brought its latest: one less to catch up on.
@@ -296,9 +303,18 @@ export class StationsSync {
     if (how.away || how.restored) this.checkRestores(address);
     if (how.away || how.restored) this.#catchingFrom(address);
     if (how.away) this.#catchUpShown(address);
+    // Its jobs' list: what the stream told since its cursor is told again (RETOLD), so a list held of before is as
+    // current as a read of it once the stream goes on; read only where none was ever answered here.
+    const link = this.#links.get(address);
+    if (link && !link.jobsRead) {
+      if (this.#core.data.listed(address, "jobs")) {
+        link.jobsRead = true;
+        this.onChange(address, "link");
+      } else this.#enqueue(address, "jobs", Priority.shown, this.#read(address, { topic: "jobs", station: address }, JOBS));
+    }
     // Its screens and its logins are held in its link's memory, not its log of events (what was kept of them shows
     // meanwhile): its screens read again whenever the stream was not there to hear them change, both once a run.
-    const memory = this.#links.get(address)?.memory;
+    const memory = link?.memory;
     if (how.away || how.restored || memory?.fresh("screens") !== true) this.#enqueue(address, "screens", Priority.background, this.#screens(address));
     // Its terminals: once a run; a stream that comes back is told the list it missed (the station keeps its latest).
     if (memory?.fresh("terminals") !== true) this.#enqueue(address, "terminals", Priority.background, this.#terminals(address));
@@ -463,6 +479,25 @@ export class StationsSync {
       else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true });
       else return yield* Effect.fail(answer.failure);
     });
+  }
+
+  /// What is held of a station's screens but `screen` (closed from here), or but its view `view` (ended from here).
+  #screensWithout(address: string, screen: string, view: string | null): void {
+    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined;
+    if (held === undefined) return;
+    let changed = false;
+    const screens = held.screens.flatMap((s) => {
+      if (get(s, "id") !== screen) return [s];
+      if (view === null) {
+        changed = true;
+        return [];
+      }
+      const views = get(s, "views");
+      if (!Array.isArray(views) || !views.some((v) => get(v, "id") === view)) return [s];
+      changed = true;
+      return [{ ...(s as object), views: views.filter((v) => get(v, "id") !== view) }];
+    });
+    if (changed) this.#heldScreens(address, { ...held, screens });
   }
 
   #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean }): void {
@@ -1960,6 +1995,8 @@ export class StationsSync {
             if (isObject(detail) && Array.isArray(detail.jobs)) detail.jobs = detail.jobs.filter((j) => get(j, "id") !== id);
           });
         }
+        // (off the station's open ones too, at once: left there, it stayed listed as up till the list was read again)
+        if (id) core.data.dropJob(address, id);
         return;
       }
       case "overview":
@@ -2242,6 +2279,8 @@ export class StationsSync {
   #onSessionRemoved(address: string, key: string): void {
     const core = this.#core;
     core.data.dropSession(address, key);
+    // (its jobs go with it: no longer among the station's open ones)
+    core.data.closeSessionJobs(address, key);
     this.#remake(address, { ids: [key] });
     const link = this.#links.get(address);
     if (link) {
@@ -2399,8 +2438,13 @@ export class StationsSync {
         view.loaded = true;
       } else if (kind === "clear") {
         Object.assign(view, { steps: [], phase: null, rate: 0 });
+        if (link.rates.delete(key)) this.seen.touch(address, "rates");
       } else if (kind === "rate") {
         view.rate = u64(get(message, "tokensPerSecond")) ?? 0;
+        const before = link.rates.get(key) ?? 0;
+        if (view.rate > 0) link.rates.set(key, view.rate);
+        else link.rates.delete(key);
+        if (before !== view.rate) this.seen.touch(address, "rates");
       } else if (kind === "work") {
         // Whole each time: how long each task has run, as since when on this device's clock.
         view.tasks = ((get(message, "tasks") as unknown[] | undefined) ?? []).map((task) => ({ ...(task as object), since: Math.round(now - (typeof get(task, "elapsedMs") === "number" ? (get(task, "elapsedMs") as number) : 0)) }));
@@ -2512,6 +2556,11 @@ export class StationsSync {
         case "none":
         // (its list read before it answered: perform's)
         case "tab":
+          return;
+        // A screen closed, a view of one ended: gone from what is held of the station's screens at once (its station
+        // tells its list as it goes, `screens` on its stream).
+        case "screenGone":
+          this.#screensWithout(address, effect.screen, effect.view);
           return;
         case "session": {
           if (effect.key !== null) reads.push([`session/${effect.key}`, this.#session(address, effect.key)]);

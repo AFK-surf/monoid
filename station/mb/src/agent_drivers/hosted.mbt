@@ -5,7 +5,7 @@
 
 ///|
 /// What the program read of a process's lines (`Heard`), as the JSON it says it in.
-pub struct Heard {
+pub(all) struct Heard {
   json : JValue
 }
 
@@ -60,7 +60,7 @@ pub struct HostedOptions {
 
 ///|
 /// A process as the program reads it (`HostedProcess`).
-pub struct Proc {
+pub(all) struct Proc {
   info : RunnerInfo
   write : (String) -> Unit
   /// "begin", "compact", "aborting", "renewed"
@@ -76,8 +76,9 @@ pub struct Proc {
   released : () -> Later[Unit]
   has_exited : () -> Bool
   handed : () -> Bool
-  /// a Codex app-server's thread and its live steps, read for it from now on
-  thread : (String, JValue) -> Unit
+  /// a Codex app-server's thread and its live steps, read for it from now on; its actor in the program taking its events
+  /// from the first (routed: one taken up with its router, mb-agents.ts `thread`)
+  thread : (String, JValue, Bool) -> Unit
   drop_thread : (String) -> Unit
   /// its actor in the program takes a thread's events (true), or no longer (false); was it said before
   route_thread : (String, Bool, Bool) -> Bool
@@ -87,7 +88,7 @@ pub struct Proc {
 
 ///|
 /// What reads the drivers' processes (`AgentsHost`).
-pub struct Procs {
+pub(all) struct Procs {
   /// starts a program under a runner of this id (one left by an earlier station ended first)
   start : (String, String, Array[String], Env, String, HostedOptions, JValue) -> Later[Proc]
   /// takes up the process a runner keeps, with its turn and live steps
@@ -104,6 +105,6 @@ pub struct Procs {
 
 ///|
 /// A random UUID (v4), as the runtimes take for ids (`uuid`): the station's, or a test's in turn.
-pub struct Ids {
+pub(all) struct Ids {
   next : () -> String
 }

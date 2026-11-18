@@ -190,7 +190,7 @@ pub async fn read_tail(ToolsBackend, String, Int32) -> String?
 
 pub fn refuse_upgrade(Int32, String) -> Bytes
 
-pub fn relay_tools(Ctx, deps? : String, probe? : (async (String) -> Probed)?) -> Array[Tool]
+pub fn relay_tools(Ctx, deps? : String, mesh_list? : Bool, enroll? : Bool, revoke? : Bool, probe? : (async (String) -> Probed)?) -> Array[Tool]
 
 pub fn remote_tools(Ctx, remote? : String) -> Array[Tool]
 

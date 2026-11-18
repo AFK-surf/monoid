@@ -753,16 +753,21 @@ pub fn settings_home_node(
   v.reacts(fn() { @settings.kept_asked() }, fn(_) { @settings.kept_ask(core) })
   // (its cards: each by its group's key (the account's and the workspace's by their rows'), its heading, its rows' keys; the account and the workspace each a card of
   // their own, as large as who and where they are)
+  // (what a query finds another list, by the query: each card's key says it, so the cards a query typed or changed
+  // finds are another set in the place of the ones before, there at once (page_node's pg_blocks_read), not each row
+  // making its way in and out of the cards it was in, a card's rows and the cards beside it on ways of their own)
   let cards_now : @signals.Computed[Array[(String, String, Array[String])]] = @signals.computed(
     fn(_) {
       let out = []
+      let q = query()
+      let found_by = if q == "" { "" } else { "?" + q }
       for part in parts.get() {
         let identity = part.rows.iter().any(fn(r) { !(r.lead is Icon(_)) })
         let groups = if identity { part.rows.map(fn(r) { [r] }) } else { [part.rows] }
         for i, rows in groups {
           if rows.length() > 0 {
             // (a card by its group's key; the account's and the workspace's each by its own row's too)
-            let id = if identity { part.key + "/" + rows[0].key } else { part.key }
+            let id = (if identity { part.key + "/" + rows[0].key } else { part.key }) + found_by
             out.push((id, if i == 0 { part.heading } else { "" }, rows.map(fn(r) { r.key })))
           }
         }

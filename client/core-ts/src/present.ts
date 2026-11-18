@@ -117,16 +117,22 @@ export function stamp(ms: number, c: Clock): Record<string, unknown> {
 }
 
 /// Times kept in seconds (still.fail cloud's) and in milliseconds (the station's).
-const SECONDS = new Set(["created_at", "expires_at", "used_at", "revoked_at", "last_seen", "lastSeen"]);
+const SECONDS = new Set(["created_at", "expires_at", "used_at", "revoked_at", "last_seen", "lastSeen", "updated_at", "delivered_at", "added_at"]);
 const MILLIS = new Set(["createdAt", "lastActiveAt", "lastUsedAt", "checkedAt", "resetsAt"]);
 /// The fields `times` says in words (`time`), each a moment.
 export const TIME_KEYS: readonly string[] = [...SECONDS, ...MILLIS];
 
-/// When a window that refills at `resetsAt` refills, in words (as `windows` says it), read by the minute: what a row
-/// kept beside its part says of its windows as it goes out (views.ts windowShown).
-export function refillsOf(resetsAt: number, c: Clock): string {
-  byMinute();
-  return format.refillsIn(resetsAt, c.now);
+/// The refill in words, and its compact figure when spent, at the given minute.
+export function refillsOf(resetsAt: unknown, left: number, now: number): { refills: string | null; refillShort?: string } {
+  if (typeof resetsAt !== "number") return { refills: null };
+  const refills = format.refillsIn(resetsAt, now);
+  return left === 0 ? { refills, refillShort: format.refillShort(resetsAt, now) } : { refills };
+}
+
+/// A kept profile row tracks the minute only when it has a refill to show.
+export function rowRefillsOf(resetsAt: unknown, left: number, now: number): ReturnType<typeof refillsOf> {
+  if (typeof resetsAt === "number") byMinute();
+  return refillsOf(resetsAt, left, now);
 }
 
 /// What a window with `used` percent of it used has left, and how full it is.
@@ -142,7 +148,7 @@ function windows(list: Record<string, unknown>[], c: Clock): Record<string, unkn
     const used = typeof w.usedPercent === "number" ? w.usedPercent : 0;
     const [mark, order] = marks[i]!;
     const [left, level] = leftLevel(used);
-    return { ...w, label: format.windowName(label), mark, order, left, level, refills: typeof w.resetsAt === "number" ? format.refillsIn(w.resetsAt, c.now) : null };
+    return { ...w, label: format.windowName(label), mark, order, left, level, ...refillsOf(w.resetsAt, left, c.now) };
   });
   // A stable sort, as Rust's sort_by_key.
   return out.sort((a, b) => (u64(a.order) ?? 1) - (u64(b.order) ?? 1));
@@ -274,7 +280,7 @@ export function times(value: unknown, c: Clock): unknown {
 /// What `times` puts in a value, for the test that holds it to how it was written before (present.test.ts).
 export const timesParts = { windows, resetsText, presentReset };
 
-const NO_TICK = new Set(["chats", "live", "thread", "letters", "history", "host", "net", "way", "stationNet", "status", "notices", "notify", "connection", "draft", "composer", "prefs", "doing", "slackTokens", "joinable", "memberships", "screenCard"]);
+const NO_TICK = new Set(["chats", "live", "thread", "letters", "history", "host", "net", "way", "stationNet", "status", "notices", "notify", "connection", "draft", "composer", "prefs", "doing", "slackTokens", "joinable", "memberships", "screenCard", "terminalCard", "longJobs"]);
 
 /// Whether a topic shows times in words, sent again each minute while shown.
 export function ticks(topic: Topic): boolean {
@@ -1450,6 +1456,11 @@ export function decorate(topic: Topic, value: unknown, c: Clock): unknown {
     // their bytes asked beside (peek-pictures.ts).
     case "linkPreview": {
       const shown = linkShown(v);
+      if (shown?.kind === "github_actions_run" && shown.startedAt > 0) {
+        if (!shown.finishedAt) byMinute();
+        value = { ...shown, elapsed: format.duration(Math.max(0, (shown.finishedAt ?? c.now) - shown.startedAt)) };
+        break;
+      }
       value = isObject(shown) && typeof shown.updatedAt === "number" && shown.updatedAt > 0 ? { ...shown, time: { updatedAt: stamp(shown.updatedAt, c) } } : shown;
       break;
     }

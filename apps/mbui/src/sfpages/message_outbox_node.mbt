@@ -53,9 +53,8 @@ fn outbox_said_node(
   o : () -> Outgoing,
   since : () -> Double,
   flying? : () -> Bool = fn() { false },
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
-  mine_said_node(v, src, here, fn() { key }, side, top, fn() { outgoing_row(o()) }, over~, out=fn() { Some(o()) }, since~, flying~)
+  mine_said_node(v, src, here, fn() { key }, side, top, fn() { outgoing_row(o()) }, out=fn() { Some(o()) }, since~, flying~)
 }
 
 ///|
@@ -180,9 +179,9 @@ fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : 
           fn() { None },
           fn() {
             let now = @signals.untracked(o)
-            let w = writing(src, here.station + ":" + here.session)
-            writing_text(src, w, now.text)
-            outbox_node_call(src, here, "chat.discard", now.id)
+            outbox_edit(src, here.station + ":" + here.session, now, fn() {
+              outbox_node_call(src, here, "chat.discard", now.id)
+            })
           },
         )
       } else {

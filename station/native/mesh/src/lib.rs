@@ -5,6 +5,8 @@
 //! ways and their streams. Which relays, when to add iroh's public ones, who may connect and what is said: the
 //! TypeScript's. And the image codecs of the thumbnails (thumbs.rs).
 
+#[path = "../../../../client/shell/src/mesh.rs"]
+mod mesh;
 mod dscp;
 mod keep;
 mod log;
@@ -92,6 +94,7 @@ pub struct RelayEntry {
 #[napi]
 pub struct Endpoint {
     inner: IrohEndpoint,
+    mesh: mesh::Scopes,
     keepers: Arc<StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// The relays it was bound with: home on each, no keeper wanted there.
     bound: Vec<RelayUrl>,
@@ -178,7 +181,10 @@ async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) 
         iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
     }));
     let transport = transport(options.congestion.as_deref().unwrap_or("cubic"))?;
+    let mesh = mesh::Scopes::default();
     let mut builder = IrohEndpoint::builder(Minimal)
+        .add_custom_transport(mesh.hub.clone())
+        .path_selector(Arc::new(mesh_transport::selection::Selector::new(mesh.hub.clone())))
         .secret_key(key.clone())
         .alpns(options.alpns.iter().map(|a| a.to_vec()).collect())
         .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
@@ -203,11 +209,13 @@ async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) 
             .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
             .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
     }
-    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default() })
+    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, mesh, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default() })
 }
 
 #[napi(object)]
 pub struct Addr {
+    /// The admitted scope through which this endpoint may be reached.
+    pub mesh_scope: Option<String>,
     /// The endpoint's id (hex).
     pub id: String,
     pub relays: Option<Vec<String>>,
@@ -237,6 +245,40 @@ fn endpoint_addr(addr: &Addr) -> napi::Result<EndpointAddr> {
 
 #[napi]
 impl Endpoint {
+    #[napi]
+    pub async fn mesh_subscribe(&self, id: u32, callback: napi::threadsafe_function::ThreadsafeFunction<serde_json::Value, ()>) -> napi::Result<()> {
+        let callback = Arc::new(callback);
+        self.mesh.subscribe_updates(u64::from(id), move |snapshot| {
+            let callback = callback.clone();
+            async move { callback.call_async(Ok(serde_json::Value::Array(snapshot))).await.map_err(|e| e.to_string()) }
+        }).map_err(failed)
+    }
+
+    #[napi]
+    pub fn mesh_unsubscribe(&self, id: u32) { self.mesh.unsubscribe(u64::from(id)); }
+
+    #[napi]
+    pub async fn mesh_attach_leaf(&self, connection: &Connection, value: serde_json::Value) -> napi::Result<serde_json::Value> {
+        self.mesh.attach_leaf(&self.inner,connection.inner.clone(),&value).await.map_err(failed)
+    }
+    #[napi]
+    pub async fn mesh_use_leaf(&self, value: serde_json::Value) -> napi::Result<()> {
+        self.mesh.use_leaf(&self.inner,&value).await.map_err(failed)
+    }
+    #[napi]
+    pub async fn mesh_detach_leaf(&self, value: serde_json::Value) -> napi::Result<()> {
+        self.mesh.detach_leaf(&value).await.map_err(failed)
+    }
+    #[napi]
+    pub async fn mesh_configure(&self, scope: serde_json::Value) -> napi::Result<serde_json::Value> {
+        self.mesh.configure_root(&self.inner, &scope).await.map_err(failed)
+    }
+
+    #[napi]
+    pub async fn mesh_remove(&self, scope: String) -> napi::Result<()> {
+        self.mesh.remove(&serde_json::json!({ "scope": scope })).await.map_err(failed)
+    }
+
     /// Its id, as the station's (hex).
     #[napi]
     pub fn id(&self) -> String {
@@ -406,7 +448,11 @@ impl Endpoint {
                 None => std::future::pending().await,
             }
         };
-        let conn = dial(&self.inner, endpoint_addr(&addr)?, &alpn, options, given_up).await.map_err(failed)?;
+        let mut target = endpoint_addr(&addr)?;
+        if let Some(scope) = &addr.mesh_scope {
+            target.addrs.insert(self.mesh.address(scope, target.id).await.map_err(failed)?);
+        }
+        let conn = dial(&self.inner, target, &alpn, options, given_up).await.map_err(failed)?;
         Ok(Connection { inner: conn })
     }
 
@@ -444,6 +490,7 @@ impl Endpoint {
 
     #[napi]
     pub async fn close(&self) {
+        self.mesh.clear().await;
         for (_, task) in self.keepers.lock().unwrap().drain() {
             task.abort();
         }
@@ -921,7 +968,7 @@ mod tests {
         /// The peer as the station dials it: by `relays`, and by its address on this machine.
         fn addr(&self, relays: &[&RelayUrl]) -> Addr {
             let port = self.peer.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
-            Addr { disabled_relays: None, id: hex::encode(self.peer.id().as_bytes()), relays: Some(relays.iter().map(|r| r.to_string()).collect()), ips: Some(vec![format!("127.0.0.1:{port}")]) }
+            Addr { mesh_scope: None, disabled_relays: None, id: hex::encode(self.peer.id().as_bytes()), relays: Some(relays.iter().map(|r| r.to_string()).collect()), ips: Some(vec![format!("127.0.0.1:{port}")]) }
         }
 
         async fn dial(&self, relays: &[&RelayUrl]) -> Connection {

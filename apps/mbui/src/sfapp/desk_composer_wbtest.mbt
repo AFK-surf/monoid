@@ -98,6 +98,24 @@ test "desk composer: typed words are the core's draft (composer.text); Enter sen
 }
 
 ///|
+test "desk composer: ⌘Z and ⇧⌘Z undo and redo one word at a time in the field and its draft" {
+  let calls : Array[Made] = []
+  let (t, src) = desk_composer_tester(calls)
+  t.draw()
+  t.tap(450.0, 500.0 - 16.0 - 22.0)
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  for ch in "hello world" {
+    t.type_text(ch.to_string())
+  }
+  t.key(@ui.key_of_char('z'), mods=@ui.mod_cmd)
+  assert_eq(w.field.text(), "hello ")
+  assert_eq(w.text.get(), "hello ")
+  t.key(@ui.key_of_char('z'), mods=@ui.mod_cmd | @ui.mod_shift_key)
+  assert_eq(w.field.text(), "hello world")
+  assert_eq(w.text.get(), "hello world")
+}
+
+///|
 test "desk composer: ⌘Enter 发送 chosen in 快捷键 (prefs sendKey), Enter and ⇧Enter are new lines and ⌘Enter sends; Ctrl+Enter on Windows" {
   for one in [(0, @ui.mod_cmd), (3, @ui.mod_ctrl)] {
     let (platform, command) = one
@@ -821,13 +839,36 @@ test "a phone's ＋ opened again shows the gallery as it is then: a screenshot t
 }
 
 ///|
+test "iOS: the open attachment sheet refreshes after the limited Photos selection changes" {
+  let calls : Array[Made] = []
+  let (t, _) = desk_composer_tester(calls, pointing=Finger, platform=1)
+  let old : @hostapi.GalleryPhoto = { id: 1L, src: "ph://old", added: 1_792_200_000L, modified: -1L, taken: -1L, video: false }
+  let added : @hostapi.GalleryPhoto = { ..old, id: 2L, src: "ph://added", added: old.added + 60L }
+  for photo in [old, added] {
+    t.add_image(photo.src, 1080, 2400)
+  }
+  t.check_looks(false)
+  t.gallery([old], limited=true)
+  t.draw()
+  t.click(Button, label=@sf.t("web-main.composer.attach"))
+  t.run_for(@ui.image_fade_ms)
+  assert_eq(strip_photos(t), [old.src])
+  t.click(Button, label=@sf.t("android-chat.attach.recent.more"))
+  t.gallery([old, added], limited=true, changed=true)
+  // The fake host completes the gallery read on its next frame.
+  t.frame()
+  t.run_for(@ui.image_fade_ms)
+  assert_eq(strip_photos(t), [added.src, old.src])
+}
+
+///|
 /// The gallery's photos ＋'s strip draws, in its order (the draw list's images, as first drawn).
 fn strip_photos(t : @ui.Tester) -> Array[String] {
   let out = []
   for line in t.drawlist().split("\n") {
     // image N PX "SOURCE"
     let parts = line.split("\"").to_array()
-    if line.has_prefix("image ") && parts.length() >= 2 && parts[1].has_prefix("content://") {
+    if line.has_prefix("image ") && parts.length() >= 2 && (parts[1].has_prefix("content://") || parts[1].has_prefix("ph://")) {
       out.push(parts[1].to_owned())
     }
   }

@@ -72,16 +72,18 @@ let senren_prefix : String = "senren-"
 /// their own corners, grounds and inks, a drawing of something else, not the theme's (the corners', gaps' and
 /// contrast's rules leave it to itself, as they leave 终端's palette). Its tile in the looks' strip is its picture alone
 /// (senren_tile), small: not thirty cards made for tiles 72 wide.
-fn senren(key : String, art : String, draw : (Pen, Json?, Bool) -> Pen) -> ShareLook {
+fn senren(key : String, art : String, draw : (Pen, () -> Json?, Bool) -> Pen) -> ShareLook {
   {
     key,
     group: "senren",
     art,
     draw: fn(c, fleet, flat) {
       let b = draw(c, fleet, flat)
-      let args = sr_args(fleet)
-      args.push(("name", @sf.t("web-main.stations.shareLook." + key)))
-      b.says(Image, sr_plain("web-main.stations.shareSenren.picture", args))
+      b.says(Image, fn() {
+        let args = sr_args(fleet())
+        args.push(("name", @sf.t("web-main.stations.shareLook." + key)))
+        sr_plain("web-main.stations.shareSenren.picture", args)
+      })
       b
     },
   }
@@ -104,7 +106,7 @@ let senren_tile_h : Double = 480.0
 
 ///|
 /// A 穗织画报 cover's look (sr_gahou, one drawing over each heroine's table) as a line of share_looks draws it.
-fn sr_gahou_of(look : String) -> (Pen, Json?, Bool) -> Pen {
+fn sr_gahou_of(look : String) -> (Pen, () -> Json?, Bool) -> Pen {
   fn(c, fleet, flat) { sr_gahou(c, look, fleet, flat) }
 }
 
@@ -127,6 +129,12 @@ let sr_box_round : @ui.Style = @ui.css("w=Full radius=Xl3 clip border=B1").then(
 let sr_box_flat : @ui.Style = sr_box_round.then(@ui.css("radius=Sharp border=B0"))
 
 ///|
+/// What holds a line of a list and what is under it (a guest and the dots under them), one under the other, as wide as
+/// the list: the two as they would be in it.
+// kept across runs: a value (no field of it changes)
+let sr_whole : @ui.Style = @ui.css("w=Full")
+
+///|
 /// Picture `art` `w` by `h` points, cut to that with its vertical crop at `at` (0 its top, 1 its foot); `small`, its
 /// small one (senren_art_file); nothing under it while it is on its way (the card's ground shows), no fade: a picture
 /// handed out is drawn whole (@ui.take_picture waits for it).
@@ -139,15 +147,51 @@ fn sr_art(c : Pen, art : String, w : Double, h : Double, at? : Double = 0.5, sma
 }
 
 ///|
-/// Words in the card's own face (霞鹜文楷 with EB Garamond: @sfbase.share_face_given), as every look's are.
-fn sr_words(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
-  c.rich([@ui.span(words)], style~, face=@sfbase.share_face_given()) |> ignore
+/// Pictures `arts` a look may draw as what it says changes (a day's picture shown once it has chats): had with those it
+/// draws as it is made (senren_drawing), so the card is handed out once any it may come to show is here.
+fn sr_may_draw(arts : Array[String]) -> Unit {
+  if senren_drew.val is Some(drew) {
+    for art in arts {
+      drew.push(senren_art_file(art))
+    }
+  }
 }
 
 ///|
-/// Words in the card's face from runs (`@ui.span`s: a figure in another colour, larger, bolder).
-fn sr_rich(c : Pen, runs : Array[@ui.Run], style : @ui.TextStyle) -> Unit {
-  c.rich(runs, style~, face=@sfbase.share_face_given()) |> ignore
+/// Picture `arts`[`which`] (one of those it may be: sr_may_draw), `w` by `h` points, cut at `at`: sr_art's, the one it
+/// is as what the card says changes.
+fn sr_art_of(c : Pen, arts : Array[String], which : () -> Int, w : Double, h : Double, at? : Double = 0.5) -> Unit {
+  sr_may_draw(arts)
+  c.image_by(fn() { senren_art_key(senren_art_file(arts[which()])) }, w, h, at~)
+}
+
+///|
+/// Words in the card's own face (霞鹜文楷 with EB Garamond: @sfbase.share_face_given), as every look's are, as `words`
+/// works them out of what the card says (and the app's words); `style_by` choosing among the look's styles as it does
+/// (laid out as `style`).
+fn sr_words(c : Pen, words : () -> String, style : @ui.TextStyle, style_by? : () -> @ui.TextStyle) -> Unit {
+  c.text_by(words, style~, style_by?, face=@sfbase.share_face_given())
+}
+
+///|
+/// Words `words` says in a line, a part each, each in the card's own face (sr_words'), of the style `style_of` says of
+/// its place; each kept by its place (a language with more of them has more).
+fn sr_each_words(c : Pen, words : () -> Array[String], style_of : (Int) -> @ui.TextStyle) -> Unit {
+  c.each_rich(
+    fn() { placed(words()) },
+    fn(w) { w.0 },
+    fn(w) { [@ui.span(w().1)] },
+    style=style_of(0),
+    style_of~,
+    face=@sfbase.share_face_given(),
+  )
+}
+
+///|
+/// Words in the card's face from runs (`@ui.span`s: a figure in another colour, larger, bolder), as `runs` works them
+/// out; `style_by` as sr_words'.
+fn sr_rich(c : Pen, runs : () -> Array[@ui.Run], style : @ui.TextStyle, style_by? : () -> @ui.TextStyle) -> Unit {
+  c.rich_by(runs, style~, style_by?, face=@sfbase.share_face_given())
 }
 
 ///|
@@ -199,7 +243,7 @@ fn sr_plain(key : String, args : Array[(String, String)]) -> String {
 ///|
 /// still.fail's name (its dot orange), in `ink`.
 fn sr_brand(c : Pen, style : @ui.TextStyle) -> Unit {
-  sr_rich(c, [@ui.span("still"), @ui.span(".", color=@sf.share_orange), @ui.span("fail")], style)
+  sr_rich(c, fn() { [@ui.span("still"), @ui.span(".", color=@sf.share_orange), @ui.span("fail")] }, style)
 }
 
 ///|

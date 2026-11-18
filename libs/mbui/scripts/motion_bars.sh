@@ -32,7 +32,7 @@ sort -u "$f" | awk -v title="${2:-bars}" -v strict="${MOTION_BARS_FAIL:-}" '
   $2 == "held" { k = $3 " " $4; if ($5 + 0 > found[k] + 0) found[k] = $5 + 0; next }
   # MOTION <check> <file>: … (a fault a counted file showed at 60 or 120; not the waits said as MOTION held_causes and
   # the like, Tester::wait_looked, which keep no file on the list)
-  $2 ~ /^(gaps_steady|rows_steady|sizes_steady|words_over)$/ { file = $3; sub(":$", "", file); inlist[file] = 1 }
+  $2 ~ /^(gaps_steady|rows_steady|sizes_steady|sizes_across|words_over)$/ { file = $3; sub(":$", "", file); inlist[file] = 1 }
   END {
     print "### " title
     print ""
@@ -49,7 +49,7 @@ sort -u "$f" | awk -v title="${2:-bars}" -v strict="${MOTION_BARS_FAIL:-}" '
     }
     for (c in counted) if ((c in counting) && !(c in unjudged) && !(c in inlist)) { printf "leaves  motion_counted   %s: counted, nothing found\n", c; off++ }
     # (what a counted file showed, by check, where it has no bar of that check: what keeps it on the list)
-    for (k in found) { split(k, cf, " "); if (!(k in bar) && (cf[2] in counted) && cf[1] ~ /^(gaps_steady|rows_steady|sizes_steady|words_over)$/) printf "counted %-16s %s: one Tester found at most %d\n", cf[1], cf[2], found[k] }
+    for (k in found) { split(k, cf, " "); if (!(k in bar) && (cf[2] in counted) && cf[1] ~ /^(gaps_steady|rows_steady|sizes_steady|sizes_across|words_over)$/) printf "counted %-16s %s: one Tester found at most %d\n", cf[1], cf[2], found[k] }
     nu = 0; for (u in unjudged) nu++
     print nb " bars of files Testers were made in, " off " to fall or leave; " nu " files not judged on how what moves goes, their bars left as they are"
     print "```"

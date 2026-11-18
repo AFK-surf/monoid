@@ -11,7 +11,7 @@
 // as the station stops (the helper with it). Which folder: FOLDER (desktop, documents, downloads; default the first the
 // helper has no grant for, else it stops: a grant there leaves nothing to see).
 //
-//   node station/side/places-e2e.ts   (a worktree with `pnpm run build` in station/ and `pnpm run build:cloud` at the
+//   node station/side/places-e2e.ts   (a worktree with `pnpm run build:node` in station/ and `pnpm run build:cloud` at the
 //                                     top, the iroh dev relay on :3340; PORT, default 8937, and PORT+1..+4 free; run
 //                                     where the person is logged in: the job goes in their GUI session)
 //

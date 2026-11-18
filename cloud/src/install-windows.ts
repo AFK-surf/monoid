@@ -2,15 +2,16 @@
 // PowerShell on the machine that is to be a station, `& ([scriptblock]::Create((irm <origin>/install.ps1))) <token> [<lock>] [rig:<person>]`
 // (the workspace lock's hash to pin; `rig:<person>`: it joins as a rig, its person's own lock's hash pinned).
 // It does what install.sh does, the Windows way ("Windows"):
-// - the release (stillfail-station-win32-x64.zip) in ~\.stillfail\app; the Node it runs on (NODE_VERSION) downloaded
-//   once per version into ~\.stillfail\node\v<version> and checked, then copied to <app>\node (no links: they take a
-//   privilege on Windows); the machine's own node.exe when it is that very version;
+// - the release (stillfail-station-win32-x64.zip) in ~\.stillfail\app; for a release from before that runs on Node
+//   (its NODE_VERSION; the MoonBit station's has none and needs none), that Node downloaded once per version into
+//   ~\.stillfail\node\v<version> and checked, then copied to <app>\node (no links: they take a privilege on Windows);
+//   the machine's own node.exe when it is that very version;
 // - `stillfail` (a .cmd) in ~\.local\bin, which is put on the user's PATH when it is not;
 // - joins the workspace the token is for (a station already in one stays in it and joins this one beside it, `enroll --stay`);
 // - runs the station at sign-in: a scheduled task of the user's (no administrator needed), started now, which runs the
 //   launcher with no window (stillfail-station-w.exe) and starts it again should it end;
 // - an update (no token, a station already in a workspace) hands the running station over to the new release as
-//   install.sh does (the launcher stays; it starts the new Node beside the old one); the release before is put back
+//   install.sh does (the launcher stays; it starts the new station beside the old one); the release before is put back
 //   when the new one does not take over. Else (a new task, no handover to be had) it is drained, stopped and started
 //   again. One already on this release is left as it is.
 // The script uses no backtick and no "${" (it is a template here): PowerShell's escapes are not needed in it.
@@ -167,41 +168,46 @@ if ($env:STILLFAIL_RELEASE_SHA256 -and -not $env:STILLFAIL_INSTALLER_HANDED -and
 }
 Set-Content -Path (Join-Path $new 'CHANNEL') -Value $channel
 
-# The Node it runs on: kept in node\\v<version> beside the data, once per version, and copied to <app>\\node.
-$nodeVersion = (Get-Content (Join-Path $new 'NODE_VERSION') -Raw).Trim()
-$nodeDir = Join-Path $data "node\\v$nodeVersion"
-if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
-  $part = "$nodeDir.part"
-  if (Test-Path $part) { Remove-Item -Recurse -Force $part }
-  New-Item -ItemType Directory -Force $part | Out-Null
-  # The node.exe that node on PATH runs, when it is this version: what is on PATH can be a version manager's shim.
-  $own = Get-Command node.exe -ErrorAction SilentlyContinue
-  $ownExe = if ($own) { try { & $own.Source -e "if (process.version === 'v$nodeVersion') console.log(process.execPath)" 2>$null } catch { $null } }
-  # With the signed hash of node.exe (STILLFAIL_NODE_SHA256), the machine's own only when it is that very one.
-  $signedNode = $env:STILLFAIL_NODE_SHA256
-  if ($ownExe -and (Test-Path -LiteralPath $ownExe) -and (-not $signedNode -or (Get-FileHash -Algorithm SHA256 -LiteralPath $ownExe).Hash -eq $signedNode)) {
-    Copy-Item -LiteralPath $ownExe (Join-Path $part 'node.exe')
-  } else {
-    $nodeFile = "node-v$nodeVersion-win-x64.zip"
-    Say (__SAY(cloud.install.node.download, version=$nodeVersion))
-    try {
-      Download "$origin/releases/node/$nodeFile" (Join-Path $tmp $nodeFile)
-      if (-not $signedNode) { $want = ((Download "$origin/releases/node/$nodeFile.sha256").Content -split '\\s+')[0] }
-    } catch { Fail (__SAY(cloud.install.node.failed, version=$nodeVersion; origin=$origin)) }
-    if (-not $signedNode) {
-      $got = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $nodeFile)).Hash
-      if (-not $want -or $want -ne $got) { Fail (__SAY(cloud.install.node.mismatch, version=$nodeVersion)) }
+# The Node a release from before runs on (its NODE_VERSION): kept in node\\v<version> beside the data, once per version,
+# and copied to <app>\\node. A release with none (the MoonBit station: scripts/station-bundle.sh) needs no Node, as
+# install.sh does.
+$nodeDir = $null
+if (Test-Path -LiteralPath (Join-Path $new 'NODE_VERSION')) {
+  $nodeVersion = (Get-Content (Join-Path $new 'NODE_VERSION') -Raw).Trim()
+  $nodeDir = Join-Path $data "node\\v$nodeVersion"
+  if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
+    $part = "$nodeDir.part"
+    if (Test-Path $part) { Remove-Item -Recurse -Force $part }
+    New-Item -ItemType Directory -Force $part | Out-Null
+    # The node.exe that node on PATH runs, when it is this version: what is on PATH can be a version manager's shim.
+    $own = Get-Command node.exe -ErrorAction SilentlyContinue
+    $ownExe = if ($own) { try { & $own.Source -e "if (process.version === 'v$nodeVersion') console.log(process.execPath)" 2>$null } catch { $null } }
+    # With the signed hash of node.exe (STILLFAIL_NODE_SHA256), the machine's own only when it is that very one.
+    $signedNode = $env:STILLFAIL_NODE_SHA256
+    if ($ownExe -and (Test-Path -LiteralPath $ownExe) -and (-not $signedNode -or (Get-FileHash -Algorithm SHA256 -LiteralPath $ownExe).Hash -eq $signedNode)) {
+      Copy-Item -LiteralPath $ownExe (Join-Path $part 'node.exe')
+    } else {
+      $nodeFile = "node-v$nodeVersion-win-x64.zip"
+      Say (__SAY(cloud.install.node.download, version=$nodeVersion))
+      try {
+        Download "$origin/releases/node/$nodeFile" (Join-Path $tmp $nodeFile)
+        if (-not $signedNode) { $want = ((Download "$origin/releases/node/$nodeFile.sha256").Content -split '\\s+')[0] }
+      } catch { Fail (__SAY(cloud.install.node.failed, version=$nodeVersion; origin=$origin)) }
+      if (-not $signedNode) {
+        $got = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $nodeFile)).Hash
+        if (-not $want -or $want -ne $got) { Fail (__SAY(cloud.install.node.mismatch, version=$nodeVersion)) }
+      }
+      Expand-Archive -Path (Join-Path $tmp $nodeFile) -DestinationPath (Join-Path $tmp 'node') -Force
+      Copy-Item (Join-Path $tmp "node\\node-v$nodeVersion-win-x64\\node.exe") (Join-Path $part 'node.exe')
+      # Signed: node.exe itself (nodejs.org's zip, as the release was signed with it).
+      if ($signedNode -and (Get-FileHash -Algorithm SHA256 (Join-Path $part 'node.exe')).Hash -ne $signedNode) { Fail (__SAY(cloud.install.node.mismatch, version=$nodeVersion)) }
     }
-    Expand-Archive -Path (Join-Path $tmp $nodeFile) -DestinationPath (Join-Path $tmp 'node') -Force
-    Copy-Item (Join-Path $tmp "node\\node-v$nodeVersion-win-x64\\node.exe") (Join-Path $part 'node.exe')
-    # Signed: node.exe itself (nodejs.org's zip, as the release was signed with it).
-    if ($signedNode -and (Get-FileHash -Algorithm SHA256 (Join-Path $part 'node.exe')).Hash -ne $signedNode) { Fail (__SAY(cloud.install.node.mismatch, version=$nodeVersion)) }
+    if ((& (Join-Path $part 'node.exe') -v) -ne "v$nodeVersion") { Fail (__SAY(cloud.install.node.broken, version=$nodeVersion)) }
+    Move-Item $part $nodeDir
   }
-  if ((& (Join-Path $part 'node.exe') -v) -ne "v$nodeVersion") { Fail (__SAY(cloud.install.node.broken, version=$nodeVersion)) }
-  Move-Item $part $nodeDir
+  New-Item -ItemType Directory -Force (Join-Path $new 'node') | Out-Null
+  Copy-Item (Join-Path $nodeDir 'node.exe') (Join-Path $new 'node\\node.exe')
 }
-New-Item -ItemType Directory -Force (Join-Path $new 'node') | Out-Null
-Copy-Item (Join-Path $nodeDir 'node.exe') (Join-Path $new 'node\\node.exe')
 
 # What runs now, by run\\station.json: still that launcher (a pid is reused once its process is gone).
 $station = $null
@@ -334,7 +340,7 @@ if (-not $handed) {
     if ($haveTask) { Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue }
     if ($station) { Stop-Process -Id $station.ProcessId -Force -ErrorAction SilentlyContinue }
     # By <app> in their command lines: the release's, and one moved aside (app.old-…) on a handover that failed.
-    $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($app) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe' } }
+    $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($app) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe', 'stillfail-reader.exe' } }
     $deadline = (Get-Date).AddSeconds(30)
     while ((& $ours) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
     & $ours | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -342,8 +348,12 @@ if (-not $handed) {
   if (-not $swap.done) { Swap }
 }
 & $old
-# The Nodes no release here runs on any more.
-Get-ChildItem (Join-Path $data 'node') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $nodeDir } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# The Nodes no release here runs on any more: all of them once it runs on none.
+if ($nodeDir) {
+  Get-ChildItem (Join-Path $data 'node') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $nodeDir } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+} else {
+  Remove-Item -LiteralPath (Join-Path $data 'node') -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # Where a .cmd names a path (station/src/platform/windows.ts cmdPath, the same rule): cmd reads the file in the
 # console's code page, not as UTF-8, so a path with other than ASCII in it (C:\\Users\\张三\\…) is named through the

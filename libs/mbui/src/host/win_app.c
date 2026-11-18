@@ -924,11 +924,17 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP: ReleaseCapture(); pointer(2, lp); return 0;
     case WM_MOUSEWHEEL: wheel(wp, lp, 0); return 0;
     case WM_MOUSEHWHEEL: wheel(wp, lp, 1); return 0;
-    case WM_KEYDOWN: key_down(wp); return 0;
+    case WM_KEYDOWN:
+      if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU) mb_cb.key(0, mods_now());
+      key_down(wp); return 0;
+    case WM_KEYUP:
+      if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU) { mb_cb.key(0, mods_now()); return 0; }
+      break;
     case WM_MB_CAUGHT_KEY:
       if (catch_canvas()) mb_cb.key((int32_t)wp, (int32_t)lp);
       return 0;
     case WM_SYSKEYDOWN:
+      if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU) mb_cb.key(0, mods_now());
       // Alt with a key: a key catcher's shortcut (win_device.h)
       if (key_catching && ws->ime_active && catch_vk(wp)) return 0;
       if (wp == VK_LEFT && go_back()) return 0;
@@ -938,19 +944,23 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
       }
       break;
+    case WM_SYSKEYUP:
+      if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU) mb_cb.key(0, mods_now());
+      break;
     case WM_XBUTTONUP:
       if (GET_XBUTTON_WPARAM(wp) == XBUTTON1) go_back();
       else if (GET_XBUTTON_WPARAM(wp) == XBUTTON2) mb_cb.key(40, 0);
       return TRUE;
     case WM_CHAR: char_in((WCHAR)wp); return 0;
     case WM_SETFOCUS:
+      mb_cb.key(0, mods_now());
       catch_keys_focus(1);
       if (ws->ime_active) {
         CreateCaret(h, NULL, 1, (int)lround(ws->caret[3] * ws->scale));
         ime_place();
       }
       return 0;
-    case WM_KILLFOCUS: catch_keys_focus(0); DestroyCaret(); return 0;
+    case WM_KILLFOCUS: mb_cb.key(0, 0); catch_keys_focus(0); DestroyCaret(); return 0;
     case WM_IME_SETCONTEXT:
       // we draw the composition ourselves; the system draws the candidates
       lp &= ~(LPARAM)ISC_SHOWUICOMPOSITIONWINDOW;

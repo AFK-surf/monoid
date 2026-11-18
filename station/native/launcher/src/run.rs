@@ -220,9 +220,8 @@ impl Os for System {
         self.end_front_not_in_release();
         let app = &self.options.app;
         let (ours, theirs) = socketpair()?;
-        let mut command = Command::new(crate::node(app));
+        let mut command = crate::station(app).command();
         command
-            .arg(crate::main_js(app))
             .arg("run")
             .arg("--app")
             .arg(app)
@@ -275,7 +274,7 @@ impl Os for System {
     }
 
     fn program(&self) -> String {
-        crate::node(&self.options.app).display().to_string()
+        crate::station(&self.options.app).program.display().to_string()
     }
 
     fn has_front(&self) -> bool {

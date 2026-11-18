@@ -6,7 +6,7 @@
 // inside a write, a listener) is a callback the station may call back while it is asked (`World::callback`).
 
 ///|
-pub struct World {
+pub(all) struct World {
   /// Asks the station `name` with `args`; what it threw raises `Thrown(kind, message)`.
   call : async (String, Array[J]) -> J
   /// A callback the station may call back with its arguments while asked: what stands for it in an argument.

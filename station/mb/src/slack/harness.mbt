@@ -146,6 +146,9 @@ fn Harness::pure(self : Harness, name : String, args : Array[J]) -> J raise {
   let words = self.words.val
   let lang = self.lang.val
   match name {
+    // zip.ts
+    "connectBlocked" => jb(connect_blocked(sarg(args, 0)))
+    "zipOne" => js(@base64.encode(zip_one(sarg(args, 0), bytes_arg(arg(args, 1)))))
     // cards.ts
     "markdown" => markdown(sarg(args, 0))
     "questionBlocks" => ja(question_blocks(words, sarg(args, 0), arg(args, 1), lang))
@@ -250,6 +253,7 @@ fn Harness::pure(self : Harness, name : String, args : Array[J]) -> J raise {
     // surface.ts
     "messageText" => js(message_text(arg(args, 0)))
     "messageFiles" => ja(message_files(arg(args, 0)))
+    "filesToLookUp" => ja(files_to_look_up(arg(args, 0)).map(js))
     "answerFiles" => ja(answer_files(arg(args, 0)))
     "toEvent" => opt_j(to_event(arg(args, 0), sarg(args, 1), sarg(args, 2)))
     "personOf" => person_of(arg(args, 0))

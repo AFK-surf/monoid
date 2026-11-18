@@ -87,6 +87,7 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
   let check = jset(check, "checkedAt", jnum(self.background.now()))
   let before = self.checks.get(id)
   self.checks[id] = check
+  self.hub_cache = None
   self.background.track(async fn() {
     ignore(self.ask("store.setProfileCheck", [js(id), check]))
   })
@@ -222,6 +223,9 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
         "modelEfforts",
         jobj([("codex", catalog.get("efforts").unwrap_or(Obj([])))]),
       )
+      if catalog.get("ultrafastModels") is Some(Arr(_) as speeds) {
+        check = jset(check, "codexUltrafastModels", speeds)
+      }
       match catalog.get("defaults") {
         Some(d) if !is_undef(d) =>
           check = jset(check, "modelEffortDefaults", jobj([("codex", d)]))
@@ -239,6 +243,9 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
             match previous.get("modelEffortDefaults") {
               Some(m) => check = jset(check, "modelEffortDefaults", m)
               None => ()
+            }
+            if previous.get("codexUltrafastModels") is Some(m) {
+              check = jset(check, "codexUltrafastModels", m)
             }
             if codex_subscription && check.get("models") == Some(Null) {
               check = jset(check, "models", previous.get("models").unwrap_or(jundef))
@@ -410,6 +417,9 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
       if check.get("modelEffortDefaults") is None &&
         prev.get("modelEffortDefaults") is Some(m) {
         check = jset(check, "modelEffortDefaults", m)
+      }
+      if check.get("codexUltrafastModels") is None && prev.get("codexUltrafastModels") is Some(m) {
+        check = jset(check, "codexUltrafastModels", m)
       }
       if check.get("fusion") is None && prev.get("fusion") is Some(m) {
         check = jset(check, "fusion", m)

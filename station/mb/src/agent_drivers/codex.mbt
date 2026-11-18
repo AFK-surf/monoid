@@ -162,11 +162,12 @@ pub struct ModelCatalog {
   mut models : Array[String]
   efforts : Array[(String, Array[String])]
   defaults : Array[(String, String)]
+  mut ultrafast_models : Array[String]?
 }
 
 ///|
 pub fn ModelCatalog::new() -> ModelCatalog {
-  { models: [], efforts: [], defaults: [] }
+  { models: [], efforts: [], defaults: [], ultrafast_models: None }
 }
 
 ///|
@@ -192,6 +193,17 @@ pub fn ModelCatalog::take_page(self : ModelCatalog, answer : JValue?) -> Unit ra
     }
     guard id is Some(id) && id != "" else { continue }
     self.models.push(id)
+    let tiers = match arr_at(Some(m), "serviceTiers") {
+      Some(tiers) => Some(tiers.filter_map(tier => str_at(Some(tier), "id")))
+      None => arr_at(Some(m), "additionalSpeedTiers").map(tiers => tiers.filter_map(tier => str_of(Some(tier))))
+    }
+    if tiers is Some(tiers) {
+      let models = self.ultrafast_models.unwrap_or([])
+      if tiers.contains("ultrafast") && !models.contains(id) {
+        models.push(id)
+      }
+      self.ultrafast_models = Some(models)
+    }
     match arr_at(Some(m), "supportedReasoningEfforts") {
       Some(levels) => {
         let efforts = []
@@ -214,11 +226,15 @@ pub fn ModelCatalog::take_page(self : ModelCatalog, answer : JValue?) -> Unit ra
 
 ///|
 pub fn ModelCatalog::to_json(self : ModelCatalog) -> JValue {
-  obj([
+  let fields = [
     ("models", strs(self.models)),
     ("efforts", obj(self.efforts.map(e => (e.0, strs(e.1))))),
     ("defaults", obj(self.defaults.map(e => (e.0, s(e.1))))),
-  ])
+  ]
+  if self.ultrafast_models is Some(models) {
+    fields.push(("ultrafastModels", strs(models)))
+  }
+  obj(fields)
 }
 
 ///|
@@ -243,7 +259,7 @@ pub struct Recovered {
 
 ///|
 /// What the Codex driver is given beside the machine (codex.ts `CodexDriverOptions`, and what it reads elsewhere).
-pub struct CodexWorld {
+pub(all) struct CodexWorld {
   /// the station's environment for what it starts, before it is scrubbed (`startEnv`'s source)
   raw_env : Env
   /// config.json's `agentEnv` (`agentEnv`)
@@ -469,7 +485,7 @@ pub fn Host::attached(self : Host) -> Unit {
       Some(i) => self.lives[i].1
       None => no_live_state()
     }
-    (p.thread)(t.0, live)
+    (p.thread)(t.0, live, self.routers.iter().any(r => r.0 == t.0))
   }
   for r in self.routers {
     (p.route_thread)(r.0, true, true) |> ignore
@@ -483,10 +499,21 @@ pub fn Host::alive(self : Host) -> Bool {
 
 ///|
 /// A thread's sink, its live steps as they stand (`addThread`).
-pub fn Host::add_thread(self : Host, thread : String, sink : Sink, live : JValue) -> Unit {
+pub fn Host::add_thread(
+  self : Host,
+  thread : String,
+  sink : Sink,
+  live : JValue,
+  router? : ((Int) -> Bool)? = None,
+) -> Unit {
   put_pair(self.threads, thread, sink)
   put_pair(self.lives, thread, live)
-  (self.p().thread)(thread, live)
+  // (one taken up with its actor's router: its notifications taken there from the first, codex.ts `addThread`)
+  match router {
+    Some(r) => put_pair(self.routers, thread, r)
+    None => ()
+  }
+  (self.p().thread)(thread, live, router is Some(_))
 }
 
 ///|
@@ -801,6 +828,9 @@ pub struct CodexDriver {
   profiles : ProfileSays
   words : Words
   hosts : Array[(String, Host)]
+  /// the routers of sessions being taken up, by their keys (hub.ts `takeUp`'s `router`): their threads' events taken
+  /// by their actors in the program from the first
+  adopt_routers : Map[String, (Int, Proc) -> Bool]
   draining : Array[Host]
   mut host_queue : Later[Unit]
   mut stopped : Bool
@@ -828,6 +858,7 @@ pub fn CodexDriver::new(
     profiles,
     words,
     hosts: [],
+    adopt_routers: Map([]),
     draining: [],
     host_queue: done(m.lp),
     stopped: false,
@@ -2617,7 +2648,15 @@ pub fn CodexDriver::adopt_on(
     }
   }
   let on = on
-  on.add_thread(session.thread_id, session.sink(), session.live)
+  let router = match self.adopt_routers.get(key) {
+    Some(r) => {
+      let proc = on.p()
+      Some(batch => r(batch, proc))
+    }
+    None => None
+  }
+  self.adopt_routers.remove(key)
+  on.add_thread(session.thread_id, session.sink(), session.live, router~)
   session.recover_transcript()
   if session.busy {
     on.turn_add(session.thread_id)

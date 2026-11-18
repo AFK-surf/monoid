@@ -68,6 +68,9 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: its last m
 /// fixture's, but the chat's picture: chat.publishPreview left unanswered). Its messages without their files: no
 /// picture's bytes handed to the host (this file has no bar for them, host_image_bytes_known_wbtest's), what a message
 /// offers of itself the same. As many messages as `came` says come after its last (each a copy of it, its seq the next).
+/// The messages `long` names by seq (those come after its last too) its paragraphs, as the core reads them (a long
+/// message drawn a block a piece: chat_body_pieces), as it says them now; where the core says it was left `at` (none:
+/// as the fixture says); those come said while the chat shows where `said` (they make their way in).
 fn chat_nodes_calling(
   w : Double,
   h : Double,
@@ -76,6 +79,12 @@ fn chat_nodes_calling(
   mine? : Bool = false,
   fixture_mode? : String = "chat",
   came? : @signals.Signal[Int] = @signals.signal(0),
+  long? : @signals.Signal[Array[(Double, Array[String])]] = @signals.signal([]),
+  at? : Double,
+  said? : Bool = false,
+  long_md? : Bool = false,
+  scale? : Double = 2.0,
+  on_pixels? : Bool = false,
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
@@ -97,6 +106,17 @@ fn chat_nodes_calling(
         if mine && i == n - 1 {
           m["mine"] = Json::boolean(true)
         }
+        // (the long answer as the core reads it, its tree with it: a block of the list a piece)
+        if long_md && m.get("text") == Some(Json::string(@sffixture.long_reply)) {
+          match (@sf.kept_call.val).bind(fn(k) { k("markdown", { "text": Json::string(@sffixture.long_reply) }, None) }) {
+            Some(Ok((Object(a), _))) =>
+              match a.get("md") {
+                Some(t) => m["md"] = t
+                None => ()
+              }
+            _ => ()
+          }
+        }
         Json::object(m)
       })
       let more = if text(Some(Json::object(params)), "session") == "s-c1" { came.get() } else { 0 }
@@ -106,9 +126,29 @@ fn chat_nodes_calling(
         let seq = number(Some(kept[n - 1]), "seq") + k.to_double()
         m["seq"] = Json::number(seq)
         m["ts"] = Json::string("ts\{seq}")
+        if said {
+          m["said"] = Json::boolean(true)
+        }
         kept.push(Json::object(m))
       }
+      let paras = long.get()
+      let kept = kept.map(fn(j) {
+        guard j is Object(was) else { return j }
+        match paras.iter().find_first(fn(p) { p.0 == number(Some(j), "seq") }) {
+          Some((_, ps)) => {
+            let m = was.copy()
+            m["text"] = Json::string(ps.join("\n\n"))
+            m["md"] = Json::array(ps.map(fn(p) { Json::array([Json::string("p"), Json::array([Json::string(p)])]) }))
+            Json::object(m)
+          }
+          None => j
+        }
+      })
       out["messages"] = Json::array(kept)
+      match at {
+        Some(a) => out["at"] = Json::number(a)
+        None => ()
+      }
       { ..got, version: got.version + more, value: Some(Json::object(out)) }
     },
     call: fn(name, params, done) {
@@ -121,7 +161,10 @@ fn chat_nodes_calling(
     },
   }
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, scale~)
+  if on_pixels {
+    t.set_rows_on_pixels(true)
+  }
   t.run_for(@ui.move_most_ms)
   (t, src)
 }
@@ -735,7 +778,7 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message 
 }
 
 ///|
-test "a chat's page made with its inside nodes, on 小屏 and 大屏: opened to go to a message before what it opens on, the pages before asked till it comes, it just under its top, nothing left to go to" {
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: opened to go to a message before what it opens on, the window moved about it (chat.around, once, no page before asked one at a time), it just under its top, nothing left to go to" {
   for s in long_screens {
     let (name, h) = (s.0, s.2)
     let target = 120
@@ -743,7 +786,8 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: opened to 
     let t = place_long_open(l, s, before=fn() { go_to(long_ref, target.to_double(), keep_place=false) })
     long_run(t, l, long_rest_ms)
     let older = l.asked.filter(fn(a) { a.has_prefix("older") })
-    assert_true(older.length() > 0, msg="\{name}: asked \{@ui.list_text(l.asked)}")
+    assert_eq(older.length(), 0, msg="\{name}: asked \{@ui.list_text(l.asked)}")
+    assert_eq(l.asked.filter(fn(a) { a == "around \{target}" }).length(), 1, msg="\{name}: asked \{@ui.list_text(l.asked)}")
     let at = t.rect_of("第\{target}条：")
     assert_true(
       at is Some((_, y, _, _)) && y > 0.0 && y < h / 3.0,
@@ -1574,18 +1618,6 @@ fn row_bands(t : @ui.Tester, c : Int64) -> Array[(Double, Double)] {
 }
 
 ///|
-/// Whether `bands` lie one on another from the first to the last, nothing between them, and hold all of `from` to `to`.
-fn bands_hold(bands : Array[(Double, Double)], from : Double, to : Double) -> Bool {
-  guard bands.length() > 0 else { return false }
-  for i in 1..<bands.length() {
-    if (bands[i].0 - bands[i - 1].1).abs() > 0.5 {
-      return false
-    }
-  }
-  bands[0].0 <= from && bands[bands.length() - 1].1 >= to
-}
-
-///|
 test "a chat's page made with its inside nodes, on 小屏 and 大屏: the bands of rows gone to one after another meet, from the middle of the room over each to the middle of the room over the next, whatever room that is" {
   for s in long_screens {
     let (name, _, _, _) = s
@@ -1619,30 +1651,385 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the bands 
 }
 
 ///|
-test "a chat's page made with its inside nodes, 大屏: a long answer in pieces gone to, or right clicked in a piece after its first, is lit as one band from its head to its foot" {
-  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, [])
+test "a chat's page made with its inside nodes, 大屏, its rows on the pixels: a long answer in pieces (a block of its words a row) gone to, right clicked in a piece after its first, or its ⋯ opened is lit by one band from its head to its foot" {
+  let (t, _) = chat_nodes_calling(1237.0, 800.0, 0, [], long_md=true, on_pixels=true)
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   @signals.start_batch()
   @sfbase.go_to(r, 3.0)
   @signals.end_batch()
   t.run_for(@sfbase.flash_in_ms + 100.0)
-  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
-    fail("its head and its last line not drawn")
+  let one = fn(bands : Array[(Double, Double)], name : String) raise {
+    guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
+      fail("\{name}: its head and its last line not drawn")
+    }
+    guard bands is [(top, foot)] else { fail("\{name}: \{Repr(bands)}") }
+    assert_true(top <= head.1 && foot >= last.1 + last.3, msg="\{name}: \{top}…\{foot}, \{head.1}…\{last.1 + last.3}")
   }
-  let flashed = row_bands(t, @sf.theme().flash_bg())
-  assert_true(bands_hold(flashed, head.1, last.1 + last.3), msg="gone to: \{Repr(flashed)}, \{head.1}…\{last.1 + last.3}")
+  one(row_bands(t, @sf.theme().flash_bg()), "gone to")
   t.run_for(@sfbase.flash_ms + @ui.move_most_ms)
   assert_eq(row_bands(t, @sf.theme().flash_bg()), [], msg="at rest")
-  // (right clicked in a piece after its first, over the composer)
+  // (right clicked in a piece after its first)
   guard t.rect_of("核心的一段在") is Some((x, y, _, _)) else { fail("a line of a later piece not drawn") }
   t.move_to(x + 8.0, y + 8.0)
   t.frame()
   t.right_click(x + 8.0, y + 8.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("复制消息链接") is Some(_), msg="its menu")
-  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
-    fail("its head and its last line not drawn, its menu open")
+  one(row_bands(t, @ui.tree_theme().color(Hover)), "right clicked")
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(row_bands(t, @ui.tree_theme().color(Hover)), [], msg="its menu gone")
+  // (its ⋯, the first piece's, shown with the pointer on a later piece)
+  t.move_to(x + 8.0, y + 8.0)
+  t.frame()
+  t.frame()
+  t.click(Button, label="更多操作")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息链接") is Some(_), msg="its ⋯'s menu")
+  one(row_bands(t, @ui.tree_theme().color(Hover)), "its ⋯")
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(row_bands(t, @ui.tree_theme().color(Hover)), [], msg="its ⋯'s menu gone")
+}
+
+///|
+/// The composer at the foot of the room while the chat's view is read, then one in the list's foot as it comes: written in
+/// meanwhile, its cursor, its keyboard and its words go on in the second (held so 2026-11-17, asked of a report).
+test "小屏, a chat's page made with its inside nodes, written in before its view comes: the cursor kept in the composer as it comes, the keyboard never told down, what was typed there" {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let answered = @signals.signal(false)
+  let src = over_source(answered)
+  open_chat(over_chat)
+  // (the screen's keyboard: a finger the native input)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, pointing=Finger, native=Finger)
+  t.run_for(page_local_ms + @ui.move_most_ms)
+  t.tap_text("发消息")
+  t.type_text("先打几个字")
+  t.draw()
+  let (active, words, _, _) = t.ime()
+  assert_true(active, msg="the cursor not in the composer while the view is read")
+  assert_eq(words, "先打几个字")
+  let down : Array[Double] = []
+  t.each_frame(Some(fn() { if !t.ime().0 { down.push(t.time()) } }))
+  @ui.view_tree().unwrap().event(t.time(), fn() { answered.set(true) })
+  t.run_for(@ui.move_most_ms)
+  t.each_frame(None)
+  assert_true(down.is_empty(), msg="the keyboard told down at \{Repr(down)}")
+  let (active, words, _, _) = t.ime()
+  assert_true(active)
+  assert_eq(words, "先打几个字")
+  t.type_text("，接着打")
+  t.draw()
+  assert_eq(t.ime().1, "先打几个字，接着打")
+}
+
+///|
+/// The fixture's chat s-c1 with its last message (seq 11, an agent's) `n` paragraphs long, each a block of its own,
+/// opened with its page's inside nodes on 小屏, its calls kept in `calls`: the words of the message whole.
+fn long_message_open(calls : Array[(String, Json)], n : Int) -> (@ui.Tester, String) {
+  let paras = Array::makei(n, fn(i) { "第 \{i} 段：这一段说的是一件很长的事情，写满一行还要再写一行才算完。" })
+  let text = paras.join("\n\n")
+  let md = Json::array(paras.map(fn(p) { Json::array([Json::string("p"), Json::array([Json::string(p)])]) }))
+  let t = message_changed_open(calls, 11, fn(c) {
+    c["text"] = Json::string(text)
+    c["md"] = md
+  })
+  (t, text)
+}
+
+///|
+/// The fixture's chat s-c1 with its message `seq` changed by `change` (its fields, as the core says them), the others'
+/// files none (no picture of theirs decoded as the list is read up), opened with its page's inside nodes on 小屏, its
+/// calls kept in `calls`.
+fn message_changed_open(
+  calls : Array[(String, Json)],
+  seq : Int,
+  change : (Map[String, Json]) -> Unit,
+  finger? : Bool = false,
+  others? : (Int, Map[String, Json]) -> Unit = fn(_, _) {  },
+) -> @ui.Tester {
+  new_run()
+  @sf.presenters_reset()
+  @sfbase.chat_page_nodes.set(true)
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      (base.call)(name, params, done)
+    },
+    topic_read: fn(name, params) {
+      let tp = base.topic(name, params).get().snapshot()
+      guard name == "chat" && tp.value is Some(Object(v)) else { return tp }
+      let o = v.copy()
+      o["messages"] = Json::array(
+        items(tp.value, "messages").map(fn(m) {
+          match m {
+            Object(mo) if number(Some(m), "seq") == seq.to_double() => {
+              let c = mo.copy()
+              change(c)
+              Json::object(c)
+            }
+            Object(mo) => {
+              let c = mo.copy()
+              c["attachments"] = Json::array([])
+              others(number(Some(m), "seq").to_int(), c)
+              Json::object(c)
+            }
+            _ => m
+          }
+        }),
+      )
+      { ..tp, value: Some(Json::object(o)) }
+    },
   }
-  let lit = row_bands(t, @ui.tree_theme().color(Hover))
-  assert_true(bands_hold(lit, head.1, last.1 + last.3), msg="its menu open: \{Repr(lit)}, \{head.1}…\{last.1 + last.3}")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  // (a finger the hand where `finger` says, as on a phone)
+  let t = if finger {
+    @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, pointing=Finger, native=Finger)
+  } else {
+    @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  }
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// 全选 over a finger's pick in a long message took what its rows round what shows held of it: those past them (a
+/// screen over what shows) were made of none, their words not picked, 复制 and 引用 cut short (2026-11-17).
+test "小屏, a chat's page made with its inside nodes: 全选 over a finger's pick in a message too long for its rows to be made whole, then 复制 or 引用: all of its words, not those of its rows made" {
+  let calls : Array[(String, Json)] = []
+  let (t, whole) = long_message_open(calls, 160)
+  // (its first paragraph a long way up, made of no row)
+  assert_true(t.run_rects("第 0 段").is_empty(), msg="the message's first paragraph drawn: not long enough")
+  let last = "第 159 段"
+  finger_held_nodes(t, last)
+  guard pick_bar_button(t, "全选") is Some((x, y, w, h)) else { fail("no 全选") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard pick_bar_button(t, "复制") is Some((x, y, w, h)) else { fail("no 复制") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.clipboard(), whole)
+  assert_eq(@ui.picked_now(), None)
+  // again, 引用: all of it quoted into the draft
+  finger_held_nodes(t, last)
+  guard pick_bar_button(t, "全选") is Some((x, y, w, h)) else { fail("no 全选") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard pick_bar_button(t, "引用") is Some((x, y, w, h)) else { fail("no 引用") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let quoted = calls.filter(fn(c) { c.0 == "composer.quote" })
+  assert_eq(quoted.length(), 1)
+  assert_eq(text(field(Some(quoted[0].1), "quote"), "text"), whole)
+}
+
+///|
+/// The bar over a finger's pick stood beside words a list's row held, as that row was let go of (the list moved on
+/// far past it): beside nothing (2026-11-17).
+test "小屏, a chat's page made with its inside nodes: a finger's pick whose words' row is let go of as the list moves far from it is let go of, its bar with it" {
+  let calls : Array[(String, Json)] = []
+  let (t, _) = long_message_open(calls, 400)
+  finger_held_nodes(t, "第 399 段")
+  assert_true(pick_bar_button(t, "复制") is Some(_))
+  // (read far up: the row the pick's words are in let go of; not as far as the chat's picture over the message)
+  for dy in Array::make(4, -800.0) {
+    t.wheel(195.0, 400.0, dy)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_true(t.run_rects("第 399 段").is_empty(), msg="still drawn")
+  assert_eq(@ui.picked_now(), None)
+  assert_true(pick_bar_button(t, "复制") is None, msg="the bar still up")
+}
+
+///|
+/// A notice folding several (×n) pressed open or shut moved as it did (what it holds under its pill coming or going
+/// round it): it never said it opens and shuts, so the framework did not hold it where it was pressed (press_stays;
+/// 2026-11-17). Read up from the chat's foot: there the list's following its foot is the framework's (said apart).
+test "小屏, a chat's page made with its inside nodes, read up: a notice folding several pressed open and shut again stays where it was pressed" {
+  let calls : Array[(String, Json)] = []
+  let words = "Willow 上 codex 的登录已失效：请在设置里重新登录。这一行写得长一些，打开以后要折成好几行才放得下全部的话。"
+  let t = message_changed_open(calls, 9, fn(c) {
+    c["text"] = Json::string(words)
+    c["notice"] = Json::object({ "failed": Json::boolean(true), "words": Json::string(words), "count": Json::number(3.0) })
+  })
+  let label = words + " ×3"
+  // (read up off the chat's foot, the notice still in sight)
+  t.wheel(195.0, 400.0, -200.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.query(Button, label~) is Some(pill) else { fail("no notice's pill") }
+  let (x, y, w, h) = pill.rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.query(Button, label~) is Some(opened) else { fail("no notice's pill, open") }
+  assert_eq(opened.expanded, Some(true))
+  assert_true((opened.rect.1 - y).abs() < 0.5, msg="opened: from \{y} to \{opened.rect.1}")
+  assert_true(opened.rect.3 > h, msg="not open: \{opened.rect.3}")
+  let (x, y2, w, h2) = opened.rect
+  t.tap(x + w / 2.0, y2 + h2 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.query(Button, label~) is Some(shut) else { fail("no notice's pill, shut") }
+  assert_true((shut.rect.1 - y2).abs() < 0.5, msg="shut: from \{y2} to \{shut.rect.1}")
+}
+
+
+///|
+/// A code block's 换行 and how far it was scrolled across were its nodes' own: its row let go as the list went far from
+/// it and made again as it came back, it was back on its lines as written, at their start (2026-11-17).
+test "小屏, a chat's page made with its inside nodes: a long message's code block wrapped, read far past and back, is still wrapped; on its lines again, scrolled across, read far past and back, scrolled as far" {
+  let calls : Array[(String, Json)] = []
+  let code = "cargo build --release --target aarch64-apple-darwin --features cuda,metal,vulkan,opencl --jobs 16 --locked --offline"
+  let paras = Array::makei(400, fn(i) { "第 \{i} 段：这一段说的是一件很长的事情，写满一行还要再写一行才算完。" })
+  let md = Json::array(
+    paras.map(fn(p) { Json::array([Json::string("p"), Json::array([Json::string(p)])]) }) +
+    [
+      Json::array([Json::string("pre"), Json::array([]), Json::object({ "code": Json::string(code), "lang": Json::string("sh"), "ink": Json::string("") })]),
+    ],
+  )
+  let t = message_changed_open(calls, 11, fn(c) {
+    c["text"] = Json::string(paras.join("\n\n") + "\n\n```sh\n" + code + "\n```")
+    c["md"] = md
+  })
+  // (the block at the message's end, where the chat opens; read far up from it, its row let go of, and back down;
+  // not as far as the chat's picture over the message)
+  let up = fn() {
+    for dy in Array::make(4, -800.0) {
+      t.wheel(195.0, 400.0, dy)
+      t.run_for(@ui.move_most_ms)
+    }
+  }
+  let down = fn() {
+    for dy in Array::make(4, 800.0) {
+      t.wheel(195.0, 400.0, dy)
+      t.run_for(@ui.move_most_ms)
+    }
+  }
+  guard t.query(Button, label="换行") is Some(key) else { fail("no code block's 换行 at the message's end") }
+  t.tap(key.rect.0 + key.rect.2 / 2.0, key.rect.1 + key.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="不换行") is Some(_), msg="not wrapped")
+  up()
+  assert_true(t.query(Button, label="不换行") is None && t.query(Button, label="换行") is None, msg="the block not let go")
+  down()
+  assert_true(t.query(Button, label="不换行") is Some(_), msg="unwrapped as it came back")
+  // back on its lines as written, scrolled across by a finger along it
+  guard t.query(Button, label="不换行") is Some(key) else { fail("no 不换行") }
+  t.tap(key.rect.0 + key.rect.2 / 2.0, key.rect.1 + key.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.run_rects("cargo") is [(cx, cy, _, ch), ..] else { fail("its code not drawn") }
+  // (held still before it is let go: scrolled as far as the finger took it, no glide after)
+  t.hold_drag(cx + 200.0, cy + ch / 2.0, cx, cy + ch / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.release(cx, cy + ch / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.run_rects("cargo") is [(moved, _, _, _), ..] else { fail("its code not drawn, scrolled") }
+  assert_true(moved < cx - 50.0, msg="not scrolled across: \{cx} to \{moved}")
+  up()
+  down()
+  guard t.run_rects("cargo") is [(back, _, _, _), ..] else { fail("its code not drawn, back") }
+  assert_true((back - moved).abs() < 0.5, msg="scrolled \{moved} before, \{back} after")
+}
+
+///|
+/// The code block's key over the code drawn at `cy` (its bar right over it): its words, 换行 or 不换行.
+fn code_key_over(t : @ui.Tester, cy : Double) -> String? {
+  t
+  .semantics()
+  .filter(fn(s) { !s.hidden && s.role is Button && (s.label == "换行" || s.label == "不换行") })
+  .filter(fn(s) { s.rect.1 < cy && s.rect.1 > cy - 60.0 })
+  .map(fn(s) { s.label })
+  .get(0)
+}
+
+///|
+/// What a code block keeps (换行, how far it is scrolled across) is its message's and block's, read as its row is now:
+/// a row's blocks taken for another message's as the list goes (#6813's reuse) take that one's, never carrying the
+/// one's they were made for (2026-11-17).
+test "小屏, a chat's page made with its inside nodes: a code block wrapped, another message's read far up from it is on its own lines at their start; scrolled, back down and up again: each as it was left" {
+  let calls : Array[(String, Json)] = []
+  let code = "cargo build --release --target aarch64-apple-darwin --features cuda,metal,vulkan,opencl --jobs 16 --locked --offline"
+  let other = "npm run build -- --mode production --filter @still/app --concurrency 8 --sourcemap --minify --no-cache --verbose"
+  let pre = fn(c : String) {
+    Json::array([Json::string("pre"), Json::array([]), Json::object({ "code": Json::string(c), "lang": Json::string("sh"), "ink": Json::string("") })])
+  }
+  let paras = Array::makei(400, fn(i) { "第 \{i} 段：这一段说的是一件很长的事情，写满一行还要再写一行才算完。" })
+  let md = Json::array(paras.map(fn(p) { Json::array([Json::string("p"), Json::array([Json::string(p)])]) }) + [pre(code)])
+  let t = message_changed_open(
+    calls,
+    11,
+    fn(c) {
+      c["text"] = Json::string(paras.join("\n\n") + "\n\n```sh\n" + code + "\n```")
+      c["md"] = md
+    },
+    others=fn(seq, c) {
+      if seq == 3 {
+        c["text"] = Json::string("先跑一遍：\n\n```sh\n" + other + "\n```")
+        c["md"] = Json::array([Json::array([Json::string("p"), Json::array([Json::string("先跑一遍：")])]), pre(other)])
+      }
+    },
+  )
+  let seen = fn(words : String) {
+    t.run_rects(words).filter(fn(r) { r.1 > 80.0 && r.1 + r.3 < 700.0 }).get(0)
+  }
+  let wheel_till = fn(words : String, dy : Double) raise {
+    for _ in 0..<160 {
+      if seen(words) is Some(_) {
+        return
+      }
+      t.wheel(195.0, 400.0, dy)
+      t.run_for(@ui.move_most_ms)
+    }
+    fail("\{words} never came into view: \{Repr(t.words().filter(fn(w) { w.2 > 0.0 && w.2 < 844.0 }).map(fn(w) { w.0 }))}")
+  }
+  // (the long message's block, where the chat opens: wrapped)
+  guard seen("cargo") is Some((start, _, _, _)) else { fail("its code not drawn") }
+  guard t.query(Button, label="换行") is Some(key) else { fail("no code block's 换行 at the message's end") }
+  t.tap(key.rect.0 + key.rect.2 / 2.0, key.rect.1 + key.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  // (wrapped, taller: where its code is drawn now)
+  guard seen("cargo") is Some((_, cy, _, _)) else { fail("its code not drawn, wrapped") }
+  assert_eq(code_key_over(t, cy), Some("不换行"))
+  // (up to the other message's: on its lines as written, at their start)
+  wheel_till("npm", -400.0)
+  guard seen("npm") is Some((ox, oy, _, oh)) else { fail("its code not drawn") }
+  assert_eq(code_key_over(t, oy), Some("换行"), msg="the other's block wrapped as the first")
+  assert_true((ox - start).abs() < 0.5, msg="the other's block scrolled across: \{ox}, its start \{start}")
+  // (scrolled across by a finger, read down to the first and up again)
+  // (held still before it is let go: scrolled as far as the finger took it, no glide after)
+  t.hold_drag(ox + 200.0, oy + oh / 2.0, ox, oy + oh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.release(ox, oy + oh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard seen("npm") is Some((moved, _, _, _)) else { fail("its code not drawn, scrolled") }
+  assert_true(moved < ox - 50.0, msg="not scrolled across: \{ox} to \{moved}")
+  wheel_till("cargo", 400.0)
+  guard seen("cargo") is Some((cx, cy, _, _)) else { fail("its code not drawn, back") }
+  assert_eq(code_key_over(t, cy), Some("不换行"), msg="the first's block not wrapped as it was left")
+  assert_true((cx - start).abs() < 0.5, msg="the first's block moved across by the other's: \{cx}, its start \{start}")
+  wheel_till("npm", -400.0)
+  guard seen("npm") is Some((back, oy, _, _)) else { fail("its code not drawn, back") }
+  assert_eq(code_key_over(t, oy), Some("换行"))
+  assert_true((back - moved).abs() < 0.5, msg="scrolled \{moved} before, \{back} after")
+}
+
+///|
+/// An agent's message of files alone had nothing a finger could hold for what it offers of itself (the bar over words
+/// held is a pick's; a file's menu its own, none of the message's): its link, 多选 (2026-11-17).
+test "小屏, a chat's page made with its inside nodes: an agent's message of a file alone, its file held by a finger: its own menu, then the message's link and 多选" {
+  let calls : Array[(String, Json)] = []
+  let t = message_changed_open(calls, 11, fn(c) {
+    c["text"] = Json::string("")
+    c["md"] = Json::array([])
+    c["attachments"] = Json::array([@sffixture.file("发布说明.pdf", 0, 0, 245760)])
+  }, finger=true)
+  guard t.rect_of("发布说明") is Some((fx, fy, fw, fh)) else { fail("its file not drawn") }
+  t.press_at(fx + fw / 2.0, fy + fh / 2.0)
+  t.run_for(@ui.long_press_ms)
+  t.release(fx + fw / 2.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("下载") is Some(_), msg="its file's own menu")
+  assert_true(t.find("复制消息链接") is Some(_), msg="no 复制消息链接 in its file's menu: \{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(t.find("多选") is Some(_), msg="no 多选 in its file's menu")
 }

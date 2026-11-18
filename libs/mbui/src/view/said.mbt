@@ -39,6 +39,10 @@ pub(all) enum Role {
   Form
   Heading
   ScrollArea
+  Table
+  Row
+  ColumnHeader
+  Cell
 }
 
 ///|
@@ -80,8 +84,19 @@ pub impl Show for Role with output(self, logger) {
       Form => "Form"
       Heading => "Heading"
       ScrollArea => "ScrollArea"
+      Table => "Table"
+      Row => "Row"
+      ColumnHeader => "ColumnHeader"
+      Cell => "Cell"
     },
   )
+}
+
+///|
+/// Whether one of this role that says no label of its own is called by what it holds (Tree::words_within): all but a
+/// table, which is called by its author alone (ARIA's table, a name from no content), its words its cells'.
+pub fn Role::named_by_held(self : Role) -> Bool {
+  self != Table
 }
 
 ///|
@@ -447,7 +462,7 @@ pub fn Tree::said_pass(
     let crossed = Ref(false)
     let label = match n.said {
       Some(said) if said.label != "" => Some(said.label)
-      Some(_) if words =>
+      Some(said) if words && said.role.named_by_held() =>
         Some(
           self.words_within(
             id,
@@ -458,6 +473,8 @@ pub fn Tree::said_pass(
             set~,
           ),
         )
+      // (a table: by its author alone)
+      Some(_) if words => Some("")
       Some(_) => None
       None => Some("")
     }
@@ -633,4 +650,11 @@ pub fn Tree::said_pass(
     None
   }
   { entries, root }
+}
+
+///|
+/// Whether node `id`'s presses are off of its own (View::presses, leaving, left out of its row, in its bones:
+/// Tree::pressless_own_at), not only taken from it by a modal layer over it as a said node's `disabled` may be.
+pub fn Tree::node_pressless_own(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.pressless_own_at(id.at)
 }

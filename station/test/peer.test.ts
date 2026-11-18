@@ -362,3 +362,28 @@ test("a station safe mode leaves out is refused saying why; one of no workspace 
   cloud.lock = null;
   assert.deepEqual(roster(cloud, "ws"), { workspace: "ws", stations: [{ id: "A" }], current: true });
 });
+
+test("mesh directory exchange runs only after workspace peer admission", async () => {
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [PEER_BYTES_ALPN], relayUrls: [], discovery: false });
+  const [source, target] = await Promise.all([bind(), bind()]);
+  const targetCloud = cloudOf(target.id(), [source.id()]);
+  const seen: unknown[] = [];
+  void (async () => {
+    for (;;) {
+      const conn = await target.accept();
+      if (!conn) return;
+      void servePeer(conn, targetCloud, { handle: async () => { throw new Error("unexpected generic handler"); } } as any,
+        async (peer, workspace, request) => { seen.push([peer, workspace, request]); return { versions: {}, records: [] }; }).catch(() => {});
+    }
+  })();
+  const call = peerCall(source, cloudOf(source.id(), [target.id()]), (id) => ({ id }));
+  try {
+    const request = { method: "meshScopes.exchange", want: [] };
+    assert.deepEqual(await call(target.id(), "ws", request), { versions: {}, records: [] });
+    assert.deepEqual(seen, [[source.id(), "ws", request]]);
+    targetCloud.state.peers = [];
+    await assert.rejects(call(target.id(), "ws", request), Refused);
+    assert.equal(seen.length, 1);
+  } finally { call.close?.(); await Promise.all([source.close(), target.close()]); }
+});

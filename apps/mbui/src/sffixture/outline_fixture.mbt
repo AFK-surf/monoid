@@ -351,7 +351,7 @@ pub fn fixture_outline_call(f : Fixture, name : String, params : Json) -> Result
     "chat.around" if outline_long_mode(f.mode) && f.older == 0 => {
       f.older = 1
       f.changed()
-      return Some(Ok(Json::object({})))
+      return Some(Ok({ "seq": Json::number(number(Some(params), "seq")) }))
     }
     _ => return None
   }

@@ -1135,12 +1135,12 @@ export class Store {
     const pinned = list !== null ? list.length === 1 : (s.profilePinned ?? false);
     this.#with((changes) => {
       this.#run(
-        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed, tui)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         s.key, s.connect, s.scope ?? "thread", s.title ?? null, s.createdBy ?? null, s.runtime, s.profile, flag(pinned), list !== null ? JSON.stringify(list) : null,
         s.model ?? null, s.effort ?? null, s.workspace, s.cwd ?? null, s.runtimeSessionId ?? null, s.token, s.createdAt, s.lastActiveAt,
         // A new session begins with today's instructions: no note is news to it.
-        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null,
+        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null, flag(s.tui === true),
       );
       changes.push({ type: "session", key: s.key });
       this.#sessionWorkspaceChanged();
@@ -1161,7 +1161,7 @@ export class Store {
     // transcript recovers the original. Without the index no older station could have made such a change.
     const first = hasRuntimeOrderIndex(this.db)
       ? "(SELECT runtime FROM runtime_sessions INDEXED BY runtime_sessions_ordered WHERE session_key = ?9 ORDER BY at, rowid LIMIT 1), " : "";
-    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
+    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, tui = NULL, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
   }
 
   /// A session's model and effort from its next start on (null: the runtime's default).
@@ -1187,6 +1187,10 @@ export class Store {
   /// Whether it goes on afresh once its prompt cache is over (null: as the station is set).
   setSessionAfresh(key: string, afresh: boolean | null): void {
     this.#updateSession(key, "UPDATE sessions SET afresh = ?1 WHERE key = ?2", optFlag(afresh), key);
+  }
+
+  setSessionTui(key: string, tui: boolean): void {
+    this.#updateSession(key, "UPDATE sessions SET tui = ?1 WHERE key = ?2", flag(tui), key);
   }
 
   setSessionSpeed(key: string, speed: ModelSpeed | null): void {
@@ -1276,8 +1280,19 @@ export class Store {
 
   /// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after.
   deviceBuildsSince(now: number): number {
-    this.#run("INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)", now);
-    return Number(this.#one("SELECT at FROM device_builds_since WHERE one = 1")?.at ?? now);
+    const saved = this.#one("SELECT at FROM device_builds_since WHERE one = 1");
+    if (saved !== undefined) return Number(saved.at);
+    // The first start may be beside another writer. Do not hold the main thread for SQLite's busy timeout: the mesh
+    // retries after a failed start. INSERT OR IGNORE also keeps the first value if two starts race to make it.
+    try {
+      return this.#tryNow(() => {
+        this.#run("INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)", now);
+        return Number(this.#one("SELECT at FROM device_builds_since WHERE one = 1")?.at ?? now);
+      });
+    } catch (error) {
+      if (error instanceof MessageWriteBusy) throw new MessageWriteBusy("device builds write is busy");
+      throw error;
+    }
   }
 
   /// What a session's calls used as last kept (`setSessionUsage`); null before any.
@@ -4007,9 +4022,10 @@ export class Store {
     });
   }
 
-  /// A job started (again): running, in this process group.
+  /// A job started (again): running, in this process group. One that waited in the queue (`queued`) starts now: what it
+  /// says of when it started was when it was queued.
   jobStarted(id: string, pgid: number, restarted: boolean): void {
-    this.#jobUpdate(id, "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, queued = 0 WHERE id = ?3", pgid, flag(restarted), id);
+    this.#jobUpdate(id, "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, started_at = CASE WHEN ?2 = 0 AND COALESCE(queued, 0) <> 0 THEN ?4 ELSE started_at END, queued = 0 WHERE id = ?3", pgid, flag(restarted), id, this.now());
   }
 
   /// A job ended: `state` exited, stopped or failed.

@@ -7,11 +7,12 @@
   // the serif face (style bit 4): a reader's 宋体
   const SERIF = '"Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif';
   const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, "JetBrains Mono", "PingFang SC", "Noto Sans CJK SC", monospace';
-  const ATLAS = 2048;
+  const ATLAS = 4096;
   const hostScriptSrc = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) || location.href;
   const params = new URLSearchParams(location.search);
   const H = {};
   let cb = null;
+  let modifiersSaid = 0;
   let canvas, gl, prog, post, vao, instBuf, atlasTex, ta;
   const U = {}, PU = {};
   let cssW = 0, cssH = 0, dpr = 1;
@@ -73,6 +74,10 @@
       requestAnimationFrame(tick);
     }
   };
+  // A frame asked for what moves on by the clock that needs only `hz` a second (@hostapi.frames_paced: a slow fill, a
+  // spinner): a browser says nothing of how often it refreshes, so it is the next animation frame, as request_frame_on.
+  // (None at all till 2026-11-17: what moved on by the clock alone, paced, stood still between inputs.)
+  H.framesPaced = (_hz) => H.requestFrame();
   // (a run to a declared moment draws every frame to it: its timers are on its clock, due at the frame they fall in)
   // The frame `ms` after the one being built (its time), else after now: drawn at the first of the display's frames at
   // or past it, the ones before drawing nothing (not the one after a timer happens to fire: a step a frame or two
@@ -365,6 +370,8 @@
       canvas.width = w;
       canvas.height = h;
     }
+    // (the system's bars as the page's size changes: a phone turned, a window moved)
+    if (barsSetUp) barsNow();
   }
 
   // ---- WebGL2 renderer ----
@@ -407,6 +414,8 @@
     if (a_rot.x != 0.0) { vec2 d = pos - a_rot.yz; float c = cos(a_rot.x), s = sin(a_rot.x); at = a_rot.yz + vec2(c * d.x - s * d.y, s * d.x + c * d.y); }
     gl_Position = vec4(at.x / u_vp.x * 2.0 - 1.0, 1.0 - at.y / u_vp.y * 2.0, 0.0, 1.0);
     v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;
+    // (a glyph's p.x, which it has no use for: how it is turned, for its texels taken whole where it is not)
+    if (kind == 1 || kind == 3 || kind == 7) v_p.x = a_rot.x;
     if (kind == 4 && a_pad.z > 0.5) v_pad.x = a_rot.w;
     v_oclip = a_oclip; v_orc = a_orc; v_ors = a_ors;
     vec2 cq = a_rot.w > 0.5 ? at : pos;
@@ -723,6 +732,8 @@
   // where a point is in the capture's sharp level (u_img while liquid glass is drawn: capture's rTex)
   uniform vec4 u_rmap;
   uniform vec4 u_ruvc;
+  // a liquid group's bounds (as the vertex shader has them)
+  uniform vec4 u_gb;
   uniform vec4 u_shape[8];
   uniform vec4 u_rad[2];
   uniform int u_n;
@@ -754,6 +765,16 @@
     for (int i = 0; i < 8; i++) {
       if (i >= u_n) break;
       d = smin_k(d, sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4])), k);
+    }
+    return d;
+  }
+  // sd_group with each shape's corners rounder (1.45 times, at most half its shorter side): what liquid glass slopes by
+  float sd_group_soft(vec2 p, float k) {
+    float d = 1e9;
+    for (int i = 0; i < 8; i++) {
+      if (i >= u_n) break;
+      vec2 hs = u_shape[i].zw * 0.5;
+      d = smin_k(d, sd_rr(p, u_shape[i], vec4(min(u_rad[i / 4][i % 4] * 1.45, min(hs.x, hs.y)))), k);
     }
     return d;
   }
@@ -804,8 +825,14 @@
     if (kind == 1 || kind == 3 || kind == 7) {
       // within its own cell (c2: where in the atlas, in texels), however its rect is stretched or turned: a sample
       // past the cell's edge texels would blend in what lies beside it (another glyph, one left from before the
-      // atlas started over)
-      vec2 uv = clamp(v_c2.xy + (p - v_rect.xy) / v_rect.zw * v_c2.zw, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
+      // atlas started over). One drawn as big as its picture, not turned, its corner on a pixel: each pixel its
+      // texel's centre, as win_render.cpp takes it (worked out of where it is across the rect, a float's division
+      // took a texel's neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)
+      vec2 off = abs(v_rect.zw * u_scale - v_c2.zw);
+      vec2 r0 = v_rect.xy * u_scale, r0i = floor(r0 + 0.5);
+      bool exact = v_p.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;
+      vec2 tex = exact ? floor(p * u_scale - r0i) + 0.5 : (p - v_rect.xy) / v_rect.zw * v_c2.zw;
+      vec2 uv = clamp(v_c2.xy + tex, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
       vec4 t = texture(u_atlas, uv);
       if (kind == 7) {
         // inked by how light what is under its glass is, looked at round the glass's middle
@@ -820,25 +847,95 @@
       return;
     }
     if (kind == 6) {
+      // Copyright 2025 Kyant. Adapted from AndroidLiquidGlass Shaders.kt at eb4a0ea2, Apache-2.0.
+      if (v_c2.z < 0.0) {
+        vec2 halfSize = v_rect.zw * 0.5;
+        vec2 centeredCoord = p - v_rect.xy - halfSize;
+        float radius = min(v_p.x, min(halfSize.x, halfSize.y));
+        vec2 cornerCoord = abs(centeredCoord) - (halfSize - radius);
+        float sd = length(max(cornerCoord, 0.0)) - radius + min(max(cornerCoord.x, cornerCoord.y), 0.0);
+        float a = clamp(0.5 - sd * u_scale, 0.0, 1.0);
+        if (a <= 0.0) discard;
+        float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+        vec2 q = abs(centeredCoord) - (halfSize - gradRadius);
+        vec2 outside = max(q, 0.0);
+        float outsideLength = length(outside);
+        float gradX = step(q.y, q.x);
+        vec2 grad = sign(centeredCoord) * (outsideLength > 0.0 ? outside / outsideLength : vec2(gradX, 1.0 - gradX));
+        vec3 c;
+        if (v_c2.y <= 0.0 || -sd >= v_c2.y) {
+          c = backdrop(p);
+        } else {
+          float x = 1.0 - max(-sd, 0.0) / v_c2.y;
+          float d = -(1.0 - sqrt(1.0 - x * x)) * v_pad.y;
+          vec2 refractedCoord = p + d * grad;
+          if (v_pad.z == 0.0) {
+            c = backdrop(refractedCoord);
+          } else {
+            float dispersionIntensity = v_pad.z * clamp(centeredCoord.x * centeredCoord.y / (halfSize.x * halfSize.y), -1.0, 1.0);
+            vec2 dispersedCoord = d * grad * dispersionIntensity;
+            vec3 red = backdrop(refractedCoord + dispersedCoord);
+            vec3 orange = backdrop(refractedCoord + dispersedCoord * (2.0 / 3.0));
+            vec3 yellow = backdrop(refractedCoord + dispersedCoord * (1.0 / 3.0));
+            vec3 green = backdrop(refractedCoord);
+            vec3 cyan = backdrop(refractedCoord - dispersedCoord * (1.0 / 3.0));
+            vec3 blue = backdrop(refractedCoord - dispersedCoord * (2.0 / 3.0));
+            vec3 purple = backdrop(refractedCoord - dispersedCoord);
+            c = vec3((red.r + orange.r + yellow.r) / 3.5 + purple.r / 7.0,
+                   orange.g / 7.0 + (yellow.g + green.g + cyan.g) / 3.5,
+                   (cyan.b + blue.b + purple.b) / 3.0);
+          }
+        }
+        c = mix(c, col.rgb, col.a);
+        // InnerShadow (Kyant's): the shape's outside blurred into it by pad.w (its radius: a deviation of half of it), a
+        // sixth of it lower, black at 15% times the highlight's strength (c2.x, the press); none where pad.w is 0
+        if (v_pad.w > 0.0) {
+          vec2 sc = abs(centeredCoord - vec2(0.0, v_pad.w / 6.0)) - (halfSize - radius);
+          float ssd = length(max(sc, 0.0)) - radius + min(max(sc.x, sc.y), 0.0);
+          float inner = 0.5 * (1.0 + mb_erf(ssd * 0.70710678 / (v_pad.w * 0.5)));
+          c = mix(c, vec3(0.0, 0.0, 0.0), 0.15 * v_c2.x * inner);
+        }
+        bool ambient = v_c2.z == -2.0;
+        float w = ambient ? 0.5 / 1.5 : 0.5;
+        // HighlightModifier uses a clipped stroke, with its width ceiled in device pixels.
+        float stroke = ceil(w * u_scale) / u_scale;
+        float blur = w * 0.5;
+        float mask = 0.5 * (mb_erf((stroke - sd) * 0.70710678 / blur) - mb_erf((-stroke - sd) * 0.70710678 / blur));
+        float normal = dot(grad, vec2(0.70710678, 0.70710678));
+        float h = v_c2.x * abs(normal) * mask;
+        if (ambient) c = mix(c, vec3(step(0.0, normal), step(0.0, normal), step(0.0, normal)), h);
+        else c = clamp(c + h, 0.0, 1.0);
+        o = vec4(c, 1.0) * (a * v_c2.w); return;
+      }
       // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus
       // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through
-      // it bent by Snell's law (n = 1.52), the colours split a little: blurred on its flat, sharp through its lip (the
-      // capture's level that is not blurred, R); its rim a cool body, a bright ridge 0.75 in from its edge and a sharp
-      // cool edge outside it, so it reads on white as on colour
+      // it bent by Snell's law (n = 1.52), the colours spread into a little spectrum: blurred on its flat, sharp through
+      // its lip (the capture's level that is not blurred, R), the colour of what is beyond its rim drawn into the lip; its
+      // rim a cool body, a bright ridge 0.8 in from its edge and a sharp cool edge outside it, so it reads on white as on
+      // colour; lit round where the pointer is over it (c2.z). Every sample within pad.y * (1 + pad.z) of p: what a
+      // capture keeps round it (grab_of's margin, damage.mbt's glass_margin), so a part drawn again, or a strip, is the
+      // frame drawn whole, to the byte.
       float k = v_pad.w;
+      // (its outline and cover the shape's own; how it slopes worked out from the shape with its corners rounder, 1.45
+      // times, so no crease runs from a corner's start to the middle, and a little dome over the group, so a long straight
+      // side bends what is under it as a lens does, not as a prism)
       float d = sd_group(p, k);
       float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
       if (a <= 0.0) discard;
-      float e = 0.5;
-      vec2 grad = vec2(sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
-                   sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k));
-      vec2 n2 = grad / max(length(grad), 1e-4);
+      float e = 0.75;
+      vec2 grad = vec2(sd_group_soft(p + vec2(e, 0.0), k) - sd_group_soft(p - vec2(e, 0.0), k),
+                   sd_group_soft(p + vec2(0.0, e), k) - sd_group_soft(p - vec2(0.0, e), k));
+      vec2 n_edge = grad / max(length(grad), 1e-4);
+      vec2 gc = 0.5 * (u_gb.xy + u_gb.zw);
+      vec2 gh = max(0.5 * (u_gb.zw - u_gb.xy), vec2(1.0, 1.0));
+      vec2 dome = clamp((p - gc) / gh, vec2(-1.0, -1.0), vec2(1.0, 1.0));
+      vec2 n2 = normalize(n_edge + 0.14 * dome);
       float bezel = max(v_c2.y, 1.0);
       // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)
       float r = clamp(1.0 + d / bezel, 0.0, 1.0);
       float r2 = r * r;
       float r4 = r2 * r2;
-      float slope = 0.48 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);
+      float slope = 0.52 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);
       float inv_n = 1.0 / sqrt(slope * slope + 1.0);
       vec2 Nxy = n2 * (slope * inv_n);
       float Nz = inv_n;
@@ -848,34 +945,72 @@
       float kt = eta * Nz - sqrt(k_ior);
       vec2 Txy = Nxy * kt;
       float Tz = -eta + kt * Nz;
-      // (at most pad.y away: |Txy / Tz| * 1.18 is 0.988 at the steepest, so what capture keeps round it is enough)
-      vec2 off = Txy * (1.18 * v_pad.y / max(-Tz, 1e-4));
-      float ch = v_pad.z;
-      vec3 cf = vec3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);
-      vec3 cs = vec3(sharp(p + off * (1.0 + ch)).r, sharp(p + off).g, sharp(p + off * (1.0 - ch)).b);
-      // (the lip sharp, the flat blurred; its tint whole on the flat, where words lie, and less through the lip)
-      float lens = r2 * smoothstep(0.22, 0.90, r);
-      vec3 c = mix(cf, cs, lens * 0.82);
+      // (at most pad.y away: |Txy / Tz| is 0.858 at the steepest, slope 6.42, so 1.15 times it 0.986)
+      vec2 off = Txy * (1.15 * v_pad.y / max(-Tz, 1e-4));
+      // (the colours spread along it, a little less where its side runs straight than across a corner: never past pad.z)
+      float ch = min(v_pad.z * (0.72 + 0.56 * abs(n2.x * n2.y)), v_pad.z);
+      vec2 disp = off * ch;
+      // (the lip sharp, seven samples across the spread, red from the far end, green about the middle, blue from the near:
+      // a spectrum, not three images; the flat blurred, three)
+      vec3 s0 = sharp(p + off + disp);
+      vec3 s1 = sharp(p + off + disp * 0.6666667);
+      vec3 s2 = sharp(p + off + disp * 0.3333333);
+      vec3 s3 = sharp(p + off);
+      vec3 s4 = sharp(p + off - disp * 0.3333333);
+      vec3 s5 = sharp(p + off - disp * 0.6666667);
+      vec3 s6 = sharp(p + off - disp);
+      vec3 cs = vec3((s0.r + 0.6666667 * s1.r + 0.3333333 * s2.r) * 0.5,
+                     (0.3333333 * s1.g + 0.6666667 * s2.g + s3.g + 0.6666667 * s4.g + 0.3333333 * s5.g) * 0.3333333,
+                     (0.3333333 * s4.b + 0.6666667 * s5.b + s6.b) * 0.5);
+      vec3 cf = vec3(backdrop(p + off + disp * 0.5).r, backdrop(p + off).g, backdrop(p + off - disp * 0.5).b);
+      float lens = r2 * smoothstep(0.16, 0.88, r);
+      vec3 c = mix(cf, cs, lens * 0.86);
+      // (the colour of what lies beyond the rim, more saturated, drawn into the lip: the meniscus takes its surroundings'
+      // colour; from at most off * (1 + 0.85 * ch), inside what is kept)
+      vec3 bleed = backdrop(p + off * (1.0 + ch * 0.85));
+      vec3 bleed_sat = max(mix(vec3(luma(bleed)), bleed, v_p.z * 1.35), 0.0);
+      c = mix(c, bleed_sat, r2 * (1.0 - 0.30 * r) * 0.26);
       c = max(mix(vec3(luma(c)), c, v_p.z), 0.0);
-      float tint_a = col.a * (1.0 - 0.52 * lens);
+      // (its tint whole on the flat, where words lie, and less through the lip)
+      float tint_a = col.a * (1.0 - 0.56 * lens);
       c = c * (1.0 - tint_a) + col.rgb * tint_a;
+      // (where the pointer is over it, c2.z: x * 4096 + y + 1, each at half a point from 256 before its rect's top left,
+      // glass.mbt's glass_spot; taken apart by a power of two, exact, so no pixel's x or y is a half point off)
+      float spot = 0.0;
+      if (v_c2.z > 0.5) {
+        float q = v_c2.z - 1.0;
+        float qx = floor(q * 0.000244140625);
+        float qy = q - qx * 4096.0;
+        vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
+        float gr = max(min(v_rect.z, v_rect.w) * 2.2, 88.0);
+        spot = 1.0 - smoothstep(gr * 0.08, gr, length(p - gp));
+      }
       float ndl = dot(n2, vec2(-0.6, -0.8));
       float rim = v_c2.x;
       // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
       float body_ring = r2 * (1.0 - 0.35 * r);
       c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
-      // (2) a ridge of light 0.75 in from the edge, most at the top left and some across from it, and a Fresnel sheen:
-      // towards white itself, not by what is left of white, so a light ground does not swallow it
-      float spec_band = clamp(1.0 - abs(d + 0.75) / 0.95, 0.0, 1.0);
+      // (under the pointer the meniscus a clear ice blue, as light bent through it is: none where it is not)
+      c = mix(c, c * vec3(0.74, 0.86, 1.0), rim * 0.72 * spot * body_ring);
+      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, and a Fresnel sheen;
+      // near the pointer more of both, and the face lit round it: what shows on #F5F5F7 as on what is dark (it was
+      // white towards white there, under a pixel's step, and the ridge already at its ceiling)
+      // (a sheen over the face round the pointer: white over what is dark, a cool white over a light ground,
+      // where white on white would not show; less towards the rim, where the ridge lights)
+      vec3 spot_sheen = mix(vec3(1.0, 1.0, 1.0), vec3(0.84, 0.92, 1.0), smoothstep(0.72, 0.94, luma(c)));
+      c = mix(c, spot_sheen, spot * spot * (0.28 - 0.12 * r));
+      float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);
       spec_band *= spec_band;
-      float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.6);
-      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +
-                          0.28 * fresnel * max(ndl + 0.3, 0.0));
-      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));
-      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white
+      float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);
+      // (near the pointer the ridge lit all the way round, whichever way it faces, nearly to white)
+      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22 + 0.85 * spot) +
+                          0.28 * fresnel * max(ndl + 0.3, 0.0) + 0.42 * fresnel * spot);
+      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, mix(0.92, 0.99, spot)));
+      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white; giving way where the
+      // pointer lights the edge
       float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
       edge_b *= edge_b;
-      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));
+      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0)) * (1.0 - 0.72 * spot);
       c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
       c += mb_dither(p * u_scale) / 255.0;
       o = vec4(c, 1.0) * (a * v_c2.w);
@@ -2132,8 +2267,17 @@
   let generation = 0;
   // the glyph drawn last (H.glyph), its picture until it is put in the atlas (H.glyphPut)
   let held = null;
+  // where a glyph is drawn to be read back: one canvas, grown and never shrunk, each glyph drawn in its top left
+  // corner and only that much of it cleared and read. Sizing it to each glyph (as till 2026-11-17) gave the canvas a
+  // new backing store per glyph: on a phone's CPU an issue's page of Han opened in one 300 ms frame, two thirds of it
+  // that (clearRect 138 ms, getImageData 36 ms of a 4x slowed Chrome).
   const rc = document.createElement('canvas');
   const rctx = rc.getContext('2d', { willReadFrequently: true });
+  rc.width = rc.height = 0;
+  // a canvas's font set only as it changes: the setter parses the CSS font each time, set or not (mctxFont, rctxFont:
+  // what each was last set to; forgotten as a face comes or goes, so the new one is found)
+  let mctxFont = '', rctxFont = '';
+  const setMFont = (f) => { if (f !== mctxFont) { mctx.font = f; mctxFont = f; } };
   // the faces given (faceAdd, style.mbt), loaded: each a family of its own ahead of the place's own
   const faces = new Set();
   // the face a style is set in: the one it names; else code's (style bit 2), what people wrote's (bit 16), the app's
@@ -2161,12 +2305,21 @@
     const had = narrowFaces.get(face);
     if (had !== undefined) return had;
     narrowFaces.set(face, false);
-    const files = faceFiles.get(face) || [];
-    Promise.all(files.map(([src, weight]) => {
-      const d = faceDescriptors(face, weight);
+    const cjk = cjkFiles.get(face);
+    const files = [...(faceFiles.get(face) || []), ...(cjk || [])];
+    Promise.all(files.map(([src, weight, desc]) => {
+      const d = desc ? { ...desc } : faceDescriptors(face, weight);
       d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
       const ff = new FontFace(`mbface${face}n`, src, d);
-      return ff.load().then(() => document.fonts.add(ff));
+      // (a CJK companion's (setCjkFace) kept with it, gone as it goes; one of its files the system has not: the rest
+      // narrow as they are)
+      return ff.load().then(() => {
+        if (desc) {
+          if (cjkFiles.get(face) !== cjk) return;
+          cjkLoaded.get(face).push(ff);
+        }
+        document.fonts.add(ff);
+      }, () => {});
     })).then(() => {
       if (narrowFaces.get(face) !== false) return;
       narrowFaces.set(face, true);
@@ -2182,6 +2335,7 @@
   // what was shaped and drawn before a face or the scale changed, forgotten (MoonBit drops its glyphs as the
   // generation moves on)
   const textChanged = () => {
+    mctxFont = rctxFont = '';
     advCache.clear();
     held = null;
     generation++;
@@ -2218,8 +2372,79 @@
     }, () => {});
     return true;
   };
+  // A face's CJK companion (@webpage.set_cjk_face): the system's CJK faces drawn, within the face's family, for the
+  // CJK marks alone (its unicode-range: Han, kana, bopomofo, CJK punctuation, full-width forms; the Latin quotes and
+  // dashes left to the face itself), each of the nine weights set in the one `step` heavier (a Latin face's 400 beside
+  // a CJK face's 400 reads thin and grey), clamped to 100..900, by the families given (local names, the first the
+  // system has) or else PingFang SC, Noto Sans CJK SC, Source Han Sans SC. With no face of the app's own given (faceAdd)
+  // the face is taken for its CJK alone once any of them is there, the rest of the words in the page's own as before;
+  // where none is, nothing changes. Asked again, what it set before goes first.
+  const CJK_RANGE = 'U+2E80-2FDF, U+3000-303F, U+3040-30FF, U+3100-312F, U+3190-31FF, U+3400-4DBF, U+4E00-9FFF, ' +
+    'U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F';
+  const CJK_FAMILIES = ['PingFang SC', 'Noto Sans CJK SC', 'Source Han Sans SC'];
+  // each weight's names in the families' own files, the nearest first
+  const CJK_WEIGHT_NAMES = {
+    100: ['Thin', 'Ultralight', 'ExtraLight'], 200: ['ExtraLight', 'Ultralight', 'Thin'], 300: ['Light', 'DemiLight'],
+    400: ['Regular', 'Normal'], 500: ['Medium'], 600: ['Semibold', 'SemiBold', 'Bold'], 700: ['Bold', 'Semibold'],
+    800: ['Heavy', 'ExtraBold', 'Black'], 900: ['Black', 'Heavy'],
+  };
+  const cjkSrc = (families, weight) => {
+    const out = [];
+    for (const fam of families) {
+      for (const name of CJK_WEIGHT_NAMES[weight]) {
+        out.push(`local(${JSON.stringify(`${fam} ${name}`)})`);
+        out.push(`local(${JSON.stringify(`${fam.replace(/ /g, '')}-${name}`)})`);
+      }
+      if (weight === 400) out.push(`local(${JSON.stringify(fam)})`);
+    }
+    return out.join(', ');
+  };
+  // each face's CJK files ([src, weight, descriptors], as faceFiles' for narrowFace) and the FontFaces put in the page
+  const cjkFiles = new Map();
+  const cjkLoaded = new Map();
+  const cjkForget = (face) => {
+    cjkFiles.delete(face);
+    for (const ff of cjkLoaded.get(face) || []) document.fonts.delete(ff);
+    cjkLoaded.delete(face);
+  };
+  H.setCjkFace = (face, weightStep, families) => {
+    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
+    const step = Number.isFinite(weightStep) ? Math.round(weightStep / 100) * 100 : 100;
+    const fams = Array.isArray(families) && families.length ? families.map(String) : CJK_FAMILIES;
+    cjkForget(face);
+    const files = [];
+    for (let w = 100; w <= 900; w += 100) {
+      const drawn = Math.min(900, Math.max(100, w + step));
+      files.push([cjkSrc(fams, drawn), w, { weight: String(w), unicodeRange: CJK_RANGE }]);
+    }
+    cjkFiles.set(face, files);
+    const loaded = [];
+    cjkLoaded.set(face, loaded);
+    // (narrow already asked of the face: its CJK narrow too)
+    const narrow = narrowFaces.has(face);
+    const load = (family, [src, , desc], more) => {
+      const ff = new FontFace(family, src, { ...desc, ...more });
+      return ff.load().then(() => {
+        if (cjkFiles.get(face) !== files) return false;
+        document.fonts.add(ff);
+        loaded.push(ff);
+        return true;
+      }, () => false);
+    };
+    Promise.all([
+      ...files.map((f) => load(`mbface${face}`, f, {})),
+      ...(narrow ? files.map((f) => load(`mbface${face}n`, f, { featureSettings: '"pwid" 1' })) : []),
+    ]).then((took) => {
+      if (cjkFiles.get(face) !== files || !took.some((t) => t)) return;
+      faces.add(face);
+      textChanged();
+      H.requestFrame();
+    });
+    return true;
+  };
   H.faceClear = (face) => {
     faceFiles.delete(face);
+    cjkForget(face);
     narrowFaces.delete(face);
     if (!faces.delete(face)) return;
     for (const ff of [...document.fonts]) {
@@ -2230,7 +2455,7 @@
   };
 
   H.fontMetrics = (size, weight, style, out) => {
-    mctx.font = font(size, weight, style);
+    setMFont(font(size, weight, style));
     const m = mctx.measureText('Hg国');
     out[0] = m.fontBoundingBoxAscent;
     out[1] = m.fontBoundingBoxDescent;
@@ -2268,10 +2493,16 @@
   // advances as the widest of the ten and is drawn centred in it (rasterize)
   const isDigit = (c) => c.length === 1 && c >= '0' && c <= '9';
   const tabWidth = (f) => Math.max(...'0123456789'.split('').map((d) => width(f, d)));
+  // a cluster that is a CJK unified ideograph (its first code point: the basic block and extension A, the
+  // compatibility ideographs, the supplementary planes' extensions)
+  const han = (c) => {
+    const cp = c.codePointAt(0);
+    return (cp >= 0x3400 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x323AF);
+  };
 
   H.shape = (text, size, weight, style, out) => {
     const f = font(size, weight, style);
-    mctx.font = f;
+    setMFont(f);
     const cap = out.length / 4;
     const segs = [...seg.segment(text)];
     // the canvas says no more of a cluster than its width alone; within a word, a cluster starts where the word up
@@ -2283,14 +2514,21 @@
     const upTo = style & 8
       ? (w, i) => segs.slice(w, i + 1).map((s) => s.segment).join('\u200C')
       : (w, i) => text.slice(segs[w].index, segs[i].index + segs[i].segment.length);
+    // A Han character after a Han character starts a word of its own: no kerning pair joins two of them, so it
+    // advances by its own width, and a paragraph with no spaces is measured cluster by cluster, not as a prefix
+    // growing to its end at each (500 characters were 125,000 measured, a frame of 70-110 ms). Punctuation beside Han
+    // stays in its word, the spacing the browser trims there trimmed as before.
+    const starts = new Uint8Array(segs.length);
+    for (let i = 0; i < segs.length; i++) {
+      const c = segs[i].segment;
+      starts[i] = i === 0 || blank(segs[i - 1].segment) || (han(c) && han(segs[i - 1].segment)) ? 1 : 0;
+    }
     const xs = new Array(segs.length);
     let word = 0;
     for (let i = 0; i < segs.length; i++) {
       const c = segs[i].segment;
-      if (blank(c)) {
-        word = i + 1;
-        continue;
-      }
+      if (blank(c)) continue;
+      if (starts[i]) word = i;
       xs[i] = width(f, upTo(word, i)) - width(f, c);
     }
     let k = 0;
@@ -2302,11 +2540,11 @@
       if (blank(c)) {
         adv = width(f, c);
       } else {
-        const last = i + 1 >= segs.length || blank(segs[i + 1].segment);
+        if (starts[i]) word = i;
+        const last = i + 1 >= segs.length || blank(segs[i + 1].segment) || starts[i + 1];
         const end = last ? width(f, upTo(word, i)) : xs[i + 1];
         adv = Math.max(0, end - xs[i]);
       }
-      if (blank(c)) word = i + 1;
       if (style & 32 && isDigit(c)) adv = tabWidth(f);
       let key = -1;
       if (c === '\n') adv = 0;
@@ -2324,33 +2562,52 @@
   // (one atlas: colour glyphs in it with the others)
   H.atlasSize = (colour) => colour ? 0 : ATLAS;
 
+  // A glyph key's horizontal quarter-pixel phase (bits 26..27: text.mbt glyph_col_sub), in pixels: how far right of
+  // the whole pixel column its quad is put on a glyph at it is drawn (win_text.cpp's sub_dx, the same).
+  const subDx = (sub) => sub === 1 ? 0.25 : sub === 2 ? -0.5 : sub === 3 ? -0.25 : 0;
+
   // `e` drawn in black, a pixel round its bounds: its box (in `e`) and its picture, held for H.glyphPut (where it
-  // goes in the atlas is MoonBit's: hostapi's atlas.mbt)
-  function rasterize(e, key) {
+  // goes in the atlas is MoonBit's: hostapi's atlas.mbt). Its ink drawn moved right by its phase (`fullKey`'s), and a
+  // digit of words whose digits are one width (style & 32) by as much again as centres it in the widest's room; the
+  // picture's edges on whole pixels round the ink so moved, so where it lands is never a pixel's rounding of its place
+  // added to that.
+  function rasterize(e, fullKey) {
     held = null;
     const sc = dpr;
-    mctx.font = font(e.size, e.weight, e.style);
+    const sub = (fullKey >>> 26) & 7;
+    setMFont(font(e.size, e.weight, e.style));
     const m = mctx.measureText(e.c);
     const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
     const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
+    let tabShift = 0;
+    if (e.style & 32 && isDigit(e.c)) {
+      const f = font(e.size, e.weight, e.style);
+      tabShift = (tabWidth(f) - width(f, e.c)) / 2;
+    }
+    const shiftPx = tabShift * sc + (sub < 4 ? subDx(sub) : 0);
     // whole pixels each way from the baseline, so every glyph's baseline is
     // on a pixel row of its bitmap and glyphs on one line line up
     const pad = 1;
-    const l = Math.ceil(left * sc), r = Math.ceil(right * sc);
+    const x0 = Math.floor(-left * sc + shiftPx) - pad, x1 = Math.ceil(right * sc + shiftPx) + pad;
     const a = Math.ceil(asc * sc), d = Math.ceil(desc * sc);
-    const pw = l + r + 2 * pad, ph = a + d + 2 * pad;
+    const pw = x1 - x0, ph = a + d + 2 * pad;
     e.w = 0;
     if (pw <= 2 || ph <= 2 || pw > 512 || ph > 512) return;
-    rc.width = pw;
-    rc.height = ph;
+    if (pw > rc.width || ph > rc.height) {
+      // (grown by 64 px steps, to the largest glyph yet: a canvas sized anew forgets its state, set again here)
+      rc.width = Math.max(rc.width, Math.ceil(pw / 64) * 64);
+      rc.height = Math.max(rc.height, Math.ceil(ph / 64) * 64);
+      rctxFont = '';
+      // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
+      // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
+      // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
+      rctx.fillStyle = '#000';
+      rctx.textBaseline = 'alphabetic';
+    }
     rctx.clearRect(0, 0, pw, ph);
-    rctx.font = font(e.size * sc, e.weight, e.style);
-    // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
-    // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
-    // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
-    rctx.fillStyle = '#000';
-    rctx.textBaseline = 'alphabetic';
-    rctx.fillText(e.c, pad + l, pad + a);
+    const rf = font(e.size * sc, e.weight, e.style);
+    if (rf !== rctxFont) { rctx.font = rf; rctxFont = rf; }
+    rctx.fillText(e.c, -x0 + shiftPx, pad + a);
     const img = rctx.getImageData(0, 0, pw, ph);
     // drawn in black: a cluster with colours of its own (grey ones too: any pixel of some opacity not black) is an
     // emoji's
@@ -2358,20 +2615,16 @@
     for (let i = 0; i < img.data.length && !color; i += 4) {
       if (img.data[i + 3] > 64 && Math.max(img.data[i], img.data[i + 1], img.data[i + 2]) > 32) color = 1;
     }
-    held = { key, img, pw, ph };
+    held = { key: fullKey, img, pw, ph };
     e.w = pw / sc;
     e.h = ph / sc;
-    e.ox = -(l + pad) / sc;
-    if (e.style & 32 && isDigit(e.c)) {
-      const f = font(e.size, e.weight, e.style);
-      e.ox += (tabWidth(f) - width(f, e.c)) / 2;
-    }
+    e.ox = x0 / sc;
     e.oy = -(a + pad) / sc;
     e.color = color;
   }
 
   H.glyph = (key, out) => {
-    const e = entries[key];
+    const e = key >= 0 ? entries[key & 0x03FFFFFF] : undefined;
     if (!e) { for (let i = 0; i < 8; i++) out[i] = 0; return; }
     rasterize(e, key);
     out[0] = 0; out[1] = 0; out[2] = e.w || 0; out[3] = e.h || 0;
@@ -2502,10 +2755,16 @@
     // (a touch screen's fingers each by its pointerId, as they come: kinds 10 down, 11 moved, 12 up, 13 called off, what
     // they come to the app's to work out, touches.mbt)
     const touch = (e) => e.pointerType === 'touch';
+    const modsOf = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    const tellModifiers = (mods, force = false) => {
+      if (force || mods !== modifiersSaid) cb.key(0, mods);
+    };
     // (the canvas's, and what takes them in its place while a site is seen)
     takePresses = (el) => {
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
+        // A key may have been held before the browser gained focus.
+        tellModifiers(modsOf(e));
         // (a box over a site goes as the app says, the press going on: `under` stays; when the canvas takes the
         // press, it stays too and can capture it itself)
         (el === canvas ? canvas : under || el).setPointerCapture(e.pointerId);
@@ -2542,7 +2801,12 @@
     const keymap = { Backspace: 1, Delete: 2, ArrowLeft: 3, ArrowRight: 4, ArrowUp: 5, ArrowDown: 6, Enter: 7, Home: 8, End: 9, PageUp: 15, PageDown: 16, Escape: 17, Tab: 18 };
     // the browser's own shortcuts left to it (reload, close, a new tab or window, the address bar, quit, zoom)
     const browsers = new Set(['r', 'w', 't', 'n', 'l', 'q', 'v']);
-    const modsOf = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    // Modifier-only keys are input too. Other keys keep their normal path, including browser shortcuts.
+    const modifiers = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS']);
+    const modifierKey = (e) => { if (modifiers.has(e.key)) tellModifiers(modsOf(e), true); };
+    window.addEventListener('keydown', modifierKey, true);
+    window.addEventListener('keyup', modifierKey, true);
+    window.addEventListener('blur', () => tellModifiers(0, true));
     const command = (e) => keysCmd() === 8 ? e.metaKey : e.ctrlKey;
     const browserKey = (e, c) => command(e) && (browsers.has(c) ||
       (!e.altKey && !(e.ctrlKey && e.metaKey) && ['+', '=', '-', '0'].includes(c)));
@@ -3388,7 +3652,10 @@
     canvas.addEventListener('webglcontextrestored', contextRestored);
     setupGL();
     setupInput();
-    cb = { frame, pointer, wheel, key, text };
+    setupPage();
+    // Remember what every key told the app, including one received with a modifier already held.
+    modifiersSaid = 0;
+    cb = { frame, pointer, wheel, key: (code, mods) => { modifiersSaid = mods; key(code, mods); }, text };
     window.__mb = cb;
     resize();
     // (the app's first frame once the host knows what it decodes and whether its terminal Wasm is beside it)
@@ -3397,6 +3664,84 @@
       H.requestFrame();
     });
   };
+
+  // ---- the page round the app: the keys held, the system's bars, its title and colour, its history ----
+  // The keys held down that change what a press does (@hostapi.mods_held: shift 1, control 2, alt 4, command 8, as a
+  // key's own are told), as the last input the window had says them; none once it is left (blurred, hidden), where its
+  // keys' going up is never seen.
+  let modsNow = 0;
+  H.modsHeld = () => modsNow;
+  // How far the system reaches in over the canvas (a phone's notch, its home indicator: the page laid out under them,
+  // index.html's viewport-fit=cover), as CSS's env(safe-area-inset-*) says, read off a probe padded by them; said on
+  // the system's channel (@hostapi.system_said's `bars`) as it changes, none said while it is none. The soft keyboard
+  // up, the app is laid out above it already (keyboardOver): nothing under it is the system's. (Said as it is found:
+  // as the page's size is measured for a frame, resize, the app takes it between that frame and the next.)
+  let barsProbe = null, barsSaid = '0,0,0,0', barsSetUp = false;
+  function barsNow() {
+    if (!barsProbe && document.body && document.body.appendChild) {
+      barsProbe = document.createElement('div');
+      const st = barsProbe.style;
+      st.position = 'fixed';
+      st.left = st.top = '0';
+      st.width = st.height = '0';
+      st.visibility = 'hidden';
+      st.pointerEvents = 'none';
+      st.paddingTop = 'env(safe-area-inset-top, 0px)';
+      st.paddingRight = 'env(safe-area-inset-right, 0px)';
+      st.paddingBottom = 'env(safe-area-inset-bottom, 0px)';
+      st.paddingLeft = 'env(safe-area-inset-left, 0px)';
+      document.body.appendChild(barsProbe);
+    }
+    if (!barsProbe || !window.getComputedStyle) return;
+    const cs = window.getComputedStyle(barsProbe);
+    const px = (v) => { const n = parseFloat(v); return n > 0 ? n : 0; };
+    const top = px(cs.paddingTop), right = px(cs.paddingRight), left = px(cs.paddingLeft);
+    const bottom = keyboardOver() > 0 ? 0 : px(cs.paddingBottom);
+    const now = [top, bottom, left, right].join(',');
+    if (now === barsSaid) return;
+    barsSaid = now;
+    H.post('system', JSON.stringify({ bars: { top, bottom, left, right } }));
+  }
+  H.barsNow = barsNow;
+  // The page's history (@webpage.location, history_*: the app's calls `mbui.page.*`, host_js.mbt): where it is (its
+  // path, query and fragment), a place put on or in place of the one it is at, and back; a place the browser went to
+  // itself (its back and forward, a person's swipe) said on @webpage.history_channel as `{"location": …}`.
+  const where = () => location.pathname + location.search + location.hash;
+  H.historyLocation = where;
+  H.historyPush = (to) => { history.pushState(null, '', to); };
+  H.historyReplace = (to) => { history.replaceState(null, '', to); };
+  H.historyBack = () => { history.back(); };
+  // The page's title and the colour of what the browser draws round it (its bar, what shows past the page's edges):
+  // @webpage.set_title, set_theme_color (a CSS colour; "" the page's own again).
+  H.setPageTitle = (t) => { document.title = t; };
+  H.setThemeColor = (c) => {
+    const meta = document.querySelector && document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', c);
+    document.documentElement.style.backgroundColor = c;
+    if (document.body) document.body.style.backgroundColor = c;
+  };
+  function setupPage() {
+    const held = (e) => { modsNow = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); };
+    for (const name of ['pointerdown', 'pointermove', 'pointerup', 'keydown', 'keyup', 'wheel']) {
+      window.addEventListener(name, held, { capture: true, passive: true });
+    }
+    const none = () => { modsNow = 0; };
+    window.addEventListener('blur', none);
+    document.addEventListener('visibilitychange', none);
+    // Escape is the app's (a layer closed): kept from the browser, which would take it for its own (leaving its full
+    // screen, its focus), but not from an input method composing, whose Escape calls its words off. The app is still
+    // told it (setupInput's keydown).
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229) e.preventDefault();
+    }, { capture: true });
+    // (and as the page's size is measured again: resize)
+    const barsChanged = () => { barsNow(); };
+    window.addEventListener('orientationchange', barsChanged);
+    window.visualViewport?.addEventListener('resize', barsChanged);
+    window.addEventListener('popstate', () => { H.post('history', JSON.stringify({ location: where() })); });
+    barsSetUp = true;
+    barsNow();
+  }
 
   // ---- mbui-render (src/render, scripts/render_web.mjs): no frames, no input ----
   // The canvas the size a window's would be, its text at the list's scale; a frame is drawn into it as any

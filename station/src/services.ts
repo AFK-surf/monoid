@@ -363,6 +363,7 @@ export class Peers extends Context.Service<Peers, PeerBus>()("stillfail/Peers") 
 /// shares chats with (`outside`), a port of another station forwarded here (`forwarded`), the runtimes its device tools
 /// see (`runtimes`). The mesh no longer reaches into the agents' side.
 export type MeshSideShape = {
+  relayControl?: { list(workspace: string): unknown[]; revoke(workspace: string, node: string): Promise<unknown> };
   readonly net: Net;
   readonly peers: { route: PeerRoute | null };
   outside: Outside | null;

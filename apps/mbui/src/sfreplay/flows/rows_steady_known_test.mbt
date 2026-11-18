@@ -6,37 +6,16 @@
 ///|
 fn init {
   @ui.rows_steady_known([
-    // (at 60 and 120 a second, MBUI_TEST_MOTION, 2026-11-17: Tree::lists_steady's on main's own jolts there, counted whole
-    // after #6722 brought the check and was counted at the default rate alone; main's 44000442600)
-    ("src/sfreplay/flows/appearance_kept_test.mbt", 1),
-    ("src/sfreplay/flows/places_test.mbt", 2),
-    ("src/sfreplay/flows/settings_station_settings_test.mbt", 1),
     // (归档 pressed in the chat's bar: the list's foot stands taller at once as the composer goes, where the chat
     // stands closing over the way, so what is over them goes up 42 in a frame and back, its page leaving for Home;
     // rows_step_least's finding. +1: Home's list of chats as the archived one goes, its row under it 13 up in a frame,
     // seen once Tree::lists_steady looks at the window's tree's lists, 2026-11-16: on main the same, frame for frame)
-    ("src/sfreplay/flows/bar_archive_test.mbt", 2),
-    // (the window's tree's lists, first looked at by Tree::lists_steady (2026-11-16): what each replay shows on main
-    // the same, every word where main draws it frame for frame till the step: Home's list of chats as one leaves or
-    // comes back (archive_restore, notify_off, wide_new_chat, wide_row_menu: a row 11 to 66 in a frame), a settings
-    // page's list as a page of it opens or closes (settings_connect -530 and +25, settings_profile -2214,
-    // settings_vault_item +94 and -13, settings_decisions, settings_device_pages, settings_workspace_people: the
-    // list put where the page that came puts it, in the frame it comes; archive_restore's second, 已归档's own list as
-    // main made it as nodes, -10 in a frame). Each goes as its list is told the change's
-    // way)
-    ("src/sfreplay/flows/archive_restore_test.mbt", 2),
-    ("src/sfreplay/flows/notify_off_test.mbt", 2),
-    ("src/sfreplay/flows/settings_connect_test.mbt", 3),
-    ("src/sfreplay/flows/settings_decisions_test.mbt", 1),
-    ("src/sfreplay/flows/settings_device_pages_test.mbt", 3),
-    ("src/sfreplay/flows/settings_profile_test.mbt", 1),
-    ("src/sfreplay/flows/settings_vault_item_test.mbt", 2),
-    ("src/sfreplay/flows/settings_workspace_people_test.mbt", 1),
-    ("src/sfreplay/flows/wide_new_chat_test.mbt", 1),
-    ("src/sfreplay/flows/wide_row_menu_test.mbt", 2),
-    // (a Tester made by sfapp's tape helper as tapes_test replays Android's recordings: Home's list of chats as one leaves
-    // it, its row under it 13 up in a frame; Tree::lists_steady's, 2026-11-16, as bar_archive's)
-    ("src/sfapp/tape.mbt", 1),
+    ("src/sfreplay/flows/bar_archive_test.mbt", 1),
+    // (Tree::lists_steady first found these steps as settings pages opened or closed on 2026-11-16.
+    // The list moved to its new position in the first frame of the page change.)
+    ("src/sfreplay/flows/settings_connect_test.mbt", 1),
+    ("src/sfreplay/flows/settings_device_pages_test.mbt", 2),
+    ("src/sfreplay/flows/settings_vault_item_test.mbt", 1),
     // (shown as the replay gives each message at its own moment, a device's timing, where main's gave each at a frame:
     // the old chat page's message list sets each change out from the frame that builds it, 2483.3, 2500 and 2516.7 one
     // after the other, its rows' way set out again each time, so the newest row turns back after 66.7 ms. Goes as the
@@ -46,11 +25,7 @@ fn init {
     // timing: the old composer's line break (foot changed at 2437.2) takes the old chat list's top row a frame's step
     // off its way's (-10.85 between -0.95 and -6.85). Goes as the chat's message list and composer are made as nodes)
     ("src/sfreplay/flows/chinese_enter_test.mbt", 1),
-    // (the old chat list's foot row, an old fault: it stands 65-81 ms into its list's way, then goes a whole step in one
-    // frame. main 0, -5.72, -5.96 a frame, 2.74 off its frames round it for 2.98 judged; with every way at its exact
-    // moment 0, -6.16, -5.85, 3.24 for 2.92. Taken away as the node list takes its place)
-    ("src/sfreplay/flows/drive_upload_test.mbt", 1),
-    // (the same old fault of the old chat list's foot row, at 60 a second: 58-68 ms into its way, then a whole step.
+    // (the old chat list's foot row, at 60 a second: 58-68 ms into its way, then a whole step.
     // main 0, -11.16, -11.46, 5.43 for 5.73; at the exact moment 0, -11.84, -11.52, 6.07 for 5.76. Taken away as the
     // node list takes its place)
     ("src/sfreplay/flows/paste_long_test.mbt", 1),

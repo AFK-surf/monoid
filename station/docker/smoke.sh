@@ -4,8 +4,9 @@
 # 1. With no workspace joined and no token it says how to give one, and ends.
 # 2. Its entrypoint keeps the station running: started again after it ends, not while an install holds its lock, and
 #    stopped with the container (a stand-in release that says what it was asked).
-# 3. The real release on the cloud installs and runs on it (a station joined by a stand-in cloud.json: the release and
-#    its Node fetched, the station started; its id said).
+# 3. The real release on the cloud installs and runs on it (a station joined by a stand-in cloud.json: the release
+#    fetched, the station started; its id said). The MoonBit station's release (station/stillfail-reader, no main.js)
+#    has no Node and is given none; one from before is given its Node.
 set -eu
 image=$1
 part=$2
@@ -66,7 +67,7 @@ docker run --rm -v "$vol:/home/stillfail" --entrypoint sh "$image" -c '
 docker run -d --name "$name" -v "$vol:/home/stillfail" -e STILLFAIL_CHANNEL="${STILLFAIL_CHANNEL:-beta}" "$image" >/dev/null
 until_in 240 '[ -f ~/.stillfail/run/station.json ]' || fail "the release did not install and start"
 docker exec "$name" sh -c '~/.stillfail/app/bin/stillfail station id' || fail "no station id"
-docker exec "$name" sh -c 'cat ~/.stillfail/app/VERSION; ~/.stillfail/app/node/bin/node -v'
+docker exec "$name" sh -c 'cat ~/.stillfail/app/VERSION; if [ -x ~/.stillfail/app/station/stillfail-reader ] && [ ! -f ~/.stillfail/app/station/main.js ]; then test ! -e ~/.stillfail/app/node; else ~/.stillfail/app/node/bin/node -v; fi'
 docker stop -t 30 "$name" >/dev/null
 fi
 echo "smoke: $part passed"

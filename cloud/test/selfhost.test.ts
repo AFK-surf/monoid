@@ -143,3 +143,78 @@ test("through the operator's OpenID provider: its page, its endpoints from its d
     await h.close();
   }
 });
+
+test("a workspace open to sign-in: whoever the operator's OpenID provider signs in joins it as a member, not only its first", async () => {
+  // (its owner the cloud's admin, as a machine's is: the workspace's seats are the admin's)
+  const h = await harness({ oidc: true, mail: true, adminEmail: "owner@sso.example.test" });
+  try {
+    const owner = await h.login("owner");
+    const team = (await (await h.as(owner)("POST", "/v1/workspaces", { name: "Machine" })).json()) as { id: string };
+    const lab = (await (await h.as(owner)("POST", "/v1/workspaces", { name: "Lab" })).json()) as { id: string };
+    const dir = await h.object("DIRECTORY", "primary");
+    await dir.openToSignIn(team.id, true);
+    // Carol was invited as an admin: without a role of the provider's, her invitation is hers to accept, not taken by
+    // joining as a member.
+    assert.equal((await h.as(owner)("POST", `/v1/workspaces/${team.id}/invitations`, { role: "admin", email: "carol@sso.example.test" })).status, 200);
+    const roles = async (tokens: Tokens) => ((await (await h.as(tokens)("GET", "/v1/me")).json()) as { workspaces: { id: string; role: string }[] }).workspaces.map((w) => `${w.id === team.id ? "team" : w.id === lab.id ? "lab" : w.id} ${w.role}`);
+    const bob = await h.login("bob");
+    assert.deepEqual(await roles(bob), ["team member"], "in the open workspace, not the other");
+    assert.deepEqual(await roles(await h.login("bob")), ["team member"], "signing in again changes nothing");
+    assert.deepEqual(await roles(await h.login("carol")), []);
+    assert.deepEqual((await roles(owner)).sort(), ["lab owner", "team owner"], "the owner stays its owner");
+    // Closed again: nobody new joins; who joined stays.
+    await dir.openToSignIn(team.id, false);
+    assert.deepEqual(await roles(await h.login("dave")), []);
+    assert.deepEqual(await roles(bob), ["team member"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a cloud signing in with Google opens no workspace to it: only its own OpenID provider's people join", async () => {
+  const h = await harness({ adminEmail: "owner@example.test" });
+  try {
+    const owner = await h.login("owner");
+    const team = (await (await h.as(owner)("POST", "/v1/workspaces", { name: "Machine" })).json()) as { id: string };
+    await (await h.object("DIRECTORY", "primary")).openToSignIn(team.id, true);
+    const eve = await h.login("eve");
+    assert.deepEqual(((await (await h.as(eve)("GET", "/v1/me")).json()) as { workspaces: unknown[] }).workspaces, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a workspace open to sign-in gives each the role the OpenID provider gives them there (OIDC_ROLE_CLAIM), on every sign-in", async () => {
+  const h = await harness({ oidc: true, oidcRoleClaim: "monoid_role", adminEmail: "owner@sso.example.test" });
+  try {
+    const signIn = async (sub: string, role?: unknown) => {
+      const flow = await h.begin(sub);
+      if (role !== undefined) h.codes.get(flow.googleCode)!.claims = { monoid_role: role };
+      const done = await h.complete(flow);
+      const answer = await h.exchange(flow, done.code);
+      assert.equal(answer.status, 200);
+      return (await answer.json()) as Tokens;
+    };
+    const owner = await signIn("owner", "owner");
+    const team = (await (await h.as(owner)("POST", "/v1/workspaces", { name: "Machine" })).json()) as { id: string };
+    await (await h.object("DIRECTORY", "primary")).openToSignIn(team.id, true);
+    const role = async (tokens: Tokens) => ((await (await h.as(tokens)("GET", "/v1/me")).json()) as { workspaces: { id: string; role: string }[] }).workspaces.find((w) => w.id === team.id)?.role;
+    // Carol's invitation as a member gives way to the provider's admin.
+    assert.equal((await h.as(owner)("POST", `/v1/workspaces/${team.id}/invitations`, { role: "member", email: "carol@sso.example.test" })).status, 200);
+    assert.equal(await role(await signIn("carol", "admin")), "admin");
+    assert.equal(await role(await signIn("bob", "viewer")), "member", "a role still.fail has not is a member");
+    assert.equal(await role(await signIn("dan", "owner")), "owner");
+    // Changed in the console: changed here as they sign in again, up or down; one given here by hand is the provider's again.
+    assert.equal(await role(await signIn("bob", "admin")), "admin");
+    assert.equal(await role(await signIn("carol", "viewer")), "member");
+    const dan = (await (await h.as(owner)("GET", `/v1/workspaces/${team.id}`)).json() as { members: { sub: string; email: string }[] }).members.find((m) => m.email === "dan@sso.example.test")!;
+    assert.equal((await h.as(owner)("PATCH", `/v1/workspaces/${team.id}/members/${dan.sub}`, { role: "member" })).status, 200);
+    assert.equal(await role(await signIn("dan", "owner")), "owner");
+    // The last owner stays one whatever the provider says; with another owner there, they become what it says.
+    assert.equal(await role(await signIn("dan", "admin")), "admin");
+    assert.equal(await role(await signIn("owner", "admin")), "owner", "its last owner");
+    assert.equal(await role(owner), "owner");
+  } finally {
+    await h.close();
+  }
+});

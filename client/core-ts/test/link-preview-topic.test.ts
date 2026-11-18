@@ -60,6 +60,23 @@ test("a_link_is_read_as_its_card_shows_and_shows_as_last_read_after_a_restart", 
   core.close();
 });
 
+test("a run card carries its jobs, step links and elapsed time through the topic shape", async () => {
+  const url = "https://github.com/acme/app/actions/runs/123";
+  const jobs = [{ name: "Build", step: "Sign", url: url + "/job/456#step:3:1" }];
+  const card = { kind: "github_actions_run", url, repository: "acme/app", number: 7, title: "Release", state: "failure",
+    workflow: "pipeline", branch: "main", commit: "7654321", startedAt: 2000, finishedAt: 62000, counts: { failed: 1 }, jobs };
+  const { core, host } = await started({ ...base(), [`GET /link-preview?url=${encodeURIComponent(url)}`]: card });
+  const values = new Map<number, unknown>();
+  subscribe(core, core.connect(), 1, { topic: "linkPreview", station: S, url });
+  await host.time.pass(500, 10);
+  apply(host, values);
+  assert.deepEqual(v(values, 1).counts, { failed: 1 });
+  assert.deepEqual(v(values, 1).jobs, jobs);
+  assert.equal(v(values, 1).workflow, "pipeline");
+  assert.ok(v(values, 1).elapsed);
+  core.close();
+});
+
 test("a_file_a_message_names_is_read_under_its_session_as_its_card_shows_and_kept", async () => {
   const PEEK = `GET /sessions/s-1/peek?path=${encodeURIComponent("src/a.ts")}&line=12`;
   const peek = (text: string) => ({ path: "/w/src/a.ts", name: "a.ts", size: 120, mtime: 1, type: "text/plain", kind: "text", lines: { start: 9, text: [text], at: 12 } });

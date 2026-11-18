@@ -498,9 +498,13 @@ static int32_t image_pixels_gl(int32_t id, int w, int h, moonbit_bytes_t out);
 static int32_t gl_sync_run(void) {
   switch (sync_ask.kind) {
     case 1: return gles_drawn_pixels(sync_ask.x, sync_ask.y, sync_ask.w, sync_ask.h, sync_ask.out);
-    case 2:
+    case 2: {
+      // The picture can place glyphs at its own scale before the app hands this frame to GL.
+      JNIEnv *env = env_();
+      (*env)->CallStaticVoidMethod(env, text_cls, m_flush);
       return gles_pixels_of(sync_ask.in, sync_ask.count, sync_ask.r, sync_ask.g, sync_ask.b, sync_ask.scale, sync_ask.w,
                             sync_ask.h, sync_ask.out);
+    }
     case 3: return image_pixels_gl(sync_ask.id, sync_ask.w, sync_ask.h, sync_ask.out);
   }
   return 0;

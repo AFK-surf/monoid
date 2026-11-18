@@ -10,7 +10,7 @@ import type { RunChange, RunShown, SessionRow } from "../store/rows.ts";
 export function runShown(row: SessionRow, named: (profile: string) => string | null): RunShown {
   const account = named(row.profile);
   return {
-    runtime: row.runtime, model: row.model, effort: row.effort, fast: row.fast, ...(row.speed ? { speed: row.speed } : {}), profile: row.profile, account,
+    runtime: row.runtime, model: row.model, effort: row.effort, fast: row.fast, ...(row.tui ? { tui: true } : {}), ...(row.speed ? { speed: row.speed } : {}), profile: row.profile, account,
     pinned: row.profilePinned, context: row.context,
   };
 }
@@ -18,7 +18,7 @@ export function runShown(row: SessionRow, named: (profile: string) => string | n
 /// What a change by hand posts a notice for: another runtime, model, effort or speed. Another account kept to by hand,
 /// or most context, alone says nothing in the chat; the station moving it to another account on its own (an allowance
 /// run out, a login over: accounts.ts `moved`) is said, as another account (the user, 2026-11-10).
-export const RUN_PARTS = ["runtime", "model", "effort", "fast"] as const;
+export const RUN_PARTS = ["runtime", "model", "effort", "fast", "tui"] as const;
 const WORD_PARTS = [...RUN_PARTS, "profile"] as const;
 
 export function runChanged(change: RunChange): boolean {
@@ -38,6 +38,8 @@ export function runChangeWords(change: RunChange, lang: Lang): string {
         return r.effort ?? tr(lang, "station.notice.runDefaultEffort");
       case "fast":
         return chosenSpeed(r) === "ultrafast" ? "Ultrafast" : chosenSpeed(r) === "fast" ? "Fast" : tr(lang, "station.notice.runStandard");
+      case "tui":
+        return r.tui ? "TUI" : "Print";
       case "profile":
         return r.account ?? r.profile ?? "";
     }

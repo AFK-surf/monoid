@@ -35,6 +35,13 @@
   "core-logic.activity.remote.stop": "Stopping {what} on {station}",
   "core-logic.activity.remote.upload": "Uploading {what} to {station}",
   "core-logic.activity.tools": "Loading tools {names}",
+  "core-logic.activity.web.search": "Searching the web",
+  "core-logic.activity.web.searchFor": "Searching the web for “{query}”",
+  "core-logic.activity.web.searchMany": "Running {n} web searches",
+  "core-logic.activity.web.open": "Opening a web page",
+  "core-logic.activity.web.openUrl": "Opening {url}",
+  "core-logic.activity.web.openMany": "Opening {n} web pages",
+  "core-logic.activity.web.operation": "Looking up on the web",
   "core-logic.choose.account": "Account",
   "core-logic.choose.account.all": "All",
   "core-logic.choose.account.auto": "Auto",
@@ -352,9 +359,12 @@
   "core-logic.jobs.long.disconnect": "Disconnect",
   "core-logic.jobs.long.ios": "iOS Simulator",
   "core-logic.jobs.long.jobs": "Long-running jobs",
+  "core-logic.jobs.long.other": "Other running · {n}",
   "core-logic.jobs.long.services": "Long-running services",
   "core-logic.jobs.long.shutdown": "Shut down",
   "core-logic.jobs.long.simulators": "Simulators left running",
+  "core-logic.jobs.long.terminals": "Terminals left open",
+  "core-logic.jobs.long.endTerminal": "End",
   "core-logic.jobs.long.views": "Remote connections left open",
   "core-logic.jobs.no_notice": "No notices yet · last output {ago}",
   "core-logic.jobs.notices": {
@@ -630,6 +640,7 @@
   "core-logic.notice.run.toLead": "Now",
   "core-logic.notice.run.was": "Before: {run}",
   "core-logic.format.connection.no_group": "No Group",
+  "core-logic.choose.error.station_claude_tui": "Update the station to use Claude TUI mode.",
   "core-logic.choose.error.station_model_speeds": "Update this station to use Ultrafast, or choose Standard or Fast.",
-  "core-logic.choose.error.ultrafast_unavailable": "Choose GPT-6 Astra or GPT-6.1 Sol in Codex with a ChatGPT subscription to use Ultrafast, or choose Standard or Fast."
+  "core-logic.choose.error.ultrafast_unavailable": "To use Ultrafast, choose a supported Codex model and an eligible ChatGPT subscription, or choose Standard or Fast."
 }

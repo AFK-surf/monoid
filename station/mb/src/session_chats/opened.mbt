@@ -12,6 +12,9 @@ pub let create_method : String = "session.create"
 pub let create_preset_method : String = "session.create.preset"
 
 ///|
+pub let create_preset_tui_method : String = "session.create.preset.tui"
+
+///|
 pub let create_speed_method : String = "session.create.speed"
 
 ///|
@@ -192,6 +195,7 @@ async fn bound_here(w : World, ws : J, pm : J, name : String) -> (J, J) {
     ("bound", jb(true)),
   ])
   let more = []
+  if at(Some(pm), "tui") is Some(Bool(true)) { more.push(("tui", jb(true))) }
   match at(Some(pm), "speed") {
     Some(Str(_) as s) => more.push(("speed", s))
     _ => ()
@@ -557,7 +561,9 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
         Some(Str(_)) => true
         _ => false
       }
-      let method = if !(preset is Null) {
+      let method = if at(at(Some(preset), "model"), "tui") is Some(Bool(true)) {
+        create_preset_tui_method
+      } else if !(preset is Null) {
         if speed is Some(_) || preset_speed { create_preset_speed_method } else { create_preset_method }
       } else if speed is Some(_) {
         create_speed_method
@@ -690,7 +696,7 @@ pub async fn create_for_peer(w : World, peer : String, request : J, ws : J) -> J
   }
   let model = given_arg(request, "model")
   let method = str_of(at(Some(request), "method"))
-  let copy = if method == Some(create_preset_method) || method == Some(create_preset_speed_method) {
+  let copy = if method == Some(create_preset_method) || method == Some(create_preset_speed_method) || method == Some(create_preset_tui_method) {
     Some(preset_copy_input(at(Some(request), "presetCopy").unwrap_or(Null)))
   } else {
     None

@@ -98,7 +98,7 @@ const UNBOUNDED = "nothing in the core bounds it (to weigh)";
 const NOT_MEASURED: Record<string, string> = {
   link: RAW, overview: RAW, sessions: RAW, session: RAW, host: RAW, memory: RAW, net: RAW, way: RAW, threads: RAW, thread: RAW, letters: RAW, chatRows: RAW,
   slackApp: RAW, jobs: RAW, machineLogins: RAW, machineLogin: RAW, machineLoginScreen: RAW, archivedRows: RAW, stationUsage: RAW, stationResources: RAW,
-  stationSearch: RAW, profilePace: RAW,
+  stationSearch: RAW, profilePace: RAW, stationRates: RAW,
   slackTokens: FORM, connectFlow: FORM, decisionForm: FORM, policyForm: FORM, agentEnvForm: FORM, profileFlow: FORM, lockDraft: FORM,
   adbCard: "four fields, its line a word of the core's or the phone's message (adb.ts card)", releases: "one number (core.ts `told`)",
   fonts: "the fonts of a fixed catalogue, by id (font-files.ts, fonts.ids, SHARE_LOOKS_FILES)", drivePlace: "three fields (DrivePlace)",
@@ -108,7 +108,7 @@ const NOT_MEASURED: Record<string, string> = {
   notify: UNBOUNDED, prefs: UNBOUNDED, doing: UNBOUNDED, adbShare: UNBOUNDED, rigs: UNBOUNDED, downloads: UNBOUNDED, driveTransfers: UNBOUNDED, lockPrompts: UNBOUNDED,
   admin: "still.fail's operators' console, not the app's", adminList: "still.fail's operators' console, not the app's", adminItem: "still.fail's operators' console, not the app's",
   adminOverview: "still.fail's operators' console, not the app's", adminRelays: "still.fail's operators' console, not the app's",
-  screenCard: "eight fields of one screen (screens.ts screenCard)", imageNear: "the two pictures beside one, at most (placed.ts near)",
+  screenCard: "eight fields of one screen (screens.ts screenCard)", terminalCard: "six fields of one terminal (terminals.ts terminalCard)", imageNear: "the two pictures beside one, at most (placed.ts near)",
   shareIn: "30 chats (share-in.ts LISTED) and the workspace's stations, 64 at most (client/limits.ts STATIONS_PER_WORKSPACE)",
   chatFeedback: UNBOUNDED,
   preset: "one preset whole, as the `presets` topic weighed sends each: its name, instructions and folders held to preset-records.ts NAME_MAX, INSTRUCTIONS_MAX, DIRS_MAX",
@@ -223,7 +223,9 @@ const EMPTY: Record<string, Record<string, string>> = {
   },
   // (what is looked for, `png`, only pictures' names have)
   "chatThings q": { files: ASKED_SO, links: ASKED_SO, pulls: ASKED_SO },
-  "linkPreview page": { labels: KIND, time: KIND },
+  "linkPreview page": { labels: KIND, time: KIND, counts: KIND, jobs: KIND },
+  "linkPreview pull": { counts: KIND, jobs: KIND },
+  "linkPreview run": { labels: KIND, time: KIND },
   "filePeek picture": { "lines.text": KIND, entries: KIND },
   "filePeek text": { entries: KIND },
 };
@@ -504,7 +506,7 @@ const STILL: Record<string, string> = {
   "memberships": READ_ONCE("views/memberships.ts readSoon, and again by station.join"),
   "workspaceWays": BY_PAGE("workspace.setWay: the rest is still.fail's relays, as /v1/me lists them"),
   "changelog news": UNTOLD("what this build got since the changelog was last shown: the device's build, said as a run starts (client.device), and the changelog shown (changelog.seen), on its own page"),
-  "linkPreview page": CARD, "linkPreview pull": CARD, "filePeek picture": CARD, "filePeek text": CARD, "messagePeek": CARD,
+  "linkPreview page": CARD, "linkPreview pull": CARD, "linkPreview run": CARD, "filePeek picture": CARD, "filePeek text": CARD, "messagePeek": CARD,
 };
 /// Those reached by a cause of a test of their own, not of `CAUSES`: by name, the test.
 const REACHED_ELSEWHERE: Record<string, string> = { live: "a working agent's stream" };

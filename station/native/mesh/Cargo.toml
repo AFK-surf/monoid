@@ -9,6 +9,10 @@ description = "The station's iroh and its image codecs (thumbnails, ThumbHashes)
 crate-type = ["cdylib"]
 
 [dependencies]
+mesh-transport = { path = "../../../libs/mesh-transport" }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # The archive lock (archive.rs `file_lock`) and local links (local_links.rs), as mesh/app has them.
 libc = "=0.2.189"
 percent-encoding = "=2.3.2"
@@ -19,14 +23,14 @@ base64 = "0.22"
 # A datagram that asks whether a connection's other end is still there (`Connection::answers`).
 bytes = "1"
 hex = "0.4"
-iroh = { version = "=1.0.3" }
+iroh = { version = "=1.0.3", features = ["unstable-custom-transports"] }
 iroh-mdns-address-lookup = "=0.4.0"
 iroh-mainline-address-lookup = "=0.5.0"
 # Its DHT, for the nodes it starts from (`dht` in src/lib.rs).
 n0-mainline = "=0.6.0"
 # The type of what an address lookup resolves (`Unmade`), as iroh names it.
 n0-future = "0.3"
-napi = { version = "3", features = ["async", "tokio_rt"] }
+napi = { version = "3", features = ["async", "tokio_rt", "serde-json"] }
 napi-derive = "3"
 noq-proto = { version = "1", default-features = false }
 # Its datagrams marked with a DSCP (`set_dscp`, src/dscp.rs): the vendored one ([patch.crates-io]), iroh's own.
@@ -64,12 +68,12 @@ iroh-relay = { version = "=1.3.0", default-features = false, features = ["server
 
 # As mesh/ has them (vendor/README.md).
 [patch.crates-io]
-noq-proto = { git = "https://github.com/zzj3720/noq", rev = "76344e6eab7ae651ce524e4f329a2f283f69d7ab" }
+noq-proto = { git = "https://github.com/CommaBot/noq", rev = "ec127b45ba708e20e4e192b8392e85ecd136fe06" }
 swarm-discovery = { path = "../../../vendor/swarm-discovery" }
 iroh-mdns-address-lookup = { path = "../../../vendor/iroh-mdns-address-lookup" }
 noq-udp = { path = "../../../vendor/noq-udp" }
-iroh = { git = "https://github.com/zzj3720/iroh", rev = "3a2d9ebb23e8f27fef2fa2aa321f98bc36ec03e3" }
-iroh-relay = { git = "https://github.com/zzj3720/iroh", rev = "3a2d9ebb23e8f27fef2fa2aa321f98bc36ec03e3" }
+iroh = { git = "https://github.com/zzj3720/iroh", rev = "cf6024a560cd33b68c6c0d896068891a82004567" }
+iroh-relay = { git = "https://github.com/zzj3720/iroh", rev = "cf6024a560cd33b68c6c0d896068891a82004567" }
 
 [profile.release]
 strip = true

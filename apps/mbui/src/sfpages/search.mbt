@@ -129,12 +129,12 @@ pub fn search_away_node(v : @view.View) -> () -> Double {
     let s = search_read()
     s.open && !s.leaving && !s.over
   }
-  let way = @sf.EdgeWay::new(if @signals.untracked(up) { 1.0 } else { 0.0 })
+  let way = @motion.NodeWay::new(if @signals.untracked(up) { 1.0 } else { 0.0 })
   v.reacts(up, fn(on) {
     if @signals.untracked(fn() { search_read().fly }) == 2 {
       way.go_from(v, 1.0, 1.0, @motion.Snap(0.0))
     } else {
-      way.go_by(v, if on { 1.0 } else { 0.0 }, search_way())
+      way.go(v, if on { 1.0 } else { 0.0 }, search_way())
     }
   })
   fn() { way.shown(v) }
@@ -327,7 +327,7 @@ pub fn search_page_node(
 ) -> Unit {
   // its way up: from its field in the list (0) to the top (1), from the moment it opened; back as it goes back, gone
   // at that way's end
-  let up = @sf.EdgeWay::new(if search.fly == 1 { 0.0 } else { 1.0 })
+  let up = @motion.NodeWay::new(if search.fly == 1 { 0.0 } else { 1.0 })
   let gone_due = Ref(fn() {  })
   let fly = fn() {
     match search.fly {
@@ -340,7 +340,7 @@ pub fn search_page_node(
   fly()
   v.reacts(fn() { search_read().leaving }, fn(leaving) {
     if leaving {
-      up.go_by(v, 0.0, search_way())
+      up.go(v, 0.0, search_way())
       (gone_due.val)()
       gone_due.val = v.at_moment(up.end(), fn() { search_gone() })
     }

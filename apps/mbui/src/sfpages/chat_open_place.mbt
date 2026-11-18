@@ -3,13 +3,15 @@
 // the screen's scale. Asked once, as the list is made (chat_body_node), never as it is laid out.
 
 ///|
-/// Where a chat's list of rows `rows` (chat view `v`'s) opens, as the row's key and its offset ListPlace::bring takes
-/// (from under what covers the list's top, `cover` tall: the chat's bar); None at its end. At its unread line, `lead`
-/// under the list's top (`top`: the bar and the room under it); else where it was left this run (`kept`: the message
+/// Where a chat's list of rows `rows` (chat view `v`'s, the list `w` wide) opens, as the row's key and its offset
+/// ListPlace::bring takes (from under what covers the list's top, `cover` tall: the chat's bar); None at its end. At its
+/// unread line, the line `lead` under the list's top (`top`: the bar and the room under it), the room over its block
+/// (chat_body_gap_room) over that; else where it was left this run (`kept`: the message
 /// at its top as far under the list's window's top, as kept: sfbase's kept_place_under), unless it was left at its end
 /// (then at its end, what came since showing);
 /// else where the core says it was left (`v.at`: the first message at or after it, its top `v.at_offset` under the
-/// window's top in the screen's pixels of `scale`, as kept; else at the list's top).
+/// window's top in the screen's pixels of `scale`, as kept; else what is read in it at the list's top, the room over its
+/// block over that, as a go-to puts it: chat_goes_to).
 fn chat_open_place(
   list : ChatBodyList,
   v : ChatView,
@@ -18,10 +20,17 @@ fn chat_open_place(
   cover : Double,
   top : Double,
   lead : Double,
+  w : Double,
 ) -> (String, Double)? {
   let rows = list.read()
+  let gap = fn(k : String) {
+    match rows.get(k) {
+      Some(row) => chat_body_gap_room(row.gap, w)
+      None => 0.0
+    }
+  }
   if rows.get("line") is Some(_) {
-    return Some(("line", @sfbase.kept_place_under(top + lead, cover)))
+    return Some(("line", @sfbase.kept_place_under(top + lead - gap("line"), cover)))
   }
   if kept is Some(p) && p.bottom >= 0.0 {
     return None
@@ -39,7 +48,7 @@ fn chat_open_place(
       k,
       match v.at_offset {
         Some(px) => @sfbase.kept_place_under(px / scale, cover)
-        None => @sfbase.kept_place_under(top, cover)
+        None => @sfbase.kept_place_under(top - gap(k), cover)
       },
     ),
   )

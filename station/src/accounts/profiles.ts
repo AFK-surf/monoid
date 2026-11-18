@@ -34,6 +34,8 @@ export type ProfileCheck = {
   modelEfforts?: Record<string, Record<string, string[]>>;
   /// runtime → model → its own reasoning level, where the runtime says one.
   modelEffortDefaults?: Record<string, Record<string, string>>;
+  /// Models with an Ultrafast tier in this account’s Codex app-server catalog.
+  codexUltrafastModels?: string[];
   /// ok: usable; login: needs a subscription sign-in; failed: the key or login was rejected; unknown.
   state: string;
   /// A Codex token was refused by the provider; a local login-status check alone cannot clear it.

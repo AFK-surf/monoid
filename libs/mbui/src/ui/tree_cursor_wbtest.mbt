@@ -201,8 +201,8 @@ test "every shape a node says comes back as itself: the host told its own number
     assert_eq(t.cursor(), c, msg="over the edge said \{c}")
     assert_true(said.contains("cursor=\{c}\n"), msg="\{c} probed: \{said}")
   }
-  assert_eq(Cursor::ResizeNWSE.to_string(), "ResizeNWSE")
-  assert_eq(Cursor::ResizeNESW.to_string(), "ResizeNESW")
+  assert_eq(Show::to_string(Cursor::ResizeNWSE), "ResizeNWSE")
+  assert_eq(Show::to_string(Cursor::ResizeNESW), "ResizeNESW")
 }
 
 ///|

@@ -2,6 +2,8 @@ import {
   "station/host",
   "station/jsjson",
   "station/jscase",
+  "station/nodepath",
+  "station/ops_platform",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/buffer",

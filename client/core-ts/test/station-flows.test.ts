@@ -130,16 +130,18 @@ test("uploads_in_parts_and_whole_to_a_station_before_parts", async () => {
 });
 
 test("fetches_a_file_in_parts_and_a_poster", async () => {
-  const { core } = await started({
+  const { core, host } = await started({
     ...base(),
-    "GET /sessions/k/parts?name=v.mp4&offset=0&length=4": "abcd",
     "GET /sessions/k/parts?name=old.mp4&offset=0&length=4": status(404, { error: "no route GET /sessions/k/parts" }),
     "GET /sessions/k/parts?name=gone.mp4&offset=0&length=4": status(404, { error: "文件不存在" }),
     "GET /sessions/k/poster?name=v.mp4": "jpeg",
   });
+  stationReplies(host, (req) => req.url.endsWith("/sessions/k/parts?name=v.mp4&offset=0&length=4")
+    ? new Raw({ status: 200, headers: [["stillfail-total", "8"]], body: new TextEncoder().encode("abcd") })
+    : undefined);
   const requests = core.inner.stations.requests;
   const got = await run(requests.filePart(remote(), "k", "v.mp4", 0, 4, null));
-  assert.equal(new TextDecoder().decode(got.bytes), JSON.stringify("abcd"));
+  assert.equal(new TextDecoder().decode(got.bytes), "abcd");
   // A station from before parts, and a file that is not there, apart.
   assert.equal((await failure(requests.filePart(remote(), "k", "old.mp4", 0, 4, null))).code, "unsupported");
   assert.equal((await failure(requests.filePart(remote(), "k", "gone.mp4", 0, 4, null))).code, "http_404");
@@ -1169,6 +1171,30 @@ test("jobs_are_put_in_place_from_their_events_and_from_stopping_them", async () 
   push("job-removed", { id: "j2", session: "a" });
   await host.time.pass(EVENTS_COALESCE_MS + 100);
   assert.deepEqual(sessionOf(core, "a").jobs.map((j: J) => j.id), ["j1"]);
+  // One still up removed (its station dropped it): no longer among the open ones at once, nothing read again.
+  const before = gets(host, "/admin/api/jobs?chats=0");
+  push("job-removed", { id: "j1", session: "a" });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.deepEqual(sessionOf(core, "a").jobs, []);
+  assert.deepEqual(open(), []);
+  assert.equal(gets(host, "/admin/api/jobs?chats=0"), before);
+  core.close();
+});
+
+test("a_sessions_jobs_leave_the_open_ones_as_it_is_removed", async () => {
+  const job = (id: string, session: string) => ({ id, session, name: id, state: "running", port: 4817, startedAt: 1 });
+  const answers: J = {
+    ...base(),
+    "GET /sessions": [summary("a", 0), summary("b", 0)],
+    "GET /jobs": [job("j1", "a"), job("j2", "b")],
+  };
+  const { host, core, push } = await started(answers);
+  await host.settle();
+  const open = () => (core.inner.data.get({ topic: "jobs", station: ST }) as J[]).map((j: J) => j.id);
+  assert.deepEqual(open().sort(), ["j1", "j2"]);
+  push("session-removed", { key: "a" });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.deepEqual(open(), ["j2"], "the other session's stays");
   core.close();
 });
 

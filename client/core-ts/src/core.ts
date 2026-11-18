@@ -281,7 +281,7 @@ export class Core {
       inner.viewCalls = new ViewCalls(inner, inner.views);
       inner.viewCalls.install();
       // What agents said lately read ahead, kept on the device: a chat opens with its Markdown read (md-ahead.ts).
-      const ahead = new MdAhead(inner.data, inner.runner, () => inner.host.nowMs(), (station, of) => inner.data.mdChanged(station, of));
+      const ahead = new MdAhead(inner.data, inner.runner, () => inner.host.nowMs(), (station, of) => inner.data.mdChanged(station, of), () => inner.store.turn());
       inner.data.onOldMd = (station, of, text) => ahead.refresh(station, of, text);
       inner.data.onLogChange((table, station, id) => {
         if (table === "entry") ahead.thread(station, Number(id));
@@ -489,6 +489,7 @@ export class Core {
       const adminRelays = new AdminRelays(inner);
       inner.router.owners.push(adminRelays);
       inner.cloudSync.onRelayLoad = (sub) => adminRelays.told(sub);
+      inner.cloudSync.onAdminSubList = (sub, prefix) => adminRelays.told(sub, prefix);
       inner.router.owners.push(new Pills(inner.store, inner.runner, () => inner.host.nowMs(), (station) => inner.views.stationName(station)));
       // The stations every account reaches are linked, as the workspaces say (once a burst of changes settles).
       let reconciling = false;

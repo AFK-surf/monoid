@@ -4,8 +4,8 @@
 
 ///|
 /// What the modes of the cards and words set going as the chat opens: chat-answering's option under way, chat-pick's
-/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's and
-/// chat-menu-choice's menu presented.
+/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's,
+/// chat-menu-choice's and chat-menu-levels' menu presented, chat-confirm's confirm.
 pub fn open_cards_fixture(mode : String) -> Unit {
   match mode {
     "chat-answering" => acting.doing["answer/" + seq_key("ws1/st1", 7.0, 8.0) + "/一起换"] = true
@@ -46,6 +46,37 @@ pub fn open_cards_fixture(mode : String) -> Unit {
         ],
         from=@sf.at_point(700.0, 300.0),
       )
+    // a menu whose item opens a menu (分享: on 小屏 a level of the same sheet, back to the first)
+    "chat-menu-levels" =>
+      @sf.menu(
+        [
+          Some(@sf.menu_item_of("复制链接", fn() {  }, icon="copy")),
+          Some(
+            @sf.menu_item_of("分享", fn() {
+              @sf.menu(
+                [
+                  Some(@sf.menu_item_of("发到 Slack", fn() {  }, icon="send")),
+                  Some(@sf.menu_item_of("发到飞书", fn() {  }, icon="send")),
+                  None,
+                  Some(@sf.menu_item_of("生成图片", fn() {  }, icon="photo")),
+                ],
+                title="分享到",
+                from=@sf.at_point(700.0, 300.0),
+              )
+            }, icon="share", further=true),
+          ),
+          None,
+          Some(
+            @sf.menu_item_of("删除", fn() {
+              @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true)
+            }, icon="trash", danger=true, further=true),
+          ),
+        ],
+        from=@sf.at_point(700.0, 300.0),
+      )
+    // a confirm over the chat (the presenters'), one that cannot be undone, its warning under its words
+    "chat-confirm" =>
+      @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true, warning="删除后不能恢复。")
     "chat-menu-choice" =>
       @sf.menu(
         [
@@ -102,7 +133,7 @@ pub fn open_fixture(mode : String) -> Unit {
       if mode == "history-details" {
         history_tab.set(1)
       } else {
-        @sfpages.history_open(["h2/group", "h2/group/1", "h4/group", "h4/group/0"])
+        @sfpages.history_open(r.station, r.session, ["h2/group", "h2/group/e3", "h4/group", "h4/group/e7"])
       }
     }
     // the wide frame's (wide_panel.mbt): the chat's "…" open, its services' popover, what is opened beside it
@@ -111,7 +142,7 @@ pub fn open_fixture(mode : String) -> Unit {
       @sfdesk.open_jobs_pop()
       @sfdesk.open_job_pop("j-ci")
     }
-    "home-attention" => @sfdesk.open_attention()
+    "home-attention" | "home-shared-bell" => @sfdesk.open_attention()
     // (what is beside it: the made-up core keeps it so, fixture.mbt fixture_chat_tabs)
     "chat-letters-side" => {
       @sfdesk.letters_to_list(r)
@@ -207,7 +238,7 @@ pub fn open_drive_fixture(mode : String) -> Unit {
             root: @sffixture.fix_docs,
             dir: "",
             name: @signals.signal(name),
-            bytes: Bytes::new(size),
+            bytes: Bytes::make(size, b'\x00'),
             sent: @signals.signal(sent),
             state: @signals.signal(state),
             error: @signals.signal(error),
@@ -370,8 +401,9 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   // a device not yet confirmed in the workspace's safe mode: lock-waiting, lock-finding, lock-code, lock-wrong (its
   // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
   // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
-  // lock-needs-app-security (its security page)
-  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" {
+  // lock-needs-app-security (its security page); lock-out-security (its person taken out: its security page)
+  // lock-restart-security, lock-rebound-security, lock-replaced-security (its person's own lock: its security page)
+  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" || mode == "lock-restart-security" || mode == "lock-rebound-security" || mode == "lock-replaced-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
   // ⌘/'s shortcuts at a glance
@@ -428,6 +460,17 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   if mode == "share-card" || mode.has_prefix("share-card-") {
     @sfpages.share_card_open(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" })
   }
+  // (the subscriptions' allowances to share, and the overview's pool to share, of the four kinds' accounts:
+  // share_quota.mbt)
+  if mode == "share-accounts" || mode == "share-pool" {
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    let ws : Workspace = { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }
+    if mode == "share-accounts" {
+      @sfpages.accounts_share_open(settings_core(src, ws), fn() { "ws1" })
+    } else {
+      @sfpages.pool_share_open(settings_core(src, ws), fn() { "ws1" })
+    }
+  }
   if mode == "chat-station-files" {
     fixture_station_files(src)
   }
@@ -450,6 +493,20 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   }
   if mode == "new-workspace-code" {
     @sfpages.new_workspace_put(src, name="产品团队", code="ABCD-1234-EFGH", error_code="invite_code_invalid")
+  }
+  if mode.has_prefix("place-remote") {
+    @settings.fixture_place_remote()
+    // (远程 is the first of the second bar: reached by sliding up to it, so that bar is the one in view, its ball on 远程;
+    // place-remote-home stays on Home, the first bar in view, for a finger to slide up to 远程 from there)
+    if mode != "place-remote-home" {
+      let (sets, _) = @sfbase.bars_in(src, "ws1")
+      @sfbase.bars_picked.set(Some((sets, 1)))
+    }
+  }
+  if mode == "place-remote-tabs" {
+    @sfbase.remote_tab_open(src, "ws1", Screen({ station: "ws1/st1", screen: "desktop", title: "Willow 的桌面", until_gone: false })) |> ignore
+    @sfbase.remote_tab_open(src, "ws1", Screen({ station: "ws1/st1", screen: "browser:T1", title: "发布清单 - localhost:5173", until_gone: false })) |> ignore
+    @sfbase.remote_tab_open(src, "ws1", Terminal({ station: "ws1/st1", terminal: "term-2", watch: false, cwd: "~/still.fail" })) |> ignore
   }
 }
 
@@ -580,11 +637,12 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_model = n.model
       n.d_runtime = n.runtime
     }
+    if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
     if mode == "newchat-ultrafast-model" {
       let n = @sffixture.new_fix
       n.crowded = true
       n.ultrafast = true
-      n.model = "gpt-6-astra"
+      n.model = "gpt-6.2-sol"
       n.runtime = "codex"
       n.d_model = n.model
       n.d_runtime = n.runtime
@@ -668,7 +726,7 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
-      "newchat-station-models" | "newchat-station-empty" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
+      "newchat-station-models" | "newchat-station-empty" | "newchat-tui-model" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
     }
@@ -719,6 +777,11 @@ pub fn open_mode(mode : String) -> Unit {
     }
     open_setting("station:ws1/st1")
     app.nav.push(Terminal({ station: "ws1/st1", terminal: tid, watch: false, cwd: "" }))
+  } else if mode == "place-remote-tabs" {
+    app.nav.replace(Place("remote"))
+  } else if mode == "place-remote-home" {
+    // (Home, as the app starts, over 远程's stations: Maple online beside Willow)
+    ()
   } else if mode.has_prefix("place-") {
     // a place of the rail's in the wide frame: place-stations, place-profiles, place-connects,
     // place-usage
@@ -870,9 +933,9 @@ fn open_share_fixture(mode : String) -> Unit {
     "share-in-files" => {
       share_in.shared.set(Some(("", None)))
       share_in.files.set([
-        { name: "home-after.png", bytes: Bytes::new(182345), image: @sffixture.fixture_file("home-after.png") },
-        { name: "compare.png", bytes: Bytes::new(96512), image: @sffixture.fixture_file("compare.png") },
-        { name: "季度数据.csv", bytes: Bytes::new(23110), image: "" },
+        { name: "home-after.png", bytes: Bytes::make(182345, b'\x00'), image: @sffixture.fixture_file("home-after.png") },
+        { name: "compare.png", bytes: Bytes::make(96512, b'\x00'), image: @sffixture.fixture_file("compare.png") },
+        { name: "季度数据.csv", bytes: Bytes::make(23110, b'\x00'), image: "" },
       ])
       share_in.env_taken.set(true)
     }

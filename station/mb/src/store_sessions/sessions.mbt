@@ -444,8 +444,8 @@ pub fn Store::insert_session(self : Store, s : Json) -> Unit raise {
     ignore(
       self.run(
         (
-          #|INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed)
-          #|         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          #|INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed, tui)
+          #|         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ),
         [
           nullish(get("key")),
@@ -470,6 +470,7 @@ pub fn Store::insert_session(self : Store, s : Json) -> Unit raise {
           nullish(get("ws")),
           nullish(get("context")),
           nullish(get("speed")),
+          flag(get("tui") == Some(Json::boolean(true))),
         ],
       ),
     )
@@ -537,7 +538,7 @@ pub fn Store::set_session_runtime(
   }
   self.update_session(
     key,
-    "UPDATE sessions SET original_runtime = COALESCE(original_runtime, \{first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, context = ?8 WHERE key = ?9",
+    "UPDATE sessions SET original_runtime = COALESCE(original_runtime, \{first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, tui = NULL, context = ?8 WHERE key = ?9",
     [
       runtime,
       profile,
@@ -614,6 +615,11 @@ pub fn Store::set_session_afresh(
     opt_flag(afresh),
     jstr(key),
   ])
+}
+
+///|
+pub fn Store::set_session_tui(self : Store, key : String, tui : Bool) -> Unit raise {
+  self.update_session(key, "UPDATE sessions SET tui = ?1 WHERE key = ?2", [flag(tui), jstr(key)])
 }
 
 ///|
@@ -845,16 +851,33 @@ pub fn Store::put_model_stars(
 }
 
 ///|
+/// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after. Read
+/// without the write lock where it is kept; the first write waits for no other writer (store.ts `#tryNow`: the mesh
+/// tries again after a failed start), refused "device builds write is busy" where one holds the lock.
 pub fn Store::device_builds_since(self : Store, now : Json) -> Json raise {
-  ignore(
-    self.run(
-      "INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)",
-      [now],
-    ),
-  )
   match self.one("SELECT at FROM device_builds_since WHERE one = 1", []) {
-    Some(r) => js_number(or_else(col(r, "at"), now))
-    None => js_number(now)
+    Some(r) => return js_number(or_else(col(r, "at"), now))
+    None => ()
+  }
+  let timeout = match self.one("PRAGMA busy_timeout", []) {
+    Some(r) => num_of(col(r, "timeout")).unwrap_or(0.0).to_int()
+    None => 0
+  }
+  self.db.exec("PRAGMA busy_timeout=0")
+  let made : Result[Json, Error] = try {
+    ignore(self.run("INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)", [now]))
+    match self.one("SELECT at FROM device_builds_since WHERE one = 1", []) {
+      Some(r) => Ok(js_number(or_else(col(r, "at"), now)))
+      None => Ok(js_number(now))
+    }
+  } catch {
+    e => Err(e)
+  }
+  self.db.exec("PRAGMA busy_timeout=\{timeout}")
+  match made {
+    Ok(at) => at
+    Err(e) if @sql.busy(e) => raise store_error("device builds write is busy")
+    Err(e) => raise e
   }
 }
 

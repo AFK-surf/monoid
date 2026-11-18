@@ -5,7 +5,6 @@
 ///|
 fn init {
   @ui.gaps_steady_known([
-    ("src/sfreplay/flows/archive_restore_test.mbt", 1),
     ("src/sfreplay/flows/glass_test.mbt", 1),
     ("src/sfreplay/flows/markdown_test.mbt", 1),
     // (this one and wide_answer_reply's: shown as the replay gives each message at its own moment, a device's timing,

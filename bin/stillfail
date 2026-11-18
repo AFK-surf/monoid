@@ -23,9 +23,10 @@
 #                                                       to <data>/run (only the latest kept; it holds the station's
 #                                                       tokens): what its memory holds, for Chrome's DevTools
 #   stillfail uninstall [--purge]                       stops the station for good: its service (launchd's, systemd's,
-#                                                       WSL's keeper) and its Helper gone, its release, its Node and
-#                                                       ~/.local/bin's link removed; its chats, memory and secrets kept
-#                                                       in the data (<data>/uninstalled says so) unless --purge
+#                                                       WSL's keeper) and its Helper gone, its release (and a Node
+#                                                       from before) and ~/.local/bin's link removed; its chats, memory
+#                                                       and secrets kept in the data (<data>/uninstalled says so)
+#                                                       unless --purge
 #   stillfail move <folder>                             moves this machine's station's data (~/.stillfail) into
 #                                                       <folder>/stillfail (another disk: an external one), ~/.stillfail
 #                                                       a link to it; <folder> the home brings it back. Its station
@@ -92,15 +93,33 @@ uninstall() {
   # once the station that would start it again is gone
   sock="$data/helper/helper.sock"
   if [ -S "$sock" ] && [ -f "$data/helper/token" ]; then
-    node=$data/app/node/bin/node
-    [ -x "$node" ] || node=$(command -v node 2>/dev/null || true)
-    [ -z "$node" ] || "$node" -e '
-      const s = require("net").connect(process.argv[1]);
-      const end = () => s.destroy();
-      s.setTimeout(3000, end);
-      s.on("error", end);
-      s.on("connect", () => s.write(JSON.stringify({ token: process.argv[2], op: "quit" }) + "\n"));
-      s.on("data", end);' "$sock" "$(tr -d ' \r\n' < "$data/helper/token")" 2>/dev/null || true
+    # (one line on the socket, by whatever this machine has: a release with no Node of its own, an old one's Node last)
+    quit=$(printf '{"token":"%s","op":"quit"}' "$(tr -d ' \r\n"\\' < "$data/helper/token")")
+    if command -v nc >/dev/null 2>&1 && printf '%s\n' "$quit" | nc -U -w 3 "$sock" >/dev/null 2>&1; then :
+    elif command -v socat >/dev/null 2>&1 && printf '%s\n' "$quit" | socat -t 3 - "UNIX-CONNECT:$sock" >/dev/null 2>&1; then :
+    elif command -v python3 >/dev/null 2>&1 && python3 -I -c '
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(3)
+s.connect(sys.argv[1])
+s.sendall(sys.argv[2].encode() + b"\n")
+try: s.recv(1)
+except OSError: pass' "$sock" "$quit" 2>/dev/null; then :
+    elif command -v perl >/dev/null 2>&1 && perl -MIO::Socket::UNIX -e '
+my $s = IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1;
+print $s "$ARGV[1]\n";
+local $SIG{ALRM} = sub { exit 0 }; alarm 3; my $b; sysread($s, $b, 1);' "$sock" "$quit" 2>/dev/null; then :
+    else
+      node=$data/app/node/bin/node
+      [ -x "$node" ] || node=$(command -v node 2>/dev/null || true)
+      [ -z "$node" ] || "$node" -e '
+        const s = require("net").connect(process.argv[1]);
+        const end = () => s.destroy();
+        s.setTimeout(3000, end);
+        s.on("error", end);
+        s.on("connect", () => s.write(process.argv[2] + "\n"));
+        s.on("data", end);' "$sock" "$quit" 2>/dev/null || true
+    fi
   fi
   link="$HOME/.local/bin/$product"
   if [ -L "$link" ]; then case "$(readlink "$link")" in "$data/app/"*) rm -f "$link" ;; esac; fi
@@ -311,14 +330,19 @@ case "${1:-} ${2:-}" in
     trap 'rm -rf "$STILLFAIL_MOVE_COPY"' EXIT
     move "$2" ;;
   "update "*)
-    # The channel's latest release, verified by this release's Node (the station's `update`: its signature, newer than
-    # this one) and installed by the installer this release carries, told what it must hash to
-    # (scripts/release-sign.ts). Not the cloud's installer: whoever serves it could put anything here.
-    node=${STILLFAIL_NODE:-$here/node/bin/node}
-    [ -x "$node" ] && [ -f "$here/station/main.js" ] || { echo "stillfail update: $here is not an installed release (no node/bin/node or station/main.js)" >&2; exit 1; }
+    # The channel's latest release, verified by this release's station (its `update`: its signature, newer than this
+    # one) and installed by the installer this release carries, told what it must hash to (scripts/release-sign.ts).
+    # Not the cloud's installer: whoever serves it could put anything here.
     case "${2:-}" in --beta|--stable|"") ;; *) echo "usage: stillfail update [--beta|--stable]" >&2; exit 2 ;; esac
     shift
-    plan=$("$node" "$here/station/main.js" update "$@" --app "$here" --data "$data") || exit $?
+    if [ -x "$station" ]; then
+      plan=$("$station" update "$@" --app "$here" --data "$data") || exit $?
+    else
+      # (a clone with no launcher built: Node's station, where it has one)
+      node=${STILLFAIL_NODE:-$here/node/bin/node}
+      [ -f "$here/station/main.js" ] && { [ -x "$node" ] || node=$(command -v node 2>/dev/null); } && [ -n "$node" ] || { echo "stillfail update: $here is not an installed release (no $station)" >&2; exit 1; }
+      plan=$("$node" "$here/station/main.js" update "$@" --app "$here" --data "$data") || exit $?
+    fi
     script=""
     while IFS='=' read -r key value; do
       case $key in
@@ -334,9 +358,6 @@ PLAN
   "status "*|"station status") exec "$station" status --data "$data" ;;
   "station id") exec "$station" id --data "$data" ;;
   "lock status"|"lock reset") what=$2; shift 2; exec "$station" lock "$what" "$@" --data "$data" ;;
-  "heap "*)
-    node=${STILLFAIL_NODE:-$here/node/bin/node}
-    [ -x "$node" ] && [ -f "$here/station/main.js" ] || { echo "stillfail heap: $here is not an installed release (no node/bin/node or station/main.js)" >&2; exit 1; }
-    exec "$node" "$here/station/main.js" heap --data "$data" ;;
+  "heap "*) exec "$station" heap --data "$data" ;;
   *) echo "usage: stillfail start [--port N] | stillfail move <folder> | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] [--lock <hash>] [--join | --stay] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail heap" >&2; exit 2 ;;
 esac

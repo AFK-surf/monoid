@@ -78,12 +78,13 @@ export function installChoose(inner: Inner): Choose {
             // (by the key the page named it by as its first words were sent: the topic's `next`)
             const key = field("key");
             const made = yield* handlers.chatCreate!(inner, { kind: "chatCreate", station: field("station"), ask, ...(key !== "" ? { key } : {}) }, progress, at, ctx);
-            choose.taken(key);
-            choose.used(field("station"), ask);
+            choose.used(field("station"), ask, key);
             return { key: get(made, "key") ?? null, runtime: ask.runtime ?? null, model: ask.model ?? null, effort: ask.effort ?? null };
           });
         case "pick.set":
           return Effect.as(attempt(() => choose.set(field("station"), field("of"), params)), null);
+        case "pick.defaultTui":
+          return Effect.as(attempt(() => choose.setDefaultTui(params.tui === true)), null);
         case "pick.like":
           return Effect.as(attempt(() => choose.like(field("station"), field("model"), params.liked === true)), null);
         case "pick.forget":

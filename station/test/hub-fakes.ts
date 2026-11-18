@@ -5,6 +5,7 @@ import { TestClock } from "effect/testing";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { after } from "node:test";
 import type { Roots } from "./reference/machine.ts";
 import { CommandMissing, type RunnerInfo } from "../src/agents/runner.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
@@ -348,7 +349,11 @@ export function testClock(): { clock: Clock.Clock; adjust(ms: number): Promise<v
   return { clock, adjust: (ms) => Effect.runPromise(test.adjust(`${ms} millis`)), asked: () => asked, begun };
 }
 
+const openRigs = new Set<Rig>();
+after(async () => { for (const rig of [...openRigs]) await rig.close(); });
+
 export class Rig {
+  #closed = false;
   dir: string;
   raw: Json;
   config: HubConfig;
@@ -395,6 +400,7 @@ export class Rig {
     this.place = o.place ?? { workspace: "ws", station: "st" };
     this.workspaces = o.workspaces;
     this.hub = this.newHub({ chats: (id) => chats.get(id), link: o.link, cold: o.cold });
+    openRigs.add(this);
   }
 
   /// The workspace and station its links name.
@@ -425,6 +431,13 @@ export class Rig {
     });
     // Its sessions' processes are fakes that load no skills and are told no memory: a hub's tests open them at once
     // (tests of the skills and the memory read them themselves: hub-parts, multi-workspace-agents, instructions).
+    // (each hub made is shut as the rig closes, the ones a test put another in place of too: a hub's program of the
+    // sessions, `stillfail-reader --sessions`, was left running after its file's tests, which setup-env.mjs found once
+    // it looked on Linux, 2026-11-17; a hub shut down by the test before is shut once)
+    const shutdown = hub.shutdown.bind(hub);
+    let shut: Promise<void> | undefined;
+    hub.shutdown = () => (shut ??= shutdown());
+    this.hubs.push(hub);
     hub.skillsLinker = async () => "";
     const cc = new CcIndexPreparation();
     hub.prepareCcSessions = async (sessions) => {
@@ -482,8 +495,14 @@ export class Rig {
       await settle();
     } while (![...this.hub.actors.values()].every((a) => a.settled()));
   }
+  /// Every hub made over this rig, `hub` the last put in its place.
+  private hubs: Hub[] = [];
   async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    openRigs.delete(this);
     await this.hub.shutdown();
+    for (const hub of this.hubs) await hub.shutdown();
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     this.store.close();
     rmSync(this.dir, { recursive: true, force: true });

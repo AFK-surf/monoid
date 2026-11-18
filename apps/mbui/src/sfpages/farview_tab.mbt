@@ -116,12 +116,131 @@ fn FarviewTab::close(self : FarviewTab, src : Source) -> Unit {
 }
 
 ///|
-/// Farview tab `screen` of `station` in `v`, filling it: its bar (back, forward, the page again, its address; while an
-/// agent drives it, a line saying so with 接管) over the page drawn here, the page's viewport as tall as what holds the
-/// tab gives it less that bar (Room::height: under a shell's own bars, a panel's, the window's top band, whatever it is
-/// laid out in). The tab is viewed while this is shown.
+/// Append `url` into the topmost open chat's composer draft (or copy to clipboard when no chat is on the stack).
+fn send_url_to_open_chat(src : Source, url : String) -> Unit {
+  guard url != "" else { return }
+  let pages = @sfbase.app.nav.pages()
+  let mut i = pages.length() - 1
+  while i >= 0 {
+    if pages[i] is Chat(r) {
+      let w = @sfbase.writing(src, r.station + ":" + r.session)
+      let cur = @signals.untracked(fn() { w.text.get() })
+      let next = if cur == "" {
+        url
+      } else if cur.has_suffix("\n") || cur.has_suffix(" ") {
+        cur + url
+      } else {
+        cur + " " + url
+      }
+      w.field.set(next)
+      @sfbase.writing_text(src, w, next)
+      @sfbase.toast_later(@sf.t("web-pages.remote.urlSent"))
+      return
+    }
+    i -= 1
+  }
+  @ui.clipboard_set(url)
+  @sfbase.toast_later(@sf.t("web-pages.remote.urlCopied"))
+}
+
+///|
+/// Farview tab `screen` of `station` in `v`, filling it (farview_pane_node, which says the rest).
 #callsite(autofill(loc))
 pub fn farview_tab_node(v : @view.View, src : Source, station : String, screen : String, loc~ : SourceLoc) -> Unit {
+  farview_pane_node(v, src, station, screen, loc~)
+}
+
+///|
+/// Farview tab `screen` of `station` in `v`, filling it: its bar (back, forward, the page again, its address, control
+/// menu; while an agent drives it, a line saying so with 接管) over the page drawn here, the page's viewport as tall as
+/// what holds the tab gives it less that bar (Room::height: under a shell's own bars, a panel's, the window's top band,
+/// whatever it is laid out in). The tab is viewed while this is shown.
+#callsite(autofill(loc))
+pub fn farview_pane_node(
+  v : @view.View,
+  src : Source,
+  station : String,
+  screen : String,
+  title? : String = "",
+  back? : () -> String,
+  on_back? : () -> Unit,
+  on_switch? : (@sfbase.Page) -> Unit,
+  on_close? : () -> Unit,
+  in_remote? : Bool = false,
+  bar_pads? : () -> (Double, Double),
+  on_window? : () -> Unit,
+  tips? : @sf.TipLayer,
+  top? : () -> Double = fn() { 0.0 },
+  loc~ : SourceLoc,
+) -> Unit {
+  let switch_to = fn(next : @sfbase.Page) {
+    match on_switch {
+      Some(f) => f(next)
+      None =>
+        if @sfbase.lone_page.val is Some(_) {
+          @sfbase.lone_page_replace(next)
+        } else {
+          @sfbase.open_page(next)
+        }
+    }
+  }
+  let close_here = fn() {
+    match on_close {
+      Some(f) => f()
+      None =>
+        match on_back {
+          Some(b) => b()
+          None => @sfbase.go_back() |> ignore
+        }
+    }
+  }
+  let open_new_tab = fn() {
+    let scope = "fv-new/" + station
+    let sub = @sfbase.hold(src, scope, "screens", { "station": Json::string(station) })
+    @sfbase.press_wait(
+      fn() { @sfbase.opens_answered(sub.get()) },
+      fn() {
+        let sval = @signals.untracked(fn() { sub.get().value })
+        @sfbase.let_go(src, scope)
+        let listed = items(sval, "screens")
+          .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+          .map(fn(sc) { text(Some(sc), "id") })
+        let next = @settings.new_browser_tab(src.call, station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+        switch_to(@sfbase.Page::Screen({ station, screen: next, title: "", until_gone: false }))
+      },
+      let_go=fn() { @sfbase.let_go(src, scope) },
+      most=@sf.open_hold_ms,
+    )
+    |> ignore
+  }
+  let close_current_tab = fn() {
+    let scope = "fv-close/" + station
+    let sub = @sfbase.hold(src, scope, "screens", { "station": Json::string(station) })
+    @sfbase.press_wait(
+      fn() { @sfbase.opens_answered(sub.get()) },
+      fn() {
+        let sval = @signals.untracked(fn() { sub.get().value })
+        @sfbase.let_go(src, scope)
+        let all_tabs = items(sval, "screens").filter(fn(sc) { text(Some(sc), "kind") == "browser" })
+        (src.call)(
+          "screen.close",
+          Json::object({ "station": Json::string(station), "screen": Json::string(screen) }),
+          failed_said(@sf.t("web-pages.screen.closeTabWhat")),
+        )
+        let rest = all_tabs.filter(fn(sc) { text(Some(sc), "id") != screen })
+        if rest.is_empty() {
+          close_here()
+        } else {
+          let idx = all_tabs.search_by(fn(sc) { text(Some(sc), "id") == screen }).unwrap_or(0)
+          let pick = rest[if idx < rest.length() { idx } else { rest.length() - 1 }]
+          switch_to(@sfbase.Page::Screen({ station, screen: text(Some(pick), "id"), title: text(Some(pick), "title"), until_gone: false }))
+        }
+      },
+      let_go=fn() { @sfbase.let_go(src, scope) },
+      most=@sf.open_hold_ms,
+    )
+    |> ignore
+  }
   v.box(made_for=loc, fn(p) {
     // (as tall as what holds it gives it, never what the page in it comes to: its viewport is that height)
     p.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
@@ -135,10 +254,265 @@ pub fn farview_tab_node(v : @view.View, src : Source, station : String, screen :
     |> ignore
     // (思源黑体 given to the page as it comes)
     p.reacts(fn() { @sfbase.page_faces().length() }, fn(_) { @sfbase.page_faces().each(fn(f) { tab.stage.add_font(f) }) })
+    let address = @ui.Field::new()
+    p
+    .key_context("Farview")
+    .on_action("farview.address", fn(_) {
+      address.focus()
+      address.pick(0, address.text().length())
+      true
+    })
+    .on_action("farview.reload", fn(_) {
+      tab.stage.reload()
+      true
+    })
+    .on_action("farview.back", fn(_) {
+      tab.stage.back()
+      true
+    })
+    .on_action("farview.forward", fn(_) {
+      tab.stage.forward()
+      true
+    })
+    .on_action("farview.tab_new", fn(_) {
+      open_new_tab()
+      true
+    }, can=fn() { !in_remote })
+    .on_action("farview.tab_close", fn(_) {
+      close_current_tab()
+      true
+    }, can=fn() { !in_remote })
+    |> ignore
+    let open_control = fn(from : @sf.Anchor) {
+      let scope = "fv-menu/" + station
+      let sub_s = @sfbase.hold(src, scope, "screens", { "station": Json::string(station) })
+      let asks_t = (src.asks_terminals)()
+      let sub_t = if asks_t {
+        Some(@sfbase.hold(src, scope, "terminals", { "station": Json::string(station) }))
+      } else {
+        None
+      }
+      @sfbase.press_wait(
+        fn() {
+          @sfbase.opens_answered(sub_s.get()) &&
+          (match sub_t { Some(st) => @sfbase.opens_answered(st.get()); None => true })
+        },
+        fn() {
+          let sval = @signals.untracked(fn() { sub_s.get().value })
+          let tval = match sub_t {
+            Some(st) => @signals.untracked(fn() { st.get().value })
+            None => None
+          }
+          @sfbase.let_go(src, scope)
+          let scs = items(sval, "screens")
+          let br_tabs = scs.filter(fn(sc) { text(Some(sc), "kind") == "browser" })
+          let other_scs = scs.filter(fn(sc) { text(Some(sc), "kind") != "browser" })
+          let open_terms = items(tval, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
+          let page_here : @sfbase.Page = @sfbase.Page::Screen({ station, screen, title, until_gone: false })
+          @sf.panel_nodes(
+            @sf.t("web-pages.screen.panel"),
+            fn(sheet, done) {
+              @sf.panel_group_node(sheet, fn() { "" }, fn(g) {
+                @sf.panel_row_node(
+                  g,
+                  fn() { @sf.t("web-pages.screen.newTab") },
+                  fn() {
+                    done()
+                    open_new_tab()
+                  },
+                  icon=fn() { "plus" },
+                )
+                for bt in br_tabs {
+                  let bid = text(Some(bt), "id")
+                  let btitle = {
+                    let t = text(Some(bt), "title")
+                    if t != "" { t } else { @sf.t("core-views.screen.kind.browser") }
+                  }
+                  let bnote = text(Some(bt), "url")
+                  let cur = bid == screen
+                  @sf.panel_row_node(
+                    g,
+                    fn() { btitle },
+                    fn() {
+                      done()
+                      if !cur {
+                        switch_to(@sfbase.Page::Screen({ station, screen: bid, title: btitle, until_gone: false }))
+                      }
+                    },
+                    icon=fn() { "web" },
+                    note=fn() { bnote },
+                    end=if cur { "check" } else { "" },
+                  )
+                }
+              })
+              @sf.panel_group_node(sheet, fn() { "" }, fn(g) {
+                @sf.panel_row_node(
+                  g,
+                  fn() { @sf.t("web-pages.remote.copyUrl") },
+                  fn() {
+                    let u = @signals.untracked(fn() { tab.stage.url() })
+                    if u != "" {
+                      @ui.clipboard_set(u)
+                      @sfbase.toast_later(@sf.t("web-pages.remote.urlCopied"))
+                    }
+                    done()
+                  },
+                  icon=fn() { "copy" },
+                )
+                @sf.panel_row_node(
+                  g,
+                  fn() { @sf.t("web-pages.remote.sendUrlToChat") },
+                  fn() {
+                    let u = @signals.untracked(fn() { tab.stage.url() })
+                    if u != "" {
+                      send_url_to_open_chat(src, u)
+                    }
+                    done()
+                  },
+                  icon=fn() { "send" },
+                )
+                if @sfbase.window_opens_for(page_here) {
+                  @sf.panel_row_node(
+                    g,
+                    fn() { @sf.t("web-pages.chat.openInWindow") },
+                    fn() {
+                      done()
+                      if @sfbase.open_window(page_here) {
+                        match on_window {
+                          Some(handed) => handed()
+                          None => close_here()
+                        }
+                      }
+                    },
+                    icon=fn() { "external" },
+                  )
+                }
+                @sf.panel_row_node(
+                  g,
+                  fn() { @sf.t("web-pages.screen.closeTabFull") },
+                  fn() {
+                    done()
+                    close_current_tab()
+                  },
+                  icon=fn() { "close" },
+                  danger=true,
+                )
+              })
+              if !other_scs.is_empty() || !open_terms.is_empty() || flag(tval, "open") {
+                @sf.panel_group_node(sheet, fn() { @sf.t("web-pages.remote.switchSession") }, fn(g) {
+                  for sc in other_scs {
+                    let sid = text(Some(sc), "id")
+                    let stitle = text(Some(sc), "title")
+                    let icon = if text(Some(sc), "kind") == "simulator" { "phone" } else { "monitor" }
+                    @sf.panel_row_node(
+                      g,
+                      fn() { stitle },
+                      fn() {
+                        done()
+                        switch_to(@sfbase.Page::Screen({ station, screen: sid, title: stitle, until_gone: false }))
+                      },
+                      icon=fn() { icon },
+                    )
+                  }
+                  for tm in open_terms {
+                    let tv = Some(tm)
+                    let tid = text(tv, "id")
+                    let tcwd = text(tv, "cwd")
+                    let tlabel = terminal_title(tv)
+                    @sf.panel_row_node(
+                      g,
+                      fn() { tlabel },
+                      fn() {
+                        done()
+                        switch_to(@sfbase.Page::Terminal({ station, terminal: tid, watch: !flag(tval, "open"), cwd: tcwd }))
+                      },
+                      icon=fn() { "terminal" },
+                      note=fn() { tcwd },
+                    )
+                  }
+                  if flag(tval, "open") {
+                    @sf.panel_row_node(
+                      g,
+                      fn() { @sf.t("web-pages.terminal.new") },
+                      fn() {
+                        done()
+                        switch_to(@sfbase.Page::Terminal({ station, terminal: "new", watch: false, cwd: "" }))
+                      },
+                      icon=fn() { "plus" },
+                    )
+                  }
+                })
+              }
+            },
+            from~,
+            along=End,
+            focus=false,
+          )
+        },
+        let_go=fn() { @sfbase.let_go(src, scope) },
+        most=@sf.open_hold_ms,
+      )
+      |> ignore
+    }
     p.by_room(fn(col, room) {
       col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       let chrome = col.box(fn(c) {
-        farview_bar_node(c, tab.stage)
+        if on_back is Some(back_fn) {
+          c.box(fn(hd) {
+            hd
+            .row(Is(true))
+            .gap(Is(8.0))
+            .padding(By(fn() { (12.0, top() + 8.0, 12.0, 4.0) }))
+            .lines_up(Is(Some(Middle)))
+            |> ignore
+            if @sfbase.lone_page.val is None {
+              let back_words = match back {
+                Some(bf) => bf
+                None => fn() { @sf.t("common.back") }
+              }
+              @sf.icon_button_node(hd, "arrow-left", back_words, back_fn) |> ignore
+            }
+            hd.box(fn(tb) {
+              tb.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(
+                tb,
+                fn() {
+                  let u = tab.stage.url()
+                  if title != "" { title } else if u != "" { u } else { @sf.t("core-views.screen.kind.browser") }
+                },
+                fn() { farview_head_words },
+              )
+              .cuts(Is(true))
+              .min_width(Is(Some(0.0)))
+              .allow_ellipsis(Is(true))
+              |> ignore
+            })
+            |> ignore
+            @sf.icon_button_node(hd, "plus", fn() { @sf.t("web-pages.screen.newTab") }, open_new_tab) |> ignore
+            let page_here : @sfbase.Page = @sfbase.Page::Screen({ station, screen, title, until_gone: false })
+            if @sfbase.window_opens_for(page_here) {
+              @sf.icon_button_node(hd, "external", fn() { @sf.t("web-pages.chat.openInWindow") }, fn() {
+                if @sfbase.open_window(page_here) {
+                  close_here()
+                }
+              })
+              |> ignore
+            }
+          })
+          |> ignore
+        }
+        // (a window of its own, where one takes it and what shows it hands it over: beside the control button)
+        let page_here : @sfbase.Page = @sfbase.Page::Screen({ station, screen, title, until_gone: false })
+        let window = match on_window {
+          Some(handed) if @sfbase.window_opens_for(page_here) =>
+            Some(fn() {
+              if @sfbase.open_window(page_here) {
+                handed()
+              }
+            })
+          _ => None
+        }
+        farview_bar_node(c, tab.stage, address, open_control, pads?=bar_pads, window?, tips?)
         c.show(fn() { tab.stage.agent() }, fn(at) {
           // (a notice in the bar, a capsule inset from its sides and from the page under it: never edge to edge with
           // the page, whose ground is the page's own; round as 接管 is, the two concentric)
@@ -194,14 +568,45 @@ pub fn farview_tab_node(v : @view.View, src : Source, station : String, screen :
 }
 
 ///|
-/// The tab's bar: ← → ⟳ and its address, Enter going to what is typed there (an address, or words to search for).
-fn farview_bar_node(p : @view.View, stage : @stage.Stage) -> Unit {
+/// The tab's bar: ← → ⟳, its address (Enter going to what is typed there), and its control button; ← and → faded and
+/// taking no press where the host says the tab has nothing to go back or forward to.
+/// Where it stands at the pane's top (`pads`: 远程's), as high as a page's bar, its keys as far in from its ends as
+/// the pane says, the last concentric with the window's corner, its empty part dragging the window; `window`: a window
+/// of its own, beside the control button.
+fn farview_bar_node(
+  p : @view.View,
+  stage : @stage.Stage,
+  address : @ui.Field,
+  open_control : (@sf.Anchor) -> Unit,
+  pads? : () -> (Double, Double),
+  window? : () -> Unit,
+  tips? : @sf.TipLayer,
+) -> Unit {
+  let linked = if pads is Some(_) { Some(@sf.bar_keys_link) } else { None }
   p.box(fn(bar) {
-    bar.row(Is(true)).gap(Is(4.0)).padding(Is((6.0, 8.0, 6.0, 8.0))).lines_up(Is(Some(Middle))) |> ignore
-    @sf.icon_button_node(bar, "arrow-left", fn() { @sf.t("web-pages.screen.back") }, fn() { stage.back() }) |> ignore
-    @sf.icon_button_node(bar, "arrow-right", fn() { @sf.t("web-pages.screen.forward") }, fn() { stage.forward() }) |> ignore
-    @sf.icon_button_node(bar, "refresh", fn() { @sf.t("web-pages.screen.reloadShort") }, fn() { stage.reload() }) |> ignore
-    let address = @ui.Field::new()
+    bar.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))) |> ignore
+    match pads {
+      Some(at) =>
+        bar
+        .height(Is(Some(@sf.wide_bar_h)))
+        .padding(By(fn() {
+          let (s, e) = at()
+          (s, 0.0, e, 1.0)
+        }))
+        .moves_window(By(@ui.window_inset_now))
+        |> ignore
+      None => bar.padding(Is((6.0, 8.0, 6.0, 8.0))) |> ignore
+    }
+    @sf.icon_button_node(bar, "arrow-left", fn() { @sf.t("web-pages.screen.back") }, fn() { stage.back() }, tips?, linked?, disabled=fn() {
+      !stage.can_back()
+    })
+    |> ignore
+    @sf.icon_button_node(bar, "arrow-right", fn() { @sf.t("web-pages.screen.forward") }, fn() { stage.forward() }, tips?, linked?, disabled=fn() {
+      !stage.can_forward()
+    })
+    |> ignore
+    @sf.icon_button_node(bar, "refresh", fn() { @sf.t("web-pages.screen.reloadShort") }, fn() { stage.reload() }, tips?, linked?)
+    |> ignore
     bar.reacts(fn() { stage.url() }, fn(u) { address.set(u) })
     bar.box(fn(f) {
       f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
@@ -214,9 +619,26 @@ fn farview_bar_node(p : @view.View, stage : @stage.Stage) -> Unit {
       |> ignore
     })
     |> ignore
+    let more_btn = Ref(bar)
+    if window is Some(handed) {
+      @sf.icon_button_node(bar, "external", fn() { @sf.t("web-pages.chat.openInWindow") }, handed, tips?, linked?) |> ignore
+    }
+    let mb = @sf.icon_button_node(
+      bar,
+      "more",
+      fn() { @sf.t("web-pages.screen.panel") },
+      fn() { open_control(Node(more_btn.val)) },
+      tips?,
+      linked?,
+    )
+    more_btn.val = mb
   })
   |> ignore
 }
+
+///|
+// kept across runs: a style, read as it is
+let farview_head_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Fg, wrap=false)
 
 ///|
 // kept across runs: a style, read as it is

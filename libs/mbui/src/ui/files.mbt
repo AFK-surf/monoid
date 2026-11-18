@@ -207,6 +207,22 @@ pub struct GalleryRead {
 }
 
 ///|
+// kept across runs: counts library changes from the host
+let gallery_changed : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// How many library changes the host reported. A view can follow this signal while it shows photos.
+pub fn gallery_changes() -> Int {
+  gallery_changed.get()
+}
+
+///|
+/// How many gallery reads the host has answered, without taking their photos.
+pub fn gallery_reads_told() -> Int {
+  answers_told[outside_gallery].get()
+}
+
+///|
 /// The gallery's photos read (@hostapi.gallery_read): None where there is no gallery. A Tester's is what the test says
 /// it is (Tester::gallery), read as a host reads it, from the next frame.
 pub fn gallery_read() -> GalleryRead? {
@@ -229,10 +245,14 @@ priv struct FakeGalleryRead {
 }
 
 ///|
-/// The device's gallery from now on, as `photos` (Tester::new's has none, the app not let read one): all of it the app
-/// may read, each read of it what it is when asked, from the next frame, as a host reads it off the app's thread.
-pub fn Tester::gallery(self : Tester, photos : Array[@hostapi.GalleryPhoto]) -> Unit {
+/// Set the photos the app can read. `limited` restricts access to the chosen photos.
+/// `changed` sends the same library change event as the host.
+pub fn Tester::gallery(self : Tester, photos : Array[@hostapi.GalleryPhoto], limited? : Bool = false, changed? : Bool = false) -> Unit {
   self.fake.gallery = Some(photos.copy())
+  self.fake.gallery_limited = limited
+  if changed {
+    on_outside(outside_gallery, 0, 1)
+  }
 }
 
 ///|
@@ -247,7 +267,7 @@ fn FakeHost::gallery_read(self : FakeHost) -> Int {
           "\{p.id}\t\{p.src}\t\{p.added}\t\{p.modified}\t\{p.taken}\t\{if p.video { 1 } else { 0 }}\n",
         )
       }
-      self.gallery_reads.push({ rows: rows.to_string(), frame: g().frame_no, ended: false })
+      self.gallery_reads.push({ rows: rows.to_string(), frame: self.gallery_frame, ended: false })
       self.wants = true
       self.gallery_reads.length()
     }
@@ -259,7 +279,7 @@ fn FakeHost::gallery_read(self : FakeHost) -> Int {
 /// How read `id` goes, as a host says it: 0 reading (until the frame after it was asked), 1 read, -1 let go of or none.
 fn FakeHost::gallery_read_state(self : FakeHost, id : Int) -> Int {
   match self.gallery_reads.get(id - 1) {
-    Some(r) if !r.ended => if g().frame_no <= r.frame { 0 } else { 1 }
+    Some(r) if !r.ended => if self.gallery_frame <= r.frame { 0 } else { 1 }
     _ => -1
   }
 }

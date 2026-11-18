@@ -67,3 +67,35 @@ fn Admin::all_routes(self : Admin) -> Array[Route] {
   }
   platform + agents + parts
 }
+
+///|
+/// What the station is as the composition root makes it (`Setup`), from outside this package.
+pub fn Setup::new(
+  words : Words,
+  build : String,
+  runtime_kinds : Array[String],
+  dev : Bool,
+  data : String?,
+  grant_key : Bytes,
+  station_lang : String,
+  absent : Array[String],
+) -> Setup {
+  { words, build, runtime_kinds, dev, data, grant_key, station_lang, absent }
+}
+
+///|
+/// A request as the composition root makes it (a member's on the mesh, the machine's own on its door).
+pub fn Request::new(
+  verb : String,
+  path : String,
+  query : Array[(String, String)],
+  search : String?,
+  headers : Array[(String, String)],
+  body : Bytes,
+  viewer : JV,
+  lang : String,
+  background? : Bool = false,
+  signal? : Signal,
+) -> Request {
+  { verb, path, query, search, headers, body, viewer, lang, background, signal }
+}

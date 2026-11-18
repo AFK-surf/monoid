@@ -1,4 +1,4 @@
-// Claude Code driver: one `claude -p` stream-json process per session, under a
+// Claude Code driver: one stream-json process or interactive TUI bridge per session, under a
 // runner whose id comes from the session key.
 //
 // Behaviour pinned by spikes:
@@ -17,7 +17,7 @@
 import { link, mkdir, readdir, realpath, stat, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { REPO_RULES_COMMAND, hookCommand } from "./repo-rules.ts";
+import { REPO_RULES_COMMAND, hookCommand, hookNode } from "./repo-rules.ts";
 import { SLACK_SPOKEN, SPEAKS, SPEAKS_WRITING } from "../tools/mcp.ts";
 import { RenewRefused } from "../accounts/console.ts";
 import { claudeToken as claudeFileToken } from "../accounts/oauth.ts";
@@ -28,7 +28,8 @@ import { CLAUDE_TOKEN_MARGIN_MS, machineClaudeToken, type Env, type MachineToken
 import { fileCredentialsSoon, takeBack, takeBackMissing } from "./no-keychain.ts";
 import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession } from "./own-process.ts";
 import { accessKind, expandRoute, isMachine, keyFile, profileEnv, profileFast, profileModel, takesFast } from "./profiles.ts";
-import type { RunnerInfo } from "./runner.ts";
+import { runnerBinary, type RunnerInfo } from "./runner.ts";
+import { withShellCommand } from "../ops/shell-path.ts";
 import type { AgentsHost } from "./mb-agents.ts";
 import { TOOL_SERVERS, cleanEnv, unreachable, uuid, type BackgroundTask, type OpenOptions, type Profile } from "./runtime.ts";
 import { wall } from "../ops/fibers.ts";
@@ -36,6 +37,10 @@ import { peerHttpBase } from "../tools/http.ts";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
 
 type Json = any;
+
+const TUI_BRIDGE = fileURLToPath(new URL("./claude-tui.mjs", import.meta.url));
+const TUI_NODE = hookNode(TUI_BRIDGE);
+const tuiRunner = (info: RunnerInfo) => /(?:^|[\\/])claude-tui\.mjs$/.test(info.args[0] ?? "");
 
 const MCP_TOKEN_VAR = "STILLFAIL_MCP_TOKEN";
 /// Inherited variables that would let a session authenticate as something other than its profile.
@@ -315,7 +320,9 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     const sessionId = options.resume ?? uuid();
     const mcpConfig = options.textOnly ? { mcpServers: {} } : { mcpServers: { stillfail: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } } };
     const model = options.model ?? profileModel(options.profile);
-    const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
+    const env = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "claude"), options.route) };
+    const tui = !options.textOnly && options.tui === true;
+    const args: string[] = tui ? [] : ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
     if (!options.textOnly) args.push("--dangerously-skip-permissions");
     if (options.resume !== undefined) args.push("--resume", sessionId);
     else args.push("--session-id", sessionId);
@@ -343,7 +350,6 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     };
     if (Object.keys(settings).length > 0) args.push("--settings", JSON.stringify(settings));
 
-    const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "claude"), options.route) };
     if (file !== undefined) env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS = "60000";
     env.CLAUDE_CONFIG_DIR = home;
     env[MCP_TOKEN_VAR] = options.mcpToken;
@@ -385,7 +391,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     }
     if (machine) {
       env.CLAUDE_CODE_OAUTH_TOKEN = machine.token;
-      Object.assign(env, RENEWED);
+      if (!tui) Object.assign(env, RENEWED);
     }
     // Its own root certificates, not the system's: read from the macOS keychain by a process outside the desktop
     // session, they took up to 36 s before a new session could start. One the user chose wins.
@@ -396,10 +402,16 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 
     // Renewed while it runs, it is never started again for its token; one read from a file again after a 401 is not
     // stopped at the first.
-    const session = new ClaudeSession(this, sessionId, { busy: false, aborting: false, authFailure: null, closed: false, renews: (machine !== undefined && renews) || file !== undefined }, null, null, events, options.effort, renews ? renew : null, machine?.token ?? null);
+    const session = new ClaudeSession(this, sessionId, { busy: false, aborting: false, authFailure: null, closed: false, renews: (!tui && machine !== undefined && renews) || file !== undefined }, tui ? machine?.expiresAt ?? null : null, null, events, options.effort, renews ? renew : null, machine?.token ?? null, tui);
     session.toolsUrl = options.mcpUrl;
     session.fast = fast;
-    await this.start(session, options, this.command, args, env);
+    if (tui) {
+      // First-run appearance selection is for a person at a terminal. The TUI still requires a trusted workspace for hooks.
+      env.IS_DEMO = "1";
+      await this.start(session, options, process.execPath, [TUI_BRIDGE, TUI_NODE, runnerBinary(), this.command, ...args], await withShellCommand(this.command, env) as Record<string, string>);
+    } else {
+      await this.start(session, options, this.command, args, env);
+    }
     return session;
   }
 
@@ -417,7 +429,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   }
 
   protected handedOver(options: OpenOptions, handed: ClaudeSnapshot, info: RunnerInfo, events: Events) {
-    const session = new ClaudeSession(this, handed.id, { ...handed.turn, closed: false }, handed.machineExpires, handed.live, events, flagOf(info.args, "--effort"), this.renewer(options.profile), null);
+    const session = new ClaudeSession(this, handed.id, { ...handed.turn, closed: false }, handed.machineExpires, handed.live, events, flagOf(info.args, "--effort"), this.renewer(options.profile), null, tuiRunner(info));
     // The address it was told is in its arguments: the station's may have moved since (hub.ts `toolsAt`).
     session.toolsUrl = mcpUrlOf(info.args);
     session.fast = fastOf(info.args);
@@ -433,7 +445,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     // Its token is not known, nor whether it asks for a new one: as if about to run out, so its next turn starts it
     // again with a current one (a machine login's or a lent one).
     const renew = this.renewer(options.profile);
-    const session = new ClaudeSession(this, sessionId, turn, renew ? wall.now() : null, replayed.live ?? null, events, flagOf(info.args, "--effort"), renew, null);
+    const session = new ClaudeSession(this, sessionId, turn, renew ? wall.now() : null, replayed.live ?? null, events, flagOf(info.args, "--effort"), renew, null, tuiRunner(info));
     session.toolsUrl = mcpUrlOf(info.args);
     session.fast = fastOf(info.args);
     return session;
@@ -445,6 +457,7 @@ type Renew = (rejected?: string) => Promise<MachineToken>;
 
 export class ClaudeSession extends OwnProcessSession<Turn> {
   /// The machine login's token this process runs on (machine profiles): when it runs out.
+  private readonly tui: boolean;
   private machineExpires: number | null;
   /// The effort it was started with: fixed for the process (`--effort` has no switch while it runs).
   private effort: string | undefined;
@@ -454,8 +467,9 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   private renew: Renew | null;
   private token: string | null;
 
-  constructor(driver: ClaudeDriver, sessionId: string, turn: Turn, machineExpires: number | null, live: ClaudeLiveState | null, events: Events, effort: string | undefined, renew: Renew | null, token: string | null) {
+  constructor(driver: ClaudeDriver, sessionId: string, turn: Turn, machineExpires: number | null, live: ClaudeLiveState | null, events: Events, effort: string | undefined, renew: Renew | null, token: string | null, tui = false) {
     super(driver, sessionId, turn, events, live);
+    this.tui = tui;
     this.renew = renew;
     this.token = token;
     this.effort = effort;
@@ -508,7 +522,11 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     this.turn.compacting = true;
     this.turn.compactError = null;
     this.proc.tell("compact");
-    this.proc.write(userMessage("/compact"));
+    this.proc.write(this.tui ? JSON.stringify({ type: "compact" }) : userMessage("/compact"));
+  }
+
+  outlived() {
+    return this.tui && this.machineExpires !== null && this.machineExpires - wall.now() < CLAUDE_TOKEN_MARGIN_MS;
   }
 
   private begin() {
@@ -522,7 +540,8 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   }
 
   async steer(text: string) {
-    if (this.turn.closed || !this.turn.busy) return false;
+    // The station keeps busy-time deliveries in its inbox until this TUI finishes its turn.
+    if (this.tui || this.turn.closed || !this.turn.busy) return false;
     this.proc.write(userMessage(text));
     return true;
   }
@@ -545,7 +564,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   /// Fast needs a new one.
   retune(options: OpenOptions) {
     const model = options.model ?? profileModel(options.profile);
-    if (this.turn.closed || this.turn.busy || model === undefined || options.effort !== this.effort || fastFor(options) !== this.fast) return false;
+    if (this.tui || options.tui === true || this.turn.closed || this.turn.busy || model === undefined || options.effort !== this.effort || fastFor(options) !== this.fast) return false;
     this.proc.write(JSON.stringify({ type: "control_request", request_id: `model-${uuid()}`, request: { subtype: "set_model", model } }));
     return true;
   }

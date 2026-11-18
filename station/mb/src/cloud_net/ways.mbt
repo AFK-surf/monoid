@@ -485,7 +485,7 @@ pub fn set_relays(
     let off = keep_relay_on(
       ours,
       relays,
-      off.filter(w => !can_parse(w) || among(urls, w) || among(ours, w)),
+      off.filter(w => mesh_way(w) || !can_parse(w) || among(urls, w) || among(ours, w)),
     )
     (relays, off)
   })
@@ -503,6 +503,8 @@ pub fn set_way(
   let own = ways.view(ws).relays.map(r => r.url)
   let relays = [..ours, ..own]
   let is_kind = way_kinds.contains(way)
+  let is_mesh = mesh_way(way) && (ways.cloud.mesh_relays)().iter().any(r =>
+    text_of(field(r, "node")) is Some(node) && "mesh:" + node == way)
   let relay = if is_kind {
     None
   } else {
@@ -511,9 +513,9 @@ pub fn set_way(
       None => None
     }
   }
-  if !is_kind && relay is None {
+  if !is_kind && !is_mesh && relay is None {
     raise WaysRefusal(
-      "no such way: a relay of the workspace's, or ours, lan, tailnet, direct",
+      "no such way: a registered relay, or ours, lan, tailnet, direct",
     )
   }
   let id = relay.unwrap_or(way)

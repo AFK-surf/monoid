@@ -221,3 +221,38 @@ test "wrap_least: a part that gives way but is never narrower than what it holds
   check("ends", ends, 89.0, 26.0, 60.0, 10.0)
   check("part", p, 0.0, 0.0, 60.0, 10.0)
 }
+
+///|
+test "wrap_least: a nested wrapping row fits its widest item including margins and padding" {
+  for wrap in [@flex.Wrap, @flex.WrapReverse] {
+    let root = @flex.Node::new()
+    root.style.direction = Row
+    root.style.wrap = Wrap
+    root.style.wrap_least = true
+    root.style.justify = FlexEnd
+    root.style.set_width(Pt(100.0))
+    let row = @flex.Node::new()
+    row.style.direction = Row
+    row.style.wrap = wrap
+    row.style.shrink = 1.0
+    row.style.set_padding_left(Pt(4.0))
+    row.style.set_padding_right(Pt(6.0))
+    row.style.set_gap_col(Pt(8.0))
+    for w in [50.0, 80.0] {
+      let item = @flex.Node::new()
+      item.style.set_width(Pt(w))
+      item.style.set_height(Pt(20.0))
+      item.style.set_margin_left(Pt(10.0))
+      row.add(item)
+    }
+    root.add(row)
+    @flex.compute(root)
+    check("two lines", row, 0.0, 0.0, 100.0, 40.0)
+    root.style.set_width(Pt(99.0))
+    @flex.compute(root)
+    check("least width", row, -1.0, 0.0, 100.0, 40.0)
+    root.style.set_width(Pt(180.0))
+    @flex.compute(root)
+    check("one line", row, 12.0, 0.0, 168.0, 20.0)
+  }
+}

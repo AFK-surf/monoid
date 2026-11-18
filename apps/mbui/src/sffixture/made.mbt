@@ -19,6 +19,9 @@ pub fn fixture_reset() -> Unit {
   new_fix.d_runtime = "claude"
   new_fix.d_effort = "high"
   new_fix.context = ""
+  new_fix.claude_mode = false
+  new_fix.default_tui = false
+  new_fix.tui = None
   new_fix.speed = ""
   new_fix.d_profile = ""
   new_fix.d_profiles.clear()
@@ -64,6 +67,7 @@ pub fn fixture_reset() -> Unit {
   fix_xshared.clear()
   fix_decided.clear()
   fix_replied.clear()
+  fix_seed_gone.clear()
   fix_card_replies.clear()
   fix_reply_at.clear()
   fix_pace.val = (fix_deliver_ms, fix_answer_ms, fix_turn_end_ms)
@@ -86,6 +90,9 @@ pub fn fixture_reset() -> Unit {
   fix_clock.val = None
   fix_serial.val = 0
   fix_stream_ids.val = 0
+  fix_farview_tell.val = None
+  fix_farview_went.clear()
+  fix_farview_at.val = 0
   fix_fetches.clear()
   fix_folders.clear()
   fix_places.clear()

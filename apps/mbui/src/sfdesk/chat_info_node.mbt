@@ -357,7 +357,7 @@ fn info_things_node(g : @view.View, src : Source, r : ChatRef, said : () -> Info
       let pv = fn() { Some(pull.get()) }
       info_pull_node(row, src, r, pv, fn() {
         done()
-        @sfbase.open_link_in(src, text(@signals.untracked(pv), "url"))
+        @sfbase.open_link(text(@signals.untracked(pv), "url"))
       }, done)
     })
     t.show(fn() { said().pulls.length() > named() }, fn(row) {

@@ -55,6 +55,7 @@ pub fn run_let_go() -> Unit {
   made_forget()
   view_forget()
   frame_watches_let_go()
+  modifiers_said.val.set(0)
 }
 
 ///|
@@ -156,6 +157,7 @@ fn reset_globals() -> Unit {
   driver.val = None
   track_x.reset()
   track_y.reset()
+  wheel_back.val = wheel_back_fresh()
   reset_glass()
   reveal_reset()
   clear_shapes()
@@ -211,6 +213,7 @@ fn reset_globals() -> Unit {
   code_clears.clear()
   bars_hand.clear()
   clock_moments.clear()
+  clock_tree_read.val = -1.0e9
   perf_bytes_said.set(-1.0)
   image_data.clear()
   image_vector_drawers.clear()
@@ -263,6 +266,9 @@ fn reset_globals() -> Unit {
   timers_reset()
   reset_drawing()
   let left = leaked_state()
+  @view.hold_reset()
+  @view.untracked_read_reset()
+  tester_fanout_reset()
   if left.length() > 0 {
     @halt.saying("state kept from an earlier test: " + left.join(", "))
   }
@@ -302,6 +308,8 @@ fn leaked_state() -> Array[String] {
   check("messages", fake_posted.length())
   check("inst_owners", inst_owners.owner.length())
   check("answering", if @view.answer_marks_left() { 1 } else { 0 })
+  check("hold collection", if @view.hold_marks_left() { 1 } else { 0 })
+  check("untracked read making", if @view.untracked_read_marks_left() { 1 } else { 0 })
   out
 }
 
@@ -520,6 +528,8 @@ pub fn Tester::new(
     pick_asks: [],
     keeps: [],
     gallery: None,
+    gallery_limited: false,
+    gallery_frame: 0,
     gallery_reads: [],
     reads: [],
     read_ids: 0,
@@ -1260,6 +1270,8 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   // (what was said to move since the frame before, between frames (an input's handler): seen before this frame lets
   // go of what is over by its moment, tester_time.mbt)
   tester_rests_seen()
+  // Gallery reads complete on the next frame, including frames that reuse the view.
+  self.fake.gallery_frame += 1
   on_frame(self.w, self.h, self.fake.scale, if shown > at { shown } else { at })
   // (a bench's measured frame ends here: what follows is the Tester's own checks of it, which a device runs not)
   bench_frame_ends()
@@ -1650,6 +1662,7 @@ pub fn Tester::app_told(self : Tester, name : String) -> Array[String] {
 /// The keys held down from now on (@ui.mods_held: @ui.mod_alt, mod_cmd…; 0 none).
 pub fn Tester::hold_mods(self : Tester, mods : Int) -> Unit {
   self.fake.mods = mods
+  on_key(0, mods)
 }
 
 ///|
@@ -2854,7 +2867,8 @@ pub fn Tester::glyphs_seen(self : Tester) -> Array[(Double, Double, Double, Doub
       if x1 > x0 && y1 > y0 {
         let px = (x0 + x1) / 2.0
         let py = (y0 + y1) / 2.0
-        let mut hidden = false
+        // (none of it seen past its clip's rounded corner: in_inst_clip)
+        let mut hidden = !in_inst_clip(a, b, px, py)
         for j in (k + 1)..<c.ninst {
           if words_over_hides(a, j, px, py) {
             hidden = true
@@ -3639,6 +3653,20 @@ pub fn Tester::drags_window_at(self : Tester, x : Double, y : Double) -> Bool {
 }
 
 ///|
+/// Where what is read out as `n` can be seen, as the boxes holding it that clip cut it (Tree::seen_bounds: a strip
+/// scrolled sideways, a list): x0, y0, x1, y1 in the window, its own rect not cut by itself. A node its rect
+/// (`n.rect`) says laid out in the window can lie wholly past that, where a press at its middle lands on whatever is
+/// there instead. Where `n` is no node of the window's tree (an old view's widget), nothing cuts it here.
+pub fn Tester::seen_bounds_of(self : Tester, n : SemNode) -> (Double, Double, Double, Double) {
+  self.reads_own()
+  let all = (-1.0e9, -1.0e9, 1.0e9, 1.0e9)
+  match (view_tree(), tree_said_ids.get(n.id)) {
+    (Some(tree), Some(id)) => tree.seen_bounds(id)
+    _ => all
+  }
+}
+
+///|
 /// What a press at (x, y) would land on, pressing nothing, found as drags_window_at finds it (view_pointer's order):
 /// "window" where it drags the window; "pressed" where what it lands on does something pressed (a node of the window's
 /// tree with its press or its drag said, as Tree::target_at has it, the rule of a press's room measuring by the same;
@@ -3730,7 +3758,7 @@ fn Find::takes(self : Find, s : SemNode) -> Bool {
 /// What `f` finds, said in a line (for what a test fails with).
 fn Find::said(self : Find) -> String {
   let sb = StringBuilder()
-  sb.write_string(self.role.to_string())
+  sb.write_string(Show::to_string(self.role))
   if self.label != "" {
     sb.write_string(" \{self.label.escape()}")
   }

@@ -67,10 +67,14 @@ pub async fn probe_relay(b : ToolsBackend, url : String) -> Probed {
 
 ///|
 /// The tool: the ways (`ways`), the workspace a session is in (`workspaceOf`), who a session's change is said to be by
-/// (`by`), and how a relay is reached (`probe`: none, `probe_relay`).
+/// (`by`), which optional mesh callbacks are present (`mesh_list`, `enroll`, `revoke`), and how a relay is reached
+/// (`probe`: none, `probe_relay`).
 pub fn relay_tools(
   c : Ctx,
   deps? : String = "relays",
+  mesh_list? : Bool = false,
+  enroll? : Bool = false,
+  revoke? : Bool = false,
   probe? : (async (String) -> Probed)? = None,
 ) -> Array[Tool] {
   let b = c.b
@@ -100,7 +104,34 @@ pub fn relay_tools(
         ]
       }
       if action is Some(Str("list")) {
-        return stringify(jobj(list()))
+        let fields = list()
+        if mesh_list {
+          fields.push(("mesh", b.ask("\{deps}.meshList", [ws])))
+        }
+        return stringify(jobj(fields))
+      }
+      if action is Some(Str("revoke")) {
+        if !revoke {
+          raise Failed("mesh relay revocation is not available on this station")
+        }
+        let node = match args.get("node") {
+          Some(Str(node)) if node.length() == 64 &&
+            node.iter().all(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) => node
+          _ => raise Failed("node must be a mesh relay public key from list")
+        }
+        return stringify(b.ask("\{deps}.revoke", [ws, js(node)]))
+      }
+      if action is Some(Str("enroll")) {
+        if !enroll {
+          raise Failed("mesh relay enrollment is not available on this station")
+        }
+        let name = match args.get("name") {
+          Some(Str(name)) => name
+          _ => raise Failed("name is required for mesh relay enrollment")
+        }
+        return stringify(b.ask("\{deps}.enroll", [
+          ws, js(name), b.ask("\{deps}.by", [js(session)]),
+        ]))
       }
       let raw = text(args.get("url"))
       if action is Some(Str("add")) {
@@ -155,7 +186,7 @@ pub fn relay_tools(
         }
         return stringify(jobj([("removed", removed), ..list()]))
       }
-      raise Failed("action: list, add or remove")
+      raise Failed("action: list, add, remove, enroll or revoke")
     }),
   ]
 }

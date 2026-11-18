@@ -53,39 +53,40 @@ test "styles: the lock's waiting page, every state, drawn as before" {
     }
   }
   inspect(out.to_string(), content=(
-    #|waiting narrow 28264:ba6ceb2d
-    #|waiting wide 61683:3054759f
-    #|waiting-dark narrow 28182:619bad93
-    #|waiting-dark wide 61509:b88b1cc7
-    #|finding narrow 46041:a28d2bdf
-    #|finding wide 80479:f262fd37
-    #|finding-dark narrow 46094:30c3d6b1
-    #|finding-dark wide 80440:df46edad
-    #|code narrow 32242:a3becb0b
-    #|code wide 65801:59296d90
-    #|code-dark narrow 32117:5652fcc3
-    #|code-dark wide 65584:1d3050f8
-    #|wrong narrow 28229:7e53333f
-    #|wrong wide 61821:7a816eec
-    #|wrong-dark narrow 28331:af440018
-    #|wrong-dark wide 61831:7730c129
-    #|checking narrow 35310:5805713d
-    #|checking wide 69704:d1daefe4
-    #|checking-dark narrow 35402:3f56047e
-    #|checking-dark wide 69704:34a03a1
-    #|none narrow 39100:b264c5b2
-    #|none wide 72792:a8dbb5f5
-    #|none-dark narrow 38978:d220c7f5
-    #|none-dark wide 72578:6498f91a
-    #|failed narrow 23491:4185eecb
-    #|failed wide 56479:9d82874d
-    #|failed-dark narrow 23493:2aa685b9
-    #|failed-dark wide 56389:44b6de83
-    #|nocode narrow 28264:ba6ceb2d
-    #|nocode wide 61683:3054759f
-    #|nocode-dark narrow 28182:619bad93
-    #|nocode-dark wide 61509:b88b1cc7
+    #|waiting narrow 28266:48ebce4
+    #|waiting wide 66023:e56f64d0
+    #|waiting-dark narrow 28184:69addc0e
+    #|waiting-dark wide 65846:69bb33bc
+    #|finding narrow 46043:94f8aac
+    #|finding wide 84907:4a8233c9
+    #|finding-dark narrow 46096:a35103c2
+    #|finding-dark wide 84865:2ee60bf7
+    #|code narrow 32244:2c263ebc
+    #|code wide 70141:b261b35e
+    #|code-dark narrow 32119:1dc2d214
+    #|code-dark wide 69921:b783895e
+    #|wrong narrow 28231:1639fd5e
+    #|wrong wide 66161:eecbff83
+    #|wrong-dark narrow 28333:70817de5
+    #|wrong-dark wide 66168:602676ba
+    #|checking narrow 35312:6c7fd234
+    #|checking wide 74132:40de646b
+    #|checking-dark narrow 35404:3fce8187
+    #|checking-dark wide 74129:16189fe2
+    #|none narrow 39102:bd17869f
+    #|none wide 77132:399ccdc7
+    #|none-dark narrow 38980:21de7adc
+    #|none-dark wide 76915:642e8d72
+    #|failed narrow 23493:7c14292
+    #|failed wide 60819:65ba3c8a
+    #|failed-dark narrow 23495:7fa9b70c
+    #|failed-dark wide 60726:2af2f0c0
+    #|nocode narrow 28266:48ebce4
+    #|nocode wide 66023:e56f64d0
+    #|nocode-dark narrow 28184:69addc0e
+    #|nocode-dark wide 65846:69bb33bc
     #|
+
 
 
 
@@ -157,20 +158,22 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // (the wide ones again, 2026-11-10: a sidebar's marks, words and headings 2 in, where its rows' foot capsules start)
   // (the wide ones again, 2026-11-16: a setting's switch on its title's line, line_end_node's, never across the middle
   // of the title and its note)
+  // The narrow station settings use the wider glass switch in both themes.
   inspect(out.to_string(), content=(
-    #|settings narrow 78736:e1c81cb7
-    #|station narrow 77764:dfaaba87
-    #|me-reading narrow 24226:e04f7391
-    #|settings wide 195544:c8c7b08a
-    #|station wide 260021:902ae401
-    #|me-reading wide 190263:7fccc390
-    #|settings-dark narrow 79004:bd5fce2
-    #|station-dark narrow 77674:804e74b
-    #|me-reading-dark narrow 24354:78389ffb
-    #|settings-dark wide 195440:653724
-    #|station-dark wide 259700:8b112d25
-    #|me-reading-dark wide 190225:5db95445
+    #|settings narrow 78734:6ed5f02a
+    #|station narrow 77681:c8fc7c61
+    #|me-reading narrow 24224:218c49a4
+    #|settings wide 199887:5614b4e6
+    #|station wide 264742:11c47999
+    #|me-reading wide 194606:20c162c8
+    #|settings-dark narrow 79002:b7e47031
+    #|station-dark narrow 77608:5135afff
+    #|me-reading-dark narrow 24352:6c5ccf8
+    #|settings-dark wide 199780:bd21d68e
+    #|station-dark wide 264418:3e175919
+    #|me-reading-dark wide 194565:44289eff
     #|
+
 
 
 

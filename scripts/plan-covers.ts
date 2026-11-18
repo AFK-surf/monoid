@@ -17,7 +17,8 @@ const esbuild = createRequire(resolve(root, "station/package.json"))("esbuild") 
 
 type Part = { name: string; entries: string[]; keys: string[]; alias?: Record<string, string>; conditions?: string[] };
 
-// The station's bundles, as its build makes them (station/package.json `build`).
+// The station's bundles, as its build makes them (station/package.json `build`): none since the release is the MoonBit
+// station (scripts/station-bundle.sh), whose build is the reader's (scripts/native.ts), not esbuild's.
 const stationEntries = (JSON.parse(readFileSync(resolve(root, "station/package.json"), "utf8")).scripts.build as string)
   .split(" ").filter((w) => /^src\/.*\.ts$/.test(w)).map((w) => `station/${w}`);
 
@@ -36,6 +37,8 @@ const parts: Part[] = [
 ];
 
 async function inputs(p: Part): Promise<string[]> {
+  // (a part bundled from nothing takes in no file: esbuild is not asked)
+  if (p.entries.length === 0) return [];
   const r = await esbuild.build({
     entryPoints: p.entries.map((e) => resolve(root, e)),
     bundle: true,
@@ -83,7 +86,7 @@ for (const line of execFileSync("bash", ["-c", all], { cwd: root, input: rules.j
   if (files.has(file!)) missed.push(`${file}: a part is built from it, so it is no rule file alone: name it otherwise`);
   else if (does.length) missed.push(`${file}: the agents' rules deploy nothing, but a change to it alone does ${does.join(", ")}`);
 }
-console.log(`plan-covers: ${files.size} files ${parts.map((p) => p.name).join(", ")} are built from`);
+console.log(`plan-covers: ${files.size} files ${parts.filter((p) => p.entries.length > 0).map((p) => p.name).join(", ")} are built from`);
 if (missed.length) {
   console.error(missed.join("\n") + "\n(say so in scripts/plan.sh)");
   process.exit(1);

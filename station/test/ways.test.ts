@@ -29,6 +29,25 @@ function station(me: string, ways?: { relays: string[]; off: string[] }) {
 
 const viewer = (role = "member"): Admitted["viewer"] => ({ sub: "ana", email: "ana@x", name: "Ana", role, workspace: WS, device: "d" });
 
+test("global mesh bootstrap state survives restart and per-node disable survives URL edits", async () => {
+  const s = station(A);
+  const node = "c".repeat(64);
+  const relays = [{ node, name: "mesh", generation: 1, revision: 1, address: { id: node, addrs: [{ Ip: "127.0.0.1:1234" }] } }];
+  applyState(s.cloud, JSON.stringify({ type: "state", peers: [], mesh_relays: relays }));
+  assert.deepEqual(s.cloud.state?.mesh_relays, relays);
+  writeState(s.cloud.data, s.cloud.state!);
+  assert.deepEqual(new Cloud(s.cloud.data, false).state?.mesh_relays, relays);
+  setWay(s.ways, WS, `mesh:${node}`, false);
+  setRelays(s.ways, WS, ["https://own.example"], "test");
+  assert.ok(s.ways.view(WS).off.includes(`mesh:${node}`));
+  setWay(s.ways, WS, `mesh:${node}`, true);
+  assert.ok(!s.ways.view(WS).off.includes(`mesh:${node}`));
+  assert.throws(() => setWay(s.ways, WS, `mesh:${"d".repeat(64)}`, false), /no such way/);
+  applyState(s.cloud, JSON.stringify({ type: "state", peers: [], mesh_relays: [] }));
+  assert.deepEqual(s.cloud.state?.mesh_relays, []);
+  await s.ways.written();
+});
+
 test("the first ways are still.fail cloud's; a change here is kept, survives a restart, and is told", async () => {
   const s = station(A, { relays: ["https://relay.pvg.test:8445/"], off: ["tailnet"] });
   assert.deepEqual(s.ways.view(WS), { relays: [{ url: "https://relay.pvg.test:8445" }], off: ["tailnet"], at: 0, station: "" });
@@ -231,4 +250,21 @@ test("a workspace's rigs are brought level as its stations are: they keep its re
   assert.ok(asked.includes("c ways.put"), `the rig asked: ${asked.join(", ")}`);
   assert.deepEqual(rig.ways.record(WS), a.ways.record(WS), "the rig has the station's");
   stop();
+});
+
+
+test("relay tool lists mesh identities and scopes revocation to the current workspace", async () => {
+  const s = station(A);
+  const node = "ab".repeat(32);
+  const revoked: string[][] = [];
+  const [tool] = relayTools({ ways: () => s.ways, workspaceOf: () => WS, by: () => "test",
+    meshList: (workspace) => { assert.equal(workspace, WS); return [{ node, name: "edge" }]; },
+    revoke: async (workspace, target) => { revoked.push([workspace,target]); return { node: target, revoked: true }; },
+  });
+  const listed = JSON.parse(await tool!.run("session", { action: "list" }) as string);
+  assert.deepEqual(listed.mesh, [{ node, name: "edge" }]);
+  await assert.rejects(tool!.run("session", { action: "revoke", node: "not-a-key" }) as Promise<unknown>, /public key/);
+  assert.deepEqual(revoked, []);
+  assert.deepEqual(JSON.parse(await tool!.run("session", { action: "revoke", node }) as string), { node, revoked: true });
+  assert.deepEqual(revoked, [[WS,node]]);
 });

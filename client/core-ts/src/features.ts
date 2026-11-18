@@ -23,6 +23,7 @@ export interface FeatureSpec {
 
 export const FEATURES = {
   chatPage: { stage: "experimental", betaOnly: true },
+  composerNodes: { stage: "experimental", betaOnly: true },
   farviewNative: { stage: "experimental", betaOnly: true },
   board: { stage: "experimental" },
   terminal: { stage: "beta", station: true },
@@ -88,6 +89,12 @@ export function experimentalItemsOf(prefs: unknown, testChannel: boolean, regist
     if (spec.stage === "experimental" && (spec.betaOnly !== true || testChannel)) out.push({ id, enabled: exp[id] === true });
   }
   return out;
+}
+
+/// Whether a station's `overview` says it runs its `beta` feature `id`.
+export function stationFeature(overview: unknown, id: FeatureId): boolean {
+  const ids = isObj(overview) ? overview.features : undefined;
+  return Array.isArray(ids) && ids.includes(id);
 }
 
 /// The `beta` features a station decides (`station: true`), as its overview's `features` lists those on.

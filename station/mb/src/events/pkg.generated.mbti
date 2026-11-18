@@ -55,6 +55,8 @@ pub let kept_most : Int32
 
 pub let kept_ms : Double
 
+pub let live_rates_header : String
+
 pub fn manages_station(String) -> Bool
 
 pub fn mesh_status(OverviewDeps, Viewer?) -> @jsjson.JValue

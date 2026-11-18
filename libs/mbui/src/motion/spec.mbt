@@ -41,6 +41,21 @@ pub fn spring(
 pub let animate_spring : Spec = spring()
 
 ///|
+/// AndroidLiquidGlass's DampedDragAnimation spring for the press progress.
+// kept across runs: a value, never written
+pub let backdrop_press_spring : Spec = spring(ratio=1.0, stiffness=1000.0, threshold=0.001)
+
+///|
+/// Horizontal scale spring for the pressed glass capsule.
+// kept across runs: a value, never written
+pub let backdrop_scale_x_spring : Spec = spring(ratio=0.6, stiffness=250.0, threshold=0.001)
+
+///|
+/// Vertical scale spring for the pressed glass capsule.
+// kept across runs: a value, never written
+pub let backdrop_scale_y_spring : Spec = spring(ratio=0.7, stiffness=250.0, threshold=0.001)
+
+///|
 /// Compose's tween(durationMillis, delayMillis, easing), its curve said:
 /// what the motion is (@ui.Ease: one curve for each).
 pub fn tween(ms : Double, ease~ : @ui.Ease, delay? : Double = 0.0) -> Spec {
@@ -156,6 +171,19 @@ pub let sheet_spring : Spec = motion_spring(0.32, threshold=0.5)
 /// finger (motionSpring(.25, bounce .35)).
 // kept across runs: a constant: its fields are not mut, nothing changes it
 pub let lift_spring : Spec = motion_spring(0.25, bounce=0.35)
+
+///|
+/// What a control's thumb flung to its other side goes by (a switch's knob, a segment's thumb sent on): crisp, a little
+/// past it and back, at rest within its length (motionSpring(.2, bounce .12)); its speed drawn by it as it flies
+/// (velocity_capsule).
+// kept across runs: a constant: its fields are not mut, nothing changes it
+pub let knob_spring : Spec = motion_spring(0.2, bounce=0.12)
+
+///|
+/// What a digit rolled in to its place goes by (an odometer's figure: motionSpring(.2), critically damped: it comes to
+/// its line and stays, never past it and back, a figure beside a still one never a pixel off it).
+// kept across runs: a constant: its fields are not mut, nothing changes it
+pub let digit_spring : Spec = motion_spring(0.2)
 
 ///|
 /// A cover's spring (@ui.Ctx::cover's: a sliding thumb sent to another item), for what moves one otherwise: its way

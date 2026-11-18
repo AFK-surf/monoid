@@ -32,16 +32,17 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 
 ## The component library
 
-- The parts pages are made of are the library's, `src/sf` (sf/styles.mbt). A part used by both the phone's pages and the desktop's lives there once and
+- The parts pages are made of are the library's, `libs/sf-ui/src` (sf/styles.mbt; `libs/sf-ui/AGENTS.md`), a
+  module of its own beside mbui that this app imports as `stillfail/sf`. A part used by both the phone's pages and the desktop's lives there once and
   both use it; a page keeps no copy of its own. The library imports nothing of the app (detlint's `library-import`):
   what it needs of the app is given to it as the app starts.
 - The library is looks (the user, 2026-11-14; `libs/mbui/AGENTS.md`, Components): what a control is to the hand, the
   keyboard and a screen reader is mbui's headless component's (`libs/mbui/src/headless`), where there is one, and its
-  part here is that component with still.fail's look (every unconditional plain button in `src/sf` over
+  part here is that component with still.fail's look (every unconditional plain button in `libs/sf-ui/src` over
   `@headless.button`; checkboxes, switches and toggle buttons over `@headless.toggle`; disclosures and menu triggers
   over `@headless.disclosure`; choice rows and offers over `@headless.choice`; segmented controls, one-of lists and
   accent radio dots over `@headless.radio_group`; hue slider over `@headless.slider`; split handles over
-  `@headless.split`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
+  `@headless.split`; a Markdown table's and 进程's table over `@headless.table`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
   that may or may not be a button (`own_head_node`, `quote_card_node`, `station_choice_node`, `viewer_steps_node`) are
   counted (detlint's `button-by-hand`) so no new hand-rolled button is added. What only still.fail wants of a control
   stays here, in its look, and no more than that: the icon button's and bar tool's tip held up by a finger's long press
@@ -85,7 +86,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   - Each page exists once, drawn into the box it gets in any tier with either input. It opens things by saying what,
     and shows menus and dialogs through the library's presenters. The shell arranges the panes per tier.
 - **Packages now, while the two page sets are merged:**
-  - `src/sf` is the component library (above).
+  - `libs/sf-ui/src` is the component library (above).
   - `src/sfbase` is the model: the core's topics and calls (`Source`), the views, the pages (`Page`, `app.nav`), the
     app-level things, and the shared machinery. It imports the library and the settings' routes, nothing of the pages.
   - `src/sfdesk` holds the Medium and Large pages not merged yet, and the Medium and Large frame.
@@ -116,9 +117,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     MBUI_SWR_VIEWS); a chat's value kept waits for the core, and the lists above are shown again by `last_said`, never
     through the client (what names a station by them takes no kept value: `station_marks`).
   - A card, a panel, a sheet or a dialog opened the first time comes in once what its nodes read as they are made is
-    answered, `open_hold_ms` at most, never held for what waits on a station (`src/sf/open_gate.mbt`: what reads a topic
-    tells it through sfbase's `Source::topic`; MBUI_OPEN_WHOLE, `src/sfapp/open_whole_wbtest.mbt`). What an old body
-    (an `@ui.old` island) reads is read as frames build it, after, and is not waited for.
+    answered, `open_hold_ms` at most, never held for what waits on a station (`libs/sf-ui/src/open_gate.mbt`: what reads a topic
+    tells it through sfbase's `Source::topic`; MBUI_OPEN_WHOLE, `src/sfapp/open_whole_wbtest.mbt`).
   - On 小屏 a place of the bottom bar switched away from is kept, not let go (2026-11-12: making Home, 连接 or 用量
     anew at each switch was the largest cause of hangs on Home): its page's nodes put on the stack's shelf at rest and
     taken back as it is switched to (sfbase's `nav_root_kept`: the bar, back to the chats, the history; the rail and the
@@ -163,17 +163,23 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     (`src/sfapp/press_waits_wbtest.mbt`).
   - A step further in is the presenters', never a page's (弹层里往里走: the user, 2026-11-02, and 2026-11-10 「系统性
     全修一下」 once the chat's own sheet and a menu's 分享 were found never to have had it). A page says `close()` and
-    opens the next, and keeps no step number and no 返回 button of its own; `src/sf/presenters.mbt` does the rest on
+    opens the next, and keeps no step number and no 返回 button of its own; `libs/sf-ui/src/presenters.mbt` does the rest on
     every screen: a panel that closes for another panel is a step further in from it (a back key before its title;
     back, Escape and the system's back go back to the one before, a press outside, × or the sheet dragged down closes
     all of it), a menu a menu's item opens is a level of the same sheet, and on 小屏 whatever a sheet closes for comes
     in its place, one sheet all along and the scrim as it was, never one sheet sinking as the next rises
     (presenters_wbtest's every pair of kinds holds it). On 小屏 a panel's step further in is a page of the same sheet
-    of the window's tree (`sheet_node`, every panel there but a stage or one with steps of its own): it slides in as
-    the one before slides off, and that one is kept as it was left for back.
+    of the window's tree (`sheet_node`, every panel there but a stage; a confirm, a
+    question, a menu and a pick are sheets of it too, `sheet_shows_node.mbt`, a menu's level a page of its sheet): it
+    slides in as the one before slides off, and that one is kept as it was left for back.
 
-- Text files (Markdown, plain text, code, CSV and HTML) open in the chat's side panel by default where one is available;
-  otherwise in the whole-window preview. An explicit 全屏 still opens the whole window (the user, 2026-11-17).
+- What opens beside a chat (a file, a web service, a visualization, a mini-program) is shown one way for all of them
+  (the user, 2026-11-17: 「这些东西的展示都做成一样的交互，大屏默认在右边展示，cmd+点击全屏，在右边也提供全屏按钮，用同
+  一套逻辑，后续方便做成独立窗口」): a tab of the chat's side panel by default where there is one, over the whole window
+  as that same tab with the command key held or the panel's 全屏 (`src/sfbase/tab_full.mbt`), drawn by the same nodes
+  in either, never a second preview of its own. A new kind that opens beside goes through it; a window of its own will
+  be its third place. Pictures, films and songs still open in the whole-window viewer (its flight, marking, stepping)
+  till the tab has those.
 
 ## Made once, as nodes
 
@@ -200,14 +206,22 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   of their make (sfpages' `chat_body_shape`, `View::scrolls_window`'s `reused`), so what a row's block holds reads its
   key through `key()` as it is now, never one taken as it was made (a quote's place, what is picked of it, its flash,
   its menu's band, which block of a long message): `chat_body_reuse_wbtest.mbt` sets each row so taken beside one made
-  for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a make holds made only as it is made (a
-  message's paths, its agent's card, the chat's thread) is part of the make.
+  for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a part in it keeps of its own (a code block
+  wrapped or copied, how far a table, code or a formula is scrolled across) is its key's by mbui's (`View::reused_bool`,
+  `View::on_reused`, what scrolls in it: `libs/mbui/src/view/reused_state.mbt`), never the part made again for the key.
+  What a make holds made only as it is made (a message's paths, its agent's card, the chat's thread) is part of the make.
+  detlint's `reused-untracked-key` counts a `make_reused` reading its key untracked as it is made, and that count only
+  falls.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `submitted-read`, `build-motion`,
   `layout-read-back`, `ui-current`. A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
 - The chat's page made as nodes is behind a switch a person turns on, 实验性功能's 试用新对话页 (the experimental
   feature `chatPage`, the prefs' `experimental`; sfbase's `chat_page_from_prefs`), off by default till it lacks nothing
-  (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile.
+  (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile. Its
+  composer made as nodes (sfpages' `composer_node`) is behind another, 试用新输入框 (`composerNodes`, read with it as the
+  page is made: sfbase's `composer_nodes`), till the composer and the new chat's page lack nothing made so (the owner,
+  2026-11-17: 「要迁就全迁了，用开关保证用户不会受影响」); what it is apart from how it is drawn is one for both views
+  (`composer_state.mbt`, sfbase's `compose_given.mbt`, `composer_send.mbt`), never copied into the view made as nodes.
 - What is not yet everyone's is a feature of one registry, the core's (`client/core-ts/src/features.ts`;
   `scripts/features-check.ts`), of which the app keeps no copy and no rule: it reads the prefs' `features` and
   `experimentalItems`, and a station's own as its overview says (`src/sfapp/settings/features.mbt`). `beta`, on on the
@@ -219,10 +233,12 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - What changes with the width a row or a part is given is a binding (`By`: a gap's height, a margin, a size), never a
   structure switched by a value worked out of that width (`pick`, `show` on `width() <= …`): a structure switched makes
   its way in and out, and what the window or the system's bars do to the width is no motion of the thing's (#5767).
+  detlint's `width-structure` counts each in a `View::by_room`'s making (its room's `width()` read by a pick's or a
+  show's condition, itself or through a function of the room's body), and that count only falls.
 
 ## Motion
 
-- `src/sf/motion.mbt` says what moves and how; read it before adding or changing a motion. In short (the user,
+- `libs/sf-ui/src/motion.mbt` says what moves and how; read it before adding or changing a motion. In short (the user,
   2026-10-25):
   - Every motion is one of nine kinds (in the hand, coming and going, moved or reshaped, flying, another page,
     scrolled to, a control answering, waiting, emphasis), each set off one way, with the kind's presets.
@@ -240,6 +256,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   moon.work): `scripts/farview.sh` puts it in `deps/farview` at the commit `farview.pin` names, `moon.work` names it,
   `scripts/env.sh` fetches it with git's own credentials and CI with the read-only deploy key `FARVIEW_DEPLOY_KEY`
   (each workflow's env, the mbui-moonbit action's last step). A newer client is a change of `farview.pin`.
+- Where it cannot be fetched (an account that cannot read AFK-surf/farview, a fork), test what you can with a stand-in
+  kept out of the change, say so in the PR, and open it ready for review, never a draft: a draft's CI never runs, and
+  the full app build with the real client is the upstream CI's (左子健, 2026-11-17).
 
 ## Running the app in development
 
@@ -296,6 +315,11 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   frame given nothing, is held to its bar in `real_size_change_known_wbtest.mbt`, which only falls; a page that comes
   to hold another topic gets its rows by running the test, and a page moved from the old view onto nodes writes its
   rows again (what was built old is made).
+- Those bars, `real_size_bindings_known_wbtest.mbt`'s and `chat_nodes_open_budget_wbtest.mbt`'s only fall: a bar
+  raised, a key the bindings' table held to 0 now above it, or a new row without the screen or change it is of
+  (`src/sfapp/fixture_open.mbt`, `client/core-ts/test/real-size.ts`) is refused as a commit's message is written and in
+  CI (`scripts/mbui-budgets.ts`), unless its message says why on a line of its own, `Budget-raise: <why>`: only
+  something more shown, or an old view's build now made as nodes and counted.
 - What the core sends for what the app subscribes to, in each flow's trace, keeps to its bar
   (`src/sfreplay/topic_bytes.mbt`: KB of values sent whole, values sent whole again, messages for what was let go of;
   each topic's largest value). A page subscribes to what it shows, no more (the user, 2026-11-10); a trace recorded

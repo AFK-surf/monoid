@@ -95,7 +95,8 @@ fn view_words_found(d : @view.Drawn) -> String {
 /// selection by the person, what it was and what it is (Ctx::editor's `on_edit`), at that edit's moment.
 /// `command_sends`: where Enter is a new line, ⌘Enter (Ctrl+Enter elsewhere) gives its words up (Ctx::editor's).
 /// `max_lines_by`: how many lines it shows at most as it is now, followed (in place of `max_lines`: a share of the
-/// window's height). `placeholder_by`: its placeholder as
+/// window's height). `paste_limit_by`: from how many characters a paste is given up as it is now, followed (in place of
+/// `paste_limit`: a bound an answer says later, none while what it goes to cannot take one). `placeholder_by`: its placeholder as
 /// it is now, followed (in place of `placeholder`). `label`: what a screen reader calls it (none: its
 /// placeholder). The node made.
 pub fn field(
@@ -124,6 +125,7 @@ pub fn field(
   edited? : (String) -> Unit,
   edit? : (FieldEdit) -> Unit,
   max_lines_by? : () -> Int,
+  paste_limit_by? : () -> Int,
   files? : (Array[(String, Bytes)]) -> Unit,
   size_by? : () -> Double,
   colors_by? : () -> (Int64, Int64, Int64),
@@ -177,11 +179,19 @@ pub fn field(
         })
       None => ()
     }
-    st.enter_sends = enter_sends.unwrap_or(enter_sends_by(@signals.untracked(most), ime_action))
+    match enter_sends {
+      Some(sends) => st.enter_sends = sends
+      None if ime_action != 0 || (max_lines_by is None && max_lines <= 1) => st.enter_sends = true
+      None => f.reacts(fn() { enter_sends_by(most(), ime_action) }, fn(sends) { st.enter_sends = sends })
+    }
     st.command_sends = command_sends
     st.leaves = leaves
     st.ime_action = ime_action
-    st.limit = paste_limit
+    match paste_limit_by {
+      // (said again as it changes: the next paste given up by it)
+      Some(by) => f.reacts(by, fn(n) { st.limit = n })
+      None => st.limit = paste_limit
+    }
     st.secret = secret
     st.words = words
     st.look = look
@@ -222,7 +232,7 @@ pub fn field(
     // (more lines than it shows: its words scroll in it as an old view's field's do, the wheel, a finger (Ctx::editor's
     // scroll_state), how far the layout's (Ctx::lay_out_field))
     if max_lines_by is Some(_) || max_lines > 1 {
-      let sw = g().scroll_state(tree_said_id(id), true)
+      let sw = @signals.untracked(fn() { g().scroll_state(tree_said_id(id), true) })
       sw.field = true
     }
     f
@@ -298,6 +308,9 @@ pub fn Field::let_go(self : Field) -> Unit {
 /// editor it was given), followed as Ctx::has_focus is: what reads it told as the focus comes to that editor or leaves
 /// it. Held by none: false (a focus asked for it is the Field's own till one holds it, Field::focus).
 pub fn Field::focused(self : Field) -> Bool {
+  // (followed whoever holds it as it is read, or none yet: what read it before its field of the tree was made, which
+  // the focus then comes to, told as it does, not left reading none)
+  hand.focus_id.get() |> ignore
   let id = match self.st.tree_node {
     Some(n) if tree_fields.contains(n) => tree_said_of.get(n).unwrap_or(0)
     // (an old view's editor by the id it was built at, while that id's editor is this Field's still)
@@ -379,11 +392,66 @@ fn tree_field_focus(id : @view.NodeId) -> Unit {
 fn tree_field_focus_came(c : Ctx) -> Unit {
   guard tree_said_ids.get(c.focus) is Some(id) && tree_fields.get(id) is Some(tf) else { return }
   tf.st.blink0 = if c.in_frame() { c.clock } else { view_moment() }
+  match tree_field_focus_told.get(id) {
+    Some(f) => f(true)
+    None => ()
+  }
+}
+
+///|
+/// The focus gone from what `was` said had it (Ctx::focus_moved): where that was a field of the window's tree, told so
+/// (field_focus_told), in the change that moved it.
+fn tree_field_focus_went(was : Int) -> Unit {
+  guard tree_said_ids.get(was) is Some(id) && tree_fields.contains(id) else { return }
+  match tree_field_focus_told.get(id) {
+    Some(f) => f(false)
+    None => ()
+  }
+}
+
+///|
+/// What each field of the window's tree is told as the keyboard's focus comes to it (true) or leaves it (false), by
+/// its node (field_focus_told): beside its TreeField, said by few.
+// kept across runs: cleared by tree_field_gone (view_forget)
+let tree_field_focus_told : Map[@view.NodeId, (Bool) -> Unit] = Map([])
+
+///|
+/// Field `f` (what `field` made) told the keyboard's focus come to it (true) or gone from it (false), in the change
+/// that moved it (a press, a key, the app's Field::focus), so what that changes is of that cause (a composer opening as
+/// it takes the cursor: View::resizes).
+pub fn field_focus_told(f : @view.View, told : (Bool) -> Unit) -> Unit {
+  let id = f.id()
+  if tree_fields.contains(id) {
+    tree_field_focus_told[id] = told
+  }
+}
+
+///|
+/// Whether Enter gives field `f`'s words up and whether ⌘Enter (Ctrl+Enter elsewhere) does, as `by` says now,
+/// followed (in place of `field`'s `enter_sends` and `command_sends`: a setting changed while it is made).
+pub fn field_sends_by(f : @view.View, by : () -> (Bool, Bool)) -> Unit {
+  guard tree_fields.get(f.id()) is Some(tf) else { return }
+  // (said again as it changes: the next Enter goes by it)
+  f.reacts(by, fn(now) {
+    tf.st.enter_sends = now.0
+    tf.st.command_sends = now.1
+  })
+}
+
+///|
+/// Whether a field (a field of the window's tree, or an old view's editor) has the keyboard's focus, followed as
+/// Ctx::field_focused is: what reads it told as the focus comes to one or leaves it (what a composer's hint says with
+/// nothing focused, made as nodes).
+pub fn field_has_focus() -> Bool {
+  hand.focus_id.get() |> ignore
+  let c = g()
+  c.focus != 0 && c.editors.contains(c.focus)
 }
 
 ///|
 /// Field node `id` let go: its editor nobody's in the window.
 fn tree_field_gone(id : @view.NodeId) -> Unit {
+  tree_field_focus_told.remove(id)
   match tree_fields.get(id) {
     Some(tf) => {
       tree_fields.remove(id)
@@ -402,6 +470,7 @@ fn tree_field_gone(id : @view.NodeId) -> Unit {
         tf.st.tree_node = None
         // (what it told of the person's edits let go with it)
         tf.st.on_change = None
+        tf.st.on_edit = None
       }
       if tree_field_hovered.val == Some(id) {
         tree_field_hovered.val = None

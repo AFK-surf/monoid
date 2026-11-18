@@ -166,6 +166,9 @@ report() {
       # (what a test file said of itself as it ended, before its summary: a process it left running, its station
       # ending; a file that failed whole says nothing more in the summary's last lines)
       grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended|\.test\.ts: as it ended: " "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
+      # (what Node's test runner and MoonBit's said failed, wherever it is: a subtest's assertion early in a long log
+      # was past the tail's 40 lines below)
+      grep -E "^✖ |AssertionError|ERR_ASSERTION|Error:" "$tmp/step.$i.log" | head -30 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
       # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
       # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
@@ -254,11 +257,11 @@ TS
 # paths): a change to one alone typechecks the core and runs its tests. #6720 made station/src/sessions/presets.ts'
 # Presets answer promises; test/presets-carried.test.ts, which calls them, ran neither, and main was red at the next
 # change to the core (43894522015). scripts/core-station.ts (part ts) holds every such import to these three lists.
-core_station='^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
+core_station='^station/test/fake-control-plane\.ts$|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve|leaf|enrollment-door)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
 # The core's tests read these (core_test_paths: scripts/plan.sh reads it from this line for CI's check-core; one line,
 # in single quotes) and are remembered by these (core_test_inputs).
-core_test_paths='^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
-core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/api/admin.ts station/src/api/moved-from.ts station/src/api/oldest.ts station/src/api/routes/presets.ts station/src/api/routes/stars.ts station/src/cloud/lock.ts station/src/cloud/state.ts station/src/mesh/credential.ts station/src/mesh/device-builds.ts station/src/mesh/serve.ts station/src/ops/fibers.ts station/src/rig/grants.ts station/src/sessions/presets.ts station/src/updates/keys.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
+core_test_paths='^station/test/fake-control-plane\.ts$|^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve|leaf|enrollment-door)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
+core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/api/admin.ts station/src/api/moved-from.ts station/src/api/oldest.ts station/src/api/routes/presets.ts station/src/api/routes/stars.ts station/src/cloud/lock.ts station/src/cloud/state.ts station/src/mesh/credential.ts station/src/mesh/device-builds.ts station/src/mesh/serve.ts station/src/mesh/leaf.ts station/src/mesh/enrollment-door.ts station/test/fake-control-plane.ts station/src/ops/fibers.ts station/src/rig/grants.ts station/src/sessions/presets.ts station/src/updates/keys.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
 
 if part ts; then
   ts_root='^(scripts|test|spike)/.*\.ts$|^(tsconfig\.json|package\.json|pnpm-lock\.yaml)$'
@@ -278,7 +281,7 @@ if part ts; then
     step "operation bindings" after core node client/core-ts/scripts/operations.ts --check
   fi
   # still.fail's colours are web/ui/src/palette.ts's (the app's palette made from it); the web's curves are the app's.
-  if touches '^web/ui/src/(palette|curves-data)\.ts$|^scripts/(palette|curves)\.ts$|^apps/mbui/src/sf/(palette_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
+  if touches '^web/ui/src/(palette|curves-data)\.ts$|^scripts/(palette|curves)\.ts$|^libs/sf-ui/src/(palette_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
     step "palette and curves" sh -c 'node scripts/palette.ts --check && node scripts/curves.ts --check'
   fi
   # The app's UI fault categories are the core's (client/core-ts/src/ui-faults.ts).
@@ -312,9 +315,17 @@ if part ts; then
   if touches '^scripts/with-timeout'; then
     step "a command's limit to the second" bash scripts/with-timeout-test.sh
   fi
+  # The station's reader's build (station/mb/build.sh): mbc's jobs by the readers built side by side, MoonBit's runtime kept.
+  if touches '^station/mb/build\.sh$|^scripts/station-mb-build-test\.sh$'; then
+    step "station reader build: mbc's jobs, the runtime kept" bash scripts/station-mb-build-test.sh
+  fi
   # An artifact a CI job downloads, unzipped whole by its digest or not there at all.
   if touches '^scripts/download-artifact'; then
     step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh
+  fi
+  # A run attempted again goes through only where what failed before was GitHub's or the network's (pipeline.yml's gate).
+  if touches '^scripts/gate-rerun-check'; then
+    step "CI gate: a rerun only after GitHub's or the network's failure" node --test scripts/gate-rerun-check.test.mjs
   fi
   # A prebuilt native part's download: asked again after a 5xx or a broken connection, never after a 404.
   if touches '^scripts/native(\.ts|-download-test\.mjs)$'; then
@@ -454,6 +465,12 @@ if part ts; then
   if [ $full = 1 ] && touches '^(test|client|web/src/core)/|^package\.json$'; then core_tests=1; fi
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || touches "$ts_cloud" || [ $core_tests = 1 ]; then prep root deps .; fi
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || [ $core_tests = 1 ]; then wasm_pkg; fi
+  # The mbui app's budgets only fall (scripts/mbui-budgets.ts): a raise says why in its commit's message. A commit's own
+  # is checked as its message is written (.githooks/commit-msg); a push's and CI's, here, by the range's messages.
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_wbtest\.mbt$|^scripts/mbui-budgets\.ts$'; then
+    step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
+  fi
+  if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi
   # The stable channel's release notes (scripts/changelog.ts): each one read as CI will.
   if touches '^docs/releases/|^scripts/changelog\.ts$'; then step "release notes" sh -c 'node scripts/changelog.ts --stable > /dev/null'; fi
   # Root tests also import the core's Markdown reader. Wait for its packages on a cold checkout, as the web does.
@@ -473,8 +490,8 @@ if part ts; then
   # The TypeScript core: its own tsconfig.
   # (with the station's deps: what the core imports of the station's imports its packages, effect among them)
   if touches "$ts_core" || touches "$core_station"; then prep core deps client/core-ts; prep station deps station; step "typecheck: core-ts" after core after station sh -c 'cd client/core-ts && pnpm exec tsgo --noEmit'; fi
-  if touches "$ts_core|^client/math/|^apps/mbui/src/sf/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
-  if touches "$ts_core|^client/fixtures/math\\.json$|^apps/mbui/src/sf/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
+  if touches "$ts_core|^client/math/|^libs/sf-ui/src/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
+  if touches "$ts_core|^client/fixtures/math\\.json$|^libs/sf-ui/src/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
   # The core's pure answers the mbui app's runs without a core keep (apps/mbui/src/sfkept), as the core answers them now.
   if touches "$ts_core|^apps/mbui/src/sfkept/kept\\.mbt$"; then prep core deps client/core-ts; step "kept core answers" after core node client/core-ts/scripts/kept-answers.ts --check; fi
   # What makes the views writes only on what it made, never on what it was given (「谁能改什么」).
@@ -528,20 +545,19 @@ if [ $full = 1 ]; then
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n station/src/cloud/lock.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
-  station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mbui/src/effect/|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
-  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and the Rust station's archive
-  # command for darwin-arm64 and linux-x64).
+  station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/mbui/src/effect/|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
+  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
+  # the Rust station's archive command and the launcher, which runs the whole station in mb-live-station.test.ts).
   station_natives="mesh runner reader"
-  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs reader" ;; esac
+  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
     remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pi && moon test --target native src/history && moon test --target native src/usagecount && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory && moon test --target native src/packed && moon test --target native src/store_schema && moon test --target native src/store_sessions && moon test --target native src/store_threads && moon test --target native src/cloud_lock && moon test --target native src/cloud_net && moon test --target native src/mesh_door/door && moon test --target native src/mesh_door/gate && moon test --target native src/events && moon test --target native src/api_routes && moon test --target native src/vault_crypto && moon test --target native src/jobs_host'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
-    # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. Cursor's
-    # driver (agents/cursor-bridge.mjs) and the sandbox bridge (agents/sandbox-bridge.mjs) run in processes of their own,
-    # not the station's.
-    step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
+    # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
+    # Cursor and sandbox bridges run in processes of their own.
+    step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/claude-tui.mjs" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
   fi
   # The station's tests (station/test): every file, or one slice of them (STILLFAIL_STATION_SHARD="<i>/<n>": the
   # files dealt by what each costs, the longest first, each onto the slice with the least: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,
@@ -551,9 +567,10 @@ if [ $full = 1 ]; then
   if part station-tests && touches "$station_paths"; then
     prep station deps station
     slice=${STILLFAIL_STATION_SHARD:-}
+    # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node --import ./test/setup-env.mjs --test ${STILLFAIL_NODE_TEST_JOBS:+--test-concurrency="$STILLFAIL_NODE_TEST_JOBS"} --test-timeout=600000 $files'
+    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell libs/mesh-transport vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.
@@ -576,9 +593,12 @@ if [ $full = 1 ]; then
   if touches '^apps/mbui/(src/host/apple_reports\.m|scripts/ios-reports-test\.sh|scripts/ios_reports_test\.m)$' && has xcrun; then
     step "iOS crash reports" bash apps/mbui/scripts/ios-reports-test.sh
   fi
+  if part core && touches '^libs/mesh-transport/'; then
+    if has cargo; then remembered "Rust: mesh transport" "libs/mesh-transport vendor/noq-udp" heavy cargo_test libs/mesh-transport --lib -q; else later "Rust: mesh transport"; fi
+  fi
   # The core's native shells (client/shell for Android, client/iroh-wasm for the web).
-  if part core && touches '^client/(shell|iroh-wasm)/|^client/Cargo\.(toml|lock)$|^vendor/'; then
-    if has cargo; then remembered "Rust: client" "client vendor" heavy cargo_test client --workspace -q; else later "Rust: client"; fi
+  if part core && touches '^client/(shell|iroh-wasm)/|^libs/mesh-transport/|^client/Cargo\.(toml|lock)$|^vendor/'; then
+    if has cargo; then remembered "Rust: client" "client libs/mesh-transport vendor" heavy cargo_test client --workspace -q; else later "Rust: client"; fi
   fi
 fi
 

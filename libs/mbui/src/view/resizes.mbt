@@ -143,3 +143,15 @@ fn Tree::resizes_never_said(self : Tree, at : Int, loc : SourceLoc) -> String? {
     "View::resizes said at \{source_place(loc)} of a node whose height can make no way: \{why}\{made_said}; its height changes at once",
   )
 }
+
+///|
+/// How tall it is at the moment of the change under way and how fast its height goes then (points a ms): where its way
+/// has it (flex's come_state), on one; else as it was placed last, still. Nothing is laid out for it: what a part sets off
+/// from as it lets go of a way its height is on (a composer's ground held as tall as it was, going on as fast).
+pub fn View::height_going_now(self : View) -> (Double, Double) {
+  guard self.live() is Some(n) else { return (0.0, 0.0) }
+  match (n.coming, @flex.come_state(n.flex.style, self.tree.cause_now())) {
+    (true, Some((tall, speed))) => (tall, speed)
+    _ => (n.lh, 0.0)
+  }
+}

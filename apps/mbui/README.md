@@ -10,7 +10,7 @@ mbui is the framework (layout, text, the UI tree, motion, Markdown, the platform
 pull request, checked by one run. `moon.work` names it a member beside this module, whose `moon.mod` imports `mbui`;
 `scripts/mbui.sh` says where it is.
 
-What knows still.fail is the rest of this directory: its component library (`src/sf`, sf/styles.mbt), its pages and
+What knows still.fail is the rest of this directory: its component library (`libs/sf-ui/src`, sf/styles.mbt), its pages and
 frames (`src/sfpages`, `src/sfdesk`, `src/sfapp`, over the model in `src/sfbase`), the core client and its engine
 hosts (`src/core`, `src/sfcore`, `src/host/*_core.*`), the apps (`src/stillfail`; `src/sffix` over made-up data,
 `src/sfkit`, `src/coredemo`), a photo's ThumbHash picture (`src/gallery`), the core's bundling (`core/`, from

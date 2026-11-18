@@ -21,14 +21,14 @@ import { PAGE, TRANSCRIPT_PAGE, entriesOf, lettersOf, transcriptOf } from "./cha
 import { type StationsSync, retryAfter, stepShown } from "./sync.ts";
 import type { LinkNet } from "./wire.ts";
 import { screenCard, screensChanged, screensView } from "../screens.ts";
-import { terminalsView } from "../terminals.ts";
+import { terminalCard, terminalsView } from "../terminals.ts";
 import { down, downWords, isLetter, members } from "../views/views.ts";
 import { type Link, MEMORY, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import * as logins from "./machine-logins.ts";
 import { laterSleep } from "../runtime.ts";
 import { timed } from "../spent.ts";
 import * as looks from "../looks.ts";
-import { freeText, moveShown } from "../move.ts";
+import { freeText, moveShown, moveWhy } from "../move.ts";
 
 /// A chat shows a window of its thread's entries: at most this many of what it shows (shownTo).
 export const WINDOW = 3 * PAGE;
@@ -45,7 +45,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -60,7 +60,7 @@ export function placeKey(station: string, thread: number): string {
 }
 
 /// The station topics made from how its link is (up, down, why): made again as it changes.
-const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
+const LINKED = new Set(["link", "live", "stationRates", "screens", "terminals", "screenCard", "terminalCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
 
 export class StationTopics implements Owner {
   readonly #core: Inner;
@@ -78,6 +78,9 @@ export class StationTopics implements Owner {
   readonly #places = new Map<string, LeftAt | null>();
   /// The chats whose place cores before kept in the host's storage was looked for this run.
   readonly #oldPlaces = new Set<string>();
+  /// The thread topics whose window's entries are being read to open it (#thread): asked once while it reads, again
+  /// once it ended (a stream back says to read it again).
+  readonly #bringing = new Set<string>();
   /// Entries told as they were said (an event), by thread: they come in with a motion; the rest is caught up on.
   readonly told = new Map<string, Set<number>>();
   /// What runs for a topic while it is started (a drive folder kept as it is), by topic.
@@ -150,7 +153,8 @@ export class StationTopics implements Owner {
       if (evicted || !known) this.#sync.channels.bring(entries, Priority.shown);
       // Its latest not on the device yet: that page alone, at once. What is before it comes with the station's history,
       // in batches behind (sync.ts #history), or as it is scrolled back to.
-      else if (this.#sync.channels.latestMissing(entries)) this.#sync.channels.bring(entries, Priority.shown, "latest");
+      // Not where it opens to be read itself (#opening's `bring`, read at once by #thread): that read goes alone.
+      else if (this.#sync.channels.latestMissing(entries) && this.#opening(station, id).bring === null) this.#sync.channels.bring(entries, Priority.shown, "latest");
       // No summary held: the chat waits on it (views.ts `#chat`), read with its entries.
       if (!known) this.#sync.summaryOf(station, id);
       this.#moveOldPlace(station, id);
@@ -220,6 +224,7 @@ export class StationTopics implements Owner {
     if (topic.topic === "net" || topic.topic === "way") this.#unsampleNet(station, topic.topic);
     this.#core.scheduler.prioritize(key, null);
     this.#windows.delete(key);
+    this.#bringing.delete(key);
     this.#firsts.delete(key);
     this.#olders.delete(key);
     const sampler = this.#samplers.get(key);
@@ -276,6 +281,11 @@ export class StationTopics implements Owner {
         if (typeof topic.screen !== "string" || topic.screen === "") return { err: CoreError.invalid(t("core-misc.params.missing", { field: "screen" })) };
         return { ok: screenCard(this.#core, station, topic.screen, this.#sync.screens(station), link?.state.state === "online") };
       }
+      case "terminalCard": {
+        seen.read(station, "terminals");
+        if (typeof topic.terminal !== "string" || topic.terminal === "") return { err: CoreError.invalid(t("core-misc.params.missing", { field: "terminal" })) };
+        return { ok: terminalCard(this.#core, station, topic.terminal, this.#sync.terminals(station), link?.state.state === "online") };
+      }
       case "jobLog": {
         const v = link?.memory.get(logKey(topic.job as string, topic.lines as number));
         return v === undefined ? undefined : { ok: v };
@@ -296,6 +306,9 @@ export class StationTopics implements Owner {
       case "live":
         seen.read(station, "live", topic.key as string);
         return this.#live(topic);
+      case "stationRates":
+        seen.read(station, "rates");
+        return { ok: { online: link?.state.state === "online", supported: link?.ratesSupported === true, items: link?.state.state === "online" && link.ratesSupported === true ? [...link.rates].map(([key, rate]) => ({ key, rate })) : [] } };
       case "machineLogins":
       case "machineLogin":
         seen.read(station, "logins");
@@ -377,7 +390,9 @@ export class StationTopics implements Owner {
         const name = this.#core.views.stationName(station);
         if (!link) return { err: new CoreError("not_found", t("core-views.station.not_listed")) };
         if (down(link.state)) return { err: new CoreError("offline", downWords(link.state, name)) };
-        if (link.jobsRead) return { err: new CoreError("not_found", t("core-views.station.job_gone", { name })) };
+        // Its list answered here before and the link not up yet (waking, coming back): what that list said holds till
+        // the stream tells otherwise, so a job not in it is gone, not one to wait on.
+        if (link.jobsRead || (link.state.state !== "online" && this.#core.data.listed(station, "jobs"))) return { err: new CoreError("not_found", t("core-views.station.job_gone", { name })) };
         return undefined;
       }
       default:
@@ -386,22 +401,25 @@ export class StationTopics implements Owner {
     }
   }
 
-  /// What the station said of moving to `topic.to` as its page draws it (move.ts): the workspace's other stations online
-  /// that offer moving (their overview's `move.offered`), each with its room; the viewer may move as an owner or admin.
+  /// What the station said of moving to `topic.to` as its page draws it (move.ts): the workspace's other stations, each
+  /// with its room, those that cannot be moved to (offline, or not offering it: their overview's `move.offered`) after
+  /// the rest with why (move.ts `moveWhy`); the viewer may move as an owner or admin.
   #moveShown(topic: Topic, raw: unknown): unknown {
     const station = topic.station as string;
     const ws = ofAddress(station);
     const to = typeof topic.to === "string" ? topic.to : "";
-    const targets = (this.#core.views.stations(ws) ?? []).flatMap((s) => {
-      if (s.address === station || !s.online) return [];
+    // (every other station, those it may go to first: one it may not says why and what makes it one)
+    const all = (this.#core.views.stations(ws) ?? []).flatMap((s) => {
+      if (s.address === station) return [];
       const overview = this.#core.data.shared({ topic: "overview", station: s.address });
-      if (get(get(overview, "move"), "offered") !== true) return [];
-      return [{ station: s.id, name: s.name, free: freeText(overview) }];
+      const why = moveWhy(s.online, overview);
+      return [{ station: s.id, name: s.name, free: s.online ? freeText(overview) : "", why }];
     });
+    const targets = [...all.filter((x) => x.why === ""), ...all.filter((x) => x.why !== "")];
     const role = get(this.#core.data.shared({ topic: "workspace", workspace: ws }), "role");
     // (no station chosen, its station's page: the one the last move went to, as the station says)
     const toId = to !== "" ? to : (typeof get(get(raw, "last"), "station") === "string" ? (get(get(raw, "last"), "station") as string) : "");
-    const toName = toId === "" ? "" : (targets.find((x) => x.station === toId)?.name ?? this.#core.views.stationName(`${ws}/${toId}`));
+    const toName = toId === "" ? "" : (all.find((x) => x.station === toId)?.name ?? this.#core.views.stationName(`${ws}/${toId}`));
     return moveShown(raw, { to, toName, module: typeof topic.module === "string" ? topic.module : "", targets, canMove: role === "owner" || role === "admin" });
   }
 
@@ -659,6 +677,9 @@ export class StationTopics implements Owner {
     const unread = u64(get(summary, "unread")) ?? 0;
     const read = u64(get(summary, "read"));
     const place = this.#placeOf(station, id);
+    // Its station down: what is held opens it, whatever is not (nothing would come of waiting on it).
+    const link = this.#sync.link(station);
+    const isDown = link !== undefined ? down(link.state) : true;
     const at = read !== null && unread > 0 ? read + 1 : (place?.at ?? null);
     const atOffset = read !== null && unread > 0 ? null : (place?.offset ?? null);
     if (at !== null && at <= latest) {
@@ -674,24 +695,34 @@ export class StationTopics implements Owner {
         const held = data.logRange("entry", station, String(id), from, to);
         first = at;
         while (first >= from && !held.has(first)) first--;
-        if (first < from) return { window: null, bring };
-        while (first > from && held.has(first - 1)) first--;
-      }
-      return { window: { first, last: to >= latest ? null : to, at, atOffset, caught: to }, bring };
+        if (first < from && (!isDown || span === null)) return { window: null, bring };
+        if (first >= from) {
+          while (first > from && held.has(first - 1)) first--;
+          return { window: { first, last: to >= latest ? null : to, at, atOffset, caught: to }, bring };
+        }
+        // (down, and nothing of it held up to there: opened on what is held, below)
+      } else return { window: { first, last: to >= latest ? null : to, at, atOffset, caught: to }, bring };
     }
     if (span === null) {
       // Nothing of it yet: it opens once its latest page is here (an empty thread opens empty).
       if (latest === 0 && summary !== null) return { window: { first: 1, last: null, at: null, atOffset: null, caught: 0 }, bring: null };
       return { window: null, bring: null };
     }
+    // What is held ends a page or more before its latest (read elsewhere, the app away): its latest page is read at once,
+    // in one read, and it opens there; not opened on what is held, a page after a page to come after it.
+    const latestFrom = Math.max(1, latest - PAGE + 1);
+    if (span.max < latestFrom && !isDown) return { window: null, bring: [latestFrom, latest] };
     // The latest page held, as far back as it runs unbroken: as many of its messages as the chat's page was told fill
-    // its screen (`chat.window`, views.ts chatFirstRows), else a page of its entries.
+    // its screen (`chat.window`, views.ts chatFirstRows), else a page of its entries. Its station down, what is held
+    // ends short of the latest: the window ends there (the chat goes on after it).
+    const last = isDown && span.max < latest ? span.max : null;
     const rows = this.#core.views.chatFirstRows(station, id);
-    if (rows !== null) return { window: { first: this.#firstShown(station, id, span.max, rows).first, last: null, at: null, atOffset: null, caught: span.max }, bring: null };
-    const page = data.logRange("entry", station, String(id), Math.max(1, latest - PAGE + 1), span.max);
+    if (rows !== null) return { window: { first: this.#firstShown(station, id, span.max, rows).first, last, at: null, atOffset: null, caught: span.max }, bring: null };
+    const pageFrom = span.max >= latestFrom ? latestFrom : Math.max(1, span.max - PAGE + 1);
+    const page = data.logRange("entry", station, String(id), pageFrom, span.max);
     let first = span.max;
-    while (first > 1 && page.has(first - 1) && first > latest - PAGE + 1) first--;
-    return { window: { first, last: null, at: null, atOffset: null, caught: span.max }, bring: null };
+    while (first > pageFrom && page.has(first - 1)) first--;
+    return { window: { first, last, at: null, atOffset: null, caught: span.max }, bring: null };
   }
 
   #thread(topic: Topic): Value | undefined {
@@ -711,10 +742,19 @@ export class StationTopics implements Owner {
       window = undefined;
     }
     if (!window) {
+      // (made again as its station is found down meanwhile: it opens then on what is held, #opening)
+      this.#sync.seen.read(station, "link");
       const opening = this.#opening(station, id);
-      if (opening.bring) {
+      if (opening.bring && !this.#bringing.has(tk)) {
         const [from, to] = opening.bring;
-        this.#core.runner.fork(Effect.ignore(this.#sync.ask(station, `range/${id}/${from}`, this.#sync.channels.range(entriesOf(station, id), from, to, { quiet: false })), { log: "Unhandled", message: "range read" }));
+        const entries = entriesOf(station, id);
+        this.#bringing.add(tk);
+        // Read, what is behind it (between what was held and it, after it) is brought after, its highest first: before
+        // the window, so the chat shown is not made again for it.
+        const read = Effect.andThen(this.#sync.ask(station, `range/${id}/${from}`, this.#sync.channels.range(entries, from, to, { quiet: false })), Effect.sync(() => {
+          if (!data.evicted("entry", station, String(id)) && (this.#sync.channels.behind(entries) || this.#sync.channels.latestMissing(entries))) this.#sync.channels.bring(entries, Priority.shown, "latest");
+        }));
+        this.#core.runner.fork(Effect.ignore(Effect.ensuring(read, Effect.sync(() => this.#bringing.delete(tk))), { log: "Unhandled", message: "range read" }));
       }
       if (!opening.window) return undefined;
       window = opening.window;
@@ -916,25 +956,37 @@ export class StationTopics implements Owner {
     });
   }
 
-  /// The window of a chat about its entry `seq` (`chat.around`: a message found in it, to be shown): a page before it
-  /// and one after, read now where not held. The chat's list goes to it by itself (the UI's to do).
-  around(station: string, id: number, seq: number): Effect.Effect<void, CoreError> {
+  /// The window of a chat about its entry `seq`, or the message said at `ts` (`chat.around`: a message found in it, one
+  /// a quote quotes, to be shown): a page before it and one after, read now where not held; a message by its time looked
+  /// for on the device, and where it is not there, in what of the chat is not on it yet (`bring`, while its station
+  /// answers). The chat's list goes to it by itself (the UI's to do): answered with its number, null where the chat has
+  /// it nowhere (the window as it was).
+  around(station: string, id: number, seq: number | null, ts: string | null = null): Effect.Effect<{ seq: number | null }, CoreError> {
     return Effect.gen({ self: this }, function* () {
+      let at = seq;
+      if (at === null && ts !== null) {
+        at = this.#core.data.messageAt(station, id, ts);
+        if (at === null) {
+          yield* this.bring(station, id);
+          at = this.#core.data.messageAt(station, id, ts);
+        }
+      }
+      if (at === null) return { seq: null };
       const found = this.#window(station, id);
       const latest = this.#latest(station, id);
-      if (!found || seq < 1 || seq > latest) return;
+      if (!found || at < 1 || at > latest) return { seq: null };
       const window = found[1];
       // Already in it, and not at its edge: left as it is (what is around it is on the page).
       const end = window.last ?? latest;
-      if (seq >= window.first && seq <= end && (seq - window.first >= AROUND || window.first === 1) && (end - seq >= AROUND || window.last === null)) return;
-      const from = Math.max(seq - PAGE, 1);
-      const to = Math.min(seq + PAGE - 1, latest);
+      if (at >= window.first && at <= end && (at - window.first >= AROUND || window.first === 1) && (end - at >= AROUND || window.last === null)) return { seq: at };
+      const from = Math.max(at - PAGE, 1);
+      const to = Math.min(at + PAGE - 1, latest);
       yield* this.#sync.channels.range(entriesOf(station, id), from, to, { quiet: false });
       const held = this.#core.data.logRange("entry", station, String(id), from, to);
-      if (!held.has(seq)) return;
-      let first = seq;
+      if (!held.has(at)) return { seq: null };
+      let first = at;
       while (first > from && held.has(first - 1)) first--;
-      let last = seq;
+      let last = at;
       while (last < to && held.has(last + 1)) last++;
       window.first = first;
       window.last = last >= latest ? null : last;
@@ -942,6 +994,7 @@ export class StationTopics implements Owner {
       window.atOffset = null;
       window.caught = Math.max(window.caught, last);
       this.#core.store.invalidate({ topic: "thread", station, thread: id });
+      return { seq: at };
     });
   }
 

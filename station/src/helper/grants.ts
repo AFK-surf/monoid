@@ -4,7 +4,9 @@
 // the station's own, looked at by sending to it, mesh/lan.ts `lanReach`). One look at them (the helper's `status`) is kept for whatever asks: the
 // desktop's screen, the station's page (the overview's `permissions`), the agents' `permissions` tool; at most FRESH_MS
 // old where it matters (a view opened, a grant asked for), looked at again when the helper says a grant changed or comes
-// back, and in the background once a page reads it SHOWN_MS after the last look.
+// back, and in the background once a page reads it SHOWN_MS after the last look, or after the last try where the
+// helper did not answer (a Mac with no one signed in to its desktop cannot start it: every page's read started it
+// again, 42,885 times in two hours on one station).
 //
 // The helper's window asks for a grant on this Mac, once: not again (nor brought forward) while it is up asking for it,
 // nor for AGAIN_MS after it was shown for it, so an agent asking again, the drive retrying or a person refreshing never
@@ -92,6 +94,8 @@ export class HelperGrants {
   readonly #now: () => number;
   #status: HelperStatus | null = null;
   #checked = -Infinity;
+  /// When a look was last tried, answered or not.
+  #attempted = -Infinity;
   #checking: Promise<void> | null = null;
   readonly #asked = new Map<GrantId, number>();
   readonly #listeners = new Set<() => void>();
@@ -143,7 +147,9 @@ export class HelperGrants {
   /// The grants as macOS has them now (at most FRESH_MS old, unless `force`); the helper started for it.
   refresh(force = false): Promise<void> {
     if (!force && this.#now() - this.#checked < FRESH_MS) return Promise.resolve();
-    this.#checking ??= Promise.all([
+    if (this.#checking !== null) return this.#checking;
+    this.#attempted = this.#now();
+    this.#checking = Promise.all([
       this.#reach().then(
         (lan) => this.#learnLan(lan),
         () => undefined,
@@ -154,7 +160,10 @@ export class HelperGrants {
       ),
     ])
       .then(() => undefined)
-      .finally(() => (this.#checking = null));
+      .finally(() => {
+        this.#attempted = this.#now();
+        this.#checking = null;
+      });
     return this.#checking;
   }
 
@@ -172,6 +181,7 @@ export class HelperGrants {
 
   #learn(status: HelperStatus) {
     this.#checked = this.#now();
+    this.#attempted = this.#checked;
     const before = JSON.stringify(this.#status);
     this.#status = status;
     if (JSON.stringify(status) !== before) for (const f of [...this.#listeners]) f();
@@ -179,7 +189,7 @@ export class HelperGrants {
 
   /// What the station's page shows, as last looked at (null before the first look: looked at now, told when known).
   view(): GrantsView | null {
-    if (this.#now() - this.#checked >= SHOWN_MS) void this.refresh();
+    if (this.#now() - Math.max(this.#checked, this.#attempted) >= SHOWN_MS) void this.refresh();
     const s = this.#status;
     if (s === null) return null;
     const grants = GRANTS.filter((g) => (g === "localNetwork" ? this.#lan !== null : this.#folders || SCREEN.includes(g))).map((grant) => ({

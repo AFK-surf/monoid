@@ -193,6 +193,8 @@ fn unlink(link : Link, sub : ReactiveNode) -> Link? {
 
 ///|
 fn propagate(start : Link, inner_write : Bool) -> Unit {
+  // One propagation can notify many sibling readers. The queue already counts them, including shared readers once.
+  let first_inserted = run.queued_length
   let mut link = start
   let mut next = link.next_sub
   let base = propagate_frames.length()
@@ -251,6 +253,13 @@ fn propagate(start : Link, inner_write : Bool) -> Unit {
       continue
     }
     break
+  }
+  let limit = fanout_limit.val
+  if limit > 0 {
+    let woken = run.queued_length - first_inserted
+    if woken >= limit && on_fanout.val is Some(tell) {
+      tell(setting.val, woken)
+    }
   }
 }
 

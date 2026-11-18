@@ -641,6 +641,18 @@ test("how_a_station_archives_on_its_own_is_said_and_offered_by_the_core", () => 
   assert.equal("archiving" in (p.decorate(topic, { counts: {} }, c) as J), false);
 });
 
+test("only spent quota chips count down, in short units", () => {
+  const now = 1_790_467_200_000;
+  const reset = now + 42 * 60_000;
+  assert.deepEqual(p.refillsOf(reset, 0, now), { refills: "42 分钟后刷新", refillShort: "42m" });
+  assert.equal(p.refillsOf(reset, 0, now + 60_000).refillShort, "41m");
+  assert.equal(p.refillsOf(reset, 1, now).refillShort, undefined);
+  assert.equal(p.refillsOf(null, 0, now).refillShort, undefined);
+  for (const [minutes, figure] of [[0, "0m"], [60, "1h"], [65, "1h5m"], [2880, "2d"], [3120, "2d4h"]] as const) {
+    assert.equal(p.refillsOf(now + minutes * 60_000, 0, now).refillShort, figure);
+  }
+});
+
 test("what_the_clients_show_is_put_in_here", () => {
   const c = { now: 1_790_467_200_000, offsetMin: 480 };
   let s: J = { runtime: "codex", model: "gpt-6-astra", effort: "medium", process: "warm", lastTurn: { declared: "block" }, firstText: "<@U1> 看看 CI" };

@@ -13,6 +13,7 @@ import { relayConns, relayLoad, type Load } from "./relay-metrics";
 import { GAP, relayLoadView, relayMinute, type RelayLoadView, type RelayMinute } from "./relay-load-view";
 import { relayToTelemetry } from "./tracing";
 import { ownRelay, relayName, relayUrls } from "./relays";
+import type { ProbeLine } from "./probes";
 
 /** How long samples are kept: the week the console shows, and a day more. */
 const KEEP = 8 * 86_400;
@@ -22,6 +23,17 @@ export class RelayLoad extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS samples (relay TEXT NOT NULL, at INTEGER NOT NULL, load TEXT NOT NULL, PRIMARY KEY (relay, at))");
+    // What the latest probes from China's carriers and Hong Kong found of each relay (probes.ts, index.ts probeAndSay).
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS probes (relay TEXT PRIMARY KEY, at INTEGER NOT NULL, lines TEXT NOT NULL)");
+  }
+
+  /** What the probes found now, by relay: each relay's latest kept, those older than KEEP gone. */
+  recordProbes(found: Record<string, ProbeLine[]>): void {
+    const now = nowSeconds();
+    for (const [relay, lines] of Object.entries(found)) {
+      if (lines.length > 0) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO probes (relay, at, lines) VALUES (?, ?, ?)", relay, now, JSON.stringify(lines));
+    }
+    this.ctx.storage.sql.exec("DELETE FROM probes WHERE at < ?", now - KEEP);
   }
 
   /** A relay's counters now; what it did since its sample before (relay-load-view.ts `relayMinute`). */
@@ -46,12 +58,15 @@ export class RelayLoad extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<{ at: number }>("SELECT at FROM samples WHERE relay = ? ORDER BY at DESC LIMIT 1", relay).toArray()[0]?.at ?? null;
   }
 
-  /** The relays' views, in the order given. */
-  view(relays: string[]): RelayLoadView[] {
+  /** The relays' views, in the order given; with the latest probes of each probed (none said of one not). */
+  view(relays: string[]): (RelayLoadView & { probes?: { at: number; lines: ProbeLine[] } })[] {
     const now = nowSeconds();
+    const probed = new Map(this.ctx.storage.sql.exec<{ relay: string; at: number; lines: string }>("SELECT relay, at, lines FROM probes WHERE at >= ?", now - KEEP).toArray().map((r) => [r.relay, r] as const));
     return relays.map((url) => {
       const rows = this.ctx.storage.sql.exec<{ at: number; load: string }>("SELECT at, load FROM samples WHERE relay = ? AND at >= ? ORDER BY at", url, now - 7 * 86_400 - GAP).toArray();
-      return relayLoadView(url, rows.map((r) => ({ at: r.at, load: JSON.parse(r.load) as Load })), now);
+      const view = relayLoadView(url, rows.map((r) => ({ at: r.at, load: JSON.parse(r.load) as Load })), now);
+      const p = probed.get(url);
+      return p ? { ...view, probes: { at: p.at, lines: JSON.parse(p.lines) as ProbeLine[] } } : view;
     });
   }
 }

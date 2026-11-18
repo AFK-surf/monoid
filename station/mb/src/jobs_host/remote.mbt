@@ -79,6 +79,15 @@ pub(all) suberror PeerError {
 }
 
 ///|
+/// Its words as they are, where an error is said (`to_string`): without it MoonBit says only the type's name
+/// ("station/jobs_host.PeerError.Refused" told an agent in place of what the other station said).
+pub impl Show for PeerError with output(self, logger) {
+  match self {
+    Refused(s) | NoLink(s) | NoBytes(s) | Unreached(s) => logger.write_string(s)
+  }
+}
+
+///|
 fn peer_words(e : Error) -> String {
   match e {
     Refused(s) | NoLink(s) | NoBytes(s) | Unreached(s) => s

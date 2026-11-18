@@ -214,11 +214,8 @@ pub fn host_kept(host : @host.Host, path : String) -> Kept {
     (try Some(host.shell_sync("fs.bytes", { "path": Json::string(path) })) catch {
       _ => None
     }) {
-    Some(answer) =>
-      match field(answer, "value") {
-        Some(String(hex)) => Some(@utf8.decode_lossy(hex_bytes(hex)))
-        _ => None
-      }
+    Some(String(hex)) => Some(@utf8.decode_lossy(hex_bytes(hex)))
+    Some(_) => None
     None => None
   }
   let writing : @effect.Queue[String] = @effect.Queue::unbounded()

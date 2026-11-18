@@ -15,13 +15,22 @@ fn row_with_people(item : ChatItem, lead : String) -> Bool {
 }
 
 ///|
-/// How wide the last of what stands in a row's foot's end corner is (row_aside: a face, or an agent's mark), whose
-/// middle the marks at its first line's end stand over (@sf.list_row's `corner_end`).
-pub fn row_aside_end_w(item : ChatItem, lead : String) -> Double {
-  let agents = @sfbase.row_agent_groups(item).length() > 0
+/// Twice the distance from the end of the aside to the centre of its last visible part. The extra pixel after a
+/// creator's face belongs outside the face, and a +N takes the width of its words rather than that of an icon.
+fn row_aside_end_w_at(item : ChatItem, lead : String, more_w : (Int) -> Double) -> Double {
+  let groups = @sfbase.row_agent_groups(item)
   let faces = row_with_people(item, lead)
-  let faces_last = faces && (lead != "people" || !agents)
-  if faces_last {
+  if faces && (lead != "people" || groups.is_empty()) {
+    let count = item.people.length()
+    if count > aside_most {
+      more_w(count - aside_most)
+    } else {
+      let last = item.people[count - 1]
+      @sf.theme().chat_list.face_d + (if count > 1 && last.id == item.creator { 2.0 * face_gap_w } else { 0.0 })
+    }
+  } else if groups.length() > aside_most {
+    more_w(groups.length() - aside_most)
+  } else if groups.is_empty() {
     @sf.theme().chat_list.face_d
   } else {
     aside_agent_w
@@ -75,6 +84,7 @@ pub fn row_aside(
   lead : String,
   ground : Int64,
   ground_by? : () -> Int64,
+  reach? : Double = 0.0,
 ) -> Unit {
   let groups = @sfbase.row_agent_groups(item)
   let people = item.people
@@ -145,7 +155,7 @@ pub fn row_aside(
     |> ignore
     @sf.tip(c, key + "/faces-tip", id, item.people_text)
   }
-  c.box(style=aside_row, fn() {
+  c.box(style=aside_row.then(@sf.outset_end(reach)), fn() {
     if lead == "people" {
       if with_people {
         faces()

@@ -78,6 +78,12 @@ pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page
 pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_nodes_at_start, same=fn(a, b) { a == b })
 
 ///|
+/// Whether a chat's composer on its page made as nodes is made as nodes too (sfpages' composer_node), not an old view
+/// in its list's foot: 实验性功能's 试用新输入框, read with chat_page_nodes as the page is made (chat_page_kind).
+// kept across runs: false as a run begins (reset)
+pub let composer_nodes : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
 /// What chat_page_nodes is as a run begins.
 // kept across runs: a value
 let chat_page_nodes_at_start : Bool = false
@@ -88,7 +94,12 @@ let chat_page_nodes_at_start : Bool = false
 /// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
 pub fn chat_page_kind() -> String {
   if chat_page_nodes.get() {
-    "chat"
+    // (its composer made as nodes or as an old view: another make of the page, made again in its place as it turns)
+    if composer_nodes.get() {
+      "chat-composed"
+    } else {
+      "chat"
+    }
   } else {
     "chat-old"
   }
@@ -232,6 +243,8 @@ pub fn chat_page_made(
   drawn? : (Int) -> Bool = fn(serial) { app.nav.shows(serial) },
   body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit,
   foot? : (@ui.Ctx, Source, ChatRef) -> Unit,
+  foot_node? : (@view.View, Source, ChatRef) -> Unit,
+  leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
   narrower? : (@view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
 ) -> Source {
@@ -315,27 +328,44 @@ pub fn chat_page_made(
                 // (its height going the way the composer's ground sets out on for what it holds, from that cause's
                 // moment and by its spec, so the room under the last row goes with that ground, one motion:
                 // composer_set_out, foot_resizes)
-                let island : Ref[@view.View?] = Ref(None)
-                island.val = app.nav.page_island(
-                  n,
-                  serial,
-                  fn(c, page) {
-                    page_entry_read(serial, retained, page)
-                    page_read(page)
-                    f(c, retained, r)
-                  },
-                  key~,
-                  natural=true,
-                  // (cut to itself, its ground its shape all the way: laid out at its one line as words are sent from
-                  // it, its ground going down to that on its own way drawn whole over its node's top, not cut flat)
-                  over=true,
-                  reshaped=fn(_was) { foot_resizes(island.val, r) },
-                )
-                // (in the list's foot, nothing to the hand but what it holds that takes it: the room round the
-                // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
-                // from outside)
-                |> @ui.old_takes_own
-                |> Some
+                // (its composer made as nodes too, where 试用新输入框 is on as the page is made (chat_page_kind): in the
+                // list's foot, its height going its own way, View::resizes)
+                let composed = @signals.untracked(fn() { composer_nodes.get() })
+                match foot_node {
+                  // (over a picture flying out from under it (the viewer's route, FlightLevel's UnderFoot), the round
+                  // buttons the foot holds made before it under that picture, as over the list they stand on)
+                  Some(fnode) if composed =>
+                    n
+                    .box(fn(at) {
+                      at.flights_under() |> ignore
+                      fnode(at, retained, r)
+                    })
+                    |> ignore
+                  _ => {
+                    let island : Ref[@view.View?] = Ref(None)
+                    island.val = app.nav.page_island(
+                      n,
+                      serial,
+                      fn(c, page) {
+                        page_entry_read(serial, retained, page)
+                        page_read(page)
+                        f(c, retained, r)
+                      },
+                      key~,
+                      natural=true,
+                      // (cut to itself, its ground its shape all the way: laid out at its one line as words are sent from
+                      // it, its ground going down to that on its own way drawn whole over its node's top, not cut flat)
+                      over=true,
+                      reshaped=fn(_was) { foot_resizes(island.val, r) },
+                    )
+                    // (in the list's foot, nothing to the hand but what it holds that takes it: the room round the
+                    // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
+                    // from outside)
+                    |> @ui.old_takes_own
+                    |> i => { i.flights_under() }
+                    |> Some
+                  }
+                }
                 // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
                 // at: its own way to another width with_side's)
                 // (none of it at rest: bound once a column has first set off on such a way, at that cause)
@@ -355,6 +385,32 @@ pub fn chat_page_made(
                   None => ()
                 }
               }, fn() { drawn(serial) })
+              // (the new chat's scene leaving over the chat it just became, for new_leave_ms from its first words sent,
+              // drawn only, then let go)
+              match leaving {
+                Some(leave_fn) if @signals.untracked(fn() { fresh.became.get() == Some(r) }) => {
+                  let scene_open = @signals.signal(true, same=fn(a, b) { a == b })
+                  let leave_end = col.cause_at() + new_leave_ms
+                  col.at_moment(leave_end, fn() { scene_open.set(false) }) |> ignore
+                  col.show(
+                    fn() { scene_open.get() && fresh.became.get() == Some(r) && drawn(serial) },
+                    fn(o) {
+                      o.over(Is(true)).hides(Is(true)).carries_until(fn() { leave_end }) |> ignore
+                      app.nav.page_island(
+                        o,
+                        serial,
+                        fn(c, _page) { leave_fn(c, retained, r) },
+                        key=fn() { key() + "/leaving" },
+                      )
+                      .grow(Is(1.0))
+                      |> @ui.old_takes_own
+                      |> ignore
+                    },
+                    at_once=true,
+                  )
+                }
+                _ => ()
+              }
             }
             _ => {
               // (a new chat: its old view, what it reads let go with this node as the page becomes its chat)
@@ -867,6 +923,55 @@ pub(all) struct TerminalAt {
 }
 
 ///|
+/// A new terminal's id (one opened for its page): `new`, `new#<seq>` the seq-th beside others, and `:<chat>` after
+/// either where it opens in that chat's workspace. The chat rides in the id, not a field of `TerminalAt`, whose shape
+/// every unit that reads a page is compiled by.
+pub fn new_terminal_id(chat? : String = "", seq? : Int = 0) -> String {
+  let base = if seq > 0 { "new#" + seq.to_string() } else { "new" }
+  if chat != "" {
+    base + ":" + chat
+  } else {
+    base
+  }
+}
+
+///|
+/// Whether a terminal's id is a new one's (new_terminal_id), none of the station's yet.
+pub fn terminal_is_new(id : String) -> Bool {
+  id == "new" || id.has_prefix("new:") || id.has_prefix("new#")
+}
+
+///|
+/// The chat a new terminal's id says it opens in ("" none, or a terminal of the station's).
+pub fn terminal_open_chat(id : String) -> String {
+  guard terminal_is_new(id) else { return "" }
+  match id.find(":") {
+    Some(i) => id.exact_view(start=i + 1).to_owned()
+    None => ""
+  }
+}
+
+///|
+/// A terminal's id without the chat a new one's says (`new`, `new#<seq>`, or the station's id as it is).
+pub fn terminal_base_id(id : String) -> String {
+  guard terminal_is_new(id) else { return id }
+  match id.find(":") {
+    Some(i) => id.exact_view(end=i).to_owned()
+    None => id
+  }
+}
+
+///|
+/// A terminal's id with `chat` put in where it is a new one's that says none yet.
+pub fn terminal_with_chat(id : String, chat : String) -> String {
+  if chat == "" || !terminal_is_new(id) || terminal_open_chat(id) != "" {
+    id
+  } else {
+    id + ":" + chat
+  }
+}
+
+///|
 /// What page `p` is, by its kind alone: a name out of a fixed set written here, never a chat's, station's, session's,
 /// file's, job's or person's id, name, title or path, nor anything typed. What the window thread's hang reports sent
 /// to PostHog say of the page shown (shown_kind, mbui's journal_shows) and the device's performance record says too.
@@ -900,6 +1005,7 @@ fn place_kind(place : String) -> String {
   match place {
     "chats" => "chats"
     "files" => "files"
+    "remote" => "remote"
     "stations" => "stations"
     "profiles" => "profiles"
     "connects" => "connects"
@@ -1172,6 +1278,7 @@ pub fn open_page(p : Page) -> Unit {
   if window_front(p) {
     return
   }
+  full_page_noted(p)
   history_act(fn() { (shell.val.open)(p) })
 }
 
@@ -1234,6 +1341,7 @@ pub(all) struct DriveAt {
 /// toast's count goes on, as before it was here).
 pub fn reset() -> Unit {
   app.nav = new_nav()
+  chat_remote_caps_reset()
   // (the core given no mermaid: a run's core is a new one)
   mermaid_begin()
   // (no page on its way: a frame with no wide page in it says none, the last run's left as it was)
@@ -1243,6 +1351,7 @@ pub fn reset() -> Unit {
   history_reset()
   last_reset()
   ahead_reset()
+  remote_tabs_reset()
   switch_reset()
   app.picked.set("")
   @ui.set_motion_chosen(None)
@@ -1324,6 +1433,7 @@ pub fn reset() -> Unit {
   go_tos.clear()
   go_to_passages.clear()
   go_to_words.clear()
+  go_to_around.clear()
   // and where each chat's reader was as a go-to took its list away (jump.mbt)
   places_back.clear()
   go_back_offsets.clear()
@@ -1336,6 +1446,7 @@ pub fn reset() -> Unit {
   absolute_times.set(false)
   // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled
   chat_page_nodes.set(chat_page_nodes_at_start)
+  composer_nodes.set(false)
   farview_native.set(false)
   board_feature.set(false)
   // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)
@@ -1363,9 +1474,11 @@ pub fn reset() -> Unit {
   menu_bar_given.val = ""
   shell.val = bare_shell()
   beside_room_now.set(false)
-  // the page shown alone in a window of its own (window.mbt)
+  tab_full_reset()
+  // the page shown alone in a window of its own (window.mbt) and remote workbench tabs (remote_tabs.mbt)
   lone_page.val = None
   lone_shown.val = @signals.signal(None)
+  remote_tabs_reset()
   windows_open.clear()
   windows_here_show.clear()
 }
@@ -1411,6 +1524,7 @@ pub fn back_label(p : Page) -> String {
     // stations, a station's own page)
     Setting(@settings.Route::Stations) | Place("stations") => @sf.t("android-misc.bar.place.stations")
     Setting(@settings.Route::Profiles(_)) | Place("profiles") => @sf.t("android-misc.bar.place.profiles")
+    Place("remote") => @sf.t("web-main.rail.remote")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")
     _ => @sf.t("common.back")

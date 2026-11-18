@@ -19,7 +19,7 @@ import { GONE, NETWORK } from "../wake.ts";
 import { StationAddr } from "./addr.ts";
 import { Cursor, upTo } from "./cursor.ts";
 import { type Keeper, Memory } from "./memory.ts";
-import { HEAD, RESUMED, type Requests } from "./requests.ts";
+import { LIVE_RATES, HEAD, RESUMED, type Requests } from "./requests.ts";
 import { SseParser } from "../sse.ts";
 import { replyHeader } from "./wire.ts";
 
@@ -151,6 +151,9 @@ export class Link {
   cursor = new Cursor();
   /// Sessions at work as their stream says (steps, phase, rate, usage).
   readonly lives = new Map<string, LiveView>();
+  /// Positive output rates from this stream alone. Nothing here survives a disconnect or a new stream.
+  readonly rates = new Map<string, number>();
+  ratesSupported: boolean | null = null;
   /// Threads whose summaries are read again once a burst of events is over.
   readonly dirty = new Set<number>();
   flushing = false;
@@ -237,6 +240,7 @@ export type Told = {
   toldMissed(address: string): void;
   /// How a station's link is, or its host figures as last kept, changed.
   changed(address: string, what: "link" | "host"): void;
+  ratesOpened(address: string, supported: boolean): void;
   /// A station is no longer linked.
   gone(address: string): void;
 };
@@ -372,6 +376,7 @@ export class Links {
     for (const [address, link] of [...this.#links]) {
       if (wanted.has(address)) continue;
       this.#links.delete(address);
+      core.meshNow()?.dropLink(address);
       core.runner.close(link.scoped);
       this.#told.gone(address);
       core.scheduler.drop(address, new CoreError("gone", t("station.core.localGone")));
@@ -625,6 +630,8 @@ export class Links {
             misses = 0;
             reached = true;
             link.heard = core.host.nowMs();
+            // Live events are not in the event log. Even a resumed stream gives a new snapshot of running sessions.
+            self.#told.ratesOpened(address, replyHeader(opened.success, LIVE_RATES) === "1");
             self.setLink(address, { state: "online" });
             // Told what came after the last event heard (RESUMED): nothing is read again. Otherwise (the first stream,
             // one that could not be resumed, a station from before) what the station holds is read now, in the trace of

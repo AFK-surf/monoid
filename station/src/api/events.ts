@@ -70,6 +70,8 @@ export const HEAD = "stillfail-head";
 /// does it, without asking for any (`live` events, from where each stood as it was opened; nothing of before): the
 /// client then follows no session by name, and reads what it lacks of a transcript as it reads anything it lacks.
 export const FOLLOWS = "stillfail-follows";
+/// A running-session snapshot includes each current output rate, and a quiet rate is cleared.
+export const LIVE_RATES = "stillfail-live-rates";
 
 /// Where what is told goes over to the next process at a handover (`handOver`), in the data directory: beside the hub's
 /// sessions (sessions/hub.ts `handoverFile`).
@@ -631,7 +633,7 @@ export class Events {
     };
     return {
       status: 200,
-      headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no", ...(head !== null ? { [RESUMED]: "1", [HEAD]: head } : {}), ...(follows ? { [FOLLOWS]: "running" } : {}) },
+      headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no", ...(head !== null ? { [RESUMED]: "1", [HEAD]: head } : {}), ...(follows ? { [FOLLOWS]: "running", ...(this.deps.heldNow !== undefined ? { [LIVE_RATES]: "1" } : {}) } : {}) },
       body,
     };
   }

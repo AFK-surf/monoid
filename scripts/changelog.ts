@@ -16,7 +16,7 @@
 // into main; `--stable` joins them for the stable channel, and check.sh reads them as CI does. A release is the day
 // before's main commit (version: its commit count) and, when there are any, the serious fixes since, the commits saying
 // `Stable: yes` (the user, 2026-11-09), cherry-picked onto it in a branch (`branch: release/<…>`, `base: <the main
-// commit's count>`; version: the branch's, which a main commit may have too): .github/stable-plan.py.
+// commit's SHA or count>`; version: the branch's, which a main commit may have too): .github/stable-plan.py.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -53,7 +53,7 @@ const PARTS: [RegExp, Part[]][] = [
   [/^web\//, ["web"]],
   [/^apps\/android\//, ["android"]],
   [/^apps\/desktop\//, ["desktop"]],
-  // still.fail's mbui app (apps/mbui, mbui itself in libs/mbui): the Android app since 2026-10-23 (the Kotlin one,
+  // still.fail's mbui app (apps/mbui, mbui itself in libs/mbui, its component library in libs/sf-ui): the Android app since 2026-10-23 (the Kotlin one,
   // apps/android, before it), and the desktop app, in the Electron one's place since 2026-10-26 (it tells the core it is
   // "desktop"). What one platform's host alone builds reaches that platform (iOS is no part yet); the desktop's own
   // pages (src/sfdesk, and what sfapp still has of them: its wide frame, the menu bar, the settings ported from the
@@ -61,7 +61,7 @@ const PARTS: [RegExp, Part[]][] = [
   [/^(apps|libs)\/mbui\/(ios\/|src\/host\/ios_)/, []],
   [/^(apps|libs)\/mbui\/((engine\/)?android\/|src\/host\/android_)/, ["android"]],
   [/^(apps|libs)\/mbui\/(src\/host\/(apple|mac_|win|electron_)|src\/sfdesk\/|src\/sfapp\/((strings_)?wide|menu_bar|preview_desk|settings\/(web|desk)_))/, ["desktop"]],
-  [/^(apps|libs)\/mbui\//, ["android", "desktop"]],
+  [/^((apps|libs)\/mbui|libs\/sf-ui)\//, ["android", "desktop"]],
   [/^cloud\/src\//, ["cloud"]],
 ];
 
@@ -74,10 +74,10 @@ const CHANGES_NOTHING = new RegExp(
     /^client\/core-ts\/(test|bench|harness|side|scripts)\//,
     /^apps\/android\/[^/]+\/src\/(androidTest|test)\/|^apps\/android\/(carries\.sh|not-carried\.txt)$/,
     /^client\/core-ts\/src\/shapes\/schema\.ts$|^web\/src\/core\/(shapes|operations)\.ts$|^apps\/android\/.*\/data\/(Shapes|Operations)\.kt$/,
-    /^(apps|libs)\/mbui\/([^/]+|(e2e|docs|screens|scripts|tools|bench|goldens|test|web)\/.*)$/,
+    /^((apps|libs)\/mbui|libs\/sf-ui)\/([^/]+|(e2e|docs|screens|scripts|tools|bench|goldens|test|web)\/.*)$/,
     /^apps\/mbui\/src\/(sffilm|sfreplay|sffix|sfkept|sfkit|sflayout|sfscreens|coredemo|books|photos|videos)\//,
     /^libs\/mbui\/src\/(\w*demo|effecttest|awly|film|textdiff)\//,
-    /^(apps|libs)\/mbui\/.*(_test|_wbtest|_fixture|\/fixture)\.mbt$|^apps\/mbui\/core\/(.*[_-]test\.(m|js)|smoke\.m)$/,
+    /^((apps|libs)\/mbui|libs\/sf-ui)\/.*(_test|_wbtest|_fixture|\/fixture)\.mbt$|^apps\/mbui\/core\/(.*[_-]test\.(m|js)|smoke\.m)$/,
   ].map((r) => r.source).join("|"),
 );
 
@@ -259,9 +259,12 @@ export function lastBase(root: string): number {
   const newest = (existsSync(dir) ? readdirSync(dir) : [])
     .filter((f) => /^0\.\d+\.\d+\.md$/.test(f))
     .map((f) => readFileSync(join(dir, f), "utf8"))
-    .map((file) => ({ version: readRelease(file).version, base: Number(/^base:\s*(\d+)\s*$/m.exec(/^---\n([\s\S]*?)\n---/.exec(file)?.[1] ?? "")?.[1] ?? 0) }))
+    .map((file) => ({ version: readRelease(file).version, base: /^base:[ \t]*(\S+)[ \t]*$/m.exec(/^---\n([\s\S]*?)\n---/.exec(file)?.[1] ?? "")?.[1] }))
     .sort((a, b) => b.version - a.version)[0];
-  return newest ? newest.base || newest.version : 0;
+  if (!newest?.base) return newest?.version ?? 0;
+  if (/^[0-9a-f]{40}$/i.test(newest.base)) return Number(execFileSync("git", ["rev-list", "--count", newest.base], { cwd: root, encoding: "utf8" }).trim());
+  if (/^\d+$/.test(newest.base)) return Number(newest.base);
+  throw new Error(`Invalid release base: ${newest.base}`);
 }
 
 /** The next release's notes are written from these: the test channel's entries after the last release's base, oldest first (excluding `Changelog-channel: beta`). */

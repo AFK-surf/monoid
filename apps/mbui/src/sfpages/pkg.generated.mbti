@@ -119,6 +119,8 @@ pub fn composer_foot_room(@ui.Ctx, String, Double, let_go~ : Bool) -> Double
 
 pub fn composer_open_room(@ui.Ctx, Double, corner? : Double) -> Double
 
+pub fn composer_page_left() -> Unit
+
 pub fn composer_place(@ui.Ctx, Double) -> ComposerPlace
 
 pub fn composer_room(@ui.Ctx, String, settled? : Bool, held? : Bool) -> Double
@@ -127,7 +129,7 @@ pub let composer_shape_ms : Double
 
 pub fn composer_side() -> Double
 
-pub fn composer_take_focus() -> Unit
+pub fn composer_take_focus(drafts? : String) -> Unit
 
 pub fn composer_width(Double) -> Double
 
@@ -241,7 +243,7 @@ pub fn history_only_io() -> Bool
 
 pub fn history_only_io_flip() -> Unit
 
-pub fn history_open(Array[String]) -> Unit
+pub fn history_open(String, String, Array[String]) -> Unit
 
 pub fn history_steps_node(@view.View, @sfbase.Source, String, String, @sf.TipLayer) -> Unit
 
@@ -354,6 +356,8 @@ pub let narrow_row_title : @ui.TextStyle
 pub fn new_chat_ask(String) -> Unit
 
 pub fn new_chat_asked(String) -> Map[String, @json.Json]
+
+pub let new_chat_drafts : String
 
 pub fn new_chat_left(@ui.Ctx, @sfbase.Source, @sfbase.Workspace, NewChatFrame, @json.Json?, @motion.Anim, @motion.Anim) -> Unit
 
@@ -509,11 +513,9 @@ pub let reveal_ms : Double
 
 pub fn role_words(String) -> String
 
-pub fn row_aside(@ui.Ctx, @sfbase.Source, @sfbase.ChatItem, String, Int64, ground_by? : () -> Int64) -> Unit
+pub fn row_aside(@ui.Ctx, @sfbase.Source, @sfbase.ChatItem, String, Int64, ground_by? : () -> Int64, reach? : Double) -> Unit
 
-pub fn row_aside_end_w(@sfbase.ChatItem, String) -> Double
-
-pub fn row_aside_node(@view.View, @sfbase.Source, @sf.TipLayer, () -> @sfbase.ChatItem, String, () -> Int64, () -> Int32) -> Unit
+pub fn row_aside_node(@view.View, @sfbase.Source, @sf.TipLayer, () -> @sfbase.ChatItem, String, () -> Int64, () -> Int32, reach? : () -> Double) -> Unit
 
 pub fn row_aside_shows(@sfbase.ChatItem, String) -> Bool
 

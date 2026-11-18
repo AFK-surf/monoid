@@ -247,11 +247,12 @@ export interface JobChat {
 
 /** How one of the open ones that is not a job is stopped (`Job.stop`). */
 export interface JobStop {
-	/** `screen.close` (a simulator shut down) or `screen.endView` (a person's view ended), with its station and these. */
+	/** `screen.close`, `screen.endView` or `terminal.end`, with its station and these. */
 	call: string;
-	screen: string;
+	screen?: string;
+	terminal?: string;
 	view?: string;
-	/** What its button says: 关闭, 断开. */
+	/** What its button says: 关闭, 断开, 结束. */
 	word: string;
 }
 
@@ -775,6 +776,7 @@ export interface QuotaWindow {
 	left: number;
 	level: Level;
 	refills?: string;
+	refillShort?: string;
 	/** Its times in words, by field (`createdAt`, `lastActiveAt`, …). */
 	time?: Record<string, Stamp>;
 }
@@ -1065,6 +1067,7 @@ export interface PickQuotaWindow {
 	left: number;
 	level: Level;
 	refills?: string;
+	refillShort?: string;
 }
 
 /** A moment as a page says it: 3 分钟前. (A Stamp's other parts no page of a profile reads.) */
@@ -1472,12 +1475,19 @@ export interface Overview {
 /** How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it. */
 export type BoardGroup = "state" | "station" | "person";
 
+/** A queued task's file, named by its composer id; its bytes stay in the device's draft store. */
+export interface BoardFile {
+	id: string;
+	name: string;
+}
+
 /** An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name. */
 export interface BoardDraft {
 	id: string;
 	title: string;
 	station: string;
 	stationName: string;
+	files?: BoardFile[];
 }
 
 /** What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档). */
@@ -1610,9 +1620,9 @@ export interface FontsView {
 
 /**
  * A place the wide screen's rail can show: a list of chats (对话, 我参与的, 监控中, 已隐藏, 已归档), 待处理's panel, or a page
- * (文件, Station, Profile, 连接, 用量).
+ * (文件, 远程, Station, Profile, 连接, 用量).
  */
-export type RailPlaceId = "chats" | "mine" | "watching" | "hidden" | "archive" | "attention" | "files" | "stations" | "profiles" | "connects" | "usage";
+export type RailPlaceId = "chats" | "mine" | "watching" | "hidden" | "archive" | "attention" | "files" | "remote" | "stations" | "profiles" | "connects" | "usage";
 
 /** What kind of place: a page of its own, one of the chats' lists, 待处理. */
 export type RailKind = "places" | "lists" | "attention";
@@ -1694,6 +1704,8 @@ export interface PrefsView {
 	accent?: string;
 	/** The window's content size on this device, as a percentage; none means 100%. */
 	windowZoom?: string;
+	/** The remote terminal's font zoom on this device, as a percentage; none means 100%. */
+	terminalZoom?: string;
 	/**
 	 * Motion on this device's pages: `reduce` (what moves only fades or is there at once), `full`, or none to
 	 * follow the system's setting.
@@ -1751,6 +1763,8 @@ export interface PrefsView {
 	 * is in front, kept as `files.tabs` writes it (JSON; the `filesTabs` topic reads it).
 	 */
 	filesTabs?: Record<string, string>;
+	/** The remote workbench's tabs on this device, by workspace (JSON). */
+	remoteTabs?: Record<string, string>;
 	/**
 	 * Folders this person keeps at hand on the files' page, by workspace, on this device: each a station's folder
 	 * (JSON: [{station, path, name}]), whoever else browses there.
@@ -2240,6 +2254,8 @@ export interface MessageCard {
 	/** options | text | login */
 	type: string;
 	options?: DecisionOption[];
+	/** A text card: the hint its field shows while nothing is written in it, as the agent said it. */
+	placeholder?: string;
 	/**
 	 * An agent's request to use a vault item: the request's id. An app shows approving it (the options,
 	 * then the person confirms: `vault.approve` with the option's scope, `vault.deny`) rather than answering in the chat;

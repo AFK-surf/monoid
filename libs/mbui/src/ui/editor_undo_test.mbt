@@ -1,5 +1,6 @@
 // A field's edits undone and done again (editor_undo.mbt): ⌘Z and ⇧⌘Z on a Mac, Ctrl+Z and Ctrl+Y elsewhere; a run
-// of typing one step, a paste and a cut each one of their own, the app's words letting go of what was kept.
+// of typing broken into manageable steps, a paste and a cut each one of their own, the app's words letting go of what
+// was kept.
 
 ///|
 /// ⌘Z (Ctrl+Z off Apple's systems) pressed, and ⇧⌘Z.
@@ -20,26 +21,105 @@ fn type_each(t : @ui.Tester, words : String) -> Unit {
 }
 
 ///|
-test "⌘Z on a Mac: a run of typing undone at once, the caret where it began; ⇧⌘Z types it again" {
+test "typing several words: ⌘Z takes the last word, then the one before; ⇧⌘Z puts each back" {
+  let (f, t) = keys_field("", 0)
+  type_each(t, "hello world again")
+  undo(t)
+  assert_eq(f.text(), "hello world ")
+  undo(t)
+  assert_eq(f.text(), "hello ")
+  redo(t)
+  assert_eq(f.text(), "hello world ")
+  redo(t)
+  assert_eq(f.text(), "hello world again")
+}
+
+///|
+test "each committed input method candidate is one undo step" {
+  let (f, t) = keys_field("", 0)
+  t.compose("nihao")
+  t.type_text("你好")
+  t.compose("shijie")
+  t.type_text("世界")
+  undo(t)
+  assert_eq(f.text(), "你好")
+  redo(t)
+  assert_eq(f.text(), "你好世界")
+}
+
+///|
+test "Android's composing state commits each candidate as a step too" {
+  let (f, t) = keys_field("", 0, platform=2)
+  t.ime_state("你", 1, 1, ca=0, cb=1)
+  t.ime_state("你", 1, 1)
+  t.ime_state("你好", 2, 2, ca=1, cb=2)
+  t.ime_state("你好", 2, 2)
+  undo(t, platform=2)
+  assert_eq(f.text(), "你")
+  undo(t, platform=2)
+  assert_eq(f.text(), "")
+}
+
+///|
+test "a pause and a long unbroken word split typing into steps" {
+  let (f, t) = keys_field("", 0)
+  type_each(t, "abc")
+  let longer_than_typing_pause = 1001.0
+  t.advance(longer_than_typing_pause)
+  type_each(t, "def")
+  undo(t)
+  assert_eq(f.text(), "abc")
+  undo(t)
+  assert_eq(f.text(), "")
+  type_each(t, "abcdefghijklmnopqrstuvwxyz0123456789")
+  undo(t)
+  assert_eq(f.text(), "abcdefghijklmnopqrstuvwxyz012345")
+  undo(t)
+  assert_eq(f.text(), "")
+}
+
+///|
+test "a candidate replacing a selection restores the selection in one undo, even after a pause" {
+  let (f, t) = keys_field("old", 3)
+  t.key(@ui.key_code_select_all)
+  t.compose("nihao")
+  let time_choosing_a_candidate = 2000.0
+  t.advance(time_choosing_a_candidate)
+  t.type_text("你好")
+  assert_eq(f.text(), "你好")
+  undo(t)
+  assert_eq(f.text(), "old")
+  assert_eq(f.selection(), (0, 3))
+  redo(t)
+  assert_eq(f.text(), "你好")
+}
+
+///|
+test "⌘Z on a Mac: typing, deleting and a new line undo in steps; ⇧⌘Z puts them back" {
   let (f, t) = keys_field("go ", 3)
   type_each(t, "hello")
-  // a deletion at the caret is typing too, and the new line
   t.key(@ui.key_code_backspace)
   t.key(@ui.key_code_enter)
   type_each(t, "p!")
   assert_eq(f.text(), "go hell\np!")
   undo(t)
+  assert_eq(f.text(), "go hell\n")
+  undo(t)
+  assert_eq(f.text(), "go hell")
+  undo(t)
+  assert_eq(f.text(), "go hello")
+  undo(t)
   assert_eq(f.text(), "go ")
   assert_eq(f.selection(), (3, 3))
   redo(t)
-  assert_eq(f.text(), "go hell\np!")
-  assert_eq(f.selection(), (10, 10))
-  // none left to do again, none before the typing to undo: nothing
+  redo(t)
+  redo(t)
   redo(t)
   assert_eq(f.text(), "go hell\np!")
-  undo(t)
-  undo(t)
-  assert_eq(f.text(), "go ")
+  assert_eq(f.selection(), (10, 10))
+  // none left to do again
+  redo(t)
+  assert_eq(f.text(), "go hell\np!")
 }
 
 ///|
@@ -130,6 +210,10 @@ test "what an input method composes and commits is typing; ⌘Z while it compose
   assert_eq(f.text(), "你好")
   t.ime_finish()
   assert_eq(f.text(), "你好a")
+  undo(t)
+  assert_eq(f.text(), "你好")
+  undo(t)
+  assert_eq(f.text(), "你")
   undo(t)
   assert_eq(f.text(), "")
 }

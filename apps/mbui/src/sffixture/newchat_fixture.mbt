@@ -13,6 +13,9 @@ pub(all) struct NewFix {
   mut model : String
   mut runtime : String
   mut effort : String
+  mut claude_mode : Bool
+  mut default_tui : Bool
+  mut tui : Bool?
   mut speed : String
   mut d_model : String
   mut d_runtime : String
@@ -73,6 +76,9 @@ pub let new_fix : NewFix = {
   model: "claude-opus-5-5",
   runtime: "claude",
   effort: "high",
+  claude_mode: false,
+  default_tui: false,
+  tui: None,
   speed: "",
   d_model: "claude-opus-5-5",
   d_runtime: "claude",
@@ -487,6 +493,7 @@ fn fix_maker_name(id : String) -> String {
 ///|
 pub fn fix_model(model : String) -> Json {
   match model {
+    "gpt-6.2-sol" => fix_crowded_model(model, "GPT-6.2 Sol", "Sol", "openai", ["codex"])
     "gpt-6-astra" => fix_crowded_model(model, "GPT-6 Astra", "Astra", "openai", ["codex"])
     "deepseek-v4-1-flash" => fix_crowded_model(model, "DeepSeek V4.1 Flash", "DeepSeek", "deepseek", ["claude", "codex", "dsh"])
     "grok-4-7-build-fast" => fix_crowded_model(model, "Grok 4.7 Build Fast", "Grok", "xai", ["grok"])
@@ -551,6 +558,8 @@ fn fix_shown_models() -> Array[Json] {
     }
     let here = if n.station_empty { [] } else { [sourced("claude-opus-5-5", "here"), sourced("claude-sonnet-5", "borrowed")] }
     if n.other_stations { here + [sourced("gpt-6", "borrowable")] } else { here }
+  } else if n.ultrafast {
+    fix_crowded_models.map(fix_model) + [fix_model("gpt-6.2-sol")]
   } else if n.tall {
     fix_crowded_models.map(fix_model) + fix_tall_models.map(fix_model)
   } else if n.providers {
@@ -671,6 +680,7 @@ pub fn fix_pick() -> Json {
       "model": Json::string(model),
       "runtime": Json::string(runtime),
     }
+    if n.tui.unwrap_or(n.default_tui) && runtime == "claude" { o["tui"] = Json::boolean(true) }
     if n.speed != "" { o["speed"] = Json::string(n.speed) }
     if effort != "" {
       o["effort"] = Json::string(effort)
@@ -734,8 +744,10 @@ pub fn fix_pick() -> Json {
     } else {
       ["low", "medium", "high"]
     },
+    "defaultTui": n.default_tui,
+    "claudeModeAvailable": n.claude_mode && n.d_runtime == "claude",
     "fastAvailable": n.tall || n.ultrafast,
-    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6-astra",
+    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6.2-sol",
     // (how much context Claude Code can be kept to under the model's 1M)
     "contexts": if n.d_runtime == "claude" {
       [("", "完整 · 1M"), ("500000", "500K"), ("300000", "300K"), ("200000", "200K")].map(fn(c) {
@@ -843,17 +855,24 @@ fn fix_pick_options(all : Array[Json]) -> Json {
           let ran = if model == n.d_model { Some((n.d_runtime, n.d_effort)) } else { used.get(model) }
           match ran {
             Some((runtime, effort)) => {
+              let astra_run = n.providers && model == "gpt-6-astra"
               m["usual"] = {
                 "runtime": Json::string(runtime),
                 "effort": if effort == "" { Json::null() } else { Json::string(effort) },
                 "fast": Json::null(),
+                "speed": if astra_run { Json::string("ultrafast") } else { Json::null() },
+                "context": if astra_run { Json::number(1100000.0) } else { Json::null() },
               }
               let parts = []
-              if many {
+              if many || astra_run {
                 parts.push(fix_runtime_short(runtime))
               }
               if effort_word(effort) != "" {
                 parts.push(effort_word(effort))
+              }
+              if astra_run {
+                parts.push("Ultrafast")
+                parts.push("1.1M")
               }
               if parts.length() > 0 {
                 m["usualText"] = Json::string(parts.join(" · "))
@@ -1078,8 +1097,11 @@ pub let stations_slow_ms : Double = 1200.0
 
 ///|
 /// The new chat's topics, None for any other.
-pub fn fixture_new_topic(f : Fixture, name : String) -> Json? {
+pub fn fixture_new_topic(f : Fixture, name : String, scope? : String = "") -> Json? {
   match name {
+    // (another workspace's: one with no station, as its stations are (none but ws1's): its first to add, never ws1's
+    // Willow and its model, a page that names what that workspace has not)
+    "newChat" if scope != "" && scope != "ws1" => Some({ "stations": [], "any": false })
     "newChat" => Some(fix_new_chat(f))
     "pick" => Some(fix_pick())
     _ => None
@@ -1294,7 +1316,13 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       f.changed()
       Some(Ok(Json::object({})))
     }
+    "pick.defaultTui" => {
+      n.default_tui = field(p, "tui") is Some(True)
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
     "pick.save" => {
+      if field(p, "tui") is Some(b) { n.tui = Some(b is True) }
       take("speed", fn(s) { n.speed = s })
       match field(p, "fast") {
         Some(True) => n.speed = "fast"

@@ -14,6 +14,39 @@ import { run } from "./run.ts";
 import { type Answers, base, entries, entry, overview, session, started, stationHost, stationLater, status, threadView } from "./station-fixture.ts";
 import { retryAfter } from "../src/station/sync.ts";
 
+test("live rates follow station events, clear on reconnect, and distinguish older stations", async () => {
+  const { host, core, push, end, gate } = await started(base(), 0, undefined, (s) => { s.gate.rates = true; });
+  const chat = { id: "7", thread: 7, session: "k1", title: "部署", agents: [{ key: "k1", process: "running" }], lastActiveAt: 1 };
+  core.inner.data.setChatsAt("ws/st", [chat], [0]);
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "agentRates", scope: "ws" });
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "≈ 0 token/s");
+  push("live", { key: "k1", type: "rate", tokensPerSecond: 20 });
+  push("live", { key: "k2", type: "rate", tokensPerSecond: 30 });
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "≈ 50 token/s");
+  assert.equal(v(values, 1).rows.find((row: { chat: string }) => row.chat === "7").title, "部署");
+  core.inner.data.putChat("ws/st", { ...chat, title: "新名称" }, 0);
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).rows.find((row: { chat: string }) => row.chat === "7").title, "新名称");
+  push("live", { key: "k1", type: "clear" });
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "≈ 30 token/s");
+  gate.rates = false;
+  end();
+  await host.time.pass(2000, 100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "—");
+  assert.equal(v(values, 1).rows.length, 0);
+  core.close();
+});
+
 const gets = (host: FakeHost, path: string) => host.requests.flatMap(readsOf).filter((url) => url.endsWith(path)).length;
 
 test("a_reached_station_is_linked_read_as_its_stream_opens_and_its_topics_read_only_what_is_held", async () => {
@@ -490,6 +523,7 @@ test("a_chat_is_looked_in_whole_and_its_window_goes_about_a_message_found", asyn
   // The window about the one found far back: a page on either side; one near the end reaches it.
   call(core, ui, 4, "chat.around", { station: "ws/st", thread: 7, seq: 27 });
   await host.settle();
+  assert.deepEqual(answered(host.emitted.slice(), 4)?.ok, { seq: 27 });
   apply(host, values);
   assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [1, 76, false]);
   call(core, ui, 5, "chat.around", { station: "ws/st", thread: 7, seq: 40 });
@@ -500,6 +534,41 @@ test("a_chat_is_looked_in_whole_and_its_window_goes_about_a_message_found", asyn
   await host.settle();
   apply(host, values);
   assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [220, 300, true]);
+  core.close();
+});
+
+test("a_quoted_message_is_found_by_its_time_and_its_chat_s_window_goes_about_it_read_onto_the_device_where_not_there", async () => {
+  const answers = base();
+  answers["GET /threads"] = [threadView(7, 300)];
+  answers["GET /threads/7/entries?limit=50"] = { last: 300, entries: entries(251, 300) };
+  const { host, core } = await started(answers);
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "thread", station: "ws/st", thread: 7 });
+  await host.time.pass(500);
+  apply(host, values);
+  assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [251, 300, true]);
+  // One on the device, by its time: its number, the window as it was (well within it).
+  call(core, ui, 2, "chat.around", { station: "ws/st", thread: 7, ts: "280.0" });
+  await host.settle();
+  assert.deepEqual(answered(host.emitted.slice(), 2)?.ok, { seq: 280 });
+  // One not on the device: the rest read onto it, then the window about it.
+  for (let from = 201; from >= 1; from -= 50) answers[`GET /threads/7/entries?from=${from}&to=${from + 49}`] = { last: 300, entries: entries(from, from + 49) };
+  call(core, ui, 3, "chat.around", { station: "ws/st", thread: 7, ts: "27.0" });
+  await host.time.pass(500);
+  assert.deepEqual(answered(host.emitted.slice(), 3)?.ok, { seq: 27 });
+  apply(host, values);
+  assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [1, 76, false]);
+  // One the chat has nowhere: none, the window as it was.
+  call(core, ui, 4, "chat.around", { station: "ws/st", thread: 7, ts: "999.0" });
+  await host.time.pass(500);
+  assert.deepEqual(answered(host.emitted.slice(), 4)?.ok, { seq: null });
+  apply(host, values);
+  assert.deepEqual([v(values, 1).first, v(values, 1).last], [1, 76]);
+  // Neither its number nor its time: refused.
+  call(core, ui, 5, "chat.around", { station: "ws/st", thread: 7 });
+  await host.settle();
+  assert.equal(answered(host.emitted.slice(), 5)?.ok, undefined);
   core.close();
 });
 

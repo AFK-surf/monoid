@@ -9,6 +9,7 @@ import { Effect } from "effect";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FakeHost } from "../src/testing.ts";
+import { PUSH_KEY } from "../src/attention.ts";
 import { answers, call } from "./helpers.ts";
 import { started, stationReplies } from "./station-fixture.ts";
 
@@ -209,4 +210,84 @@ test("an account its `/v1/me` says is no operator reads no operator's lists as i
   console.log(`OPERATOR none ${none}, before ${before}`);
   assert.equal(none, 0, "no operator: nothing of /v1/admin asked");
   assert.ok(before >= 1, "a cloud from before: /v1/admin/me asked as before");
+});
+
+/// A device signed in on an operator's console (the cloud's own origin for it: sign-in, `/v1/me`, `/v1/events` and
+/// `/v1/admin/*` alone), or, `console` false, in the app as before, at rest; the operator's lists answered.
+async function operator(onConsole: boolean) {
+  const s = await started(undefined, 0, undefined, (x) => {
+    x.cloud.me = { operator: true, ...(onConsole ? { console: true } : {}) };
+    x.cloud.more = [{ id: "w1", name: "日常", role: "owner", members: [] }];
+    x.host.store(PUSH_KEY, { registration: { kind: "fcm", token: "t" }, with: [], lang: null });
+    // (answered from the first: the operator's lists are asked as the socket first opens)
+    stationReplies(x.host, (req) => {
+      const path = req.url.replace("https://stillfail.test", "");
+      if (req.method === "GET" && path === "/v1/admin/me") return { operator: true };
+      if (req.method === "GET" && path.startsWith("/v1/admin/")) return { items: [] };
+      if (req.method === "POST" && path.startsWith("/v1/admin/")) return { ok: true };
+      return undefined;
+    });
+  });
+  const from = s.host.requests.length;
+  s.core.inner.runner.fork(Effect.ignore(s.core.inner.cloudSync.pushRegistered()));
+  await s.host.time.pass(5_000, 100);
+  return { s, opened: asked(s.host, 0), since: asked(s.host, from) };
+}
+
+/// Whether `counts` has a request to a path that starts so.
+const any = (counts: Record<string, number>, prefix: string) => Object.keys(counts).some((k) => k.startsWith(prefix));
+
+test("an operator's console asks its origin for the operator's lists alone: nothing of workspaces, sign-ins or pushes", async () => {
+  const app = await operator(false);
+  app.s.core.close();
+  const con = await operator(true);
+  con.s.core.close();
+  console.log(`APP ${JSON.stringify(app.opened)}`);
+  console.log(`CONSOLE ${JSON.stringify(con.opened)}`);
+  // (in the app, as before: what the console must not ask is asked there, so the test sees it)
+  assert.ok(any(app.opened, "GET /v1/workspaces/w1"), "the app reads its workspaces");
+  assert.ok(any(app.opened, "GET /v1/auth/sessions"), "the app reads its sign-ins");
+  assert.ok(any(app.opened, "POST /v1/push"), "the app gives its push registration");
+  for (const route of ["GET /v1/workspaces/", "POST /v1/workspaces/", "GET /v1/auth/sessions", "POST /v1/push"]) assert.ok(!any(con.opened, route), `the console asks no ${route}`);
+  assert.deepEqual(Object.keys(con.opened).filter((k) => k.startsWith("GET /v1/admin/")).sort(), ["GET /v1/admin/feedback", "GET /v1/admin/invite-codes", "GET /v1/admin/me", "GET /v1/admin/users", "GET /v1/admin/workspaces"]);
+});
+
+test("an `admin` event reads again the operator's lists it names, alone", async () => {
+  const { s } = await operator(true);
+  const event = (e: unknown) => s.host.socketSend("/v1/events", JSON.stringify(e));
+  const feedback = await count(s, () => event({ type: "admin", lists: ["feedback"] }));
+  const all = await count(s, () => event({ type: "admin" }));
+  // (a workspace's events are not read on the console: its origin serves none of them)
+  const told = await count(s, () => (event({ type: "workspace", id: "w1" }), event({ type: "workspaces" }), event({ type: "feedback", workspace: "w1" })));
+  console.log(`ADMIN EVENT ${JSON.stringify({ feedback, all, told })}`);
+  assert.deepEqual(feedback, { "GET /v1/admin/feedback": 1 });
+  assert.deepEqual(all, { "GET /v1/admin/users": 1, "GET /v1/admin/workspaces": 1, "GET /v1/admin/invite-codes": 1, "GET /v1/admin/feedback": 1 });
+  assert.deepEqual(told, {});
+  s.core.close();
+});
+
+test("an operator's write reads again the lists it changed, alone", async () => {
+  const { s } = await operator(true);
+  const ui = s.core.connect();
+  const status = await count(s, () => answered(s, ui, 1, "admin.feedbackStatus", { account: "s1", id: "F1", status: "done" }));
+  const mayCreate = await count(s, () => answered(s, ui, 2, "admin.setMayCreate", { account: "s1", user: "u1", on: true }));
+  const code = await count(s, () => answered(s, ui, 3, "admin.revokeCode", { account: "s1", code: "C1" }));
+  console.log(`ADMIN WRITE ${JSON.stringify({ status, mayCreate, code })}`);
+  assert.deepEqual(status, { "POST /v1/admin/feedback/F1/status": 1, "GET /v1/admin/feedback": 1 });
+  assert.deepEqual(mayCreate, { "POST /v1/admin/users/u1/may-create": 1, "GET /v1/admin/users": 1, "GET /v1/admin/workspaces": 1 });
+  assert.deepEqual(code, { "POST /v1/admin/invite-codes/C1/revoke": 1, "GET /v1/admin/invite-codes": 1 });
+  s.core.close();
+});
+
+test("which of an operator's lists a write changes", async () => {
+  // (imported here: the rest of the file runs on a core from before this, to see its tests fail there)
+  const { ADMIN_LISTS, adminListsForWrite } = await import("../src/sync/cloud.ts");
+  assert.deepEqual(adminListsForWrite("/v1/admin/me"), []);
+  assert.deepEqual(adminListsForWrite("/v1/admin/feedback/F1/status"), ["feedback"]);
+  assert.deepEqual(adminListsForWrite("/v1/admin/invite-codes"), ["invite-codes"]);
+  assert.deepEqual(adminListsForWrite("/v1/admin/pending/remove"), ["users", "workspaces"]);
+  assert.deepEqual(adminListsForWrite("/v1/admin/users/u1/beta"), ["users"]);
+  assert.deepEqual(adminListsForWrite("/v1/admin/users/u1/may-create"), ["users", "workspaces"]);
+  assert.deepEqual(adminListsForWrite("/v1/admin/workspaces/w1/limits"), ["workspaces", "users"]);
+  assert.deepEqual(adminListsForWrite("/v1/admin/somewhere-new"), ADMIN_LISTS);
 });

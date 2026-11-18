@@ -153,6 +153,46 @@ fn tick(label : String) -> Unit {
 }
 
 ///|
+/// t[from:end]'s first byte c (memchr): its index, or -1
+#borrow(t)
+extern "C" fn c_find_byte(t : Bytes, from : Int, end : Int, c : Int) -> Int = "mbc_find_byte"
+
+///|
+/// t[from:end]'s first s (memmem where there is one): its index, or -1
+#borrow(t, s)
+extern "C" fn c_find(t : Bytes, from : Int, end : Int, s : Bytes) -> Int = "mbc_find"
+
+///|
+/// hash_range of t[s:e]
+#borrow(t)
+extern "C" fn c_hash(t : Bytes, s : Int, e : Int) -> Int = "mbc_hash"
+
+///|
+/// The end of the run of identifier characters in t[i:end]
+#borrow(t)
+extern "C" fn c_ident_end(t : Bytes, i : Int, end : Int) -> Int = "mbc_ident_end"
+
+///|
+/// k[ks:ks + n] is t[s:s + n]
+#borrow(k, t)
+extern "C" fn c_same(k : FixedArray[Byte], ks : Int, t : Bytes, s : Int, n : Int) -> Bool = "mbc_same"
+
+///|
+/// clen of t[s:e]
+#borrow(t)
+extern "C" fn c_clen(t : Bytes, s : Int, e : Int) -> Int = "mbc_clen"
+
+///|
+/// line_starts of t into out (empty: only counted), how many
+#borrow(t, out)
+extern "C" fn c_line_starts(t : Bytes, out : FixedArray[Int]) -> Int = "mbc_line_starts"
+
+///|
+/// blank of t[start:start + n], into out
+#borrow(t, out)
+extern "C" fn c_blank(t : Bytes, start : Int, n : Int, out : FixedArray[Byte]) -> Unit = "mbc_blank"
+
+///|
 extern "C" fn c_cpu_count() -> Int = "mbc_cpu_count"
 
 ///|
@@ -287,3 +327,6 @@ extern "C" fn c_chdir(path : Bytes) -> Int = "mbc_chdir"
 ///|
 /// A process's slot free again, its end taken
 extern "C" fn c_release(slot : Int) -> Unit = "mbc_release"
+
+///|
+extern "C" fn c_wait_short() -> Unit = "mbc_wait_short"

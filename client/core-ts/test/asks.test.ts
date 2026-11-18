@@ -36,6 +36,7 @@ test("still_fail_links_open_in_the_app_and_others_do_not", () => {
   assert.deepEqual(linkTarget("https://app.still.fail/w/ws1/s/st1/login/l-3", cloud), { opens: "login", workspace: "ws1", station: "st1", login: "l-3" });
   assert.equal(linkTarget("https://app.still.fail/w/ws1/s/st1/login/", cloud), null);
   assert.deepEqual(linkTarget("https://app.still.fail/w/ws1/s/st1/services/j-1", cloud), { opens: "service", workspace: "ws1", station: "st1", service: "j-1" });
+  assert.deepEqual(linkTarget("https://app.still.fail/w/ws1/s/st1/terminal/term-1", cloud), { opens: "terminal", workspace: "ws1", station: "st1", terminal: "term-1" });
   assert.equal(linkTarget("https://app.still.fail/w/ws1/s/st1/services/", cloud), null);
   assert.deepEqual(linkTarget("https://app.still.fail/o/ws1/st1/k?history=k%3A2&entry=12", cloud), { opens: "item", workspace: "ws1", station: "st1", session: "k", service: null, history: "k:2", entry: 12 });
   assert.deepEqual(linkTarget("https://app.still.fail/w/ws1/s/st1/chats/c?history=k", cloud), { opens: "chat", workspace: "ws1", station: "st1", chat: "c", history: "k" });

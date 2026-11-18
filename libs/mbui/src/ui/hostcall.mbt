@@ -240,6 +240,8 @@ struct FakeHost {
   /// the device's gallery as the test says it is now (Tester::gallery; None: it gave none, the app not let read one),
   /// and the reads of it asked (files.mbt)
   mut gallery : Array[@hostapi.GalleryPhoto]?
+  mut gallery_limited : Bool
+  mut gallery_frame : Int
   gallery_reads : Array[FakeGalleryRead]
   /// what its players ask of the app's bytes and let go of, not taken yet (Tester::view_reads, view_lets_go), and what
   /// the app gave, piece by piece: the view, the read, how many bytes, the whole's length, whether more comes
@@ -958,7 +960,7 @@ let outside_view = 2
 let outside_pick = 3
 
 ///|
-/// The gallery's photos read (@hostapi.GalleryRead's id).
+/// The gallery's photos read (@hostapi.GalleryRead's id), or the library changed (id 0).
 let outside_gallery = 4
 
 ///|
@@ -1245,6 +1247,10 @@ fn on_outside_now(kind : Int, id : Int, state : Int) -> Unit {
   }
   if kind == outside_streamed {
     streams_said(id)
+    return
+  }
+  if kind == outside_gallery && id == 0 {
+    gallery_changed.set(gallery_changed.untracked() + 1)
     return
   }
   if kind == outside_stood {

@@ -273,7 +273,10 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
   let measured : Map[String, Bool] = Map([])
   let home : Map[String, Bool] = Map([])
   // (Home first: the shell's ways are given there, those it does not read on the first screen that does)
-  let modes = corner_modes.filter(fn(m) { m == "home" }) + corner_modes.filter(fn(m) { m != "home" })
+  // These fixtures differ only in their pick topic. The real workspace replaces it with the same value.
+  // The test below holds their work to newchat-model exactly, whose opening and changes have their bars here.
+  let distinct = corner_modes.filter(fn(m) { m != "newchat-station-models" && m != "newchat-station-empty" })
+  let modes = distinct.filter(fn(m) { m == "home" }) + distinct.filter(fn(m) { m != "home" })
   for mode in modes {
     let (opening, rows) = real_size_screen(mode, win, fn(way) {
       real_size_given_here(mode, way, measured, home)
@@ -383,6 +386,17 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
     println("real_size_bindings_known_wbtest.mbt, written so:\n" + bindings_lines.join("\n"))
   }
   assert_eq(faults, [])
+}
+
+///|
+test "the station filter fixtures become the same model panel on the real workspace and do exactly the same work" {
+  for win in real_size_windows {
+    let given = fn(way : String) { !real_size_shell_ways.contains(way) && !real_size_chat_ways.contains(way) }
+    let expected = real_size_screen("newchat-model", win, given)
+    for mode in ["newchat-station-models", "newchat-station-empty"] {
+      assert_eq(real_size_screen(mode, win, given), expected, msg="\{win.0} \{mode}")
+    }
+  }
 }
 
 ///|

@@ -26,6 +26,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 mod adb;
 mod keep;
+mod mesh;
 mod log;
 
 const MDNS_SERVICE: &str = "stillfail";
@@ -488,6 +489,7 @@ type Accepted = Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiv
 /// held unanswered, not even their handshake (`iroh.holdIncoming`), and those held.
 #[derive(Default)]
 struct Kept {
+    mesh: mesh::Scopes,
     accepted: Accepted,
     keepers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// The relays it was bound with, and those of them it is home on now (one removed is home no more: a keeper is
@@ -508,10 +510,16 @@ const PIPE_FAILED: u32 = 0xFFFF_FFFD;
 /// A frame no longer than this (the longest a read gives, and what the other side sends).
 const PIPE_MOST: u32 = 1 << 20;
 
+/// A WebSocket frame as `ws.next` gives it and `ws.send` takes it.
+enum WsFrame {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
 #[derive(Clone)]
 enum Handle {
     Response(Arc<tokio::sync::Mutex<reqwest::Response>>),
-    Ws { incoming: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>>>, outgoing: tokio::sync::mpsc::UnboundedSender<String> },
+    Ws { incoming: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<WsFrame, String>>>>, outgoing: tokio::sync::mpsc::UnboundedSender<WsFrame> },
     /// A socket to the device's own port, or a station's session on the phone's adb (`adb.open`).
     Tcp { read: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncRead + Send + Unpin>>>, write: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>> },
     Endpoint(Endpoint, Arc<Kept>),
@@ -2858,14 +2866,18 @@ impl Inner {
                 let Handle::Ws { incoming, .. } = self.handle(id_of(&a)?)? else { return Err("not a socket".into()) };
                 let frame = incoming.lock().await.recv().await;
                 match frame {
-                    Some(Ok(text)) => Ok(Answer::json(json!({ "text": text }))),
+                    Some(Ok(WsFrame::Text(text))) => Ok(Answer::json(json!({ "text": text }))),
+                    // A binary frame (Feishu's long connection speaks protobuf): its bytes, said `binary`.
+                    Some(Ok(WsFrame::Binary(b))) => Ok(Answer::bytes(json!({ "binary": true }), b)),
                     Some(Err(e)) => Err(e),
                     None => Ok(Answer::json(json!({ "end": true }))),
                 }
             }
             "ws.send" => {
                 let Handle::Ws { outgoing, .. } = self.handle(id_of(&a)?)? else { return Err("not a socket".into()) };
-                outgoing.send(str_of(&a, "text")?.to_string()).map_err(|_| "the socket is closed".to_string())?;
+                // Bytes given: a binary frame; else `text`.
+                let frame = match bytes { Some(b) => WsFrame::Binary(b), None => WsFrame::Text(str_of(&a, "text")?.to_string()) };
+                outgoing.send(frame).map_err(|_| "the socket is closed".to_string())?;
                 Ok(Answer::json(json!({})))
             }
             "storage.get" => {
@@ -3036,9 +3048,42 @@ impl Inner {
                 Ok(Answer::json(json!({})))
             }
             "iroh.bind" => self.bind(&a, bytes.unwrap_or_default()).await,
+            "iroh.meshSubscribe" | "iroh.meshUnsubscribe" => {
+                let Handle::Endpoint(_, kept) = self.handle(id_of(&a)?)? else { return Err("not an endpoint".into()) };
+                let socket = a.get("socket").and_then(Value::as_u64).ok_or("missing subscription socket")?;
+                if op == "iroh.meshUnsubscribe" { kept.mesh.unsubscribe(socket); }
+                else {
+                    let Handle::Tcp { write, .. } = self.handle(socket)? else { return Err("not a control socket".into()) };
+                    kept.mesh.subscribe(socket, write)?;
+                }
+                Ok(Answer::json(json!({})))
+            }
+            "iroh.meshAttachLeaf" | "iroh.meshUseLeaf" | "iroh.meshDetachLeaf" => {
+                let Handle::Endpoint(endpoint,kept)=self.handle(id_of(&a)?)? else {return Err("not an endpoint".into())};
+                if op=="iroh.meshAttachLeaf" {
+                    let connection=a.get("connection").and_then(Value::as_u64).ok_or("missing leaf connection")?;
+                    let Handle::Conn(connection)=self.handle(connection)? else {return Err("not a connection".into())};
+                    Ok(Answer::json(kept.mesh.attach_leaf(&endpoint,connection,&a).await?))
+                } else {
+                    if op=="iroh.meshUseLeaf" {kept.mesh.use_leaf(&endpoint,&a).await?;} else {kept.mesh.detach_leaf(&a).await?;}
+                    Ok(Answer::json(json!({})))
+                }
+            }
+            "iroh.meshConfigure" | "iroh.meshRemove" => {
+                let (endpoint,kept)=match self.handle(id_of(&a)?)? {
+                    Handle::Endpoint(endpoint,kept)=>(endpoint,kept),
+                    _=>return Err("not an endpoint".into()),
+                };
+                if op=="iroh.meshRemove" {
+                    kept.mesh.remove(&a).await?;
+                    Ok(Answer::json(json!({})))
+                } else {
+                    Ok(Answer::json(kept.mesh.configure_root(&endpoint,&a).await?))
+                }
+            }
             "iroh.connect" => {
-                let endpoint = match self.handle(id_of(&a)?)? {
-                    Handle::Endpoint(endpoint, _) => endpoint,
+                let (endpoint, kept) = match self.handle(id_of(&a)?)? {
+                    Handle::Endpoint(endpoint, kept) => (endpoint, kept),
                     Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
                     _ => return Err("not an endpoint".into()),
                 };
@@ -3051,7 +3096,10 @@ impl Inner {
                     let disabled: Vec<RelayUrl> = disabled.iter().map(|u| relay_url(u.as_str().unwrap_or_default())).collect::<Result<_, _>>()?;
                     options = options.with_disabled_relays(disabled);
                 }
-                let addr = endpoint_addr(said)?;
+                let mut addr = endpoint_addr(said)?;
+                if let Some(scope) = said.get("meshScope").and_then(Value::as_str) {
+                    addr.addrs.insert(kept.mesh.address(scope, addr.id).await?);
+                }
                 let connecting = endpoint.connect_with_opts(addr, &bytes.unwrap_or_default(), options).await.map_err(err)?;
                 let conn = connecting.await.map_err(err)?;
                 Ok(Answer::json(json!({ "id": self.keep_conn(conn) })))
@@ -3127,6 +3175,7 @@ impl Inner {
             }
             "iroh.close" => {
                 let id = id_of(&a)?;
+                if let Ok(Handle::Endpoint(_,kept))=self.handle(id) { kept.mesh.clear().await; }
                 let forget = a.get("forget").and_then(Value::as_bool).unwrap_or(false);
                 let endpoint = {
                     let mut handles = self.handles.lock().unwrap();
@@ -3650,21 +3699,25 @@ impl Inner {
                 tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector).await.map_err(ws_error)?
             }
         };
+        // `binary`: its binary frames given too (`{binary: true}` and their bytes); else they are let go, as a socket
+        // that speaks only text takes `ws.next`'s other answers for its end.
+        let binary = a.get("binary").and_then(Value::as_bool).unwrap_or(false);
         let (incoming_tx, incoming) = tokio::sync::mpsc::unbounded_channel();
-        let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<WsFrame>();
         // One task owns the socket: reading is also what answers the server's pings; what is to be sent goes between.
         tokio::spawn(async move {
             let mut socket = socket;
             loop {
                 tokio::select! {
                     message = socket.next() => match message {
-                        Some(Ok(Message::Text(text))) => { let _ = incoming_tx.send(Ok(text.as_str().to_owned())); }
+                        Some(Ok(Message::Text(text))) => { let _ = incoming_tx.send(Ok(WsFrame::Text(text.as_str().to_owned()))); }
+                        Some(Ok(Message::Binary(b))) if binary => { let _ = incoming_tx.send(Ok(WsFrame::Binary(b.to_vec()))); }
                         Some(Ok(Message::Close(_))) | Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
                         Some(Ok(_)) => {}
                         Some(Err(e)) => { let _ = incoming_tx.send(Err(ws_error(e))); return; }
                     },
                     text = outgoing_rx.recv() => match text {
-                        Some(text) => { if let Err(e) = socket.send(Message::text(text)).await { let _ = incoming_tx.send(Err(ws_error(e))); return; } }
+                        Some(frame) => { let m = match frame { WsFrame::Text(t) => Message::text(t), WsFrame::Binary(b) => Message::binary(b) }; if let Err(e) = socket.send(m).await { let _ = incoming_tx.send(Err(ws_error(e))); return; } }
                         // The handle went (ws.close): the socket is closed.
                         None => { let _ = socket.close(None).await; return; }
                     },
@@ -3686,7 +3739,10 @@ impl Inner {
         }));
         let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
         mark_with_dscp(a.get("dscp"))?;
+        let kept = Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), ..Kept::default() });
         let mut builder = Endpoint::builder(Minimal)
+            .add_custom_transport(kept.mesh.hub.clone())
+            .path_selector(Arc::new(mesh_transport::selection::Selector::new(kept.mesh.hub.clone())))
             .secret_key(key)
             .alpns(alpns)
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
@@ -3715,7 +3771,7 @@ impl Inner {
                 .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
         }
         let endpoint = builder.bind().await.map_err(err)?;
-        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), ..Kept::default() }))) })))
+        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, kept)) })))
     }
 
     /// An account's database: opened, a statement run, its rows, closed, its file removed.

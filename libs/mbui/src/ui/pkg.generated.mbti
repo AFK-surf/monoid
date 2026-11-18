@@ -212,7 +212,11 @@ pub let frame_period_default : Double
 
 pub fn full_screen() -> Bool
 
+pub fn gallery_changes() -> Int
+
 pub fn gallery_read() -> GalleryRead?
+
+pub fn gallery_reads_told() -> Int
 
 pub fn gaps_steady_known(Array[(String, Int32)]) -> Unit
 
@@ -364,6 +368,8 @@ pub let key_in_ctrl : Int32
 pub let key_in_meta : Int32
 
 pub let key_in_shift : Int32
+
+pub fn key_modifiers() -> Int32
 
 pub fn key_of_char(Char) -> Int32
 
@@ -571,6 +577,8 @@ pub fn pointing() -> Pointing
 
 pub let press_enter : Int32
 
+pub fn press_rules_now() -> PressRules
+
 pub let press_slop : Double
 
 pub let press_space : Int32
@@ -650,6 +658,8 @@ pub fn set_motion_chosen(Bool?) -> Unit
 pub fn set_platform(Int32?) -> Unit
 
 pub fn set_pointing(Pointing?) -> Unit
+
+pub fn set_press_rules(PressRules) -> Unit
 
 pub fn set_tree_theme(() -> Theme) -> Unit
 
@@ -2436,6 +2446,12 @@ pub(all) struct Press {
   mods : Int32
 }
 
+pub(all) struct PressRules {
+  finger : Double
+  mouse : Double
+  large_from : Double?
+}
+
 #derive(Eq, @debug.Debug)
 pub(all) enum PressStep {
   Down(Double, Double, (Double, Double, Double, Double)?)
@@ -2904,6 +2920,7 @@ pub fn Tester::face_wider(Self, Int32, Double) -> Unit
 pub fn Tester::failed_images(Self) -> Array[Int32]
 pub fn Tester::failed_images_drawn(Self) -> Array[Int32]
 pub fn Tester::family_given(Self, Int32) -> String
+pub fn Tester::fanout_faults(Self) -> Array[String]
 pub fn Tester::field_words(Self) -> String
 pub fn Tester::film(Self, String, fps? : Double, max? : Int32, draw~ : (Self) -> Bool, put~ : (Int32) -> Bool) -> FilmRun
 pub fn Tester::film_frame(Self, String, Int32, max? : Int32) -> (Bool, Array[String])
@@ -2939,7 +2956,7 @@ pub fn Tester::frames_on(Self) -> Int32
 pub fn Tester::frames_owed(Self) -> Unit
 pub fn Tester::frames_paced(Self) -> Double
 pub fn Tester::frames_unjudged(Self, Bool) -> Unit
-pub fn Tester::gallery(Self, Array[@hostapi.GalleryPhoto]) -> Unit
+pub fn Tester::gallery(Self, Array[@hostapi.GalleryPhoto], limited? : Bool, changed? : Bool) -> Unit
 pub fn Tester::gap_faults(Self) -> Array[String]
 pub fn Tester::get(Self, @view.Role, label? : String, has? : String, checked? : @view.Check, selected? : Bool, expanded? : Bool, disabled? : Bool, within? : SemNode) -> SemNode raise
 pub fn Tester::glyph_box(Self, Double, Double) -> Unit
@@ -2952,6 +2969,7 @@ pub fn Tester::hand_moves(Self) -> Array[String]
 pub fn Tester::haptics(Self) -> Array[Haptic]
 pub fn Tester::height_faults(Self) -> Array[String]
 pub fn Tester::hold_drag(Self, Double, Double, Double, Double, steps? : Int32) -> Unit
+pub fn Tester::hold_faults(Self) -> Array[String]
 pub fn Tester::hold_files(Self, (Double, Double)?) -> Unit
 pub fn Tester::hold_mods(Self, Int32) -> Unit
 pub fn Tester::hold_move(Self, Double, Double) -> Unit
@@ -3079,6 +3097,7 @@ pub fn Tester::said(Self) -> String
 pub fn Tester::scroll_all_to_end(Self) -> Int32
 pub fn Tester::scroll_to(Self, Int32) -> Unit
 pub fn Tester::scroll_to_end(Self) -> Unit
+pub fn Tester::seen_bounds_of(Self, SemNode) -> (Double, Double, Double, Double)
 pub fn Tester::semantics(Self) -> Array[SemNode]
 pub fn Tester::semantics_dump(Self) -> String
 pub fn Tester::set_a11y(Self, Bool) -> Unit
@@ -3086,6 +3105,7 @@ pub fn Tester::set_app_said(Self, String, String) -> Unit
 pub fn Tester::set_av1(Self, Bool) -> Unit
 pub fn Tester::set_dark(Self, Bool) -> Unit
 pub fn Tester::set_env(Self, String, String) -> Unit
+pub fn Tester::set_fanout_limit(Self, Int32) -> Unit
 pub fn Tester::set_font_scale(Self, Double) -> Unit
 pub fn Tester::set_frame_period(Self, Double) -> Unit
 pub fn Tester::set_frame_times(Self, Array[Double]) -> Unit
@@ -3170,6 +3190,7 @@ pub fn Tester::tree_room_faults(Self) -> Array[String]
 pub fn Tester::turn_of(Self, String) -> Double?
 pub fn Tester::type_text(Self, String) -> Unit
 pub fn Tester::ui_face_wider(Self, Double) -> Unit
+pub fn Tester::untracked_read_faults(Self) -> Array[String]
 pub fn Tester::update_asked(Self) -> Array[String]
 pub fn Tester::view_answers(Self, Int32) -> Array[(Int32, Int32, Double)]
 pub fn Tester::view_given(Self, Int32, Int32) -> (Int32, Bool)
@@ -3184,6 +3205,7 @@ pub fn Tester::views(Self) -> Array[String]
 pub fn Tester::visible(Self) -> (Int32, Int32)
 pub fn Tester::wanted_after(Self) -> Double
 pub fn Tester::wanted_why(Self) -> String
+pub fn Tester::waterfall_faults(Self) -> Array[String]
 pub fn Tester::ways_set_out(Self) -> Array[@view.WaySet]
 pub fn Tester::wheel(Self, Double, Double, Double) -> Unit
 pub fn Tester::wheel_kept(Self) -> Bool

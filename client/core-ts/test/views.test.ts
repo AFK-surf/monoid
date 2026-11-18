@@ -765,7 +765,7 @@ test("a_models_own_window_is_said_of_that_model_alone", () => {
   const spent = Object.fromEntries(models(ov, 0).map((m: J) => [m.model, m.spent?.until ?? null]));
   assert.deepEqual(spent, { "claude-fable-5-1": 9000, "claude-opus-5-5": null });
   assert.deepEqual(attention(ov, { profile: "a", model: "claude-opus-5-5" }, 0), []);
-  assert.deepEqual(attention(ov, { profile: "a", model: "claude-fable-5-1" }, 0), [{ kind: "quota", text: "每周 · Fable剩余 0%", more: "即将刷新", quota: { left: 0, mark: "Fable", level: "red", until: 9000 } }]);
+  assert.deepEqual(attention(ov, { profile: "a", model: "claude-fable-5-1" }, 0), [{ kind: "quota", text: "每周 · Fable剩余 0%", more: "即将刷新", quota: { left: 0, mark: "Fable", level: "red", until: 9000, refillShort: "0m" } }]);
   const agyWin = [
     { label: "5 小时 · Gemini", usedPercent: 10, resetsAt: 9000, scope: "gemini" },
     { label: "每周 · Gemini", usedPercent: 20, resetsAt: 9000, scope: "gemini" },
@@ -3370,6 +3370,18 @@ test("what_a_chats_agent_sent_to_slack_shows_after_the_message_it_followed_witho
     // Someone none of the station's agents heard from: by their Slack id.
     [2, "@U7 补一句", true],
   ]);
+  // A chat_post the station refused, to an address not of its session (`CHT/…` for `CHAT/…`), went nowhere: it is not
+  // shown as sent to Slack. One refused on its way to a thread of its session still says it failed.
+  t.data.putItems("transcript", "ws/a", "k", [
+    [8, call("mcp__stillfail__chat_post", { to: "CHT/1.0", text: "x" }, "1970-01-01T00:00:06Z", "c5")],
+    [9, { at: "1970-01-01T00:00:06Z", kind: "tool_result", text: "CHT/1.0 is not a conversation of this session. Its threads: CHAT/1.0", ok: false, callId: "c5" }],
+    [10, call("mcp__stillfail__chat_post", { to: "C0OPS/1727.0001", text: "再说一句" }, "1970-01-01T00:00:07Z", "c6")],
+    [11, { at: "1970-01-01T00:00:07Z", kind: "tool_result", text: "Slack refused it", ok: false, callId: "c6" }],
+  ]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { connect: "ember" }), threads: [thread(7, ["k"], now), { ...thread(8, ["k"], now), surface: "slack:T1", channel: "C0OPS", threadTs: "1727.0001" }], turns: [] });
+  await t.read(u, 1);
+  const shown = sent(u.value).map((s: J) => [s.text, s.failed]);
+  assert.deepEqual(shown.filter(([text]: J[]) => text === "x" || text === "再说一句"), [["再说一句", true]]);
 });
 
 test("a_chat_updates_a_slack_mention_when_another_agent_learns_the_name", async () => {
@@ -4214,4 +4226,27 @@ test("subscribing_a_held_topic_views_read_sends_its_value_and_makes_none_of_them
   assert.equal(record.value.stations[0].name, "工作室");
   assert.ok(t.router.computed > computed);
   assert.equal(chats.value.days[0].items[0].stationName, "工作室");
+});
+
+test("a terminal reminds the opener even where two members have the same name", async () => {
+  const t = setup();
+  const topic = { topic: "longJobs", scope: "ws" };
+  const pane = ui();
+  t.set(workspace(), { ...oneStation(), members: [
+    { sub: "s1", name: "Ann", email: "me@x.com" },
+    { sub: "s2", name: "Ann", email: "someone@x.com" },
+  ] });
+  t.subscribe(1, topic);
+  assert.ok(t.started().some((source) => source.topic === "terminals" && source.station === "ws/st"));
+  t.set(link("ws/st"), { state: "online" });
+  const base = { by: "Ann", cwd: "/work", at: t.host.nowMs() - DAY_MS, looking: [] };
+  t.set({ topic: "terminals", station: "ws/st" }, { open: true, known: true, outdated: false, terminals: [
+    { ...base, id: "mine", byEmail: "me@x.com" },
+    { ...base, id: "theirs", byEmail: "someone@x.com" },
+    { ...base, id: "old" },
+  ] });
+  await t.read(pane, 1);
+  const result = whole(t, topic);
+  assert.deepEqual(result.ids, ["ws/st/terminal:mine"]);
+  assert.equal(result.otherCount, 2);
 });

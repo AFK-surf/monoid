@@ -4,7 +4,7 @@
 // up on this Mac; this waits (WAIT seconds, default 1800) for a person to grant it there, then measures a still and a
 // moving screen (the pointer driven over the view), and keeps the first decoded frame of each as a PNG.
 //
-//   node station/side/screen-e2e.ts    (a worktree with `pnpm run build` done in station/ and `pnpm run build:cloud`
+//   node station/side/screen-e2e.ts    (a worktree with `pnpm run build:node` done in station/ and `pnpm run build:cloud`
 //                                       at the top, the iroh dev relay on :3340; PORT, default 8897, and PORT+1..+4
 //                                       free; run where the person is logged in: the job goes in their GUI session)
 //

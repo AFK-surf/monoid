@@ -16,7 +16,7 @@ function browser(platform, clipboard) {
     if (name === 'getShaderParameter' || name === 'getProgramParameter') return () => true;
     return () => ({});
   } });
-  const canvas = { ...element(), width: 0, height: 0, getContext: () => gl,
+  const canvas = { ...element(), width: 0, height: 0, getContext: () => gl, setPointerCapture() {},
     getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }) };
   const ime = element();
   const document = { createElement: () => ({ ...element(), getContext: () => ({}) }),
@@ -39,7 +39,35 @@ function browser(platform, clipboard) {
       win.dispatch('keydown', event);
       return { prevented: event.defaultPrevented, keys: [...keys] };
     },
+    release(key, mods = {}) {
+      keys.length = 0;
+      win.dispatch('keyup', { target: canvas, key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods });
+      return [...keys];
+    },
+    pointer(mods = {}) {
+      keys.length = 0;
+      canvas.dispatch('pointerdown', { pointerType: 'mouse', pointerId: 1, button: 0, clientX: 10, clientY: 10,
+        ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, preventDefault() {}, ...mods });
+      return [...keys];
+    },
+    blur() { keys.length = 0; win.dispatch('blur', {}); return [...keys]; },
   };
+}
+
+for (const [platform, key, flag, bit] of [['MacIntel', 'Meta', 'metaKey', 8], ['Win32', 'Control', 'ctrlKey', 2]]) {
+  test(`${platform}: modifier-only keys and pointer focus tell the app what is held and released`, () => {
+    const b = browser(platform);
+    assert.deepEqual(b.press('page', key, { [flag]: true }), { prevented: false, keys: [[0, bit]] });
+    assert.deepEqual(b.release(key), [[0, 0]]);
+    // A modifier already held as the browser gets a pointer press is told too, but an unchanged one is not repeated.
+    assert.deepEqual(b.pointer({ [flag]: true }), [[0, bit]]);
+    assert.deepEqual(b.pointer({ [flag]: true }), []);
+    assert.deepEqual(b.blur(), [[0, 0]]);
+    assert.deepEqual(b.pointer(), []);
+    // The browser can receive a normal key before it sees the held modifier's own keydown.
+    assert.deepEqual(b.press('page', 'Enter', { [flag]: true }), { prevented: true, keys: [[7, bit]] });
+    assert.deepEqual(b.pointer(), [[0, 0]]);
+  });
 }
 
 test('a clipboard PNG over 8 MiB is read as an attachment; the file bound still applies', async () => {

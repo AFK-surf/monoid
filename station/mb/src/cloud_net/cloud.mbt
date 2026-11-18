@@ -41,6 +41,8 @@ pub(all) struct CloudView {
   stillfail_relays : () -> Array[String]?
   /// still.fail's relays (`Cloud.relays`: `relay_urls`, else `relay_url`; what is no URL left out).
   relays : () -> Array[String]
+  /// Registered global mesh relays as last accepted from the plane.
+  mesh_relays : () -> Array[Json]
   /// Every workspace the station is in now, its home one first.
   memberships : () -> Array[Membership]
   membership : (String) -> Membership?
@@ -233,7 +235,7 @@ fn js_slice(s : String, n : Int) -> String {
 /// The cloud's state as cloud.json holds it, no lock pinned: its rosters are the plane's word (`Cloud` with none).
 pub struct StateCloud {
   /// cloud.json's object; None before it is enrolled.
-  state : Map[String, Json]?
+  mut state : Map[String, Json]?
   mut peers_current : Bool
   told : Listeners
 }
@@ -247,6 +249,27 @@ pub fn StateCloud::new(state : Json?) -> StateCloud {
   let c = { state: st, peers_current: false, told: Listeners::new() }
   c.peers_current = st is Some(_) && !c.removed()
   c
+}
+
+///|
+/// cloud.json read again (another process enrolled it, or its keeper read it anew): the state it holds now, its
+/// listeners told where it is another object.
+pub fn StateCloud::reset(self : StateCloud, state : Json?) -> Unit {
+  let st = match state {
+    Some(Object(m)) => Some(m)
+    _ => None
+  }
+  let same = match (self.state, st) {
+    (Some(a), Some(b)) => physical_equal(a, b)
+    (None, None) => true
+    _ => false
+  }
+  if same {
+    return
+  }
+  self.state = st
+  self.peers_current = st is Some(_) && !self.removed()
+  self.told.tell()
 }
 
 ///|
@@ -428,6 +451,10 @@ pub fn StateCloud::view(self : StateCloud) -> CloudView {
           _ => None
         }
       None => None
+    },
+    mesh_relays: () => match self.state {
+      Some(m) => array_of(m.get("mesh_relays")).unwrap_or([])
+      None => []
     },
     relays: () => self.relays(),
     memberships: () => self.memberships(),

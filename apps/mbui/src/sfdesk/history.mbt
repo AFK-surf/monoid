@@ -54,6 +54,38 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
       h.box(fn(k) {
         @sf.style_node(k, fn() { @sf.keys_row() }, in_row=true)
         k.shrink(Is(0.0)) |> ignore
+        // 停止 while the agent works (or waits to): its turn stopped (session.stop, as its card's stop and ⌘.), a chip
+        // as 只看收发 and 详情 are, faded while asked; gone as it rests (2026-11-14: 「右侧需要有一个停止按钮」; not the
+        // panel's bar, which is the panel's own, nor the card's round stop, which did not match these chips: 左子健,
+        // 2026-11-17)
+        let working = fn() {
+          match text(a(), "status") {
+            "running" | "queued" => true
+            _ => false
+          }
+        }
+        let stop_key = "stop/" + station + "/" + key
+        k.show(at_once=true, working, fn(e) {
+          let stop = @sf.press_chip_node(
+            e,
+            fn() { @sf.t("web-pages.chat.stop") },
+            fn() {
+              if !@sfbase.doing(stop_key) {
+                @sfbase.act(
+                  src,
+                  @sf.t("web-pages.chat.stop"),
+                  stop_key,
+                  "session.stop",
+                  { "station": Json::string(station), "key": Json::string(key) },
+                  done=@sf.t("web-pages.chat.stopAsked"),
+                )
+              }
+            },
+            icon="stop",
+            disabled=fn() { @sfbase.doing(stop_key) },
+          )
+          @sf.tip_node(tips, stop, fn() { @sf.t("web-pages.chat.stopTurn") }) |> ignore
+        })
         // 只看收发, its ground the picked one's while it is on
         let io = @sf.toggle_chip_node(
           k,

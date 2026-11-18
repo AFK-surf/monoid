@@ -278,6 +278,7 @@ fn cmd_said(args : Array[String]) -> Unit {
           Some("skipped test") => skipped = skipped + 1
           Some("") => ()
           Some(m) => {
+            let m = m.replace_all(old="\n", new="\n  ")
             failed.push("[\{pkg}] test \{key} (\{name(f, i)}) failed: \{m}")
             failures = failures + 1
           }

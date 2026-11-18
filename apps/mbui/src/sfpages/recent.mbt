@@ -6,7 +6,7 @@
 // while some are chosen a tap anywhere on a tile chooses it or not; the tiles under the strip give way to 添加 n 个
 // (recent_adding), which puts them in the message in that order.
 // Without leave to read the gallery the strip's last tile asks for it (显示最近照片); with only the photos chosen for
-// the app (Android 14 on), it chooses more (选择更多照片). A host with no gallery (macOS, iOS, Windows) keeps the
+// the app, it chooses more (选择更多照片). A host with no gallery keeps the
 // tile, which says so. The strip scrolls sideways under the finger (what scrolls across: its offset gliding on once
 // let go). Made as nodes of ＋'s panel (attach.mbt): what is read of the gallery taken as the host tells it.
 
@@ -24,14 +24,11 @@ let recent_step : Double = 98.0
 /// The strip's state while the app runs.
 priv struct Recent {
   /// the gallery's answers when last read
-  mut answers : Int
+  mut answers : (Int, Int, @hostapi.GalleryAccess)
   access : @signals.Signal[@hostapi.GalleryAccess]
   mut reading : @ui.GalleryRead?
   /// how many reads were begun (what takes a read follows it: recent_reads_node)
   reading_said : @signals.Signal[Int]
-  /// what a read gave, taken as its host said it and not yet put in the strip; how many were taken
-  mut took : Array[@hostapi.GalleryPhoto]?
-  mut took_n : Int
   /// read again once the read under way is taken (asked for while it read)
   mut again : Bool
   photos : @sf.LiveArray[@hostapi.GalleryPhoto]
@@ -41,12 +38,10 @@ priv struct Recent {
 
 ///|
 let recent : Recent = {
-  answers: -1,
+  answers: (-1, -1, NoGallery),
   access: @signals.signal(NoGallery),
   reading: None,
   reading_said: @signals.signal(0),
-  took: None,
-  took_n: 0,
   again: false,
   photos: @sf.LiveArray::new(),
   chosen: @sf.LiveArray::new(),
@@ -54,10 +49,9 @@ let recent : Recent = {
 
 ///|
 fn recent_reset() -> Unit {
-  recent.answers = -1
+  recent.answers = (-1, -1, NoGallery)
   recent.access.set(NoGallery)
   recent.reading = None
-  recent.took = None
   recent.again = false
   recent.photos.clear()
   recent.chosen.clear()
@@ -136,13 +130,14 @@ pub fn recent_opened() -> Unit {
 /// The gallery read as it is now; asked while a read is under way, read again once that one is taken (one at a time,
 /// none let go of unread).
 fn recent_read() -> Unit {
-  recent.answers = @hostapi.gallery_answers()
+  recent.answers = recent_gallery_state()
   if recent.reading is Some(_) {
     recent.again = true
     return
   }
-  recent.access.set(@hostapi.gallery_access())
-  recent.reading = match recent.access.get() {
+  let access = recent.answers.2
+  recent.access.set(access)
+  recent.reading = match access {
     Whole | Chosen => @ui.gallery_read()
     _ => {
       recent.photos.replace([])
@@ -153,16 +148,17 @@ fn recent_read() -> Unit {
 }
 
 ///|
-/// While ＋'s sheet holds node `v`: the gallery read again as the system answers an ask of it (its leave given or
-/// refused, told by no event of the host's: looked at again as the app comes back in front of the system's question,
-/// and as `v` is made), a read taken as its host tells it is read (@ui.GalleryRead::photos, a signal), the photos
-/// newest at `src`'s now put in the strip.
+/// Follow host events and check permissions again when the app returns from Settings.
+fn recent_gallery_state() -> (Int, Int, @hostapi.GalleryAccess) {
+  @ui.app_focused() |> ignore
+  (@ui.gallery_changes(), @hostapi.gallery_answers(), @hostapi.gallery_access())
+}
+
+///|
+/// Refresh the strip when access or the library changes while the sheet is open.
 fn recent_reads_node(v : @view.View, src : Source) -> Unit {
   v.reacts(
-    fn() {
-      @ui.app_focused() |> ignore
-      @hostapi.gallery_answers()
-    },
+    recent_gallery_state,
     fn(answers) {
       if answers != recent.answers {
         recent_read()
@@ -170,37 +166,17 @@ fn recent_reads_node(v : @view.View, src : Source) -> Unit {
     },
   )
   v.reacts(
-    fn() {
-      recent.reading_said.get() |> ignore
-      // (taken as it is told: a read's photos are the host's to give once)
-      match recent.reading {
-        Some(r) =>
-          match r.photos() {
-            Some(all) => {
-              recent.reading = None
-              recent.took = Some(all)
-              recent.took_n += 1
-            }
-            None => ()
-          }
-        None => ()
-      }
-      recent.took_n
-    },
+    fn() { (recent.reading_said.get(), @ui.gallery_reads_told()) },
     fn(_) {
-      match recent.took {
-        Some(all) => {
-          recent.took = None
-          recent.photos.replace(latest_photos(all, ((src.now)() / 1000.0).to_int64(), recent_most))
-          // (one chosen and gone from the gallery since: not chosen)
-          recent.chosen.retain(fn(s) { recent.photos.iter().any(fn(p) { p.src == s }) })
-          @hostapi.log("recent photos: \{recent.photos.length()} of \{all.length()}")
-          if recent.again {
-            recent.again = false
-            recent_read()
-          }
-        }
-        None => ()
+      guard recent.reading is Some(read) && read.photos() is Some(all) else { return }
+      recent.reading = None
+      recent.photos.replace(latest_photos(all, ((src.now)() / 1000.0).to_int64(), recent_most))
+      // Keep selections for photos that are still in the gallery.
+      recent.chosen.retain(fn(s) { recent.photos.iter().any(fn(p) { p.src == s }) })
+      @hostapi.log("recent photos: \{recent.photos.length()} of \{all.length()}")
+      if recent.again {
+        recent.again = false
+        recent_read()
       }
     },
   )

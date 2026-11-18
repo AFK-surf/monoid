@@ -58,9 +58,6 @@ pub(all) struct Wide {
   /// where the move has got to this frame: the sidebar's top row's height, its frosted bands' ground (0 the sidebar's,
   /// 1 the closed bar's), the lists' marks on the rail (0 gone, 1 in)
   mut brand_h : Double
-  /// the room the lists leave for it (list_top_h), and how far the band over them is to the closed bar's for that
-  mut list_top : Double
-  mut list_band : Double
   mut band : Double
   mut mark : Double
   /// the page's bars' padding at its left (clear of the closed bar) and their margins while the folded sidebar is shown
@@ -69,8 +66,6 @@ pub(all) struct Wide {
   mut bar_pl : Double
   mut bar_ml : Double
   mut bar_mr : Double
-  /// where the page starts (the column the block takes, where its move has got)
-  mut page_from : Double
   /// the chat last opened here by the frame (the core's last chat taken once per workspace)
   landed : @signals.Signal[String]
   /// the rail's menu (from its right click): the place right clicked ("" the rail), where; a place dragged to another
@@ -134,14 +129,11 @@ pub let wide : Wide = {
   in_bar: false,
   closed: @signals.signal(false, same=fn(a, b) { a == b }),
   brand_h: 0.0,
-  list_top: 0.0,
-  list_band: 0.0,
   band: 0.0,
   mark: 0.0,
   bar_pl: 0.0,
   bar_ml: 0.0,
   bar_mr: 0.0,
-  page_from: 0.0,
   landed: @signals.signal("", same=fn(a, b) { a == b }),
   rail_menu: @signals.signal(None, same=fn(a, b) { a == b }),
   rail_drag: @signals.signal(None, same=fn(a, b) { a == b }),
@@ -174,6 +166,8 @@ pub(all) struct ArchiveSide {
   q : @signals.Signal[String]
   limit : @signals.Signal[Int]
   mut last : Json?
+  /// the workspace `last` is of: shown again only in it
+  mut last_ws : String
   note : @signals.Signal[String]
   mut landed : Bool
 }
@@ -183,6 +177,7 @@ pub let archive_side : ArchiveSide = {
   q: @signals.signal(""),
   limit: @signals.signal(archive_side_page),
   last: None,
+  last_ws: "",
   note: @signals.signal(""),
   landed: false,
 }
@@ -197,6 +192,7 @@ fn wide_reset() -> Unit {
   archive_side.q.set("")
   archive_side.limit.set(archive_side_page)
   archive_side.last = None
+  archive_side.last_ws = ""
   archive_side.note.set("")
   archive_side.landed = false
   wide.side_w.set(side_own)
@@ -209,21 +205,18 @@ fn wide_reset() -> Unit {
   wide.side_place = "chats"
   wide.side_key = ""
   board_frame_src.val = None
+  board_kept_chat.clear()
   room_held.val = None
   wide.kept_w.set(0.0)
   wide.kept_folded.set(false)
   wide.in_bar = false
   wide.closed.set(false)
   wide.brand_h = 0.0
-  wide.list_top = 0.0
-  wide.list_band = 0.0
   wide.band = 0.0
-  list_room_told()
   wide.mark = 0.0
   wide.bar_pl = 0.0
   wide.bar_ml = 0.0
   wide.bar_mr = 0.0
-  wide.page_from = 0.0
   wide.landed.set("")
   wide.rail_menu.set(None)
   rail_menu_drawn.val = None
@@ -256,9 +249,16 @@ fn wide_reset() -> Unit {
 /// Whether the window is drawn as this frame: laid out Medium or Large (@sf.layout), by the window's width (not the
 /// box being built's: asked from within the sidebar too).
 pub fn is_wide(c : @ui.Ctx) -> Bool {
+  wide_at(c.window_size().0)
+}
+
+///|
+/// Whether a window `w` wide is drawn as the wide frame (is_wide): what the app's tree tells as its window is first
+/// given, before anything of it is laid out (sfapp's app_tree).
+pub fn wide_at(w : Double) -> Bool {
   // (or where the system lays out its tabs in every pose, the cards across on each screen: an iPhone Duo's outer one too,
   // rail_native.mbt)
-  !(@sf.layout(c.window_size().0) is Small) || @sf.native_able()
+  !(@sf.layout(w) is Small) || @sf.native_able()
 }
 
 ///|
@@ -450,6 +450,8 @@ fn dock_side_at(
     shown,
     brand: f.brand,
     band: f.band,
+    list_brand: f.brand,
+    list_band: f.band,
     bar,
     tape: false,
   }
@@ -544,7 +546,7 @@ let dock_line : Double = 1.0
 /// Where the block lays its sidebar out (dock_side_at): its box (x, y, w, h) in what holds the block, the block's own
 /// (x, y, w, h), its corners (linked as its look's are, else one radius: dock_round_node) and its line (how wide, its
 /// colour: dock_edge_node), whether what is in it is drawn, how tall its top row is (the brand's, where the block's
-/// move has got: fold_bars'), where that move has got between open and the floating bar (the band's), whether the
+/// move has got), where that move has got between open and the floating bar (the band's), whether the
 /// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour).
 priv struct SideAt {
   box : (Double, Double, Double, Double)
@@ -561,6 +563,9 @@ priv struct SideAt {
   shown : Bool
   brand : Double
   band : Double
+  /// The list's band held at the open end during a fold, so its rows keep their layout through the move.
+  list_brand : Double
+  list_band : Double
   bar : Bool
   tape : Bool
 }
@@ -1164,6 +1169,7 @@ fn side_group(src : Source, ws : String) -> String {
   let railed = rail_items(src, ws)
   match place {
     "files" => "files"
+    "remote" if railed.contains("remote") => "remote"
     "profiles" if railed.contains("profiles") => "profiles"
     "stations" if railed.contains("stations") => "stations"
     "chats" | "archive" => "chats"

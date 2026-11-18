@@ -24,7 +24,8 @@ const whole = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) 
 export class GroupThreads {
   readonly path: string;
   private kept: Kept = {};
-  private writing: Promise<void> = Promise.resolve();
+  private writeTurn: Promise<void> = Promise.resolve();
+  private pending = 0;
   private dirty = false;
 
   constructor(path: string) {
@@ -112,7 +113,8 @@ export class GroupThreads {
   private save() {
     if (this.dirty) return;
     this.dirty = true;
-    this.writing = this.writing.then(async () => {
+    this.pending++;
+    this.writeTurn = this.writeTurn.then(async () => {
       this.dirty = false;
       const tmp = `${this.path}.tmp`;
       try {
@@ -121,11 +123,15 @@ export class GroupThreads {
       } catch (error) {
         log.warn("group", "group threads not kept", { error: (error as Error).message });
       }
-    });
+    }).finally(() => { this.pending--; });
   }
 
   /// Once what was changed is on the disk.
   flushed(): Promise<void> {
-    return this.writing;
+    return this.writeTurn;
   }
+
+  writing(): boolean { return this.pending > 0; }
+
+  written(): Promise<void> { return this.writeTurn; }
 }

@@ -20,11 +20,13 @@ fn foot_trouble_of(src : Source, workspace : () -> Workspace?) -> Json? {
 }
 
 ///|
-/// How many services the workspace in view has left up long, as the foot's band's 运行中 N says it (lists_foot_node's):
-/// none with the bell in the rail (its panel lists them).
+/// How many the workspace in view has left up long, as the foot's band's 运行中 N says it (lists_foot_node's): the
+/// viewer's own and the others' (nothing kept from where there is no bell), those stopped here aside; none with the
+/// bell in the rail (its panel lists them).
 fn foot_jobs_of(src : Source, workspace : () -> Workspace?) -> Int {
   match workspace() {
-    Some(w) if !rail_items(src, w.id).contains("attention") => long_jobs(src, w)
+    Some(w) if !rail_items(src, w.id).contains("attention") =>
+      open_jobs_count(open_jobs_groups(src, w, "groups")) + open_jobs_count(open_jobs_groups(src, w, "otherGroups"))
     _ => 0
   }
 }
@@ -125,9 +127,10 @@ fn open_jobs_pop_node(chip : @view.View, src : Source, workspace : () -> Workspa
     guard @signals.untracked(workspace) is Some(w) else { return }
     @sf.panel_nodes(
       "",
-      fn(v, _) {
-        // (in a box of its own: its rows as far in as their own room says, the dot's column where the headings start)
-        v.box(fn(b) { open_jobs_node(b, src, w) }) |> ignore
+      fn(v, close) {
+        // (in a box of its own: its rows as far in as their own room says, the dot's column where the headings start; a
+        // row pressed closes it as it leads where it is)
+        v.box(fn(b) { open_jobs_node(b, src, w, close, alone=true) }) |> ignore
       },
       // (420 high at most, or 60% of the window: past that its groups scroll in it, as the old popover's did,
       // within_room)
@@ -336,13 +339,13 @@ fn todo_shown(src : Source, w : Workspace) -> Bool {
 ///|
 /// The band's height over the lists: its top row, 新建对话's (6 + a row + 2; in the closed bar 6 + a row + 6), 待处理's
 /// when there (2 + a row + 8); a row as high as the theme's band (32; touch's the search field's 38).
-fn band_h(src : Source, w : Workspace) -> Double {
-  side_top_h() +
+fn band_h(src : Source, w : Workspace, at? : BandAt = band_at_old()) -> Double {
+  at.brand +
   band_row_h() +
-  (if wide.tape.get() {
-    band_new_top + side_new_under + band_new_tape_over()
+  (if at.tape {
+    band_new_top + side_new_under + band_new_tape_over(at~)
   } else {
-    band_pane_top() + band_pane_under()
+    band_pane_top(at~) + band_pane_under(at~)
   }) +
   (if todo_shown(src, w) { side_todo_around + band_row_h() } else { 0.0 })
 }

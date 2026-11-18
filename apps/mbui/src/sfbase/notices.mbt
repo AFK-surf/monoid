@@ -373,7 +373,7 @@ fn open_notice(src : Source, opens : String) -> Unit {
     _ => None
   }
   @hostapi.log("notice tapped \{url} at \{seq}")
-  open_link_in(src, trim_slash(cloud_origin()) + url, outside=true, at~, or_else=fn() {
+  open_link_in(src, trim_slash(cloud_origin()) + url, outside=true, at~, notice=true, or_else=fn() {
     @hostapi.log("notice: the link opens nothing here: " + url)
   })
 }

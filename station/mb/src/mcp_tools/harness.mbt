@@ -157,7 +157,7 @@ async fn make_world(b : ToolsBackend, setup : JV) -> World {
     ..permission_tools(c),
     ..computer_tools(computer),
     ..forward_tools(c),
-    ..relay_tools(c),
+    ..relay_tools(c, mesh_list=true, enroll=true, revoke=true),
     ..feedback_tools(c),
     ..move_tools(moves),
     ..retire_tools(c),
@@ -260,6 +260,7 @@ async fn run_fn(w : World, name : String, a : Array[JV]) -> JV {
         Reached(ms) => jobj([("ok", jbool(true)), ("ms", jnum(ms))])
         Not(why) => jobj([("ok", jbool(false)), ("why", js(why))])
       }
+    "relaysWithoutMesh" => js((relay_tools(w.c)[0].run)(s(0), arg(1), jundef))
     "noHelper" => js((w.no_helper[0].run)(s(0), arg(1), jundef))
     "report" => report(w.c, arg(0), arg(1), arg(2))
     "fixedNotice" => js(fixed_notice(arg(0), opt_str(a.get(1))))

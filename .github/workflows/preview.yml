@@ -22,6 +22,7 @@ on:
     paths:
       - "apps/mbui/**"
       - "libs/mbui/**"
+      - "libs/sf-ui/**"
       - "client/**"
       - "rules/js/**"
       - "web/public/avatars/index.json"
@@ -75,6 +76,7 @@ jobs:
       win_build: ${{ steps.what.outputs.win_build }}
     steps:
       # (the history's commits and trees, the files' contents only for beta.sh: what changed is told by the trees)
+      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none", sparse-checkout: apps/mbui/scripts }
       - id: what
@@ -151,18 +153,25 @@ jobs:
       # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
       # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
       # (less the 1-5 s of "Set up job" before it, as windows')
+      # (a branch's app: mbc's MBC_LIGHT_TESTS, each unit taken at -O2 where main's store has it as this program's would
+      # be, what it has not compiled at -O0, as pipeline.yml's desktop-build: all at -O2 a push after main took a large
+      # change and before it saved a store of it was cut. Main's stays -O2)
       - name: The job's end and its image
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
+          [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" } # the build's number is the commits in the history (their files only as checked out)
+      - run: bash scripts/git-history.sh
       # (GTK 4 and what the host and the core link beside it: libsoup, libsecret)
       - uses: ./.github/actions/apt
         with:
           name: mbui-linux-${{ matrix.arch }}
           packages: libgtk-4-dev libepoxy-dev libsoup-3.0-dev libsecret-1-dev clang
-      - uses: ./.github/actions/setup
+      # (Node alone here: pnpm and its store only for a core.hbc not kept, below)
+      - uses: ./.github/actions/node
       - uses: ./.github/actions/mbui-moonbit
       # mbc's units and the core's bytecode: main's newest, and on a branch its own last push's over them (m- and b-, as
       # check-mbui keeps its own). With main's alone, every push of a branch compiled all it had changed since main
@@ -207,13 +216,22 @@ jobs:
         with:
           path: ~/.cache/stillfail-native
           key: ${{ steps.native-keys.outputs.key }}
-      - name: Tools (the Linux engine and shell prebuilt, the core's packages)
+      - name: Tools (the Linux engine and shell prebuilt)
         run: |
           sh apps/mbui/scripts/mbui.sh > /dev/null
           node scripts/native.ts fetch engine linux-${{ matrix.arch }}
           node scripts/native.ts fetch shell linux-${{ matrix.arch }}
-          (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
-          touch "$RUNNER_TEMP/start"
+      # (the core's packages only for a core.hbc not kept for this commit's inputs, as the ios job's: asked with the
+      # hermesc linux.sh's core step makes it with. Kept, pnpm's install and its store's restore were time taken from the
+      # build's own limit for nothing it used: Linux x64's build cut at 163 s, core.hbc kept, 44040854948, 2026-11-17)
+      - id: core
+        run: if HERMESC="$(node scripts/native.ts path engine linux-${{ matrix.arch }})/hermesc" bash apps/mbui/scripts/core.sh hermes-kept; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.core.outputs.kept != 'true'
+        uses: ./.github/actions/setup
+      - name: The core's packages
+        if: steps.core.outputs.kept != 'true'
+        run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
+      - run: touch "$RUNNER_TEMP/start"
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: the store saved over what was
       # restored, nothing taken out, so the next run goes on from there. Saved only at the job's end, a store too far
       # behind to be caught up in five minutes was never saved again: Linux x64's on main, cut at its limit on nearly
@@ -231,6 +249,9 @@ jobs:
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
           reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 55 || echo 35)
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash apps/mbui/scripts/linux.sh build
+      # (what a cut build left running stopped on main and a branch alike; a branch's store saved only of a build that
+      # went through: a job that needs longer is made faster, never finished over several pushes, .github/AGENTS.md;
+      # main's cut keeps what it compiled)
       - name: The caches' keys, by what they hold
         if: always() && steps.build.outcome != 'skipped'
         run: |
@@ -249,6 +270,7 @@ jobs:
               sleep 1
             done
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "a branch's build that did not go through: its store not saved"; exit 0; }
           fi
           echo "STORE_KEY=mbui-linux-${{ matrix.arch }}-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
@@ -333,6 +355,8 @@ jobs:
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
       - name: iOS's SDK 27.1 or later
         run: |
           v=$(xcrun --sdk iphoneos --show-sdk-version)
@@ -526,8 +550,12 @@ jobs:
       # time to go out, apps/mbui/scripts/beta.sh deltas_deadline; main 44efbac9's, 43981921907, spent its last 24 s on
       # them. The job's first step: after Defender's, pwsh's start put it 8 s past the job's real end, main bd0f01ab's,
       # 43990130513, and its put, all done, was cancelled at that end; less the 3-5 s of "Set up job" before it, 43998071944)
+      # (and a branch's app at /Od where main's store has not its /O2 units, as the Linux job's: MBC_LIGHT_TESTS for the
+      # whole job, the app built in the background and the beta's build after it one build to mbc)
       - name: The job's end
-        run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+        run: |
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+          [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
       # Defender's real-time scan kept off what the job writes and runs: each new file and each program's first start was
       # scanned, MoonBit's 114 MB (206 MB of programs) put in in 12-25 s against 2 s for as much of the build's, 2026-10-30
       - shell: pwsh
@@ -536,9 +564,12 @@ jobs:
           Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:RUNNER_TOOL_CACHE, $env:LOCALAPPDATA, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
           "Defender kept off them in $([int]((Get-Date) - $t).TotalMilliseconds) ms"
       # the natives' keys are git's blobs: the checkout as git has it
-      - run: git config --global core.autocrlf false
+      - run: |
+          git config --global core.autocrlf false
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" } # (the build's number: the commits in the history)
+      - run: bash scripts/git-history.sh
       # Node alone first (the natives' fetch, the build's scripts): the rest of the setup (pnpm, its store) is done while
       # cl compiles the app. The image's Node, from its tool cache, put on the PATH as it is: setup-node's would print
       # npm's and yarn's versions, their first start on the runner (29-81 s of some runs, 2026-10-25, 40225325122; the
@@ -666,17 +697,28 @@ jobs:
           nohup bash -c 'MBUI_WIN_CORE=0 bash apps/mbui/scripts/win.sh build > "$0/log" 2>&1; echo $? > "$0/status"' "$B" > /dev/null 2>&1 &
           # (its Windows process, for taskkill to stop all it runs (moon, mbc, clang-cl) where it is cut: below)
           cat "/proc/$!/winpid" > "$B/winpid" 2>/dev/null || true
-      - uses: ./.github/actions/setup
       # core.hbc by its inputs (HBC_CACHE, scripts/core.sh hermes), as the other jobs keep it: the core's step was 12-17 s
       # of every run (~14 s of a CPU, beside cl), the core unchanged in most of them (restored on every run, saved by
-      # main's when it made one: the names in it are their contents' keys)
+      # main's when it made one: the names in it are their contents' keys). Before the setup: whether core.hbc is in it
+      # says whether a push's job needs pnpm, below.
       - uses: actions/cache/restore@v4
         id: hbc
         with:
           path: .ci/hbc
           key: mbui-win-hbc-${{ github.sha }}
           restore-keys: mbui-win-hbc-
+      # (a push's, with no e2e flow: pnpm, its store and the packages only for a core.hbc not kept, asked with the hermesc
+      # win.sh core makes it with. Kept, they were ~55 s beside cl, the NTFS unpack of the store and two installs, and
+      # the build was cut waiting: 44039192757, 44039733726, 2026-11-17. Nothing after needs them then: win.sh's core,
+      # setup-bare, setup, put, collate, engine-sync and sealed, beta.sh win and publish (the token given: no wrangler),
+      # e2e/win/setup.sh)
+      - id: core
+        if: env.E2E == ''
+        run: if HERMESC=$(cygpath -m "$(node scripts/native.ts path engine win32-x64)/hermesc.exe") bash apps/mbui/scripts/core.sh hermes-kept; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
+      - if: env.E2E == '1' || steps.core.outputs.kept != 'true'
+        uses: ./.github/actions/setup
       - name: Packages (the core's, the cloud's; the test station built)
+        if: env.E2E == '1' || steps.core.outputs.kept != 'true'
         run: |
           # (the packages' scripts in bash, not cmd: the station's build is sh)
           export npm_config_script_shell="$(cygpath -w "$(command -v bash)")"
@@ -706,7 +748,7 @@ jobs:
           [ -n "$missing" ] || exit 0
           echo "not in the release yet: $(echo $missing); the pipeline's natives job is waited for"
           api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
-          t0=$SECONDS run=""
+          t0=$SECONDS run="" wait_min=${{ github.event_name == 'push' && 3 || 6 }}
           # (main's: in the release, whichever run's natives job put them there. A run of main's still waiting to start
           # is cancelled by the next push's, which builds and publishes the same natives: 91434fca's was, and this step
           # waited for it until its 6 minutes ran out, the next one's in the release 2 minutes before, 40642483751.)
@@ -728,13 +770,15 @@ jobs:
               gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
               sleep 120; exit 1
             fi
-            # (3 minutes: inside the job's 5, said before the job is stopped)
-            [ $((SECONDS - t0)) -lt 180 ] || { echo "::error::the pipeline's natives job not done after 3 minutes (run ${run:-not found})"; exit 1; }
+            # (3 minutes: inside a push's 5, said before the job is stopped; 6 inside a run's of the day or by hand, its 10:
+            # 3 gave up on main's queue, 44017173538)
+            [ $((SECONDS - t0)) -lt $((wait_min * 60)) ] || { echo "::error::the pipeline's natives job not done after $wait_min minutes (run ${run:-not found})"; exit 1; }
             sleep 5
           done
           echo "(its natives job done after $((SECONDS - t0)) s: run $run)"
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+            node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA"
             echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
           fi
       # The still.fail the e2e flow signs in against (its cloud, relay, station and chat: ~13 s of the flow's ~18, none
@@ -790,8 +834,9 @@ jobs:
           c=$(sha256sum "$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c" | cut -c1-16)
           echo "BUILD_KEY=mbui-win-build-mono-$c" >> "$GITHUB_ENV"
           # the installer (apps/mbui/windows/setup.c) made of the app as built (out/setup, made anew: rm -rf), here, so
-          # that the release's signing (beta.sh win, which only reads it) starts as soon as the app is built
-          bash apps/mbui/scripts/win.sh setup
+          # that the release's signing (beta.sh win, which only reads it) starts as soon as the app is built; its raw
+          # form as --pack writes it beside it, which e2e/win/setup.sh holds to the bytes --raw makes (the release's)
+          MBUI_SETUP_RAW="$PWD/apps/mbui/out/setup/stillfail-setup-0.1.$(git rev-list --count HEAD).exe.raw" bash apps/mbui/scripts/win.sh setup
       # (main's push: the installer signed and its raw form made while what is below runs, on this machine alone:
       # beta.sh win reads out/setup's installer, copies it and writes only its own folders (MBUI_CACHE's), nothing
       # put anywhere; its put is started only once the checks below passed. One after another the signing began at
@@ -858,15 +903,8 @@ jobs:
           Z=$RUNNER_TEMP/zip
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'while [ ! -s "$0/signed" ]; do sleep 1; done; [ "$(cat "$0/signed")" = 0 ] && bash apps/mbui/scripts/beta.sh publish win >> "$0/log" 2>&1; echo $? > "$0/status"' "$Z" > /dev/null 2>&1 &
-      # main's core.hbc kept (HBC_CACHE: the newest 8, some 370 MB, its save ~45 s) while the e2e flow runs, not
-      # before the app's put, which the flow waits for (it held the put back 44 s, 2026-10-28, 40642305618)
-      - if: github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
-        uses: actions/cache/save@v4
-        with:
-          path: .ci/hbc
-          key: ${{ env.HBC_KEY }}
-      # (main's and a branch's, however the build ended: one cut short keeps what it compiled, nothing taken out, so
-      # the next run goes on from there, as the Linux jobs' do; what it left running (moon, mbc, clang-cl) stopped first
+      # (main's however the build ended: one cut short keeps what it compiled, nothing taken out, so the next run goes on
+      # from there, as the Linux jobs' do; a branch's only of a build that went through, as theirs; what it left running (moon, mbc, clang-cl) stopped first
       # and their locks taken out, so the store is still as it is tarred: mbui-check.yml's save failed so, 43839505847)
       - name: The units, by what they hold
         if: always() && steps.build.outcome != 'skipped'
@@ -879,6 +917,7 @@ jobs:
             taskkill //F //IM moon.exe //IM moonc.exe //IM mbc.exe //IM clang-cl.exe //IM cl.exe //IM link.exe > /dev/null 2>&1 || true
             sleep 1
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "a branch's build that did not go through: its store not saved"; exit 0; }
           fi
           echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
           echo "STORE_KEY=mbui-win-store-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store)" >> "$GITHUB_ENV"
@@ -887,6 +926,34 @@ jobs:
         with:
           path: .ci/mbc-store
           key: ${{ env.STORE_KEY }}
+      # main's core.hbc kept (HBC_CACHE: the newest 8, beside the put and the e2e flow, and after mbc-store when a
+      # build was cut short so the next push finds core.hbc kept and skips pnpm + Hermes instead of rebuilding both:
+      # 44100344729, 44101911655, 44108899153, 2026-11-17)
+      - if: always() && !cancelled() && github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: .ci/hbc
+          key: ${{ env.HBC_KEY }}
+      # (main's build cut short: the app's C moonc wrote whole (mbc had split it) kept as mbui-win-build-mono-moon-<its
+      # key>, so the next run, this job's or the pipeline's desktop-win, goes on from it without moonc's ~60 s again; a
+      # build whole saves under the key without -moon- above. Cut, the C and moon's .core were thrown away with the
+      # rest, and each run after began moonc again from the last build saved, 2026-11-17)
+      - name: The app's C, of a build cut short
+        id: moon-key
+        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome == 'failure'
+        run: |
+          d=$(sh apps/mbui/scripts/mbui.sh)
+          c=$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c
+          if [ -s "$c" ] && grep -q '^mbc: stillfail\.c: .* units in ' "$d/out/mbc.log" 2>/dev/null; then
+            echo "key=mbui-win-build-mono-moon-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          fi
+      - if: always() && steps.moon-key.outputs.key != '' && steps.moon-key.outputs.key != steps.build-cache.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libs/mbui/_build
+            libs/mbui/out
+          key: ${{ steps.moon-key.outputs.key }}
       - name: The Windows app's installer signed, put, checked, then its feed
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |

@@ -334,6 +334,33 @@ fn agent_rooms_expected(_name : String) -> Int {
 }
 
 ///|
+test "the model and account row lights as the mouse enters it and clears as it returns to the trigger" {
+  let src = @sffixture.fixture("chat-agent-card")
+  let t = agent_new(src, fn(b, src, tips, card) { agent_card_node(b, src, agent_ref(), agent_at, tips, card) })
+  let (mx, my) = t.find("Claude · Opus 5.5").unwrap()
+  let (ax, ay) = t.find("林的 Max").unwrap()
+  let row_lit = fn() {
+    t.drawn_rects().iter().any(fn(r) {
+      r.4 == @sf.theme().p.hover &&
+      r.0 <= mx && mx < r.0 + r.2 && r.1 <= my && my < r.1 + r.3 &&
+      r.0 <= ax && ax < r.0 + r.2 && r.1 <= ay && ay < r.1 + r.3
+    })
+  }
+  assert_false(row_lit())
+  t.move_to(mx, my)
+  t.draw()
+  assert_true(row_lit())
+  t.move_to(ax, ay)
+  t.draw()
+  assert_true(row_lit())
+  let (x, y, w, h) = peek_trigger
+  t.move_to(x + w / 2.0, y + h / 2.0)
+  t.draw()
+  assert_false(row_lit())
+  assert_true(t.find("Claude · Opus 5.5") is Some(_))
+}
+
+///|
 test "an agent's card as nodes: the same words where they were and the same rectangles as the old card's, in each state; its figures' row in three shares" {
   let faults = []
   for case in agent_cases() {

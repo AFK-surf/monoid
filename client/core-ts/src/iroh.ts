@@ -6,7 +6,21 @@ import type { Effect } from "effect";
 import type { HostError } from "./error.ts";
 
 /// Where an endpoint is: its id (hex), the relays it may be on, the addresses it may be at (`ip:port`).
-export type IrohAddr = { id: string; relays?: string[]; ips?: string[] };
+export type IrohAddr = { id: string; relays?: string[]; ips?: string[]; meshScope?: string };
+
+/// A root-signed neighbor identity. The program admits it before configuring a scope.
+export type IrohMeshDescriptor = {
+  binding: { scope: number[]; policy: number[]; endpoint: number[]; neighbor: number[]; generation: number; transit: boolean; signature: number[] };
+  address: unknown;
+};
+export type IrohLeafAttachment = { scope: number[]; policy: number[]; issuer: IrohMeshDescriptor["binding"]; leaf: IrohMeshDescriptor["binding"]; target: number[]; id: number[]; expires_unix_ms: number; signature: number[] };
+export type IrohMeshScope = {
+  scope: string;
+  transit: boolean;
+  peers: IrohMeshDescriptor[];
+  relayUrls: string[];
+  globalRelays?: { node: string; name: string; generation: number; revision: number; address: { id: string; addrs: ({ Ip: string } | { Relay: string })[] } }[];
+};
 
 /// Why a connection went: the other end closed it saying `reason` (`application`), this end did (`local`), nothing was
 /// heard (`timeout`), or something else (`other`, `reason` in words).
@@ -54,6 +68,11 @@ export interface IrohConnection {
 }
 
 export interface IrohEndpoint {
+  meshUseLeaf?(value: {scope: string; attachment: IrohLeafAttachment}): Effect.Effect<void, HostError>;
+  meshDetachLeaf?(value: {scope: string; attachmentId: number[]}): Effect.Effect<void, HostError>;
+  /// Configure only identities admitted by the program; a device always sets transit false.
+  meshConfigure?(scope: IrohMeshScope): Effect.Effect<IrohMeshDescriptor, HostError>;
+  meshRemove?(scope: string): Effect.Effect<void, HostError>;
   /// Its id (hex): the public half of its key.
   id(): string;
   /// A connection offering `alpn` (and the `additional` ones, for a station from before a rename). Once `givenUp`

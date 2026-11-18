@@ -9,7 +9,10 @@ import type { HttpResponse } from "../src/host-of.ts";
 import { HostError } from "../src/error.ts";
 import { jsonResponse } from "../src/testing.ts";
 import { t } from "../src/i18n.ts";
+import { Core } from "../src/core.ts";
+import { HostWire } from "../src/station/wire.ts";
 import { apply, subscribe, v } from "./helpers.ts";
+import { run } from "./run.ts";
 import { base, started, stationLater, status } from "./station-fixture.ts";
 
 const ST = "ws/st";
@@ -132,6 +135,64 @@ test("a job of a station up whose jobs are not read yet: nothing, never gone; it
     } else {
       assert.equal(last(after, 1), t("core-views.station.job_gone", { name: "studio" }));
     }
+    core.close();
+  }
+});
+
+/// A core whose station's jobs were read and its stream's place kept, closed: `again` starts a core on the same device,
+/// its station's stream as `stream` says.
+async function jobsReadBefore() {
+  const s = await started({ ...base(), "GET /jobs": [job] }, 0, undefined, (f) => {
+    f.gate.marks = true;
+    f.gate.resumes = true;
+  });
+  await s.host.time.pass(1000, 50);
+  await run(s.core.inner.data.written);
+  assert.notEqual(s.core.inner.data.record("heard", ST), undefined, "its stream's place kept");
+  assert.ok(s.core.inner.data.listed(ST, "jobs"));
+  s.core.close();
+  await s.host.settle();
+  const again = async (stream: "open" | "hang") => {
+    s.gate.stream = stream;
+    const jobsBefore = jobsAsked(s.host.requests);
+    const core = await Core.create(s.host, { clock: s.host.time.clock, sample: 0, wire: () => new HostWire(s.host) });
+    s.host.takeEmitted();
+    return { core, jobsSince: () => jobsAsked(s.host.requests) - jobsBefore };
+  };
+  return { ...s, again };
+}
+
+const jobsAsked = (requests: { url: string }[]) => requests.filter((r) => /\/admin\/api\/jobs(\?|$)/.test(r.url)).length;
+
+test("a_job_not_held_of_a_station_whose_stream_goes_on_from_where_a_core_before_left_it_is_gone_at_once_its_list_not_read_again", async () => {
+  const s = await jobsReadBefore();
+  const { core, jobsSince } = await s.again("open");
+  try {
+    const ui = core.connect();
+    subscribe(core, ui, 1, { topic: "job", station: ST, id: "gone-job" });
+    subscribe(core, ui, 2, { topic: "job", station: ST, id: "j-web" });
+    await s.host.time.pass(1000, 50);
+    assert.ok(s.streams.at(-1)!.path.includes("since="), s.streams.at(-1)!.path);
+    assert.equal((core.inner.stations.link(ST)?.state as { state: string }).state, "online");
+    const said = s.host.takeEmitted();
+    assert.equal(last(said, 1), t("core-views.station.job_gone", { name: "studio" }), "gone, not nothing");
+    assert.equal(last(said, 2), "value");
+    assert.equal(jobsSince(), 0, "its list, told on the stream since, not read again");
+  } finally {
+    core.close();
+  }
+});
+
+test("a_job_not_held_of_a_station_coming_back_whose_jobs_were_read_before_is_gone_at_once", async () => {
+  const s = await jobsReadBefore();
+  const { core } = await s.again("hang");
+  try {
+    const ui = core.connect();
+    subscribe(core, ui, 1, { topic: "job", station: ST, id: "gone-job" });
+    await s.host.time.pass(300, 50);
+    assert.deepEqual(core.inner.stations.link(ST)?.state, { state: "connecting", last: "online" });
+    assert.equal(last(s.host.takeEmitted(), 1), t("core-views.station.job_gone", { name: "studio" }));
+  } finally {
     core.close();
   }
 });

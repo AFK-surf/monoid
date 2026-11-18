@@ -8,7 +8,7 @@
 
 ///|
 /// What a runner's info file says (`RunnerInfo`), as the JSON it is.
-pub struct RunnerInfo {
+pub(all) struct RunnerInfo {
   json : JValue
 }
 
@@ -49,14 +49,14 @@ pub fn RunnerInfo::keeps(self : RunnerInfo) -> Bool {
 
 ///|
 /// How a process ended (`Exit`).
-pub struct Exit {
+pub(all) struct Exit {
   code : Int?
   signal : String?
 }
 
 ///|
 /// What `stat` says of a path.
-pub struct FileStat {
+pub(all) struct FileStat {
   dev : Double
   ino : Double
   size : Double
@@ -68,7 +68,7 @@ pub struct FileStat {
 
 ///|
 /// A connection's events.
-pub struct SocketEvents {
+pub(all) struct SocketEvents {
   connected : () -> Unit
   data : (String) -> Unit
   error : (String) -> Unit
@@ -77,7 +77,7 @@ pub struct SocketEvents {
 
 ///|
 /// A connection as the machine gives it.
-pub struct Socket {
+pub(all) struct Socket {
   write : (String) -> Unit
   end : () -> Unit
   destroy : () -> Unit
@@ -87,7 +87,7 @@ pub struct Socket {
 
 ///|
 /// What the drivers ask of the machine.
-pub struct Machine {
+pub(all) struct Machine {
   lp : Loop
   /// the path's separator (`/`, `\` on Windows)
   sep : String
