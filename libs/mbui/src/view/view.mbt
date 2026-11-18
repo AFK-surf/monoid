@@ -13877,6 +13877,17 @@ fn Tree::target_in(self : Tree, x : Double, y : Double, tracked~ : Bool) -> (Tar
 /// and what hosts it say it: what says it is pointed at alone over all that takes it there (View::points); else what
 /// takes a press or a hold there; else nothing.
 pub fn Tree::pointed_of(self : Tree, t : Target) -> NodeId? {
+  // (while a node is held (a press, a drag) it alone is pointed at, and only while the pointer is over it: what the
+  // pointer passes over meanwhile is not, its hover and its tip not told, as a captured pointer's are not on the web
+  // (setPointerCapture); let go, what is under a still pointer is pointed at again: Tree::held_to)
+  match self.held {
+    Some(h) =>
+      return match t {
+        Pressed(id) | Dragged(id) if id == h => Some(id)
+        _ => None
+      }
+    None => ()
+  }
   match self.points_hover {
     Some(id) => Some(id)
     None =>
@@ -14359,6 +14370,9 @@ fn Tree::held_to(self : Tree, h : NodeId?) -> Unit {
     self.pressing = h
     self.hand_told(was, fn(n) { n.pressed_cell }, false)
     self.hand_told(h, fn(n) { n.pressed_cell }, true)
+    // (what a still pointer is over worked out again: held, nothing else is pointed at; let go, what is under it is
+    // again: Tree::pointed_of)
+    self.hits_bump()
   }
 }
 
