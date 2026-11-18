@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [acfb3e6af](https://github.com/AFK-surf/monoid/commit/acfb3e6afb05100d30e0ba3fabae6c7176f46777) fix(sf-ui): soften floating edges and shadows, mak | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 96.85 | 121.81 |
 | [bfd2fbcf1](https://github.com/AFK-surf/monoid/commit/bfd2fbcf1177f00d55c37932495739b6ffe4b61d) fix(mbui): a video whose size was not sent covers  | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 96.85 | 121.81 |
 | [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
 | [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [869829a2c](https://github.com/AFK-surf/monoid/commit/869829a2cec7570fc8bb5f1bf05902771c24ccd4) fix(core): a new device approved face to face is i | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.56 | 63.51 | 96.72 | 96.78 |
 | [855e7eb76](https://github.com/AFK-surf/monoid/commit/855e7eb76d16328411aa3049bb80511fd5785cc1) fix(mbui): a node shaken by ShakeWay is no jolt al | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.55 | 63.49 | 96.8 | 114.79 |
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
-| [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [acfb3e6af](https://github.com/AFK-surf/monoid/commit/acfb3e6afb05100d30e0ba3fabae6c7176f46777) fix(sf-ui): soften floating edges and shadows, mak | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
 | [bfd2fbcf1](https://github.com/AFK-surf/monoid/commit/bfd2fbcf1177f00d55c37932495739b6ffe4b61d) fix(mbui): a video whose size was not sent covers  | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.1 |
 | [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.1 |
 | [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [869829a2c](https://github.com/AFK-surf/monoid/commit/869829a2cec7570fc8bb5f1bf05902771c24ccd4) fix(core): a new device approved face to face is i | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.87 |
 | [855e7eb76](https://github.com/AFK-surf/monoid/commit/855e7eb76d16328411aa3049bb80511fd5785cc1) fix(mbui): a node shaken by ShakeWay is no jolt al | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.87 |
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.71 |
-| [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
