@@ -1897,6 +1897,13 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     the_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [box addSubview:the_view];
     w.contentView = box;
+    // An app's bundle opens its window where it was last left, its size and place AppKit's to keep in the bundle's
+    // defaults as it moves or is resized (its frame autosave). A run of a script, a window of its own (MBUI_WINDOW),
+    // one measured or recorded, or one told its size (MBUI_WIN) keeps the size it is given. Set after the content is
+    // in, so the views follow the restored size.
+    if (in_bundle() && !win && !window_run() && !latency_run() && !record_dir && !getenv("MBUI_SCRIPT") &&
+        !getenv("MBUI_DRIVE") && !getenv("MBUI_DRIVE_B64") && !getenv("MBUI_RECORD"))
+      [w setFrameAutosaveName:@"MainWindow"];
     // (the first window of the run's: win_use)
     if (!win_slots) win_slots = [NSMutableDictionary new];
     MBWinSlot *first = [MBWinSlot new];
