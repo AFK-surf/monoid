@@ -9,7 +9,7 @@
 // its words sent into it (`chat.send`: at work at once, the station's row keeping the key it was made under).
 // board-clarify…: a third draft first, one paragraph of three things, to be split by 先理清 (`board.clarify`: its
 // tasks after fix_clarify_ms; board-clarify-organizing never answered, -split shown answered, sfapp's open_mode; -auto
-// each chat started done with fix_clarify_settle_ms after; -gone and -failed a draft waiting for one gone or errored).
+// (shown answered) and -flow (from the menu, a film's) each chat started done with fix_clarify_settle_ms after; -gone and -failed a draft waiting for one gone or errored).
 
 ///|
 /// Whether `mode` is one of the board's.
@@ -543,7 +543,7 @@ pub fn fixture_board_call(f : Fixture, name : String, params : Json) -> Result[J
       )
       f.changed()
       // (its agent done with it after a while: what waits for it starts by itself)
-      if f.mode == "board-clarify-auto" {
+      if f.mode == "board-clarify-auto" || f.mode == "board-clarify-flow" {
         fix_later(fix_clarify_settle_ms, fn() { board_fix_settle(f, key) })
       }
       Some(Ok(Json::object({})))
