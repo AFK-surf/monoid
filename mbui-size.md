@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
 | [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
 | [ac7ed5f22](https://github.com/AFK-surf/monoid/commit/ac7ed5f22106d5b4bd4b24f61ab2d25cc343b096) fix(app): draw the archived row's tray words at th | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.14 | 112.34 |
 | [8ff3ce3b2](https://github.com/AFK-surf/monoid/commit/8ff3ce3b20acc851acf42a79f6cc36c870cfcfcb) perf(sync): isolate background batch reads, stream | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.16 | 125.57 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
 | [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
 | [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.58 | 63.66 | 96.75 | 123.6 |
-| [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 2.56 | 3.44 | 14.07 | 36.02 | 54.16 | 31.58 | 63.66 | 96.75 | 131.73 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.1 |
 | [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [ac7ed5f22](https://github.com/AFK-surf/monoid/commit/ac7ed5f22106d5b4bd4b24f61ab2d25cc343b096) fix(app): draw the archived row's tray words at th | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [8ff3ce3b2](https://github.com/AFK-surf/monoid/commit/8ff3ce3b20acc851acf42a79f6cc36c870cfcfcb) perf(sync): isolate background batch reads, stream | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.71 |
 | [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
-| [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
