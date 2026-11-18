@@ -10,11 +10,13 @@ The scripts sit beside this file: from your workspace, `.claude/skills/stillfail
 signed in (else use the login tool) and `jq`.
 
 - A PR: `bash <this skill>/ci-wait.sh <PR> [owner/name]`. Give the repository when not running inside its clone.
-  Exits 1 at the first failed or cancelled check, printing it and its link; 0 once this commit's runs all completed
+  Exits 1 at the first failed or cancelled check, printing it, its link and what its failure annotations say; 0 once this commit's runs all completed
   with nothing pending, listing them; 3 when the PR got a new commit (run it again); 4 when a PR from a fork has no
   run until it is approved.
 - Known runs (a release, a deploy after merging): `bash <this skill>/run-wait.sh <owner/name> <run id> ...`, exits 1
   as soon as a job fails, 0 when every run succeeded.
+- Each look is one GraphQL query (REST only where GraphQL fails or cannot say it whole): the REST quota a token's
+  sessions share is what the other `gh` commands need. Do not poll with `gh pr checks` or `gh run view` yourself.
 - Do not wait for workflows by name: the runs of one push are created together, and one that has not appeared was
   not triggered. A wrong name waits until a timeout.
 

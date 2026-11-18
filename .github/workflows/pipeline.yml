@@ -1063,9 +1063,12 @@ jobs:
     runs-on: [self-hosted, macos-ci]
     outputs:
       hand: ${{ steps.hand.outputs.key }}
+      monoid: ${{ steps.monoid.outputs.packed }}
     environment: production
     timeout-minutes: 5
     steps:
+      # (when the job began, for monoid's deadline below)
+      - run: echo "JOB_BEGAN=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 } # versionCode is the commits in the history
       - uses: ./.github/actions/setup-mac
@@ -1098,15 +1101,24 @@ jobs:
           echo "key=$(tail -1 "$RUNNER_TEMP/hand.out")" >> "$GITHUB_OUTPUT"
       # monoid's (build.monoid.android.beta, the same key): from the same build, in the same warm cache (its native code
       # is this one's; only the package is made again: its id, name and links are in its manifest and resources); put by
-      # monoid-android once the check passed.
+      # monoid-android once the check passed. Left for the next release where this job has not the time for it, as
+      # desktop-win's: still.fail's was put, and main 43e63e625's was cut at 351 s building monoid's, the job cancelled.
       - name: Build and sign monoid's beta Android app from the same build
+        id: monoid
         if: vars.MONOID_CI == 'on'
         env:
           ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           RELEASE_DIR: ${{ runner.temp }}/monoid
-        run: sh .github/release.sh --product monoid android
-      - if: vars.MONOID_CI == 'on'
+        run: |
+          used=$(( $(date +%s) - JOB_BEGAN ))
+          if [ "$used" -gt 200 ]; then
+            echo "::warning::monoid's beta Android app left for the next release: this job has used ${used} s of its 300"
+            exit 0
+          fi
+          sh .github/release.sh --product monoid android
+          echo "packed=1" >> "$GITHUB_OUTPUT"
+      - if: vars.MONOID_CI == 'on' && steps.monoid.outputs.packed == '1'
         uses: actions/upload-artifact@v4
         with: { name: "monoid-android-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1, compression-level: 0 }
 
@@ -1114,7 +1126,7 @@ jobs:
   # bucket once the check passed.
   monoid-android:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, android]
-    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.android_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.android.result == 'success' }}
+    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.android_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.android.result == 'success' && needs.android.outputs.monoid == '1' }}
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5

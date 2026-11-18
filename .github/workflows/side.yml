@@ -58,11 +58,10 @@ jobs:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
-      - uses: ./.github/actions/mbui-moonbit
-      - uses: ./.github/actions/natives
-      # The simulator tests' devices, made and set booting while the rest installs and runs: each test's own cold boot,
-      # five in a row, took this job past its 10 minutes (134713681856). The iPhone is shared by four of them in turn
-      # (SIM_SHARED_UDID), the Duo used by its own (SIM_DUO_UDID); "simulators left" below deletes both.
+      # The simulator tests' devices, made and set booting while the rest installs and runs (MoonBit, the natives and the
+      # packages too, not before it: side-mac took 357 s): each test's own cold boot, five in a row, took this job past
+      # its 10 minutes (134713681856). The iPhone is shared by four of them in turn (SIM_SHARED_UDID), the Duo used by
+      # its own (SIM_DUO_UDID); "simulators left" below deletes both.
       - name: simulators made
         run: |
           S=/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl
@@ -76,6 +75,8 @@ jobs:
           if [ $# -eq 2 ]; then u=$($S create "still.fail side shared" "$1" "$2"); echo "SIM_SHARED_UDID=$u" >> "$GITHUB_ENV"; ($S boot "$u" >/dev/null 2>&1 &); fi
           set -- $(picked duo)
           if [ $# -eq 2 ]; then u=$($S create "still.fail side duo" "$1" "$2"); echo "SIM_DUO_UDID=$u" >> "$GITHUB_ENV"; ($S boot "$u" >/dev/null 2>&1 &); fi
+      - uses: ./.github/actions/mbui-moonbit
+      - uses: ./.github/actions/natives
       - run: pnpm install --frozen-lockfile && cd station && pnpm install --frozen-lockfile
       # (the simulators' pictures as the tests took them, kept when one fails: a tap on the Duo's inner panel that opened
       # nothing for a minute could not be told from its log alone, 41636490524)

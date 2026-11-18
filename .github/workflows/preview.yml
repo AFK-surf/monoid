@@ -207,20 +207,22 @@ jobs:
         run: |
           mkdir -p .ci && cp -a -n "$RUNNER_TEMP/ci-main/." .ci/ && rm -rf "$RUNNER_TEMP/ci-main"
           echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
-      # (the Linux engine and shell in the native cache, as a run before fetched them, as the windows job keeps its own:
-      # one download from the store took 84 s for 2.9 MB, main 9440b484, 40668393099)
+      # (the Linux engine, shell and libghostty-vt, which apps/mbui/scripts/linux.sh links, in the native cache, as a run
+      # before fetched them, as the windows job keeps its own: one download from the store took 84 s for 2.9 MB, main
+      # 9440b484, 40668393099)
       - name: The Linux natives' keys
         id: native-keys
-        run: echo "key=natives-linux-${{ matrix.arch }}-$(node scripts/native.ts key shell linux-${{ matrix.arch }})-$(node scripts/native.ts key engine linux-${{ matrix.arch }})" >> "$GITHUB_OUTPUT"
+        run: echo "key=natives-linux-${{ matrix.arch }}-$(node scripts/native.ts key shell linux-${{ matrix.arch }})-$(node scripts/native.ts key engine linux-${{ matrix.arch }})-$(node scripts/native.ts key ghostty-vt linux-${{ matrix.arch }})" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/stillfail-native
           key: ${{ steps.native-keys.outputs.key }}
-      - name: Tools (the Linux engine and shell prebuilt)
+      - name: Tools (the Linux engine, shell and libghostty-vt prebuilt)
         run: |
           sh apps/mbui/scripts/mbui.sh > /dev/null
           node scripts/native.ts fetch engine linux-${{ matrix.arch }}
           node scripts/native.ts fetch shell linux-${{ matrix.arch }}
+          node scripts/native.ts fetch ghostty-vt linux-${{ matrix.arch }}
       # (the core's packages only for a core.hbc not kept for this commit's inputs, as the ios job's: asked with the
       # hermesc linux.sh's core step makes it with. Kept, pnpm's install and its store's restore were time taken from the
       # build's own limit for nothing it used: Linux x64's build cut at 163 s, core.hbc kept, 44040854948, 2026-11-17)
@@ -231,6 +233,22 @@ jobs:
       - name: The core's packages
         if: steps.core.outputs.kept != 'true'
         run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
+      # (moon's own build of mbui's and the app's copies, libs/mbui/scripts/linux.sh's out/linux/mod and out/linux/app:
+      # mirrored by content there so that moon, going by mtimes, builds again only what changed, but made from nothing
+      # on every runner, ~75 s of moonc before mbc's units were asked: 578a45fe4's linux (x64) cut at its reserve. main's
+      # newest, saved below; mbc's units are the store's above, left out here)
+      - uses: actions/cache/restore@v4
+        id: moon
+        with:
+          path: |
+            libs/mbui/out/linux/mod
+            libs/mbui/out/linux/app
+            !libs/mbui/out/linux/**/*.mbc
+            !libs/mbui/out/linux/**/*.mbc/**
+          key: mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-${{ github.sha }}
+          restore-keys: |
+            mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-
+            mbui-linux-moon-${{ matrix.arch }}-
       - run: touch "$RUNNER_TEMP/start"
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: the store saved over what was
       # restored, nothing taken out, so the next run goes on from there. Saved only at the job's end, a store too far
@@ -287,6 +305,22 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: bash apps/mbui/scripts/beta.sh publish ${{ matrix.part }}
+      # (moon's build saved last, after the package is put and only where the job has the time left for it: a save cut
+      # by the job's limit would cancel a job whose beta was out)
+      - id: moon-room
+        if: github.ref == 'refs/heads/main' && steps.build.outcome == 'success' && steps.moon.outputs.cache-hit != 'true'
+        run: |
+          left=$(( JOB_END - $(date +%s) ))
+          if [ "$left" -gt 25 ]; then echo "save=1" >> "$GITHUB_OUTPUT"; else echo "moon's build not saved: ${left} s left"; fi
+      - if: steps.moon-room.outputs.save == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libs/mbui/out/linux/mod
+            libs/mbui/out/linux/app
+            !libs/mbui/out/linux/**/*.mbc
+            !libs/mbui/out/linux/**/*.mbc/**
+          key: mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-${{ github.sha }}
       - uses: actions/upload-artifact@v4
         if: github.ref != 'refs/heads/main'
         with: { name: "mbui-linux-${{ matrix.arch }}-${{ github.sha }}", path: ".ci/release/release/${{ matrix.part }}", retention-days: 7 }
@@ -600,7 +634,7 @@ jobs:
           # (the natives' keys made from here on, beside MSVC's and MoonBit's setup: Node's first start on the runner
           # is ~5 s and the keys' first look at the tree ~2, before the build could start, 2026-10-30, 40979192948)
           K=$RUNNER_TEMP/native-keys; mkdir -p "$K"
-          nohup bash -c 'PATH="$1:$PATH"; k="natives-win32-x64-$(node scripts/native.ts key shell win32-x64)-$(node scripts/native.ts key engine win32-x64)" && printf %s "$k" > "$0/key"; echo $? > "$0/status"' "$K" "$d" > /dev/null 2>&1 &
+          nohup bash -c 'PATH="$1:$PATH"; k="natives-win32-x64-$(node scripts/native.ts key shell win32-x64)-$(node scripts/native.ts key engine win32-x64)-$(node scripts/native.ts key ghostty-vt win32-x64)" && printf %s "$k" > "$0/key"; echo $? > "$0/status"' "$K" "$d" > /dev/null 2>&1 &
       - if: steps.node.outputs.kept != 'true'
         uses: actions/setup-node@v5
         with: { node-version-file: .node-version, package-manager-cache: false }
@@ -609,23 +643,24 @@ jobs:
       - name: Tools (MSVC's link.exe for cargo, which Git Bash's /usr/bin/link shadows)
         run: |
           echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -m "$(dirname "$(which cl)")/link.exe")" >> "$GITHUB_ENV"
-      # (the Windows engine and shell in the native cache, as a run before fetched them: a download is not every run's
-      # to break off, 39431384793)
+      # (the Windows engine, shell and libghostty-vt, which win.sh links, in the native cache, as a run before fetched
+      # them, as pipeline.yml's desktop-win: a download is not every run's to break off, 39431384793)
       - name: The Windows natives' keys
         id: native-keys
         run: |
           K=$RUNNER_TEMP/native-keys
           if [ -d "$K" ]; then while [ ! -f "$K/status" ]; do sleep 0.2; done; fi
           if [ "$(cat "$K/status" 2>/dev/null)" = 0 ]; then echo "key=$(cat "$K/key")" >> "$GITHUB_OUTPUT"
-          else echo "key=natives-win32-x64-$(node scripts/native.ts key shell win32-x64)-$(node scripts/native.ts key engine win32-x64)" >> "$GITHUB_OUTPUT"; fi
+          else echo "key=natives-win32-x64-$(node scripts/native.ts key shell win32-x64)-$(node scripts/native.ts key engine win32-x64)-$(node scripts/native.ts key ghostty-vt win32-x64)" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/cache@v4
         with:
           path: ~/AppData/Local/stillfail-native
           key: ${{ steps.native-keys.outputs.key }}
-      - name: The Windows engine and shell, prebuilt (the prebuild workflow's, when asked)
+      - name: The Windows engine, shell and ghostty-vt, prebuilt (the prebuild workflow's, when asked)
         run: |
           node scripts/native.ts fetch shell win32-x64
           node scripts/native.ts fetch engine win32-x64
+          node scripts/native.ts fetch ghostty-vt win32-x64
       # The app's build as the last run on main left it (mbui's in libs/mbui: moon's _build, the split C and its objects, the .exe): of main's pushes that run this job, three in four leave the app's C
       # as it was (tests, docs, client/, media/; 96 of 129, 2026-10-18 to 20), and then moonc writes the same C again,
       # scripts/mbc finds every unit's object made of the same inputs (by content) and the same link made already:
@@ -725,13 +760,14 @@ jobs:
           # (each quiet unless it fails, then all it said: pnpm says its errors on stdout, and a run that ended 127
           # with nothing said could not be told why, fix-update-jitter 40539668024)
           quiet() { "$@" > "$RUNNER_TEMP/packages.log" 2>&1 || { c=$?; cat "$RUNNER_TEMP/packages.log"; echo "packages: $* in $PWD: exit $c"; return $c; }; }
-          quiet pnpm install --frozen-lockfile --prefer-offline --ignore-scripts
           # (append-only: what its install scripts run and say, in the log, not only the packages: the core's ended 127
           # once more with every package added and nothing said after, #6305's 43616724205, 2026-11-14; esbuild's
           # postinstall is the one script it runs, pnpm-workspace.yaml's onlyBuiltDependencies)
           (cd client/core-ts && quiet pnpm install --frozen-lockfile --prefer-offline --reporter=append-only)
-          # (the cloud and the test station: the e2e flow's alone)
+          # (the root's, the cloud's and the test station's: the e2e flow's alone, as pipeline.yml's desktop-win installs
+          # only the core's; the root's on NTFS beside clang-cl was some 15-20 s of a push's)
           [ -n "$E2E" ] || exit 0
+          quiet pnpm install --frozen-lockfile --prefer-offline --ignore-scripts
           (cd cloud && quiet pnpm install --frozen-lockfile --prefer-offline)
           (cd station && quiet pnpm install --frozen-lockfile --prefer-offline && quiet pnpm run build:node)
       # The test station's natives (e2e/win.sh: mesh, runner and reader, win32-x64), by their keys. A change to one of them is in
@@ -813,7 +849,8 @@ jobs:
           # with 39-64 s of the job unused, main 6c66e773, 21ec95ea and eb3f3a3a in a row, 2026-11-17: 43989080704,
           # 43989906170, 43992166607)
           if [ "$GITHUB_EVENT_NAME" = push ]; then
-            reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 75 || echo 60)
+            # (main's 55 since the build cache's save runs beside the installer's put, not before it)
+            reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 55 || echo 60)
             wait=$(( JOB_END - $(date +%s) - reserve ))
             [ "$wait" -ge 30 ] || wait=30
           else
@@ -863,17 +900,6 @@ jobs:
           Z=$RUNNER_TEMP/zip; mkdir -p "$Z"
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'bash apps/mbui/scripts/beta.sh win > "$0/log" 2>&1; echo $? > "$0/signed"' "$Z" > /dev/null 2>&1 &
-      # main's, saved when its C is new (a branch reads main's: its own would be its alone), as soon as it is built:
-      # after the checks and the put below, a run cut at its five minutes saved none, and every run after built from
-      # the last one saved again, 159-178 s where it had taken 72, and was cut the same (main 7f153d7b and 6222bae5,
-      # and each branch after them, 2026-11-15)
-      - if: github.ref == 'refs/heads/main' && env.BUILD_KEY != steps.build-cache.outputs.cache-matched-key
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            libs/mbui/_build
-            libs/mbui/out
-          key: ${{ env.BUILD_KEY }}
       # the installer (apps/mbui/windows/setup.c) made of the app as built, put into a folder of this run's, put again
       # over it, taken away (e2e/win/setup.sh: ~5 s)
       - name: The installer, installed and taken away (e2e/win/setup.sh)
@@ -903,6 +929,17 @@ jobs:
           Z=$RUNNER_TEMP/zip
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'while [ ! -s "$0/signed" ]; do sleep 1; done; [ "$(cat "$0/signed")" = 0 ] && bash apps/mbui/scripts/beta.sh publish win >> "$0/log" 2>&1; echo $? > "$0/status"' "$Z" > /dev/null 2>&1 &
+      # main's, saved when its C is new (a branch reads main's: its own would be its alone), once the installer's put has
+      # started, its ~160 MB packed and sent while the put waits on the network: not after the checks below, where a run
+      # cut at its five minutes saved none, and every run after built from the last one saved again, 159-178 s where it
+      # had taken 72, and was cut the same (main 7f153d7b and 6222bae5, and each branch after them, 2026-11-15)
+      - if: github.ref == 'refs/heads/main' && env.BUILD_KEY != steps.build-cache.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libs/mbui/_build
+            libs/mbui/out
+          key: ${{ env.BUILD_KEY }}
       # (main's however the build ended: one cut short keeps what it compiled, nothing taken out, so the next run goes on
       # from there, as the Linux jobs' do; a branch's only of a build that went through, as theirs; what it left running (moon, mbc, clang-cl) stopped first
       # and their locks taken out, so the store is still as it is tarred: mbui-check.yml's save failed so, 43839505847)
