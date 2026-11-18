@@ -594,6 +594,8 @@ fn pane_made(
                 aside=fn(n) { pane_aside_at(src, n) },
                 // (its old view held at the width the block's move ends at all the way, moved across by its node)
                 held=fn(n) { pane_fold_held(src, n, k) },
+                // (bound once the block's move has first set off: nothing of it at rest before)
+                held_from=pane_fold_set_off,
               )
             })
             |> ignore

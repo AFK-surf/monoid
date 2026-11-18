@@ -248,6 +248,7 @@ pub fn chat_page_made(
   narrower? : (@view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
   held? : (@view.View) -> ColumnLaid,
+  held_from? : () -> Bool = fn() { true },
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
   let page_read = page_chat_reader(retained, v, serial)
@@ -466,26 +467,30 @@ pub fn chat_page_made(
       // is not, so it is built as the way sets off and not at each frame of it)
       let host = match held {
         Some(by) => {
-          let h = v.box(fn(h) {
-            h
-            .grow(Is(1.0))
-            .shrink(Is(0.0))
-            .min_height(Is(Some(0.0)))
-            // (as wide as what holds it leaves it at rest, nothing of its own said there)
-            .width(By(fn() {
-              let c = by(h)
-              if c.by.abs() < 0.5 && c.across == 0.0 {
-                None
-              } else {
-                Some(c.laid)
-              }
-            }))
-            .margin(By(fn() { (by(h).by, 0.0, 0.0, 0.0) }))
-            .offset(By(fn() { (by(h).across - by(h).by + aside_of(h), 0.0) }))
-            .lays_anew(By(fn() { by(h).laid }))
-            |> ignore
+          let h = v.box(fn(h) { h.grow(Is(1.0)).shrink(Is(0.0)).min_height(Is(Some(0.0))) |> ignore })
+          // (none of it at rest, nothing read as the chat changes: bound once the shell's way has first set off
+          // (`held_from`), at that cause)
+          let bound = Ref(false)
+          h.reacts(held_from, fn(going) {
+            if going && !bound.val && h.alive() {
+              bound.val = true
+              h
+              // (as wide as what holds it leaves it at rest, nothing of its own said there)
+              .width(By(fn() {
+                let c = by(h)
+                if c.by.abs() < 0.5 && c.across == 0.0 {
+                  None
+                } else {
+                  Some(c.laid)
+                }
+              }))
+              .margin(By(fn() { (by(h).by, 0.0, 0.0, 0.0) }))
+              .offset(By(fn() { (by(h).across - by(h).by + aside_of(h), 0.0) }))
+              .lays_anew(By(fn() { by(h).laid }))
+              |> ignore
+              v.clips(By(fn() { by(h).by.abs() > 0.5 })) |> ignore
+            }
           })
-          v.clips(By(fn() { by(h).by.abs() > 0.5 })) |> ignore
           h
         }
         None => v

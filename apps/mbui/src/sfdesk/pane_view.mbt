@@ -388,8 +388,22 @@ let fold_goes : FoldGoes = {
 }
 
 ///|
+/// How many times the block's move has set off (fold_moves_from): what is bound to the block's way only once it has set
+/// off follows it (pane_fold_set_off).
+// kept across runs: put back as a run begins (fold_goes_reset)
+let fold_set_offs : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Whether the block's move has set off yet (fold_set_offs): what the pane's chat holds its old view by is bound then,
+/// none of it at rest before (chat_page_made's `held_from`).
+fn pane_fold_set_off() -> Bool {
+  fold_set_offs.get() > 0
+}
+
+///|
 fn fold_goes_reset() -> Unit {
   pane_page_wait.reset()
+  fold_set_offs.set(0)
   fold_goes.way.put(1.0)
   fold_goes.from = None
   fold_goes.to = None
@@ -462,6 +476,7 @@ fn fold_moves_from(at : Double, to : FoldLook, was_look? : FoldLook) -> Unit {
   fold_goes.way.put(0.0)
   fold_goes.way.go(1.0, @motion.moved(over=fold_far(from, to)), at~)
   fold_said()
+  fold_set_offs.set(fold_set_offs.untracked() + 1)
 }
 
 ///|
