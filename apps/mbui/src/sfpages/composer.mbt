@@ -2096,7 +2096,7 @@ fn thumb_box() -> @ui.Style {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let thumb_whole : @ui.Style = @ui.css("border=B1 border_color=Line")
+let thumb_whole : @ui.Style = @ui.css("")
 
 ///|
 // kept across runs: a value (no field of it changes)

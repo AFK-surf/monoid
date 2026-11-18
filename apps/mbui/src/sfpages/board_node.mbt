@@ -1508,7 +1508,6 @@ fn board_files_node(
           fn() {  },
           fn() { "" },
           video=fn() { is_video() && picture() != "" && picture() != "!" },
-          rim=false,
         )
         |> ignore
       })
