@@ -69,7 +69,7 @@ let said_modes : Array[String] = [
   "settings-workspace", "settings-security", "settings-security-pending", "settings-vault", "settings-vault-items", "settings-vault-item", "settings-stations",
   "settings-station", "settings-station-env", "settings-station-processes", "settings-profiles", "settings-profile",
   "settings-connects", "settings-connect", "settings-memory", "settings-memory-doc", "settings-usage",
-  "settings-archive", "settings-run-models", "settings-run", "settings-decisions", "settings-changelog",
+  "settings-archive", "settings-decisions", "settings-changelog",
   "settings-new-profile",
 ]
 

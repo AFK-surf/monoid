@@ -10,7 +10,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 import { Effect, Exit, Scope, type Clock } from "effect";
 import { TestClock } from "effect/testing";
-import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
+import { PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
+import { type Line, hearLines } from "../src/ops/log.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { Copies, keptDir } from "../src/replica/copies.ts";
 import { keepers } from "../src/replica/peers.ts";
@@ -52,6 +53,8 @@ class Mesh {
   asks = 0;
   /// The requests each station was asked, by method (and kind, for `replica.put`).
   readonly asked = new Map<string, Map<string, number>>();
+  /// Stations from before copies: they refuse every `replica.*` as an old station's default handler does.
+  readonly old = new Set<string>();
 
   add(id: string, workspaces: string[], made?: { data: string; store: Store }): Node {
     const data = made?.data ?? dataDir(id.slice(0, 4));
@@ -68,6 +71,7 @@ class Mesh {
       const there = this.nodes.get(to);
       if (there === undefined || !there.up || !node.up) throw new Error("station unreachable");
       if (ws !== null && (!there.workspaces.includes(ws) || !(this.rosters.get(ws) ?? []).includes(id))) throw new Error("peer is not another station in this workspace");
+      if (this.old.has(to)) throw new Refused("session and task key are required (at most 256 / 128 bytes)");
       return across(await there.bus.handle(ws ?? "", id, across(request)));
     });
     const runner = new InlineRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: id, now: () => this.clock.currentTimeMillisUnsafe() });
@@ -405,6 +409,53 @@ test("while a keeper is not reached, the next station holds the copy; once it is
   await mesh.clock.move(60_000);
   await mesh.settle();
   assert.deepEqual(holders(mesh, HOME, A).sort(), [first!, second!].sort());
+});
+
+test("a keeper from before copies is said old, warned of and asked nothing again until it says it is up; the next station holds the copy meanwhile", async () => {
+  const mesh = new Mesh();
+  const A = id("a");
+  const others = ["b", "c", "d"].map(id);
+  mesh.rosters.set(HOME, [A, ...others]);
+  const a = mesh.add(A, [HOME], station());
+  for (const s of others) mesh.add(s, [HOME]);
+  const [first, second] = keepers(HOME, A, [A, ...others]);
+  const third = others.find((s) => s !== first && s !== second)!;
+  mesh.old.add(first!);
+  const lines: Line[] = [];
+  hearLines((l) => lines.push(l));
+  try {
+    for (const n of mesh.nodes.values()) if (n.id !== first) await n.copies.start();
+    await mesh.settle();
+    await mesh.clock.move(60_000);
+    await mesh.settle();
+    assert.deepEqual(holders(mesh, HOME, A).sort(), [second!, third].sort(), "the next one holds it in the old one's place");
+    const o = (await a.copies.overview(HOME)) as Json;
+    const old = o.keepers.find((k: Json) => k.station === first);
+    assert.equal(old.reason, "old");
+    assert.match(old.error, /are required/);
+    assert.equal(o.keepers.find((k: Json) => k.station === third).error, null);
+    const asked = () => [...(mesh.asked.get(first!) ?? new Map()).values()].reduce((x, y) => x + y, 0);
+    const before = asked();
+    // a pass, and an hour on the clock: nothing asked of it again
+    const thread = a.store.sessionThreads("chat:a")[0]!.thread.id;
+    a.store.insertMessage({ thread, ts: "old.1", authorKind: "person", author: "p@x", text: "while it is old" });
+    for (let i = 0; i < 6; i++) {
+      await mesh.clock.move(10 * 60_000);
+      await mesh.settle();
+    }
+    assert.equal(asked(), before, "no retry of a station from before copies");
+    assert.deepEqual(lines.filter((l) => l.message === "a place not brought level" && l.fields.place === first), [], "no warning of it");
+    // updated, it says it is up: brought level at once, and the third lets its own go
+    mesh.old.delete(first!);
+    await mesh.nodes.get(first!)!.copies.start();
+    await mesh.settle();
+    await mesh.clock.move(60_000);
+    await mesh.settle();
+    assert.deepEqual(holders(mesh, HOME, A).sort(), [first!, second!].sort());
+    assert.equal(((await a.copies.overview(HOME)) as Json).keepers.find((k: Json) => k.station === first).error, null);
+  } finally {
+    hearLines(null);
+  }
 });
 
 test("the export failing is said in the settings, and tried again with a backoff until it goes", async () => {

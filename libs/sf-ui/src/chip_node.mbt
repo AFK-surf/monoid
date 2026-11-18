@@ -87,10 +87,10 @@ fn tone_colours(tone : PillTone) -> (Int64, Int64) {
 }
 
 ///|
-/// A status pill (pill's) as a node in `parent`: `words` in its tone's ink on its tone's ground, a 4px rounded tag
-/// (Radius::Base) pill_h high, pill_in in at either end, cut short where its row has not the room; `icon` leading it
-/// (pill_icon, its ink, 4 before its words; "" none); one piece in bones. Static display only, keeping full capsules
-/// exclusive to clickable controls. The node.
+/// A status pill (pill's) as a node in `parent`: `words` in its tone's ink on its tone's ground, a tag (static_tag_in's:
+/// round as a tag is, Radius::Base, so a status said never looks like what is pressed) pill_h high, pill_in in at either
+/// end, growing with the system's size of words, cut short where its row has not the room; `icon` leading it (pill_icon,
+/// its ink, 4 before its words; "" none); one piece in bones. The node.
 #callsite(autofill(loc))
 pub fn pill_node(
   parent : @view.View,
@@ -101,40 +101,19 @@ pub fn pill_node(
 ) -> @view.View {
   let colours = fn() { tone_colours(tone) }
   parent.box(made_for=loc, fn(b) {
-    b
-    .row(Is(true))
-    .height(Is(Some(pill_h)))
-    .padding(Is((pill_in, 0.0, pill_in, 0.0)))
-    // (4px rectangular tag corner so non-interactive status pills never share full-capsule form with buttons)
-    .radius(Is(4.0))
-    .lines_up(Is(Some(Middle)))
-    .ground(By(fn() { colours().0 }))
-    .bone_whole(Is(true))
-    .shrink(Is(1.0))
-    .min_width(Is(Some(0.0)))
-    |> ignore
-    // (none, the pill as it was: its words alone)
-    if icon != "" {
-      b.gap(Is(pill_icon_gap)) |> ignore
-      icon_node(b, icon, pill_icon, By(fn() { colours().1 })) |> ignore
+    let lead = if icon != "" {
+      Some(fn(l : @view.View) { icon_node(l, icon, pill_icon, By(fn() { colours().1 })) |> ignore })
+    } else {
+      None
     }
-    b.box(fn(w) {
-      w
-      .words(By(words))
-      .words_look(By(fn() { @ui.style_words(pill_words) }))
-      .ink(By(fn() { colours().1 }))
-      .cuts(Is(true))
-      .min_width(Is(Some(0.0)))
-      .allow_ellipsis(Is(true))
-      |> ignore
-    })
-    |> ignore
+    static_tag_in(b, pill_kind, words, fn() { colours().1 }, ground=fn() { colours().0 }, lead?, cuts=true)
   })
 }
 
 ///|
-/// A compact inline status badge in `parent`: `words` in Caption Medium, 4px rounded tag (Radius::Base), scaling with
-/// the system's word size. Static display only, visually separated from clickable capsule buttons.
+/// A compact inline status badge in `parent`: `words` in its tone's ink on its tone's ground, the caption's size,
+/// medium, a tag's height (static_tag_in's: round as a tag is, Radius::Base), growing with the system's size of words.
+/// Said, not pressed. The node.
 #callsite(autofill(loc))
 pub fn badge_node(
   parent : @view.View,
@@ -144,26 +123,9 @@ pub fn badge_node(
 ) -> @view.View {
   let colours = fn() { tone_colours(tone) }
   parent.box(made_for=loc, fn(b) {
-    style_node(b, fn() { badge_box }, in_row=true)
-    b.shrink(Is(0.0)).ground(By(fn() { colours().0 })).bone_whole(Is(true)) |> ignore
-    b.box(fn(w) {
-      w
-      .words(By(words))
-      .words_look(By(fn() { @ui.style_words(badge_words) }))
-      .ink(By(fn() { colours().1 }))
-      |> ignore
-    })
-    |> ignore
+    static_tag_in(b, badge_kind, words, fn() { colours().1 }, ground=fn() { colours().0 }, in_row=true)
   })
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-let badge_box : @ui.Style = @ui.css("row px=S1_25 radius=Base align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let badge_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, wrap=false)
 
 ///|
 /// A borderless full-capsule toggle chip in `parent`: soft neutral capsule while off, accented capsule while `active`;

@@ -39,7 +39,9 @@ let tool_faint : Double = 0.35
 /// ripples over it and, where its ground is one of its own (@ui.stands_alone), sinks it (press_look: picture_button's).
 /// `roving`: its hover ground the one its row's tools share (roving_hover_node: going from the tool the hand came from
 /// to this one), drawn over its chosen ground, under its icon, in place of its own; none given, the one what holds it
-/// lends (rove_lent), if any. The node.
+/// lends (rove_lent), if any. `progress`: while what it does goes on and says how far (Some, 0 to 1, as viewer_download
+/// draws a download coming), a ring in the ink's own in its icon's place saying how far (ring_shapes), faint and taking
+/// no press as a tool that cannot be pressed, read out still as itself; None, the tool. The node.
 #callsite(autofill(loc))
 pub fn tool_node(
   parent : @view.View,
@@ -51,8 +53,18 @@ pub fn tool_node(
   lights? : Bool = true,
   ripples? : Bool = false,
   roving? : RovingHover,
+  progress? : () -> Double? = fn() { None },
   loc~ : SourceLoc,
 ) -> @view.View {
+  // (what it says while what it does goes on: unable to be pressed, as viewer_download's ring is)
+  let said = fn() {
+    let s = said()
+    if progress() is Some(_) {
+      { ..s, disabled: true }
+    } else {
+      s
+    }
+  }
   // (the hover ground its row shares: given it, else lent it by what holds it, a bar's row of tools: rove_lent)
   let roving = match roving {
     Some(r) => Some(r)
@@ -152,10 +164,16 @@ pub fn tool_node(
         i
         .width(Is(Some(viewer_tool_icon)))
         .height(Is(Some(viewer_tool_icon)))
-        .shapes(By(fn() { tool_shapes(said().icon) }))
+        // (its ring while what it does goes on, in the ink's own, drawn in its own colours: no tint then)
+        .shapes(By(fn() {
+          match progress() {
+            Some(p) => ring_shapes(viewer_tool_icon, p, ink().ink)
+            None => tool_shapes(said().icon)
+          }
+        }))
         // (called as an old view's icon is, by what finds it on screen)
         .drawn_as(By(fn() { "/icon/" + said().icon + "/" }))
-        .tint(By(shown_ink))
+        .tint(By(fn() { if progress() is Some(_) { 0L } else { shown_ink() } }))
         |> ignore
       })
       |> ignore
@@ -214,36 +232,4 @@ fn tool_shapes(name : String) -> Array[@ui.Shape] {
     Some(d) => icon_shapes(d, viewer_tool_icon / 24.0, 0x000000FFL)
     None => []
   }
-}
-
-///|
-/// A tool's place while what it does goes on, as viewer_download draws it while a download comes (its 32 square, faint
-/// as a tool that cannot be pressed, a ring in the ink's own saying how far, `part` as it changes), in `parent`: read
-/// out as the tool it stands for (`label`), unable to be pressed; its corner `corner`. The node.
-#callsite(autofill(loc))
-pub fn tool_ring_node(
-  parent : @view.View,
-  part : () -> Double,
-  label : () -> String,
-  ink : () -> ViewerInk,
-  corner : @view.Live[Double],
-  loc~ : SourceLoc,
-) -> @view.View {
-  @headless.button(made_for=loc, parent, label, fn(_) {  }, disabled=fn() { true }, fn(v, _) {
-    v
-    .width(Is(Some(tool_side)))
-    .height(Is(Some(tool_side)))
-    .padding(Is((tool_icon_in, tool_icon_in, tool_icon_in, tool_icon_in)))
-    .radius(corner)
-    .alpha(Is(tool_faint))
-    |> ignore
-    v.box(fn(i) {
-      i
-      .width(Is(Some(viewer_tool_icon)))
-      .height(Is(Some(viewer_tool_icon)))
-      .shapes(By(fn() { ring_shapes(viewer_tool_icon, part(), ink().ink) }))
-      |> ignore
-    })
-    |> ignore
-  })
 }

@@ -704,7 +704,7 @@ async fn Admin::went(self : Admin, path : String, viewer : JV) -> JV? {
 
 ///|
 /// A message's write kept under its key, as a hand-over carries it to the station its chat went to.
-pub struct KeptSend {
+pub(all) struct KeptSend {
   viewer : String
   thread : Double
   key : String

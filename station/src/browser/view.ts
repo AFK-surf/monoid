@@ -149,11 +149,16 @@ export const COPY_HOOK = `(() => {
 export const LOGIN_BINDING = "__stillfailLogin";
 /// What tells of the login field in focus, run in a page's top document (and each one it opens while watched): a
 /// password field, or one an account goes in (marked so, or a text field of a form with a password field, or named
-/// so), said as `{"field": …}` as the focus comes to one and `null` as it leaves; only when it changed. What it says is
-/// only a hint: the site is the station's to say (the tab's address), and the page may call the binding as it likes.
+/// so), said as `{"field": …, "filled": true}` (or without `filled` while empty) as the focus comes to one or its value
+/// changes and `null` as it leaves; only when it changed. What it says is only a hint: the site is the station's to say
+/// (the tab's address), and the page may call the binding as it likes.
 export const LOGIN_HOOK = `(() => {
-  if (window !== window.top || window.__stillfailLoginHook) return;
-  window.__stillfailLoginHook = true;
+  if (window !== window.top) return;
+  if (typeof window.__stillfailLoginTell === "function") {
+    window.__stillfailLoginTell();
+    return;
+  }
+  const deep = (root) => { let el = root.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement; return el; };
   const kind = (el) => {
     if (!el || el.tagName !== "INPUT" || el.disabled || el.readOnly) return null;
     const type = (el.type || "text").toLowerCase();
@@ -164,18 +169,25 @@ export const LOGIN_HOOK = `(() => {
     if (el.form && el.form.querySelector("input[type=password]")) return "username";
     return /user|email|login|account|identifier/i.test((el.name || "") + " " + (el.id || "")) ? "username" : null;
   };
-  const focused = (e) => (e && e.composedPath ? e.composedPath()[0] : document.activeElement);
+  const focused = (e) => (e && e.composedPath ? e.composedPath()[0] : deep(document));
   let said = "";
-  const say = (field) => {
-    const now = field ? JSON.stringify({ field }) : "null";
+  const say = (el) => {
+    const field = kind(el);
+    const now = field ? JSON.stringify(el.value ? { field, filled: true } : { field }) : "null";
     if (now === said) return;
     said = now;
     try { if (typeof window.${LOGIN_BINDING} === "function") window.${LOGIN_BINDING}(now); } catch {}
   };
-  document.addEventListener("focusin", (e) => say(kind(focused(e))), true);
+  window.__stillfailLoginTell = () => {
+    said = "";
+    say(deep(document));
+  };
+  document.addEventListener("focusin", (e) => say(focused(e)), true);
   // (where the focus goes: none, or one a focusin then says itself)
-  document.addEventListener("focusout", (e) => say(kind(e.relatedTarget)), true);
-  say(kind(document.activeElement));
+  document.addEventListener("focusout", (e) => say(e.relatedTarget), true);
+  document.addEventListener("input", () => say(deep(document)), true);
+  document.addEventListener("change", () => say(deep(document)), true);
+  say(deep(document));
 })()`;
 
 /// Fills the login form the focus is in (or the page's first, where the focus is in none): its account field and its
@@ -514,7 +526,8 @@ export class TabView implements ScreenView {
       } catch {}
       const field = said?.field === "username" || said?.field === "password" ? (said.field as LoginField["field"]) : null;
       if (field === null) return heard(null);
-      void this.#host(targetId).then((host) => on && heard(host === "" ? null : { host, field }));
+      const filled = said?.filled === true;
+      void this.#host(targetId).then((host) => on && heard(host === "" ? null : { host, field, ...(filled ? { filled: true } : {}) }));
     });
     const undo = () => {
       if (this.#ended) return;

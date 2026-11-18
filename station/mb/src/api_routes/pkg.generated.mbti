@@ -307,7 +307,7 @@ pub struct Kept {
   body : Bytes
 }
 
-pub struct KeptSend {
+pub(all) struct KeptSend {
   viewer : String
   thread : Double
   key : String

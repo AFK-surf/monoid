@@ -268,10 +268,10 @@ fn side_said_node(line : @view.View, bad : Bool, words : () -> String) -> Unit {
 }
 
 ///|
-/// Looking for one (archive_search_side's) in `line`: a field at the list's top on the pointer's ground, as what stands
-/// over a sidebar's list is (the theme's band's: its height, its words' room, its mark, its words); its 4 under it while
-/// `gap` says. What it holds the archive's words looked for (archive_side's `q`, trimmed), the first page asked again as
-/// they change.
+/// Looking for one (archive_search_side's) in `line`: the library's field to look through a list by, standing where the
+/// list does (@sf.search_input_node: the theme's band's height, its words' room, its mark, its words, the clear key
+/// while it holds words); its 4 under it while `gap` says. What it holds the archive's words looked for (archive_side's
+/// `q`, trimmed), the first page asked again as they change.
 fn archive_search_side_node(line : @view.View, at : @sf.ListAt, gap : () -> Bool) -> Unit {
   let own = @ui.Field::new(text=archive_side.q.untracked())
   line.box(fn(o) {
@@ -283,32 +283,7 @@ fn archive_search_side_node(line : @view.View, at : @sf.ListAt, gap : () -> Bool
         archive_side.limit.set(archive_side_page)
       }
     })
-    o.box(fn(f) {
-      @sf.style_node(f, fn() {
-        let l = @sf.theme().chat_list
-        arch_field.then(@ui.style(h=Fixed(l.band_h), px=@sf.room_of(@sf.band_pad_in(at))))
-      })
-      @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-      @ui.field(
-        f,
-        own,
-        placeholder_by=fn() { @sf.t("web-pages.archive.search") },
-        max_lines=1,
-        enter_sends=true,
-        size_by=fn() { @sf.theme().t.ui },
-        line=@signals.untracked(fn() { @sf.theme().t.ui_line }),
-        colors_by=fn() {
-          let p = @sf.theme().p
-          (p.text, p.subtle, p.accent)
-        },
-      )
-      .grow(Is(1.0))
-      .basis(Is(Some(0.0)))
-      .shrink(Is(1.0))
-      .min_width(Is(Some(0.0)))
-      |> ignore
-    })
-    |> ignore
+    @sf.search_input_node(o, own, fn() { @sf.t("web-pages.archive.search") }, at~) |> ignore
   })
   |> ignore
 }
@@ -467,7 +442,6 @@ fn archive_row_side_node(
           "retry",
           fn() { t().p.text },
           fn() { @sf.t("web-pages.archive.restoreNamed", args=[("title", title())]) },
-          fn() { @sf.t("web-pages.archive.restore") },
           busy,
           fn() { archive_restore(src, @signals.untracked(it)) },
         )
@@ -478,7 +452,6 @@ fn archive_row_side_node(
             "trash",
             fn() { t().p.red },
             fn() { @sf.t("web-pages.archive.deleteNamed", args=[("title", title())]) },
-            fn() { @sf.t("common.delete") },
             fn() { false },
             fn() { archive_delete(src, @signals.untracked(it)) },
           )
@@ -491,39 +464,26 @@ fn archive_row_side_node(
 }
 
 ///|
-/// A key of an archived chat's row (@sf.row_key_box's) in `parent`: round, 24 across, the pointer's ground on it; its
-/// `icon` muted, in `lit()` under the pointer; turning while `busy`, taking no press then; read out a button named
-/// `label()`, `tip()` its tip; pressed, `press`.
+/// A key of an archived chat's row (@sf.row_key_box's) in `parent`: the library's icon button (@sf.icon_button_node),
+/// round, 24 across, the pointer's ground on it; its `icon` muted, in `lit()` under the hand; read out a button named
+/// `label()`, its tip; pressed, `press`. While `busy`, a spinner in its place, taking no press.
 fn archive_key_node(
   parent : @view.View,
   tips : @sf.TipLayer,
   icon : String,
   lit : () -> Int64,
   label : () -> String,
-  tip : () -> String,
   busy : () -> Bool,
   press : () -> Unit,
 ) -> Unit {
-  @headless.button(parent, label, fn(_) { if !@signals.untracked(busy) { press() } }, fn(k, _) {
-    k
-    .width(Is(Some(row_key_side)))
-    .height(Is(Some(row_key_side)))
-    .radius(Is(1.0e6))
-    .lines_up(Is(Some(Middle)))
-    .lies_along(Is(Middle))
-    |> ignore
-    // (its hover ground over what it stands on: the library's)
-    @sf.hover_ground_node(k)
-    k.pick(busy, fn(m, on) {
-      if on {
-        @sf.spinner_node(m, size=arch_spin) |> ignore
-      } else {
-        @sf.icon_node(m, icon, arch_icon, By(fn() { if @sf.lit_node(k) { lit() } else { @sf.theme().p.muted } })) |> ignore
-      }
-    })
-    @sf.tip_node(tips, k, tip) |> ignore
+  parent.pick(busy, at_once=true, fn(k, on) {
+    if on {
+      k.width(Is(Some(row_key_side))).height(Is(Some(row_key_side))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+      @sf.spinner_node(k, size=arch_spin) |> ignore
+    } else {
+      @sf.icon_button_node(k, icon, label, press, tips~, size=row_key_side, icon_size=arch_icon, ink=lit) |> ignore
+    }
   })
-  |> ignore
 }
 
 ///|

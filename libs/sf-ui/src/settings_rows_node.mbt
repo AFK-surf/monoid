@@ -2,26 +2,93 @@
 // row's lead; the first of something to add, EmptyState's), laid out by the width the page's frame gives it (look_node): the page gives what they say, these how.
 
 ///|
-/// How something stands, at a glance (status_dot's, as a node): a dot 7 round, online the online green, busy amber,
-/// error red, waiting the muted ink, else (offline) a ring 1.5 in it; `state` as it is now.
+/// How something stands, at a glance (status_dot's and a job's JobDot, as a node): a dot `size` round, online the online
+/// green, busy amber, error red, waiting the muted ink; a job's tones the theme's (up green, restart amber breathing to
+/// .35 and back, fail red, off the strong line's grey), live green with its breath out round it (from .6 to 1.15 and
+/// back, fading); else (offline) a ring 1.5 in it; `state` as it is now, the breaths on the resident clock's steps, only
+/// where it `breathes` (a job's: made anew as its state changes, in `parent`, whatever `in_node` says). Made in a box
+/// of its own in `parent`, or `in_node` of `parent` itself (a box given for it alone).
 #callsite(autofill(loc))
-pub fn state_dot_node(parent : @view.View, state : () -> String, loc~ : SourceLoc) -> Unit {
-  let look = fn() {
+pub fn state_dot_node(
+  parent : @view.View,
+  state : () -> String,
+  size? : Double = dot_across,
+  in_node? : Bool = false,
+  breathes? : Bool = false,
+  loc~ : SourceLoc,
+) -> Unit {
+  let look_of = fn(st : String) {
     let p = theme().p
-    match state() {
+    let tone = fn(c : @ui.Color) { (@ui.tree_theme().color(c), no_ground) }
+    match st {
       "online" => (p.online, no_ground)
       "busy" => (p.warn_ink, no_ground)
       "error" => (p.red, no_ground)
       "waiting" => (p.muted, no_ground)
+      "up" | "live" => tone(Positive)
+      "restart" => tone(Warn)
+      "fail" => tone(Danger)
+      "off" => tone(Border)
       _ => (no_ground, p.muted)
     }
   }
-  parent.box(made_for=loc, fn(d) {
+  let round = fn(d : @view.View) {
     d
-    .width(Is(Some(dot_across)))
-    .height(Is(Some(dot_across)))
+    .width(Is(Some(size)))
+    .height(Is(Some(size)))
     // (round as a pill is said to be, Full: as round as it can be)
     .radius(Is(1.0e6))
+    |> ignore
+  }
+  // (one that breathes: made anew as its state changes, what a state has bound only in it (the old view's job_dot,
+  // a box each state), so a job up, failed or off binds its colour alone; a job's tones are each a ground, no ring)
+  if breathes {
+    parent.pick(loc~, state, fn(p, st) {
+      p.box(fn(d) {
+        round(d)
+        d.ground(By(fn() { look_of(st).0 })) |> ignore
+        // (restarting: breathing to .35 and back)
+        if st == "restart" {
+          d
+          .alpha(By(fn() {
+            let f = d.cycle_resident(breath_ms)
+            let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
+            1.0 - (1.0 - state_breath_low) * @ui.Ease::InOut.at(way)
+          }))
+          |> ignore
+        }
+        // (alive: its breath out round it, over what is beside it)
+        if st == "live" {
+          d.box(fn(halo) {
+            halo
+            .over(Is(true))
+            .offset(Is((-state_halo_out, -state_halo_out)))
+            .width(Is(Some(size + state_halo_out * 2.0)))
+            .height(Is(Some(size + state_halo_out * 2.0)))
+            .radius(Is(1.0e6))
+            .ground(By(fn() { @ui.tree_theme().color(Positive) }))
+            |> ignore
+            let way = fn() {
+              let f = halo.cycle_resident(state_live_ms)
+              if f < 0.5 {
+                f * 2.0
+              } else {
+                2.0 - f * 2.0
+              }
+            }
+            halo.scale(By(fn() { 0.6 + 0.55 * way() })).alpha(By(fn() { 0.35 * (1.0 - way()) })) |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    })
+    return
+  }
+  let look = fn() { look_of(state()) }
+  let dot = fn(d : @view.View) {
+    round(d)
+    d
     .ground(By(fn() { look().0 }))
     .edge(By(fn() {
       match look() {
@@ -30,13 +97,29 @@ pub fn state_dot_node(parent : @view.View, state : () -> String, loc~ : SourceLo
       }
     }))
     |> ignore
-  })
-  |> ignore
+  }
+  if in_node {
+    dot(parent)
+  } else {
+    parent.box(made_for=loc, dot) |> ignore
+  }
 }
 
 ///|
 /// status_dot's across (dot_size).
 let dot_across : Double = 7.0
+
+///|
+/// How faint a restarting dot breathes (breathe's `low` in job_dot).
+let state_breath_low : Double = 0.35
+
+///|
+/// How long an alive dot's breath out takes (jobLive 2.4 s).
+pub let state_live_ms : Double = 2400.0
+
+///|
+/// How far an alive dot's breath reaches past it (inset -4).
+pub let state_halo_out : Double = 4.0
 
 ///|
 /// What is before a station's name in its row (the web's StationRow): wide, whether it is online, then its mark where it
@@ -146,57 +229,6 @@ let note_link_inline_narrow : @ui.TextStyle = secondary.then(one_line)
 ///|
 // kept across runs: a value (no field of it changes)
 let note_link_inline_wide : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
-
-///|
-/// A row on a group's card that undoes what is not got back (关闭安全模式: a page's narrow foot), as an old view's row of
-/// the body's words in red: lit under the hand, rippling under a finger, `press` done as it is pressed; while `busy`
-/// says, a spinner after its words and pressed none, lit none. Read out a button named `title`.
-#callsite(autofill(loc))
-pub fn danger_row_node(
-  parent : @view.View,
-  title : () -> String,
-  press : () -> Unit,
-  busy? : () -> Bool = fn() { false },
-  loc~ : SourceLoc,
-) -> Unit {
-  @headless.button(made_for=loc, parent, title, fn(_) { press() }, disabled=busy, fn(r, b) {
-    r
-    .row(Is(true))
-    .gap(Is(12.0))
-    .padding(Is((text_in, text_in, text_in, text_in)))
-    .radius(Is(@ui.concentric(group_corner, list_pad)))
-    .lines_up(Is(Some(Middle)))
-    .focus_ring_theme()
-    |> ignore
-    hover_ground_node(r, on=fn() { !b.disabled() })
-    // (a pointer's press lights its ground: press_ripple's)
-    let rippled = press_look(r, Is(row_corner), fn() { false }, pointer=false)
-    let on_it = fn(d : @view.Drag) { r.finger_target(d.wx, d.wy) }
-    r.gesture(
-      @ui.touch_slop(),
-      press=fn(d) { if !b.disabled() { (rippled.down)(d) } },
-      tap=fn(d) {
-        (rippled.tapped)(d)
-        if on_it(d) {
-          b.press()
-        }
-      },
-      drag=fn(d) { if d.kind == Up && @ui.pointing() is Mouse && on_it(d) { b.press() } },
-    )
-    |> ignore
-    words_node(r, title, fn() { danger_row_words }) |> ignore
-    r.show(busy, fn(s) { spinner_node(s, size=danger_row_spin) |> ignore })
-  })
-  |> ignore
-}
-
-///|
-/// A danger row's words (the body's in red) and its spinner (14).
-// kept across runs: a value (no field of it changes)
-let danger_row_words : @ui.TextStyle = body.then(bad)
-
-///|
-let danger_row_spin : Double = 14.0
 
 ///|
 /// The first of something to add (first_one's, as a node: StationsFirst, ProfilesFirst) in `parent`: `art` over its

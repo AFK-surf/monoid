@@ -32,6 +32,19 @@ runs:
         echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
         echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
         sh .github/actions/setup-linux/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"
+        upkeep="$HOME/stillfail-ci/.upkeep"
+        if [ -z "$(find "$upkeep" -mmin -60 2>/dev/null)" ]; then
+          mkdir -p "$HOME/stillfail-ci" && touch "$upkeep"
+          if [ -d "$HOME/stillfail-ci/reader-mbc-store" ]; then
+            find "$HOME/stillfail-ci/reader-mbc-store" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
+            find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          for diag in "$HOME"/actions-runner*/_diag; do
+            [ -d "$diag" ] || continue
+            find "$diag" -maxdepth 1 -type f -name 'Worker_*.log' -mtime +1 -delete 2>/dev/null || true
+            find "$diag" -maxdepth 2 -type f -mtime +3 -delete 2>/dev/null || true
+          done
+        fi
         archives="$HOME/stillfail-ci/action-archives"
         if [ -z "$(find "$archives/.filled" -mmin -60 2>/dev/null)" ]; then
           mkdir -p "$archives" && touch "$archives/.filled"

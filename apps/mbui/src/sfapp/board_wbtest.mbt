@@ -532,7 +532,8 @@ test "the new action on 小屏 brings 待派发 into view; on the list it still 
   assert_true(@sfbase.board_on_of(src, "ws1"))
   assert_eq(@sfbase.board_lane.get(), "draft")
   t.type_text("小屏上的待办")
-  t.enter()
+  // (the screen's keyboard's Enter a new line, as in a chat's composer: 添加 adds it)
+  t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
   assert_eq(board_kept_drafts()[0], "小屏上的待办")
   let (t, src) = board_at("board-list", 1440.0, 900.0)
@@ -560,8 +561,8 @@ test "待派发: a pasted picture is kept with an image-only task and sent after
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
   // (⌘ let go after pasting, as the host says it: held, 添加 is 派发)
   t.hold_mods(0)
-  t.frame()
-  t.frame()
+  // (its picture over its words, what is under it moved down for it)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="移除 image.png") is Some(_))
   t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
@@ -598,10 +599,10 @@ test "待派发: removing a pasted picture leaves the words and sends no file" {
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
   // (⌘ let go after pasting, as the host says it: held, 添加 is 派发)
   t.hold_mods(0)
-  // (its strip's room open over the words)
+  // (its picture over its words, what is under it moved down for it)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 image.png")
-  t.frame()
+  t.run_for(@ui.move_most_ms)
   t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
   let draft = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
@@ -666,7 +667,7 @@ test "小屏: a picture pasted with words is kept in 待派发" {
   t.type_text("检查图片")
   t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
-  // (its strip's room open over the words)
+  // (its picture over its words, what is under it moved down for it)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
@@ -1753,6 +1754,55 @@ test "大屏: a chat put in the pane's place from the board (⌘N, 待处理's, 
     assert_eq(board_faults(t), [])
   }
 }
+
+///|
+test "大屏: words written in 待派发 kept as the board makes way for the list or a chat, there again as 看板 is pressed" {
+  let chat : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("作为文件")
+  t.run_for(@ui.move_most_ms)
+  // (对话: the list again, the board gone)
+  board_rail_press(t, "对话")
+  assert_false(@sfbase.board_on_of(src, "ws1"))
+  assert_true(t.query(TextField, label="要做什么？") is None)
+  // (看板 again: its line open on what was written, nothing added)
+  board_rail_press(t, "看板")
+  assert_true(@sfbase.board_adding.get())
+  assert_eq(t.field_words(), "作为文件")
+  assert_false(board_kept_drafts().contains("作为文件"))
+  // (a chat put in the board's place: the words kept for the board to come back to)
+  open_page(Chat(chat))
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_on_of(src, "ws1"))
+  assert_true(@sfbase.board_writing_kept(src, "ws1"))
+  assert_false(board_kept_drafts().contains("作为文件"))
+}
+
+///|
+test "大屏: 待派发's line put away by Escape is empty as it opens again; once added, empty for the next" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("留待稍后")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_kept_drafts().contains("留待稍后"))
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_writing_kept(src, "ws1"))
+  assert_eq(t.field_words(), "")
+  t.type_text("现在执行")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_writing_kept(src, "ws1"))
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.field_words(), "")
+  assert_eq(board_faults(t), [])
+}
+
 
 ///|
 test "大屏: 看板 taken out of the rail from its menu, kept so; 侧边条恢复默认 puts it back right under 对话" {

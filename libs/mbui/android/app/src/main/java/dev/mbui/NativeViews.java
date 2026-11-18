@@ -8,7 +8,11 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.PorterDuff;
 import android.graphics.SurfaceTexture;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
 import android.media.MediaDataSource;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.opengl.GLES30;
@@ -1994,32 +1998,195 @@ final class NativeViews {
             return video[0] < 0 ? new long[0] : x.getSampleTimestampsUs(video[0]);
         }
 
-        /** The frame showing at `ms` grabbed whole at its own size (MediaMetadataRetriever, the closest), as a PNG. */
+        /**
+         * The frame showing at `ms` grabbed whole at its own size, as a PNG: the system's retriever's (the closest),
+         * which knows every format the device decodes (HDR's, a decoder's own); where it gives none, decoded here
+         * (grabByCodec). The retriever decodes in the media server, which gives up on a decoder that has said nothing
+         * for about a second of the clock (FrameDecoder's 100 waits of 10 ms): an emulator held up longer than that
+         * (CI's, 10 s seen) had it give none at random (mbui-host-android 43901247938, 44250621232).
+         */
         void grab(double ms) {
             stillState = 1;
             still = new byte[0];
             new Thread(() -> {
+                Bitmap b = null;
+                String how = "";
                 MediaMetadataRetriever r = new MediaMetadataRetriever();
                 Media media = new Media();
                 try {
                     r.setDataSource(media);
-                    Bitmap b = r.getFrameAtTime((long) (ms * 1000), MediaMetadataRetriever.OPTION_CLOSEST);
+                    b = r.getFrameAtTime((long) (ms * 1000), MediaMetadataRetriever.OPTION_CLOSEST);
+                    if (b == null) Host.log("view " + id + ": no frame at " + ms + " ms from the system's retriever");
+                } catch (Exception e) {
+                    Host.log("view " + id + ": no frame at " + ms + " ms from the system's retriever: " + e);
+                } finally {
+                    try { r.release(); } catch (Exception ignored) { }
+                    media.close();
+                }
+                try {
+                    if (b == null && !closed) {
+                        b = grabByCodec(ms);
+                        how = " via codec";
+                    }
                     if (b == null) throw new IOException("no frame at " + ms + " ms");
                     ByteArrayOutputStream out = new ByteArrayOutputStream();
                     b.compress(Bitmap.CompressFormat.PNG, 100, out);
                     b.recycle();
                     still = out.toByteArray();
                     stillState = 2;
-                    Host.log("view " + id + ": frame at " + ms + " ms grabbed (" + still.length + " bytes)");
+                    Host.log("view " + id + ": frame at " + ms + " ms grabbed" + how + " (" + still.length + " bytes)");
                 } catch (Exception e) {
                     Host.log("view " + id + ": frame not grabbed: " + e);
                     stillState = -1;
-                } finally {
-                    try { r.release(); } catch (Exception ignored) { }
-                    media.close();
                 }
                 Native.tell(Native.OUTSIDE_GRAB, id, stillState == 2 ? 1 : -1);
             }, "mbui-grab").start();
+        }
+
+        /**
+         * The frame showing at `ms` decoded here (the grab thread), from the key frame before it: the first whose
+         * time is `ms` or after, else the last there is (the retriever's closest). Each wait is for the decoder's
+         * next word, however long it takes, the view's closing looked at between them; it ends at that frame, the
+         * stream's end, a decoder's failure or the view closed, never at a time.
+         */
+        Bitmap grabByCodec(double ms) throws IOException {
+            Media media = new Media();
+            MediaExtractor x = new MediaExtractor();
+            MediaCodec codec = null;
+            try {
+                x.setDataSource(media);
+                int track = -1;
+                MediaFormat format = null;
+                for (int i = 0; i < x.getTrackCount(); i++) {
+                    MediaFormat f = x.getTrackFormat(i);
+                    String m = f.getString(MediaFormat.KEY_MIME);
+                    if (m != null && m.startsWith("video/")) {
+                        track = i;
+                        format = f;
+                        break;
+                    }
+                }
+                if (track < 0) throw new IOException("no video track");
+                x.selectTrack(track);
+                String mime = format.getString(MediaFormat.KEY_MIME);
+                int rotation = format.containsKey(MediaFormat.KEY_ROTATION) ? format.getInteger(MediaFormat.KEY_ROTATION) : 0;
+                codec = MediaCodec.createDecoderByType(mime);
+                try {
+                    MediaFormat flexible = new MediaFormat(format);
+                    flexible.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
+                    codec.configure(flexible, null, null, 0);
+                } catch (Exception e) {
+                    // (a decoder that takes no colour format asked for: its own, read as YUV_420_888 all the same)
+                    codec.reset();
+                    codec.configure(format, null, null, 0);
+                }
+                codec.start();
+                long target = Math.max(0L, Math.round(ms * 1000.0));
+                x.seekTo(target, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
+                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+                boolean fed = false;
+                Bitmap last = null;
+                MediaFormat out = codec.getOutputFormat();
+                while (!closed) {
+                    if (!fed) {
+                        int in = codec.dequeueInputBuffer(100_000);
+                        if (in >= 0) {
+                            java.nio.ByteBuffer buf = codec.getInputBuffer(in);
+                            int n = buf == null ? -1 : x.readSampleData(buf, 0);
+                            if (n < 0) {
+                                codec.queueInputBuffer(in, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                fed = true;
+                            } else {
+                                codec.queueInputBuffer(in, 0, n, x.getSampleTime(), 0);
+                                x.advance();
+                            }
+                        }
+                    }
+                    int o = codec.dequeueOutputBuffer(info, 100_000);
+                    if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        out = codec.getOutputFormat();
+                        continue;
+                    }
+                    if (o < 0) continue;
+                    boolean end = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                    if (info.size > 0) {
+                        android.media.Image img = codec.getOutputImage(o);
+                        Bitmap b = img == null ? null : bitmapOf(img, out, rotation);
+                        if (img != null) img.close();
+                        codec.releaseOutputBuffer(o, false);
+                        if (b != null && info.presentationTimeUs >= target) {
+                            if (last != null) last.recycle();
+                            return b;
+                        }
+                        if (b != null) {
+                            if (last != null) last.recycle();
+                            last = b;
+                        }
+                    } else {
+                        codec.releaseOutputBuffer(o, false);
+                    }
+                    if (end) return last;
+                }
+                if (last != null) last.recycle();
+                throw new InterruptedIOException("view " + id + " closed");
+            } finally {
+                if (codec != null) {
+                    try { codec.stop(); } catch (Exception ignored) { }
+                    codec.release();
+                }
+                x.release();
+                media.close();
+            }
+        }
+
+        /**
+         * A decoded YUV_420_888 picture as an ARGB bitmap, its crop alone, turned as the track says: BT.709's matrix
+         * where the format says so, else BT.601's, in the limited range unless it says full.
+         */
+        static Bitmap bitmapOf(android.media.Image img, MediaFormat format, int rotation) {
+            android.graphics.Rect crop = img.getCropRect();
+            int w = crop.width(), h = crop.height();
+            if (w <= 0 || h <= 0) return null;
+            android.media.Image.Plane[] planes = img.getPlanes();
+            if (planes.length < 3) return null;
+            java.nio.ByteBuffer yb = planes[0].getBuffer(), ub = planes[1].getBuffer(), vb = planes[2].getBuffer();
+            int ys = planes[0].getRowStride(), yp = planes[0].getPixelStride();
+            int us = planes[1].getRowStride(), up = planes[1].getPixelStride();
+            int vs = planes[2].getRowStride(), vp = planes[2].getPixelStride();
+            boolean bt709 = format != null && format.containsKey(MediaFormat.KEY_COLOR_STANDARD)
+                && format.getInteger(MediaFormat.KEY_COLOR_STANDARD) == MediaFormat.COLOR_STANDARD_BT709;
+            boolean full = format != null && format.containsKey(MediaFormat.KEY_COLOR_RANGE)
+                && format.getInteger(MediaFormat.KEY_COLOR_RANGE) == MediaFormat.COLOR_RANGE_FULL;
+            // (Y' and the two differences to R'G'B', scaled by 1024)
+            double kr = bt709 ? 0.2126 : 0.299, kb = bt709 ? 0.0722 : 0.114, kg = 1 - kr - kb;
+            double ys1 = full ? 1.0 : 255.0 / 219.0, cs = full ? 1.0 : 255.0 / 224.0;
+            int cy = (int) Math.round(ys1 * 1024), crv = (int) Math.round(2 * (1 - kr) * cs * 1024);
+            int cbu = (int) Math.round(2 * (1 - kb) * cs * 1024);
+            int cgu = (int) Math.round(2 * (1 - kb) * kb / kg * cs * 1024), cgv = (int) Math.round(2 * (1 - kr) * kr / kg * cs * 1024);
+            int y0 = full ? 0 : 16;
+            int[] px = new int[w * h];
+            for (int j = 0; j < h; j++) {
+                int sy = crop.top + j, sc = sy / 2;
+                for (int i = 0; i < w; i++) {
+                    int sx = crop.left + i, cx = sx / 2;
+                    int y = (yb.get(sy * ys + sx * yp) & 0xff) - y0;
+                    int u = (ub.get(sc * us + cx * up) & 0xff) - 128;
+                    int v = (vb.get(sc * vs + cx * vp) & 0xff) - 128;
+                    int l = cy * y;
+                    int r = (l + crv * v) >> 10, g = (l - cgu * u - cgv * v) >> 10, b = (l + cbu * u) >> 10;
+                    r = r < 0 ? 0 : Math.min(r, 255);
+                    g = g < 0 ? 0 : Math.min(g, 255);
+                    b = b < 0 ? 0 : Math.min(b, 255);
+                    px[j * w + i] = 0xff000000 | (r << 16) | (g << 8) | b;
+                }
+            }
+            Bitmap bm = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+            if (rotation % 360 == 0) return bm;
+            android.graphics.Matrix m = new android.graphics.Matrix();
+            m.postRotate(rotation);
+            Bitmap turned = Bitmap.createBitmap(bm, 0, 0, w, h, m, true);
+            if (turned != bm) bm.recycle();
+            return turned;
         }
 
         /**

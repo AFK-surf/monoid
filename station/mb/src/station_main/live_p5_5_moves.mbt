@@ -150,7 +150,14 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
       }
       "bindingsOf" => (hooks.bindings_of)(strs(a.get(0)))
       _ if name.has_prefix("connects.") => of_core(self.coord_connects(name, a.map(to_core)))
-      // (store.*, hub.*, fn.*, keptSends, keepSends: the hub's and its store's)
+      // What the admin API kept of the messages written under a key (P5-1's, `$admin.keptSends`, `$admin.keepSends`)
+      "keptSends" =>
+        of_core(self.bus.call_peer("self", None, "$admin.keptSends", { "threads": to_core(a.get(0).unwrap_or(Null)) }).0)
+      "keepSends" => {
+        ignore(self.bus.call_peer("self", None, "$admin.keepSends", { "sends": to_core(a.get(0).unwrap_or(Null)) }))
+        Null
+      }
+      // (store.*, hub.*, fn.*: the hub's and its store's)
       _ => of_core(self.hub(name, a.map(to_core)))
     }
   }

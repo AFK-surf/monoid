@@ -805,39 +805,48 @@ fn reader_found_node(parent : @view.View, r : Reading, paper : () -> ReaderPaper
       reader_jump(r, all[h].chunk, all[h].start, lead=true)
     }
   }
-  parent.box(made_for=loc, fn(b) {
-    style_node(b, fn() { desk_found_box })
-    b
-    .glass(By(fn() { Some(narrow_glass(paper())) }))
-    .presses(Is(true))
-    .on_press(fn() {  })
-    .as_ground()
-    |> ignore
-    words_node(
-      b,
-      fn() {
-        t("web-pages.drive.reader.foundAt", args=[
-          ("query", r.searched.get()),
-          ("at", "\{r.hit.get() + 1}"),
-          ("n", "\{r.matches.get().length()}"),
-        ])
-      },
-      fn() { desk_found_words.then(@ui.text_style(color=Data(paper().ink))) },
-    )
-    |> ignore
-    let ink = fn() { paper().ink }
-    chip_node(b, fn() { "" }, fn() { step(-1) }, icon="chevron-left", ink~, said=fn() { t("android-misc.drive.reader.prevHit") }, disabled=fn() {
-      r.hit.get() <= 0
-    })
-    |> ignore
-    chip_node(b, fn() { "" }, fn() { step(1) }, icon="chevron-right", ink~, said=fn() { t("android-misc.drive.reader.nextHit") }, disabled=fn() {
-      r.hit.get() >= r.matches.get().length() - 1
-    })
-    |> ignore
-    chip_node(b, fn() { "" }, fn() { r.hit.set(-1) }, icon="close", ink~, said=fn() { t("common.close") }) |> ignore
-  })
+  // (the library's find in a page, without a field: what was looked for and where among it, its keys in the paper's
+  // ink)
+  page_find_node(
+    loc~,
+    parent,
+    fn() {
+      t("web-pages.drive.reader.foundAt", args=[
+        ("query", r.searched.get()),
+        ("at", "\{r.hit.get() + 1}"),
+        ("n", "\{r.matches.get().length()}"),
+      ])
+    },
+    step,
+    fn(d) { if d < 0 { r.hit.get() > 0 } else { r.hit.get() < r.matches.get().length() - 1 } },
+    fn() { r.hit.set(-1) },
+    frame=fn(b) {
+      // (a capsule now its keys are round: they stand in its ends concentric with them, 5 in)
+      style_node(b, fn() { desk_found_box.then(desk_found_round) })
+      b
+      .glass(By(fn() { Some(narrow_glass(paper())) }))
+      .presses(Is(true))
+      .on_press(fn() {  })
+      .as_ground()
+      |> ignore
+    },
+    said_look=fn() { desk_found_words.then(@ui.text_style(color=Data(paper().ink))) },
+    ink=fn() { paper().ink },
+    prev_label=fn() { t("android-misc.drive.reader.prevHit") },
+    next_label=fn() { t("android-misc.drive.reader.nextHit") },
+    close_label=fn() { t("common.close") },
+    key_side=desk_found_key,
+  )
   |> ignore
 }
+
+///|
+/// Its keys as tall as its chips were (30), and its round as a capsule's, 5 round them in its 40.
+let desk_found_key : Double = 30.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let desk_found_round : @ui.Style = @ui.css("radius=Full")
 
 ///|
 /// The contents' or the search's panel docked at the right of `parent` (a column), from where it is to its foot: the

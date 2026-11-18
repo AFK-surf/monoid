@@ -66,16 +66,17 @@ let job_dot_side : Double = 8.0
 let job_dot_over : Double = 7.0
 
 ///|
-/// A tone's colour (the core's accent | green | blue | red | neutral).
-fn tone_color(tone : String) -> Int64 {
-  let t = @sf.theme()
+/// A session's tone (the core's accent | green | blue | red | neutral, format.ts statusText) as the library's dot says
+/// how something stands (@sf.state_dot_node): at work (running, queued) busy; done online; waiting on a person (blocked,
+/// a decision) waiting; failed error; else (idle, aborted) a ring.
+fn tone_state(tone : String) -> String {
   match tone {
-    "accent" => t.p.accent
-    "green" => t.p.green
-    "blue" => if t.dark { 0x81AEFAFFL } else { 0x1559C4FFL }
-    "red" => t.p.red
-    "amber" | "warn" => 0xD9962BFFL
-    _ => t.p.subtle
+    "accent" => "busy"
+    "green" => "online"
+    "blue" => "waiting"
+    "red" => "error"
+    "amber" | "warn" => "busy"
+    _ => "offline"
   }
 }
 
@@ -238,12 +239,8 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
         fn(s, said) {
           guard said.length() > 0 else { return }
           let shown = @signals.untracked(faces)
-          s.box(fn(b) {
-            b.width(Is(Some(info_face_step + (info_face_step - 5.0) * (shown.length() - 1).to_double()))).shrink(Is(0.0)) |> ignore
-            // (ringed in the sheet's ground)
-            people_stack_node(b, src, shown, info_face, fn() { 0 }, ring=fn() { @sf.theme().p.card })
-          })
-          |> ignore
+          // (ringed in the sheet's ground)
+          @sf.avatar_stack_node(s, stack_faces(src, shown, fn() { 0 }), info_face, fn() { @sf.theme().p.card }) |> ignore
         },
       )
       line.box(fn(w) {
@@ -618,14 +615,11 @@ let info_rename : @ui.Style = @ui.css("w=S8 h=S8 radius=Full align=ACenter justi
 let info_rename_side : Double = 32.0
 
 ///|
-/// An info row's icon (16), and the faces before its facts (16, each 19 with its ring).
+/// An info row's icon (16), and the faces before its facts (16, ringed 1.5).
 let info_icon : Double = 16.0
 
 ///|
 let info_face : Double = 16.0
-
-///|
-let info_face_step : Double = 19.0
 
 ///|
 /// Its facts' line: 6 over, 16 under, its faces and words 8 apart on their middle; its words 13, muted.
@@ -1282,133 +1276,35 @@ let agent_lines_gap : Double = 4.0
 let agent_line_h : Double = 18.0
 
 ///|
-/// The figures that say most in an agent's card (agent_tiles', as nodes: UsageTiles.kt) in `v`, `top` under what is over them, the core's
-/// card as `card` has it now: what it cost, the cache's hit rate, how full its context is, each its share of the row
-/// 8 apart, 20/26 bold (shrinking cleanly to fit the tile's inner width as it is laid out, so numbers never truncate)
-/// over 12/16 muted; its context's opens what can be done to it when it can be (`entry`).
+/// The figures that say most in an agent's card (agent_tiles', as nodes: UsageTiles.kt) in `v`, `top` under what is
+/// over them, the core's card as `card` has it now: the library's roomy figures (@sfpages.usage_tiles_node: what it
+/// cost, the cache's hit rate, how full its context is, each its share of the row, as large as fits); its context's
+/// opens what can be done to it when it can be (`entry`: turning while that is under way, its mark where it failed).
 fn card_tiles_node(v : @view.View, card : () -> Json?, top : Double, entry : () -> ContextTile?) -> Unit {
-  @sf.style_node(v, fn() { agent_tiles_row.then(@ui.style(pt=@sf.room_of(top))) })
-  // (which tiles, by what they say: made again only as one comes or goes)
-  let kinds = fn() {
-    let c = card()
-    let out : Array[String] = []
-    if text(c, "cost") != "" {
-      out.push("cost")
-    }
-    if field(c, "cache") is Some(Object(_)) {
-      out.push("cache")
-    }
-    if field(c, "context") is Some(Object(_)) {
-      out.push("context")
-    }
-    out
-  }
-  v.each(kinds, fn(k) { k }, fn(tile, kind) {
-    let k = @signals.untracked(fn() { kind.get() })
-    let figure = fn() {
-      let c = card()
-      match k {
-        "cost" => text(c, "cost")
-        "cache" => text(field(c, "cache"), "text")
-        _ => {
-          let context = field(c, "context")
-          if flag(context, "unknown") {
-            text(context, "text")
-          } else {
-            "\{number(context, "percent").round().to_int()}%"
+  let tips = @sf.panel_tips_of(v).unwrap_or(@sf.window_tips())
+  v.pick(at_once=true, fn() { entry() is Some(_) }, fn(t, opens) {
+    if opens {
+      @sfpages.usage_tiles_node(
+        t,
+        card,
+        tips,
+        roomy=true,
+        top~,
+        context=fn(_) {
+          match @signals.untracked(entry) {
+            Some(o) if !o.busy => (o.open)()
+            _ => ()
           }
-        }
-      }
+        },
+        busy=fn() { entry().map_or(false, fn(o) { o.busy }) },
+        failed=fn() { entry().map_or(false, fn(o) { o.failed }) },
+        compacts=fn() { entry().map_or(false, fn(o) { o.compacts }) },
+      )
+    } else {
+      @sfpages.usage_tiles_node(t, card, tips, roomy=true, top~)
     }
-    let ink = fn() {
-      let t = @sf.theme()
-      match k {
-        "context" if !flag(field(card(), "context"), "unknown") =>
-          match text(field(card(), "context"), "level") {
-            "red" => t.p.red
-            "amber" => t.p.warn_ink
-            _ => t.p.text
-          }
-        _ => t.p.text
-      }
-    }
-    let open = fn() { if k == "context" { entry() } else { None } }
-    let name = fn() {
-      match k {
-        "cost" => tr("android-chat.agent.cost")
-        "cache" => tr("android-chat.agent.cache")
-        _ => context_tile_label(entry(), text(field(card(), "context"), "level"))
-      }
-    }
-    // (each its share of the row: the room its figure is fitted to)
-    tile.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-    agent_tile_node(tile, figure, name, ink, open)
   })
 }
-
-///|
-/// A figure's tile (agent_tiles' tile, as a node) in `tile`: its figure as large as fits the tile's room inside its
-/// sides as it is laid out (agent_tiles_fit_size's), in `ink`, on a line of 26 at the system's size of words, its name
-/// under it (context_tile_name's); read out 「name figure」; where `open` says something can be done to it, pressed,
-/// that opens.
-fn agent_tile_node(tile : @view.View, figure : () -> String, name : () -> String, ink : () -> Int64, open : () -> ContextTile?) -> Unit {
-  tile.by_room(fn(b, given) {
-    @sf.style_node(b, fn() { agent_tile.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, 0.05)))) })
-    b.radius(Is(@sf.row_corner)).says(By(fn() { Some(@view.said(Button, label=name() + " " + figure())) })) |> ignore
-    @sf.presses_node(b, fn() {
-      match @signals.untracked(open) {
-        Some(o) if !o.busy => (o.open)()
-        _ => ()
-      }
-    }, on=fn() { open() is Some(_) })
-    b.box(fn(f) {
-      f
-      .words(By(figure))
-      .words_look(By(fn() {
-        let room = dmax(0.0, given.width() - 2.0 * @sf.text_in)
-        let size = agent_tile_fit(b, figure(), room)
-        { size, weight: 600, line: agent_tile_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-      }))
-      .ink(By(ink))
-      |> ignore
-    })
-    |> ignore
-    context_tile_name_node(b, name, open)
-  })
-  .grow(Is(1.0))
-  .basis(Is(Some(0.0)))
-  |> ignore
-}
-
-///|
-/// The size a figure is drawn at in node `v` (agent_tiles_fit_size's): the largest of its steps (16 down for one longer
-/// than 6, else 20 down) whose figure is narrower than `room` at the system's size of words; 10 at the least.
-fn agent_tile_fit(v : @view.View, figure : String, room : Double) -> Double {
-  let sizes : Array[Double] = if figure.length() > 6 {
-    [16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0]
-  } else {
-    [20.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0]
-  }
-  for sz in sizes {
-    if @sf.node_words_w(figure, @sf.node_sp(v, sz), weight=600) <= room - 1.0 {
-      return sz
-    }
-  }
-  10.0
-}
-
-///|
-/// Its figures: in a row 8 apart; each tile 9 over, 8 under, its words 16 in, a row's corner; its figure on a line of
-/// 26.
-// kept across runs: a value (no field of it changes)
-let agent_tiles_row : @ui.Style = @ui.css("row w=Full gap=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let agent_tile : @ui.Style = @ui.css("pb=S2").then(@ui.style(pl=@sf.room_of(@sf.text_in), pr=@sf.room_of(@sf.text_in), pt=@sf.room_of(9.0)))
-
-///|
-let agent_tile_line : Double = 26.0
 
 ///|
 /// The agent's card (agent_node): the library's panel, as tall as what it shows, what it holds nodes of the window's

@@ -645,14 +645,16 @@ static void touches_sent(int kind, NSSet<UITouch *> *t, UIEvent *e, UIView *v) {
 // for addresses and its go key, a number's digits and its done key.
 - (UIKeyboardType)keyboardType {
   if (key_catching) return UIKeyboardTypeDefault;
-  return ime_action_kind == 2 ? UIKeyboardTypeURL : ime_action_kind == 3 ? UIKeyboardTypeNumbersAndPunctuation : UIKeyboardTypeDefault;
+  return ime_action_kind == 2 ? UIKeyboardTypeURL : ime_action_kind == 3 ? UIKeyboardTypeNumbersAndPunctuation
+    : ime_action_kind == 5 ? UIKeyboardTypeEmailAddress : UIKeyboardTypeDefault;
 }
+// (a secret's, hostapi ime_action 4, a token or a password; an email address's, 5; words taken as typed, 6: no
+// corrections nor spelling, nothing of it suggested)
 - (UITextAutocorrectionType)autocorrectionType {
-  return key_catching || ime_action_kind == 4 ? UITextAutocorrectionTypeNo : UITextAutocorrectionTypeDefault;
+  return key_catching || ime_action_kind >= 4 ? UITextAutocorrectionTypeNo : UITextAutocorrectionTypeDefault;
 }
-// (a secret's, hostapi ime_action 4, a token or a password: no corrections nor spelling, nothing of it suggested)
 - (UITextSpellCheckingType)spellCheckingType {
-  return key_catching || ime_action_kind == 4 ? UITextSpellCheckingTypeNo : UITextSpellCheckingTypeDefault;
+  return key_catching || ime_action_kind >= 4 ? UITextSpellCheckingTypeNo : UITextSpellCheckingTypeDefault;
 }
 - (UITextAutocapitalizationType)autocapitalizationType { return UITextAutocapitalizationTypeNone; }
 - (UITextSmartQuotesType)smartQuotesType { return UITextSmartQuotesTypeNo; }

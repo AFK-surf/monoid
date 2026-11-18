@@ -189,6 +189,10 @@ pub async fn Incoming::heard(self : Incoming, peer : String, ws : String, reques
   // What reports a use back to the station asked, one after another (incoming.ts `reports`).
   let reports : @effect.Queue[Unit] = @effect.Queue::unbounded()
   let pending = Ref(0)
+  // The run's end waits for the reports given before it (incoming.ts `reports.then(tell)`): woken as the last is
+  // answered, never by turning over while one is out (a turn a pause made the runtime give up past its bound).
+  let ran_out = Ref(false)
+  let reported : @effect.Deferred[Unit] = @effect.Deferred::new()
   let reporter = @effect.runtime().fork(name="vault used", async fn() {
     while true {
       reports.take()
@@ -199,6 +203,9 @@ pub async fn Incoming::heard(self : Incoming, peer : String, ws : String, reques
         expires.val = gn(Some(answer), "until").unwrap()
       }
       pending.val -= 1
+      if ran_out.val && pending.val == 0 {
+        ignore(reported.succeed(()))
+      }
     }
   })
   ignore(
@@ -232,8 +239,11 @@ pub async fn Incoming::heard(self : Incoming, peer : String, ws : String, reques
           return
         }
       }
-      while pending.val > 0 {
-        @effect.pause()
+      ran_out.val = true
+      if pending.val > 0 {
+        reported.wait() catch {
+          _ => ()
+        }
       }
       reporter.interrupt()
       tell(spread(Some(ran.to_json()), [("used", jb(used.val))]))

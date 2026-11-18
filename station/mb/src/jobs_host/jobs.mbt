@@ -793,12 +793,29 @@ pub async fn JobsHost::collect(
   job_of : (String) -> Json?,
 ) -> Array[String] {
   let gone = []
+  let up_ids : Map[String, Bool] = {}
+  for id in up {
+    up_ids[id] = true
+  }
+  // (each job read once, and none of one up: a log and an exit file of one id read it once, jobs.ts `jobOf`)
+  let looked : Map[String, Json?] = {}
   for sub in ["logs", "exit"] {
     let dir = pjoin([self.dir, sub])
     for name in readdir(self.host, dir).unwrap_or([]) {
       guard job_file_id(name, sub) is Some(id) else { continue }
+      if up_ids.contains(id) || self.running.contains(id) {
+        continue
+      }
       let file = pjoin([dir, name])
-      match job_of(id) {
+      let job = match looked.get(id) {
+        Some(j) => j
+        None => {
+          let j = job_of(id)
+          looked[id] = j
+          j
+        }
+      }
+      match job {
         None => {
           guard lstat(self.host, file) is Some(st) else { continue }
           if now - num(field(st, "mtimeMs")).unwrap_or(now) < job_files_orphan_ms {
@@ -807,9 +824,7 @@ pub async fn JobsHost::collect(
         }
         Some(job) => {
           let ended_at = num(field(job, "endedAt"))
-          if up.contains(id) ||
-            self.running.contains(id) ||
-            text(job, "state") == "running" ||
+          if text(job, "state") == "running" ||
             ended_at is None ||
             now - ended_at.unwrap() < job_logs_kept_ms {
             continue

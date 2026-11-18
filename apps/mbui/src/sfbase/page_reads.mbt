@@ -245,8 +245,6 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
         station_ask(ws, address),
         ("stationMove", { "station": Json::string(address), "to": Json::string(""), "module": Json::string("") }),
       ])
-    RunSettings(address, key) =>
-      reads_of([("pick", { "station": Json::string(address), "of": Json::string("session:" + key) })])
     Changelog => reads_of([("changelog", { "limit": Json::number(30.0) })])
     Notifications => reads_of([("notices", { "workspace": of })])
     // (what this device keeps and its own settings, the build's own words, the lock every shell reads: nothing of the

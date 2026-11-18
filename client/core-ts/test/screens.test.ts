@@ -1393,7 +1393,7 @@ test("user_browser_pages_keep_site_and_sleep_state_and_follow_child_tabs", async
   call(core, ui, 14, "screen.view", { station: "ws/st", screen: "browser:u_mail", view: "live", codecs: ["jpeg"] });
   await host.settle();
   assert.equal(views.length, 1);
-  views[0]!.send(stateFrame({ control: true, title: "验证登录 - Proton Mail", site: "account.proton.me", userTab: true, openUrl: true, childScreen: "browser:u_verify" }));
+  views[0]!.send(stateFrame({ control: true, title: "验证登录 - Proton Mail", site: "account.proton.me", userTab: true, openUrl: true, childScreen: "browser:u_verify", login: { host: "account.proton.me", field: "password", filled: true } }));
   await host.settle();
   said(host, log);
   const live = lastState(log, 14);
@@ -1402,6 +1402,11 @@ test("user_browser_pages_keep_site_and_sleep_state_and_follow_child_tabs", async
   assert.equal(live.openUrl, true);
   assert.equal(live.childOpened, 1);
   assert.equal(live.childScreen, "browser:u_verify");
+  assert.deepEqual(live.login, { host: "account.proton.me", field: "password", filled: true });
+  views[0]!.send(stateFrame({ login: { host: "account.proton.me", field: "password", filled: false } }));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual(lastState(log, 14).login, { host: "account.proton.me", field: "password" });
 
   push("screens", { browser: true, screens: [{ ...answers["GET /screens"].screens[0], sleeping: false, width: 1280, height: 800, viewers: ["Bob"] }] });
   await host.settle();

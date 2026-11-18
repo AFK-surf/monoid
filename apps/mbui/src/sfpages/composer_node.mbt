@@ -244,7 +244,76 @@ pub fn chat_composer_node(
 }
 
 ///|
-/// The composer's box in `foot`, `width()` wide: its capsule or its box, its field, ＋, what it says before send, send.
+/// What a composer's box made as nodes is for: a chat's (`chat`: its `@` menu, 抄送, its agent warmed as it is typed,
+/// ↑ ↓ to the chat beside it with nothing typed, what is said over it, its words sent into the chat, its foot kept as
+/// it grows), or what is written for something else in it (待派发's new task): opened however little it holds
+/// (`roomy`), what its field says while empty (`placeholder`, the chat's where none), what stands in its foot's row
+/// between ＋ and send (`tools`: where it goes), how much room its words leave at their end, clear of what stands over
+/// its top corner (`words_end`), what send is called and shows (`sends`, `send_icon`), and what it does with what is
+/// written once it is ready (`send`: composer_submit's; a chat's sends it into the chat).
+priv struct BoxSpec {
+  chat : Bool
+  roomy : Bool
+  placeholder : String
+  tools : ((@view.View) -> Unit)?
+  words_end : Double
+  sends : () -> String
+  send_icon : () -> String
+  send : ((Writing) -> Unit)?
+}
+
+///|
+/// A chat's composer's box (chat_composer_node's).
+fn chat_box_spec() -> BoxSpec {
+  {
+    chat: true,
+    roomy: false,
+    placeholder: "",
+    tools: None,
+    words_end: 0.0,
+    sends: fn() { @sf.t("web-main.composer.send") },
+    send_icon: fn() { "arrow-up" },
+    send: None,
+  }
+}
+
+///|
+/// A composer's box made as nodes in `v` for draft `draft` on `station`, no chat's (`spec`: 待派发's new task): as wide as
+/// it is given, alone (no panel's foot), what is given its draft from outside taken in (take_in_node), its tips in
+/// `tips`.
+fn composer_alone_node(v : @view.View, src : Source, station : String, draft : String, spec : BoxSpec, tips : @sf.TipLayer) -> Unit {
+  let r : ChatRef = { station, session: "", title: "", station_name: "" }
+  let w = @signals.untracked(fn() { writing(src, draft) })
+  take_in_node(v, src, r, w, fn() { false })
+  v.by_room(fn(foot, room) {
+    let stand : Stand = {
+      wide: fn() { room.width() },
+      scale: fn() { foot.words_scale() },
+      apart: fn() { false },
+      pane: fn() { None },
+    }
+    composer_box_node(
+      foot,
+      src,
+      r,
+      w,
+      tips,
+      fn() { None },
+      fn() { [] },
+      fn() { false },
+      stand,
+      @motion.NodeWay::new(0.0),
+      fn(_) {  },
+      fn() { room.width() },
+      spec~,
+    )
+  })
+  |> ignore
+}
+
+///|
+/// The composer's box in `foot`, `width()` wide: its capsule or its box, its field, ＋, what it says before send, send;
+/// a chat's, or as `spec` says.
 fn composer_box_node(
   foot : @view.View,
   src : Source,
@@ -258,18 +327,26 @@ fn composer_box_node(
   foot_shift : @motion.NodeWay,
   drawn_top : ((@view.View) -> Double) -> Unit,
   width : () -> Double,
+  spec? : BoxSpec = chat_box_spec(),
 ) -> Unit {
   let draft = w.key
   let focused = fn() { w.field.focused() }
   // (a box while it has the cursor; lost, a capsule a moment later, let_go_ms: kept so by the cursor's leaving)
   let held = fn() { composing_node.held.get(draft).unwrap_or(false) }
   let multiline = fn() {
-    focused() || held() || w.text.get() != "" || w.files.get().length() > 0 || w.quotes.get().length() > 0
+    spec.roomy || focused() || held() || w.text.get() != "" || w.files.get().length() > 0 || w.quotes.get().length() > 0
   }
   let ready = fn() {
     (w.ready.get() || (w.field.text().trim() != "" && !w.starting.get()))
   }
   let scale = stand.scale
+  // (send pressed, or Enter: a chat's into its chat, else as `spec` says, once ready)
+  let submit = fn() {
+    match spec.send {
+      Some(send) => composer_submit(src, w, r.station, locked=false, send) |> ignore
+      None => composer_node_submit(src, r, w, head, ready)
+    }
+  }
   // (and the room under the list's last row with its ground, from the same cause, the same way: its foot's height, kept
   // to its foot, the composer growing from it: View::resizes)
   // (its height and the foot's room going their way for what changes them, said in the change of each cause: the
@@ -319,14 +396,15 @@ fn composer_box_node(
   // (said once a moment, whatever said it first: what changes it again at the same moment, another cause of that
   // moment, goes on the one way said then, never set out again over it)
   let reshaped_at = Ref(-1.0)
-  let resize = fn(spec : (Double, (Double) -> Double)?) {
+  let resize = fn(way : (Double, (Double) -> Double)?) {
     // (none before it is first drawn: what it is as its page comes in is there at once)
     guard foot.was_placed() && !composing_node.quiet else { return }
     guard foot.cause_at() != reshaped_at.val else { return }
     reshaped_at.val = foot.cause_at()
+    // (a chat's kept to its foot as it grows; elsewhere to its top, as a card is)
     match made.val {
-      Some(b) => b.resizes(foot=true, spec?) |> ignore
-      None => foot.resizes(foot=true, spec?) |> ignore
+      Some(b) => b.resizes(foot=spec.chat, spec?=way) |> ignore
+      None => foot.resizes(foot=spec.chat, spec?=way) |> ignore
     }
   }
   // (a line more or fewer, what waits to go put in or taken out: a Move by how far)
@@ -341,7 +419,10 @@ fn composer_box_node(
     guard foot.cause_at() != reshaped_at.val else { return }
     // (taller than its least, opened or not, only with something over it (what is said over it) or under it (what went
     // wrong): its shape moves it then)
-    guard @signals.untracked(fn() { w.error.get() != "" || composer_notice_kinds(src, r).length() > 0 }) else { return }
+    guard spec.chat &&
+      @signals.untracked(fn() { w.error.get() != "" || composer_notice_kinds(src, r).length() > 0 }) else {
+      return
+    }
     reshaped_at.val = foot.cause_at()
     foot.resizes(foot=true, spec=(composer_shape_ms, fn(p) { @ui.Ease::Move.at(p) })) |> ignore
   }
@@ -377,7 +458,10 @@ fn composer_box_node(
     // (drawn off where it is laid out as its foot's room goes its way on the page's: chat_composer_node's foot_shift)
     box.offset(By(fn() { (0.0, foot_shift.shown(box)) })) |> ignore
     made.val = Some(box)
-    composer_nodes[draft] = (box, foot, sent_over, foot_shift)
+    // (a chat's alone: what flies from it and what is set beside it find it)
+    if spec.chat {
+      composer_nodes[draft] = (box, foot, sent_over, foot_shift)
+    }
     // (as tall as it was as words left it while it was going: once that way has slowed to rest, down on the flight's
     // curve from the moment what flies from it begins its rise (sent_out_hold_ms after), or from then if that is past,
     // to come to none as it would have)
@@ -396,7 +480,7 @@ fn composer_box_node(
         }
       }
     })
-    composer_sent_holds[draft] = fn() {
+    let sent_hold = fn() {
       // (its hint and caret away from this moment till the words sent are half way out of it, then its hint back as at
       // rest without the cursor)
       let at = box.cause_at()
@@ -434,6 +518,9 @@ fn composer_box_node(
           sent_over.go(box, 0.0, @motion.tween(@ui.move_most_ms - hold, ease=Flight, delay=hold))
         }
       }
+    }
+    if spec.chat {
+      composer_sent_holds[draft] = sent_hold
     }
     // (its ground as drawn now off where it is laid out, as node `v` draws it: from its capsule to its box of one line
     // or back (`morph`), or as tall as it was as words left it (`sent_over`); what stands over it going with its top:
@@ -544,8 +631,10 @@ fn composer_box_node(
     |> ignore
     // (what waits to go over its words: its quotes, its files)
     composer_extras_node(box, src, r, w, tips, stand)
-    // (`@` and a few letters: the chats they find, over it)
-    ref_menu_node(box, src, r, w)
+    // (`@` and a few letters: the chats they find, over it: a chat's)
+    if spec.chat {
+      ref_menu_node(box, src, r, w)
+    }
     // (its words, then what is said before send and send: one line as a capsule, ＋ laid over its start; opened, the
     // words the whole of the first line, the rest on a second, at its end)
     box.box(fn(line) {
@@ -553,10 +642,16 @@ fn composer_box_node(
       // it is that one's, as the old composer's cards took theirs, never the field's. Taken by what lies under the row,
       // not the row itself: what is drawn small on it (send) reached from round it as far as its press's room holds,
       // over the row's own, as the old composer's (reach.mbt's `cut` is only by what holds it))
-      line.box(fn(under) {
-        under.over(Is(true)).on_press(fn() { w.field.focus() }) |> ignore
-      })
-      |> ignore
+      // (with what stands between ＋ and send (a station choice, as tall as a row's press room, past the row's foot):
+      // the box's own, under all it holds, as nothing it holds overlaps it)
+      if spec.tools is None {
+        line.box(fn(under) {
+          under.over(Is(true)).on_press(fn() { w.field.focus() }) |> ignore
+        })
+        |> ignore
+      } else {
+        box.on_press(fn() { w.field.focus() }) |> ignore
+      }
       line
       .row(Is(true))
       // (its parts a point apart, as the capsule's are: composer_box's)
@@ -602,7 +697,7 @@ fn composer_box_node(
             }
           }),
         )
-        .padding(By(fn() { if multiline() { (8.0, 8.0, 8.0, 0.0) } else { (0.0, 0.0, 8.0, 0.0) } }))
+        .padding(By(fn() { if multiline() { (8.0, 8.0, 8.0 + spec.words_end, 0.0) } else { (0.0, 0.0, 8.0, 0.0) } }))
         // (its field: on one line past ＋ in the capsule's middle, opened over the row of ＋ and send)
         .offset(
           By(fn() {
@@ -621,7 +716,7 @@ fn composer_box_node(
           }),
         )
         |> ignore
-        composer_field_node(words, src, r, w, scale, ready, fn() { hint_in.shown(words) }, away, fn(on) {
+        composer_field_node(words, src, r, w, scale, fn() { hint_in.shown(words) }, away, spec, submit, fn(on) {
           if on {
             // (from a capsule: opened as the cursor comes in, a box of one line, drawn from the capsule: `morph`)
             // (a capsule till now: kept by nothing, holding nothing)
@@ -677,15 +772,30 @@ fn composer_box_node(
           })
         })
         })
+        // (what it says of where it goes, where it says so: from ＋'s end, as far as send leaves, as tall as ＋ and send,
+        // what it holds centred on theirs whatever its own press room: a station choice is as tall as a row, ＋ and send
+        // are round)
+        match spec.tools {
+          Some(tools) => {
+            tail.grow(Is(1.0)) |> ignore
+            tail.box(fn(gap) {
+              gap
+              .grow(Is(1.0))
+              .shrink(Is(1.0))
+              .min_width(Is(Some(0.0)))
+              .row(Is(true))
+              .lines_up(Is(Some(Middle)))
+              .height(By(fn() { Some(side()) }))
+              .padding(By(fn() { (open_in() - @sf.composer_pad + side() + 6.0, 0.0, 6.0, 0.0) }))
+              |> ignore
+              tools(gap)
+            })
+            |> ignore
+          }
+          None => ()
+        }
         // (send: the library's, its arrow alone, a chat's own draft never making a chat as a new chat's does)
-        @sf.send_button_node(
-          tail,
-          fn() { @sf.t("web-main.composer.send") },
-          ready,
-          fn() { false },
-          fn() { composer_node_submit(src, r, w, head, ready) },
-          tips~,
-        )
+        @sf.send_button_node(tail, spec.sends, ready, fn() { false }, submit, tips~, icon_now=spec.send_icon)
         |> ignore
       })
       |> ignore
@@ -855,16 +965,19 @@ fn composer_field_node(
   r : ChatRef,
   w : Writing,
   scale : () -> Double,
-  ready : () -> Bool,
   hint_in : () -> Double,
   away : () -> Bool,
+  spec : BoxSpec,
+  submit : () -> Unit,
   focus_told : (Bool) -> Unit,
   regrow : (Double) -> Unit,
 ) -> Unit {
   let prefs = fn() { src.topic("prefs", {}).get().value }
   let by_command = fn() { @settings.sends_by_command(prefs()) }
   let hint = fn() {
-    if !@sf.soft_keyboard() && !w.field.focused() && !@ui.field_has_focus() {
+    if spec.placeholder != "" {
+      spec.placeholder
+    } else if !@sf.soft_keyboard() && !w.field.focused() && !@ui.field_has_focus() {
       match @settings.key_label(prefs(), "composer.focus") {
         "" => @sf.t("web-main.composer.placeholder")
         key => @sf.t("web-main.composer.pressToTypeCjk", args=[("key", key)])
@@ -905,7 +1018,9 @@ fn composer_field_node(
       }
       if now != @signals.untracked(fn() { w.text.get() }) && !@signals.untracked(fn() { w.starting.get() }) {
         writing_text(src, w, now)
-        composer_warm(src, r, words.cause_at())
+        if spec.chat {
+          composer_warm(src, r, words.cause_at())
+        }
       }
     },
     submitted=fn(now) {
@@ -913,7 +1028,7 @@ fn composer_field_node(
         if now != @signals.untracked(fn() { w.text.get() }) {
           writing_text(src, w, now)
         }
-        composer_node_submit(src, r, w, fn() { @sfbase.chat_view_now(src, r) }, ready)
+        submit()
       }
     },
     pasted=fn(now) {
@@ -955,9 +1070,9 @@ fn composer_field_node(
     })
   }
   typed.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-  // nothing typed: ↑ ↓ the chat above or below, as the list shows them now, before the field sees it
+  // nothing typed in a chat's: ↑ ↓ the chat above or below, as the list shows them now, before the field sees it
   typed.on_key(fn(k) {
-    guard k.mods == 0 && (k.code == @ui.key_code_up || k.code == @ui.key_code_down) else { return false }
+    guard spec.chat && k.mods == 0 && (k.code == @ui.key_code_up || k.code == @ui.key_code_down) else { return false }
     guard w.text.get() == "" && !(@sfbase.neighbour_held.val)() else { return false }
     match @sfbase.workspace_in_view(src).0 {
       Some(ws) => (@sfbase.neighbour_go.val)(src, ws, if k.code == @ui.key_code_up { -1 } else { 1 })

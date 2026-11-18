@@ -270,7 +270,7 @@ fn new_profile_stations_node(
   let waiting : Ref[@sfbase.PressWait?] = Ref(None)
   b.box(fn(r) {
     @sf.style_node(r, fn() { ap_stations })
-    @sf.labelled_field_node(r, fn() { @sf.t("web-pages.addProfile.station") }, fn(f) {
+    @sf.field_node(r, fn() { @sf.t("web-pages.addProfile.station") }, fn(f) {
       @sf.page_choice_node(
         f,
         fn() { list().map(fn(s) { text(Some(s), "name") }) },
@@ -594,7 +594,7 @@ fn new_profile_form_node(
   b.box(fn(f) {
     @sf.style_node(f, fn() { ap_form })
     f.show(fn() { flag(d(), "showEndpoint") }, fn(x) {
-      @sf.labelled_field_node(x, fn() { @sf.t("common.provider.endpoint") }, hint=fn() { text(d(), "endpointHint") }, fn(c) {
+      @sf.field_node(x, fn() { @sf.t("common.provider.endpoint") }, hint=fn() { text(d(), "endpointHint") }, fn(c) {
         @sf.input_node(
           c,
           endpoint,
@@ -612,7 +612,7 @@ fn new_profile_form_node(
     })
     let regions = fn() { items(d(), "regions") }
     f.show(fn() { regions().length() > 1 }, fn(x) {
-      @sf.labelled_field_node(x, fn() { @sf.t("web-pages.addProfile.region") }, fn(c) {
+      @sf.field_node(x, fn() { @sf.t("web-pages.addProfile.region") }, fn(c) {
         @sf.page_choice_node(
           c,
           fn() { regions().map(fn(r) { text(Some(r), "label") }) },
@@ -628,7 +628,7 @@ fn new_profile_form_node(
     })
     let protocols = fn() { items(d(), "protocols") }
     f.show(fn() { protocols().length() > 1 }, fn(x) {
-      @sf.labelled_field_node(x, fn() { @sf.t("web-pages.addProfile.protocol") }, fn(c) {
+      @sf.field_node(x, fn() { @sf.t("web-pages.addProfile.protocol") }, fn(c) {
         @sf.page_choice_node(
           c,
           fn() { protocols().map(fn(p) { text(Some(p), "label") }) },
@@ -643,7 +643,7 @@ fn new_profile_form_node(
       })
     })
     f.show(fn() { flag(d(), "showKey") }, fn(x) {
-      @sf.labelled_field_node(x, fn() { text(d(), "keyLabel") }, hint=fn() { text(d(), "keyHint") }, error=fn() { text(d(), "error") }, fn(c) {
+      @sf.field_node(x, fn() { text(d(), "keyLabel") }, hint=fn() { text(d(), "keyHint") }, error=fn() { text(d(), "error") }, fn(c) {
         @sf.input_node(c, key, placeholder=@sf.t("android-settings.profile.keyPlaceholder"), secret=true, disabled=pending, submitted=fn(_) {
           submit()
         })

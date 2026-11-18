@@ -5,7 +5,8 @@
 
 ///|
 /// The parts made, in their order, `ui_ask` answering what each answers. On a station that only runs tasks (`rig`)
-/// only the devices it reaches for the stations (rig/main.ts gives a rig no vault, browser, drive, terminals or logins).
+/// only the devices it reaches for the stations and the commands they run with a secret (rig/main.ts gives a rig no
+/// vault, browser, drive, terminals or logins).
 pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
   let host = bus.host
   let cloud : P54Cloud = { locks: Map([]), memberships: [] }
@@ -30,6 +31,8 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
       Ok(d) => asks.push(async fn(op, a) { p54_devices_ask(d, op, a) })
       Err(e) => err_write("station: the devices are not made (\{e})\n")
     }
+    // (rig/main.ts: no vault, but what another station runs here with a secret one of its chats holds)
+    p54_rig_incoming(bus, cloud, threads)
     p54_ui_ask_chain(bus, asks)
     return
   }

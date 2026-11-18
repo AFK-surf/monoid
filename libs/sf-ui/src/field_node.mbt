@@ -225,7 +225,7 @@ let field_disabled_alpha : Double = 0.55
 ///|
 /// A field (field's, as nodes) in `parent`: its `label` (13, 500) over what `body` makes in it (the input), 6 apart,
 /// what `aside` makes at its head's end where it is given; under it what is wrong (`error`, 12 red) or else a `hint`
-/// (12, muted), as each says it now (labelled_field_node's); on a wide page not in a panel as wide as what is typed in it
+/// (12, muted), as each says it now; on a wide page not in a panel as wide as what is typed in it
 /// needs (field_box_wide), else as wide as where it is.
 #callsite(autofill(loc))
 pub fn field_node(

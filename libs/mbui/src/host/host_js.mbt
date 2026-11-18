@@ -143,7 +143,7 @@ extern "js" fn js_system_dark() -> Bool =
   #|() => typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches
 
 extern "js" fn js_env(name : String) -> String =
-  #|(n) => (typeof location !== "undefined" && new URLSearchParams(location.search).get(n)) || ""
+  #|(n) => (globalThis.__mbhost && globalThis.__mbhost.env) ? globalThis.__mbhost.env(n) : ((typeof location !== "undefined" && new URLSearchParams(location.search).get(n)) || "")
 
 ///|
 fn set_window_zoom(_zoom : Double) -> Unit {
@@ -541,7 +541,8 @@ fn perf_read() -> Bytes {
 }
 
 ///|
-/// The page's query parameter `name` ("" when there is none).
+/// The page's query parameter `name` ("" when there is none): the web host's (`env`, host.js), which keeps what the
+/// address had as it loaded though the page took it off since.
 fn env(name : String) -> String {
   js_env(name)
 }

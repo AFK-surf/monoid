@@ -1124,7 +1124,6 @@ fn setting_kind(r : @settings.Route) -> String {
     StationArchiving(_) => "StationArchiving"
     StationMove(_) => "StationMove"
     UsagePrices(_) => "UsagePrices"
-    RunSettings(_, _) => "RunSettings"
   }
 }
 

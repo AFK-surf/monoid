@@ -322,7 +322,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           tab_held_beside(q, r, agent)
           file_tab_node(q, src, r, session, path, name, full_of(r, agent), tips)
         } else if side_screen_tab(agent) is Some(_) {
-          side_screen_node(q, src, r, agent, fn() { side_shown(src, r).0 }, false)
+          side_screen_node(q, src, r, agent, fn() { side_shown(src, r).0 }, false, shows=pane_shows(serial))
         } else if side_adb_tab(agent) is Some(station) {
           side_adb_node(q, src, station)
         } else if side_files_tab(agent) is Some(station) {
@@ -533,26 +533,44 @@ fn side_terminal_node(q : @view.View, src : Source, r : ChatRef, tab : String) -
 /// is on (side_farview_node), else its page (sfpages' screen_node) beside its chat, its × the tab's, alone in the panel
 /// upright the panel's bar its own (side_own_bar_node), its view let go of as the tab goes (closed, another in front,
 /// its chat left) unless it is the page on top over all of it; made again as that is turned on or off.
-fn side_screen_node(q : @view.View, src : Source, r : ChatRef, tab : String, tabs : () -> Array[String], on_tape : Bool) -> Unit {
+fn side_screen_node(
+  q : @view.View,
+  src : Source,
+  r : ChatRef,
+  tab : String,
+  tabs : () -> Array[String],
+  on_tape : Bool,
+  shows? : () -> Bool = fn() { true },
+) -> Unit {
   guard station_tab_page(r, tab) is Some(Screen(at)) else { return }
   q.pick(at_once=true, fn() { @sfpages.farview_native_screen(at.screen) }, fn(n, native) {
     n.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     if native {
       side_farview_node(n, src, r, tab, at.station, at.screen)
     } else {
-      side_screen_page_node(n, src, r, tab, at, tabs, on_tape)
+      side_screen_page_node(n, src, r, tab, at, tabs, on_tape, shows)
     }
   })
 }
 
 ///|
 /// Station screen tab `tab`'s page (`at`) in node `q` (side_screen_node's).
-fn side_screen_page_node(q : @view.View, src : Source, r : ChatRef, tab : String, at : @sfbase.ScreenAt, tabs : () -> Array[String], on_tape : Bool) -> Unit {
+fn side_screen_page_node(
+  q : @view.View,
+  src : Source,
+  r : ChatRef,
+  tab : String,
+  at : @sfbase.ScreenAt,
+  tabs : () -> Array[String],
+  on_tape : Bool,
+  shows : () -> Bool,
+) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     s.owns(fn() {
       match app.nav.top() {
         Screen(top) if top.station == at.station && top.screen == at.screen => ()
+        Place("remote") if @sfpages.remote_has_screen(src, at.station, at.screen) => ()
         _ => @sfpages.screen_left(src, at.station, at.screen)
       }
     })
@@ -575,12 +593,12 @@ fn side_screen_page_node(q : @view.View, src : Source, r : ChatRef, tab : String
           in_tab=true,
           own_bar=if alone { Some(side_bar_look_node(on_tape)) } else { None },
         )
-        // on the tape, out of sight while another panel is in use at rest: let go of as a page under another is (its
-        // last frame kept, the stream and its hold on the screen given back), opened again as it comes over
-        if on_tape {
-          p.reacts(tape_side_hidden, fn(h) { @sfpages.screen_covered(src, at.station, at.screen, h) })
-          p.owns(fn() { @sfpages.screen_covered(src, at.station, at.screen, false) }) |> ignore
-        }
+        // on the tape, out of sight while another panel is in use at rest; off the tape, out of sight while another page
+        // covers its chat in the pane: let go of as a page under another is (its last frame kept, the stream and its hold
+        // on the screen given back), opened again as it comes over
+        let hidden = if on_tape { tape_side_hidden } else { fn() { !shows() } }
+        p.reacts(hidden, fn(h) { @sfpages.screen_covered(src, at.station, at.screen, h) })
+        p.owns(fn() { @sfpages.screen_covered(src, at.station, at.screen, false) }) |> ignore
       })
     })
   })

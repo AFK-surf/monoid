@@ -574,39 +574,64 @@ pub fn panel_said_row_node(
 }
 
 ///|
-/// A panel's row that turns something on or off in `parent` (switch_row's in a panel): `title`, its switch at its end,
-/// which alone answers (`on`, `turn`: switch_node's), in by a row's padding as the panel's labels, notes and choices are
-/// (its words where theirs are, its switch where their ends are). In a sheet (narrow) a narrow row's (min a row's
-/// height, 12 between); beside what opened it (wide) a wide control row's, its title as strong as a setting's.
+/// A panel's row that turns something on or off in `parent` (switch_row's in a panel): `title`, `note` quieter under it
+/// (none where it says ""), its switch at the end of the title's first line, never across the middle of title and note,
+/// which alone answers (`on`, `turn`: switch_node's; at half and taking no press while `disabled`; a spinner in its place
+/// while `busy`), its words where the panel's rows' are (panel_row_in_node), its switch where their ends are. In a sheet
+/// (narrow) a narrow row's (min a row's height, 12 between); beside what opened it (wide) a wide control row's, its
+/// title as strong as a setting's.
 #callsite(autofill(loc))
 pub fn panel_switch_row_node(
   parent : @view.View,
   title : () -> String,
   on : () -> Bool,
   turn : (Bool) -> Unit,
+  note? : () -> String = fn() { "" },
+  disabled? : () -> Bool = fn() { false },
+  busy? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
-  let control = fn(r : @view.View) { switch_node(r, on, turn, title) }
+  let control = fn(r : @view.View) {
+    r.pick(busy, fn(p, busy) {
+      if busy {
+        spinner_node(p, size=spinner_inline) |> ignore
+      } else {
+        switch_node(p, on, turn, title, disabled~)
+      }
+    })
+  }
+  // (a note under its title: the switch on the title's first line; none, the row as tall as its switch, in its middle)
+  let noted = fn() { note() != "" }
   if look_node(parent) is Wide {
     parent.box(made_for=loc, fn(b) {
-      style_node(b, fn() { panel_text_box })
-      wide_control_row_node(b, title, fn() { "" }, None, control, looks=(fn() { setting_title() }, fn() { theme().rows.note }), loc~)
+      style_node(b, fn() { panel_row_in_node(b) })
+      wide_control_row_node(b, title, note, None, control, looks=(fn() { setting_title() }, fn() { theme().rows.note }), first_line=true, first_line_while=noted, loc~)
     })
     |> ignore
     return
   }
-  let at = panel_in_of(parent)
-  // (as panel_label_in's: a sheet's list's words where the sheet's are, else a row's padding in)
-  let sides = if at.listed && !at.small && at.words > 0.0 { room(at.words) } else { @ui.Space::S2_5 }
   parent.box(made_for=loc, fn(r) {
-    style_node(r, fn() { pg_said_row_square.then(@ui.style(min_h=Fixed(theme().items.least), px=sides)) })
-    r.box(fn(words) {
-      style_node(words, fn() { pg_row_words }, in_row=true)
-      words.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      words_node(words, title, fn() { pg_switch_title }) |> ignore
+    // (the row as tall as a row at least, what it holds in its middle; in that, the switch on the title's first line)
+    style_node(r, fn() { pg_said_row_square.then(@ui.style(min_h=Fixed(theme().items.least))).then(panel_row_in_node(r)) })
+    r.box(fn(line) {
+      line
+      .grow(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .row(Is(true))
+      .gap(Is(@ui.Space::px(S3)))
+      .lines_up(By(fn() { Some(if noted() { Start } else { Middle }) }))
+      |> ignore
+      line.box(fn(words) {
+        style_node(words, fn() { pg_row_words }, in_row=true)
+        words.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        words_node(words, title, fn() { pg_switch_title }) |> ignore
+        // (in even lines where it takes two beside the switch: switch_row_note)
+        words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
+      })
+      |> ignore
+      line_end_while_node(line, noted, control)
     })
     |> ignore
-    control(r)
   })
   |> ignore
 }

@@ -631,10 +631,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1/4, 2/4, 3/4, 4/4, contrast]
+        group: [1/4, 3/4, contrast]
         fps: [""]
-        # The Chinese odd-window sweep exceeded the job limit in run 44236112180.
+        # Groups 2 and 4 reached the job limit in 44250614119. Each runner takes half.
+        # Keep the two corners parts from 44236112180.
         include:
+          - { group: 2/4, fps: "", part: 1/2 }
+          - { group: 2/4, fps: "", part: 2/2 }
+          - { group: 4/4, fps: "", part: 1/2 }
+          - { group: 4/4, fps: "", part: 2/2 }
           - { group: corners, fps: "", part: 1/2 }
           - { group: corners, fps: "", part: 2/2 }
     env: &app-env

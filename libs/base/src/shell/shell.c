@@ -9,6 +9,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifdef __linux__
+#include <sys/random.h>
+#endif
 #include "moonbit.h"
 
 // The shell's C interface (client/shell/src/lib.rs).
@@ -183,9 +186,22 @@ int64_t bsh_now(void) {
   return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
-/// `n` bytes of the system's randomness.
+/// `n` bytes of the system's randomness: getrandom on Linux (glibc 2.25 on, where arc4random_buf is 2.36's), and
+/// arc4random_buf elsewhere (Apple's, the BSDs'). Never fewer: a read cut short goes on, and a failure stops the program.
 moonbit_bytes_t bsh_random(int32_t n) {
   moonbit_bytes_t out = moonbit_make_bytes(n, 0);
+#ifdef __linux__
+  size_t done = 0;
+  while (done < (size_t)n) {
+    ssize_t got = getrandom(out + done, (size_t)n - done, 0);
+    if (got < 0) {
+      if (errno == EINTR) continue;
+      abort();
+    }
+    done += (size_t)got;
+  }
+#else
   arc4random_buf(out, (size_t)n);
+#endif
   return out;
 }

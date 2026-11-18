@@ -8,15 +8,33 @@
 // logged or shown.
 
 ///|
-/// The login field in focus, while this viewer drives the screen: the site's host; None in none, or only looking.
+/// Which login input `(host, field, address)` the view's state currently reports in focus; `None` when in none.
+fn login_slot_of(state : Json?) -> (String, String, String)? {
+  match field(state, "login") {
+    Some(Object(_) as l) => {
+      let host = text(Some(l), "host")
+      if host == "" {
+        None
+      } else {
+        Some((host, text(Some(l), "field"), text(state, "address")))
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+/// The login field in focus, while this viewer drives the screen: the site's host; None in none, already filled,
+/// dismissed for this field and address, or only looking.
 fn ScreenSess::login_host(self : ScreenSess) -> String? {
+  let dismissed = self.fill_dismissed.get()
   if !self.driving() {
     return None
   }
   match field(self.state, "login") {
     Some(Object(_) as l) => {
       let host = text(Some(l), "host")
-      if host == "" {
+      if host == "" || flag(Some(l), "filled") || (dismissed is Some(w) && login_slot_of(self.state) == Some(w)) {
         None
       } else {
         Some(host)
@@ -92,6 +110,17 @@ fn ScreenSess::fill_said(self : ScreenSess, note : String) -> Unit {
 fn ScreenSess::fill_pick(self : ScreenSess, l : @hostapi.PasswordLogin) -> Unit {
   self.fill_choices = []
   self.fill_ask(["item", "get", l.id, "--fields", "label=username,label=password", "--reveal", "--format", "json"], "getting")
+}
+
+///|
+/// Closed (`×`): any run under way stopped, and this field on this page not offered again until the focus leaves it or
+/// the tab goes elsewhere.
+fn ScreenSess::fill_dismiss(self : ScreenSess) -> Unit {
+  match login_slot_of(self.state) {
+    Some(slot) => self.fill_dismissed.set(Some(slot))
+    None => ()
+  }
+  self.fill_stop()
 }
 
 ///|
@@ -209,8 +238,8 @@ fn login_fill_node(c : @view.View, s : ScreenSess) -> Unit {
         @sf.icon_node(l, "key", drop_icon, By(fn() { @ui.tree_theme().color(Muted) }), name_now=fn() { if step() == "said" { "info" } else { "key" } })
         |> ignore
       })
-      // (its first line as high as its close key while that shows: across its middle)
-      .min_height(By(fn() { if step() != "" { Some(drop_key_side) } else { None } }))
+      // (its first line as high as its close key: across its middle)
+      .min_height(Is(Some(drop_key_side)))
       |> ignore
       @sf.row_lines_node(
         row,
@@ -229,7 +258,7 @@ fn login_fill_node(c : @view.View, s : ScreenSess) -> Unit {
             @sf.words_node(w, title, fn() { if step() == "said" { drop_path_words } else { drop_name } }) |> ignore
           })
           |> ignore
-          first.show(at_once=true, fn() { step() != "" }, fn(k) { screen_row_key_node(k, "close", @sf.t("common.close"), fn() { s.fill_stop() }) })
+          screen_row_key_node(first, "close", @sf.t("common.close"), fn() { s.fill_dismiss() })
         },
         fn(under) {
           under.pick(at_once=true, step, fn(u, st) {

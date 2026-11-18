@@ -42,6 +42,10 @@ priv struct P52 {
   mut live_locator : LiveLocator?
   /// The bug reports' part (feedback/module.ts), where the station is on the stable channel of a plane that takes them.
   mut feedback : @mcp_tools.FeedbackPart?
+  /// The consumer of the cards' queued outcomes (agents.ts `cardOutcomes`, card-outbox-worker.ts), on `threads`.
+  mut card_outcomes : @store_threads.Worker?
+  /// Whether what the worker writes is being followed to tell it (`outcomes_follow`).
+  mut outcomes_following : Bool
 }
 
 ///|
@@ -61,6 +65,10 @@ fn P52::the_hub(self : P52) -> @session_hub.Hub raise LiveError {
 /// One of the store's calls by its TypeScript name (store.ts): the sessions' store's, else the threads'.
 fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
   self.threads.set_now(wall_ms().to_double())
+  // (the store's clock, as store.ts's `now`: what the storage's policy view counts its decisions since)
+  if name == "now" {
+    return Json::number(self.bus.store.now().to_double())
+  }
   match (try { Ok(self.bus.store.call(name, args)) } catch { e => Err(e) }) {
     Ok(v) => v
     Err(e) => {
@@ -69,7 +77,14 @@ fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
         // What it wrote is told as the store's own writes are (the events, the readers), as P5-4's vault does
         // (`p54_told_threads`): kept in `sent` and never told, an agent's chat_post reached no device until the app
         // read the chat again, and `sent` grew for good (0.1.9984).
-        let answer = self.threads.call(name, args.map(jv_of)) catch {
+        // (an argument left undefined, as the conversations and the rigs say it, is none: the threads' store takes a
+        // hook where one is given, and ran an empty statement for card-place.ts's `insertMessage(message, undefined)`)
+        let given = args.map(a => match a {
+          Object(m) if m.length() == 1 && (m.contains("$u") || m.contains("$undef") || m.contains("$undefined")) =>
+            Json::null()
+          a => a
+        })
+        let answer = self.threads.call(name, given.map(jv_of)) catch {
           e => {
             p52_told_threads(self.bus, self.threads)
             raise e
@@ -82,6 +97,92 @@ fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
       }
     }
   }
+}
+
+///|
+/// One of a queued card's pages (read/pool.ts `cardEditPage`, `cardMessagePage`), read by the readers, behind what a
+/// person waits on.
+async fn P52::card_page(self : P52, op : String, thread : Json, target : String, before : String?) -> Json {
+  let got = (self.bus.reader_ask.val)(op, { "thread": thread, "target": Json::string(target), "before": jopt(before) }, "zh")
+  let page = match got {
+    String(text) => @json.parse(text) catch { _ => Json::null() }
+    v => v
+  }
+  // (a page read after the worker wrote: what it wrote told first)
+  p52_told_threads(self.bus, self.threads)
+  page
+}
+
+///|
+/// agents.ts `cardOutcomes`: the worker made on the threads' store, begun once the process before is gone (it wrote
+/// the outbox too while it served), closed as the station stops.
+fn P52::outcomes_start(self : P52) -> Unit {
+  let worker = @store_threads.Worker::new(
+    self.threads,
+    self.host.rt,
+    async fn(thread, target, before) { self.card_page("internalCardEditPage", thread, target, before) },
+    async fn(thread, target, before) { self.card_page("internalCardMessagePage", thread, target, before) },
+  )
+  self.card_outcomes = Some(worker)
+  ignore(
+    self.host.rt.fork(name="card outcomes", async fn() {
+      match (try { Ok((self.bus.previous_gone)()) } catch { e => Err(e) }) {
+        Ok(_) => {
+          worker.previous_exited()
+          self.outcomes_follow()
+        }
+        Err(e) => {
+          worker.previous_failed(said_of(e))
+          live_log("warn", "card-outbox", "the previous station did not exit", { "error": jstr(said_of(e)) })
+        }
+      }
+    }),
+  )
+  ignore(
+    self.host.rt.fork(name="card outcomes stop", async fn() {
+      ignore(self.bus.stopped.wait())
+      worker.close()
+    }),
+  )
+}
+
+///|
+/// card-outbox-worker.ts `save`: a card's outcome queued (`{thread, ts, agent, field, close, outcome}`), the card
+/// closed in the same write where asked and the close told; the worker restates it. Its id in the queue.
+fn P52::outcome_save(self : P52, item : Json) -> Json raise {
+  guard self.card_outcomes is Some(worker) else { raise LiveError("the cards' outcomes are not kept yet") }
+  self.threads.set_now(wall_ms().to_double())
+  let id = worker.save(@store_threads.CardOutcome::from_json(jv_of(item)), () => ()) catch {
+    e => {
+      p52_told_threads(self.bus, self.threads)
+      raise e
+    }
+  }
+  p52_told_threads(self.bus, self.threads)
+  self.outcomes_follow()
+  Json::string(id)
+}
+
+///|
+/// What the worker writes as it goes (a card restated, one let go) told on the bus as the store's own writes are:
+/// after each of its turns while it goes through the queue, again after a busy write's retry while one waits. A long
+/// scan's own pages tell what came before them (`card_page`); its end wakes the worker, which the next save follows.
+fn P52::outcomes_follow(self : P52) -> Unit {
+  guard self.card_outcomes is Some(worker) && !self.outcomes_following else { return }
+  self.outcomes_following = true
+  fn step() -> Unit {
+    p52_told_threads(self.bus, self.threads)
+    let st = worker.state()
+    let going = jtext(st, "cursor") != Some("0") || jfield(st, "again") is True
+    let waiting = jitems(jfield(st, "deferred")).length() > 0
+    if self.bus.stopped.is_done() || !(going || waiting) {
+      self.outcomes_following = false
+    } else {
+      // timer: a retry after a failure (a busy write's, the worker's RETRY_MS) where one waits; else its next turn
+      self.host.rt.after(if going { 0 } else { 250 }, () => step())
+    }
+  }
+  self.host.rt.after(0, () => step())
 }
 
 ///|

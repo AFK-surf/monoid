@@ -54,10 +54,10 @@ fn job_dot(c : @ui.Ctx, tone : String) -> Unit {
     // alive: its breath out round it, from .6 to 1.15 and back, fading (jobLive); resident: up as long as it runs
     if tone == "live" {
       c.layer(fn() {
-        let halo = c.box(style=job_halo, tx=-job_halo_out, ty=-job_halo_out, fn() {  })
+        let halo = c.box(style=job_halo, tx=-@sf.state_halo_out, ty=-@sf.state_halo_out, fn() {  })
         c.cycle_look(
           halo,
-          job_live_ms,
+          @sf.state_live_ms,
           fn(f) {
             let p = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
             @ui.look(scale=0.6 + 0.55 * p, alpha=0.35 * (1.0 - p))
@@ -73,14 +73,6 @@ fn job_dot(c : @ui.Ctx, tone : String) -> Unit {
     @sf.breathe(c, n, low=0.35, resident=true)
   }
 }
-
-///|
-/// How long an alive job's breath out takes (jobLive 2.4 s).
-let job_live_ms : Double = 2400.0
-
-///|
-/// How far an alive job's breath reaches past its dot (inset -4).
-let job_halo_out : Double = 4.0
 
 ///|
 /// The line under a job's name (metaOf): its state's word in its dot's colour's ink (green's, amber's, red: the dot's

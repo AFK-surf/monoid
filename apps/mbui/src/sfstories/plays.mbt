@@ -126,41 +126,6 @@ fn button_play() -> Play {
 }
 
 ///|
-fn wide_button_play() -> Play {
-  let label = @signals.signal("继续")
-  let primary = @signals.signal(true)
-  let danger = @signals.signal(false)
-  let busy = @signals.signal(false)
-  let enabled = @signals.signal(true)
-  {
-    controls: fn(v) {
-      text_control(v, "label", label)
-      bool_control(v, "primary", primary)
-      bool_control(v, "danger", danger)
-      bool_control(v, "busy", busy)
-      bool_control(v, "enabled", enabled)
-    },
-    preview: fn(v) {
-      v.pick(fn() { (primary.get(), danger.get()) }, at_once=true, fn(o, k) {
-        @sf.wide_button_node(o, fn() { label.get() }, fn() {  }, k.0, danger=k.1, busy=fn() { busy.get() }, enabled=fn() {
-          enabled.get()
-        })
-        |> ignore
-      })
-    },
-    code: fn() {
-      "@sf.wide_button_node(v, fn() { \{quoted(label.get())} }, fn() { … }, \{primary.get()}" +
-      said_args([
-        (danger.get(), "danger=true"),
-        (busy.get(), "busy=fn() { true }"),
-        (!enabled.get(), "enabled=fn() { false }"),
-      ]) +
-      ")"
-    },
-  }
-}
-
-///|
 fn switch_play() -> Play {
   let label = @signals.signal("通知")
   let on = @signals.signal(true)

@@ -321,8 +321,9 @@ class ViewSession {
   readonly #over = new Promise<void>((resolve) => (this.#done = resolve));
   /// Writes, in order; one that fails breaks the view.
   #writes: Promise<void> = Promise.resolve();
-  /// Inputs, in order, each once the one before was posted.
+  /// Inputs, in order, each once the one before was posted; unsent pointer moves of the same buttons coalesce to the latest.
   #inputs: Promise<void> = Promise.resolve();
+  #pendingMove: { buttons: number; run: () => Promise<void> } | null = null;
   #wake: () => void = () => {};
   /// Whether the link's round trip is known (the first frame acknowledged): the sound waits for it.
   #timed = false;
@@ -741,8 +742,25 @@ class ViewSession {
     }
   }
 
-  /// What the client asks of the source, after what it asked before (a paste comes after the keys before it).
-  #then(f: () => Promise<void>) {
+  /// What the client asks of the source, after what it asked before (a paste comes after the keys before it); unsent
+  /// pointer moves of the same buttons coalesce to the latest so a slow dispatch never builds a move backlog ahead of a click.
+  #then(f: () => Promise<void>, move: number | null = null) {
+    if (move !== null) {
+      if (this.#pendingMove !== null && this.#pendingMove.buttons === move) {
+        this.#pendingMove.run = f;
+        return;
+      }
+      const slot = { buttons: move, run: f };
+      this.#pendingMove = slot;
+      this.#inputs = this.#inputs
+        .then(() => {
+          if (this.#pendingMove === slot) this.#pendingMove = null;
+          return slot.run();
+        })
+        .catch((error) => log.info("screens", "input not posted", { screen: this.id, error: (error as Error).message }));
+      return;
+    }
+    this.#pendingMove = null;
     this.#inputs = this.#inputs.then(f).catch((error) => log.info("screens", "input not posted", { screen: this.id, error: (error as Error).message }));
   }
 
@@ -836,7 +854,7 @@ class ViewSession {
               if (e.t === "pointer") this.#pointer = e;
               else if (e.t === "key" && e.kind === "down") this.#keys.set(e.code || e.key, e);
               else if (e.t === "key") this.#keys.delete(e.code || e.key);
-              this.#then(() => this.view.input(e));
+              this.#then(() => this.view.input(e), e.t === "pointer" && e.kind === "move" ? e.buttons : null);
             }
             break;
           }

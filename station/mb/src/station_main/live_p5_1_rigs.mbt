@@ -29,16 +29,99 @@ fn part_answer(a : @rigs_mode.Answer) -> Json {
 }
 
 ///|
+/// What another part says undefined as (the threads' store's `{"$undefined": true}`, the agents' side's
+/// `{"$undef": 1}`), as rigs_mode says it (`{"$u": 1}`); anything else as it is.
+fn rigs_answer(v : Json) -> Json {
+  match v {
+    Object(m) if m.length() == 1 && (m.contains("$undefined") || m.contains("$undef") || m.contains("$u")) =>
+      @rigs_mode.undefined_json()
+    v => v
+  }
+}
+
+///|
+/// An argument as the agents' side takes it: rigs_mode's undefined as its own (`{"$undef": 1}`).
+fn rigs_arg(v : Json) -> Json {
+  if @rigs_mode.is_undefined(v) {
+    { "$undef": Json::number(1.0) }
+  } else {
+    v
+  }
+}
+
+///|
 /// What rigs_mode asks of the station (its `World`): the store's reads here, the rest the agents' side's and the devices'
-/// (the bus's), a rig asked through the mesh (`remote.ask`).
+/// (the bus's), a rig asked through the mesh (`remote.ask`). A function it gives (`{"$fn": id}`: a request's write, a
+/// card made again from the one it was) is called here, where it was given: the other parts have none of its numbers.
 fn P51::rigs_world(self : P51) -> @rigs_mode.World {
   let bus = self.bus
   let callbacks : Map[Int, async (Array[Json]) -> Json] = {}
   let next = Ref(0)
+  let fn_of = (v : Json) => match v {
+    { "$fn": Number(n, ..), .. } => callbacks.get(n.to_int())
+    _ => None
+  }
+  // (the chats' store's cards as the devices' world writes them: what changed told on the bus)
+  let threads : Ref[@store_threads.Store?] = Ref(None)
+  let threads_of = () => match threads.val {
+    Some(t) => {
+      t.set_now(wall_ms().to_double())
+      t
+    }
+    None => {
+      let t = @store_threads.Store::new(bus.db, wall_ms().to_double())
+      threads.val = Some(t)
+      t
+    }
+  }
+  let told = (t : @store_threads.Store) => {
+    let sent = t.sent.copy()
+    t.sent.clear()
+    for c in sent {
+      bus.notify_store(c)
+    }
+  }
   {
     call: async fn(name, args) {
       let arg = (i : Int) => args.get(i).unwrap_or(Json::null())
       match name {
+        // (requests.ts `#saveAndRestate`: the request written, then its outcome queued for the agents' side's worker
+        // (card-outbox-worker.ts), which closes the card and restates its `rig.outcome`)
+        "cardOutcomes.save" => {
+          match fn_of(arg(1)) {
+            Some(f) => ignore(f([]))
+            None => ()
+          }
+          ignore((bus.hub_ask.val)("cardOutcomes.save", Json::array([arg(0)])))
+          @rigs_mode.undefined_json()
+        }
+        "store.withdrawCard" => {
+          let t = threads_of()
+          let got = t.withdraw_card(arg(0), arg(1), arg(2)) catch {
+            e => {
+              told(t)
+              raise e
+            }
+          }
+          told(t)
+          rigs_answer(got)
+        }
+        "store.restateCard" => {
+          let t = threads_of()
+          let was = t.card_at(arg(1), arg(2))
+          let made = match fn_of(arg(3)) {
+            Some(f) => f([was])
+            None => was
+          }
+          let got = t.restate_card(arg(0), arg(1), arg(2), _ => @drive.to_jv(made)) catch {
+            e => {
+              told(t)
+              raise e
+            }
+          }
+          told(t)
+          rigs_answer(got)
+        }
         "remote.ask" => {
           let station = match arg(0) {
             String(s) => s
@@ -93,10 +176,14 @@ fn P51::rigs_world(self : P51) -> @rigs_mode.World {
         }
         _ => {
           let ask = if name.has_prefix("sources.") || name.has_prefix("forwards.") { bus.ui_ask.val } else { bus.hub_ask.val }
-          match ask(name, Json::array(args)) {
-            Null => @rigs_mode.undefined_json()
-            v => v
+          // (what another part threw, as rigs_mode takes a part's: its class's name and its message)
+          let got = ask(name, Json::array(args.map(rigs_arg))) catch {
+            @rigs_mode.Refused(_) as e => raise e
+            @gate.PeerRefused(m) => raise @rigs_mode.Refused(m)
+            @api_routes.Thrown(kind, _) as e => raise @rigs_mode.Thrown(kind, said_of(e))
+            e => raise @rigs_mode.Thrown("Error", said_of(e))
           }
+          rigs_answer(got)
         }
       }
     },
@@ -220,7 +307,8 @@ fn P51::rigs_live(self : P51) -> Unit {
   bus.parts.overview("rigs", async fn(viewer, _) { Json::array(rigs.listed(rigs_viewer(viewer).workspace)) }) catch {
     _ => ()
   }
-  // station_use: a chat's grant of a rig asked of its person; offered where the workspace has rigs.
+  // station_use: a chat's grant of a rig asked of its person; always offered, as rigs/module.ts's (where the workspace
+  // has none, its call says so).
   let workspace_of = (session : String) => match bus.store.get_session(session) {
     { "ws": String(w), .. } if w != "" => w
     _ =>
@@ -244,12 +332,14 @@ fn P51::rigs_live(self : P51) -> Unit {
             { "session": String(s), .. } => s
             _ => ""
           }
-          let text = @rigs_mode.rig_use_run(use_, session, args)
+          // (what the rigs refuse or a part they ask throws, said in its words: tools.ts takes an Error's message)
+          let text = @rigs_mode.rig_use_run(use_, session, args) catch {
+            e => raise Failure(@rigs_mode.error_message(e))
+          }
           { "content": [{ "type": "text", "text": Json::string(text) }] }
         },
       },
     ],
-    offered=() => cloud.memberships().iter().any(m => match m { { "workspace": String(w), .. } => cloud.rigs_named(w).length() > 0; _ => false }),
   )
   // Windows: running as the machine's administrator.
   if is_windows() {

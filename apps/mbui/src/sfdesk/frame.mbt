@@ -222,7 +222,6 @@ fn wide_reset() -> Unit {
   rail_menu_drawn.val = None
   wide.rail_drag.set(None)
   attention_from.val = None
-  workspace_add_from.val = None
   transfers_from.val = None
   wide.editing.set(false)
   wide.attention_open.set(false)

@@ -280,11 +280,6 @@ test "home" {
 }
 
 ///|
-test "settings-run-models" {
-  check("settings-run-models", @ui.move_most_ms)
-}
-
-///|
 test "landing" {
   check("landing", @ui.move_most_ms)
 }

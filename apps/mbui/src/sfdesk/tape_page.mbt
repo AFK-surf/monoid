@@ -417,7 +417,7 @@ fn tape_made(
       Some(
         (
           "place/remote",
-          fn(v, _page, _under, _stint, _k) {
+          fn(v, _page, _under, _stint, k) {
             v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, ws_id) {
               guard ws_id is Some(wid) else { return }
               context_node(p)
@@ -442,6 +442,11 @@ fn tape_made(
                   }
                 },
                 width~,
+                shown=pane_shows(k),
+                keep_screen=fn(st, sc) {
+                  side_screen_shown(src, st, sc) ||
+                  (app.nav.top() is Screen(top) && top.station == st && top.screen == sc)
+                },
               )
             })
           },
@@ -614,12 +619,6 @@ fn tape_made(
       made("kept/" + station + "/" + thread.to_string(), fn(p, core, _here, _stint, told, _acts) {
         context_node(p)
         @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
-      })
-    // (by its station and session: another's another page)
-    Setting(RunSettings(station, key)) if pane_makes.val =>
-      made("run/" + station + "/" + key, fn(p, core, _here, _stint, told, _acts) {
-        context_node(p)
-        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) if pane_makes.val =>
