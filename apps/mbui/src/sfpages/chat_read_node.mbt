@@ -196,8 +196,11 @@ fn chat_read_node(
     settle()
   }
   place.on_sight(seen)
-  // (what it has in sight this moment, a glide still going or not: taken where it differs from what was last)
+  // (what it has in sight this moment while the list still goes by itself (a fling's glide, a notch easing in) or is in
+  // the hand: what was last told is where it was let go, not where it is. At rest what was last told is where it is,
+  // taken as it came to rest: read again as the page goes, it would be read off a list laid out for leaving)
   a.refresh = fn() {
+    guard @signals.untracked(fn() { scroll.in_hand() }) || scroll.glides_till() is Some(_) else { return }
     match place.sight_live() {
       Some(s) if !(a.sight is Some((was, _)) && was == s) => taken(s)
       _ => ()
