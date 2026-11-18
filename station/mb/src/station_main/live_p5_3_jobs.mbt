@@ -1140,7 +1140,14 @@ fn P53Jobs::tools(self : P53Jobs) -> Array[PartTool] {
           None => raise P53Error("unknown session")
         }
         let given = p53_text(args, "cwd").trim_space().to_string()
-        let cwd = if given == "" { home } else { @nodepath.join(sep(), [home, given]) }
+        // (paths.ts `joinPath`: a path given whole stays as it is, as job_start's description says)
+        let cwd = if given == "" {
+          home
+        } else if is_windows() {
+          @ops_platform.win_join(home, given)
+        } else {
+          @ops_platform.unix_join(home, given)
+        }
         let port = match p53_get(args, "port") {
           Null => None
           v =>

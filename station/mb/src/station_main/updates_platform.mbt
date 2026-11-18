@@ -283,7 +283,10 @@ async fn start_installer(host : @host.Host, script : String, run_dir : String, e
     let task = task + " update"
     let made = try {
       @drive.rm_force(path([run_dir, "update.err"]))
+      // (copied over what the update before left: node's copyFile replaces, the drive's makes a new file only)
+      ignore(attempt(() => @drive.unlink(hidden)))
       @drive.copy_file(path([app, "mesh", "target", "release", "stillfail-station-w.exe"]), hidden)
+      ignore(attempt(() => @drive.unlink(path([run_dir, "install.ps1"]))))
       @drive.copy_file(script, path([run_dir, "install.ps1"]))
       @drive.write_private(ps1, @ops_platform.windows_update_script(run_dir, env, task))
       true
@@ -309,6 +312,9 @@ async fn start_installer(host : @host.Host, script : String, run_dir : String, e
   }
   // A copy: the installer replaces the release it is in.
   let copy = path([run_dir, "install.sh"])
+  // (the update before left its copy there: node's copyFile replaced it, the drive's makes a new file only, so 0.1.9984
+  // started no installer after the first update)
+  ignore(attempt(() => @drive.unlink(copy)))
   @drive.copy_file(script, copy) catch {
     _ => return false
   }

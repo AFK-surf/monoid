@@ -667,6 +667,14 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
       Json::null()
     }
     "copyFile" => {
+      // (node's copyFile replaces what is there unless its mode says COPYFILE_EXCL (1); the drive's never does)
+      let excl = match args.get(2) {
+        Some(Number(m, ..)) => (m.to_int() & 1) == 1
+        _ => false
+      }
+      if !excl {
+        ignore(attempt(() => @drive.unlink(s(1))))
+      }
       @drive.copy_file(s(0), s(1)) catch {
         e => raise fail(e)
       }
@@ -1542,6 +1550,15 @@ async fn P52::tools_call(
       let title = jtext(row, "title")
       rjs(@session_hub.agent_name(title, s(0)))
     }
+    // (paths.ts `joinPath`: a path given whole stays as it is)
+    "ops/paths.joinPath" =>
+      rjs(
+        if is_windows() {
+          @ops_platform.win_join(s(0), s(1))
+        } else {
+          @ops_platform.unix_join(s(0), s(1))
+        },
+      )
     "os.hostname" => rjs(hostname())
     "ops/version.version" => rjs(self.bus.version)
     "agents.pageOf" =>
