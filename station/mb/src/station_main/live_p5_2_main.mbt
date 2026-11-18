@@ -589,7 +589,17 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
         return Json::null()
       }
       let profile = self.run_on(key, true, false)
-      let options = self.open_options(row, profile, self.link_skills(row))
+      // Its runtime session as the row keeps it, for what a crash's output read again does not name (an ACP process
+      // whose `session/new` or `session/load` came before the acknowledged offset: agy's turns went to session "" and
+      // each failed "Session not found", 0.1.9984). Codex's threads are taken up as before: by the snapshot, else resumed.
+      let options = match (self.open_options(row, profile, self.link_skills(row)), jtext(row, "runtimeSessionId")) {
+        (Object(m), Some(id)) if runtime != "codex" && id != "" && !m.contains("resume") => {
+          let c = m.copy()
+          c["resume"] = jstr(id)
+          Json::object(c)
+        }
+        (o, _) => o
+      }
       // (its events held by its actor while it is taken up, routed from the first: hub.ts `takeUp`, #7096)
       let generation = actor.generation
       let took = actor.begin_adopt(generation)

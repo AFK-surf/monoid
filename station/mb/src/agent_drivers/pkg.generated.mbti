@@ -2,6 +2,7 @@
 package "station/agent_drivers"
 
 import {
+  "moonbitlang/core/ref",
   "station/host",
   "station/jsjson",
 }
@@ -315,6 +316,8 @@ pub fn transcript_at(Machine, String, String, String) -> Later[String?]
 
 pub fn truthy(@jsjson.JValue) -> Bool
 
+pub fn tui_runner(Array[String]) -> Bool
+
 pub fn turn_usage(@jsjson.JValue?) -> @jsjson.JValue?
 
 pub fn untold(Bytes) -> Bool
@@ -456,7 +459,7 @@ pub fn AgySession::steer(Self, String) -> Later[Bool]
 pub fn AgySession::taken(Self, @jsjson.JValue) -> Unit
 pub fn AgySession::updated(Self, @jsjson.JValue) -> Unit
 
-pub struct AgyWorld {
+pub(all) struct AgyWorld {
   raw_env : Env
   has_keychain : Bool
   keychain_read : () -> Later[String?]
@@ -465,6 +468,30 @@ pub struct AgyWorld {
   run : (String, Array[String], Env, String, Double) -> Later[Unit]
   sleep : (Double) -> Later[Unit]
 }
+
+pub struct BridgedDriver {
+  own : OwnDriver
+  kind : String
+  ids : Ids
+  sessions : Array[BridgedSession]
+}
+pub fn BridgedDriver::adopt(Self, @jsjson.JValue, @jsjson.JValue?, (@jsjson.JValue) -> Unit) -> Later[BridgedSession]
+pub fn BridgedDriver::new(Machine, String, Procs, String, Ids) -> Self
+pub fn BridgedDriver::open(Self, String, String, String, Array[String], Env, @jsjson.JValue, String, (@jsjson.JValue) -> Unit, id? : String, model? : String?, no_tools? : String) -> Later[BridgedSession]
+
+pub struct BridgedSession {
+  own : OwnSession
+  kind : String
+  ids : Ids
+  mut model : String?
+}
+pub fn BridgedSession::abort(Self) -> Later[Unit]
+pub fn BridgedSession::busy(Self) -> Bool
+pub fn BridgedSession::prompt(Self, String) -> Later[Unit]
+pub fn BridgedSession::request(Self, String, String, Array[(String, @jsjson.JValue)], late? : String, no_tools? : String) -> Later[@jsjson.JValue]
+pub fn BridgedSession::retune(Self, @jsjson.JValue) -> Bool
+pub fn BridgedSession::snapshot(Self) -> @jsjson.JValue
+pub fn BridgedSession::steer(Self, String) -> Later[Bool]
 
 pub struct ClaudeDriver {
   own : OwnDriver
@@ -475,6 +502,7 @@ pub struct ClaudeDriver {
   logins : ClaudeLogins
   ids : Ids
   sessions : Array[ClaudeSession]
+  tui_bridge : @ref.Ref[TuiBridge?]
 }
 pub fn ClaudeDriver::adopt(Self, @jsjson.JValue, @jsjson.JValue?, (@jsjson.JValue) -> Unit) -> Later[ClaudeSession]
 pub fn ClaudeDriver::args_for(Self, @jsjson.JValue, String, Bool?, String?) -> Array[String]
@@ -486,7 +514,7 @@ pub fn ClaudeDriver::new(Machine, String, Procs, command? : String, Env, Words, 
 pub fn ClaudeDriver::open(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> Later[ClaudeSession]
 pub fn ClaudeDriver::renewer(Self, @jsjson.JValue) -> ((String?) -> Later[(String, Double)])?
 
-pub struct ClaudeLogins {
+pub(all) struct ClaudeLogins {
   machine_token : (String?) -> Later[(String, Double)]
   subscription_token : ((@jsjson.JValue) -> ((String?) -> Later[(String, Double)]))?
   lent_borrowed : ((@jsjson.JValue) -> Bool)?
@@ -500,6 +528,7 @@ pub struct ClaudeLogins {
 pub struct ClaudeSession {
   own : OwnSession
   driver : ClaudeDriver
+  tui : Bool
   machine_expires : Double?
   effort : String?
   mut fast : Bool?
@@ -513,7 +542,8 @@ pub fn ClaudeSession::begin(Self) -> Unit raise
 pub fn ClaudeSession::compact(Self) -> Later[Unit]
 pub fn ClaudeSession::detach(Self) -> Unit
 pub fn ClaudeSession::dispose(Self) -> Later[Unit]
-pub fn ClaudeSession::make(ClaudeDriver, String, @jsjson.JValue, Double?, @jsjson.JValue, (@jsjson.JValue) -> Unit, String?, ((String?) -> Later[(String, Double)])?, String?) -> Self
+pub fn ClaudeSession::make(ClaudeDriver, String, @jsjson.JValue, Double?, @jsjson.JValue, (@jsjson.JValue) -> Unit, String?, ((String?) -> Later[(String, Double)])?, String?, tui? : Bool) -> Self
+pub fn ClaudeSession::outlived(Self) -> Bool
 pub fn ClaudeSession::prompt(Self, String) -> Later[Unit]
 pub fn ClaudeSession::renew_token(Self, String) -> Unit
 pub fn ClaudeSession::retune(Self, @jsjson.JValue) -> Bool
@@ -529,6 +559,7 @@ pub struct CodexDriver {
   profiles : ProfileSays
   words : Words
   hosts : Array[(String, Host)]
+  adopt_routers : Map[String, (Int32, Proc) -> Bool]
   draining : Array[Host]
   mut host_queue : Later[Unit]
   mut stopped : Bool
@@ -632,7 +663,7 @@ pub fn CodexSession::sink(Self) -> (Notice) -> Unit
 pub fn CodexSession::snapshot(Self) -> @jsjson.JValue
 pub fn CodexSession::steer(Self, String) -> Later[Bool]
 
-pub struct CodexWorld {
+pub(all) struct CodexWorld {
   raw_env : Env
   agent_env : () -> Array[(String, String)]
   walk_skills : (String) -> Later[Array[String]]
@@ -668,12 +699,12 @@ pub fn Env::set(Self, String, String) -> Unit
 pub fn Env::set_unset(Self, String, String) -> Unit
 pub fn Env::to_json(Self) -> @jsjson.JValue
 
-pub struct Exit {
+pub(all) struct Exit {
   code : Int32?
   signal : String?
 }
 
-pub struct FileStat {
+pub(all) struct FileStat {
   dev : Double
   ino : Double
   size : Double
@@ -683,7 +714,7 @@ pub struct FileStat {
   symlink : Bool
 }
 
-pub struct Heard {
+pub(all) struct Heard {
   json : @jsjson.JValue
 }
 pub fn Heard::events(Self) -> Array[@jsjson.JValue]
@@ -727,7 +758,7 @@ pub struct Host {
   mut next_id : Double
   mut lent_until : Double?
 }
-pub fn Host::add_thread(Self, String, (Notice) -> Unit, @jsjson.JValue) -> Unit
+pub fn Host::add_thread(Self, String, (Notice) -> Unit, @jsjson.JValue, router? : ((Int32) -> Bool)?) -> Unit
 pub fn Host::alive(Self) -> Bool
 pub fn Host::attached(Self) -> Unit
 pub fn Host::detach(Self) -> Unit
@@ -766,7 +797,7 @@ pub struct HostedOptions {
   exit : (String, String) -> Later[Unit]
 }
 
-pub struct Ids {
+pub(all) struct Ids {
   next : () -> String
 }
 
@@ -827,7 +858,7 @@ pub fn Loop::new(now? : Double) -> Self
 pub fn Loop::run(Self) -> Unit
 pub fn Loop::soon(Self, () -> Unit) -> Unit
 
-pub struct Machine {
+pub(all) struct Machine {
   lp : Loop
   sep : String
   socket_visible : Bool
@@ -960,13 +991,14 @@ pub fn OwnSession::new(Loop, String, String, @jsjson.JValue, (@jsjson.JValue) ->
 pub fn OwnSession::p(Self) -> Proc
 pub fn OwnSession::runner(Self) -> String?
 pub fn OwnSession::set_flag(Self, String, @jsjson.JValue) -> Unit
+pub fn OwnSession::set_tools_url(Self, String?) -> Unit
 pub fn OwnSession::settled(Self) -> Later[Unit]?
 pub fn OwnSession::startable(Self) -> Unit raise
 pub fn OwnSession::take(Self, @jsjson.JValue?) -> Unit
 pub fn OwnSession::told(Self, Heard, Int32) -> Later[Unit]?
 pub fn OwnSession::turn_now(Self) -> @jsjson.JValue
 
-pub struct Proc {
+pub(all) struct Proc {
   info : RunnerInfo
   write : (String) -> Unit
   tell : (String) -> Unit
@@ -979,14 +1011,14 @@ pub struct Proc {
   released : () -> Later[Unit]
   has_exited : () -> Bool
   handed : () -> Bool
-  thread : (String, @jsjson.JValue) -> Unit
+  thread : (String, @jsjson.JValue, Bool) -> Unit
   drop_thread : (String) -> Unit
   route_thread : (String, Bool, Bool) -> Bool
   route : (Bool) -> Unit
   orphans_off : () -> Unit
 }
 
-pub struct Procs {
+pub(all) struct Procs {
   start : (String, String, Array[String], Env, String, HostedOptions, @jsjson.JValue) -> Later[Proc]
   adopt : (RunnerInfo, HostedOptions, @jsjson.JValue, @jsjson.JValue) -> Proc
   replay_own : (String, String, Int32, @jsjson.JValue) -> Later[@jsjson.JValue]
@@ -996,7 +1028,7 @@ pub struct Procs {
   close : () -> Later[Unit]
 }
 
-pub struct ProfileSays {
+pub(all) struct ProfileSays {
   env : (@jsjson.JValue, String) -> Array[(String, String)]
   codex_overrides : (@jsjson.JValue) -> Array[(String, String)]
 }
@@ -1036,7 +1068,7 @@ pub fn RunnerConnection::send(Self, @jsjson.JValue) -> Unit
 pub fn RunnerConnection::signal(Self, String, group? : Bool) -> Unit
 pub fn RunnerConnection::write(Self, String) -> Unit
 
-pub struct RunnerInfo {
+pub(all) struct RunnerInfo {
   json : @jsjson.JValue
 }
 pub fn RunnerInfo::args(Self) -> Array[String]
@@ -1047,7 +1079,7 @@ pub fn RunnerInfo::runner(Self) -> Int32
 pub fn RunnerInfo::socket(Self) -> String
 pub fn RunnerInfo::started_at(Self) -> Double?
 
-pub struct Socket {
+pub(all) struct Socket {
   write : (String) -> Unit
   end : () -> Unit
   destroy : () -> Unit
@@ -1055,11 +1087,18 @@ pub struct Socket {
   destroyed : () -> Bool
 }
 
-pub struct SocketEvents {
+pub(all) struct SocketEvents {
   connected : () -> Unit
   data : (String) -> Unit
   error : (String) -> Unit
   closed : () -> Unit
+}
+
+pub(all) struct TuiBridge {
+  program : String
+  script : String
+  runner : String
+  shell_env : (String, Env) -> Later[Unit]
 }
 
 pub struct Waiting {
@@ -1073,7 +1112,7 @@ pub fn Waiting::fail_all(Self, Error) -> Unit
 pub fn Waiting::new(Loop) -> Self
 pub fn Waiting::wait(Self, String, (@jsjson.JValue) -> Error?, late? : String, ms? : Double) -> Later[@jsjson.JValue]
 
-pub struct Words {
+pub(all) struct Words {
   repo_rules_command : String
   agy_repo_rules_command : String
   subagent_hook_command : String

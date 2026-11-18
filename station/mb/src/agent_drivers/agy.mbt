@@ -1649,9 +1649,10 @@ pub fn AgyDriver::adopt(
   let o = Some(options)
   let profile = get(o, "profile").unwrap_or(Null)
   let home = profile_home(profile)
+  // (a snapshot's id of "" is one a station before took up without its session: the row's is taken then)
   let id = match str_at(snapshot, "id") {
-    Some(i) => Some(i)
-    None => str_at(o, "resume")
+    Some(i) if i != "" => Some(i)
+    _ => str_at(o, "resume")
   }
   let first = match id {
     Some(i) => self.ensure_conversation(home, i)
@@ -1666,6 +1667,9 @@ pub fn AgyDriver::adopt(
     handed_over: (h, _) => {
       let x = self.session(options, events)
       x.acp.handed(h)
+      if x.acp.own.session_id == "" {
+        x.acp.own.session_id = id.unwrap_or("")
+      }
       made.val = Some(x)
       x.acp.own
     },
