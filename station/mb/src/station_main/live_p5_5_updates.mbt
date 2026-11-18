@@ -199,20 +199,14 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
     unchanged()
     u.close()
   })
-  // The cloud said a release is out (its presence socket's `release`): read again.
-  let last_release = Ref(Json::null())
-  ignore(
-    (bus.cloud_listen.val)(state => {
-      let r = match state {
-        Some(s) => p55_jfield(s, "release")
-        None => Json::null()
-      }
-      if r != last_release.val {
-        last_release.val = r
-        bus.host.rt.fork(async fn() { u.check() catch { e => self.warn("updates", "the release not read", e) } }) |> ignore
-      }
-    }),
-  )
+  // The cloud said a release is out (its presence socket's `release`, the plane's `told`): read again, a rig too.
+  bus.on_release(() => ignore(
+    bus.host.rt.fork(name="release check", async fn() { u.check() catch { e => self.warn("updates", "the release not read", e) } }),
+  ))
+  self.op("updates.check", async fn(_arg) {
+    u.check()
+    Json::null()
+  })
   if rig {
     // rig/main.ts: `stillfail update --beta|--stable` asks it by SIGHUP too.
     self.op("updates.hup", async fn(_arg) {
@@ -221,6 +215,24 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
     })
     return
   }
+  // A runtime installed or updated from the pages (agents.ts `onRuntimeChanged`): the machine's logins read again, and
+  // the agents' side told (what waited for it started, its processes on the new one).
+  u.on_runtime_changed((kind, installed, replaced) => ignore(
+    bus.host.rt.fork(name="runtime changed", async fn() {
+      ignore((bus.jobs_ask.val)("accounts.machineRefresh", Json::array([]))) catch {
+        _ => ()
+      }
+      ignore(
+        (bus.hub_ask.val)("runtimeChanged", {
+          "kind": Json::string(kind),
+          "installed": Json::boolean(installed),
+          "replaced": Json::boolean(replaced),
+        }),
+      ) catch {
+        e => self.warn("updates", "the agents' side not told a runtime changed", e)
+      }
+    }),
+  ))
   bus.parts.overview("updates", async fn(_viewer, lang) { to_core(@jsjson.JValue::Arr(u.get(lang))) })
   bus.parts.routes(updates_routes(u))
   // Its agents' hand on its release (tools/version.ts): updated, or put back to an earlier one.
@@ -234,10 +246,6 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   self.admin_ops(u)
   self.op("agents.updates.get", async fn(arg) { to_core(@jsjson.JValue::Arr(u.get(lang_arg(arg)))) })
   self.op("agents.updates.channel", async fn(_arg) { Json::string(u.channel()) })
-  self.op("updates.check", async fn(_arg) {
-    u.check()
-    Json::null()
-  })
   // (agents.ts's hub: a runtime's command not found where it was asked, `runtimeMissing`; what of the machine's Codex
   // is installed; the machine's Codex updated where a session found it too old to serve, `updateOldCodex`)
   self.op("updates.runtimeMissing", async fn(arg) {

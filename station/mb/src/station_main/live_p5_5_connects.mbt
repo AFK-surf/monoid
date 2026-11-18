@@ -420,7 +420,8 @@ async fn P55::start_connects(self : P55) -> Unit {
       let a = handler(from, of_core(with_method(params, meth)), ws, bytes)
       (to_core(a.json), a.bytes)
     }),
-    heard: None,
+    // (peer.ts `heard`: a station heard from again, a connect's move it may hold settled)
+    heard: Some(f => bus.on_peer_heard(f)),
   }
   let wc = @connects_hub.WorkspaceConnects::new({
     data,
@@ -538,6 +539,47 @@ async fn P55::start_connects(self : P55) -> Unit {
   })
   bus.parts.overview("slackApps", async fn(viewer, _lang) {
     p55_jfield(to_core(@slack.slack_overview(Some(of_core((bus.config_raw.val)())), p55_jtext(viewer, "email"))), "slackApps")
+  })
+  // (what the overview shows of each connect config.json names, as its kind says it (connectKind `shown`: slack/index.ts
+  // `slackShown`, the Feishu, Comma and group parts' `shown`), where its connection stands, and every kind a part is
+  // made for: one ask for the overview)
+  self.op("connects.overview", async fn(_arg) {
+    let out = []
+    for c in core_items(p55_jfield((bus.config_raw.val)(), "connects")) {
+      let id = p55_jtext(c, "id")
+      let kind = match p55_jfield(c, "kind") {
+        String(k) if k != "" => k
+        _ => "slack"
+      }
+      guard kinds.get(kind) is Some(k) else { continue }
+      let shown = match kind {
+        "slack" => to_core(@slack.slack_shown(Some(of_core(c))))
+        "feishu" => {
+          let live = match k.chat(id) {
+            Some(conn) => p55_bot_identity(to_core((conn.identity)()))
+            None => None
+          }
+          @feishu.shown(@feishu.JV::from_json(c), live).to_json()
+        }
+        "comma" => to_core(@comma.shown(of_core(c)))
+        "group" =>
+          match p55_group_parts.val {
+            Some(g) => to_core(g.shown(of_core(c)))
+            None => Json::object({})
+          }
+        _ => Json::object({})
+      }
+      let st = match k.state(of_core({ "id": Json::string(id) })) {
+        Some(s) => to_core(s)
+        None => Json::null()
+      }
+      out.push(({ "id": Json::string(id), "kind": Json::string(kind), "connection": st, "shown": shown } : Json))
+    }
+    let made = []
+    for kind, _ in kinds {
+      made.push(Json::string(kind))
+    }
+    { "kinds": Json::array(made), "connects": Json::array(out) }
   })
   // (each connect and where its connection stands: what the agents' overview shows of them, connectKind's)
   self.op("connects.states", async fn(_arg) {
@@ -840,3 +882,29 @@ fn p55_surface_json(s : @connects_hub.Surface) -> Json {
   }
   Json::object(out)
 }
+
+///|
+/// A Feishu connection's identity as its surface says it (`BotIdentity::to_jv`), None where it has none yet.
+fn p55_bot_identity(j : Json) -> @feishu.BotIdentity? {
+  guard j is Object(m) && m.get("botUserId") is Some(String(_)) else { return None }
+  let t = (k : String) => match m.get(k) {
+    Some(String(s)) => s
+    _ => ""
+  }
+  Some({
+    team: t("team"),
+    team_id: t("teamId"),
+    url: t("url"),
+    bot_user_id: t("botUserId"),
+    bot_name: t("botName"),
+    bot_image: match m.get("botImage") {
+      Some(String(s)) => Some(s)
+      _ => None
+    },
+    bot_id: t("botId"),
+  })
+}
+
+///|
+/// The group's part, made by `start_group`, for what the overview shows of a group connect.
+let p55_group_parts : Ref[@connects_hub.GroupParts?] = Ref(None)

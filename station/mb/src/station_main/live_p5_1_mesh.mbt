@@ -24,6 +24,9 @@ priv struct Endpoint {
   set_congestion : (String) -> Unit
   disabled_relays : async (String, Array[String], Bool) -> Unit
   linked : () -> Bool
+  /// Whether a relay holds it inactive for another endpoint of its id (native.ts `relaysConflict`: another station on
+  /// this station's key; health.json's `relayConflict`).
+  relay_conflict : () -> Bool
   close : async () -> Unit
   /// Its mesh scopes, where its endpoint keeps them (the front's: endpoint.ts `meshConfigure` and the rest).
   mesh : MeshOps?
@@ -305,12 +308,25 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
       ignore(op("disabledRelays", [("peer", Json::string(peer)), ("relays", Json::array(urls.map(u => Json::string(u)))), ("public", Json::boolean(no_public))]))
     },
     linked: () => true,
+    relay_conflict: () => {
+      relays.val = try { host.shell_sync("iroh.relayStatus", { "id": eid }) } catch { _ => relays.val }
+      relays_conflict(relays.val)
+    },
     close: async fn() {
       ignore(@effect.timeout(1000, async fn() { ignore(host.shell("iroh.close", { "id": eid, "forget": true })) })) catch {
         _ => ()
       }
     },
     mesh: None,
+  }
+}
+
+///|
+/// Whether a relay's status says it holds the endpoint inactive for another of its id (native.ts `relaysConflict`).
+fn relays_conflict(status : Json) -> Bool {
+  match status {
+    Array(rs) => rs.iter().any(r => r is { "conflict": True, .. })
+    _ => false
   }
 }
 
@@ -341,6 +357,7 @@ async fn front_endpoint(host : @host.Host, socket : String, bind : Map[String, J
     set_congestion: c => e.set_congestion(c),
     disabled_relays: async fn(peer, urls, no_public) { e.disabled_relays(peer, urls, no_public) },
     linked: () => e.linked(),
+    relay_conflict: () => relays_conflict(e.relay_status()),
     close: async fn() { e.close() },
     mesh: Some({
       scopes: {
@@ -762,6 +779,8 @@ async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
     let (answer, out) = bus.dispatch_peer(peer, if workspace == "" { None } else { Some(workspace) }, meth, request, bytes)
     (answer, out.map(bytes_body))
   })
+  // (peer.ts `heard`: another station heard from, told the parts that follow it: the moves)
+  peers.heard(peer => bus.notify_peer_heard(peer))
   let m : MeshLive = { endpoint: None, call: None, http: None, peers, keeper: None, scopes: None }
   // Outbound: through the mesh once it is up (the bus's `peer_call`).
   let before = bus.peer_call.val
@@ -780,6 +799,10 @@ async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
   bus.mesh_front_kind.val = () => match m.endpoint {
     Some(e) => if e.kind == "front" && (e.linked)() { "front" } else if e.kind == "front" { "unlinked" } else { "direct" }
     None => if env_get("STILLFAIL_MESH_FRONT") is Some(_) { "unlinked" } else { "direct" }
+  }
+  bus.mesh_relay_conflict.val = () => match m.endpoint {
+    Some(e) => (e.relay_conflict)()
+    None => false
   }
   bus.mesh_net_info.val = () => match m.endpoint {
     Some(e) => {

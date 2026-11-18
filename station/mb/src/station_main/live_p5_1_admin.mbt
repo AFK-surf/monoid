@@ -845,6 +845,18 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
   let store = bus.store
   let host = self.host
   let processes = (bus.hub_ask.val)("processes", Json::null()) catch { _ => Json::null() }
+  let threads = match self.threads {
+    Some(t) => Some(t)
+    None => {
+      let t = (try { Some(@store_threads.Store::new(bus.db, wall_ms().to_double())) } catch { _ => None })
+      self.threads = t
+      t
+    }
+  }
+  match threads {
+    Some(t) => t.set_now(wall_ms().to_double())
+    None => ()
+  }
   // What the other slices say of it, asked first (the overview's own reads are synchronous): the accounts' views
   // (P5-3), the updates and the connects' connections (P5-5), Helper's grants (P5-4), the archive policy and the
   // decisions' version (P5-2), the model catalog as the cloud gave it.
@@ -866,7 +878,13 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     (Some(profiles), Some(logins), Some(providers), Some(machine), Some(models)) => {
       let decisions = asked(jobs, "accounts.automaticDecisionsView", [viewer, Json::boolean(false)])
       Some({
-        homes_read_soon: None,
+        // (accounts/index.ts `homesReadSoon`: the profiles' homes read again before the view is made)
+        homes_read_soon: Some(k => ignore(
+          host.rt.fork(name="homes read soon", async fn() {
+            ignore(asked(jobs, "accounts.homesReadSoon", []))
+            k()
+          }),
+        )),
         profiles_view: _ => jv(profiles),
         logins_view: _ => jv(logins),
         api_providers: () => jv(providers),
@@ -878,25 +896,38 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     _ => None
   }
   let updates = asked(bus.coord_ask.val, "updates.get", [Json::string(lang)])
+  // (each connect as its kind shows it and where its connection stands, and every kind made: P5-5's, one ask)
   let states : Map[String, Json] = {}
-  match asked(bus.coord_ask.val, "connects.states", []) {
-    Some(Array(xs)) =>
-      for x in xs {
-        match x {
-          { "id": String(id), "connection": st, .. } => states[id] = st
-          _ => ()
-        }
-      }
-    _ => ()
-  }
+  let shown : Map[String, Json] = {}
   let kinds : Map[String, Unit] = {}
-  match asked(bus.coord_ask.val, "connects.states", []) {
-    Some(Array(xs)) =>
-      for x in xs {
-        if x is { "kind": String(k), .. } {
-          kinds[k] = ()
-        }
+  match asked(bus.coord_ask.val, "connects.overview", []) {
+    Some(Object(o)) => {
+      match o.get("kinds") {
+        Some(Array(ks)) =>
+          for k in ks {
+            if k is String(k) {
+              kinds[k] = ()
+            }
+          }
+        _ => ()
       }
+      match o.get("connects") {
+        Some(Array(xs)) =>
+          for x in xs {
+            if x is { "id": String(id), .. } {
+              match x {
+                { "connection": st, .. } => states[id] = st
+                _ => ()
+              }
+              match x {
+                { "shown": Object(_) as sh, .. } => shown[id] = sh
+                _ => ()
+              }
+            }
+          }
+        _ => ()
+      }
+    }
     _ => ()
   }
   let grants = if platform() == "darwin" { asked(bus.ui_ask.val, "grants.view", []) } else { None }
@@ -944,7 +975,15 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       }
       _ => None
     },
-    wait_for_session_counts: None,
+    // (agents.ts `waitForSessionCounts`: the sessions' counts built where a store from before has none yet)
+    wait_for_session_counts: Some(k => ignore(
+      host.rt.fork(name="session counts", async fn() {
+        match (try { Ok((bus.reader_ask.val)("$sessionCounts", Json::null(), lang)) } catch { e => Err(e) }) {
+          Ok(_) => k(true)
+          Err(_) => k(false)
+        }
+      }),
+    )),
     hub_processes: () => match processes {
       Array(items) =>
         items.filter_map(p => match p {
@@ -989,7 +1028,10 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     connect_kind: kind => if kinds.contains(kind) {
       Some({
-        shown: _ => @jsjson.Obj([]),
+        shown: c => match of_jv(c) {
+          { "id": String(id), .. } => jv(shown.get(id).unwrap_or(Json::object({})))
+          _ => @jsjson.Obj([])
+        },
         connection: c => match of_jv(c) {
           { "id": String(id), .. } => states.get(id).map(jv)
           _ => None
@@ -1040,7 +1082,15 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     policy_checks: None,
     policy_view: (_, _, _, _, _) => jv(policy.unwrap_or(Json::null())),
     prepare_decision_sessions: k => k(),
-    prepare_session_chat_names: None,
+    // (hub.ts `prepareSessionChatNames`: the cc index's chat names of these sessions, built before they are shown)
+    prepare_session_chat_names: Some((keys, k) => ignore(
+      host.rt.fork(name="session chat names", async fn() {
+        ignore((bus.reader_ask.val)("$sessionChatNames", Json::array(keys.map(Json::string(_))), lang)) catch {
+          _ => ()
+        }
+        k()
+      }),
+    )),
     session_there: key => match (try { Ok(store.get_session(key)) } catch { e => Err(e) }) {
       Ok(Null) | Err(_) => false
       Ok(_) => true
@@ -1049,15 +1099,40 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       Ok(String(ws)) => !ws.has_prefix("handed:")
       _ => true
     },
-    chat_title: key => match (try { Ok(store.get_session(key)) } catch { e => Err(e) }) {
-      Ok({ "title": String(t), .. }) => t
-      _ => ""
+    // (overview.ts `chatTitleOf`: what a session's chat is called in the chat list; its title, else its key)
+    chat_title: key => {
+      let chat = match threads {
+        Some(t) => {
+          let c = t.session_chat(Json::string(key)) catch { _ => Json::null() }
+          bus.drain_thread_requests(t)
+          c
+        }
+        None => Json::null()
+      }
+      match chat {
+        Object(_) =>
+          @adb_devices.chat_title(
+            jv(jfield(chat, "thread")),
+            match jfield(chat, "firstText") {
+              String(t) => Some(t)
+              _ => None
+            },
+            None,
+            tr(lang, "station.chat.untitled"),
+            tr(lang, "station.chat.directMessage"),
+          )
+        _ =>
+          match (try { Ok(store.get_session(key)) } catch { e => Err(e) }) {
+            Ok({ "title": String(t), .. }) => t
+            _ => key
+          }
+      }
     },
     rooted: p => p.has_prefix("/") || (p.length() > 2 && p[1] == ':'),
     clean: p => p,
   }
   let d : @effect.Deferred[Json] = @effect.Deferred::new()
-  @events.overview(deps, @events.OverviewKept::new(), @events.Viewer::of(jv(viewer)), lang, r => match r {
+  @events.overview(deps, self.overview_kept, @events.Viewer::of(jv(viewer)), lang, r => match r {
     Ok(v) => ignore(d.succeed(of_jv(v)))
     Err(e) => ignore(d.succeed({ "error": Json::string(e) }))
   })

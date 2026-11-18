@@ -336,8 +336,11 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
   let watch = P53Watch::new(bus, jobs, remote)
   let links = @jobs_host.LinkPreviews::new(@jobs_host.LinkIo::shell(bus.host))
   let models = P53Models::new(bus, accounts)
-  resources.trim_idle = async fn() { search.trim_idle() }
-  resources.programs = () => [program.pid(), search.pid()].filter_map(x => x)
+  // (every part's that answers nothing let go, and every program the station runs counted: pool.ts `onTrim`,
+  // self-memory.ts `MbProcess.live`)
+  resources.trim_idle = async fn() { search.trim_idle() + bus.trim_helpers() }
+  bus.register_pids(() => [program.pid(), search.pid()].filter_map(x => x))
+  resources.programs = () => bus.all_helper_pids()
   let p : P53 = { bus, program, jobs, remote, resources, search, accounts, share, upkeep, watch, links, models }
   // (each part's own: its routes, tools, door places, peers' methods, carried memory)
   jobs.attach()
@@ -663,6 +666,16 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
       Json::array(did)
     }
     "memory.sample" => self.resources.sample()
+    // (self-memory.ts `trimIdle` as a sample past the limits does it: every part's idle programs let go, the readers'
+    // too, a count; and the programs counted after)
+    "memory.trimIdle" => {
+      let parts = (self.resources.trim_idle)()
+      let readers = match (self.bus.reader_ask.val)("trimIdle", Json::null(), (self.bus.lang.val)()) {
+        Number(n, ..) => n.to_int()
+        _ => 0
+      }
+      p53_obj([("parts", p53_i(parts)), ("readers", p53_i(readers)), ("programs", Json::array(self.bus.all_helper_pids().map(p53_i)))])
+    }
     "workspaceLimit" | "workspaceWatch.setLimit" =>
       p53_n(self.watch.set_limit(text(0, "session"), text(1, "station"), num(2, "gib").unwrap_or(0.0)))
     "workspaceWatch.ready" => {
@@ -815,6 +828,10 @@ async fn p53_parts_door(bus : LiveBus, r : Request) -> Reply {
     }
     if path.has_prefix("/parts/ask/") {
       return json_reply(200, (bus.jobs_ask.val)(path[11:].to_owned(), body))
+    }
+    // (the agents' side's, by name, as another part asks it on the bus: `hub_ask`)
+    if path.has_prefix("/parts/hub/") {
+      return json_reply(200, (bus.hub_ask.val)(path[11:].to_owned(), body))
     }
     if path.has_prefix("/parts/overview/") {
       let field = path[16:].to_owned()

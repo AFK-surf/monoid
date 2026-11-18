@@ -740,6 +740,14 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
       "fusionView" => p53_json(self.made().fusion_view(text(0, "id")))
       "loginsView" => p53_json(self.made().logins_view())
       "machineLogins" => p53_json(self.made().machine_logins())
+      // (agents.ts `accounts.machine?.refresh()`: a runtime installed or updated, the machine's logins read again)
+      "machineRefresh" => {
+        match self.machine {
+          Some(m) => m.refresh()
+          None => ()
+        }
+        done
+      }
       "apiProviders" => p53_json(@accounts_pool.api_providers())
       "homesReadSoon" => {
         self.made().homes_read_soon()

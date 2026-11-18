@@ -496,6 +496,11 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
           pump.wait(d.login_changed(jtext(Json::object({ "p": jitems(arg).get(0).unwrap_or(Json::null()) }), "p").unwrap_or("")))
           Json::null()
         }
+        // (codex.ts `runtimeChanged`: its app-servers of a replaced version let go, a busy one's turns drained first)
+        "runtimeChanged" => {
+          pump.wait(d.runtime_changed(replaced=jfield(arg, "replaced") is True, drain_busy=jfield(arg, "drainBusy") is True))
+          Json::null()
+        }
         _ => raise LiveError("codex's driver answers no \{what}")
       }
     },
