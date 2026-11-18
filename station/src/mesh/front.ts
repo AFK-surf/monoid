@@ -8,12 +8,13 @@
 // What the addon answers at once of a connection (how it runs, its ways, what went over it) is what the front said
 // last, asked again as it is read: a log line or a storm's count a read behind. The rest is as the addon's.
 import type { MeshDescriptor, MeshLeafAttachment, MeshScope, MeshScopeView } from "./endpoint.ts";
-import { rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
+import { pidAlive } from "../platform/processes.ts";
 import { type Addr, type Connection, type Endpoint, type Mesh, type Stream, type Traffic, relaysConflict } from "./native.ts";
 
 /// What frames say besides a length (client/shell's PIPE_END, PIPE_FAILED); the longest a frame written here is.
@@ -42,6 +43,20 @@ export function withFront(mesh: Mesh, socket: string): Mesh {
 }
 
 let opened = 0;
+
+/// The streams' sockets of processes that are gone, taken away: one ended as it is asked removes its own (`close`), but
+/// one killed or crashed left it, a socket file in run/ for every such station process since (2026-11-18: 21 there).
+/// A process still running (the one handing over to this) keeps its own.
+async function sweepStreams(dir: string): Promise<void> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  for (const name of names) {
+    const m = /^mesh-(\d+)-\d+\.sock$/.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (pid === process.pid || pidAlive(pid)) continue;
+    await rm(join(dir, name), { force: true });
+  }
+}
 
 /// One process's link to the front: its asks and answers, and the streams it is given.
 export class Front {
@@ -102,6 +117,7 @@ export class Front {
     // (one each time this process binds: a test binds as two Nodes would)
     const streamsPath = join(dirname(socket), `mesh-${process.pid}-${++opened}.sock`);
     await rm(streamsPath, { force: true });
+    await sweepStreams(dirname(socket));
     const server = createServer({ allowHalfOpen: true });
     // what the front gives this process its streams on
     await new Promise<void>((resolve, reject) => server.once("error", reject).listen(streamsPath, () => resolve())); // a Unix socket, by its path

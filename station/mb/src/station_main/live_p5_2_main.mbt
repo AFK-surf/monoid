@@ -1293,7 +1293,10 @@ async fn P52::take_handover(self : P52, handed : Json?) -> Unit {
   let url = self.bus.door_ready.wait()
   self.door_url = url
   carried_handover.val = handed
-  guard self.hub is Some(hub) else { return }
+  guard self.hub is Some(hub) else {
+    codex_left_taken_up()
+    return
+  }
   let side = @session_hub.AgentsSide::new(hub, self.place())
   self.agents_side = Some(side)
   side.start(self.place()) catch {
@@ -1302,6 +1305,7 @@ async fn P52::take_handover(self : P52, handed : Json?) -> Unit {
         "error": jstr(said_of(e)),
       })
   }
+  codex_left_taken_up()
   self.taken = true
   self.start_usage()
   self.start_feedback()
