@@ -121,11 +121,14 @@ while [ $# -gt 0 ]; do
 done
 url=$(printf '%s' "$cfg" | /usr/bin/sed -n 's/.*"url":"\\([^"]*\\)".*/\\1/p')
 say() { printf '%s\\n' "$1"; }
-say '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
 n=0
 while IFS= read -r line; do
   case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
   n=$((n+1))
+  # (its init as Claude Code says it: once a turn is given it, never before its first message, which the station reads
+  # as a turn begun: said at its start, it was read before the station's first prompt on a busy machine, and that prompt
+  # was refused as a turn already running, 1 run in 16 or so)
+  say '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
   say '{"type":"system","subtype":"status","status":"requesting","session_id":"'"$sid"'"}'
   to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
   # (a prompt that names no thread, as a resume's: the one it was last asked in, as its conversation would know)
