@@ -39,6 +39,22 @@ fn clarify_press(t : @ui.Tester, label : String, k? : Int = 0, end? : Double = 8
 }
 
 ///|
+/// Line `k`'s menu (0 the first: its ⋯'s, by a right click on its place) opened, and its `item` pressed.
+fn clarify_line_menu(t : @ui.Tester, k : Int, item : String) -> Unit raise {
+  guard board_words_at(t, "\{k + 1}.") is Some((x, y, w, h)) else { fail("no line \{k + 1}") }
+  t.right_click(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  board_tap_words(t, item)
+}
+
+///|
+/// The split's own ⋯ (at its foot, after its lines) opened, and its `item` pressed.
+fn clarify_split_menu(t : @ui.Tester, item : String) -> Unit raise {
+  clarify_press(t, "更多操作", k=t.all(Button, label="更多操作").length() - 1)
+  board_tap_words(t, item)
+}
+
+///|
 /// The board's chats of workspace ws1 titled by one of `titles`, and in which column each stands.
 fn clarify_lanes(src : Source, titles : Array[String]) -> Array[String] {
   @sfbase.board_items(src, "ws1").filter(fn(i) { titles.contains(i.title) }).map(fn(i) { @sfbase.board_lane_of(i) })
@@ -66,7 +82,8 @@ test "大屏: 先理清 from a draft's menu: its card being split, then three li
   let tasks = @sfbase.clarify.tasks.untracked()
   assert_eq(tasks[2].after.untracked(), [tasks[0].id, tasks[1].id])
   assert_eq(tasks[0].after.untracked(), [])
-  for w in ["等 在设置页加上导出对话记录…", "等 在设置页加上导入对话记录…", "全部派发", "放入待派发", "按原话派发", "返回修改"] {
+  // (a checklist: numbered lines, what the third waits for in grey under it, two keys at the foot)
+  for w in ["1.", "2.", "3.", "等 1、2", "全部派发", "放入待派发"] {
     assert_true(board_words_at(t, w) is Some(_), msg=w)
   }
   // (nothing made, nothing started: the draft still the board's, whole)
@@ -117,14 +134,15 @@ test "the core's answer read whole: what is not an earlier line's place waits fo
 ///|
 test "大屏: a line deleted, one added by hand, empty; 返回修改 leaves the draft as it was" {
   let (t, _) = board_at("board-clarify-split", 1440.0, 900.0)
-  clarify_press(t, "删除这项", k=1)
+  clarify_line_menu(t, 1, "删除这项")
   assert_eq(clarify_now(), [clarify_lines()[0], clarify_lines()[2]])
   let tasks = @sfbase.clarify.tasks.untracked()
   assert_eq(tasks[1].after.untracked(), [tasks[0].id])
-  clarify_press(t, "添加任务")
+  assert_true(board_words_at(t, "等 1") is Some(_), msg="renumbered")
+  clarify_press(t, "添加")
   assert_eq(clarify_now(), [clarify_lines()[0], clarify_lines()[2], ""])
   assert_eq(board_faults(t), [])
-  clarify_press(t, "返回修改")
+  clarify_split_menu(t, "返回修改")
   assert_eq(@sfbase.clarify.draft.untracked(), "")
   assert_eq(board_kept_drafts()[0], @sffixture.fix_clarify_words)
 }
@@ -153,8 +171,14 @@ test "大屏: 放入待派发 makes each line a 待派发 card, together where t
   }
   // (its card says the line alone, and what it waits for)
   assert_true(board_words_at(t, clarify_lines()[2]) is Some(_))
-  assert_true(board_words_at(t, "等 在设置页加上导出对话记录… 等 1 项") is Some(_), msg=t.words().map(fn(w) { w.0 }).join(" | "))
+  assert_true(board_words_at(t, "等 2 个任务") is Some(_), msg=t.words().map(fn(w) { w.0 }).join(" | "))
   assert_eq(@signals.untracked(fn() { @sfbase.board_wait_of(drafts[2], drafts, @sfbase.board_items(src, "ws1"), true) }), Waits([clarify_lines()[0], clarify_lines()[1]]))
+  // (pressed: which ones, by their words)
+  clarify_press(t, "等 2 个任务")
+  for w in ["要等这些做完", "在设置页加上导入对话记录，认得导出的格式"] {
+    assert_true(board_words_at(t, w) is Some(_), msg=w + ": " + t.words().map(fn(w) { w.0 }).join(" | "))
+  }
+
   assert_eq(board_faults(t), [])
 }
 
@@ -168,7 +192,7 @@ test "大屏: 全部派发 starts the free lines only; the third waits in 待派
   assert_eq(clarify_lanes(src, [lines[2]]), [])
   let drafts = clarify_drafts(src)
   assert_eq(drafts.map(fn(d) { d.title }), [lines[2], "给导出加上按月份筛选", "看一下 Android 冷启动为什么慢了 300ms"])
-  assert_true(board_words_at(t, "等 在设置页加上导出对话记录… 等 1 项") is Some(_), msg="its wait")
+  assert_true(board_words_at(t, "等 2 个任务") is Some(_), msg="its wait")
   assert_eq(board_faults(t), [])
   // (the first two done with: in 待收口, and the third started by itself, its chat at work)
   t.run_for(@sffixture.fix_clarify_settle_ms + @ui.move_most_ms)
@@ -221,8 +245,10 @@ test "大屏: what a draft waits for errored: said on its card, never started by
 ///|
 test "大屏: one line started on its own: what waits for it waits for its chat; the draft kept till the last goes" {
   let (t, src) = board_at("board-clarify-split", 1440.0, 900.0)
-  clarify_press(t, "派发这项", k=0)
+  clarify_line_menu(t, 0, "派发这项")
   assert_eq(clarify_now(), clarify_lines()[1:].to_owned())
+  // (what waited for it says it by its words now: the line is not the split's)
+  assert_eq(@sfbase.clarify_waits_words(@sfbase.clarify.tasks.untracked()[1]), "等 在设置页加上导出…、1")
   assert_eq(clarify_lanes(src, [clarify_lines()[0]]), ["run"])
   assert_eq(board_kept_drafts()[0], @sffixture.fix_clarify_words)
   clarify_press(t, "放入待派发")
@@ -240,7 +266,7 @@ test "小屏: the split in 待派发's column, a phone's width: three lines, the
   // (a column at a time: 待派发's chip)
   t.click(Tab, label="待派发 3")
   t.run_for(@ui.move_most_ms)
-  for w in ["先理清", "全部派发", "等 在设置页加上导出对话记录…"] {
+  for w in ["先理清", "全部派发", "等 1、2"] {
     assert_true(board_words_at(t, w) is Some(_), msg=w)
   }
   guard board_words_at(t, "全部派发") is Some((x, _, w, _)) else { fail("no foot") }

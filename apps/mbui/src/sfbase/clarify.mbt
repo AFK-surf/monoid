@@ -257,3 +257,24 @@ pub fn clarify_waits_of(t : ClarifyTask) -> Array[(Int, String)] {
   }
   out
 }
+
+///|
+/// What line `t` waits for, said under it: 等 1、2, each by its place in the split, or by its words where it was started
+/// alone already ("" where it waits for none).
+pub fn clarify_waits_words(t : ClarifyTask) -> String {
+  let after = t.after.get()
+  guard !after.is_empty() else { return "" }
+  let tasks = clarify.tasks.get()
+  let said : Array[String] = []
+  for a in after {
+    match tasks.search_by(fn(o) { o.id == a }) {
+      Some(at) => said.push((at + 1).to_string())
+      None =>
+        match clarify.started.get(a) {
+          Some(k) => said.push(board_after_short(k.title, n=8))
+          None => ()
+        }
+    }
+  }
+  @sf.t("web-main.board.clarify.waits_nums", args=[("list", said.join(@sf.t("web-main.board.clarify.sep")))])
+}

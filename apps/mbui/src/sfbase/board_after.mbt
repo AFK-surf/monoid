@@ -176,11 +176,11 @@ pub fn board_wait_words(w : BoardWait) -> String {
   match w {
     Free | Ready => ""
     Waits(ts) => {
-      let first = board_after_short(ts[0])
+      // (one by its words; several by how many, their words a press away: the card's 「等 n 个任务」)
       if ts.length() == 1 {
-        @sf.t("web-main.board.clarify.waits", args=[("task", first)])
+        @sf.t("web-main.board.clarify.waits", args=[("task", board_after_short(ts[0]))])
       } else {
-        @sf.t("web-main.board.clarify.waits_more", args=[("task", first), ("n", (ts.length() - 1).to_string())])
+        @sf.t("web-main.board.clarify.waits_more", args=[("n", ts.length().to_string())])
       }
     }
     Gone(t) => @sf.t("web-main.board.clarify.wait_gone", args=[("task", board_after_short(t, n=8))])
