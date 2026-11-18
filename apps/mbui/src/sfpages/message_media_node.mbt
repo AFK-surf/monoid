@@ -18,8 +18,8 @@
 /// and whose message it is (`by`, for 引用); `corner` how round it is (a message's file's, or a quote's own picture's,
 /// concentric with its card: quote_picture_corner). What shows of it (its share of the box, what it is decoded for, where
 /// it is cut from) is bound to its data too: a message sent from here, made before the core said its picture's size and
-/// told it as the core's row takes it over, keeps the same nodes, its flight and how it came in. `flies_from`: made in
-/// the change in which it is sent, where it stood in the composer then (its picture flies from there:
+/// told it as the core's row takes it over, keeps the same nodes, its flight and how it came in. `flies`: made in the
+/// change in which it is sent, how its picture flies from where it stood in the composer then (sent_flies:
 /// image_reveal_node's `flies`).
 fn message_image_node(
   parent : @view.View,
@@ -31,7 +31,7 @@ fn message_image_node(
   w : () -> Double,
   h : () -> Double,
   corner? : Double = @sf.message_file_corner,
-  flies_from? : (Double, Double, Double, Double)? = None,
+  flies? : ((@view.View) -> Unit)? = None,
 ) -> Unit {
   let station = fn() { (place.station)() }
   let owner = fn() { owner_of(place.here(), a()) }
@@ -210,7 +210,7 @@ fn message_image_node(
               comes=place.said,
               start_crop~,
               decoded_for=fn() { dmax(most().0, most().1) },
-              flies=flies_from.map(fn(from) { (sent_part_flight, from, sent_up_late) }),
+              flies~,
               corner~,
             )
             |> ignore

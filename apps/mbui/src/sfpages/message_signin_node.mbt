@@ -37,14 +37,31 @@ fn signin_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core
     }
   }
   let title = fn() { @sf.t("android-misc.signin.title", args=[("site", ask().site)]) }
-  v.pick(fn() { signin_over(ask()) }, fn(p, decided) {
+  // (ended, the card fades where it stands as its room gives way to how it went (a rig's way, rig_ask_node): one
+  // place, one thing in it at a time, the card leaving as it was at the end, never gone in that frame. One ended as it
+  // is made never goes back: none of that is made for it)
+  let leave = if @signals.untracked(fn() { signin_over(ask()) }) { 0.0 } else { msg_part_leave_ms }
+  v.pick(fn() { signin_over(ask()) }, leave~, fn(p, decided) {
     @sf.style_node(p, fn() { under_post_room })
     if !decided {
+      // (what it asked as it was while it was answered, held so as it leaves: nothing of it answered again once it
+      // has ended)
+      let held : Ref[SignInAsk?] = Ref(None)
+      let open_ask = fn() -> SignInAsk {
+        let a = ask()
+        match held.val {
+          Some(h) if signin_over(a) => h
+          _ => {
+            held.val = Some(a)
+            a
+          }
+        }
+      }
       // (the card as wide as what it says: lined up at the column's start, not across it)
       p.lines_up(Is(Some(Start))) |> ignore
       p.box(fn(r) {
         @sf.style_node(r, fn() { @sf.ask_card_room.then(ask_card_under_head) })
-        signin_card_node(r, here, core, ask, fn() { m().card })
+        signin_card_node(r, here, core, open_ask, fn() { m().card })
       })
       |> ignore
     } else {
@@ -229,7 +246,10 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
     })
     f.show(fn() { buttons() != NoButtons }, fn(s) {
       s.width_share(Is(1.0)) |> ignore
-      s.pick(at_once=true, buttons, fn(p, kind) {
+      // (one set of buttons for another as what is answered moves on (1Password's logins to pick from, a code asked,
+      // filling in): the one before fading where it stood as the foot's room makes its way to the one now, as a
+      // card's own parts go (msg_part_leave_ms))
+      s.pick(buttons, leave=msg_part_leave_ms, fn(p, kind) {
         p.width_share(Is(1.0)) |> ignore
         p.box(fn(col) {
           @sf.style_node(col, fn() { signin_foot_room })
@@ -264,7 +284,7 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
             }
             col.box(fn(list) {
               @sf.style_node(list, fn() { signin_typed.then(@sf.over_foot_reach(@sf.button_height())) })
-              list.each(at_once=true, choices, fn(p) { (p.0, p.1.id) }, fn(r, item) {
+              list.each(choices, fn(p) { (p.0, p.1.id) }, fn(r, item) {
                 let words = fn() {
                   let l = item.get().1
                   if l.username == "" { l.title } else { l.title + " · " + l.username }

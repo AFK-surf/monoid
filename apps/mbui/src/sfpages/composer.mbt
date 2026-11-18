@@ -234,6 +234,7 @@ let composing : Composing = {
 ///|
 fn composing_reset() -> Unit {
   composer_foot_way.val = None
+  composer_width_last.val = ("", "", 0.0, 0.0)
   composing.let_go.set(false)
   composing.had_focus = false
   composing.let_go_at = @double.neg_infinity
@@ -490,10 +491,11 @@ pub fn composer(
     @motion.tween(flight_desk_ms, ease=Flight)
   } else if moved && sent_out is Some(_) {
     // (gone to its chat's foot as a new chat's first words set out from it on a chat's page made as nodes: held where
-    // it was as long as they go across before they rise (sent_out_hold_ms), then down on their flight's clock and
-    // curve, one way with them, not ahead of them and back: sfbase's sent_out_said, said by new_chat's send)
-    // det-ok(motion-length): words sent's own, their flight's (message_words_node's flies_in), sf/motion.mbt kind 4
-    @motion.tween(flight_desk_ms - @sfbase.sent_out_hold_ms, ease=Flight, delay=@sfbase.sent_out_hold_ms)
+    // it was as long as they go across before they rise (sent_up_late of their flight), then down on their flight's
+    // curve within move_most_ms, one way with them, not ahead of them and back)
+    let ms = @ui.move_most_ms
+    let hold_ms = ms * sent_up_late
+    @motion.tween(ms - hold_ms, ease=Flight, delay=hold_ms)
   } else if sent_lets_go || sent_out is Some(_) {
     // (let go by words sent from it: down on their flight's clock, with its room, flight_lets_go)
     // (said where their row's opening is: flight_lets_go)
@@ -2394,6 +2396,7 @@ fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) 
     words: w.field.words_at().map(fn(at) { at.0 }),
     quotes: w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }),
     parts,
+    delay: 0.0,
   })
 }
 
@@ -2741,7 +2744,7 @@ pub fn chat_composer(c : @ui.Ctx, src : Source, ws : Workspace, r : ChatRef, v :
     },
     warm_agent: !v.map(fn(v) { v.archived }).unwrap_or(false),
   }
-  let width = composer_width(c.width)
+  let width = composer_width_in(spec.draft, c.width)
   let place = if apart { composer_place(c, c.width) } else { composer_alone }
   let mut notices = -1
   let mut shaped = None
@@ -3381,6 +3384,58 @@ fn composer_foot_at(pane : Double) -> Double {
 /// How far under the composer its room is since a page's way set it off (composer_foot_in), and the way it was on as it
 /// was last asked ("" none) and when that is there: none till then, and none once the window takes the pane across with no way going.
 let composer_foot_way : Ref[(@motion.Anim, String, Double)?] = Ref(None)
+
+///|
+/// Draft, page_way id, starting pane width, and starting composer width (composer_width_in); reset by composing_reset.
+// kept across runs: reset by composing_reset
+let composer_width_last : Ref[(String, String, Double, Double)] = Ref(("", "", 0.0, 0.0))
+
+///|
+/// Width of `draft`'s composer in a pane `pane` wide: smoothly interpolated between the endpoints of `@sfbase.page_way`
+/// while the side panel slides so its edges never hit the piecewise clamp corner at `composer_most` mid-flight.
+fn composer_width_in(draft : String, pane : Double) -> Double {
+  let way = @sfbase.page_way
+  if way.id == "" {
+    let cw = composer_width(pane)
+    composer_width_last.val = (draft, "", pane, cw)
+    return cw
+  }
+  let (from, cw0) = match composer_width_last.val {
+    (d, id, w, cw) if d == draft && id == way.id => (w, cw)
+    (d, _, _, cw_was) if d == draft && cw_was > 0.0 => {
+      composer_width_last.val = (draft, way.id, pane, cw_was)
+      (pane, cw_was)
+    }
+    _ => {
+      let cw = composer_width(pane)
+      composer_width_last.val = (draft, way.id, pane, cw)
+      (pane, cw)
+    }
+  }
+  let to = way.to
+  if (from - to).abs() <= 0.5 {
+    composer_width(pane)
+  } else {
+    let gone = @sf.dclamp((from - pane) / (from - to), 0.0, 1.0)
+    let cw1 = composer_width(to)
+    let cw = cw0 + (cw1 - cw0) * gone
+    composer_width_last.val = (draft, way.id, from, cw0)
+    cw
+  }
+}
+
+///|
+/// Width of a composer in a tree node `w` wide while its column is on `c` (`@sfbase.column_laid`): smoothly interpolated
+/// between `c.laid` and `c.toward` so its edges never hit the piecewise clamp corner at `composer_most` mid-flight.
+fn composer_width_on(w : Double, c : @sfbase.ColumnLaid) -> Double {
+  if c.toward_by <= 0.0 || (c.toward - c.laid).abs() <= 0.5 {
+    composer_width(w)
+  } else {
+    let cw0 = composer_width(c.laid)
+    let cw1 = composer_width(c.toward)
+    cw0 + (cw1 - cw0) * c.toward_by
+  }
+}
 
 ///|
 /// Whether a chat's composer reaches across a pane `pane` wide, as far from its sides as from its foot

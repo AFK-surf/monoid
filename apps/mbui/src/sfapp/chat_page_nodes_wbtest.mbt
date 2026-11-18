@@ -599,21 +599,24 @@ test "where a chat was left as one page keeps it, the other opens at the same me
 }
 
 ///|
-test "a chat's page made with its inside nodes opens where it was left, on 小屏 and 大屏: left at its end, at its end, what came since too; read up, at the same messages as far down" {
+test "a chat's page made with its inside nodes opens where it was left, on 小屏 and 大屏: left at its end, at its end; left there with a message come since, where it was, what came under it to read on (the old page's left_at_end); read up, at the same messages as far down" {
   for s in long_screens {
     let (name, w, h, _) = s
     // left at its end, with nothing come since and with a message come since
     for came in [0, 1] {
       let l = long_chat()
-      let t = place_long_open(l, s)
+      // (its composer made as nodes too, in the list's foot as it is laid out: the old view's composer there is as tall
+      // as its first build only a frame after, the list brought short of its foot in the first fill held at it)
+      let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(true) })
       // (at its end as it opens: how far down its last message's words end)
       let foot_of = fn(n : Int) { t.rect_of("第\{n}条：").map(fn(r) { r.1 + r.3 }) }
       guard foot_of(long_count) is Some(end) else { fail("\{name}: its last message not drawn as it opens") }
       place_left_and_opened(t, l, meanwhile=fn() { if came > 0 { l.last.set(l.last.get() + came) } })
-      let now = foot_of(long_count + came)
+      // (the message last as it was left where it was: what came since under it, not shown in its place)
+      let now = foot_of(long_count)
       assert_true(
         now is Some(y) && (y - end).abs() <= 1.0,
-        msg="\{name}, \{came} come since: its last message at \{Repr(now)}, its end \{end}",
+        msg="\{name}, \{came} come since: the message last as it was left at \{Repr(now)}, its end then \{end}",
       )
     }
     // read up
@@ -682,6 +685,29 @@ test "a chat's page made with its inside nodes opens at its unread line before w
     place_left_and_opened(t, l, meanwhile=fn() { line.set(l.first.get() + 3) })
     let at = t.rect_of("以下是新消息")
     assert_true(at is Some((_, y, _, _)) && y > 0.0 && y < h / 3.0, msg="\{name}: the unread line at \{Repr(at)}")
+  }
+}
+
+///|
+test "a chat's page made with its inside nodes left at its end, messages come while it was away: opened where it was left, what came read from there, not at its end; nothing come since, at its end, on 小屏 and 大屏" {
+  for s in long_screens {
+    let (name, _, h, _) = s
+    for came in [20, 0] {
+      let l = long_chat()
+      let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(true) })
+      let last = "第\{long_count}条："
+      guard t.rect_of(last) is Some((_, y0, _, _)) else { fail("\{name}: its last message not drawn as it opens") }
+      place_left_and_opened(t, l, meanwhile=fn() { l.last.set(long_count + came) })
+      let newest = "第\{long_count + came}条："
+      if came > 0 {
+        // (where it was left: its last message then where it was, what came since under it, out of sight)
+        let at = t.rect_of(last)
+        assert_true(at is Some((_, y, _, _)) && (y - y0).abs() <= 1.0, msg="\{name}: its last message then at \{Repr(at)}, \{y0} as left")
+        assert_false(long_drawn(t, long_count + came, h), msg="\{name}: opened at its end, \{newest} drawn")
+      } else {
+        assert_true(t.rect_of(last) is Some(_) && to_newest_shown(t) is None, msg="\{name}: nothing came, not at its end")
+      }
+    }
   }
 }
 

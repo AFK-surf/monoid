@@ -7,8 +7,9 @@
 // motion from the moment its cause was said (the step began showing; the row came into its list), as data. Not here
 // yet: the card over its picture (P21). What a message of its agent's coming out of its picture does to it (the line
 // folding to its picture, the picture and its ring away while the message's own flies from it, flying home again from
-// where it let the message out, the line unfolding: emit.mbt's Fold, Float, Return) is the message's (agent_out_steps),
-// told through its AgentFace; the ring fading as the row goes is the list's.
+// where it let the message out, the line unfolding: emit.mbt's Fold, Float, Return) is the message's plan's (the list's
+// held keys in chat_body_node, agent_out_steps, agent_out_return), told through its AgentFace; the ring fading as the
+// row goes is the list's.
 
 ///|
 /// An agent at work's picture on its line, as a message of its agent's coming out of it reads and moves it

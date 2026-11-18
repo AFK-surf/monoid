@@ -58,6 +58,8 @@ fn message_others_node(
       @sf.style_node(col, fn() { if share is Some(_) { msg_main_share } else { msg_main } })
       col.box(fn(head) {
         @sf.style_node(head, fn() { if message_inline(here) { msg_head_inline } else { msg_head } })
+        // (in past its picture as much as it is drawn over its start: message_inline_way)
+        message_inline_way(head, here, msg_space(@sf.message_head_in))
         name(head)
         match route {
           // (at once: the list's width says the arrangement, and what the window or the sidebar does to the width is
@@ -116,11 +118,63 @@ fn message_others_node(
     row.box(fn(av) {
       av.over(Is(true)) |> ignore
       @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
+      // (out in the margin as much as it is drawn so: message_inline_way)
+      message_inline_way(av, here, @sf.message_avatar_reach)
       avatar(av)
     })
     |> ignore
   })
   (node, menu_on.val)
+}
+
+///|
+/// How much more inline than it is laid out (-1 … 1) a message in a chat's list of `here` is drawn as node `n` is drawn:
+/// none at rest; on the page's way to another width across chat_narrow_w (a side panel sliding in or out beside it, the
+/// tape's panels moving), its list laid out anew as the way sets off in the arrangement of where it goes (or of the
+/// narrower end), so much of the way to the arrangement at the way's other end as the column says is left of it
+/// (@sfbase.column_laid's `toward`, `toward_by`): its picture and its head going across between out in the margin and
+/// over the head's start as the column goes, never a step of either in the frame it sets off (2026-11-17: ±25 at the
+/// set off and the close of 大屏's side panel).
+fn message_inline_by(here : MessageNodeHere, n : @view.View) -> Double {
+  let c = @sfbase.column_laid(here.station + "\u{1}" + here.session, n)
+  if c.toward_by <= 0.0 {
+    return 0.0
+  }
+  // (the list as wide as it is laid out, at the column's other end as much wider or narrower as that is)
+  let w = (here.width)()
+  let laid = if w <= chat_narrow_w { 1.0 } else { 0.0 }
+  let other = if w + (c.toward - c.laid) <= chat_narrow_w { 1.0 } else { 0.0 }
+  (other - laid) * c.toward_by
+}
+
+///|
+/// Node `n` of a message in a chat's list of `here`, `by` further across where it is laid out inline than where its
+/// picture is out in the margin, drawn that much across for as much more inline as it is drawn than laid out
+/// (message_inline_by): bound once a column has first set off on the page's way (none at rest, as the page's column's
+/// own: chat_page_made's `narrower`), told directly as it does, no binding of each row's following the count
+/// (@sfbase.column_set_off_each).
+fn message_inline_way(n : @view.View, here : MessageNodeHere, by : Double) -> Unit {
+  let bound = Ref(false)
+  let bind = fn() {
+    if !bound.val && n.alive() {
+      bound.val = true
+      n.offset(By(fn() { (by * message_inline_by(here, n), 0.0) })) |> ignore
+    }
+  }
+  if @signals.untracked(fn() { @sfbase.column_set_off_count() > 0 }) {
+    bind()
+  } else {
+    @sfbase.column_set_off_each(n, bind)
+  }
+}
+
+///|
+/// A space said exactly (message_head_in), in points.
+fn msg_space(s : @ui.Space) -> Double {
+  match s {
+    Exact(x) => x
+    _ => 0.0
+  }
 }
 
 ///|

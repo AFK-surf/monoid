@@ -866,3 +866,67 @@ test "大屏, 中屏: 归档 on a chat keeping watch, asked, and 归档 in the q
     assert_true(keys.iter().all(fn(k) { k.contains("s-c2") }), msg="\{win.0}: \{Repr(keys)}")
   }
 }
+
+///|
+/// Each frame's left of the bar's button `label` (wide_bar_button's) from the one before `change` is made, through
+/// `ms` of the frames a host draws after it; and what steps more than 8 in a frame among them.
+fn wide_bar_way(t : @ui.Tester, label : String, change : () -> Unit, ms : Double) -> (Array[Double], Array[String]) {
+  let at = fn() {
+    match wide_bar_button(t, label) {
+      Some(r) => r.0
+      None => -1000.0
+    }
+  }
+  let xs = [at()]
+  t.each_frame(Some(fn() { xs.push(at()) }))
+  change()
+  t.run_shown(ms)
+  t.each_frame(None)
+  let steps = []
+  for i in 1..<xs.length() {
+    let d = xs[i] - xs[i - 1]
+    if d > 8.0 || d < -8.0 {
+      steps.push("frame \{i}: \{xs[i - 1]} → \{xs[i]}")
+    }
+  }
+  (xs, steps)
+}
+
+///|
+test "大屏, 中屏: a button of the bar coming or going as its chat changes (its services' and jobs') moves those beside it along the row, never 8 in a frame; told as an answer, at once" {
+  for win in wide_bar_windows {
+    let calls : Array[Made] = []
+    let jobs_on = @signals.signal(false)
+    let jobs = wide_bar_jobs("")
+    let t = wide_bar_at(
+      calls,
+      w=win.1,
+      over=wide_bar_both(wide_bar_chat_field("archivable", fn(_) { Json::boolean(true) }), fn(n, tp) {
+        if jobs_on.get() {
+          jobs(n, tp)
+        } else {
+          tp
+        }
+      }),
+    )
+    let archive = @sf.t("web-pages.chat.archive")
+    let x0 = match wide_bar_button(t, archive) {
+      Some(r) => r.0
+      None => fail("\{win.0}: no 归档")
+    }
+    // some come: its button comes in after 归档's, which moves aside for it
+    let (came, came_steps) = wide_bar_way(t, archive, fn() { jobs_on.set(true) }, @ui.move_most_ms)
+    let x1 = came[came.length() - 1]
+    assert_true(x0 - x1 >= 20.0, msg="\{win.0}: 归档 made room for the services' button: \{x0} → \{x1}")
+    assert_true(came.length() > 3, msg="\{win.0}: drawn on its way: \{Repr(came)}")
+    assert_eq(came_steps, [], msg="\{win.0}: its way in: \{Repr(came)}")
+    // none left: back the same way
+    let (went, went_steps) = wide_bar_way(t, archive, fn() { jobs_on.set(false) }, @ui.move_most_ms)
+    assert_eq(went[went.length() - 1], x0, msg=win.0)
+    assert_eq(went_steps, [], msg="\{win.0}: its way out: \{Repr(went)}")
+    // told as an answer (the topic's first value): at once, no way
+    let (told, _) = wide_bar_way(t, archive, fn() { @view.answering(fn() { jobs_on.set(true) }) }, @ui.move_most_ms)
+    assert_true(told.length() >= 2, msg=win.0)
+    assert_eq(told[1], x1, msg="\{win.0}: an answer's button in its place at once: \{Repr(told)}")
+  }
+}

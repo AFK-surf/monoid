@@ -716,6 +716,10 @@ pub fn follows(@ui.ListInfo?) -> Bool?
 
 pub let fresh : FreshChat
 
+pub let fresh_composer_at : @signals.Signal[(Double, Double, Double, Double)?]
+
+pub let fresh_fly_after : @signals.Signal[Double]
+
 pub fn fresh_picked(@json.Json?) -> Unit
 
 pub fn fresh_reset() -> Unit

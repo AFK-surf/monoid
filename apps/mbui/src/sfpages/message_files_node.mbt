@@ -59,7 +59,8 @@ fn MessageFilesAt::here(self : MessageFilesAt) -> MessageHere {
 /// (author, role, ts), for 引用 in their menus; `place` says where they are shown, `at()` names where they are as it is now
 /// (thumb_occurrence's: a message sent from here by its key on its way, the chat's once the chat has it); `over`: the
 /// room over them (message_files'). A picture's and a video's size follow the width given as bindings: the window or a
-/// pane resized makes none of them again (what is held on one, how it came in, stay).
+/// pane resized makes none of them again (what is held on one, how it came in, stay). Sent from here a moment ago, each
+/// flies from where it stood (`flies_of`) with the rest of what was sent (`fly`: SentFly's, each its part by its key).
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn message_files_node(
@@ -73,6 +74,7 @@ fn message_files_node(
   at : () -> String,
   over? : () -> Double = fn() { 0.0 },
   flies_of? : (String) -> (Double, Double, Double, Double)? = fn(_) { None },
+  fly? : SentFly = sent_fly_alone,
 ) -> Unit {
   // (none, as most messages have: nothing worked out for them but whether there are some)
   parent.show(fn() { list().length() > 0 }, fn(s) {
@@ -112,7 +114,8 @@ fn message_files_node(
           let a = fn() { found.get() }
           // (sent from here a moment ago: where its tile stood in the composer, which it flies from as it is made:
           // sfbase's sent_part_take, taken once)
-          let from = @signals.untracked(fn() { flies_of(k.get()) })
+          let part = @signals.untracked(fn() { k.get() })
+          let from = @signals.untracked(fn() { flies_of(part) })
           // (only in the change it was made in, the send's: made again later (its size come with the station's copy
           // of it, as its message is delivered), it is there as it is, never flown again from where its tile stood
           // then, nor a flight paired as that change lays out what is made for it)
@@ -129,13 +132,13 @@ fn message_files_node(
                   // data comes to say, a picture sent from here told its size as the core's row takes it over keeping
                   // its flight and how it came in: what shows of it bound inside, message_image_node)
                   let size = fn() { media_size(a(), image_least, image_min_side, room.width()) }
-                  message_image_node(p, src, place, a, by, at, fn() { size().0 }, fn() { size().1 }, flies_from=from_now(p))
+                  message_image_node(p, src, place, a, by, at, fn() { size().0 }, fn() { size().1 }, flies=sent_flies(fly, part, from_now(p)))
                 }
                 "video" => {
                   // (made anew for another file, its still read for the file it is made for; its size bound)
                   let size = fn() { media_size(a(), video_least, 0.0, room.width()) }
                   p.pick(at_once=true, fn() { @sfbase.file_key(a()) }, fn(q, _) {
-                    message_video_node(q, src, tips, place, a, by, at, fn() { size().0 }, fn() { size().1 }, flies_from=from_now(q))
+                    message_video_node(q, src, tips, place, a, by, at, fn() { size().0 }, fn() { size().1 }, flies_from=from_now(q), fly~, part~)
                   })
                   |> ignore
                 }
@@ -145,9 +148,7 @@ fn message_files_node(
                   match from_now(p) {
                     // (from where its tile stood, at its own size: a card is no tile's square, never drawn
                     // stretched to one on its way)
-                    Some(r) =>
-                      card.flies_in(sent_part_flight, fn(to) { Some((r.0, r.1, to.2, to.3)) }, up_late=sent_up_late)
-                      |> ignore
+                    Some(r) => fly.flies_in(card, part, fn(to) { Some((r.0, r.1, to.2, to.3)) })
                     None => ()
                   }
                 }

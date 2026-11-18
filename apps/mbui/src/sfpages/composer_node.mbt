@@ -228,12 +228,34 @@ pub fn chat_composer_node(
       drawn_top_said.get() |> ignore
       (drawn_top.val)(v) + foot_shift.shown(v)
     })
-    composer_box_node(foot, src, r, w, tips, head, note, offline, stand, foot_shift, fn(f) {
-      drawn_top.val = f
-      drawn_top_said.set(drawn_top_said.untracked() + 1)
-    }, fn() {
-      stand.at(fn() { composer_width(room.width()) })
-    })
+    // (the new chat it was, become it on 宽排法: its composer flies in from where the new chat's stood (sfbase's
+    // fresh_composer_at, taken once), as the words sent from it do)
+    let from_at = if @signals.untracked(fn() { @sfbase.fresh.became.get() }) == Some(r) &&
+      @signals.untracked(fn() { room.width() }) >= @sf.page_narrow_most {
+      let was = @signals.untracked(fn() { @sfbase.fresh_composer_at.get() })
+      @sfbase.fresh_composer_at.set(None)
+      was
+    } else {
+      None
+    }
+    composer_box_node(
+      foot,
+      src,
+      r,
+      w,
+      tips,
+      head,
+      note,
+      offline,
+      stand,
+      foot_shift,
+      fn(f) {
+        drawn_top.val = f
+        drawn_top_said.set(drawn_top_said.untracked() + 1)
+      },
+      fn() { stand.at(fn() { composer_width(room.width()) }) },
+      from_at~,
+    )
     // (what went wrong, under it)
     foot.show(at_once=true, fn() { w.error.get() != "" }, fn(e) {
       @sf.style_node(e, fn() { error_box })
@@ -328,6 +350,7 @@ fn composer_box_node(
   drawn_top : ((@view.View) -> Double) -> Unit,
   width : () -> Double,
   spec? : BoxSpec = chat_box_spec(),
+  from_at? : (Double, Double, Double, Double)? = None,
 ) -> Unit {
   let draft = w.key
   let focused = fn() { w.field.focused() }
@@ -382,7 +405,16 @@ fn composer_box_node(
   }
   // (how far what it says while empty shows: composer_field_node's)
   // (and while a layer over the page keeps its cursor for it, parked: its own again as that layer goes)
-  let hint_in = @motion.NodeWay::new(if @signals.untracked(fn() { focused() || w.field.parked() || held() }) { 0.0 } else { 1.0 })
+  // (and flying in from the new chat it was (`from_at`): away till it has landed, then back as at rest)
+  let hint_in = @motion.NodeWay::new(
+    if from_at is Some(_) || @signals.untracked(fn() { focused() || w.field.parked() || held() }) {
+      0.0
+    } else {
+      1.0
+    },
+  )
+  // (its hint's way back said by that flight: not set off again as it is first made)
+  let fresh_fly = Ref(from_at is Some(_))
   // (how much taller than it is laid out its ground is drawn, over it: what it was as words were sent from it, held as
   // long as the old composer's on this page is (sfbase's sent_out_hold_ms), then down to none on their flight's curve)
   let sent_over = @motion.NodeWay::new(0.0)
@@ -461,6 +493,36 @@ fn composer_box_node(
     // (a chat's alone: what flies from it and what is set beside it find it)
     if spec.chat {
       composer_nodes[draft] = (box, foot, sent_over, foot_shift)
+    }
+    // (from where the new chat's composer stood, on the flight of what is sent from it, its foot kept to its foot; its
+    // hint back once it has landed, as at rest without the cursor)
+    match from_at {
+      Some((fx, fy, fw, fh)) => {
+        let start_at = box.cause_at()
+        box.flies_in(
+          sent_part_flight,
+          fn(to) {
+            let from = (fx, fy + fh - to.3, fw, to.3)
+            let (dur, _) = (sent_part_flight.way)(sent_far(from, to))
+            let ms = @sf.dmax(1.0, dur)
+            let holds = fn() { w.text.get() != "" || w.files.get().length() > 0 || w.quotes.get().length() > 0 }
+            if !@signals.untracked(fn() { focused() || w.field.parked() || (held() && !holds()) }) {
+              hint_in.put_at(
+                foot,
+                0.0,
+                1.0,
+                @motion.tween(@sf.hint_back_ms, ease=Out, delay=@sf.dmax(ms, @sfbase.flight_most_ms)),
+                start_at,
+              )
+            }
+            Some(from)
+          },
+          up_late=sent_up_late,
+          far_of=sent_far,
+        )
+        |> ignore
+      }
+      None => ()
     }
     // (as tall as it was as words left it while it was going: once that way has slowed to rest, down on the flight's
     // curve from the moment what flies from it begins its rise (sent_out_hold_ms after), or from then if that is past,
@@ -877,6 +939,13 @@ fn composer_box_node(
     hint_shape.val = shaped
     let back = away_was.val && !gone
     away_was.val = gone
+    // (flying in from the new chat it was: its hint's way back is that flight's)
+    if fresh_fly.val {
+      fresh_fly.val = false
+      if !hidden && !reshaped && !gone {
+        return
+      }
+    }
     if hidden || reshaped || gone {
       hint_in.put(0.0)
     }
@@ -2124,7 +2193,7 @@ pub fn send_in_chat_node(src : Source, r : ChatRef, v : ChatView, w : Writing) -
         _ => ()
       }
     }
-    Some({ words, quotes, parts })
+    Some({ words, quotes, parts, delay: 0.0 })
   }
   let row = sent_local(
     rk,

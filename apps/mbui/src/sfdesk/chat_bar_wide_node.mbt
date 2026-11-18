@@ -700,6 +700,7 @@ fn wide_bar_keys(
           None => false
         })
       },
+      along_row=true,
       fn(b) {
         @sf.icon_button_node(b, "archive", fn() { @sf.t("web-pages.chat.archive") }, fn() {
           match (@signals.untracked(view), @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 })) {
@@ -713,7 +714,7 @@ fn wide_bar_keys(
     // its services and jobs, while it has any
     let jobs = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
     let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
-    k.show(fn() { own() && has_jobs() }, fn(b) {
+    k.show(fn() { own() && has_jobs() }, along_row=true, fn(b) {
       let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, linked=ends.linked, shortcut="chat.jobs")
       // (its popover beside it, where it is as that is drawn: the nodes' (chat_pops_node), or the old page's
       // (chat_page's chat_bar_by))
@@ -740,6 +741,7 @@ fn wide_bar_keys(
           None => false
         })
       },
+      along_row=true,
       fn(b) {
         b.box(fn(sb) {
           let me : Ref[@view.View?] = Ref(None)

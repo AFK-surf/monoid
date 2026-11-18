@@ -64,6 +64,8 @@ pub fn sent_reset() -> Unit {
   sent_from_at.clear()
   sent_parts_at.clear()
   sent_quotes_from_at.clear()
+  sent_delay_at.clear()
+  sent_delay_fresh.clear()
 }
 
 ///|
@@ -191,13 +193,16 @@ fn going_up(going : Array[Json]) -> (Array[Json], Array[(String, Int, Int)]) {
 ///|
 /// Where what is sent from here stood in the composer as it was sent, in the window: its words (the top left of their
 /// first line), each quote's card (x, y, w, h, in the order the composer held them; None where one was not drawn) and
-/// each other part (a file's tile, a quote's picture: by its key in the row, file_key, quote_picture_key). On a chat's
-/// page made as nodes its row flies from there (mbui's View::flies_in): the composer is an old view hosted in the list's
-/// foot, none of the window's tree to pair with, so where they stood is part of what is sent, never said after it.
+/// each other part (a file's tile, a quote's picture: by its key in the row, file_key, quote_picture_key), and how long
+/// after it is sent all of it sets out (`delay`, ms; 0 at once: a chat just made's first words set out as its scene
+/// says as it leaves whatever this says, fresh's fly_after, sent_delay_take). On a chat's page made as nodes its row flies from there (mbui's
+/// View::flies_in): the composer is an old view hosted in the list's foot, none of the window's tree to pair with, so
+/// where they stood is part of what is sent, never said after it.
 pub(all) struct SentFrom {
   words : (Double, Double)?
   quotes : Array[(Double, Double, Double, Double)?]
   parts : Array[(String, (Double, Double, Double, Double))]
+  delay : Double
 }
 
 ///|
@@ -236,6 +241,14 @@ pub fn sent_local(
       if !f.parts.is_empty() {
         sent_parts_at[key] = Map::from_array(f.parts)
       }
+      if f.delay > 0.0 {
+        sent_delay_at[key] = f.delay
+      }
+      // (a chat just made, its first words: they set out as its scene says as it leaves, said by became_starts
+      // once they are in its list, in the same press, before their row takes it: fresh's fly_after)
+      if v is None {
+        sent_delay_fresh.add(key)
+      }
     }
     None => ()
   }
@@ -253,7 +266,9 @@ pub fn sent_local(
       joined,
       followed: false,
       seq: -1.0,
-      time: None,
+      // (sent now: 刚刚 from the frame it is sent, as the core says of its outbox the moment it has it: its time stands
+      // under it from the first, never 正在发送 for the round trip till the core's row says it: outbox_mine_under)
+      time: Some({ ago: @sf.t("core-logic.format.ago.now"), full: "" }),
       waits: if going.length() > 0 { @sf.t("common.uploading") } else { "" },
       progress: None,
       uploads: cards,
@@ -344,6 +359,8 @@ pub fn sent_local_gone(rk : String, key : String) -> Unit {
       sent_from_at.remove(key)
       sent_quotes_from_at.remove(key)
       sent_parts_at.remove(key)
+      sent_delay_at.remove(key)
+      sent_delay_fresh.remove(key)
       sending_changed()
     }
     None => ()
@@ -454,6 +471,32 @@ pub fn sent_from_waits(key : String) -> Bool {
 }
 
 ///|
+/// How long after it was sent what was sent from here sets out (SentFrom's `delay`), by the key its row has in its
+/// chat's list, till that row takes it (sent_delay_take).
+let sent_delay_at : Map[String, Double] = Map([])
+
+///|
+/// How long after it was sent what was sent from here as `key` sets out (sent_local's `from`, its `delay`; 0 at once;
+/// a chat's first words as it was made, as its scene says: fresh's fly_after, said by became_starts in their press),
+/// taken: told once, to all of its row that flies.
+pub fn sent_delay_take(key : String) -> Double {
+  let at = if sent_delay_fresh.contains(key) {
+    @signals.untracked(fn() { fresh_fly_after.get() })
+  } else {
+    sent_delay_at.get(key).unwrap_or(0.0)
+  }
+  sent_delay_at.remove(key)
+  sent_delay_fresh.remove(key)
+  at
+}
+
+///|
+/// What was sent from here as a chat's first words as it was made (sent_local with no view), by its row's key, till
+/// that row takes how long after they set out (sent_delay_take: the new chat's, fresh's fly_after).
+// kept across runs: emptied as a run starts and as each row takes it
+let sent_delay_fresh : Set[String] = Set([])
+
+///|
 /// Where the words of what was sent from here as `key` stood as they were sent (sent_local's `from`), taken: told once.
 pub fn sent_from_take(key : String) -> (Double, Double)? {
   let at = sent_from_at.get(key)
@@ -480,4 +523,15 @@ pub fn sent_part_take(key : String, part : String) -> (Double, Double, Double, D
     sent_parts_at.remove(key)
   }
   at
+}
+
+///|
+/// Which parts of what was sent from here as `key` fly from where they stood (sent_part_take's, not taken yet), in the
+/// order the composer held them (its files, then its quotes' own pictures): what of it leads its flight, where it has
+/// no words (sfpages' sent_lead).
+pub fn sent_parts_flying(key : String) -> Array[String] {
+  match sent_parts_at.get(key) {
+    Some(m) => m.keys().collect()
+    None => []
+  }
 }

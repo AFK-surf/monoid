@@ -175,6 +175,48 @@ pub struct Scroll {
 let scrolls_made : Ref[Int] = Ref(0)
 
 ///|
+// kept across runs: each scroll's entry while it scrolls in a node (View::scrolls's owns removes it)
+let scroll_notch_landed : Map[Int, Bool] = Map([])
+
+///|
+// kept across runs: each scroll's entry while it scrolls in a node (View::scrolls's owns removes it)
+let scroll_follows_said : Map[Int, () -> Bool] = Map([])
+
+///|
+// kept across runs: each scroll's entry while it scrolls in a node (View::scrolls's owns removes it)
+let scroll_glides_foot_said : Map[Int, () -> Bool] = Map([])
+
+///|
+fn Scroll::is_notch_landed(self : Scroll) -> Bool {
+  scroll_notch_landed.get(self.serial).unwrap_or(false)
+}
+
+///|
+fn Scroll::set_notch_landed(self : Scroll, v : Bool) -> Unit {
+  if v {
+    scroll_notch_landed[self.serial] = true
+  } else {
+    scroll_notch_landed.remove(self.serial)
+  }
+}
+
+///|
+fn Scroll::set_follows_said(self : Scroll, f : (() -> Bool)?) -> Unit {
+  match f {
+    Some(cb) => scroll_follows_said[self.serial] = cb
+    None => scroll_follows_said.remove(self.serial)
+  }
+}
+
+///|
+fn Scroll::set_glides_foot_said(self : Scroll, f : (() -> Bool)?) -> Unit {
+  match f {
+    Some(cb) => scroll_glides_foot_said[self.serial] = cb
+    None => scroll_glides_foot_said.remove(self.serial)
+  }
+}
+
+///|
 /// Which scroll it is (each made its own number; one `beside` another its own too): what tells two apart, where
 /// what is made in one is made again for another (a block of a page's list taken for another row).
 pub fn Scroll::serial(self : Scroll) -> Int {
@@ -594,6 +636,7 @@ fn Scroll::stopped(self : Scroll, t : Double) -> Double {
   if self.notch.untracked() is Some(_) {
     (self.settle_off)()
     self.settle_off = fn() {  }
+    self.set_notch_landed(false)
     self.notch.set(None)
   }
   if self.fling.untracked() is Some(f) {
@@ -736,6 +779,29 @@ pub fn Scroll::at_foot_now(self : Scroll) -> Bool {
     Some(f) => f()
     // (scrolling in nothing yet: where it is put)
     None => self.x.get() == @double.infinity
+  }
+}
+
+///|
+/// Whether it follows its foot, as what comes at it is to be followed (a chat's newest): told only as that comes to be
+/// so or stops. A page's list's (View::scrolls_window): at its foot (Scroll::at_foot_now); held short of it by a
+/// standing limit the reader has not moved it off (ListPlace::follow_from); or on its glide back to it
+/// (ListPlace::to_end) not stopped by another way. Else whether it is at its foot.
+pub fn Scroll::follows_now(self : Scroll) -> Bool {
+  match scroll_follows_said.get(self.serial) {
+    Some(f) => f()
+    None => self.at_foot_now()
+  }
+}
+
+///|
+/// Whether it is on its glide back to its foot (a page's list's ListPlace::to_end), not stopped by another way (the
+/// hand, the wheel, another ask): told only as that comes to be so or stops. A way back to its foot shows none
+/// meanwhile, as the old view's list's `gliding`.
+pub fn Scroll::glides_to_foot(self : Scroll) -> Bool {
+  match scroll_glides_foot_said.get(self.serial) {
+    Some(f) => f()
+    None => false
   }
 }
 
@@ -1400,6 +1466,7 @@ pub fn View::scrolls(
     // (a page's list's notches easing in at rest where they had come to)
     if s.notch.untracked() is Some(_) {
       let at = @signals.untracked(fn() { s.where_at(self.tree.logic_said()) })
+      s.set_notch_landed(false)
       s.notch.set(None)
       s.x.set(at)
     }
@@ -1415,6 +1482,9 @@ pub fn View::scrolls(
     // (whether it is at its foot, by what it held: said again by what scrolls in it next; till then where it is put.
     // Kept, it held all it read (a page's list's blocks and keys) past its going, read again by any that asks it)
     s.at_foot_said = None
+    s.set_follows_said(None)
+    s.set_glides_foot_said(None)
+    s.set_notch_landed(false)
     s.fill = fn(_, _, _) {  }
     s.fill_put = fn() {  }
     s.whole = None

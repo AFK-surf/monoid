@@ -10,15 +10,19 @@
 
 ///|
 /// What is under `o` now, where anything is (outbox_row's order; nothing while it is followed and went, which its row
-/// says apart: mine_said_node's `lone`): what did not go, its time (the station has it), 正在发送; as what is under the
-/// viewer's message is said (mine_said_node's).
-fn outbox_mine_under(o : Outgoing) -> MineUnder {
+/// says apart: mine_said_node's `lone`): what did not go; 正在发送 once it has been on its way a while (`late`:
+/// sending_shows_ms from when it was sent) and the station has not taken it, or while no time of it is said (none is
+/// sent from here: sfbase's sent_local says 刚刚 from the frame it is sent, the core its time of its `createdAt` from
+/// the moment it has it, Outgoing's `time`); else that time. So the station taking it changes
+/// nothing seen: its time was under it already (2026-11-17: 「刚刚」 came in a second time, the room under it opening,
+/// as the station took the message a moment after its words landed).
+fn outbox_mine_under(o : Outgoing, late : Bool) -> MineUnder {
   if o.state == "failed" {
     MineUnsent
-  } else if o.state == "sent" {
-    MineTime
-  } else {
+  } else if o.state != "sent" && (late || o.time is None) {
     MineSending
+  } else {
+    MineTime
   }
 }
 

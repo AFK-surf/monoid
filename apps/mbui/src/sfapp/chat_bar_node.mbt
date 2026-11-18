@@ -249,9 +249,13 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         icon_size=22.0,
         ink=fn() { @sf.theme().p.accent_text },
       )
+      // (what moves in the row as 归档 or the services' key comes or goes: laid out at once where the change has them,
+      // the people left out of it then or not at that moment alone, what is beside them drawn from where it was to there
+      // on archive_tween; what an answer tells at once. The row's own, not the window's: bar_slides)
+      let slides = bar_slides(row, fn() { bar_keys_shown(src, r, view) })
       // the title and what follows it, in one row
-      bar_middle_node(row, src, r, view, stint, state, expanded, can_toggle, mid_w_sig)
-      row.show(read, fn(end) { bar_end_node(end, src, r, view) })
+      bar_middle_node(row, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides)
+      row.show(read, at_once=true, fn(end) { bar_end_node(end, src, r, view, slides) })
     })
     |> ignore
     g.show(fn() { expanded() || state.open_way.shown(g) > 0.0 }, fn(row2_host) {
@@ -340,7 +344,8 @@ impl Eq for BarMarks with equal(a, b) {
 /// The middle of the bar of chat `r` (its view `view`), in row `row`: its title, kept whole while what follows it may
 /// leave the row for it, cut short only once nothing more may; then, once the view is read, its station's tag while no
 /// agent is in it, its people (the first to leave the row short of room), its agents' marks, the first's with the
-/// station it runs on: all in the one row, as bar_frame's, made again as any of them changes.
+/// station it runs on: all in the one row, as bar_frame's, made again as any of them changes. What follows the title is
+/// drawn on its way from where it was as the bar's end changes (`slides`).
 fn bar_middle_node(
   row : @view.View,
   src : Source,
@@ -351,6 +356,7 @@ fn bar_middle_node(
   expanded : () -> Bool,
   can_toggle : () -> Bool,
   mid_w_sig : @signals.Signal[Double],
+  slides : (@view.View) -> Unit,
 ) -> Unit {
   let marks = fn() {
     let w = match workspace_in_view(src).0 {
@@ -465,19 +471,19 @@ fn bar_middle_node(
       guard marks.shown is Some((v, station, people)) else { return }
       if v.agents.length() == 0 {
         match station {
-          Some(s) => station_chip_node(mid, r.station, s, via, stint)
+          Some(s) => station_chip_node(mid, r.station, s, via, stint, slides)
           None => ()
         }
       }
       if people.length() > 0 {
-        @sf.avatar_stack_node(mid, stack_faces(src, people, stint), 16.0, fn() { @sf.theme().p.bg })
-        .drops(Is(bar_drop_people))
-        .laid_nowhere(By(expanded))
-        |> ignore
+        let p = @sf.avatar_stack_node(mid, stack_faces(src, people, stint), 16.0, fn() { @sf.theme().p.bg })
+        p.drops(Is(bar_drop_people)).laid_nowhere(By(expanded)) |> ignore
+        slides(p)
       }
       for i, ag in v.agents {
         let key = ag.key
         mid.box(fn(k) {
+          slides(k)
           // each opens its card, said as the agent (with the station it runs on, the first's)
           @sf.presses_node(k, fn() { open_agent(src, r, key) })
           let label = match station {
@@ -499,31 +505,128 @@ fn bar_middle_node(
 }
 
 ///|
+/// What slides along row `row` of a chat's bar as what `by` reads changes (归档, the services' key): each part said
+/// of it (the function given back) drawn from where it was drawn as the change came to where the change lays it out,
+/// on archive_tween from the change's moment, while it takes room in the row before and after; laid out at once all
+/// the same. What comes or goes itself (a part with no room on one side of the change) fades where it stands, its own.
+/// What an answer tells, at once. Where each is drawn as the change comes: on its way, where its way set out from (where
+/// the change before laid it out) and how far off that it is then, whether or not a frame drew it there yet (one turned
+/// back between frames is drawn from where it was on its way, not from where the frame before drew it plus that way);
+/// at rest, where it was placed (as its last frame drew it). Once the change is told whole (every structure it changes
+/// made or let go), where it lays it out: the row's own, nothing laid out for the rest of the window as its changes come
+/// (as Moves' laid_before_causes would).
+fn[T : Eq] bar_slides(row : @view.View, by : () -> T) -> (@view.View) -> Unit {
+  // (each part, its way, where the change that set it off laid it out, and whether drawn_off is bound yet)
+  let parts : Array[(@view.View, @motion.NodeWay, Ref[Double], Ref[Bool])] = []
+  row.reacts(by, at_start=false, fn(_) {
+    guard !@view.answering_now() else { return }
+    let at = row.cause_at()
+    let was = parts
+      .filter(fn(p) { p.0.alive() && p.0.was_placed() })
+      .map(fn(p) {
+        let (x, _, w, _) = p.0.placed_window_now()
+        let drawn = if p.1.goes_at(at) { p.2.val + p.1.value_at(at) } else { x }
+        (p.0, p.1, p.2, p.3, drawn, w)
+      })
+    @signals.after_flush(fn() {
+      for q in was {
+        let (v, way, ground, bound, was_x, was_w) = q
+        guard v.alive() else { continue }
+        let (now_x, _, now_w, _) = v.laid_window_now()
+        if was_w > 0.5 && now_w > 0.5 {
+          ground.val = now_x
+          // (drawn where it is laid out already, as when a change turned back at once: what was left of the way
+          // before is let go of, not drawn on past where it is)
+          if (was_x - now_x).abs() > 0.5 {
+            if !bound.val {
+              bound.val = true
+              v.drawn_off(By(fn() { (way.shown(v), 0.0) })) |> ignore
+            }
+            way.put_at(v, was_x - now_x, 0.0, archive_tween, at)
+          } else {
+            way.put(0.0)
+          }
+        }
+      }
+    })
+  })
+  fn(v) {
+    let way = @motion.NodeWay::new(0.0)
+    parts.push((v, way, Ref(0.0), Ref(false)))
+    v.owns(fn() {
+      way.stop()
+      match parts.search_by(fn(p) { physical_equal(p.0, v) }) {
+        Some(i) => parts.remove(i) |> ignore
+        None => ()
+      }
+    })
+    |> ignore
+    v.carries_until(fn() { way.ends_at() }) |> ignore
+  }
+}
+
+///|
+/// Whether a chat's bar shows 归档 (nothing left in it), its view `view` as it is now.
+fn bar_archivable(view : () -> ChatView?) -> Bool {
+  match view() {
+    Some(v) => v.archivable && !v.archived
+    None => false
+  }
+}
+
+///|
+/// Whether chat `r` has services or jobs (its bar's key to them), as the core says now.
+fn bar_has_jobs(src : Source, r : ChatRef) -> Bool {
+  let j = src.topic("chatJobs", chat_jobs_summary_params(r)).get().value
+  flag(j, "hasJobs") || items(j, "jobs").length() > 0
+}
+
+///|
+/// What of chat `r`'s bar's end is shown (its view `view`): none before the view is read; once it is, 归档 and the
+/// services' key, each while it is: what slides in the bar is set off by (bar_slides).
+fn bar_keys_shown(src : Source, r : ChatRef, view : () -> ChatView?) -> (Bool, Bool, Bool) {
+  match view() {
+    Some(_) => (true, bar_archivable(view), bar_has_jobs(src, r))
+    None => (false, false, false)
+  }
+}
+
+///|
 /// At the end of chat `r`'s bar (its view `view`, read), in `e`: 归档 while nothing is left in it, coming and going
-/// (chat_bar's: 280 ms, ArchiveEase, its room before it with it, fading from or to 85% of its size), its services and
-/// jobs while it has any (a dot when one died lately or a service is started again), what it is and "…".
-fn bar_end_node(e : @view.View, src : Source, r : ChatRef, view : () -> ChatView?) -> Unit {
+/// (chat_bar's: 280 ms, ArchiveEase, fading from or to 85% of its size where it stands, its room laid out at once),
+/// its services and jobs while it has any (a dot when one died lately or a service is started again), what it is and
+/// "…"; each drawn on its way from where it was as 归档 or the services' key comes or goes (`slides`).
+fn bar_end_node(
+  e : @view.View,
+  src : Source,
+  r : ChatRef,
+  view : () -> ChatView?,
+  slides : (@view.View) -> Unit,
+) -> Unit {
   e.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
   // (its "…" is its chat's whole row's: held while its page is open (let go of as it is left, chat_left), asked as it
   // opens: @sfpages.chat_menu_of)
   @signals.untracked(fn() { @sfbase.chat_whole_held(src, r) }) |> ignore
-  let archivable = fn() {
-    match view() {
-      Some(v) => v.archivable && !v.archived
-      None => false
-    }
-  }
+  let archivable = fn() { bar_archivable(view) }
   let doing_key = "archive/" + r.station + "/" + r.session
   e.box(fn(k) {
     // (there as it is made where it is so; set off as it becomes so or stops, at that cause's moment: reacts' first
-    // run, as it is made, goes nowhere, the way already there)
+    // run, as it is made, goes nowhere, the way already there). Its room laid out at once as it becomes so or stops
+    // (what is beside it drawn on its way there: `slides`); its button at its room's end, so where it stood as the room
+    // goes, fading out there over what comes into it, fading in where it comes
     let share = @motion.NodeWay::new(if @signals.untracked(archivable) { 1.0 } else { 0.0 })
-    k.reacts(archivable, fn(on) { share.go(k, if on { 1.0 } else { 0.0 }, archive_tween) })
+    k.reacts(archivable, fn(on) {
+      if @view.answering_now() {
+        share.put(if on { 1.0 } else { 0.0 })
+      } else {
+        share.go(k, if on { 1.0 } else { 0.0 }, archive_tween)
+      }
+    })
+    slides(k)
     let s = fn() { share.shown(k) }
     k
     .row(Is(true))
-    .width(By(fn() { Some((nav_key_side + bar_keys_apart()) * s()) }))
-    .clips(Is(true))
+    .width(By(fn() { Some(if archivable() { nav_key_side + bar_keys_apart() } else { 0.0 }) }))
     .lies_along(Is(End))
     .laid_nowhere(By(fn() { s() <= 0.0 && !archivable() }))
     |> ignore
@@ -560,11 +663,9 @@ fn bar_end_node(e : @view.View, src : Source, r : ChatRef, view : () -> ChatView
   |> ignore
   // its services and jobs, while it has any
   let jobs = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
-  let has_jobs = fn() {
-    let j = jobs()
-    flag(j, "hasJobs") || items(j, "jobs").length() > 0
-  }
-  e.show(has_jobs, fn(k) {
+  let has_jobs = fn() { bar_has_jobs(src, r) }
+  e.show(has_jobs, at_once=true, fn(k) {
+    slides(k)
     k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
     @sf.round_key_node(k, "web", fn() { tr("android-misc.jobs.title") }, fn() { open_chat_jobs(src, r) }, icon_size=20.0)
     let alarm = fn() { text(jobs(), "alarm") }
@@ -646,11 +747,13 @@ fn bar_end_node(e : @view.View, src : Source, r : ChatRef, view : () -> ChatView
   })
   // what it is (its info's sheet), then what is done with it ("…": the menu a row of the list has)
   e.box(fn(k) {
+    slides(k)
     k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
     @sf.round_key_node(k, "info", fn() { tr("android-chat.info.title") }, fn() { open_info(src, r) }, icon_size=20.0)
   })
   |> ignore
   e.box(fn(k) {
+    slides(k)
     k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
     k.box(fn(more) {
       @sf.round_key_node(
@@ -675,9 +778,18 @@ fn bar_end_node(e : @view.View, src : Source, r : ChatRef, view : () -> ChatView
 }
 
 ///|
-/// The station's tag in a chat's bar while no agent is in it (station_chip's, as nodes): a tap opens its card.
-fn station_chip_node(v : @view.View, address : String, s : Station, via : () -> String, stint : () -> Int) -> Unit {
+/// The station's tag in a chat's bar while no agent is in it (station_chip's, as nodes): a tap opens its card; drawn
+/// on its way as the bar's end changes (`slides`).
+fn station_chip_node(
+  v : @view.View,
+  address : String,
+  s : Station,
+  via : () -> String,
+  stint : () -> Int,
+  slides : (@view.View) -> Unit,
+) -> Unit {
   v.box(fn(k) {
+    slides(k)
     @sf.presses_node(k, fn() {
       let (x, y, w, h) = k.placed_window_now()
       @settings.open_station_peek(address, from=At(x, y, w, h))
@@ -692,7 +804,7 @@ fn station_chip_node(v : @view.View, address : String, s : Station, via : () -> 
     .lines_up(Is(Some(Middle)))
     .says(Is(Some(@view.said(Group, label=s.name))))
     |> ignore
-    k.show(at_once=true, fn() { via() != "" }, fn(d) { via_dot_in(d, via, via_dot_side, 0.0) })
+    k.show(fn() { via() != "" }, along_row=true, fn(d) { via_dot_in(d, via, via_dot_side, 0.0) })
     if @sf.has_station_mark(s.emoji, s.icon) {
       @sf.station_mark_node(k, fn() { s.emoji }, fn() { s.icon }, 12.0, fn() { @sf.theme().p.muted }, stint)
     }

@@ -21,7 +21,6 @@ fn init {
     ("src/sfapp/chat_neighbour_wbtest.mbt", 1),
     ("src/sfapp/chat_nodes_outline_wbtest.mbt", 4),
     ("src/sfapp/chat_nodes_read_stays_help_wbtest.mbt", 2),
-    ("src/sfapp/chat_page_nodes_wbtest.mbt", 1),
     ("src/sfapp/chat_wbtest.mbt", 2),
     ("src/sfapp/composer_wbtest.mbt", 2),
     ("src/sfapp/covered_focus_wbtest.mbt", 4),

@@ -140,19 +140,7 @@ fn sending_line_node(
   parent.box(fn(w) {
     @sf.style_node(w, fn() { msg_waiting })
     // (seen from the moment said: at once where it has come, else as it comes)
-    let shows = @signals.signal(false)
-    let due : Ref[() -> Unit] = Ref(fn() {  })
-    w.reacts(since, fn(at) {
-      (due.val)()
-      due.val = fn() {  }
-      let seen = at + sending_shows_ms
-      if w.cause_at() >= seen {
-        shows.set(true)
-      } else {
-        shows.set(false)
-        due.val = w.at_moment(seen, fn() { shows.set(true) })
-      }
-    })
+    let shows = @sf.waited_past_node(w, since, sending_shows_ms)
     // (leaving, as it was as it began to leave: one not seen as its words flew, the message taken by the station as
     // they land, is never seen for its leaving's while because the flight it waited for is over)
     let was = Ref(0.0)
@@ -161,7 +149,7 @@ fn sending_line_node(
         if w.leaving() {
           was.val
         } else {
-          let a = if shows.get() && !flying() { 1.0 } else { 0.0 }
+          let a = if shows() && !flying() { 1.0 } else { 0.0 }
           was.val = a
           a
         }

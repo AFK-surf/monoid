@@ -81,16 +81,21 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (140, 102, 125, 28), (160, 105, 146, 28))
   // (2026-11-18: each wide shell holds what opens over its panels as nodes, closed: a right click's menu, the rail's, its
   // adder and 待处理, sfdesk overlays_node: wide cold 6 more made, 2 laid)
-  "phone cold": (1035, 31, 667, 80, 969),
-  "phone again": (346, 19, 233, 28, 347),
-  "wide cold": (2482, 503, 1922, 217, 2471),
-  "wide again": (905, 130, 871, 124, 1083),
-  "phone up": (552, 359, 601, 87, 0),
+  // (2026-11-18: signin & viz cards pick their decided/open state on View::pick with leave cross-fade instead of instant
+  // show swaps, a pick branch node more where one shows; meanwhile chat_rail_node omits empty non-day gap boxes; each the
+  // most of the default rate and 60, 120, 24 and 7, what fell brought down to it: 大屏 again lets go 4 more than before
+  // it (905, 130, 871, 124, 1083), the rest fell; before it (1035, 31, 667, 80, 969), (346, 19, 233, 28, 347), (2482,
+  // 503, 1922, 217, 2471), (552, 359, 601, 87), (726, 372, 915, 114) scrolling up, its frames (139, 100, 124, 28))
+  "phone cold": (1028, 31, 660, 80, 968),
+  "phone again": (339, 19, 226, 28, 346),
+  "wide cold": (2473, 503, 1914, 217, 2470),
+  "wide again": (899, 134, 870, 121, 1080),
+  "phone up": (551, 358, 593, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
   // where a bare box was pressed by hand; before it 724 and 914)
-  "wide up": (726, 372, 915, 114, 0),
-  "phone up frame": (139, 100, 124, 28, 0),
+  "wide up": (725, 371, 906, 114, 0),
+  "phone up frame": (138, 100, 123, 28, 0),
   "wide up frame": (160, 103, 152, 28, 0),
 }
 

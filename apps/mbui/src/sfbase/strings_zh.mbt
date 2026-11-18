@@ -739,6 +739,7 @@ let zh : Map[String, String] = {
   "core-logic.accounts.login.failed": "登录失败",
   "core-logic.decisions.replied": "{name} 回复了",
   "core-logic.decisions.you": "你",
+  "core-logic.format.ago.now": "刚刚",
   "core-views.screen.kind.browser": "浏览器标签页",
   "desktop.contextMenu.copy": "复制",
   "desktop.contextMenu.copyImage": "复制图片",

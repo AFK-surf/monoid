@@ -5,8 +5,8 @@
 // name and time; what each quotes ahead of its words (message_quotes_node). Each read through what it is given, as
 // that changes.
 // Each link's card while a mouse rests on it (message_link_card: a web link's, a chat's); its files (message_files_node:
-// the viewer's between what it quotes and its words, someone else's under their words). Not here yet: the viewer's
-// words flying in from the composer (flight.mbt) and its time faded in as they land.
+// the viewer's between what it quotes and its words, someone else's under their words). The viewer's words sent from
+// here fly in from the composer (sent_part_flight), what is under them coming in on that flight's own way.
 
 ///|
 /// What a person wrote (person_words') in `v`, as `m` says it as it changes: in the face for what people wrote (the
@@ -90,6 +90,8 @@ fn mine_most_of(pane : Double) -> Double {
 /// The viewer's words in their bubble (mine_bubble's, as they rest: none flying in) in `v`: 8 by 14 in, 18 round, on
 /// the neutral ground, as wide as the composer sets its words at most (mine_most_of the pane's width, as it changes);
 /// its links' cards as `cards` says (person_words_node's: none for what is not in the chat yet, as the old one's).
+/// Sent from here a moment ago (`flies_from`: where its words stood in the composer's field), it flies from there with
+/// the rest of what was sent (`fly`: SentFly's, its words' part "words").
 fn mine_bubble_node(
   v : @view.View,
   here : MessageNodeHere,
@@ -99,21 +101,16 @@ fn mine_bubble_node(
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   cards? : (@sf.TipLayer, (@sf.LinkOf) -> @sf.LinkCard?),
   flies_from? : (Double, Double)? = None,
+  fly? : SentFly = sent_fly_alone,
 ) -> Unit {
   v.box(fn(b) {
     @sf.style_node(b, fn() { bubble.then(@ui.style(max_w=Fixed(mine_most_of((here.width)())))) })
     // (sent from here a moment ago: from where its words stood in the composer's field, its words there as they were
-    // typed, its ground coming in round them on the way: a flight, sf/motion.mbt's kind 4; View::flies_in)
+    // typed, its ground coming in round them as they go across (the old page's desktop flight, flight_ground: what
+    // every composer sends with): a flight, sf/motion.mbt's kind 4; View::flies_in)
     match flies_from {
       Some((x, y)) =>
-        b.flies_in(
-          sent_part_flight,
-          fn(to) { Some((x - bubble_side, y - bubble_top, to.2, to.3)) },
-          up_late=sent_up_late,
-          bare_from=true,
-          look_late=sent_ground_late,
-        )
-        |> ignore
+        fly.flies_in(b, sent_words_part, fn(to) { Some((x - bubble_side, y - bubble_top, to.2, to.3)) }, bare_from=true)
       None => ()
     }
     // (on the page's way to a wider column (a side panel sliding out), laid out as wide as where it goes, as long as it
@@ -170,10 +167,12 @@ fn mine_bubble_node(
 ///
 /// What was sent from here and is not the chat's yet is the same row (`out`: Some while it is on its way, `m` then
 /// outgoing_said's), one row to a person as the core's message takes it over: its words' node made once and kept, so
-/// what is picked of them, its handles and its menu stay. What differs is bound to which it is now: under it 正在发送
-/// seen once it has been on its way sending_shows_ms from `since` (a moment of the frames' clock: the caller's) and not
-/// while its words fly here (`flying`), or what did not go (outbox_unsent_node), or its time once the station has it;
-/// on its way, its files said by no one yet, its links no cards, nothing found in it and no right click's offer.
+/// what is picked of them, its handles and its menu stay. What differs is bound to which it is now: under it its time
+/// from the first (the core says it of when it was sent), so the station taking it changes nothing seen; 正在发送 in
+/// its place only once it has been on its way sending_shows_ms from `since` (a moment of the frames' clock: the
+/// caller's) with the station not having it, and not while its words fly here (`flying`); or what did not go
+/// (outbox_unsent_node); on its way, its files said by no one yet, its links no cards, nothing found in it and no right
+/// click's offer.
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn mine_said_node(
@@ -191,17 +190,42 @@ fn mine_said_node(
   out? : () -> Outgoing? = fn() { None },
   since? : () -> Double = fn() { 0.0 },
   flying? : () -> Bool = fn() { false },
+  lands? : (Double) -> Unit = fn(_) {  },
 ) -> MessageRowNode {
   let said = fn() { out() is None }
-  // (what is under its words seen once they land, where they fly here from the composer: none of it as they pass up
-  // over its place, coming in from their landing (the old page's time-in: enter_ms from `lands`); at once otherwise)
-  let landed = @motion.Way::new(1.0)
   // (sent from here a moment ago: its bubble flies from where its words stood in the composer's field (mine_bubble_node),
-  // landing then; what did not go is said under it once they have, never under them on their way)
+  // its quotes and files from where they stood (message_quotes_node's, message_files_node's), all of it one send's:
+  // SentFly, setting out as long after it was sent as it says (sfbase's sent_delay_take: none but a new chat's first
+  // words on 窄排法))
   let flies_from = @sfbase.sent_from_take(@signals.untracked(key))
-  let lands = flies_from.map(fn(_) { v.cause_at() + @sfbase.flight_desk_ms })
-  // (and its quotes' cards from where they stood in the composer: message_quotes_node's)
   let quotes_from = @sfbase.sent_quotes_from_take(@signals.untracked(key))
+  let parts_flying = @sfbase.sent_parts_flying(@signals.untracked(key))
+  let has_parts = !parts_flying.is_empty() || quotes_from.iter().any(fn(q) { q is Some(_) })
+  let made_at = v.cause_at()
+  // (the node of what leads it, as it is made: what is under it comes in as that goes across, View::flight_across_now)
+  // (a node handle, no value to compare: told once, as its lead is made, for the under's binding to follow)
+  let lead_view : @signals.Signal[@view.View?] = @signals.signal_ref(None)
+  let flight_ends : @signals.Signal[Double?] = @signals.signal(None)
+  let lead_dy = Ref(0.0)
+  let fly : SentFly = {
+    flight: sent_flight(@sfbase.sent_delay_take(@signals.untracked(key))),
+    lead: sent_lead(
+      flies_from is Some(_) && @signals.untracked(fn() { m().text != "" }),
+      parts_flying,
+      quotes_from,
+    ),
+    led: fn(b) {
+      lead_view.set(Some(b))
+      b.reacts(fn() { b.flight_ends_now() }, fn(ends) {
+        flight_ends.set(ends)
+        match ends {
+          Some(e) => lands(e)
+          None => ()
+        }
+      })
+    },
+    dy_told: fn(dy) { lead_dy.val = dy },
+  }
   message_row_frame_node(v, key, side, top, fn(r) {
     r.box(fn(col) {
       @sf.style_node(col, fn() { mine_column })
@@ -232,7 +256,7 @@ fn mine_said_node(
           |> ignore
         None => ()
       }
-      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from, flies_of~)
+      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from, flies_of~, fly~)
       message_files_node(
         col,
         src,
@@ -247,6 +271,7 @@ fn mine_said_node(
         fn() { if said() { Some((@sf.t("web-main.chat.you"), "person", m().ts)) } else { None } },
         fn() { at() + "/f" },
         flies_of~,
+        fly~,
       )
       // (on its way, its other files still going up: how far, or why it did not go)
       if !@signals.untracked(said) {
@@ -259,10 +284,6 @@ fn mine_said_node(
         // chat_quote_node)
         picked_of_by(b, key)
         let cards = message_link_card(src, here.station, fn() { "" }, m)
-        if flies_from is Some(_) {
-          landed.put(0.0)
-          landed.go(1.0, @motion.tween(@sf.enter_ms, ease=Out), at=b.cause_at() + @sfbase.flight_desk_ms)
-        }
         mine_bubble_node(
           b,
           here,
@@ -272,11 +293,26 @@ fn mine_said_node(
           lit=fn() { if said() { lit() } else { ("", 0L) } },
           cards=(here.tips, fn(l) { if said() { cards(l) } else { None } }),
           flies_from~,
+          fly~,
         )
       })
+      // (on its way a while: sending_shows_ms from when it was sent (`since`), the moment its 正在发送 may stand in for
+      // its time; due on the frames' clock, never read of the source's as it is drawn. Only while it is still going:
+      // sent, failed or said by the core, nothing is due for it, the moment called off)
+      let late = if @signals.untracked(said) {
+        fn() { false }
+      } else {
+        @sf.waited_past_node(r, since, sending_shows_ms, going=fn() {
+          !said() &&
+          (match out() {
+            Some(o) => o.state != "sent" && o.state != "failed"
+            None => false
+          })
+        })
+      }
       let under = fn() {
         match out() {
-          Some(o) => outbox_mine_under(o)
+          Some(o) => outbox_mine_under(o, late())
           None => mine_under(m())
         }
       }
@@ -292,10 +328,71 @@ fn mine_said_node(
         }
       }
       col.show(at_once=true, lone, fn(n) {
-        if flies_from is Some(_) {
-          n.alpha(By(fn() { landed.shown_on(n) })) |> ignore
+        // (what is under it, where it flies here from the composer: coming in as what leads it goes across (its words,
+        // else its first file or quote: SentFly's `lead`), on their flight's own way from its own cause (the old page's
+        // flight_settled, the desktop's: flight_across), whole as they land; at once otherwise. One curve, one length,
+        // one clock: never a fade of its own after it)
+        if fly.lead != "" && n.cause_at() == made_at {
+          let sent_at = n.cause_at()
+          if has_parts {
+            // (with files or quotes, the composer's ground starts tall and shrinks down as they fly out of it: unseen
+            // until the lead lands above the composer, then eased in within move_most_ms, as mine_time_flight's)
+            n.alpha(By(fn() {
+              if n.drawn_while(fn(now) { now <= sent_at }) <= sent_at {
+                return 0.0
+              }
+              match flight_ends.get() {
+                Some(e) => {
+                  let finish = @sf.dmin(e + @sf.enter_ms, @sf.dmax(e + 60.0, sent_at + @ui.move_most_ms))
+                  let t = n.drawn_while(fn(now) { now < finish })
+                  if t <= e {
+                    0.0
+                  } else if t >= finish {
+                    1.0
+                  } else {
+                    let u = (t - e) / (finish - e)
+                    1.0 - (1.0 - u) * (1.0 - u)
+                  }
+                }
+                None =>
+                  match lead_view.get() {
+                    Some(b) if b.flying_now() => 0.0
+                    _ => 1.0
+                  }
+              }
+            }))
+            |> ignore
+          } else {
+            // (the moment it is sent: its lead not on its way yet as that moment's frame is drawn, where its flight is
+            // still 0 of the way across, so nothing under it seen then; read by the clock till that moment is gone;
+            // lifted strictly vertically under its rising lead (`from.0 == to.0`) so it stays under its bubble uncut by
+            // the row's clip and never shifts across)
+            fly.flies_in(n, "under", fn(to) {
+              let dy = lead_dy.val
+              if dy > 0.5 {
+                Some((to.0, to.1 + dy, to.2, to.3))
+              } else {
+                None
+              }
+            })
+            n.alpha(By(fn() {
+              if n.drawn_while(fn(now) { now <= sent_at }) <= sent_at {
+                return 0.0
+              }
+              match lead_view.get() {
+                Some(b) => b.flight_across_now()
+                None => 1.0
+              }
+            }))
+            |> ignore
+          }
         }
-        n.pick(under, leave=msg_part_leave_ms, fn(u, now) {
+        let under_leave = if !@signals.untracked(said) || @signals.untracked(under) != MineTime {
+          msg_part_leave_ms
+        } else {
+          0.0
+        }
+        n.pick(under, leave=under_leave, fn(u, now) {
           match now {
             MineBlocked =>
               blocked_line_node(u, src, here.tips, fn() { here.station }, fn() {
@@ -327,21 +424,8 @@ fn mine_said_node(
                 take_back=fn(b) { outbox_take_back_node(b, src, here, fn() { out().unwrap_or(chat_body_no_out) }) },
               )
               |> ignore
-            MineUnsent =>
-              u.box(fn(n) {
-                // (seen as its words land, coming in over a part's leave_ms: failed at once, it was under their way)
-                match lands {
-                  Some(at) =>
-                    n.alpha(By(fn() {
-                      let t = n.drawn_while(fn(now) { now < at + msg_part_leave_ms })
-                      @sf.dclamp((t - at) / msg_part_leave_ms, 0.0, 1.0)
-                    }))
-                    |> ignore
-                  None => ()
-                }
-                outbox_unsent_node(n, src, here, fn() { out().unwrap_or(chat_body_no_out) })
-              })
-              |> ignore
+            // (failed at once, as its words fly here: coming in with all that is under them, no way of its own)
+            MineUnsent => outbox_unsent_node(u, src, here, fn() { out().unwrap_or(chat_body_no_out) })
           }
         })
       })
@@ -486,14 +570,122 @@ fn message_files_at(here : MessageNodeHere, said : () -> Bool, share? : () -> Me
 let sent_up_late : Double = 0.12
 
 ///|
-/// How much of their way words sent fly bare, out of the field, before their bubble's ground and edge come round them
-/// (the old page's flight_ground: none till a quarter of the way, flight.mbt's flight_settle).
-let sent_ground_late : Double = 0.24
+/// What was sent from here flying in, all of it as one (mine_said_node's; the old page's flight, one clock for a send:
+/// flight.mbt's flight_target_key): on one flight (`flight`, sent_flight's, its delay and all), each part's way as long
+/// as its place is far from where it rests (sent_far: never by how its size changes), the part keyed `lead` leading:
+/// its way, as long as it goes, the way of every part and of its list's rise (View::flies_in's `lead`), its node told
+/// `led` as it is made, for what is under it to come in on (sent_lead says which; "" none: nothing flies).
+priv struct SentFly {
+  flight : @view.Flight
+  lead : String
+  led : (@view.View) -> Unit
+  dy_told : (Double) -> Unit
+}
+
+///|
+/// What is sent from here flying alone, at once as it is sent, leading nothing (sent_part_flight's): what is no part of
+/// a send said whole.
+// kept across runs: a value, no field of it changes
+let sent_fly_alone : SentFly = { flight: sent_part_flight, lead: "", led: fn(_) {  }, dy_told: fn(_) {  } }
+
+///|
+/// Words sent's part of what flies (SentFly's keys: else a quote's card, sent_quote_part; a file or a quote's own
+/// picture, by its key in the row, as sfbase's sent_part_take has it).
+let sent_words_part : String = "words"
+
+///|
+/// Quote `i`'s card's part of what flies (SentFly's keys).
+fn sent_quote_part(i : Int) -> String {
+  "q:" + i.to_string()
+}
+
+///|
+/// Which part of what was sent leads its flight (SentFly's `lead`), the old page's flight_target_key: its words where
+/// they fly (`words`); else the first of its files that flies (`parts`, as the composer held them: sfbase's
+/// sent_parts_flying); else its first quote's card that does (`quotes`, where each stood); else a quote's own picture;
+/// "" where none flies.
+fn sent_lead(words : Bool, parts : Array[String], quotes : Array[(Double, Double, Double, Double)?]) -> String {
+  if words {
+    return sent_words_part
+  }
+  match parts.search_by(fn(p) { !@sfbase.is_quote_picture_key(p) }) {
+    Some(i) => return parts[i]
+    None => ()
+  }
+  match quotes.search_by(fn(q) { q is Some(_) }) {
+    Some(i) => return sent_quote_part(i)
+    None => ()
+  }
+  parts.get(0).unwrap_or("")
+}
+
+///|
+/// Part `part` of what was sent (SentFly's keys) flying into `v` from where `from` says, given where it rests
+/// (View::flies_in), with the rest of the send: on its flight, as long as its place is far (sent_far), led by its lead,
+/// its rise `up_late` late (sent_up_late); `bare_from` as View::flies_in's.
+fn SentFly::flies_in(
+  self : SentFly,
+  v : @view.View,
+  part : String,
+  from : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
+  up_late? : Double = sent_up_late,
+  bare_from? : Bool = false,
+) -> Unit {
+  let lead = part == self.lead
+  let from_fn = if lead {
+    fn(to : (Double, Double, Double, Double)) {
+      let r = from(to)
+      match r {
+        Some(f) => (self.dy_told)(f.1 - to.1)
+        None => (self.dy_told)(0.0)
+      }
+      r
+    }
+  } else {
+    from
+  }
+  v.flies_in(self.flight, from_fn, up_late~, bare_from~, far_of=sent_far, lead~) |> ignore
+  if lead {
+    (self.led)(v)
+  }
+}
+
+///|
+/// How a picture sent from here flies in as part `part` of what was sent (`fly`), from where it stood (`from`; None
+/// where it was not made in the change it was sent in: there as it is): image_reveal_node's `flies`.
+fn sent_flies(fly : SentFly, part : String, from : (Double, Double, Double, Double)?) -> ((@view.View) -> Unit)? {
+  from.map(fn(r) { fn(v : @view.View) { fly.flies_in(v, part, fn(_) { Some(r) }) } })
+}
+
+///|
+/// How far what is sent from here goes, from where it stood (`from`) to where it rests (`to`), both in the window: the
+/// farther of across and down between their places, its size changing nothing of it (the old page's flight_start's).
+fn sent_far(from : (Double, Double, Double, Double), to : (Double, Double, Double, Double)) -> Double {
+  @sf.dmax((from.0 - to.0).abs(), (from.1 - to.1).abs())
+}
 
 ///|
 /// The way what is sent from here flies from where it stood in the composer to its place in its message (its words, and
-/// each of its files and quotes: the old page's curve, sfbase's flight_across and flight_up: across first on the
-/// flight's ease, up sent_up_late late), sf/motion.mbt kind 4.
-// det-ok(motion-length): words sent's own, the old page's flight (sfbase's flight_desk_ms), sf/motion.mbt kind 4
-// kept across runs: constant flight curve
-let sent_part_flight : @view.Flight = @motion.flight_by(@motion.tween(@sfbase.flight_desk_ms, ease=Flight))
+/// each of its files and quotes): the old page's, the desktop's flight every composer sends with (composer.mbt's
+/// flight_start, `desk`), as long as it is far up to `flight_desk_ms`, across first on the flight's ease, up
+/// sent_up_late late (flight_across, flight_up), setting out `delay` after it was sent; sf/motion.mbt kind 4.
+fn sent_flight(delay : Double) -> @view.Flight {
+  // det-ok(motion-length): words sent's own, the old page's flight by how far (sfbase's flight_way_ms), kind 4
+  @motion.flight_scaled(sent_far_ms, ease=Flight, delay~)
+}
+
+///|
+/// What is sent from here flying at once as it is sent (sent_flight's): what has no delay of its own to say.
+// kept across runs: a function of how far it goes, nothing of its own
+let sent_part_flight : @view.Flight = sent_flight(0.0)
+
+///|
+/// How long what is sent from here takes over a way `far` points long (sent_flight's): none where it goes nowhere,
+/// capped at `flight_desk_ms` so every send lands within the desktop flight's budget.
+fn sent_far_ms(far : Double) -> Double {
+  if far <= 0.5 {
+    0.0
+  } else {
+    @sf.dmin(@sfbase.flight_way_ms(true, far), @sfbase.flight_desk_ms)
+  }
+}
