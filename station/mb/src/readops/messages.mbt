@@ -103,7 +103,7 @@ fn with_letter(out : Map[String, Json], v : Json) -> Unit {
 fn author_kind(v : Json) -> Json {
   match v {
     String("agent") => Json::string("agent")
-    String("ember" | "stillfail") => Json::string("ember")
+    String("ember" | "stillfail" | "station") => Json::string("ember")
     _ => Json::string("person")
   }
 }

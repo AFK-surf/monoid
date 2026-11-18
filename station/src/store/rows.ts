@@ -425,7 +425,8 @@ export function jsonList<T>(value: T[], write: (v: Json) => T): string | null {
 /// AuthorKind::parse.
 export function authorKind(s: string): AuthorKind {
   if (s === "agent") return "agent";
-  if (s === STATION_AUTHOR || s === "stillfail") return STATION_AUTHOR;
+  // ("station": what the MoonBit station wrote for its notices on 2026-11-18, read as a person's until it was mended)
+  if (s === STATION_AUTHOR || s === "stillfail" || s === "station") return STATION_AUTHOR;
   return "person";
 }
 

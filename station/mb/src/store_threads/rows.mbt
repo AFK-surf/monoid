@@ -206,7 +206,7 @@ fn change_of_column(v : Json) -> @jsjson.JValue? {
 fn author_kind_of(v : Json) -> String {
   match v {
     String("agent") => "agent"
-    String("ember" | "stillfail") => station_author
+    String("ember" | "stillfail" | "station") => station_author
     _ => "person"
   }
 }

@@ -292,7 +292,7 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
     let kind = field(e, "author_kind")
     let author_kind = match kind {
       String("agent") => "agent"
-      String("ember") | String("stillfail") => "ember"
+      String("ember") | String("stillfail") | String("station") => "ember"
       _ => "person"
     }
     let m : Map[String, Json] = {
