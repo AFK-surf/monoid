@@ -472,7 +472,42 @@ pub(all) struct Message {
 }
 
 ///|
+/// How many messages were read as Messages (message_of) in this run, wherever: what a test of the work a change costs
+/// counts (chat_opens reads none; a chat's page opened again reads none of those that did not change).
+// kept across runs: a count a test reads as the difference over what it does, never its value
+pub let messages_decoded : Ref[Int] = Ref(0)
+
+///|
+/// Message JSON `m` read as a Message (message_of), or as it was read last where it is the same JSON as one of the last
+/// `messages_read_most` read: what reads a chat whole (chat_read) and what reads it by key (ChatMessages), each of its
+/// own, read a message come once between them, not once each (the page the app ships reads its newest by key too).
+fn message_read(m : Json) -> Message {
+  for p in messages_read_last {
+    if physical_equal(p.0, m) {
+      return p.1
+    }
+  }
+  let made = message_of(m)
+  if messages_read_last.length() >= messages_read_most {
+    messages_read_last.remove(0) |> ignore
+  }
+  messages_read_last.push((m, made))
+  made
+}
+
+///|
+/// The last messages read (message_read), with the JSON each was read of.
+// kept across runs: made of the JSON each is kept with alone, the same whichever run reads it; emptied as a run begins
+// (chat_seeds_reset) so no run holds another's values
+let messages_read_last : Array[(Json, Message)] = []
+
+///|
+/// How many of the last messages read message_read keeps.
+let messages_read_most : Int = 16
+
+///|
 pub fn message_of(m : Json) -> Message {
+  messages_decoded.val += 1
   let s = Some(m)
   {
     seq: number(s, "seq"),
@@ -1157,45 +1192,105 @@ pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState, 
     return t.waiting && all
   }
   // (the faces of its people in its bar, sfapp's chat.mbt people_stack, and each person's over their messages:
-  // sfpages' message.mbt person_avatar, message_head_node.mbt's)
-  let faces = items(t.value, "people").map(fn(p) { person_of(p).picture })
-  for m in items(t.value, "messages") {
-    if !["agent", "station", "ember", "stillfail"].contains(text(Some(m), "authorKind")) {
-      faces.push(by_of(Some(m)).picture)
+  // sfpages' message.mbt person_avatar, message_head_node.mbt's; and what its posts are laid out by: chat_opening,
+  // read of its value once however often what opens waits on it)
+  let o = match t.value {
+    Some(v) => chat_opening(r.station, v)
+    None => { station: r.station, raw: Json::null(), faces: [], asks: [] }
+  }
+  all = pictures_in(opening_pictures.val, o.faces) && all
+  for a in o.asks {
+    match a {
+      LinkAsk(to) =>
+        match link_card_ask(to) {
+          Some((name, params)) => all = opens_answered(ask(name, params)) && all
+          None => ()
+        }
+      LoginAsk(station, id) => {
+        let (name, params) = machine_login_ask(station, id)
+        let l = ask(name, params)
+        if !opens_answered(l) {
+          all = false
+        } else if flag(l.value, "active") {
+          let (name, params) = machine_logins_ask(station)
+          all = opens_answered(ask(name, params)) && all
+        }
+      }
     }
   }
-  all = pictures_in(opening_pictures.val, faces) && all
-  for m in items(t.value, "messages") {
+  all
+}
+
+///|
+/// What chat_opens asks of a chat's posts beside its view, in their order: a link's card in a post's words (its link
+/// to a station: link_card_ask), a login's card under a post (its station and its login).
+priv enum OpeningAsk {
+  LinkAsk(@sf.LinkTo)
+  LoginAsk(String, String)
+}
+
+///|
+/// What chat_opens reads of a chat's value `raw` (of a chat on station `station`): the faces it shows (its people's,
+/// its posts' authors') and what its posts ask (OpeningAsk).
+priv struct Opening {
+  station : String
+  raw : Json
+  faces : Array[String]
+  asks : Array[OpeningAsk]
+}
+
+///|
+/// The last chats' values chat_opens read (chat_opening), `chats_kept` of them: what opens waits on a chat again and
+/// again as each other thing it waits on comes (its draft, its jobs, each face decoded), the chat's value the same.
+// kept across runs: made of the value each is kept with alone, the same whichever run reads it; emptied as a run begins
+// (chat_seeds_reset) so no run holds another's values
+let chat_openings : Array[Opening] = []
+
+///|
+/// What chat_opens reads of chat value `v` of a chat on `station`: read of its JSON (no post read as a Message), once
+/// for each value (chat_openings).
+fn chat_opening(station : String, v : Json) -> Opening {
+  for o in chat_openings {
+    if physical_equal(o.raw, v) && o.station == station {
+      return o
+    }
+  }
+  let s = Some(v)
+  let faces = items(s, "people").map(fn(p) { person_of(p).picture })
+  let messages = items(s, "messages")
+  for m in messages {
+    if !["agent", "station", "ember", "stillfail"].contains(text(Some(m), "authorKind")) {
+      faces.push(text(field(Some(m), "by"), "picture"))
+    }
+  }
+  let asks : Array[OpeningAsk] = []
+  for m in messages {
+    let p = Some(m)
     // (each link's card in a post's words, as the message tells them, its tree or its runs: a screen's a capsule or,
     // previewed, the screen across its top. None of still.fail's notices, whose words are read as no post's; none
     // read of a post's words here, every post of the chat each time it opens)
-    let links = if field(Some(m), "notice") is None && text(Some(m), "authorKind") != "ember" {
-      message_links_to(message_of(m), told=true)
-    } else {
-      Map([])
-    }
-    for _, to in links {
-      match link_card_ask(to) {
-        Some((name, params)) if to.station != "" => all = opens_answered(ask(name, params)) && all
-        _ => ()
+    let kind = text(p, "authorKind")
+    if field(p, "notice") is None && kind != "ember" {
+      let links = links_to_of(field(p, "words"), kind, flag(p, "mine"), text(p, "text"), field(p, "md"), told=true)
+      for _, to in links {
+        if to.station != "" {
+          asks.push(LinkAsk(to))
+        }
       }
     }
-    let card = field(Some(m), "card")
+    let card = field(p, "card")
     let id = text(card, "login")
     if text(card, "type") != "login" || id == "" {
       continue
     }
-    let station = card_login_station(r.station, text(card, "station"))
-    let (name, params) = machine_login_ask(station, id)
-    let l = ask(name, params)
-    if !opens_answered(l) {
-      all = false
-    } else if flag(l.value, "active") {
-      let (name, params) = machine_logins_ask(station)
-      all = opens_answered(ask(name, params)) && all
-    }
+    asks.push(LoginAsk(card_login_station(station, text(card, "station")), id))
   }
-  all
+  let o = { station, raw: v, faces, asks }
+  if chat_openings.length() >= chats_kept {
+    chat_openings.remove(0) |> ignore
+  }
+  chat_openings.push(o)
+  o
 }
 
 ///|
@@ -1203,7 +1298,21 @@ pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState, 
 /// (the first run of each), or of an agent's Markdown (read as the row is, as its words are); none of a person's words
 /// said without runs; `told`: only as the message tells them (its runs, its tree), none read of its words here.
 pub fn message_links_to(m : Message, told? : Bool = false) -> Map[String, @sf.LinkTo] {
-  match m.words {
+  links_to_of(m.words, m.author_kind, m.mine, m.text, m.md, told~)
+}
+
+///|
+/// message_links_to of a message's parts (its `words`, `authorKind`, `mine`, `text` and `md`), so what reads them of its
+/// JSON alone (chat_opening) reads them as a Message's are read.
+fn links_to_of(
+  words : Json?,
+  author_kind : String,
+  mine : Bool,
+  said : String,
+  md : Json?,
+  told~ : Bool,
+) -> Map[String, @sf.LinkTo] {
+  match words {
     Some(Array(runs)) => {
       let out : Map[String, @sf.LinkTo] = Map([])
       for r in runs {
@@ -1214,9 +1323,9 @@ pub fn message_links_to(m : Message, told? : Bool = false) -> Map[String, @sf.Li
       }
       out
     }
-    _ if m.author_kind == "person" || m.mine => Map([])
-    _ if told && !(m.md is Some(Array(_))) => Map([])
-    _ => @sf.md_links_to(m.text, m.md)
+    _ if author_kind == "person" || mine => Map([])
+    _ if told && !(md is Some(Array(_))) => Map([])
+    _ => @sf.md_links_to(said, md)
   }
 }
 
