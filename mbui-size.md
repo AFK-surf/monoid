@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 2.58 | 3.46 | 14.13 | 36.17 | 54.38 | 31.69 | 63.81 | 97.22 | 120.26 |
 | [e6ec96714](https://github.com/AFK-surf/monoid/commit/e6ec96714deaa21be8d1db30285b5a6864bd40b3) fix(mbui): take the start drop of a finger pick wh | 2.57 | 3.46 | 14.12 | 36.16 | 54.38 | 31.69 | 63.81 | 97.14 | 124.81 |
 | [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 2.58 | 3.46 | 14.12 | 36.16 | 54.38 | 31.69 | 63.81 | 97.14 | 121.14 |
 | [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 2.57 | 3.46 | 14.12 | 36.15 | 54.37 | 31.69 | 63.79 | 97.35 | 121.99 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [43e63e625](https://github.com/AFK-surf/monoid/commit/43e63e625fe5efa6c2090b2e63516ca2682555d2) fix(sf-ui): center a mouse sidebar row's parts on  | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.57 | 63.54 | 96.86 | 107.17 |
 | [e82b12413](https://github.com/AFK-surf/monoid/commit/e82b12413098195fc15643b7c4d5b17810bf3c25) fix(station): move a session off an API key whose  | 2.56 | 3.43 | 14.03 | 36.01 | 53.99 | 31.57 | 63.54 | 96.86 | 121.52 |
 | [49440f883](https://github.com/AFK-surf/monoid/commit/49440f883492d3a040c3f9c173af456638a5ca4c) feat(mbui): storybook foundations, accent preview  | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
-| [89302f4f7](https://github.com/AFK-surf/monoid/commit/89302f4f7ae17ff0c1f2c65e1f7604db91fd83e7) perf(mbui): draw a frame's new glyphs ahead as the | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [e6ec96714](https://github.com/AFK-surf/monoid/commit/e6ec96714deaa21be8d1db30285b5a6864bd40b3) fix(mbui): take the start drop of a finger pick wh | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.95 |
 | [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [43e63e625](https://github.com/AFK-surf/monoid/commit/43e63e625fe5efa6c2090b2e63516ca2682555d2) fix(sf-ui): center a mouse sidebar row's parts on  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
 | [e82b12413](https://github.com/AFK-surf/monoid/commit/e82b12413098195fc15643b7c4d5b17810bf3c25) fix(station): move a session off an API key whose  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
 | [49440f883](https://github.com/AFK-surf/monoid/commit/49440f883492d3a040c3f9c173af456638a5ca4c) feat(mbui): storybook foundations, accent preview  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
-| [89302f4f7](https://github.com/AFK-surf/monoid/commit/89302f4f7ae17ff0c1f2c65e1f7604db91fd83e7) perf(mbui): draw a frame's new glyphs ahead as the | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.86 |
