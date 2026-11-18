@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
 | [5409b4cbc](https://github.com/AFK-surf/monoid/commit/5409b4cbc70cc6419539de41783a28be85367f26) feat(station): Farview 8B and 8C, farview.pin to 8 | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
 | [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.32 | 96.77 | 126.18 |
 | [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 2.54 | 3.41 | 13.98 | 35.9 | 53.78 | 31.48 | 63.32 | 96.77 | 116.78 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 2.56 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 114.21 |
 | [f18d30634](https://github.com/AFK-surf/monoid/commit/f18d3063414e5f696a1782eae614d560b99df6e7) app: a process's stop sits on its name's line on a | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 122.81 |
 | [bc074d677](https://github.com/AFK-surf/monoid/commit/bc074d67709bfcf785c69f67ad34d3f3b3400f8e) station: tell the workspace when its last terminal | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.26 | 125.26 |
-| [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.14 | 125.72 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
 | [5409b4cbc](https://github.com/AFK-surf/monoid/commit/5409b4cbc70cc6419539de41783a28be85367f26) feat(station): Farview 8B and 8C, farview.pin to 8 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [f18d30634](https://github.com/AFK-surf/monoid/commit/f18d3063414e5f696a1782eae614d560b99df6e7) app: a process's stop sits on its name's line on a | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [bc074d677](https://github.com/AFK-surf/monoid/commit/bc074d67709bfcf785c69f67ad34d3f3b3400f8e) station: tell the workspace when its last terminal | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
-| [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
