@@ -38,7 +38,8 @@ priv struct ChatJump {
   sight : @signals.Signal[(String, String)?]
   put : @signals.Signal[Int]
   mut went : (Double, Double)
-  mut stand : (String, Double, Bool)?
+  mut stand : (String, ChatStandAt, Bool)?
+  mut stand_cover : Double
   mut landing : Bool
   mut stood : (Double?, String, Double)
   mut around : Double
@@ -49,6 +50,28 @@ priv struct ChatJump {
   mut outline_at : @view.View?
   reader : @signals.Signal[(Double, Bool)]
   mut rail_at : @view.View?
+}
+
+///|
+/// Where the page puts a block of a chat's list (chat_stand), kept as such while the reader has not moved it, so that
+/// what covers the list's top coming to be another height (the bar's second row measured, or pressed open or shut:
+/// chat_stand_again) leaves it where it was meant.
+priv enum ChatStandAt {
+  /// its top `kept` under the list's window's top, as a place is kept (sfbase's KeptPlace, the core's `atOffset`, a
+  /// place to go back to): where the reader left it, whatever covers the top
+  AtWindow(Double)
+  /// its top `into` over the foot of what covers the list's top (under it where less than 0: ListPlace::bring's
+  /// offset), wherever that comes to be: a go-to's, the unread line's, the core's `at` with no offset
+  UnderBar(Double)
+}
+
+///|
+/// ListPlace::bring's offset of a block standing at `at`, what covers the list's top `cover` tall.
+fn chat_stand_offset(at : ChatStandAt, cover : Double) -> Double {
+  match at {
+    AtWindow(kept) => @sfbase.kept_place_under(kept, cover)
+    UnderBar(into) => into
+  }
 }
 
 ///|
@@ -65,6 +88,7 @@ fn ChatJump::new() -> ChatJump {
     put: @signals.signal(0, same=fn(a, b) { a == b }),
     went: (-1.0, 0.0),
     stand: None,
+    stand_cover: 0.0,
     landing: false,
     stood: (None, "", 0.0),
     around: -1.0,
@@ -97,6 +121,17 @@ fn chat_top_in_sight(s : @view.Sight[String], rs : ChatBodyNow, k : String) -> D
 }
 
 ///|
+/// Where the reader is (chat_reader_at): the message at the top and how far its top is under the list's window's top,
+/// as kept (sfbase's kept_place_of); of a message drawn in pieces, the piece at the top (-1 a message of one) and how far
+/// that piece's top is under it, as kept.
+priv struct ChatReaderAt {
+  seq : Double
+  off : Double
+  piece : Int
+  piece_off : Double
+}
+
+///|
 /// Where the reader is in what the list of rows `rs` has in sight (`s`), as the chat's reading keeps it (sfbase's
 /// Reading's top_seq and top_off) and tells it the core (chat_read_node): the first message whose block shows under what
 /// covers the list's top (`cover` tall) more than the room the list keeps under it (`top` the two: what of a block over
@@ -106,7 +141,13 @@ fn chat_top_in_sight(s : @view.Sight[String], rs : ChatBodyNow, k : String) -> D
 /// sent from here), the message after it (its top counted where the row is the first in sight's next, else the next's:
 /// how far further down is not told). One read for every way the reader's place is taken (a go-to's, ⌘F's start, the
 /// outline's, the place told the core). None where what shows holds no message.
-fn chat_reader_at(s : @view.Sight[String], rs : ChatBodyNow, cover : Double, top : Double) -> (Double, Double)? {
+fn chat_reader_at(
+  s : @view.Sight[String],
+  rs : ChatBodyNow,
+  place : @view.ListPlace[String],
+  cover : Double,
+  top : Double,
+) -> ChatReaderAt? {
   guard rs.keys.search(s.first) is Some(i) else { return None }
   let mut j = i
   while j < rs.keys.length() {
@@ -114,7 +155,46 @@ fn chat_reader_at(s : @view.Sight[String], rs : ChatBodyNow, cover : Double, top
     match rs.get(k).map(fn(row) { row.entry }) {
       Some(Said(m)) if j > i || s.tall - s.into > top - cover + 0.5 || k == s.last => {
         let top = if j == i { -s.into } else { s.tall - s.into }
-        return Some((m.seq, @sfbase.kept_place_of(top, cover)))
+        // (a piece of a long message: that piece's top as well, and the whole message's by how far down it the piece
+        // lies as the list counts them)
+        let piece = chat_piece_index(k)
+        let base = chat_piece_of(k)
+        // (its pieces over it not all measured (read up into it from its foot): how far down it the piece lies only
+        // guessed; the first message after it whose top is in sight taken instead, where one is, its top as measured,
+        // what is kept and told then known to the pixel)
+        if piece > 0 && place.span_between(base, k, measured=true) is None {
+          let mut q = j + 1
+          while q < rs.keys.length() {
+            let qk = rs.keys[q]
+            match rs.get(qk).map(fn(row) { row.entry }) {
+              Some(Said(next)) if chat_piece_of(qk) == qk =>
+                match place.span_between(s.first, qk, measured=true) {
+                  Some(sp) => {
+                    let at = @sfbase.kept_place_of(sp - s.into, cover)
+                    return Some({
+                      seq: next.seq,
+                      off: at,
+                      piece: if rs.get(qk).map(fn(row) { row.piece }) is Some(None) { -1 } else { 0 },
+                      piece_off: at,
+                    })
+                  }
+                  None => break
+                }
+              _ => ()
+            }
+            if qk == s.last {
+              break
+            }
+            q = q + 1
+          }
+        }
+        let span = if piece > 0 { place.span_between(base, k).unwrap_or(0.0) } else { 0.0 }
+        return Some({
+          seq: m.seq,
+          off: @sfbase.kept_place_of(top - span, cover),
+          piece: if base == k && rs.get(k).map(fn(row) { row.piece }) is Some(None) { -1 } else { piece },
+          piece_off: @sfbase.kept_place_of(top, cover),
+        })
       }
       _ => ()
     }
@@ -154,17 +234,19 @@ fn chat_stand(
   jump : ChatJump,
   place : @view.ListPlace[String],
   k : String,
-  offset : Double,
+  at : ChatStandAt,
+  cover : Double,
   sought? : Bool = false,
   glide? : Bool = false,
 ) -> Unit {
-  jump.stand = Some((k, offset, sought))
+  jump.stand = Some((k, at, sought))
+  jump.stand_cover = cover
   if jump.gliding.untracked() {
     jump.gliding.set(false)
   }
   jump.landing = true
   jump.stood = (None, "", 0.0)
-  place.bring(k, offset~, glide~, sought~)
+  place.bring(k, offset=chat_stand_offset(at, cover), glide~, sought~)
 }
 
 ///|
@@ -172,11 +254,26 @@ fn chat_stand(
 /// (as it is drawn now, on its way there): that block's place under it as it was meant, not under the cover's foot as
 /// it was then, gliding there as the cover goes. Nothing where the reader has moved it since.
 fn chat_stand_again(jump : ChatJump, place : @view.ListPlace[String], to : Double, now : Double) -> Unit {
-  guard jump.stand is Some((k, offset, sought)) else { return }
-  // (kept as it was meant, under the cover as it comes to be: what it comes to again is counted from it)
+  guard jump.stand is Some((k, at, sought)) else { return }
   jump.landing = true
   jump.stood = (None, "", 0.0)
-  place.bring(k, offset=offset - (to - now), glide=true, sought~)
+  // (kept as it was meant: where a place kept has it in the window, the cover laid out at once (its second row first
+  // measured), nothing of it moving; the cover pressed open or shut (on its way), as much further down or up, gliding
+  // there with it, not under its second row; under the cover as it comes to be, gliding there as the cover goes)
+  let gliding = (to - now).abs() > 0.5
+  let offset = match at {
+    AtWindow(kept) =>
+      if gliding {
+        let next = kept + (to - jump.stand_cover)
+        jump.stand = Some((k, AtWindow(next), sought))
+        @sfbase.kept_place_under(next, now)
+      } else {
+        @sfbase.kept_place_under(kept, now)
+      }
+    UnderBar(into) => into - (to - now)
+  }
+  jump.stand_cover = to
+  place.bring(k, offset~, glide=gliding, sought~)
 }
 
 ///|
@@ -267,6 +364,8 @@ fn chat_goes_to(
   place.on_sight(fn(s) {
     let cv = @signals.untracked(view)
     let rs = @signals.untracked(fn() { rows.read() })
+    // (at its foot within half a point, as Scroll::at_foot_now has it: what the way to the newest and the place told go by)
+    let at_foot = s.at_foot || s.from_foot <= 0.5
     // (first in sight: what floats over its foot stands as it is found then, chat_float_stand)
     if jump.sight_from == @double.infinity {
       jump.sight_from = v.cause_at()
@@ -274,19 +373,20 @@ fn chat_goes_to(
     // (on its glide back to its end: there, the glide over short of it (what it holds changed under it), or going
     // further from it (the wheel's), no longer)
     if jump.gliding.untracked() {
-      if s.at_foot || (!place.asking() && scroll.glides_till() is None) || s.from_foot > jump.glide_left + 0.5 {
+      if at_foot || (!place.asking() && scroll.glides_till() is None) || s.from_foot > jump.glide_left + 0.5 {
         jump.gliding.set(false)
       } else {
         jump.glide_left = s.from_foot
       }
     }
-    jump.away.set(!s.at_foot && s.from_foot > to_newest_away)
+    jump.away.set(!at_foot && s.from_foot > to_newest_away)
     jump.sight.set(Some((s.first, s.last)))
     // (where the page put it: there once what it asked is done, its block's top as it then stood; moved off it since,
     // the reader's (a message streamed into at the foot, a page before come in over it, a row over it measured anew
     // move none of it: the list holds what is read))
     match jump.stand {
-      Some((k, _, _)) if !place.asking() =>
+      // (not while a glide it asked goes on: where it stood is taken once it ends)
+      Some((k, _, _)) if !place.asking() && scroll.glides_till() is None =>
         if jump.landing {
           jump.landing = false
           jump.stood = (chat_top_in_sight(s, rs, k), s.first, s.into)
@@ -308,10 +408,12 @@ fn chat_goes_to(
     // (placed while it shows: sfbase's keep_place_of)
     let rd = @sfbase.reading_of(chat)
     rd.placed = @signals.untracked(shows)
-    match chat_reader_at(s, rs, @signals.untracked(cover), @signals.untracked(top)) {
-      Some((seq, off)) => {
-        rd.top_seq = seq
-        rd.top_off = off
+    match chat_reader_at(s, rs, place, @signals.untracked(cover), @signals.untracked(top)) {
+      Some(at) => {
+        rd.top_seq = at.seq
+        rd.top_off = at.off
+        rd.top_piece = at.piece
+        rd.top_piece_off = at.piece_off
       }
       None => ()
     }
@@ -322,13 +424,15 @@ fn chat_goes_to(
       (seq, off) if jump.put.untracked() == 2 && seq >= 0.0 => {
         rd.top_seq = seq
         rd.top_off = off
+        rd.top_piece = -1
+        rd.top_piece_off = 0.0
       }
       _ => ()
     }
-    rd.far = cv.newer || (!s.at_foot && s.from_foot > s.shows)
+    rd.far = cv.newer || (!at_foot && s.from_foot > s.shows)
     // (at the chat's end: what the steps to what a person said and 对话目录 take the reader to be at, outline_current)
-    rd.at_end = s.at_foot && !cv.newer
-    if s.at_foot && !cv.newer {
+    rd.at_end = at_foot && !cv.newer
+    if at_foot && !cv.newer {
       @sfbase.place_forget(chat)
     }
     // (where the reader is, told: the rail's long tick)
@@ -355,6 +459,7 @@ fn chat_goes_to(
     @sfbase.go_to_passages.remove(chat)
     @sfbase.go_to_words.remove(chat)
     @sfbase.go_back_offsets.remove(chat)
+    @sfbase.go_back_pieces.remove(chat)
     @sfbase.go_to_around.remove(chat)
     find_goes.remove(chat)
     jump.around = -1.0
@@ -407,6 +512,8 @@ fn chat_goes_to(
         @sfbase.go_to_around.remove(chat)
         let back = @sfbase.go_back_offsets.get(chat)
         @sfbase.go_back_offsets.remove(chat)
+        let back_piece = @sfbase.go_back_pieces.get(chat)
+        @sfbase.go_back_pieces.remove(chat)
         let words = @sfbase.go_to_words.get(chat).unwrap_or([])
         @sfbase.go_to_words.remove(chat)
         // (⌘F's: no flash, the time the reader is at brought before the eyes; the bell's: its ask)
@@ -416,7 +523,18 @@ fn chat_goes_to(
         jump.ask_to = -1.0
         jump.around = -1.0
         // (the piece of a long message that holds what was meant in it: its block brought, View::sought's there)
-        let pk = if back is Some(_) {
+        // (back where the reader was: the piece that was at the top, where the place said one and it is one still)
+        let back_at = match (back, back_piece) {
+          (Some(_), Some((pc, poff))) =>
+            match chat_piece_kept(rs, k, pc) {
+              Some(pk) => Some((pk, poff))
+              None => None
+            }
+          _ => None
+        }
+        let pk = if back_at is Some((pk, _)) {
+          pk
+        } else if back is Some(_) {
           k
         } else if finds {
           chat_piece_sought(rs, k, m, false, "", find_words_in(chat), find_k())
@@ -436,6 +554,13 @@ fn chat_goes_to(
         }
         // (where the reader is: the message, where its first piece is the one brought)
         jump.went = if pk == k { (target, off) } else { (-1.0, 0.0) }
+        // (back where the reader was: where it was in the window, as kept (its piece's top, where that is brought),
+        // whatever covers its top; else under what covers it as a go-to puts it)
+        let stand_at = match (back_at, back) {
+          (Some((_, poff)), _) => AtWindow(poff)
+          (None, Some(off)) => AtWindow(off)
+          (None, None) => UnderBar(@sfbase.kept_place_under(off, c))
+        }
         // (what was meant in it before the eyes too, where it lies low in a long message: a search's words, a quote's
         // passage, the bell's ask; not back where the reader was: ListPlace::bring's `sought`, what its words mark:
         // View::sought. One in sight already glides there, the eyes taken along to it as it lights (what is between
@@ -467,14 +592,7 @@ fn chat_goes_to(
           }
         }
         jump.put.set(1)
-        chat_stand(
-          jump,
-          place,
-          pk,
-          @sfbase.kept_place_under(off, c),
-          glide=back is None && in_sight,
-          sought=back is None,
-        )
+        chat_stand(jump, place, pk, stand_at, c, glide=back is None && in_sight, sought=back is None)
       }
       None if first >= 0.0 && last >= 0.0 && target >= first && target <= last => give_up(true)
       None => {

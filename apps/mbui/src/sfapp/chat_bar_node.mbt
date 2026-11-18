@@ -214,9 +214,14 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
     })
     g.reacts(fn() { (mid_w_sig.get() > 0.0, expanded(), state.row2_h.get()) }, fn(cur) {
       if cur.0 && !state.settled_initial {
-        state.settled_initial = true
-        state.open_way.put(if cur.1 { 1.0 } else { 0.0 })
-        state.extra_target.set(if cur.1 { cur.2 } else { 0.0 })
+        // (open as it is first laid out: settled only once its second row's height is known (that row made while it is
+        // open, measured shut), its way and the height it comes to put there at once together, never open on a height of
+        // none first)
+        if !cur.1 || cur.2 > 0.0 {
+          state.settled_initial = true
+          state.open_way.put(if cur.1 { 1.0 } else { 0.0 })
+          state.extra_target.set(if cur.1 { cur.2 } else { 0.0 })
+        }
       } else if state.settled_initial {
         if cur.1 != (state.open_way.target() >= 0.5) {
           state.open_way.go_ms(

@@ -15123,6 +15123,20 @@ fn Tree::holds_hosted(self : Tree, at : Int) -> Bool {
 }
 
 ///|
+/// Whether node `at` or what it holds is an old view hosted in the tree as tall as what it holds (ui's `old`, `natural`)
+/// whose height the old frame has not laid out yet (as tall as nothing till then, its height said by no number): a
+/// list's pinned foot holding one does not end where it will (View::scrolls_window's `foot_unbuilt`), whatever frame
+/// was painted since it was made (a page made while it waits to be drawn: its old view built by no frame yet).
+fn Tree::holds_unlaid_hosted(self : Tree, at : Int) -> Bool {
+  guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return false }
+  let n = self.nodes[at]
+  if n.hosted && n.flex.style.height_kind() == @flex.LEN_AUTO {
+    return true
+  }
+  n.kids.iter().any(fn(k) { self.holds_unlaid_hosted(k) })
+}
+
+///|
 /// Node `at` drawn by `f` as what holds it in a block of a page's list said `flips` changes inside it (Node's flip_in:
 /// how far down off where it is laid out, how much shorter its own ground, how big from its top, how opaque), as that
 /// list's way goes: the list's (View::scrolls_window), bound once for the node, read as it is placed, nothing laid out.

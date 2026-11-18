@@ -21,6 +21,8 @@ priv struct LongChat {
   asks : Array[Int]
   /// each message a station's notice, joined to the one before (the shortest rows a chat has)
   notices : Bool
+  /// the messages said in paragraphs (long_pieced_words: an agent's answer drawn a block a paragraph)
+  pieced : Array[Int]
 }
 
 ///|
@@ -60,13 +62,18 @@ fn long_value(base : Json, l : LongChat) -> Json {
   let messages : Array[Json] = []
   for n in first..=last {
     let m = t.copy()
-    let words = long_words(n)
+    let paras = if l.pieced.contains(n) { long_pieced_words(n) } else { [long_words(n)] }
+    let words = paras.join("\n\n")
     m["seq"] = Json::number(n.to_double())
     m["ts"] = Json::string("ts\{n}")
     m["text"] = Json::string(words)
     m["words"] = Json::array([{ "text": Json::string(words) }])
-    // (its tree as the core gives it, a line of words: nothing asked of the core's `markdown` for it)
-    let md : Json = [["p", [[0, Json::number(words.length().to_double())]]]]
+    // (its tree as the core gives it, a line of words a paragraph: nothing asked of the core's `markdown` for it)
+    let md : Json = if paras.length() == 1 {
+      [["p", [[0, Json::number(words.length().to_double())]]]]
+    } else {
+      Json::array(paras.map(fn(p) { Json::array([Json::string("p"), Json::array([Json::string(p)])]) }))
+    }
     m["md"] = md
     if l.notices {
       m["notice"] = { "failed": false, "words": Json::string(words), "md": md }
@@ -196,7 +203,12 @@ fn long_source(l : LongChat, mode? : String = "chat") -> Source {
 
 ///|
 /// A long chat that opens at its end (`unread`: about that message, unread), its asks.
-fn long_chat(unread? : Int = 0, asks? : Array[Int] = [], notices? : Bool = false) -> LongChat {
+fn long_chat(
+  unread? : Int = 0,
+  asks? : Array[Int] = [],
+  notices? : Bool = false,
+  pieced? : Array[Int] = [],
+) -> LongChat {
   let at = if unread > 0 { unread } else { long_count - long_page + 1 }
   {
     first: @signals.signal(if unread > 0 { long_max(1, at - long_page) } else { at }),
@@ -206,7 +218,16 @@ fn long_chat(unread? : Int = 0, asks? : Array[Int] = [], notices? : Bool = false
     unread,
     asks,
     notices,
+    pieced,
   }
+}
+
+///|
+/// What message `n` of the long chat says where it is said in paragraphs (LongChat's `pieced`): its number first, then
+/// seven paragraphs more, each its number and the paragraph's (第n条第i段：), each a few lines long.
+fn long_pieced_words(n : Int) -> Array[String] {
+  let said = "这一段讲构建脚本里的一步：先检查签名，再看上传的产物是否齐全，最后把日志里的警告逐条过一遍，确认都不影响发布。"
+  Array::makei(8, fn(i) { if i == 0 { "第\{n}条：\{said}" } else { "第\{n}条第\{i}段：\{said}" } })
 }
 
 ///|

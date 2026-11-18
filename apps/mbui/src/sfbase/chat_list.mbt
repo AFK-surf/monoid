@@ -91,6 +91,10 @@ pub(all) struct Reading {
   mut bottom_seq : Double
   /// how far that message's top is below the list's (points: above it, less than 0)
   mut top_off : Double
+  /// of a message drawn in pieces (a page made as nodes: a long message a block a piece), which of its pieces is at the
+  /// top and how far its top is under the list's (as kept: kept_place_of); -1 none (the old page's, a message of one)
+  mut top_piece : Int
+  mut top_piece_off : Double
   mut at_end : Bool
   /// where the core was last told the chat is (chat.place: "" not yet), and the screen's scale it was laid out at
   mut told_place : String
@@ -268,6 +272,8 @@ pub fn reading_of(key : String) -> Reading {
         top_seq: -1.0,
         bottom_seq: -1.0,
         top_off: 0.0,
+        top_piece: -1,
+        top_piece_off: 0.0,
         at_end: true,
         told_place: "",
         told_at: "\u{0}",
@@ -350,6 +356,11 @@ pub(all) struct KeptPlace {
   top : Double
   offset : Double
   bottom : Double
+  /// where the page that kept it draws a message in pieces (a page made as nodes): the piece at its top (0 its first,
+  /// -1 none said: the old page's, a test's, a message of one) and how far that piece's top is under the list's window's
+  /// top, as `offset` is kept; `offset` stays the whole message's, which the old page and the core read
+  piece : Int
+  piece_offset : Double
 }
 
 ///|
@@ -2285,6 +2296,8 @@ pub fn tell_place(src : Source, r : ChatRef, v : ChatView, rd : Reading, exact? 
     kept_places[r.station + "\u{1}" + r.session] = {
       top: rd.top_seq,
       offset: rd.top_off,
+      piece: -1,
+      piece_offset: 0.0,
       bottom: if rd.at_end {
         match v.messages.last() {
           Some(m) => m.seq
@@ -2604,6 +2617,7 @@ pub fn list_after(
           go_tos.remove(gk)
           go_to_passages.remove(gk)
           go_back_offsets.remove(gk)
+          go_back_pieces.remove(gk)
           find_around.val = -1.0
           if found {
             on_found(rd)
@@ -2653,6 +2667,7 @@ pub fn list_after(
             _ => {
               go_tos.remove(gk)
               go_back_offsets.remove(gk)
+              go_back_pieces.remove(gk)
             }
           }
         }

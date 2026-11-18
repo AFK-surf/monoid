@@ -1504,6 +1504,16 @@ fn View::scrolls_window_ids(
   // taken for good where the list ends short of where it will (the fill's `cut`); a bridge while old views are hosted in
   // a list's foot, as one_move_builds is)
   let foot_unbuilt = Ref(false)
+  // (and while its old view, as tall as what it holds, is not laid out by the old frame yet, whatever frame was painted
+  // since (a page made while it waits to be drawn: its old view built by no frame then, as tall as nothing still):
+  // where it ends is not known either, no ask taken for good by it)
+  let foot_waiting = fn() {
+    foot_unbuilt.val ||
+    (match foot_v.val {
+      Some(fv) => fv.alive() && self.tree.holds_unlaid_hosted(fv.at)
+      None => false
+    })
+  }
   // (the column marked laid out again: not while it is laid out, its fill going on to what that changed itself)
   let laid_again = fn() {
     if self.tree.rooming != self.at {
@@ -2166,7 +2176,7 @@ fn View::scrolls_window_ids(
       p.glide = fn(ask) {
         // (its pinned foot not laid out as tall as it is yet: where all of it ends not known, nothing to glide to; the
         // fill takes the ask, keeping it till it is: foot_unbuilt)
-        if foot_unbuilt.val {
+        if foot_waiting() {
           match ask {
             ToEnd => ()
             _ => return false
@@ -2223,6 +2233,26 @@ fn View::scrolls_window_ids(
           _ => false
         }
       }
+      // (how far one block's top lies under another's as they are counted now: read off them, nothing laid out)
+      p.span_of = fn(a, b, measured) {
+        let all = counted(laid.untracked())
+        match (laid_at.get(a), laid_at.get(b)) {
+          (Some(i), Some(j)) if i < all.length() && j < all.length() => {
+            // (`measured`: every block between them measured, else not known)
+            if measured {
+              for q in (if i < j { i } else { j })..<(if i < j { j } else { i }) {
+                if !all.known(q) {
+                  return None
+                }
+              }
+            }
+            Some(all.top(j) - all.top(i))
+          }
+          _ => None
+        }
+      }
+      // (span_of kept past the list as sight_of is: what reads where the reader left it as the page is let go reads both
+      // as they were last counted)
       self.owns(fn() {
         p.laid_again = fn() {  }
         p.glide = fn(_) { false }
@@ -3056,6 +3086,8 @@ fn View::scrolls_window_ids(
     let mut vh = 0.0
     let mut again = true
     let measured : Map[Int, Bool] = Map([])
+    // (the blocks an ask's place spanned, unknown, a pass gone out from each: the fill's `spans_unknown`)
+    let spanned : Map[Int, Bool] = Map([])
     // (what showed as this layout began, kept made while it still measures: a pass that finds what shows otherwise for
     // one never measured (the appended one at its foot, as tall as `est` till it is measured, all that shows by itself)
     // lets none of it go, to make it again a pass later; what shows no more let go once, after the last pass)
@@ -3190,6 +3222,7 @@ fn View::scrolls_window_ids(
       // never measured as it is measured, those past it only once it is, where they start known then; none that was
       // made and still shows let go for one come in over it)
       let foot = follows_foot || to_end
+      let mut spans_unknown = false
       let si = if foot {
         // (at its foot, from the last measured that meets where it shows: those come under it, never measured, made
         // as it goes down to them, what showed over them kept made. Gone out from its last alone, one come at its foot
@@ -3213,10 +3246,34 @@ fn View::scrolls_window_ids(
         // found again by where it ends now)
         ai
       } else {
-        all.first_past(top).min(all.length() - 1)
+        let past = all.first_past(top).min(all.length() - 1)
+        // (asked to bring a block with the place under it as far down as past its own foot (a long message's first
+        // piece and how far down the whole of it the reader was: a place kept whole, or the core's), and blocks between
+        // it and where that comes to never measured: where that is, is known only once they are. From the first of them,
+        // a pass again as each is measured, till the place falls where it was meant; once all are known, from where it
+        // shows as ever, nothing more for it)
+        let mut unknown = -1
+        if asked && all.top(ai) + all.h(ai) <= top {
+          let mut q = ai
+          while q <= past && all.top(q) <= top {
+            // (once each in a fill: one that stays unknown measured is no reason for another pass)
+            if !all.known(q) && !spanned.contains(q) {
+              spanned[q] = true
+              unknown = q
+              break
+            }
+            q = q + 1
+          }
+        }
+        if unknown >= 0 {
+          spans_unknown = true
+          unknown
+        } else {
+          past
+        }
       }
       let now = window(all, top, vh, si, si, !foot && !centring)
-      let mut short = window_short.val
+      let mut short = window_short.val || spans_unknown
       // (a block on its way: what shows where all of it ends as well, kept made till then; stopped short there too, at
       // one never measured, a pass again as well)
       let now = if !ways.is_empty() {
@@ -3340,7 +3397,7 @@ fn View::scrolls_window_ids(
           let ends = dmax(0.0, whole_of(counted(laid.untracked())) - vh)
           // (or its pinned foot not laid out as tall as it is yet (foot_unbuilt): where it ends is not known, and the
           // block asked further down than the list goes now may well be put there once it is)
-          wants > top + 0.5 && (ends > top + 0.5 || foot_unbuilt.val)
+          wants > top + 0.5 && (ends > top + 0.5 || foot_waiting())
         }
       }
     }
@@ -5308,7 +5365,7 @@ fn View::scrolls_window_ids(
             foot_unbuilt.val = true
             let begun = self.tree.old_builds_begun
             fn wait_built(settled : Bool) -> Unit {
-              if !settled && self.tree.old_builds <= begun {
+              if !settled && (self.tree.old_builds <= begun || self.tree.holds_unlaid_hosted(i.at)) {
                 self.tree.old_built_waits.push(wait_built)
               } else {
                 foot_unbuilt.val = false
@@ -5406,6 +5463,9 @@ priv struct PlaceAt {
   mut sight : Sight[Int]?
   mut sight_of : () -> Sight[Int]?
   mut sight_listened : () -> Unit
+  /// how far one block's top lies under another's, by their numbers, as its list counts its blocks now
+  /// (ListPlace::span_between; none before it is made; as last counted once it is let go, as `sight_of`)
+  mut span_of : (Int, Int, Bool) -> Double?
 }
 
 ///|
@@ -5479,6 +5539,7 @@ pub fn[K : Hash + Eq] ListPlace::new() -> ListPlace[K] {
       sight: None,
       sight_of: fn() { None },
       sight_listened: fn() {  },
+      span_of: fn(_, _, _) { None },
     },
     ids: ListKeys::new(),
   }

@@ -234,7 +234,7 @@ fn outline_tester(
   open_fixture_over(mode, src)
   // (`top`: the list away at that message in place of the mode's)
   if top >= 0.0 {
-    @sfbase.kept_places["ws1/st1\u{1}s-c1"] = { top, offset: 0.0, bottom: -1.0 }
+    @sfbase.kept_places["ws1/st1\u{1}s-c1"] = { top, offset: 0.0, bottom: -1.0, piece: -1, piece_offset: 0.0 }
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, pointing?)
   t.run_for(@ui.move_most_ms)

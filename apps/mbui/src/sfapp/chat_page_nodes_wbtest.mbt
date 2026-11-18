@@ -605,22 +605,23 @@ test "where a chat was left as one page keeps it, the other opens at the same me
 test "a chat's page made with its inside nodes opens where it was left, on 小屏 and 大屏: left at its end, at its end; left there with a message come since, where it was, what came under it to read on (the old page's left_at_end); read up, at the same messages as far down" {
   for s in long_screens {
     let (name, w, h, _) = s
-    // left at its end, with nothing come since and with a message come since
-    for came in [0, 1] {
-      let l = long_chat()
-      // (its composer made as nodes too, in the list's foot as it is laid out: the old view's composer there is as tall
-      // as its first build only a frame after, the list brought short of its foot in the first fill held at it)
-      let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(true) })
-      // (at its end as it opens: how far down its last message's words end)
-      let foot_of = fn(n : Int) { t.rect_of("第\{n}条：").map(fn(r) { r.1 + r.3 }) }
-      guard foot_of(long_count) is Some(end) else { fail("\{name}: its last message not drawn as it opens") }
-      place_left_and_opened(t, l, meanwhile=fn() { if came > 0 { l.last.set(l.last.get() + came) } })
-      // (the message last as it was left where it was: what came since under it, not shown in its place)
-      let now = foot_of(long_count)
-      assert_true(
-        now is Some(y) && (y - end).abs() <= 1.0,
-        msg="\{name}, \{came} come since: the message last as it was left at \{Repr(now)}, its end then \{end}",
-      )
+    // left at its end, with nothing come since and with a message come since; its composer the old view's (in the list's
+    // foot as tall as nothing till the old frame lays it out) or made as nodes
+    for composed in [false, true] {
+      for came in [0, 1] {
+        let l = long_chat()
+        let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(composed) })
+        // (at its end as it opens: how far down its last message's words end)
+        let foot_of = fn(n : Int) { t.rect_of("第\{n}条：").map(fn(r) { r.1 + r.3 }) }
+        guard foot_of(long_count) is Some(end) else { fail("\{name}: its last message not drawn as it opens") }
+        place_left_and_opened(t, l, meanwhile=fn() { if came > 0 { l.last.set(l.last.get() + came) } })
+        // (the message last as it was left where it was: what came since under it, not shown in its place)
+        let now = foot_of(long_count)
+        assert_true(
+          now is Some(y) && (y - end).abs() <= 1.0,
+          msg="\{name}, composer as nodes \{composed}, \{came} come since: the message last as it was left at \{Repr(now)}, its end then \{end}",
+        )
+      }
     }
     // read up
     let l = long_chat()

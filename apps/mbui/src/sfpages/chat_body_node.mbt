@@ -442,6 +442,33 @@ fn chat_piece_of(k : String) -> String {
 }
 
 ///|
+/// Which piece of its message a row's key `k` is (chat_piece_key's `b`): 0 its first, or where it is no piece.
+fn chat_piece_index(k : String) -> Int {
+  let base = chat_piece_of(k)
+  guard base != k else { return 0 }
+  let n = k.unsafe_substring(start=base.length() + 1, end=k.length())
+  let mut b = 0
+  for c in n {
+    guard c >= '0' && c <= '9' else { return 0 }
+    b = b * 10 + (c.to_int() - '0'.to_int())
+  }
+  b
+}
+
+///|
+/// The key of piece `piece` (a place kept said it: 0 its first) of the message whose first piece's key is `base`, where
+/// the list's rows `rs` have that piece still; none where none was said (-1) or they have it no more.
+fn chat_piece_kept(rs : ChatBodyNow, base : String, piece : Int) -> String? {
+  guard piece >= 0 else { return None }
+  let want = chat_piece_key(base, piece)
+  if rs.get(want) is Some(_) {
+    Some(want)
+  } else {
+    None
+  }
+}
+
+///|
 /// The pieces entry `e` is drawn in, a block of the list each (none: one, as ever): an agent's message whose words
 /// the core read as more than one piece (sf's markdown_pieces: a block each, a table a few rows each), its card in
 /// their place none. A long message
@@ -1381,8 +1408,8 @@ fn chat_body_node(
     }
   })
   |> ignore
-  if opened is Some((k, offset)) && !@sfbase.go_tos.contains(chat) {
-    chat_stand(jump, place, k, offset)
+  if opened is Some((k, at)) && !@sfbase.go_tos.contains(chat) {
+    chat_stand(jump, place, k, at, @signals.untracked(cover))
   }
   // (where the core says the chat was left come only after the list was made at its end, nothing done there since (the
   // hand, a go-to, words sent): put there then, once)
@@ -1398,9 +1425,9 @@ fn chat_body_node(
       return
     }
     match opens() {
-      Some((k, offset)) => {
+      Some((k, at)) => {
         jump.put.set(1)
-        chat_stand(jump, place, k, offset)
+        chat_stand(jump, place, k, at, @signals.untracked(cover))
       }
       None => ()
     }
@@ -1482,7 +1509,8 @@ fn chat_body_node(
           jump,
           place,
           "line",
-          @sfbase.kept_place_under(@signals.untracked(top) + lead - gap, @signals.untracked(cover)),
+          UnderBar(gap - (@signals.untracked(top) - @signals.untracked(cover)) - lead),
+          @signals.untracked(cover),
         )
       }
     },
