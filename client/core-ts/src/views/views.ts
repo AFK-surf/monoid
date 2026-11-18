@@ -1637,15 +1637,21 @@ export class Views implements Owner {
   /// its title as its row says it, and whether it is archived (archivedRows), said so. One no list has is left out.
   /// Each its row alone, read where it is kept: a station's whole lists, its archive's thousands of rows, read for a
   /// link were most of what opening a chat that has one took (0.65-0.83 s on a phone, 2026-10-31).
-  #linkedChats(station: string, text: string): J[] {
+  /// Each its row's columns alone (data.ts chatLinked): no record read, parsed nor frozen for a link. `now`: the stations
+  /// links name now (stationNow), found once for the chat being drawn.
+  #linkedChats(station: string, text: string, now?: Map<string, string>): J[] {
     if (!text.includes("/chats/") && !text.includes("/o/")) return [];
     return this.#chatsLinked(text, station).flatMap((linked) => {
-      const c = { ...linked, station: this.stationNow(linked.station) };
-      const found = this.#core.data.chatNamed(c.station, c.id);
-      if (found === undefined || (found.archived && !isObject(get(found.row, "archived")))) return [];
-      const row = found.row as J;
-      const thread = u64(get(row, "thread"));
-      return [{ href: c.href, title: str(get(row, "title")) || t("core-views.new_chat"), ...(thread !== null ? { thread } : {}), ...(found.archived ? { archived: true, note: t("core-views.search.archived") } : {}) }];
+      let at = now?.get(linked.station);
+      if (at === undefined) {
+        at = this.stationNow(linked.station);
+        now?.set(linked.station, at);
+      }
+      const c = { ...linked, station: at };
+      const found = this.#core.data.chatLinked(c.station, c.id);
+      if (found === undefined || (found.archived && !found.archivedMark)) return [];
+      const thread = u64(found.thread ?? null);
+      return [{ href: c.href, title: found.title || t("core-views.new_chat"), ...(thread !== null ? { thread } : {}), ...(found.archived ? { archived: true, note: t("core-views.search.archived") } : {}) }];
     });
   }
 
@@ -1948,7 +1954,10 @@ export class Views implements Owner {
           const thread = out !== undefined && "ok" in out ? u64(get(get(out.ok, "thread"), "id")) : null;
           const of = thread !== null ? `t:${thread}` : typeof view.thread === "number" ? `t:${view.thread}` : `s:${String(view.session ?? "")}`;
           const held = (session: string, name: string) => this.#core.data.hasKeptFile(station, session, name, "thumb") || this.#core.data.hasKeptFile(station, session, name, "poster");
-          const shown = timed("chat.draw", () => drawn(out, (path) => this.local.uploadOf(station, path), this.#core.data.mdStore(station, of), (text) => timed("chat.links", () => this.#linkedChats(station, text)), held));
+          // (the station each link names now, found once for all of its messages' links: each a walk of its workspace's
+          // stations)
+          const now = new Map<string, string>();
+          const shown = timed("chat.draw", () => drawn(out, (path) => this.local.uploadOf(station, path), this.#core.data.mdStore(station, of), (text) => timed("chat.links", () => this.#linkedChats(station, text, now)), held));
           return timed("chat.vault", () => this.#vaultCards(view, shown));
         };
         if (typeof view.thread === "number") return draw(this.#chat(station, view.thread));
@@ -2247,6 +2256,8 @@ export class Views implements Owner {
     const me = this.me(scope);
     const workspace = this.ok({ topic: "workspace", workspace: scope });
     const members_ = arr(get(workspace, "members"));
+    // (written out once for every station's rows' signature: `sig` below)
+    let membersJson: string | null = null;
     const hint = this.#core.store.select({ topic: "prefs" }, archiveHintIn);
     const states: J[] = [];
     // Each station in trouble: its state, its line, the words said once when every one says the same (the device's
@@ -2331,7 +2342,8 @@ export class Views implements Owner {
         // (the members: those of them it names, its own, `rowSig`; all of them for the list's kept rows, `sig`, which
         // each row then looks at again)
         const base = JSON.stringify([s.address, s.name, mark, me, slackUsers, watching, hint]);
-        const sig = JSON.stringify([base, members_]);
+        // (as JSON.stringify([base, members_]) writes it, the members written out once for all the stations)
+        const sig = `[${JSON.stringify(base)},${(membersJson ??= JSON.stringify(members_))}]`;
         // (the base as it is and the members after a character JSON never leaves unescaped, U+0001: one signature for one
         // pair, as JSON.stringify([base, members]) was, without writing the base out again escaped for each row)
         const rowSig = (shown: J) => `${base}\u0001${JSON.stringify(present.rowMembers(shown, members_))}`;
@@ -3060,14 +3072,11 @@ export class Views implements Owner {
       const title = str(get(row, "title")) || str(get(o, "title")) || t("core-views.new_chat");
       const out: J = { station: at, session, title };
       if (isObject(row)) {
-        const agents = arr(row.agents);
-        const mark = present.rowState(agents);
-        if (mark !== null) out.mark = mark;
-        const shown = decisions.presentRow({ ...structuredClone(row), agents: agents.map((a: J) => present.session(a)) });
-        const line = present.rowStateLine(shown);
-        if (line !== null) {
-          out.stateText = line[0];
-          if (line[3] !== null) out.stateLead = line[3].kind;
+        const state = this.#openedState(row);
+        if (state.mark !== null) out.mark = state.mark;
+        if (state.text !== null) {
+          out.stateText = state.text;
+          if (state.lead !== null) out.stateLead = state.lead;
         }
       }
       if (found?.archived === true) {
@@ -3076,6 +3085,24 @@ export class Views implements Owner {
       }
       return [out];
     });
+  }
+
+  /// Where a chat a chat's agent opened stands (#opened): its mark and its row's second line, made of its record alone
+  /// (and the words of the language they are said in), so kept by the record, the same object while it does not change.
+  /// A chat that leads many is made again on each change while its reply streams: each of them was copied whole and
+  /// presented again every time.
+  readonly #openedStates = new WeakMap<object, { lang: string; mark: string | null; text: string | null; lead: string | null }>();
+  #openedState(row: J): { mark: string | null; text: string | null; lead: string | null } {
+    const said = lang();
+    const was = this.#openedStates.get(row);
+    if (was !== undefined && was.lang === said) return was;
+    const agents = arr(row.agents);
+    // (presentRow and the presenting of each agent copy what they change: the record is read, never written)
+    const shown = decisions.presentRow({ ...row, agents: agents.map((a: J) => present.session(a)) });
+    const line = present.rowStateLine(shown);
+    const made = { lang: said, mark: present.rowState(agents), text: line === null ? null : line[0], lead: line === null || line[3] === null ? null : line[3].kind };
+    this.#openedStates.set(row, made);
+    return made;
   }
 
   /// The chat an agent opened a row's chat from (its station's `opener`), as its list has it: on its station (the row's
@@ -4702,8 +4729,20 @@ function mayLink(m: J): boolean {
   return may;
 }
 
-/// A message as drawn (`drawn`), by the message shown: what it was drawn with, and how.
-const drawnMade = new WeakMap<object, { parts: unknown[]; out: J }>();
+/// A message as drawn (`drawn`), by the message shown: what it was drawn with (its files as drawn and what each was drawn
+/// with, `drawn` fileParts; the chats it links to; who it is by, and whether that is one of the chat's agents; its words
+/// as read), and how.
+const drawnMade = new WeakMap<object, { files: J; fileParts: unknown[] | null; chats: J[]; by: J; byHere: boolean; tree: unknown; out: J }>();
+/// A message that links to no chat (never drawn: `chats` goes out only where it has some).
+const NO_CHATS: J[] = Object.freeze([]) as unknown as J[];
+
+/// Whether a message's files are drawn with what they were (`drawn` fileParts): each of the same, by reference.
+function sameParts(a: unknown[] | null, b: unknown[] | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) => string | undefined, md?: MdStore, linked?: (text: string) => J[], held?: (session: string, name: string) => boolean): V {
   if (out === undefined || !("ok" in out) || !isObject(out.ok)) return out;
@@ -4718,18 +4757,36 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
     const by = typeof path === "string" ? agents.find((a) => path.startsWith(`${str(get(a.session, "workspace")) ?? "\0"}/`)) : undefined;
     return str(get(by?.session, "key")) ?? author ?? str(get(agents[0]?.session, "key"));
   };
-  const own = (files: unknown, author: string | null = null): J => {
-    if (!Array.isArray(files)) return files;
-    return files.map((f) => {
-      if (!isObject(f)) return f;
+  // What each of a message's files is drawn with, three a file: whose workspace keeps it, its upload here and whether its
+  // picture is kept (null: not a list of files).
+  const fileParts = (files: unknown, author: string | null): unknown[] | null => {
+    if (!Array.isArray(files)) return null;
+    const parts: unknown[] = [];
+    for (const f of files) {
+      if (!isObject(f)) {
+        parts.push(null, undefined, false);
+        continue;
+      }
       const key = owner(get(f, "path"), author);
       // One sent from here before it was up: its picture is still here, under its upload's id.
       const upload = uploadOf(get(f, "path"));
       const path = str(get(f, "path")) ?? "";
       const kept = key !== null && held !== undefined && path !== "" && held(key, path.slice(path.lastIndexOf("/") + 1));
+      parts.push(key, upload, kept);
+    }
+    return parts;
+  };
+  const ownOf = (files: unknown, parts: unknown[] | null): J => {
+    if (parts === null || !Array.isArray(files)) return files;
+    return files.map((f, i) => {
+      if (!isObject(f)) return f;
+      const key = parts[i * 3] as string | null;
+      const upload = parts[i * 3 + 1] as string | undefined;
+      const kept = parts[i * 3 + 2] === true;
       return key !== null || upload !== undefined ? { ...f, ...(key !== null ? { owner: key } : {}), ...(upload !== undefined ? { upload } : {}), ...(kept ? { held: true } : {}) } : f;
     });
   };
+  const own = (files: unknown, author: string | null = null): J => ownOf(files, fileParts(files, author));
   const here = (by: J): J => {
     const agent = str(get(by, "agent"));
     return agent !== null && keys.has(agent) ? { ...by, here: true } : by;
@@ -4747,10 +4804,19 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
   }
   const messages: J[] = arr(view.messages).map((m) => {
     if (!isObject(m)) return m;
-    const files = own(m.attachments, m.authorKind === "agent" ? str(m.author) : null);
+    // Drawn before (`was`, by the message, the same object while it does not change): what it is drawn with that is as
+    // it was is what it was drawn with then, not made again, so that it is known the same by its reference (a file's
+    // copy, its links, who it is by): one change of a chat made every message's anew and walked them all to find them
+    // equal (13-22 ms of a chat drawn, its Markdown read already, 2026-11-18).
+    const was = drawnMade.get(m);
+    const parts = fileParts(m.attachments, m.authorKind === "agent" ? str(m.author) : null);
+    const files = was !== undefined && sameParts(was.fileParts, parts) ? was.files : ownOf(m.attachments, parts);
     // The chats it links to, each with its title (one linked bare reads as it) and whether it is archived.
-    const chats = linked !== undefined && mayLink(m) ? linked(str(m.text) ?? "") : [];
-    const by = here(m.by);
+    const linking = linked !== undefined && mayLink(m) ? linked(str(m.text) ?? "") : NO_CHATS;
+    const chats = was !== undefined && (linking.length === 0 ? was.chats.length === 0 : equal(was.chats, linking)) ? was.chats : linking;
+    const agent = str(get(m.by, "agent"));
+    const byHere = agent !== null && keys.has(agent);
+    const by = was !== undefined && was.byHere === byHere ? was.by : byHere ? { ...(m.by as J), here: true } : m.by;
     // A person's words are drawn as they wrote them and place nothing: their files are all below them. An agent's are
     // Markdown, read here (once: markdown.ts keeps it by the words; read again as its reader changes); still.fail's
     // notice's are too, as its pill says them (noticeOf: a chat it opened is a link to it).
@@ -4758,8 +4824,7 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
     const tree = words === null ? null : markdown(words, md, keyed.get(words));
     // Drawn as before while what it is drawn with is (its files, its links, who it is by, its words as read): the
     // same object.
-    const was = drawnMade.get(m);
-    if (was !== undefined && equal(was.parts, [files, chats, by, tree])) return was.out;
+    if (was !== undefined && ((was.files === files && was.chats === chats && was.by === by && was.tree === tree) || equal([was.files, was.chats, was.by, was.tree], [files, chats, by, tree]))) return was.out;
     const out: J = { ...m, by, attachments: files };
     if (chats.length > 0) out.chats = chats;
     if (isObject(m.notice)) out.notice = { ...m.notice, md: tree };
@@ -4771,7 +4836,7 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
         if (placed.size > 0) out.placed = [...placed.keys()];
       }
     }
-    drawnMade.set(m, { parts: [files, chats, by, tree], out: sharedValue(out) });
+    drawnMade.set(m, { files, fileParts: parts, chats, by, byHere, tree, out: sharedValue(out) });
     return out;
   });
   view.messages = messages;

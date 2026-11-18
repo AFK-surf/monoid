@@ -43,7 +43,7 @@ type Over = Record<string, (keyof Walked)[]>;
 
 /// The causes whose walking grows with what is shown three times as large, and which of their counters grow.
 const OVER_SHOWN: Over = {
-  "quota": ["reads", "shared", "equaled", "copied", "fitted"],
+  "quota": ["reads", "shared", "copied", "fitted"],
   "message": ["reads", "shared", "equaled"],
   "agent": ["reads", "shared", "diffed", "copied", "fitted"],
   "line": ["diffed", "fitted"],
@@ -65,8 +65,8 @@ const OVER_SHOWN: Over = {
   "machine": ["reads", "shared", "equaled", "copied", "fitted"],
   "login": ["shared"],
   "release": ["reads", "shared"],
-  "quota six pages": ["shared", "equaled"],
-  "message six pages": ["reads", "shared", "equaled"],
+  "quota six pages": ["shared"],
+  "message six pages": ["reads", "shared"],
 };
 /// The same with the workspace's chats three times.
 const OVER_CHATS: Over = {

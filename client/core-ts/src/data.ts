@@ -16,7 +16,7 @@ import { olderMdKeys, type MdStore } from "./markdown.ts";
 import { topicKey, type Topic } from "./protocol.ts";
 import { Marks, signal, tracking, untracked, type Source as ReactiveSource } from "./reactive.ts";
 import type { Runner } from "./runtime.ts";
-import { equal, get, isObject, parseJson, toJsonBytes } from "./util.ts";
+import { equal, get, isObject, parseJson, toJsonBytes, u64 } from "./util.ts";
 import { worded, type Words } from "./chat-row.ts";
 import { rowWords } from "./station/rows-made.ts";
 import { ofAddress } from "./workspace.ts";
@@ -1301,6 +1301,18 @@ export class Data {
     void this.listed(station, "archived");
     const f = this.chatFound(CHAT_READS.named, { station, id }, () => false)[0];
     return f === undefined ? undefined : { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, archived: f.archived };
+  }
+
+  /// The chat a link names (as chatNamed finds it), as a link to it is drawn: its title, its thread, whether it is
+  /// archived and whether its record is marked so (`archivedMark`), of their columns, no record read. A chat linked from
+  /// a message read its record whole for these (its JSON parsed and frozen), five to ten of them each time a chat that
+  /// leads others was made again.
+  chatLinked(station: string, id: string): { id: string; title: string | null; thread: number | undefined; archived: boolean; archivedMark: boolean } | undefined {
+    void this.listed(station, "chats");
+    void this.listed(station, "archived");
+    const f = this.chatFound(CHAT_READS.named, { station, id }, () => false)[0];
+    if (f === undefined) return undefined;
+    return { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, thread: u64(f.cols[2]), archived: f.archived, archivedMark: f.cols[3] === 1 };
   }
 
   /// The chat a job's session is in (its job's row names none): the one its link names (as chatTitled finds it), else
