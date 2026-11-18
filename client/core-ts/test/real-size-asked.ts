@@ -27,7 +27,7 @@ import { screensView } from "../src/screens.ts";
 import { terminalsView } from "../src/terminals.ts";
 import { sharedPlace } from "../src/station/rows-made.ts";
 import type { Store } from "../src/store.ts";
-import type { FakeHost } from "../src/testing.ts";
+import { type FakeHost, flush } from "../src/testing.ts";
 import { lockView, signerKnown } from "../src/views/lock.ts";
 import { joinable, memberships } from "../src/views/memberships.ts";
 import { boxKeyKnown, itemsView, usesView, vaultsView } from "../src/views/vault.ts";
@@ -405,6 +405,13 @@ export async function held(long = false, on: { host?: FakeHost; cold?: boolean }
     // (others' presets as Maple gave them at the press that showed them)
     presetViews!.heard("ws", station, othersPresetsOf(base));
     await t.host.time.pass(100);
+    // What this round set going (the stations' answers to the search the views asked as they were watched) taken in
+    // before the next, with no time passing: `pass` gives each 10 ms step a few turns of the loop, so whether an answer
+    // was in by the time `search` was made again depended on how many topics took their turns first. One more topic
+    // asked here and `search` was made once at rest instead of twice (part of its stations' answers, then all), and as
+    // `share` keeps the equal parts of the value before, every change after walked it otherwise: 114 or 105 for the
+    // same change (view-work.test.ts, the `boardDrafts` topic, 2026-11-18).
+    await flush(200);
   }
   noticesHeard(notices!, UP.map((station) => [station, (t.data.shared({ topic: "chatRows", station }) as J[]) ?? []]));
   // (what is made after the rest: Markdown read, a page's words)
