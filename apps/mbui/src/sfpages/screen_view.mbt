@@ -290,6 +290,9 @@ pub fn screen_pane_node(
   let s = screen_sess(src, station, screen)
   let u = screen_ui(key)
   u.in_tab = in_tab
+  if in_tab {
+    u.covered.set(false)
+  }
   u.at = Some(at)
   // its 关闭: closed through the shell, the page it is; the window back as it was where its 全屏 filled the screen
   let close = fn() {

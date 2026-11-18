@@ -530,6 +530,13 @@ fn silent(pcm : Bytes) -> Bool {
 pub let quiet : Int = 10
 
 ///|
+priv struct PendingMove {
+  id : Int
+  buttons : Int
+  mut run : async () -> Unit
+}
+
+///|
 /// One view while it lasts (`ViewSession`).
 priv struct ViewSession {
   hub : ScreenHubPort
@@ -566,8 +573,10 @@ priv struct ViewSession {
   over : @effect.Deferred[Unit]
   /// The writes, in order: each waits for the one before.
   mut writes : @effect.Deferred[Unit]
-  /// The inputs, in order, each once the one before was posted.
+  /// The inputs, in order, each once the one before was posted; unsent pointer moves of the same buttons coalesce.
   mut inputs : @effect.Deferred[Unit]
+  mut move_seq : Int
+  mut pending_move : PendingMove?
   mut wake_ : @effect.Deferred[Unit]
   mut timed : Bool
   mut sound_on : Bool
@@ -669,6 +678,8 @@ fn ViewSession::new(
     over: @effect.Deferred::new(),
     writes: done_now(),
     inputs: done_now(),
+    move_seq: 0,
+    pending_move: None,
     wake_: done_now(),
     timed: false,
     sound_on: true,
@@ -723,8 +734,35 @@ fn ViewSession::state(self : ViewSession, state : Json) -> @effect.Deferred[Unit
 }
 
 ///|
-/// What the client asks of the source, after what it asked before (`#then`).
-fn ViewSession::then_(self : ViewSession, f : async () -> Unit) -> Unit {
+/// What the client asks of the source, after what it asked before (`#then`); unsent pointer moves of the same buttons
+/// coalesce to the latest.
+fn ViewSession::then_(self : ViewSession, f : async () -> Unit, move_? : Int? = None) -> Unit {
+  if move_ is Some(buttons) {
+    if self.pending_move is Some(pm) && pm.buttons == buttons {
+      pm.run = f
+      return
+    }
+    self.move_seq += 1
+    let slot : PendingMove = { id: self.move_seq, buttons, run: f }
+    self.pending_move = Some(slot)
+    let before = self.inputs
+    let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
+    self.inputs = mine
+    ignore(
+      self.rt.fork(name="screen input", () => {
+        before.wait() catch { _ => () }
+        if self.pending_move is Some(cur) && cur.id == slot.id {
+          self.pending_move = None
+        }
+        (slot.run)() catch {
+          e => (self.said)("info", "screens", "input not posted", jobj([("screen", jstr(self.id)), ("error", jstr(message_of(e)))]))
+        }
+        ignore(mine.succeed(()))
+      }),
+    )
+    return
+  }
+  self.pending_move = None
   let before = self.inputs
   let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.inputs = mine
@@ -1181,7 +1219,11 @@ fn ViewSession::input(self : ViewSession, raw : Json) -> Unit {
     }
     _ => ()
   }
-  self.then_(() => (self.view.input)(e))
+  let move_ = match (field(e, "t"), field(e, "kind"), field(e, "buttons")) {
+    (Some(String("pointer")), Some(String("move")), Some(Number(b, ..))) => Some(b.to_int())
+    _ => None
+  }
+  self.then_(() => (self.view.input)(e), move_~)
 }
 
 ///|

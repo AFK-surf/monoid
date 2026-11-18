@@ -156,7 +156,10 @@ export class Station {
         // (stopped by the device before its answer's end: let go of)
         let ended = false;
         if (head !== null) void stream.stopped().then((code: number | null) => code !== null && !ended && this.letGo.push(JSON.parse(head).path), () => {});
-        if (head !== null && JSON.parse(head).screen !== undefined) return this.#view(stream, JSON.parse(head), c.bytes);
+        if (head !== null && JSON.parse(head).screen !== undefined) {
+          if (dead()) return;
+          return this.#view(stream, JSON.parse(head), c.bytes);
+        }
         if (head !== null && JSON.parse(head).adb?.op === "share") {
           this.offers.push({ conn, head: JSON.parse(head) });
           await stream.write(Buffer.from(`${JSON.stringify({ status: 200, headers: { "content-type": "application/x-ndjson", "stillfail-build": "0.1.0" } })}\n`));

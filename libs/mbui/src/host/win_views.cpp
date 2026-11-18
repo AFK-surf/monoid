@@ -821,7 +821,9 @@ static void player_said(View *v, const wchar_t *t) {
   v->playing = (int)jnum(t, L"playing", 0);
   v->vw = (int)jnum(t, L"w", 0);
   v->vh = (int)jnum(t, L"h", 0);
-  v->drawn = (int)jnum(t, L"drawn", 0);
+  // (once a frame has shown it stays so, as the other hosts' players do: a seek drops the <video>'s readyState to
+  // HAVE_METADATA till it gets there, and read as not shown the app put the still it opened on over the picture)
+  if (jnum(t, L"drawn", 0) > 0) v->drawn = 1;
   v->buffering = (int)jnum(t, L"buf", 0);
   v->ahead = jnum(t, L"ahead", 0);
   v->ended = (int)jnum(t, L"ended", 0);

@@ -326,6 +326,11 @@ fn pane_made(
                 start_pad=fn() { dmax(12.0, (ends.start)()) },
                 end_pad=fn() { (ends.end)(false, false) },
                 width~,
+                shown=pane_shows(k),
+                keep_screen=fn(st, sc) {
+                  side_screen_shown(src, st, sc) ||
+                  (app.nav.top() is Screen(top) && top.station == st && top.screen == sc)
+                },
               )
             })
           },
