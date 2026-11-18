@@ -1512,15 +1512,15 @@ fn notice_pill_of(failed : Bool, open : Bool) -> @ui.Style {
 }
 
 ///|
-/// A notice's pill: its corner one size closed and open (Xl1_5, no less than half its height on one line, so round
-/// closed), never `Full`, which is half of whatever height it is drawn at on its way and so swelled to a blob as an
-/// open pill began to close.
+/// A notice's pill: its corner a size said, never `Full`, which is half of whatever height it is drawn at on its way
+/// and so swelled to a blob as an open pill began to close: closed Xl4, more than half its height on one line, so held
+/// to round at its ends; open Xl1_5.
 // kept across runs: a value (no field of it changes)
-let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Xl1_5 bg=Hover")
+let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Xl4 bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_pill_open : @ui.Style = notice_pill
+let notice_pill_open : @ui.Style = notice_pill.then(@ui.css("radius=Xl1_5"))
 
 ///|
 // kept across runs: a value (no field of it changes)

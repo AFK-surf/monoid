@@ -1728,8 +1728,9 @@ fn View::scrolls_window_ids(
   let pin_x = Ref(0.0)
   let pin_with : Ref[(Int, Int?)] = Ref((0, None))
   let pin_foot = Ref(false)
-  // (whether the press opens what was pressed (it said itself shut as it was pressed): at its foot, followed there as it
-  // opens, so what it opens to is seen over what covers the foot, not grown under it)
+  // (whether the press opens what was pressed (it said itself shut as it was pressed) and it said it opens in sight
+  // (View::opens_in_sight): at its foot, followed there as it opens, so what it opens to is seen over what covers the
+  // foot, not grown under it)
   let pin_opens = Ref(false)
   // (the node its blocks are held in, once made: what they hold set coming or going kept by it, Tree's list_inner)
   let held_node = Ref(-1)
@@ -1850,10 +1851,11 @@ fn View::scrolls_window_ids(
     })
     let x_then = @signals.untracked(at)
     let foot_then = s.at_foot() && @signals.untracked(follows)
-    let opens_then = match self.tree.nodes[v.at].said {
-      Some(said) => said.expanded == Some(false)
-      None => false
-    }
+    let opens_then = self.tree.opens_in_sight(v.at) &&
+      (match self.tree.nodes[v.at].said {
+        Some(said) => said.expanded == Some(false)
+        None => false
+      })
     fn() {
       (unpin.val)()
       room_held.val = None
@@ -3168,9 +3170,10 @@ fn View::scrolls_window_ids(
       }
     }
     // (held by what was pressed in a block: neither following its foot nor held at it meanwhile; but one at its foot
-    // that follows it, pressed to open: its foot followed on the press's way, what it opens to seen as it comes, held
-    // no further than a block's top `margin` under what covers its top, as below (the coordinator of the chat page's
-    // motion, 2026-11-18: one way from the press's frame, never a scroll after it); shut, or not at its foot, held)
+    // that follows it, pressed to open and said to open in sight (View::opens_in_sight): its foot followed on the
+    // press's way, what it opens to seen as it comes, held no further than a block's top `margin` under what covers
+    // its top, as below (the coordinator of the chat page's motion, 2026-11-18: one way from the press's frame, never a
+    // scroll after it); shut, not at its foot, or not said so, held)
     if !asked && pin.val is Some((k, _, _, _)) && laid_at.contains(k) && !(pin_foot.val && pin_opens.val) {
       follows_foot = false
       held = false

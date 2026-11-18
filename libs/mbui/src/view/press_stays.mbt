@@ -25,3 +25,17 @@ fn Tree::press_stays(self : Tree, id : NodeId) -> () -> Unit {
     None => fn() {  }
   }
 }
+
+///|
+/// Says that what `self` opens is to be seen as it opens where it is pressed at a page's list's foot, the list
+/// following that foot: the one way press_stays gives, for a part whose opening is read at once (a notice: what
+/// failed said of it and its time, never left under what covers the list's foot). Shutting, or pressed off the foot,
+/// it stays where it was pressed as anything does. `self` is what says it opens or shuts (View::says, `expanded`).
+pub fn View::opens_in_sight(self : View) -> View {
+  let n = self.tree.nodes[self.at]
+  if n.live {
+    self.tree.motion_aux().opens_in_sight[self.at] = n.gen
+    self.owns(fn() { self.tree.motion_aux().opens_in_sight.remove(self.at) }) |> ignore
+  }
+  self
+}

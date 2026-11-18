@@ -1891,6 +1891,7 @@ priv struct TreeMotionAux {
   feet_lead : Map[Int, (Double, Bool)]
   flight_cells : Map[Int, (Int, @signals.Signal[Int])]
   pick_faders : Map[Int, Int]
+  opens_in_sight : Map[Int, Int]
 }
 
 ///|
@@ -1920,6 +1921,7 @@ fn Tree::motion_aux(self : Tree) -> TreeMotionAux {
     feet_lead: {},
     flight_cells: {},
     pick_faders: {},
+    opens_in_sight: {},
   }
   tree_motion_auxs.push(aux)
   tree_motion_last.val = Some(aux)
@@ -1940,6 +1942,13 @@ fn Tree::mark_pick_fader(self : Tree, at : Int) -> Unit {
   if n.live {
     self.motion_aux().pick_faders[at] = n.gen
   }
+}
+
+///|
+/// Node `at` said, as it is now, to open in sight at a page's list's foot (View::opens_in_sight).
+fn Tree::opens_in_sight(self : Tree, at : Int) -> Bool {
+  let n = self.nodes[at]
+  n.live && self.motion_aux().opens_in_sight.get(at) == Some(n.gen)
 }
 
 ///|

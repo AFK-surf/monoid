@@ -113,7 +113,9 @@ yet and you can add one, add it.
   what the press opens or shuts round it comes or goes, over it or under it, at the column's foot too (the user,
   2026-11-12: 「所有点击展开的控件，展开和收起前后点击的元素位置不能变化」): the framework's, from the press
   (`src/view/press_stays.mbt`), not each control's: a control that opens or shuts says so (`View::says`, `expanded`),
-  which is all it takes; nothing it does may undo it.
+  which is all it takes; nothing it does may undo it. One that says it opens in sight (`View::opens_in_sight`: a
+  notice) is followed instead, opening at a page's list's foot, so what it opens to is never left under what
+  covers that foot.
 - A page's list has a node (a slot) only for the keys round what shows, a screen over and under it (`slots_margin`),
   a spacer over them and one under as tall as the rest are counted, so what a frame of it does is the same at 30 keys
   as at 15,000. A change of its keys costs the slots of the keys that came or went among them alone, brought up to the

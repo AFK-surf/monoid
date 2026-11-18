@@ -161,6 +161,9 @@ pub fn notice_pill_node(
   // (saying whether it is open: pressed, it stays where it was pressed as it opens or closes, the framework's
   // press_stays)
   action_box_node(loc~, parent, label, expanded=open, fn(_) { press() }, fn(p) {
+    // (at a chat's list's foot, what it opens to seen as it opens, the list following its foot, never left under the
+    // composer: View::opens_in_sight)
+    p.opens_in_sight() |> ignore
     style_node(p, fn() { notice_pill_of(failed(), open()) }, in_row=true)
     // (what it holds cut to its ground as that is drawn on its way: its words and what more there is never past it)
     p.clips(Is(true)) |> ignore
@@ -243,7 +246,7 @@ let notice_pill_size : @ui.TextSize = Meta
 let notice_pill_leading : @ui.Leading = L7
 
 ///|
-/// Its pill: as wide as its words, 6 by 14 in, its corner 16 open or closed (round at its ends on one line); the hover
+/// Its pill: as wide as its words, 6 by 14 in, round at its ends (16 once opened); the hover
 /// ground, a failure's red ground.
 fn notice_pill_of(failed : Bool, open : Bool) -> @ui.Style {
   match (failed, open) {
@@ -255,15 +258,15 @@ fn notice_pill_of(failed : Bool, open : Bool) -> @ui.Style {
 }
 
 ///|
-/// Its corner one size closed and open (Xl1_5, no less than half its height on one line, so round closed), never
-/// `Full`, which is half of whatever height it is drawn at on its way and so swelled to a blob as an open pill began to
-/// close.
+/// Its corner a size said, never `Full`, which is half of whatever height it is drawn at on its way and so swelled to a
+/// blob as an open pill began to close: closed Xl4, more than half its height on one line, so held to round at its
+/// ends; open Xl1_5.
 // kept across runs: a value (no field of it changes)
-let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Xl1_5 bg=Hover")
+let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Xl4 bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_pill_open : @ui.Style = notice_pill
+let notice_pill_open : @ui.Style = notice_pill.then(@ui.css("radius=Xl1_5"))
 
 ///|
 // kept across runs: a value (no field of it changes)
