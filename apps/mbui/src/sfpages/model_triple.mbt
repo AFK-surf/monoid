@@ -1265,63 +1265,69 @@ fn triple_body_node(
         // (the room between them each row's own: triple_first_gap)
         // (the room past the row at the panel's far end from what opened it taken back: none there, whichever row is
         // there as rows come and go, nothing of any row's said again at once)
-        let back = 1.0
-        let col = scrolled.box(fn(c) {
-          @sf.style_node(c, fn() { triple_first_rows })
-          c.margin(Is(if up { (0.0, -back, 0.0, 0.0) } else { (0.0, 0.0, 0.0, -back) })) |> ignore
-        })
-        // (its combos by key once: each row reads its own, told only as that one changes)
-        let combos_by = col.keyed_by(combos, fn(x) { triple_combo_key(Some(x)) })
-        col.each(first_keys, fn(k) { k }, fn(r, k) {
-          let k = k.untracked()
-          // (each with the room between it and the next in its own, on its side towards the panel's far end from what
-          // opened it, a part of what it holds, so that room opens and closes with it)
-          @sf.style_node(r, fn() { triple_first_rows })
-          let apart = fn() { r.box(fn(g) { @sf.style_node(g, fn() { triple_first_gap }) }) |> ignore }
-          if up {
-            apart()
-          }
-          if k.has_prefix("head/") {
-            triple_column_head_node(r, @sf.t("web-main.combos.label"))
-          } else if k.has_prefix("none/") {
-            r.box(fn(e) {
-              @sf.style_node(e, fn() { triple_empty })
-              @sf.words_node(e, fn() { @sf.t("web-main.model.noneHere") }, fn() { triple_muted_lines }) |> ignore
-            })
-            |> ignore
-          } else if k.has_prefix("apart/") {
-            r.box(fn(a) { @sf.style_node(a, fn() { triple_apart }) }) |> ignore
-          } else if k.has_prefix("model/") {
-            model_row(r, k.exact_view(start=6).to_owned())
-          } else {
-            let combo = fn() {
-              match combos_by.get(k) {
-                Some(x) => Some(x)
-                None => leaving.get().get(k)
-              }
+        // (beside what opened it, this station's models or every station's swapped in the frame of the press, as a
+        // maker's models are (model_rows, kind_rows): rows making their way in and out there were held still part of the
+        // way by the column of how hard it thinks beside them, then pushed the panel on, a second change of one press
+        // (switches_still's newchat-station-models); in a sheet, nothing beside them, its rows make their way as ever)
+        scrolled.pick(at_once=true, fn() { !sheet && flag(v(), "otherStations") }, fn(scrolled, _) {
+          let back = 1.0
+          let col = scrolled.box(fn(c) {
+            @sf.style_node(c, fn() { triple_first_rows })
+            c.margin(Is(if up { (0.0, -back, 0.0, 0.0) } else { (0.0, 0.0, 0.0, -back) })) |> ignore
+          })
+          // (its combos by key once: each row reads its own, told only as that one changes)
+          let combos_by = col.keyed_by(combos, fn(x) { triple_combo_key(Some(x)) })
+          col.each(first_keys, fn(k) { k }, fn(r, k) {
+            let k = k.untracked()
+            // (each with the room between it and the next in its own, on its side towards the panel's far end from what
+            // opened it, a part of what it holds, so that room opens and closes with it)
+            @sf.style_node(r, fn() { triple_first_rows })
+            let apart = fn() { r.box(fn(g) { @sf.style_node(g, fn() { triple_first_gap }) }) |> ignore }
+            if up {
+              apart()
             }
-            let last : Ref[Json] = Ref(@signals.untracked(combo).unwrap_or(Json::null()))
-            let x = fn() {
-              match combo() {
-                Some(c) => {
-                  last.val = c
-                  Some(c)
+            if k.has_prefix("head/") {
+              triple_column_head_node(r, @sf.t("web-main.combos.label"))
+            } else if k.has_prefix("none/") {
+              r.box(fn(e) {
+                @sf.style_node(e, fn() { triple_empty })
+                @sf.words_node(e, fn() { @sf.t("web-main.model.noneHere") }, fn() { triple_muted_lines }) |> ignore
+              })
+              |> ignore
+            } else if k.has_prefix("apart/") {
+              r.box(fn(a) { @sf.style_node(a, fn() { triple_apart }) }) |> ignore
+            } else if k.has_prefix("model/") {
+              model_row(r, k.exact_view(start=6).to_owned())
+            } else {
+              let combo = fn() {
+                match combos_by.get(k) {
+                  Some(x) => Some(x)
+                  None => leaving.get().get(k)
                 }
-                // (taken out, as it leaves: as it was)
-                None => Some(last.val)
               }
+              let last : Ref[Json] = Ref(@signals.untracked(combo).unwrap_or(Json::null()))
+              let x = fn() {
+                match combo() {
+                  Some(c) => {
+                    last.val = c
+                    Some(c)
+                  }
+                  // (taken out, as it leaves: as it was)
+                  None => Some(last.val)
+                }
+              }
+              // (taken out: fading where it is, from the change that took it out, nothing to press there)
+              let gone = fn() { leaving.get().contains(k) }
+              let fade = @motion.Way::new(1.0)
+              r.reacts(at_start=false, gone, fn(g) { if g { fade.go(0.0, @motion.tween(@sf.leave_ms, ease=Out), at=r.cause_at()) } })
+              r.alpha(By(fn() { fade.shown_on(r) })) |> ignore
+              triple_combo_row_node(r, src, station, of, v, x, fn() { model_of(text(x(), "model")) }, names_w, saved, close, able=fn() { !gone() })
+              brought(r, k)
             }
-            // (taken out: fading where it is, from the change that took it out, nothing to press there)
-            let gone = fn() { leaving.get().contains(k) }
-            let fade = @motion.Way::new(1.0)
-            r.reacts(at_start=false, gone, fn(g) { if g { fade.go(0.0, @motion.tween(@sf.leave_ms, ease=Out), at=r.cause_at()) } })
-            r.alpha(By(fn() { fade.shown_on(r) })) |> ignore
-            triple_combo_row_node(r, src, station, of, v, x, fn() { model_of(text(x(), "model")) }, names_w, saved, close, able=fn() { !gone() })
-            brought(r, k)
-          }
-          if !up {
-            apart()
-          }
+            if !up {
+              apart()
+            }
+          })
         })
       })
       room.show(fn() { !flat() }, to_all)
