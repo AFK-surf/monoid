@@ -9863,7 +9863,11 @@ fn View::comes(
       match tree.flip_lists.get(p) {
         Some(tell) => {
           // (made or let go as an answer told it: at once, nothing set out, answering.mbt)
-          if v.live() is Some(_) && !@signals.untracked(tree.motion_reduced) && !answered.val && !tree.answer_holds(v.at) {
+          if v.live() is Some(_) &&
+            !@signals.untracked(tree.motion_reduced) &&
+            !answered.val &&
+            !tree.answer_holds(v.at) &&
+            !tree.nowhere_at(self.at) {
             tell(v.at)
           } else if answered.val || tree.answer_holds(v.at) {
             tree.answer_mark(v.at)
@@ -9879,6 +9883,8 @@ fn View::comes(
     v.live() is Some(n) &&
     tree.last_w >= 0.0 &&
     !@signals.untracked(tree.motion_reduced) &&
+    // (in what is laid out nowhere (a page under the one on top): there at once, as it is shown again (Tree::nowhere_at))
+    !tree.nowhere_at(self.at) &&
     tree.makes_way(v.at) &&
     !tree.holds_shared(v.at) &&
     // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
@@ -10365,10 +10371,32 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   // again or laid out as it said it is)
   st.come_k = 1.0
   m.look.clips = m.clips_said
+  // (what is drawn by the way (held_on_way, a pick's place held by it) told it is over: worked out again, whole, even
+  // where it never read the clock, its end unmeasured as it was laid out nowhere)
+  match m.come_said {
+    Some(s) => s.set(s.untracked() + 1)
+    None => ()
+  }
   m.come_said = None
   m.prop_stop(Comes.ord())
   tree.layout_marked_at(v.at)
   tree.look_marked_at(v.at)
+}
+
+///|
+/// Whether node `at` lies in what is laid out nowhere (View::laid_nowhere: a page under the one on top; or left out of
+/// its row, View::drops): what is made or let go there comes or goes at once, no way set out, so that it is there as
+/// it is, at rest, when it is shown again (nowhere_changed_test.mbt), and nothing hidden asks for frames meanwhile.
+fn Tree::nowhere_at(self : Tree, at : Int) -> Bool {
+  let mut p = at
+  while p >= 0 {
+    let pn = self.nodes[p]
+    if !pn.slot && (pn.out || pn.flex.style.display == @flex.DisplayNone) {
+      return true
+    }
+    p = pn.parent
+  }
+  false
 }
 
 ///|
@@ -10379,6 +10407,11 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
 fn View::goes(self : View, v : View, ms : Double, at_once : Bool, swaps? : Bool = false) -> Bool {
   // (it and what it holds told it starts leaving before any of it is put to rest (View::rests, below))
   self.tree.tell_leaving(v.at)
+  // (in what is laid out nowhere: gone at once, nothing of it left behind to fade or wait (Tree::nowhere_at))
+  if self.tree.nowhere_at(self.at) {
+    self.leave(v, 0.0)
+    return false
+  }
   if !at_once && v.live() is Some(n) {
     // (as tall as it is at this moment: on its way, where that way has it (flex's come_state), whether a frame has laid
     // it out since or not; else as it was laid out last)

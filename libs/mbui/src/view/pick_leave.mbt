@@ -139,6 +139,10 @@ fn held_on_way(v : View, going : Bool) -> Unit {
   let told = @signals.signal(0, same=fn(a, b) { a == b })
   let share = fn() {
     told.get() |> ignore
+    // (told as its way is over, View::comes's come_done)
+    if v.live() is Some(m) && m.come_said is Some(s) {
+      s.get() |> ignore
+    }
     show_held_share(v, going, at)
   }
   v.alpha(By(fn() { row_held_at(share()).0 })) |> ignore
@@ -240,6 +244,10 @@ fn View::pick_leaving(
   let progress_of = fn(way_at : Ref[Double]) {
     fn(p : View) {
       way_told.get() |> ignore
+      // (told as its place's way is over, View::comes's come_done)
+      if p.live() is Some(m) && m.come_said is Some(s) {
+        s.get() |> ignore
+      }
       leave_held_progress(p, way_at.val)
     }
   }
@@ -303,6 +311,18 @@ fn View::pick_leaving(
         if p.live() is Some(n) && n.flex.style.display == @flex.Display::DisplayNone {
           n.flex.style.display = @flex.Display::Flex
           tree.layout_marked_at(p.at)
+        }
+        // (in what is laid out nowhere (a page under the one on top): what showed gone and what shows now there at once,
+        // at rest, no way and nothing fading (Tree::nowhere_at), as it is to be when it is shown again)
+        if tree.nowhere_at(slot.at) {
+          p.leave(old.fader, 0.0)
+          let now = fader(p, k, -1.0 / 0.0)
+          had.val = Some((k, now))
+          if now.none && p.live() is Some(n) {
+            n.flex.style.display = @flex.Display::DisplayNone
+            tree.layout_marked_at(p.at)
+          }
+          return
         }
         // (what showed: not seen yet, let go at once (nothing seen goes); else over the place where it was, taking no
         // room, fading out over `leave` from as opaque as it is)
