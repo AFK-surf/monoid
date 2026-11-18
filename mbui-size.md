@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.32 | 96.77 | 126.18 |
 | [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 2.54 | 3.41 | 13.98 | 35.9 | 53.78 | 31.48 | 63.32 | 96.77 | 116.78 |
 | [3d4e7f31c](https://github.com/AFK-surf/monoid/commit/3d4e7f31c8c5cb3dd90c1edec406bfc8da86e8e5) feat(station): put the MoonBit station together wh | 2.54 | 3.41 | 13.98 | 35.9 | 53.77 | 31.47 | 63.32 | 96.99 | 123.22 |
 | [8dea365d1](https://github.com/AFK-surf/monoid/commit/8dea365d1d1817c3ab8256bf568900d88cafc779) test(mbui): sizes_across bars hold what 60 and 120 | 2.54 | 3.41 | 13.98 | 35.9 | 53.77 | 31.47 | 63.32 | 96.58 | 123.22 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc074d677](https://github.com/AFK-surf/monoid/commit/bc074d67709bfcf785c69f67ad34d3f3b3400f8e) station: tell the workspace when its last terminal | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.26 | 125.26 |
 | [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.14 | 125.72 |
 | [8aa48a00c](https://github.com/AFK-surf/monoid/commit/8aa48a00c6a2fa69d3d45b1b873aa1de75626e9e) release: resolve the previous stable base SHA when | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.14 | 125.72 |
-| [4c9974d97](https://github.com/AFK-surf/monoid/commit/4c9974d978dda945aaf942569ce00b751874b9f5) app: mark the station process group (#6962) | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.34 | 125.46 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [3d4e7f31c](https://github.com/AFK-surf/monoid/commit/3d4e7f31c8c5cb3dd90c1edec406bfc8da86e8e5) feat(station): put the MoonBit station together wh | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [8dea365d1](https://github.com/AFK-surf/monoid/commit/8dea365d1d1817c3ab8256bf568900d88cafc779) test(mbui): sizes_across bars hold what 60 and 120 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc074d677](https://github.com/AFK-surf/monoid/commit/bc074d67709bfcf785c69f67ad34d3f3b3400f8e) station: tell the workspace when its last terminal | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [8aa48a00c](https://github.com/AFK-surf/monoid/commit/8aa48a00c6a2fa69d3d45b1b873aa1de75626e9e) release: resolve the previous stable base SHA when | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
-| [4c9974d97](https://github.com/AFK-surf/monoid/commit/4c9974d978dda945aaf942569ce00b751874b9f5) app: mark the station process group (#6962) | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
