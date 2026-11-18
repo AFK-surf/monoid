@@ -1239,7 +1239,7 @@ fn body_sent_steps(
   if case == "taken" {
     give({ ..v0, outbox: [{ ..out, created_at: sent_at }] })
   }
-  t.run_for(sending_shows_ms / 2.0)
+  t.run_for(sending_shows_ms / 2.0 + msg_part_leave_ms)
   said.push(body_sending(t))
   t.run_for(sending_shows_ms / 2.0)
   said.push(body_sending(t))
@@ -1274,12 +1274,13 @@ test "words sent from here as nodes: 正在发送 seen sending_shows_ms after th
       view.set(v)
       entries.set(@sfbase.entries_of(v))
     })
-    assert_eq(now, was, msg=case)
+    assert_eq(now, was, msg="\{case}: as nodes \{Repr(now)}, the old list \{Repr(was)}")
     let want = match case {
       "opened" => [[1.0], [1.0], [1.0]]
-      _ => [[0.0], [1.0], [1.0]]
+      // (half way to it, its time in 正在发送's place: none drawn at all, not one unseen; outbox_mine_under)
+      _ => [[], [1.0], [1.0]]
     }
-    assert_eq(now, want, msg=case)
+    assert_eq(now, want, msg="\{case}: \{Repr(now)}")
     if case == "taken" {
       // (the core's outbox entry is the row sent from here: no row of its own, the row not made again)
       assert_eq(made.get("o:core-1"), None, msg=case)

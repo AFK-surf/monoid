@@ -1,6 +1,7 @@
 {
   "common.cancel": "Cancel",
   "common.search": "Search",
+  "common.clearSearch": "Clear search",
   "common.noMatch": "No matches",
   "common.save": "Save",
   "common.close": "Close",

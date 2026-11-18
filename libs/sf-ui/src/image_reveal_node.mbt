@@ -26,9 +26,10 @@ priv enum RevealPhase {
 /// (else there whole at once). `start_crop`: covering it from its start (its top, or its left), not its middle (a tall one
 /// at the chat's least width, a wide strip at its least height: an old view's FitCoverFrom(0, 0), View::image_covers_at;
 /// bound, as its data says it).
-/// `flies`: made in a change in which it is sent, the picture flies from where it stood then (its way, where it stood in
-/// the window, how late its rise is: View::flies_in), drawn on the way as it is at rest, covering the box the way has,
-/// rounded `corner` (its frame's: what cuts it at rest cuts it nowhere on the way).
+/// `flies`: made in a change in which it is sent, the picture flies from where it stood then, as its caller says of its
+/// box (View::flies_in: its way, where from, how late its rise is, how far it goes and what leads it, with what else
+/// of the same send flies), drawn on the way as it is at rest, covering the box the way has, rounded `corner` (its
+/// frame's: what cuts it at rest cuts it nowhere on the way).
 /// `decoded_for`: the longer side it is decoded for (the largest it is drawn at, bound), so a size that changes asks no
 /// other decode; none: as it is laid out. The node.
 #callsite(autofill(loc))
@@ -43,7 +44,7 @@ pub fn image_reveal_node(
   held? : () -> Bool = fn() { false },
   comes? : () -> Bool = fn() { true },
   start_crop? : () -> Bool = fn() { false },
-  flies? : (@view.Flight, (Double, Double, Double, Double), Double)? = None,
+  flies? : ((@view.View) -> Unit)? = None,
   corner? : Double = 0.0,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -104,7 +105,7 @@ pub fn image_reveal_node(
     // (flying in as a whole, what it waits on as it is decoded and the picture once it is: the box itself from the
     // first frame, never a frame with nothing on the way while it decodes)
     match flies {
-      Some((flight, from, late)) => b.radius(Is(corner)).flies_in(flight, fn(_) { Some(from) }, up_late=late) |> ignore
+      Some(fly) => fly(b.radius(Is(corner)))
       None => ()
     }
     // given a picture (as it is made, or another as its block shows another key): decoded already, or the device's,

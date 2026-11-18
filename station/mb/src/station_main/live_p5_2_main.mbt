@@ -68,6 +68,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     card_outcomes: None,
     outcomes_following: false,
   }
+  p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
   // cards closed and restated by one worker here (agents.ts `cardOutcomes`).
   ctx.outcomes_start()
@@ -116,6 +117,39 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   // No turn until the agents' door is open (a runtime started before has no MCP endpoint).
   hub.hold("starting")
   ctx.wire_bus()
+  // The station's own memory (resources/module.ts): the programs this side runs counted, and what of them answers
+  // nothing let go short of memory (agents.ts `readers.onTrim`: the live locator; usage/module.ts: the usage counter).
+  bus.register_pids(() => {
+    let out : Array[Int] = []
+    match program.proc {
+      Some(p) if !program.ended => out.push(p.pid)
+      _ => ()
+    }
+    match usage_counter_program.val.bind(c => c.pid()) {
+      Some(pid) => out.push(pid)
+      None => ()
+    }
+    match ctx.live_locator.bind(l => l.pid()) {
+      Some(pid) => out.push(pid)
+      None => ()
+    }
+    out
+  })
+  // (the hub's own reads of the threads' store, what they found not prepared asked of the builders as the store
+  // changes next)
+  ignore(bus.subscribe_store(_ => bus.drain_thread_requests(threads)))
+  bus.on_trim(() => {
+    let mut n = 0
+    match ctx.live_locator {
+      Some(l) => n += l.trim_idle()
+      None => ()
+    }
+    match usage_counter_program.val {
+      Some(c) => n += c.trim_idle()
+      None => ()
+    }
+    n
+  })
   // The agents' home (agenthome/module.ts).
   ctx.agent_home_live()
   // Workspaces as the control plane says them (agents.ts `follow`).
@@ -183,8 +217,20 @@ fn P52::place(self : P52) -> @session_hub.Place {
       Some(s) => jfield(s, "removed_at") != Json::null()
       None => false
     },
-    rig_due: false,
-    rig_pending: None,
+    // (cloud/state.ts `rig_due`: listed as a rig now, as its owner's device asked of this station; `rig_pending` what
+    // it asked)
+    rig_due: match state {
+      Some(s) => jfield(s, "rig_due") is True
+      None => false
+    },
+    rig_pending: match state {
+      Some(s) =>
+        match jfield(s, "rig_pending") {
+          Object(_) as due => Some(due)
+          _ => None
+        }
+      None => None
+    },
   }
 }
 
@@ -446,7 +492,15 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       )
     // (a lookup of where a session went on is not called off here: the next read asks again)
     "live.unfollow" => ()
-    "agents.rigDueDropped" => ()
+    // (agents.ts `follow`: due to be a rig with nothing asked of it, `rig_due` dropped)
+    "agents.rigDueDropped" =>
+      ignore(
+        self.host.rt.fork(name="rig due dropped", async fn() {
+          ignore((self.bus.cloud_call.val)("dropRigDue", Json::null())) catch {
+            _ => ()
+          }
+        }),
+      )
     "taking" => (self.bus.control_say)({ "taking": jb(true) })
     _ =>
       if what.has_prefix("usageCheck.") || what.has_prefix("live.") {
@@ -562,10 +616,16 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       ji(n)
     }
     "drivers.freeze" => {
-      for d in self.drivers.values() {
-        (d.freeze)()
+      let limit = jnum_of(args, "limitMs").unwrap_or(30_000.0).to_int()
+      let done = @effect.timeout(limit, async fn() {
+        for d in self.drivers.values() {
+          (d.freeze)()
+        }
+      })
+      match done {
+        Some(_) => Json::object({})
+        None => { "error": jstr("the drivers did not freeze in \{limit} ms") }
       }
-      Json::object({})
     }
     "drivers.owns" => {
       let id = match args {
@@ -721,8 +781,16 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       guard self.actors_program is Some(p) else { return Json::object({}) }
       let limit = jnum_of(args, "limitMs").unwrap_or(30_000.0).to_int()
       let done = @effect.timeout(limit, async fn() {
-        while p.busy() || p.actors.values().any(a => !a.settled()) {
-          @effect.sleep(20) // timer: a deadline to a handover's settling (the program says where each actor stands)
+        // Each session's actor alone, its queue run out and again while more came (hub.ts `settled`): the
+        // program's own count of asks under way is the shells' too (`#remote`, `#jobs`), which a mirror's sync keeps
+        // busy for minutes. (What a runtime said goes to an actor in the program itself, not counted here: the
+        // actor's `flushed` waits for it.)
+        while true {
+          let actors = p.actors.values().to_array()
+          ignore(@effect.all(actors.map(a => async fn() { ignore(a.call("flushed", [])) })))
+          if actors.iter().all(a => a.settled()) && p.actors.values().all(a => a.settled()) {
+            break
+          }
         }
       })
       match done {
@@ -1220,6 +1288,32 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           None => false
         }) || hub.any_running(),
       )
+    // (agents.ts `updates.onRuntimeChanged`: a runtime installed or updated from the pages)
+    "runtimeChanged" => {
+      let kind = jtext(arg, "kind").unwrap_or("")
+      let replaced = jfield(arg, "replaced") is True
+      // Installed: the sessions whose start found it missing take what waits.
+      if jfield(arg, "installed") is True {
+        hub.installed(kind) catch {
+          _ => ()
+        }
+      }
+      // Codex updated: its app-servers of the old version are replaced (their files are gone).
+      if self.drivers.get("codex") is Some(d) {
+        ignore(
+          self.host.rt.fork(name="codex runtime changed", async fn() {
+            ignore((d.ask)("runtimeChanged", { "replaced": jb(kind == "codex" && replaced), "drainBusy": jb(false) })) catch {
+              e => live_log("warn", "agents::codex", "codex app-servers not checked after an update", { "error": jstr(said_of(e)) })
+            }
+          }),
+        )
+      }
+      // Another runtime: each session's process of it is started again on the new one.
+      if kind != "codex" {
+        hub.runtime_updated(kind)
+      }
+      Json::null()
+    }
     _ => self.hub_bridge(op, jitems(arg))
   }
 }
@@ -1313,7 +1407,9 @@ fn P52::status_agents(self : P52) -> Json {
 /// sessions handed over.
 async fn P52::hand_over(self : P52) -> Array[Json] {
   guard self.hub is Some(hub) else { return [] }
-  let handed = hub.hand_over() catch {
+  // Within the launcher's 30 s (`Times::exit`): a session that does not settle fails the handover in time for
+  // what the parts carry to be sent.
+  let handed = hub.hand_over(limit_ms=12_000.0) catch {
     e => {
       live_log("warn", "agents", "the sessions were not handed over", {
         "error": jstr(said_of(e)),
@@ -1430,6 +1526,14 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
         fn(t, args) { live.told_by_program(t, args) },
       )
     None => ()
+  }
+  // Where each checklist was read to, for the next process to read on from (not back, at each update), and where each
+  // transcript's reading stood, for it to read on from there (agents.ts `parts.carry("live.plans" | "live.tails")`).
+  self.bus.parts.carry("live.plans", async fn() { jfield(live.carried(), "plans") }, what => live.take_plans(what)) catch {
+    _ => ()
+  }
+  self.bus.parts.carry("live.tails", async fn() { jfield(live.carried(), "tails") }, what => live.take_tails(what)) catch {
+    _ => ()
   }
   guard live_events.val is Some(events) else { return }
   let host = self.host

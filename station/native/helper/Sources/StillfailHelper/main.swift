@@ -63,6 +63,11 @@ if !locked && environment["STILLFAIL_HELPER_TAKEOVER"] == "1" {
   }
 }
 guard locked else { exit(0) }
+// Who holds it, said in it: a helper whose socket went can be found and ended by the station starting the next.
+_ = ftruncate(lock, 0)
+_ = lseek(lock, 0, SEEK_SET)
+let pidBytes = Array("\(getpid())\n".utf8)
+_ = write(lock, pidBytes, pidBytes.count)
 
 let application = NSApplication.shared
 _ = application.setActivationPolicy(.accessory)

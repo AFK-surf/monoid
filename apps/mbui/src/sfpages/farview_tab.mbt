@@ -607,17 +607,18 @@ fn farview_bar_node(
     |> ignore
     @sf.icon_button_node(bar, "refresh", fn() { @sf.t("web-pages.screen.reloadShort") }, fn() { stage.reload() }, tips?, linked?)
     |> ignore
-    bar.reacts(fn() { stage.url() }, fn(u) { address.set(u) })
-    bar.box(fn(f) {
-      f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-      @sf.style_node(f, fn() { farview_address })
-      @ui.field(f, address, font_size=14.0, max_lines=1, enter_sends=true, ime_action=2, label=@sf.t("web-pages.screen.goUrlShort"), submitted=fn(
-        t,
-      ) {
-        stage.go(t)
-      })
-      |> ignore
-    })
+    // (@sf.address_field_node's: where the page is while nobody writes there; pressed into, all of it picked; Enter
+    // goes, Escape gives the writing up)
+    @sf.address_field_node(
+      bar,
+      address,
+      fn() { stage.url() },
+      fn(t) { stage.go(t) },
+      fn() { @sf.t("web-pages.screen.goUrlShort") },
+      placeholder=fn() { @sf.t("web-pages.screen.addressHint") },
+      lead=fn(b) { @sf.icon_node(b, "web", @sf.theme().bars.icon, By(fn() { @sf.theme().p.muted })) |> ignore },
+      least=0.0,
+    )
     |> ignore
     let more_btn = Ref(bar)
     if window is Some(handed) {
@@ -641,15 +642,11 @@ fn farview_bar_node(
 let farview_head_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Fg, wrap=false)
 
 ///|
-// kept across runs: a style, read as it is
-let farview_address : @ui.Style = @ui.css("px=S3 py=S2 radius=Full bg=Neutral")
-
-///|
 /// The agent's line's words: the body's, on one line.
 // kept across runs: a value (no field of it changes)
 let farview_agent_words : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, wrap=false)
 
 ///|
 /// How far in from the agent's line's start its words stand: as far as the address's words stand in their capsule
-/// over it (`farview_address`'s `px=S3`), clear of the capsule's round end.
+/// over it (@sf.address_field_node's capsule), clear of the capsule's round end.
 let farview_words_in : Double = @ui.Space::S3.px()

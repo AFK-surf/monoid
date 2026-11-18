@@ -36,15 +36,15 @@ priv struct P53Jobs {
 }
 
 ///|
-/// The machine's processes as the jobs ask them: through sys.mbt's `kill` and `pid_alive`, a process's start as `ps`
-/// says it.
+/// The machine's processes as the jobs ask them: through sys.mbt's `kill` and `pid_alive`, a process's start as the
+/// system says it (ms since the epoch, as `processes.started_at` keeps it: `JobsHost::still_ours` compares the two).
 fn p53_processes(host : @host.Host) -> @jobs_host.Processes {
-  let shell = @jobs_host.Processes::shell(host)
+  ignore(host)
   {
     signal_group: async fn(pgid, signal) { ignore(kill(pgid, signal, group=true)) },
-    group_alive: async fn(pgid) { kill(pgid, "0", group=true) },
+    group_alive: async fn(pgid) { group_alive(pgid) },
     pid_alive: async fn(pid) { pid_alive(pid) },
-    start_time: shell.start_time,
+    start_time: async fn(pid) { start_time_of(pid) },
   }
 }
 
@@ -490,7 +490,9 @@ async fn P53Jobs::relaunch(self : P53Jobs) -> Json {
     return Json::null()
   }
   self.relaunched = true
-  self.program.call(p53_jobs_key, "relaunch", [])
+  let said = self.program.call(p53_jobs_key, "relaunch", [])
+  p53_log("info", "jobs", "the jobs of before taken up")
+  said
 }
 
 ///|
@@ -597,10 +599,10 @@ async fn P53Jobs::stop_all(self : P53Jobs, session : String?, why? : String, onl
 }
 
 ///|
-/// A session archived or deleted: its jobs stopped, those over taken off with their files (jobs.ts `clearEnded`).
+/// A session archived or deleted: its jobs that run stopped. Those over keep their rows and logs, as Node keeps them:
+/// only `DELETE /sessions/:key/jobs` (`clear_ended`) or the session's deletion (the store's) takes them off.
 async fn P53Jobs::session_ended(self : P53Jobs, session : String) -> Unit {
   ignore(self.stop_all(Some(session)))
-  ignore(self.clear_ended(session))
 }
 
 ///|

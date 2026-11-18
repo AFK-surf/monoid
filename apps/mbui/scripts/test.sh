@@ -107,7 +107,15 @@ for t in $targets; do
   light=""
   for p in $pkgs; do
     case $p in
-      -p | stillfail/core | stillfail/sfreplay/*) continue ;;
+      -p | stillfail/core) continue ;;
+      # (the flows' program on a branch's check-mbui replay-build, as sfapp's: its 1075 units at -O2 again for a change of
+      # sfbase or of mbui ran past that job's budget, 44284668314; main, workflow_run and schedule build it whole)
+      stillfail/sfreplay/flows)
+        if [ -n "${GITHUB_ACTIONS:-}" ] && [ "${GITHUB_REF:-}" != refs/heads/main ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_run ] && [ "${GITHUB_EVENT_NAME:-}" != schedule ]; then
+          light="$light sfreplay/flows/flows.blackbox_test"
+        fi
+        continue ;;
+      stillfail/sfreplay/*) continue ;;
       stillfail/sfapp)
         if [ -n "${GITHUB_ACTIONS:-}" ] && [ "${GITHUB_REF:-}" != refs/heads/main ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_run ] && [ "${GITHUB_EVENT_NAME:-}" != schedule ]; then
           light="$light sfapp/sfapp.whitebox_test"
@@ -120,10 +128,12 @@ for t in $targets; do
   export MBC_LIGHT_TESTS="$light"
   # sfapp's program built alone (APP_GROUP=build) and light keeps mbui's and the library's units at its own level
   # (mbc's MBC_LIGHT_KEEP): they run in every frame of its 491 tests, at -O0 2.5 times as long, and a branch that changed
-  # them, taking them from no store, ran the app's shards past five minutes (44243493008, 2026-11-18). Not with the
-  # small packages' programs (APP_GROUP=pkgs), which would each compile them again (40127533069).
+  # them, taking them from no store, ran the app's shards past five minutes (44243493008, 2026-11-18). So does the
+  # flows' program built alone (REPLAY_BUILD_OUT). Not with the small packages' programs (APP_GROUP=pkgs), which would
+  # each compile them again (40127533069).
   case " $light " in
     *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+    *" sfreplay/flows/flows.blackbox_test "*) [ -n "${REPLAY_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
   esac
   out=$(mktemp)
   # Built first on its own (TIMES=1, as CI's: each said with how long it took; its errors shown by the run), then run.

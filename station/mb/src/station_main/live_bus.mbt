@@ -37,6 +37,9 @@ pub(all) struct LiveBus {
   control_say : (Json) -> Unit
   stop_station : (String) -> Unit
   restart_front : (() -> Unit)?
+  /// ops/launcher.ts `runInstaller` (`--launcher-installer`): the release's installer started by the launcher, where
+  /// this process could not start it itself (updates.ts `startPlanned`).
+  run_installer : ((String, Map[String, String]) -> Unit)?
   // ── Config & Own (owned by P5-1; defaults read/write config.json directly for standalone slice tests) ──
   config_raw : Ref[() -> Json]
   config_update : Ref[async ((Json) -> Json) -> Json]
@@ -84,6 +87,17 @@ pub(all) struct LiveBus {
   ui_ask : Ref[async (String, Json) -> Json]
   /// P5-5: Slack, Feishu, Comma, Group, WorkspaceConnects, Copies, Moves, Updates, Features.
   coord_ask : Ref[async (String, Json) -> Json]
+  // ── Hooks any slice registers on (plain lists: each slice adds its own, none provides a whole) ──
+  /// The control plane's presence said a release is out (`plane.told("release", …)`: the updates, the fixed bug reports).
+  release_hearers : Array[() -> Unit]
+  /// A peer station was heard (peer.ts `heard`: the moves' handover reached, its plan asked again).
+  peer_hearers : Array[(String) -> Unit]
+  /// The helper processes' pids each part keeps (resources' `programs`).
+  helper_pids : Array[() -> Array[Int]]
+  /// What each part lets go of that answers nothing, short of memory (pool.ts `onTrim`): a count.
+  trimmers : Array[() -> Int]
+  /// What `@store_threads.Store`'s `requested` asked prepared, under way (agents.ts `namesPreparing`).
+  threads_preparing : Map[String, Bool]
 }
 
 ///|
@@ -105,6 +119,7 @@ pub fn LiveBus::new(
   control_say : (Json) -> Unit,
   stop_station : (String) -> Unit,
   restart_front? : () -> Unit,
+  run_installer? : (String, Map[String, String]) -> Unit,
 ) -> LiveBus {
   let cfg_checks : Array[(Json) -> String?] = []
   let cfg_listeners : Array[(Int, (Json) -> Unit)] = []
@@ -126,9 +141,13 @@ pub fn LiveBus::new(
   }
   let cloud_listeners : Array[(Int, (Json?) -> Unit)] = []
   let next_cloud = Ref(0)
+  // (previous.ts `previousProcess`: the process before is gone once its pid is, not once run/hub.json is: Node lets go
+  // of hub.json as its agents stop and writes run/events.json after; PREVIOUS_LIMIT_MS at most)
   let wait_prev = async fn() -> Unit {
-    while held_by_hub(data) is Some(_) && !stopped.is_done() {
-      @effect.sleep(100)
+    let mut waited = 0
+    while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 400 && !stopped.is_done() {
+      waited += 1
+      @effect.sleep(100) // timer: a retry until the process before is gone (it says nothing when it ends)
     }
   }
   let peer_handlers : Map[String, async (String, String?, Json, Bytes?) -> (Json, Bytes?)] = Map([])
@@ -152,7 +171,7 @@ pub fn LiveBus::new(
     }
     raise BusError("mesh transport not attached for \{target}: \{meth}")
   }
-  {
+  let b : LiveBus = {
     host,
     argv0,
     args,
@@ -172,6 +191,7 @@ pub fn LiveBus::new(
     control_say,
     stop_station,
     restart_front,
+    run_installer,
     config_raw: Ref(read_cfg),
     config_update: Ref(default_update),
     config_listen: Ref(fn(f) {
@@ -219,7 +239,16 @@ pub fn LiveBus::new(
     jobs_ask: Ref(async fn(_op, _arg) { Json::null() }),
     ui_ask: Ref(async fn(_op, _arg) { Json::null() }),
     coord_ask: Ref(async fn(_op, _arg) { Json::null() }),
+    release_hearers: [],
+    peer_hearers: [],
+    helper_pids: [],
+    trimmers: [],
+    threads_preparing: Map([]),
   }
+  // (the store's own writes told on the bus too, as the program's changes are: one stream of changes, as store.ts's
+  // `subscribe` gives every part of the TypeScript)
+  ignore(b.store.subscribe(c => b.notify_store(c)))
+  b
 }
 
 ///|
@@ -273,6 +302,111 @@ pub async fn LiveBus::dispatch_peer(
     }
   }
   raise BusError("unknown peer method: \{meth}")
+}
+
+///|
+/// peer.ts `heard`: what follows a peer station's being heard.
+pub fn LiveBus::on_peer_heard(self : LiveBus, f : (String) -> Unit) -> Unit {
+  self.peer_hearers.push(f)
+}
+
+///|
+pub fn LiveBus::notify_peer_heard(self : LiveBus, peer : String) -> Unit {
+  if peer == "" || peer == self.key.id {
+    return
+  }
+  for f in self.peer_hearers.copy() {
+    f(peer)
+  }
+}
+
+///|
+/// The control plane's `release` (presence): what reads it again.
+pub fn LiveBus::on_release(self : LiveBus, f : () -> Unit) -> Unit {
+  self.release_hearers.push(f)
+}
+
+///|
+pub fn LiveBus::told_release(self : LiveBus) -> Unit {
+  for f in self.release_hearers.copy() {
+    f()
+  }
+}
+
+///|
+/// A part's helper processes, counted in the station's own memory (resources' `programs`).
+pub fn LiveBus::register_pids(self : LiveBus, f : () -> Array[Int]) -> Unit {
+  self.helper_pids.push(f)
+}
+
+///|
+/// What a part lets go of short of memory (pool.ts `onTrim`), asked by resources' `trimIdle`.
+pub fn LiveBus::on_trim(self : LiveBus, f : () -> Int) -> Unit {
+  self.trimmers.push(f)
+}
+
+///|
+pub fn LiveBus::trim_helpers(self : LiveBus) -> Int {
+  let mut n = 0
+  for f in self.trimmers {
+    n += f()
+  }
+  n
+}
+
+///|
+pub fn LiveBus::all_helper_pids(self : LiveBus) -> Array[Int] {
+  let out : Array[Int] = []
+  for f in self.helper_pids {
+    for pid in f() {
+      if pid > 0 && !out.contains(pid) {
+        out.push(pid)
+      }
+    }
+  }
+  out
+}
+
+///|
+/// agents.ts's `threads.requested` (721-733): what the threads' store found not yet prepared (a session's latest
+/// thread, its chat's names) asked of the readers' builders, once each while under way.
+pub fn LiveBus::drain_thread_requests(self : LiveBus, threads : @store_threads.Store) -> Unit {
+  if threads.requested.is_empty() {
+    return
+  }
+  let reqs = threads.requested.copy()
+  threads.requested.clear()
+  let latest : Array[Json] = []
+  let names : Array[Json] = []
+  for r in reqs {
+    match r {
+      { "latestThread": String(s), .. } if !self.threads_preparing.contains("l:" + s) => {
+        self.threads_preparing["l:" + s] = true
+        latest.push(Json::string(s))
+      }
+      { "sessionChat": String(s), .. } if !self.threads_preparing.contains("n:" + s) => {
+        self.threads_preparing["n:" + s] = true
+        names.push(Json::string(s))
+      }
+      _ => ()
+    }
+  }
+  let prepare = (op : String, prefix : String, keys : Array[Json]) => if !keys.is_empty() {
+    ignore(
+      self.host.rt.fork(name="threads prepared", async fn() {
+        ignore((self.reader_ask.val)(op, Json::array(keys), "")) catch {
+          _ => ()
+        }
+        for k in keys {
+          if k is String(s) {
+            self.threads_preparing.remove(prefix + s)
+          }
+        }
+      }),
+    )
+  }
+  prepare("$latestThreads", "l:", latest)
+  prepare("$sessionChatNames", "n:", names)
 }
 
 ///|

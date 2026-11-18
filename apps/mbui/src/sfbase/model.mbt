@@ -497,14 +497,17 @@ pub fn first_line(words : String) -> String {
 
 ///|
 /// The station this machine is, as its host says (its station's cloud.json),
-/// read once it is one; "" where it is none, asked again (one 添加这台 Mac adds, known without the app opened again).
+/// read once it is one; "" where it is none (or one uninstalled, taken out of its workspace, or one that only runs
+/// tasks), asked again (one 添加这台 Mac adds, known without the app opened again).
 pub fn this_machine() -> String {
   match machine_here.val {
     Some(h) => h
     None => {
       let v = @json.parse(@hostapi.app_said("local_station")) catch { _ => Json::null() }
       let ws = field(Some(v), "workspace")
-      let h = if text(ws, "id") != "" && text(ws, "station") != "" {
+      // (not one taken away from here, its data kept, nor one that only runs tasks: the settings' local_station_id)
+      let gone = flag(Some(v), "uninstalled") || flag(ws, "removed") || flag(ws, "rig")
+      let h = if !gone && text(ws, "id") != "" && text(ws, "station") != "" {
         text(ws, "id") + "/" + text(ws, "station")
       } else {
         ""

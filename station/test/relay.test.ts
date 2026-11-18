@@ -112,10 +112,10 @@ test("relaying starts the conversation there, makes it the agent's, says so wher
   // The new thread is the session's, through the connect; its first message is the station's.
   const there = r.thread("C1", "1700.000100");
   assert.deepEqual(r.store.threadSessions(there.id).map((m) => [m.session, m.connect]), [[key, "cl"]]);
-  assert.deepEqual(r.said(there.id).map((m) => [m.authorKind, m.ts]), [["ember", "1700.000100"]]);
+  assert.deepEqual(r.said(there.id).map((m) => [m.authorKind, m.ts]), [["station", "1700.000100"]]);
   // Said in the chat it came from, with a link there.
   const back = r.said(thread.id).at(-1)!;
-  assert.equal(back.authorKind, "ember");
+  assert.equal(back.authorKind, "station");
   assert.ok(back.text.startsWith("↗ ") && back.text.includes("Ada") && back.text.includes("[#cue-dev](https://acme.slack.com/archives/C1/p1700000100)"), back.text);
   // The agent is told, and posts there with chat_post.
   await settle();
@@ -130,7 +130,7 @@ test("relaying starts the conversation there, makes it the agent's, says so wher
   );
   assert.equal(r.chat.posts.length, posts, "not a reply");
   assert.deepEqual(r.chat.edits, [[{ channel: "C1", threadTs: "1700.000100" }, "1700.000100", `${begun[0]![1]}\n\nContext: …`]]);
-  assert.deepEqual(r.said(there.id).map((m) => [m.authorKind, m.text]), [["ember", `${begun[0]![1]}\n\nContext: …`]]);
+  assert.deepEqual(r.said(there.id).map((m) => [m.authorKind, m.text]), [["station", `${begun[0]![1]}\n\nContext: …`]]);
   // The next is a reply.
   assert.equal(await r.call(key, "chat_post", { to: "C1/1700.000100", text: "More" }), "Posted to C1/1700.000100.");
   assert.deepEqual(r.chat.posts.at(-1), [{ channel: "C1", threadTs: "1700.000100" }, "More"]);

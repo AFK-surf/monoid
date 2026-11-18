@@ -208,33 +208,40 @@ fn mine_message(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> U
             // coming in with the words, when they fly here from the composer: seen once they are in over it, not as
             // they pass up over its place (sf/motion.mbt rule 4)
             let at = c.box(fn() { message_time(c, "m:" + m.ts, m.time) })
-            match flight_here(here) {
-              Some(f) if f.text != "" => {
-                // (from their landing: before it they may still be passing up over its place; none before they set
-                // out, their landing not known yet)
-                let lands = f.way.ends()
-                if f.placed && lands < @double.infinity && c.moment() >= lands {
-                  let a = @motion.anim(c, "time-in/" + m.ts, 0.0, global=true)
-                  if a.target() != 1.0 {
-                    a.animate(c, 1.0, @motion.tween(@sf.enter_ms, ease=Out), start_at=lands)
-                  }
-                  // (faded in as it is drawn)
-                  c.look_by(at, fn() { @ui.look(alpha=a.get(c)) })
-                } else {
-                  // (built again as they land)
-                  if f.placed && lands < @double.infinity {
-                    c.shows_until(lands)
-                  }
-                  c.look(at, @ui.look(alpha=0.0))
-                }
-              }
-              _ => ()
-            }
+            mine_time_flight(c, here, at, if m.outgoing == "" { m.ts } else { "o:" + m.outgoing })
           }
       }
     }
   })
   |> ignore
+}
+
+///|
+/// Holds `at` (the time under one's own message or outbox row, keyed by `key`) unseen until its words' flight `here`
+/// has landed so the shrinking composer ground never covers it, then fades it in once from `lands`.
+fn mine_time_flight(c : @ui.Ctx, here : MessageHere, at : Int, key : String) -> Unit {
+  match flight_here(here) {
+    Some(f) if f.text != "" => {
+      // (from their landing: before it they may still be passing up over its place; none before they set
+      // out, their landing not known yet)
+      let lands = f.way.ends()
+      if f.placed && lands < @double.infinity && c.moment() >= lands {
+        let a = @motion.anim(c, "time-in/" + key, 0.0, global=true)
+        if a.target() != 1.0 {
+          a.animate(c, 1.0, @motion.tween(@sf.enter_ms, ease=Out), start_at=lands)
+        }
+        // (faded in as it is drawn)
+        c.look_by(at, fn() { @ui.look(alpha=a.get(c)) })
+      } else {
+        // (built again as they land)
+        if f.placed && lands < @double.infinity {
+          c.shows_until(lands)
+        }
+        c.look(at, @ui.look(alpha=0.0))
+      }
+    }
+    _ => ()
+  }
 }
 
 ///|

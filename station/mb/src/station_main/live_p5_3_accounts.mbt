@@ -5,8 +5,9 @@
 // catalog the cloud keeps (models/module.ts, `@accounts_oauth.models_live`). What the accounts ask of the rest of the
 // station (`Backend`: its files, its store, config.json, the network, the words, the hub and the drivers, the
 // sign-ins, the shared profiles) is answered here, each by its part: the files and the network by the shell, the store
-// by `bus.store`, config.json by the bus, the hub, the drivers and the agents by `bus.hub_ask` (P5-2's), the sign-ins
-// by `bus.ui_ask` (P5-4's Logins), the shared profiles by this slice's Sharing.
+// by `bus.store`, config.json by the bus, the hub, the drivers and the agents by `bus.hub_ask` (P5-2's), the profiles'
+// sign-ins and the machine's logins by this slice's own (login.ts's LoginManager, machine.ts's MachineLogins:
+// live_p5_3_accounts_io.mbt), the shared profiles by this slice's Sharing.
 
 ///|
 /// A JSON value as the accounts read it (`@accounts_pool.JV`).
@@ -59,6 +60,14 @@ priv struct P53Accounts {
   oauth_io : @accounts_oauth.Io
   /// Claude's logins renewed (oauth.ts `claudeOAuthToken`): one renewal a login at a time.
   claude_auth : @accounts_oauth.ClaudeAuth
+  /// The profiles' sign-ins (accounts/index.ts `logins`: login.ts's LoginManager), not the station's logins to
+  /// command-line tools (P5-4's, `/machine-logins`).
+  logins : @accounts_oauth.LoginManager
+  /// The machine's own logins (accounts/index.ts `machine`: machine.ts), on a whole station.
+  machine : @accounts_oauth.MachineLogins?
+  /// What the model catalog last said, as the accounts read it (catalog.ts `learn`'s table, one for the station):
+  /// the models' makers and prices, kept by P53Models.
+  pool_catalog : @accounts_pool.Catalog
 }
 
 ///|
@@ -96,11 +105,26 @@ fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
     station_lang: (bus.lang.val)(),
     tz_offset_ms: _ => 0.0,
   }
-  let oauth_io = @accounts_oauth.host_io(bus.host)
+  let oauth_io = p5_oauth_io(bus.host)
   let claude_auth = @accounts_oauth.ClaudeAuth::new(oauth_io, p53_claude_store(bus.host), {
     tr: (lang, key, args) => ctx.words.tr(lang, key, args~),
   })
-  let a : P53Accounts = { bus, backend, ctx, accounts: None, sharing: None, sessions: None, oauth_io, claude_auth }
+  let words : @accounts_oauth.Words = { tr: (lang, key, args) => ctx.words.tr(lang, key, args~) }
+  let logins = p53_login_manager(bus, words, oauth_io, ctx.io)
+  let machine = if bus.as_rig() { None } else { Some(p53_machine_logins(bus, words, oauth_io, ctx)) }
+  let a : P53Accounts = {
+    bus,
+    backend,
+    ctx,
+    accounts: None,
+    sharing: None,
+    sessions: None,
+    oauth_io,
+    claude_auth,
+    logins,
+    machine,
+    pool_catalog: @accounts_pool.Catalog::new(),
+  }
   me.val = Some(a)
   a
 }
@@ -117,7 +141,7 @@ fn @accounts_pool.JV::or_obj(self : @accounts_pool.JV, whole : @accounts_pool.JV
 ///|
 /// What the accounts are given (accounts/index.ts's options as `Given` names them): what of the rest this station
 /// answers here.
-fn p53_given() -> Json {
+fn p53_given(machine~ : Bool) -> Json {
   p53_obj([
     ("hub", p53_b(true)),
     ("hubProfileGone", p53_b(true)),
@@ -134,7 +158,7 @@ fn p53_given() -> Json {
     ("quota", p53_s("default")),
     ("resetQuota", p53_s("default")),
     ("discover", p53_s("default")),
-    ("machine", p53_b(false)),
+    ("machine", p53_b(machine)),
     ("checkOnStart", p53_b(true)),
     ("workspaces", p53_b(true)),
     ("reviewUndecided", p53_b(true)),
@@ -181,11 +205,11 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       let made = @accounts_pool.Accounts::new(
         self.backend,
         self.ctx,
-        @accounts_pool.Given::of_jv(p53_jv(p53_given()), bus.data),
+        @accounts_pool.Given::of_jv(p53_jv(p53_given(machine=self.machine is Some(_))), bus.data),
         rt,
         clock,
         p53_jv(raw),
-        @accounts_pool.Catalog::new(),
+        self.pool_catalog,
       ) catch {
         e => {
           p53_log("error", "accounts", "the accounts were not made", fields=p53_obj([("error", p53_s(p53_words(e)))]))
@@ -204,6 +228,21 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       self.sessions = Some(sa)
       made.set_hub_accounts(sa)
       ignore((bus.config_listen.val)(next => made.config_said(p53_jv(next))))
+      // (accounts/index.ts `start`: a sign-in's change, and the machine's logins read again, told the accounts)
+      ignore(self.logins.changes(id => ignore(rt.fork(name="a sign-in changed", async fn() {
+        made.login_changed(id) catch {
+          e => p53_log("warn", "accounts", "a sign-in's change was not taken", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        }
+      }))))
+      match self.machine {
+        Some(m) =>
+          ignore(m.changes(() => ignore(rt.fork(name="the machine's logins changed", async fn() {
+            made.machine_changed() catch {
+              e => p53_log("warn", "accounts", "the machine's logins were not taken", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+            }
+          }))))
+        None => ()
+      }
       made.start()
     }),
   )
@@ -492,9 +531,12 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
           Some(w) => Str(w)
           None => Null
         }
-      // ── the sign-ins (P5-4's Logins) ──
-      _ if name.has_prefix("logins.") || name.has_prefix("console.") =>
-        p53_jv((bus.ui_ask.val)(name, Json::array(args.map(p53_json))))
+      // ── the sign-ins and the machine's logins (accounts/index.ts `logins`, console.ts, `machine`) ──
+      _ if name.has_prefix("logins.") || name.has_prefix("console.") || name.has_prefix("machine.") =>
+        match self.sign_in_answer(name, args.map(p53_json)) {
+          Some(v) => p53_jv(v)
+          None => raise P53Error("no sign-ins' ask \{name}")
+        }
       // ── the hub, the drivers, the agents and the rest of the store (P5-2's) ──
       _ =>
         p53_jv((bus.hub_ask.val)(name, Json::array(args.map(p53_json))))
@@ -540,9 +582,17 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
     }
   }
   try {
-    // ── the sign-ins: P5-4's Logins (accounts.ts `logins`) ──
+    // ── the sign-ins (accounts.ts `logins`: the routes' code, page, its state and cancel) ──
     if m.has_prefix("logins.") {
-      return (self.bus.ui_ask.val)(m, arg)
+      let args = match arg {
+        Array(xs) => xs
+        Null => []
+        v => [v]
+      }
+      match self.sign_in_answer(m, args) {
+        Some(v) => return v
+        None => raise P53Error("no sign-ins' ask \{m}")
+      }
     }
     let sessions = () => match self.sessions {
       Some(sa) => sa
@@ -705,6 +755,14 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
       "fusionView" => p53_json(self.made().fusion_view(text(0, "id")))
       "loginsView" => p53_json(self.made().logins_view())
       "machineLogins" => p53_json(self.made().machine_logins())
+      // (agents.ts `accounts.machine?.refresh()`: a runtime installed or updated, the machine's logins read again)
+      "machineRefresh" => {
+        match self.machine {
+          Some(m) => m.refresh()
+          None => ()
+        }
+        done
+      }
       "apiProviders" => p53_json(@accounts_pool.api_providers())
       "homesReadSoon" => {
         self.made().homes_read_soon()
@@ -774,44 +832,81 @@ fn p53_uuid() -> String {
 priv struct P53Models {
   bus : LiveBus
   accounts : P53Accounts
+  /// What the catalog says (catalog.ts's table), told on to the accounts' (`P53Accounts::pool_catalog`).
+  told : @accounts_oauth.Catalog
   mut catalog : @accounts_oauth.ModelCatalog?
+  /// The cloud said the catalog changed before what was kept was read (Some: to that ETag, if it named one): asked for
+  /// once it is.
+  mut pending : String??
 }
 
 ///|
 fn P53Models::new(bus : LiveBus, accounts : P53Accounts) -> P53Models {
-  { bus, accounts, catalog: None }
+  { bus, accounts, told: @accounts_oauth.Catalog::new(), catalog: None, pending: None }
 }
 
 ///|
-/// still.fail cloud's origin, where the station is in a workspace of its.
+/// still.fail cloud's origin, where the station is in a workspace of its (models/module.ts `origin`: none where the
+/// plane is Comma's, which serves no catalog).
 fn p53_origin(bus : LiveBus) -> String? {
-  match p53_str(p53_cloud(bus), "origin") {
+  let cloud = p53_cloud(bus)
+  guard @cloud_net.provider_of(Some(p53_get(cloud, "provider"))) is Stillfail else { return None }
+  match p53_str(cloud, "origin") {
     Some(o) if o != "" => Some(o)
     _ => None
   }
 }
 
 ///|
+/// What the catalog says now, given the accounts (their makers' profiles and prices read it).
+fn P53Models::learned(self : P53Models) -> Unit {
+  let models : Map[String, @accounts_pool.JV] = Map::new()
+  if self.told.snapshot() is { "models": Object(m), .. } {
+    for k, v in m {
+      models[k] = p53_jv(v)
+    }
+  }
+  self.accounts.pool_catalog.models = models
+}
+
+///|
 fn P53Models::attach(self : P53Models) -> Unit {
   let bus = self.bus
+  let not_read = (e : Error) => p53_log(
+    "info",
+    "models",
+    "the model catalog was not read",
+    fields=p53_obj([("error", p53_s(p53_words(e)))]),
+  )
   ignore(
     bus.host.rt.fork(name="model catalog", async fn() {
       let catalog = @accounts_oauth.ModelCatalog::open(
         self.accounts.oauth_io,
-        @accounts_oauth.Catalog::new(),
+        self.told,
         @nodepath.join(sep(), [bus.data, "model-catalog.json"]),
         () => p53_origin(bus),
-        added=keys => self.accounts.new_models(keys),
+        added=keys => {
+          self.learned()
+          self.accounts.new_models(keys)
+        },
       ) catch {
         e => {
-          p53_log("info", "models", "the model catalog was not read", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+          not_read(e)
           return
         }
       }
       self.catalog = Some(catalog)
+      self.learned()
       // (asked for in the background at the start, and as the cloud says it changed: its presence socket, `models`)
-      catalog.refresh() catch {
-        e => p53_log("info", "models", "the model catalog was not read", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+      self.refresh(None) catch {
+        e => not_read(e)
+      }
+      // (what the cloud said meanwhile, while what was kept was read)
+      if self.pending is Some(etag) {
+        self.pending = None
+        self.refresh(etag) catch {
+          e => not_read(e)
+        }
       }
     }),
   )
@@ -831,14 +926,31 @@ fn P53Models::attach(self : P53Models) -> Unit {
 }
 
 ///|
-/// The cloud said the catalog changed (to `etag`): asked for again.
+/// The cloud said the catalog changed (to `etag`): asked for again, once what was kept is read if it is not yet.
 async fn P53Models::refresh(self : P53Models, etag : String?) -> Unit {
   match self.catalog {
-    Some(c) =>
+    Some(c) => {
       match etag {
         Some(e) => c.refresh(etag=e)
         None => c.refresh()
       }
-    None => ()
+      self.learned()
+    }
+    None => self.pending = Some(etag)
   }
+}
+
+///|
+/// Once what it read of the cloud is written (the station stopping: models/module.ts's finalizer).
+async fn P53Models::written(self : P53Models) -> Unit {
+  if self.catalog is Some(c) {
+    c.written()
+  }
+}
+
+///|
+/// The accounts' IO (`@accounts_oauth.host_io`) with the times it keeps (an expiry, when a lock was taken) since the
+/// epoch.
+fn p5_oauth_io(host : @host.Host) -> @accounts_oauth.Io {
+  { ..@accounts_oauth.host_io(host), now: () => p5_epoch_ms(), wall: () => p5_epoch_ms() }
 }

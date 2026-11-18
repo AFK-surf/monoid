@@ -470,7 +470,7 @@ pub fn BridgedDriver::adopt(
           None
         },
       )
-      x.own.tools_url = str_at(o, "mcpUrl")
+      x.own.tools_url = crashed_tools_url(o)
       made.val = Some(x)
       Later::ok(lp, x.own)
     },

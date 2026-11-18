@@ -1140,14 +1140,9 @@ pub fn terminal_pane_node(
         bar.shrink(Is(0.0)) |> ignore
         bar.box(fn(chip_slot) {
           chip_slot.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).row(Is(true)) |> ignore
-          chip_slot.box(fn(chip) {
+          @sf.action_box_node(chip_slot, fn() { @sf.t("web-pages.remote.openInFiles") + ": " + cwd() }, fn(_) { open_cwd_in_files() }, fn(chip) {
             @sf.style_node(chip, fn() { terminal_cwd_chip_look }, in_row=true)
-            @sf.presses_node(chip, open_cwd_in_files)
-            chip
-            .min_width(Is(Some(0.0)))
-            .shrink(Is(1.0))
-            .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.remote.openInFiles") + ": " + cwd())) }))
-            |> ignore
+            chip.min_width(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
             @sf.icon_node(chip, "folder", 14.0, By(fn() { @ui.tree_theme().color(Muted) })) |> ignore
             @sf.words_node(chip, fn() {
               let c = cwd()
@@ -1270,6 +1265,8 @@ pub fn terminal_pane_node(
     }
   }
   let held = fn(bit : Int) { fn() { ((once.get() | kept_mods.get()) & bit) != 0 } }
+  // (a key of the bars over the soft keyboard: pressed, the focus stays on what is typed in (key_catcher_node), never
+  // taken by the key; felt as it goes down; the arrows and ⌫ go on as they are held)
   let pad_key = fn(
     parent : @view.View,
     cap : String,
@@ -1282,105 +1279,21 @@ pub fn terminal_pane_node(
     icon : String,
     repeat : Bool,
   ) {
-    let is_held = held_fn.unwrap_or(fn() { false })
-    parent.box(fn(b) {
-      if w_px > 0.0 {
-        b.width(Is(Some(w_px))) |> ignore
-      } else {
-        b.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      }
-      b
-      .height(Is(Some(h_px)))
-      .radius(Is(10.0))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      .ground(By(fn() {
-        let p = @sf.theme().p
-        let base = if primary || is_held() { p.primary } else { p.raised }
-        if b.pressed() { @sf.over(base, p.hover) } else { base }
-      }))
-      .says(Is(Some(@view.said(Button, label=name))))
-      // Do NOT set .focusable(Is(true)) here so tapping accessory keys never blurs key_catcher_node / soft keyboard!
-      .presses(Is(true))
-      .on_press(press)
-      |> ignore
-      let rep_stop : Ref[() -> Unit] = Ref(fn() {  })
-      let rep_fired : Ref[Bool] = Ref(false)
-      let stop_rep = fn() {
-        (rep_stop.val)()
-        rep_stop.val = fn() {  }
-      }
-      b.owns(stop_rep) |> ignore
-      let on_it = fn(d : @view.Drag) { b.finger_target(d.wx, d.wy) }
-      b.gesture(
-        @ui.touch_slop(),
-        press=fn(d) {
-          stop_rep()
-          rep_fired.val = false
-          if repeat {
-            fn step(at_t : Double) -> Unit {
-              rep_stop.val = b.at_moment(
-                at_t,
-                fn() {
-                  if b.pressed() {
-                    rep_fired.val = true
-                    @ui.haptic(KeyboardTap)
-                    press()
-                    step(at_t + 45.0)
-                  }
-                },
-                later=true,
-              )
-            }
-            step(d.at + 400.0)
-          }
-        },
-        tap=fn(d) {
-          let already = rep_fired.val
-          stop_rep()
-          rep_fired.val = false
-          if !already && on_it(d) {
-            @ui.haptic(KeyboardTap)
-            press()
-          }
-        },
-        drag=fn(d) {
-          match d.kind {
-            Up => {
-              let already = rep_fired.val
-              stop_rep()
-              rep_fired.val = false
-              if !already && on_it(d) {
-                press()
-              }
-            }
-            Off => {
-              stop_rep()
-              rep_fired.val = false
-            }
-            _ => ()
-          }
-        },
-      )
-      |> ignore
-      let ink_fn = fn() {
-        let p = @sf.theme().p
-        if primary || is_held() { p.on_primary } else { p.text }
-      }
-      if icon != "" {
-        @sf.icon_node(b, icon, 18.0, By(ink_fn)) |> ignore
-      } else {
-        b.box(fn(w) {
-          w
-          .words(Is(cap))
-          .words_look(Is(@ui.style_words(key_tile_words)))
-          .ink(By(ink_fn))
-          .allow_ellipsis(Is(true))
-          |> ignore
-        })
-        |> ignore
-      }
-    })
+    @sf.key_cap_node(
+      parent,
+      cap,
+      fn() { name },
+      press,
+      look=Tile,
+      icon~,
+      width?=if w_px > 0.0 { Some(w_px) } else { None },
+      height=h_px,
+      primary~,
+      held?=held_fn,
+      steals_focus=false,
+      repeat~,
+      felt=KeyboardTap,
+    )
     |> ignore
   }
   let dpad_cluster = fn(
@@ -1872,15 +1785,7 @@ pub fn terminal_pane_node(
         |> ignore
         f.box(fn(cap) {
           @sf.style_node(cap, fn() { full_tools_box })
-          cap.box(fn(b) {
-            @sf.style_node(b, fn() {
-              if b.pressed() { round_button_box.then(tile_pressed) } else { round_button_box }
-            })
-            b.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-misc.screen.unfull"))) })) |> ignore
-            @sf.presses_node(b, fn() { full.set(false) })
-            @sf.icon_node(b, "shrink", round_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
-          })
-          |> ignore
+          @sf.tool_round_node(cap, "shrink", fn() { @sf.t("android-misc.screen.unfull") }, fn() { full.set(false) }) |> ignore
         })
         |> ignore
       })

@@ -232,14 +232,14 @@ async fn p54_port_pids(host : @host.Host, port : Int) -> Json {
 }
 
 ///|
-/// A process's start, ms (platform `startTimeOf`).
+/// A process's start, ms since the epoch (platform `startTimeOf`), as the system says it: `ps -o lstart=` is in the
+/// machine's own time zone.
 async fn p54_start_time(host : @host.Host, pid : Int) -> Json {
-  let (code, out, _) = p54_run(host, "ps", ["-o", "lstart=", "-p", pid.to_string()]) catch { _ => return Json::null() }
-  if code != Some(0) || out.trim() == "" {
-    return Json::null()
+  ignore(host)
+  match start_time_of(pid) {
+    Some(ms) => Json::number(ms)
+    None => Json::null()
   }
-  let ms = @screens.date_parse_utc(out.trim().to_owned())
-  if ms.is_nan() { Json::null() } else { Json::number(ms) }
 }
 
 ///|
@@ -690,8 +690,16 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     "store.getSession" => p54_session_row(bus, s(0)).unwrap_or(Json::null())
     "store.starter" => self.threads.starter(a(0).unwrap_or(Json::null()))
     "store.firstText" => self.threads.first_text(a(0).unwrap_or(Json::null()))
-    "store.latestThread" => self.threads.latest_thread(a(0).unwrap_or(Json::null()))
-    "store.latestThreadIfReady" => self.threads.latest_thread_if_ready(a(0).unwrap_or(Json::null()))
+    "store.latestThread" => {
+      let v = self.threads.latest_thread(a(0).unwrap_or(Json::null()))
+      bus.drain_thread_requests(self.threads)
+      v
+    }
+    "store.latestThreadIfReady" => {
+      let v = self.threads.latest_thread_if_ready(a(0).unwrap_or(Json::null()))
+      bus.drain_thread_requests(self.threads)
+      v
+    }
     "store.sessionThreadById" => self.threads.session_thread_by_id(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()))
     "store.pendingCardHeader" => self.threads.pending_card_header(a(0).unwrap_or(Json::null()))
     "store.pendingCardHeaderIfReady" => self.threads.pending_card_header_if_ready(a(0).unwrap_or(Json::null()))

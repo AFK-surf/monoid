@@ -80,7 +80,8 @@ fn trouble_again(close : (@ui.Tester, Double, Double) -> Unit, frames : Bool) ->
   }
   t.touch_at(0, x, y, t.time())
   t.touch_at(2, x, y, t.time())
-  t.draw()
+  // (the panel closed gone its way out: what it listed as it showed no longer drawn)
+  t.run_for(@kit.pop_out_ms)
   (t.find("Maple 连不上了") is Some(_), t.find("暂无待处理") is Some(_), kept, (app.nav.depth(), app.nav.top()) == page)
 }
 
@@ -107,12 +108,18 @@ test "大屏: the stations' trouble looked at in 待处理's panel, the panel cl
 let trouble_core_delay_ms : Double = 3000.0
 
 ///|
-fn trouble_loading_tester(calls : Array[Made], loaded : @signals.Signal[Bool], prefs : @signals.Signal[Json], generation? : Ref[Int] = Ref(0)) -> @ui.Tester {
+fn trouble_loading_tester(
+  calls : Array[Made],
+  loaded : @signals.Signal[Bool],
+  prefs : @signals.Signal[Json],
+  generation? : @signals.Signal[Int] = @signals.signal(0),
+) -> @ui.Tester {
   new_run()
   let base = fixture("home")
   let src : Source = {
     ..base,
-    generation: fn(_, _) { (generation.val, true) },
+    // (another core told as it comes, as its topics are given anew)
+    generation: fn(_, _) { (generation.get(), true) },
     topic_read: fn(name, params) {
       if name == "chats" && !loaded.get() {
         return { value: None, error: None, version: 0 }
@@ -179,14 +186,14 @@ test "a failed trouble clear does not retry on every frame and a new core can cl
   let calls : Array[Made] = []
   let loaded = @signals.signal(true)
   let prefs : @signals.Signal[Json] = @signals.signal({ "ws1\nseen": "Maple 连不上了" })
-  let generation = Ref(0)
+  let generation = @signals.signal(0)
   let t = trouble_loading_tester(calls, loaded, prefs, generation~)
   t.frame()
   assert_eq(calls.length(), 1)
   (calls[0].done)(Err({ "code": "core_restarted" }))
   t.run_for(trouble_core_delay_ms)
   assert_eq(calls.length(), 1, msg="an error is not a reason to write again each frame")
-  generation.val += 1
+  generation.set(generation.untracked() + 1)
   t.frame()
   t.frame()
   assert_eq(calls.length(), 2, msg="an old core's pending clearing does not suppress the new core")

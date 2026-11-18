@@ -498,6 +498,12 @@ fn gpu_ms() -> Double {
 }
 
 ///|
+/// How many frames the app made were never drawn (none here: the page draws each frame as it is made).
+fn frames_dropped() -> Int {
+  0
+}
+
+///|
 /// A browser says not how much of a CPU its page has had (@hostapi.cpu_ms).
 fn cpu_ms() -> Double {
   -1.0

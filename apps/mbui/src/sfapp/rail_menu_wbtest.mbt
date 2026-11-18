@@ -9,17 +9,27 @@ test "the rail's menu keeps its contents and place while it closes" {
     t.right_click(x + w / 2.0, y + h / 2.0)
     t.run_for(@kit.pop_ms)
     let before = t.rect_of("自定义侧边条").unwrap()
+    // (drawn back into its corner beside the place as it goes, kit's pop_out: its words no further from where they were
+    // than its 3% shrink toward that corner carries them, a pixel more)
+    let (mx, my, _, _) = t.query(Menu).unwrap().rect
+    let (reach_x, reach_y) = (1.0 + 0.03 * (before.0 - mx).abs(), 1.0 + 0.03 * (before.1 - my).abs())
     if outside {
       t.touch_at(0, 640.0, 400.0, t.time())
       t.touch_at(2, 640.0, 400.0, t.time())
     } else {
       t.key_told(@ui.key_escape, 0, t.time())
     }
-    for _ in 0..<3 {
+    for step in 0..<3 {
       t.run_for(@kit.pop_out_ms / 4.0)
-      guard t.rect_of("自定义侧边条") is Some(during) else { fail("the menu's words disappeared while it closed") }
+      // (its words fade before its ground as it goes, kit's pop_out: drawn where they were for as long as they show)
+      guard t.rect_of("自定义侧边条") is Some(during) else {
+        if step == 0 {
+          fail("the menu's words disappeared as it began to close")
+        }
+        continue
+      }
       assert_true(
-        (during.0 - before.0).abs() < 2.0 && (during.1 - before.1).abs() < 2.0,
+        (during.0 - before.0).abs() <= reach_x && (during.1 - before.1).abs() <= reach_y,
         msg="the menu moved while closing: \{Repr(before)} to \{Repr(during)}",
       )
       assert_true(t.query(MenuItem, label="自定义侧边条") is None, msg="the closing menu cannot be chosen")

@@ -11,7 +11,7 @@ import type { Rigs } from "../src/rigs.ts";
 import { parseTopic, type Topic } from "../src/protocol.ts";
 import { isObject } from "../src/util.ts";
 import {
-  CHANGELOG_DEVICE, CHANGELOG_SEEN, CHAT, PEOPLE, CHAT_MESSAGES, DRIVE, LETTERS_COUNT, JOB, JOB_LOG_LINES, OPENS, OTHER_WORKSPACE, OUTLINED, PEEKS, SEARCH, UP, VAULT_ITEM, cardCame, changelogFeed, changelogReleased,
+  CHANGELOG_DEVICE, CHANGELOG_SEEN, CHAT, PEOPLE, CHAT_MESSAGES, DRIVE, LETTERS_COUNT, JOB, JOB_LOG_LINES, OPENS, OTHER_WORKSPACE, OUTLINED, PEEKS, PLAIN_WORKSPACE, SEARCH, UP, VAULT_ITEM, cardCame, changelogFeed, changelogReleased,
   chatArchived, chatRenamed, devicesAdded, devicesSaid, driveAdded, fixture, hostReading, jobLogOf, jobsMoved, lettersHeld, listedOf, liveStepped, lockApproved, memberJoined, messageAdded, more,
   netOf, outlinedEdit, outlinedLog, outlinedSaid, outlinedWorking, overviewMoved, othersPresetsChanged, othersPresetsOf, presetRecordsChanged, presetsChanged, quotaChanged, records, resourcesOf, screensMoved, screensOf, sessionMade, thingSaid, transcriptOf,
   usageRead, vaultAdded, vaultUsed, ownPendingOf, STATIONS, MOVES_ASKED, moveOf,
@@ -123,9 +123,9 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   // (安全模式, sfpages/security.mbt: the twelve members' devices, the five stations)
   "lock": { topic: "lock", workspace: "ws" },
   // (the vault, sfpages/vault.mbt and vault_item.mbt: 36 secrets, the uses of the most used one)
-  "vaults": { topic: "vaults", workspace: "ws" },
-  "vaultItems": { topic: "vaultItems", workspace: "ws", vault: "plain" },
-  "vaultUses": { topic: "vaultUses", workspace: "ws", vault: "plain", item: VAULT_ITEM },
+  "vaults": { topic: "vaults", workspace: PLAIN_WORKSPACE },
+  "vaultItems": { topic: "vaultItems", workspace: PLAIN_WORKSPACE, vault: "plain" },
+  "vaultUses": { topic: "vaultUses", workspace: PLAIN_WORKSPACE, vault: "plain", item: VAULT_ITEM },
   // (adding a station, sfapp/settings/station_add.mbt; a station's workspaces, sfpages/station_page.mbt)
   "joinable": { topic: "joinable", workspace: "ws" },
   "memberships": { topic: "memberships", station },
@@ -539,8 +539,8 @@ export const CAUSES: Record<string, Cause> = {
   // A member's new device approved in the workspace's lock, as its stations keep it.
   approved: { run: ({ t, base }) => t.data.put("lock", "ws", lockApproved(base, t.host.nowMs())) },
   // The vault's plain library: an item used once more (its uses as Maple told them again), an item added.
-  used: { run: ({ t, base }) => t.data.put("vault", "ws", vaultUsed(base, t.host.nowMs())) },
-  item: { run: ({ t, base }) => t.data.put("vault", "ws", vaultAdded(base, t.host.nowMs())) },
+  used: { run: ({ t, base }) => t.data.put("vault", PLAIN_WORKSPACE, vaultUsed(base, t.host.nowMs())) },
+  item: { run: ({ t, base }) => t.data.put("vault", PLAIN_WORKSPACE, vaultAdded(base, t.host.nowMs())) },
   // A member more in the workspace, as the cloud lists it.
   member: { run: ({ t, base }) => t.set({ topic: "workspace", workspace: "ws" }, memberJoined(base)) },
   // A session more on Maple, a Slack thread's.

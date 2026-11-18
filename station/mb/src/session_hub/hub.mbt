@@ -27,10 +27,10 @@ pub let max_inbound_file : Double = 52_428_800.0
 
 ///|
 /// rows.ts surfaces and marks.
-pub let stillfail_surface : String = "ember"
+pub let stillfail_surface : String = "chat"
 
 ///|
-pub let internal_connect : String = "ember"
+pub let internal_connect : String = "chat"
 
 ///|
 pub let internal_channel : String = "CHAT"

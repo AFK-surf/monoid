@@ -1304,6 +1304,21 @@
   "web-pages.security.devicesWhich": "Signed in within the last 30 days",
   "web-pages.security.lead": "Who can access this workspace's stations and run commands on them",
   "web-pages.security.members": "Members",
+  "web-pages.security.myDevices": "My devices",
+  "web-pages.security.otherMembers": "Other members",
+  "web-pages.security.memberTrustedDevices": {
+    "one": "{n} trusted device",
+    "other": "{n} trusted devices"
+  },
+  "web-pages.security.memberDevices": {
+    "one": "{n} device",
+    "other": "{n} devices"
+  },
+  "web-pages.security.memberWebDevices": {
+    "one": "{n} web session",
+    "other": "{n} web sessions"
+  },
+  "web-pages.security.memberNoDevices": "No devices",
   "web-pages.security.needsAppTitle": "Install the app first",
   "web-pages.security.newDeviceOf": "{name}'s new device",
   "web-pages.security.newDevices": "New devices need approval",
@@ -1522,6 +1537,7 @@
   "web-pages.screen.someone": "them",
   "web-pages.screen.takeOver": "Take over",
   "web-pages.screen.takeOverTip": "Pause {names} and take control",
+  "web-pages.screen.heldBy": "{who} is operating this screen — click Take over to interact",
   "web-pages.screen.copiedText": "Copied on the remote: ",
   "web-pages.screen.copiedImage": "An image was copied on the remote",
   "web-pages.screen.copyHere": "Copy here",
@@ -2266,5 +2282,29 @@
   "web-pages.experimental.farviewNative.title": "Native Farview tab rendering",
   "web-pages.experimental.farviewNative.description": "Draw Farview browser tabs directly on this device for instant scrolling and typing; turn it off anytime to switch back to screenshots",
   "web-pages.experimental.board.title": "Board view for chats",
-  "web-pages.experimental.board.description": "View chats in columns by status, station, or person and manage pending tasks; turning it off returns to the chat list"
+  "web-pages.experimental.board.description": "View chats in columns by status, station, or person and manage pending tasks; turning it off returns to the chat list",
+  "web-pages.rowMenu.open": "Open",
+  "web-pages.rowMenu.openChat": "Open chat",
+  "web-pages.rowMenu.copyName": "Copy name",
+  "web-pages.rowMenu.copyAddress": "Copy address",
+  "web-pages.rowMenu.copied": "Copied “{name}”",
+  "web-pages.rowMenu.restore": "Restore chat",
+  "web-pages.cloud.connect.title": "Add the machine to a workspace",
+  "web-pages.cloud.connect.lead": "{host} asks to add “{machine}” as a station to the workspace you pick. Go on only if you just pressed Connect there.",
+  "web-pages.cloud.connect.aMachine": "a machine",
+  "web-pages.cloud.connect.workspace": "Workspace",
+  "web-pages.cloud.connect.name": "Station name",
+  "web-pages.cloud.connect.note": "Add hands {host} the command to join; the machine's station restarts and joins. The command works once, within the hour.",
+  "web-pages.cloud.connect.add": "Add",
+  "web-pages.cloud.connect.adding": "Adding",
+  "web-pages.cloud.connect.cancel": "Cancel",
+  "web-pages.cloud.connect.handing": "Going back to {host}",
+  "web-pages.cloud.connect.reading": "Reading your workspaces",
+  "web-pages.cloud.connect.failed": "Not added: {error}. You can press Add again.",
+  "web-pages.cloud.connect.noCommand": "no command to join came back",
+  "web-pages.cloud.connect.noWorkspace": "No workspace to add a station to",
+  "web-pages.cloud.connect.noWorkspaceBody": "Only a workspace's owners and admins add stations. Make a workspace in {name}, or ask an owner to make you an admin, then press Connect in the console again.",
+  "web-pages.cloud.connect.refused": "Not connected",
+  "web-pages.cloud.connect.refusedBody": "This link did not come from a console {name} knows, so nothing was sent. Go back to your console and press Connect on the machine's page again.",
+  "web-pages.cloud.connect.signInBody": "Once you are signed in you come back here: pick a workspace to add the machine to."
 }

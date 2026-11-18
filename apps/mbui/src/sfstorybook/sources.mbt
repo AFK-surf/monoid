@@ -65,7 +65,7 @@ fn dedent(lines : Array[String]) -> String {
 /// The lines that make the state `label` says in stories.mbt: the body of the `fn(card) { … }` after its label
 /// ("" where stories.mbt did not come with the page).
 fn case_code(label : String) -> String {
-  guard sources().get("sfstories/stories.mbt") is Some(lines) else { return "" }
+  guard sources().get("sfstorybook/stories.mbt") is Some(lines) else { return "" }
   let said = "\"" + label + "\""
   guard lines.search_by(fn(l) { l.contains(said) }) is Some(at) else { return "" }
   let head = "fn(card) {"

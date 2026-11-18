@@ -2,8 +2,8 @@
 // browser seen and driven from the app asks for one): the platform's authenticator asked
 // to sign the client data the app gives for a relying party, as a browser asks it. Windows (win_passkeys.c: its WebAuthn
 // API, which asks the person itself with Windows Hello, a phone or a security key, and the passkeys of a provider such
-// as 1Password); macOS 14 and later in an app entitled as a browser (apple_passwords.m: AuthenticationServices, which
-// makes its own client data of the challenge and origin given); none elsewhere (`passkeys` is false there).
+// as 1Password); macOS 14+ and iOS 17.4+ in an app entitled as a browser (apple_passwords.m: AuthenticationServices,
+// which makes its own client data of the challenge and origin given); none elsewhere (`passkeys` is false there).
 
 ///|
 /// A signing under way (`passkey_get`).

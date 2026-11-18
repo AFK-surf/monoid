@@ -21,6 +21,7 @@ pub fn Store::get_thread(self : Store, id : Json) -> Json raise {
 
 ///|
 pub fn Store::thread_at(self : Store, surface : Json, channel : Json, thread_ts : Json) -> Json raise {
+  let surface = own_name(surface)
   opt_row(self.one("SELECT * FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?", [surface, channel, thread_ts]), thread_of)
 }
 
@@ -44,6 +45,7 @@ pub fn Store::open_thread_of(
   created_by : Json,
   home : Json,
 ) -> Json raise {
+  let surface = own_name(surface)
   ignore(self.run(thread_insert_if_absent_sql, [surface, channel, thread_ts, title, created_by, self.now_json(), home]))
   let thread = self.thread_at(surface, channel, thread_ts)
   if thread is Null {
@@ -59,6 +61,7 @@ pub fn Store::open_thread_of(
 
 ///|
 pub fn Store::thread_of_message(self : Store, surface : Json, channel : Json, ts : Json) -> Json raise {
+  let surface = own_name(surface)
   match
     self.one(
       "SELECT t.* FROM entries e JOIN threads t ON t.id = e.thread WHERE t.surface = ? AND t.channel = ? AND e.ts = ? LIMIT 1",
@@ -71,6 +74,7 @@ pub fn Store::thread_of_message(self : Store, surface : Json, channel : Json, ts
 
 ///|
 pub fn Store::join_thread(self : Store, thread : Json, session : Json, connect : Json) -> Json raise {
+  let connect = own_name(connect)
   self.with_(changes => {
     let joined = self.run(member_join_if_needed_sql, [thread, session, connect, self.now_json()]) > 0
     if joined {
@@ -99,6 +103,7 @@ pub fn Store::leave_thread(self : Store, thread : Json, session : Json) -> Json 
 
 ///|
 pub fn Store::left_thread(self : Store, session : Json, connect : Json, channel : Json, thread_ts : Json) -> Json raise {
+  let connect = own_name(connect)
   jbool(
     self.one(
       "SELECT 1 FROM thread_sessions m JOIN threads t ON t.id = m.thread\n         WHERE m.session = ? AND m.connect = ? AND t.channel = ? AND t.thread_ts = ? AND m.left_at IS NOT NULL LIMIT 1",

@@ -270,16 +270,30 @@ fn ftab_places_node(v : @view.View, src : Source, ws : String, scope : String, s
       return
     }
     let keyed = p.keyed_by(fn() { ftab_place_lines(src, ws, stations()) }, fn(l) { l.key })
-    p.scrolls_window(
+    // (a line's block taken by the next of its make (a station's heading, a place's row) to show as it no more does,
+    // its key that one's)
+    p.scrolls_reused(
       @view.Scroll::list(),
       fn() { keyed.keys() },
+      shape=fn(k) { if keyed.peek(k).map_or(false, fn(l) { l.head }) { 0 } else { 1 } },
       est=ftab_place_est,
       slop=@ui.touch_slop(),
       bar=@ui.tree_scroll_bar(),
       foot=fn(f) { f.height(Is(Some(ftab_places_foot))) |> ignore },
       fn(b, k) {
-        guard @signals.untracked(fn() { keyed.get(k) }) is Some(first) else { return }
-        let now = fn() { keyed.get(k).unwrap_or(first) }
+        // (its make, which never changes for a block: `shape`'s)
+        guard @signals.untracked(fn() { keyed.get(k()) }) is Some(first) else { return }
+        // (its key's line as it is now, the last it was where its key is gone from the list: what it shows as it goes)
+        let last = Ref(first)
+        let now = fn() {
+          match keyed.get(k()) {
+            Some(l) => {
+              last.val = l
+              l
+            }
+            None => last.val
+          }
+        }
         if first.head {
           @sf.section_heading_node(b, fn() { now().title }, note=fn() { now().note })
           return

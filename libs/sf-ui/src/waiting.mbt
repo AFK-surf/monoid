@@ -24,6 +24,38 @@ fn waited_long(c : @ui.Ctx, key : String) -> Bool {
 }
 
 ///|
+/// Whether `ms` has passed on `v`'s clock since `since()` (a moment of that clock), followed: true at once where it
+/// already has, else false till `since() + ms` comes due on the timeline, let go with `v`. Only while `going()`: once
+/// it is not, nothing is due (the moment called off) and it is false.
+pub fn waited_past_node(
+  v : @view.View,
+  since : () -> Double,
+  ms : Double,
+  going? : () -> Bool = fn() { true },
+) -> () -> Bool {
+  let past = @signals.signal(false)
+  let due : Ref[() -> Unit] = Ref(fn() {  })
+  v.owns(fn() { (due.val)() }) |> ignore
+  v.reacts(fn() { if going() { Some(since()) } else { None } }, fn(at) {
+    (due.val)()
+    due.val = fn() {  }
+    match at {
+      Some(at) => {
+        let seen = at + ms
+        if v.cause_at() >= seen {
+          past.set(true)
+        } else {
+          past.set(false)
+          due.val = v.at_moment(seen, fn() { past.set(true) })
+        }
+      }
+      None => past.set(false)
+    }
+  })
+  fn() { past.get() }
+}
+
+///|
 /// What waits, node `node`, breathing (the placeholders, to 0.5: waiting.css.ts breathe; a service restarting, its dot
 /// to 0.35: Jobs.css.ts jobBreathe): whole to `low` and back in breath_ms, each way on CSS's ease-in-out, worked out as
 /// each frame is drawn, never built anew for it (Ctx::cycle_look); still and whole when what it waits on failed (the

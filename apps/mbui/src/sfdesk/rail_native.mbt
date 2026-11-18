@@ -888,7 +888,6 @@ fn rail_native_reset() -> Unit {
   @sfbase.nav_tapped_place.set((0.0, 0.0, 0.0, 0.0))
   tabs_kept.clear()
   nav_log_was.val = ""
-  attention_size[0] = 0.0
   info_width[0] = 0.0
 }
 

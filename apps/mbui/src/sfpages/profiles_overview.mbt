@@ -796,60 +796,18 @@ fn ov_pool_pill_node(
   selected : () -> Bool,
   on_select : () -> Unit,
 ) -> Unit {
-  // (one of the pools to choose: read out selected while it is the one shown, the pointer's ground over its own)
-  @headless.choice(parent, Button, fn() { title() + " " + count_txt() }, selected, fn(_) { on_select() }, fn(pill, _) {
-    pill
-    .row(Is(true))
-    .gap(Is(6.0))
-    .lines_up(Is(Some(Middle)))
-    .grow(Is(1.0))
-    .basis(Is(Some(0.0)))
-    .min_width(Is(Some(0.0)))
-    .min_height(By(fn() { Some(@sf.theme().items.least) }))
-    .padding(Is((12.0, 7.0, 12.0, 7.0)))
-    .radius(By(ug_row_corner))
-    .ground(By(fn() {
-      let t = @sf.theme()
-      if selected() {
-        @sf.alpha(t.p.accent, if t.dark { 0.18 } else { 0.11 })
-      } else {
-        @ui.tree_theme().color(Tint)
-      }
-    }))
-    |> ignore
-    @sf.focus_ring_node(pill)
-    @sf.hover_ground_node(pill, on=fn() { !selected() })
-
-    @sf.words_node(pill, title, fn() {
-      if selected() {
-        ug_named_title.then(@ui.text_style(color=AccentText, w=@sf.grow))
-      } else {
-        ug_row_title
-      }
-    })
-    .grow(Is(1.0))
-    .basis(Is(Some(0.0)))
-    .shrink(Is(1.0))
-    .min_width(Is(Some(0.0)))
-    .allow_ellipsis(Is(true))
-    |> ignore
-
-    pill.box(fn(dot) {
-      dot
-      .width(Is(Some(6.0)))
-      .height(Is(Some(6.0)))
-      .radius(Is(3.0))
-      .shrink(Is(0.0))
-      .ground(By(fn() {
-        let t = @sf.theme()
-        if low() { t.p.red } else { t.p.green }
-      }))
-      |> ignore
-    })
-    |> ignore
-
-    @sf.words_node(pill, count_txt, fn() { ug_line_end }).shrink(Is(0.0)) |> ignore
-  })
+  // (one of the pools to choose (@sf.count_chip_node's Fill): read out selected while it is the one shown, the pointer's
+  // ground over its own; its state's dot red where it runs short, else the online green)
+  @sf.count_chip_node(
+    parent,
+    title,
+    fn(_) { on_select() },
+    count=count_txt,
+    chosen=selected,
+    dot=fn() { if low() { "error" } else { "online" } },
+    corner=ug_row_corner,
+  )
+  .grow(Is(1.0))
   |> ignore
 }
 
@@ -1154,10 +1112,20 @@ fn ov_charts_node(
 
 ///|
 /// `输出速度`, under the pool's two charts: its title and the speed now, the span to show, and each window's speed over
-/// it; where none of the pool's calls was timed in the span, says so in the chart's place.
+/// it; where none of the pool's calls was timed in the span, says so in the chart's place. A pool none of whose calls
+/// was timed in any span shows none of it, title and spans too: nothing to choose between.
 fn ov_speed_node(parent : @view.View, active_pool : () -> ModelPool?) -> Unit {
   let points_now = @signals.computed(fn(_) { active_pool().map(ov_speed_points).unwrap_or([]) }, same=fn(a, b) { a == b })
   let points = fn() { points_now.get() }
+  let any_timed = @signals.computed(
+    fn(_) { active_pool().map(fn(p) { p.speed.iter().any(ov_speed_known) }).unwrap_or(false) },
+    same=fn(a, b) { a == b },
+  )
+  parent.show(fn() { any_timed.get() }, at_once=true, fn(sec) { ov_speed_section_node(sec, points) })
+}
+
+///|
+fn ov_speed_section_node(parent : @view.View, points : () -> Array[Double]) -> Unit {
   parent.box(fn(col) {
     col.gap(Is(6.0)).padding(Is((0.0, 16.0, 0.0, 0.0))) |> ignore
     ug_line_node(col, fn(h) {

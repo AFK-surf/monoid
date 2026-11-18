@@ -572,3 +572,49 @@ fn present(v : J?) -> J? {
     _ => v
   }
 }
+
+///|
+/// `/^(https?|all|no)_proxy$/i.test(name)` (`machineProxy`): a variable naming one machine's way out, never a borrowed
+/// profile's.
+fn machine_proxy(name : String) -> Bool {
+  let folded = StringBuilder::new()
+  for c in name {
+    folded.write_char(if c >= 'A' && c <= 'Z' { (c.to_int() + 32).unsafe_to_char() } else { c })
+  }
+  ["http_proxy", "https_proxy", "all_proxy", "no_proxy"].contains(folded.to_string())
+}
+
+///|
+/// `env[name] || env[name.toLowerCase()]`: a variable in either case it is written in, none when empty.
+fn either_case(env : Fields, name : String) -> String? {
+  match str_of(env.get(name)) {
+    Some(v) if v != "" => Some(v)
+    _ =>
+      match str_of(env.get(lower(name))) {
+        Some(v) if v != "" => Some(v)
+        _ => None
+      }
+  }
+}
+
+///|
+/// `keepLocal`: `env` going through a proxy, this machine left out of it in both cases of NO_PROXY, added to what they
+/// name.
+fn keep_local_fields(env : Fields) -> Unit {
+  if !["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"].iter().any(p => either_case(env, p) is Some(_)) {
+    return
+  }
+  let named : Array[String] = either_case(env, "NO_PROXY")
+    .unwrap_or("")
+    .split(",")
+    .map(h => trim(h.to_string()))
+    .filter(h => h != "")
+    .collect()
+  if named.contains("*") {
+    return
+  }
+  let kept = named + ["localhost", "127.0.0.1", "::1"].filter(h => !named.contains(h))
+  let joined = kept.join(",")
+  env.set_str("NO_PROXY", joined)
+  env.set_str("no_proxy", joined)
+}

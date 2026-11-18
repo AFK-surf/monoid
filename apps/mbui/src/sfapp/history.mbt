@@ -116,7 +116,7 @@ fn history_details_node(v : @view.View, src : Source, r : ChatRef, key : String,
     held.padding(Is((18.0, 0.0, 18.0, 30.0))) |> ignore
     held.box(fn(st) {
       st.padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
-      agent_status_node(st, src, a)
+      @sfpages.agent_status_node(st, src, a)
     })
     |> ignore
     agent_tiles_node(held, card, 14.0, tips~)
@@ -172,100 +172,6 @@ fn history_details_node(v : @view.View, src : Source, r : ChatRef, key : String,
     })
   })
   |> ignore
-}
-
-///|
-/// Where it stands (agent_status's, as nodes) in `v`, as `a` says it now: the library's dot of its tone (tone_state) on
-/// the first line's middle, its words and, muted, for how long, counting on each second from when it began.
-fn agent_status_node(v : @view.View, src : Source, a : () -> Json?) -> Unit {
-  let s = fn() { field(a(), "session") }
-  v.box(fn(row) {
-    row.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
-    // (the library's dot, in a box as tall as its words' first line at the system's size of words, across its middle)
-    row.box(fn(d) {
-      d
-      .height(By(fn() { Some(@sf.node_sp(d, @ui.tree_theme().text_size(Meta).1)) }))
-      .row(Is(true))
-      .lines_up(Is(Some(Middle)))
-      .shrink(Is(0.0))
-      |> ignore
-      @sf.state_dot_node(d, fn() { tone_state(text(s(), "tone")) })
-    })
-    |> ignore
-    // (its clock made again as what it counts from changes)
-    row.pick(at_once=true, fn() { since_from(src, a()) }, fn(w, from) {
-      w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-      let tick = match from {
-        Some((at, till)) => @sfpages.steps_seconds(w, src, at, till?=till)
-        None => fn() { 0 }
-      }
-      w
-      .words_runs(By(fn() {
-        tick() |> ignore
-        let since = since_words(src, a())
-        let runs = [@ui.span(text(s(), "statusText"))]
-        if since != "" {
-          runs.push(@ui.span(" · " + since, color=@sf.theme().p.muted))
-        }
-        runs
-      }))
-      .words_look(By(fn() { @ui.style_words(status_words) }))
-      .ink(By(fn() { @ui.style_ink(status_words) }))
-      |> ignore
-    })
-  })
-  |> ignore
-}
-
-///|
-/// Where its words stand: the meta's, 18 a line, in the ink.
-// kept across runs: a value (no field of it changes)
-let status_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg)
-
-///|
-/// When what agent `a`'s status counts from began and for how long at most it counts (ms; none: on), none when it
-/// counts nothing (when it was last at it, as the core says it).
-fn since_from(src : Source, a : Json?) -> (Double, Double?)? {
-  let wait = field(a, "wait")
-  match wait {
-    Some(Object(_)) => {
-      let from = number(wait, "since")
-      Some((from, opt_number(wait, "seconds").map(fn(sec) { sec * second_ms })))
-    }
-    _ =>
-      match opt_number(a, "since") {
-        Some(at) => Some((at, None))
-        None => {
-          ignore(src)
-          None
-        }
-      }
-  }
-}
-
-///|
-/// For how long agent `a` has stood where it does (agent_since's words, read at the time it is drawn): at work since
-/// its turn began, waiting as long as it has (of at most), else when it was last at it.
-fn since_words(src : Source, a : Json?) -> String {
-  let wait = field(a, "wait")
-  let since = opt_number(a, "since")
-  if wait is None && since is None {
-    return text(field(field(field(a, "session"), "time"), "lastActiveAt"), "ago")
-  }
-  let now = (src.now)()
-  match wait {
-    Some(Object(_)) => {
-      let from = number(wait, "since")
-      match opt_number(wait, "seconds") {
-        Some(sec) => elapsed(dmin(now, from + sec * second_ms) - from) + " / " + elapsed(sec * second_ms)
-        None => elapsed(now - from)
-      }
-    }
-    _ => {
-      let from = since.unwrap_or(now)
-      elapsed(now - from)
-    }
-  }
 }
 
 ///|

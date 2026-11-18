@@ -5,15 +5,37 @@
 // goes to the station to answer the page (`screen.input` passkey). A no is answered as a browser answers it.
 
 ///|
-/// The page's ask for a passkey, while this viewer drives the screen; None in none, or only looking.
+/// The page's ask for a passkey, while this viewer drives the screen; None in none, dismissed, or only looking.
 fn ScreenSess::passkey_ask(self : ScreenSess) -> Json? {
   if !self.driving() {
     return None
   }
   match field(self.state, "passkey") {
-    Some(Object(_) as p) if text(Some(p), "id") != "" => Some(p)
+    Some(Object(_) as p) => {
+      let id = text(Some(p), "id")
+      if id != "" && self.passkey_dismissed.get() != Some(id) {
+        Some(p)
+      } else {
+        None
+      }
+    }
     _ => None
   }
+}
+
+///|
+/// Dismisses the passkey prompt (`×`): remembers the current ask's `id` so it hides immediately, cancels any host ask,
+/// and tells the page `NotAllowedError` as cancelling in a browser does.
+fn ScreenSess::passkey_dismiss(self : ScreenSess) -> Unit {
+  let id = match field(self.state, "passkey") {
+    Some(Object(_) as p) => text(Some(p), "id")
+    _ => ""
+  }
+  if id != "" {
+    self.passkey_dismissed.set(Some(id))
+    self.input(self.src, Json::object({ "t": Json::string("passkey"), "id": Json::string(id), "error": Json::string("NotAllowedError") }))
+  }
+  self.passkey_stop()
 }
 
 ///|
@@ -140,7 +162,7 @@ fn passkey_sign_node(c : @view.View, s : ScreenSess) -> Unit {
       @sf.first_line_node(row, Ui, fn(l) {
         @sf.icon_node(l, "key", drop_icon, By(fn() { @ui.tree_theme().color(Muted) }), name_now=fn() { if step() == "said" { "info" } else { "key" } })
         |> ignore
-      })
+      }).min_height(Is(Some(drop_key_side)))
       |> ignore
       @sf.row_lines_node(
         row,
@@ -157,7 +179,7 @@ fn passkey_sign_node(c : @view.View, s : ScreenSess) -> Unit {
             @sf.words_node(w, title, fn() { if step() == "said" { drop_path_words } else { drop_name } }) |> ignore
           })
           |> ignore
-          first.show(at_once=true, fn() { step() == "said" }, fn(k) { screen_row_key_node(k, "close", @sf.t("common.close"), fn() { s.passkey_stop() }) })
+          screen_row_key_node(first, "close", @sf.t("common.close"), fn() { s.passkey_dismiss() })
         },
         fn(under) {
           under.show(at_once=true, fn() { step() == "" }, fn(u) {

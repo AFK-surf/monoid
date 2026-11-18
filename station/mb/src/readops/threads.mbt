@@ -10,7 +10,7 @@ fn thread_people(db : @sql.Db, thread : Json, surface : Json) -> Json raise {
     None => Json::null()
   }
   let authors = db.all("SELECT author FROM thread_people WHERE thread = ? ORDER BY first_n", [thread]).map(r => field(r, "author"))
-  if surface == Json::string("ember") {
+  if surface == Json::string("chat") {
     return Json::array(authors)
   }
   match connect {

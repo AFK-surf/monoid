@@ -138,7 +138,7 @@ fn prepared_origin_index(db : @sql.Db) -> Bool raise {
 ///|
 /// store.ts `namingOriginProbe`: whether a member has an external thread visible to the shared reader.
 fn naming_origin(db : @sql.Db, session : String, prepared_ok : Bool) -> Bool raise {
-  let original = () => one(db, has_naming_origin_sql, [Json::string(session), Json::string("ember")]) is Some(_)
+  let original = () => one(db, has_naming_origin_sql, [Json::string(session), Json::string("chat")]) is Some(_)
   if !prepared_ok {
     return original()
   }
@@ -168,7 +168,7 @@ fn latest_naming_origins(db : @sql.Db, sessions : Array[String]) -> Array[Json] 
   if sessions.length() == 0 {
     return []
   }
-  let original = (keys : Array[String]) => db.all(latest_naming_origin_sql, [ids_json(keys.map(Json::string)), Json::string("ember")]).map(r => field(r, "id"))
+  let original = (keys : Array[String]) => db.all(latest_naming_origin_sql, [ids_json(keys.map(Json::string)), Json::string("chat")]).map(r => field(r, "id"))
   db.exec("SAVEPOINT latest_naming_origins")
   defer (db.exec("RELEASE latest_naming_origins") catch { _ => () })
   let found = try {
@@ -297,7 +297,7 @@ fn scope_of_job_names(db : @sql.Db, keys : Array[String]) -> JobScope raise {
     []
   } else {
     db
-    .all("SELECT DISTINCT t.id FROM thread_sessions m CROSS JOIN threads t ON t.id = m.thread\n    WHERE m.session IN (SELECT value FROM json_each(?1)) AND t.surface = ?2", [ids_json(keys.map(Json::string)), Json::string("ember")])
+    .all("SELECT DISTINCT t.id FROM thread_sessions m CROSS JOIN threads t ON t.id = m.thread\n    WHERE m.session IN (SELECT value FROM json_each(?1)) AND t.surface = ?2", [ids_json(keys.map(Json::string)), Json::string("chat")])
     .map(r => field(r, "id"))
   }
   let checked : Map[String, Bool] = Map([])
@@ -447,7 +447,7 @@ fn job_name_items(db : @sql.Db, viewer : Json, words : Json, archived : Bool, sc
   let origins : Map[String, (Map[String, Json], Array[Map[String, Json]])] = Map([])
   let chatted : Set[String] = Set::new()
   for t in threads {
-    let own = field(t.0, "surface") == Json::string("ember")
+    let own = field(t.0, "surface") == Json::string("chat")
     for m in t.1 {
       let s = js_text(field(m, "session"))
       if own {
@@ -472,7 +472,7 @@ fn job_name_items(db : @sql.Db, viewer : Json, words : Json, archived : Bool, sc
     }
   }
   for t in threads {
-    if field(t.0, "surface") != Json::string("ember") || !listed(t.0) {
+    if field(t.0, "surface") != Json::string("chat") || !listed(t.0) {
       continue
     }
     let agents = in_chat(t.0, t.1)

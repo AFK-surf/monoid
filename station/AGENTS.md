@@ -7,7 +7,8 @@
   (`<app>/station/stillfail-reader`), the launcher, the runner, the Helper and what `package.json`'s `build` lays out
   (`../scripts/station-bundle.sh`). The MoonBit program can be the whole station (`mb/src/station_main`, its
   `mb-live-*.test.ts`), and the launcher runs it so for a release with no `main.js`
-  (`native/launcher/src/main.rs` `station`). Releases ran it so as 0.1.9984 to 0.1.9996 and came back to Node: alone it
+  (`native/launcher/src/main.rs` `station`), or for a station whose config.json says `"engine": "moonbit"` (`station_of`,
+  read at each start of its process: a switch of one station's, turned on first for still.fail's own). Releases ran it so as 0.1.9984 to 0.1.9996 and came back to Node: alone it
   fell short of the TypeScript in the chats' events, files, peers and the accounts, so a release runs it alone again
   only once it does all the TypeScript does, held by those tests.
 - Processes: the launcher (`native/launcher`, Rust) keeps the pid, the data directory's lock and the ports, and on an
@@ -27,12 +28,13 @@
   the launcher changes seldom, so a station whose own program is broken still updates. What a Node says of itself for
   `stillfail status` is `<data>/run/health.json` (`src/ops/health.ts`), fresh
   only while its loop runs. A device's requests of the
-  routes in `src/mesh/served.ts` (the reads a device makes, `/batch`, `/changed`, its marks, names and a message in
+  routes in `src/mesh/served.ts` (the reads a device makes, `/changed`, its marks, names and a message in
   words and quotes) the front hands the MoonBit program that answers them itself (station/mb's reader `--serve`), not
   Node, which only tells it who each connection's member is and the floor a core is too old under there, takes what it wrote (`changes`, `said`: Node's store
   tells, the hub delivers) and keeps a message's idempotency slot and timestamp (`claim`); and `GET /events`, which
   Node's events make and give it a piece at a time, each told several streams given once (`relay`), and which it
-  compresses and writes. The native
+  compresses and writes. A device's batch of reads (`POST /batch`, a history brought on in the background) stays Node's,
+  read after what a person waits on (`src/read/pool.ts`), so it never holds up one of those programs. The native
   parts are prebuilt by their sources (`scripts/native.ts`): even a comment changed in one makes every machine and
   CI build it again, so touch them only for what they do.
 - What still.fail draws outside the app (the Helper's windows, `native/helper`) is in still.fail's design (the

@@ -20,6 +20,7 @@ import { bodyHash, inForce, wsTag } from "../src/lock-moved.ts";
 import { added, enrolled, held, inForceOf, lockView, offOwnLock, outOf, read, roster } from "../src/views/lock.ts";
 import * as format from "../src/format.ts";
 import { hooks } from "../src/core/execute.ts";
+import { t } from "../src/i18n.ts";
 import { dialer, ownLogFor, serveTrusted, tryOne } from "../src/views/pair.ts";
 import { ME, committed, genesis, grant, pipe, rig } from "./lock-rig.ts";
 
@@ -692,3 +693,91 @@ test("the new device already on its person's log: no log begun, nobody asked, it
   assert.equal(w.inner.adb.personal().entries("s1").length, length, "nothing signed on it");
   assert.equal(w.asked(), before, "nobody asked");
 });
+
+// Asked into the person's own lock, a trusted device shows its code with nobody asked: the person is asked once, by
+// the device whose code was typed right, as it approves, never as a code shows nor as one typed wrong; a device whose
+// code was not typed asks nothing at all. One ask for every account asked into, the person's no ending them all.
+const personalHello = (id: string, k: { id: string }, subs: string[]) => ({ t: "hello", v: 1, workspaces: [], kind: "app", label: "Pixel", sign_key: "ed25519:" + "12".repeat(32), personal: { subs, key: k.id } });
+
+test("two trusted devices showing their codes to a new app of the person's: nobody asked as they show or as a code is typed wrong; the one whose code is typed asks once as it approves, the other never", async () => {
+  const a = await setUp();
+  const b = await setUp();
+  const k = key(7010);
+  const id = key(7110).hex;
+  const before = [a.asked(), b.asked()];
+  const asked = () => [a.asked() - before[0]!, b.asked() - before[1]!];
+  const shown = await Promise.all([a, b].map(async (w) => {
+    const [trusted, phone] = await pipe();
+    w.inner.runner.fork(serveTrusted(w.inner, id, ME, trusted));
+    const first = await w.run(Effect.andThen(phone.send(personalHello(id, k, ["s1"])), phone.next()));
+    assert.deepEqual(first.ok, { t: "code", workspaces: ["person:s1"] });
+    return phone;
+  }));
+  assert.deepEqual(asked(), [0, 0], "nobody asked as the codes show");
+  const wrong = await a.run(tryOne(a.inner, { id: ME, d: shown[0]!, workspaces: ["person:s1"] }, id, "000000"));
+  assert.ok(wrong.ok !== undefined && "left" in wrong.ok, `a wrong code is not taken: ${JSON.stringify(wrong.ok ?? wrong.error?.message)}`);
+  assert.deepEqual(asked(), [0, 0], "nor as a code is typed wrong");
+  const code = ((await a.prompts()).pairing as { device: string; code: string }[]).find((p) => p.device === id)!.code;
+  const done = await a.run(tryOne(a.inner, { id: ME, d: shown[0]!, workspaces: ["person:s1"] }, id, code));
+  assert.equal(done.error, undefined, done.error?.message);
+  assert.deepEqual(asked(), [1, 0], "asked once where the code was typed, never on the other");
+  assert.deepEqual(a.r.host.secureAsked.slice(before[0]).map((x) => x.reason), [t("core-misc.personal.reason.add")]);
+  assert.ok(a.own().some((e) => e.kind === "device" && (e.body as { id: string }).id === id), "on s1's own log");
+});
+
+/// A trusted device signed into two accounts of the person's, both asked into (`subs`): the person's own lock of each
+/// as this device has it, s2's played here (on it, as s1's is), what approving puts on it noted.
+async function twoAccounts() {
+  const w = await setUp();
+  const real = w.inner.adb.personal();
+  const seeds: (Uint8Array | null)[] = [];
+  const s2Added: string[] = [];
+  const over: Record<string, unknown> = {
+    standing: (sub: string) => (sub === "s2" ? "member" : real.standing(sub)),
+    seedFor: (sub: string, reason: string) => Effect.suspend(() => (seeds.push(null), real.seedFor(sub === "s2" ? "s1" : sub, reason))),
+    addDevice: (sub: string, d: { id: string }, reason: string, seed: Uint8Array | null) => {
+      if (sub !== "s2") return real.addDevice(sub, d as never, reason, seed);
+      seeds.push(seed);
+      s2Added.push(d.id);
+      return Effect.succeed([] as Entry[]);
+    },
+  };
+  const personal = new Proxy(real, { get: (t, p) => (p in over ? over[p as string] : typeof (t as any)[p] === "function" ? (t as any)[p].bind(t) : (t as any)[p]) });
+  w.inner.adb.personal = () => personal as never;
+  const list = w.inner.accounts.list.bind(w.inner.accounts);
+  w.inner.accounts.list = () => {
+    const all = list();
+    return [...all, { ...all.find((x) => x.sub === "s1")!, sub: "s2", email: "s2@x.com" }];
+  };
+  return { w, seeds, s2Added };
+}
+
+for (const refused of [false, true]) {
+  test(`a new app asking into two accounts of the person's: nobody asked as the code shows; ${refused ? "the person saying no as the code is typed right is asked once, for neither account" : "the code typed right asks once for both"}`, async () => {
+    const { w, seeds, s2Added } = await twoAccounts();
+    const k = key(7011);
+    const id = key(7111).hex;
+    const before = w.asked();
+    const [trusted, phone] = await pipe();
+    w.inner.runner.fork(serveTrusted(w.inner, id, ME, trusted));
+    const first = await w.run(Effect.andThen(phone.send(personalHello(id, k, ["s1", "s2"])), phone.next()));
+    assert.deepEqual(first.ok, { t: "code", workspaces: ["person:s1", "person:s2"] });
+    assert.equal(w.asked() - before, 0, "nobody asked as the code shows");
+    const code = ((await w.prompts()).pairing as { device: string; code: string }[]).find((p) => p.device === id)!.code;
+    w.r.host.secureRefused = refused;
+    const done = await w.run(tryOne(w.inner, { id: ME, d: phone, workspaces: ["person:s1", "person:s2"] }, id, code));
+    w.r.host.secureRefused = false;
+    assert.equal(w.asked() - before, 1, "asked once in all");
+    if (refused) {
+      assert.ok(done.error !== undefined, "not approved");
+      assert.deepEqual(s2Added, [], "nothing put on either");
+      assert.ok(!w.own().some((e) => e.kind === "device" && (e.body as { id: string }).id === id), "not on s1's");
+    } else {
+      assert.equal(done.error, undefined, done.error?.message);
+      assert.deepEqual(s2Added, [id], "put on s2's");
+      assert.ok(w.own().some((e) => e.kind === "device" && (e.body as { id: string }).id === id), "and on s1's");
+      assert.equal(seeds.filter((x) => x === null).length, 1, "the key read once");
+      assert.ok(seeds.at(-1) instanceof Uint8Array, "s2's put on with the key read for s1");
+    }
+  });
+}

@@ -51,7 +51,7 @@ import { accountEmailSoon } from "../accounts/index.ts";
 import { agyAccountFile, agyExpiryIn, agyLentFile, agyToken } from "../agents/agy.ts";
 import { LEND_BOUND_MS } from "../accounts/oauth.ts";
 import { devinData } from "../agents/devin.ts";
-import { kimiSignedIn } from "../agents/profiles.ts";
+import { kimiSignedIn, machineProxy } from "../agents/profiles.ts";
 import type { Cloud } from "../cloud/state.ts";
 import { Refused } from "../mesh/bus.ts";
 import type { ConfigFile } from "../ops/config.ts";
@@ -207,10 +207,12 @@ export function signInFiles(p: Json): string[] {
 const keyed = (kind: unknown) => kind === "opencode-go" || kind === "anthropic-api" || kind === "api-provider";
 
 /// A profile as another station gets it: what it is, its key when it has one, never where its files are or a login.
-function portable(p: Json): Json {
+export function portable(p: Json): Json {
   const out: Json = {};
   for (const k of ["name", "runtime", "access", "env", "model", "models", "backgroundOnMessage", "fast", "enabled"]) if (p[k] !== undefined) out[k] = structuredClone(p[k]);
   if (isObject(out.access) && !keyed(out.access.kind)) delete out.access.key;
+  // A proxy is this machine's, not the profile's: the other station has its own way out, or none.
+  if (isObject(out.env)) for (const k of Object.keys(out.env)) if (machineProxy(k)) delete out.env[k];
   return out;
 }
 

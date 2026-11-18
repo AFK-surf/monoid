@@ -354,6 +354,7 @@ export function install(): void {
   };
   const chatPart = (inner: Inner, c: Extract<Call, { kind: "stationFilePart" }>, progress: Progress, ctx: SpanContext) => {
     const quiet = c.quiet === true;
+    const noHedge = c.noHedge === true;
     const [heard, sink] = partProgress(c, progress);
     // What is kept here of it, answered as the station would.
     const here = (got: { type: string; bytes: Uint8Array }, total: number) => {
@@ -364,7 +365,7 @@ export function install(): void {
     const station = () => {
       if (c.keep === null) {
         return Effect.map(
-          Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.filePart(addr, c.key, c.name, c.offset, c.length, ctx, heard, sink, undefined, quiet)),
+          Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.filePart(addr, c.key, c.name, c.offset, c.length, ctx, heard, sink, undefined, quiet, noHedge)),
           (got) => partAnswer(c, { type: got.type, total: got.total }, got.bytes),
         );
       }
@@ -385,7 +386,7 @@ export function install(): void {
           sink,
           (at, length, before, take, said) =>
             Effect.flatMap(parse(c.station), (addr) =>
-              inner.stations.requests.filePart(addr, c.key, c.name, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet),
+              inner.stations.requests.filePart(addr, c.key, c.name, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, noHedge),
             ),
           (head, at, bytes) => ((!size || head.total === size) && at + bytes.length <= head.total ? inner.driveKept.keep(id, "chat", 0, head.total, head.type, at, bytes) : Effect.void),
           (head) => head.total === size,
@@ -449,11 +450,12 @@ export function install(): void {
   };
   const drivePart = (inner: Inner, c: Extract<Call, { kind: "driveRead" }>, progress: Progress, ctx: SpanContext) => {
     const quiet = c.quiet === true;
+    const noHedge = c.noHedge === true;
     const [heard, sink] = partProgress(c, progress);
     const id = keptId(c.station, c.root, c.path);
     if (c.keep === null || c.mtime === null || c.size === null) {
       return Effect.map(
-        Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.driveRead(addr, c.root, c.path, c.offset, c.length, ctx, heard, sink, undefined, quiet)),
+        Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.driveRead(addr, c.root, c.path, c.offset, c.length, ctx, heard, sink, undefined, quiet, undefined, noHedge)),
         (got) => partAnswer(c, { type: got.type, total: got.total, mtime: got.mtime }, got.bytes),
       );
     }
@@ -469,7 +471,7 @@ export function install(): void {
         sink,
         (at, length, before, take, said) =>
           Effect.flatMap(parse(c.station), (addr) =>
-            inner.stations.requests.driveRead(addr, c.root, c.path, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, [mtime, size]),
+            inner.stations.requests.driveRead(addr, c.root, c.path, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, [mtime, size], noHedge),
           ),
         // (kept as the folder said it is; the station's says it changed: what was kept of it goes)
         (head, at, bytes) => (head.total === size && head.mtime === mtime ? inner.driveKept.keep(id, keep, mtime, size, head.type, at, bytes) : inner.driveKept.forget(id)),

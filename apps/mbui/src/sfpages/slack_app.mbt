@@ -379,14 +379,7 @@ fn sa_guide_step_node(g : @view.View, n : Int, title : String, note : () -> Stri
   g.box(fn(r) {
     @sf.style_node(r, fn() { sa_step })
     // (its circle across its title's line's middle, as tall as that line at the system's size of words)
-    @sf.first_line_node(r, Ui, leading=L6, fn(at) {
-      at.box(fn(c) {
-        @sf.style_node(c, fn() { sa_step_number })
-        @sf.words_node(c, fn() { n.to_string() }, fn() { sa_step_number_words }) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
+    @sf.step_circle_node(r, fn() { n.to_string() }, first_line=Ui, leading=L6) |> ignore
     r.box(fn(b) {
       @sf.style_node(b, fn() { sa_step_body }, in_row=true)
       @sf.words_node(b, fn() { @sf.t(title) }, fn() { desk_strong }) |> ignore
@@ -671,11 +664,9 @@ fn app_fields_node(
   k.box(fn(l) {
     @sf.style_node(l, fn() { sa_look })
     // its avatar (appAvatar: 136, the settings' corner, on the neutral ground behind its colour): pressed, a picture
-    let ab = l.box(fn(a) {
+    let ab = @sf.action_box_node(l, fn() { @sf.t("web-pages.slackApp.upload") }, fn(_) { upload() }, fn(a) {
       @sf.style_node(a, fn() { sa_avatar }, in_row=true)
       a.ground(By(ground)).clips(Is(true)) |> ignore
-      @sf.presses_node(a, upload)
-      a.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.slackApp.upload"))) })) |> ignore
       a.pick(fn() { d.shown.get() }, fn(s, shown) {
         if shown != "" {
           s.box(fn(img) {
@@ -770,8 +761,8 @@ fn sa_avatar_picker_node(
       r.each(all, fn(a) { a.id }, fn(t, item) {
         let a = item.untracked()
         let label = if a.label.has_prefix("android-") { @sf.t(a.label) } else { a.label }
-        let tile = t.box(fn(b) {
-          let on = fn() { picked_is(a.id) }
+        let on = fn() { picked_is(a.id) }
+        let tile = @sf.action_box_node(t, fn() { label }, selected=on, fn(_) { pick(a) }, fn(b) {
           // (its edge: picked, sa_tile_on's; under the pointer, sa_tile_lit's, its hovered{border_color=FieldHover})
           @sf.style_node(b, fn() { if on() { sa_tile_on } else if b.pointed() { sa_tile_lit } else { sa_tile } })
           b
@@ -779,9 +770,7 @@ fn sa_avatar_picker_node(
           .height(By(fn() { Some(side()) }))
           .ground(Is(@sf.hex_color(a.bg).unwrap_or(@sf.icon_fallback)))
           .clips(Is(true))
-          .says(By(fn() { Some(@view.said(Button, label~, selected=on())) }))
           |> ignore
-          @sf.presses_node(b, fn() { pick(a) })
           if a.mark != "" {
             b.pick(side, fn(m, w) {
               @sf.drawable_node(m, a.mark, w * sa_mark_share, tint?=if a.mono { Some(fn() { Some(sa_white) }) } else { None }) |> ignore
@@ -828,10 +817,8 @@ fn sa_permissions_node(k : @view.View, d : SaDraft, sections : () -> Array[Json]
       b.box(fn(l) {
         @sf.style_node(l, fn() { sa_perms_line })
         let said = fn() { @sf.t("web-pages.slackApp.permissions", args=[("on", on().to_string()), ("all", every().length().to_string())]) }
-        l.box(fn(s) {
+        @sf.action_box_node(l, said, expanded=fn() { d.perms.get() }, fn(_) { d.perms.set(!d.perms.untracked()) }, fn(s) {
           @sf.style_node(s, fn() { sa_perms_summary }, in_row=true)
-          @sf.presses_node(s, fn() { d.perms.set(!d.perms.untracked()) })
-          s.says(By(fn() { Some(@view.said(Button, label=said(), expanded=d.perms.get())) })) |> ignore
           @sf.icon_node(s, "chevron-right", cd_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
             if d.perms.get() {
               "chevron-down"
@@ -929,9 +916,7 @@ fn sa_permission_node(r : @view.View, d : SaDraft, g : Json?, tips : @sf.TipLaye
 /// Words to press beside a row's (cd_text_button's, as a node) in `parent`: the meta's 13 underlined, muted, the
 /// words' ink under the pointer; `press` done as they are pressed.
 fn cd_text_button_node(parent : @view.View, label : () -> String, press : () -> Unit) -> Unit {
-  parent.box(fn(b) {
-    @sf.presses_node(b, press)
-    b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
+  @sf.action_box_node(parent, label, fn(_) { press() }, fn(b) {
     b.box(fn(w) {
       w
       .words_runs(By(fn() { [@ui.span(label(), underline=true)] }), look=@ui.style_words(cd_text_button_words))
@@ -1000,14 +985,6 @@ let sa_guide : @ui.Style = @ui.css("w=Full gap=S4_5")
 ///|
 // kept across runs: a value (no field of it changes)
 let sa_step : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_step_number : @ui.Style = @ui.css("w=S6 h=S6 radius=Full bg=Neutral align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sa_step_number_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Muted, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)

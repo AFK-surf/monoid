@@ -527,6 +527,12 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     private volatile long glWorked;
 
     /**
+     * A frame drawn on the GL thread in {@code ms}, {@code dropped} frames handed over since the last never drawn
+     * (android_host.c: what the app reads of it, @hostapi.gpu_ms and frames_dropped).
+     */
+    private static native void glDrawn(double ms, int dropped);
+
+    /**
      * The frame handed over drawn (GL thread), the GL thread's queue's tasks before it done first and those after it
      * after, and what the frames it took the place of used let go once it is drawn; else the frame kept drawn again (a
      * native view's picture changed, or the surface asks for a frame: GLSurfaceView swaps whatever this draws). A new
@@ -545,6 +551,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         long t0 = System.nanoTime();
         mail.awaitFresh(fresh);
         fresh = 0;
+        long d0 = System.nanoTime();
         FrameMail.Taken<MBText.Placed> t = mail.take();
         // what the app asked of the context before this frame: done first (a stream's frame latched, a texture made)
         if (t.took) mail.runTasks(t.seq);
@@ -561,7 +568,11 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         showAt(t.shows);
         if (t.ref != null) MBText.frameDrawn(t.ref);
         Latency.frameEnds(t.lat);
-        glWorked = System.nanoTime() - t0;
+        long d1 = System.nanoTime();
+        glWorked = d1 - t0;
+        // (the GL thread's time drawing it, its waiting for the app's frame left out, and the frames handed over never
+        // drawn since the last: @hostapi.gpu_ms, @hostapi.frames_dropped)
+        glDrawn((d1 - d0) / 1e6, mail.takeDropped());
         // what the app asked of it after: done now, but for what follows a frame handed over meanwhile
         mail.runTasks(mail.pendingSeqNow());
     }

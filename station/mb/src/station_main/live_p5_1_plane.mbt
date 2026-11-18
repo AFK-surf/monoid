@@ -206,7 +206,10 @@ fn P51::plane_live(self : P51) -> Plane {
       writing.val = true
       cloud.update(_ => ())
       writing.val = false
-      p.reach_changed()
+      // (what the frame changed told on the bus as cloud.json's listeners are told of it: state.ts `update`; the
+      // station that became a rig, the agents following their workspaces, the event streams' overview)
+      p.reached_said = p.plane.reached
+      p.tell()
     }),
   )
   ignore(
@@ -242,6 +245,20 @@ fn P51::plane_live(self : P51) -> Plane {
     () => ignore(p.listeners.search_by(x => x.0 == id).map(i => p.listeners.remove(i)))
   }
   bus.cloud_call.val = async fn(op, arg) { p.call(op, arg) }
+  // What the presence socket says of a release and the model catalog (rig/main.ts, sessions/agents.ts,
+  // feedback/module.ts `plane.told("release", …)`; models/module.ts `plane.told("models", …)`).
+  control.told("release", _ => bus.told_release())
+  control.told("models", ev => ignore(
+    host.rt.fork(name="models refresh", async fn() {
+      let etag = match ev {
+        @cloud_net.Models(Some(e)) => Json::string(e)
+        _ => Json::null()
+      }
+      ignore((bus.jobs_ask.val)("models.refresh", Json::array([etag]))) catch {
+        e => p51_log("WARN", "models", "the model catalog not read", fields={ "error": Json::string("\{e}") })
+      }
+    }),
+  ))
   // (the presence socket is the mesh's, once a relay reaches the station: live_p5_1_mesh.mbt)
   self.stops.push(() => {
     up.set(false)
@@ -352,6 +369,11 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     }
     // (agents.ts: whole to tasks once the agents ended, as `rig_due` said: the rig's owner kept, what was pending of it
     // and the rigs it listed dropped, the grants of before it removed; this process then gives way to the rig's)
+    // (agents.ts `follow`: due to be a rig with nothing its owner asked, `rig_due` let go)
+    "dropRigDue" => {
+      self.state.update(st => st.remove("rig_due"))
+      Json::null()
+    }
     "becomeRig" => {
       let due = match arg {
         Object(m) if m.get("due") is Some(d) => d

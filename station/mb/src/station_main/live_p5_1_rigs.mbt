@@ -80,6 +80,8 @@ fn P51::rigs_world(self : P51) -> @rigs_mode.World {
     for c in sent {
       bus.notify_store(c)
     }
+    // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
+    bus.drain_thread_requests(t)
   }
   {
     call: async fn(name, args) {

@@ -59,3 +59,7 @@ opus-rs = "=0.1.42"
 libadb = { version = "=0.7.0", default-features = false, features = ["tokio", "pairing", "host-keys"] }
 embedded-io-async = "0.6"
 
+[dev-dependencies]
+# The test's clock (`start_paused`): a handshake given up and what it sends over ten minutes, counted in no time.
+tokio = { version = "1", features = ["test-util"] }
+

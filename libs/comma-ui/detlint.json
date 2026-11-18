@@ -92,6 +92,10 @@
     "list-comes-off": {},
     "old-island": {},
     "old-panel": {},
+    "old-set-theme": {},
+    "old-empty-around": {
+      "src/gallery/main.mbt": 1
+    },
     "click-read": {},
     "key-read": {},
     "submitted-read": {},
@@ -118,7 +122,9 @@
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
-    "headless-on-drag": {}
+    "headless-on-drag": {},
+    "page-headless": {},
+    "page-control-by-hand": {}
   },
   "excused": {
     "frame-request": {},
@@ -176,6 +182,8 @@
     "list-comes-off": {},
     "old-island": {},
     "old-panel": {},
+    "old-set-theme": {},
+    "old-empty-around": {},
     "click-read": {},
     "key-read": {},
     "submitted-read": {},
@@ -202,6 +210,8 @@
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
-    "headless-on-drag": {}
+    "headless-on-drag": {},
+    "page-headless": {},
+    "page-control-by-hand": {}
   }
 }

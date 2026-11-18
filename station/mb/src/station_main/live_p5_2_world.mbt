@@ -457,7 +457,7 @@ async fn P52::net_fetch(self : P52, meth : String, args : Array[Json]) -> Json {
     Object(m) => m.to_array().filter_map(kv => if kv.1 is String(v) { Some((kv.0, v)) } else { None })
     _ => []
   }
-  let answer = (@accounts_oauth.host_io(self.host).fetch)({
+  let answer = (p5_oauth_io(self.host).fetch)({
     url: jtext(Json::object({ "u": args.get(0).unwrap_or(Json::null()) }), "u").unwrap_or(""),
     method_: jtext(init, "method").unwrap_or("GET"),
     headers,
@@ -554,17 +554,6 @@ async fn P52::start_feedback(self : P52) -> Unit {
       tell()
     }),
   )
-  // (the plane's `release`: what of it the cloud state says, as the updates read it)
-  let last = Ref((bus.cloud_state.val)().map(s => jfield(s, "release")).unwrap_or(Json::null()))
-  ignore(
-    (bus.cloud_listen.val)(s => {
-      let now = s.map(x => jfield(x, "release")).unwrap_or(Json::null())
-      if now != last.val {
-        last.val = now
-        if !(now is Null) {
-          tell()
-        }
-      }
-    }),
-  )
+  // (the plane's `release`, told by its presence socket: feedback/module.ts `plane.told("release", tellingFixed)`)
+  bus.on_release(tell)
 }

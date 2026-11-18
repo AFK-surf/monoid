@@ -330,13 +330,20 @@ fn fpane_body_node(parent : @view.View, e : DvEntry, way : String, open : () -> 
               let keys = Array::makei(blocks.length() + (if cut { 1 } else { 0 }), fn(i) { i })
               x.box(fn(l) {
                 l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-                l.scrolls_window(@view.Scroll::list(), fn() { keys }, est=fpane_block_est, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(r, i) {
+                // (a block's node taken by the next to show as it no more does, its number that one's; what says the
+                // rest is cut made once)
+                l.scrolls_reused(@view.Scroll::list(), fn() { keys }, est=fpane_block_est, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), reuses=fn(
+                  i,
+                ) {
+                  i < blocks.length()
+                }, fn(r, i) {
                   r.box(fn(c) {
                     @sf.style_node(c, fn() { fpane_code })
-                    if i < blocks.length() {
+                    // (a block or what says the rest is cut: which never changes for a node, `reuses`')
+                    if @signals.untracked(i) < blocks.length() {
                       c.box(fn(w) {
                         w
-                        .words_runs(By(fn() { [@ui.span(blocks[i], mono=true)] }), look={ ..@view.words_plain, size: @sf.theme().t.caption, wrap: true })
+                        .words_runs(By(fn() { [@ui.span(blocks[i()], mono=true)] }), look={ ..@view.words_plain, size: @sf.theme().t.caption, wrap: true })
                         .ink(By(fn() { @sf.theme().p.text }))
                         |> ignore
                       })

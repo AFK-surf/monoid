@@ -1290,7 +1290,7 @@ test("an agent opens a chat here: it begins with its message, goes to its starte
   assert.ok(runtimeOf(r, child).prompts[0]!.includes("build the android app"));
   // Said in the opener's chat, for people.
   const notice = r.said(r.thread("C1", a.threadTs).id).at(-1)!;
-  assert.equal(notice.authorKind, "ember");
+  assert.equal(notice.authorKind, "station");
   assert.ok(notice.text.includes(`<https://ember.test/o/ws/st/${child.replaceAll(":", "%3A")}|安卓构建>`), notice.text);
   // Its row in the list leads back to the chat that opened it, named as that chat was then; the opener's row says
   // nothing of it, and archiving the opener leaves it as it was.
@@ -1548,7 +1548,7 @@ test("an agent opens a chat on another station: made there once per key, its fir
   runtimeOf(far, child!).complete();
   await settle();
   const last = far.said(thread.id).at(-1)!;
-  assert.ok(last.authorKind === "ember" && last.text.includes("peer unavailable"), last.text);
+  assert.ok(last.authorKind === "station" && last.text.includes("peer unavailable"), last.text);
   // A station that cannot be reached: not opened, and it says how to go on.
   farDown = true;
   const down = await near.refused(keyA, "chat_create", { for: "me", key: "again", station: "far", text: "x" });

@@ -19,10 +19,10 @@ pub let line_most : Int = 1500
 
 ///|
 /// rows.ts `STILLFAIL_SURFACE` and `STATION_AUTHOR`.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
 
 ///|
-let station_author : String = "ember"
+let station_author : String = "station"
 
 ///|
 fn instructions(project : String, workspace : String, repos_dir : String, memory_path : String, station : String) -> String {

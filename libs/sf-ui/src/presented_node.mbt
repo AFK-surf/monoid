@@ -311,7 +311,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             gone~,
             extras=fn(i) {
               match choices.get(i) {
-                Some(x) => { note: x.note, value: x.value, mark: x.mark }
+                Some(x) => { note: x.note, value: x.value, mark: x.mark, end: None }
                 None => menu_no_extra
               }
             },

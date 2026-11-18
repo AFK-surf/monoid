@@ -98,7 +98,6 @@ using @sfbase {
   flight_landing_words,
   flight_pieces_in,
   flight_placed,
-  flight_settled_of,
   flight_takes,
   go_to_words,
   go_tos,

@@ -9,7 +9,7 @@ import { makeStore } from "./reference/store.ts";
 import { MANUAL, Store, newMessage } from "../src/store/store.ts";
 
 const viewer = { sub: "ann@x", email: "ann@x", name: "Ann", role: "member", workspace: "A", device: "dev", home: true } as const;
-const session = (s: Store, key: string) => s.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key,
+const session = (s: Store, key: string) => s.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: key,
   createdAt: 1, lastActiveAt: 1, createdBy: "ann@x" });
 const job = (s: Store, key: string) => s.insertJob({ id: `j-${key}`, sessionKey: key, name: "job", command: "true", cwd: "/", port: null, token: key,
   state: "running", pgid: null, exitCode: null, startedAt: 1, endedAt: null, restarts: 0, log: "/dev/null", watch: false });
@@ -19,9 +19,9 @@ for (const owner of ["a", "b"]) test(`a named shared chat does not read ${owner}
   const s = Store.open(":memory:");
   try {
     session(s, "a"); session(s, "b"); job(s, "a");
-    const chat = s.openThreadOf("ember", "CHAT", "own", "Given title", "ann@x", "a");
-    s.joinThread(chat.id, "a", "ember");
-    s.joinThread(chat.id, "b", "ember");
+    const chat = s.openThreadOf("chat", "CHAT", "own", "Given title", "ann@x", "a");
+    s.joinThread(chat.id, "a", "chat");
+    s.joinThread(chat.id, "b", "chat");
     const reader = makeStore(s.db, ".");
     const expected = openJobs(reader, viewer, "en");
     assert.deepEqual(result(expected), [["j-a", "a", "Given title", false]]);
@@ -58,9 +58,9 @@ test("an unnamed shared chat may use an archived member's origin before its acti
   const s = Store.open(":memory:");
   try {
     session(s, "a"); session(s, "b"); job(s, "a");
-    const chat = s.openThreadOf("ember", "CHAT", "own", null, "ann@x", "a");
-    s.joinThread(chat.id, "b", "ember");
-    s.joinThread(chat.id, "a", "ember");
+    const chat = s.openThreadOf("chat", "CHAT", "own", null, "ann@x", "a");
+    s.joinThread(chat.id, "b", "chat");
+    s.joinThread(chat.id, "a", "chat");
     const old = s.openThread("slack:one", "C1", "old", "B origin", "ann@x");
     const recent = s.openThread("slack:one", "C1", "recent", "A origin", "ann@x");
     s.joinThread(old.id, "b", "one");
@@ -76,9 +76,9 @@ test("a missing member's origin remains usable when another member of that origi
   const s = Store.open(":memory:");
   try {
     session(s, "a"); session(s, "other"); job(s, "a");
-    const chat = s.openThreadOf("ember", "CHAT", "own", null, "ann@x", "a");
-    s.joinThread(chat.id, "missing", "ember");
-    s.joinThread(chat.id, "a", "ember");
+    const chat = s.openThreadOf("chat", "CHAT", "own", null, "ann@x", "a");
+    s.joinThread(chat.id, "missing", "chat");
+    s.joinThread(chat.id, "a", "chat");
     const origin = s.openThread("slack:one", "C1", "origin", "Missing member origin", "ann@x");
     s.joinThread(origin.id, "missing", "one");
     s.joinThread(origin.id, "other", "one");
@@ -90,10 +90,10 @@ test("job selection keeps the sidebar's order across multiple named chats", () =
   const s = Store.open(":memory:");
   try {
     session(s, "a"); job(s, "a");
-    const older = s.openThreadOf("ember", "CHAT", "old", "Older", "ann@x", "a");
-    const newer = s.openThreadOf("ember", "CHAT", "new", "Newer", "ann@x", "a");
-    s.joinThread(older.id, "a", "ember");
-    s.joinThread(newer.id, "a", "ember");
+    const older = s.openThreadOf("chat", "CHAT", "old", "Older", "ann@x", "a");
+    const newer = s.openThreadOf("chat", "CHAT", "new", "Newer", "ann@x", "a");
+    s.joinThread(older.id, "a", "chat");
+    s.joinThread(newer.id, "a", "chat");
     s.insertMessage({ ...newMessage(older.id, "old", "person", "ann@x", "old"), at: 1 });
     s.insertMessage({ ...newMessage(newer.id, "new", "person", "ann@x", "new"), at: 9 });
     assert.deepEqual(result(openJobs(makeStore(s.db, "."), viewer, "en")), [["j-a", "a", "Older", false]]);
@@ -104,8 +104,8 @@ test("finding a job's chats does not traverse unrelated station chats", () => {
   const s = Store.open(":memory:");
   try {
     session(s, "a"); job(s, "a");
-    const chat = s.openThreadOf("ember", "CHAT", "own", "Given title", "ann@x", "a");
-    s.joinThread(chat.id, "a", "ember");
+    const chat = s.openThreadOf("chat", "CHAT", "own", "Given title", "ann@x", "a");
+    s.joinThread(chat.id, "a", "chat");
     let visited = 0, traced = false;
     s.db.function("visit_job_scope_thread", (id) => { visited++; return id; });
     const observed = new Proxy(s.db, { get(target, property) {
@@ -135,8 +135,8 @@ test("finding a job's chats does not traverse unrelated station chats", () => {
     };
     const add = (start: number, end: number) => {
       for (let i = start; i < end; i++) {
-        const other = s.openThreadOf("ember", "CHAT", `other-${i}`, "Other", "ann@x", "b");
-        s.joinThread(other.id, "b", "ember");
+        const other = s.openThreadOf("chat", "CHAT", `other-${i}`, "Other", "ann@x", "b");
+        s.joinThread(other.id, "b", "chat");
       }
     };
     add(0, 40);
@@ -152,9 +152,9 @@ test("job names remain readable without the session membership index", () => {
   const s = Store.open(":memory:");
   try {
     session(s, "a"); session(s, "b"); job(s, "a");
-    const chat = s.openThreadOf("ember", "CHAT", "own", null, "ann@x", "a");
-    s.joinThread(chat.id, "b", "ember");
-    s.joinThread(chat.id, "a", "ember");
+    const chat = s.openThreadOf("chat", "CHAT", "own", null, "ann@x", "a");
+    s.joinThread(chat.id, "b", "chat");
+    s.joinThread(chat.id, "a", "chat");
     const origin = s.openThread("slack:one", "C1", "origin", "Origin", "ann@x");
     s.joinThread(origin.id, "b", "one");
     const reader = makeStore(s.db, ".");
@@ -170,9 +170,9 @@ test("the scope and the selected title share the reader's snapshot", () => {
   const path = join(dir, "stillfail.db"), s = Store.open(path), writer = new DatabaseSync(path);
   try {
     session(s, "a"); session(s, "b"); job(s, "a");
-    const chat = s.openThreadOf("ember", "CHAT", "own", "Given title", "ann@x", "a");
-    s.joinThread(chat.id, "a", "ember");
-    s.joinThread(chat.id, "b", "ember");
+    const chat = s.openThreadOf("chat", "CHAT", "own", "Given title", "ann@x", "a");
+    s.joinThread(chat.id, "a", "chat");
+    s.joinThread(chat.id, "b", "chat");
     const origin = s.openThread("slack:one", "C1", "origin", "Later origin", "ann@x");
     s.joinThread(origin.id, "b", "one");
     let changed = false;

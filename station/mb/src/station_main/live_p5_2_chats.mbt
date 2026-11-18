@@ -1643,9 +1643,24 @@ async fn P52::tools_call(
             None => Null
           }
       }
-    // (agents.ts `meshList`: the relays the mesh directory registered in the workspace, none where there is no
-    // directory, as here)
-    "relays.meshList" => @api_routes.jarr([])
+    // (agents.ts `meshList`, `revoke`, `enroll`: the mesh directory's, P5-1's on the bus)
+    "relays.meshList" => rv_of((self.bus.cloud_call.val)("meshList", { "workspace": json_of_rv(a(0)) }))
+    // (where no mesh answers them, a program with no P5-1's: refused as agents.ts refuses them with no directory)
+    "relays.revoke" =>
+      match (self.bus.cloud_call.val)("meshRevoke", { "workspace": json_of_rv(a(0)), "node": json_of_rv(a(1)) }) {
+        Null => fail("native mesh relay control is not available on this station")
+        said => rv_of(said)
+      }
+    "relays.enroll" =>
+      match
+        (self.bus.cloud_call.val)("meshEnroll", {
+          "workspace": json_of_rv(a(0)),
+          "name": json_of_rv(a(1)),
+          "by": json_of_rv(a(2)),
+        }) {
+        Null => fail("native mesh relay enrollment is not available on this station")
+        said => rv_of(said)
+      }
     "relays.by" => {
       let row = self.store("getSession", [jstr(s(0))]) catch { _ => Json::null() }
       rjs(@session_hub.agent_name(jtext(row, "title"), s(0)))
@@ -1668,7 +1683,7 @@ async fn P52::tools_call(
       rv_of((self.bus.cloud_call.val)("removeRelay", { "workspace": json_of_rv(a(1)), "url": json_of_rv(a(2)) }))
     // (relays.ts `probeRelay`: a relay reached over https, its answer's status)
     "fetch" => {
-      let answer = (@accounts_oauth.host_io(self.host).fetch)({
+      let answer = (p5_oauth_io(self.host).fetch)({
         url: s(0),
         method_: "GET",
         headers: [],
@@ -1889,9 +1904,8 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
     },
     ..@mcp_tools.forward_tools(c),
     // (`list` says the mesh's relays as agents.ts's `meshList` does; enrolling and revoking one are the mesh
-    // directory's (mesh/scope-sync.ts, enrollment-door.ts), which this program does not run: refused, as agents.ts
-    // refuses them where the native mesh has no directory)
-    ..@mcp_tools.relay_tools(c, mesh_list=true),
+    // directory's (live_p5_1_scopes.mbt), refused where the endpoint keeps no scopes, as agents.ts refuses them)
+    ..@mcp_tools.relay_tools(c, mesh_list=true, enroll=true, revoke=true),
     ..@mcp_tools.search_tools(c),
     // (feedback/module.ts: offered only where its part is live)
     ..match self.feedback {
@@ -1921,8 +1935,22 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
       None => tools.push(tool)
     }
   }
+  // (in the order the TypeScript lists them, its tools then its parts' as main.ts's layers give them: a session handed
+  // between the two keeps its list of tools, and so its runtime's cached prompt; one not named here after, as given)
+  let place = (t : @mcp_tools.Tool) => tools_order.search(t.name).unwrap_or(tools_order.length())
+  tools.mut_view().stable_sort_by((a, b) => place(a).compare(place(b)))
   tools
 }
+
+///|
+let tools_order : Array[String] = [
+  "chat_post", "slack_api", "chat_state", "chat_leave", "chat_history", "chat_list", "chat_read", "session_send", "chat_create",
+  "chat_archive", "session_history", "archive_policy", "station_list", "station_task", "station_file", "workspace_limit",
+  "job_start", "job_list", "job_log", "job_stop", "screen", "permissions", "computer", "peer_forward", "relays",
+  "station_version", "sign_in", "secret_list", "secret_use", "secret_save", "secret_describe", "secret_delete", "secret_cancel",
+  "secret_reask", "secret_run", "phone_use", "phone_send", "adb_devices", "browser", "feedback_send", "feedback_reply",
+  "skill_read", "search", "station_use", "device_list", "device_use", "station_retire", "station_move", "login", "feishu_api",
+]
 
 ///|
 /// The agents' door's `/mcp` (tools/http.ts over tools/mcp.ts `McpEndpoint`).

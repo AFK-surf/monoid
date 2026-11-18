@@ -630,6 +630,8 @@ pub fn ClaudeDriver::open(self : ClaudeDriver, options : JValue, events : (JValu
     let args = self.args_for(options, session_id, fast, file)
     let env = start_env(self.raw_env, claude_scrubbed)
     env.merge(expand_route((self.profiles.env)(profile, "claude"), str_at(o, "route").unwrap_or("")))
+    // The profile's own proxy too leaves this machine out (`keepLocal`).
+    let env = keep_local(env)
     if file is Some(_) {
       env.set("CLAUDE_CODE_API_KEY_HELPER_TTL_MS", "60000")
     }

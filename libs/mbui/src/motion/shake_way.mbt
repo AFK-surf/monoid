@@ -2,9 +2,11 @@
 // so nothing is laid out again as it goes. Said once at its cause's moment; where it is at any moment is worked out
 // from that moment alone, `amplitude` × (1 - p) × sin(2π · cycles · p) over p = (now - start) / duration_ms: 0 where
 // it sets out and 0 where it ends, smaller each swing between, whatever frames were drawn. Shaken again before it
-// ends, it sets out again from the new cause's moment. What draws it reads it by the moment it is drawn at while it
-// goes (`v.offset(By(fn() { (way.offset_at(v.drawn_while(fn(t) { way.active_at(t) })), 0.0) }))`), so no frame is asked
-// for once it is over; with motion reduced it does not move at all.
+// ends, it sets out again from the new cause's moment. A node is shaken by it through `way.shakes(v)`, which draws it
+// off by the shake at the moment it is drawn at while it goes (`View::offset` by `View::drawn_while`), so no frame is
+// asked for once it is over, and says the node shakes across while it goes (`View::shakes_while`): what turns back
+// again and again on purpose is no jolt to a Tester's steadiness judges along its row, its left edge and that of what
+// it holds alone, and only while it goes. With motion reduced it does not move at all.
 
 ///|
 /// A shake's way (see the file's head): how far its first swing goes (points), how long it goes (ms), how many whole
@@ -45,4 +47,31 @@ pub fn ShakeWay::offset_at(self : ShakeWay, now : Double, reduced_motion? : Bool
   guard self.active_at(now, reduced_motion~) && self.started_at.get() is Some(start) else { return 0.0 }
   let p = (now - start) / self.duration_ms
   self.amplitude * (1.0 - p) * @dmath.sin(p * self.cycles * 2.0 * @math.PI)
+}
+
+///|
+/// Shakes `v` by it (see the file's head): drawn off across by `offset_at` at the moment it is drawn at while it goes,
+/// and said to shake across then (`View::shakes_while`); with motion reduced (`reduced_motion`, the system's by default),
+/// neither.
+#callsite(autofill(loc))
+pub fn ShakeWay::shakes(self : ShakeWay, v : @view.View, reduced_motion? : Bool, loc~ : SourceLoc) -> @view.View {
+  let goes = fn(t : Double) {
+    match reduced_motion {
+      Some(r) => self.active_at(t, reduced_motion=r)
+      None => self.active_at(t)
+    }
+  }
+  v
+  .shakes_while(goes)
+  .offset(
+    By(fn() {
+      let at = v.drawn_while(goes)
+      let x = match reduced_motion {
+        Some(r) => self.offset_at(at, reduced_motion=r)
+        None => self.offset_at(at)
+      }
+      (x, 0.0)
+    }),
+    loc~,
+  )
 }

@@ -299,7 +299,7 @@ pub fn turn_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
   }
   let missing : Array[Json] = []
   let found : Array[(Map[String, Json], Json)] = []
-  for t in db.all("SELECT t.* FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = ? ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT ?", [Json::string(key), Json::string("ember"), Json::number(-1.0)]) {
+  for t in db.all("SELECT t.* FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = ? ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT ?", [Json::string(key), Json::string("chat"), Json::number(-1.0)]) {
     if !(field(t, "hidden_at") is Null) {
       continue
     }
@@ -347,7 +347,7 @@ pub fn said_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
   let fresh = entries.filter(e => e.value("kind") == Some(Json::string("message")) && num(e.value("at").unwrap_or(Json::null())) >= since)
   let person = fresh.filter(e => e.value("authorKind") == Some(Json::string("person"))).last()
   let wrong = fresh
-    .filter(e => e.value("authorKind") == Some(Json::string("ember")))
+    .filter(e => e.value("authorKind") == Some(Json::string("station")))
     .filter_map(e => match e.value("text") {
       Some(String(t)) => went_wrong(t).map(w => (e.value("n").unwrap_or(Json::null()), w))
       _ => None
@@ -356,7 +356,7 @@ pub fn said_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
   if person is None && wrong is None {
     return Json::array([])
   }
-  guard one(db, "SELECT * FROM threads WHERE id = ?", [id]) is Some(t) && field(t, "surface") == Json::string("ember") && field(t, "hidden_at") is Null else {
+  guard one(db, "SELECT * FROM threads WHERE id = ?", [id]) is Some(t) && field(t, "surface") == Json::string("chat") && field(t, "hidden_at") is Null else {
     return Json::array([])
   }
   guard one(db, "SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id]) is Some(first) else {

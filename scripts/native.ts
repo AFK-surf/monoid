@@ -633,7 +633,29 @@ const PARTS: Record<string, Part> = {
       rmSync(tgz);
     },
   },
+  // still.fail's own relay (libs/mesh-transport's mesh-relay), for the side runs' tests of it
+  // (station/side/mesh-relay-daemon.test.ts, cloud/side/mesh-relay.test.ts): built where it runs, published nowhere
+  // (`publish: []`, so no CI job builds or fetches it for a release).
+  "mesh-relay": {
+    files: () => ["mesh-relay"],
+    targets: ["darwin-arm64", "linux-x64", "linux-arm64"],
+    publish: [],
+    env: "STILLFAIL_MESH_RELAY_BIN",
+    inputs: ["libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", "libs/mesh-transport/Cargo.lock", ...VENDORED],
+    // (the same key wherever it is built: which cargo builds it is the machine's, not what it is made of)
+    recipe: (t) => ({ cargo: cargoCommand(t, ["--bin", "mesh-relay"]) }),
+    build(t, out) {
+      const target = stationTargetDir("libs/mesh-transport", t);
+      cargo(meshRelayCargo(t), join(ROOT, "libs/mesh-transport"), { CARGO_TARGET_DIR: target });
+      copyFileSync(join(target, TRIPLE(t), "release", "mesh-relay"), join(out, "mesh-relay"));
+    },
+  },
 };
+/// mesh-relay's build: cargo's own on a machine of its target (a Mac, a Linux of the target's), else cross-built.
+const meshRelayCargo = (t: Target) =>
+  t === "darwin-arm64" || (osPlatform() === "linux" && host() === t)
+    ? ["build", "--release", "--locked", "--bin", "mesh-relay", "--target", TRIPLE(t)]
+    : cargoCommand(t, ["--bin", "mesh-relay"]);
 const RELAY_URL = (triple: string) => `https://github.com/n0-computer/iroh/releases/download/v1.1.0/iroh-relay-v1.1.0-${triple}.tar.gz`;
 const RELAY: Record<string, { url: string; sha256: string }> = {
   "darwin-arm64": { url: RELAY_URL("aarch64-apple-darwin"), sha256: "abe9606e28749b7be4b602cbf48a7795755dfe484ccc9ff6f17a9c1b3cfd5c3f" },

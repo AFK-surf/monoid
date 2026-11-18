@@ -531,7 +531,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         if thread is Null {
           raise @api_routes.Thrown("Refused", jv_of_json({ "message": "this session has no chat to ask in" }))
         }
-        if jtext(jfield(thread, "thread"), "surface") != Some("ember") {
+        if jtext(jfield(thread, "thread"), "surface") != Some("chat") {
           raise @api_routes.Thrown(
             "Refused",
             jv_of_json({
@@ -818,7 +818,7 @@ fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
     let without = self.title_of(own, None, None)
     // (a given name and a still.fail chat's name do not depend on the session's most recent chat)
     let surface = jtext(own, "surface")
-    if @adb_devices.given_title(jv_of(own)) is Some(_) || surface == Some("ember") || surface == Some("stillfail") {
+    if @adb_devices.given_title(jv_of(own)) is Some(_) || surface == Some("chat") || surface == Some("ember") || surface == Some("stillfail") {
       return Some(without)
     }
     let first = match self.store("firstText", [jfield(own, "id")]) {

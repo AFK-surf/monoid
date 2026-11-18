@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
+  <!-- The appearance and motion as chosen on this device (the web's pages keep a copy: src/prefs.ts), before the first
+       paint, as index.html reads them: the ground and the mark below follow them till the app draws. -->
+  <script>try{var a=localStorage.getItem("stillfail.appearance");if(a==="light"||a==="dark")document.documentElement.dataset.theme=a}catch(e){}</script>
+  <script>try{var m=localStorage.getItem("stillfail.motion");if(m==="reduce"||(m!=="full"&&matchMedia("(prefers-reduced-motion: reduce)").matches))document.documentElement.setAttribute("data-reduced-motion","")}catch(e){}</script>
   <title>still.fail</title>
   <meta name="description" content="still.fail — 把你的机器连到任何地方">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
@@ -23,20 +27,52 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="still.fail · One devices.">
   <meta name="twitter:card" content="summary_large_image">
-  <!-- still.fail's app as every device runs it (apps/mbui), drawn by mbui's web host: src/mbui/core.ts -->
+  <!-- still.fail's app as every device runs it (apps/mbui), drawn by mbui's web host: src/mbui/core.ts, started by
+       src/mbui/start.ts once the browser gives WebGL 2 (src/mbui/gpu.ts) -->
   <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #F5F3EF; }
-    @media (prefers-color-scheme: dark) { html, body { background: #1F2023; } }
+    :root { --ground: #F5F3EF; --ink: #24272B; --muted: #565B62; --chip: #24272B13;
+            --safe-top: env(safe-area-inset-top, 0px); --safe-right: env(safe-area-inset-right, 0px);
+            --safe-bottom: env(safe-area-inset-bottom, 0px); --safe-left: env(safe-area-inset-left, 0px); }
+    :root[data-theme="dark"] { --ground: #1F2023; --ink: #E9E9EA; --muted: #A8AAAE; --chip: #E9E9EA19; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { --ground: #1F2023; --ink: #E9E9EA; --muted: #A8AAAE; --chip: #E9E9EA19; }
+    }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ground); }
     #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
     /* receives the input method; sits at the caret, invisible */
     #ime { position: fixed; left: 0; top: 0; width: 2px; height: 20px; opacity: 0; padding: 0; border: 0;
            resize: none; overflow: hidden; font-size: 16px; caret-color: transparent; color: transparent;
            background: transparent; outline: none; }
+    /* still.fail's mark in one colour while the app comes (src/mbui/boot.ts fades it out before the app runs, then fades
+       the bare ground off the app's first frame):
+       it shows after a moment, so a load from the cache shows none of it, and a light passes over it while it waits */
+    #boot { position: fixed; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 16px; padding: max(24px, var(--safe-top)) max(16px, var(--safe-right)) max(24px, var(--safe-bottom)) max(16px, var(--safe-left)); box-sizing: border-box; background: var(--ground);
+            color: var(--ink); font: 400 14px/20px system-ui, -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+            transition: opacity 160ms ease-out; }
+    #boot.gone { opacity: 0; pointer-events: none; }
+    #boot .mark { position: relative; width: 48px; height: 48px; border-radius: 10.8px; overflow: hidden;
+                  animation: boot-in 320ms ease-out 240ms both; }
+    #boot .mark svg { display: block; width: 100%; height: 100%; }
+    #boot .mark::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+                         background: linear-gradient(100deg, transparent 20%,
+                           color-mix(in srgb, var(--ground) 42%, transparent) 50%, transparent 80%);
+                         animation: boot-light 2000ms cubic-bezier(0.4, 0, 0.2, 1) 560ms infinite; }
+    #boot .said { margin: 0; max-width: 320px; color: var(--muted); text-align: center; text-wrap: pretty; }
+    #boot .again { height: 36px; padding: 0 16px; border: 0; border-radius: 999px; cursor: pointer;
+                   background: var(--chip); color: var(--ink); font: inherit; font-weight: 500; }
+    #boot.stuck .mark::after, #boot .mark.still::after { animation: none; display: none; }
+    @keyframes boot-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes boot-light { 0% { transform: translateX(-100%); } 60%, 100% { transform: translateX(100%); } }
+    :root[data-reduced-motion] #boot { transition: none; }
+    :root[data-reduced-motion] #boot .mark { animation: none; }
+    :root[data-reduced-motion] #boot .mark::after { animation: none; display: none; }
   </style>
 </head>
 <body>
   <canvas id="c"></canvas>
   <textarea id="ime" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
-  <script type="module" src="/src/mbui/core.ts"></script>
+  <div id="boot" role="status" aria-label="still.fail"><div class="mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M7.2 0h17.6A7.2 7.2 0 0 1 32 7.2v17.6a7.2 7.2 0 0 1-7.2 7.2H7.2A7.2 7.2 0 0 1 0 24.8V7.2A7.2 7.2 0 0 1 7.2 0ZM10.37 13.12a2.11 2.11 0 1 0 0 4.22a2.11 2.11 0 1 0 0-4.22ZM21.63 13.12a2.11 2.11 0 1 0 0 4.22a2.11 2.11 0 1 0 0-4.22ZM5.73 21.7a1.245 1.245 0 0 0 0 2.49h2.11a1.245 1.245 0 0 0 0-2.49ZM24.16 21.7a1.245 1.245 0 0 0 0 2.49h2.11a1.245 1.245 0 0 0 0-2.49Z"/></svg></div></div>
+  <script type="module" src="/src/mbui/start.ts"></script>
 </body>
 </html>

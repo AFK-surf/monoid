@@ -14,6 +14,16 @@ import { exchangeScope, exchangeSignedRecords } from "./scope-exchange.ts";
 import { workspaceScope } from "./enrollment-door.ts";
 import { waysOf, workspaceRelays } from "./ways.ts";
 import { globalRelaysOf } from "./global-relays.ts";
+/// What a front from before its mesh operations (one saying `streams` under 5, launcher front.rs `STREAMS`) answers them.
+const OLD_FRONT = /no operation mesh(?:Configure|Remove)/i;
+/// What a station from before the directory exchange answers it: a method it does not know, or (one from before
+/// `meshDirectory` in peer.ts `servePeer`) the exchange taken as a task's request (as replica/copies.ts `#reason`).
+const OLD_PEER = /unknown.*method|no such method|unsupported peer method|session and task key (?:is|are) required/i;
+/// How long a station waits before it tries a peer again that it could not reach or exchange with, at first; each
+/// failure after doubles it, up to PEER_RETRY_MOST_MS (as ways.ts's and lock-sync.ts's): a peer that is off is the
+/// workspace's ordinary state, not this station's failure.
+const PEER_RETRY_MS = 5_000;
+const PEER_RETRY_MOST_MS = 10 * 60_000;
 export class ScopeSync {
   readonly directory: ScopeDirectory;
   readonly #cloud: Cloud;
@@ -25,20 +35,36 @@ export class ScopeSync {
   #rosterEpoch = 0;
   #rosterWait = 0;
   #rosterRetry?: () => void;
+  readonly #restartFront: (() => void) | undefined;
+  #oldFront = false;
   readonly #off: (() => void)[] = [];
   readonly #workspaces = new Map<string, string>();
   readonly #jobs = new Map<string, { scope: string; workspace: string; peer: string; done: string; running: boolean; wait: number; cancel?: () => void }>();
   readonly #listeners = new Set<(scope: string) => void>();
   #closed = false;
   #active = 0;
-  constructor(endpoint: Endpoint, db: DatabaseSync, cloud: Cloud, signer: { id: string; sign(text: string): string }, call: PeerCall, read: (args: unknown) => Promise<string>, fibers: Pick<Fibers, "after" | "close"> = new Fibers("mesh-directory")) {
-    this.#fibers = fibers;
+  constructor(endpoint: Endpoint, db: DatabaseSync, cloud: Cloud, signer: { id: string; sign(text: string): string }, call: PeerCall, read: (args: unknown) => Promise<string>, fibers: Pick<Fibers, "after" | "close"> = new Fibers("mesh-directory"), restartFront?: () => void) {
+    this.#fibers = fibers; this.#restartFront = restartFront;
     this.#cloud = cloud; this.#call = call; this.#read = read; this.#relayStore = new RelayRecords(db);
     this.directory = new ScopeDirectory(endpoint, new Announcements(db, async (scope, nodes) => JSON.parse(await read({ kind: "announcements", scope, nodes }))), signer, (scope) => this.#changed(scope), (error) => this.#failed(error));
     this.#off.push(cloud.listen(() => this.#roster()), waysOf(cloud).listen(() => this.#roster()));
     this.#roster();
   }
-  #failed(error: unknown) { log.warn("mesh", "mesh directory update failed", { error: String(error) }); }
+  #failed(error: unknown) {
+    if (OLD_FRONT.test(String(error))) return this.#frontTooOld();
+    log.warn("mesh", "mesh directory update failed", { error: String(error) });
+  }
+  // The launcher's front is from before the mesh operations: no retry makes it take them. Its launcher (one that
+  // keeps it) is asked once to start the release's, the Node then handed over to one linked to it; with none, it is
+  // said once, and the directory is tried again only as the roster changes.
+  #frontTooOld() {
+    if (this.#oldFront) return;
+    this.#oldFront = true;
+    if (this.#restartFront) {
+      log.warn("mesh", "the front is from before meshConfigure: asking the launcher to start the release's");
+      this.#restartFront();
+    } else log.warn("mesh", "the front is from before meshConfigure: the mesh directory waits for a front that takes it");
+  }
   async #roster() {
     if (this.#closed || !this.#cloud.peersCurrent || !this.#cloud.state) return;
     const epoch = ++this.#rosterEpoch;
@@ -94,6 +120,7 @@ export class ScopeSync {
   #retryRoster(epoch: number, error: unknown) {
     if (this.#closed || epoch !== this.#rosterEpoch) return;
     this.#failed(error);
+    if (OLD_FRONT.test(String(error))) return;
     this.#rosterWait = Math.min(this.#rosterWait ? this.#rosterWait * 2 : 1000, 60_000);
     this.#rosterRetry = this.#fibers.after(this.#rosterWait, () => this.#roster()); // timer: retry failed native directory application with backoff
   }
@@ -108,9 +135,12 @@ export class ScopeSync {
       const word = this.#word(job.scope);
       if (job.running || job.cancel || job.done === word) continue;
       job.running = true; this.#active++;
+      // Whether the peer's call failed, not this station's own directory (its front, its store).
+      let peerFailed = false;
       const send = (method: string) => async (request: unknown) => {
         if (this.#closed || this.#jobs.get(key) !== job) throw new Error("mesh membership changed");
-        return this.#call(job.peer, job.workspace, { method, ...request as object });
+        try { return await this.#call(job.peer, job.workspace, { method, ...request as object }); }
+        catch (error) { peerFailed = true; throw error; }
       };
       void (async () => {
         // Membership grants/revocations arrive before any relay address records.
@@ -119,9 +149,17 @@ export class ScopeSync {
         await exchangeScope(this.directory, job.scope, send("meshScopes.exchange"));
       })().then(() => { job.done = word; job.wait = 0; }, (error) => {
         if (this.#closed || this.#jobs.get(key) !== job) return;
-        if (/unknown.*method|no such method/i.test(String(error))) { job.done = word; return; }
-        this.#failed(error);
-        job.wait = Math.min(job.wait ? job.wait * 2 : 1000, 60_000);
+        // A station from before the exchange: level with it until this station's word changes.
+        if (peerFailed && OLD_PEER.test(String(error))) { job.done = word; job.wait = 0; return; }
+        // (a front from before: tried again with the next word, or by the Node a new front is handed)
+        if (!peerFailed && OLD_FRONT.test(String(error))) { this.#frontTooOld(); job.done = word; return; }
+        if (peerFailed) {
+          log.info("mesh", "a station's mesh directory was not brought level", { peer: job.peer.slice(0, 12), workspace: job.workspace, error: String(error) });
+          job.wait = Math.min(job.wait ? job.wait * 2 : PEER_RETRY_MS, PEER_RETRY_MOST_MS);
+        } else {
+          this.#failed(error);
+          job.wait = Math.min(job.wait ? job.wait * 2 : 1000, 60_000);
+        }
         job.cancel = this.#fibers.after(job.wait, () => { // timer: retry after failed directory exchange, with backoff
           job.cancel = undefined; this.#pump();
         });

@@ -77,7 +77,8 @@ pub fn Toggle::press(self : Toggle) -> Unit {
 /// A toggle of `kind` in `parent`, called `label` (what a screen reader says, as it changes), on or off as `on` says;
 /// pressed, `turn` told what it is to be (not `on()` as it is pressed); `disabled` while it cannot be pressed; `mixed`
 /// while a checkbox is neither (read out Mixed, pressed turned on, as Radix's indeterminate; a switch or a toggle
-/// button is never so, `mixed` not read). `look`
+/// button is never so, `mixed` not read); `focusable` false where another control keeps the keyboard while it is
+/// pressed (button.mbt's). `look`
 /// is run once as it is made, given its node and what it reads of it: all that is drawn of it, and how it is laid
 /// out. Its node is made at `loc` (`made_for` where a library's part over it was asked for), as the button's is. The
 /// node.
@@ -93,6 +94,7 @@ pub fn toggle(
   mixed? : () -> Bool = fn() { false },
   hold? : Hold,
   hold_press? : (Double, Double),
+  focusable? : Bool = true,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -123,7 +125,6 @@ pub fn toggle(
     }
     v
     .presses(By(able))
-    .focusable(By(able), keys~)
     .says(By(fn() {
       let now = on()
       Some(
@@ -143,5 +144,8 @@ pub fn toggle(
       }
     })
     |> ignore
+    if focusable {
+      v.focusable(By(able), keys~) |> ignore
+    }
   })
 }

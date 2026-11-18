@@ -162,7 +162,7 @@ test("a chat's people hear of its turns and of each other, once, gathered", asyn
   store.startTurn("t1", "k", "input");
   store.insertMessage({ ...newMessage(chat.id, "1.3", "agent", "k", "好了"), declared: "final" });
   store.endTurn("t1", "completed", null, "final", null);
-  store.insertMessage(newMessage(chat.id, "1.4", "ember", "ember", "⚠️ 没能启动"));
+  store.insertMessage(newMessage(chat.id, "1.4", "station", "station", "⚠️ 没能启动"));
   const settle = () => new Promise((r) => setImmediate(r));
   for (let i = 0; i < 5 || asking > 0; i++) await settle();
   assert.equal(posted.length, 0, "nothing before the second is up");

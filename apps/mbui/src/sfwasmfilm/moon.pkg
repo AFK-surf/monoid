@@ -4,6 +4,7 @@ import {
   "mbui/hostapi",
   "stillfail/sfapp",
   "stillfail/sffilmscene",
+  "stillfail/sfstorybook",
   "mbui/view",
   "mbui/film",
 }

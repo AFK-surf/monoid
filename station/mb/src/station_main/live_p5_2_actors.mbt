@@ -121,12 +121,6 @@ fn ActorsProgram::now(_self : ActorsProgram) -> Double {
 }
 
 ///|
-/// Whether what was said to it is not all taken in yet, or something of it runs.
-fn ActorsProgram::busy(self : ActorsProgram) -> Bool {
-  self.sent > self.seen || self.active > 0 || self.answering > 0
-}
-
-///|
 /// Its sessions' state went with it: the station ends as in a crash, and the next takes up their runners and resumes
 /// their turns (mb-actor.ts `#lost`).
 fn ActorsProgram::lost(self : ActorsProgram, code : Int32) -> Unit {
@@ -309,13 +303,16 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
     Some((asked, told)) => {
       match jnum_of(said, "rpc") {
         Some(id) => {
-          self.answering += 1
+          // The live view's asks are not counted (live.ts `uncounted`): a page of a transcript read for it holds no
+          // handover's settling.
+          let counted = if key == "#live" { 0 } else { 1 }
+          self.answering += counted
           let f = jtext(said, "fn").unwrap_or("")
           let args = jitems(jfield(said, "args"))
           ignore(
             self.ctx.host.rt.fork(name="shell's rpc", async fn() {
               let answer = Ok(asked(f, args)) catch { e => Err(e) }
-              self.answering -= 1
+              self.answering -= counted
               match answer {
                 Ok({ "$programError": err, .. }) =>
                   ignore(self.post({ "answer": jn(id), "error": err }))

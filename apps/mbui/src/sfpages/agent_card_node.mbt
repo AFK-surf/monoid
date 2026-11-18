@@ -70,10 +70,8 @@ pub fn agent_card_node(
         @sf.style_node(l, fn() { agent_card_lines })
         l.each(fn() { items(card(), "latest") }, fn(line) { text(Some(line), "key") }, fn(row, line) {
           let k = text(Some(line.untracked()), "key")
-          row.box(fn(n) {
+          @sf.action_box_node(row, fn() { text(Some(line.get()), "text") }, fn(_) { history(line_entry(k)) }, fn(n) {
             @sf.style_node(n, fn() { agent_card_line_box })
-            @sf.presses_node(n, fn() { history(line_entry(k)) })
-            n.says(By(fn() { Some(@view.said(Button, label=text(Some(line.get()), "text"))) })) |> ignore
             @sf.words_node(n, fn() { text(Some(line.get()), "text") }, fn() {
               if flag(Some(line.get()), "now") || @sf.lit_node(n) {
                 agent_card_now
@@ -89,16 +87,17 @@ pub fn agent_card_node(
       |> ignore
     })
     // what it has going in the background and its checklist, in a line: to its execution history
-    b.show(fn() { text(card(), "workLine") != "" }, fn(x) {
-      @sf.style_node(x, fn() { work_line_inset })
-      @sf.presses_node(x, fn() { history(None) })
-      x.says(By(fn() { Some(@view.said(Button, label=text(card(), "workLine"))) })) |> ignore
-      @sf.words_node(x, fn() { text(card(), "workLine") }, fn() {
-        if @sf.lit_node(x) {
-          work_line_hot
-        } else {
-          work_line_words
-        }
+    b.show(fn() { text(card(), "workLine") != "" }, fn(w) {
+      @sf.action_box_node(w, fn() { text(card(), "workLine") }, fn(_) { history(None) }, fn(x) {
+        @sf.style_node(x, fn() { work_line_inset })
+        @sf.words_node(x, fn() { text(card(), "workLine") }, fn() {
+          if @sf.lit_node(x) {
+            work_line_hot
+          } else {
+            work_line_words
+          }
+        })
+        |> ignore
       })
       |> ignore
     })
@@ -446,9 +445,7 @@ pub fn agent_card_seconds(v : @view.View, src : Source, since : () -> (Double, D
 fn agent_card_stop_node(p : @view.View, src : Source, station : String, key : String, tips : @sf.TipLayer) -> Unit {
   let skey = "stop/" + station + "/" + key
   let label = fn() { @sf.t("web-pages.chat.stopTurn") }
-  p.box(fn(b) {
-    @sf.style_node(b, fn() { agent_card_stop_box }, in_row=true)
-    @sf.presses_node(b, fn() {
+  @sf.action_box_node(p, label, fn(_) {
       if !doing(skey) {
         act(
           src,
@@ -459,8 +456,8 @@ fn agent_card_stop_node(p : @view.View, src : Source, station : String, key : St
           done=@sf.t("web-pages.chat.stopAsked"),
         )
       }
-    })
-    b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
+    }, fn(b) {
+    @sf.style_node(b, fn() { agent_card_stop_box }, in_row=true)
     @sf.tip_node(tips, b, label) |> ignore
     b.pick(fn() { doing(skey) }, fn(i, busy) {
       if busy {
@@ -482,10 +479,8 @@ fn agent_card_link_node(
   hot : () -> @ui.TextStyle,
   press : () -> Unit,
 ) -> Unit {
-  p.box(fn(b) {
+  @sf.action_box_node(p, words, fn(_) { press() }, fn(b) {
     @sf.style_node(b, fn() { agent_card_link_box })
-    @sf.presses_node(b, press)
-    b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
     @sf.words_node(b, words, fn() { if @sf.lit_node(b) { hot() } else { style() } }) |> ignore
   })
   |> ignore

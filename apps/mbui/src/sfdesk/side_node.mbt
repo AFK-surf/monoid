@@ -21,6 +21,15 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     |> ignore
     dock_round_node(cut, at)
     cut.box(fn(side) {
+      // (where the rail's lit place pressed again finds its list: back_to_top.mbt)
+      side_made.val = Some(side)
+      side.owns(fn() {
+        match side_made.val {
+          Some(v) if physical_equal(v, side) => side_made.val = None
+          _ => ()
+        }
+      })
+      |> ignore
       side
       .width(By(fn() { Some(at().laid_w) }))
       .height(By(fn() { Some(at().box.3) }))
@@ -343,6 +352,15 @@ fn lists_band_node(
     band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(k) {
       k.box(fn(t) {
         @sf.style_node(t, fn() { todo_box })
+        // (what 待处理's panel opens under: attention_node.mbt)
+        side_attention.val = Some(t)
+        t.owns(fn() {
+          match side_attention.val {
+            Some(v) if physical_equal(v, t) => side_attention.val = None
+            _ => ()
+          }
+        })
+        |> ignore
         let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
         @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
           attention_set(!wide.attention_open.untracked())

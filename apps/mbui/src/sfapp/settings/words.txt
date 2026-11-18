@@ -1453,7 +1453,9 @@ web-pages.security.joinShort
 web-pages.security.joinTitle
 web-pages.security.joined
 web-pages.security.lead
+web-pages.security.memberDevices
 web-pages.security.members
+web-pages.security.myDevices
 web-pages.security.needsAppTitle
 web-pages.security.newDeviceOf
 web-pages.security.newDevices
@@ -1473,6 +1475,7 @@ web-pages.security.onLead
 web-pages.security.onMeta
 web-pages.security.openLead
 web-pages.security.openTitle
+web-pages.security.otherMembers
 web-pages.security.ownerOnly
 web-pages.security.pairBody
 web-pages.security.pairAgain
@@ -1486,7 +1489,6 @@ web-pages.security.pairPersonal
 web-pages.security.pairRetry
 web-pages.security.pairTitle
 web-pages.security.pairWrong
-web-pages.security.people
 web-pages.security.promptFor
 web-pages.security.protected
 web-pages.security.recent
@@ -1530,7 +1532,6 @@ web-pages.security.webCannotSign
 web-pages.security.webDevice
 web-pages.security.webExpiry
 web-pages.security.webRisk
-web-pages.security.webTitle
 web-pages.settings.account.delete
 web-pages.settings.account.deleteAction
 web-pages.settings.account.deleteConfirmBody

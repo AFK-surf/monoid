@@ -772,3 +772,81 @@ test "a new chat's first words sent with the keyboard up: the chat it becomes wr
     assert_true(active)
   })
 }
+
+///|
+/// The frames a host draws (60 a second, as it draws them: check_looks(false), its rows on the device's pixels) of a new
+/// chat's first words sent on the page made as nodes, opened as fixture mode `mode` on a `w` by `h` window of
+/// `platform` and driven by `script`: at each, its moment and whether the new chat's scene (its title) is seen.
+fn new_scene_frames(
+  mode : String,
+  w : Double,
+  h : Double,
+  platform : Int,
+  script : String,
+) -> Array[(Double, Bool)] raise {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let src = fixture_app(mode, chat_nodes=true)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)
+  t.check_looks(false)
+  t.set_rows_on_pixels(true)
+  t.set_frame_period(1000.0 / 60.0)
+  let title = @sf.t("android-chat.new.heading")
+  let frames : Array[(Double, Bool)] = []
+  t.drive(script, each=fn(t) {
+    frames.push((t.time(), t.words().iter().any(fn(wd) { wd.0 == title && wd.5 > 0.02 })))
+  })
+  |> ignore
+  assert_true(app.nav.top() is Chat(_), msg="the new chat did not become its chat")
+  frames
+}
+
+///|
+/// Where the frames `frames` (new_scene_frames') draw the new chat's scene, then none of it, then it again: each such
+/// frame's moment.
+fn new_scene_gaps(frames : Array[(Double, Bool)]) -> Array[Double] {
+  let gaps = []
+  for i in 1..<(frames.length() - 1) {
+    if !frames[i].1 && frames[i - 1].1 {
+      let mut back = false
+      for j in (i + 1)..<frames.length() {
+        if frames[j].1 {
+          back = true
+        }
+      }
+      if back {
+        gaps.push(frames[i].0)
+      }
+    }
+  }
+  gaps
+}
+
+///|
+/// The page becomes the chat in the change its first words are sent in, its scene leaving over the chat from then
+/// (new_leave_ms): the scene's old view is the one the page showed, the same node going on to draw it leaving, never let
+/// go there and made again for its way out (an old view hosted in a node draws nothing in the frame it is made: the frame
+/// the words went in was drawn with neither the scene nor a composer, and the scene back the next; 2026-11-17).
+test "a new chat's first words sent on the page made as nodes: its scene drawn in every frame till it has left, 大屏 and 小屏" {
+  if @ui.test_at_a_rate() {
+    return
+  }
+  let wide = new_scene_frames(
+    "chat",
+    1280.0,
+    800.0,
+    0,
+    "timeout 20000\nuntil 新建对话\nwait 600\ntap 新建对话\nwait 900\nuntil 做任何事\nwait 500\ntype 把发布说明写一下\nwait 700\ntap icon:arrow-up\nwait 600\nexit\n",
+  )
+  assert_eq(new_scene_gaps(wide), [])
+  let narrow = new_scene_frames(
+    "newchat",
+    390.0,
+    844.0,
+    2,
+    "timeout 20000\nwait 1200\ntap 做任何事\nwait 500\ntype 把发布说明写一下\nwait 700\ntap icon:arrow-up\nwait 600\nexit\n",
+  )
+  assert_eq(new_scene_gaps(narrow), [])
+  let picture = new_scene_frames("newchat-attach", 390.0, 844.0, 2, "timeout 20000\nwait 1500\ntap icon:arrow-up\nwait 600\nexit\n")
+  assert_eq(new_scene_gaps(picture), [])
+}

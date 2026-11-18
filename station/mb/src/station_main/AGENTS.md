@@ -29,14 +29,21 @@
   `start_live_p5_<N>`): P5-1 first, then on a whole station P5-2, P5-3, P5-4 and P5-5 in that order (P5-3 finds the
   hub's sessions' program there and mounts `#jobs` and `#remote` on it); a station that only runs tasks (`--rig`, or
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
-  (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file.
+  (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
+  what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,
+  `register_pids`). station/test/mb-station-contracts.test.ts holds every `Ref` of the bus given by a slice, and every
+  `parts.carry`, `plane.told` and `events.follow` hook of the TypeScript's given here; station/test/mb-live-hooks-parity.test.ts
+  holds them live.
   A release runs this program alone (station/AGENTS.md); held by station/test/mb-live-station.test.ts whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
     station's chats taken back before the store opens, the control plane and its presence, the readers and their
     builders, the machine and the event streams, the admin API (the platform's calls answered there, another slice's
     asked through the bus), the mesh (the front's endpoint or one bound through the shell, members, peers, the agents'
-    `/peer/` door, the device tools), the forwards of other stations' ports and devices (`$forwards`) and the rigs.
+    `/peer/` door, the device tools), the workspaces' mesh directory, the relays' enrollment door and a device's leaf
+    in its workspace's scope (live_p5_1_scopes.mbt over src/mesh_scopes: mesh/scope-sync.ts, enrollment-door.ts and
+    leaf.ts as the TypeScript has them, where the endpoint is the front's), the forwards of other stations' ports and
+    devices (`$forwards`) and the rigs.
     With `STILLFAIL_LOCAL_ADMIN=1` (a test with no mesh) the admin API is on the agents' door under `/admin-api/`, as
     the station's owner: station/test/mb-live-p5-1.test.ts.
   - P5-2 (`live_p5_2_*.mbt`), the agents' side: the hub, its actors and their drivers in the sessions' program
@@ -53,7 +60,7 @@
     so, one of its own only where there is no hub, a rig's or a test's: never two on one data directory); a sandbox's
     task runs through this program as its bridge's host side (`stillfail-reader <…>/sandbox-bridge.mjs host
     '<json>'`: live_p5_3_sandbox.mbt). With `STILLFAIL_PARTS_DOOR=1` the agents' door answers the parts' routes,
-    `jobs_ask`, overview fields and peers' requests under `/parts/`: station/test/mb-live-p5-3.test.ts.
+    `jobs_ask`, `hub_ask`, overview fields and peers' requests under `/parts/`: station/test/mb-live-p5-3.test.ts.
   - P5-4 (`live_p5_4_*.mbt`), the vault, the drive and its transfers, the screens with the Helper and its grants, the
     browser, the phones and devices, the terminals and the logins, answered by name on `ui_ask`:
     station/test/mb-live-p5-4.test.ts.
@@ -61,6 +68,10 @@
     chat surfaces told the agents' side, `surfaces`, and called by name, `chat.*`); the copies, their export a
     backgrounded process of its own, and a retirement; the moves; the updates and the `beta` features, on
     `coord_ask`: station/test/mb-live-p5-5.test.ts.
+- `@host.now()` (and the runtime's `now`) is a monotonic clock counting from the machine's start: it times waits and
+  durations only. A time a part keeps or compares as the world's (a record's `at`, an expiry, a process's start) is
+  `p5_epoch_ms` (sys.mbt), given to each package's clock where it is made; a process's start is `start_time_of`
+  (the system's, ms since the epoch), never `ps`'s words, which are in the machine's own time zone.
 - The shell keeps no watch of a file or a folder: what the TypeScript watched (a transcript, a job's log, a drive's
   folder, run/'s files) is looked at by its size and time every few hundred ms while it is followed, its line saying
   `timer:` why. A command named bare is found on the PATH it is given, then in the system's own directories

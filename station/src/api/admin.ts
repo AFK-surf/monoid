@@ -263,7 +263,9 @@ export class Admin {
     if (r.viewer.name !== "") this.readers.names.set(r.viewer.email, r.viewer.name);
     // A write with a key is done once, however often it is asked; the key is the viewer's own.
     const key = Object.entries(r.headers).find(([k]) => k.toLowerCase() === ONCE_KEY)?.[1];
-    const keyed = key !== undefined && key !== "" && key.length <= 200 && r.method !== "GET" && r.method !== "HEAD";
+    // (not a read that sends what the client holds, or several reads in one: a retry reads again, and an answer as it
+    // comes is never held whole to be kept)
+    const keyed = key !== undefined && key !== "" && key.length <= 200 && r.method !== "GET" && r.method !== "HEAD" && !READS.test(r.path);
     const answer = keyed ? await this.once(`${r.viewer.email}\0${r.path}\0${key}`, () => this.answer(r)) : await this.answer(r);
     // Every answer says this station keeps writes to once, and its build (api/oldest.ts).
     answer.headers["stillfail-idempotent"] = "1";
@@ -432,7 +434,8 @@ export class Admin {
   /// Several reads in one (POST /batch `{ gets }`, each a path with its query): each answered as its GET is, all in one
   /// answer, `{ answers: [{ status, body }] }` in their order, and compressed as one. A client brings a station's history
   /// onto its device so in the background: a read a request, a new device made some 500 of them for one station, each
-  /// compressed on its own (and not at all under 512 bytes). Only the reads in BATCHED.
+  /// compressed on its own (and not at all under 512 bytes). Only the reads in BATCHED. A client that accepts
+  /// `application/x-ndjson` is given each answer as a line of its own as soon as it is read (`batchLines`).
   private async batch(r: Request): Promise<Answer> {
     if (r.body.length > 1_000_000) return error(413, "request too large");
     let gets: unknown;
@@ -443,26 +446,75 @@ export class Admin {
     }
     if (!Array.isArray(gets) || gets.length > BATCH_MOST || gets.some((g) => typeof g !== "string")) return error(400, `gets: at most ${BATCH_MOST} paths to read`);
     const paths = gets as string[];
+    if (r.signal?.aborted) return error(503, "read cancelled");
+    const accept = Object.entries(r.headers).find(([k]) => k.toLowerCase() === "accept")?.[1] ?? "";
+    if (accept.toLowerCase().includes(NDJSON)) return this.batchLines(r, paths);
     const answers: string[] = [];
     let next = 0;
     const work = async () => {
       for (let i = next++; i < paths.length; i = next++) {
         if (r.signal?.aborted) return;
-        const at = paths[i]!.indexOf("?");
-        const path = at < 0 ? paths[i]! : paths[i]!.slice(0, at);
-        const a = BATCHED.some((p) => p.test(path))
-          ? await this.answer({ ...r, background: true, method: "GET", path, query: at < 0 ? [] : queryPairs(paths[i]!.slice(at + 1)), search: at < 0 ? "" : paths[i]!.slice(at), body: Buffer.alloc(0) })
-          : error(400, `not read in a batch: ${path}`);
-        const text = Buffer.isBuffer(a.body) ? a.body.toString("utf8") : "";
-        const isJson = Buffer.isBuffer(a.body) && (a.headers["content-type"] ?? "").startsWith("application/json") && text !== "";
-        answers[i] = `{"status":${a.status},"body":${isJson ? text : JSON.stringify(text)}}`;
+        answers[i] = batchLine(await this.batchRead(r, paths[i]!, r.signal));
       }
     };
     await Promise.all(Array.from({ length: Math.min(BATCH_AT_ONCE, paths.length) }, work));
-    // A cancelled batch has no answer to keep under an idempotency key; a retry must read its pages again.
+    // A cancelled batch has no answer to keep; a retry must read its pages again.
     if (r.signal?.aborted) return error(503, "read cancelled");
     return json(200, `{"answers":[${answers.join(",")}]}`);
   }
+
+  /// A batch's reads one at a time, each answer a line (`{"status":…,"body":…}`) given as soon as it is read: a page read
+  /// waits for no other, and a client stopping (the device gone, or the iterator let go of) stops the read under way
+  /// and starts none after it. Each line is as a client from before takes it (runtime-compat.ts, as the whole batch's
+  /// answers are: that one sees a stream, and leaves it as it is). Written by hand: an async generator's `return`
+  /// would wait for the read under way.
+  private batchLines(r: Request, paths: string[]): Answer {
+    const stop = new AbortController();
+    const signal = r.signal === undefined ? stop.signal : AbortSignal.any([r.signal, stop.signal]);
+    const done = { done: true as const, value: undefined };
+    let i = 0;
+    let stopped = false;
+    const it: AsyncIterableIterator<Buffer> = {
+      [Symbol.asyncIterator]: () => it,
+      next: async () => {
+        if (stopped || signal.aborted || i >= paths.length) {
+          stopped = true;
+          return done;
+        }
+        const p = paths[i++]!;
+        const a = await this.batchRead(r, p, signal);
+        if (stopped || signal.aborted) {
+          stopped = true;
+          return done;
+        }
+        return { done: false, value: Buffer.from(`${batchLine(runtimeCompatible({ ...r, method: "GET", path: pathOf(p) }, a))}\n`) };
+      },
+      return: async () => {
+        stopped = true;
+        stop.abort();
+        return done;
+      },
+    };
+    return { status: 200, headers: { "content-type": NDJSON, "cache-control": "no-store" }, body: it };
+  }
+
+  /// One read of a batch, as its GET is answered, in the background.
+  private async batchRead(r: Request, p: string, signal: AbortSignal | undefined): Promise<Answer> {
+    const at = p.indexOf("?");
+    const path = pathOf(p);
+    if (!BATCHED.some((b) => b.test(path))) return error(400, `not read in a batch: ${path}`);
+    return this.answer({ ...r, signal, background: true, method: "GET", path, query: at < 0 ? [] : queryPairs(p.slice(at + 1)), search: at < 0 ? "" : p.slice(at), body: Buffer.alloc(0) });
+  }
+}
+
+/// A batch's answers a line at a time (`batchLines`).
+const NDJSON = "application/x-ndjson";
+const pathOf = (p: string) => (p.indexOf("?") < 0 ? p : p.slice(0, p.indexOf("?")));
+/// One answer of a batch as it is said: its body as it is where it is JSON, else as a string.
+function batchLine(a: Answer): string {
+  const text = Buffer.isBuffer(a.body) ? a.body.toString("utf8") : "";
+  const isJson = Buffer.isBuffer(a.body) && (a.headers["content-type"] ?? "").startsWith("application/json") && text !== "";
+  return `{"status":${a.status},"body":${isJson ? text : JSON.stringify(text)}}`;
 }
 
 /// The agents' side's routes (sessions/agents.ts says them as a part of the station): the station's and runtimes'

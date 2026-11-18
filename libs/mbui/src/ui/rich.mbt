@@ -322,6 +322,8 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     }
   }
   let lay = rich_lines(r, k.prep, max_w)
+  // (its glyphs not drawn yet, at the phases its lines put them at: drawn ahead so, text.mbt glyphs_ahead)
+  laid_ahead(lay.keys, fn(c) { lay.xs[c] + lay.pre[c] })
   k.lays.insert(0, (max_w, lay))
   if k.lays.length() > rich_lays_most {
     k.lays.pop() |> ignore

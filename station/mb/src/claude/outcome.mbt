@@ -148,7 +148,7 @@ pub fn classify_result(text : Array[Int]) -> String {
     return "auth"
   }
   if word("429") ||
-    ["rate limit", "rate-limit", "rate_limit", "ratelimit", "usage limit"].iter().any(says) ||
+    ["rate limit", "rate-limit", "rate_limit", "ratelimit", "usage limit", "credit balance"].iter().any(says) ||
     ["session", "weekly", "daily"].iter().any(window => says("hit your \{window} limit")) ||
     hourly_limit(lower) ||
     named_limit(lower) ||
@@ -202,7 +202,7 @@ pub fn failure_of(
     "not authorized in this region",
   ]
   let block_page = ["<html", "<!doctype html", "attention required", "just a moment", "cloudflare"]
-  let limit = ["rate limit", "rate_limit", "quota", "usage limit", "limit reached", "resource_exhausted", "too many requests"]
+  let limit = ["rate limit", "rate_limit", "quota", "usage limit", "limit reached", "resource_exhausted", "too many requests", "credit balance"]
   let auth = auth + extra_auth
   let limit = limit + extra_limit
   if word("401") || auth_codes.iter().any(word) {

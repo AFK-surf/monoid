@@ -257,6 +257,8 @@ struct EditorState {
   /// its look, as the last frame said it: the words', the placeholder's, the caret's and the selection's colours
   mut color : Int64
   mut ph_color : Int64
+  /// how far the placeholder shows, worked out as it is painted (Ctx::placeholder_by; None: as `ph_color` says)
+  mut ph_alpha_by : (() -> Double)?
   mut caret_color : Int64
   mut sel_color : Int64
   /// what it holds is a secret (a key, a token, a password): drawn as dots, never copied or cut out of it

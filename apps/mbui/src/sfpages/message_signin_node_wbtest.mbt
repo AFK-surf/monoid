@@ -346,8 +346,10 @@ test "a sign-in asked of 1Password, made once as nodes: what it is at said as th
   assert_true(t.get(Button, label="用 1Password 登录").disabled)
   // (while it runs: nothing built again for it, the app at rest)
   assert_true(t.at_rest(), msg=t.rest_why())
-  // its list comes: the logins to pick from, at that moment
+  // its list comes: the logins to pick from, at that moment (its buttons fading where they stood as the list comes in
+  // their place: at rest a move after the frame that took it)
   @ui.fake_op_pending.val = false
+  t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
   assert_true(card_has(t, "选一个 github.com 的登录"))
   assert_true(card_has(t, "GitHub · lin"))
@@ -419,3 +421,54 @@ test "many 1Password logins including a long OAuth username: stacked top to bott
   card_audit(t, "five logins at 390 1.3", 0)
 }
 
+
+///|
+/// How opaque `words` are drawn on `t` now (the last drawn so), none where they are not.
+fn signin_seen(t : @ui.Tester, words : String) -> Double? {
+  let mut seen : Double? = None
+  for w in t.words() {
+    if w.0 == words {
+      seen = Some(w.5)
+    }
+  }
+  seen
+}
+
+///|
+test "a sign-in's card made once as nodes moves on without a jump: 1Password's logins come in place of its buttons as those fade where they stood; ended, the card fades where it stood as the line saying how it went takes its place" {
+  @sf.presenters_reset()
+  let m = @signals.signal(signin_post_with())
+  let t = card_new(760.0, card_src("chat-signin"), fn() { m.get() }, begun=signin_host(OnePassword(signin_two_logins, false, false)))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(signin_seen(t, "用 1Password 登录"), Some(1.0))
+  // 1Password asked: its logins to pick from, its buttons before fading as they go, never gone in that frame
+  t.tap_text("用 1Password 登录")
+  t.run_for(@sf.leave_ms / 2.0)
+  let half = signin_seen(t, "用 1Password 登录")
+  assert_true(half is Some(a) && a > 0.0 && a < 1.0, msg="its button half way out: \{Repr(half)}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(signin_seen(t, "用 1Password 登录") is None, msg="its button not gone")
+  assert_eq(signin_seen(t, "GitHub · lin"), Some(1.0))
+  assert_eq(signin_seen(t, "GitHub 工作 · lin-work"), Some(1.0))
+  // ended: the card fading where it stood, the line in its place once it is gone
+  m.set(signin_post_with(more={ "status": Json::string("done"), "keep": Json::boolean(false) }))
+  @ui.came_from_outside()
+  t.run_for(@sf.leave_ms / 2.0)
+  let half = signin_seen(t, "GitHub · lin")
+  assert_true(half is Some(a) && a > 0.0 && a < 1.0, msg="the card half way out: \{Repr(half)}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(signin_seen(t, "GitHub · lin") is None, msg="the card not gone")
+  assert_true(t.words().iter().any(fn(w) { w.0.has_prefix("已登录 github.com") }), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  card_audit(t, "ended", 0)
+}
+
+///|
+test "a sign-in ended as its card is made, made once as nodes: the line saying how it went there at once, no card fading over it" {
+  @sf.presenters_reset()
+  let t = card_new(760.0, card_src("chat-signin"), fn() {
+    signin_post_with(more={ "status": Json::string("done"), "keep": Json::boolean(false) })
+  }, begun=signin_host(NoManager))
+  t.draw()
+  assert_true(t.words().iter().any(fn(w) { w.0.has_prefix("已登录 github.com") }), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(signin_seen(t, "在画面中登录") is None)
+}

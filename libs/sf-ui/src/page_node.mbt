@@ -177,6 +177,77 @@ pub fn rippled_node(
 }
 
 ///|
+/// A search whose list is a page's list of its own (⌘K's, the search page's): mbui's headless combobox
+/// (`@headless.combobox`) in the node that holds its field, its options made by `ripple_option_node` in that list's
+/// rows, its list by `SearchCombo::list_node`.
+pub struct SearchCombo {
+  priv cb : @headless.Combobox[String]
+}
+
+///|
+/// Node `v` (what holds a search's field) the combobox of that search (`@headless.combobox` in `v` itself), called
+/// `label`: `keys` its options shown now, in order, `active` the one the keys are on (the caller's) and `activate` told
+/// one to move them to, by the keys or a press; `choose` told the one chosen (a press on one, just made active; Enter on
+/// the active one where the keymap gives Enter to it: `combobox_bindings`); `chosen` the one read out selected; `moved`
+/// told the one the keys made active (what the list brings into sight). ↓ and ↑ go no further than the ends. Its
+/// combobox.
+#callsite(autofill(loc))
+pub fn search_combo_node(
+  v : @view.View,
+  label : () -> String,
+  keys : () -> Array[String],
+  active : () -> String?,
+  activate : (String?) -> Unit,
+  choose : (String) -> Unit,
+  chosen? : () -> String? = fn() { None },
+  moved? : (String) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> SearchCombo {
+  let made : Ref[@headless.Combobox[String]?] = Ref(None)
+  @headless.combobox(
+    v,
+    label,
+    keys,
+    active,
+    activate,
+    choose,
+    fn(_, cb) { made.val = Some(cb) },
+    chosen~,
+    wraps=false,
+    moved~,
+    in_node=true,
+    made_for=loc,
+  )
+  |> ignore
+  { cb: made.val.unwrap() }
+}
+
+///|
+/// Node `l` (the search's list, what scrolls its lines) the combobox's listbox, called as the combobox is.
+pub fn SearchCombo::list_node(self : SearchCombo, l : @view.View) -> Unit {
+  self.cb.listbox(l, fn(_) {  }, in_node=true) |> ignore
+}
+
+///|
+/// Node `v` an option of search `combo` (`@headless.Combobox::option` in its node, read out an option called
+/// `label()`, selected as the combobox says; taking no focus), its key `key()`: rippling round its `corner` as a finger
+/// or the pointer presses it, as rippled_node's, that press the option's (made active and chosen).
+#callsite(autofill(loc))
+pub fn ripple_option_node(
+  v : @view.View,
+  combo : SearchCombo,
+  key : () -> String,
+  label : () -> String,
+  corner : Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  combo.cb.option(v, key, label, in_node=true, made_for=loc, fn(o, opt) {
+    rippled_look(loc~, o, Is(corner), fn() { opt.press() })
+  })
+  |> ignore
+}
+
+///|
 /// A button in `parent` of mbui's headless button (`@headless.button`: read out a button named `label()`, `press` done
 /// as it is pressed, however it came), rippling as a finger or the pointer presses it (press_look's, heard through its
 /// `Hold`, as media_key_node's): `look` lays it out and draws it as it is made, saying how round it is (the ripple's
@@ -913,7 +984,8 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 
 ///|
 /// A row on a group's card that goes somewhere (link_row's, narrow, in a card): `lead` before its title (`strong`
-/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, a red dot before it
+/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, in amber where
+/// `value_warn`: soon not as it should be, a web page's days left; a red dot before it
 /// where `value_dot`) and a chevron (none where not `chevron`; an arrow out where it goes `out` of the app); `note` under
 /// its title, a line of its own as wide as its words, its end then on its first line, its lead across that line's
 /// middle; `below` under that while `below_open` says it is any of the way open (a room opening on it, its row growing
@@ -948,6 +1020,7 @@ pub fn link_row_node(
   press : () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -990,6 +1063,7 @@ pub fn link_row_node(
     fn(_) { press },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1038,6 +1112,7 @@ pub fn link_row_opens_node(
   opens : (@view.View) -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1077,6 +1152,7 @@ pub fn link_row_opens_node(
     fn(row) { fn() { opens(row) } },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1119,6 +1195,7 @@ fn link_row_made(
   pressed_by : (@view.View) -> () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1182,7 +1259,10 @@ fn link_row_made(
   }
   let ends = goes && (out || (chevron && !acts && control is None))
   // (what it says, its note: in the link's ink, in amber, where it says so)
-  let value_look = fn(base : @ui.TextStyle) { if value_lit { base.then(lit_words) } else { base } }
+  let value_look = fn(base : @ui.TextStyle) {
+    let lit = if value_lit { base.then(lit_words) } else { base }
+    if value_warn() { lit.then(lacking) } else { lit }
+  }
   let note_look = fn(base : @ui.TextStyle) { if lacks { base.then(lacking) } else { base } }
   if look_node(parent) is Wide {
     // (its note as a wide page says it, where it says it otherwise: `wide_note`)

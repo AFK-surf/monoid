@@ -80,3 +80,19 @@ test "waiting tile: 56 square, as round as what waits in the composer" {
   guard fills is [f, ..] else { fail("no picture drawn") }
   assert_eq((f.2, f.3), (waiting_tile_side, waiting_tile_side))
 }
+
+///|
+test "waiting tile: a hairline rim drawn over its picture, as round as it; red once it failed" {
+  let failed = @signals.signal(false, same=fn(a, b) { a == b })
+  let off = fn() { @signals.signal(false, same=fn(a, b) { a == b }) }
+  let t = tile_tester(off(), failed, off(), Ref(0))
+  let rims = t
+    .drawn_rect_corners()
+    .filter(fn(r) { r.2 == waiting_tile_side && r.3 == waiting_tile_side && r.4 != 0x8899AAFFL })
+  guard rims is [(_, _, _, _, _, (r, _, _, _)), ..] else { fail("no rim: \{Repr(t.drawn_rect_corners())}") }
+  assert_eq(r, composer_inner())
+  failed.set(true)
+  t.draw()
+  let edged = t.drawn_rect_corners().iter().any(fn(r) { r.2 == waiting_tile_side && r.3 == waiting_tile_side })
+  assert_true(edged, msg="failed: no edge")
+}
