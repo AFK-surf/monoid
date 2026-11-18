@@ -870,6 +870,10 @@ pub fn icon_parts_node(@view.View, String, Array[Int32], Double, @view.Live[Int6
 
 pub fn icon_path(String) -> String
 
+pub fn icon_point_row_node(@view.View, String, () -> String, rest? : () -> String, icon_now? : () -> String, look? : PointLook, loc~ : SourceLoc) -> Unit
+
+pub fn icon_points_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
 pub let identity_mark : Double
 
 pub fn image_reveal_node(@view.View, () -> String, () -> String, Double, Double, cover? : Bool, held? : () -> Bool, start_crop? : Bool) -> @view.View
@@ -1229,6 +1233,10 @@ pub fn meter_line_node(@view.View, () -> Array[@json.Json], in_row? : Bool) -> U
 pub fn mix(Int64, Double, Int64) -> Int64
 
 pub fn mix_seen(Int64, Double, Int64) -> Int64
+
+pub fn mono_line_node(@view.View, () -> String, @ui.TextSize, () -> Int64, loc~ : SourceLoc) -> Unit
+
+pub fn mono_words_node(@view.View, () -> String, @ui.TextStyle, loc~ : SourceLoc) -> Unit
 
 pub fn more_held() -> Bool
 
@@ -1855,6 +1863,12 @@ pub fn reading_for(String) -> Reading
 
 pub fn reads_as_markdown(String) -> Bool
 
+pub fn record_how_node(@view.View, () -> String, () -> Bool, loc~ : SourceLoc) -> Unit
+
+pub fn record_row_node(@view.View, (@view.View) -> Unit, (@view.View) -> Unit, () -> String, loc~ : SourceLoc) -> Unit
+
+pub fn record_rows_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
 pub let ref_item_corner : @ui.Radius
 
 pub let ref_menu_corner : @ui.Radius
@@ -1953,6 +1967,18 @@ pub let search_ground : @ui.Color
 pub fn search_input_node(@view.View, @ui.Field, () -> String, at? : ListAt, shorter? : Array[String], edited? : (String) -> Unit, submitted? : (String) -> Unit, escape? : () -> Bool, cleared? : () -> Unit, end? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let secondary : @ui.TextStyle
+
+pub let secret_copied_life : Double
+
+pub fn secret_copy_node(@view.View, () -> String, () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn secret_key_node(@view.View, String, () -> String, () -> Unit, icon_now? : () -> String, loc~ : SourceLoc) -> @view.View
+
+pub let secret_key_side : Double
+
+pub fn secret_mask(String) -> String
+
+pub fn secret_value_row_node(@view.View, () -> String, () -> String, (@view.View) -> Unit, shown? : () -> Bool, mono? : () -> Bool, one_line? : Bool, loc~ : SourceLoc) -> Unit
 
 pub fn section(@ui.Ctx, String, () -> Unit, heads? : Bool, note? : String, actions? : () -> Unit, title_after? : () -> Unit) -> Unit
 
@@ -2202,6 +2228,8 @@ pub fn station_mark(@ui.Ctx, String, String, Double, Int64, none? : String, stil
 pub fn station_mark_node(@view.View, () -> String, () -> String, Double, () -> Int64, () -> Int32, visible_only? : Bool) -> Unit
 
 pub fn station_mark_visible(@ui.Ctx, String, String, Double) -> Bool
+
+pub fn status_banner_line_node(@view.View, () -> Bool, () -> String, loc~ : SourceLoc) -> Unit
 
 pub fn status_dot(@ui.Ctx, String) -> Unit
 
@@ -3205,6 +3233,12 @@ pub(all) struct Playing {
   opened : @signals.Signal[Bool]
   mut subtitle_of : String
   mut keeps : Int32
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum PointLook {
+  Told
+  Listed
 }
 
 pub(all) struct QuoteCardDone {
