@@ -730,6 +730,9 @@ pub fn open_mode(mode : String) -> Unit {
     bar.open_panel(true)
   } else if mode == "place" {
     app.nav.replace(Files)
+  } else if mode == "place-usage" {
+    @sfbase.bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
+    app.nav.replace(Place("usage"))
   } else if mode == "archived" {
     // 已归档: on the wide frame the sidebar's list of them, the newest beside it (lists.mbt archive_pane); laid out
     // Small its page
