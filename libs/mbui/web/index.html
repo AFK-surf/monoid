@@ -19,8 +19,9 @@
   /* What shows where this browser gives no WebGL 2 (hardware acceleration turned off, a browser too old): the app
      draws with it, so it is never loaded there; the page says how to turn it on instead, in plain HTML, the app not
      being there to draw it. Its colours and shapes are the ones the apps on mbui draw with (a warm ground, a card on
-     it): the card's corner is 26 and what sits in its corners (the steps' panel, Retry) is 6 in from its edge, so
-     theirs is 20. Only #nogl is styled: the page the app draws on is as it was. */
+     it): the card's corner is 26; the steps' panel sits 6 in from its edge, so its corner is 20, and Retry, a
+     capsule 32 high, sits 10 in from the card's foot and side, its half 16 and those 10 the card's 26. Only #nogl
+     is styled: the page the app draws on is as it was. */
   #nogl {
     --ground: #F5F3EF; --card: #FFFFFF; --panel: #F6F5F1; --ink: #24272B; --muted: #565B62; --line: #322D2424;
     --badge: #24272B13; --hover: #26211711; --primary: #24272B; --primary-hover: #41464C; --on-primary: #FFFFFF;
@@ -48,10 +49,9 @@
   #nogl .head { padding: 18px 18px 8px; display: flex; flex-direction: column; gap: 8px; }
   #nogl h1 { margin: 0; font-size: 18px; line-height: 26px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
   #nogl .lead { margin: 0; color: var(--muted); text-wrap: pretty; }
-  #nogl ol { list-style: none; margin: 0; padding: 4px 18px; background: var(--panel); border-radius: 20px; }
+  #nogl ol { list-style: none; margin: 0; padding: 14px 18px; background: var(--panel); border-radius: 20px; display: grid; row-gap: 12px; }
   /* a step's number sits on its first line, as tall as that line, never in the middle of a step of several */
-  #nogl li { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; align-items: start; padding: 12px 0; }
-  #nogl li + li { border-top: 1px solid var(--line); }
+  #nogl li { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; align-items: start; padding: 0; }
   #nogl .n { width: 20px; height: 20px; border-radius: 999px; background: var(--badge); color: var(--muted);
              font-size: 12px; line-height: 20px; font-weight: 500; text-align: center; font-variant-numeric: tabular-nums; }
   #nogl .say { min-width: 0; overflow-wrap: anywhere; }
@@ -65,7 +65,7 @@
     background: var(--card); box-shadow: 0 0 0 1px var(--line); overflow-wrap: anywhere; min-width: 0;
     user-select: all; -webkit-user-select: all;
   }
-  #nogl .note { margin: 0; padding: 4px 18px 6px; color: var(--muted); font-size: 12px; line-height: 18px; text-wrap: pretty; }
+  #nogl .note { margin: 0; padding: 6px 18px 2px; color: var(--muted); font-size: 12px; line-height: 18px; text-wrap: pretty; }
   #nogl .note b { color: var(--ink); overflow-wrap: anywhere; }
   #nogl button {
     font: inherit; font-weight: 500; cursor: pointer; border: 0; margin: 0; border-radius: 999px;
@@ -74,7 +74,8 @@
   #nogl button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   #nogl .copy { height: 28px; padding: 0 12px; font-size: 12px; line-height: 28px; color: var(--ink);
                 background: var(--card); box-shadow: 0 0 0 1px var(--line); }
-  #nogl .retry { height: 40px; width: 100%; padding: 0 20px; color: var(--on-primary); background: var(--primary); }
+  #nogl .foot { display: flex; justify-content: flex-end; padding: 0 4px 4px; }
+  #nogl .retry { height: 32px; padding: 0 16px; font-size: 13px; line-height: 32px; color: var(--on-primary); background: var(--primary); }
   @media (hover: hover) {
     #nogl .copy:hover { background: var(--hover); }
     #nogl .retry:hover { background: var(--primary-hover); }
@@ -96,7 +97,7 @@
     </div>
     <ol id="nogl-steps"></ol>
     <p class="note" id="nogl-note"></p>
-    <button type="button" class="retry" id="nogl-retry"></button>
+    <div class="foot"><button type="button" class="retry" id="nogl-retry"></button></div>
   </main>
 </div>
 <script>
