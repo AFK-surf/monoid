@@ -1002,7 +1002,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   }
   scope_stops.push(() => (call.close)())
   // The workspaces' mesh directory over the peer bus, and the relays' door (mesh.ts, scope-sync.ts, enrollment-door.ts).
-  let door = self.mesh_scopes(m, endpoint, plane, call)
+  let door = self.mesh_scopes(m, endpoint, plane, call, scope_stops)
   scope_stops.push(() => {
     match m.scopes {
       Some(sync) => sync.close()

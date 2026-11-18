@@ -55,9 +55,16 @@ fn p51_unhex(h : String) -> Bytes {
 }
 
 ///|
-/// The directory made where the endpoint keeps scopes, its peers' requests answered, the relays tool's asks answered;
-/// the door the relays' connections are served by.
-fn P51::mesh_scopes(self : P51, m : MeshLive, endpoint : Endpoint, plane : Plane, call : @gate.StationCall) -> @mesh_scopes.EnrollmentDoor {
+/// The directory made where the endpoint keeps scopes, its peers' requests answered, the relays tool's asks answered
+/// (till `stops` is run, as the mesh it was made for ends); the door the relays' connections are served by.
+fn P51::mesh_scopes(
+  self : P51,
+  m : MeshLive,
+  endpoint : Endpoint,
+  plane : Plane,
+  call : @gate.StationCall,
+  stops : Array[() -> Unit],
+) -> @mesh_scopes.EnrollmentDoor {
   let bus = self.bus
   let crypto = p51_scopes_crypto(bus)
   let read = async fn(args : Json) -> Json { @readops.mesh_control_read(bus.db, args) }
@@ -136,7 +143,7 @@ fn P51::mesh_scopes(self : P51, m : MeshLive, endpoint : Endpoint, plane : Plane
       _ => before(op, arg)
     }
   }
-  self.stops.push(() => bus.cloud_call.val = before)
+  stops.push(() => bus.cloud_call.val = before)
   @mesh_scopes.EnrollmentDoor::new({
     enrollment,
     allowed,
