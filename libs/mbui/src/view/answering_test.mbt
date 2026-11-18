@@ -199,6 +199,7 @@ test "answering: a show going by an event, shown again by an answer as it closes
     // (back by an answer before that way ends: whole at once, the line under it where it was)
     @view.answering(fn() { on.set(true) })
     tree.frame(390.0, 844.0, now=clock.val) |> ignore
+    println("show-back \{period}: \{top()}")
     assert_eq(top(), 100.0, msg="at \{period} ms a frame: shown again by the answer")
     while clock.val + period <= 2400.0 {
       clock.val += period

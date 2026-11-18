@@ -349,6 +349,33 @@ test "用量: selecting a model keeps every legend and the chart in place while 
 }
 
 ///|
+test "用量: a person picked in the breakdown, their view answered as the breakdown closes its way: it comes back taking its room, what is under it under it, the page as long as all of it" {
+  for case in page_cases {
+    let (w, platform) = case
+    // (the core's client answering the person's view late, as a device's does: its first value told as an answer)
+    let t = setting_tester(Usage, w, platform~, h=2400.0, over=fn(base) {
+      @sffixture.round_trip_again(base, 0.0, late=fn(name, params) {
+        if name == "usage" && params.get("only") is Some(_) { @ui.move_most_ms / 4.0 } else { 0.0 }
+      })
+    })
+    let at = "\{w} platform \{platform}"
+    t.run_for(@ui.move_most_ms)
+    t.click(Radio, label="人")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="Ana")
+    t.run_for(@ui.move_most_ms * 2.0)
+    assert_eq(usage_pick.only.get(), ("people", "ana@example.com"), msg=at)
+    // (the note under the breakdown card under its last row, never drawn over the card)
+    let sub = t.rect_of("9 个对话 · 410 次调用 · 最多 GPT-6")
+    let note = t.rect_of("按各服务商公开的 API 价格折算，不是实际账单。")
+    match (sub, note) {
+      (Some(r), Some(n)) => assert_true(n.1 > r.1 + r.3 + 16.0, msg="\{at}: the row's last line at \{r.1}, the note at \{n.1}")
+      _ => fail("\{at}: no row or note \{t.drawn_text()}")
+    }
+  }
+}
+
+///|
 test "用量: the overview follows the page's theme, including after a day is picked" {
   // (tall enough for the overview under the summary)
   let t = setting_tester(Usage, 390.0, platform=2, h=2400.0)
