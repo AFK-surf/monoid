@@ -559,7 +559,7 @@ fn fix_shown_models() -> Array[Json] {
     let here = if n.station_empty {
       []
     } else if n.crowded {
-      fix_crowded_models.map(fn(m) { sourced(m, "here") })
+      fix_crowded_models.map(fn(m) { sourced(m, "here") }) + fix_providers.map(fn(p) { sourced(p.0, "here") })
     } else {
       [sourced("claude-opus-5-5", "here"), sourced("claude-sonnet-5", "borrowed")]
     }
