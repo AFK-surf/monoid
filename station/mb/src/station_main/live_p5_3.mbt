@@ -264,11 +264,7 @@ async fn p53_write_private(host : @host.Host, path : String, bytes : Bytes) -> U
 ///|
 /// The station's log line of a part (ops/log.ts), on stderr as the program's are.
 fn p53_log(level : String, part : String, message : String, fields? : Json = Json::object({})) -> Unit {
-  let f = match fields {
-    Object(m) if m.length() > 0 => " " + fields.stringify()
-    _ => ""
-  }
-  err_write("\{level} \{part}: \{message}\{f}\n")
+  slice_log(level, part, message, fields)
 }
 
 ///|

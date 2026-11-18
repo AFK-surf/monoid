@@ -49,7 +49,7 @@ fn connects_fs() -> @connects_hub.Fs {
 
 ///|
 fn connects_log() -> @connects_hub.Log {
-  { write: (level, part, words, fields) => err_write("\{level} \{part}: \{words} \{@jsjson.stringify(fields)}\n") }
+  { write: (level, part, words, fields) => slice_log(level, part, words, to_core(fields)) }
 }
 
 ///|
@@ -344,7 +344,7 @@ async fn P55::start_connects(self : P55) -> Unit {
   // Slack: a connect's surface on Slack's Web API and Socket Mode ($STILLFAIL_SLACK_API: a stand-in's), each socket's
   // events taken as the hub's.
   let client = @slack.SlackClient::new(@slack.host_net(host, @slack.Wall::new(wall_ms().to_double())), base=@slack.api_base(env_get("STILLFAIL_SLACK_API")))
-  let slack_log = (level : String, part : String, said : String, fields : @jsjson.JValue) => err_write("\{level} \{part}: \{said} \{@jsjson.stringify(fields)}\n")
+  let slack_log = (level : String, part : String, said : String, fields : @jsjson.JValue) => slice_log(level, part, said, to_core(fields))
   let slack = @connects_hub.make_connects(options, {
     kind: "slack",
     names: "slack-names.json",

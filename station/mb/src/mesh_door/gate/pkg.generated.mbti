@@ -268,42 +268,52 @@ pub fn words_of(Error) -> String
 pub(all) suberror DeviceRefused {
   DeviceRefused(Int32, String)
 }
+pub impl Show for DeviceRefused
 
 pub(all) suberror HttpRefusal {
   HttpRefusal(Int32, String, Bool)
 }
+pub impl Show for HttpRefusal
 
 pub(all) suberror LockRefusal {
   LockRefusal(String)
 }
+pub impl Show for LockRefusal
 
 pub(all) suberror MarkRefusal {
   MarkRefusal(String)
 }
+pub impl Show for MarkRefusal
 
 pub(all) suberror NoBytes {
   NoBytes(String)
 }
+pub impl Show for NoBytes
 
 pub(all) suberror NoLink {
   NoLink(String)
 }
+pub impl Show for NoLink
 
 pub(all) suberror PeerGone {
   PeerGone(String, Bool)
 }
+pub impl Show for PeerGone
 
 pub(all) suberror PeerRefused {
   PeerRefused(String)
 }
+pub impl Show for PeerRefused
 
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 
 pub(all) suberror WaysRefusal {
   WaysRefusal(String)
 }
+pub impl Show for WaysRefusal
 
 // Types and methods
 pub(all) struct Accepted {

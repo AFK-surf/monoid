@@ -377,7 +377,7 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
     }),
     machine: p54_vault_machine(bus),
     hold: () => () => (),
-    log: (level, part, said, about) => err_write("\{level} \{part}: \{said} \{about.stringify()}\n"),
+    log: (level, part, said, about) => slice_log(level, part, said, about),
     random: n => crypto.random(n) catch { _ => @drive.random_bytes(n) },
     env: () => env_all(),
     index_db: Some(() => @sql.Db::attach(host, db_path, wait=5000)),

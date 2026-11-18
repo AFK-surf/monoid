@@ -46,6 +46,34 @@ priv struct P51 {
 let p51_live : Ref[P51?] = Ref(None)
 
 ///|
+/// A slice's log line (P5-2 to P5-5, their parts' `log`), as P5-1's own: its time and level as log.ts writes them,
+/// and heard (the station's log sent, an error reported). Written bare, those lines had no time and none reached
+/// either (0.1.9984).
+fn slice_log(level : String, at : String, message : String, fields : Json) -> Unit {
+  let f = match fields {
+    Object(m) if m.length() > 0 => Some(fields)
+    Object(_) | Null => None
+    other => Some({ "said": other })
+  }
+  p51_log(level.to_upper(), at, message, fields?=f)
+}
+
+///|
+/// A line a part wrote through `@host.note`: "<level> <part>: <words>" as a log line of the station's own.
+fn noted(text : String) -> Unit {
+  let levels = ["debug", "info", "warn", "error"]
+  let words = text.split(" ").map(w => w.to_owned()).collect()
+  match words {
+    [level, part, ..] if levels.contains(level) && part.length() > 1 && part.has_suffix(":") => {
+      let start = level.length() + 1 + part.length() + 1
+      let rest = if start < text.length() { text[start:].to_owned() } else { "" }
+      p51_log(level.to_upper(), part[:part.length() - 1].to_owned(), rest)
+    }
+    _ => err_write(text + "\n")
+  }
+}
+
+///|
 /// A line of the station's log (ops/log.ts): written to stderr as the TypeScript's are, kept for still.fail
 /// (`stationLog`), and an error line reported where the operator turned reports on (`hearErrors`).
 fn p51_log(level : String, at : String, message : String, fields? : Json) -> Unit {
@@ -186,6 +214,8 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
     stops: [],
   }
   p51_live.val = Some(p)
+  // The parts' lines through the host's `note` ("warn helper: …"): each with its time, and heard, as P5-1's are.
+  @host.note_sink.val = Some(noted)
   p.config_live()
   p.station_id = match read_json(path([bus.data, "mesh", "cloud.json"])) {
     Some({ "station": String(s), .. }) => Some(s)

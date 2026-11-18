@@ -153,8 +153,16 @@ pub fn Host::out(self : Host, bytes : Bytes) -> Unit {
 ///|
 /// Writes `text` and a newline to stderr, for the station's log.
 pub fn note(text : String) -> Unit {
-  eprintln(text)
+  match note_sink.val {
+    Some(sink) => sink(text)
+    None => eprintln(text)
+  }
 }
+
+///|
+/// Where `note` writes in a program that keeps a log of its own (the station's `run`: each line with its time, and
+/// heard as its own lines are); none, stderr as it is.
+pub let note_sink : Ref[((String) -> Unit)?] = Ref(None)
 
 ///|
 fn Host::dispatch(self : Host, e : Bytes) -> Unit {

@@ -581,8 +581,12 @@ fn Station::told(self : Station, line : String) -> Unit {
         _ => Json::object({})
       }
       self.carried = Some(what)
+      // Taken up in a task: the line comes on the host's queue, outside one, and a part's `take` may start work of
+      // its own (the vault's saves carried over fork a wait): outside a task that stopped the program, "effect: not
+      // inside a task", at the handover from 0.1.9977 to 0.1.9984, so the next process started over as after a crash.
       match what {
-        Object(kept) => self.parts.take_up(kept)
+        Object(kept) =>
+          ignore(self.host.rt.fork(name="carried", async fn() { self.parts.take_up(kept) }))
         _ => ()
       }
     }

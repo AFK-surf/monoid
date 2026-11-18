@@ -474,11 +474,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
 ///|
 /// A line of the station's log (ops/log.ts): stderr, which the launcher keeps as stillfail.log.
 fn live_log(level : String, area : String, message : String, fields : Json) -> Unit {
-  let f = match fields {
-    Object(m) if m.length() > 0 => " " + fields.stringify()
-    _ => ""
-  }
-  err_write("\{level} \{area}: \{message}\{f}\n")
+  slice_log(level, area, message, fields)
 }
 
 ///|

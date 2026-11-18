@@ -170,7 +170,7 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
     },
     words,
     lang,
-    (level, part, said, fields) => err_write("\{level} \{part}: \{said} \{@jsjson.stringify(fields)}\n"),
+    (level, part, said, fields) => slice_log(level, part, said, to_core(fields)),
   )
   let slack_connect = (v : Json) => @slack.slack_connects(Some(of_core({ "connects": [v] }))).get(0)
   self.prefix_op("slack/index.", async fn(name, arg) {

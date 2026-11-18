@@ -275,7 +275,7 @@ async fn P55::start_moves(self : P55) -> Unit {
   let data = bus.data
   let host = bus.host
   let replica_fs = @replica_coord.Fs::new(host, sep=sep())
-  let say = @move_coord.Say::of((lang, key, args) => tr(lang, key, args~), (bus.lang.val)(), log=(level, part, fields) => err_write("\{level} move: \{part} \{@jsjson.stringify(fields)}\n"))
+  let say = @move_coord.Say::of((lang, key, args) => tr(lang, key, args~), (bus.lang.val)(), log=(level, part, fields) => slice_log(level, "move", part, to_core(fields)))
   let roster = (ws : String) => self.roster(ws).map(r => r.map(m => ({ id: m.0, name: m.1, tasks: m.2 } : @move_coord.RosterEntry)))
   // (a burst of changes, a file's progress among them, told once: what the app's page reads again, GET /move)
   let telling = Ref(false)

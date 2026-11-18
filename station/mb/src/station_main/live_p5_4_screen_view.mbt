@@ -231,7 +231,7 @@ async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
     () => !bus.stopped.is_done(),
     host.rt,
     words,
-    (level, part, said, with_) => err_write("\{level} \{part}: \{said} \{with_.stringify()}\n"),
+    (level, part, said, with_) => slice_log(level, part, said, with_),
     host_now=Some(() => wall_ms().to_double()),
   )
 }

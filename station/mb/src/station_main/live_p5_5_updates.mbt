@@ -153,7 +153,7 @@ async fn P55::start_updates(self : P55) -> Unit {
     origin: () => self.release_base(),
     env,
     registry: "https://registry.npmjs.org",
-    devin_manifest: "https://static.devin.ai/cli/manifest.json",
+    devin_manifest: @updates.devin_manifest,
     claude_releases: "https://downloads.claude.ai/claude-code-releases",
     agy_manifests: @updates.agy_manifests,
     node_dist: "https://nodejs.org/dist",
