@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [96fae6be6](https://github.com/AFK-surf/monoid/commit/96fae6be63bc71ff0c9597648b9af1ff6b008928) mbui: a chat's words broken anew as the side panel | 2.54 | 3.42 | 14 | 35.93 | 53.86 | 31.5 | 63.41 | 96.77 | 117.45 |
 | [47562f9dd](https://github.com/AFK-surf/monoid/commit/47562f9dd2435091c8f4fb111366a4a41fb7f990) fix(mbui): a show shown again by an answer as it c | 2.54 | 3.42 | 14 | 35.93 | 53.86 | 31.5 | 63.41 | 96.77 | 117.45 |
 | [bef9e7b69](https://github.com/AFK-surf/monoid/commit/bef9e7b69b9cf6fb3d79fde18093210a51b6c868) fix(station): tell what the threads' store wrote f | 2.54 | 3.42 | 14 | 35.92 | 53.83 | 31.49 | 63.37 | 96.75 | 117.45 |
 | [34b88f6c4](https://github.com/AFK-surf/monoid/commit/34b88f6c4ca6ba57b9d48768c8ba518a75d857ed) fix(core): bound pairing code verification reads a | 2.54 | 3.42 | 14 | 35.92 | 53.83 | 31.49 | 63.37 | 96.75 | 117.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.42 | 120.63 |
 | [2cea29165](https://github.com/AFK-surf/monoid/commit/2cea29165294fd7b43bcfe7d2115c091f4c5b0e2) admin: dual-brand console, feedback replies, relay | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.42 | 120.63 |
 | [7f4127bab](https://github.com/AFK-surf/monoid/commit/7f4127babaf94ca2b9c48155067e27adf4df7769) station test: await home's background relayStatus  | 2.56 | 3.63 | 15.18 | 36.32 | 57.93 | 31.67 | 64.57 | 96.49 | 127.43 |
-| [b199c2d64](https://github.com/AFK-surf/monoid/commit/b199c2d648538499e233464c7ae2799b7ad79684) mbui: bound transition holds on the tree timeline  | 2.56 | 3.63 | 15.18 | 36.32 | 58.04 | 31.67 | 64.57 | 96.49 | 127.01 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [96fae6be6](https://github.com/AFK-surf/monoid/commit/96fae6be63bc71ff0c9597648b9af1ff6b008928) mbui: a chat's words broken anew as the side panel | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.79 |
 | [47562f9dd](https://github.com/AFK-surf/monoid/commit/47562f9dd2435091c8f4fb111366a4a41fb7f990) fix(mbui): a show shown again by an answer as it c | 0.44 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.25 |
 | [bef9e7b69](https://github.com/AFK-surf/monoid/commit/bef9e7b69b9cf6fb3d79fde18093210a51b6c868) fix(station): tell what the threads' store wrote f | 0.44 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.25 |
 | [34b88f6c4](https://github.com/AFK-surf/monoid/commit/34b88f6c4ca6ba57b9d48768c8ba518a75d857ed) fix(core): bound pairing code verification reads a | 0.44 | 0.57 | 2.17 | 3.27 | 5.21 | 1.6 | 4.28 | 53.48 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
 | [2cea29165](https://github.com/AFK-surf/monoid/commit/2cea29165294fd7b43bcfe7d2115c091f4c5b0e2) admin: dual-brand console, feedback replies, relay | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
 | [7f4127bab](https://github.com/AFK-surf/monoid/commit/7f4127babaf94ca2b9c48155067e27adf4df7769) station test: await home's background relayStatus  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
-| [b199c2d64](https://github.com/AFK-surf/monoid/commit/b199c2d648538499e233464c7ae2799b7ad79684) mbui: bound transition holds on the tree timeline  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
