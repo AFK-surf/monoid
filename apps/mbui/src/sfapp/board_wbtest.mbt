@@ -479,7 +479,7 @@ test "中屏 760: on the tape the rail's 看板 brings the board's panel over, �
 }
 
 ///|
-/// The drafts of ws1 as the made-up core keeps them (the prefs' `boardDrafts`): each one's words.
+/// The drafts of ws1 as the made-up core keeps them (its `boardDrafts` topic): each one's words.
 fn board_kept_drafts() -> Array[String] {
   match @sffixture.board_prefs["boardDrafts"].get("ws1") {
     Some(Array(a)) => a.map(fn(d) { text(Some(d), "title") })

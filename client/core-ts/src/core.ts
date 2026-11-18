@@ -83,6 +83,7 @@ import * as vaultCalls from "./views/vault.ts";
 import * as waysCalls from "./views/ways-stations.ts";
 import * as stationMarkCalls from "./views/station-marks.ts";
 import * as presetCalls from "./views/presets.ts";
+import * as boardDraftCalls from "./views/board-drafts.ts";
 import * as movedChats from "./views/moved.ts";
 import { MOVED } from "./station/requests.ts";
 import * as transferCalls from "./views/transfers.ts";
@@ -156,6 +157,8 @@ export class Inner {
   choose!: Choose;
   /// A person's presets and starred models as their devices carry them (views/presets.ts).
   presets!: presetCalls.PresetViews;
+  /// A person's drafts of 待派发 as their devices carry them (views/board-drafts.ts).
+  boardDrafts!: boardDraftCalls.BoardDraftViews;
   changelog!: Changelog;
   forms!: Forms;
   adb!: Adb;
@@ -297,6 +300,7 @@ export class Core {
       waysCalls.install(inner);
       stationMarkCalls.install(inner);
       inner.presets = presetCalls.install(inner);
+      inner.boardDrafts = boardDraftCalls.install(inner);
       movedChats.install(inner);
       transferCalls.install(inner);
       browseCalls.install(inner);

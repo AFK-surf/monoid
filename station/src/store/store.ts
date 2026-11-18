@@ -1289,6 +1289,17 @@ export class Store {
     this.#run("INSERT INTO model_stars (ws, sub, stars) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET stars = excluded.stars", ws, sub, stars);
   }
 
+  /// `sub`'s drafts of 待派发 in workspace `ws` as kept (sessions/board-drafts.ts), as JSON; null before any.
+  boardDrafts(ws: string, sub: string): string | null {
+    const row = this.#one("SELECT drafts FROM board_drafts WHERE ws = ?1 AND sub = ?2", ws, sub);
+    return row === undefined || row === null ? null : String(row.drafts);
+  }
+
+  /// `sub`'s drafts of 待派发 in workspace `ws`, kept as `drafts` (JSON).
+  putBoardDrafts(ws: string, sub: string, drafts: string): void {
+    this.#run("INSERT INTO board_drafts (ws, sub, drafts) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET drafts = excluded.drafts", ws, sub, drafts);
+  }
+
   /// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after.
   deviceBuildsSince(now: number): number {
     const saved = this.#one("SELECT at FROM device_builds_since WHERE one = 1");

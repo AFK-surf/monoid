@@ -1241,6 +1241,31 @@ function presetRecordsOf(now: number): J {
   return { records, before: [] };
 }
 
+/// The person's drafts of 待派发 as the device carries them (views/board-drafts.ts): a board of real size, a dozen tasks
+/// written and not started, two with a picture, kept by every station; two started on another device.
+function boardDraftsOf(now: number): J {
+  const drafts: J = {};
+  for (let i = 0; i < 12; i++) {
+    const id = `new:board-${now - i * HOUR}-1`;
+    const st = STATIONS[i % 4]!;
+    drafts[id] = {
+      id, owner: "s1", rev: 1 + (i % 3), at: now - i * HOUR, updatedAt: now - i * HOUR, title: `${pick(TITLES, i)}`.slice(0, 60), station: `ws/${st.id}`, stationName: st.name,
+      files: i % 6 === 0 ? [{ id: `f-${i}`, name: `截图 ${i + 1}.png`, size: 180_000 + i }] : [],
+    };
+  }
+  for (const i of [12, 13]) drafts[`new:board-${now - i * DAY}-1`] = { id: `new:board-${now - i * DAY}-1`, owner: "s1", rev: 2, gone: true, updatedAt: now - DAY };
+  return { drafts, owed: [], met: UP.map((a) => a.slice(3)), files: { maple: ["f-0"], studio: ["f-6"] }, took: true };
+}
+
+/// What the device holds once a draft of 待派发 was edited on another device of theirs at `at` (carried to it as a
+/// station told `boardDrafts`).
+export function boardDraftsChanged(base: number, at: number): J {
+  const held = boardDraftsOf(base);
+  const id = Object.keys(held.drafts)[1]!;
+  const was = held.drafts[id];
+  return { ...held, drafts: { ...held.drafts, [id]: { ...was, title: `${was.title}（改）`, updatedAt: at, rev: was.rev + 1 } } };
+}
+
 /// What the device holds once one of the person's presets was changed on another device of theirs at `at` (carried to
 /// it as a station told `presets`).
 export function presetRecordsChanged(base: number, at: number): J {
@@ -1331,6 +1356,7 @@ export function records(now: number): [string, string, unknown][] {
     ["choice", "ws:ws:preset", { id: "p-app", station: "ws/maple" }],
     ["choice", "ws:ws:presetUsage", [{ id: "p-app", count: 5, last: now - 2 * HOUR }]],
     ["presetRecords", "ws", presetRecordsOf(now)],
+    ["boardDrafts", "ws", boardDraftsOf(now)],
     ...UP.map((at, st): [string, string, unknown] => ["memberships", at, { workspaces: [{ workspace: "ws", workspaceName: "Acme", name: STATIONS[st]!.name, home: true }], canJoin: true }]),
     ["lock", "ws", lockOf(now)],
     ["lockPending", "ws", pendingOf(now)],

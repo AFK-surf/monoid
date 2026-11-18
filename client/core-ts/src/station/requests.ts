@@ -692,6 +692,17 @@ export class Requests {
     });
   }
 
+  /// GET /board/files?draft=&file=: a file of one of the person's drafts of 待派发 as its station keeps it, and its type;
+  /// null where it keeps none (sessions/board-drafts.ts).
+  boardFile(station: StationAddr, draft: string, file: string, ctx: SpanContext | null): Effect.Effect<{ type: string; bytes: Uint8Array } | null, CoreError> {
+    return Effect.flatMap(this.exchange(station, "GET", `/board/files?draft=${encode(draft)}&file=${encode(file)}`, [], empty, true, ctx), (r) => {
+      if (r.status === 200) return Effect.succeed({ type: r.headers.find(([k]) => k.toLowerCase() === "content-type")?.[1] ?? "", bytes: r.body });
+      if (r.status === 404) return Effect.succeed(null);
+      const data = parseJson(r.body);
+      return Effect.fail(httpError(r.status, data === undefined ? {} : data));
+    });
+  }
+
   /// A request to a web service on the station's machine (`/preview/<port>`), passed through as it is.
   preview(station: StationAddr, port: number, method: string, path: string, headers: [string, string][], body: Uint8Array, ctx: SpanContext | null) {
     return this.exchange(station, method, `/preview/${port}${path.startsWith("/") ? path : `/${path}`}`, headers, body, false, ctx);

@@ -72,6 +72,7 @@ export const TOPIC_SHAPES: Record<string, Ty> = {
   newChat: "NewChatView",
   preset: "PresetOne",
   otherPresets: "OtherPresetsView",
+  boardDrafts: "BoardDraftsView",
   shareIn: "ShareInView",
   pick: "PickView",
   chatJobs: "ChatJobsView",

@@ -24,7 +24,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
-import { liveClock, within } from "../ops/fibers.ts";
+import { liveClock, wall, within } from "../ops/fibers.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
@@ -54,6 +54,7 @@ import { LiveHub } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
 import { agentHomePaths, workspaceAgentHome, workspaceAgentHomePath } from "./agent-home.ts";
 import { Presets, RepoIndex } from "./presets.ts";
+import { BoardDrafts } from "./board-drafts.ts";
 import { Clones } from "./clones.ts";
 import { type Roots, roots as machineRoots } from "../read/machine.ts";
 import { carrySubagents, goesAfresh, startsAfresh, toldCleared, toldLongChat, toldResumeLost } from "./afresh.ts";
@@ -290,6 +291,13 @@ export class Hub {
     station: () => this.station(),
     workspace: (ws) => ws ?? this.workspaces()[0] ?? null,
     stationName: (id) => this.options.stationName?.(id) ?? null,
+  });
+  /// Each person's drafts of 待派发 and the files of those to run here (board-drafts.ts).
+  readonly boardDrafts = new BoardDrafts({
+    store: () => this.store,
+    dir: () => join(this.config().dataDir, "board-files"),
+    uploads: () => join(this.config().dataDir, "uploads"),
+    now: () => wall.now(),
   });
   /// The repositories on the machine, offered as a preset's folders (presets.ts).
   readonly repoIndex = new RepoIndex({ roots: () => [homedir()], file: () => join(this.config().dataDir, "repo-index.json"), now: () => this.now(), besides: () => [this.config().dataDir] });

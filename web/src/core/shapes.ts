@@ -1489,13 +1489,16 @@ export interface Overview {
 /** How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it. */
 export type BoardGroup = "state" | "station" | "person";
 
-/** A queued task's file, named by its composer id; its bytes stay in the device's draft store. */
+/**
+ * A queued task's file, named by its composer id; its bytes are the device's draft store's where it was added,
+ * kept by the station the task is to run on for the person's other devices.
+ */
 export interface BoardFile {
 	id: string;
 	name: string;
 }
 
-/** An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name. */
+/** An unstarted task of a workspace's 待派发 column: its key, its words, the station it is to run on and that station's name. */
 export interface BoardDraft {
 	id: string;
 	title: string;
@@ -1703,7 +1706,10 @@ export interface PrefsView {
 	boardGroups?: Record<string, BoardGroup>;
 	/** A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown. */
 	boardShowEmpty?: Record<string, boolean>;
-	/** Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200). */
+	/**
+	 * Unstarted tasks a workspace's 待派发 kept on this device before they were carried (by workspace):
+	 * taken into the `boardDrafts` topic's once and left out of here.
+	 */
 	boardDrafts?: Record<string, BoardDraft[]>;
 	/**
 	 * The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`

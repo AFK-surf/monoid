@@ -473,6 +473,14 @@ CREATE TABLE IF NOT EXISTS model_stars (
   stars TEXT NOT NULL,
   PRIMARY KEY (ws, sub)
 );
+-- A person's drafts of 待派发 in a workspace, as their devices carry them (sessions/board-drafts.ts; the drafts as JSON
+-- by id, the KeptDraft of the core's board-drafts.ts): one row a person (their sub) a workspace, read by its key.
+CREATE TABLE IF NOT EXISTS board_drafts (
+  ws TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  drafts TEXT NOT NULL,
+  PRIMARY KEY (ws, sub)
+);
 -- The chats handed from here to another station while both are up (replica/handover.ts): where each went, the
 -- workspace it was of here (null: the home one), its chat's thread here and there. Its rows here stay (a hand-back
 -- goes on from them); a device, a link or a letter naming it is told where it is.

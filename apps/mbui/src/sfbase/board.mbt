@@ -1,9 +1,10 @@
 // The chats as a board (看板), a way of showing Home's chats beside the list (列表): the workspace's chats in columns
 // by where each stands (待派发, 等你处理, 进行中, 待收口, 监控中), by the station it runs on, or by who is in it. What a
 // chat stands at is the core's (its row's state, tone, lead): the board only sorts by it, so a card goes to another
-// column only as its chat goes on. Whether a workspace shows its board, how it is grouped and the drafts of its 待派发
-// are this device's, kept in the core's prefs (`boardViews`, `boardGroups`, `boardShowEmpty`, `boardDrafts`) by workspace, what was
-// chosen here shown at once while the core takes it. A draft started becomes a chat as a new chat's page makes one
+// column only as its chat goes on. Whether a workspace shows its board and how it is grouped are this device's, kept in
+// the core's prefs (`boardViews`, `boardGroups`, `boardShowEmpty`) by workspace; the drafts of its 待派发 are the person's,
+// the same on all their devices (the core's `boardDrafts` topic, written by `board.drafts`); what was chosen here shown
+// at once while the core takes it. A draft started becomes a chat as a new chat's page makes one
 // (`newChat.create` under the draft's key, then `chat.send` of its words), its card that chat's from the press on.
 
 ///|
@@ -89,9 +90,16 @@ let board_groups_here : Map[String, String] = Map([])
 let board_empty_here : Map[String, Bool] = Map([])
 
 ///|
-/// Each workspace's drafts as written here, by workspace (board_views_here's).
+/// Each workspace's drafts as written here, by workspace, shown till the core says what it made of them: once it
+/// answered, the first value of its topic other than the one it had then (`seen`).
 // kept across runs: put back by board_reset as a run starts
-let board_drafts_here : Map[String, Array[BoardDraft]] = Map([])
+let board_drafts_here : Map[String, BoardHere] = Map([])
+
+///|
+priv struct BoardHere {
+  drafts : Array[BoardDraft]
+  mut seen : Json??
+}
 
 ///|
 /// The words each draft started here began its chat with, by that chat's row's key (`<station>/<key>`): its card's
@@ -286,37 +294,49 @@ pub fn set_board_show_empty(src : Source, ws : String, on : Bool) -> Unit {
 }
 
 ///|
+/// What the core says of workspace `ws`'s drafts (its `boardDrafts` topic's `drafts`), as it is now.
+fn board_drafts_told(src : Source, ws : String) -> Json? {
+  field(src.topic("boardDrafts", { "scope": Json::string(ws) }).get().value, "drafts")
+}
+
+///|
 /// The drafts of workspace `ws` as kept (newest first), started ones too.
 fn board_drafts_kept(src : Source, ws : String) -> Array[BoardDraft] {
   board_rev.get() |> ignore
+  let told = board_drafts_told(src, ws)
   match board_drafts_here.get(ws) {
-    Some(d) => d
-    None =>
-      match board_kept(src, "boardDrafts", ws) {
-        Some(Array(a)) =>
-          a
-          .map(fn(d) -> BoardDraft {
-            let one = Some(d)
-            {
-              id: text(one, "id"),
-              title: text(one, "title"),
-              station: text(one, "station"),
-              station_name: text(one, "stationName"),
-              files: items(one, "files").map(fn(f) { { id: text(Some(f), "id"), name: text(Some(f), "name") } }),
-            }
-          })
-          .filter(fn(d) { d.id != "" && (d.title != "" || !d.files.is_empty()) })
-        _ => []
+    Some(here) =>
+      match here.seen {
+        Some(seen) if seen != told => board_drafts_here.remove(ws)
+        _ => return here.drafts
       }
+    None => ()
+  }
+  match told {
+    Some(Array(a)) =>
+      a
+      .map(fn(d) -> BoardDraft {
+        let one = Some(d)
+        {
+          id: text(one, "id"),
+          title: text(one, "title"),
+          station: text(one, "station"),
+          station_name: text(one, "stationName"),
+          files: items(one, "files").map(fn(f) { { id: text(Some(f), "id"), name: text(Some(f), "name") } }),
+        }
+      })
+      .filter(fn(d) { d.id != "" && (d.title != "" || !d.files.is_empty()) })
+    _ => []
   }
 }
 
 ///|
-/// Workspace `ws`'s drafts made `drafts` (newest first): shown so at once, kept so in the prefs.
+/// Workspace `ws`'s drafts made `drafts` (newest first): shown so at once, given to the core as the board has them.
 fn board_drafts_put(src : Source, ws : String, drafts : Array[BoardDraft]) -> Unit {
-  board_drafts_here[ws] = drafts
+  let here : BoardHere = { drafts, seen: None }
+  board_drafts_here[ws] = here
   board_rev.set(board_rev.untracked() + 1)
-  let kept = Json::array(
+  let given = Json::array(
     drafts.map(fn(d) {
       let one : Map[String, Json] = {
         "id": Json::string(d.id),
@@ -330,7 +350,18 @@ fn board_drafts_put(src : Source, ws : String, drafts : Array[BoardDraft]) -> Un
       Json::object(one)
     }),
   )
-  (src.call)("prefs.set", { "boardDrafts": board_of_ws(ws, kept) }, answer_unread)
+  (src.call)("board.drafts", { "workspace": Json::string(ws), "drafts": given }, fn(r) {
+    match r {
+      // (what the core made of it shown from its next value on)
+      Ok(_) => here.seen = Some(@signals.untracked(fn() { board_drafts_told(src, ws) }))
+      // (refused: what it keeps shown again)
+      Err(_) =>
+        if board_drafts_here.get(ws) is Some(now) && physical_equal(now, here) {
+          board_drafts_here.remove(ws)
+        }
+    }
+    board_rev.set(board_rev.untracked() + 1)
+  })
 }
 
 ///|

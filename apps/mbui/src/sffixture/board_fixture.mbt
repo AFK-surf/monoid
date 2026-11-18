@@ -3,8 +3,8 @@
 // Slack and Comma, faces of people with their pictures, an agent's subagents): a workspace's chats at every stand the
 // board sorts them by (waiting on a decision, on help, failed; at work, waiting on CI; done; keeping watch), on Willow
 // and Maple, with Claude, Codex and Gemini, 林, Ana and 周, from Slack and Feishu, each chat with what was said in it;
-// two drafts in 待派发, kept in the prefs as the core keeps them (`boardViews`, `boardDrafts`: board-list none, the
-// list shown). The made-up station goes on as a person does: a decision made or words sent in a chat that waited, it
+// two drafts in 待派发, the board kept in the prefs as the core keeps it (`boardViews`: board-list none, the list shown)
+// and the drafts as the core's `boardDrafts` topic gives them (written by `board.drafts`). The made-up station goes on as a person does: a decision made or words sent in a chat that waited, it
 // is at work again; a draft started, its chat made under its key (`newChat.create`: a pending row, as the core's) and
 // its words sent into it (`chat.send`: at work at once, the station's row keeping the key it was made under).
 
@@ -21,7 +21,8 @@ pub fn board_mode(mode : String) -> Bool {
 pub let board_started_rows : Array[Json] = []
 
 ///|
-/// The board's prefs as the core keeps them (`boardViews`, `boardGroups`, `boardShowEmpty`, `boardDrafts`), each by workspace.
+/// The board's prefs as the core keeps them (`boardViews`, `boardGroups`, `boardShowEmpty`), each by workspace, and its
+/// drafts (`boardDrafts`, the core's topic of that name).
 // kept across runs: put back as a fixture is made (board_prefs_seed)
 pub let board_prefs : Map[String, Map[String, Json]] = Map([])
 
@@ -64,7 +65,40 @@ pub fn board_prefs_seed(mode : String) -> Unit {
 /// The board's prefs into the prefs' value `o`.
 pub fn board_prefs_into(o : Map[String, Json]) -> Unit {
   for k, m in board_prefs {
-    o[k] = Json::object(m)
+    if k != "boardDrafts" {
+      o[k] = Json::object(m)
+    }
+  }
+}
+
+///|
+/// Workspace `ws`'s drafts as the core's `boardDrafts` topic gives them.
+pub fn board_drafts_topic(ws : String) -> Json {
+  let drafts = match board_prefs.get("boardDrafts") {
+    Some(m) => m.get(ws).unwrap_or(Json::array([]))
+    None => Json::array([])
+  }
+  { "drafts": drafts }
+}
+
+///|
+/// Workspace `ws`'s drafts as `board.drafts` gives them (`params`): replaced whole, none letting it go.
+pub fn board_drafts_set(params : Json) -> Unit {
+  let ws = match field(Some(params), "workspace") {
+    Some(String(w)) => w
+    _ => return
+  }
+  let m = match board_prefs.get("boardDrafts") {
+    Some(m) => m
+    None => {
+      let m : Map[String, Json] = Map([])
+      board_prefs["boardDrafts"] = m
+      m
+    }
+  }
+  match field(Some(params), "drafts") {
+    Some(Array([])) | Some(Null) | None => m.remove(ws)
+    Some(v) => m[ws] = v
   }
 }
 
@@ -72,7 +106,7 @@ pub fn board_prefs_into(o : Map[String, Json]) -> Unit {
 /// The board's prefs as `prefs.set` puts them (`params`): each workspace's entry replaced, null (or no drafts) letting
 /// it go.
 pub fn board_prefs_set(params : Json) -> Unit {
-  for k in ["boardViews", "boardGroups", "boardShowEmpty", "boardDrafts"] {
+  for k in ["boardViews", "boardGroups", "boardShowEmpty"] {
     match field(Some(params), k) {
       Some(Object(given)) => {
         let m = match board_prefs.get(k) {

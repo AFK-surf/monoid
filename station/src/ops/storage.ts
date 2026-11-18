@@ -104,6 +104,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "sessions", class: "session-bound", what: "each chat's workspace", reclaim: "sessions/lifecycle.ts expireArchived, relieveArchived" },
   { name: "archive", class: "authoritative", what: "chats put away (store/archive.ts)" },
   { name: "uploads", class: "authoritative", what: "files sent in chats" },
+  { name: "board-files", class: "authoritative", what: "the files of people's drafts of 待派发 (sessions/board-drafts.ts; a draft started or deleted, its files a day more)" },
   { name: "homes", class: "authoritative", what: "the runtimes' homes (accounts' sign-ins, their settings)" },
   { name: "repos", class: "authoritative", what: "the repositories' shared clones" },
   { name: "agent", class: "authoritative", what: "the agents' memory and skills" },

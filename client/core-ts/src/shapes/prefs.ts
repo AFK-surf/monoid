@@ -9,14 +9,17 @@ export const PREF_SHAPES: Record<string, Shape> = {
   BoardFile: struct([
     ["id", "String"],
     ["name", "String"],
-  ], { doc: "A queued task's file, named by its composer id; its bytes stay in the device's draft store." }),
+  ], { doc: "A queued task's file, named by its composer id; its bytes are the device's draft store's where it was added,\nkept by the station the task is to run on for the person's other devices." }),
   BoardDraft: struct([
     ["id", "String"],
     ["title", "String"],
     ["station", "String"],
     ["stationName", "String"],
     ["files", opt(vec("BoardFile"))],
-  ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
+  ], { doc: "An unstarted task of a workspace's 待派发 column: its key, its words, the station it is to run on and that station's name." }),
+  BoardDraftsView: struct([
+    ["drafts", vec("BoardDraft")],
+  ], { doc: "A person's unstarted tasks of a workspace's 待派发 (the `boardDrafts` topic), newest first: the same on all their\ndevices, kept by the workspace's stations and carried by those devices (views/board-drafts.ts)." }),
   KeptTabs: struct([
     ["tabs", vec("String")],
     ["active", opt("String")],
@@ -33,7 +36,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["boardViews", map("String"), { default: true, doc: "How a workspace's chats are shown on this device, by workspace: `board` (by columns), or none (its list)." }],
     ["boardGroups", map("BoardGroup"), { default: true, doc: "How a workspace's board columns are grouped on this device, by workspace; none: `state`." }],
     ["boardShowEmpty", map("bool"), { default: true, doc: "A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown." }],
-    ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200)." }],
+    ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks a workspace's 待派发 kept on this device before they were carried (by workspace):\ntaken into the `boardDrafts` topic's once and left out of here." }],
     ["listFilter", map("ListFilter"), { default: true, doc: "The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`\n(one filter for all, as devices kept it before)." }],
     ["appearance", "Appearance", { default: true }],
     ["accent", opt("String"), { doc: "The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `custom:<hue>` (0 to 359: a theme the app\nmakes of that hue), or none for still.fail's orange." }],
