@@ -43,7 +43,7 @@ fn viz_views(t : @ui.Tester) -> (Int, Int) {
 /// A fragment's page in a message, for what all pages do.
 fn a_page(c : @ui.Ctx) -> Unit {
   c.box(style=@sfbase.viz_mermaid_box, fn() {
-    @sfbase.viz_frame(c, "chat/ws1/st1:s-c1/message/page.html", "<p>图</p>", None, { keep: None, failed: None, follow_up: None })
+    @sfbase.viz_frame(c, "chat/ws1/st1:s-c1/message/page.html", "<p>图</p>", None, { keep: None, failed: None, follow_up: None, app: None })
   })
   |> ignore
 }

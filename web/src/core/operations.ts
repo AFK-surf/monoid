@@ -53,6 +53,14 @@ export interface OperationParams {
   "file.peek": { key: string; path: string; line?: number | null | undefined };
   "link.preview": { url: string };
   "widget.setState": { key: string; path?: string | null | undefined; state?: unknown };
+  "app.list": {  };
+  "app.get": { id: string; rev?: number | null | undefined };
+  "app.versions": { id: string };
+  "app.publish": { id: string; rev: number; force?: boolean | null | undefined };
+  "app.docs": { id: string; collection: string };
+  "app.putDoc": { id: string; collection: string; doc: string; data?: unknown; base?: number | null | undefined };
+  "app.deleteDoc": { id: string; collection: string; doc: string };
+  "app.llm": { id: string; key: string; prompt: string; system?: string | null | undefined; max_tokens?: number | null | undefined };
   "machineSessions.list": {  };
   "machineSessions.read": { runtime: string; id: string; limit?: number | null | undefined };
   "machineSessions.continue": { runtime?: string | null | undefined; id?: string | null | undefined };
@@ -197,7 +205,7 @@ export interface OperationParams {
   "admin.relayRemove": { url: string };
 }
 
-export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
+export const UNTRACKED_OPERATIONS = new Set(["admin.me", "app.deleteDoc", "app.docs", "app.get", "app.list", "app.llm", "app.putDoc", "app.versions", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
 
 type Call = (name: string, params: Record<string, unknown>) => Promise<unknown>;
 
@@ -256,6 +264,14 @@ export function bindStationOperations(call: Call) {
     filePeek: <T = unknown>(params: OperationParams["file.peek"]) => call("file.peek", params) as Promise<T>,
     linkPreview: <T = unknown>(params: OperationParams["link.preview"]) => call("link.preview", params) as Promise<T>,
     widgetSetState: <T = unknown>(params: OperationParams["widget.setState"]) => call("widget.setState", params) as Promise<T>,
+    appList: <T = unknown>(params: OperationParams["app.list"] = {}) => call("app.list", params) as Promise<T>,
+    appGet: <T = unknown>(params: OperationParams["app.get"]) => call("app.get", params) as Promise<T>,
+    appVersions: <T = unknown>(params: OperationParams["app.versions"]) => call("app.versions", params) as Promise<T>,
+    appPublish: <T = unknown>(params: OperationParams["app.publish"]) => call("app.publish", params) as Promise<T>,
+    appDocs: <T = unknown>(params: OperationParams["app.docs"]) => call("app.docs", params) as Promise<T>,
+    appPutDoc: <T = unknown>(params: OperationParams["app.putDoc"]) => call("app.putDoc", params) as Promise<T>,
+    appDeleteDoc: <T = unknown>(params: OperationParams["app.deleteDoc"]) => call("app.deleteDoc", params) as Promise<T>,
+    appLlm: <T = unknown>(params: OperationParams["app.llm"]) => call("app.llm", params) as Promise<T>,
     machineSessionsList: <T = unknown>(params: OperationParams["machineSessions.list"] = {}) => call("machineSessions.list", params) as Promise<T>,
     machineSessionsRead: <T = unknown>(params: OperationParams["machineSessions.read"]) => call("machineSessions.read", params) as Promise<T>,
     machineSessionsContinue: <T = unknown>(params: OperationParams["machineSessions.continue"] = {}) => call("machineSessions.continue", params) as Promise<T>,

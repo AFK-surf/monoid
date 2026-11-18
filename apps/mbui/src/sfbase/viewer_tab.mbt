@@ -1106,6 +1106,7 @@ pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : 
                     } else {
                       None
                     },
+                    app: viz_app_host(src, vw.station, vw.key),
                   },
                 )
               None => ()

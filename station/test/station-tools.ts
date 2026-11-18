@@ -9,6 +9,7 @@ import { feishuTools } from "../src/feishu/tool.ts";
 import { loginTools } from "../src/logins/tool.ts";
 import { rigTools } from "../src/rigs/tool.ts";
 import { searchTools } from "../src/search/tool.ts";
+import { appTools } from "../src/tools/apps.ts";
 import { archiveTools } from "../src/tools/archive.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { computerTools } from "../src/tools/computer.ts";
@@ -32,6 +33,7 @@ import { vaultTools } from "../src/vault/tool.ts";
 export function stationTools(): Tool[] {
   const none = {} as any;
   return [
+    ...appTools(none, () => null),
     ...chatTools(none),
     ...archiveTools(none),
     ...remoteTools(none),

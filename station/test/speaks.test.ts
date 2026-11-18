@@ -26,6 +26,7 @@ const QUIET = [
   "chat_history", "chat_list", "chat_read", "session_history", "archive_policy", "station_list", "station_task", "station_file", "workspace_limit",
   "job_start", "job_list", "job_log", "job_stop", "screen", "permissions", "computer", "peer_forward", "relays", "phone_send", "adb_devices", "browser",
   "device_list", "feishu_api", "skill_read", "search", "secret_list", "secret_run", "station_version",
+  "app_save", "app_list", "app_versions", "app_publish", "app_data",
 ];
 
 test("every tool the station declares is sorted: a session speaks by it, or it does not", () => {

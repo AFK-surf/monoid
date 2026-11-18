@@ -84,6 +84,7 @@ test "standalone .wasm mini-program builds its native UI tree in mbui_init and d
             drafted.val = p
             true
           }),
+          app: None,
         },
       )
     },
@@ -159,6 +160,7 @@ test "wasm sandbox traps infinite loops deterministically by gas_limit and rejec
           }),
           failed: None,
           follow_up: None,
+          app: None,
         },
       )
     },
@@ -309,7 +311,7 @@ test "mbui widget charts (line, donut, scatter), svg, details and controls audit
     let t = @ui.Tester::new(fn(c) {
       @sf.begin(c) |> ignore
       c.with_theme(@sf.ui_theme(), fn() {
-        @sfbase.viz_mbui_ctx(c, "test:all:\{fps}", widget, Json::null(), { keep: None, failed: None, follow_up: None })
+        @sfbase.viz_mbui_ctx(c, "test:all:\{fps}", widget, Json::null(), { keep: None, failed: None, follow_up: None, app: None })
       })
     }, w=420.0, h=1400.0)
     t.set_frame_period(1000.0 / fps.to_double())

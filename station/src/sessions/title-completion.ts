@@ -24,20 +24,56 @@ export function titleCompletion(profile: RunOn, model: string | null, session: s
 }
 
 export async function completeTitle(config: TitleCompletion, instructions: string, input: string, signal: AbortSignal): Promise<string> {
+  try {
+    return await completeText(config, { system: instructions, prompt: input, maxTokens: 128 }, signal);
+  } catch (e) {
+    throw new Error(e instanceof CompletionError ? `title completion ${e.problem}` : (e as Error).message);
+  }
+}
+
+/// Why a text completion did not come: the provider refused or failed (`failed`), answered more than ANSWER_MOST
+/// (`too large`), or with no text (`missing`: none, or tool calls).
+export class CompletionError extends Error {
+  readonly problem: "failed" | "too large" | "missing";
+  readonly status: number | null;
+  constructor(problem: "failed" | "too large" | "missing", status: number | null = null) {
+    super(`text completion ${problem}${status === null ? "" : ` (${status})`}`);
+    this.problem = problem;
+    this.status = status;
+  }
+}
+
+/// The most of a provider's answer read, in bytes.
+export const ANSWER_MOST = 256_000;
+
+/// A bounded text completion with the profile's endpoint and key (`titleCompletion`'s): a system text and a prompt in,
+/// the answer's text out, `maxTokens` at most, never tools. `fetcher`: how it goes out (the profile's proxy; a test's).
+export async function completeText(
+  config: TitleCompletion,
+  ask: { system?: string | null; prompt: string; maxTokens: number },
+  signal: AbortSignal,
+  fetcher: typeof profileFetch = profileFetch,
+): Promise<string> {
   const headers: Record<string, string> = { ...config.headers, "content-type": "application/json" };
   if (config.key !== "") headers.authorization = `Bearer ${config.key}`;
-  const body = JSON.stringify({ model: config.model, stream: false, max_tokens: 128, messages: [{ role: "system", content: instructions }, { role: "user", content: input }] });
-  const response = await profileFetch(config.endpoint, { method: "POST", headers, body, redirect: "manual", signal });
-  if (!response.ok) throw new Error("title completion failed");
+  const messages = [...(ask.system ? [{ role: "system", content: ask.system }] : []), { role: "user", content: ask.prompt }];
+  const body = JSON.stringify({ model: config.model, stream: false, max_tokens: ask.maxTokens, messages });
+  const response = await fetcher(config.endpoint, { method: "POST", headers, body, redirect: "manual", signal });
+  if (!response.ok) throw new CompletionError("failed", response.status);
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of response.body ?? []) {
     size += chunk.length;
-    if (size > 256_000) throw new Error("title completion too large");
+    if (size > ANSWER_MOST) throw new CompletionError("too large");
     chunks.push(Buffer.from(chunk));
   }
-  const answer = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  let answer: any;
+  try {
+    answer = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new CompletionError("missing");
+  }
   const text = answer?.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || answer?.choices?.[0]?.message?.tool_calls?.length) throw new Error("title completion missing");
+  if (typeof text !== "string" || answer?.choices?.[0]?.message?.tool_calls?.length) throw new CompletionError("missing");
   return text;
 }

@@ -1233,7 +1233,7 @@ fn publish_viz_live(parent : @view.View, r : ChatRef, k : String, a : Attachment
       match (state, @signals.untracked(load)) {
         (2, Some(Ok((html, state)))) => {
           let place = "publish/" + r.station + ":" + r.session + "/" + k
-          let hears : @sfbase.VizHears = { keep: None, failed: None, follow_up: None }
+          let hears : @sfbase.VizHears = { keep: None, failed: None, follow_up: None, app: None }
           match @sfbase.viz_mbui_parse(a.name, html) {
             Some(widget) =>
               ticked(p, fn(b) {

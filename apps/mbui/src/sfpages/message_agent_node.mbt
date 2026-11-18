@@ -357,6 +357,19 @@ fn agent_prose_node(
         let card = fn(a) {
           fn(d) { message_files_node(d, src, here.tips, place, fn() { [a] }, fn() { false }, by, at) }
         }
+        // a station's app it links to alone on its line (`sf-app:<id>`, `sf-app:<id>@<rev>`): the app, where it is
+        // linked (message_app_node)
+        match @sfbase.viz_app_link(name) {
+          Some((id, rev)) if here.picture is None =>
+            return Some({
+              draw: fn(d) {
+                let ts = @signals.untracked(m).ts
+                message_app_node(d, src, here.station, here.session, app_key_of(place.here()), ts, id, rev)
+              },
+              image: None,
+            })
+          _ => ()
+        }
         match placed(name) {
           // an HTML page: drawn as a page where it is placed (message_viz_node), its card where it cannot be read; in a
           // picture of the chat being shared, as that draws it (publish.mbt)

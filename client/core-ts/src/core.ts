@@ -82,6 +82,7 @@ import * as pairing from "./views/pair.ts";
 import * as vaultCalls from "./views/vault.ts";
 import * as waysCalls from "./views/ways-stations.ts";
 import * as stationMarkCalls from "./views/station-marks.ts";
+import * as appCalls from "./views/apps.ts";
 import * as presetCalls from "./views/presets.ts";
 import * as movedChats from "./views/moved.ts";
 import { MOVED } from "./station/requests.ts";
@@ -294,6 +295,7 @@ export class Core {
       vaultCalls.install(inner);
       waysCalls.install(inner);
       stationMarkCalls.install(inner);
+      appCalls.install(inner);
       inner.presets = presetCalls.install(inner);
       movedChats.install(inner);
       transferCalls.install(inner);

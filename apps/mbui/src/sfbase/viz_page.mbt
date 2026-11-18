@@ -89,6 +89,8 @@ pub(all) struct VizHears {
   failed : ((String) -> Unit)?
   /// words for the chat's composer: whether it took them
   follow_up : ((String) -> Bool)?
+  /// where a widget bound to a station's app asks it (viz_app.mbt): None where it is shown in no chat
+  app : VizAppHost?
 }
 
 ///|
@@ -642,6 +644,7 @@ pub fn viz_file_of(
               keep: Some(fn(s) { viz_keep(src, station, key, a.path, s) }),
               failed: None,
               follow_up: Some(viz_follow_up(station, session)),
+              app: viz_app_host(src, station, key),
             })
           None => {
             if is_mbui_viz(a.name) {
@@ -652,6 +655,7 @@ pub fn viz_file_of(
               keep: Some(fn(s) { viz_keep(src, station, key, a.path, s) }),
               failed: None,
               follow_up: Some(viz_follow_up(station, session)),
+              app: None,
             })
           }
         }
@@ -851,6 +855,7 @@ fn viz_full_shown(n : @view.View, src : Source, full : VizFull, html : String, s
     keep: Some(fn(s) { viz_keep(src, full.station, full.key, full.path, s) }),
     failed: None,
     follow_up: Some(viz_follow_up(full.station, full.session)),
+    app: viz_app_host(src, full.station, full.key),
   }
   // (while it is the one open: the pages under it take no press, key or wheel; back and Escape close it)
   n
@@ -1040,6 +1045,7 @@ pub fn viz_pages_reset() -> Unit {
   viz_left_chats.clear()
   viz_heights.clear()
   viz_mbui_states_clear()
+  viz_app_loads_clear()
   viz_full.set(None)
   mermaid_charts.clear()
 }

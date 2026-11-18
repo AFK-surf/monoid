@@ -122,6 +122,14 @@ export const PARAMS: Record<string, string> = {
   "file.peek": "key:string path:string line?:number",
   "link.preview": "url:string",
   "widget.setState": "key:string path?:string state?:json",
+  "app.list": "",
+  "app.get": "id:string rev?:number",
+  "app.versions": "id:string",
+  "app.publish": "id:string rev:number force?:boolean",
+  "app.docs": "id:string collection:string",
+  "app.putDoc": "id:string collection:string doc:string data?:json base?:number",
+  "app.deleteDoc": "id:string collection:string doc:string",
+  "app.llm": "id:string key:string prompt:string system?:string max_tokens?:number",
   "machineSessions.list": "",
   "machineSessions.read": "runtime:string id:string limit?:number",
   "machineSessions.continue": "runtime?:string id?:string",
@@ -267,7 +275,7 @@ export const PARAMS: Record<string, string> = {
 };
 
 /// Writes that are not shown as under way (`doing`): quick and quiet.
-export const QUIET_WRITES = ["session.warm", "widget.setState", "login.drop"];
+export const QUIET_WRITES = ["session.warm", "widget.setState", "login.drop", "app.putDoc", "app.deleteDoc", "app.llm"];
 
 
 /// The request of the operation `name`, with its params; null when there is no such operation. It throws (a
@@ -534,6 +542,25 @@ function stationOp(name: string, params: unknown): Request | null {
     case "widget.setState":
       // A widget's own state: nothing a list shows (its page reads it, `widget.state`).
       return op("PUT", () => `/sessions/${p.at("key")}/widget-state`, p.pick(["path", "state"]), NONE);
+    // A workspace's station apps (the station's routes/apps.ts): the list, one app's source (its current version, or
+    // `rev`), its versions, one made current again; its documents read, written and deleted; a completion its widget
+    // asks of the model of the chat (`key`) it is shown in. What changes the station tells (`app.watch`).
+    case "app.list":
+      return op("GET", () => "/apps", null, NONE);
+    case "app.get":
+      return op("GET", () => `/apps/${p.at("id")}${optU64("rev") !== null ? `?rev=${optU64("rev")}` : ""}`, null, NONE);
+    case "app.versions":
+      return op("GET", () => `/apps/${p.at("id")}/versions`, null, NONE);
+    case "app.publish":
+      return op("POST", () => `/apps/${p.at("id")}/current`, { rev: p.u64("rev"), ...p.pick(["force"]) }, NONE);
+    case "app.docs":
+      return op("GET", () => `/apps/${p.at("id")}/docs/${p.at("collection")}`, null, NONE);
+    case "app.putDoc":
+      return op("PUT", () => `/apps/${p.at("id")}/docs/${p.at("collection")}/${p.at("doc")}`, { data: p.has("data") ? p.v.data : null, ...p.pick(["base"]) }, NONE);
+    case "app.deleteDoc":
+      return op("DELETE", () => `/apps/${p.at("id")}/docs/${p.at("collection")}/${p.at("doc")}`, null, NONE);
+    case "app.llm":
+      return op("POST", () => `/apps/${p.at("id")}/llm`, { session: p.str("key"), prompt: p.str("prompt"), ...p.pick(["system", "max_tokens"]) }, NONE);
     case "machineSessions.list":
       return op("GET", () => "/machine-sessions", null, NONE);
     case "machineSessions.read":

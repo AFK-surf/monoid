@@ -2,7 +2,9 @@
 //
 // Runs `.wasm` mini-programs and embedded Wasm compute modules across all platforms
 // (including iOS without JIT and Web/Wasm-GC Tester) with:
-// - Capability-based host import allowlist (`mbui` / `env` state, tree, and follow-up primitives only; zero OS/network I/O)
+// - Capability-based host import allowlist (`mbui` / `env` state, tree, and follow-up primitives, and a bound app's
+//   document store and LLM asked asynchronously through the host: `db_list`, `db_put`, `db_delete`, `llm`; zero OS/network
+//   I/O of its own)
 // - Deterministic instruction-level Gas metering (`viz_wasm_default_gas` per invocation)
 // - Hard linear memory cap (`viz_wasm_max_pages` = 64 pages = 4 MiB) and call stack depth limit (`256`)
 
@@ -307,7 +309,40 @@ pub struct VizWasmHost {
   mut out_state : Json?
   mut input_bytes : Bytes
   mut follow_up_draft : String?
+  /// whether the widget is bound to a station's app (its db/llm imports ask; unbound, each returns 0)
+  mut app_bound : Bool
+  /// what the program asked of its app during the call now running, sent by the host once it has returned
+  app_asks : Array[VizAppAsk]
+  /// the last request id given (ids start at 1)
+  mut app_last_req : Int
+  /// requests sent and not answered yet (at most `viz_app_max_in_flight`)
+  mut app_in_flight : Int
 }
+
+///|
+/// A request of a bound widget's program to its app (`db_list`, `db_put`, `db_delete`, `llm`), answered later by a call
+/// of its `mbui_event` with `{"type":"app","req":req,…}`. `op` is "docs", "put", "delete", "llm"; `fail` a refusal
+/// found here already (invalid JSON), answered without asking the station.
+pub struct VizAppAsk {
+  req : Int
+  op : String
+  collection : String
+  doc : String
+  data : Json
+  fail : String
+}
+
+///|
+/// How many app requests a program may have unanswered at once; past it an import returns 0 (no request made).
+pub let viz_app_max_in_flight : Int = 32
+
+///|
+/// The longest collection name and document id a program may give (bytes).
+let viz_app_max_name : Int = 256
+
+///|
+/// The largest document or LLM request a program may give (bytes of JSON): the station's own bound for a document.
+pub let viz_app_max_json : Int = 65536
 
 ///|
 pub struct VizWasmInstance {
@@ -350,6 +385,14 @@ const HOST_INPUT_LEN : Int = 10
 const HOST_INPUT_COPY : Int = 11
 ///|
 const HOST_NOOP : Int = 12
+///|
+const HOST_DB_LIST : Int = 13
+///|
+const HOST_DB_PUT : Int = 14
+///|
+const HOST_DB_DELETE : Int = 15
+///|
+const HOST_LLM : Int = 16
 
 ///|
 fn resolve_host_import(mod_name : String, field_name : String) -> Result[Int, String] {
@@ -369,6 +412,10 @@ fn resolve_host_import(mod_name : String, field_name : String) -> Result[Int, St
     "input_len" | "mbui_input_len" => Ok(HOST_INPUT_LEN)
     "input_copy" | "mbui_input_copy" | "input_read" => Ok(HOST_INPUT_COPY)
     "log" | "mbui_log" | "print" | "print_i32" | "print_char" | "abort" => Ok(HOST_NOOP)
+    "db_list" | "mbui_db_list" => Ok(HOST_DB_LIST)
+    "db_put" | "mbui_db_put" => Ok(HOST_DB_PUT)
+    "db_delete" | "mbui_db_delete" => Ok(HOST_DB_DELETE)
+    "llm" | "mbui_llm" => Ok(HOST_LLM)
     _ => Err("disallowed wasm import function: \{mod_name}.\{field_name}")
   }
 }
@@ -1108,6 +1155,10 @@ pub fn viz_wasm_instantiate(
       out_state: None,
       input_bytes: b"",
       follow_up_draft: None,
+      app_bound: false,
+      app_asks: [],
+      app_last_req: 0,
+      app_in_flight: 0,
     },
     last_gas_used: 0,
     total_gas_used: 0,
@@ -1355,7 +1406,20 @@ fn run_host_import(
   let a1 = if args.length() > 1 { args[1].to_int() } else { 0 }
   let a2 = if args.length() > 2 { args[2].to_int() } else { 0 }
   let a3 = if args.length() > 3 { args[3].to_int() } else { 0 }
+  let a4 = if args.length() > 4 { args[4].to_int() } else { 0 }
+  let a5 = if args.length() > 5 { args[5].to_int() } else { 0 }
   match imp.kind {
+    HOST_DB_LIST | HOST_DB_PUT | HOST_DB_DELETE | HOST_LLM => {
+      let results = if imp.type_idx >= 0 && imp.type_idx < inst.types.length() {
+        inst.types[imp.type_idx].results.length()
+      } else {
+        0
+      }
+      match viz_app_import(inst, imp.kind, a0, a1, a2, a3, a4, a5) {
+        Ok(_) if results == 0 => Ok([])
+        other => other
+      }
+    }
     HOST_SET_TREE => {
       let s = match viz_wasm_read_utf8(inst, a0, a1) {
         Ok(v) => v
@@ -2539,4 +2603,94 @@ pub fn viz_wasm_extract_string(
     }
   }
   Ok(None)
+}
+
+///|
+/// A name a program gives its app (a collection, a document's id): read from its memory, at most `viz_app_max_name`
+/// bytes, not empty.
+fn viz_app_name_of(inst : VizWasmInstance, ptr : Int, len : Int) -> Result[String?, String] {
+  if len <= 0 || len > viz_app_max_name {
+    return Ok(None)
+  }
+  match viz_wasm_read_utf8(inst, ptr, len) {
+    Ok(s) => Ok(Some(s))
+    Err(e) => Err(e)
+  }
+}
+
+///|
+/// `db_list`, `db_put`, `db_delete` and `llm`: asynchronous, each the id of its request (1 and on), whose answer comes
+/// as a call of the program's `mbui_event`; 0 when the widget is bound to no app, when it gives a name or JSON out of
+/// bounds, or when `viz_app_max_in_flight` are unanswered (no request made). What it asks is only noted here: the host
+/// sends it once the call that asked has returned, so nothing answers into the program while it runs. A read out of its
+/// memory's bounds traps, as every import's does.
+fn viz_app_import(
+  inst : VizWasmInstance,
+  kind : Int,
+  a0 : Int,
+  a1 : Int,
+  a2 : Int,
+  a3 : Int,
+  a4 : Int,
+  a5 : Int,
+) -> Result[Array[Int64], String] {
+  let h = inst.host
+  if !h.app_bound || h.app_in_flight >= viz_app_max_in_flight {
+    return Ok([0L])
+  }
+  let collection = if kind == HOST_LLM {
+    ""
+  } else {
+    match viz_app_name_of(inst, a0, a1) {
+      Ok(Some(c)) => c
+      Ok(None) => return Ok([0L])
+      Err(e) => return Err(e)
+    }
+  }
+  let doc = if kind == HOST_DB_PUT || kind == HOST_DB_DELETE {
+    match viz_app_name_of(inst, a2, a3) {
+      Ok(Some(d)) => d
+      Ok(None) => return Ok([0L])
+      Err(e) => return Err(e)
+    }
+  } else {
+    ""
+  }
+  let (jp, jl) = if kind == HOST_DB_PUT { (a4, a5) } else if kind == HOST_LLM { (a0, a1) } else { (0, 0) }
+  let mut fail = ""
+  let data : Json = if kind == HOST_DB_PUT || kind == HOST_LLM {
+    if jl <= 0 || jl > viz_app_max_json {
+      return Ok([0L])
+    }
+    let text = match viz_wasm_read_utf8(inst, jp, jl) {
+      Ok(t) => t
+      Err(e) => return Err(e)
+    }
+    match (try Some(@json.parse(text)) catch { _ => None }) {
+      Some(j) => j
+      None => {
+        fail = "invalid JSON"
+        Json::null()
+      }
+    }
+  } else {
+    Json::null()
+  }
+  if kind == HOST_LLM && fail == "" {
+    match data {
+      Object(m) if m.get("prompt") is Some(String(p)) && p != "" => ()
+      _ => fail = "llm needs {\"prompt\": \"…\"}"
+    }
+  }
+  let op = match kind {
+    HOST_DB_LIST => "docs"
+    HOST_DB_PUT => "put"
+    HOST_DB_DELETE => "delete"
+    _ => "llm"
+  }
+  h.app_last_req = h.app_last_req + 1
+  h.app_in_flight = h.app_in_flight + 1
+  let req = h.app_last_req
+  h.app_asks.push({ req, op, collection, doc, data, fail })
+  Ok([req.to_int64()])
 }

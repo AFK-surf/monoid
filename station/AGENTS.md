@@ -137,6 +137,10 @@
 - A thread is a log: entries are appended, an edit is an entry of its own, nothing is deleted (a Slack delete is
   ignored); readers merge. The schema migrates forward only.
 - What changes is told: the store's change, then `GET /events` (`src/api/events.ts`) to devices. A device never polls.
+- A workspace's station apps (`src/apps/registry.ts`) are versions, never changed once saved: a save makes a new one
+  current, a rollback makes an older one current again; neither overwrites, and a save made on a version that is no
+  longer the newest is refused. Their documents are the app's, shared by every version; what each version reads of them
+  is its `schema`, which only rises unless forced.
 - Nothing in a workspace is hidden from its members: there is no permission system (the user, 2026-10-25). Every
   chat, a private one too, is open to every member and every agent of the workspace. The station is its server and
   the agents run as one system user, reading its database and every session's directory, so what is hidden from one

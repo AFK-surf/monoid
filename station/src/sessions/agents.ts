@@ -100,6 +100,10 @@ import { readAgentEnvFrom } from "../ops/agent-env.ts";
 import { CardOutcomeWorker } from "../store/card-outbox-worker.ts";
 import { type PageBase, pageOrigin, sessionPage } from "./page.ts";
 import { stationMoveOn } from "../features.ts";
+import { Apps } from "../apps/registry.ts";
+import { appTools } from "../tools/apps.ts";
+import { appCompletion } from "../apps/completion.ts";
+import type { AppCompletion } from "../api/routes/apps.ts";
 
 /// server.rs `encode` (encodeURIComponent).
 const encode = encodeURIComponent;
@@ -119,6 +123,10 @@ export type AgentsParts = {
   previousGone: Promise<void>;
   cardOutcomes: CardOutcomeWorker;
   hub: Hub;
+  /// The workspaces' station apps (apps/registry.ts): the agents' tools and the devices' routes share them.
+  apps?: Apps;
+  /// The completion a widget of an app asks of the chat (its session) it is shown in (apps/completion.ts).
+  appCompletion?: (session: string) => AppCompletion | null;
   jobs: Jobs;
   remote: Remote;
   mcp: McpEndpoint;
@@ -535,7 +543,17 @@ export const AgentsLive = (control: Control) =>
       // The profiles' homes elsewhere and the machine's runtime logins are the station's own too (ops/own.ts): never
       // reached through the drive, the device tools or a search.
       own.add(() => [...hub.config().profiles.map((p) => p.home), claudeCredentialsFile(process.env), codexAuthFile(process.env)]);
+      // The workspaces' station apps: what changes told on the event stream to the app's workspace (`app`, `app-doc`).
+      const homeWs = () => plane.state.home() ?? "";
+      const apps = new Apps(store.db, () => hub.clock.currentTimeMillisUnsafe(), (e) => {
+        if (e.kind === "app") events.tell("app", { id: e.id, rev: e.rev, current: e.current }, `app\0${e.ws}\0${e.id}`, { workspace: e.ws });
+        else events.tell("app-doc", { app: e.app, collection: e.collection, id: e.id, rev: e.rev, deleted: e.deleted }, `app-doc\0${e.ws}\0${e.app}\0${e.collection}\0${e.id}`, { workspace: e.ws });
+      });
       const tools = [
+        ...appTools(apps, (key) => {
+          const row = store.getSession(key);
+          return row === null ? null : { ws: row.ws ?? homeWs(), dir: row.cwd ?? row.workspace };
+        }),
         ...chatTools(hub),
         ...archiveTools(hub),
         ...remoteTools(remote),
@@ -1038,7 +1056,7 @@ export const AgentsLive = (control: Control) =>
           }
         }),
       );
-      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, jobs, remote, mcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, workspaceConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
+      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, apps, appCompletion: (key: string) => appCompletion({ getSession: (k) => store.getSession(k), profile: (id) => hub.accounts.profile(id), allows: (k, p) => hub.accounts.allows(k, p), home: homeWs }, key), jobs, remote, mcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, workspaceConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
       // The admin API asks for the agents' side as a request comes (services.ts AgentsSide); its routes are a part.
       (yield* AgentsSide).current = self;
       // And what the mesh asks of it (services.ts MeshSide).

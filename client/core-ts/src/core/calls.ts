@@ -51,6 +51,8 @@ export type Call =
   | { kind: "chatArchive"; op: ops.Request; thread: number | null; session: string; archived: boolean }
   | { kind: "chatChange"; op: ops.Request; thread: number | null; session: string; title: string | null; pinned: boolean | null; keep: boolean | null; hidden: boolean | null; muted: boolean | null }
   | { kind: "widgetState"; op: ops.Request; key: string; path: string; state: unknown | undefined }
+  /// An open widget following a station app's changes (views/apps.ts): open until cancelled.
+  | { kind: "appWatch"; station: string; id: string }
   | { kind: "chatXshare"; station: string; workspace: string | null; session: string; thread: number | null; to: string[]; write: boolean }
   | { kind: "stationJoin"; workspace: string; station: string; name: string | null }
   | { kind: "chatSend"; station: string; thread: number; text: string; attachments: unknown; uploads?: { id: string; name: string; size: number; width?: number; height?: number }[]; quotes: unknown; client: string | null }
@@ -219,7 +221,7 @@ function fromOf(params: unknown): { from?: unknown } {
 /// those that hand it what they read as it comes (`stream`: a player's part of a file, let go of as it seeks elsewhere
 /// or closes), so that nothing no page waits for any more goes on coming over the network.
 export function cancellable(call: Call): boolean {
-  return ((call.kind === "stationPreview" || call.kind === "stationFilePart" || call.kind === "driveRead") && call.stream) || call.kind === "previewSocket" || (call.kind === "screen" && call.call.kind === "view") || (call.kind === "terminal" && call.call.kind === "view") || (call.kind === "farview" && call.call.kind === "view");
+  return ((call.kind === "stationPreview" || call.kind === "stationFilePart" || call.kind === "driveRead") && call.stream) || call.kind === "previewSocket" || call.kind === "appWatch" || (call.kind === "screen" && call.call.kind === "view") || (call.kind === "terminal" && call.call.kind === "view") || (call.kind === "farview" && call.call.kind === "view");
 }
 
 function opStation(op: ops.Request): string | null {
@@ -1221,6 +1223,13 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         headers: p.headers as [string, string][],
         stream: p.stream as boolean,
       };
+    }
+    case "app.watch": {
+      const p = read(params, [
+        ["station", S, "req"],
+        ["id", S, "req"],
+      ]);
+      return { kind: "appWatch", station: p.station as string, id: p.id as string };
     }
     case "preview.socket": {
       const p = read(params, [

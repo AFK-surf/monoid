@@ -13,6 +13,20 @@ pub struct VizMbuiWidget {
   root : Json
   wasm_bytes : Bytes?
   gas_limit : Int
+  /// the station's app it is bound to (its `.mbui`'s top-level `"app"`, or the link it is shown by): "" for none
+  app : String
+}
+
+///|
+/// `w` bound to app `id` (the link it is shown by names it: a `.wasm` has no field to say it).
+pub fn viz_mbui_bound_to(w : VizMbuiWidget, id : String) -> VizMbuiWidget {
+  { ..w, app: id }
+}
+
+///|
+/// The app `w` is bound to ("" for none).
+pub fn viz_mbui_app(w : VizMbuiWidget) -> String {
+  w.app
 }
 
 ///|
@@ -28,6 +42,12 @@ priv struct VizMbuiStore {
   icon_sig : @signals.Signal[String]
   tree_ver : @signals.Signal[Int]
   wasm_error : @signals.Signal[String]
+  /// its app ("" for none) and where it is drawn from now (what it hears, its app's host among it: viz_app.mbt)
+  app : String
+  mut hears : VizHears?
+  /// what its app answered and told, given to its program in turn (viz_app_deliver)
+  app_inbox : Array[Json]
+  mut app_delivering : Bool
 }
 
 ///|
@@ -392,6 +412,7 @@ pub fn viz_mbui_parse_bytes(name : String, bytes : Bytes) -> VizMbuiWidget? {
       root: Json::object(Map([])),
       wasm_bytes: Some(bytes),
       gas_limit: viz_wasm_default_gas,
+      app: "",
     })
   }
   viz_mbui_parse(name, @utf8.decode_lossy(bytes))
@@ -483,7 +504,9 @@ pub fn viz_mbui_parse(name : String, raw : String) -> VizMbuiWidget? {
             None => parsed
           }
       }
-      Some({ title, subtitle, icon, init_state, root, wasm_bytes, gas_limit })
+      let app = viz_json_str(obj, "app", "")
+      let app = if viz_app_id_ok(app) { app } else { "" }
+      Some({ title, subtitle, icon, init_state, root, wasm_bytes, gas_limit, app })
     }
     _ => None
   }
@@ -729,6 +752,7 @@ fn viz_sync_from_wasm(
     }
     None => ()
   }
+  viz_app_flush(store, inst)
 }
 
 ///|
@@ -789,9 +813,17 @@ fn viz_store_of(
   key : String,
   widget : VizMbuiWidget,
   external_state : Json,
+  hears : VizHears?,
 ) -> VizMbuiStore {
   for s in viz_mbui_stores {
     if s.key == key {
+      if hears is Some(_) {
+        s.hears = hears
+        match s.wasm {
+          Some(inst) => inst.host.app_bound = viz_app_bound(s)
+          None => ()
+        }
+      }
       if s.synced_raw != external_state {
         s.synced_raw = external_state
         let ext = viz_extract_state_map(external_state)
@@ -828,6 +860,13 @@ fn viz_store_of(
     merged_state[k] = v
     signals[k] = @signals.signal(v)
   }
+  // (what its llm buttons put their answers in, there from the start, so what shows them reads them as they come)
+  for k, v in viz_app_llm_keys(widget.root) {
+    if !merged_state.contains(k) {
+      merged_state[k] = v
+      signals[k] = @signals.signal(v)
+    }
+  }
   let store : VizMbuiStore = {
     key,
     signals,
@@ -840,12 +879,17 @@ fn viz_store_of(
     icon_sig: @signals.signal(widget.icon),
     tree_ver: @signals.signal(0),
     wasm_error: @signals.signal(""),
+    app: widget.app,
+    hears,
+    app_inbox: [],
+    app_delivering: false,
   }
   match widget.wasm_bytes {
     Some(bytes) =>
       match viz_wasm_instantiate(bytes, merged_state) {
         Ok(inst) => {
           store.wasm = Some(inst)
+          inst.host.app_bound = viz_app_bound(store)
           viz_sync_state_to_wasm(store, inst)
           if viz_wasm_has_export(inst, "mbui_init") {
             let init_json = Json::object(merged_state).stringify()
@@ -1101,6 +1145,10 @@ fn viz_run_action_map(
   hears : VizHears,
   obj : Map[String, Json],
 ) -> Unit {
+  match obj.get("llm") {
+    Some(Object(llm)) => viz_app_llm_press(store, hears, llm)
+    _ => ()
+  }
   let mut mutated = false
   match obj.get("set") {
     Some(Object(pairs)) => {
@@ -3046,15 +3094,18 @@ pub fn viz_mbui_node(
   widget : VizMbuiWidget,
   state : () -> Json,
   hears : VizHears,
+  on_app? : (Json) -> Unit = fn(_) { () },
 ) -> Unit {
-  let store = viz_store_of(place, widget, state())
+  let store = viz_store_of(place, widget, state(), Some(hears))
   let in_shell = place.has_prefix("beside/") || place.has_prefix("viewer/")
   parent.box(fn(root) {
+    // (its app's changes told while it shows: viz_app.mbt)
+    viz_app_watch_node(root, store, on_app)
     root.reacts(fn() { store.wasm_error.get() }, fn(err) {
       viz_persist_diagnostics(store, hears, err)
     })
     @sf.style_node(root, fn() {
-      let _ = viz_store_of(place, widget, state())
+      let _ = viz_store_of(place, widget, state(), None)
       viz_root_col
     })
     root.show(
@@ -3110,7 +3161,7 @@ pub fn viz_mbui_ctx(
   state : Json,
   hears : VizHears,
 ) -> Unit {
-  let store = viz_store_of(place, widget, state)
+  let store = viz_store_of(place, widget, state, Some(hears))
   let in_shell = place.has_prefix("beside/") || place.has_prefix("viewer/")
   let root_json = store.root_sig.get()
   let title = store.title_sig.get()

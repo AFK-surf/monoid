@@ -81,6 +81,7 @@ fn viz_shown_node(
             keep: Some(fn(s) { @sfbase.viz_keep(src, station, key, a.path, s) }),
             failed: None,
             follow_up: Some(@sfbase.viz_follow_up(station, session)),
+            app: @sfbase.viz_app_host(src, station, key),
           },
         )
       None =>
@@ -88,6 +89,7 @@ fn viz_shown_node(
           keep: Some(fn(s) { @sfbase.viz_keep(src, station, key, a.path, s) }),
           failed: None,
           follow_up: Some(@sfbase.viz_follow_up(station, session)),
+          app: None,
         })
         |> ignore
     }
