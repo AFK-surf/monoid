@@ -623,6 +623,42 @@ test "Profile overview shares charts or accounts from its header and charts dire
 }
 
 ///|
+test "Profile switching 账号 -> 概览 -> 账号 updates top bar share action on narrow place and medium tape" {
+  for cfg in [(390.0, 844.0, 2, "place-profiles-sum-a"), (720.0, 844.0, 0, "settings-profiles-sum-a")] {
+    let (w, h, platform, mode) = cfg
+    let src = fixture_app(mode)
+    @settings.profiles_narrow_overview.set(false)
+    @settings.profiles_place_overview.set(false)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+    t.run_for(@ui.move_most_ms)
+    // 1. Initially on 账号: top bar button is 分享订阅额度, opens subscriptions picture directly
+    t.click(Button, label="分享订阅额度")
+    t.run_for(@motion.presence_in_ms)
+    assert_true(picture_says(t, "个订阅账号"), msg="initial accounts share: \{mode}")
+    t.click(Button, label="关闭")
+    t.run_for(@motion.presence_in_ms)
+    // 2. Switch to 概览: top bar button updates to 分享 menu -> 分享额度与恢复图
+    t.click(Radio, label="概览")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="分享")
+    t.run_for(@motion.presence_in_ms)
+    move_pick(t, "分享额度与恢复图")
+    assert_true(picture_says(t, "额度与恢复"), msg="overview pool share quota: \{mode}")
+    assert_true(picture_says(t, "消耗速度"), msg="overview pool share pace: \{mode}")
+    assert_true(picture_says(t, "个账号可用"), msg="overview pool share ready: \{mode}")
+    assert_true(!picture_says(t, "输出速度"), msg="overview pool share hides interactive speed: \{mode}")
+    t.click(Button, label="关闭")
+    t.run_for(@motion.presence_in_ms)
+    // 3. Switch back to 账号: top bar button returns to 分享订阅额度
+    t.click(Radio, label="账号")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="分享订阅额度")
+    t.run_for(@motion.presence_in_ms)
+    assert_true(picture_says(t, "个订阅账号"), msg="returned accounts share: \{mode}")
+  }
+}
+
+///|
 test "the subscriptions' picture: 完全打码 over it keeps each name laid out as it is, dots drawn in its place; 部分打码 back to its email's first two letters" {
   let src = fixture_app("share-accounts")
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)

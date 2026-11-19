@@ -522,12 +522,14 @@ fn narrow_made_as(
             }
           }
           v.pick(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
-            let gen = next_place_actions_gen()
+            let last_gen = Ref(0)
             let acts = fn(make : (@view.View) -> Unit, _side : (@sf.Look) -> Double) {
+              let gen = next_place_actions_gen()
+              last_gen.val = gen
               page_actions.set(Some((make, gen)))
             }
             p.owns(fn() {
-              if page_actions.untracked() is Some((_, g)) && g == gen {
+              if last_gen.val > 0 && page_actions.untracked() is Some((_, g)) && g == last_gen.val {
                 page_actions.set(None)
               }
             })

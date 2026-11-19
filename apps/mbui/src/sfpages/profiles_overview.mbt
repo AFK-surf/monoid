@@ -337,11 +337,15 @@ fn ov_push_v_dash(
   ink : Int64,
   width : Double,
 ) -> Unit {
+  let outlines : Array[(Array[Double], Bool)] = []
   let mut y = y0
   while y < y1 {
     let ye = @cmp.minimum(y1, y + dash)
-    out.push(@ui.shape_of([([x, y, x, ye], false)], stroke=ink, width~))
+    outlines.push(([x, y, x, ye], false))
     y += dash + gap
+  }
+  if !outlines.is_empty() {
+    out.push(@ui.shape_of(outlines, stroke=ink, width~))
   }
 }
 
@@ -583,9 +587,13 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
   let y_top = y_of(100.0)
   let shapes : Array[@ui.Shape] = []
 
-  for yg in [y_top, y_mid, y_bot] {
-    shapes.push(@ui.shape_of([([0.0, yg, w, yg], false)], stroke=t.p.line, width=1.0))
-  }
+  shapes.push(
+    @ui.shape_of(
+      [([0.0, y_top, w, y_top], false), ([0.0, y_mid, w, y_mid], false), ([0.0, y_bot, w, y_bot], false)],
+      stroke=t.p.line,
+      width=1.0,
+    ),
+  )
 
   let mut idx = 48
   while idx < 216 {
@@ -621,6 +629,25 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
   shapes.push(@ui.shape_of([(past_line, false)], stroke=t.p.text, width=2.0))
 
   let refill_dots : Array[(Double, Double)] = []
+  let green_strokes : Array[(Array[Double], Bool)] = []
+  let red_strokes : Array[(Array[Double], Bool)] = []
+  let mut run_pts : Array[Double] = []
+  let mut run_ink = 0L
+  let mut run_starve = false
+  let mut run_x0 = 0.0
+  let mut run_x1 = 0.0
+  let flush_run = fn() {
+    if !run_pts.is_empty() {
+      run_pts.push(run_x1)
+      run_pts.push(y_bot)
+      run_pts.push(run_x0)
+      run_pts.push(y_bot)
+      shapes.push(
+        @ui.shape_of([(run_pts, true)], fill=@sf.alpha(run_ink, if run_starve { 0.12 } else { 0.10 })),
+      )
+      run_pts = []
+    }
+  }
   for step in 0..<168 {
     let i0 = 48 + step
     let i1 = i0 + 1
@@ -635,31 +662,55 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
     let seg_ink = if is_jump || !starve { t.p.green } else { t.p.red }
 
     if v0 > 0.2 || v1 > 0.2 {
-      shapes.push(
-        @ui.shape_of(
-          [([x0, y0, x1, y1, x1, y_bot, x0, y_bot], true)],
-          fill=@sf.alpha(seg_ink, if starve { 0.12 } else { 0.10 }),
-        ),
-      )
+      if run_pts.is_empty() || run_ink != seg_ink || run_starve != starve {
+        flush_run()
+        run_ink = seg_ink
+        run_starve = starve
+        run_x0 = x0
+        run_pts.push(x0)
+        run_pts.push(y0)
+      }
+      run_pts.push(x1)
+      run_pts.push(y1)
+      run_x1 = x1
+    } else {
+      flush_run()
     }
 
     if is_jump {
-      shapes.push(@ui.shape_of([([x0, y0, x1, y1], false)], stroke=t.p.green, width=2.0))
+      green_strokes.push(([x0, y0, x1, y1], false))
       if v1 - v0 >= 6.0 {
         refill_dots.push((x1, y1))
       }
     } else if !(v0 <= 0.4 && v1 <= 0.4) && step % 3 != 2 {
-      shapes.push(@ui.shape_of([([x0, y0, x1, y1], false)], stroke=seg_ink, width=2.0))
+      if seg_ink == t.p.green {
+        green_strokes.push(([x0, y0, x1, y1], false))
+      } else {
+        red_strokes.push(([x0, y0, x1, y1], false))
+      }
     }
+  }
+  flush_run()
+  if !green_strokes.is_empty() {
+    shapes.push(@ui.shape_of(green_strokes, stroke=t.p.green, width=2.0))
+  }
+  if !red_strokes.is_empty() {
+    shapes.push(@ui.shape_of(red_strokes, stroke=t.p.red, width=2.0))
   }
 
   let x_now = x_of(48)
   let y_now = y_of(pool.traj[48])
   ov_push_v_dash(shapes, x_now, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.28), 1.0)
 
-  for pt in refill_dots {
-    shapes.push(@ui.shape_of([(ov_circle_poly(pt.0, pt.1, 3.6), true)], fill=t.p.card))
-    shapes.push(@ui.shape_of([(ov_circle_poly(pt.0, pt.1, 2.3), true)], fill=t.p.green))
+  if !refill_dots.is_empty() {
+    let outer : Array[(Array[Double], Bool)] = []
+    let inner : Array[(Array[Double], Bool)] = []
+    for pt in refill_dots {
+      outer.push((ov_circle_poly(pt.0, pt.1, 3.6), true))
+      inner.push((ov_circle_poly(pt.0, pt.1, 2.3), true))
+    }
+    shapes.push(@ui.shape_of(outer, fill=t.p.card))
+    shapes.push(@ui.shape_of(inner, fill=t.p.green))
   }
 
   shapes.push(@ui.shape_of([(ov_circle_poly(x_now, y_now, 4.6), true)], fill=t.p.card))
@@ -720,9 +771,9 @@ fn ov_net_shapes(pool : ModelPool, scale_top : Double, w : Double, h : Double) -
   let y_zero = pad_top + half
   let y_bot = pad_top + half * 2.0
   let shapes : Array[@ui.Shape] = []
-  for yg in [y_top, y_bot] {
-    shapes.push(@ui.shape_of([([0.0, yg, w, yg], false)], stroke=t.p.line, width=1.0))
-  }
+  shapes.push(
+    @ui.shape_of([([0.0, y_top, w, y_top], false), ([0.0, y_bot, w, y_bot], false)], stroke=t.p.line, width=1.0),
+  )
   ov_push_v_dash(shapes, 0.5 * w, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.28), 1.0)
   let slot_w = w / 48.0
   let bar_w = @cmp.minimum(9.0, @cmp.maximum(1.5, slot_w * 0.64))
@@ -938,6 +989,7 @@ fn ov_charts_node(
   active_pool : () -> ModelPool?,
   share : (() -> Unit)?,
   tips : @sf.TipLayer?,
+  show_speed? : Bool = true,
 ) -> Unit {
   parent.box(fn(body) {
     body.padding(Is((12.0, 10.0, 12.0, 10.0))) |> ignore
@@ -1100,7 +1152,9 @@ fn ov_charts_node(
       })
       |> ignore
     })
-    ov_speed_node(body, active_pool)
+    if show_speed {
+      ov_speed_node(body, active_pool)
+    }
   })
   |> ignore
 }

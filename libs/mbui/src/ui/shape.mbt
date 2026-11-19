@@ -239,7 +239,7 @@ fn shape_band_of(
   }
   let out = shape_band_made(outlines, fill, hw, even_odd)
   // (a few hundred kept, all let go at once past them: what is drawn now is soon among them again)
-  if shape_bands_known.length() >= 256 {
+  if shape_bands_known.length() >= 1024 {
     shape_bands_known.clear()
   }
   // (by a copy of its outlines: one of theirs changed after is not the outlines these were made of)

@@ -336,13 +336,15 @@ fn tape_made(
           v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
             // (what the page made in `p` does in the bar, its own while `p` is: given as it is made, let go with `p`
             // where none since gave the bar another's)
-            let gen = next_tape_actions_gen()
+            let last_gen = Ref(0)
             let acts = fn(make : (@view.View) -> Unit, side : (@sf.Look) -> Double) {
+              let gen = next_tape_actions_gen()
+              last_gen.val = gen
               tape_bar_of(k).page_actions.set(Some((make, side, gen)))
             }
             p.owns(fn() {
               let tb = tape_bar_of(k)
-              if tb.page_actions.untracked() is Some((_, _, g)) && g == gen {
+              if last_gen.val > 0 && tb.page_actions.untracked() is Some((_, _, g)) && g == last_gen.val {
                 tb.page_actions.set(None)
               }
             })
