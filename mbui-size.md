@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fedda4bd5](https://github.com/AFK-surf/monoid/commit/fedda4bd54f42c1d7303d2285a374bb09eee7e87) refactor(cloud): split directory durable object in | 2.62 | 3.53 | 14.41 | 36.61 | 55.51 | 32.08 | 64.9 | 97.26 | 123.27 |
 | [65ec9344f](https://github.com/AFK-surf/monoid/commit/65ec9344f47bbd53b0ab982846b6cb4405c955d7) ci(natives): compile a branch's reader in 8 MB uni | 2.62 | 3.52 | 14.4 | 36.6 | 55.48 | 32.07 | 64.88 | 97.27 | 118.74 |
 | [91b2657cb](https://github.com/AFK-surf/monoid/commit/91b2657cb24d686b95df63a0cae773318cc37699) perf(screens): send screen frames as QUIC datagram | 2.62 | 3.52 | 14.4 | 36.6 | 55.48 | 32.07 | 64.88 | 97.27 | 118.74 |
 | [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd3d1d1d3](https://github.com/AFK-surf/monoid/commit/fd3d1d1d317beced89cf5125c17fdf12bc0ca651) feat(mbui): move the chat page only for a cause sa | 2.6 | 3.49 | 14.28 | 36.35 | 55.03 | 31.77 | 63.99 | 97.44 | 125.25 |
 | [d5e590268](https://github.com/AFK-surf/monoid/commit/d5e59026855dd2844e2a03bc9fa3822d17c515ec) fix(ci): run check off ci-1 unless its Rust change | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.44 | 163.91 |
 | [e8d64fae7](https://github.com/AFK-surf/monoid/commit/e8d64fae7f73cd4011cef67567c24ee70a6011b3) feat(mbui): draw the 小屏 bottom bar and the finger' | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.03 | 207.49 |
-| [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.03 | 207.49 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fedda4bd5](https://github.com/AFK-surf/monoid/commit/fedda4bd54f42c1d7303d2285a374bb09eee7e87) refactor(cloud): split directory durable object in | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.84 |
 | [65ec9344f](https://github.com/AFK-surf/monoid/commit/65ec9344f47bbd53b0ab982846b6cb4405c955d7) ci(natives): compile a branch's reader in 8 MB uni | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.84 |
 | [91b2657cb](https://github.com/AFK-surf/monoid/commit/91b2657cb24d686b95df63a0cae773318cc37699) perf(screens): send screen frames as QUIC datagram | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.99 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd3d1d1d3](https://github.com/AFK-surf/monoid/commit/fd3d1d1d317beced89cf5125c17fdf12bc0ca651) feat(mbui): move the chat page only for a cause sa | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [d5e590268](https://github.com/AFK-surf/monoid/commit/d5e59026855dd2844e2a03bc9fa3822d17c515ec) fix(ci): run check off ci-1 unless its Rust change | 0.44 | 0.58 | 2.22 | 3.31 | 5.32 | 1.62 | 4.38 | 54.2 |
 | [e8d64fae7](https://github.com/AFK-surf/monoid/commit/e8d64fae7f73cd4011cef67567c24ee70a6011b3) feat(mbui): draw the 小屏 bottom bar and the finger' | 0.44 | 0.58 | 2.22 | 3.31 | 5.32 | 1.62 | 4.38 | 54.2 |
-| [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
