@@ -33,6 +33,13 @@
 // station verifies to go back to one of them (station/src/updates/release.ts planBack), its archive downloaded under
 // its own name; release-prune.ts keeps the archives these name.
 // Run twice on the same directory, the second run changes nothing (a delta already made and in the feed is kept).
+// --platform P (one of STATION_PLATFORMS): the station's feeds alone, and of them P's deltas alone, so that each
+//   platform's are made on a runner of its own (pipeline.yml's deltas-station, 10 bases × 4 platforms did not fit one
+//   runner's --deadline). The feed is not amended: what this run would have put in it (its `earlier`, P's deltas) is
+//   written beside it as <feed>.deltas.<P>.json, which --merge puts in the feed.
+//   node scripts/release-deltas.ts --merge DIR   each <feed>.deltas.<P>.json in DIR put in its feed there (`earlier`,
+//                                                P's deltas), the feed as one run of every platform would have amended
+//                                                it, and deleted; a platform with none keeps what the feed said
 //   node scripts/release-deltas.ts --zst RAW OUT     RAW compressed (zstd) to OUT: the Windows raw installer's .raw.zst
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -411,7 +418,7 @@ type Target = {
   platform?: string;
 };
 
-export type Options = { releases: string; bases: number; jobs: number; deadline: number | null; into: string };
+export type Options = { releases: string; bases: number; jobs: number; deadline: number | null; into: string; platform?: string | null };
 
 class Run {
   readonly warnings: string[] = [];
@@ -567,7 +574,7 @@ class Run {
     const inPlace = (p: string) => `${channel === "beta" ? "beta/" : ""}stillfail-station-${p}${p.startsWith("win32") ? ".zip" : ".tar.gz"}`;
     const archive = (b: number, sha: string, p: string) => `station/archive/${channel}/${b}-${sha}-${p}${p.startsWith("win32") ? ".zip" : ".tar.gz"}`;
     const out: Target[] = [];
-    for (const platform of STATION_PLATFORMS) {
+    for (const platform of this.o.platform ? [this.o.platform] : STATION_PLATFORMS) {
       const it = words.builds[platform];
       if (!it) continue;
       const label = `${feedName.replace(/\.json$/, "")} ${platform}`;
@@ -700,6 +707,16 @@ class Run {
       for (const t of targets) if (t.made_.length) deltas[t.platform!] = [...t.made_].sort((a, b) => b.from - a.from);
       const { earlier: _e, ...words } = rest;
       const earlier = this.earlier.get(feedName) ?? [];
+      if (this.o.platform) {
+        // (one platform's: beside the feed, for --merge; release-put.sh --files leaves it, a feed by its name, out)
+        const platform = this.o.platform, mine = deltas[platform] ?? [];
+        if (earlier.length === 0 && mine.length === 0) return;
+        const to = join(this.o.into, fragmentName(feedName, platform));
+        mkdirSync(dirname(to), { recursive: true });
+        writeFileSync(`${to}.new`, `${JSON.stringify({ earlier, platform, deltas: mine } satisfies Fragment)}\n`);
+        renameSync(`${to}.new`, to);
+        return;
+      }
       amended = { ...words, ...(earlier.length ? { earlier } : {}), ...(Object.keys(deltas).length ? { deltas } : {}) };
     } else {
       const t = targets[0];
@@ -729,6 +746,55 @@ class Run {
   }
 }
 
+/** What a run of one platform (--platform) would have put in the station's feed, beside it. */
+type Fragment = { earlier: Signed[]; platform: string; deltas: Made[] };
+const fragmentName = (feedName: string, platform: string) => `${feedName.replace(/\.json$/, "")}.deltas.${platform}.json`;
+const FRAGMENT = /^(station(?:-beta)?)\.deltas\.([^.]+)\.json$/;
+
+/** Each <feed>.deltas.<platform>.json in `dir` put in its feed there, as one run of every platform would have amended
+ * it (its `earlier`, each platform's deltas, in STATION_PLATFORMS' order, newest first), and deleted, whatever came of
+ * it: a fragment left there would be put as a feed (release-put.sh's feed()). A platform with no fragment (its job
+ * failed) keeps what the feed said of it; nothing here fails a release. */
+export function mergeDeltas(dir: string): { lines: string[]; warnings: string[] } {
+  const lines: string[] = [], warnings: string[] = [];
+  const byFeed = new Map<string, string[]>();
+  for (const name of existsSync(dir) ? readdirSync(dir).sort() : []) {
+    const m = FRAGMENT.exec(name);
+    if (m) byFeed.set(`${m[1]}.json`, [...(byFeed.get(`${m[1]}.json`) ?? []), name]);
+  }
+  for (const [feedName, names] of byFeed) {
+    try {
+      const path = join(dir, feedName);
+      if (!existsSync(path)) throw new Error("no such feed here");
+      const feed = JSON.parse(readFileSync(path, "utf8"));
+      const { raw: _r, deltas: had, earlier: hadEarlier, ...words } = feed;
+      const deltas: Record<string, Made[]> = { ...(had && typeof had === "object" ? had : {}) };
+      let earlier: Signed[] = Array.isArray(hadEarlier) ? hadEarlier : [];
+      const said: string[] = [];
+      for (const name of names) {
+        let f: Fragment;
+        try { f = JSON.parse(readFileSync(join(dir, name), "utf8")); } catch (e) { warnings.push(`${name}: not read: ${why(e)}`); continue; }
+        if (!STATION_PLATFORMS.includes(f.platform) || !Array.isArray(f.deltas)) { warnings.push(`${name}: not a station platform's deltas`); continue; }
+        if (Array.isArray(f.earlier) && f.earlier.length) earlier = f.earlier;
+        if (f.deltas.length) deltas[f.platform] = [...f.deltas].sort((a, b) => b.from - a.from);
+        else delete deltas[f.platform];
+        said.push(`${f.platform} ${f.deltas.length}`);
+      }
+      const order = (k: string) => (STATION_PLATFORMS.includes(k) ? STATION_PLATFORMS.indexOf(k) : STATION_PLATFORMS.length);
+      const sorted = Object.fromEntries(Object.entries(deltas).sort(([a], [b]) => order(a) - order(b)));
+      const amended = { ...words, ...(earlier.length ? { earlier } : {}), ...(Object.keys(sorted).length ? { deltas: sorted } : {}) };
+      writeFileSync(`${path}.new`, `${JSON.stringify(amended)}\n`);
+      renameSync(`${path}.new`, path);
+      lines.push(`${feedName}: merged (${said.join(", ") || "nothing"})`);
+    } catch (e) {
+      warnings.push(`${feedName}: deltas not merged: ${why(e)}`);
+    } finally {
+      for (const name of names) rmSync(join(dir, name), { force: true });
+    }
+  }
+  return { lines, warnings };
+}
+
 /** The feeds of a release directory: the apps' (…/latest.json) and the station's. */
 function feedsIn(dir: string): string[] {
   const out: string[] = [];
@@ -747,7 +813,7 @@ export async function releaseDeltas(dir: string, o: Options): Promise<{ lines: s
   const run = new Run(dir, o);
   try {
     const feeds: { name: string; feed: any; targets: Target[] }[] = [];
-    for (const name of feedsIn(dir)) {
+    for (const name of feedsIn(dir).filter((n) => !o.platform || n.startsWith("station"))) {
       try {
         const feed = JSON.parse(readFileSync(join(dir, name), "utf8"));
         const targets = name.startsWith("station") ? await run.stationTargets(name, feed) : [await run.appTarget(name, feed)].filter((t): t is Target => t !== null);
@@ -771,7 +837,7 @@ export async function releaseDeltas(dir: string, o: Options): Promise<{ lines: s
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const usage = (): never => {
-    console.error("usage: release-deltas.ts <release dir> [--releases URL|DIR] [--bases N] [--jobs N] [--deadline SECONDS] [--into DIR] | --zst RAW OUT");
+    console.error("usage: release-deltas.ts <release dir> [--releases URL|DIR] [--bases N] [--jobs N] [--deadline SECONDS] [--into DIR] [--platform P] | --merge DIR | --zst RAW OUT");
     process.exit(2);
   };
   if (args[0] === "--pair") {
@@ -781,6 +847,12 @@ if (import.meta.main) {
   if (args[0] === "--zst") {
     const [raw, out] = [args[1] ?? usage(), args[2] ?? usage()];
     writeFileSync(out, zstdCompressSync(readFileSync(raw)));
+    process.exit(0);
+  }
+  if (args[0] === "--merge") {
+    const r = mergeDeltas(args[1] ?? usage());
+    for (const w of r.warnings) console.error(`${process.env.GITHUB_ACTIONS ? "::warning::" : ""}release-deltas: ${w}`);
+    for (const line of r.lines) console.log(`deltas: ${line}`);
     process.exit(0);
   }
   const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 ? (args[i + 1] ?? usage()) : undefined; };
@@ -800,7 +872,9 @@ if (import.meta.main) {
     jobs: number("--jobs", jobs)!,
     deadline: number("--deadline", null),
     into: flag("--into") ?? dir,
+    platform: flag("--platform") ?? null,
   };
+  if (o.platform && !STATION_PLATFORMS.includes(o.platform)) usage();
   mkdirSync(o.into, { recursive: true });
   let result: { lines: string[]; warnings: string[] } = { lines: [], warnings: [] };
   try {

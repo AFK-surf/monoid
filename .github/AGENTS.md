@@ -77,7 +77,8 @@
 - A release's deltas (`scripts/release-deltas.ts`: the `deltas-<part>` jobs, each waiting for its own part's build
   alone, `put_feed` in `scripts/release.sh`) never fail or hold back a release: what goes wrong is a warning and that
   delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
-  a part that needs more is made faster or gets fewer bases, not longer (10 bases: the owner, 2026-11-11).
+  a part that needs more is made faster, split (the station's, a job a platform: `--platform`, put's `--merge`) or gets
+  fewer bases, not longer (10 bases: the owner, 2026-11-11).
 - `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts) and `desktop` for `desktop-build` alone, never
   for `natives`' slower Linux build. The release's upload jobs (`deltas-*`, `desktop`, `put`, `changelog`) take Node
   alone (`.github/actions/node`), no pnpm: `release-put.sh` and `changelog-put.sh` go through Cloudflare's API with the

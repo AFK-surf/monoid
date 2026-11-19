@@ -2330,6 +2330,9 @@ jobs:
   # taken back from staged/), puts the deltas (and the station's archives under their own names: nothing points at them
   # until put writes the feed) and hands put the amended feeds (deltas-<part>-<sha>). Never a reason to hold a release
   # back: put goes on without what this did not make. The four run the same steps (deltas-steps), their part in PART.
+  # The station's are a job a platform (PLATFORM: release-deltas.ts --platform): its 4 archives' 40 pairs on one runner
+  # took 151 s at 4 bases, and 10 would not fit --deadline 200 (main 44524530919). Each hands put its part of the feed
+  # beside it (station-beta.deltas.<platform>.json), which put merges (--merge) before it puts the feeds.
   deltas-station:
     needs: [plan, station]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' }}
@@ -2337,8 +2340,13 @@ jobs:
     environment: production
     timeout-minutes: 5
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [darwin-arm64, linux-x64, linux-arm64, win32-x64]
     env:
-      PART: station
+      PART: station-${{ matrix.platform }}
+      PLATFORM: ${{ matrix.platform }}
       HANDED: ${{ needs.station.outputs.hand }}
     # (what it runs alone: scripts/release-deltas.ts and its delta.ts, release-put.sh through Cloudflare's API, javac
     # on Delta.java and JZlib for Android's; no packages, no pnpm)
@@ -2367,7 +2375,7 @@ jobs:
           sh scripts/release-put.sh --unstage "$RUNNER_TEMP/release"
       # (a deadline of its own, inside the job's: what is not made by then is left out, the job green)
       - name: Its deltas
-        run: node scripts/release-deltas.ts "$RUNNER_TEMP/release" --into "$RUNNER_TEMP/deltas" --deadline 200
+        run: node scripts/release-deltas.ts "$RUNNER_TEMP/release" --into "$RUNNER_TEMP/deltas" --deadline 200 ${PLATFORM:+--platform "$PLATFORM"}
       - name: Put them (nothing points at them until put writes the feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2445,6 +2453,9 @@ jobs:
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with: { pattern: "deltas-*-${{ github.sha }}", path: "${{ runner.temp }}/release", merge-multiple: true }
+      # (the station's platforms' deltas, each its job's, put in its feed; none, and the feed goes out as it was handed)
+      - name: The station's deltas in its feed
+        run: node scripts/release-deltas.ts --merge "$RUNNER_TEMP/release"
       - name: Put the releases (their files, then their feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
