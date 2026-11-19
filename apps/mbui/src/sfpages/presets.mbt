@@ -1212,6 +1212,19 @@ fn preset_fields(
   })
   v.box(fn(col) {
     @sf.style_node(col, fn() { preset_form })
+    @sf.field_node(col, fn() { @sf.t("web-main.preset.name") }, fn(b) {
+      let f = @sf.input_node(b, e.name, placeholder=@sf.t("web-main.preset.namePlaceholder"))
+      if id == "" {
+        @sf.panel_search_at_hand_node(f)
+      }
+    })
+    preset_capsules_node(col, src, address, stations, e)
+    // (why it was not saved under it: a folder the station has not, say)
+    @sf.field_node(col, fn() { @sf.t("web-main.preset.instructionsTitle") }, hint=fn() { @sf.t("web-main.preset.instructionsHint") }, error=fn() {
+      e.error.get()
+    }, fn(b) {
+      @sf.textarea_node(b, e.instructions, rows=4, most=10, placeholder=@sf.t("web-main.preset.instructionsPlaceholder")) |> ignore
+    })
     @sf.field_node(col, fn() { @sf.t("web-main.preset.dirs") }, hint=fn() {
       if e.dirs.get().length() == 0 && e.clones.get().length() == 0 {
         @sf.t("web-main.preset.dirsHint")
@@ -1219,16 +1232,6 @@ fn preset_fields(
         ""
       }
     }, fn(b) { preset_dirs_node(b, src, address, stations, e, close) })
-    preset_capsules_node(col, src, address, stations, e)
-    @sf.field_node(col, fn() { @sf.t("web-main.preset.name") }, fn(b) {
-      @sf.input_node(b, e.name, placeholder=@sf.t("web-main.preset.namePlaceholder")) |> ignore
-    })
-    // (why it was not saved under it: a folder the station has not, say)
-    @sf.field_node(col, fn() { @sf.t("web-main.preset.instructions") }, hint=fn() { @sf.t("web-main.preset.instructionsHint") }, error=fn() {
-      e.error.get()
-    }, fn(b) {
-      @sf.textarea_node(b, e.instructions, rows=3, placeholder=@sf.t("web-main.preset.instructionsPlaceholder")) |> ignore
-    })
   })
   |> ignore
 }
@@ -1299,8 +1302,6 @@ fn preset_dirs_node(
     list.each(rows, PresetDirsRow::key, fn(row, item) {
       match item.untracked() {
         DirsAdd =>
-          // (what the dialog opens on in the window's middle: its folders are what a preset is made of first, its name
-          // the first folder's until typed; Enter there adds one, and no input method is raised over the form by touch)
           preset_action_row(
             row,
             "plus",
@@ -1309,7 +1310,6 @@ fn preset_dirs_node(
               close()
               preset_add_open(src, address, stations, e)
             },
-            opens=true,
           )
         DirsHead(s, saved) => @sf.panel_heading_node(row, fn() { preset_station_name(s, saved, stations) })
         DirsDir(at, was) => {
@@ -1634,6 +1634,23 @@ fn preset_foot(
         }
         if text(pick_val, "effort") != "" {
           pm["effort"] = Json::string(text(pick_val, "effort"))
+        }
+        if text(pick_val, "speed") != "" {
+          pm["speed"] = Json::string(text(pick_val, "speed"))
+        }
+        match field(pick_val, "fast") {
+          Some(True) => pm["fast"] = Json::boolean(true)
+          Some(False) => pm["fast"] = Json::boolean(false)
+          _ => ()
+        }
+        match field(pick_val, "tui") {
+          Some(True) => pm["tui"] = Json::boolean(true)
+          Some(False) => pm["tui"] = Json::boolean(false)
+          _ => ()
+        }
+        let ctx_n = preset_context_num(pick_val)
+        if ctx_n > 0 {
+          pm["context"] = Json::number(ctx_n.to_double())
         }
         if text(pick_val, "profile") != "" {
           pm["profile"] = Json::string(text(pick_val, "profile"))
@@ -1999,11 +2016,11 @@ fn repo_mark(c : @ui.Ctx, name : String, repo : String, icon : String, size : Do
 /// A folder's mark in the preset's dialog: as high as its two lines, its corner the small block's (the ladder's 10), so
 /// with a row's 8 over and under it stands a corner's inset (8) in from the row's round ground on every side, concentric
 /// with its 18 (@sf.panel_row_in_node) whether the row has one line or two.
-let preset_dir_mark : Double = 38.0
+let preset_dir_mark : Double = 34.0
 
 ///|
 /// The icon in a neutral tile of a row that does something (浏览文件夹, 从 Git 克隆, 添加目录).
-let preset_action_icon : Double = 20.0
+let preset_action_icon : Double = 18.0
 
 ///|
 /// A folder's ×: as high as its name's line and a half.
@@ -2015,7 +2032,7 @@ let preset_search_icon : Double = 16.0
 
 ///|
 /// A row's height before it is laid out (a name, a note under it, its tile's room).
-let preset_row_est : Double = 56.0
+let preset_row_est : Double = 50.0
 
 ///|
 /// 添加目录's share of the window, the folder picker's (sfdesk station_pick_tall's).
@@ -2037,21 +2054,21 @@ let preset_row_at : @ui.Style = @ui.css("row w=Full min_h=S11 py=S2 gap=S3 align
 
 ///|
 // kept across runs: a value (no field of it changes)
-let preset_dir_name : @ui.TextStyle = @ui.text_style(size=Body, leading=L6, color=Fg, wrap=false, w=Cut)
+let preset_dir_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, wrap=false, w=Cut)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let preset_dir_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Cut)
+let preset_dir_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L4, color=Muted, wrap=false, w=Cut)
 
 ///|
 /// Why a clone failed, in red.
 // kept across runs: a value (no field of it changes)
-let preset_dir_bad : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, wrap=false, w=Cut)
+let preset_dir_bad : @ui.TextStyle = @ui.text_style(size=Meta, leading=L4, color=Danger, wrap=false, w=Cut)
 
 ///|
-/// The dialog's fields, and the clone step's: one under another, 20 apart.
+/// The dialog's fields, and the clone step's: one under another, 16 apart.
 // kept across runs: a value (no field of it changes)
-let preset_form : @ui.Style = @ui.css("w=Full gap=S5")
+let preset_form : @ui.Style = @ui.css("w=Full gap=S4")
 
 ///|
 /// 添加目录's search over its rows: across the panel (where panel_field_in_node stands it), a row's room under it.
@@ -2073,7 +2090,72 @@ let preset_drop_words : Int = 1
 let preset_drop_chevron : Int = new_drop_station_name + 1
 
 ///|
-/// Station 与模型（可选）：一行双胶囊，支持不限（不选）或指定 Station（单选/多选自动分配）与模型。
+fn preset_context_num(v : Json?) -> Int {
+  match field(v, "context") {
+    Some(Number(n, ..)) if n > 0.0 => n.to_int()
+    Some(String(s)) if s != "" => {
+      let mut acc = 0
+      for ch in s {
+        let code = ch.to_int()
+        if code >= 48 && code <= 57 {
+          acc = acc * 10 + (code - 48)
+        } else {
+          return 0
+        }
+      }
+      acc
+    }
+    _ => 0
+  }
+}
+
+///|
+fn preset_context_text(v : Json?) -> String {
+  let n = preset_context_num(v)
+  if n <= 0 {
+    ""
+  } else if n >= 1_000_000 {
+    let whole = n / 1_000_000
+    let tenths = (n % 1_000_000) / 100_000
+    if tenths == 0 {
+      "\{whole}M"
+    } else {
+      "\{whole}.\{tenths}M"
+    }
+  } else if n >= 1_000 {
+    let whole = n / 1_000
+    "\{whole}K"
+  } else {
+    n.to_string()
+  }
+}
+
+///|
+fn preset_speed_text(v : Json?) -> String {
+  match text(v, "speed") {
+    "ultrafast" => "Ultrafast"
+    "fast" => "Fast"
+    _ => if flag(v, "fast") { "Fast" } else { "" }
+  }
+}
+
+///|
+fn preset_station_mark_node(
+  parent : @view.View,
+  emoji : String,
+  icon : String,
+  size : Double,
+  tint : () -> Int64,
+) -> Unit {
+  if emoji != "" || icon != "" {
+    @sf.station_mark_node(parent, fn() { emoji }, fn() { icon }, size, tint, fn() { 0 })
+  } else {
+    @sf.icon_node(parent, "server", size, By(tint)) |> ignore
+  }
+}
+
+///|
+/// Station 与模型：一行双胶囊，支持不限（不选）或指定 Station（单选/多选自动分配）与模型。
 fn preset_capsules_node(
   col : @view.View,
   src : Source,
@@ -2084,23 +2166,27 @@ fn preset_capsules_node(
   let has_station = fn() {
     e.auto_station.get() || e.station.get() != "" || e.stations.get().length() > 0
   }
-  let station_words = fn() {
-    let first_name = match stations.get(0) {
-      Some(s) if text(Some(s), "name") != "" => text(Some(s), "name")
-      _ => preset_station_name(address, "", stations)
+  let pinned_station = fn() -> Json? {
+    if e.auto_station.get() || e.station.get() == "" {
+      None
+    } else {
+      let sid = e.station.get()
+      stations.iter().find_first(fn(s) { text(Some(s), "id") == sid || text(Some(s), "station") == sid })
     }
+  }
+  let station_words = fn() {
     if e.auto_station.get() {
-      if first_name != "" { "自动 · " + first_name } else { "自动分配" }
+      @sf.t("web-main.preset.autoStation")
     } else if e.station.get() != "" {
       let sid = e.station.get()
-      match stations.iter().find_first(fn(s) { text(Some(s), "id") == sid || text(Some(s), "station") == sid }) {
+      match pinned_station() {
         Some(s) if text(Some(s), "name") != "" => text(Some(s), "name")
         _ => sid
       }
     } else if e.stations.get().length() > 0 {
-      "\{e.stations.get().length()} 台 station"
+      @sf.t("web-main.preset.stationsCount", args=[("n", e.stations.get().length().to_string())])
     } else {
-      "不限 Station"
+      @sf.t("web-main.preset.anyStation")
     }
   }
   let pick_v = fn() {
@@ -2130,7 +2216,7 @@ fn preset_capsules_node(
   let has_model = fn() { text(pick_val(), "model") != "" }
   let model_words = fn() {
     if !has_model() {
-      "不限模型"
+      @sf.t("web-main.preset.anyModel")
     } else {
       let mname = if text(pick_vo(), "name") != "" { text(pick_vo(), "name") } else { text(pick_val(), "model") }
       let parts = [mname]
@@ -2142,38 +2228,82 @@ fn preset_capsules_node(
       if eff != "" {
         parts.push(eff)
       }
+      let speed = if e.model_state.get() == 2 {
+        let ft = text(pick_v(), "fastText")
+        if ft != "" { ft } else { preset_speed_text(pick_val()) }
+      } else {
+        preset_speed_text(pick_val())
+      }
+      if speed != "" {
+        parts.push(speed)
+      }
+      let ctx = preset_context_text(pick_val())
+      if ctx != "" {
+        parts.push(ctx)
+      }
       if e.model_state.get() == 2 {
-        let fast = text(pick_v(), "fastText")
-        if fast != "" {
-          parts.push(fast)
-        }
         let acc = text(field(pick_v(), "account"), "text")
         if acc != "" {
           parts.push(acc)
+        }
+      } else {
+        let p_list = items(pick_val(), "profiles")
+        let pid = if p_list.length() == 1 {
+          match p_list[0] {
+            String(s) => s
+            _ => ""
+          }
+        } else if p_list.length() == 0 {
+          text(pick_val(), "profile")
+        } else {
+          ""
+        }
+        if pid != "" {
+          let acc_name = match items(pick_v(), "accounts").iter().find_first(fn(a) { text(Some(a), "id") == pid }) {
+            Some(a) if text(Some(a), "name") != "" => text(Some(a), "name")
+            _ => pid
+          }
+          parts.push(acc_name)
         }
       }
       join(parts, " · ")
     }
   }
-  @sf.field_node(col, fn() { "Station 与模型（可选）" }, fn(b) {
+  @sf.field_node(col, fn() { @sf.t("web-main.preset.runtimeSection") }, fn(b) {
     b.box(fn(bar) {
       @sf.style_node(bar, fn() { preset_simple_capsules })
       bar.wraps(Is(Some(8.0))) |> ignore
       preset_capsule_pill(
         bar,
         fn(l) {
-          @sf.icon_node(
-            l,
-            "sliders",
-            15.0,
-            By(fn() { if has_station() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
+          l.pick(
+            fn() {
+              if !e.auto_station.get() && e.station.get() != "" {
+                let st = pinned_station()
+                Some((text(st, "emoji"), text(st, "icon")))
+              } else {
+                None
+              }
+            },
+            fn(m, pinned) {
+              match pinned {
+                Some((emoji, icon)) => preset_station_mark_node(m, emoji, icon, 15.0, fn() { @sf.theme().p.text })
+                None =>
+                  @sf.icon_node(
+                    m,
+                    "sliders",
+                    15.0,
+                    By(fn() { if has_station() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
+                  )
+                  |> ignore
+              }
+            },
           )
-          |> ignore
         },
         station_words,
         has_station,
         fn(btn) { preset_station_open(src, address, stations, e, Node(btn)) },
-        "清除 Station",
+        fn() { @sf.t("web-main.preset.clearStation") },
         fn() {
           e.auto_station.set(false)
           e.station.set("")
@@ -2211,7 +2341,7 @@ fn preset_capsules_node(
                   "of": Json::string("connect-new:preset"),
                   "model": Json::string(text(Some(Json::object(m)), "model")),
                 }
-                for k in ["runtime", "effort", "profile", "profiles"] {
+                for k in ["runtime", "effort", "fast", "speed", "context", "tui", "profile", "profiles"] {
                   match m.get(k) {
                     Some(v) => save_p[k] = v
                     None => ()
@@ -2237,7 +2367,7 @@ fn preset_capsules_node(
             asks=fn(borrow) { borrow_ask(src, address, "connect-new:preset", borrow) },
           )
         },
-        "清除模型",
+        fn() { @sf.t("web-main.preset.clearModel") },
         fn() {
           e.model_state.set(1)
           (src.call)(
@@ -2259,10 +2389,10 @@ fn preset_capsule_pill(
   words : () -> String,
   has_value : () -> Bool,
   on_open : (@view.View) -> Unit,
-  clear_label : String,
+  clear_label : () -> String,
   on_clear : () -> Unit,
 ) -> Unit {
-  @sf.filter_pill_node(parent, words, on_open, picked=has_value, lead~, clear=on_clear, clear_label=fn() { clear_label })
+  @sf.filter_pill_node(parent, words, on_open, picked=has_value, lead~, clear=on_clear, clear_label~)
   |> ignore
 }
 
@@ -2323,10 +2453,10 @@ fn preset_station_open(
     fn(n, close) {
       @sf.choice_row_node(
         n,
-        fn() { "不限 Station" },
+        fn() { @sf.t("web-main.preset.anyStation") },
         unrestricted,
         compact=true,
-        note=fn() { "保持新对话当前选中的 station" },
+        note=fn() { @sf.t("web-main.preset.anyStationHint") },
         press=fn() {
           apply_selected([])
           close()
@@ -2334,11 +2464,11 @@ fn preset_station_open(
       )
       @sf.choice_row_node(
         n,
-        fn() { @sf.t("web-main.model.selectAll") },
+        fn() { @sf.t("web-main.preset.autoStation") },
         fn() { false },
         compact=true,
         lead=fn(l) { @sf.check_mark_node(l, all_checked, mixed=some_checked) },
-        note=fn() { "在所有可用 station 间按负载自动分配" },
+        note=fn() { @sf.t("web-main.preset.autoStationHint") },
         press=fn() {
           if all_checked() {
             apply_selected([])
@@ -2352,6 +2482,8 @@ fn preset_station_open(
       for s in stations {
         let sid = preset_station_id(s)
         let sname = preset_station_name(text(Some(s), "station"), text(Some(s), "name"), stations)
+        let emoji = text(Some(s), "emoji")
+        let icon = text(Some(s), "icon")
         let checked = fn() {
           e.auto_station.get() || e.station.get() == sid || e.stations.get().contains(sid)
         }
@@ -2360,7 +2492,11 @@ fn preset_station_open(
           fn() { sname },
           fn() { false },
           compact=true,
-          lead=fn(l) { @sf.check_mark_node(l, checked) },
+          lead=fn(l) {
+            l.gap(Is(8.0)) |> ignore
+            @sf.check_mark_node(l, checked)
+            preset_station_mark_node(l, emoji, icon, 15.0, fn() { @sf.theme().p.muted })
+          },
           note=fn() { text(Some(s), "summary") },
           press=fn() {
             let cur = @signals.untracked(current_selected)

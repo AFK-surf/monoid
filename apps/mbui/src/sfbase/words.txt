@@ -2875,6 +2875,14 @@ web-main.preset.stationsCount
 web-main.preset.hasInstructions
 web-main.preset.editItem
 web-main.preset.copyItem
+web-main.preset.runtimeSection
+web-main.preset.anyStation
+web-main.preset.anyStationHint
+web-main.preset.autoStationHint
+web-main.preset.anyModel
+web-main.preset.clearStation
+web-main.preset.clearModel
+web-main.preset.instructionsTitle
 web-pages.screen.debug.app
 web-pages.screen.device.back
 web-pages.screen.debug.paneHide
