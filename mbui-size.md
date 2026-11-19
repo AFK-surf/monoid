@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f65dd8ee5](https://github.com/AFK-surf/monoid/commit/f65dd8ee584b511023f9c87efe3263611d1b38f9) refactor(mbui): shard detlint counts by package (# | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.21 | 115.97 |
 | [5f9f2dfa2](https://github.com/AFK-surf/monoid/commit/5f9f2dfa2a0399c6f0b653b441d97a3c8925c6de) fix(app): settings search finds settings by what p | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.21 | 115.97 |
 | [9d591d003](https://github.com/AFK-surf/monoid/commit/9d591d003a8ea8c8ad92538b70889a14c7a2e43e) mbui app: a new chat made as nodes with its compos | 2.61 | 3.51 | 14.33 | 36.42 | 55.25 | 31.9 | 64.5 | 97.21 | 115.97 |
 | [0191af001](https://github.com/AFK-surf/monoid/commit/0191af001dad79da0356ee6ff33119ce01f8cc4b) perf(core): walk the archive on a covering index,  | 2.6 | 3.5 | 14.29 | 36.36 | 55.05 | 31.87 | 64.34 | 97.22 | 122.31 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 2.58 | 3.46 | 14.13 | 36.17 | 54.38 | 31.69 | 63.81 | 97.22 | 120.26 |
 | [e6ec96714](https://github.com/AFK-surf/monoid/commit/e6ec96714deaa21be8d1db30285b5a6864bd40b3) fix(mbui): take the start drop of a finger pick wh | 2.57 | 3.46 | 14.12 | 36.16 | 54.38 | 31.69 | 63.81 | 97.14 | 124.81 |
 | [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 2.58 | 3.46 | 14.12 | 36.16 | 54.38 | 31.69 | 63.81 | 97.14 | 121.14 |
-| [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 2.57 | 3.46 | 14.12 | 36.15 | 54.37 | 31.69 | 63.79 | 97.35 | 121.99 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f65dd8ee5](https://github.com/AFK-surf/monoid/commit/f65dd8ee584b511023f9c87efe3263611d1b38f9) refactor(mbui): shard detlint counts by package (# | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54 |
 | [5f9f2dfa2](https://github.com/AFK-surf/monoid/commit/5f9f2dfa2a0399c6f0b653b441d97a3c8925c6de) fix(app): settings search finds settings by what p | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.94 |
 | [9d591d003](https://github.com/AFK-surf/monoid/commit/9d591d003a8ea8c8ad92538b70889a14c7a2e43e) mbui app: a new chat made as nodes with its compos | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.94 |
 | [0191af001](https://github.com/AFK-surf/monoid/commit/0191af001dad79da0356ee6ff33119ce01f8cc4b) perf(core): walk the archive on a covering index,  | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [e6ec96714](https://github.com/AFK-surf/monoid/commit/e6ec96714deaa21be8d1db30285b5a6864bd40b3) fix(mbui): take the start drop of a finger pick wh | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.95 |
-| [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
