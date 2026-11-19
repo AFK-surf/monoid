@@ -367,7 +367,17 @@ async fn Actors::enqueue(self : Actors, a : Actor, task : async () -> Unit raise
     a.tasks.try_offer(() => {
       if a.phase != "closed" {
         task() catch {
-          e => self.log(a, "error", "session task failed", fields={ "error": Json::string(Asked::message(e)) })
+          e => {
+            // (which runtime and model it ran under, never what was said)
+            let fields : Map[String, Json] = {
+              "error": Json::string(Asked::message(e)),
+              "runtime": Json::string(a.runtime),
+            }
+            if str_of(a.running_identity.value("model")) is Some(m) && m != "" {
+              fields["model"] = Json::string(m)
+            }
+            self.log(a, "error", "session task failed", fields~)
+          }
         }
       }
       a.queued -= 1

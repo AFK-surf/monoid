@@ -170,9 +170,13 @@ export const MeshLive = Layer.effectDiscard(
         (stop) => Effect.sync(stop),
       );
       const connections = yield* FiberSet.make();
-      // The mesh's spans, when the config turns traces on (read at start, as the Rust does).
+      // The mesh's spans (read at start, as the Rust does): `telemetry.traces` false, none; true, every one; unset, only
+      // a failed or slow one.
       const traces = yield* Effect.acquireRelease(
-        Effect.sync(() => new Traces(config.raw()?.telemetry?.traces === true)),
+        Effect.sync(() => {
+          const said = config.raw()?.telemetry?.traces;
+          return said === false ? new Traces(false) : said === true ? new Traces(true) : new Traces(true, { tailOnly: true });
+        }),
         (traces) => Effect.promise(() => traces.close()),
       );
       if (traces.enabled) traces.exportTo((spans) => Effect.runPromise(plane.traces(spans)));

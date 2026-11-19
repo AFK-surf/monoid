@@ -269,6 +269,8 @@ test("a traceparent, a route without its ids and an OTLP batch, as traces.ts has
   }
   const spans = [{ a: 1 }, { traceId: "x", attributes: [], nested: { "2": 1, b: [1, 2.5, null, "s"] } }];
   for (const station of ["s1", "", "名字 \"q\""]) await same("otlpBody", { station, spans }, () => otlpBody(station, spans));
+  const resource: [string, string][] = [["service.version", "0.1.1"], ["os.type", "darwin"], ["host.arch", ""], ["", "x"], ["process.runtime.name", "名字"]];
+  await same("otlpBody", { station: "s1", spans, resource }, () => otlpBody("s1", spans, resource));
 });
 
 test("the traces' spans and their batches, on the clocks of the test's", { skip }, async () => {
@@ -282,16 +284,17 @@ test("the traces' spans and their batches, on the clocks of the test's", { skip 
     for (let i = 0; i < 6; i++) await new Promise<void>((r) => setImmediate(r));
   };
   try {
-    for (const enabled of [false, true]) {
-      const name = `traces-${enabled}`;
-      const traces = new Traces(enabled, { clock });
-      await make("Traces", name, { enabled });
+    for (const [enabled, tailOnly] of [[false, false], [true, false], [true, true]] as const) {
+      const name = `traces-${enabled}-${tailOnly}`;
+      const traces = new Traces(enabled, { clock, tailOnly });
+      await make("Traces", name, { enabled, tailOnly });
       const sent: unknown[][] = [];
       let failing = 0;
+      let error = "the plane is down";
       traces.exportTo(async (batch) => {
         if (failing > 0) {
           failing--;
-          throw new Error("the plane is down");
+          throw new Error(error);
         }
         sent.push(batch);
       });
@@ -301,11 +304,14 @@ test("the traces' spans and their batches, on the clocks of the test's", { skip 
       ];
       const r = rng(7);
       let k = 0;
-      for (let round = 0; round < 4; round++) {
-        if (round === 2) {
-          failing = 1;
-          await ask(name, "fail", { times: 1 });
+      // (failing once: sent again at the next flush; twice: dropped, said once in 10 min; a 4xx: dropped at once)
+      const fails: Record<number, [number, string]> = { 2: [1, "the plane is down"], 3: [2, "the plane is down"], 4: [1, "the plane answered 413"], 5: [2, "the plane is down"], 6: [2, "the plane is down"] };
+      for (let round = 0; round < 8; round++) {
+        if (fails[round] !== undefined) {
+          [failing, error] = fails[round]!;
+          await ask(name, "fail", { times: failing, error });
         }
+        if (round === 6) HR += 600_000_000_000n;
         // more than a batch's worth, and some with nothing recorded
         const n = round === 1 ? 6_500 : 30;
         for (let i = 0; i < n; i++) {
@@ -317,7 +323,7 @@ test("the traces' spans and their batches, on the clocks of the test's", { skip 
           const ours = await ask(name, "start", { parent: asJson(parent), spanId: span?.id ?? "", wallMs: WALL, as: `s${k}` });
           assert.equal(ours, span === null ? null : Traces.traceparent(span));
           if (span === null) continue;
-          HR += BigInt(r.int(90_000_000));
+          HR += BigInt(r.next() < 0.1 ? 1_000_000_000 + r.int(9_000_000) : r.int(90_000_000));
           await mb().ask("hr", { ns: Number(HR) });
           const attributes: [string, unknown][] = [["http.response.status_code", r.pick([200, 404, 1.5, -0.25, 1e21])], ["ok", r.next() < 0.5], ["route", "/a"], ["x", { a: [1] }], ["n", null]];
           const failed = r.next() < 0.3;

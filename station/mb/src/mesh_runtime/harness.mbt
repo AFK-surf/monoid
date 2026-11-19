@@ -6,7 +6,8 @@
 // - `new` `{kind, as, args}` and `do` `{on, method, args}`: one of the things that keep state (a pacer, a sizer, the
 //   traces, …) made under a name, and asked;
 // - `now` `{ms}`, `stalled` `{ms}`, `hr` `{ns}`: the clocks they read (the view's, the loop's stands, the monotonic one),
-//   the test's; `advance` `{ms}`: the clock the traces' batching waits on, moved.
+//   the test's; `advance` `{ms}`: the clock the traces' batching waits on, moved. The traces' `fail` `{times, error?}`:
+//   so many batches refused with these words.
 
 ///|
 priv struct Harness {
@@ -21,7 +22,7 @@ priv struct Harness {
   latencies : Map[String, FrameLatency]
   losses : Map[String, LinkLoss]
   stalls : Map[String, (LoopStall, Ref[(() -> Unit)?], Map[String, () -> Unit])]
-  traces : Map[String, (Traces, Array[Json], Array[Json], Ref[Int])]
+  traces : Map[String, (Traces, Array[Json], Array[Json], Ref[Int], Ref[String])]
   spans : Map[String, Span]
   follows : Map[String, (NetworkFollow, Array[Json], Ref[Bool])]
   tells : Map[String, (LockWorld, Array[Json], () -> Unit)]
@@ -265,7 +266,17 @@ async fn Harness::call(self : Harness, name : String, a : Json) -> Json {
       }
     "route" => jstr(route(str_of(arg(a, "path")).unwrap_or("")))
     "attribute" => attribute(str_of(arg(a, "key")).unwrap_or(""), arg(a, "value").unwrap_or(Json::null()))
-    "otlpBody" => jstr(otlp_body(str_of(arg(a, "station")).unwrap_or(""), arr(arg(a, "spans"))))
+    "otlpBody" =>
+      jstr(
+        otlp_body(
+          str_of(arg(a, "station")).unwrap_or(""),
+          arr(arg(a, "spans")),
+          resource=arr(arg(a, "resource")).map(kv => match kv {
+            Array([String(k), String(v)]) => (k, v)
+            _ => ("", "")
+          }),
+        ),
+      )
     "ownRate" => jnum(own_rate(num_of(arg(a, "width")).unwrap_or(0.0), num_of(arg(a, "height")).unwrap_or(0.0)))
     "rateCeiling" =>
       jnum(
@@ -628,11 +639,20 @@ fn Harness::new_(self : Harness, kind : String, name : String, a : Json) -> Json
       let sent = []
       let said = []
       let failing = Ref(0)
+      let error = Ref("the plane is down")
       let hr = self.hr
-      let t = Traces::new(arg(a, "enabled") is Some(True), self.rt, () => hr.val, (level, words, with_) => said.push(
-        jobj([("level", jstr(level)), ("words", jstr(words)), ("with", with_)]),
-      ))
-      self.traces[name] = (t, sent, said, failing)
+      let t = Traces::new(
+        arg(a, "enabled") is Some(True),
+        self.rt,
+        () => hr.val,
+        (level, words, with_) => said.push(jobj([("level", jstr(level)), ("words", jstr(words)), ("with", with_)])),
+        tail_only=arg(a, "tailOnly") is Some(True),
+        slow_ms=match arg(a, "slowMs") {
+          Some(Number(n, ..)) => n.to_int()
+          _ => 1_000
+        },
+      )
+      self.traces[name] = (t, sent, said, failing, error)
     }
     "NetworkFollow" => {
       let calls = []
@@ -793,7 +813,7 @@ async fn Harness::do_(self : Harness, on : String, verb : String, a : Json) -> J
       _ => raise Failure("no method \{verb}")
     }
   }
-  if self.traces.get(on) is Some((t, sent, said, failing)) {
+  if self.traces.get(on) is Some((t, sent, said, failing, error)) {
     return match verb {
       "start" => {
         let span = t.start(
@@ -822,13 +842,17 @@ async fn Harness::do_(self : Harness, on : String, verb : String, a : Json) -> J
         t.export_to(async fn(batch) {
           if failing.val > 0 {
             failing.val -= 1
-            raise Failure("the plane is down")
+            raise Failure(error.val)
           }
           sent.push(Json::array(batch))
         })
         Json::null()
       }
-      "fail" => { failing.val = n("times").to_int(); Json::null() }
+      "fail" => {
+        failing.val = n("times").to_int()
+        error.val = str_of(arg(a, "error")).unwrap_or("the plane is down")
+        Json::null()
+      }
       "spans" => Json::array(t.spans)
       "sent" => Json::array(sent)
       "said" => {

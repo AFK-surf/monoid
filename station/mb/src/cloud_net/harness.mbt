@@ -166,7 +166,16 @@ fn pure_case(c : Json) -> Json raise {
     }
     "otlpBody" =>
       Json::string(
-        otlp_body(text_of(arg(0)).unwrap_or(""), array_of(arg(1)).unwrap_or([])),
+        otlp_body(
+          text_of(arg(0)).unwrap_or(""),
+          array_of(arg(1)).unwrap_or([]),
+          resource=array_of(arg(2))
+            .unwrap_or([])
+            .map(kv => match kv {
+              Array([String(k), String(v)]) => (k, v)
+              _ => ("", "")
+            }),
+        ),
       )
     f => raise NetError("no such function: \{f}")
   }

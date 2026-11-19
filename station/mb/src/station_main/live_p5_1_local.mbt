@@ -250,10 +250,15 @@ fn P51::member_socket(self : P51) -> async (@door.Stream, @door.Reader, Json, St
 }
 
 ///|
-/// The mesh's spans (mesh/traces.ts), where config.json turns them on (`telemetry.traces`): batched to the control plane.
+/// The mesh's spans (mesh/traces.ts), batched to the control plane: config.json's `telemetry.traces` false, none; true,
+/// every one; unset, only a failed or slow one.
 fn P51::member_traces(self : P51, plane : Plane) -> @gate.Traces? {
-  guard (self.bus.config_raw.val)() is { "telemetry": { "traces": True, .. }, .. } else { return None }
-  let traces = @mesh_runtime.Traces::new(true, self.host.rt, () => @host.now() * 1000000L, (level, words, with_) => p51_log(level.to_upper(), "traces", words, fields=with_))
+  let tail_only = match (self.bus.config_raw.val)() {
+    { "telemetry": { "traces": False, .. }, .. } => return None
+    { "telemetry": { "traces": True, .. }, .. } => false
+    _ => true
+  }
+  let traces = @mesh_runtime.Traces::new(true, self.host.rt, () => @host.now() * 1000000L, (level, words, with_) => p51_log(level.to_upper(), "traces", words, fields=with_), tail_only~)
   traces.export_to(async fn(spans) { plane.control.traces(spans) })
   self.stops.push(() => traces.close())
   let span_of = (j : Json) => match j {

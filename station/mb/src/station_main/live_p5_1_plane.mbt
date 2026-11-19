@@ -166,6 +166,12 @@ fn P51::plane_live(self : P51) -> Plane {
     () => wall_ms() / 1000L,
     transport,
     http,
+    trace_resource=[
+      ("service.version", bus.version),
+      ("os.type", platform()),
+      ("host.arch", arch()),
+      ("process.runtime.name", "moonbit"),
+    ],
   )
   let ways = @cloud_net.Ways::new(
     state.view(),

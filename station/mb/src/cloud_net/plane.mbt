@@ -131,20 +131,30 @@ pub async fn signed_post(
 }
 
 ///|
-/// The traces' body (traces.ts `otlpBody`).
-pub fn otlp_body(station : String, spans : Array[Json]) -> String {
+/// The traces' body (traces.ts `otlpBody`); `resource`: what else describes it, an empty key or value left out.
+pub fn otlp_body(
+  station : String,
+  spans : Array[Json],
+  resource? : Array[(String, String)] = [],
+) -> String {
   let attribute = (key : String, value : String) => Json::object({
     "key": Json::string(key),
     "value": { "stringValue": Json::string(value) },
   })
+  let attributes = [
+    attribute("service.name", "stillfail-mesh"),
+    attribute("stillfail.station", station),
+  ]
+  for kv in resource {
+    if kv.0 != "" && kv.1 != "" {
+      attributes.push(attribute(kv.0, kv.1))
+    }
+  }
   let body : Json = {
     "resourceSpans": [
       {
         "resource": {
-          "attributes": [
-            attribute("service.name", "stillfail-mesh"),
-            attribute("stillfail.station", station),
-          ],
+          "attributes": Json::array(attributes),
         },
         "scopeSpans": [
           { "scope": { "name": "stillfail-mesh" }, "spans": Json::array(spans) },
@@ -168,6 +178,8 @@ pub struct ControlPlane {
   priv http : Http
   priv pool : Pool
   priv listeners : Array[(String, (CloudSaid) -> Unit)]
+  /// What describes the station's spans besides its id (`service.version`, `os.type`, …).
+  priv trace_resource : Array[(String, String)]
 }
 
 ///|
@@ -179,6 +191,7 @@ pub fn ControlPlane::new(
   transport : CloudTransport,
   http : Http,
   provider? : Provider,
+  trace_resource? : Array[(String, String)] = [],
 ) -> ControlPlane {
   {
     state,
@@ -190,6 +203,7 @@ pub fn ControlPlane::new(
     http,
     pool: Pool::new(),
     listeners: [],
+    trace_resource,
   }
 }
 
@@ -307,7 +321,7 @@ async fn ControlPlane::telemetry(
 ///|
 /// A batch of the mesh's spans.
 pub async fn ControlPlane::traces(self : ControlPlane, spans : Array[Json]) -> Unit {
-  self.telemetry(false, station => otlp_body(station, spans))
+  self.telemetry(false, station => otlp_body(station, spans, resource=self.trace_resource))
 }
 
 ///|

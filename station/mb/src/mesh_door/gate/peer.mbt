@@ -30,6 +30,10 @@ let failed_code : Int = 2
 let slow_ms : Int64 = 10000L
 
 ///|
+/// A copy's batch (`replica.put`) carries many bytes: said only past a minute.
+let slow_put_ms : Int64 = 60000L
+
+///|
 /// What a rig tells the stations of its workspace besides a task's change.
 pub let rig_tells : Array[String] = ["rig.hello", "rig.changed", "vault.used", "vault.done"]
 
@@ -858,19 +862,26 @@ async fn answer_peer_stream(
     }
   }
   let ms = @effect.now() - begun
-  if ms >= slow_ms {
-    let s = (k : String) => match field(asked.val, k) {
-      Some(String(v)) => v
-      Some(Null) | None => ""
-      Some(v) => v.stringify()
+  let s = (k : String) => match field(asked.val, k) {
+    Some(String(v)) => v
+    Some(Null) | None => ""
+    Some(v) => v.stringify()
+  }
+  let method = s("method")
+  if ms >= (if method == "replica.put" { slow_put_ms } else { slow_ms }) {
+    // (an empty field left out; its error says whether it was slow to arrive or to be answered)
+    let with_ : Map[String, Json] = { "peer": Json::string(short(peer)) }
+    for k in ["method", "session", "key"] {
+      let v = s(k)
+      if v != "" {
+        with_[k] = Json::string(v)
+      }
     }
-    @door.log("warn", "mesh", "peer request answered slowly", {
-      "peer": Json::string(short(peer)),
-      "method": Json::string(s("method")),
-      "session": Json::string(s("session")),
-      "key": Json::string(s("key")),
-      "ms": Json::number(ms.to_double()),
-    })
+    with_["ms"] = Json::number(ms.to_double())
+    if answer is { "error": e, .. } {
+      with_["error"] = e
+    }
+    @door.log("warn", "mesh", "peer request answered slowly", Json::object(with_))
   }
   let mut answer = answer
   if outgoing.val is Some(o) && o.check is Some(check) {

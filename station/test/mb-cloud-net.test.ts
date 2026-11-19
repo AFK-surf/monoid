@@ -213,6 +213,8 @@ test("the providers, their signed headers, a cloudEntry, what fails says and the
   for (const r of [{ kind: "d", id: "x", at: 0 }, { kind: "d", id: "x", at: -1 }, { kind: "d", id: "x", at: 1.5 }, { kind: "d", at: 1 }, null]) assert.equal(await mb({ op: "pure", fn: "isRevocation", args: [r] }), isRevocation(r));
   const spans = [{ name: "a", attributes: [] }];
   assert.equal(await mb({ op: "pure", fn: "otlpBody", args: [A, spans] }), otlpBody(A, spans));
+  const resource: [string, string][] = [["service.version", "0.1.1"], ["os.type", "linux"], ["host.arch", ""], ["", "x"], ["process.runtime.name", "moonbit"]];
+  assert.equal(await mb({ op: "pure", fn: "otlpBody", args: [A, spans, resource] }), otlpBody(A, spans, resource));
 });
 
 // ── the ways and the marks, step by step ──

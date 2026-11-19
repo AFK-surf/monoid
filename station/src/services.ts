@@ -71,7 +71,7 @@ export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShap
     return Layer.effect(
       ControlPlane,
       Effect.gen(function* () {
-        const { data } = yield* Paths;
+        const { data, app } = yield* Paths;
         const key = yield* Key;
         const up = yield* Up;
         const clock = yield* Clock.clockWith(Effect.succeed);
@@ -83,7 +83,9 @@ export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShap
             (unlisten) => Effect.sync(unlisten),
           ),
         );
-        return ControlPlane.of(makeControlPlane({ state, changes, key, up, provider }));
+        // (the platform's, not process.platform: test/platform.test.ts)
+        const traceResource: [string, string][] = [["service.version", stationVersion(app) ?? ""], ["os.type", platform.buildOs ?? platform.os], ["host.arch", process.arch], ["process.runtime.name", "nodejs"]];
+        return ControlPlane.of(makeControlPlane({ state, changes, key, up, provider, traceResource }));
       }),
     );
   }

@@ -149,7 +149,7 @@ test "a traceparent is read as W3C says, and a route keeps no ids" {
 }
 
 ///|
-test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, dropped when they cannot go" {
+test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, a failed one sent again at the next flush" {
   let sent = []
   let said = []
   let hr = Ref(0L)
@@ -174,15 +174,19 @@ test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, dropp
   rt.advance(2999)
   assert_eq(sent, [])
   rt.advance(1)
-  assert_eq(sent, [500, 200])
-  assert_eq(said, ["warn traces dropped", "info traces sent", "info traces sent"])
+  // (the first batch failed: put back, the rest left for the next flush)
+  assert_eq(sent, [])
+  assert_eq(traces.spans.length(), 1200)
+  rt.advance(3000)
+  assert_eq(sent, [500, 500, 200])
+  assert_eq(said, [])
   assert_eq(traces.spans.length(), 0)
   let span = traces.start(parent, "0000000000000001", 2L).unwrap()
   assert_eq(@mesh_runtime.traceparent(span), "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000001-01")
   traces.end(span, "x", [], true)
   traces.close()
   rt.advance(10_000)
-  assert_eq(sent, [500, 200])
+  assert_eq(sent, [500, 500, 200])
   inspect(
     @mesh_runtime.attribute("n", Json::number(1.0e21)).stringify(),
     content="{\"key\":\"n\",\"value\":{\"intValue\":\"1e+21\"}}",
@@ -741,4 +745,96 @@ test "a listener's next connection taken through a try that failed while it list
   assert_eq(waited, [Some(3)])
   assert_true(@mesh_runtime.listener_gone(Failure("not a listening socket")))
   assert_false(@mesh_runtime.listener_gone(Failure("Too many open files (os error 24)")))
+}
+
+///|
+test "where only the tail is kept: a failed or slow span, never a quick one that did not fail" {
+  let hr = Ref(0L)
+  let rt = @effect.Runtime::new()
+  let parent = @mesh_runtime.parse_parent(Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"))
+  let ended = (traces : @mesh_runtime.Traces, name : String, ms : Int64, failed : Bool) => {
+    let span = traces.start(parent, "0000000000000001", 1000L).unwrap()
+    hr.val += ms * 1_000_000L
+    traces.end(span, name, [], failed)
+  }
+  let names = (traces : @mesh_runtime.Traces) => traces.spans.map(s => match s {
+    { "name": String(n), .. } => n
+    _ => ""
+  })
+  let tail = @mesh_runtime.Traces::new(true, rt, () => hr.val, (_, _, _) => (), tail_only=true)
+  ended(tail, "quick", 20L, false)
+  ended(tail, "failed", 20L, true)
+  ended(tail, "almost", 999L, false)
+  ended(tail, "slow", 1000L, false)
+  assert_eq(names(tail), ["failed", "slow"])
+  tail.close()
+  let all = @mesh_runtime.Traces::new(true, rt, () => hr.val, (_, _, _) => ())
+  ended(all, "quick", 20L, false)
+  ended(all, "failed", 20L, true)
+  assert_eq(names(all), ["quick", "failed"])
+  all.close()
+  let slower = @mesh_runtime.Traces::new(true, rt, () => hr.val, (_, _, _) => (), tail_only=true, slow_ms=5_000)
+  ended(slower, "slow", 1000L, false)
+  assert_eq(slower.spans.length(), 0)
+  slower.close()
+  let off = @mesh_runtime.Traces::new(false, rt, () => hr.val, (_, _, _) => ())
+  assert_true(off.start(parent, "0000000000000001", 0L) is None)
+}
+
+///|
+test "a batch that fails again is dropped, said once in 10 min; a 4xx is not sent again" {
+  let said = []
+  let hr = Ref(0L)
+  let rt = @effect.Runtime::new()
+  let traces = @mesh_runtime.Traces::new(true, rt, () => hr.val, (level, words, with_) => said.push("\{level} \{words} \{with_.stringify()}"))
+  let calls = Ref(0)
+  let error = Ref("still.fail cloud answered 503")
+  traces.export_to(async fn(_) {
+    calls.val += 1
+    raise Failure(error.val)
+  })
+  let parent = @mesh_runtime.parse_parent(Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"))
+  let one = () => {
+    let span = traces.start(parent, "0000000000000001", 1000L).unwrap()
+    hr.val += 5_000_000L
+    traces.end(span, "GET /", [], false)
+  }
+  one()
+  rt.advance(3000)
+  rt.advance(3000)
+  assert_eq(calls.val, 2)
+  assert_eq(traces.spans.length(), 0)
+  assert_eq(said, ["warn traces dropped {\"error\":\"still.fail cloud answered 503\",\"count\":1}"])
+  said.clear()
+  one()
+  rt.advance(3000)
+  rt.advance(3000)
+  assert_eq(calls.val, 4)
+  assert_eq(said, [])
+  error.val = "still.fail cloud answered 413"
+  one()
+  one()
+  rt.advance(3000)
+  assert_eq(calls.val, 5)
+  assert_eq(traces.spans.length(), 0)
+  assert_eq(said, [])
+  hr.val += 600_000_000_000L
+  one()
+  rt.advance(3000)
+  assert_eq(calls.val, 6)
+  assert_eq(said, ["warn traces dropped {\"error\":\"still.fail cloud answered 413\",\"count\":1}"])
+  traces.close()
+}
+
+///|
+test "an OTLP batch says what describes the station, an empty one left out" {
+  assert_eq(@mesh_runtime.otlp_body("s1", []), @mesh_runtime.otlp_body("s1", [], resource=[]))
+  let body = @json.parse(
+    @mesh_runtime.otlp_body("s1", [], resource=[("service.version", "0.1.1"), ("host.arch", ""), ("", "x")]),
+  )
+  guard body is { "resourceSpans": [{ "resource": { "attributes": attributes, .. }, .. }], .. } else { fail("no resource") }
+  inspect(
+    attributes.stringify(),
+    content="[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"stillfail-mesh\"}},{\"key\":\"stillfail.station\",\"value\":{\"stringValue\":\"s1\"}},{\"key\":\"service.version\",\"value\":{\"stringValue\":\"0.1.1\"}}]",
+  )
 }

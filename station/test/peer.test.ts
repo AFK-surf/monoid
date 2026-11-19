@@ -387,3 +387,55 @@ test("mesh directory exchange runs only after workspace peer admission", async (
     assert.equal(seen.length, 1);
   } finally { call.close?.(); await Promise.all([source.close(), target.close()]); }
 });
+
+test("a slow answer is said with what it was and its error; a copy's batch only past a minute", async (t) => {
+  const { log } = await import("../src/ops/log.ts");
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [PEER_BYTES_ALPN, PEER_ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  const [source, target] = await Promise.all([bind(), bind()]);
+  // (the time the handler takes, as performance.now has it)
+  let skew = 0;
+  const real = performance.now.bind(performance);
+  t.mock.method(performance, "now", () => real() + skew);
+  const said: any[] = [];
+  t.mock.method(log, "warn", (at: string, words: string, fields?: any) => void (words === "peer request answered slowly" && said.push({ at, ...fields })));
+  const remote: any = {
+    handle: async (_workspace: string, _peer: string, request: any) => {
+      skew += request.took;
+      if (request.method === "no") throw new Error("remote tasks are not enabled");
+      return { ok: request.method };
+    },
+  };
+  void (async () => {
+    for (;;) {
+      const conn = await target.accept();
+      if (!conn) return;
+      void servePeer(conn, cloudOf(target.id(), [source.id()]), remote).catch(() => {});
+    }
+  })();
+  const port = target.sockets()[0]!.split(":").at(-1);
+  const call = peerCall(source, cloudOf(source.id(), [target.id()]), (id) => ({ id, ips: [`127.0.0.1:${port}`] }));
+  const peer = source.id().slice(0, 12);
+  const next = () => {
+    const s = said.splice(0);
+    for (const l of s) {
+      assert.ok(l.ms >= 10_000);
+      delete l.ms;
+    }
+    return s;
+  };
+  try {
+    await call(target.id(), "ws", { method: "replica.put", took: 30_000 });
+    assert.deepEqual(next(), [], "a copy's batch in 30 s is not slow");
+    await call(target.id(), "ws", { method: "replica.put", took: 61_000 });
+    assert.deepEqual(next(), [{ at: "mesh", peer, method: "replica.put" }]);
+    await call(target.id(), "ws", { method: "describe", took: 9_000 });
+    assert.deepEqual(next(), []);
+    await call(target.id(), "ws", { method: "describe", session: "s1", took: 11_000 });
+    assert.deepEqual(next(), [{ at: "mesh", peer, method: "describe", session: "s1" }], "no empty key");
+    await assert.rejects(call(target.id(), "ws", { method: "no", key: "k", took: 11_000 }), Refused);
+    assert.deepEqual(next(), [{ at: "mesh", peer, method: "no", key: "k", error: "remote tasks are not enabled" }]);
+  } finally {
+    await Promise.all([source.close(), target.close()]);
+  }
+});
