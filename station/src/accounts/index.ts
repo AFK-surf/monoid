@@ -240,7 +240,7 @@ export class Accounts {
   /// Which Codex account each Codex subscription profile is signed in to, as its auth.json last said (read off the
   /// thread: `codexAccountRead`), and the reads under way.
   private readonly codexAccounts = new Map<string, { home: string; account: string | null }>();
-  private readonly codexAccountReads = new Map<string, Promise<void>>();
+  private readonly codexAccountReads = new Map<string, { home: string; read: Promise<void> }>();
   /// What each profile's home said when last read (`HomeSays`), by profile, with what it was read for: the overview is
   /// made again at each change for each viewer, and read every profile's files on the thread each time (a few dozen
   /// calls; seconds on a machine short of memory). Read again off the thread as it is made, at most every
@@ -447,15 +447,15 @@ export class Accounts {
   /// `again`: its login just changed, so one read under way may have read the file before: a read after it, kept last.
   private codexAccountRead(profile: Profile, again = false): Promise<void> {
     const under = this.codexAccountReads.get(profile.id);
-    if (under && !again) return under;
-    const read: Promise<void> = (under ?? Promise.resolve())
+    if (under && !again && under.home === profile.home) return under.read;
+    const read: Promise<void> = (under?.read ?? Promise.resolve())
       .catch(() => {})
       .then(() => codexAccountIdentity(profile.home))
       .then((account) => void this.codexAccounts.set(profile.id, { home: profile.home, account }))
       .finally(() => {
-        if (this.codexAccountReads.get(profile.id) === read) this.codexAccountReads.delete(profile.id);
+        if (this.codexAccountReads.get(profile.id)?.read === read) this.codexAccountReads.delete(profile.id);
       });
-    this.codexAccountReads.set(profile.id, read);
+    this.codexAccountReads.set(profile.id, { home: profile.home, read });
     return read;
   }
 
