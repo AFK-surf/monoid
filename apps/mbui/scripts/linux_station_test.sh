@@ -99,4 +99,14 @@ case "$after" in "STATIONCHECK after ") ;; *) echo "station (linux): with no dat
 [ ! -e "$S/.config/systemd/user/stillfail-station.service" ] || { echo "station (linux): with no data, its unit left"; exit 1; }
 [ ! -e "$S/.stillfail" ] || { echo "station (linux): with no data, its data made anew"; exit 1; }
 [ ! -e "$K/stillfail-station-Ubuntu.vbs" ] && [ -e "$K/stillfail-station-Debian.vbs" ] || { echo "station (linux): WSL's keeper of this distribution not the one taken away"; exit 1; }
-echo "station (linux): one started by hand said and stopped; the service's said as running it, stopped for good, started and restarted enabled; taken away, its data kept; taken away with only its unit left, WSL's keeper with it"
+
+# another product's app (MBUI_STATION_ID) started with still.fail's STILLFAIL_DATA: its update run for its own data all
+# the same (curl the run's, handing an installer that says the data it was given)
+cat > "$O/bin/curl" << EOF
+#!/bin/sh
+echo 'echo "\$STILLFAIL_DATA" > "$S/data-said"'
+EOF
+chmod +x "$O/bin/curl"
+after=$(MBUI_STATION_ID=monoid STILLFAIL_DATA="$S/.stillfail" run 'update {"origin":"https://app.monoid.build","channel":"stable"}'); echo "$after"
+[ "$(cat "$S/data-said" 2> /dev/null)" = "$S/.monoid" ] || { echo "station (linux): another product's update not given its own data: $(cat "$S/data-said" 2> /dev/null)"; exit 1; }
+echo "station (linux): one started by hand said and stopped; the service's said as running it, stopped for good, started and restarted enabled; taken away, its data kept; taken away with only its unit left, WSL's keeper with it; another product's update given its own data"

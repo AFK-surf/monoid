@@ -32,15 +32,34 @@
 #                                                       a link to it; <folder> the home brings it back. Its station
 #                                                       stopped meanwhile (what its agents ran too) and started again,
 #                                                       the old place given back only once it runs from the new one
-# The data is in $STILLFAIL_DATA, default ~/.stillfail.
+# The data is in $STILLFAIL_DATA, default its product's own (~/.stillfail, ~/.monoid: below).
 set -eu
 # Called through a link (~/.local/bin/stillfail): the app is where the link points.
 self=$(readlink -f "$0" 2>/dev/null || echo "$0")
 here=$(cd "$(dirname "$self")/.." && pwd)
-# Called as another product's command (`monoid`: the installer links it so, client/i18n/brand.ts), that product's data
-# directory (~/.monoid) beside still.fail's.
-own=$HOME/.stillfail
-case "$(basename "$0")" in stillfail|stillfail-*) ;; *) [ ! -d "$HOME/.$(basename "$0")/app" ] || own="$HOME/.$(basename "$0")" ;; esac
+# Whose station's this is (another product's, client/i18n/brand.ts: its data directory ~/.monoid beside still.fail's)
+# is said by where this release is, never by the name it is called by (the app runs it as stillfail, a person by
+# ~/.local/bin/monoid): ~/.<product>/app, or <folder>/<product>/app where `stillfail move` put it, ~/.<product> a link
+# to that. The copy `move` runs is told it (STILLFAIL_MOVE_OWN); a clone, or a system with no readlink -f, goes by the
+# name it is called by, as before.
+own=""
+if [ -n "${STILLFAIL_MOVE_COPY:-}" ] && [ -n "${STILLFAIL_MOVE_OWN:-}" ]; then
+  own=$STILLFAIL_MOVE_OWN
+else
+  at=$(dirname "$here")
+  name=$(basename "$at")
+  name=${name#.}
+  case "$name" in
+    ""|*[!a-z0-9-]*) ;;
+    *) if [ "$at" = "$(cd "$HOME" 2>/dev/null && pwd -P)/.$name" ] || { [ -L "$HOME/.$name" ] && [ "$(cd "$HOME/.$name" 2>/dev/null && pwd -P)" = "$at" ]; }; then
+         own="$HOME/.$name"
+       fi ;;
+  esac
+fi
+if [ -z "$own" ]; then
+  own=$HOME/.stillfail
+  case "$(basename "$0")" in stillfail|stillfail-*) ;; *) [ ! -d "$HOME/.$(basename "$0")/app" ] || own="$HOME/.$(basename "$0")" ;; esac
+fi
 data=${STILLFAIL_DATA:-$own}
 station=${STILLFAIL_STATION_BIN:-$here/mesh/target/release/stillfail-station}
 
@@ -51,7 +70,12 @@ uninstall() {
   purge=$1
   case "$data" in ""|/|"$HOME"|"$HOME/") echo "stillfail uninstall: refusing to remove $data" >&2; exit 2 ;; esac
   product=stillfail reverse=fail.still
-  case "$(basename "$0") $data" in monoid\ *|*" $HOME/.monoid") product=monoid reverse=build.monoid ;; esac
+  # (its data's own name says whose, else whose release this is)
+  case "$data" in
+    "$HOME/.stillfail") ;;
+    "$HOME/.monoid") product=monoid reverse=build.monoid ;;
+    *) [ "$own" != "$HOME/.monoid" ] || product=monoid reverse=build.monoid ;;
+  esac
   apart=""
   [ "$data" = "$HOME/.$product" ] || apart=yes
   case "$(uname -s)" in
@@ -321,11 +345,11 @@ case "${1:-} ${2:-}" in
   "start "*) shift; exec "$station" run --app "$here" --data "$data" "$@" ;;
   "move "*)
     [ $# -eq 2 ] || { echo "usage: stillfail move <folder>" >&2; exit 2; }
-    # run from a copy of this script outside the data, which it moves (its name kept: it says which product's)
+    # run from a copy of this script outside the data, which it moves, told whose station it is and its data
     if [ -z "${STILLFAIL_MOVE_COPY:-}" ]; then
       dir=$(mktemp -d "${TMPDIR:-/tmp}/stillfail-move.XXXXXX")
       cp "$self" "$dir/$(basename "$0")"
-      STILLFAIL_MOVE_COPY=$dir exec sh "$dir/$(basename "$0")" "$@"
+      STILLFAIL_MOVE_COPY=$dir STILLFAIL_MOVE_OWN=$own STILLFAIL_DATA=$data exec sh "$dir/$(basename "$0")" "$@"
     fi
     trap 'rm -rf "$STILLFAIL_MOVE_COPY"' EXIT
     move "$2" ;;
