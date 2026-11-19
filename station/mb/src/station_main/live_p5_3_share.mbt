@@ -214,9 +214,9 @@ fn P53Share::attach(self : P53Share) -> Unit {
         (jtext_or_empty(got, "token"), jnum_of(got, "expiresAt").unwrap_or(0.0))
       },
       codex_renew_running: async fn(profile) {
-        (bus.hub_ask.val)("codex.renewRunning", jobj_of([("profile", jstr(profile))])) is True
+        bus.hub_codex_renew_running(profile)
       },
-      agy_renew: Some(async fn(profile) { ignore((bus.hub_ask.val)("agy.renew", jobj_of([("profile", jstr(profile))]))) }),
+      agy_renew: Some(async fn(profile) { bus.hub_agy_renew(profile) }),
       status: async fn(id) {
         let accounts = self.accounts.made()
         p53_json(accounts.health(id).to_jv())
@@ -235,7 +235,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
           None => ()
         }
       }),
-      profile_gone: Some(async fn(id) { ignore((bus.hub_ask.val)("profileGone", jobj_of([("profile", jstr(id))]))) }),
+      profile_gone: Some(async fn(id) { bus.hub_profile_gone(id) }),
       itself: Some(station => station == p53_station_id(bus)),
       codex_token_url: @share_sync.codex_token_url,
       fetch: async fn(url, body) {
@@ -333,7 +333,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       },
       title: session => jtext_or_empty(p53_session_row(bus, session), "title"),
       touches: entry => match jfield(entry, "session") { String(s) => [s]; _ => [] },
-      inbox: async fn(station, request) { (bus.hub_ask.val)("inbox", jobj_of([("station", jstr(station)), ("request", request)])) },
+      inbox: async fn(station, request) { bus.hub_inbox(station, request) },
       prepare_index: Some(() => index.request()),
       clock: self.clock,
       log: self.log,

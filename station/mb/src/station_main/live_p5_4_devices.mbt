@@ -739,7 +739,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         Some(f) => ignore(f([]))
         None => ()
       }
-      (bus.hub_ask.val)("cardOutcomes.save", Json::array([a(0).unwrap_or(Json::null())]))
+      bus.hub_card_outcomes_save(a(0).unwrap_or(Json::null()))
     }
     // the hub and the agents' side (P5-2's)
     "hub.has" => Json::boolean(["prepareCardPosts", "prepareLatestThreads"].contains(s(0)))
@@ -749,15 +749,12 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     "jobs.watched" => (bus.jobs_ask.val)(name, jarr)
     // (the forwards and the rigs are P5-1's: asked of this station's own handlers on the bus, the jobs' where none is)
     "forwards.openDevice" | "forwards.closeDevice" =>
-      match (try { Ok(bus.call_peer("self", None, "$forwards", { "op": Json::string(name), "args": jarr })) } catch { e => Err(e) }) {
-        Ok((got, _)) => got
+      match (try { Ok(bus.forwards_call(name, args)) } catch { e => Err(e) }) {
+        Ok(got) => got
         Err(BusError(_)) => (bus.jobs_ask.val)(name, jarr)
         Err(e) => raise e
       }
-    "rigs.list" | "rigs.use" | "rigs.done" => {
-      let (got, _) = bus.call_peer("self", None, "$rigs", { "op": Json::string(name), "args": jarr })
-      got
-    }
+    "rigs.list" | "rigs.use" | "rigs.done" => bus.rigs_call(name, args)
     "remote.ask" => {
       let req = a(1)
       let (got, _) = bus.call_peer(s(0), opt_text(req, "workspace"), opt_text(req, "method").unwrap_or(""), req.unwrap_or(Json::null()))

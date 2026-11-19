@@ -272,7 +272,7 @@ fn P51::forwards_live(self : P51) -> @gate.Forwards {
           Some(async fn() -> @gate.Socket raise {
             let reached = match d {
               { "reachFn": reach, .. } => (bus.ui_ask.val)("devices.reachForward", Json::array([Json::string(session), reach]))
-              _ => (bus.ui_ask.val)("devices.reach", { "session": Json::string(session), "device": Json::string(id) })
+              _ => bus.ui_devices_reach(session, id)
             }
             match reached {
               { "id": cid, .. } => shell_socket(host, host.conn(cid))

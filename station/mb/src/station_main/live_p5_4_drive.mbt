@@ -217,7 +217,7 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
       let entry = dr.stat(s(0), s(1), b(4))
       let name = if entry.dir && b(5) { entry.name + ".zip" } else { entry.name }
       let fn_id = opt_field(call_arg(a, 2), "$fn").unwrap_or(Json::null())
-      let (given, _) = bus.call_peer("self", None, "$admin.called", { "id": fn_id, "args": [Json::string(name)] })
+      let given = bus.admin_called(fn_id, [Json::string(name)])
       let safe = jtext(given, "safe").unwrap_or(name)
       let to = match jtext(given, "path") {
         Some(p) => p
@@ -239,7 +239,7 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
           let fn_id = opt_field(call_arg(a, 1), "$fn").unwrap_or(Json::null())
           let host = bus.host
           match p54_folder_watches(bus).follow(s(0), () => ignore(host.rt.fork_quiet(name="a drive folder changed", async fn() {
-            ignore(bus.call_peer("self", None, "$admin.called", { "id": fn_id, "args": [] })) catch { _ => () }
+            ignore(bus.admin_called(fn_id, [])) catch { _ => () }
           }))) {
             Some(stop) => {
               p54_follows_next.val += 1

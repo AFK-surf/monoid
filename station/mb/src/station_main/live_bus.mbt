@@ -530,9 +530,9 @@ async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double) -> U
 }
 
 ///|
-/// A decided card's outcome queued for the agents' side's worker (agents.ts `cardOutcomes.save`).
-async fn LiveBus::hub_card_outcomes_save(self : LiveBus, outcome : Json) -> Unit {
-  ignore((self.hub_ask.val)("cardOutcomes.save", Json::array([outcome])))
+/// A decided card's outcome queued for the agents' side's worker (agents.ts `cardOutcomes.save`): its id.
+async fn LiveBus::hub_card_outcomes_save(self : LiveBus, outcome : Json) -> Json {
+  (self.hub_ask.val)("cardOutcomes.save", Json::array([outcome]))
 }
 
 ///|
@@ -582,3 +582,358 @@ async fn asked_lent_token(ask : async (String, Json) -> Json, profile : Json, re
   ask("sharing.lendClaude", { "profile": profile, "rejected": jopt(rejected) })
 }
 
+
+// ── What a slice asks of this station's own peers' handlers (`$…`), typed ──
+// Asked of "self" on the peers' bus (`call_peer`), as another station's would be: what answers them is the slice that
+// registered it (`on_peer`), a test's stand-in too.
+
+///|
+/// A callback the admin API handed as `{"$fn": id}` (P5-1's `$admin.called`), called with `args`: its answer.
+async fn LiveBus::admin_called(self : LiveBus, id : Json, args : Array[Json]) -> Json {
+  self.call_peer("self", None, "$admin.called", { "id": id, "args": Json::array(args) }).0
+}
+
+///|
+/// What the admin API kept of the messages written under `threads`' keys (P5-1's `$admin.keptSends`).
+async fn LiveBus::admin_kept_sends(self : LiveBus, threads : Json) -> Json {
+  self.call_peer("self", None, "$admin.keptSends", { "threads": threads }).0
+}
+
+///|
+/// Messages written under a key the admin API keeps (P5-1's `$admin.keepSends`).
+async fn LiveBus::admin_keep_sends(self : LiveBus, sends : Json) -> Unit {
+  ignore(self.call_peer("self", None, "$admin.keepSends", { "sends": sends }))
+}
+
+///|
+/// A forward of another station's port or device (P5-1's gate, `$forwards`): `op` (`forwards.…`) with `args`. Raises
+/// `BusError` where no gate answers (a station with no mesh).
+async fn LiveBus::forwards_call(self : LiveBus, op : String, args : Array[Json]) -> Json {
+  self.call_peer("self", None, "$forwards", { "op": Json::string(op), "args": Json::array(args) }).0
+}
+
+///|
+/// The rigs (P5-1's `$rigs`): `op` (`rigs.…`) with `args`.
+async fn LiveBus::rigs_call(self : LiveBus, op : String, args : Array[Json]) -> Json {
+  self.call_peer("self", None, "$rigs", { "op": Json::string(op), "args": Json::array(args) }).0
+}
+
+///|
+/// The station's overview as `viewer` sees it in `lang` (P5-1's `$overview`).
+async fn LiveBus::overview_call(self : LiveBus, viewer : Json, lang : Json) -> Json {
+  self.call_peer("self", None, "$overview", { "viewer": viewer, "lang": lang }).0
+}
+
+///|
+/// What the sessions' program asks of a pseudo-actor `key` mounted on it (`#jobs`, `#remote`): its `fn` with `args`.
+async fn LiveBus::program_asked(self : LiveBus, key : String, f : String, args : Array[Json]) -> Json {
+  self.call_peer("self", None, "$program.asked:" + key, { "fn": Json::string(f), "args": Json::array(args) }).0
+}
+
+///|
+/// What the sessions' program tells a pseudo-actor `key` mounted on it: its `fn` with `args`, no answer.
+async fn LiveBus::program_told(self : LiveBus, key : String, f : String, args : Array[Json]) -> Unit {
+  ignore(self.call_peer("self", None, "$program.told:" + key, { "fn": Json::string(f), "args": Json::array(args) }))
+}
+
+// ── The agents' side (P5-2), asked by the others ──
+
+///|
+/// A session's chat page (its link), null where it has none.
+async fn LiveBus::hub_link(self : LiveBus, session : Json) -> Json {
+  (self.hub_ask.val)("link", { "session": session })
+}
+
+///|
+/// A profile removed: the sessions on it told.
+async fn LiveBus::hub_profile_gone(self : LiveBus, profile : String) -> Unit {
+  ignore((self.hub_ask.val)("profileGone", { "profile": Json::string(profile) }))
+}
+
+///|
+/// The agents' processes, `[[name, pid], …]` (anything but an array where none answers).
+async fn LiveBus::hub_processes(self : LiveBus) -> Json {
+  (self.hub_ask.val)("processes", Json::null())
+}
+
+///|
+/// The keys the agents' clients hold.
+async fn LiveBus::hub_client_keys(self : LiveBus) -> Json {
+  (self.hub_ask.val)("clientKeys", Json::null())
+}
+
+///|
+/// The warm sessions' processes let go, short of memory: how many.
+async fn LiveBus::hub_evict_all_idle(self : LiveBus) -> Json {
+  (self.hub_ask.val)("evictAllIdle", Json::null())
+}
+
+///|
+/// The decided cards' worker woken (agents.ts `cardOutcomes.wake`).
+async fn LiveBus::hub_card_outcomes_wake(self : LiveBus) -> Unit {
+  ignore((self.hub_ask.val)("cardOutcomes.wake", Json::array([])))
+}
+
+///|
+/// The platform's overview made by the agents' side, where it makes one (null where not).
+async fn LiveBus::hub_overview(self : LiveBus, viewer : Json, lang : String) -> Json {
+  (self.hub_ask.val)("overview", { "viewer": viewer, "lang": Json::string(lang) })
+}
+
+///|
+/// A turn ended, its opener told (opened.ts `settled`).
+async fn LiveBus::hub_settled(self : LiveBus, key : Json, state : Json, words : Json) -> Json {
+  (self.hub_ask.val)("settled", { "key": key, "state": state, "words": words })
+}
+
+///|
+/// Antigravity's sign-in in `home` taken back from the agents: whether it was.
+async fn LiveBus::hub_agy_take_back(self : LiveBus, home : String) -> Json {
+  (self.hub_ask.val)("agy.takeBack", Json::array([Json::string(home)]))
+}
+
+///|
+/// What Antigravity said in `home` noted for its account's email.
+async fn LiveBus::hub_agy_note_email(self : LiveBus, home : String, text : String) -> Json {
+  (self.hub_ask.val)("agy.noteEmail", { "home": Json::string(home), "text": Json::string(text) })
+}
+
+///|
+/// Antigravity's sessions on `profile` given its renewed sign-in.
+async fn LiveBus::hub_agy_renew(self : LiveBus, profile : String) -> Unit {
+  ignore((self.hub_ask.val)("agy.renew", { "profile": Json::string(profile) }))
+}
+
+///|
+/// Codex's running sessions on `profile` given its renewed sign-in: whether any was.
+async fn LiveBus::hub_codex_renew_running(self : LiveBus, profile : String) -> Bool {
+  (self.hub_ask.val)("codex.renewRunning", { "profile": Json::string(profile) }) is True
+}
+
+///|
+/// A rig as the agents' side describes it to `peer` of `workspace`.
+async fn LiveBus::hub_rig_described(self : LiveBus, peer : String, workspace : String) -> Json {
+  (self.hub_ask.val)("rig.described", { "peer": Json::string(peer), "workspace": Json::string(workspace) })
+}
+
+///|
+/// A message another workspace's station sent a chat shared with it (xshare's inbox).
+async fn LiveBus::hub_inbox(self : LiveBus, station : String, request : Json) -> Json {
+  (self.hub_ask.val)("inbox", { "station": Json::string(station), "request": request })
+}
+
+///|
+/// The runners no session owns swept at `now`: the ended ones.
+async fn LiveBus::hub_sweep_runners(self : LiveBus, now : Double) -> Json {
+  (self.hub_ask.val)("sweepRunners", { "now": Json::number(now) })
+}
+
+///|
+/// Whether the agents' side runs the sessions' program the jobs mount on.
+async fn LiveBus::hub_program_has(self : LiveBus) -> Json {
+  (self.hub_ask.val)("program.has", Json::null())
+}
+
+///|
+/// A pseudo-actor `key` mounted on the agents' sessions' program (asked as `program_asked`, told as `program_told`).
+async fn LiveBus::hub_program_shell(self : LiveBus, key : String) -> Unit {
+  ignore((self.hub_ask.val)("program.shell", { "key": Json::string(key) }))
+}
+
+///|
+/// An actor `actor` of the agents' sessions' program asked its `method` with `args`.
+async fn LiveBus::hub_program_call(self : LiveBus, actor : String, meth : String, args : Array[Json]) -> Json {
+  (self.hub_ask.val)("program.call", { "actor": Json::string(actor), "method": Json::string(meth), "args": Json::array(args) })
+}
+
+// ── The jobs and the accounts (P5-3), asked by the others ──
+
+///|
+/// The jobs relaunched as the agents' side asks (`args` as it gives them).
+async fn LiveBus::jobs_relaunch(self : LiveBus, args : Json) -> Json {
+  (self.jobs_ask.val)("jobs.relaunch", args)
+}
+
+///|
+/// Every job stopped as the agents' side asks (`args` as it gives them).
+async fn LiveBus::jobs_stop_all(self : LiveBus, args : Json) -> Json {
+  (self.jobs_ask.val)("jobs.stopAll", args)
+}
+
+///|
+/// The account a session `key` runs on now (`holding` the one it had, `across` workspaces): its token, home and env.
+async fn LiveBus::jobs_accounts_run_on(self : LiveBus, key : String, holding : Bool, across : Bool) -> Json {
+  (self.jobs_ask.val)("accounts.runOn", { "key": Json::string(key), "holding": Json::boolean(holding), "across": Json::boolean(across) })
+}
+
+///|
+/// A profile by its id.
+async fn LiveBus::jobs_accounts_profile(self : LiveBus, id : String) -> Json {
+  (self.jobs_ask.val)("accounts.profile", { "id": Json::string(id) })
+}
+
+///|
+/// The limit `profile` reached on `model`, if any.
+async fn LiveBus::jobs_accounts_limit_after(self : LiveBus, profile : Json, model : Json) -> Json {
+  (self.jobs_ask.val)("accounts.limitAfter", { "profile": profile, "model": model })
+}
+
+///|
+/// What a session `key` spent running on `ran_on` with `model`.
+async fn LiveBus::jobs_accounts_spend(self : LiveBus, key : Json, ran_on : Json, model : Json) -> Json {
+  (self.jobs_ask.val)("accounts.spend", { "key": key, "ranOn": ran_on, "model": model })
+}
+
+///|
+/// When a session `key`'s account is refilled.
+async fn LiveBus::jobs_accounts_refills_at(self : LiveBus, key : Json) -> Json {
+  (self.jobs_ask.val)("accounts.refillsAt", { "key": key })
+}
+
+///|
+/// A profile's limits checked again.
+async fn LiveBus::jobs_accounts_recheck(self : LiveBus, profile : Json) -> Json {
+  (self.jobs_ask.val)("accounts.recheck", { "profile": profile })
+}
+
+///|
+/// The accounts followed again (the machine's logins and homes).
+async fn LiveBus::jobs_accounts_followed(self : LiveBus) -> Unit {
+  ignore((self.jobs_ask.val)("accounts.followed", Json::array([])))
+}
+
+///|
+/// The Codex login another station lent `profile` written here: its expiry.
+async fn LiveBus::jobs_sharing_lend_codex(self : LiveBus, profile : Json) -> Json {
+  (self.jobs_ask.val)("sharing.lendCodex", { "profile": profile })
+}
+
+///|
+/// The Antigravity login another station lent `profile` written here: its expiry.
+async fn LiveBus::jobs_sharing_lend_agy(self : LiveBus, profile : Json) -> Json {
+  (self.jobs_ask.val)("sharing.lendAgy", { "profile": profile })
+}
+
+// ── The screens and the devices (P5-4), asked by the others ──
+
+///|
+/// A screen's view a member opens (`head` as it asked), given its stream's handle: null where no screens answer.
+async fn LiveBus::ui_screens_view(self : LiveBus, head : Json, viewer : Json, stream : Json) -> Json {
+  (self.ui_ask.val)("screens.view", { "head": head, "viewer": viewer, "stream": stream })
+}
+
+///|
+/// A device of this station reached for `session`: its connection (`{id}`).
+async fn LiveBus::ui_devices_reach(self : LiveBus, session : String, device : String) -> Json {
+  (self.ui_ask.val)("devices.reach", { "session": Json::string(session), "device": Json::string(device) })
+}
+
+// ── The connects and the updates (P5-5), asked by the others ──
+
+///|
+/// A message posted in a connect's thread: its ts (or `{ts}`).
+async fn LiveBus::coord_chat_post(
+  self : LiveBus,
+  connect~ : String,
+  channel~ : String,
+  thread_ts~ : String,
+  text~ : String,
+  files~ : Array[Json],
+) -> Json {
+  (self.coord_ask.val)("chat.post", {
+    "connect": Json::string(connect),
+    "thread": { "channel": Json::string(channel), "threadTs": Json::string(thread_ts) },
+    "text": Json::string(text),
+    "files": Json::array(files),
+  })
+}
+
+///|
+/// A connect's bot (`{name, user}`).
+async fn LiveBus::coord_chat_bot(self : LiveBus, connect : String) -> Json {
+  (self.coord_ask.val)("chat.bot", { "connect": Json::string(connect) })
+}
+
+///|
+/// A connect's user's name.
+async fn LiveBus::coord_chat_user_name(self : LiveBus, connect : String, user : String) -> Json {
+  (self.coord_ask.val)("chat.userName", { "connect": Json::string(connect), "user": Json::string(user) })
+}
+
+///|
+/// A turn's working status said in its connect's thread.
+async fn LiveBus::coord_chat_working(
+  self : LiveBus,
+  connect~ : String,
+  channel~ : Json,
+  thread_ts~ : Json,
+  ts~ : Json,
+  status~ : String,
+  page~ : String?,
+) -> Unit {
+  ignore(
+    (self.coord_ask.val)("chat.working", {
+      "connect": Json::string(connect),
+      "thread": { "channel": channel, "threadTs": thread_ts },
+      "ts": ts,
+      "status": Json::string(status),
+      "page": jopt(page),
+    }),
+  )
+}
+
+///|
+/// Where a turn stands said in its connect's thread (Slack's assistant status).
+async fn LiveBus::coord_chat_stands_at(self : LiveBus, connect~ : Json, channel~ : Json, thread_ts~ : Json, stands~ : Json) -> Unit {
+  ignore(
+    (self.coord_ask.val)("chat.standsAt", {
+      "connect": connect,
+      "thread": { "channel": channel, "threadTs": thread_ts },
+      "stands": stands,
+    }),
+  )
+}
+
+///|
+/// The connects a session's chat is held by (`args` as the agents' side gives them).
+async fn LiveBus::coord_connects_held_by(self : LiveBus, args : Array[Json]) -> Json {
+  (self.coord_ask.val)("connects.heldBy", Json::array(args))
+}
+
+///|
+/// The version of a runtime `id` (`claude`, `codex`) the updates found installed, null where none.
+async fn LiveBus::coord_updates_version(self : LiveBus, id : String) -> Json {
+  (self.coord_ask.val)("updates.version", { "id": Json::string(id) })
+}
+
+///|
+/// The installed runtimes checked again (an incomplete installation found).
+async fn LiveBus::coord_updates_check(self : LiveBus) -> Unit {
+  ignore((self.coord_ask.val)("updates.check", Json::null()))
+}
+
+///|
+/// An old Codex updated (`running` the version a session runs): `{error}` where it failed.
+async fn LiveBus::coord_updates_update_old_codex(self : LiveBus, running : String?) -> Json {
+  (self.coord_ask.val)("updates.updateOldCodex", { "running": jopt(running) })
+}
+
+///|
+/// A runtime a session needs found missing.
+async fn LiveBus::coord_updates_runtime_missing(self : LiveBus, runtime : Json) -> Unit {
+  ignore((self.coord_ask.val)("updates.runtimeMissing", { "runtime": runtime }))
+}
+
+// ── The readers (P5-1), asked by the others ──
+
+///|
+/// The latest threads of the sessions `keys` prepared.
+async fn LiveBus::reader_latest_threads(self : LiveBus, keys : Json) -> Json {
+  (self.reader_ask.val)("$latestThreads", keys, "zh")
+}
+
+///|
+/// The readers' idle let go, short of memory: how many.
+async fn LiveBus::reader_trim_idle(self : LiveBus) -> Json {
+  (self.reader_ask.val)("trimIdle", Json::null(), (self.lang.val)())
+}

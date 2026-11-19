@@ -342,7 +342,7 @@ async fn P52::open_options(self : P52, row : Json, profile : Json, memory : Stri
 /// runtime, else the machine's own login of its runtime.
 async fn P52::run_on(self : P52, key : String, holding : Bool, across : Bool) -> Json {
   // (the accounts' pool, P5-3's: its token, its home and its env as the session's account now)
-  match (try { Ok((self.bus.jobs_ask.val)("accounts.runOn", { "key": jstr(key), "holding": jb(holding), "across": jb(across) })) } catch { e => Err(e) }) {
+  match (try { Ok(self.bus.jobs_accounts_run_on(key, holding, across)) } catch { e => Err(e) }) {
     Ok(Object(_) as p) => return p
     Ok(_) => ()
     Err(e) =>
@@ -602,12 +602,7 @@ async fn P52::chat_post(self : P52, connect : String, channel : String, thread_t
     }
     return @session_hub.next_ts_at(wall_ms().to_double())
   }
-  match (self.bus.coord_ask.val)("chat.post", {
-    "connect": jstr(connect),
-    "thread": { "channel": jstr(channel), "threadTs": jstr(thread_ts) },
-    "text": jstr(text),
-    "files": Json::array(files),
-  }) {
+  match self.bus.coord_chat_post(connect~, channel~, thread_ts~, text~, files~) {
     String(ts) => ts
     Object(m) if m.get("ts") is Some(String(ts)) => ts
     _ => raise LiveError("connect \{connect} is not connected")
@@ -756,7 +751,7 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
     if selves.iter().any(x => x.0 == connect) || connect == @session_hub.internal_connect {
       continue
     }
-    match (self.bus.coord_ask.val)("chat.bot", { "connect": jstr(connect) }) {
+    match self.bus.coord_chat_bot(connect) {
       Object(_) as bot =>
         match (jtext(bot, "name"), jtext(bot, "user")) {
           (Some(name), Some(user)) if name != "" && user != "" => selves.push((connect, "\{name} (<@\{user}>)"))
@@ -844,7 +839,7 @@ async fn P52::user_name(self : P52, connect : String, user : String) -> String? 
   if connect == @session_hub.internal_connect {
     return if user == "UEMBER" { None } else if user == "local" { Some(if self.lang() == "zh" { "管理员" } else { "Admin" }) } else { Some(user) }
   }
-  match (self.bus.coord_ask.val)("chat.userName", { "connect": jstr(connect), "user": jstr(user) }) {
+  match self.bus.coord_chat_user_name(connect, user) {
     String(s) => Some(s)
     _ => None
   }
@@ -962,7 +957,7 @@ fn P52::keep_ask(self : P52, key : String, id : String, before : Json) -> Json r
 /// What its allowance, asked again, says it ran into (accounts.ts `limitAfter`): the accounts' answer.
 async fn P52::limit_after(self : P52, key : String, profile : Json) -> Json {
   let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
-  match (self.bus.jobs_ask.val)("accounts.limitAfter", { "profile": profile, "model": jfield(row, "model") }) {
+  match self.bus.jobs_accounts_limit_after(profile, jfield(row, "model")) {
     Object(m) if m.contains("limit") => Json::object(m)
     _ => Json::null()
   }
@@ -976,7 +971,7 @@ fn P52::can_update_codex(self : P52) -> Bool {
 ///|
 /// Updates the machine's Codex and waits until it serves new turns (updates' `updateOldCodex`): the updates' part.
 async fn P52::update_codex(self : P52, before : String?) -> Unit {
-  match (self.bus.coord_ask.val)("updates.updateOldCodex", { "running": jopt(before) }) {
+  match self.bus.coord_updates_update_old_codex(before) {
     Object(m) if m.get("error") is Some(String(e)) => raise LiveError(e)
     _ => ()
   }
@@ -1021,13 +1016,14 @@ fn P52::working(self : P52, key : String, working : Array[Json], status : Json) 
     }
     ignore(
       self.host.rt.fork_daemon("working", on_error=e => @host.note("working failed: \{e}"), async fn() {
-        ignore((self.bus.coord_ask.val)("chat.working", {
-          "connect": jstr(connect),
-          "thread": { "channel": jfield(w, "channel"), "threadTs": jfield(w, "threadTs") },
-          "ts": jfield(w, "ts"),
-          "status": jstr(text),
-          "page": jopt(self.page_of(key)),
-        }))
+        self.bus.coord_chat_working(
+          connect~,
+          channel=jfield(w, "channel"),
+          thread_ts=jfield(w, "threadTs"),
+          ts=jfield(w, "ts"),
+          status=text,
+          page=self.page_of(key),
+        )
       }),
     )
   }
@@ -1041,11 +1037,7 @@ fn P52::stands_at(self : P52, connect : Json, channel : Json, thread_ts : Json, 
   }
   ignore(
     self.host.rt.fork_daemon("stands at", on_error=e => @host.note("stands at failed: \{e}"), async fn() {
-      ignore((self.bus.coord_ask.val)("chat.standsAt", {
-        "connect": connect,
-        "thread": { "channel": channel, "threadTs": thread_ts },
-        "stands": stands,
-      }))
+      self.bus.coord_chat_stands_at(connect~, channel~, thread_ts~, stands~)
     }),
   )
 }
@@ -1152,19 +1144,19 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
     "coldAfresh" => jb(hub.goes_afresh(s(0), as_num(a(1)).unwrap_or(wall_ms().to_double())))
     "longChat" => jopt(hub.told_long_chat(s(0)))
     "ranIn" => self.store("ranIn", args)
-    "spend" => (self.bus.jobs_ask.val)("accounts.spend", { "key": a(0), "ranOn": a(1), "model": a(2) })
+    "spend" => self.bus.jobs_accounts_spend(a(0), a(1), a(2))
     "refillsAt" =>
-      match (self.bus.jobs_ask.val)("accounts.refillsAt", { "key": a(0) }) {
+      match self.bus.jobs_accounts_refills_at(a(0)) {
         Number(_) as n => n
         _ => jn(wall_ms().to_double() + 3_600_000.0)
       }
-    "recheck" => (self.bus.jobs_ask.val)("accounts.recheck", { "profile": a(0) })
+    "recheck" => self.bus.jobs_accounts_recheck(a(0))
     "runtimeMissing" => {
       hub.runtime_updated(s(0))
-      ignore((self.bus.coord_ask.val)("updates.runtimeMissing", { "runtime": a(0) }))
+      self.bus.coord_updates_runtime_missing(a(0))
       Json::null()
     }
-    "settled" => (self.bus.hub_ask.val)("settled", { "key": a(0), "state": a(1), "words": a(2) })
+    "settled" => self.bus.hub_settled(a(0), a(1), a(2))
     "stopJobs" => {
       for id in jitems(self.store("runningWaitJobIds", [a(0)]) catch { _ => Json::array([]) }) {
         self.bus.jobs_stop(id)

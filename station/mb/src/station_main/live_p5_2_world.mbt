@@ -501,7 +501,7 @@ fn P52::on_closed(self : P52, key : String) -> Unit {
         Some(c) => c.close_session(key) catch { _ => () }
         None => ()
       }
-      ignore(bus.call_peer("self", None, "$forwards", { "op": "forwards.closeSession", "args": [Json::string(key)] })) catch {
+      ignore(bus.forwards_call("forwards.closeSession", [Json::string(key)])) catch {
         _ => ()
       }
       bus.parts.end_session(key)

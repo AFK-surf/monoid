@@ -406,13 +406,13 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     current_profile: Some(id => ctx.profiles().iter().find_first(p => jtext(p, "id") == Some(id)).map(to_jv)),
     lent_borrowed: Some(p => borrowed_profile(ctx, of_jv(p))),
     lent_write: Some(p => pump.later("lent Codex login", async fn() {
-      match (ctx.bus.jobs_ask.val)("sharing.lendCodex", { "profile": of_jv(p) }) {
+      match ctx.bus.jobs_sharing_lend_codex(of_jv(p)) {
         Number(n, ..) => n
         _ => raise @agent_drivers.Failed("the lent sign-in is not there")
       }
     })),
     installed_version: () => pump.later("codex version", async fn() {
-      match (ctx.bus.coord_ask.val)("updates.version", { "id": jstr("codex") }) {
+      match ctx.bus.coord_updates_version("codex") {
         String(v) => Some(v)
         _ => None
       }
@@ -421,7 +421,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     missing_host: (command, env) => pump.later("codex host", async fn() {
       @updates.find_missing_codex_host(station_updates_world(ctx.bus), command, env.pairs) is Some(_)
     }),
-    incomplete_installation: () => ignore(host.rt.fork_daemon("codex check", on_error=e => @host.note("codex check failed: \{e}"), async fn() { ignore((ctx.bus.coord_ask.val)("updates.check", Json::null())) })),
+    incomplete_installation: () => ignore(host.rt.fork_daemon("codex check", on_error=e => @host.note("codex check failed: \{e}"), async fn() { ctx.bus.coord_updates_check() })),
     link_auth: dir => pump.later("codex auth", async fn() {
       let fields = @agent_runtimes.Fields::new()
       for kv in env_all() {
@@ -573,7 +573,7 @@ fn agy_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Wo
     }),
     lent_borrowed: Some(p => borrowed_profile(ctx, of_jv(p))),
     lent_write: Some(p => pump.later("lent Antigravity login", async fn() {
-      match (ctx.bus.jobs_ask.val)("sharing.lendAgy", { "profile": of_jv(p) }) {
+      match ctx.bus.jobs_sharing_lend_agy(of_jv(p)) {
         Number(n, ..) => n
         _ => raise @agent_drivers.Failed("the lent sign-in is not there")
       }

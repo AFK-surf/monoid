@@ -538,10 +538,7 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
 /// answer.
 async fn P55::called(self : P55, f : Json, args : Array[Json]) -> Json {
   match jfield(f, "$fn") {
-    Number(_, ..) as id => {
-      let (v, _) = self.bus.call_peer("self", None, "$admin.called", { "id": id, "args": Json::array(args) })
-      v
-    }
+    Number(_, ..) as id => self.bus.admin_called(id, args)
     _ => raise BusError("not a callback: \{f.stringify()}")
   }
 }

@@ -975,13 +975,13 @@ fn P51::readers_live(self : P51) -> Readers {
   r.previous_gone.val = bus.previous_gone
   r.catalog = () => (bus.model_catalog.val)()
   r.processes = async fn() {
-    match (bus.hub_ask.val)("processes", Json::null()) {
+    match bus.hub_processes() {
       Array(_) as a => a
       _ => Json::array([])
     }
   }
   r.client_keys = async fn() {
-    match (bus.hub_ask.val)("clientKeys", Json::null()) {
+    match bus.hub_client_keys() {
       Array(_) as a => a
       _ => Json::array([])
     }

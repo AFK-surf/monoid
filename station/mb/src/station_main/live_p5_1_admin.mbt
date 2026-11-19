@@ -836,7 +836,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
 /// (api/overview.ts), with the fields the station's parts add (parts.ts `overviewOf`).
 async fn P51::overview(self : P51, viewer : Json, lang : String) -> Json {
   let bus = self.bus
-  let made = (bus.hub_ask.val)("overview", { "viewer": viewer, "lang": Json::string(lang) }) catch { _ => Json::null() }
+  let made = bus.hub_overview(viewer, lang) catch { _ => Json::null() }
   let base : Map[String, Json] = match made {
     Object(m) => m.copy()
     _ =>
@@ -858,7 +858,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
   let bus = self.bus
   let store = bus.store
   let host = self.host
-  let processes = (bus.hub_ask.val)("processes", Json::null()) catch { _ => Json::null() }
+  let processes = bus.hub_processes() catch { _ => Json::null() }
   let threads = match self.threads {
     Some(t) => Some(t)
     None => {

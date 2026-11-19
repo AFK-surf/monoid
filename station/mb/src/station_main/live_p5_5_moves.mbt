@@ -152,9 +152,9 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
       _ if name.has_prefix("connects.") => to_jv(self.coord_connects(name, a.map(of_jv)))
       // What the admin API kept of the messages written under a key (P5-1's, `$admin.keptSends`, `$admin.keepSends`)
       "keptSends" =>
-        to_jv(self.bus.call_peer("self", None, "$admin.keptSends", { "threads": of_jv(a.get(0).unwrap_or(Null)) }).0)
+        to_jv(self.bus.admin_kept_sends(of_jv(a.get(0).unwrap_or(Null))))
       "keepSends" => {
-        ignore(self.bus.call_peer("self", None, "$admin.keepSends", { "sends": of_jv(a.get(0).unwrap_or(Null)) }))
+        self.bus.admin_keep_sends(of_jv(a.get(0).unwrap_or(Null)))
         Null
       }
       // (store.*, hub.*, fn.*: the hub's and its store's)

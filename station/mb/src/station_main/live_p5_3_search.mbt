@@ -98,7 +98,7 @@ async fn P53Search::linked(self : P53Search, groups : Json) -> Json {
         for h in hs {
           match jtext(h, "chat") {
             Some(chat) => {
-              let link = (self.bus.hub_ask.val)("link", jobj_of([("session", jstr(chat))])) catch { _ => Json::null() }
+              let link = self.bus.hub_link(jstr(chat)) catch { _ => Json::null() }
               hits.push(if link is String(_) { jwith(h, "link", link) } else { h })
             }
             None => hits.push(h)

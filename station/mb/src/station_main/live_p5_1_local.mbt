@@ -206,7 +206,7 @@ fn P51::member_screens(self : P51) -> async (@door.Stream, Bytes, Json, @gate.Vi
   let host = self.host
   async fn(stream, carry, head, viewer, _up) {
     let handle = shell_handle(host, stream, carry)
-    let said = (bus.ui_ask.val)("screens.view", { "head": head, "viewer": viewer.to_json(), "stream": handle })
+    let said = bus.ui_screens_view(head, viewer.to_json(), handle)
     if said is Null {
       @door.write_line(stream, { "status": 404, "error": "no screens on this station" })
       (stream.finish)()

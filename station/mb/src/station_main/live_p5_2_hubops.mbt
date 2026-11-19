@@ -76,7 +76,7 @@ fn routes_thrown(e : Error) -> Error {
 async fn P52::called(self : P52, f : Json, args : Array[Json]) -> Json {
   match f {
     { "$fn": Number(_, ..) as id, .. } =>
-      self.bus.call_peer("self", None, "$admin.called", { "id": id, "args": Json::array(args) }).0
+      self.bus.admin_called(id, args)
     _ => Json::null()
   }
 }
@@ -352,7 +352,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
     // ── the store's ──
     match op {
       "store.prepareLatestThreads" | "hub.prepareLatestThreads" =>
-        return (self.bus.reader_ask.val)("$latestThreads", arg_or_null(args, 0), "zh")
+        return self.bus.reader_latest_threads(arg_or_null(args, 0))
       // (replica/module.ts `retired`: a retired workspace's chats said to be out of its sight, idempotent)
       "store.setSessionsWsRetired" => {
         let ws = arg_text(args, 0)
@@ -532,14 +532,14 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         Json::array(repos.map(of_jv).filter_map(r => match jfield(r, "path") { String(_) as p => Some(p); _ => None }))
       }
       "agents.overview" =>
-        self.bus.call_peer("self", None, "$overview", { "viewer": arg_or_null(args, 0), "lang": arg_or_null(args, 1) }).0
+        self.bus.overview_call(arg_or_null(args, 0), arg_or_null(args, 1))
       // (replica/retire-asks.ts `chatCards`: a card in the session's latest chat, a still.fail one's alone, and whether it
       // still waits there)
       "cards.post" => {
         let session = arg_text(args, 0)
         let thread = match self.store("latestThreadIfReady", [Json::string(session)]) {
           Object(m) if m.contains("$undef") => {
-            ignore((self.bus.reader_ask.val)("$latestThreads", Json::array([Json::string(session)]), "zh"))
+            ignore(self.bus.reader_latest_threads(Json::array([Json::string(session)])))
             self.store("latestThread", [Json::string(session)])
           }
           t => t
@@ -608,7 +608,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
             }
           _ => Json::null()
         }
-      "agents.heldBy" => (self.bus.coord_ask.val)("connects.heldBy", Json::array(args))
+      "agents.heldBy" => self.bus.coord_connects_held_by(args)
       "agents/runtime.runtimeKind" =>
         match @agent_drivers.runtime_kind(Some(to_jv(arg_or_null(args, 0)))) {
           Some(k) => Json::string(k)

@@ -259,7 +259,7 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       answer: async fn(r) {
         let id = id_of(r)
         a(r).0.delete_profile(id, viewer_of(r), lang_of(r))
-        ignore((bus.hub_ask.val)("profileGone", jobj_of([("profile", jstr(id))]))) catch { _ => () }
+        bus.hub_profile_gone(id) catch { _ => () }
         jobj_of([("ok", jb(true))])
       },
     },
@@ -700,7 +700,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
       "deleteProfile" => {
         let id = text(0, "id")
         self.made().delete_profile(id, given(1, "viewer"), lang(2))
-        ignore((self.bus.hub_ask.val)("profileGone", jobj_of([("profile", jstr(id))]))) catch { _ => () }
+        self.bus.hub_profile_gone(id) catch { _ => () }
         done
       }
       "newKeyedProfile" => jstr(self.made().new_keyed_profile(given(0, "body"), given(1, "viewer"), lang(2)))

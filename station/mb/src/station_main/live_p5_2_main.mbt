@@ -657,7 +657,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       // `accounts.profile(ranOn) ?? accounts.runOn(row.key)`)
       let ran_on = match jtext(args, "ranOn") {
         Some(id) if id != "" =>
-          match (try { Ok((self.bus.jobs_ask.val)("accounts.profile", { "id": jstr(id) })) } catch { e => Err(e) }) {
+          match (try { Ok(self.bus.jobs_accounts_profile(id)) } catch { e => Err(e) }) {
             Ok(Object(_) as p) => Some(p)
             _ => None
           }
@@ -939,8 +939,8 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       }
     }
     "agents.along" => (self.bus.coord_ask.val)("agents.along", args)
-    "agents.jobsRelaunch" => (self.bus.jobs_ask.val)("jobs.relaunch", args)
-    "agents.jobsStopAll" => (self.bus.jobs_ask.val)("jobs.stopAll", args)
+    "agents.jobsRelaunch" => self.bus.jobs_relaunch(args)
+    "agents.jobsStopAll" => self.bus.jobs_stop_all(args)
     "agents.becomeRig" => (self.bus.cloud_call.val)("becomeRig", { "due": args })
     "agents.openDoor" => {
       let url = (self.bus.open_door.val)()
@@ -1131,20 +1131,12 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       let bus = self.bus
       p.shells[key] = (
         async fn(f, args) {
-          bus.call_peer("self", None, "$program.asked:" + key, {
-            "fn": jstr(f),
-            "args": Json::array(args),
-          }).0
+          bus.program_asked(key, f, args)
         },
         fn(t, args) {
           ignore(
             self.host.rt.fork_daemon("shell's tell", on_error=e => @host.note("shell's tell failed: \{e}"), async fn() {
-              ignore(
-                bus.call_peer("self", None, "$program.told:" + key, {
-                  "fn": jstr(t),
-                  "args": Json::array(args),
-                }),
-              )
+              bus.program_told(key, t, args)
             }),
           )
         },
@@ -1632,7 +1624,7 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
     process_state=key => Some(hub.process_state(key)),
     followed=() => ignore(
       host.rt.fork_quiet(name="followed again", async fn() {
-        ignore((bus.jobs_ask.val)("accounts.followed", Json::array([]))) catch {
+        bus.jobs_accounts_followed() catch {
           _ => ()
         }
       }),

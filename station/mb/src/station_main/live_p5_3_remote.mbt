@@ -551,7 +551,7 @@ async fn P53Remote::describe(self : P53Remote, peer : String, ws : String) -> Js
   // (a station that only runs tasks: none of a station's sessions, messages, reads or chats, and who may use it, as its
   // rig part says it: rig/module.ts `described`)
   guard !(jfield(p53_cloud(self.bus), "rig") is Null) else { return answer }
-  let rig = (self.bus.hub_ask.val)("rig.described", jobj_of([("peer", jstr(peer)), ("workspace", jstr(ws))])) catch {
+  let rig = self.bus.hub_rig_described(peer, ws) catch {
     _ => Json::null()
   }
   let out : Map[String, Json] = Map([])

@@ -156,7 +156,7 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   }
   note("station log", async fn() { jb(@jobs_host.rotate_in_place(host, at(["stillfail.log"]), p53_station_log_cap)) })
   note("update log", async fn() { jb(@jobs_host.rotate_in_place(host, at(["run", "update.log"]), p53_update_log_cap)) })
-  note("runners", async fn() { (bus.hub_ask.val)("sweepRunners", jobj_of([("now", jn(now))])) })
+  note("runners", async fn() { bus.hub_sweep_runners(now) })
   note("jobs", async fn() {
     let (capped, collected) = self.jobs.upkeep(now)
     jobj_of([("capped", ji(capped)), ("collected", Json::array(collected.map(jstr)))])

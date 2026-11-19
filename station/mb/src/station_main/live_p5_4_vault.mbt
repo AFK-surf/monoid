@@ -1157,7 +1157,7 @@ fn p54_vault_outcomes(bus : LiveBus, threads : @store_threads.Store, db : @vault
       told_threads(bus, threads)
       ignore(
         bus.host.rt.fork_quiet(name="card outcome", async fn() {
-          ignore((bus.hub_ask.val)("cardOutcomes.wake", Json::array([]))) catch {
+          bus.hub_card_outcomes_wake() catch {
             _ => ()
           }
         }),

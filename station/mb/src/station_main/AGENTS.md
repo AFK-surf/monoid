@@ -34,8 +34,9 @@
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
   (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
   what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,
-  `register_pids`). What is asked often across slices is a typed method of the bus (live_bus.mbt `hub_notify`,
-  `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
+  `register_pids`). What is asked often across slices or by named fields, and every `$…` handler a slice asks of this
+  station's own (`call_peer("self", …)`: `admin_called`, `forwards_call`, …), is a typed method of the bus
+  (live_bus.mbt `hub_notify`, `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
   given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, every method session_hub asks
   of an actor to one reader/actor_run.mbt answers, and every `parts.carry`, `plane.told` and `events.follow` hook of the
   TypeScript's given here; station/test/mb-live-hooks-parity.test.ts holds them live.

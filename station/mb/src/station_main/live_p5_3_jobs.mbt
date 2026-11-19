@@ -762,7 +762,7 @@ async fn P53Jobs::view(self : P53Jobs, job : Json) -> Json {
   let v = @jobs_host.job_json(job)
   if p53_has_port(job) {
     let id = jtext_or_empty(job, "id")
-    let page = (self.bus.hub_ask.val)("link", jobj_of([("session", jfield(job, "sessionKey"))])) catch {
+    let page = self.bus.hub_link(jfield(job, "sessionKey")) catch {
       _ => Json::null()
     }
     let link = match page {

@@ -76,14 +76,14 @@ async fn P53Program::shell(self : P53Program, key : String, shell : P53Shell) ->
     (shell.told)(jtext_or_empty(params, "fn"), args)
     (Json::null(), None)
   })
-  ignore((self.bus.hub_ask.val)("program.shell", jobj_of([("key", jstr(key))])))
+  self.bus.hub_program_shell(key)
 }
 
 ///|
 /// The program started, told the station's database (`{db}`: the actors' begin), what it says heard as it comes.
 async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
   let bus = self.bus
-  let has = (bus.hub_ask.val)("program.has", Json::null()) catch { _ => Json::null() }
+  let has = bus.hub_program_has() catch { _ => Json::null() }
   if has is True {
     self.shared = true
     return
@@ -153,7 +153,7 @@ fn P53Program::post(self : P53Program, message : Json) -> Bool {
 /// Asks pseudo-actor `key` of the program `method` (`ActorsProgram.call`): its value, null where the program is gone.
 async fn P53Program::call(self : P53Program, key : String, method : String, args : Array[Json]) -> Json {
   if self.shared {
-    return (self.bus.hub_ask.val)("program.call", jobj_of([("actor", jstr(key)), ("method", jstr(method)), ("args", Json::array(args))]))
+    return self.bus.hub_program_call(key, method, args)
   }
   self.next += 1
   let id = self.next

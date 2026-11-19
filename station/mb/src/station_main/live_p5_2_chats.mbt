@@ -1828,19 +1828,16 @@ async fn P52::tools_call(
       // (the forwards' are the gate's (P5-1 `@gate.Forwards`), answered on the bus as `$forwards`; the jobs' part
       // where no gate answers)
       if name.has_prefix("forwards.") {
-        let given = Json::array(args.map(@jsjson.JV::to_json))
+        let given = args.map(@jsjson.JV::to_json)
         let answered = Some(
-          self.bus.call_peer("self", None, "$forwards", {
-            "op": jstr(name),
-            "args": given,
-          }).0,
+          self.bus.forwards_call(name, given),
         ) catch {
           _ => None
         }
         return @jsjson.JV::of_json(
           match answered {
             Some(v) => v
-            None => (self.bus.jobs_ask.val)(name, given)
+            None => (self.bus.jobs_ask.val)(name, Json::array(given))
           },
         )
       }

@@ -350,7 +350,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
     // (ops/model-name.ts `modelName`)
     "modelName" => Some(Str(@ops_platform.model_name(p53_arg_s(args, 0))))
     // (agents.ts: `claudeVersion`, the machine's Claude Code as the updates found it)
-    "claudeVersion" => Some(@jsjson.JV::of_json((self.bus.coord_ask.val)("updates.version", Json::array([Json::string("claude")]))))
+    "claudeVersion" => Some(@jsjson.JV::of_json(self.bus.coord_updates_version("claude")))
     // (agents.ts: what the overview shows of the accounts changed, told the event streams: `onChange`)
     "changed" => {
       (self.bus.overview_changed.val)()
@@ -475,11 +475,11 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     },
     devin_catalog: j => of_jv(@agent_runtimes.devin_catalog(Some(to_jv(j)))),
     agy_take_back: async fn(home) {
-      let back = (bus.hub_ask.val)("agy.takeBack", Json::array([Json::string(home)])) catch { _ => Json::boolean(false) }
+      let back = bus.hub_agy_take_back(home) catch { _ => Json::boolean(false) }
       back is True
     },
     note_agy_email: async fn(home, text) {
-      let noted = (bus.hub_ask.val)("agy.noteEmail", { "home": Json::string(home), "text": Json::string(text) }) catch {
+      let noted = bus.hub_agy_note_email(home, text) catch {
         _ => Json::null()
       }
       match noted {
@@ -797,7 +797,7 @@ fn p53_login_manager(
     },
     agy_token_ready: (text, enterprise) => @agent_drivers.agy_token_ready(text, enterprise),
     note_agy_email: async fn(home, text) {
-      ignore((bus.hub_ask.val)("agy.noteEmail", { "home": Json::string(home), "text": Json::string(text) })) catch {
+      ignore(bus.hub_agy_note_email(home, text)) catch {
         _ => ()
       }
     },

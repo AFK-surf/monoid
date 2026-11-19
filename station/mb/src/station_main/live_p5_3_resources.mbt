@@ -680,13 +680,13 @@ async fn P53Resources::sample(self : P53Resources) -> Json {
   if (pressed || whole + front.unwrap_or(0.0) > soft) && relieved {
     self.last_relief = Some(now)
     let trimmed = (self.trim_idle)()
-    let trimmed_readers = match (try { Ok((bus.reader_ask.val)("trimIdle", Json::null(), (bus.lang.val)())) } catch { e => Err(e) }) {
+    let trimmed_readers = match (try { Ok(bus.reader_trim_idle()) } catch { e => Err(e) }) {
       Ok(Number(n, ..)) => n.to_int()
       _ => 0
     }
     out["trimmed"] = ji(trimmed + trimmed_readers)
     if pressed {
-      out["evictedWarm"] = (bus.hub_ask.val)("evictAllIdle", Json::null()) catch { _ => Json::null() }
+      out["evictedWarm"] = bus.hub_evict_all_idle() catch { _ => Json::null() }
     }
     slice_log("info", "memory", "station trimmed idle helpers under memory pressure", Json::object(out))
   }

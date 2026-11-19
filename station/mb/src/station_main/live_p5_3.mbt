@@ -455,7 +455,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
       let f = at(0, "told")
       let bus = self.bus
       let stop = self.resources.follow(() => ignore(bus.host.rt.fork_quiet(name="resources told", async fn() {
-        ignore(bus.call_peer("self", None, "$admin.called", { "id": jfield(f, "$fn"), "args": [] })) catch { _ => () }
+        ignore(bus.admin_called(jfield(f, "$fn"), [])) catch { _ => () }
       })))
       p53_follows_next.val += 1
       let handle = "resources.watch.stop:\{p53_follows_next.val}"
@@ -546,7 +546,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     // too, a count; and the programs counted after)
     "memory.trimIdle" => {
       let parts = (self.resources.trim_idle)()
-      let readers = match (self.bus.reader_ask.val)("trimIdle", Json::null(), (self.bus.lang.val)()) {
+      let readers = match self.bus.reader_trim_idle() {
         Number(n, ..) => n.to_int()
         _ => 0
       }
@@ -575,7 +575,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
       let (answer, _) = self.bus.call_peer(text(0, "station"), jtext(request, "workspace"), jtext_or_empty(request, "method"), request)
       answer
     }
-    "searchDeps.link" => (self.bus.hub_ask.val)("link", jobj_of([("session", at(0, "chat"))]))
+    "searchDeps.link" => self.bus.hub_link(at(0, "chat"))
     // ── Accounts and models ──
     // (a change of config.json through the bus: what every part checks it against first, the accounts' among them)
     "config.put" => (self.bus.config_update.val)(_ => arg)
