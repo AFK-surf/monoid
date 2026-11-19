@@ -680,3 +680,44 @@ test "wide, search: matches maker and runtime tokens, Escape clears before closi
   assert_true(t.query(@ui.Role::Dialog) is None, msg="Enter closed the panel after picking")
   assert_eq(new_fix.model, "gpt-oss-2")
 }
+
+///|
+test "wide, keys and mouse: the model's panel opened over the focused composer has 搜索模型 focused, typed into at once with no press; a model picked, the focus back in the composer" {
+  let t = model_pop("newchat-providers")
+  let focus = fn() { t.focused().map(fn(s) { "\{s.role} \{s.label}" }).unwrap_or("none") }
+  // (the composer pressed: it has the keys)
+  let composer = t.semantics().filter(fn(s) { s.role is TextField })[0]
+  let (x, y, w, h) = composer.rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(squeeze_opening)
+  let had = focus()
+  assert_true(had.has_prefix("TextField "), msg="the composer's before: \{had}")
+  // (the model's control pressed: its panel beside it, 搜索模型 focused, nothing more pressed)
+  let buttons = t.semantics().filter(fn(s) { s.role is Button }).map(fn(s) { s.label })
+  guard t.semantics().filter(fn(s) { s.role is Button && s.label.has_prefix("DeepSeek V4.1 Flash · ") }) is [chip, ..] else {
+    fail("no model control among \{buttons.join(", ")}")
+  }
+  let (x, y, w, h) = chip.rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(squeeze_opening)
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the model's panel open")
+  assert_eq(focus(), "TextField 搜索模型")
+  t.type_text("openai codex")
+  t.run_for(squeeze_opening)
+  assert_true(t.query(Button, label="GPT-6 Astra") is Some(_), msg="typed at once: GPT-6 Astra found")
+  assert_true(t.query(Button, label="Opus 5.5") is None, msg="typed at once: Opus 5.5 filtered out")
+  assert_eq(t.get(TextField, label="搜索模型").value, "openai codex")
+  // (Escape clears what was typed, the panel open; Enter on a model found picks it, the panel gone, the focus back where
+  // it was and nothing typed the composer's)
+  t.key(@ui.key_escape)
+  t.run_for(squeeze_opening)
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="Escape cleared the search, the panel open")
+  assert_eq(t.get(TextField, label="搜索模型").value, "")
+  t.type_text("openai")
+  t.run_for(squeeze_opening)
+  t.key(@ui.key_code_enter)
+  t.run_for(@motion.presence_in_ms)
+  assert_true(t.query(@ui.Role::Dialog) is None, msg="Enter picked a model and closed the panel")
+  assert_eq(focus(), had)
+  assert_eq(t.semantics().filter(fn(s) { s.role is TextField })[0].value, "", msg="nothing typed went to the composer")
+}

@@ -2037,6 +2037,9 @@ fn triple_find_node(
       },
     )
     field.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    // (typed into as the panel opens beside its control with keys and a mouse; never on a sheet or by touch, where an
+    // input method raised would cover the models: 2026-11-19 用户「点开模型选择框时，编辑器焦点应该默认聚焦到输入框上」)
+    @sf.panel_search_at_hand_node(field)
     f.show(at_once=true, fn() { contents.field.text() != "" }, fn(cl) {
       // (concentric with the pill's right end: same inset from the right edge as from top and bottom)
       cl.margin(By(fn() { (0.0, 0.0, (@sf.menu_row_min - 20.0) / 2.0 - @ui.Space::px(S3), 0.0) })) |> ignore
