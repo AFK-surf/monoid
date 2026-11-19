@@ -107,6 +107,10 @@ priv struct Actor {
   mut delivery_interruptions : Int
   mut recoveries : Int
   mut recovery_deferred : Bool
+  /// how many times a turn on what waited for it failed to start
+  mut start_failures : Int
+  /// what was handed to the last of those (`handed_ids`); "" once one started
+  mut failed_handed : String
   /// its waits on Node's clock, by name
   timers : Map[String, () -> Unit]
   /// what it last told Node of itself
@@ -303,6 +307,8 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         delivery_interruptions: 0,
         recoveries: 0,
         recovery_deferred: false,
+        start_failures: 0,
+        failed_handed: "",
         timers: Map([]),
         mirrored: "",
       }

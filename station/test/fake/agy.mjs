@@ -7,7 +7,8 @@
 // what it is and waits for the answer; with a sign-in in $HOME already it asks nothing and goes straight into its
 // interface. FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`). FAKE_AGY_OFFLINE: how many openings
 // (session/new, session/load) of all its processes answer as 1.5.9 does with its backend not reached: no models, and
-// every model refused after (counted in FAKE_DUMP.offline).
+// every model refused after (counted in FAKE_DUMP.offline). FAKE_AGY_SILENT: initialize never answered (its backend out of
+// reach as it starts), nothing written.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -207,6 +208,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (dump) appendFileSync(dump + '.rpc', line + '\n');
   if (!m.method) continue;
   const p = m.params;
+  if (m.method === 'initialize' && process.env.FAKE_AGY_SILENT) continue;
   if (m.method === 'initialize') reply(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true, _meta: { antigravity: { tier: true, systemPrompt: { append: true } } } }, agentInfo: { name: 'Antigravity ACP Server', version: '1.4.12' } });
   else if (m.method === 'session/new') {
     if (process.env.FAKE_AGY_SIGNED_OUT) { say({ id: m.id, error: { code: -32000, message: 'Authentication required' } }); continue; }

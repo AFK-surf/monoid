@@ -389,8 +389,12 @@ export class Hub {
   /// Takes back `reason` to hold turns; once none is left, turns start again and what waited meanwhile goes on.
   release(reason: Hold) {
     if (!this.holdsNow.delete(reason) || this.holdsNow.size > 0) return;
+    // (an actor released goes on with what waits for it itself, a recovery it put off or its messages: kicked as well,
+    // it would start a turn on them again after one that failed to start, 2026-11-19)
+    const released = new Set(this.actors.keys());
     for (const actor of this.actors.values()) void actor.release();
     for (const key of this.store.sessionsWithPending()) {
+      if (released.has(key)) continue;
       const row = this.store.getSession(key);
       if (row) void this.actor(row).kick();
     }
@@ -1115,15 +1119,21 @@ export class Hub {
   /// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is still
   /// pending.
   recover() {
+    const recovering = new Set<string>();
     for (const row of this.store.runningSessions()) {
       // Taken up from the previous station: its turn runs on.
       if (this.adopted.has(row.key) || !this.online(row)) continue;
       log.info("hub", "recovering a turn cut off by restart", { session: row.key });
+      recovering.add(row.key);
       void this.actor(row).recover();
     }
-    for (const key of this.store.sessionsWithPending()) {
-      const row = this.store.getSession(key);
-      if (row && this.online(row)) void this.actor(row).kick();
+    // A turn resumed takes what waits for it with it; while turns are held, `release` gives the rest theirs.
+    if ((this.holdsNow?.size ?? 0) === 0) {
+      for (const key of this.store.sessionsWithPending()) {
+        if (recovering.has(key)) continue;
+        const row = this.store.getSession(key);
+        if (row && this.online(row)) void this.actor(row).kick();
+      }
     }
     // Waits on record that were not handed over: taken up so each asks again when it would have, or put right by the
     // actor. An old store retains its original recovery path until its lookup has been prepared.
