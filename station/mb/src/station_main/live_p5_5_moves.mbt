@@ -310,7 +310,7 @@ async fn P55::start_moves(self : P55) -> Unit {
     to_jv(value)
   }
   let hub_bool = async fn(name : String, args : Array[Json]) -> Bool { self.hub(name, args) is True }
-  let items_of = (v : Json) => core_items(v).map(to_jv)
+  let items_of = (v : Json) => jitems(v).map(to_jv)
   let opt_of = (v : Json) => match v {
     Null => None
     v => Some(to_jv(v))
@@ -336,7 +336,7 @@ async fn P55::start_moves(self : P55) -> Unit {
         }
       },
       jobs_mark_of: async fn(keys) {
-        core_items(self.jobs("store.jobsMarkOf", [Json::array(keys.map(Json::string(_)))])).filter_map(p => match p {
+        jitems(self.jobs("store.jobsMarkOf", [Json::array(keys.map(Json::string(_)))])).filter_map(p => match p {
           Array([String(a), String(b), ..]) => Some((a, b))
           _ => None
         })
@@ -390,7 +390,7 @@ async fn P55::start_moves(self : P55) -> Unit {
         }
       },
       own_in: async fn(ws) {
-        core_items(self.coord_connects("connects.ownKinds", [Json::string(ws)])).map(c => ({
+        jitems(self.coord_connects("connects.ownKinds", [Json::string(ws)])).map(c => ({
           id: jtext_or_empty(c, "id"),
           name: jtext_or_empty(c, "name"),
           kind: jtext_or_empty(c, "kind"),
@@ -398,7 +398,7 @@ async fn P55::start_moves(self : P55) -> Unit {
         } : @move_coord.OwnConnect))
       },
       moved_away: Some(async fn(ws) {
-        core_items(self.coord_connects("connects.movedAway", [Json::string(ws)])).map(c => ({
+        jitems(self.coord_connects("connects.movedAway", [Json::string(ws)])).map(c => ({
           id: jtext_or_empty(c, "id"),
           name: jtext_or_empty(c, "name"),
           kind: jtext_or_empty(c, "kind"),
@@ -419,7 +419,7 @@ async fn P55::start_moves(self : P55) -> Unit {
       start: async fn(j) { ignore(self.jobs("jobs.startMoved", [of_jv(j)])) },
       stop_named: async fn(session, name) { ignore(self.jobs("jobs.stopNamed", [Json::string(session), Json::string(name)])) },
     },
-    profiles: async fn() { core_items(jfield((bus.config_raw.val)(), "profiles")).map(to_jv) },
+    profiles: async fn() { jitems(jfield((bus.config_raw.val)(), "profiles")).map(to_jv) },
     move_profile: async fn(id, to) { to_jv(self.jobs("sharing.moveProfile", [jopt(id), Json::string(to)])) },
     share_moves: Some({
       move: async fn(id, to, made) {
@@ -578,9 +578,9 @@ async fn P55::start_moves(self : P55) -> Unit {
   bus.parts.overview("move", async fn(_viewer, _lang) { { "offered": Json::boolean(self.move_on()) } })
   // (the card's choice, in the app: an owner or admin of the chat's workspace confirms it or declines)
   bus.parts.card_choice("move", {
-    may: (viewer, card, at) => asks.may(@jsjson.JV::of_json(viewer), @jsjson.JV::of_json(card), @jsjson.JV::of_json(at)),
+    may: (viewer, card, at) => asks.may(to_jv(viewer), to_jv(card), to_jv(at)),
     chosen: (viewer, card, option, at) => ignore(host.rt.fork_quiet(name="move card chosen", async fn() {
-      asks.chosen(@jsjson.JV::of_json(viewer), @jsjson.JV::of_json(card), option, @jsjson.JV::of_json(at)) catch {
+      asks.chosen(to_jv(viewer), to_jv(card), option, to_jv(at)) catch {
         e => self.warn("move", "the card's choice was not taken", e)
       }
     })),
@@ -590,11 +590,11 @@ async fn P55::start_moves(self : P55) -> Unit {
     [
       {
         name: "station_move",
-        declared: @jsjson.JV::to_json(asks.c.decl("station_move")),
+        declared: of_jv(asks.c.decl("station_move")),
         call: async fn(args, context) {
           tool_said(async fn() {
             let session = self.session_of(context)
-            Json::string(@mcp_tools.pretty(move_tool_said(async fn() { asks.tool(session, @jsjson.JV::of_json(args)) })))
+            Json::string(@mcp_tools.pretty(move_tool_said(async fn() { asks.tool(session, to_jv(args)) })))
           })
         },
       },
@@ -771,19 +771,19 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
 /// answers them on coord_ask), its file of asks (`fs.*`) and a temporary name's bytes (`crypto.randomBytes`).
 fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
   let (zh, en) = catalogs_json()
-  let words = @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en))
+  let words = @api_routes.Words::new(to_jv(zh), to_jv(en))
   let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
     match op {
       "fs.readFileSync" | "fs.mkdir" | "fs.rename" =>
-        @jsjson.JV::of_json(
-          host_fs_op(self.bus.host, op[3:].to_owned(), args.map(@jsjson.JV::to_json)) catch {
+        to_jv(
+          host_fs_op(self.bus.host, op[3:].to_owned(), args.map(of_jv)) catch {
             DispatchFsError(_, m) => raise BusError(m)
             e => raise e
           },
         )
       "fs.writeFile" =>
-        @jsjson.JV::of_json(
-          host_fs_op(self.bus.host, "writePrivate", args.map(@jsjson.JV::to_json)) catch {
+        to_jv(
+          host_fs_op(self.bus.host, "writePrivate", args.map(of_jv)) catch {
             DispatchFsError(_, m) => raise BusError(m)
             e => raise e
           },
@@ -792,12 +792,12 @@ fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
         @api_routes.jbytes(@drive.random_bytes(match args.get(0) { Some(Num(n)) => n.to_int(); _ => 0 }))
       _ =>
         match self.ops.get(op) {
-          Some(f) => @jsjson.JV::of_json(f(Json::array(args.map(@jsjson.JV::to_json))))
+          Some(f) => to_jv(f(Json::array(args.map(of_jv))))
           None => raise BusError("no move part \{op}")
         }
     }
   })
-  @mcp_tools.Ctx::new(backend, words, { runtime_kinds: [], station_lang: (self.bus.lang.val)(), os: p54_os(), arch: arch() })
+  @mcp_tools.Ctx::new(backend, words, { runtime_kinds: [], station_lang: (self.bus.lang.val)(), os: platform_os(), arch: arch() })
 }
 
 ///|
@@ -805,7 +805,7 @@ fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
 /// it asks so (`told`, its key), the step's end told to it; else answered with its outcome as before.
 async fn move_asked(moves : @move_coord.Moves, asks : @mcp_tools.MoveAsks, peer : String, ws : String, request : Json) -> Json {
   let args = match jfield(request, "args") {
-    Object(_) as a => @jsjson.JV::of_json(a)
+    Object(_) as a => to_jv(a)
     _ => @api_routes.JV::Obj([])
   }
   match jfield(request, "told") {
@@ -813,7 +813,7 @@ async fn move_asked(moves : @move_coord.Moves, asks : @mcp_tools.MoveAsks, peer 
       of_jv(moves.told.run(peer, key, async fn(_progress) {
         Some(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
       }))
-    _ => @jsjson.JV::to_json(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
+    _ => of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
   }
 }
 

@@ -395,7 +395,7 @@ fn P53Watch::new(bus : LiveBus, jobs : P53Jobs, remote : P53Remote) -> P53Watch 
 ///|
 /// Whether a session is at work now (its turn running, or a job of its up).
 fn P53Watch::working(self : P53Watch, key : String) -> Bool {
-  let row = p53_session_row(self.bus, key)
+  let row = bus_session_row(self.bus, key)
   jtrue(row, "running") || (self.bus.store.session_has_up_job(jstr(key)) catch { _ => Json::null() }) is True
 }
 
@@ -411,7 +411,7 @@ fn P53Watch::attach(self : P53Watch) -> Unit {
         let sessions = bus.store.running_sessions() catch { _ => [] }
         for s in sessions {
           let key = jtext_or_empty(s, "key")
-          let path = jtext_or_empty(p53_session_row(bus, key), "workspace")
+          let path = jtext_or_empty(bus_session_row(bus, key), "workspace")
           if path == "" || path == "/" || path == homedir() {
             continue
           }

@@ -127,14 +127,7 @@ fn p54_drive_start(bus : LiveBus, screens : P54Screens) -> P54Drive {
   })
   // What another station reads of this drive with a grant of this one's.
   bus.on_peer_prefix("drive.", async fn(_peer, ws, meth, params, _bytes) {
-    let request = match params {
-      Object(m) => {
-        let c = m.copy()
-        c["method"] = Json::string(meth)
-        Json::object(c)
-      }
-      _ => { "method": Json::string(meth) }
-    }
+    let request = with_method(params, meth)
     let got = @drive.drive_for_peer(drive, key, to_jv(request), ws, wall_ms().to_double()) catch {
       @drive.Refused(why) => raise BusError(why)
     }
@@ -286,7 +279,7 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
         "drive/grants.sign" => Json::string(@drive.sign(d.key, to_jv(call_arg(a, 1).unwrap_or(Json::null()))))
         "drive/transfers.shown" => of_jv(@drive.shown(to_jv(call_arg(a, 0).unwrap_or(Json::null()))))
         "transfers.now" => Json::number(wall_ms().to_double())
-        "transfers.self" => jopt(p54_station_id(bus))
+        "transfers.self" => jopt(bus_station_id_opt(bus))
         "transfers.nameOf" => {
           let id = s(0)
           let mut named = id

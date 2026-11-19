@@ -170,10 +170,7 @@ fn P52::profiles(self : P52) -> Array[Json] {
 ///|
 /// The agent home (config.json `agentHome`, else `<data>/agent`).
 fn P52::agent_home(self : P52) -> String {
-  match jtext(self.config, "agentHome") {
-    Some(h) if h != "" => h
-    _ => path([self.data, "agent"])
-  }
+  bus_agent_home(self.bus)
 }
 
 ///|

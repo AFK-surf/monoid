@@ -60,7 +60,7 @@ async fn P53Remote::new(bus : LiveBus, program : P53Program, jobs : P53Jobs) -> 
   let root = @nodepath.join(sep(), [bus.data, "remote"])
   let host = bus.host
   for name in ["incoming", "outgoing", "sessions", "used", "prepared"] {
-    ignore(try { Ok(host.shell("fs.mkdir", { "path": jstr(@nodepath.join(sep(), [root, name])), "recursive": jb(true) })) } catch { e => Err(e) })
+    host_mkdir_quiet(host, @nodepath.join(sep(), [root, name]))
   }
   let landing_root = @nodepath.join(sep(), [root, "landing"])
   @jobs_host.tidy_landing(host, landing_root, @drive.pid(), async fn(pid) { pid_alive(pid) })
@@ -86,20 +86,7 @@ async fn P53Remote::new(bus : LiveBus, program : P53Program, jobs : P53Jobs) -> 
     cpu: [],
     used: Map([]),
     used_ready: false,
-    gpus: {
-      let run = async fn(file, args, ms) { @jobs_host.run_on(host, file, args, ms) }
-      @jobs_host.Gpus::new(
-        run,
-        match platform() {
-          "darwin" => "macos"
-          "win32" => "windows"
-          p => p
-        },
-        arch(),
-        () => wall_ms().to_double(),
-        async fn() { @jobs_host.linux_gpus(@jobs_host.LinuxIo::shell(host, run)) },
-      )
-    },
+    gpus: make_gpus(host),
   }
   program.shell(p53_remote_key, { asked: async fn(f, args) { r.asked(f, args) }, told: (f, args) => r.told(f, args) })
   ignore(program.call(p53_remote_key, "start", [jstr(root)])) catch { _ => () }
@@ -126,7 +113,7 @@ fn P53Remote::attach(self : P53Remote) -> Unit {
     bus.on_peer_prefix(prefix, async fn(peer, ws, meth, request, bytes) {
       let workspace = match ws {
         Some(w) => w
-        None => p53_home(bus).unwrap_or("")
+        None => bus_home(bus).unwrap_or("")
       }
       self.answer(workspace, peer, jwith(request, "method", jstr(meth)), bytes)
     })
@@ -157,7 +144,7 @@ fn P53Remote::attach(self : P53Remote) -> Unit {
 ///|
 /// Tasks of stations no longer in a workspace stopped (remote.ts `followRoster`, the program's `revoke`).
 async fn P53Remote::revoke(self : P53Remote) -> Unit {
-  let state = p53_cloud(self.bus)
+  let state = bus_cloud(self.bus)
   let rosters = []
   if jtext_or_empty(state, "workspace") != "" && jfield(state, "removed_at") is Null {
     let add = (m : Json) => {
@@ -312,8 +299,8 @@ fn P53Remote::asker(self : P53Remote) -> @jobs_host.Ask {
 fn P53Remote::told(self : P53Remote, f : String, args : Array[Json]) -> Unit {
   match f {
     "writing" => {
-      let path = p53_as(args, 0)
-      let id = p53_ai(args, 1)
+      let path = arg_str(args, 0)
+      let id = arg_int(args, 1)
       let theirs = match self.writing.get(path) {
         Some(t) => t
         None => {
@@ -325,8 +312,8 @@ fn P53Remote::told(self : P53Remote, f : String, args : Array[Json]) -> Unit {
       theirs[id] = @effect.Deferred::new()
     }
     "wrote" => {
-      let path = p53_as(args, 0)
-      let id = p53_ai(args, 1)
+      let path = arg_str(args, 0)
+      let id = arg_int(args, 1)
       match self.writing.get(path) {
         Some(theirs) => {
           if theirs.get(id) is Some(d) { ignore(d.succeed(())) }
@@ -338,8 +325,8 @@ fn P53Remote::told(self : P53Remote, f : String, args : Array[Json]) -> Unit {
         None => ()
       }
     }
-    "log" => slice_log(p53_as(args, 0), "remote", p53_as(args, 1), p53_a(args, 2))
-    "used" => self.used[p53_as(args, 0)] = p53_a(args, 1)
+    "log" => slice_log(arg_str(args, 0), "remote", arg_str(args, 1), arg_at(args, 2))
+    "used" => self.used[arg_str(args, 0)] = arg_at(args, 1)
     "usedReady" => self.used_ready = true
     // (a chat's use record as the program has it now: read through it when asked)
     _ => ()
@@ -363,8 +350,8 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
   if f.has_prefix("store.") {
     return dispatch_store(bus, f[6:].to_owned(), args)
   }
-  let a = (i : Int) => p53_a(args, i)
-  let s = (i : Int) => p53_as(args, i)
+  let a = (i : Int) => arg_at(args, i)
+  let s = (i : Int) => arg_str(args, i)
   match f {
     "node.ask" => {
       let (answer, _) = self.ask(s(0), a(1))
@@ -412,7 +399,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
       }
     }
     "node.jobJson" => @jobs_host.job_json(a(0))
-    "node.tail" => jstr(@jobs_host.tail(host, s(0), p53_ai(args, 1)))
+    "node.tail" => jstr(@jobs_host.tail(host, s(0), arg_int(args, 1)))
     "node.ensureIdentity" => {
       @agent_runtimes.ensure_identity(host, bus.data)
       Json::null()
@@ -458,7 +445,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
       bus.hub_notify(session=s(0), text=s(1)) catch { _ => () }
       Json::null()
     }
-    "node.cloudState" => p53_cloud(bus)
+    "node.cloudState" => bus_cloud(bus)
     "node.sandboxes" => Json::array(self.sandboxes().map(d => jobj_of([("name", jstr(d.name))])))
     "node.listStations" => self.station_list(s(0), s(1), s(2))
     "node.stationFile" => @jobs_host.station_file(host, self.bulk, self.asker(), s(0), a(1), a(2), s(3))
@@ -497,7 +484,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
     }
     "node.bringBack" => {
       let entry = a(0)
-      let row = p53_session_row(bus, jtext_or_empty(entry, "session"))
+      let row = bus_session_row(bus, jtext_or_empty(entry, "session"))
       @jobs_host.bring_back(host, self.bulk, self.asker(), entry, jtext(row, "workspace"), self.root)
     }
     _ => raise P53Error("no remote ask \{f}")
@@ -537,7 +524,7 @@ async fn P53Remote::describe(self : P53Remote, peer : String, ws : String) -> Js
   ])
   // (a station that only runs tasks: none of a station's sessions, messages, reads or chats, and who may use it, as its
   // rig part says it: rig/module.ts `described`)
-  guard !(jfield(p53_cloud(self.bus), "rig") is Null) else { return answer }
+  guard !(jfield(bus_cloud(self.bus), "rig") is Null) else { return answer }
   let rig = self.bus.hub_rig_described(peer, ws) catch {
     _ => Json::null()
   }
@@ -565,16 +552,7 @@ async fn P53Remote::cpu_ticks(self : P53Remote) -> (Double, Double)? {
   if platform() == "linux" {
     return shell_read_text(self.bus.host, "/proc/stat").bind(@ops_platform.proc_stat_ticks)
   }
-  guard jfield(machine(), "cpus") is Array(cpus) && cpus.length() > 0 else { return None }
-  let mut busy = 0.0
-  let mut total = 0.0
-  for c in cpus {
-    let t = jfield(c, "times")
-    let n = (k : String) => jnum_of(t, k).unwrap_or(0.0)
-    busy += n("user") + n("sys") + n("nice")
-    total += n("user") + n("sys") + n("idle") + n("nice")
-  }
-  Some((busy, total))
+  machine_cpu_ticks()
 }
 
 ///|
@@ -610,7 +588,7 @@ async fn P53Remote::gpus_now(self : P53Remote) -> Json {
     None => gpus.cached()
   }
   match got {
-    Some(g) => Json::array(g.map(x => x.to_json()))
+    Some(g) => gpus_to_json(g)
     None => Json::null()
   }
 }
@@ -618,7 +596,7 @@ async fn P53Remote::gpus_now(self : P53Remote) -> Json {
 ///|
 /// station_list (remote.ts `stationList`): the workspace's stations, or one in detail.
 async fn P53Remote::station_list(self : P53Remote, workspace : String, _session : String, station : String) -> Json {
-  let me = p53_station_id(self.bus)
+  let me = bus_station_id(self.bus)
   if station == me || station == "self" {
     return @jobs_host.detailed(self.describe("", workspace))
   }
@@ -665,8 +643,8 @@ fn p53_sandboxes(bus : LiveBus) -> Array[@agent_runtimes.Sandbox] {
 async fn P53Remote::roster(self : P53Remote, ws : String) -> Json {
   let (r, _) = self.bus.call_peer("", Some(ws), "peers", jobj_of([("method", jstr("peers")), ("workspace", jstr(ws))])) catch {
     _ => {
-      let state = p53_cloud(self.bus)
-      let me = p53_station_id(self.bus)
+      let state = bus_cloud(self.bus)
+      let me = bus_station_id(self.bus)
       (jobj_of([("stations", Json::array([jobj_of([("id", jstr(me)), ("name", jfield(state, "name"))])]))]), None)
     }
   }
@@ -718,7 +696,7 @@ async fn p53_workspace_size(bus : LiveBus, path : String, limit : Double) -> @jo
   ignore(proc.write(@utf8.encode(ask.stringify() + "\n")))
   proc.end_input()
   let (_, _, out, _) = proc.finished()
-  let line = p53_utf8(out).split("\n").to_array()
+  let line = @utf8.decode_lossy(out).split("\n").to_array()
   let said = if line.length() > 0 { attempt(() => @json.parse(line[0].to_string())).unwrap_or(Json::null()) } else { Json::null() }
   if jtext(said, "error") is Some(e) { raise P53Error(e) }
   let bytes = jnum_of(said, "size").unwrap_or(0.0)
@@ -751,7 +729,7 @@ async fn p53_tree_bytes_by(host : @host.Host, reader : String, path : String) ->
   ignore(proc.write(@utf8.encode(ask.stringify() + "\n")))
   proc.end_input()
   let (_, _, out, _) = proc.finished() catch { _ => return 0.0 }
-  let line = p53_utf8(out).split("\n").to_array()
+  let line = @utf8.decode_lossy(out).split("\n").to_array()
   let said = if line.length() > 0 { attempt(() => @json.parse(line[0].to_string())).unwrap_or(Json::null()) } else { Json::null() }
   jnum_of(said, "size").unwrap_or(0.0)
 }
@@ -904,7 +882,7 @@ fn P53Remote::used_path(self : P53Remote, session : String) -> String {
 /// remote.ts `workspace`: the workspace a session's tasks go in, its chat's (the home one where none), while the
 /// station is in it.
 fn P53Remote::workspace_of(self : P53Remote, own : String?) -> String raise P53Error {
-  let state = p53_cloud(self.bus)
+  let state = bus_cloud(self.bus)
   if state is Null {
     raise P53Error("station has no workspace")
   }
@@ -930,7 +908,7 @@ fn P53Remote::workspace_of(self : P53Remote, own : String?) -> String raise P53E
 /// remote.ts `workspaceTargets`: the stations on which a session has a remote workspace, within the workspace it is
 /// still in (None: none).
 async fn P53Remote::workspace_targets(self : P53Remote, session : String) -> (String, Array[String])? {
-  let row = p53_session_row(self.bus, session)
+  let row = bus_session_row(self.bus, session)
   if row is Null || !(jfield(row, "archivedAt") is Null) {
     return None
   }
@@ -955,10 +933,10 @@ async fn P53Remote::workspace_targets(self : P53Remote, session : String) -> (St
 ///|
 /// remote.ts `workspaceStation`: only a station this chat has used; the empty id names its own.
 async fn P53Remote::workspace_station(self : P53Remote, session : String, named : String) -> String {
-  if p53_session_row(self.bus, session) is Null {
+  if bus_session_row(self.bus, session) is Null {
     raise P53Error("unknown session")
   }
-  let own = p53_station_id(self.bus)
+  let own = bus_station_id(self.bus)
   if named == "" || named == own {
     return ""
   }

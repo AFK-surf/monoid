@@ -216,15 +216,15 @@ async fn p54_helper_evict(host : @host.Host, dir : String) -> Unit {
   }
   let by_lsof = pids.is_empty()
   if by_lsof {
-    if p53_run(host, "lsof", ["-t", "--", lock], timeout_ms=2000) is Some(t) { add(t) }
+    if shell_proc_run(host, "lsof", ["-t", "--", lock], timeout_ms=2000) is Some(t) { add(t) }
   }
   for pid in pids {
-    guard p53_run(host, "ps", ["-ww", "-p", pid.to_string(), "-o", "command="], timeout_ms=2000) is Some(command) else {
+    guard shell_proc_run(host, "ps", ["-ww", "-p", pid.to_string(), "-o", "command="], timeout_ms=2000) is Some(command) else {
       continue
     }
     let here = by_lsof ||
       command.contains(dir) ||
-      (p53_run(host, "lsof", ["-t", "-a", "-p", pid.to_string(), "--", lock], timeout_ms=2000) is Some(t) && t.trim() != "")
+      (shell_proc_run(host, "lsof", ["-t", "-a", "-p", pid.to_string(), "--", lock], timeout_ms=2000) is Some(t) && t.trim() != "")
     if here && command.contains("stillfail-helper") {
       p51_log("WARN", "helper", "ending a still.fail Helper that holds its lock with no socket", fields={ "pid": Json::number(pid.to_double()) })
       ignore(kill(pid, "SIGKILL"))
@@ -320,20 +320,6 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
     None => ()
   }
   { bus, hub, io, helper, grants, files, views: Map([]), debugs: Map([]), next_view: 0 }
-}
-
-///|
-fn p54_api_jv(j : Json) -> @api_routes.JV {
-  @api_routes.parse(j.stringify()) catch {
-    _ => @api_routes.JV::Null
-  }
-}
-
-///|
-fn p54_of_api(v : @api_routes.JV) -> Json {
-  @json.parse(@api_routes.stringify(v)) catch {
-    _ => Json::null()
-  }
 }
 
 ///|
@@ -668,26 +654,26 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
 /// by name as P54Screens answers, the rest of what they ask (who an agent is, the station's pages) through the bus.
 async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
   let (zh, en) = catalogs_json()
-  let words = @api_routes.Words::new(p54_api_jv(zh), p54_api_jv(en))
+  let words = @api_routes.Words::new(to_jv(zh), to_jv(en))
   let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
-    let a = Json::array(args.map(p54_of_api))
+    let a = Json::array(args.map(of_jv))
     match op {
-      "agentName" => p54_api_jv(Json::string("agent"))
+      "agentName" => to_jv(Json::string("agent"))
       "base" =>
-        match ((bus.cloud_state.val)(), p54_home(bus), p54_station_id(bus)) {
+        match ((bus.cloud_state.val)(), bus_home(bus), bus_station_id_opt(bus)) {
           (Some(st), Some(w), Some(id)) =>
             match jtext(st, "origin") {
-              Some(o) => p54_api_jv(Json::string("\{o}/w/\{w}/s/\{id}"))
+              Some(o) => to_jv(Json::string("\{o}/w/\{w}/s/\{id}"))
               None => @api_routes.JV::Null
             }
           _ => @api_routes.JV::Null
         }
       _ =>
         match (try { Ok(s.ask(op, a)) } catch { e => Err(e) }) {
-          Ok(Some(v)) => p54_api_jv(v)
-          Ok(None) => p54_api_jv((bus.ui_ask.val)(op, a))
+          Ok(Some(v)) => to_jv(v)
+          Ok(None) => to_jv((bus.ui_ask.val)(op, a))
           // (a refusal as the tools take it: mcp_tools' `thrown_as`)
-          Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, p54_api_jv(said))
+          Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, to_jv(said))
           Err(e) => raise e
         }
     }
@@ -695,14 +681,14 @@ async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
   let ctx = @mcp_tools.Ctx::new(backend, words, {
     runtime_kinds: [],
     station_lang: (bus.lang.val)(),
-    os: p54_os(),
+    os: platform_os(),
     arch: arch(),
   })
   let computer = @mcp_tools.Computer::new(ctx)
   let tools = @mcp_tools.screen_tools(ctx) + @mcp_tools.computer_tools(computer)
   bus.parts.tools(
     tools.map(t => {
-      let declared = p54_of_api(@mcp_tools.declared(t))
+      let declared = of_jv(@mcp_tools.declared(t))
       ({
         name: t.name,
         declared,
@@ -710,7 +696,7 @@ async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
           let session = p54_session(context)
           match t.content {
             Some(content) => {
-              let reply = content(session, p54_api_jv(args)) catch {
+              let reply = content(session, to_jv(args)) catch {
                 e => return tool_answer(p54_message(e), error=true)
               }
               let parts = reply.content.map(c => match c {
@@ -724,7 +710,7 @@ async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
               }
             }
             None =>
-              match (try { Ok((t.run)(session, p54_api_jv(args), p54_api_jv(context))) } catch { e => Err(e) }) {
+              match (try { Ok((t.run)(session, to_jv(args), to_jv(context))) } catch { e => Err(e) }) {
                 Ok(text) => tool_answer(text)
                 Err(e) => tool_answer(p54_message(e), error=true)
               }

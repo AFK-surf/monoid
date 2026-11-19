@@ -58,23 +58,22 @@ async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes?
 }
 
 ///|
+async fn p54_stream_read(host : @host.Host, handle : Json) -> Bytes? {
+  let (said, bytes) = p54_stream_call(host, handle, "read") catch { _ => return None }
+  match (opt_field(Some(said), "end"), bytes) {
+    (Some(True), _) => None
+    (_, Some(b)) => Some(b)
+    _ => None
+  }
+}
+
+///|
 /// A member's stream as the shell holds it (its handle: `p54_stream_handle`): read, written, finished.
 fn p54_member_stream(host : @host.Host, handle : Json) -> @terminals_logins.Stream {
   {
-    read: async fn() {
-      let (said, bytes) = p54_stream_call(host, handle, "read") catch { _ => return None }
-      match (opt_field(Some(said), "end"), bytes) {
-        (Some(True), _) => None
-        (_, Some(b)) => Some(b)
-        _ => None
-      }
-    },
+    read: async fn() { p54_stream_read(host, handle) },
     write: async fn(b) { ignore(p54_stream_call(host, handle, "write", bytes=b)) },
-    finish: async fn() {
-      ignore(p54_stream_call(host, handle, "finish")) catch {
-        _ => ()
-      }
-    },
+    finish: async fn() { ignore(p54_stream_call(host, handle, "finish")) catch { _ => () } },
   }
 }
 
@@ -186,32 +185,11 @@ async fn p54_start_runner(
   pty : (Int, Int)?,
   env? : Array[(String, String)],
 ) -> Json {
-  guard p54_runner_binary(bus) is Some(runner) else { raise Failure("stillfail-runner is not there") }
-  let given = ["--dir", path([bus.data, "run", "runners"]), "--id", id, "--cwd", cwd]
-  match pty {
-    Some((cols, rows)) => {
-      given.push("--pty")
-      given.push("\{cols}x\{rows}")
-    }
-    None => ()
+  guard runner_binary(bus.app, bus.argv0, bus.data) is Some(runner) else { raise Failure("stillfail-runner is not there") }
+  start_runner_proc(bus.host, runner, bus.data, id, program, args, env?, cwd, pty?) catch {
+    LiveError(m) => raise Failure(m)
+    e => raise e
   }
-  given.push("--")
-  given.push(program)
-  for a in args {
-    given.push(a)
-  }
-  let proc = spawn(bus.host, runner, given, env?, stdout=Piped, stderr=Piped, group=true)
-  let (_, _, out, err) = proc.finished()
-  let said = @utf8.decode_lossy(out)
-  for line in said.split("\n") {
-    if line.has_prefix("{") {
-      match (try { Ok(@json.parse(line.to_owned())) } catch { e => Err(e) }) {
-        Ok(Object(m) as ready) if m.get("ready") is Some(True) => return ready
-        _ => ()
-      }
-    }
-  }
-  raise Failure("the runner did not start: \{@utf8.decode_lossy(err).trim()}\{said.trim()}")
 }
 
 ///|
@@ -231,9 +209,9 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
   let part = @terminals_logins.TerminalsPart::start({
     data: bus.data,
     home: homedir(),
-    os: p54_os(),
+    os: platform_os(),
     shell: env_get("SHELL"),
-    session_dir: k => p54_session_dir(bus, k),
+    session_dir: k => bus_session_dir(bus, k),
     random_hex: () => @drive.hex(@drive.random_bytes(8)),
     offered,
     tell: (workspace, value) => (bus.events_tell.val)(
@@ -256,7 +234,7 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
       for kv in env_all() {
         station_env[kv.0] = kv.1
       }
-      let env = @terminals_logins.shell_env(p54_os(), station_env).iter().map(kv => (kv.0, kv.1)).collect()
+      let env = @terminals_logins.shell_env(platform_os(), station_env).iter().map(kv => (kv.0, kv.1)).collect()
       let info = p54_start_runner(bus, id, program, args, cwd, Some((cols, rows)), env~)
       sockets[id] = jtext(info, "socket").unwrap_or("")
       p54_runner_info(info)
@@ -486,12 +464,12 @@ async fn p54_logins_start(
     m
   }
   let run_out = async fn(program : String, args : Array[String]) -> String? {
-    let (code, out, _) = p54_run(host, program, args) catch { _ => return None }
+    let (code, out, _) = run_cmd(host, program, args) catch { _ => return None }
     if code == Some(0) { Some(out) } else { None }
   }
   let run_io : @terminals_logins.RunIo = {
     now: () => wall_ms().to_double(),
-    after: (ms, f) => p54_after(host, ms.to_double(), f),
+    after: (ms, f) => bus_after(host, ms.to_double(), f),
     spawn: fork,
     home: env => env.get("HOME"),
     prepend_path: env_prepend_path,
@@ -566,7 +544,7 @@ async fn p54_logins_start(
         if pids.is_empty() {
           return Some([])
         }
-        let (code, out, _) = p54_run(host, "lsof", ["-nP", "-a", "-p", pids.map(p => p.to_string()).join(","), "-iTCP:\{port}", "-sTCP:LISTEN", "-Fn"]) catch {
+        let (code, out, _) = run_cmd(host, "lsof", ["-nP", "-a", "-p", pids.map(p => p.to_string()).join(","), "-iTCP:\{port}", "-sTCP:LISTEN", "-Fn"]) catch {
           _ => return None
         }
         if code != Some(0) && code != Some(1) {
@@ -600,9 +578,9 @@ async fn p54_logins_start(
     None => ()
   }
   let part = @terminals_logins.LoginsPart::new(logins, {
-    session_ws: k => p54_session_ws(bus, k),
-    session_row: k => match p54_session_row(bus, k) {
-      Some(row) => Some((jtext(row, "createdBy"), p54_session_ws(bus, k)))
+    session_ws: k => bus_session_ws(bus, k),
+    session_row: k => match bus_session_row_opt(bus, k) {
+      Some(row) => Some((jtext(row, "createdBy"), bus_session_ws(bus, k)))
       None => None
     },
     close_login_cards: id => {
@@ -615,18 +593,18 @@ async fn p54_logins_start(
       (bus.events_tell.val)("machine-logins", of_jv(limited), "machine-logins-limited\u{0}\{of}", { "readOnly": Json::boolean(true) })
     },
     notify: (session, text) => {
-      if p54_session_row(bus, session) is None {
+      if bus_session_row_opt(bus, session) is None {
         raise Failure("no session \{session}")
       }
       fork(async fn() { ignore((bus.hub_ask.val)("hub.notify", [Json::string(session), Json::string(text)])) })
     },
-    chat_title: session => opt_text(p54_session_row(bus, session), "title"),
+    chat_title: session => opt_text(bus_session_row_opt(bus, session), "title"),
     name_of: email => cloud.person_name(email),
-    place: () => match (p54_station_id(bus), p54_home(bus)) {
+    place: () => match (bus_station_id_opt(bus), bus_home(bus)) {
       (Some(s), Some(w)) => Some((s, w))
       _ => None
     },
-    page_base: () => match ((bus.cloud_state.val)(), p54_home(bus), p54_station_id(bus)) {
+    page_base: () => match ((bus.cloud_state.val)(), bus_home(bus), bus_station_id_opt(bus)) {
       (Some(st), Some(w), Some(s)) =>
         match jtext(st, "origin") {
           Some(o) => Some((o, w, s))
@@ -650,14 +628,7 @@ async fn p54_logins_start(
     log: (said, about) => err_write("login: \{said} \{@jsjson.stringify(about)}\n"),
   })
   bus.on_peer_prefix("login.", async fn(peer, ws, meth, params, _) {
-    let request = match params {
-      Object(m) => {
-        let c = m.copy()
-        c["method"] = Json::string(meth)
-        Json::object(c)
-      }
-      _ => { "method": Json::string(meth) }
-    }
+    let request = with_method(params, meth)
     let answer = part.heard_peer(peer, to_jv(request), match ws {
       Some(w) => @jsjson.JValue::Str(w)
       None => @jsjson.JValue::Null

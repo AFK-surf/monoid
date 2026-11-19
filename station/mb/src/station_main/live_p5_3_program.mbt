@@ -101,7 +101,7 @@ async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
         Out(b) =>
           for i in 0..<b.length() {
             if b[i] == b'\n' {
-              let text = p53_utf8(line.to_bytes())
+              let text = @utf8.decode_lossy(line.to_bytes())
               line.reset()
               self.said(text)
             } else {
@@ -111,7 +111,7 @@ async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
         Err(b) =>
           for i in 0..<b.length() {
             if b[i] == b'\n' {
-              slice_log("warn", "readers", "the sessions' program said", jobj_of([("line", jstr(p53_utf8(err.to_bytes())))]))
+              slice_log("warn", "readers", "the sessions' program said", jobj_of([("line", jstr(@utf8.decode_lossy(err.to_bytes())))]))
               err.reset()
             } else {
               err.write_byte(b[i])

@@ -11,39 +11,6 @@ fn p53_lend_bound(host : @host.Host) -> @accounts_oauth.Bound {
 }
 
 ///|
-/// A child run to its end with `input` on its stdin, given `ms` at most: (its code, its signal, stdout); None where it
-/// did not start, `timed_out` set where it was killed at its deadline.
-async fn p53_run_with_input(
-  host : @host.Host,
-  program : String,
-  args : Array[String],
-  env? : Array[(String, String)],
-  cwd? : String,
-  input? : String,
-  ms~ : Int,
-  timed_out~ : Ref[Bool],
-) -> (Int?, String?, String, String)? {
-  let proc = spawn(host, program, args, env?, cwd?, stdin_piped=input is Some(_), stdout=Piped, stderr=Piped) catch {
-    _ => return None
-  }
-  match input {
-    Some(t) => {
-      ignore(proc.write(@utf8.encode(t)))
-      proc.end_input()
-    }
-    None => ()
-  }
-  let killer = host.rt.fork(name="a child's deadline", async fn() {
-    @effect.sleep(ms) // timer: a deadline to a process
-    timed_out.val = true
-    ignore(kill(proc.pid, "SIGKILL"))
-  })
-  let (code, signal, out, err) = proc.finished()
-  killer.interrupt()
-  Some((code, signal, @utf8.decode_lossy(out), @utf8.decode_lossy(err)))
-}
-
-///|
 /// The machine's Claude logins as the renewal reads and keeps them (oauth.ts's `read`, `save`): macOS's keychain item
 /// first for the machine's own, `security -i` given its commands on stdin.
 fn p53_claude_store(host : @host.Host) -> @accounts_oauth.ClaudeStore {
@@ -60,17 +27,16 @@ fn p53_claude_store(host : @host.Host) -> @accounts_oauth.ClaudeStore {
     take_back_missing: async fn(home) { @agent_runtimes.take_back_missing(host, home, mac) },
     home_of: env => env.get("HOME"),
     user_name: async fn() {
-      match p53_run_with_input(host, "/usr/bin/id", ["-un"], ms=10000, timed_out=Ref(false)) {
-        Some((code, _, out, _)) => Some((code == Some(0), out))
-        None => None
+      match run_capture(host, "/usr/bin/id", ["-un"], ms=10000) {
+        Some((code, _, out, _, false)) => Some((code == Some(0), out))
+        _ => None
       }
     },
     security: async fn(env, input, ms) {
-      let late = Ref(false)
-      match p53_run_with_input(host, "/usr/bin/security", ["-i"], env=env.to_array(), input~, ms~, timed_out=late) {
+      match run_capture(host, "/usr/bin/security", ["-i"], env=env.to_array(), input~, ms~) {
         None => SecurityUnstarted
-        Some(_) if late.val => SecurityTimedOut
-        Some((code, _, _, _)) => SecurityExited(code)
+        Some((_, _, _, _, true)) => SecurityTimedOut
+        Some((code, _, _, _, false)) => SecurityExited(code)
       }
     },
   }
@@ -249,7 +215,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
       } else {
         self.claude_auth.token(p53_station_env(), opt(0), opt(1), p53_arg_s(args, 2), p53_arg_s(args, 3), margin~)
       }
-      Some(@jsjson.JV::of_json(Json::array([Json::string(token), Json::number(expires.to_double())])))
+      Some(to_jv(Json::array([Json::string(token), Json::number(expires.to_double())])))
     }
     "machine.codexAuthFile" => {
       let fields = @agent_runtimes.Fields::new()
@@ -266,17 +232,17 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
         _ => env
       }
       let found = with_shell_command(host, p53_arg_s(args, 0), env, lookup~)
-      Some(@jsjson.JV::of_json(Json::object(Map::from_array(found.map(kv => (kv.0, Json::string(kv.1)))))))
+      Some(to_jv(Json::object(Map::from_array(found.map(kv => (kv.0, Json::string(kv.1)))))))
     }
-    "grok.billing" => Some(@jsjson.JV::of_json(p53_grok_billing(host, p53_env_pairs(j(0)))))
-    "agy.run" => Some(@jsjson.JV::of_json(p53_agy_run(host, p53_arg_s(args, 0), p53_env_pairs(j(1)), p53_arg_s(args, 2))))
+    "grok.billing" => Some(to_jv(p53_grok_billing(host, p53_env_pairs(j(0)))))
+    "agy.run" => Some(to_jv(p53_agy_run(host, p53_arg_s(args, 0), p53_env_pairs(j(1)), p53_arg_s(args, 2))))
     // (accounts/index.ts `check`: profiles.ts `checkProfile`, with the station's environment, the machine's Claude
     // login, the providers', Cursor's and Antigravity CLI's own reading)
-    "profiles.checkProfile" => Some(@jsjson.JV::of_json(self.check_profile(j(0), p53_arg_s(args, 1))))
+    "profiles.checkProfile" => Some(to_jv(self.check_profile(j(0), p53_arg_s(args, 1))))
     "agy.company" => Some(Bool(@agent_drivers.agy_company(p53_arg_s(args, 0))))
     // (the agents' side's: Antigravity CLI's driver takes a login back from the keychain, a running app-server says its
     // rate limits)
-    "agy.takeBack" | "codex.rateLimits" => Some(@jsjson.JV::of_json((self.bus.hub_ask.val)(name, Json::array(args.map(p53_json)))))
+    "agy.takeBack" | "codex.rateLimits" => Some(to_jv((self.bus.hub_ask.val)(name, Json::array(args.map(p53_json)))))
     // ── what accounts/index.ts calls of the modules beside it ──
     // (profiles.ts `loginCommand`: the command a subscription's sign-in runs)
     "profiles.loginCommand" =>
@@ -285,7 +251,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
     "codex.claimsIn" =>
       Some(
         match @accounts_oauth.codex_claims_in(p53_arg_s(args, 0)) {
-          Some(c) => @jsjson.JV::of_json(c)
+          Some(c) => to_jv(c)
           None => Null
         },
       )
@@ -307,7 +273,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
         _ => None
       }, done)
       Some(
-        @jsjson.JV::of_json({
+        to_jv({
           "raw": raw,
           "changes": Json::array(changes.map(c => c.to_json())),
           "unchecked": Json::array(unchecked.map(Json::string)),
@@ -317,7 +283,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
     // (sessions/archive-policy.ts `policyFrom`)
     "policy.policyFrom" =>
       Some(
-        @jsjson.JV::of_json(
+        to_jv(
           @session_storage.policy_from(
             match j(0) {
               Null => None
@@ -338,7 +304,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
     // (ops/model-name.ts `modelName`)
     "modelName" => Some(Str(@ops_platform.model_name(p53_arg_s(args, 0))))
     // (agents.ts: `claudeVersion`, the machine's Claude Code as the updates found it)
-    "claudeVersion" => Some(@jsjson.JV::of_json(self.bus.coord_updates_version("claude")))
+    "claudeVersion" => Some(to_jv(self.bus.coord_updates_version("claude")))
     // (agents.ts: what the overview shows of the accounts changed, told the event streams: `onChange`)
     "changed" => {
       (self.bus.overview_changed.val)()
@@ -700,7 +666,7 @@ fn p53_login_manager(
       }
     },
     poll_cursor: async fn(handshake) {
-      match p53_json(@accounts_pool.poll_cursor(pool_io, cursor, @jsjson.JV::of_json(handshake))) {
+      match p53_json(@accounts_pool.poll_cursor(pool_io, cursor, to_jv(handshake))) {
         Object(m) as a if !m.contains("pending") => Some(a)
         _ => None
       }
@@ -731,7 +697,7 @@ fn p53_login_manager(
       if jtext(p, "id") != Some(id) {
         continue
       }
-      let profile = @accounts_pool.profile_of(@jsjson.JV::of_json(p), bus.data, _ => None)
+      let profile = @accounts_pool.profile_of(to_jv(p), bus.data, _ => None)
       return if profile.machine || @accounts_pool.borrowed(profile.raw) {
         None
       } else {
@@ -826,25 +792,7 @@ async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : A
       Some(Json::null())
     }
     "console.renew" =>
-      Some(
-        @accounts_oauth.renew_token(self.oauth_io, s(0), s(1)).to_json() catch {
-          @accounts_oauth.RenewRefused(status, message) =>
-            raise @accounts_pool.Thrown(
-              "RenewRefused",
-              @accounts_pool.jobj([
-                ("message", @accounts_pool.js(message)),
-                (
-                  "status",
-                  match status {
-                    Some(n) => Num(n.to_double())
-                    None => Null
-                  },
-                ),
-              ]),
-            )
-          e => raise e
-        },
-      )
+      Some(@accounts_oauth.renew_token(self.oauth_io, s(0), s(1)).to_json())
     "console.in" =>
       Some(
         match @accounts_oauth.console_in(s(0)) {

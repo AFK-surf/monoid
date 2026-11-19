@@ -14,7 +14,7 @@ fn p55_thrown_of(e : Error) -> Error {
     @slack.SlackApiError(m, code, details) =>
       @api_routes.Thrown(
         "SlackApiError",
-        @jsjson.JV::of_json({
+        to_jv({
           "message": Json::string(p55_said_of(e)),
           "method": Json::string(m),
           "code": Json::string(code),
@@ -24,16 +24,16 @@ fn p55_thrown_of(e : Error) -> Error {
           },
         }),
       )
-    @slack.SlackWords(key, words) => @api_routes.Thrown("SlackWords", @jsjson.JV::of_json({ "message": Json::string(words), "key": Json::string(key) }))
-    @replica_coord.Thrown(_, _) => @api_routes.Thrown("mesh/bus.Refused", @jsjson.JV::of_json({ "message": Json::string(p55_said_of(e)) }))
-    e => @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(p55_said_of(e)) }))
+    @slack.SlackWords(key, words) => @api_routes.Thrown("SlackWords", to_jv({ "message": Json::string(words), "key": Json::string(key) }))
+    @replica_coord.Thrown(_, _) => @api_routes.Thrown("mesh/bus.Refused", to_jv({ "message": Json::string(p55_said_of(e)) }))
+    e => @api_routes.Thrown("Error", to_jv({ "message": Json::string(p55_said_of(e)) }))
   }
 }
 
 ///|
 /// A `{"$bytes": base64}` argument's bytes.
 fn bytes_arg(v : Json) -> Bytes {
-  @api_routes.bytes_of(@jsjson.JV::of_json(v)).unwrap_or(b"")
+  @api_routes.bytes_of(to_jv(v)).unwrap_or(b"")
 }
 
 ///|
@@ -52,11 +52,6 @@ fn slack_error_of(v : Json) -> Error {
 }
 
 ///|
-fn text_at(a : Array[Json], i : Int) -> String {
-  arg_str(a, i)
-}
-
-///|
 /// A JSON argument as one may be absent (`{"$undef": 1}`, null): None.
 fn given(v : Json) -> @jsjson.JValue? {
   match v {
@@ -72,7 +67,7 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
   let bus = self.bus
   // A kind's part, by reference (`{"$ref": kind}`): its entry edited, its connects connected again.
   self.op("connectKinds.get", async fn(arg) {
-    let kind = text_at(core_items(arg), 0)
+    let kind = arg_str(jitems(arg), 0)
     if live.kinds.contains(kind) {
       { "$ref": Json::string(kind) }
     } else {
@@ -81,19 +76,19 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
   })
   for kind in ["slack", "feishu", "comma", "group"] {
     self.op("\{kind}.entry", async fn(arg) {
-      let a = core_items(arg)
+      let a = jitems(arg)
       let (given_, had) = (arg_at(a, 0), arg_at(a, 1))
       match kind {
-        "slack" => to_core_ar(@api_routes.slack_entry(@jsjson.JV::of_json(given_), @jsjson.JV::of_json(had)))
-        "feishu" => to_core_ar(@api_routes.feishu_entry(@jsjson.JV::of_json(given_), @jsjson.JV::of_json(had)))
-        "comma" => to_core_ar(@api_routes.comma_entry(@jsjson.JV::of_json(given_), @jsjson.JV::of_json(had)))
+        "slack" => of_jv(@api_routes.slack_entry(to_jv(given_), to_jv(had)))
+        "feishu" => of_jv(@api_routes.feishu_entry(to_jv(given_), to_jv(had)))
+        "comma" => of_jv(@api_routes.comma_entry(to_jv(given_), to_jv(had)))
         _ => group_entry(given_, had)
       }
     })
     self.op("\{kind}.reconnect", async fn(arg) {
       guard live.kinds.get(kind) is Some(c) else { return Json::null() }
       c.reconcile()
-      c.refresh_identity(text_at(core_items(arg), 0)) catch {
+      c.refresh_identity(arg_str(jitems(arg), 0)) catch {
         e => self.warn(kind, "who the bot is not read again", e)
       }
       Json::null()
@@ -105,11 +100,11 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
     Json::array(@slack.slack_connects(Some(to_jv((bus.config_raw.val)()))).map(c => of_jv(c.to_j())))
   })
   self.op("slack.refreshIdentity", async fn(arg) {
-    slack.refresh_identity(text_at(core_items(arg), 0))
+    slack.refresh_identity(arg_str(jitems(arg), 0))
     Json::null()
   })
   self.op("slack.chat", async fn(arg) {
-    let id = text_at(core_items(arg), 0)
+    let id = arg_str(jitems(arg), 0)
     match slack.chats(id) {
       Some(_) => { "$ref": Json::string("slack.chat:\{id}") }
       None => Json::null()
@@ -126,7 +121,7 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
     async fn(token) {
       ignore(
         (bus.config_update.val)(raw => {
-          let kept = core_items(jfield(raw, "slackConfigTokens")).map(to_jv)
+          let kept = jitems(jfield(raw, "slackConfigTokens")).map(to_jv)
           match raw {
             Object(m) => {
               m["slackConfigTokens"] = Json::array(@slack.upsert_token(kept, token).map(of_jv))
@@ -145,25 +140,25 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
   )
   let slack_connect = (v : Json) => @slack.slack_connects(Some(to_jv({ "connects": [v] }))).get(0)
   self.prefix_op("slack/index.", async fn(name, arg) {
-    let a = core_items(arg)
+    let a = jitems(arg)
     let j = (i : Int) => given(arg_at(a, i))
     match name {
       "slack/index.madeApps" => Json::array(@slack.made_apps(j(0)).map(of_jv))
       "slack/index.configTokens" => Json::array(@slack.config_tokens(j(0)).map(of_jv))
-      "slack/index.appIdOf" => Json::string(@slack.app_id_of(client, text_at(a, 1)))
-      "slack/index.slackError" => Json::string(@slack.slack_error(words, slack_error_of(arg_at(a, 0)), text_at(a, 1)))
+      "slack/index.appIdOf" => Json::string(@slack.app_id_of(client, arg_str(a, 1)))
+      "slack/index.slackError" => Json::string(@slack.slack_error(words, slack_error_of(arg_at(a, 0)), arg_str(a, 1)))
       "slack/index.withSocketMode" => of_jv(@slack.with_socket_mode(j(0), arg_at(a, 1) is True))
       "slack/index.applySettings" => of_jv(@slack.apply_settings(j(0), j(1)))
-      "slack/index.slackManifest" => of_jv(@slack.slack_manifest(text_at(a, 0), description=arg_opt_text(a, 1), redirect_url=arg_opt_text(a, 2)))
-      "slack/index.slackAppLinks" => of_jv(@slack.slack_app_links(text_at(a, 0), arg_opt_text(a, 1)))
+      "slack/index.slackManifest" => of_jv(@slack.slack_manifest(arg_str(a, 0), description=arg_opt_text(a, 1), redirect_url=arg_opt_text(a, 2)))
+      "slack/index.slackAppLinks" => of_jv(@slack.slack_app_links(arg_str(a, 0), arg_opt_text(a, 1)))
       "slack/index.settingsOf" => of_jv(@slack.settings_of(j(0)))
-      "slack/index.rotateConfigToken" => of_jv(@slack.rotate_config_token(client, text_at(a, 1)))
+      "slack/index.rotateConfigToken" => of_jv(@slack.rotate_config_token(client, arg_str(a, 1)))
       "slack/index.ownerOfConfigToken" =>
-        match @slack.owner_of_config_token(client, text_at(a, 1)) {
+        match @slack.owner_of_config_token(client, arg_str(a, 1)) {
           Some(o) => of_jv(o)
           None => Json::null()
         }
-      "slack/index.upsertToken" => Json::array(@slack.upsert_token(core_items(arg_at(a, 0)).map(to_jv), to_jv(arg_at(a, 1))).map(of_jv))
+      "slack/index.upsertToken" => Json::array(@slack.upsert_token(jitems(arg_at(a, 0)).map(to_jv), to_jv(arg_at(a, 1))).map(of_jv))
       "slack/index.shownIdentity" => {
         let i = arg_at(a, 0)
         {
@@ -180,19 +175,19 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
           Some(c) => Json::string(@slack.connect_name(c))
           None => Json::null()
         }
-      "slack/index.createAppUrl" => Json::string(@slack.create_app_url(text_at(a, 0)))
+      "slack/index.createAppUrl" => Json::string(@slack.create_app_url(arg_str(a, 0)))
       _ => raise BusError("no such Slack function: \{name}")
     }
   })
   self.prefix_op("slack.apps.", async fn(name, arg) {
-    let a = core_items(arg)
+    let a = jitems(arg)
     match name {
-      "slack.apps.configured" => Json::boolean(apps.configured(text_at(a, 0)))
-      "slack.apps.exportManifest" => of_jv(apps.export_manifest(text_at(a, 0), text_at(a, 1)))
+      "slack.apps.configured" => Json::boolean(apps.configured(arg_str(a, 0)))
+      "slack.apps.exportManifest" => of_jv(apps.export_manifest(arg_str(a, 0), arg_str(a, 1)))
       "slack.apps.editManifest" => {
         let f = arg_at(a, 2)
         Json::boolean(
-          apps.edit_manifest(text_at(a, 0), text_at(a, 1), async fn(m) {
+          apps.edit_manifest(arg_str(a, 0), arg_str(a, 1), async fn(m) {
             match self.called(f, [of_jv(m)]) {
               Null => None
               Object(o) if o.contains("$undef") => None
@@ -201,17 +196,17 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
           }),
         )
       }
-      "slack.apps.createApp" => of_jv(apps.create_app(text_at(a, 0), text_at(a, 1), to_jv(arg_at(a, 2))))
+      "slack.apps.createApp" => of_jv(apps.create_app(arg_str(a, 0), arg_str(a, 1), to_jv(arg_at(a, 2))))
       "slack.apps.setIcon" => {
-        apps.set_icon(text_at(a, 0), text_at(a, 1), bytes_arg(arg_at(a, 2)), text_at(a, 3))
+        apps.set_icon(arg_str(a, 0), arg_str(a, 1), bytes_arg(arg_at(a, 2)), arg_str(a, 3))
         Json::null()
       }
       "slack.apps.exchangeInstallCode" => {
-        let (token, team) = apps.exchange_install_code(text_at(a, 0), text_at(a, 1), text_at(a, 2), text_at(a, 3))
+        let (token, team) = apps.exchange_install_code(arg_str(a, 0), arg_str(a, 1), arg_str(a, 2), arg_str(a, 3))
         Json::array([Json::string(token), jopt(team)])
       }
       "slack.apps.verifyTokens" => {
-        let (identity, errors) = apps.verify_tokens(text_at(a, 0), text_at(a, 1), text_at(a, 2))
+        let (identity, errors) = apps.verify_tokens(arg_str(a, 0), arg_str(a, 1), arg_str(a, 2))
         Json::array([
           match identity {
             Some(i) => of_jv(i)
@@ -230,20 +225,8 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
     let id = rest.unsafe_substring(start=0, end=dot)
     let call = rest.unsafe_substring(start=dot + 1, end=rest.length())
     guard slack.chats(id) is Some(chat) else { raise BusError("the Slack connect \{id} is not connected") }
-    of_jv((chat.call)(call, core_items(arg).map(to_jv)))
+    of_jv((chat.call)(call, jitems(arg).map(to_jv)))
   })
-}
-
-///|
-fn to_core_ar(v : @api_routes.JV) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(s)
-    Arr(xs) => Json::array(xs.map(to_core_ar))
-    Obj(fs) => Json::object(Map::from_array(fs.map(kv => (kv.0, to_core_ar(kv.1)))))
-  }
 }
 
 ///|
@@ -251,27 +234,27 @@ fn to_core_ar(v : @api_routes.JV) -> Json {
 /// `copies_routes`).
 fn P55::admin_ops(self : P55, u : @updates.Updates) -> Unit {
   self.op("updates.get", async fn(arg) { of_jv(@jsjson.JValue::Arr(u.get(lang_arg(arg)))) })
-  self.op("updates/versions.channelOfId", async fn(arg) { jopt(@updates.channel_of_id(text_at(core_items(arg), 0))) })
+  self.op("updates/versions.channelOfId", async fn(arg) { jopt(@updates.channel_of_id(arg_str(jitems(arg), 0))) })
   self.op("updates.setChannel", async fn(arg) {
-    let a = core_items(arg)
-    u.set_channel(text_at(a, 0), text_at(a, 1))
+    let a = jitems(arg)
+    u.set_channel(arg_str(a, 0), arg_str(a, 1))
     Json::null()
   })
   self.op("updates.setAuto", async fn(arg) {
-    let a = core_items(arg)
-    u.set_auto(arg_at(a, 0) is True, text_at(a, 1))
+    let a = jitems(arg)
+    u.set_auto(arg_at(a, 0) is True, arg_str(a, 1))
     Json::null()
   })
   self.op("updates.repairCodex", async fn(arg) {
-    u.repair_codex(text_at(core_items(arg), 0))
+    u.repair_codex(arg_str(jitems(arg), 0))
     Json::null()
   })
   self.op("updates.update", async fn(arg) {
-    let a = core_items(arg)
+    let a = jitems(arg)
     // (a third: the release the station goes back to)
     match arg_at(a, 2) {
-      String(t) => u.update(text_at(a, 0), text_at(a, 1), to=t)
-      _ => u.update(text_at(a, 0), text_at(a, 1))
+      String(t) => u.update(arg_str(a, 0), arg_str(a, 1), to=t)
+      _ => u.update(arg_str(a, 0), arg_str(a, 1))
     }
     Json::null()
   })
@@ -280,22 +263,22 @@ fn P55::admin_ops(self : P55, u : @updates.Updates) -> Unit {
 ///|
 fn P55::copies_ops(self : P55, copies : @replica_coord.Copies, retire : @replica_coord.Retire) -> Unit {
   self.op("retire.retire", async fn(arg) {
-    let a = core_items(arg)
-    retire.retire(text_at(a, 0), text_at(a, 1), text_at(a, 2))
+    let a = jitems(arg)
+    retire.retire(arg_str(a, 0), arg_str(a, 1), arg_str(a, 2))
     Json::null()
   })
-  self.op("retire.preview", async fn(arg) { of_jv(retire.preview(text_at(core_items(arg), 0))) })
+  self.op("retire.preview", async fn(arg) { of_jv(retire.preview(arg_str(jitems(arg), 0))) })
   self.op("retire.cancel", async fn(arg) {
-    retire.cancel(text_at(core_items(arg), 0))
+    retire.cancel(arg_str(jitems(arg), 0))
     Json::null()
   })
   self.op("retire.again", async fn(arg) {
-    retire.again(text_at(core_items(arg), 0))
+    retire.again(arg_str(jitems(arg), 0))
     Json::null()
   })
   self.op("copies.restore", async fn(arg) {
-    let a = core_items(arg)
-    copies.restore(text_at(a, 0), text_at(a, 1), text_at(a, 2), jtext_or_empty(arg_at(a, 3), "station"))
+    let a = jitems(arg)
+    copies.restore(arg_str(a, 0), arg_str(a, 1), arg_str(a, 2), jtext_or_empty(arg_at(a, 3), "station"))
     Json::null()
   })
 }

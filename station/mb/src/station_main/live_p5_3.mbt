@@ -100,11 +100,6 @@ fn p53_session_of(bus : LiveBus, context : Json) -> String raise P53Error {
 }
 
 ///|
-fn p53_session_row(bus : LiveBus, key : String) -> Json {
-  bus_session_row(bus, key)
-}
-
-///|
 /// A part's tool (tools/mcp.ts `Tool`): its declaration and its call, given its arguments and its session.
 fn p53_tool(
   bus : LiveBus,
@@ -125,55 +120,6 @@ fn p53_tool(
         e => tool_answer(p53_words(e), error=true)
       }
     },
-  }
-}
-
-///|
-/// Text, in UTF-8.
-fn p53_utf8(b : Bytes) -> String {
-  @utf8.decode_lossy(b)
-}
-
-///|
-/// A file of the station's user's alone written whole: beside it under a name of its own with mode 0600, synced, then
-/// renamed into place (`Host::write_private`).
-async fn p53_write_private(host : @host.Host, path : String, bytes : Bytes) -> Unit {
-  host.write_private(path, bytes, sep=sep())
-}
-
-///|
-/// The cloud's state as this station keeps it (mesh/cloud.json), through the bus.
-fn p53_cloud(bus : LiveBus) -> Json {
-  (bus.cloud_state.val)().unwrap_or(Json::null())
-}
-
-///|
-fn p53_station_id(bus : LiveBus) -> String {
-  bus_station_id_opt(bus).unwrap_or(bus.key.id)
-}
-
-///|
-fn p53_home(bus : LiveBus) -> String? {
-  bus_home(bus)
-}
-
-///|
-/// A program run to its end (`proc.run`), its stdout; none where it failed.
-async fn p53_run(host : @host.Host, command : String, args : Array[String], timeout_ms? : Int = 10000) -> String? {
-  match
-    (try {
-      Ok(
-        host.shell("proc.run", {
-          "command": Json::string(command),
-          "args": Json::array(args.map(a => Json::string(a))),
-          "timeoutMs": Json::number(timeout_ms.to_double()),
-        }),
-      )
-    } catch {
-      e => Err(e)
-    }) {
-    Ok((String(s), _)) => Some(s)
-    _ => None
   }
 }
 
@@ -315,7 +261,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     "jobs.json" => @jobs_host.job_json(at(0, "job"))
     "jobs.log" => jstr(self.jobs.log(text(0, "id"), num(1, "lines").unwrap_or(50.0).to_int()))
     "jobs.workspace" =>
-      jopt(jtext(p53_session_row(self.bus, text(0, "session")), "workspace"))
+      jopt(jtext(bus_session_row(self.bus, text(0, "session")), "workspace"))
     "jobs.say" => {
       self.jobs.tell_session(text(0, "session"), text(1, "text"))
       Json::null()
@@ -420,7 +366,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     "resources.watch.end" =>
       Json::string(
         self.resources.end(num(0, "pid").unwrap_or(-1.0).to_int(), text(1, "session")) catch {
-          P53Error(m) => raise @api_routes.Thrown("NotEndable", @jsjson.JV::of_json({ "message": Json::string(m) }))
+          P53Error(m) => raise @api_routes.Thrown("NotEndable", to_jv({ "message": Json::string(m) }))
           e => raise e
         },
       )
@@ -633,7 +579,7 @@ fn p53_route_match(pattern : String, path : String) -> Map[String, Json]? {
 /// request of this station, as the mesh would hand it: `bus.dispatch_peer`).
 async fn p53_parts_door(bus : LiveBus, r : Request) -> Reply {
   let path = r.path()
-  let body = if r.body.length() == 0 { Json::null() } else { attempt(() => @json.parse(p53_utf8(r.body))).unwrap_or(Json::null()) }
+  let body = if r.body.length() == 0 { Json::null() } else { attempt(() => @json.parse(@utf8.decode_lossy(r.body))).unwrap_or(Json::null()) }
   let query : Map[String, Json] = Map([])
   match r.query() {
     Some(q) =>
@@ -646,7 +592,7 @@ async fn p53_parts_door(bus : LiveBus, r : Request) -> Reply {
       }
     None => ()
   }
-  let viewer = jobj_of([("workspace", jopt(p53_home(bus))), ("home", jb(true)), ("role", jstr("owner")), ("name", jstr("a test"))])
+  let viewer = jobj_of([("workspace", jopt(bus_home(bus))), ("home", jb(true)), ("role", jstr("owner")), ("name", jstr("a test"))])
   try {
     if path.has_prefix("/parts/route/") {
       let target = path[12:].to_owned()
@@ -685,7 +631,7 @@ async fn p53_parts_door(bus : LiveBus, r : Request) -> Reply {
       return json_reply(200, all.get(field).unwrap_or(Json::null()))
     }
     if path.has_prefix("/parts/peer/") {
-      let (answer, _) = bus.dispatch_peer(jtext_or_empty(query |> Json::object, "from"), p53_home(bus), path[12:].to_owned(), body, None)
+      let (answer, _) = bus.dispatch_peer(jtext_or_empty(query |> Json::object, "from"), bus_home(bus), path[12:].to_owned(), body, None)
       return json_reply(200, answer)
     }
     json_reply(404, jobj_of([("error", jstr("no such place"))]))

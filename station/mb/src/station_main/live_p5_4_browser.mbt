@@ -451,7 +451,7 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
         }
       }
       if title == "" {
-        title = match p54_session_row(bus, session) {
+        title = match bus_session_row_opt(bus, session) {
           Some(row) => jtext(row, "title").unwrap_or("").trim().to_owned()
           None => ""
         }
@@ -465,7 +465,7 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
   ignore(
     bus.store.subscribe(change => match change {
       { "type": "session", "key": String(k), .. } =>
-        match p54_session_row(bus, k) {
+        match bus_session_row_opt(bus, k) {
           Some({ "running": True, .. }) => ()
           _ => hold.release_session(k)
         }

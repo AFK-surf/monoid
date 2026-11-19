@@ -342,28 +342,7 @@ async fn start_runner(
   if !named && find_command(program, env) is None {
     raise CommandMissing(program)
   }
-  let given = ["--dir", path([data, "run", "runners"]), "--id", id, "--cwd", cwd, "--", program, ..args]
-  // (lower than the station: ops/nice.ts)
-  let nice = agent_nice()
-  let (command, all_args) = if !is_windows() && nice > 0 && attempt(() => @drive.stat("/usr/bin/nice")) is Ok(_) {
-    ("/usr/bin/nice", ["-n", nice.to_string(), runner, ..given])
-  } else {
-    (runner, given)
-  }
-  let child = spawn(host, command, all_args, env~, stdout=Piped, stderr=Piped, group=true)
-  let (_, _, out, err) = child.finished()
-  let text = @utf8.decode_lossy(out)
-  for line in text.split("\n") {
-    let l = line.to_owned()
-    if l.has_prefix("{") {
-      match attempt(() => @json.parse(l)) {
-        Ok({ "ready": True, .. } as ready) => return ready
-        _ => ()
-      }
-    }
-  }
-  let why = @utf8.decode_lossy(err).trim().to_owned()
-  raise LiveError("the runner did not start: \{if why == "" { text.trim().to_owned() } else { why }}")
+  start_runner_proc(host, runner, data, id, program, args, env~, cwd, use_nice=true)
 }
 
 // ── the agents' processes read by the program (mb-agents.ts) ──

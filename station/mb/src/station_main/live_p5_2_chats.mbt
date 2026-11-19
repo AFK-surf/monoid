@@ -929,11 +929,6 @@ async fn P52::dep(
 // ── the agents' tools ──
 
 ///|
-fn rjs(s : String) -> @api_routes.JV {
-  Str(s)
-}
-
-///|
 /// What the tools ask the station's parts by name (mcp_tools `ToolsBackend`): the conversations', the endpoint's own
 /// (`mcp.*`), the log; what is another part's goes to it over the bus.
 fn P52::tools_backend(self : P52) -> @mcp_tools.ToolsBackend {
@@ -949,12 +944,9 @@ async fn P52::tools_call(
   args : Array[@api_routes.JV],
 ) -> @api_routes.JV {
   let a = (i : Int32) => args.get(i).unwrap_or(Null)
-  let s = (i : Int32) => {
-    match a(i) {
-      Str(x) => x
-      _ => ""
-    }
-  }
+  let s = (i : Int32) => match a(i) { Str(x) => x; _ => "" }
+  let opt_s = (i : Int32) => match a(i) { Str(x) => Some(x); _ => None }
+  let jopt_jv = (x : String?) => match x { Some(t) => @api_routes.JV::Str(t); None => Null }
   let w = self.chats_world()
   let thrown = (e : Error) => {
     match e {
@@ -965,12 +957,12 @@ async fn P52::tools_call(
           } else {
             kind
           },
-          @api_routes.jobj([("message", rjs(m))]),
+          @api_routes.jobj([("message", Str(m))]),
         )
       other =>
         @api_routes.Thrown(
           "Error",
-          @api_routes.jobj([("message", rjs(said_of(other)))]),
+          @api_routes.jobj([("message", Str(said_of(other)))]),
         )
     }
   }
@@ -982,7 +974,7 @@ async fn P52::tools_call(
   match name {
     "mcp.resolve" =>
       match self.store("sessionKeyByToken", [jstr(s(0))]) {
-        String(k) => rjs(k)
+        String(k) => Str(k)
         _ => @api_routes.jundef
       }
     "mcp.listing" => {
@@ -1007,9 +999,9 @@ async fn P52::tools_call(
       if self.bound() && self.in_its_workspace(s(0)) {
         @api_routes.jundef
       } else {
-        rjs(@mcp_tools.unbound_refusal)
+        Str(@mcp_tools.unbound_refusal)
       }
-    "hub.store.handedTo" => @jsjson.JV::of_json(self.store("handedTo", [jstr(s(0))]))
+    "hub.store.handedTo" => to_jv(self.store("handedTo", [jstr(s(0))]))
     "sessions/conversations.target" =>
       run(async fn() {
         @session_chats.target(
@@ -1040,7 +1032,7 @@ async fn P52::tools_call(
         chat_state.refs[id] = J::Arr(copies.map(@jsjson.JValue::of_string))
         @api_routes.jobj([
           ("args", given),
-          ("done", @api_routes.jobj([("$ref", rjs(id))])),
+          ("done", @api_routes.jobj([("$ref", Str(id))])),
         ])
       })
     "sessions/conversations.unheld" =>
@@ -1051,7 +1043,7 @@ async fn P52::tools_call(
           (
             "id",
             match held.id {
-              Some(i) => rjs(i)
+              Some(i) => Str(i)
               None => Null
             },
           ),
@@ -1067,154 +1059,57 @@ async fn P52::tools_call(
           },
           args: @api_routes.jget(Some(held), "args").unwrap_or(a(2)),
         }
-        rjs(@session_chats.chat_post(w, s(1), a(2), h))
+        Str(@session_chats.chat_post(w, s(1), a(2), h))
       })
     "sessions/conversations.chatState" =>
-      run(async fn() { rjs(@session_chats.chat_state(w, s(1), a(2))) })
+      run(async fn() { Str(@session_chats.chat_state(w, s(1), a(2))) })
     "sessions/conversations.chatLeave" =>
-      run(async fn() { rjs(@session_chats.chat_leave(w, s(1), a(2))) })
+      run(async fn() { Str(@session_chats.chat_leave(w, s(1), a(2))) })
     "sessions/conversations.chatHistory" =>
-      run(async fn() { rjs(@session_chats.chat_history(w, s(1), a(2))) })
+      run(async fn() { Str(@session_chats.chat_history(w, s(1), a(2))) })
     "sessions/conversations.slackApi" =>
       run(async fn() {
-        rjs(
-          @session_chats.slack_api(
-            w,
-            s(1),
-            s(2),
-            a(3),
-            match a(4) {
-              Str(x) => Some(x)
-              _ => None
-            },
-            match a(5) {
-              Str(x) => Some(x)
-              _ => None
-            },
-            a(6) is Bool(true),
-          ),
-        )
+        Str(@session_chats.slack_api(w, s(1), s(2), a(3), opt_s(4), opt_s(5), a(6) is Bool(true)))
       })
     "sessions/messages.sessionSend" =>
-      run(async fn() { rjs(@session_chats.session_send(w, s(1), a(2))) })
+      run(async fn() { Str(@session_chats.session_send(w, s(1), a(2))) })
     "sessions/opened.chatCreate" =>
-      run(async fn() { rjs(@session_chats.chat_create(w, s(1), a(2))) })
+      run(async fn() { Str(@session_chats.chat_create(w, s(1), a(2))) })
     "sessions/review.suggestArchive" => {
       let key = s(1)
-      ignore(
-        self.host.rt.fork_quiet(name="suggest archive", async fn() {
-          @session_chats.review(w, key) catch {
-            _ => ()
-          }
-        }),
-      )
+      ignore(self.host.rt.fork_quiet(name="suggest archive", async fn() { @session_chats.review(w, key) catch { _ => () } }))
       Null
     }
     "sessions/review.reviewUndecided" => {
-      ignore(
-        self.host.rt.fork_quiet(name="review undecided", async fn() {
-          @session_chats.review_undecided_once(w) catch {
-            _ => ()
-          }
-        }),
-      )
+      ignore(self.host.rt.fork_quiet(name="review undecided", async fn() { @session_chats.review_undecided_once(w) catch { _ => () } }))
       Null
     }
-    "sessions/review.policyWs" =>
-      match self.ws_of(s(1)) {
-        Some(ws) => rjs(ws)
-        None => Null
-      }
+    "sessions/review.policyWs" => jopt_jv(self.ws_of(s(1)))
     "sessions/archive-policy.currentPolicy" =>
-      run(async fn() {
-        @jsjson.JV::of_json(
-          self
-          .storage()
-          .current_policy(
-            match a(1) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          )
-          .to_json(),
-        )
-      })
+      run(async fn() { to_jv(self.storage().current_policy(opt_s(1)).to_json()) })
     "sessions/archive-policy.savePolicy" =>
-      run(async fn() {
-        match
-          self
-          .storage()
-          .save_policy(
-            Some(@jsjson.JV::to_json(a(1))),
-            @jsjson.JV::to_json(a(2)),
-            match a(3) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          ) {
-          Some(t) => rjs(t)
-          None => Null
-        }
-      })
+      run(async fn() { jopt_jv(self.storage().save_policy(Some(of_jv(a(1))), of_jv(a(2)), opt_s(3))) })
     "sessions/chat-archive.chatArchive" =>
-      run(async fn() {
-        rjs(self.storage().chat_archive(s(1), @jsjson.JV::to_json(a(2))))
-      })
+      run(async fn() { Str(self.storage().chat_archive(s(1), of_jv(a(2)))) })
     "sessions/chat-configure.chatConfigure" =>
-      run(async fn() {
-        rjs(self.storage().chat_configure(s(1), @jsjson.JV::to_json(a(2))))
-      })
+      run(async fn() { Str(self.storage().chat_configure(s(1), of_jv(a(2)))) })
     "sessions/others.chatList" =>
-      run(async fn() { rjs(self.storage().chat_list(s(1), @jsjson.JV::to_json(a(2)))) })
-    "sessions/others.scopeOf" =>
-      match self.storage().scope_of(s(1)) {
-        Some(x) => rjs(x)
-        None => Null
-      }
+      run(async fn() { Str(self.storage().chat_list(s(1), of_jv(a(2)))) })
+    "sessions/others.scopeOf" => jopt_jv(self.storage().scope_of(s(1)))
     "sessions/others.chatRead" =>
-      run(async fn() {
-        rjs(
-          self
-          .storage()
-          .chat_read(
-            s(1),
-            @jsjson.JV::to_json(a(2)),
-            None,
-            match a(4) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          ),
-        )
-      })
+      run(async fn() { Str(self.storage().chat_read(s(1), of_jv(a(2)), None, opt_s(4))) })
     "sessions/others.sessionHistory" =>
-      run(async fn() {
-        rjs(
-          self
-          .storage()
-          .session_history(
-            @jsjson.JV::to_json(a(1)),
-            match a(2) {
-              Str(x) => Some(x)
-              _ => None
-            },
-          ),
-        )
-      })
-    "sessions/others.elsewhere" =>
-      match self.storage().elsewhere(s(1), s(2)) {
-        Some(x) => rjs(x)
-        None => Null
-      }
+      run(async fn() { Str(self.storage().session_history(of_jv(a(1)), opt_s(2))) })
+    "sessions/others.elsewhere" => jopt_jv(self.storage().elsewhere(s(1), s(2)))
     "sessions/others.readAfar" =>
       run(async fn() {
-        rjs(self.storage().read_afar(s(1), s(2), s(3), @jsjson.JV::to_json(a(4))))
+        Str(self.storage().read_afar(s(1), s(2), s(3), of_jv(a(4))))
       })
     "sessions/others.linkedSession" =>
       match @session_storage.linked_session(s(0)) {
         Some((k, n)) =>
           @api_routes.jarr([
-            rjs(k),
+            Str(k),
             match n {
               Some(x) => @api_routes.jnum(x.to_double())
               None => Null
@@ -1222,7 +1117,7 @@ async fn P52::tools_call(
           ])
         None => Null
       }
-    "paths.data" => rjs(self.data)
+    "paths.data" => Str(self.data)
     // ── the relays tool's (agents.ts `relayTools`) ──
     "relays.ways" =>
       if (self.bus.cloud_state.val)() is Some(_) {
@@ -1230,81 +1125,49 @@ async fn P52::tools_call(
       } else {
         Null
       }
-    "relays.workspaceOf" =>
-      match self.ws_of(s(0)) {
-        Some(ws) => rjs(ws)
-        None =>
-          match self.place().home {
-            Some(h) => rjs(h)
-            None => Null
-          }
-      }
+    "relays.workspaceOf" => jopt_jv(either(self.ws_of(s(0)), self.place().home))
     // (agents.ts `meshList`, `revoke`, `enroll`: the mesh directory's, P5-1's on the bus)
     "relays.meshList" =>
-      match (self.bus.cloud_call.val)("meshList", { "workspace": @jsjson.JV::to_json(a(0)) }) {
+      match (self.bus.cloud_call.val)("meshList", { "workspace": of_jv(a(0)) }) {
         Null => @api_routes.jarr([])
-        said => @jsjson.JV::of_json(said)
+        said => to_jv(said)
       }
     // (where no mesh answers them, a program with no P5-1's: refused as agents.ts refuses them with no directory)
     "relays.revoke" =>
-      match (self.bus.cloud_call.val)("meshRevoke", { "workspace": @jsjson.JV::to_json(a(0)), "node": @jsjson.JV::to_json(a(1)) }) {
+      match (self.bus.cloud_call.val)("meshRevoke", { "workspace": of_jv(a(0)), "node": of_jv(a(1)) }) {
         Null => fail("native mesh relay control is not available on this station")
-        said => @jsjson.JV::of_json(said)
+        said => to_jv(said)
       }
     "relays.enroll" =>
-      match
-        (self.bus.cloud_call.val)("meshEnroll", {
-          "workspace": @jsjson.JV::to_json(a(0)),
-          "name": @jsjson.JV::to_json(a(1)),
-          "by": @jsjson.JV::to_json(a(2)),
-        }) {
+      match (self.bus.cloud_call.val)("meshEnroll", { "workspace": of_jv(a(0)), "name": of_jv(a(1)), "by": of_jv(a(2)) }) {
         Null => fail("native mesh relay enrollment is not available on this station")
-        said => @jsjson.JV::of_json(said)
+        said => to_jv(said)
       }
     "relays.by" => {
       let row = self.store("getSession", [jstr(s(0))]) catch { _ => Json::null() }
-      rjs(@session_hub.agent_name(jtext(row, "title"), s(0)))
+      Str(@session_hub.agent_name(jtext(row, "title"), s(0)))
     }
-    "ways.view" => @jsjson.JV::of_json((self.bus.cloud_call.val)("ways", { "workspace": @jsjson.JV::to_json(a(0)) }))
-    "ways.cloud.state" =>
-      match (self.bus.cloud_state.val)() {
-        Some(st) => @jsjson.JV::of_json(st)
-        None => @api_routes.jundef
-      }
-    "mesh/ways.stillFails" => @jsjson.JV::of_json((self.bus.cloud_call.val)("stillFails", Json::null()))
-    "mesh/ways.relayUrl" =>
-      match @cloud_net.relay_url(@jsjson.JV::to_json(a(0)), insecure=a(1) is Bool(true)) {
-        Some(u) => rjs(u)
-        None => Null
-      }
+    "ways.view" => to_jv((self.bus.cloud_call.val)("ways", { "workspace": of_jv(a(0)) }))
+    "ways.cloud.state" => (self.bus.cloud_state.val)().map(to_jv).unwrap_or(@api_routes.jundef)
+    "mesh/ways.stillFails" => to_jv((self.bus.cloud_call.val)("stillFails", Json::null()))
+    "mesh/ways.relayUrl" => jopt_jv(@cloud_net.relay_url(of_jv(a(0)), insecure=a(1) is Bool(true)))
     "mesh/ways.addRelay" =>
-      @jsjson.JV::of_json((self.bus.cloud_call.val)("addRelay", { "workspace": @jsjson.JV::to_json(a(1)), "url": @jsjson.JV::to_json(a(2)), "by": @jsjson.JV::to_json(a(3)) }))
+      to_jv((self.bus.cloud_call.val)("addRelay", { "workspace": of_jv(a(1)), "url": of_jv(a(2)), "by": of_jv(a(3)) }))
     "mesh/ways.removeRelay" =>
-      @jsjson.JV::of_json((self.bus.cloud_call.val)("removeRelay", { "workspace": @jsjson.JV::to_json(a(1)), "url": @jsjson.JV::to_json(a(2)) }))
+      to_jv((self.bus.cloud_call.val)("removeRelay", { "workspace": of_jv(a(1)), "url": of_jv(a(2)) }))
     // (relays.ts `probeRelay`: a relay reached over https, its answer's status)
     "fetch" => {
-      let answer = (p5_oauth_io(self.host).fetch)({
-        url: s(0),
-        method_: "GET",
-        headers: [],
-        body: None,
-        timeout_ms: 10000,
-        manual: true,
-      })
+      let answer = (p5_oauth_io(self.host).fetch)({ url: s(0), method_: "GET", headers: [], body: None, timeout_ms: 10000, manual: true })
       @api_routes.jobj([("status", @api_routes.jnum(answer.status.to_double()))])
     }
     // ── the feedback's (feedback/module.ts) ──
-    "plane.spec" => @jsjson.JV::of_json((self.bus.cloud_call.val)("spec", Json::null()))
-    "plane.state.removed" => @jsjson.JV::of_json((self.bus.cloud_call.val)("removed", Json::null()))
-    "plane.state.state" =>
-      match (self.bus.cloud_state.val)() {
-        Some(st) => @jsjson.JV::of_json(st)
-        None => Null
-      }
+    "plane.spec" => to_jv((self.bus.cloud_call.val)("spec", Json::null()))
+    "plane.state.removed" => to_jv((self.bus.cloud_call.val)("removed", Json::null()))
+    "plane.state.state" => (self.bus.cloud_state.val)().map(to_jv).unwrap_or(Null)
     "cloud/signed.signedPost" =>
-      @jsjson.JV::of_json((self.bus.cloud_call.val)("signedPost", { "path": @jsjson.JV::to_json(a(2)), "tag": @jsjson.JV::to_json(a(3)), "value": @jsjson.JV::to_json(a(4)) }))
+      to_jv((self.bus.cloud_call.val)("signedPost", { "path": of_jv(a(2)), "tag": of_jv(a(3)), "value": of_jv(a(4)) }))
     "ops/agent-env.agentEnv" =>
-      @jsjson.JV::of_json(Json::object(Map::from_array(@ops_platform.agent_env((self.bus.config_raw.val)()).map(kv => (kv.0, Json::string(kv.1))))))
+      to_jv(Json::object(Map::from_array(@ops_platform.agent_env((self.bus.config_raw.val)()).map(kv => (kv.0, Json::string(kv.1))))))
     "agents.hub.notify" => {
       ignore(self.the_hub().command(s(0), "notify", [jstr(s(1))]))
       Null
@@ -1324,7 +1187,7 @@ async fn P52::tools_call(
           match
             (jtext(st, "origin"), jtext(st, "workspace"), jtext(st, "station")) {
             (Some(o), Some(ws), Some(station)) =>
-              rjs("\{o}/w/\{ws}/s/\{station}")
+              Str("\{o}/w/\{ws}/s/\{station}")
             _ => Null
           }
         _ => Null
@@ -1334,27 +1197,27 @@ async fn P52::tools_call(
         _ => Json::null()
       }
       let title = jtext(row, "title")
-      rjs(@session_hub.agent_name(title, s(0)))
+      Str(@session_hub.agent_name(title, s(0)))
     }
     // (paths.ts `joinPath`: a path given whole stays as it is)
     "ops/paths.joinPath" =>
-      rjs(
+      Str(
         if is_windows() {
           @ops_platform.win_join(s(0), s(1))
         } else {
           @ops_platform.unix_join(s(0), s(1))
         },
       )
-    "os.hostname" => rjs(hostname())
-    "ops/version.version" => rjs(self.bus.version)
+    "os.hostname" => Str(hostname())
+    "ops/version.version" => Str(self.bus.version)
     "agents.pageOf" =>
       match self.page_of(s(0)) {
-        Some(l) => rjs(l)
+        Some(l) => Str(l)
         None => @api_routes.jundef
       }
     _ => {
       if name.has_prefix("store.") {
-        return @jsjson.JV::of_json(self.store(name[6:].to_owned(), args.map(@jsjson.JV::to_json)))
+        return to_jv(self.store(name[6:].to_owned(), args.map(of_jv)))
       }
       // (a file the tools opened, `fs.open`: its size, a piece of it, let go)
       if name.has_prefix("toolfile:") {
@@ -1400,19 +1263,19 @@ async fn P52::tools_call(
         return Null
       }
       if name.has_prefix("ops/log.log.") {
-        slice_log(name[12:].to_owned(), s(0), s(1), @jsjson.JV::to_json(a(2)))
+        slice_log(name[12:].to_owned(), s(0), s(1), of_jv(a(2)))
         return Null
       }
       // (the forwards' are the gate's (P5-1 `@gate.Forwards`), answered on the bus as `$forwards`; the jobs' part
       // where no gate answers)
       if name.has_prefix("forwards.") {
-        let given = args.map(@jsjson.JV::to_json)
+        let given = args.map(of_jv)
         let answered = Some(
           self.bus.forwards_call(name, given),
         ) catch {
           _ => None
         }
-        return @jsjson.JV::of_json(
+        return to_jv(
           match answered {
             Some(v) => v
             None => (self.bus.jobs_ask.val)(name, Json::array(given))
@@ -1437,7 +1300,7 @@ async fn P52::tools_call(
       } else {
         self.bus.coord_ask
       }
-      @jsjson.JV::of_json((to.val)(name, Json::array(args.map(@jsjson.JV::to_json))))
+      to_jv((to.val)(name, Json::array(args.map(of_jv))))
     }
   }
 }
@@ -1513,12 +1376,12 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
   // (what the station's other parts add: tools/mcp.ts takes them as their own; one a part registers under a name
   // listed here is the part's, in that place: its instance holds the part's state, ours only asks it on the bus)
   for t in self.bus.parts.all_tools() {
-    let tool = @mcp_tools.Tool::new(@jsjson.JV::of_json(t.declared), async fn(
+    let tool = @mcp_tools.Tool::new(to_jv(t.declared), async fn(
       session,
       args,
       _,
     ) {
-      let out = (t.call)(@jsjson.JV::to_json(args), { "session": jstr(session) })
+      let out = (t.call)(of_jv(args), { "session": jstr(session) })
       match out {
         String(text) => text
         // (a part's refusal stays one: the call said as failed, isError)
@@ -1557,7 +1420,7 @@ async fn P52::mcp(self : P52, r : Request) -> Reply {
   })
   let answered = endpoint.handle(r.meth, r.header("authorization"), r.body)
   match answered.body {
-    Some(b) => json_reply(answered.status, @jsjson.JV::to_json(b))
+    Some(b) => json_reply(answered.status, of_jv(b))
     None => { status: answered.status, headers: [], body: b"", }
   }
 }

@@ -120,6 +120,15 @@ fn jwith(j : Json, k : String, v : Json) -> Json {
 }
 
 ///|
+/// Ensure a peer request object carries `"method": meth` (a copy; non-objects become `{"method": meth}`).
+fn with_method(params : Json, meth : String) -> Json {
+  match params {
+    Object(m) if m.contains("method") => params
+    _ => jwith(params, "method", Json::string(meth))
+  }
+}
+
+///|
 /// What JSON.stringify(v, null, 2) writes.
 fn jpretty(v : Json) -> String {
   v.stringify(indent=2)

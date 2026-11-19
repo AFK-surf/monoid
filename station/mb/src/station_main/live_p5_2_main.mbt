@@ -42,7 +42,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       lang=(bus.lang.val)(),
     ),
     cwords: @session_chats.Words::new(to_jv(zh), to_jv(en)),
-    rwords: @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en)),
+    rwords: @api_routes.Words::new(to_jv(zh), to_jv(en)),
     files: p52_cold_files(bus),
     config: Json::object({
       "dataDir": jstr(bus.data),

@@ -161,16 +161,6 @@ fn connection_of(
 // ── Feishu ──
 
 ///|
-fn feishu_jv(j : @jsjson.JValue) -> @feishu.JV {
-  @jsjson.JV::of_js(j)
-}
-
-///|
-fn of_feishu(v : @feishu.JV) -> @jsjson.JValue {
-  v
-}
-
-///|
 /// A Feishu connect as the connects hand it back (`FeishuConnect::to_jv`'s fields, flat).
 fn feishu_connect_of(j : @jsjson.JValue) -> @feishu.FeishuConnect? {
   let c = of_jv(j)
@@ -239,8 +229,8 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       bot_id: jtext_or_empty(c, "botId"),
     })
   })
-  base.hooked(identify=async fn() { of_feishu(s.identify().to_jv()) }, address=async fn() { s.address() }, run_socket=async fn(url, handler) {
-    let hooks = s.socket_hooks(url, async fn(e) { handler(of_feishu(e)) })
+  base.hooked(identify=async fn() { s.identify().to_jv() }, address=async fn() { s.address() }, run_socket=async fn(url, handler) {
+    let hooks = s.socket_hooks(url, async fn(e) { handler(e) })
     let wrap = (sock : @connects_hub.Socket) => ({ send: sock.send, is_open: () => true } : @feishu.Socket)
     base.socket_to(url, {
       opened: sock => (hooks.opened)(wrap(sock)),
@@ -251,7 +241,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
     })
   }, look_up=async fn(user) {
     match s.look_up(user) {
-      Some(p) => Some(of_feishu(p.to_jv()))
+      Some(p) => Some(p.to_jv())
       None => None
     }
   }, look_up_email=async fn(user) { s.look_up_email(user) })
@@ -263,7 +253,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       "sessionLink" => Some(opt(s.session_link()))
       "knownPerson" =>
         Some(match s.known_person(txt(a, 0)) {
-          Some(p) => of_feishu(p.to_jv())
+          Some(p) => p.to_jv()
           None => Null
         })
       "knownChannel" => Some(opt(s.known_channel(txt(a, 0))))
@@ -283,11 +273,11 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
           Some(Arr(xs)) => xs.map(f => ({ path: jv_text(f, "path").unwrap_or(""), name: jv_text(f, "name").unwrap_or("") } : @feishu.Attachment))
           _ => []
         }
-        let card = match a.get(3) { Some(Null) | None => None; Some(c) => Some(feishu_jv(c)) }
+        let card = match a.get(3) { Some(Null) | None => None; Some(c) => Some(c) }
         Some(to_jv(Json::string(s.post(feishu_thread(a.get(0)), txt(a, 1), files, card~))))
       }
       "cardEnded" => {
-        s.card_ended(feishu_thread(a.get(0)), txt(a, 1), txt(a, 2), a.get(3).map(feishu_jv), feishu_card_end(a.get(4)))
+        s.card_ended(feishu_thread(a.get(0)), txt(a, 1), txt(a, 2), a.get(3), feishu_card_end(a.get(4)))
         Some(Null)
       }
       "download" => {
@@ -296,10 +286,10 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
         Some(to_jv(Json::string(@drive.hex(s.download(file)))))
       }
       "history" =>
-        Some(Arr(s.history(feishu_thread(a.get(0)), txt(a, 1), match a.get(2) { Some(Num(n)) => n.to_int(); _ => 50 }).map(m => of_feishu(m.to_jv()))))
+        Some(Arr(s.history(feishu_thread(a.get(0)), txt(a, 1), match a.get(2) { Some(Num(n)) => n.to_int(); _ => 50 }).map(m => m.to_jv())))
       "quoted" =>
         Some(match s.quoted(feishu_thread(a.get(0)), txt(a, 1)) {
-          Some(m) => of_feishu(m.to_jv())
+          Some(m) => m.to_jv()
           None => Null
         })
       "places" => Some(Arr(s.places().map(p => to_jv({ "id": Json::string(p.id), "name": Json::string(p.name), "kind": Json::string(p.kind) }))))
@@ -314,8 +304,8 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       "userEmail" => Some(opt(s.user_email(txt(a, 0))))
       "userOf" => Some(opt(s.user_of(txt(a, 0))))
       "api" =>
-        Some(match s.api(txt(a, 0), feishu_jv(a.get(1).unwrap_or(Null))) {
-          Data(v) => of_feishu(v)
+        Some(match s.api(txt(a, 0), a.get(1).unwrap_or(Null)) {
+          Data(v) => v
           File(bytes, name, kind) => to_jv({ "file": Json::string(@drive.hex(bytes)), "name": Json::string(name), "type": Json::string(kind) })
         })
       _ => None
@@ -339,7 +329,7 @@ fn feishu_book(book : @connects_hub.NameBook) -> @feishu.NameBook {
   {
     person: (key, fetch, stale) => match book.person(key, async fn() {
         match fetch() {
-          Some(p) => Some(of_feishu(p.to_jv()))
+          Some(p) => Some(p.to_jv())
           None => None
         }
       }, stale=(known, at) => stale({ name: jv_text(known, "name").unwrap_or(""), email: jv_text(known, "email").unwrap_or("") }, at)) {
@@ -366,7 +356,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
   let connects = @connects_hub.make_connects(options, {
     kind: "feishu",
     names: "feishu-names.json",
-    connects: raw => @feishu.feishu_connects(feishu_jv(raw)).map(c => of_feishu(c.to_jv())),
+    connects: raw => @feishu.feishu_connects(raw).map(c => c.to_jv()),
     credentials: c => match feishu_connect_of(c) {
       Some(fc) => @feishu.credentials(fc)
       None => None
@@ -389,12 +379,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
         bot_id: jtext_or_empty(id, "botId"),
       }
       match @feishu.seen_patch(fc, identity) {
-        Some(patch) =>
-          Some(entry => {
-            let e = feishu_jv(entry)
-            patch(e)
-            of_feishu(e)
-          })
+        Some(patch) => Some(entry => { patch(entry); entry })
         None => None
       }
     },
@@ -405,7 +390,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
   })
   // (the apps being made by a scan before a restart, known before the overview lists them)
   bus.parts.overview("feishuRegistrations", async fn(viewer, _lang) {
-    of_jv(of_feishu(feishu.overview(jtext_or_empty(viewer, "email"), jtext(viewer, "workspace"))))
+    of_jv(feishu.overview(jtext_or_empty(viewer, "email"), jtext(viewer, "workspace")))
   })
   ignore(feishu.registrations.on_change(() => (bus.overview_changed.val)()))
   // feishu_api for the agents (feishu/tool.ts), where the agents' part offers it not; `feishu.api` for its.
@@ -416,11 +401,11 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
     [
       {
         name: "feishu_api",
-        declared: of_jv(of_feishu(declared)),
+        declared: of_jv(declared),
         call: async fn(args, context) {
           tool_said(async fn() {
             let session = self.session_of(context)
-            Json::string(run(session, feishu_jv(to_jv(args))))
+            Json::string(run(session, to_jv(args)))
           })
         },
       },
@@ -428,34 +413,34 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
   )
   self.op("feishu.api", async fn(arg) {
     match arg {
-      Array([String(session), args, ..]) => Json::string(run(session, feishu_jv(to_jv(args))))
+      Array([String(session), args, ..]) => Json::string(run(session, to_jv(args)))
       _ => raise BusError("feishu.api: [session, args]")
     }
   })
   // What the admin API's Feishu routes ask (api_routes kinds2.mbt): an app's credentials verified, its domain, the
   // apps made by a scan begun, completed, called off.
   self.op("feishu/surface.verifyFeishuApp", async fn(arg) {
-    let a = core_items(arg)
+    let a = jitems(arg)
     let s = (i : Int) => match a.get(i) { Some(String(x)) => x; _ => "" }
     let (identity, errors) = @feishu.verify_feishu_app(net, words, s(0), s(1), s(2), lang=s(3))
     Json::array([
       match identity {
-        Some(i) => of_jv(of_feishu(i.to_jv()))
+        Some(i) => of_jv(i.to_jv())
         None => Json::null()
       },
       Json::array(errors.map(Json::string(_))),
     ])
   })
   self.op("feishu/web.domainOf", async fn(arg) {
-    Json::string(@feishu.domain_of(match core_items(arg).get(0) { Some(Null) | None => None; Some(v) => Some(@feishu.JV::of_json(v)) }))
+    Json::string(@feishu.domain_of(match jitems(arg).get(0) { Some(Null) | None => None; Some(v) => Some(@feishu.JV::of_json(v)) }))
   })
   self.op("feishu.registrations.start", async fn(arg) {
-    let save = core_items(arg).get(0).unwrap_or(Json::null())
-    feishu.registrations.start(async fn(reg) { self.called_text(save, [of_jv(of_feishu(reg.jv()))]) })
+    let save = jitems(arg).get(0).unwrap_or(Json::null())
+    feishu.registrations.start(async fn(reg) { self.called_text(save, [of_jv(reg.jv())]) })
     Json::null()
   })
   self.op("feishu.registrations.begin", async fn(arg) {
-    let a = core_items(arg)
+    let a = jitems(arg)
     let s = (i : Int) => match a.get(i) { Some(String(x)) => Some(x); _ => None }
     let reg = feishu.registrations.begin(
       s(0).unwrap_or(""),
@@ -464,16 +449,16 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
       context=@feishu.JV::of_json(a.get(3).unwrap_or(Json::null())),
       workspace=s(4),
     )
-    of_jv(of_feishu(reg.jv()))
+    of_jv(reg.jv())
   })
   self.op("feishu.registrations.complete", async fn(arg) {
-    let a = core_items(arg)
+    let a = jitems(arg)
     let s = (i : Int) => match a.get(i) { Some(String(x)) => x; _ => "" }
     let save = a.get(3).unwrap_or(Json::null())
-    jopt(feishu.registrations.complete(s(0), s(1), s(2), async fn(reg) { self.called_text(save, [of_jv(of_feishu(reg.jv()))]) }))
+    jopt(feishu.registrations.complete(s(0), s(1), s(2), async fn(reg) { self.called_text(save, [of_jv(reg.jv())]) }))
   })
   self.op("feishu.registrations.cancel", async fn(arg) {
-    let a = core_items(arg)
+    let a = jitems(arg)
     let s = (i : Int) => match a.get(i) { Some(String(x)) => x; _ => "" }
     Json::boolean(feishu.registrations.cancel(s(0), s(1), workspace=s(2)))
   })
@@ -504,7 +489,7 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
         _ => ""
       }
       guard t.rev_find("/") is Some(cut) && cut > 0 && cut < t.length() - 1 else {
-        raise BusError("to must look like CHANNEL/THREAD_TS, got \{of_jv(of_feishu(to)).stringify()}")
+        raise BusError("to must look like CHANNEL/THREAD_TS, got \{of_jv(to).stringify()}")
       }
       let rows = bus.db.all(
         "SELECT ts.connect FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.channel = ? AND t.thread_ts = ?",
@@ -518,7 +503,7 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
     chat_api: id => match connects.chats(id) {
       Some(chat) =>
         Some(async fn(meth, params) {
-          let v = of_jv((chat.call)("api", [to_jv(Json::string(meth)), of_feishu(params)]))
+          let v = of_jv((chat.call)("api", [to_jv(Json::string(meth)), params]))
           match jtext(v, "file") {
             Some(h) => File(unhex_lenient(h), jtext_or_empty(v, "name"), jtext_or_empty(v, "type"))
             None => Data(@feishu.JV::of_json(v))
@@ -681,7 +666,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
         },
         all: async fn(sql, args) { rows(sql, args) },
         run: async fn(sql, args) { ignore(db.all(sql, args.map(of_jv))) },
-        thread_sessions: async fn(thread) { core_items(self.hub("store.threadSessions", [Json::number(thread)])).map(to_jv) },
+        thread_sessions: async fn(thread) { jitems(self.hub("store.threadSessions", [Json::number(thread)])).map(to_jv) },
         get_session: async fn(key) {
           match (try { Ok(bus.store.get_session(key)) } catch { e => Err(e) }) {
             Ok(r) => to_jv(r)
@@ -783,7 +768,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
   // (what offers Comma as a platform in the connect wizard)
   bus.parts.overview("comma", async fn(_viewer, _lang) { Json::boolean(true) })
   self.op("comma/index.commaLine", async fn(arg) {
-    match @comma.comma_line(match core_items(arg).get(0) { Some(String(l)) => l; _ => "" }) {
+    match @comma.comma_line(match jitems(arg).get(0) { Some(String(l)) => l; _ => "" }) {
       Some((server, token)) => { "server": Json::string(server), "token": Json::string(token) }
       None => Json::null()
     }

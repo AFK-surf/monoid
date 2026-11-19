@@ -167,7 +167,7 @@ fn P54DevWorld::sock_of(self : P54DevWorld, v : Json?) -> P54Sock raise {
 ///|
 /// The process table (platform `processTable`): each process's pid, parent and group.
 async fn p54_process_table(host : @host.Host) -> Json {
-  let (code, out, _) = p54_run(host, "ps", ["-axo", "pid=,ppid=,pgid="]) catch { _ => return Json::null() }
+  let (code, out, _) = run_cmd(host, "ps", ["-axo", "pid=,ppid=,pgid="]) catch { _ => return Json::null() }
   if code != Some(0) {
     return Json::null()
   }
@@ -188,7 +188,7 @@ async fn p54_port_pids(host : @host.Host, port : Int) -> Json {
   let me = @drive.pid()
   if platform() == "darwin" {
     // (lsof -i names the sockets either end of which is on the port: the listener's own end is this process's)
-    let (_, out, _) = p54_run(host, "lsof", ["-nP", "-a", "-iTCP@127.0.0.1:\{port}", "-sTCP:ESTABLISHED", "-Fp"]) catch {
+    let (_, out, _) = run_cmd(host, "lsof", ["-nP", "-a", "-iTCP@127.0.0.1:\{port}", "-sTCP:ESTABLISHED", "-Fp"]) catch {
       _ => return Json::array([])
     }
     let pids : Array[Int] = []
@@ -308,7 +308,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       } else if pids.length() > 0 {
         // (lsof exits 1 where one of them is gone: what it found is still said)
         let list = pids.map(p => p54_int(Some(p)).to_string()).join(",")
-        let (_, said, _) = p54_run(host, "lsof", ["-a", "-d", "cwd", "-p", list, "-Fpn"]) catch { _ => (None, "", "") }
+        let (_, said, _) = run_cmd(host, "lsof", ["-a", "-d", "cwd", "-p", list, "-Fpn"]) catch { _ => (None, "", "") }
         let mut pid = -1
         for line in said.split("\n") {
           if line.has_prefix("p") {
@@ -347,22 +347,13 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     "proc.run" => {
       let o = a(0)
       let env = if opt_true(opt_field(o, "adbEnv")) { Some(env_all() + [("ADB_MDNS_AUTO_CONNECT", "0")]) } else { None }
-      let proc = spawn(host, opt_text(o, "file").unwrap_or(""), opt_strs(opt_field(o, "args")), env?, stdout=Piped, stderr=Piped, group=true)
-      let ms = match opt_num(opt_field(o, "timeout")) {
-        Some(t) if t > 0.0 => t.to_int()
-        _ => 2147483647
-      }
-      match @effect.timeout(ms, async fn() { proc.finished() }) {
-        Some((code, _, out, err)) =>
-          {
-            "code": code.map(c => Json::number(c.to_double())).unwrap_or(Json::null()),
-            "out": Json::string(@utf8.decode_lossy(out)),
-            "err": Json::string(@utf8.decode_lossy(err)),
-          }
-        None => {
-          ignore(kill(proc.pid, "SIGKILL", group=true))
+      let ms = match opt_num(opt_field(o, "timeout")) { Some(t) if t > 0.0 => t.to_int(); _ => 0 }
+      match run_capture(host, opt_text(o, "file").unwrap_or(""), opt_strs(opt_field(o, "args")), env?, ms~, group=true) {
+        Some((_, _, _, _, true)) =>
           { "timedOut": Json::boolean(true), "code": Json::null(), "out": Json::string(""), "err": Json::string("") }
-        }
+        Some((code, _, out, err, false)) =>
+          { "code": code.map(ji).unwrap_or(Json::null()), "out": jstr(out), "err": jstr(err) }
+        None => raise SysError("spawn failed")
       }
     }
     "proc.start" => {

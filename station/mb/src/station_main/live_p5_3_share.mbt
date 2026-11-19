@@ -77,7 +77,7 @@ fn P53Share::cloud(self : P53Share) -> @share_sync.Cloud {
     peers_current: () => state() is Some(_) && !removed() && (bus.cloud_reached.val)(),
     memberships,
     membership: ws => memberships().iter().find_first(m => m.workspace == ws),
-    home: () => if removed() { None } else { p53_home(bus) },
+    home: () => if removed() { None } else { bus_home(bus) },
     removed,
     listen: f => (bus.cloud_listen.val)(_ => f()),
   }
@@ -106,10 +106,7 @@ fn P53Share::config(self : P53Share) -> @share_sync.Config {
 ///|
 /// The agents' home (sessions/agents.ts `settings().agentHome`): config.json's, else `<data>/agent`.
 fn P53Share::agent_home(self : P53Share) -> String {
-  match jtext((self.bus.config_raw.val)(), "agentHome") {
-    Some(h) if h != "" => h
-    _ => @nodepath.join(sep(), [self.bus.data, "agent"])
-  }
+  bus_agent_home(self.bus)
 }
 
 ///|
@@ -205,7 +202,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       machine_email: None,
       claude_token: async fn(profile, rejected) {
         let accounts = self.accounts.made()
-        let got = p53_json(accounts.claude_token(@jsjson.JV::of_json(profile), rejected, true))
+        let got = p53_json(accounts.claude_token(to_jv(profile), rejected, true))
         (jtext_or_empty(got, "token"), jnum_of(got, "expiresAt").unwrap_or(0.0))
       },
       codex_renew_running: async fn(profile) {
@@ -225,7 +222,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
         if self.accounts.accounts is Some(a) { a.shared_quota_reset(id) }
       }),
       profile_gone: Some(async fn(id) { bus.hub_profile_gone(id) }),
-      itself: Some(station => station == p53_station_id(bus)),
+      itself: Some(station => station == bus_station_id(bus)),
       codex_token_url: @share_sync.codex_token_url,
       fetch: async fn(url, body) {
         let answer = (self.accounts.oauth_io.fetch)({
@@ -308,16 +305,16 @@ fn P53Share::attach(self : P53Share) -> Unit {
       data: bus.data,
       store: sql.store(),
       cloud,
-      chat_ws: Some(session => match p53_session_row(bus, session) { Null => None; row => either(jtext(row, "ws"), p53_home(bus)) }),
+      chat_ws: Some(session => match bus_session_row(bus, session) { Null => None; row => either(jtext(row, "ws"), bus_home(bus)) }),
       ask: async fn(station, request) { self.ask(station, None, request) },
-      link: session => match p53_home(bus) {
+      link: session => match bus_home(bus) {
         Some(ws) => match p53_origin(bus) {
-          Some(o) => Some("\{o}/o/\{ws}/\{p53_station_id(bus)}/\{session}")
+          Some(o) => Some("\{o}/o/\{ws}/\{bus_station_id(bus)}/\{session}")
           None => None
         }
         None => None
       },
-      title: session => jtext_or_empty(p53_session_row(bus, session), "title"),
+      title: session => jtext_or_empty(bus_session_row(bus, session), "title"),
       touches: entry => match jfield(entry, "session") { String(s) => [s]; _ => [] },
       inbox: async fn(station, request) { bus.hub_inbox(station, request) },
       prepare_index: Some(() => index.request()),
@@ -372,7 +369,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
     {
       meth: "GET",
       path: "/memory/kept",
-      answer: async fn(r) { self.memory_kept(either(jtext(jfield(r, "query"), "workspace"), p53_home(bus)).unwrap_or("")) },
+      answer: async fn(r) { self.memory_kept(either(jtext(jfield(r, "query"), "workspace"), bus_home(bus)).unwrap_or("")) },
     },
   ])
 }

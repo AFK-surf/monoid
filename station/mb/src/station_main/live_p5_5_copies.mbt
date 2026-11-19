@@ -34,31 +34,12 @@ fn core_strs(v : Json) -> Array[String] {
 }
 
 ///|
-fn core_items(v : Json) -> Array[Json] {
-  jitems(v)
-}
-
-///|
 /// A body's bytes as the mesh carries them (replica_coord's `Body`: whole, a file's range, or a stream).
 async fn p55_body_bytes(fs : @replica_coord.Fs, b : @replica_coord.Body?) -> Bytes? {
   match b {
     None => None
     Some(Whole(x)) => Some(x)
     Some(other) => Some(other.whole(fs))
-  }
-}
-
-///|
-/// The request with its method said in it (a peer's request, as `bus.on` hands it: its method beside its params).
-fn with_method(params : Json, meth : String) -> Json {
-  match params {
-    Object(m) => {
-      if !m.contains("method") {
-        m["method"] = Json::string(meth)
-      }
-      Json::object(m)
-    }
-    _ => { "method": Json::string(meth) }
   }
 }
 
@@ -165,7 +146,7 @@ async fn P55::start_copies(self : P55) -> Unit {
   })
   // The jobs and services of a workspace's chats up now (what a retirement stops and the preview lists).
   let jobs_in = async fn(ws : String) -> Array[@jsjson.JValue] {
-    core_items(self.jobs("jobs.upIn", [Json::string(ws)])).map(to_jv)
+    jitems(self.jobs("jobs.upIn", [Json::string(ws)])).map(to_jv)
   }
   let asks_ref : Ref[@replica_coord.RetireAsks?] = Ref(None)
   let retire = @replica_coord.Retire::new(w, {
@@ -218,7 +199,7 @@ async fn P55::start_copies(self : P55) -> Unit {
     lack_most: @replica_coord.lack_most,
     work: @replica_coord.work_here(w.fs),
     jobs_in,
-    connects_named: async fn(ws) { core_items(self.coord_connects("retire.named", [Json::string(ws)])).map(to_jv) },
+    connects_named: async fn(ws) { jitems(self.coord_connects("retire.named", [Json::string(ws)])).map(to_jv) },
     tell: Some(async fn(session, text) { ignore(self.hub("hub.notify", [Json::string(session), Json::string(text)])) }),
     jobs: Some({
       start: async fn(session, j) { to_jv(self.jobs("jobs.start", [Json::string(session), of_jv(j)])) },
@@ -370,7 +351,7 @@ fn at_thread(at : Json) -> Double {
 ///|
 /// This station's own accounts (no copy borrowed, not the machine's login): what may move (share/index.ts moveProfile).
 fn own_profiles(raw : Json) -> Array[Json] {
-  core_items(jfield(raw, "profiles")).filter(p => jtext(p, "id") is Some(_) &&
+  jitems(jfield(raw, "profiles")).filter(p => jtext(p, "id") is Some(_) &&
     !(jfield(p, "machine") is True) &&
     !(jfield(jfield(p, "share"), "borrowed") is True))
 }
