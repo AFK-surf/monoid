@@ -209,18 +209,19 @@ done
 
 type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; err: () => string };
 
-/// The launcher's two listening sockets, the agents' door's and the loopback's: kept across a handover, as the
-/// launcher keeps them (native/launcher), so a runtime taken up reaches the door where it was told it is.
-const listener = () => new Promise<Server>((resolve) => {
+/// The launcher's two listening sockets, the agents' door's and the loopback's; `port` listens again where an ended
+/// station's door was, as the launcher keeps it (native/launcher), so a runtime taken up reaches the door it was told.
+const listener = (port = 0) => new Promise<Server>((resolve, reject) => {
   const s = createServer();
-  s.listen(0, "127.0.0.1", () => resolve(s));
+  s.once("error", reject);
+  s.listen(port, "127.0.0.1", () => resolve(s));
 });
 const ports: Server[] = [];
 after(() => {
   for (const s of ports) s.close();
 });
 
-async function launch(data: string, app: string, path: string, out: string, sockets?: [Server, Server], more: Record<string, string> = {}, keepSockets = false): Promise<Launched & { sockets: [Server, Server] }> {
+async function launch(data: string, app: string, path: string, out: string, sockets?: [Server, Server], more: Record<string, string> = {}): Promise<Launched & { sockets: [Server, Server] }> {
   const [mcp, loop] = sockets ?? [await listener(), await listener()];
   const fd = (s: Server) => (s as any)._handle.fd as number;
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
@@ -231,11 +232,10 @@ async function launch(data: string, app: string, path: string, out: string, sock
     env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "1", ...more },
   });
   children.push(child);
-  // (the launcher's copies let go: the station alone accepts on them, unless the caller keeps them for a handover)
-  if (!keepSockets) {
-    mcp.close();
-    loop.close();
-  }
+  // (the launcher's copies let go: the station alone accepts on them; one kept here would race it for a connection
+  // and, with no handler, leave that connection hanging)
+  mcp.close();
+  loop.close();
   const said: any[] = [];
   const waiters: (() => void)[] = [];
   createInterface({ input: (child.stdio as readonly unknown[])[5] as import("node:net").Socket }).on("line", (line) => {
@@ -834,8 +834,7 @@ test("handover of an in-flight turn: the new station takes up sessions before op
   }));
   mkdirSync(join(data, "mesh"), { recursive: true });
   writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
-  const sockets: [Server, Server] = [await listener(), await listener()];
-  const a = await launch(data, app, bin, out, sockets, {}, true);
+  const a = await launch(data, app, bin, out);
   await a.next("ready", (m) => m.ready === true);
   const door = await a.next("the agents' door", (m) => m.serving === "mcp");
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
@@ -851,19 +850,18 @@ test("handover of an in-flight turn: the new station takes up sessions before op
     assert.ok(runnerInfos.length >= 1, "runner info present for in-flight turn");
     const runnerPid = runnerInfos[0]!.runner;
 
-    // Launch the next station sharing the launcher's listening sockets, then hand over from `a`.
-    const b = await launch(data, app, bin, out, sockets);
-    await b.next("ready", (m) => m.ready === true);
-    await b.next("taking", (m) => m.taking === true);
+    // Hand over from `a` first: its end frees the door's port (the runner holds none of its fds, all close-on-exec).
     a.tell({ op: "handover" });
     const carry = await a.next("carry", (m) => m.carry !== undefined);
     assert.equal(await a.ended, 0, a.err());
     // The in-flight runner must survive `a`'s handover and exit (never killed by hub_shutdown).
     assert.doesNotThrow(() => process.kill(runnerPid, 0), "in-flight runner survived handover");
 
-    // Release the in-flight agent right before `b` finishes taking over: its POST to the shared /mcp socket
-    // sits in the kernel accept queue and is served only after `Hub::take_up()` opens the door.
+    // Launch the next station on the same door's port, then release the in-flight agent: its POST to /mcp sits in
+    // `b`'s kernel accept queue and is served only after `Hub::take_up()` opens the door.
+    const b = await launch(data, app, bin, out, [await listener(door.port), await listener()]);
     writeFileSync(join(out, "mid-go"), "");
+    await b.next("ready", (m) => m.ready === true);
     b.tell({ op: "carried", carried: carry.carry });
     await b.next("b's door", (m) => m.serving === "mcp");
 
