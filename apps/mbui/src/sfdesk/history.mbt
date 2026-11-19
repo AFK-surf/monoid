@@ -428,11 +428,13 @@ fn wh_transcript(src : Source, station : String, key : String) -> @signals.Signa
       let p : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
       history_own.transcripts[me] = p
       (src.call)("session.transcript", { "station": Json::string(station), "key": Json::string(key) }, fn(res) {
-        match res {
-          Ok(j) => p.set(Some(text(Some(j), "path")))
-          // not written yet, or a station from before it: nothing said
-          Err(_) => p.set(Some(""))
-        }
+        @view.answering(fn() {
+          match res {
+            Ok(j) => p.set(Some(text(Some(j), "path")))
+            // not written yet, or a station from before it: nothing said
+            Err(_) => p.set(Some(""))
+          }
+        })
       })
       p
     }
@@ -446,8 +448,7 @@ fn wh_transcript(src : Source, station : String, key : String) -> @signals.Signa
 fn wh_transcript_node(v : @view.View, src : Source, station : String, key : String, tips : @sf.TipLayer) -> Unit {
   let said = wh_transcript(src, station, key)
   let path = fn() { said.get().unwrap_or("") }
-  // Without `at_once`, a late transcript answer after `open_hold_ms` opens smoothly via View::comes without a jump.
-  v.show(fn() { path() != "" }, fn(o) {
+  v.show(at_once=true, fn() { path() != "" }, fn(o) {
     let name = fn() {
       let whole = path()
       let cut = match whole.rev_find("/") {

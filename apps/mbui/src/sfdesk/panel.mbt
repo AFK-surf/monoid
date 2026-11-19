@@ -195,9 +195,7 @@ pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
 pub fn side_toggle(src : Source, r : ChatRef, tab : String) -> Unit {
   let (tabs, front) = side_now(src, r)
   if tabs.contains(tab) && front == tab {
-    if wide.tape.untracked() && wide.tape_at.untracked() != Panel {
-      tape_bring_side(r)
-    } else {
+    if !tape_bring_side_if_hidden(r) {
       side_change(src, r, "close", Some(tab))
     }
   } else {
