@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
 | [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
 | [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 97.47 | 122.6 |
 | [bfcbe28c6](https://github.com/AFK-surf/monoid/commit/bfcbe28c6d49fe9e4486591f92ab8a5bfba9f0aa) refactor(mbui): extract sfapptest and sfapp_realsi | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 97.47 | 122.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.03 | 207.49 |
 | [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 2.59 | 3.48 | 14.18 | 36.26 | 54.59 | 31.76 | 63.92 | 97.13 | 121.06 |
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 2.58 | 3.47 | 14.17 | 36.24 | 54.53 | 31.76 | 63.92 | 97.13 | 102.26 |
-| [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
 | [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
 | [bfcbe28c6](https://github.com/AFK-surf/monoid/commit/bfcbe28c6d49fe9e4486591f92ab8a5bfba9f0aa) refactor(mbui): extract sfapptest and sfapp_realsi | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
-| [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
