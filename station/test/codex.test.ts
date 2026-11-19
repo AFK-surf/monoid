@@ -742,6 +742,57 @@ describe("the Codex driver", { concurrency: true }, () => {
     await b.until(ended(1));
   });
 
+  test("an app-server this driver ended, its runner slow to go, is not taken up again as left by a station before", async () => {
+    const d = driver({ outputLimit: 1 });
+    const p = profile();
+    const a = listen();
+    const one = await d.open(options(p), a.push);
+    // Its runner still there once it is ended (as under load, past the wait for it to go): ending it is held here.
+    const proc = (one as unknown as { host: { proc: { info: RunnerInfo; kill: (graceMs: number) => Promise<void> } } }).host.proc;
+    const kill = proc.kill.bind(proc);
+    let ended_ = false;
+    proc.kill = async () => {
+      ended_ = true;
+    };
+    await one.prompt("say:x");
+    await a.until(ended(1));
+    await eventually(() => ended_);
+    const b = listen();
+    const two = await d.open(options(p), b.push);
+    assert.notEqual((two as unknown as { host: { proc: { info: RunnerInfo } } }).host.proc.info.runner, proc.info.runner, "not the one ended");
+    assert.equal(starts(p.dump).length, 2);
+    await two.prompt("say:back");
+    await b.until(ended(1));
+    await kill(5000);
+  });
+
+  test("an app-server a thread is being opened on is not ended under it, outgrown as another session opens", async () => {
+    const d = driver();
+    const p = profile();
+    // The first thread's open held where it looks at its station tools (a resumed thread's, its lease still had).
+    const mcp = gates(p.dump, "mcp");
+    const a = listen();
+    const opening = d.open(options(p, { resume: "th-held" }), a.push);
+    await eventually(() => existsSync(`${p.dump}.stdin`) && stdin(p.dump).some((m) => m.method === "mcpServerStatus/list"));
+    // Outgrown now: another session opened meanwhile does not end it under the first.
+    (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
+    const two = await d.open(options(p), listen().push);
+    await mcp.open("a");
+    const one = await opening;
+    assert.equal(starts(p.dump).length, 1);
+    // Its turn over, idle: replaced, both opened again on a new one with their next turn.
+    await one.prompt("say:x");
+    await a.until(ended(1));
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    await two.dispose();
+    (d as unknown as { options: CodexDriverOptions }).options.outputLimit = undefined;
+    const c = listen();
+    const three = await d.open(options(p), c.push);
+    assert.equal(starts(p.dump).length, 2);
+    await three.prompt("say:y");
+    await c.until(ended(1));
+  });
+
   test("a turn asked of an app-server Codex was updated under is refused, so it is opened again on a new one", async () => {
     // Codex updated from outside the station, while the app-server started: it runs the old one.
     const d = driver({ installedVersion: async () => "2.0.0" });
