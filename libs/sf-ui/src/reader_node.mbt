@@ -11,10 +11,10 @@
 // right under the bar, 320 wide, the text kept clear of it (the layout's the window's tree's own: reader_layout_nodes).
 // On 小屏 its own bars that a tap on the text brings (and takes away), coming in 140 ms and going in 240, a step up or
 // down as they fade; the contents and the search sheets from the window's foot (sheet_node), the layout's half as tall.
-// In a tab beside a chat (`host` Tab or PanelTab) the tab's tools open search and layout (reader_panel_toggle), while
-// contents and scroll-to-bottom float at the tab's bottom-right (reader_beside_chrome, matching a chat's floats); the
-// column starts at the tab's top (wider in PanelTab: panel_column_ems), and an open panel sits over the text where the
-// tab has not room for both.
+// In a tab beside a chat (`host` Tab or PanelTab) the tab's tools open its panels (reader_panel_toggle), while
+// scroll-to-bottom floats at the tab's bottom-right (reader_beside_chrome, matching a chat's float); the column starts
+// at the tab's top (wider in PanelTab: panel_column_ems), and an open panel sits over the text where the tab has not
+// room for both.
 //
 // ⌘F finds, ← → go from chapter to chapter, Esc closes what is open over the text (else goes back): the keymap's
 // reader.* (reader_bindings), at their key's moment; none of a tab's (the window's keys are the chat's).
@@ -1165,12 +1165,12 @@ fn reader_find_node(col : @view.View, r : Reading, paper : () -> ReaderPaper, do
 }
 
 ///|
-/// What floats over the paper in a tab beside a chat (reader_node's `beside`) in `parent`: the hairline; the contents
-/// (always shown) and scroll-to-bottom (shown when taller than two screens and further than reader_end_away from its
-/// end) round buttons at the tab's bottom-right (under the panel when narrow so an open panel covers them, shifted
-/// left of the docked panel when wide); the contents' or search's panel at its right from its top (as wide as the tab,
-/// 320 at most); what was found, 10 under the tab's top over the text's middle; and the tips layer over all of it. The
-/// tab's tools open search and layout; no keys (the window's are the chat's).
+/// What floats over the paper in a tab beside a chat (reader_node's `beside`) in `parent`: the hairline; the
+/// scroll-to-bottom round button (shown when taller than two screens and further than reader_end_away from its end) at
+/// the tab's bottom-right (under the panel when narrow so an open panel covers it, shifted left of the docked panel
+/// when wide); the contents' or search's panel at its right from its top (as wide as the tab, 320 at most); what was
+/// found, 10 under the tab's top over the text's middle; and the tips layer over all of it. The tab's tools open the
+/// panels; no keys (the window's are the chat's).
 #callsite(autofill(loc))
 fn reader_beside_chrome(
   parent : @view.View,
@@ -1189,8 +1189,8 @@ fn reader_beside_chrome(
     }
   }
   reader_hairline(parent, paper, share, fn(_) { 1.0 })
-  // (floating contents and scroll-to-bottom keys at bottom-right; no ground on the over box so wheel and text
-  // selection pass straight through to the column underneath)
+  // (floating scroll-to-bottom key at bottom-right; no ground on the over box so wheel and text selection pass
+  // straight through to the column underneath)
   parent.box(made_for=loc, fn(o) {
     let reach = float_button_reach
     o
@@ -1201,35 +1201,21 @@ fn reader_beside_chrome(
       (0.0, 0.0, reader_panel_room(r, wide) + beside_float_in - reach, beside_float_lift - reach)
     }))
     |> ignore
-    float_button_node(
-      o,
-      "list",
-      fn() { t("web-pages.drive.reader.contents") },
-      fn() { reader_toggle_panel(r, Contents) },
-      tips~,
-    )
-    |> ignore
-    // (fixed-height lower slot of beside_float_above = float_button_side + 2 * float_button_reach = 44: the two 44×44
-    // press boxes meet with no overlap, centers 44 apart, and the contents button stays put when ↓ hides)
-    o.box(fn(slot) {
-      slot.height(Is(Some(beside_float_above))) |> ignore
-      slot.show(fn() { r.long.get() && r.away.get() }, at_once=true, leave=beside_float_ms, fn(stand) {
-        let settled = stand.cause_at() <= r.sight_from || @view.answering_now()
-        stand.alpha(
-          By(@motion.presence_in(stand, @motion.tween(beside_float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 })),
-        )
-        |> ignore
-        float_button_node(
-          stand,
-          "arrow-down",
-          fn() { t("web-pages.drive.reader.toEnd") },
-          fn() { reader_to_end(r) },
-          tips~,
-        )
-        |> ignore
-      })
+    o.show(fn() { r.long.get() && r.away.get() }, at_once=true, leave=beside_float_ms, fn(stand) {
+      let settled = stand.cause_at() <= r.sight_from || @view.answering_now()
+      stand.alpha(
+        By(@motion.presence_in(stand, @motion.tween(beside_float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 })),
+      )
+      |> ignore
+      float_button_node(
+        stand,
+        "arrow-down",
+        fn() { t("web-pages.drive.reader.toEnd") },
+        fn() { reader_to_end(r) },
+        tips~,
+      )
+      |> ignore
     })
-    |> ignore
   })
   |> ignore
   parent.show(fn() { r.panel.get() == Contents || r.panel.get() == Find }, fn(o) {

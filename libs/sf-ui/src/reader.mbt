@@ -910,14 +910,9 @@ let reader_end_away : Double = 120.0
 let beside_float_in : Double = 16.0
 
 ///|
-/// How far up from a tab's bottom edge the lower floating button's drawn circle sits (a chat's float_lift = 12 sits
-/// over the composer).
+/// How far up from a tab's bottom edge the scroll-to-bottom floating button's drawn circle sits (a chat's float_lift =
+/// 12 sits over the composer).
 let beside_float_lift : Double = 16.0
-
-///|
-/// Pitch between a tab's two floating buttons' centers (float_button_side 32 + 2 * float_button_reach 6 = 44): their
-/// 44×44 press boxes meet with no overlap (a chat's float_above = 40 predates 44×44 node padding).
-let beside_float_above : Double = 44.0
 
 ///|
 /// How long a tab's scroll-to-bottom floating button fades in and out (matches a chat's float_ms).

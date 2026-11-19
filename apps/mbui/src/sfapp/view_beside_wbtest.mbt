@@ -312,22 +312,17 @@ test "大屏: Markdown in a tab 360 wide reads in one column there, its 目录 a
   let (left, _, wide, _) = t.get(Toolbar, label="说明.md").rect
   assert_true(wide >= 359.0 && wide <= 361.0, msg="the tab \{wide} wide")
   assert_true(shown_beside(t, "说明.md", "发布前要做的"), msg="its words")
-  // (the contents button floats at bottom-right; opening it on a 360-wide tab puts the panel over it)
-  let contents_label = @sf.t("web-pages.drive.reader.contents")
-  assert_eq(t.all(Button, label=contents_label).length(), 1)
-  let (cx, cy, cw, ch) = t.get(Button, label=contents_label).rect
-  t.click(Button, label=contents_label)
+  // (no bar of the reader's own in the tab: its tools are the tab's, once)
+  assert_eq(t.all(Button, label=@sf.t("web-pages.drive.reader.contents")).length(), 1)
+  t.click(Button, label=@sf.t("web-pages.drive.reader.contents"))
   t.run_for(@ui.move_most_ms)
   match t.find(@sf.t("web-pages.drive.reader.findPlaceholder")) {
     Some((x, _)) => assert_true(x >= left && x <= left + wide, msg="目录 over the tab's stage: \{x}")
     None => fail("目录 not open")
   }
-  // covered by the narrow overlay panel: a press at the floating button's center lands on the panel, not the button
-  let landed = t.press_lands_at(cx + cw / 2.0, cy + ch / 2.0)
-  assert_true(!landed.contains(contents_label), msg="floating 目录 covered by narrow panel, got \{landed}")
-  t.click(Button, label=@sf.t("common.close"))
+  t.click(Button, label=@sf.t("web-pages.drive.reader.contents"))
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find(@sf.t("web-pages.drive.reader.findPlaceholder")) is None, msg="closed by panel close")
+  assert_true(t.find(@sf.t("web-pages.drive.reader.findPlaceholder")) is None, msg="closed by its tool")
   t.click(Button, label=@sf.t("web-pages.drive.reader.layout"))
   t.run_for(@ui.move_most_ms)
   match t.find(@sf.t("web-pages.drive.reader.layout")) {
@@ -377,31 +372,45 @@ test "大屏: a tab's 排版 is the tab's: another tab brought to the front take
 }
 
 ///|
-test "大屏: a long Markdown beside a chat floats 目录 and 滚动到底部 at bottom-right without blocking wheel or text selection; pressing ↓ scrolls to the end and hides ↓ without moving 目录; wheeling up brings ↓ back" {
+test "大屏: a long Markdown beside a chat keeps 目录 in the toolbar and floats 滚动到底部 at bottom-right without blocking wheel or text selection; pressing ↓ scrolls to the end and hides ↓; wheeling up brings ↓ back; panels cover or shift ↓" {
   let t = beside_tester(mode="chat-view-side-md-long")
   let contents = @sf.t("web-pages.drive.reader.contents")
   let to_end = @sf.t("web-pages.drive.reader.toEnd")
-  assert_eq(t.all(Button, label=contents).length(), 1, msg="目录 float shown")
+  let (bx, by, bw, bh) = t.get(Toolbar, label="长说明.md").rect
+  let in_bar = t
+    .all(Button)
+    .filter(fn(n) {
+      let (nx, ny, nw, nh) = n.rect
+      nx >= bx - 1.0 && ny >= by - 1.0 && nx + nw <= bx + bw + 1.0 && ny + nh <= by + bh + 1.0
+    })
+    .map(fn(n) { n.label })
+  let want_bar = [
+    contents,
+    @sf.t("web-pages.drive.reader.find"),
+    @sf.t("web-pages.drive.reader.layout"),
+    @sf.t("web-main.preview.download"),
+    @sf.t("web-main.preview.fullWindow"),
+  ]
+  assert_eq(in_bar, want_bar, msg="toolbar buttons: \{Repr(in_bar)}")
+  assert_eq(t.all(Button, label=contents).length(), 1, msg="exactly one 目录 button (in toolbar)")
   assert_eq(t.all(Button, label=to_end).length(), 1, msg="滚动到底部 float shown for long Markdown")
-  let (tx, _, tw, _) = t.get(Toolbar, label="长说明.md").rect
-  let tab_right = tx + tw
+  let tab_right = bx + bw
   let tab_bottom = 800.0
   let reach = @sf.float_button_reach
-  let c_rect = t.get(Button, label=contents).rect
-  let e_rect = t.get(Button, label=to_end).rect
-  let (cx, cy, cw, ch) = c_rect
-  let (ex, ey, ew, eh) = e_rect
-  // press targets >= 44×44 and non-overlapping
-  assert_true(cw >= 44.0 && ch >= 44.0, msg="目录 press box >= 44×44: \{cw}×\{ch}")
+  let (ex, ey, ew, eh) = t.get(Button, label=to_end).rect
+  // float is outside toolbar, press box >= 44×44, drawn 32×32 circle 16±1 from right and bottom
+  assert_true(ey > by + bh, msg="滚动到底部 floats below toolbar")
   assert_true(ew >= 44.0 && eh >= 44.0, msg="滚动到底部 press box >= 44×44: \{ew}×\{eh}")
-  assert_true(cy + ch <= ey + 0.5, msg="two float press boxes do not overlap: \{cy + ch} vs \{ey}")
-  // drawn 32×32 circles sit 16±1 from right, ↓ 16±1 from bottom, centers 44±0.5 apart
-  assert_true((tab_right - (cx + cw - reach) - 16.0).abs() <= 1.0, msg="目录 right margin \{tab_right - (cx + cw - reach)}")
   assert_true((tab_right - (ex + ew - reach) - 16.0).abs() <= 1.0, msg="↓ right margin \{tab_right - (ex + ew - reach)}")
   assert_true((tab_bottom - (ey + eh - reach) - 16.0).abs() <= 1.0, msg="↓ bottom margin \{tab_bottom - (ey + eh - reach)}")
-  let dy_centers = (ey + eh / 2.0) - (cy + ch / 2.0)
-  assert_true((dy_centers - 44.0).abs() <= 0.5, msg="centers vertical distance \{dy_centers}, want 44 ±0.5")
-  // over container has no ground: wheel and text drag-selection to the left of the floats reach the reader body
+  // narrow tab: opening contents panel covers the floating ↓ button
+  t.click(Button, label=contents)
+  t.run_for(@ui.move_most_ms)
+  let landed = t.press_lands_at(ex + ew / 2.0, ey + eh / 2.0)
+  assert_true(!landed.contains(to_end), msg="floating ↓ covered by narrow contents panel, got \{landed}")
+  t.click(Button, label=contents)
+  t.run_for(@ui.move_most_ms)
+  // over container has no ground: wheel and text drag-selection to the left of ↓ reach the reader body
   let has = fn(words : String) { t.words().iter().any(fn(w) { w.0.contains(words) }) }
   assert_true(has("发布前长说明"), msg="start words shown at top")
   assert_true(!has("所有检查项已核对完毕"), msg="end words not shown at top")
@@ -409,55 +418,55 @@ test "大屏: a long Markdown beside a chat floats 目录 and 滚动到底部 at
     Some((_, _, y, _, _, _)) => y
     None => fail("no top heading")
   }
-  t.wheel(tx + 60.0, ey + eh / 2.0, 200.0)
+  t.wheel(bx + 60.0, ey + eh / 2.0, 200.0)
   t.run_for(@ui.move_most_ms)
   let top_moved = match t.words().iter().find_first(fn(w) { w.0.contains("发布前长说明") }) {
     Some((_, _, y, _, _, _)) => y < top_y_before - 10.0
     None => true
   }
-  assert_true(top_moved, msg="wheel to the left of the floats scrolls the reader body")
-  // drag-select text on a line beside the floating buttons (a paragraph block overlapping the floats' vertical band)
-  match t.words().iter().find_first(fn(w) { w.1 >= tx && w.1 + 40.0 < cx && w.2 < ey + eh && w.2 + w.4 > cy && w.3 >= 40.0 }) {
+  assert_true(top_moved, msg="wheel to the left of ↓ scrolls the reader body")
+  // drag-select text on a line beside ↓ (a paragraph block overlapping ↓'s vertical band)
+  match t.words().iter().find_first(fn(w) { w.1 >= bx && w.1 + 40.0 < ex && w.2 < ey + eh && w.2 + w.4 > ey && w.3 >= 40.0 }) {
     Some((_, wx, wy, ww, wh, _)) => {
-      let sy = if wy + 8.0 > cy + 8.0 { wy + 8.0 } else if cy + 8.0 < wy + wh - 4.0 { cy + 8.0 } else { wy + wh / 2.0 }
-      let x1 = if wx + ww - 4.0 < cx - 8.0 { wx + ww - 4.0 } else { cx - 8.0 }
+      let sy = if wy + 8.0 > ey + 8.0 { wy + 8.0 } else if ey + 8.0 < wy + wh - 4.0 { ey + 8.0 } else { wy + wh / 2.0 }
+      let x1 = if wx + ww - 4.0 < ex - 8.0 { wx + ww - 4.0 } else { ex - 8.0 }
       let x1 = if x1 < wx + 80.0 { x1 } else { wx + 80.0 }
       t.drag(wx + 4.0, sy, x1, sy)
       t.run_for(@ui.move_most_ms)
       let picked = t.picking().map(fn(p) { p.text }).unwrap_or("")
-      assert_true(picked != "", msg="text beside the floats can be drag-selected")
+      assert_true(picked != "", msg="text beside ↓ can be drag-selected")
       t.key(@ui.key_code_copy, mods=@ui.mod_cmd)
       t.run_for(@ui.move_most_ms)
-      assert_eq(t.clipboard(), picked, msg="selected text beside the floats copied")
+      assert_eq(t.clipboard(), picked, msg="selected text beside ↓ copied")
     }
-    None => fail("no reader line beside the floating buttons to drag-select")
+    None => fail("no reader line beside ↓ to drag-select")
   }
-  // pressing ↓ scrolls to the end, hides ↓, and leaves 目录 in the exact same rect
+  // pressing ↓ scrolls to the end and hides ↓
   t.click(Button, label=to_end)
   t.run_for(@ui.move_most_ms)
   assert_true(has("所有检查项已核对完毕"), msg="end words shown after pressing 滚动到底部")
   assert_true(!has("发布前长说明"), msg="start words scrolled out after pressing 滚动到底部")
   assert_eq(t.all(Button, label=to_end).length(), 0, msg="滚动到底部 hides at the end")
-  assert_eq(t.get(Button, label=contents).rect, c_rect, msg="目录 rect unchanged when 滚动到底部 hides")
   // wheeling up past reader_end_away (120) brings ↓ back
-  t.wheel(tx + tw / 2.0, 400.0, -240.0)
+  t.wheel(bx + bw / 2.0, 400.0, -240.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(t.all(Button, label=to_end).length(), 1, msg="滚动到底部 returns after wheeling up > 120")
   let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") })
   assert_eq(faults, [], msg="audit faults: \{Repr(faults)}")
+  // wide tab: opening contents panel shifts ↓ left of the 320 docked panel
+  let tw = beside_tester(mode="chat-view-side-md-long", w=2400.0, h=600.0)
+  let (wtx, _, wtw, _) = tw.get(Toolbar, label="长说明.md").rect
+  tw.click(Button, label=contents)
+  tw.run_for(@ui.move_most_ms)
+  let (ex2, _, ew2, _) = tw.get(Button, label=to_end).rect
+  let right_gap = wtx + wtw - (ex2 + ew2 - reach)
+  assert_true((right_gap - (320.0 + 16.0)).abs() <= 1.0, msg="↓ right gap with docked panel: \{right_gap}, want 336 ±1")
 }
 
 ///|
-test "大屏: a short Markdown beside a chat floats 目录 at the same spot with no 滚动到底部, leaves only 4 keys in the toolbar, and shifts the float left of a wide docked panel" {
-  // compare 目录 rect against long Markdown at the same 1280×800 size
-  let t_long = beside_tester(mode="chat-view-side-md-long")
-  let contents = @sf.t("web-pages.drive.reader.contents")
-  let long_c_rect = t_long.get(Button, label=contents).rect
+test "大屏: a short Markdown beside a chat does not show 滚动到底部, keeping all five reader keys in the toolbar" {
   let t = beside_tester(mode="chat-view-side")
   assert_eq(t.all(Button, label=@sf.t("web-pages.drive.reader.toEnd")).length(), 0, msg="no 滚动到底部 for short Markdown")
-  assert_eq(t.all(Button, label=contents).length(), 1, msg="目录 float shown for short Markdown")
-  assert_eq(t.get(Button, label=contents).rect, long_c_rect, msg="目录 rect matches long Markdown")
-  // toolbar contains only 搜索, 排版, 下载, 全屏 (no 目录, no 滚动到底部)
   let (bx, by, bw, bh) = t.get(Toolbar, label="说明.md").rect
   let in_bar = t
     .all(Button)
@@ -467,24 +476,13 @@ test "大屏: a short Markdown beside a chat floats 目录 at the same spot with
     })
     .map(fn(n) { n.label })
   let want_bar = [
+    @sf.t("web-pages.drive.reader.contents"),
     @sf.t("web-pages.drive.reader.find"),
     @sf.t("web-pages.drive.reader.layout"),
     @sf.t("web-main.preview.download"),
     @sf.t("web-main.preview.fullWindow"),
   ]
   assert_eq(in_bar, want_bar, msg="toolbar buttons: \{Repr(in_bar)}")
-  // in a wide tab, opening the contents panel shifts the floating 目录 button left of the 320 docked panel
-  t.resize(3000.0, 900.0)
-  t.run_for(@ui.move_most_ms)
-  let (wtx, _, wtw, _) = t.get(Toolbar, label="说明.md").rect
-  t.click(Button, label=contents)
-  t.run_for(@ui.move_most_ms)
-  let (cx2, _, cw2, _) = t.get(Button, label=contents).rect
-  let right_gap = wtx + wtw - (cx2 + cw2 - @sf.float_button_reach)
-  assert_true((right_gap - (320.0 + 16.0)).abs() <= 1.0, msg="float right gap with docked panel: \{right_gap}, want 336 ±1")
-  t.click(Button, label=contents)
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find(@sf.t("web-pages.drive.reader.findPlaceholder")) is None, msg="docked contents panel closed by float")
 }
 
 ///|
@@ -1311,6 +1309,7 @@ test "大屏: a file's tab in a window of its own on a Mac and on Windows, its b
       t.run_for(@ui.move_most_ms)
       let words = beside_window_words(t, wid)
       let reader = [
+        @sf.t("web-pages.drive.reader.contents"),
         @sf.t("web-pages.drive.reader.find"),
         @sf.t("web-pages.drive.reader.layout"),
         @sf.t("web-main.preview.download"),
@@ -1319,10 +1318,6 @@ test "大屏: a file's tab in a window of its own on a Mac and on Windows, its b
       t.in_window(wid, fn() { t.key(@ui.key_escape) })
       t.run_for(@ui.move_most_ms)
     }
-    assert_true(
-      beside_window_rect(t, wid, Button, @sf.t("web-pages.drive.reader.contents")) is Some(_),
-      msg="\{at}: floating 目录 button present in independent window",
-    )
     // closed by its own close button (the app's on Windows: @hostapi.window_act; the system's on a Mac: the person's)
     if platform == 3 {
       assert_true(beside_window_press(t, wid, @sf.t("desktop.menu.close")), msg="\{at}: its close button")
