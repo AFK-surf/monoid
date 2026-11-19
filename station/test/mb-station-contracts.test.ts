@@ -551,3 +551,32 @@ test("every name a slice asks of another on the bus is one that slice answers", 
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
+
+/// Bare `hub.act(...)` calls in `station_main` bypass `Hub::notify` / `Hub::ensure_actor` cold-session wakeup.
+/// Only the 3 existing `notify` sites tracked on the parallel fix branch are temporarily permitted here; once those
+/// are migrated to `Hub::notify`, no bare `hub.act(` calls remain anywhere in `station_main`.
+const ALLOWED_BARE_HUB_ACT = new Set([
+  "mb/src/station_main/live_p5_2_chats.mbt:notify",
+  "mb/src/station_main/live_p5_2_main.mbt:notify",
+]);
+
+test("station_main has no new bare hub.act() calls bypassing cold-session wakeup", () => {
+  const unexpected: string[] = [];
+  for (const f of programFiles()) {
+    const rel = relative(station, f);
+    const text = read(f);
+    for (const m of text.matchAll(/\.act\(/g)) {
+      const lineStart = text.lastIndexOf("\n", m.index!) + 1;
+      const lineEnd = text.indexOf("\n", m.index!);
+      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      if (/^\s*\/\//.test(line) || /\bhold\.act\(/.test(line)) continue;
+      const args = argsAt(text, m.index! + m[0].length);
+      const method = /^\s*"([^"]+)"\s*$/.exec(args[1] ?? "")?.[1] ?? "<dynamic>";
+      const lineNo = text.slice(0, m.index!).split("\n").length;
+      if (!ALLOWED_BARE_HUB_ACT.has(`${rel}:${method}`)) {
+        unexpected.push(`${rel}:${lineNo} calls .act(..., "${method}") directly`);
+      }
+    }
+  }
+  assert.deepEqual(unexpected, [], unexpected.join("\n"));
+});
