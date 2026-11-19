@@ -14,7 +14,8 @@ import { after, test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import { Events } from "../src/api/events.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
-import { FrameIn, KIND, MAX_CLIP_IN, MAX_IN, SCREEN_TYPE, answerScreen, asked, cursorPayload, frame, parseClip, parseInput, parseWindowPick } from "../src/mesh/screens.ts";
+import type { Stream } from "../src/mesh/native.ts";
+import { DGRAM_HEADER, FrameIn, KIND, MAX_CLIP_IN, MAX_IN, SCREEN_TYPE, answerScreen, asked, cursorPayload, frame, parseClip, parseInput, parseWindowPick } from "../src/mesh/screens.ts";
 import { ALPN, Reader, writeLine } from "../src/mesh/serve.ts";
 import { HELPER_APP, HelperApp } from "../src/helper/app.ts";
 import { Desktop, HelperView, TO_HELPER, helperClip, helperMessage } from "../src/screens/desktop.ts";
@@ -829,6 +830,33 @@ test("a client that reads `cursor` frames is sent the pointer in a few bytes, ne
       assert.deepEqual(cursors, []);
       assert.deepEqual(said, [{ x: 0.123456, y: 0.987654, shape: "pointer" }, null]);
     }
+  }
+});
+
+test("a client that takes the frames as datagrams under its token is told so where the stream sends them so; a preview, a stream that cannot, or a client before it, on the stream", async () => {
+  assert.equal(asked({ codecs: ["h264"], datagrams: 77 }).datagrams, 77);
+  for (const v of [undefined, 0, -1, 1.5, 2 ** 32, "77", true]) assert.equal("datagrams" in asked({ codecs: ["h264"], datagrams: v }), false, String(v));
+  assert.equal("datagrams" in asked({ codecs: ["h264"], datagrams: 77, peek: true }), false, "a preview's on the stream");
+  for (const [screen, can, header] of [[{ datagrams: 77 }, true, "77"], [{ datagrams: 77 }, false, undefined], [{ datagrams: 77 }, undefined, undefined], [{}, true, undefined]] as const) {
+    const hub = new ScreenHub();
+    hub.add(new FakeSource());
+    const { conn, theirs } = await link();
+    const stream = await conn.openBi();
+    await writeLine(stream, { method: "POST", path: "/admin/api/screens/fake/view", headers: { "stillfail-lang": "en" }, screen: { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, ...screen } });
+    const incoming = (await theirs.acceptBi())!;
+    const asks: number[] = [];
+    // (a stream of the addon's or the front's that sends them: undefined, one from before)
+    const sending: Stream = can === undefined ? incoming : { read: () => incoming.read(), write: (b) => incoming.write(b), finish: () => incoming.finish(), stopped: () => incoming.stopped(), reset: (c) => incoming.reset(c), mediaDatagrams: async (token) => (asks.push(token), can) };
+    const heard = new Reader(incoming);
+    const head = await heard.line();
+    const served = answerScreen(hub, sending, heard.carry, head, member, () => true);
+    const client = new Reader(stream);
+    const answer = await client.line();
+    assert.equal(answer.status, 200);
+    assert.equal(answer.headers[DGRAM_HEADER], header, JSON.stringify([screen, can]));
+    assert.deepEqual(asks, can !== undefined && "datagrams" in screen ? [77] : []);
+    await stream.finish();
+    await served;
   }
 });
 

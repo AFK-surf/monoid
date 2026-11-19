@@ -203,14 +203,15 @@ each("the_pointer_in_a_cursor_frame_is_read_to_a_ten_thousandth_with_its_shape_o
 
 /// One view the fake station has open: what the client asked, what it sent, and the station's side of the stream.
 /// `alongside`: how many of the others were still open as it opened.
-type Viewing = { head: RequestHead; ask: ScreenAsk; got: ClientFrame[]; closed: boolean; alongside: number; tapped?: number; send(bytes: Uint8Array): void; end(): void };
+type Viewing = { head: RequestHead; ask: ScreenAsk; got: ClientFrame[]; closed: boolean; alongside: number; tapped?: number; tappedCursor?: boolean; send(bytes: Uint8Array): void; end(): void };
 
 /// A wire whose requests go over the host's fetch (station-fixture.ts) and whose screen views a test drives: `answer`
 /// says how the station answers each (200, or a status and its error).
 function screenWire(seed: number) {
   const views: Viewing[] = [];
-  // `tap`: the host reads the picture and sound itself (IrohStream.tap, Apple's shell), the core only the rest
-  const opts: { answer: (v: Viewing) => number | [number, string]; tap?: boolean } = { answer: () => 200 };
+  // `tap`: the host reads the picture and sound itself (IrohStream.tap, Apple's shell), the core only the rest;
+  // "cursor": the pointer too, where the page takes it alone (a shell from before: `true`, the pointer the core's)
+  const opts: { answer: (v: Viewing) => number | [number, string]; tap?: boolean | "cursor" } = { answer: () => 200 };
   const draw = random(seed);
   // The way to the station as the mesh has it: `replace` puts another in its place (mesh.ts `#switch`).
   let way = Deferred.makeUnsafe<void>();
@@ -256,7 +257,7 @@ function screenWire(seed: number) {
                 }),
               finish: () => {},
             },
-            ...(opts.tap ? { tap: (call: number) => Effect.sync(() => ((v.tapped = call), true)) } : {}),
+            ...(opts.tap ? { tap: (call: number, cursor?: boolean) => Effect.sync(() => ((v.tapped = call), (v.tappedCursor = cursor === true), opts.tap === "cursor" && cursor === true ? ("cursor" as const) : true)) } : {}),
           };
         }),
     };
@@ -565,6 +566,33 @@ each("a_page_that_takes_the_pointer_alone_is_told_it_alone_as_it_moves_and_every
   said(host, log);
   assert.deepEqual([lastState(log, 1).cursor, lastState(log, 1).others], [{ x: 0.1, y: 0.2 }, ["Bob"]]);
   core.close();
+});
+
+each("a_pointer_its_host_says_to_the_page_is_not_said_again_and_the_next_state_has_where_it_is_now", async (seed) => {
+  for (const shell of ["cursor", true] as const) {
+    const { host, core, ui, views, opts } = await viewing(seed);
+    opts.tap = shell;
+    const log: J[] = [];
+    call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"], cursorUpdates: true });
+    await host.settle();
+    const [v] = views;
+    assert.deepEqual([v!.tapped, v!.tappedCursor], [1, true], "the host asked to say the pointer");
+    v!.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, new Uint8Array(0))]));
+    await host.settle();
+    said(host, log);
+    const before = states(log, 1).length;
+    // what the host leaves the core of the pointer moving 120 times: the newest alone, given just before a state
+    v!.send(join([cursorFrame({ x: 0.75, y: 0.25, shape: "text" }), stateFrame({ latency: { frame: 30, before: 6 } })]));
+    await host.settle();
+    said(host, log);
+    const cursors = log.filter((m) => m.id === 1 && m.value && "cursor" in m.value).map((m) => m.value);
+    // said by the host already: not again (a shell from before says none of it, so the core does)
+    assert.deepEqual(cursors, shell === "cursor" ? [] : [{ cursor: { x: 0.75, y: 0.25, shape: "text" } }]);
+    // the state after it has the pointer where it is now, not where it was before
+    assert.equal(states(log, 1).length, before + 1);
+    assert.deepEqual([lastState(log, 1).latency, lastState(log, 1).cursor], [{ frame: 30, before: 6 }, { x: 0.75, y: 0.25, shape: "text" }]);
+    core.close();
+  }
 });
 
 each("a_view_brings_its_frames_with_their_bytes_and_takes_acks_key_frames_and_input", async (seed) => {

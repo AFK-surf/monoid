@@ -343,7 +343,9 @@ fn config_bytes(c : FrameConfig) -> Bytes {
 /// `paths`: the ways of the connection it came on, whose counters say what of the view's link was lost (None: nothing
 /// said of it) and where it goes (what the view starts at: `start_rate_of`); `rt`: the view's clock (ms); `host_now`:
 /// the clock a frame's capture time is on (screen-pace.ts `hostNow`, the helpers' monotonic one; by default the view's);
-/// `stall`: how long the station's loop stood still, and its end (the live clock's alone).
+/// `stall`: how long the station's loop stood still, and its end (the live clock's alone); `media_datagrams`: the
+/// stream's frames of picture and sound sent as datagrams under the client's token from now on (the shell's
+/// `istream.mediaDatagrams`), whether they are (None: a stream that cannot, on as before).
 pub async fn answer_screen(
   hub : ScreenHubPort,
   stream : @door.Stream,
@@ -357,6 +359,7 @@ pub async fn answer_screen(
   paths? : (() -> Array[LinkPath])? = None,
   host_now? : (() -> Double)? = None,
   stall? : (() -> Double, () -> Unit) = (() => 0.0, () => ()),
+  media_datagrams? : (async (Double) -> Bool)? = None,
 ) -> Unit {
   let headers = match field(head, "headers") {
     Some(Object(m)) => {
@@ -483,8 +486,20 @@ pub async fn answer_screen(
     (view.close)()
     return refuse(404, tr(lang, "station.screen.notFound", none), [])
   }
+  // its picture and sound as datagrams where the client takes them under its token and the link carries them (the
+  // reply says so), else on the stream as before
+  let reply_headers = [("content-type", jstr(screen_type))]
+  match (field(ask, "datagrams"), media_datagrams) {
+    (Some(Number(token, ..)), Some(send)) => {
+      let sent = send(token) catch { _ => false }
+      if sent {
+        reply_headers.push((dgram_header, jstr(token.to_int64().to_string())))
+      }
+    }
+    _ => ()
+  }
   let wrote = (async fn() -> Bool {
-    js_line(stream, jobj([("status", jnum(200.0)), ("headers", jobj([("content-type", jstr(screen_type))]))]))
+    js_line(stream, jobj([("status", jnum(200.0)), ("headers", jobj(reply_headers))]))
     true
   })() catch {
     _ => false

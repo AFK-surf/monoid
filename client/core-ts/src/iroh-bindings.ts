@@ -13,6 +13,8 @@ export type BoundStream = {
   finish(): Promise<void>;
   stopped(): Promise<number | null | void>;
   reset?(code: number): Promise<void> | void;
+  /// The addon's since its streams took frames as datagrams (iroh.ts `receiveMediaDatagrams`).
+  receiveMediaDatagrams?(token: number): Promise<boolean>;
 };
 export type BoundConnection = {
   remoteId(): string;
@@ -39,6 +41,7 @@ export type BoundEndpoint = {
   networkChange(): Promise<void>;
   relayStatus(): { url: string; connected: boolean; access?: string }[];
   setRelayEntries?(entries: { entry: string; relay: string }[]): Promise<void>;
+  mediaDatagrams?(): boolean;
   close(): Promise<void>;
 };
 
@@ -64,6 +67,7 @@ export function wrapIroh(bind: (o: BindOptions) => Promise<BoundEndpoint>, bytes
         return typeof code === "number" ? code : null;
       }),
     reset: (code) => void Promise.resolve(s.reset?.(code)).catch(() => {}),
+    ...(s.receiveMediaDatagrams && { receiveMediaDatagrams: (token: number) => call(() => s.receiveMediaDatagrams!(token)) }),
   });
   const connection = (c: BoundConnection, e: BoundEndpoint): IrohConnection => ({
     remoteId: () => c.remoteId(),
@@ -109,6 +113,7 @@ export function wrapIroh(bind: (o: BindOptions) => Promise<BoundEndpoint>, bytes
       networkChange: () => Effect.promise(() => e.networkChange()),
       relayStatus: () => e.relayStatus(),
       ...(e.setRelayEntries && { setRelayEntries: (entries: { entry: string; relay: string }[]) => call(() => e.setRelayEntries!(entries)) }),
+      ...(e.mediaDatagrams && { mediaDatagrams: () => e.mediaDatagrams!() }),
       close: () => Effect.promise(() => e.close()),
     };
   };

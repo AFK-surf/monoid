@@ -39,12 +39,21 @@ pub(crate) struct ScreenTap {
     /// on from (0: none decoded since it was made)
     opus: Option<Box<opus_rs::OpusDecoder>>,
     opus_next: u64,
+    /// The page takes the pointer alone (`cursorUpdates`): each `cursor` frame said to it from here, as screens.ts says
+    /// it, and only the newest kept for the core, given it just before whatever it is given next (its next whole state
+    /// says where the pointer is now, not where it was when the core last heard of it), so a pointer moving wakes
+    /// neither the core's JS nor its thread.
+    cursor_updates: bool,
+    last_cursor: Option<Vec<u8>>,
 }
 
 const FRAME_CONFIG: u8 = 1;
 const FRAME_VIDEO: u8 = 2;
 const FRAME_AUDIO_CONFIG: u8 = 5;
 const FRAME_AUDIO: u8 = 6;
+const FRAME_CURSOR: u8 = 7;
+/// A `cursor` frame's shape, at most (screen-frames.ts CURSOR_SHAPE_MAX).
+const CURSOR_SHAPE_MAX: usize = 64;
 /// A frame longer than this is no frame (screen-frames.ts MAX_FRAME): left to the core, which says so.
 const FRAME_MAX: usize = 64 * 1024 * 1024;
 /// A packet of sound as the hosts play it: 960 frames of interleaved stereo PCM16 (20 ms at 48 kHz); the longest Opus
@@ -58,8 +67,26 @@ const OPUS_MAX: usize = 1275;
 const OPUS_SLACK: u64 = 10_000;
 
 impl ScreenTap {
-    pub(crate) fn new(call: u64) -> Self {
-        ScreenTap { call, pending: Vec::new(), out: Vec::new(), told_video: false, opus: None, opus_next: 0 }
+    pub(crate) fn new(call: u64, cursor_updates: bool) -> Self {
+        ScreenTap { call, pending: Vec::new(), out: Vec::new(), told_video: false, opus: None, opus_next: 0, cursor_updates, last_cursor: None }
+    }
+
+    /// Bytes for the core: the newest pointer not yet given it first.
+    fn keep(&mut self, bytes: &[u8]) {
+        if let Some(cursor) = self.last_cursor.take() {
+            self.out.extend_from_slice(&cursor);
+        }
+        self.out.extend_from_slice(bytes);
+    }
+
+    /// A whole frame that came apart from the stream (as a datagram: screen_dgram.rs), said or kept as one on it is.
+    pub(crate) fn whole(&mut self, kind: u8, body: &[u8], tell: &dyn Tell) {
+        if !self.said(kind, body, tell) {
+            let mut head = [kind, 0, 0, 0, 0];
+            head[1..].copy_from_slice(&(body.len() as u32).to_be_bytes());
+            self.keep(&head);
+            self.out.extend_from_slice(body);
+        }
     }
 
     /// What came next: its whole frames said or kept.
@@ -88,7 +115,7 @@ impl ScreenTap {
             let len = u32::from_be_bytes([rest[1], rest[2], rest[3], rest[4]]) as usize;
             if len > FRAME_MAX {
                 // out of step: all of it the core's, which fails the view
-                self.out.extend_from_slice(rest);
+                self.keep(rest);
                 at = data.len();
                 break;
             }
@@ -97,7 +124,7 @@ impl ScreenTap {
             }
             let (kind, body) = (rest[0], &rest[5..5 + len]);
             if !self.said(kind, body, tell) {
-                self.out.extend_from_slice(&rest[..5 + len]);
+                self.keep(&rest[..5 + len]);
             }
             at += 5 + len;
         }
@@ -122,9 +149,33 @@ impl ScreenTap {
                 tally("tap.video");
                 if !self.told_video {
                     self.told_video = true;
-                    self.out.extend_from_slice(&[FRAME_VIDEO, 0, 0, 0, 9]);
+                    self.keep(&[FRAME_VIDEO, 0, 0, 0, 9]);
                     self.out.extend_from_slice(&body[..9]);
                 }
+                true
+            }
+            FRAME_CURSOR if self.cursor_updates => {
+                // read as screen-frames.ts reads it, said as screens.ts says it
+                let text = if body.is_empty() {
+                    format!(r#"{{"id":{id},"value":{{"cursor":null}}}}"#)
+                } else if (4..=4 + CURSOR_SHAPE_MAX).contains(&body.len()) {
+                    let at = |hi: usize| ((u16::from_be_bytes([body[hi], body[hi + 1]]) as f64 / 65535.0) * 10000.0).round() / 10000.0;
+                    let mut cursor = json!({ "x": at(0), "y": at(2) });
+                    if body.len() > 4 {
+                        let Ok(shape) = std::str::from_utf8(&body[4..]) else { return false };
+                        cursor["shape"] = json!(shape);
+                    }
+                    serde_json::to_string(&json!({ "id": id, "value": { "cursor": cursor } })).unwrap_or_default()
+                } else {
+                    // (a length no station sends: passed over, as the core passes it over)
+                    return true;
+                };
+                tell.say(text.as_bytes(), None);
+                tally("tap.cursor");
+                let mut kept = vec![FRAME_CURSOR];
+                kept.extend((body.len() as u32).to_be_bytes());
+                kept.extend_from_slice(body);
+                self.last_cursor = Some(kept);
                 true
             }
             FRAME_AUDIO if body.len() > 8 && (if self.opus.is_some() { body.len() <= 8 + OPUS_MAX } else { body.len() == 8 + PCM_PACKET }) => {
@@ -309,7 +360,7 @@ mod tests {
     #[test]
     fn a_tapped_screen_says_its_picture_and_sound_and_keeps_the_rest_for_the_core() {
         let told = Told::default();
-        let mut tap = ScreenTap::new(7);
+        let mut tap = ScreenTap::new(7, false);
         let (wire, core) = screen_wire();
         // cut anywhere
         for piece in wire.chunks(7) {
@@ -334,7 +385,7 @@ mod tests {
         // as it came whole, or a frame cut across two pieces: the same
         for cut in [wire.len(), wire.len() - 3] {
             let told = Told::default();
-            let mut again = ScreenTap::new(7);
+            let mut again = ScreenTap::new(7, false);
             again.take(&wire[..cut], &told);
             again.take(&wire[cut..], &told);
             assert_eq!((told.said.lock().unwrap().len(), &again.out, again.pending.len()), (4, &core, 0));
@@ -345,7 +396,7 @@ mod tests {
     fn what_the_host_takes_of_a_tapped_screen_is_not_said() {
         // the host decodes and plays the frames and the sound itself: only the config said, the core's kept the same
         let told = Told { takes: vec![FRAME_VIDEO, FRAME_AUDIO], ..Told::default() };
-        let mut tap = ScreenTap::new(3);
+        let mut tap = ScreenTap::new(3, false);
         let (wire, core) = screen_wire();
         tap.take(&wire, &told);
         let said = told.said.into_inner().unwrap();
@@ -371,7 +422,7 @@ mod tests {
     #[test]
     fn a_tapped_screens_opus_sound_is_said_as_the_pcm_it_decodes_to() {
         let told = Told::default();
-        let mut tap = ScreenTap::new(4);
+        let mut tap = ScreenTap::new(4, false);
         let mut wire = frame(FRAME_AUDIO_CONFIG, br#"{"codec":"opus","sampleRate":48000,"channels":2}"#);
         for (i, packet) in TONE_OPUS.iter().enumerate() {
             let mut body = ((i as u64 + 1) * 20_000).to_be_bytes().to_vec();
@@ -403,5 +454,51 @@ mod tests {
         let (left, right) = (rms(packets[3], 0), rms(packets[3], 1));
         assert!((0.19..0.26).contains(&left) && (0.18..0.25).contains(&right), "{left} {right}");
         assert!(tap.out.is_empty(), "nothing of it the core's");
+    }
+
+    fn cursor(x: u16, y: u16, shape: &[u8]) -> Vec<u8> {
+        let mut b = x.to_be_bytes().to_vec();
+        b.extend(y.to_be_bytes());
+        b.extend_from_slice(shape);
+        frame(FRAME_CURSOR, &b)
+    }
+
+    #[test]
+    fn a_pointer_moving_is_said_to_the_page_and_only_its_newest_kept_for_the_core() {
+        let told = Told::default();
+        let mut tap = ScreenTap::new(5, true);
+        let mut wire = Vec::new();
+        for i in 0..120u16 {
+            wire.extend(cursor(i * 500, 65535 - i, if i % 2 == 0 { b"arrow" } else { b"" }));
+        }
+        wire.extend(frame(FRAME_CURSOR, &[]));
+        wire.extend(cursor(32768, 13107, "手".as_bytes()));
+        for piece in wire.chunks(5) {
+            tap.take(piece, &told);
+        }
+        // the pointer alone moving: nothing for the core, so it is woken for none of it
+        assert!(tap.out.is_empty());
+        let said = told.said.lock().unwrap().clone();
+        assert_eq!(said.len(), 122);
+        assert_eq!(said[0].0, json!({ "id": 5, "value": { "cursor": { "x": 0.0, "y": 1.0, "shape": "arrow" } } }));
+        assert_eq!(said[1].0, json!({ "id": 5, "value": { "cursor": { "x": 0.0076, "y": 1.0 } } }));
+        assert_eq!(said[120].0, json!({ "id": 5, "value": { "cursor": null } }));
+        assert_eq!(said[121].0, json!({ "id": 5, "value": { "cursor": { "x": 0.5, "y": 0.2, "shape": "手" } } }));
+        assert!(said.iter().all(|s| s.1.is_none()));
+        // a state comes: the core given the newest pointer just before it, and nothing older
+        let state = frame(3, br#"{"title":"t"}"#);
+        tap.take(&state, &told);
+        let mut core = cursor(32768, 13107, "手".as_bytes());
+        core.extend(&state);
+        assert_eq!(tap.out, core);
+        // a shape that is not UTF-8: the core's to pass over; a length no station sends: passed over here
+        tap.out.clear();
+        tap.take(&cursor(1, 1, &[0xff, 0xfe]), &told);
+        tap.take(&frame(FRAME_CURSOR, &[1, 2]), &told);
+        assert_eq!(tap.out, cursor(1, 1, &[0xff, 0xfe]));
+        // a page that does not take it alone: every cursor frame the core's, as before
+        let mut old = ScreenTap::new(6, false);
+        old.take(&cursor(1, 2, b""), &told);
+        assert_eq!(old.out, cursor(1, 2, b""));
     }
 }

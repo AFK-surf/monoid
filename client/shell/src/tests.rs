@@ -1182,3 +1182,156 @@ fn puts_a_transcript_away_in_segments_and_reads_it_back_whole() {
     assert!(run("zstd.segments", json!({ "path": at("none"), "out": at("x.zst"), "segment": 8 })).is_err());
 }
 
+
+/// A remote screen's view at 60 frames a second over a real iroh connection on this machine, its frames as datagrams
+/// (screen_dgram.rs) with 2% and then 5% of them lost on the way, with the parity made for that loss and with none:
+/// how many frames came, how many were given up (a key frame asked for instead), how long each took to come.
+#[test]
+fn a_screens_frames_as_datagrams_come_through_loss_at_once() {
+    use crate::screen_dgram::{KEYFRAME_FRAME, MediaIn, MediaOut, MediaRx, route};
+    use std::collections::HashMap;
+    use tokio::time::{Duration, Instant};
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taking = b.clone();
+        let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+        let client = a.connect(addr, &alpn).await.unwrap();
+        let station = taken.await.unwrap();
+        assert!(client.max_datagram_size().unwrap() >= 1024);
+        let slot = StdMutex::default();
+        const FRAMES: u64 = 240;
+        let mut report = Vec::new();
+        for (token, (loss, parity)) in [(0.02, true), (0.02, false), (0.05, true), (0.05, false)].into_iter().enumerate() {
+            let token = token as u32 + 1;
+            let (mut csend, mut crecv) = client.open_bi().await.unwrap();
+            let (route, rx) = route(&slot, &client, token).unwrap();
+            let mut rx = MediaRx { media: MediaIn::new(token, true), rx, rx_done: false, _route: route };
+            csend.write_all(b"{\"screen\":{}}\n").await.unwrap();
+            let (mut ssend, mut srecv) = station.accept_bi().await.unwrap();
+            let sent: Arc<StdMutex<HashMap<u64, Instant>>> = Arc::default();
+            let want_key = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            // the station: its head, a config, then the frames, a key frame every 2 s or as asked
+            let sending = {
+                let (station, sent, want_key) = (station.clone(), sent.clone(), want_key.clone());
+                tokio::spawn(async move {
+                    let mut line = [0u8; 14];
+                    srecv.read_exact(&mut line).await.unwrap();
+                    let asked = want_key.clone();
+                    tokio::spawn(async move {
+                        let mut f = [0u8; 5];
+                        while srecv.read_exact(&mut f).await.is_ok() {
+                            if f == KEYFRAME_FRAME {
+                                asked.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    });
+                    let mut media = MediaOut::new(station, token).unwrap();
+                    media.lose = Some((loss, 0x9e37_79b9_7f4a_7c15 ^ token as u64));
+                    media.assumed_loss = Some(loss);
+                    media.no_parity = !parity;
+                    media.write(&mut ssend, b"{\"status\":200}\n").await.unwrap();
+                    let config = br#"{"codec":"h264","width":1920,"height":1080}"#;
+                    let mut f = vec![1u8];
+                    f.extend((config.len() as u32).to_be_bytes());
+                    f.extend(config);
+                    media.write(&mut ssend, &f).await.unwrap();
+                    let start = Instant::now();
+                    for i in 0..FRAMES {
+                        tokio::time::sleep_until(start + Duration::from_micros(16_667 * i)).await;
+                        let key = i % 120 == 0 || want_key.swap(false, Ordering::Relaxed);
+                        let len = if key { 90_000 } else { 9_000 + (i as usize * 7919) % 12_000 };
+                        let mut body = vec![key as u8];
+                        body.extend(i.to_be_bytes());
+                        body.extend((0..len).map(|j| (j as u64 * 31 + i) as u8));
+                        let mut f = vec![2u8];
+                        f.extend((body.len() as u32).to_be_bytes());
+                        f.extend(body);
+                        sent.lock().unwrap().insert(i, Instant::now());
+                        media.write(&mut ssend, &f).await.unwrap();
+                    }
+                    ssend.finish().unwrap();
+                })
+            };
+            // the client: what a read gives, its frames taken apart
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut line = false;
+            let mut got: Vec<(u64, bool, Duration)> = Vec::new();
+            loop {
+                if rx.media.at_boundary() {
+                    rx.media.drain_into(&mut bytes);
+                }
+                if rx.media.take_keyframe(Instant::now()) {
+                    csend.write_all(&KEYFRAME_FRAME).await.unwrap();
+                }
+                if !line {
+                    if let Some(at) = bytes.iter().position(|&b| b == b'\n') {
+                        bytes.drain(..=at);
+                        line = true;
+                    }
+                }
+                while line && bytes.len() >= 5 {
+                    let len = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+                    if bytes.len() < 5 + len {
+                        break;
+                    }
+                    if bytes[0] == 2 {
+                        let i = u64::from_be_bytes(bytes[6..14].try_into().unwrap());
+                        assert!(bytes[14..5 + len].iter().enumerate().all(|(j, &v)| v == (j as u64 * 31 + i) as u8), "frame {i} made whole as it was sent");
+                        let at = sent.lock().unwrap()[&i];
+                        got.push((i, bytes[5] & 1 == 1, at.elapsed()));
+                    }
+                    bytes.drain(..5 + len);
+                }
+                let deadline = rx.media.deadline();
+                tokio::select! {
+                    read = crecv.read(&mut buf) => match read.unwrap() {
+                        Some(n) => {
+                            let chunk = &buf[..n];
+                            match rx.media.stream(chunk) {
+                                Some(b) => {
+                                    bytes.extend_from_slice(&chunk[..b]);
+                                    rx.media.drain_into(&mut bytes);
+                                    bytes.extend_from_slice(&chunk[b..]);
+                                }
+                                None => bytes.extend_from_slice(chunk),
+                            }
+                        }
+                        None => break,
+                    },
+                    d = rx.next() => rx.take_waiting(d, Instant::now()),
+                    _ = crate::screen_dgram::until(deadline) => rx.media.tick(Instant::now()),
+                }
+            }
+            sending.await.unwrap();
+            // never a frame that lost the one before it: each a key frame or the one after the last given
+            for w in got.windows(2) {
+                assert!(w[1].1 || w[1].0 == w[0].0 + 1, "frame {} given after {}", w[1].0, w[0].0);
+            }
+            let mut ms: Vec<f64> = got.iter().map(|g| g.2.as_secs_f64() * 1000.0).collect();
+            ms.sort_by(f64::total_cmp);
+            let pct = |p: f64| if ms.is_empty() { f64::NAN } else { ms[((ms.len() - 1) as f64 * p).round() as usize] };
+            let c = rx.media.counts;
+            let line = format!(
+                "loss {:.0}% parity {}: {}/{} frames ({:.1}%), {} given up, {} key frames asked, P50 {:.2} ms P99 {:.2} ms max {:.2} ms",
+                loss * 100.0, if parity { "adaptive" } else { "none" }, got.len(), FRAMES, got.len() as f64 * 100.0 / FRAMES as f64, c.given_up, c.keyframes, pct(0.5), pct(0.99), pct(1.0)
+            );
+            eprintln!("{line}");
+            report.push((loss, parity, got.len() as f64 / FRAMES as f64));
+        }
+        // with parity for the loss, nearly every frame comes; without, many are given up
+        for (loss, parity, came) in &report {
+            if *parity {
+                assert!(*came >= if *loss < 0.03 { 0.97 } else { 0.93 }, "{loss} {came}");
+            }
+        }
+        assert!(report[0].2 > report[1].2 && report[2].2 > report[3].2);
+    });
+}

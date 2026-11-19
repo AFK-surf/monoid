@@ -23,7 +23,7 @@ pub fn address_shown(String?) -> String?
 
 pub fn admin_answered(Int32, String) -> Result[@json.Json, (String, String)]
 
-pub async fn answer_screen(ScreenHubPort, @door.Stream, Bytes, @json.Json, @json.Json, () -> Bool, @effect.Runtime, (String, String, @json.Json) -> String, (String, String, String, @json.Json) -> Unit, paths? : (() -> Array[LinkPath])?, host_now? : (() -> Double)?, stall? : (() -> Double, () -> Unit)) -> Unit
+pub async fn answer_screen(ScreenHubPort, @door.Stream, Bytes, @json.Json, @json.Json, () -> Bool, @effect.Runtime, (String, String, @json.Json) -> String, (String, String, String, @json.Json) -> Unit, paths? : (() -> Array[LinkPath])?, host_now? : (() -> Double)?, stall? : (() -> Double, () -> Unit), media_datagrams? : (async (Double) -> Bool)?) -> Unit
 
 pub fn asked(@json.Json) -> @json.Json
 
@@ -58,6 +58,8 @@ pub let cut : Double
 pub fn decode_uri_component(String) -> String?
 
 pub let delivery_window_ms : Double
+
+pub let dgram_header : String
 
 pub let direct_rate : Double
 

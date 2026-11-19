@@ -22,7 +22,7 @@ fn p54_stream_handle(asked : Json) -> Json {
 ///|
 /// One of the shell's calls of a member's stream (`read`, `write`, `finish`, `reset`, `stopped`), as its handle is
 /// held: `istream.*`, or `tcp.*` for one carried on a loopback connection.
-async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes? : Bytes, code? : Json) -> (Json, Bytes?) {
+async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes? : Bytes, code? : Json, token? : Json) -> (Json, Bytes?) {
   match handle {
     { "$tcp": id, .. } =>
       match call {
@@ -49,6 +49,10 @@ async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes?
       let asked : Map[String, Json] = { "id": id }
       match code {
         Some(c) => asked["code"] = c
+        None => ()
+      }
+      match token {
+        Some(t) => asked["token"] = t
         None => ()
       }
       match bytes {

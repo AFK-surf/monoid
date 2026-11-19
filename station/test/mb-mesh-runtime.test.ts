@@ -639,6 +639,8 @@ test("a view's frames, its ask and every frame a client sends, checked as screen
     { codecs: ["jpeg", "jpeg"], fps: 24, quality: "best", gamut: "srgb", client: 5, app: "", self: "😀".repeat(40), taken: "yes", maxWidth: -3, maxHeight: Number.NaN },
     { client: "\u{e0001}tag\u{e0020}", app: "­؀x", maxWidth: 1919.5, maxHeight: 1080.49 },
     { codecs: ["h264"], binaryCursor: true, taken: true }, { codecs: ["h264"], binaryCursor: true, peek: true }, { codecs: ["h264"], binaryCursor: 1 }, { codecs: ["h264"], binaryCursor: false },
+    { codecs: ["h264"], datagrams: 77 }, { codecs: ["h264"], datagrams: 4294967295 }, { codecs: ["h264"], datagrams: 77, peek: true }, { codecs: ["h264"], datagrams: 0 },
+    { codecs: ["h264"], datagrams: 1.5 }, { codecs: ["h264"], datagrams: 4294967296 }, { codecs: ["h264"], datagrams: "77" },
   ];
   for (const screen of screens) await same("asked", { screen }, () => asked(screen));
   for (const kind of [16, 19, 20]) await same("limitIn", { kind }, () => limitIn(kind));
@@ -1160,6 +1162,8 @@ class ScreenWorld {
       finish: async () => void (this.finished = true),
       stopped: () => stopped,
       reset: async () => {},
+      // (`mediaDatagrams` in the world: what the stream's addon or front answers; none, one from before)
+      ...(typeof conf.mediaDatagrams === "boolean" ? { mediaDatagrams: async (token: number) => (this.calls.push(["mediaDatagrams", token]), conf.mediaDatagrams) } : {}),
     };
     this.paths = Array.isArray(conf.paths) ? conf.paths : [];
     const conn = Array.isArray(conf.paths) ? { paths: () => (this.calls.push(["paths"]), this.paths) } : undefined;
@@ -1497,6 +1501,11 @@ test("a screen's view that reads `cursor` frames, started at the rate its link c
   await bothScreens(binary, cursorSteps, "cursor frames on a LAN");
   await bothScreens({ ...binary, head: viewHead({ screen: { codecs: ["h264"], control: true } }) }, cursorSteps, "a client before cursor frames");
   await bothScreens({ ...binary, paths: [{ ...lan[0], relay: "https://r1/", ip: null, rttMs: 20 }] }, [{ op: "clientEnd" }], "a near relay");
+  // frames as datagrams: the client's token, the stream asked, the reply saying so where it sends them so
+  const dgram = { ...binary, head: viewHead({ screen: { codecs: ["h264"], control: true, datagrams: 3_000_000_007 } }) };
+  await bothScreens({ ...dgram, mediaDatagrams: true }, [{ op: "clientEnd" }], "frames as datagrams");
+  await bothScreens({ ...dgram, mediaDatagrams: false }, [{ op: "clientEnd" }], "a link with no datagrams");
+  await bothScreens(dgram, [{ op: "clientEnd" }], "a stream that sends none");
   // frames at 60 a second, each acknowledged: the rate climbs, a key frame asked once it doubled the last one's
   const moving: Json[] = [vframe(1_000, { key: true, config: { codec: "h264", width: 1920, height: 1080 } })];
   for (let i = 1; i < 200; i++) moving.push({ op: "advance", ms: 17 }, ackOf(i * 1_000), vframe((i + 1) * 1_000, i % 90 === 0 ? { key: true } : {}));

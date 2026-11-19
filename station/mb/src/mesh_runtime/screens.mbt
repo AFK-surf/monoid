@@ -7,6 +7,11 @@
 pub let screen_type : String = "application/x-stillfail-screen"
 
 ///|
+/// The header of a view's reply that says its frames go as datagrams, with the client's token (mesh/screens.ts
+/// `DGRAM_HEADER`).
+pub let dgram_header : String = "x-screen-dgram"
+
+///|
 pub let kind_config : Int = 1
 
 ///|
@@ -710,6 +715,12 @@ pub fn asked(screen : Json) -> Json {
   }
   if m.get("binaryCursor") is Some(True) && !peek {
     out.push(("binaryCursor", Json::boolean(true)))
+  }
+  // (the token the client takes the video and audio frames under as datagrams: client/shell screen_dgram.rs)
+  match m.get("datagrams") {
+    Some(Number(t, ..)) if !peek && t >= 1.0 && t <= 4294967295.0 && js_round(t) == t =>
+      out.push(("datagrams", jnum(t)))
+    _ => ()
   }
   jobj(out)
 }

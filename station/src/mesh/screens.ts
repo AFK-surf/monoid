@@ -28,6 +28,8 @@ import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, type Quality, S
 import { writeLine } from "./serve.ts";
 
 export const SCREEN_TYPE = "application/x-stillfail-screen";
+/// The header of a view's reply that says its frames go as datagrams, with the client's token.
+export const DGRAM_HEADER = "x-screen-dgram";
 export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, cursor: 7, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21 } as const;
 /// A client's frame is an input event at most: one larger ends the view.
 export const MAX_IN = 64 * 1024;
@@ -233,8 +235,10 @@ const QUIET = 10;
 /// its people which device a view is on; `audio: "pcm_s16le"` the computer's sound, with `opus` where the client
 /// decodes Opus too (a station from before sends PCM to it); `self`: the device's main id, for it to know its own views; `taken`: its person
 /// asked to drive it (控制, 接管): it takes it from whoever else drives it, and over having been made to only look (hub.ts `drive`);
-/// `binaryCursor`: the client reads the pointer as `cursor` frames (none from a client before them, nor for a preview).
-export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; binaryCursor?: boolean } {
+/// `binaryCursor`: the client reads the pointer as `cursor` frames (none from a client before them, nor for a preview);
+/// `datagrams`: the token the client takes the video and audio frames under as datagrams (client/shell screen_dgram.rs;
+/// none for a preview).
+export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; binaryCursor?: boolean; datagrams?: number } {
   const bound = (v: unknown, otherwise: number) => (num(v) ? Math.min(8192, Math.max(16, Math.round(v))) : otherwise);
   const codecs = Array.isArray(screen.codecs) ? CODECS.filter((c) => screen.codecs.includes(c)) : [];
   // A preview (`peek`, a link's card in a chat) only looks.
@@ -245,7 +249,7 @@ export function asked(screen: any): { maxWidth: number; maxHeight: number; codec
   const fit = control && f && side(f.width) && side(f.height) && num(f.scale) && f.scale >= 1 && f.scale <= 4 ? { width: Math.round(f.width), height: Math.round(f.height), scale: f.scale } : undefined;
   const quality: Quality | undefined = ["smooth", "hd", "original"].includes(screen.quality) && !peek ? screen.quality : undefined;
   const fps: Fps | undefined = isFps(screen.fps) && !peek ? screen.fps : undefined;
-  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}) };
+  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}), ...(Number.isInteger(screen.datagrams) && screen.datagrams > 0 && screen.datagrams <= 0xffff_ffff && !peek ? { datagrams: screen.datagrams as number } : {}) };
 }
 
 /// A word a client says of itself, as far as it is shown: a line's worth, none when it said none.
@@ -311,8 +315,11 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
     view.close();
     return refuse(404, tr(lang, "station.screen.notFound"));
   }
+  // Its picture and sound as datagrams where the client takes them under its token and the link carries them (the
+  // reply says so: `x-screen-dgram`), else on the stream as before.
+  const datagrams = ask.datagrams !== undefined && stream.mediaDatagrams ? await stream.mediaDatagrams(ask.datagrams).catch(() => false) : false;
   try {
-    await writeLine(stream, { status: 200, headers: { "content-type": SCREEN_TYPE } });
+    await writeLine(stream, { status: 200, headers: { "content-type": SCREEN_TYPE, ...(datagrams ? { [DGRAM_HEADER]: String(ask.datagrams) } : {}) } });
   } catch {
     view.close();
     return;

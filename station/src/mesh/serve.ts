@@ -984,6 +984,8 @@ function tracing(traces: Traces | undefined, head: any, method: string, path: st
     finish: () => stream.finish(),
     stopped: () => stream.stopped(),
     reset: (code) => stream.reset(code),
+    // (a screen's frames as datagrams: what goes so is not counted here, as the stream does not carry it)
+    ...(stream.mediaDatagrams ? { mediaDatagrams: (token: number) => stream.mediaDatagrams!(token) } : {}),
   };
   return { stream: counted, end: (error: Error | null) => end(false, error) };
 }

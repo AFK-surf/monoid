@@ -464,6 +464,8 @@ impl Inner {
                     recv: tokio::sync::Mutex::new(recv),
                     reset: tokio::sync::watch::channel(false).0,
                     tap: Mutex::default(),
+                    media_out: Default::default(),
+                    media_in: Default::default(),
                 };
                 Ok(Answer::json(json!({ "id": self.keep(Handle::IStream(Arc::new(halves))) })))
             }

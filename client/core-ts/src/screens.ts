@@ -908,7 +908,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           tell();
           // Its picture and sound read by the host and said to the app itself where it can (Apple's shell: no frame
           // through here), what it leaves here the config (its size, for the state) and a video frame's head after it.
-          const tapped = socket.tap === undefined ? false : yield* socket.tap(at[1]);
+          // A page that takes the pointer alone has it said by the host too where it taps the view ("cursor"), the core
+          // given only the newest before whatever comes next for it.
+          const tapped = socket.tap === undefined ? false : yield* socket.tap(at[1], c.cursorUpdates === true);
           const reader = new FrameReader();
           let seen = false;
           let pcm = false;
@@ -981,8 +983,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 const k = frame.cursor;
                 if (k === null) delete state.cursor;
                 else state.cursor = { x: k.x, y: k.y, ...(k.shape !== undefined ? { shape: k.shape } : {}) };
-                if (c.cursorUpdates === true) progress({ cursor: state.cursor ?? null });
-                else tell();
+                if (c.cursorUpdates !== true) tell();
+                else if (tapped !== "cursor") progress({ cursor: state.cursor ?? null });
               } else if ("state" in frame) {
                 const s = frame.state;
                 if (!isObject(s)) continue;

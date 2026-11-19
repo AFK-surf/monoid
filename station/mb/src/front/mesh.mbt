@@ -593,6 +593,9 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
     }
     "stopped" => self.host.shell("istream.stopped", { "id": arg("stream") }).0
     "reset" => self.host.shell("istream.reset", { "id": arg("stream"), "code": arg("code") }).0
+    // A view's frames as datagrams from now on (client/shell `istream.mediaDatagrams`): asked by the Node before its
+    // reply's head goes (front.ts `FrontStream.mediaDatagrams`).
+    "mediaDatagrams" => self.host.shell("istream.mediaDatagrams", { "id": arg("stream"), "token": arg("token") }).0
     "conn.close" => {
       let conn = arg("conn")
       client.conns.remove(conn.stringify())
