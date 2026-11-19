@@ -30,17 +30,9 @@ fn values_of(v : J?) -> Array[J] {
 }
 
 ///|
-/// A string's code points (`[...s]`).
-fn points(s : String) -> Array[Char] {
-  let out = []
-  for c in s {
-    out.push(c)
-  }
-  out
-}
+fn points(s : String) -> Array[Char] { s.to_array() }
 
 ///|
-/// The object at `k` of `o`, an empty one where it is none (apps.ts `object`).
 fn obj_at(o : J, k : String) -> J {
   match at(Some(o), k) {
     Some(Obj(_) as x) => x
@@ -49,13 +41,9 @@ fn obj_at(o : J, k : String) -> J {
 }
 
 ///|
-/// `o[k]` changed by `f` of the object there (made an empty one where none is: apps.ts `object`), `o` made again with it.
-fn with_obj(o : J, k : String, f : (J) -> J) -> J {
-  put(o, k, f(obj_at(o, k)))
-}
+fn with_obj(o : J, k : String, f : (J) -> J) -> J { put(o, k, f(obj_at(o, k))) }
 
 ///|
-/// `JSON.parse`, its SyntaxError said as a Thrown.
 fn parse(t : String) -> J raise Thrown {
   @jsjson.parse(t) catch {
     @jsjson.SyntaxError(m) => raise Thrown("SyntaxError", m)
@@ -76,9 +64,7 @@ pub impl Show for Thrown with output(self, logger) {
 }
 
 ///|
-fn fail_(message : String) -> Thrown {
-  Thrown("", message)
-}
+fn fail_(message : String) -> Thrown { Thrown("", message) }
 
 ///|
 /// An error's message (`(error as Error).message`).

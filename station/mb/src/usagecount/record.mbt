@@ -498,13 +498,40 @@ pub fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : A
 // ── the calls and positions ──
 
 ///|
-/// store/usage.ts `recordUsage`: a transcript's calls read up to `file.offset`, each with what it was for; a call
+pub let begin_usage_file_sql : String =
+  #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
+  #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
+  #|    ON CONFLICT(path) DO UPDATE SET
+  #|      session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
+  #|      offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
+  #|      model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
+  #|      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
+  #|      counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
+  #|      counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END
+
+///|
+/// store/usage.ts `recordUsage`: a transcript's calls read up to `offset`, each with what it was for; a call
 /// recorded before keeps its row (its output grown). How many were new. In the caller's transaction.
-fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
+pub fn record_calls(
+  db : @sql.Db,
+  compact : Bool,
+  totals_complete : (String) -> Bool raise,
+  path : Json,
+  session_col : Json,
+  session : String?,
+  offset : Json,
+  model : Json,
+  speed : Json,
+  cutoff : Json,
+  anchor : Json,
+  runtime : String,
+  calls : Array[(Call, For)],
+  min_new_at : Double?,
+  on_change : (Double) -> Unit,
+) -> Int raise {
   let mut added = 0
-  let compact = schema.has_compact(db)
   let recent : Array[(Call, For)] = []
-  if w.file.session is Some(session) {
+  if session is Some(session) {
     let mut seeded = false
     let mut snapshot : Snapshot? = None
     let insert = if compact {
@@ -520,14 +547,14 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
         #|  gen_output = CASE WHEN MAX(gen_ms, excluded.gen_ms) > 0 THEN MAX(output, excluded.output) ELSE 0 END
       )
     }
-    for pair in w.calls {
+    for pair in calls {
       let (c, of) = pair
       let was = match one(db, "SELECT output, gen_ms FROM usage WHERE id = ?", [Json::string(c.id)]) {
         Some(r) => Some((num_of(field(r, "output")).unwrap_or(0.0), num_of(field(r, "gen_ms")).unwrap_or(0.0)))
         None => None
       }
       // An old call may grow after the cutover, but an unseen old call is not historical work to fill in.
-      if was is None && w.min_new_at is Some(min) && c.at < min {
+      if was is None && min_new_at is Some(min) && c.at < min {
         continue
       }
       // The same response can occur in several lines or be replayed after an interrupted read.
@@ -536,7 +563,7 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
       }
       if compact && !seeded {
         seeded = true
-        if schema.totals_complete(db, session) {
+        if totals_complete(session) {
           snapshot = seed_context(db, session)
         }
       }
@@ -561,7 +588,7 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
             of.thread,
             of.person,
             of.profile,
-            Json::string(w.runtime),
+            Json::string(runtime),
             opt_str(c.model),
             Json::number(if c.subagent { 1.0 } else { 0.0 }),
             Json::number(if c.fast { 1.0 } else { 0.0 }),
@@ -583,12 +610,10 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
           recent.push((c, of))
         }
       }
-      if c.at < w.changed.val {
-        w.changed.val = c.at
-      }
+      on_change(c.at)
     }
     if recent.length() > 0 {
-      note_contexts(db, session, w.runtime, recent, snapshot)
+      note_contexts(db, session, runtime, recent, snapshot)
     }
   }
   ignore(
@@ -603,18 +628,31 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
         #|       OR usage_files.speed IS NOT excluded.speed
         #|       OR (excluded.counter_cutoff IS NOT NULL AND (usage_files.counter_cutoff IS NOT excluded.counter_cutoff OR usage_files.counter_anchor IS NOT excluded.counter_anchor))
       ),
-      [
-        Json::string(w.path),
-        opt_str(w.file.session),
-        Json::number(w.file.offset),
-        opt_str(w.file.model),
-        Json::number(w.cutoff),
-        Json::string(w.anchor),
-        opt_str(w.file.speed),
-      ],
+      [path, session_col, offset, model, cutoff, anchor, speed],
     ),
   )
   added
+}
+
+///|
+fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
+  record_calls(
+    db,
+    schema.has_compact(db),
+    s => schema.totals_complete(db, s),
+    Json::string(w.path),
+    opt_str(w.file.session),
+    w.file.session,
+    Json::number(w.file.offset),
+    opt_str(w.file.model),
+    opt_str(w.file.speed),
+    Json::number(w.cutoff),
+    Json::string(w.anchor),
+    w.runtime,
+    w.calls,
+    w.min_new_at,
+    at => if at < w.changed.val { w.changed.val = at },
+  )
 }
 
 ///|
@@ -673,17 +711,7 @@ fn begin_counter_file(db : @sql.Db, path : String, file : File, cutoff : Double,
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   ignore(
     db.run(
-      (
-        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
-        #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
-        #|    ON CONFLICT(path) DO UPDATE SET
-        #|      session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
-        #|      offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
-        #|      model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
-        #|      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
-        #|      counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
-        #|      counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END
-      ),
+      begin_usage_file_sql,
       [
         Json::string(path),
         opt_str(file.session),

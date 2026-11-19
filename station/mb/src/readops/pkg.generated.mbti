@@ -31,6 +31,8 @@ pub fn delivery_card_state(@sql.Db, @json.Json) -> @json.Json raise
 
 pub fn digest(@json.Json) -> String
 
+pub fn has_legacy_said(@sql.Db) -> Bool raise
+
 pub fn job(@sql.Db, @host.Host, @json.Json) -> @json.Json raise
 
 pub fn job_log(@sql.Db, @host.Host, @json.Json) -> @json.Json raise
@@ -46,6 +48,8 @@ pub fn learn_catalog(@json.Json) -> Unit
 pub let legacy_asked_during_sql : String
 
 pub let legacy_said_boundary_tail_sql : String
+
+pub fn legacy_said_head(@sql.Db, @json.Json) -> (Bool, Map[String, @json.Json]?) raise
 
 pub let legacy_said_head_first_sql : String
 

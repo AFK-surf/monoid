@@ -10,7 +10,9 @@ using @jsjson {type JValue}
 
 ///|
 using @live_wire {
-  jstr, obj, field, str, non_empty, is_str, has_prefix, or_else, pretty, joined, start, delta, end_event, live, failed,
+  jstr, obj, field, str, non_empty, is_str, has_prefix, or_else, pretty, joined, start, delta, live, failed,
+  completed, aborted, turn_started, turn_ended, tools_lost_event, find_entry, set_entry, load_entries,
+  entries_json, opt_str_json, transition, end_entry, end_open, has_open_tool, str_or_js,
 }
 
 ///|
@@ -82,34 +84,10 @@ pub fn Live::new() -> Live {
 }
 
 ///|
-fn Live::find(self : Live, id : String) -> Int? {
-  for i, e in self.open {
-    if e.0 == id {
-      return Some(i)
-    }
-  }
-  None
-}
-
-///|
-fn Live::set(self : Live, id : String, step : String) -> Unit {
-  match self.find(id) {
-    Some(i) => self.open[i] = (id, step)
-    None => self.open.push((id, step))
-  }
-}
-
-///|
 /// What `state` said: live.ts `CursorLiveState`.
 pub fn Live::of_state(state : J) -> Live {
   let live = Live::new()
-  if state.get("open") is Some(Arr(entries)) {
-    for e in entries {
-      if e is Arr([Str(id), Str(step), ..]) {
-        live.set(id, step)
-      }
-    }
-  }
+  load_entries(state, "open", live.open)
   if state.get("said") is Some(Str(s)) {
     live.said = Some(s)
   }
@@ -125,34 +103,23 @@ pub fn Live::of_state(state : J) -> Live {
 ///|
 pub fn Live::state(self : Live) -> J {
   obj([
-    ("open", Arr(self.open.map(e => J::Arr([Str(e.0), jstr(e.1)])))),
-    ("said", match self.said { Some(s) => Str(s); None => Null }),
+    ("open", entries_json(self.open)),
+    ("said", opt_str_json(self.said)),
     ("n", Num(self.n.to_double())),
-    ("phase", match self.phase { Some(p) => jstr(p); None => Null }),
+    ("phase", opt_str_json(self.phase)),
   ])
 }
 
 ///|
 fn Live::to(self : Live, next : String, out : Array[J]) -> Unit {
-  if self.phase != Some(next) {
-    self.phase = Some(next)
-    out.push(obj([("kind", jstr("phase")), ("phase", jstr(next))]))
-  }
-}
-
-///|
-fn Live::end(self : Live, id : String, out : Array[J]) -> Unit {
-  if self.find(id) is Some(i) {
-    ignore(self.open.remove(i))
-    out.push(end_event(id))
-  }
+  self.phase = transition(self.phase, next, out)
 }
 
 ///|
 /// The text or thoughts under way ends: something else came.
 fn Live::stop_saying(self : Live, out : Array[J]) -> Unit {
   if self.said is Some(s) {
-    self.end(s, out)
+    end_entry(self.open, s, out)
   }
   self.said = None
 }
@@ -167,7 +134,7 @@ pub fn Live::prompted(self : Live) -> Array[J] {
 
 ///|
 fn Live::step_of(self : Live, id : String) -> String? {
-  match self.find(id) {
+  match find_entry(self.open, id) {
     Some(i) => Some(self.open[i].1)
     None => None
   }
@@ -211,7 +178,7 @@ pub fn Live::feed(self : Live, message : J?) -> Array[J] {
       let id = run + ":" + self.n.to_string()
       self.n += 1
       self.said = Some(id)
-      self.set(id, step)
+      set_entry(self.open, id, step)
       out.push(start(id, step, None, None))
     }
     if step == "text" {
@@ -224,27 +191,27 @@ pub fn Live::feed(self : Live, message : J?) -> Array[J] {
     guard non_empty(field(message, "call_id")) is Some(id) else { return out }
     self.stop_saying(out)
     if is_str(field(message, "status"), "running") {
-      if self.find(id) is Some(_) {
+      if find_entry(self.open, id) is Some(_) {
         return out
       }
       let (name, input) = cursor_call(str(field(message, "name")).unwrap_or("tool"), field(message, "args"))
-      self.set(id, "tool")
+      set_entry(self.open, id, "tool")
       self.to("working", out)
       out.push(start(id, "tool", Some(name), Some(@claude.chars(pretty(Some(input)), @live_wire.INPUT_MOST))))
       return out
     }
-    if self.find(id) is None {
+    if find_entry(self.open, id) is None {
       // One done that this station did not see start (taken up after it started): started with its input whole.
       let (name, input) = cursor_call(str(field(message, "name")).unwrap_or("tool"), field(message, "args"))
-      self.set(id, "tool")
+      set_entry(self.open, id, "tool")
       out.push(start(id, "tool", Some(name), Some(@claude.chars(pretty(Some(input)), @live_wire.INPUT_MOST))))
     }
     let output = cursor_output(field(message, "result"))
     if output.length() > 0 {
       out.push(delta(id, "output", @claude.chars(output, @live_wire.INPUT_MOST)))
     }
-    self.end(id, out)
-    if !self.open.iter().any(e => e.1 == "tool") {
+    end_entry(self.open, id, out)
+    if !has_open_tool(self.open) {
       self.to("requesting", out)
     }
   } else if kind == "user" {
@@ -257,8 +224,7 @@ pub fn Live::feed(self : Live, message : J?) -> Array[J] {
 ///|
 /// The turn ended: whatever is still open ends with it.
 pub fn Live::ended(self : Live) -> Array[J] {
-  let out = self.open.map(e => end_event(e.0))
-  self.open.clear()
+  let out = end_open(self.open)
   self.said = None
   self.phase = None
   out
@@ -306,10 +272,10 @@ pub(all) struct Said {
 /// cursor.ts `outcomeOf`: how a run's end ends the turn.
 pub fn outcome_of(end : J?) -> J {
   if is_str(field(end, "status"), "cancelled") {
-    return obj([("kind", jstr("aborted"))])
+    return aborted()
   }
   if is_str(field(end, "status"), "finished") {
-    return obj([("kind", jstr("completed"))])
+    return completed()
   }
   let message = match field(field(end, "error"), "message") {
     Some(Str(s)) => s
@@ -321,16 +287,8 @@ pub fn outcome_of(end : J?) -> J {
       "the run ended " + status
     }
   }
-  let code = match field(field(end, "error"), "code") {
-    None | Some(Null) => ""
-    Some(v) => @jsjson.js_string(v)
-  }
+  let code = str_or_js(field(field(end, "error"), "code"))
   failed(@claude.failure_of(code + " " + message), @claude.chars(message, 1000))
-}
-
-///|
-fn turn_ended(outcome : J) -> J {
-  obj([("type", jstr("turnEnded")), ("outcome", outcome)])
 }
 
 ///|
@@ -342,24 +300,24 @@ pub fn Session::line(self : Session, message : J) -> Said {
     // A turn running that this station did not see start (taken up after a crash just as it was given).
     if !self.turn.busy {
       self.turn.busy = true
-      events.push(obj([("type", jstr("turnStarted"))]))
+      events.push(turn_started())
     }
     for e in self.live.feed(field(m, "message")) {
       events.push(live(e))
     }
     if self.tools_lost(field(m, "message")) is Some(why) {
-      events.push(obj([("type", jstr("toolsLost")), ("why", Str(why))]))
+      events.push(tools_lost_event(why))
     }
     return { events, node: false }
   }
   if is_str(field(m, "ev"), "end") {
     let outcome = if self.turn.aborting && !is_str(field(m, "status"), "finished") {
-      obj([("kind", jstr("aborted"))])
+      aborted()
     } else {
       outcome_of(m)
     }
     if !self.turn.busy {
-      events.push(obj([("type", jstr("turnStarted"))]))
+      events.push(turn_started())
     }
     self.turn.busy = false
     self.turn.aborting = false
@@ -391,10 +349,7 @@ pub fn Session::line(self : Session, message : J) -> Said {
 /// cursor.ts `toolsLost`: a call to one of the station's tools failed as unreachable.
 fn Session::tools_lost(self : Session, message : J?) -> String? {
   guard is_str(field(message, "type"), "tool_call") && field(message, "call_id") is Some(Str(id)) else { return None }
-  let provider = match field(field(message, "args"), "providerIdentifier") {
-    None | Some(Null) => ""
-    Some(v) => @jsjson.js_string(v)
-  }
+  let provider = str_or_js(field(field(message, "args"), "providerIdentifier"))
   let running = is_str(field(message, "status"), "running")
   if running && is_str(field(message, "name"), "mcp") && provider == "stillfail" {
     self.calls.push(id)

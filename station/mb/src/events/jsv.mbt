@@ -3,51 +3,16 @@
 // (`{ ...v, name }`), deleted, a string's text.
 
 ///|
-using @jsjson {type JValue}
-
-///|
-type J = JValue
-
-///|
-fn js(s : String) -> J {
-  Str(s)
-}
-
-///|
-fn jn(d : Double) -> J {
-  Num(d)
-}
-
-///|
-/// An object of these properties, in this order.
-fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs)
+using @jsjson {
+  type JValue as J, jval_str as js, jval_num as jn, jval_obj as jo, jval_array as ja,
+  jval_str_raw_of as text_of, jval_set_or_new as with_prop, jval_del as without, stringify,
+  jval_try_parse as parse, jval_stringify_num as num_text, js_compare,
 }
 
 ///|
 /// An object of these properties, those absent (undefined) left out as JSON.stringify leaves them.
 fn jopt(pairs : Array[(String, J?)]) -> J {
-  let out = []
-  for p in pairs {
-    if p.1 is Some(v) {
-      out.push((p.0, v))
-    }
-  }
-  Obj(out)
-}
-
-///|
-fn ja(items : Array[J]) -> J {
-  Arr(items)
-}
-
-///|
-/// The text of a string (its code units as they are).
-fn text_of(v : J?) -> String? {
-  match v {
-    Some(Str(s)) => Some(s)
-    _ => None
-  }
+  Obj(pairs.filter_map(p => p.1.map(v => (p.0, v))))
 }
 
 ///|
@@ -57,10 +22,7 @@ fn str_prop(v : J, name : String) -> String? {
 
 ///|
 fn num_prop(v : J, name : String) -> Double? {
-  match v.get(name) {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(v.get(name))
 }
 
 ///|
@@ -70,59 +32,12 @@ fn has(v : J, name : String) -> Bool {
 }
 
 ///|
-/// `{ ...v, [name]: value }`: an object's property set where it is, or put after the rest (anything but an object
-/// spread as none).
-fn with_prop(v : J, name : String, value : J) -> J {
-  let out = []
-  let mut set = false
-  if v is Obj(entries) {
-    for e in entries {
-      if e.0 == name {
-        if !set {
-          out.push((name, value))
-          set = true
-        }
-      } else {
-        out.push(e)
-      }
-    }
-  }
-  if !set {
-    out.push((name, value))
-  }
-  Obj(out)
-}
-
-///|
-/// `{ ...v }` without `name` (`delete copy[name]`).
-fn without(v : J, name : String) -> J {
-  @jsjson.jval_del(v, name)
-}
-
-///|
-fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-/// JSON.parse; none for what is not JSON.
-fn parse(text : String) -> J? {
-  @jsjson.jval_try_parse(text)
-}
-
-///|
 /// `String(v ?? "")`.
 fn string_of(v : J?) -> String {
   match v {
     None | Some(Null) => ""
     Some(v) => @jsjson.js_string(v)
   }
-}
-
-///|
-/// A number as JavaScript writes it in a template string (`${n}`).
-fn num_text(d : Double) -> String {
-  @jsjson.stringify(Num(d))
 }
 
 ///|
@@ -142,12 +57,6 @@ fn spread(v : J) -> J {
       Obj(items.mapi((i, item) => (i.to_string(), item)))
     _ => Obj([])
   }
-}
-
-///|
-/// `a < b` of two strings, as JavaScript compares them: by their UTF-16 code units.
-fn js_compare(a : String, b : String) -> Int32 {
-  @jsjson.js_compare(a, b)
 }
 
 ///|

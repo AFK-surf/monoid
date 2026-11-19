@@ -160,41 +160,7 @@ fn Agents::own_heard(self : Agents, h : Hosted, own : Own, lines : Array[(Bytes,
   }
   let end = lines[lines.length() - 1].1
   let turn = own.turn()
-  let same = @jsjson.stringify(turn) == before && node.length() == 0
-  // (only what steps wrote: held, told with what comes next or once DELTAS_MS is over)
-  if same && events.length() > 0 && events.iter().all(is_delta) {
-    merge_into(h.pending, events)
-    h.pending_units += units_of(events)
-    h.pending_to = end
-    h.told = end
-    if h.pending_units >= DELTAS_MOST {
-      self.flush(h)
-    } else {
-      self.soon(h)
-    }
-    return
-  }
-  if same && events.length() == 0 {
-    if h.pending.length() > 0 {
-      h.pending_to = end
-      h.told = end
-      return
-    }
-    if h.told <= h.acked_out {
-      h.acked_out = end
-      h.acked_to = end
-      h.told = end
-      h.told_out = end
-      self.ack(h)
-      return
-    }
-  }
-  let all = h.pending
-  h.pending = []
-  h.pending_units = 0
-  merge_into(all, events)
-  h.told = end
-  self.tell(h, end, turn, all, node~)
+  self.deliver_heard(h, end, turn, @jsjson.stringify(turn) == before && node.length() == 0, events, node~)
 }
 
 ///|

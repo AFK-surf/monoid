@@ -31,6 +31,12 @@ pub fn length_of(Array[Marked]) -> Int32
 
 pub fn marks_dir(String, String) -> String
 
+pub fn packed_frames_of(@host.Host, String) -> Array[PackedFrame]? raise
+
+pub fn packed_read_segments(@host.Host, String, Int64, end? : Int64, check_size? : Bool, (BytesView) -> Bool raise) -> Bool raise
+
+pub fn packed_written_size(@host.Host, String) -> Int64? raise
+
 pub fn script_calls(String) -> (Array[(String, @jsjson.JValue)], Bool)
 
 pub fn state_json(TailState) -> @json.Json
@@ -69,6 +75,13 @@ pub struct Mark {
 pub struct Marked {
   state : TailState
   marks : Array[Mark]
+}
+
+pub(all) struct PackedFrame {
+  at : Int64
+  packed : Int64
+  from : Int64
+  size : Int64
 }
 
 pub struct ReadState {

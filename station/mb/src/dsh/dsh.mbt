@@ -10,7 +10,10 @@ using @jsjson {type JValue}
 
 ///|
 using @live_wire {
-  jstr, obj, field, str, non_empty, is_str, has_prefix, or_else, pretty, joined, start, delta, end_event, live, failed,
+  jstr, obj, field, str, non_empty, is_str, has_prefix, or_else, pretty, joined, start, delta, live, failed,
+  completed, aborted, turn_started, turn_ended, tools_lost_event, find_entry, set_entry, load_entries,
+  entries_json, opt_str_json, transition, end_entry, end_open, end_non_tool_prefix, has_open_tool,
+  station_tool, str_or_js, content_text,
 }
 
 ///|
@@ -32,55 +35,11 @@ pub fn Live::new() -> Live {
 }
 
 ///|
-fn find(entries : Array[(String, String)], key : String) -> Int? {
-  for i, e in entries {
-    if e.0 == key {
-      return Some(i)
-    }
-  }
-  None
-}
-
-///|
-fn find_call(entries : Array[(String, String)], key : String) -> Int? {
-  for i, e in entries {
-    if e.0 == key {
-      return Some(i)
-    }
-  }
-  None
-}
-
-///|
-/// `Map.set`: a key there keeps its place.
-fn Live::set_open(self : Live, id : String, step : String) -> Unit {
-  match find(self.open, id) {
-    Some(i) => self.open[i] = (id, step)
-    None => self.open.push((id, step))
-  }
-}
-
-///|
 /// What `state` said (a station's before, or this one's after a crash): live.ts `DshLiveState`.
 pub fn Live::of_state(state : J) -> Live {
   let live = Live::new()
-  if state.get("open") is Some(Arr(entries)) {
-    for e in entries {
-      if e is Arr([Str(id), Str(step), ..]) {
-        live.set_open(id, step)
-      }
-    }
-  }
-  if state.get("calls") is Some(Arr(entries)) {
-    for e in entries {
-      if e is Arr([Str(block), Str(id), ..]) {
-        match find_call(live.calls, block) {
-          Some(i) => live.calls[i] = (block, id)
-          None => live.calls.push((block, id))
-        }
-      }
-    }
-  }
+  load_entries(state, "open", live.open)
+  load_entries(state, "calls", live.calls)
   if state.get("phase") is Some(Str(p)) {
     live.phase = Some(p)
   }
@@ -90,26 +49,15 @@ pub fn Live::of_state(state : J) -> Live {
 ///|
 pub fn Live::state(self : Live) -> J {
   obj([
-    ("open", Arr(self.open.map(e => J::Arr([Str(e.0), jstr(e.1)])))),
-    ("calls", Arr(self.calls.map(e => J::Arr([Str(e.0), Str(e.1)])))),
-    ("phase", match self.phase { Some(p) => jstr(p); None => Null }),
+    ("open", entries_json(self.open)),
+    ("calls", entries_json(self.calls)),
+    ("phase", opt_str_json(self.phase)),
   ])
 }
 
 ///|
 fn Live::to(self : Live, next : String, out : Array[J]) -> Unit {
-  if self.phase != Some(next) {
-    self.phase = Some(next)
-    out.push(obj([("kind", jstr("phase")), ("phase", jstr(next))]))
-  }
-}
-
-///|
-fn Live::end(self : Live, id : String, out : Array[J]) -> Unit {
-  if find(self.open, id) is Some(i) {
-    ignore(self.open.remove(i))
-    out.push(end_event(id))
-  }
+  self.phase = transition(self.phase, next, out)
 }
 
 ///|
@@ -134,17 +82,6 @@ pub fn Live::feed(self : Live, message : J) -> Array[J] {
 }
 
 ///|
-/// `!v`: what JavaScript takes as false.
-fn falsy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) | Some(Bool(false)) => true
-    Some(Num(d)) => d == 0.0 || d.is_nan()
-    Some(Str(s)) => s.length() == 0
-    _ => false
-  }
-}
-
-///|
 fn Live::stream(self : Live, frame : J?, out : Array[J]) -> Unit {
   let attempt = str(field(frame, "attemptId")).unwrap_or("")
   if is_str(field(frame, "type"), "start") {
@@ -153,17 +90,12 @@ fn Live::stream(self : Live, frame : J?, out : Array[J]) -> Unit {
   if is_str(field(frame, "type"), "end") {
     // An attempt that did not commit (cancelled, failed, retried): what it said so far ends with it.
     if !is_str(field(field(frame, "outcome"), "kind"), "committed") {
-      let prefix = attempt + "#"
-      for e in self.open.copy() {
-        if e.1 != "tool" && has_prefix(e.0, prefix) {
-          self.end(e.0, out)
-        }
-      }
+      end_non_tool_prefix(self.open, attempt + "#", out)
     }
     return
   }
   let chunk = field(frame, "chunk")
-  if !is_str(field(frame, "type"), "chunk") || falsy(chunk) {
+  if !is_str(field(frame, "type"), "chunk") || !@jsjson.jval_truthy(chunk) {
     return
   }
   let index = match field(chunk, "index") {
@@ -175,17 +107,17 @@ fn Live::stream(self : Live, frame : J?, out : Array[J]) -> Unit {
   let block_type = field(chunk, "blockType")
   if kind == "block-start" && (is_str(block_type, "text") || is_str(block_type, "reasoning")) {
     let step = if is_str(block_type, "text") { "text" } else { "thinking" }
-    self.set_open(block, step)
+    set_entry(self.open, block, step)
     out.push(start(block, step, None, None))
   } else if kind == "text-delta" || kind == "reasoning-delta" {
     let text = str(field(chunk, "text")).unwrap_or("")
-    if find(self.open, block) is None || text.length() == 0 {
+    if find_entry(self.open, block) is None || text.length() == 0 {
       return
     }
     self.to("responding", out)
     out.push(delta(block, "text", text))
   } else if kind == "tool-call-delta" {
-    let mut call = match find_call(self.calls, block) {
+    let mut call = match find_entry(self.calls, block) {
       Some(i) => Some(self.calls[i].1)
       None => None
     }
@@ -193,7 +125,7 @@ fn Live::stream(self : Live, frame : J?, out : Array[J]) -> Unit {
     if call is None && id is Some(id) {
       call = Some(id)
       self.calls.push((block, id))
-      self.set_open(id, "tool")
+      set_entry(self.open, id, "tool")
       self.to("responding", out)
       out.push(start(id, "tool", Some(str(field(chunk, "name")).unwrap_or("")), Some("")))
     }
@@ -203,10 +135,8 @@ fn Live::stream(self : Live, frame : J?, out : Array[J]) -> Unit {
     }
   } else if kind == "block-end" {
     // A call goes on until its result.
-    if find(self.open, block) is Some(_) {
-      self.end(block, out)
-    }
-    if find_call(self.calls, block) is Some(i) {
+    end_entry(self.open, block, out)
+    if find_entry(self.calls, block) is Some(i) {
       ignore(self.calls.remove(i))
     }
   }
@@ -218,8 +148,8 @@ fn Live::event(self : Live, kind : String, data : J?, out : Array[J]) -> Unit {
     guard non_empty(field(data, "callId")) is Some(id) else { return }
     self.to("working", out)
     // One not seen streaming (taken up after it streamed): started with its input whole.
-    if find(self.open, id) is None {
-      self.set_open(id, "tool")
+    if find_entry(self.open, id) is None {
+      set_entry(self.open, id, "tool")
       let raw = str(field(data, "arguments")).unwrap_or("")
       let input = match (try Some(@jsjson.parse(raw)) catch { _ => None }) {
         Some(v) => pretty(Some(v))
@@ -229,17 +159,13 @@ fn Live::event(self : Live, kind : String, data : J?, out : Array[J]) -> Unit {
     }
   } else if kind == "tool/result" {
     let result = Some(or_else(field(data, "message"), Obj([])))
-    guard non_empty(field(result, "toolCallId")) is Some(id) && find(self.open, id) is Some(_) else { return }
-    let parts = match field(result, "content") {
-      Some(Arr(items)) => items.map(c => str(field(Some(c), "text")).unwrap_or("")).filter(t => t.length() > 0)
-      _ => []
-    }
-    let output = joined(parts, "\n")
+    guard non_empty(field(result, "toolCallId")) is Some(id) && find_entry(self.open, id) is Some(_) else { return }
+    let output = content_text(field(result, "content"), allow_str=false)
     if output.length() > 0 {
       out.push(delta(id, "output", output))
     }
-    self.end(id, out)
-    if !self.open.iter().any(e => e.1 == "tool") {
+    end_entry(self.open, id, out)
+    if !has_open_tool(self.open) {
       self.to("requesting", out)
     }
   } else if kind == "turn/end" {
@@ -250,8 +176,7 @@ fn Live::event(self : Live, kind : String, data : J?, out : Array[J]) -> Unit {
 ///|
 /// The turn ended: whatever is still open ends with it.
 pub fn Live::ended(self : Live) -> Array[J] {
-  let out = self.open.map(e => end_event(e.0))
-  self.open.clear()
+  let out = end_open(self.open)
   self.calls.clear()
   self.phase = None
   out
@@ -308,7 +233,7 @@ pub fn classify_failure(code : String, text : String) -> String {
 /// dsh.ts `outcomeOf`: how a turn/end's reason ends the turn.
 pub fn outcome_of(reason : J?) -> J {
   if is_str(field(reason, "kind"), "aborted") {
-    return obj([("kind", jstr("aborted"))])
+    return aborted()
   }
   if is_str(field(reason, "kind"), "error") {
     let error = Some(or_else(field(reason, "error"), Obj([])))
@@ -316,19 +241,10 @@ pub fn outcome_of(reason : J?) -> J {
       Some(Str(s)) => s
       _ => @jsjson.stringify(error.unwrap())
     }
-    let code = match field(error, "code") {
-      None | Some(Null) => ""
-      Some(v) => @jsjson.js_string(v)
-    }
+    let code = str_or_js(field(error, "code"))
     return failed(classify_failure(code, message), @claude.chars(message, 1000))
   }
-  obj([("kind", jstr("completed"))])
-}
-
-///|
-/// runtime.ts `stationTool`: a call to one of the station's tools, by the name the station gives it.
-fn station_tool(name : String) -> Bool {
-  has_prefix(name, "mcp__stillfail__") || has_prefix(name, "stillfail__")
+  completed()
 }
 
 ///|
@@ -343,7 +259,7 @@ pub fn Session::line(self : Session, message : J) -> Said {
       has_prefix(id, "prompt:") &&
       self.turn.prompted {
       self.turn.prompted = false
-      events.push(obj([("type", jstr("turnEnded")), ("outcome", failed("other", @claude.chars(error, 1000)))]))
+      events.push(turn_ended(failed("other", @claude.chars(error, 1000))))
     }
     return { events, node: true }
   }
@@ -355,19 +271,19 @@ pub fn Session::line(self : Session, message : J) -> Said {
     self.turn.busy = true
     // A turn of its own: a steer that came as the turn ended started one.
     if !ours {
-      events.push(obj([("type", jstr("turnStarted"))]))
+      events.push(turn_started())
     }
   }
   for e in self.live.feed(message) {
     events.push(live(e))
   }
   if event && self.tools_lost(kind, Some(or_else(field(m, "data"), Obj([])))) is Some(why) {
-    events.push(obj([("type", jstr("toolsLost")), ("why", Str(why))]))
+    events.push(tools_lost_event(why))
   }
   if event && kind == "turn/end" {
     self.turn.busy = false
     self.turn.aborting = false
-    events.push(obj([("type", jstr("turnEnded")), ("outcome", outcome_of(field(field(m, "data"), "reason")))]))
+    events.push(turn_ended(outcome_of(field(field(m, "data"), "reason"))))
   }
   { events, node: false }
 }
@@ -376,11 +292,7 @@ pub fn Session::line(self : Session, message : J) -> Said {
 /// dsh.ts `toolsLost`: a call to one of the station's tools failed as unreachable.
 fn Session::tools_lost(self : Session, kind : String, data : J?) -> String? {
   if kind == "tool/call" && field(data, "callId") is Some(Str(id)) {
-    let name = match field(data, "name") {
-      None | Some(Null) => ""
-      Some(v) => @jsjson.js_string(v)
-    }
-    if station_tool(name) {
+    if station_tool(str_or_js(field(data, "name"))) {
       self.calls.push(id)
     }
   }
@@ -388,10 +300,7 @@ fn Session::tools_lost(self : Session, kind : String, data : J?) -> String? {
     return None
   }
   let result = Some(or_else(field(data, "message"), Obj([])))
-  let id = match field(result, "toolCallId") {
-    None | Some(Null) => ""
-    Some(v) => @jsjson.js_string(v)
-  }
+  let id = str_or_js(field(result, "toolCallId"))
   guard self.calls.search(id) is Some(i) else { return None }
   ignore(self.calls.remove(i))
   guard field(result, "isError") is Some(Bool(true)) else { return None }

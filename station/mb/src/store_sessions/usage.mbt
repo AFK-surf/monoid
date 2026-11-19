@@ -45,17 +45,7 @@ pub fn Store::begin_usage_counter_file(
   self.tx(() => {
     ignore(
       self.run(
-        (
-          #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
-          #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
-          #|    ON CONFLICT(path) DO UPDATE SET
-          #|      session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
-          #|      offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
-          #|      model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
-          #|      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
-          #|      counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
-          #|      counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END
-        ),
+        @usagecount.begin_usage_file_sql,
         [
           path,
           nullish(field(file, "session")),
@@ -172,130 +162,38 @@ fn Store::record_usage_in(
   calls : Array[Json],
   options : Json,
 ) -> Int32 raise {
-  let mut added = 0
-  let compact = self.has_compact()
-  let recent : Array[(Call, For)] = []
-  let min_new_at = num_of(nullish(field(options, "minNewAt")))
-  let changed = field(options, "changed")
-  if field(file, "session") is Some(String(session)) {
-    let mut seeded = false
-    let mut snapshot : Snapshot? = None
-    let insert = if compact {
-      (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, gen_ms, gen_output, rollup_counted, compact_counted)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, CASE WHEN ?20 > 0 THEN ?16 ELSE 0 END, 1, 1)
-        #|
-      )
-    } else {
-      (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, gen_ms, gen_output, rollup_counted)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, CASE WHEN ?20 > 0 THEN ?16 ELSE 0 END, 1)
-        #|       ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output), gen_ms = MAX(gen_ms, excluded.gen_ms),
-        #|  gen_output = CASE WHEN MAX(gen_ms, excluded.gen_ms) > 0 THEN MAX(output, excluded.output) ELSE 0 END
-      )
-    }
-    for pair in calls {
-      let c = call_of(arr(pair)[0])
-      let of = for_of(arr(pair)[1])
-      let was = match
-        self.one("SELECT output, gen_ms FROM usage WHERE id = ?", [jstr(c.id)]) {
-        Some(r) => Some((num_of(col(r, "output")).unwrap_or(0.0), num_of(col(r, "gen_ms")).unwrap_or(0.0)))
-        None => None
-      }
-      if was is None && min_new_at is Some(min) && c.at < min {
-        continue
-      }
-      if was is Some((o, g)) && c.output <= o && c.gen_ms <= g {
-        continue
-      }
-      if compact && !seeded {
-        seeded = true
-        if self.usage_totals_complete(session) {
-          snapshot = @usagecount.seed_context(self.db, session)
-        }
-      }
-      if was is Some(_) && compact {
-        ignore(
-          self.run(
-            (
-              #|UPDATE usage SET output = MAX(output, ?1), gen_ms = MAX(gen_ms, ?3),
-              #|  gen_output = CASE WHEN MAX(gen_ms, ?3) > 0 THEN MAX(output, ?1) ELSE 0 END
-              #|      WHERE id = ?2 AND (output < ?1 OR gen_ms < ?3)
-            ),
-            [jnum(c.output), jstr(c.id), jnum(c.gen_ms)],
-          ),
-        )
-      } else {
-        ignore(
-          self.run(insert, [
-            jstr(c.id),
-            jnum(c.at),
-            jstr(session),
-            of.turn,
-            of.thread,
-            of.person,
-            of.profile,
-            jstr(runtime),
-            opt_str(c.model),
-            flag(c.subagent),
-            flag(c.fast),
-            jnum(c.input),
-            jnum(c.cache_read),
-            jnum(c.cache_write),
-            jnum(c.cache_write_long),
-            jnum(c.output),
-            jnum(c.calls),
-            opt_num(c.context),
-            opt_num(c.window),
-            jnum(c.gen_ms),
-          ]),
-        )
-      }
-      if was is None {
-        added += 1
-        if compact && !c.subagent {
-          recent.push((c, of))
-        }
-      }
-      if changed is Some(Object(ch)) {
-        let from = num_of(nullish(ch.get("from")))
-        ch["from"] = jnum(
-          match from {
-            Some(f) => if c.at < f { c.at } else { f }
-            None => c.at
-          },
-        )
-      }
-    }
-    if recent.length() > 0 {
-      @usagecount.note_contexts(self.db, session, runtime, recent, snapshot)
-    }
+  let session = match field(file, "session") {
+    Some(String(s)) => Some(s)
+    _ => None
   }
+  let pairs = calls.map(pair => (call_of(arr(pair)[0]), for_of(arr(pair)[1])))
+  let changed = field(options, "changed")
   let counter = nullish(field(options, "counter"))
-  ignore(
-    self.run(
-      (
-        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        #|     ON CONFLICT (path) DO UPDATE SET session = excluded.session, offset = excluded.offset, model = excluded.model,
-        #|       counter_cutoff = COALESCE(excluded.counter_cutoff, usage_files.counter_cutoff),
-        #|       counter_anchor = CASE WHEN excluded.counter_cutoff IS NULL THEN usage_files.counter_anchor ELSE excluded.counter_anchor END,
-        #|       speed = excluded.speed
-        #|     WHERE usage_files.session IS NOT excluded.session OR usage_files.offset IS NOT excluded.offset OR usage_files.model IS NOT excluded.model
-        #|       OR usage_files.speed IS NOT excluded.speed
-        #|       OR (excluded.counter_cutoff IS NOT NULL AND (usage_files.counter_cutoff IS NOT excluded.counter_cutoff OR usage_files.counter_anchor IS NOT excluded.counter_anchor))
-      ),
-      [
-        path,
-        nullish(field(file, "session")),
-        nullish(field(file, "offset")),
-        nullish(field(file, "model")),
-        nullish(field(counter, "cutoff")),
-        nullish(field(counter, "anchor")),
-        nullish(field(file, "speed")),
-      ],
-    ),
+  @usagecount.record_calls(
+    self.db,
+    self.has_compact(),
+    s => self.usage_totals_complete(s),
+    path,
+    nullish(field(file, "session")),
+    session,
+    nullish(field(file, "offset")),
+    nullish(field(file, "model")),
+    nullish(field(file, "speed")),
+    nullish(field(counter, "cutoff")),
+    nullish(field(counter, "anchor")),
+    runtime,
+    pairs,
+    num_of(nullish(field(options, "minNewAt"))),
+    at => if changed is Some(Object(ch)) {
+      let from = num_of(nullish(ch.get("from")))
+      ch["from"] = jnum(
+        match from {
+          Some(f) => if at < f { at } else { f }
+          None => at
+        },
+      )
+    },
   )
-  added
 }
 
 ///|

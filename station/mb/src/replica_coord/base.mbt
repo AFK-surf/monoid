@@ -93,30 +93,19 @@ pub using @jsjson {
 }
 
 ///|
-/// `v[key]` (None where it is no object or has none).
-pub fn at(v : J, key : String) -> J? {
-  @jsjson.jval_at(Some(v), key)
-}
+pub fn at(v : J, key : String) -> J? { @jsjson.jval_at(Some(v), key) }
 
 ///|
-pub fn text_at(v : J, key : String) -> String {
-  @jsjson.jval_text(at(v, key))
-}
+pub fn text_at(v : J, key : String) -> String { @jsjson.jval_text(at(v, key)) }
 
 ///|
-pub fn str_at(v : J, key : String) -> String? {
-  str_of(at(v, key))
-}
+pub fn str_at(v : J, key : String) -> String? { str_of(at(v, key)) }
 
 ///|
-pub fn num_at(v : J, key : String) -> Double? {
-  num_of(at(v, key))
-}
+pub fn num_at(v : J, key : String) -> Double? { num_of(at(v, key)) }
 
 ///|
-pub fn yes_at(v : J, key : String) -> Bool {
-  @jsjson.jval_is_true(at(v, key))
-}
+pub fn yes_at(v : J, key : String) -> Bool { @jsjson.jval_is_true(at(v, key)) }
 
 ///|
 /// `Object.fromEntries(Object.entries(v ?? {}).filter(([, x]) => typeof x === "string"))`.
@@ -128,9 +117,7 @@ pub fn string_map(v : J?) -> Array[(String, String)] {
 }
 
 ///|
-pub fn pairs_json(xs : Array[(String, String)]) -> J {
-  jo(xs.map(p => (p.0, js(p.1))))
-}
+pub fn pairs_json(xs : Array[(String, String)]) -> J { jo(xs.map(p => (p.0, js(p.1)))) }
 
 ///|
 pub fn pair_get(xs : Array[(String, String)], key : String) -> String? {
@@ -152,27 +139,13 @@ pub fn fixed1(x : Double) -> String {
 }
 
 ///|
-/// `${(n / 1024 ** 3).toFixed(1)} GB`.
-pub fn gb(n : Double) -> String {
-  "\{fixed1(n / (1024.0 * 1024.0 * 1024.0))} GB"
-}
+pub fn gb(n : Double) -> String { "\{fixed1(n / (1024.0 * 1024.0 * 1024.0))} GB" }
 
 ///|
-pub fn sha256_text(s : String) -> String {
-  @memory.sha256_hex(@utf8.encode(s))
-}
+pub fn sha256_text(s : String) -> String { @memory.sha256_hex(@utf8.encode(s)) }
 
 ///|
-pub fn js_cmp(a : String, b : String) -> Int {
-  let c = @jsjson.js_compare(a, b)
-  if c < 0 {
-    -1
-  } else if c > 0 {
-    1
-  } else {
-    0
-  }
-}
+pub fn js_cmp(a : String, b : String) -> Int { @jsjson.js_compare(a, b) }
 
 // ── names a copy is made of (format.ts) ──
 

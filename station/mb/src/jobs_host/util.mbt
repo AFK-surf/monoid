@@ -54,7 +54,7 @@ fn unescape(s : String) -> String {
 }
 
 ///|
-pub using @jsjson {js_round}
+pub using @jsjson {js_round, jval_stringify_num as js_number}
 
 ///|
 using @jsjson {
@@ -67,62 +67,30 @@ using @jsjson {
 using @jscase {trim}
 
 ///|
-/// `v[key]`, null where there is none.
-fn field_or_null(v : Json, key : String) -> Json {
-  field(v, key).unwrap_or(Json::null())
-}
+fn field_or_null(v : Json, key : String) -> Json { field(v, key).unwrap_or(Json::null()) }
 
 ///|
-/// `v[key]` where it is a string, else "".
-fn text(v : Json, key : String) -> String {
-  match field(v, key) {
-    Some(String(s)) => s
-    _ => ""
-  }
-}
-
-///|
-/// A JavaScript number as `String(n)` writes it.
-pub fn js_number(d : Double) -> String {
-  @jsjson.jval_stringify_num(d)
-}
+fn text(v : Json, key : String) -> String { @jsjson.json_str_field(v, key).unwrap_or("") }
 
 ///|
 fn slice(s : String, from : Int, to : Int) -> String {
-  let n = s.length()
-  let a = if from < 0 { 0 } else if from > n { n } else { from }
-  let b = if to < a { a } else if to > n { n } else { to }
-  s.view(start_offset=a, end_offset=b).to_owned()
+  @jsjson.js_slice(s, if from < 0 { 0 } else { from }, end=if to < 0 { 0 } else { to })
 }
 
 ///|
-fn from(s : String, i : Int) -> String {
-  slice(s, i, s.length())
-}
+fn from(s : String, i : Int) -> String { @jsjson.js_slice(s, if i < 0 { 0 } else { i }) }
 
 ///|
-/// `s.indexOf(sep, at)`.
-fn index_of(s : String, sep : String, at? : Int = 0) -> Int {
-  @jsjson.js_index_of(s, sep, from=at)
-}
+fn index_of(s : String, sep : String, at? : Int = 0) -> Int { @jsjson.js_index_of(s, sep, from=at) }
 
 ///|
-fn join(parts : Array[String], sep : String) -> String {
-  parts.join(sep)
-}
+fn join(parts : Array[String], sep : String) -> String { parts.join(sep) }
 
 ///|
-fn is_digit(c : Int) -> Bool {
-  c >= '0' && c <= '9'
-}
+fn is_digit(c : Int) -> Bool { c >= '0' && c <= '9' }
 
 ///|
-/// `Number(s)` of digits (and one `.`), as a double.
-fn digits_number(s : String) -> Double {
-  @string.parse_double(s) catch {
-    _ => 0.0
-  }
-}
+fn digits_number(s : String) -> Double { @string.parse_double(s) catch { _ => 0.0 } }
 
 ///|
 /// `/^\d+(\.\d+)?$/`.

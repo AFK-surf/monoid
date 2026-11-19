@@ -40,7 +40,7 @@ fn is_integer(v : Json) -> Bool {
 
 ///|
 /// legacy-said-build.ts `legacySaidReadHead`: (known, the head row).
-fn legacy_said_head(db : @sql.Db, thread : Json) -> (Bool, Map[String, Json]?) raise {
+pub fn legacy_said_head(db : @sql.Db, thread : Json) -> (Bool, Map[String, Json]?) raise {
   guard one(db, legacy_said_head_first_sql, [thread]) is Some(first) else { return (true, None) }
   if !(field(first, "n") is Null) {
     return (true, Some(first))

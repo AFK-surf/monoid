@@ -6,6 +6,7 @@ import {
   "station/locate",
   "station/nodepath",
   "station/readops",
+  "station/history",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/hex",

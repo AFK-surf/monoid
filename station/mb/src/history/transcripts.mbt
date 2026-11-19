@@ -149,7 +149,7 @@ fn record_of(line : String) -> @jsjson.JValue? {
 
 ///|
 /// read/packed.ts `Frame`.
-priv struct Frame {
+pub(all) struct PackedFrame {
   at : Int64
   packed : Int64
   from : Int64
@@ -175,7 +175,7 @@ fn bytes_at(host : @host.Host, path : String, at : Int64, n : Int64) -> Bytes ra
 ///|
 /// read/packed.ts `framesOf`: a put-away transcript's frames from its table; None without one, or one that does not add
 /// up to the file.
-fn frames_of(host : @host.Host, path : String) -> Array[Frame]? raise {
+pub fn packed_frames_of(host : @host.Host, path : String) -> Array[PackedFrame]? raise {
   guard meta(host, path) is Some((size, _)) else { fail("a put-away transcript is not there") }
   if size < 8L + footer_size {
     return None
@@ -209,8 +209,8 @@ fn frames_of(host : @host.Host, path : String) -> Array[Frame]? raise {
 
 ///|
 /// read/packed.ts `writtenSize`.
-fn written_size(host : @host.Host, path : String) -> Int64? raise {
-  guard frames_of(host, path) is Some(frames) else { return None }
+pub fn packed_written_size(host : @host.Host, path : String) -> Int64? raise {
+  guard packed_frames_of(host, path) is Some(frames) else { return None }
   let mut n = 0L
   for f in frames {
     n += f.size
@@ -219,10 +219,17 @@ fn written_size(host : @host.Host, path : String) -> Int64? raise {
 }
 
 ///|
-/// read/packed.ts `readSegments`: what a put-away transcript holds from `from` up to `end`, a segment at a time while
-/// `take` wants more; false without a table.
-fn read_segments(host : @host.Host, path : String, from : Int64, end : Int64, take : (BytesView) -> Bool raise) -> Bool raise {
-  guard frames_of(host, path) is Some(frames) else { return false }
+/// read/packed.ts `readSegments`: what a put-away transcript holds from `from` (up to `end` when given), a segment at a
+/// time while `take` wants more; false without a table.
+pub fn packed_read_segments(
+  host : @host.Host,
+  path : String,
+  from : Int64,
+  end? : Int64,
+  check_size? : Bool = false,
+  take : (BytesView) -> Bool raise,
+) -> Bool raise {
+  guard packed_frames_of(host, path) is Some(frames) else { return false }
   let mut lo = 0
   let mut hi = frames.length() - 1
   while lo < hi {
@@ -238,17 +245,43 @@ fn read_segments(host : @host.Host, path : String, from : Int64, end : Int64, ta
     if f.from + f.size <= from {
       continue
     }
-    if f.from >= end {
+    if end is Some(e) && f.from >= e {
       break
     }
-    let bytes = bytes_of(host, path, from=f.at, length=f.packed, zstd=true, exact=true).unwrap_or(Bytes::default())
-    let a = @cmp.maximum(0L, from - f.from).to_int()
-    let b = @cmp.minimum(bytes.length().to_int64(), end - f.from).to_int()
-    if !take(if a < b { bytes[a:b] } else { bytes[0:0] }) {
-      break
+    let bytes = match bytes_of(host, path, from=f.at, length=f.packed, zstd=true, exact=true) {
+      Some(b) => b
+      None => if check_size { fail("not there") } else { Bytes::default() }
+    }
+    if check_size && bytes.length().to_int64() != f.size {
+      fail("a put-away transcript frame has the wrong size")
+    }
+    match end {
+      Some(e) => {
+        let a = @cmp.maximum(0L, from - f.from).to_int()
+        let b = @cmp.minimum(bytes.length().to_int64(), e - f.from).to_int()
+        if !take(if a < b { bytes[a:b] } else { bytes[0:0] }) {
+          break
+        }
+      }
+      None => {
+        let skip = if from > f.from { (from - f.from).to_int() } else { 0 }
+        if skip < bytes.length() && !take(bytes[skip:]) {
+          break
+        }
+      }
     }
   }
   true
+}
+
+///|
+fn written_size(host : @host.Host, path : String) -> Int64? raise {
+  packed_written_size(host, path)
+}
+
+///|
+fn read_segments(host : @host.Host, path : String, from : Int64, end : Int64, take : (BytesView) -> Bool raise) -> Bool raise {
+  packed_read_segments(host, path, from, end~, take)
 }
 
 ///|

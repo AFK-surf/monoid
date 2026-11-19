@@ -5,28 +5,14 @@
 ///|
 using @jsjson {
   json_str as jstr, json_bool as jbool, json_num as jnum, json_opt_str as opt_str, json_field as field,
-  jval_of_json as to_js, jval_to_json as of_js, json_strs as strings,
+  jval_of_json as to_js, jval_to_json as of_js, json_strs as strings, json_int64 as jint,
 }
 
 ///|
-fn col(r : Map[String, Json], k : String) -> Json {
-  r.get(k).unwrap_or(Json::null())
-}
+fn col(r : Map[String, Json], k : String) -> Json { r.get(k).unwrap_or(Json::null()) }
 
 ///|
-/// An integer as a statement's value, exactly.
-fn jint(n : Int64) -> Json {
-  if n > 9007199254740991L || n < -9007199254740991L {
-    Json::number(n.to_double(), repr=n.to_string())
-  } else {
-    Json::number(n.to_double())
-  }
-}
-
-///|
-fn flag(b : Bool) -> Json {
-  Json::number(if b { 1.0 } else { 0.0 })
-}
+fn flag(b : Bool) -> Json { Json::number(if b { 1.0 } else { 0.0 }) }
 
 ///|
 /// store.ts `optFlag`: null or undefined as null, else 1 or 0 by JavaScript's truthiness of a boolean.
@@ -38,59 +24,25 @@ fn opt_flag(v : Json?) -> Json {
 }
 
 ///|
-/// JavaScript's truthiness.
-fn truthy(v : Json) -> Bool {
-  @jsjson.json_truthy(Some(v))
-}
+fn truthy(v : Json) -> Bool { @jsjson.json_truthy(Some(v)) }
 
 ///|
-fn str_of(v : Json) -> String? {
-  match v {
-    String(s) => Some(s)
-    _ => None
-  }
-}
+fn str_of(v : Json) -> String? { @jsjson.json_str_of(Some(v)) }
 
 ///|
-fn num_of(v : Json) -> Double? {
-  match v {
-    Number(n, ..) => Some(n)
-    _ => None
-  }
-}
+fn num_of(v : Json) -> Double? { @jsjson.json_num_of(Some(v)) }
 
 ///|
-/// `v === n`.
-fn is_n(v : Json, n : Double) -> Bool {
-  v is Number(x, ..) && x == n
-}
+fn is_n(v : Json, n : Double) -> Bool { v is Number(x, ..) && x == n }
 
 ///|
-/// `v ?? null` of an object's field (undefined when not there).
-fn nullish(v : Json?) -> Json {
-  match v {
-    Some(v) => v
-    None => Json::null()
-  }
-}
+fn nullish(v : Json?) -> Json { v.unwrap_or(Json::null()) }
 
 ///|
-/// `a ?? b`.
-fn or_else(a : Json, b : Json) -> Json {
-  if a is Null {
-    b
-  } else {
-    a
-  }
-}
+fn or_else(a : Json, b : Json) -> Json { if a is Null { b } else { a } }
 
 ///|
-fn arr(v : Json) -> Array[Json] {
-  match v {
-    Array(a) => a
-    _ => []
-  }
-}
+fn arr(v : Json) -> Array[Json] { @jsjson.json_items(Some(v)) }
 
 ///|
 fn obj(v : Json) -> Map[String, Json] {
@@ -102,29 +54,18 @@ fn obj(v : Json) -> Map[String, Json] {
 
 ///|
 /// What the TypeScript gives back as `undefined` (test/mb-store-sessions.test.ts says it so).
-fn undefined() -> Json {
-  { "$undefined": true }
-}
+fn undefined() -> Json { { "$undefined": true } }
 
 ///|
-/// A row as an object.
-fn row_json(r : Map[String, Json]) -> Json {
-  Json::object(r)
-}
+fn row_json(r : Map[String, Json]) -> Json { Json::object(r) }
 
 // ── JSON as JavaScript writes it ──
 
 ///|
-/// JSON.stringify.
-fn js(v : Json) -> String {
-  @jsjson.stringify(to_js(v))
-}
+fn js(v : Json) -> String { @jsjson.stringify(to_js(v)) }
 
 ///|
-/// JSON.parse (raising as it throws).
-fn js_parse(text : String) -> Json raise {
-  of_js(@jsjson.parse(text))
-}
+fn js_parse(text : String) -> Json raise { of_js(@jsjson.parse(text)) }
 
 ///|
 /// rows.ts `parsed`: undefined (None) when it does not parse.
@@ -136,10 +77,7 @@ fn parsed(v : Json) -> Json? {
 }
 
 ///|
-/// `String(v)`.
-fn js_string(v : Json) -> String {
-  @jsjson.js_string(to_js(v))
-}
+fn js_string(v : Json) -> String { @jsjson.js_string(to_js(v)) }
 
 ///|
 /// Rust's ordering of strings (rows.ts `byBytes`): by their UTF-8 bytes.

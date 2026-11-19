@@ -25,21 +25,13 @@ pub using @jscase {trim, trim_end}
 pub using @codec {hex_encode as hex, base64_decode_loose as base64_bytes}
 
 ///|
-/// `JSON.stringify(a) === JSON.stringify(b)`.
-pub fn same(a : J, b : J) -> Bool {
-  stringify(a) == stringify(b)
-}
+pub fn same(a : J, b : J) -> Bool { stringify(a) == stringify(b) }
 
 ///|
-fn cu(s : String, i : Int) -> Int {
-  s.code_unit_at(i).to_int()
-}
+fn cu(s : String, i : Int) -> Int { s.code_unit_at(i).to_int() }
 
 ///|
-/// `s.indexOf(sub)` (-1: none).
-pub fn index_of(s : String, sub : String) -> Int {
-  @jsjson.js_index_of(s, sub)
-}
+pub fn index_of(s : String, sub : String) -> Int { @jsjson.js_index_of(s, sub) }
 
 ///|
 /// `s.split(re)` by a set of single units (a character class).
@@ -57,28 +49,12 @@ pub fn split_units(s : String, is_sep : (Int) -> Bool) -> Array[String] {
 }
 
 ///|
-fn is_digit(c : Int) -> Bool {
-  c >= 48 && c <= 57
-}
+fn is_digit(c : Int) -> Bool { c >= 48 && c <= 57 }
 
 ///|
 /// `/^[0-9a-f]{64}$/`.
 pub fn is_sha(s : String) -> Bool {
-  if s.length() != 64 {
-    return false
-  }
-  for i in 0..<64 {
-    let c = cu(s, i)
-    if !(is_digit(c) || (c >= 97 && c <= 102)) {
-      return false
-    }
-  }
-  true
-}
-
-///|
-fn hex_value(c : Int) -> Int {
-  @codec.hex_digit(c).unwrap_or(-1)
+  s.length() == 64 && s.iter().all(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
 }
 
 ///|
@@ -87,47 +63,33 @@ pub fn unhex(s : String) -> Bytes {
   let out = Buffer()
   let mut i = 0
   while i + 1 < s.length() {
-    let a = hex_value(cu(s, i))
-    let b = hex_value(cu(s, i + 1))
-    if a < 0 || b < 0 {
-      break
+    match (@codec.hex_digit(cu(s, i)), @codec.hex_digit(cu(s, i + 1))) {
+      (Some(a), Some(b)) => out.write_byte((a * 16 + b).to_byte())
+      _ => break
     }
-    out.write_byte((a * 16 + b).to_byte())
     i += 2
   }
   out.to_bytes()
 }
 
 ///|
-pub fn base64_of(b : Bytes) -> String {
-  @base64.encode(b)
-}
+pub fn base64_of(b : Bytes) -> String { @base64.encode(b) }
 
 ///|
-/// Bytes as JSON the way the test and the world carry them: `{"$bytes": base64}`.
-pub fn jbytes(b : Bytes) -> J {
-  jo([("$bytes", js(base64_of(b)))])
-}
+pub fn jbytes(b : Bytes) -> J { jo([("$bytes", js(base64_of(b)))]) }
 
 ///|
 /// Bytes from `{"$bytes"}` (or a string's UTF-8).
 pub fn bytes_of(j : J?) -> Bytes {
   match j {
-    Some(Obj(_)) =>
-      match text(get(j, "$bytes")) {
-        Some(b) => base64_bytes(b)
-        None => b""
-      }
+    Some(Obj(_)) => text(get(j, "$bytes")).map(base64_bytes).unwrap_or(b"")
     Some(Str(u)) => @utf8.encode(@jsjson.sanitize_str(u))
     _ => b""
   }
 }
 
 ///|
-/// `Math.floor`.
-pub fn floor(d : Double) -> Double {
-  d.floor()
-}
+pub fn floor(d : Double) -> Double { d.floor() }
 
 ///|
 /// JavaScript's `Number(text)` of a decimal the caller already matched (`/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/`).

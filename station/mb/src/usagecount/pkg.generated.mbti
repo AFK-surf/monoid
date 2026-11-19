@@ -9,6 +9,8 @@ import {
 }
 
 // Values
+pub let begin_usage_file_sql : String
+
 pub fn calls_of(String, BytesView, Bool, CallState) -> Array[Call]
 
 pub fn context_snapshot(@sql.Db, String) -> Snapshot raise
@@ -20,6 +22,8 @@ pub fn keep_recent(@sql.Db, String, Owner, @jsjson.JValue, Owner?) -> Unit raise
 pub fn note_contexts(@sql.Db, String, String, Array[(Call, For)], Snapshot?) -> Unit raise
 
 pub fn parse_iso(String) -> Double?
+
+pub fn record_calls(@sql.Db, Bool, (String) -> Bool raise, @json.Json, @json.Json, String?, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json, String, Array[(Call, For)], Double?, (Double) -> Unit) -> Int32 raise
 
 pub fn seed_context(@sql.Db, String) -> Snapshot? raise
 

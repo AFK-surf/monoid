@@ -105,108 +105,16 @@ fn put_away(host : @host.Host, path : String) -> Bool {
 }
 
 ///|
-fn le32(b : BytesView, at : Int) -> Int64 {
-  b[at].to_int64() | (b[at + 1].to_int64() << 8) | (b[at + 2].to_int64() << 16) | (b[at + 3].to_int64() << 24)
-}
-
-///|
-/// read/packed.ts `Frame`.
-priv struct Frame {
-  at : Int64
-  packed : Int64
-  from : Int64
-  size : Int64
-}
-
-///|
-let skippable : Int64 = 0x184d2a5eL
-
-///|
-let seekable : Int64 = 0x8f92eab1L
-
-///|
-let footer_size : Int64 = 9L
-
-///|
-/// read/packed.ts `framesOf`: a put-away transcript's frames from its table; None without one, or one that does not add
-/// up to the file. A file that does not read is a failure.
-fn frames_of(host : @host.Host, path : String) -> Array[Frame]? raise {
-  guard size_of(host, path) is Some(size) else { raise Unread("a put-away transcript is not there") }
-  if size < 8L + footer_size {
-    return None
-  }
-  let footer = bytes_of(host, path, size - footer_size, footer_size, exact=true)
-  if le32(footer[:], 5) != seekable || (footer[4].to_int() & 0x7f) != 0 {
-    return None
-  }
-  let entry = if (footer[4].to_int() & 0x80) != 0 { 12L } else { 8L }
-  let length = 8L + le32(footer[:], 0) * entry + footer_size
-  if length > size {
-    return None
-  }
-  let table = bytes_of(host, path, size - length, length, exact=true)
-  if le32(table[:], 0) != skippable || le32(table[:], 4) != length - 8L {
-    return None
-  }
-  let count = (length - 8L - footer_size) / entry
-  let frames = []
-  let mut at = 0L
-  let mut from = 0L
-  for i = 0L; i < count; i = i + 1L {
-    let packed = le32(table[:], (8L + i * entry).to_int())
-    let each = le32(table[:], (12L + i * entry).to_int())
-    frames.push({ at, packed, from, size: each })
-    at += packed
-    from += each
-  }
-  if at == size - length {
-    Some(frames)
-  } else {
-    None
-  }
-}
-
-///|
 /// read/packed.ts `writtenLength`: how long a put-away transcript is as written, from its table; None without one.
 fn written_length(host : @host.Host, path : String) -> Int64? raise {
-  guard frames_of(host, path) is Some(frames) else { return None }
-  let mut total = 0L
-  for f in frames {
-    total += f.size
-  }
-  Some(total)
+  @history.packed_written_size(host, path)
 }
 
 ///|
 /// read/packed.ts `segmentsFrom`: what a put-away transcript with a table holds from `from` on, a segment at a time,
 /// each given to `take` (which says false to stop); false without a table. A segment that does not read is a failure.
 fn segments_from(host : @host.Host, path : String, from : Int64, take : (BytesView) -> Bool raise) -> Bool raise {
-  guard frames_of(host, path) is Some(frames) else { return false }
-  let mut lo = 0
-  let mut hi = frames.length() - 1
-  while lo < hi {
-    let mid = (lo + hi + 1) >> 1
-    if frames[mid].from <= from {
-      lo = mid
-    } else {
-      hi = mid - 1
-    }
-  }
-  for i = lo; i < frames.length(); i = i + 1 {
-    let f = frames[i]
-    if f.from + f.size <= from {
-      continue
-    }
-    let bytes = bytes_of(host, path, f.at, f.packed, exact=true, zstd=true)
-    if bytes.length().to_int64() != f.size {
-      raise Unread("a put-away transcript frame has the wrong size")
-    }
-    let skip = if from > f.from { (from - f.from).to_int() } else { 0 }
-    if skip < bytes.length() && !take(bytes[skip:]) {
-      break
-    }
-  }
-  true
+  @history.packed_read_segments(host, path, from, check_size=true, take)
 }
 
 ///|

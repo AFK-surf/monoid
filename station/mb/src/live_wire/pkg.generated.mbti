@@ -8,13 +8,31 @@ import {
 // Values
 pub const INPUT_MOST : Int32 = 262144
 
+pub fn aborted() -> @jsjson.JValue
+
+pub fn completed() -> @jsjson.JValue
+
+pub fn content_text(@jsjson.JValue?, allow_str? : Bool) -> String
+
 pub fn delta(String, String, String) -> @jsjson.JValue
 
+pub fn end_entry(Array[(String, String)], String, Array[@jsjson.JValue]) -> Unit
+
 pub fn end_event(String) -> @jsjson.JValue
+
+pub fn end_non_tool_prefix(Array[(String, String)], String, Array[@jsjson.JValue]) -> Unit
+
+pub fn end_open(Array[(String, String)]) -> Array[@jsjson.JValue]
+
+pub fn entries_json(Array[(String, String)]) -> @jsjson.JValue
 
 pub fn failed(String, String) -> @jsjson.JValue
 
 pub fn field(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn find_entry(Array[(String, String)], String) -> Int32?
+
+pub fn has_open_tool(Array[(String, String)]) -> Bool
 
 pub fn has_prefix(String, String) -> Bool
 
@@ -26,17 +44,35 @@ pub fn jstr(String) -> @jsjson.JValue
 
 pub fn live(@jsjson.JValue) -> @jsjson.JValue
 
+pub fn load_entries(@jsjson.JValue, String, Array[(String, String)]) -> Unit
+
 pub fn non_empty(@jsjson.JValue?) -> String?
 
 pub fn obj(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn opt_str_json(String?) -> @jsjson.JValue
 
 pub fn or_else(@jsjson.JValue?, @jsjson.JValue) -> @jsjson.JValue
 
 pub fn pretty(@jsjson.JValue?) -> String
 
+pub fn set_entry(Array[(String, String)], String, String) -> Unit
+
 pub fn start(String, String, String?, String?) -> @jsjson.JValue
 
+pub fn station_tool(String) -> Bool
+
 pub fn str(@jsjson.JValue?) -> String?
+
+pub fn str_or_js(@jsjson.JValue?) -> String
+
+pub fn tools_lost_event(String) -> @jsjson.JValue
+
+pub fn transition(String?, String, Array[@jsjson.JValue]) -> String?
+
+pub fn turn_ended(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn turn_started() -> @jsjson.JValue
 
 // Errors
 

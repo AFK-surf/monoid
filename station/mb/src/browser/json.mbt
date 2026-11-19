@@ -111,50 +111,30 @@ pub fn kind_of(e : Error) -> String {
 }
 
 ///|
-fn is_ascii_digit(c : Char) -> Bool {
-  c >= '0' && c <= '9'
-}
+fn is_ascii_digit(c : Char) -> Bool { c >= '0' && c <= '9' }
 
 ///|
-fn is_ascii_alpha(c : Char) -> Bool {
-  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
+fn is_ascii_alpha(c : Char) -> Bool { (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
 
 ///|
-/// `s.slice(a, b)` by UTF-16 code units, clamped as JavaScript clamps it.
-fn slice(s : String, a : Int, b? : Int) -> String {
-  @jsjson.js_slice(s, a, end?=b)
-}
+fn slice(s : String, a : Int, b? : Int) -> String { @jsjson.js_slice(s, a, end?=b) }
 
 ///|
-fn imax(a : Int, b : Int) -> Int {
-  if a > b {
-    a
-  } else {
-    b
-  }
-}
+fn imax(a : Int, b : Int) -> Int { if a > b { a } else { b } }
 
 ///|
-fn imin(a : Int, b : Int) -> Int {
-  if a < b {
-    a
-  } else {
-    b
-  }
-}
+fn imin(a : Int, b : Int) -> Int { if a < b { a } else { b } }
 
 ///|
 /// The base64url of `b` (no padding: Buffer's `base64url`).
 pub fn base64url(b : Bytes) -> String {
-  let t = @base64.encode(b, padding=false)
-  t.replace_all(old="+", new="-").replace_all(old="/", new="_")
+  @base64.encode(b, padding=false).replace_all(old="+", new="-").replace_all(old="/", new="_")
 }
 
 ///|
 /// What `JSON.parse(t)` makes where it is an object; None where it is not, or `t` is no JSON.
 fn parse_obj(t : String) -> J? {
-  match (try Some(parse(t)) catch { _ => None }) {
+  match @jsjson.try_parse(t) {
     Some(Obj(_) as o) => Some(o)
     _ => None
   }

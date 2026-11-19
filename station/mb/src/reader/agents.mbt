@@ -610,13 +610,7 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
       frame,
       h.turn,
       // (a turn's start and end said with the turn as it left it)
-      e => events.push(
-        match e {
-          Obj(fields) if e.get("type") is Some(Str(t)) && (t == "turnStarted" || t == "turnEnded") =>
-            Obj(fields + [("turn", turn_json_js(h.turn))])
-          _ => e
-        },
-      ),
+      e => events.push(with_turn(e, turn_json_js(h.turn))),
       () => self.write(h, interrupt_request(self.host)),
       () => self.now(),
       m => @host.note("agents: \{m}"),
@@ -624,7 +618,19 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
   }
   let end = lines[lines.length() - 1].1
   let turn = turn_json_js(h.turn)
-  let same = @jsjson.stringify(turn) == before
+  self.deliver_heard(h, end, turn, @jsjson.stringify(turn) == before, events)
+}
+
+///|
+fn Agents::deliver_heard(
+  self : Agents,
+  h : Hosted,
+  end : Int64,
+  turn : @jsjson.JValue,
+  same : Bool,
+  events : Array[@jsjson.JValue],
+  node~ : Array[(Bytes, Int64, Int64)] = [],
+) -> Unit {
   // (only what steps wrote: held, told with what comes next or once DELTAS_MS is over)
   if same && events.length() > 0 && events.iter().all(is_delta) {
     merge_into(h.pending, events)
@@ -659,7 +665,7 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
   h.pending_units = 0
   merge_into(all, events)
   h.told = end
-  self.tell(h, end, turn, all)
+  self.tell(h, end, turn, all, node~)
 }
 
 ///|

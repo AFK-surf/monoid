@@ -13,6 +13,7 @@ pub using @jsjson {
   jval_or_null as or_null, jval_safe_int as safe_int, js_string, jval_js_str_raw as js_text,
   js_compare as units_cmp, points, chars as first_points, parse as parse_json, stringify,
   js_utf8_len as byte_length, jval_to_json_lossy as to_json, jval_of_json as from_json, json_num as bind_num,
+  js_number, jval_stringify_num as num_text,
 }
 
 ///|
@@ -71,14 +72,7 @@ pub fn kind_of(e : Error) -> String {
 ///|
 /// An object of the fields given, those None (undefined) left out as JSON.stringify leaves them.
 pub fn jo(fields : Array[(String, J?)]) -> J {
-  let out = []
-  for f in fields {
-    match f.1 {
-      Some(v) => out.push((f.0, v))
-      None => ()
-    }
-  }
-  Obj(out)
+  Obj(fields.filter_map(f => f.1.map(v => (f.0, v))))
 }
 
 ///|
@@ -142,12 +136,6 @@ pub fn nullish(a : J?, b : J?) -> J? {
 }
 
 ///|
-/// A number as `String(n)` says it.
-pub fn num_text(n : Double) -> String {
-  js_text(Num(n))
-}
-
-///|
 /// A string as node writes it to UTF-8 (a lone surrogate as U+FFFD).
 pub fn utf8_of(s : String) -> Bytes {
   @utf8.encode(@jsjson.sanitize_str(s))
@@ -162,10 +150,7 @@ pub fn bind_text(s : String) -> Json {
 ///|
 /// An integer column's value (a number SQLite gave).
 pub fn col_num(row : Map[String, Json], name : String) -> Double? {
-  match row.get(name) {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
+  @jsjson.json_num_of(row.get(name))
 }
 
 ///|
@@ -226,10 +211,4 @@ pub fn col_json_text(row : Map[String, Json], name : String) -> String {
 /// `createHash("sha256").update(bytes).digest("hex")`.
 pub fn sha256_hex(b : Bytes) -> String {
   @memory.sha256_hex(b[:])
-}
-
-///|
-/// `Number(text)` of a decimal integer as the station writes one (meta's values); NaN for anything else.
-pub fn js_number(text : String) -> Double {
-  @jsjson.js_number(text)
 }

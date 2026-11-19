@@ -35,19 +35,60 @@ pub struct Settings {
 }
 
 ///|
-pub fn Settings::new(d : SettingsDeps) -> Settings {
-  let former = match (d.disk.read)(@nodepath.join("/", [d.data, "move", "settings.json"])) {
-    Some(t) =>
-      match (try Ok(parse(t)) catch { e => Err(e) }) {
-        Ok(j) => j
-        Err(_) => jo([])
-      }
+fn move_path(data : String, name : String) -> String {
+  @nodepath.join("/", [data, "move", name])
+}
+
+///|
+fn read_move_json(disk : Disk, data : String, name : String) -> J {
+  match (disk.read)(move_path(data, name)) {
+    Some(t) => @jsjson.try_parse(t).unwrap_or(jo([]))
     None => jo([])
   }
+}
+
+///|
+async fn write_move_json(disk : Disk, data : String, name : String, v : J) -> Unit {
+  (disk.write)(move_path(data, name), stringify(v))
+}
+
+///|
+fn simple_module(
+  id : String,
+  moved : KeptSet,
+  plan : async (String, String, PlanReads?) -> Array[J],
+  move : async (J, String, (J) -> Unit, Waits?) -> Unit,
+  back : async (J, String, Waits?) -> Unit,
+) -> Module {
+  {
+    id,
+    needs: [],
+    plan,
+    move,
+    back,
+    state: async fn(item) {
+      st(if moved.has(item_id(item)) { "there" } else { "here" })
+    },
+    usable_here: Some(async fn(_) { true }),
+    usable_there: None,
+    can_lend: None,
+    lend: None,
+    lent_for: None,
+    left: None,
+    is_here: None,
+    abandon: None,
+    ready: None,
+    stop: None,
+    resume: None,
+  }
+}
+
+///|
+pub fn Settings::new(d : SettingsDeps) -> Settings {
   {
     d,
-    moved: KeptSet::new(d.disk, @nodepath.join("/", [d.data, "move", "settings-moved.json"])),
-    former,
+    moved: KeptSet::new(d.disk, move_path(d.data, "settings-moved.json")),
+    former: read_move_json(d.disk, d.data, "settings.json"),
   }
 }
 
@@ -61,10 +102,10 @@ async fn Settings::raw(self : Settings) -> J {
 
 ///|
 pub fn Settings::module(self : Settings) -> Module {
-  {
-    id: "settings",
-    needs: [],
-    plan: async fn(_ws, to, _reads) {
+  simple_module(
+    "settings",
+    self.moved,
+    async fn(_ws, to, _reads) {
       let raw = self.raw()
       let keys = settings_that_move.filter(k => get(Some(raw), k) is Some(_))
       let mut failed = false
@@ -110,12 +151,9 @@ pub fn Settings::module(self : Settings) -> Module {
         new_item("settings", "setting:\{k}", k, [], cannot?, again=failed)
       })
     },
-    move: async fn(item, to, _progress, _arrive) {
+    async fn(item, to, _progress, _arrive) {
       let key = slice_from(item_id(item), 8)
-      let value = match get(Some(self.raw()), key) {
-        Some(v) => v
-        None => Null
-      }
+      let value = get(Some(self.raw()), key).unwrap_or(Null)
       ignore(
         (self.d.ask)(
           to,
@@ -128,7 +166,7 @@ pub fn Settings::module(self : Settings) -> Module {
       )
       self.moved.add(item_id(item))
     },
-    back: async fn(item, from, _arrive) {
+    async fn(item, from, _arrive) {
       ignore(
         (self.d.ask)(
           from,
@@ -140,29 +178,12 @@ pub fn Settings::module(self : Settings) -> Module {
       )
       self.moved.delete(item_id(item))
     },
-    state: async fn(item) {
-      st(if self.moved.has(item_id(item)) { "there" } else { "here" })
-    },
-    usable_here: Some(async fn(_) { true }),
-    usable_there: None,
-    can_lend: None,
-    lend: None,
-    lent_for: None,
-    left: None,
-    is_here: None,
-    abandon: None,
-    ready: None,
-    stop: None,
-    resume: None,
-  }
+  )
 }
 
 ///|
 async fn Settings::save(self : Settings) -> Unit {
-  (self.d.disk.write)(
-    @nodepath.join("/", [self.d.data, "move", "settings.json"]),
-    stringify(self.former),
-  )
+  write_move_json(self.d.disk, self.d.data, "settings.json", self.former)
 }
 
 ///|

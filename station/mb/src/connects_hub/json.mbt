@@ -102,15 +102,7 @@ pub fn unhex(s : String) -> Bytes {
 ///|
 /// Whether `s` is `n` lowercase hex digits (`/^[0-9a-f]{n}$/`).
 pub fn lower_hex_of(s : String, n : Int) -> Bool {
-  if s.length() != n {
-    return false
-  }
-  for c in s {
-    if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-      return false
-    }
-  }
-  true
+  s.length() == n && s.iter().all(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
 }
 
 ///|

@@ -81,3 +81,42 @@ test "live events" {
   )
   assert_eq(@live_wire.INPUT_MOST, 262144)
 }
+
+///|
+test "entry state machine helpers" {
+  let open : Array[(String, String)] = []
+  @live_wire.set_entry(open, "a#0", "text")
+  @live_wire.set_entry(open, "t1", "tool")
+  @live_wire.set_entry(open, "a#0", "thinking")
+  assert_eq(@live_wire.find_entry(open, "a#0"), Some(0))
+  assert_true(@live_wire.has_open_tool(open))
+  let out : Array[@jsjson.JValue] = []
+  @live_wire.end_non_tool_prefix(open, "a#", out)
+  assert_eq(out.length(), 1)
+  assert_eq(said(out[0]), "{\"kind\":\"end\",\"id\":\"a#0\"}")
+  assert_eq(@live_wire.find_entry(open, "a#0"), None)
+  let phase = @live_wire.transition(None, "requesting", out)
+  assert_eq(phase, Some("requesting"))
+  assert_eq(@live_wire.transition(phase, "requesting", out), Some("requesting"))
+  assert_eq(out.length(), 2)
+  let ended = @live_wire.end_open(open)
+  assert_eq(ended.length(), 1)
+  assert_false(@live_wire.has_open_tool(open))
+  let loaded : Array[(String, String)] = []
+  let state = @live_wire.obj([("open", @live_wire.entries_json([("k1", "v1"), ("k2", "v2")]))])
+  @live_wire.load_entries(state, "open", loaded)
+  assert_eq(loaded, [("k1", "v1"), ("k2", "v2")])
+  assert_eq(said(@live_wire.opt_str_json(None)), "null")
+  assert_eq(said(@live_wire.opt_str_json(Some("ok"))), "\"ok\"")
+  assert_eq(said(@live_wire.turn_started()), "{\"type\":\"turnStarted\"}")
+  assert_eq(said(@live_wire.turn_ended(@live_wire.completed())), "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}")
+  assert_eq(said(@live_wire.aborted()), "{\"kind\":\"aborted\"}")
+  assert_eq(said(@live_wire.tools_lost_event("err")), "{\"type\":\"toolsLost\",\"why\":\"err\"}")
+  assert_true(@live_wire.station_tool("mcp__stillfail__post"))
+  assert_true(@live_wire.station_tool("stillfail__post"))
+  assert_false(@live_wire.station_tool("bash"))
+  assert_eq(@live_wire.str_or_js(None), "")
+  assert_eq(@live_wire.str_or_js(Some(Num(42.0))), "42")
+  assert_eq(@live_wire.content_text(Some(@live_wire.jstr("hi"))), "hi")
+  assert_eq(@live_wire.content_text(Some(@live_wire.jstr("hi")), allow_str=false), "")
+}
