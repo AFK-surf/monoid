@@ -71,7 +71,14 @@ sign() {
   codesign --force --sign "${MAC_SIGN_IDENTITY:--}" "${how[@]}" "$APPDIR/Contents/Frameworks/hermes.framework"
   [ ! -d "$APPDIR/Contents/Frameworks/Squirrel.framework" ] ||
     codesign --force --sign "${MAC_SIGN_IDENTITY:--}" "${how[@]}" "$APPDIR/Contents/Frameworks/Squirrel.framework"
-  codesign --force --sign "${MAC_SIGN_IDENTITY:--}" "${how[@]}" "$APPDIR"
+  # (the hardened runtime keeps the microphone from the app unless it says it takes it: a screen's 麦克风, apple_core.mm)
+  local app=("${how[@]}")
+  case "${MAC_SIGN_IDENTITY:-}" in "Developer ID Application:"*)
+    plutil -create xml1 "$OUT/entitlements.plist"
+    plutil -insert com.apple.security.device.audio-input -bool YES "$OUT/entitlements.plist"
+    app+=(--entitlements "$OUT/entitlements.plist") ;;
+  esac
+  codesign --force --sign "${MAC_SIGN_IDENTITY:--}" "${app[@]}" "$APPDIR"
   codesign --verify --deep --strict --verbose=2 "$APPDIR" 2>&1 | sed 's/^/codesign: /'
   codesign -dvv "$APPDIR" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier|Signature|Format)=' | sed 's/^/codesign: /'
   case "${MAC_SIGN_IDENTITY:-}" in "Developer ID Application:"*) python3 "$SF_SRC/.github/mac_signing.py" notarize "$APPDIR" --no-staple ;; esac
@@ -253,6 +260,9 @@ p = {
     "NSSupportsAutomaticGraphicsSwitching": True,
     # the core reaches stations on the local network directly when it can (as still.fail's desktop app says it)
     "NSLocalNetworkUsageDescription": e["NAME"] + " connects straight to your stations on the local network when it can.",
+    # a remote screen's 麦克风: this Mac's microphone shared into the screen's virtual one while an app there records it
+    # (src/host/apple_core.mm; without it the system ends an app that opens the microphone)
+    "NSMicrophoneUsageDescription": e["NAME"] + " shares your microphone with a remote screen you control, only while an app there is recording and you turned it on.",
 }
 # where its newer builds come from (src/stillfail main: MBUI_UPDATE_FEED; the host installs them: mac_app.m Updates),
 # the feed beta.sh mac publishes; built in still.fail's desktop app's place, still.fail's own (the device named as that

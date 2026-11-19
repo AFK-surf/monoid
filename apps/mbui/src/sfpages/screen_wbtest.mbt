@@ -444,6 +444,8 @@ test "it asks for the view by its name, JPEG only here, as large as its stage; �
   assert_eq(text(Some(asked[0]), "screen"), "browser:tab-1")
   assert_eq(text(Some(asked[0]), "view"), r.sess().view)
   assert_eq(items(Some(asked[0]), "codecs"), [Json::string("jpeg")])
+  // (no H.265 decoded here: nor its 4:4:4)
+  assert_true(field(Some(asked[0]), "chroma444") is None)
   // 自动: the stage it is shown on, in the device's pixels
   let (sw, sh) = r.sess().stage_px
   assert_true(sw > 0 && sh > 0)
@@ -2192,5 +2194,123 @@ test "browser tab bar with keyboard and mouse, passkey close button, and blocked
   assert_eq(pointers_of(r).length(), before_ptr)
   assert_eq(r.ui().held_nudge.get(), 1)
   r.t.run_for(@sf.refused_ms)
+  screen_done(r.t)
+}
+
+///|
+/// The screen's virtual microphone as its station says it while this viewer drives it (`mic`): recorded there now or
+/// not, a desktop's.
+fn mic_said(r : ScreenRig, active : Bool, control? : Bool = true) -> Unit {
+  let more : Map[String, Json] = { "kind": Json::string("desktop") }
+  // (the core says none while only looking)
+  if control {
+    more["mic"] = { "available": true, "active": active, "epoch": 1.0 }
+  }
+  r.state("live", control~, others=[], more~)
+}
+
+///|
+test "麦克风 on the bar only while something on the screen records it or this device's is shared: pressed, shared and told the core; opened again, told again" {
+  // (a browser's: its microphone taken, web/src/mbui/screen-peripherals.ts)
+  let r = screen_rig(platform=4)
+  r.live(others=[])
+  let asked = tr("web-pages.screen.micAsked")
+  let on = tr("web-pages.screen.micMute")
+  let off = tr("web-pages.screen.micUnmute")
+  let none = fn() { r.labelled(asked) is None && r.labelled(on) is None && r.labelled(off) is None }
+  // a screen with no virtual microphone, and one nobody records: nothing on the bar
+  assert_true(none())
+  mic_said(r, false)
+  assert_true(none())
+  // recorded there: on the bar, not lit, saying so
+  mic_said(r, true)
+  assert_eq(pressed_of(r, asked), Some(false))
+  assert_eq(r.t.audit(), [])
+  // pressed: shared, lit, told the core
+  r.tap_label(asked)
+  r.t.draw()
+  let s = r.sess()
+  assert_true(s.mic_on.get())
+  assert_eq(pressed_of(r, on), Some(true))
+  assert_eq(r.told("screen.micOn").last().unwrap().stringify(), "{\"view\":\"" + s.view + "\",\"on\":true}")
+  // the recording over: there still while shared, to switch it off
+  mic_said(r, false)
+  assert_eq(pressed_of(r, on), Some(true))
+  // only looking: gone, shared still (the core sends nothing meanwhile)
+  mic_said(r, true, control=false)
+  assert_true(none())
+  mic_said(r, true)
+  assert_eq(pressed_of(r, on), Some(true))
+  // let go of out of sight and opened again: told again once the view says it is there, not before
+  let told = r.told("screen.micOn").length()
+  s.pause(s.src)
+  s.open(s.src)
+  assert_eq(r.told("screen.micOn").length(), told)
+  mic_said(r, true)
+  assert_eq(r.told("screen.micOn").length(), told + 1)
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  // pressed again: no more, told so; the bar saying the app there records it
+  r.tap_label(on)
+  r.t.draw()
+  assert_false(s.mic_on.get())
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":false"))
+  assert_eq(pressed_of(r, asked), Some(false))
+  // its recording over, nothing shared: gone from the bar
+  mic_said(r, false)
+  assert_true(none())
+  screen_done(r.t)
+}
+
+///|
+test "麦克风 in the viewer's bar with keyboard and mouse: there as on the phone's, lit while shared" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0)
+  r.live(others=[])
+  let asked = tr("web-pages.screen.micAsked")
+  let on = tr("web-pages.screen.micMute")
+  assert_true(r.labelled(asked) is None)
+  mic_said(r, true)
+  assert_eq(pressed_of(r, asked), Some(false))
+  assert_eq(r.t.audit(), [])
+  r.tap_label(asked)
+  r.t.draw()
+  assert_eq(pressed_of(r, on), Some(true))
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  assert_eq(r.t.audit(), [])
+  screen_done(r.t)
+}
+
+///|
+test "a copy a password manager marked on the screen lands on the device's clipboard as a secret: concealed taken off after a while, transient kept, auto as any words" {
+  let r = screen_rig()
+  driven(r)
+  r.say({ "clipboard": { "type": "text", "text": "hunter2", "privacy": "concealed" } })
+  assert_eq(r.t.clipboard(), "hunter2")
+  assert_eq(r.t.clipboard_secret(), Some(@sf.secret_copied_life))
+  r.t.run_for(@sf.secret_copied_life)
+  assert_eq(r.t.clipboard(), "")
+  assert_eq(r.t.clipboard_secret(), None)
+  // words an app made up: as any
+  r.say({ "clipboard": { "type": "text", "text": "made up", "privacy": "auto" } })
+  assert_eq(r.t.clipboard(), "made up")
+  assert_eq(r.t.clipboard_secret(), None)
+  // not to be kept: a secret, left there
+  r.say({ "clipboard": { "type": "text", "text": "one-time 123456", "privacy": "transient" } })
+  assert_eq(r.t.clipboard(), "one-time 123456")
+  assert_eq(r.t.clipboard_secret(), Some(0.0))
+  r.t.run_for(@sf.secret_copied_life)
+  assert_eq(r.t.clipboard(), "one-time 123456")
+  screen_done(r.t)
+}
+
+///|
+test "no 麦克风 where this device's microphone is not taken (an Android phone's): neither on the bar nor in 控制中心" {
+  let r = screen_rig()
+  r.live(others=[])
+  mic_said(r, true)
+  assert_false(r.sess().mic_available())
+  assert_true(r.labelled(tr("web-pages.screen.micAsked")) is None)
+  open_center(r)
+  assert_true(r.labelled(tr("web-pages.screen.mic")) is None)
+  shut(r)
   screen_done(r.t)
 }

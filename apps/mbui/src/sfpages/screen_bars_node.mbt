@@ -141,6 +141,20 @@ fn keys_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
 }
 
 ///|
+/// 麦克风 as a round button in `parent`, lit while this device's microphone is shared into the screen's virtual one:
+/// there only while something on the screen records it or it is shared (ScreenSess::mic_bar_shown), so a bar says
+/// nothing of it otherwise (控制中心's tile switches it then); pressed, shared or no more.
+fn mic_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  parent.show(at_once=true, fn() { s.mic_bar_shown() }, fn(k) {
+    screen_round_node(k, pg, fn() { s.mic_icon() }, fn() { s.mic_label() }, fn(_) { s.toggle_mic() }, lit=fn() {
+      s.mic_on.get()
+    })
+    |> ignore
+  })
+}
+
+///|
 /// 只看/控制 as one round button (the rail's, the folded tools') in `parent`: the pointer while driving, an eye while
 /// looking; where it may be chosen.
 fn mode_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
@@ -295,6 +309,7 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         })
       }
     })
+    mic_button_node(bar, pg)
     bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
     // (a panel's bar of its own: the panel's close at its end, beside what it closes, where the system has bars too:
     // among the chat's actions in them it read as another thing's; the user, 2026-11-06)
@@ -364,6 +379,7 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           })
         }
       })
+      mic_button_node(bar, pg)
       // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
       if pg.on_window is Some(handed) {
         let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
@@ -452,6 +468,11 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "terminal", label: @sf.t("web-pages.remote.switchSession"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
           t.on_press(fn() { station_sessions_open(pg, t) }) |> ignore
+        })
+        // (麦克风 while something on the screen records it, or this device's is shared: ScreenSess::mic_bar_shown)
+        r.show(at_once=true, fn() { s.mic_bar_shown() }, fn(k) {
+          let t = @sf.tool_node(k, fn() { { icon: s.mic_icon(), label: s.mic_label(), on: s.mic_on.get(), disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
+          t.on_press(fn() { s.toggle_mic() }) |> ignore
         })
         r.show(at_once=true, fn() { s.open_said() }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "sliders", label: @sf.t("web-pages.screen.panel"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
@@ -576,6 +597,7 @@ fn full_tools_node(fill : @view.View, pg : ScreenPage) -> Unit {
         keys_button_node(t, pg)
         paste_button_node(t, pg)
         keyboard_button_node(t, pg)
+        mic_button_node(t, pg)
         center_button_node(t, pg)
         full_button_node(t, pg)
       })
@@ -625,6 +647,7 @@ fn screen_rail_node(p : @view.View, pg : ScreenPage) -> (() -> Unit, () -> Bool)
     keys_button_node(rail, pg)
     paste_button_node(rail, pg)
     keyboard_button_node(rail, pg)
+    mic_button_node(rail, pg)
     rail.show(at_once=true, fn() { s.open_said() }, fn(k) {
       k.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
       center_button_node(k, pg)

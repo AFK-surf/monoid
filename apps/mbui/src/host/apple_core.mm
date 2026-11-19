@@ -16,6 +16,7 @@
 // can't use it). A JS error that escapes, or a bug the core reports, ends the core as on Android: `{"fatal": …}` to the
 // UI, and the host starts another.
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <Security/Security.h>
 #include <pthread.h>
@@ -24,6 +25,7 @@
 #include <time.h>
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -194,7 +196,11 @@ struct Core {
 
 Core C;
 
+bool screen_mic_from_core(const char *json, size_t len);
+
 void say(const char *json, size_t len, const uint8_t *bytes, size_t blen) {
+  // (the answers to the microphone's own calls are not the app's: screen_mic_from_core)
+  if (screen_mic_from_core(json, len)) return;
   if (C.on_message) C.on_message(json, len, bytes, blen, C.ctx);
 }
 
@@ -1071,6 +1077,270 @@ static void probe_js(void) {
   });
 }
 
+
+// ---- A screen's virtual microphone fed from this Mac's (sfpages' screen.mbt 麦克风, the core's `screen.mic`)
+//
+// The app shares the person's microphone into a screen's virtual one (`screen.micOn`) and the core sends what it is
+// given of it only while the view drives that screen, is shared and something there records it (the state's `mic`).
+// mbui's host has no microphone of its own, so this engine, which sees what the app and the core say to each other,
+// opens this Mac's own (AVAudioEngine's input) only while all of that holds for a view, and lets go of it at once as
+// any of it stops, so the system's recording mark (the menu bar's) shows only then. Its 20 ms packets of 48 kHz mono
+// s16le go to the core as calls of its own (ids past the app's, their answers kept from the app). Never asked of the
+// person here but where the app's Info.plist says why (NSMicrophoneUsageDescription: without it the system ends the
+// app); not yet on iOS, whose audio session is mbui's (its screen sound's).
+//
+// AVFoundation is looked up by name (NSClassFromString): the programs this engine is linked into without it (scripts/
+// core.sh's tests) find none and open nothing.
+
+namespace {
+
+/// The ids of the microphone's own calls: past the app's (the same as the web's, web/src/mbui/screen-peripherals.ts).
+constexpr double kMicFirst = 2147483648.0 + 1073741824.0;
+[[maybe_unused]] constexpr int kMicSamples = 960;
+
+struct MicView {
+  std::string view;
+  std::string phase = "connecting";
+  bool control = false, available = false, active = false, on = false;
+  double epoch = 0;
+};
+
+struct Mic {
+  std::mutex mutex;
+  std::map<double, MicView> views;  // by the app's call that opened each
+  double next = kMicFirst;
+  std::string feeding;  // the view this Mac's microphone goes to now ("" none)
+  double epoch = 0;
+  AVAudioEngine *engine = nil;
+  AVAudioConverter *converter = nil;
+  std::vector<int16_t> pcm;
+  bool asking = false;  // the person asked for the microphone, not answered yet
+};
+
+Mic M;
+
+double json_id(const char *json, size_t len) {
+  const char *k = static_cast<const char *>(memmem(json, std::min<size_t>(len, 24), "\"id\":", 5));
+  return k ? strtod(k + 5, nullptr) : -1;
+}
+
+NSDictionary *json_object(const char *json, size_t len) {
+  id o = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytesNoCopy:(void *)json length:len freeWhenDone:NO] options:0 error:nil];
+  return [o isKindOfClass:NSDictionary.class] ? o : nil;
+}
+
+std::string str_of(id v) { return [v isKindOfClass:NSString.class] ? std::string([(NSString *)v UTF8String]) : std::string(); }
+bool flag_of(id v) { return [v isKindOfClass:NSNumber.class] && [(NSNumber *)v boolValue]; }
+
+/// The view the microphone goes to now, under M.mutex: driving, shared, recorded there.
+const MicView *mic_wanted() {
+  for (auto &[_, v] : M.views)
+    if (v.phase == "live" && v.control && v.on && v.available && v.active) return &v;
+  return nullptr;
+}
+
+/// A packet of the microphone's to the core, for `view` in recording `epoch`.
+[[maybe_unused]] void mic_packet(const std::string &view, double epoch, const int16_t *pcm, size_t n) {
+  double id;
+  {
+    std::lock_guard<std::mutex> lock(M.mutex);
+    id = M.next++;
+  }
+  char head[64];
+  snprintf(head, sizeof head, "{\"id\":%.0f,\"call\":\"screen.mic\",\"params\":{\"view\":", id);
+  std::string j = std::string(head) + quote(view) + ",\"epoch\":" + std::to_string((long long)epoch) + "}}";
+  std::string b(reinterpret_cast<const char *>(pcm), n * sizeof(int16_t));
+  post([j = std::move(j), b = std::move(b)](jsi::Runtime &rt) {
+    jsi::Object sf = stillfail(rt);
+    sf.getPropertyAsFunction(rt, "receiveBytes").callWithThis(rt, sf, jsi::Value(C.client), jsi::String::createFromUtf8(rt, j), array_buffer(rt, b.data(), b.size()));
+  });
+}
+
+/// The microphone let go of, under M.mutex: what it was taken from, to be stopped once the lock is let go of (its
+/// tap waits on the lock: stopping it under the lock would wait on the tap). What it captures from now goes nowhere.
+AVAudioEngine *mic_stop_locked() {
+  AVAudioEngine *e = M.engine;
+  M.engine = nil;
+  M.converter = nil;
+  M.pcm.clear();
+  M.feeding.clear();
+  return e;
+}
+
+/// The engine stopped: the system's recording mark out with it.
+void mic_stopped(AVAudioEngine *e) {
+  if (!e) return;
+  [e.inputNode removeTapOnBus:0];
+  [e stop];
+}
+
+void mic_sync();
+
+/// This Mac's microphone opened for what mic_wanted says, under M.mutex (as the person allowed it: asked once where
+/// they have not said yet, the views looked at again as they answer).
+void mic_start_locked(const MicView &v) {
+#if TARGET_OS_IPHONE
+  (void)v;
+#else
+  NSString *why = [NSBundle.mainBundle objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"];
+  Class device = NSClassFromString(@"AVCaptureDevice"), engine = NSClassFromString(@"AVAudioEngine");
+  if (![why isKindOfClass:NSString.class] || why.length == 0 || !device || !engine) return;
+  // (AVMediaTypeAudio by its value: the symbol is AVFoundation's)
+  NSString *audio = @"soun";
+  AVAuthorizationStatus status = [device authorizationStatusForMediaType:audio];
+  if (status == AVAuthorizationStatusNotDetermined) {
+    if (M.asking) return;
+    M.asking = true;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [device requestAccessForMediaType:audio completionHandler:^(BOOL) {
+        {
+          std::lock_guard<std::mutex> lock(M.mutex);
+          M.asking = false;
+        }
+        mic_sync();
+      }];
+    });
+    return;
+  }
+  if (status != AVAuthorizationStatusAuthorized) return;
+  AVAudioEngine *e = [engine new];
+  AVAudioInputNode *input = e.inputNode;
+  AVAudioFormat *from = [input outputFormatForBus:0];
+  AVAudioFormat *to = [[NSClassFromString(@"AVAudioFormat") alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 sampleRate:48000 channels:1 interleaved:NO];
+  AVAudioConverter *conv = from.sampleRate > 0 && from.channelCount > 0 ? [[NSClassFromString(@"AVAudioConverter") alloc] initFromFormat:from toFormat:to] : nil;
+  if (!conv) return;
+  M.engine = e;
+  M.converter = conv;
+  M.feeding = v.view;
+  M.epoch = v.epoch;
+  std::string view = v.view;
+  Class pcm_buffer = NSClassFromString(@"AVAudioPCMBuffer");
+  // (the tap with an error of its own is macOS 27's: this one on every macOS the app runs on)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  [input installTapOnBus:0 bufferSize:4800 format:from block:^(AVAudioPCMBuffer *buf, AVAudioTime *) {
+    std::vector<std::pair<double, std::vector<int16_t>>> out;
+    {
+      std::lock_guard<std::mutex> lock(M.mutex);
+      if (M.converter != conv || M.feeding != view) return;
+      AVAudioFrameCount cap = (AVAudioFrameCount)((double)buf.frameLength * 48000.0 / from.sampleRate) + 64;
+      AVAudioPCMBuffer *got = [[pcm_buffer alloc] initWithPCMFormat:to frameCapacity:cap];
+      __block bool given = false;
+      [conv convertToBuffer:got error:nil withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount, AVAudioConverterInputStatus *status) {
+        if (given) {
+          *status = AVAudioConverterInputStatus_NoDataNow;
+          return nil;
+        }
+        given = true;
+        *status = AVAudioConverterInputStatus_HaveData;
+        return buf;
+      }];
+      const float *f = got.floatChannelData ? got.floatChannelData[0] : nullptr;
+      for (AVAudioFrameCount i = 0; f && i < got.frameLength; i++) {
+        float c = std::isfinite(f[i]) ? std::max(-1.0f, std::min(1.0f, f[i])) : 0.0f;
+        M.pcm.push_back((int16_t)(c < 0 ? lrintf(c * 32768.0f) : lrintf(c * 32767.0f)));
+        if (M.pcm.size() == kMicSamples) {
+          out.emplace_back(M.epoch, std::move(M.pcm));
+          M.pcm.clear();
+        }
+      }
+    }
+    for (auto &[epoch, pcm] : out) mic_packet(view, epoch, pcm.data(), pcm.size());
+  }];
+#pragma clang diagnostic pop
+  NSError *error = nil;
+  if (![e startAndReturnError:&error]) {
+    fprintf(stderr, "[core] the microphone did not open: %s\n", error.localizedDescription.UTF8String ?: "");
+    // (not started: nothing taps it yet)
+    mic_stopped(mic_stop_locked());
+  }
+#endif
+}
+
+/// The microphone as the views say now: opened for the view that wants it, let go of where none does (at once).
+void mic_sync() {
+  AVAudioEngine *gone = nil;
+  {
+    std::lock_guard<std::mutex> lock(M.mutex);
+    const MicView *want = mic_wanted();
+    if (!want || (M.engine && M.feeding != want->view)) gone = mic_stop_locked();
+    if (want) M.epoch = want->epoch;
+    if (want && !M.engine) mic_start_locked(*want);
+  }
+  mic_stopped(gone);
+}
+
+/// What the core says to the app, read for the views' states and ends (the core's thread); whether it is the
+/// microphone's own answer, kept from the app.
+bool screen_mic_from_core(const char *json, size_t len) {
+  double id = json_id(json, len);
+  if (id >= kMicFirst) return true;
+  {
+    std::lock_guard<std::mutex> lock(M.mutex);
+    if (M.views.empty() || !M.views.count(id)) return false;
+  }
+  bool state = memmem(json, len, "\"state\":", 8) != nullptr;
+  bool over = !state && (memmem(json, len, "\"ok\":", 5) || memmem(json, len, "\"error\":", 8));
+  if (!state && !over) return false;
+  NSDictionary *m = json_object(json, len);
+  if (!m) return false;
+  {
+    std::lock_guard<std::mutex> lock(M.mutex);
+    auto it = M.views.find(id);
+    if (it == M.views.end()) return false;
+    if (m[@"ok"] || m[@"error"]) {
+      M.views.erase(it);
+    } else {
+      NSDictionary *value = [m[@"value"] isKindOfClass:NSDictionary.class] ? m[@"value"] : nil;
+      NSDictionary *s = [value[@"state"] isKindOfClass:NSDictionary.class] ? value[@"state"] : nil;
+      if (!s) return false;
+      MicView &v = it->second;
+      std::string phase = str_of(s[@"phase"]);
+      if (!phase.empty()) v.phase = phase;
+      v.control = flag_of(s[@"control"]);
+      NSDictionary *mic = [s[@"mic"] isKindOfClass:NSDictionary.class] ? s[@"mic"] : nil;
+      v.available = mic && flag_of(mic[@"available"]);
+      v.active = v.available && flag_of(mic[@"active"]);
+      v.epoch = [mic[@"epoch"] isKindOfClass:NSNumber.class] ? [mic[@"epoch"] doubleValue] : 0;
+    }
+  }
+  mic_sync();
+  return false;
+}
+
+}  // namespace
+
+/// What the app says to the core, read for the views and whether each shares the microphone (UI thread).
+static void screen_mic_from_app(const char *json, size_t len) {
+  bool view = memmem(json, len, "\"screen.view\"", 13) != nullptr, on = memmem(json, len, "\"screen.micOn\"", 14) != nullptr;
+  bool cancel = memmem(json, std::min<size_t>(len, 48), "\"cancel\":true", 13) != nullptr;
+  if (!view && !on && !cancel) return;
+  NSDictionary *m = json_object(json, len);
+  if (!m || ![m[@"id"] isKindOfClass:NSNumber.class]) return;
+  double id = [m[@"id"] doubleValue];
+  NSDictionary *p = [m[@"params"] isKindOfClass:NSDictionary.class] ? m[@"params"] : nil;
+  {
+    std::lock_guard<std::mutex> lock(M.mutex);
+    if (cancel) {
+      if (!M.views.erase(id)) return;
+    } else if (view && [m[@"call"] isEqual:@"screen.view"]) {
+      MicView v;
+      v.view = str_of(p[@"view"]);
+      M.views[id] = v;
+      return;
+    } else if (on && [m[@"call"] isEqual:@"screen.micOn"]) {
+      std::string name = str_of(p[@"view"]);
+      bool found = false;
+      for (auto &[_, v] : M.views)
+        if (v.view == name) v.on = flag_of(p[@"on"]), found = true;
+      if (!found) return;
+    } else {
+      return;
+    }
+  }
+  mic_sync();
+}
+
 void mb_core_start(const char *data_dir, const char *cloud_origin, int beta, mb_core_message_fn on_message, void *ctx) {
   if (C.running) return;
   probe_taps();
@@ -1103,7 +1373,10 @@ void mb_core_start(const char *data_dir, const char *cloud_origin, int beta, mb_
   pthread_attr_destroy(&attr);
 }
 
+static void screen_mic_from_app(const char *json, size_t len);
+
 void mb_core_send(const char *json, size_t len, const uint8_t *bytes, size_t blen) {
+  screen_mic_from_app(json, len);
   std::string j(json, len);
   bool has = bytes != nullptr;
   std::string b = has ? std::string(reinterpret_cast<const char *>(bytes), blen) : std::string();
@@ -1207,6 +1480,12 @@ static void probe_taps(void) {
 }
 
 void mb_core_stop(void) {
+  // (the views went with the core: this Mac's microphone let go of, a core started again told them anew)
+  {
+    std::lock_guard<std::mutex> lock(M.mutex);
+    M.views.clear();
+  }
+  mic_sync();
   if (!C.running) return;
   {
     std::lock_guard<std::mutex> lock(C.mutex);

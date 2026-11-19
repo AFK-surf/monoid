@@ -174,6 +174,8 @@ test "a host that decodes H.265 asks for it first; 自动 says no 画质" {
   let asked = r.told("screen.view").last().unwrap()
   assert_eq(items(Some(asked), "codecs"), [Json::string("h265"), Json::string("jpeg")])
   assert_true(field(Some(asked), "quality") is None)
+  // (Android's decoder takes Main and Main 10 only: no 4:4:4 asked)
+  assert_true(field(Some(asked), "chroma444") is None)
   // its config to the stream as H.265, its frames handed over after it
   r.live()
   r.say({ "config": { "codec": "h265", "width": 1920, "height": 1080 } }, bytes=b"\x01\x01")
@@ -1221,4 +1223,18 @@ test "a desktop's windows as its tabs: the whole screen and each window; pressed
   assert_true(p.labelled(tr("web-pages.screen.windows") + " 3") is Some(_))
   assert_eq(p.t.audit(), [])
   screen_done(p.t)
+}
+
+///|
+test "a Mac that decodes H.265 says it decodes its 4:4:4 too (the core asks it of the station with 原画 alone)" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0)
+  r.t.set_h265(true)
+  let s = screens_open.get(screen_key("ws-1/st-1", "browser:tab-1")).unwrap()
+  s.pause(s.src)
+  s.open(s.src)
+  let asked = r.told("screen.view").last().unwrap()
+  assert_eq(items(Some(asked), "codecs"), [Json::string("h265"), Json::string("jpeg")])
+  assert_eq(field(Some(asked), "chroma444"), Some(Json::boolean(true)))
+  s.pause(s.src)
+  screen_done(r.t)
 }

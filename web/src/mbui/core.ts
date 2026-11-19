@@ -10,6 +10,7 @@ import { takeShare } from "./share.ts";
 import { ErrorGate, isNoise, thrownText } from "./client-error.ts";
 import { putBack, take } from "../login/signin.ts";
 import { bootGoesWithFirstFrame, bootMarkOut, fetchedAhead } from "./boot.ts";
+import { ScreenPeripherals } from "./screen-peripherals.ts";
 // the app's words' face in a browser: the web's own Inter (its Latin, as the web's pages have it), not the whole face
 // the native hosts carry (apps/mbui src/sfbase/inter_face_js.mbt)
 import interLatin from "@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url";
@@ -70,7 +71,9 @@ function toApp(data: unknown): void {
     return;
   }
   const id = (data as { id?: unknown }).id;
+  // (the reports' and the screens' devices' own calls, screen-peripherals.ts: past REPORT_FIRST too)
   if (typeof id === "number" && id >= REPORT_FIRST) return;
+  peripherals.fromCore(data);
   const message = data as { bytes?: unknown; retired?: boolean; rejoin?: boolean; fault?: { name: string; message: string; stack?: string } };
   // A newer build's core took over: this page is of the older build and loads the newer.
   if (message.retired) {
@@ -91,6 +94,13 @@ function toApp(data: unknown): void {
 }
 
 let worker: Worker | null = null;
+
+/// What a screen's view takes of this browser's devices while the app drives it (its microphone, controllers, the
+/// pointer held, the keys in full screen), following what the app and the core say of the views.
+const peripherals = new ScreenPeripherals({
+  post: (message) => worker?.postMessage(message),
+  canvas: () => document.getElementById("c") as HTMLCanvasElement | null,
+});
 
 /// The core's worker, started as the page loads: its databases and the station links come up while the app's script is
 /// still on its way (the app's `start` takes the one there is).
@@ -117,6 +127,7 @@ function send(json: string, bytes: Uint8Array | null): void {
   } catch {
     return;
   }
+  peripherals.fromApp(message);
   const taken = withFiles(message, bytes);
   // (bytes beside another call: handed over with it, as a native host's bridge hands them, src/core/worker.ts unwrap)
   if (bytes !== null && taken === message) worker.postMessage({ withBytes: message, bytes });
@@ -152,6 +163,7 @@ function withFiles(message: unknown, bytes: Uint8Array | null): unknown {
 }
 
 function stop(): void {
+  peripherals.stop();
   worker?.postMessage({ bye: true });
   worker?.terminate();
   worker = null;
@@ -168,7 +180,10 @@ function stop(): void {
     return true;
   },
 };
-addEventListener("pagehide", () => worker?.postMessage({ bye: true }));
+addEventListener("pagehide", () => {
+  peripherals.stop();
+  worker?.postMessage({ bye: true });
+});
 
 /// The host, then the app: each a classic script, in order (the app runs as it loads, and finds both).
 function load(src: string): Promise<void> {
