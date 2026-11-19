@@ -103,6 +103,9 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     }))),
     passkey: v.passkey.map(f => async fn(j) { f({ id: p54_text(Some(j), "id").unwrap_or(""), fields: p54_jv(j) }) }),
     watch_child: v.watch_child,
+    set_clipboard_marked: v.set_clipboard_marked.map(f => async fn(c, b, m) { f(p54_clip_of(c), b, m) }),
+    watch_clipboard_marked: v.watch_clipboard_marked.map(w => (k : (@mesh_runtime.Clip, Int) -> Unit) => w((c, m) => k(p54_clip(c), m))),
+    watch_pointer_lock: v.watch_pointer_lock,
   }
 }
 

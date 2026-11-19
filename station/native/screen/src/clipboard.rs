@@ -2,6 +2,8 @@
 // no PNG), pasted with Ctrl+V; and, while watched, what is copied on it (its sequence number looked at every half a
 // second; nothing else read until it changes, and what the view set not said back): text first, else a picture as PNG.
 // Another app may hold the clipboard a moment (a clipboard manager, Remote Desktop): opening it is tried again.
+// A copy an app marked (a password manager's: privacy.rs) is said with its mark (message 12), and one set with a mark
+// is written with the formats that say it, so this machine's clipboard history and managers leave it out.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
@@ -17,6 +19,7 @@ use windows::core::w;
 
 use super::Out;
 use super::image::Images;
+use super::privacy;
 
 pub const TEXT_MAX: usize = 1024 * 1024;
 pub const PNG_MAX: usize = 8 * 1024 * 1024;
@@ -88,11 +91,13 @@ impl Clipboard {
         Clipboard { owner, images: Images::new().ok(), ours: Arc::new(AtomicU32::new(0)), watching: None, out }
     }
 
-    /// Message 4's payload: flags (bit 0 paste), type (1 text, 2 PNG), the bytes. Whether it was set.
+    /// Message 4's payload: flags (bit 0 paste, bits 1..2 the clip's mark), type (1 text, 2 PNG), the bytes. Whether
+    /// it was set.
     pub fn set(&mut self, payload: &[u8]) -> bool {
         if payload.len() < 2 {
             return false;
         }
+        let (_, mark) = privacy::flags(payload[0]);
         let body = &payload[2..];
         let Some(open) = Open::new(self.owner) else {
             self.out.json(4, serde_json::json!({ "clipboard": "busy" }));
@@ -126,6 +131,16 @@ impl Clipboard {
                     }
                 }
                 _ => return false,
+            }
+            // Its mark, as the formats that say it (each 4 bytes of 0).
+            for name in privacy::formats_of(mark) {
+                let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+                let format = RegisterClipboardFormatW(windows::core::PCWSTR(wide.as_ptr()));
+                if format != 0 {
+                    if let Some(handle) = global(&0u32.to_le_bytes()) {
+                        let _ = SetClipboardData(format, Some(handle));
+                    }
+                }
             }
             // Its number once closed (the clipboard's changes are counted as it closes).
             drop(open);
@@ -161,10 +176,11 @@ impl Clipboard {
                 if now == ours.load(Ordering::SeqCst) || !flag.load(Ordering::SeqCst) {
                     continue;
                 }
-                if let Some((kind, bytes)) = copied(images.as_ref()) {
-                    let mut payload = vec![kind];
+                if let Some((kind, bytes, mark)) = copied(images.as_ref()) {
+                    // (marked: message 12, its mark first)
+                    let mut payload = if mark == 0 { vec![kind] } else { vec![mark, kind] };
                     payload.extend_from_slice(&bytes);
-                    out.send(5, &payload);
+                    out.send(if mark == 0 { 5 } else { 12 }, &payload);
                 }
             }
         });
@@ -175,26 +191,60 @@ impl Clipboard {
     }
 }
 
-/// What the clipboard holds: text first (its UTF-8), else a picture as PNG; none past its bound.
-fn copied(images: Option<&Images>) -> Option<(u8, Vec<u8>)> {
+/// The clipboard's registered formats (by name), with the data of those a mark is read from (a DWORD's, at most 64
+/// bytes kept): what `privacy::mark_of` reads. On an open clipboard.
+unsafe fn named_formats() -> Vec<(String, Option<Vec<u8>>)> {
+    let mut out = Vec::new();
+    let mut format = 0u32;
+    loop {
+        format = unsafe { EnumClipboardFormats(format) };
+        if format == 0 {
+            break;
+        }
+        // (the registered ones: 0xC000..0xFFFF)
+        if format < 0xC000 {
+            continue;
+        }
+        let mut name = [0u16; 128];
+        let n = unsafe { GetClipboardFormatNameW(format, &mut name) };
+        if n <= 0 {
+            continue;
+        }
+        let name = String::from_utf16_lossy(&name[..n as usize]);
+        let data = if privacy::read_data(&name) {
+            unsafe { GetClipboardData(format) }.ok().and_then(read_global).map(|mut d| {
+                d.truncate(64);
+                d
+            })
+        } else {
+            None
+        };
+        out.push((name, data));
+    }
+    out
+}
+
+/// What the clipboard holds: text first (its UTF-8), else a picture as PNG; none past its bound; and its mark.
+fn copied(images: Option<&Images>) -> Option<(u8, Vec<u8>, u8)> {
     let _open = Open::new(None)?;
     unsafe {
+        let mark = privacy::mark_of(&named_formats());
         if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() {
             let bytes = read_global(GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?)?;
             let wide: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
             let text = String::from_utf16_lossy(&wide);
-            return (!text.is_empty() && text.len() <= TEXT_MAX).then(|| (1, text.into_bytes()));
+            return (!text.is_empty() && text.len() <= TEXT_MAX).then(|| (1, text.into_bytes(), mark));
         }
         let png = png_format();
         if IsClipboardFormatAvailable(png).is_ok() {
             if let Some(bytes) = GetClipboardData(png).ok().and_then(read_global) {
-                return (!bytes.is_empty() && bytes.len() <= PNG_MAX).then_some((2, bytes));
+                return (!bytes.is_empty() && bytes.len() <= PNG_MAX).then_some((2, bytes, mark));
             }
         }
         if IsClipboardFormatAvailable(CF_BITMAP.0 as u32).is_ok() {
             let bitmap = HBITMAP(GetClipboardData(CF_BITMAP.0 as u32).ok()?.0);
             let bytes = images?.png_of_hbitmap(bitmap).ok()?;
-            return (bytes.len() <= PNG_MAX).then_some((2, bytes));
+            return (bytes.len() <= PNG_MAX).then_some((2, bytes, mark));
         }
     }
     None

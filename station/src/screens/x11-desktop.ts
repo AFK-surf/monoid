@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
+import { LinuxGamepads } from "./linux-gamepad.ts";
 import { ScreenRefused } from "./hub.ts";
 import { executable, type LinuxScreenTools, type LinuxToolPair } from "./linux-tools.ts";
 import type { Frame, ScreenAccess, ScreenInput, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
@@ -204,11 +205,14 @@ class X11Input {
   #input: Promise<void> = Promise.resolve();
   #wheel = { x: 0, y: 0 };
   #ended = false;
+  /// Its controllers: virtual ones, else the desktop driven with them through this input.
+  readonly #pads: LinuxGamepads;
 
   constructor(xdotool: string, env: NodeJS.ProcessEnv, screen: Size) {
     this.#xdotool = xdotool;
     this.#env = env;
     this.#screen = { ...screen };
+    this.#pads = new LinuxGamepads((e) => this.input(e), env);
   }
 
   async #command(args: string[], timeout = 3_000): Promise<void> {
@@ -218,11 +222,15 @@ class X11Input {
     await this.#command(["type", "--delay", String(TYPE_DELAY_MS), "--", text], 5_000 + Array.from(text).length * TYPE_DELAY_MS * 3);
   }
   input(event: ScreenInput): Promise<void> {
+    if (event.t === "gamepad") return this.#pads.input(event);
     const next = this.#input.then(async () => {
       if (this.#ended) return;
       const point = (x: number, y: number) => [String(Math.max(0, Math.min(this.#screen.width - 1, Math.round(x * (this.#screen.width - 1))))), String(Math.max(0, Math.min(this.#screen.height - 1, Math.round(y * (this.#screen.height - 1)))))];
       if (event.t === "pointer") {
-        await this.#command(["mousemove", ...point(event.x, event.y)]);
+        // A relative move goes only as far as it says, wherever the pointer is (an app holding it, a controller's stick).
+        if (event.relative === true) {
+          if (event.dx || event.dy) await this.#command(["mousemove_relative", "--", String(Math.round(event.dx ?? 0)), String(Math.round(event.dy ?? 0))]);
+        } else await this.#command(["mousemove", ...point(event.x, event.y)]);
         for (const { bit, button } of BUTTONS) {
           const down = (event.buttons & bit) !== 0, was = this.#buttons.has(button);
           if (down === was) continue;
@@ -230,7 +238,8 @@ class X11Input {
           if (down) this.#buttons.add(button); else this.#buttons.delete(button);
         }
       } else if (event.t === "wheel") {
-        await this.#command(["mousemove", ...point(event.x, event.y)]);
+        // (x below 0: where the pointer is, a controller's stick)
+        if (event.x >= 0) await this.#command(["mousemove", ...point(event.x, event.y)]);
         this.#wheel.x += event.dx / 100;
         this.#wheel.y += event.dy / 100;
         for (const axis of ["x", "y"] as const) {
@@ -267,6 +276,7 @@ class X11Input {
 
   close(): void {
     if (this.#ended) return;
+    this.#pads.close();
     this.#ended = true;
     // Release anything this view pressed even if its client disappeared while dragging or typing.
     void this.#input.then(async () => {

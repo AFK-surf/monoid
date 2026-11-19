@@ -110,6 +110,12 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
     };
     let mut keys = Input::new();
     keys.nudge();
+    // Whether an app holds the pointer (pointer_lock.rs), and the person's controllers (gamepad.rs).
+    let lock = super::pointer_lock::Watch::start(out.clone());
+    let pads = {
+        let lock = lock.clone();
+        super::gamepad::Gamepads::new(&out, move || lock.moved())
+    };
     let mut clipboard = Clipboard::new(out.clone());
     // A picture on the clipboard is the largest message.
     while let Some((kind, payload)) = super::message(input, 2 + PNG_MAX) {
@@ -118,11 +124,20 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
             2 => drop(tx.send(Msg::Keyframe)),
             3 => {
                 if let Ok(op) = serde_json::from_slice::<Value>(&payload) {
-                    keys.post(&op);
+                    match op["op"].as_str() {
+                        Some("gamepad") => pads.post(&op),
+                        Some("mouse") => {
+                            keys.post(&op);
+                            if op["type"].as_str() == Some("move") {
+                                lock.moved();
+                            }
+                        }
+                        _ => keys.post(&op),
+                    }
                 }
             }
             4 => {
-                if clipboard.set(&payload) && payload[0] & 1 == 1 {
+                if clipboard.set(&payload) && super::privacy::flags(payload[0]).0 {
                     keys.paste();
                 }
             }
@@ -141,6 +156,8 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
         }
     }
     clipboard.stop();
+    pads.release();
+    lock.stop();
     drop(tx);
     drop(worker);
     std::process::exit(0);

@@ -36,7 +36,7 @@ import { subOf } from "../src/mesh/person-chains.ts";
 import { pathsOf, sentOn, slowly } from "../src/mesh/reply-watch.ts";
 import { FrameLatency, LinkLoss, LoopStall, Pacer, Sharpener, Sizer, isFps, ownRate, queueMs, rateCeiling, startRate } from "../src/mesh/screen-pace.ts";
 import {
-  FrameIn, answerScreen, asked, clipPayload, configPayload, cursorPayload, frame, limitIn, parseClip, parseFill, parseInput, parseLook, parsePasskey, parseResolution, parseReveal,
+  FrameIn, answerScreen, asked, clipPayload, privateClipPayload, configPayload, cursorPayload, frame, limitIn, parseClip, parseFill, parseInput, parseLook, parsePasskey, parseResolution, parseReveal,
   parseScale, parseWindowPick, videoPayload,
 } from "../src/mesh/screens.ts";
 import { SERVED_ROUTES, SERVED_STEADY_MS, Served, type ServingProcess } from "../src/mesh/served.ts";
@@ -581,8 +581,15 @@ test("a view's frames, its ask and every frame a client sends, checked as screen
       await same("clipPayload", { clip, ...(flags !== undefined ? { flags } : {}) }, () => hex(clipPayload(tsClip, flags)));
     }
   }
-  const clipJson = (c: ReturnType<typeof parseClip>) => (c === null ? null : { clip: c.clip.type === "text" ? c.clip : { type: "png", data: hex(c.clip.data) }, paste: c.paste });
-  for (const payload of ["", "0001", "000141", "010141", "0301c3a9", "0002ff", "000300", "0001ff", "0001efbbbf41", "01020000"]) {
+  for (const clip of clips.filter((c) => c.type === "text" ? c.text !== "" : c.data !== "")) {
+    for (const privacy of ["concealed", "transient", "auto"] as const) {
+      const tsClip = clip.type === "text" ? { ...clip, privacy } : { type: "png" as const, data: new Uint8Array(bytesOf(clip.data)), privacy };
+      await same("privateClipPayload", { clip, privacy: { concealed: 1, transient: 2, auto: 3 }[privacy] }, () => hex(privateClipPayload(tsClip as never)));
+    }
+  }
+  const clipJson = (c: ReturnType<typeof parseClip>) => (c === null ? null : { clip: c.clip.type === "text" ? c.clip : { type: "png", data: hex(c.clip.data), ...(c.clip.privacy ? { privacy: c.clip.privacy } : {}) }, paste: c.paste });
+  // (bits 1..2 of the flags: the clip's mark, 1 concealed, 2 transient, 3 auto)
+  for (const payload of ["", "0001", "000141", "010141", "0301c3a9", "0002ff", "000300", "0001ff", "0001efbbbf41", "01020000", "020141", "050141", "0602ff", "070141", "ff0141"]) {
     await same("parseClip", { payload }, () => clipJson(parseClip(bytesOf(payload))));
   }
   const big = "00" + "01" + "41".repeat(1024 * 1024 + 1);
@@ -605,6 +612,11 @@ test("a view's frames, its ask and every frame a client sends, checked as screen
     { t: "text", text: "hi" }, { t: "text", text: "" }, { t: "text", text: "x".repeat(4097) }, { t: "pose", name: "book" }, { t: "pose", name: "flat" }, { t: "device", name: "rotate" },
     { t: "device", name: "shake" }, { t: "button", page: 12, usage: 64, down: true }, { t: "button", page: 0, usage: 64, down: true }, { t: "button", page: 12, usage: 65536, down: false },
     { t: "button", page: 12, usage: 64, down: 1 }, { t: "other" },
+    { t: "pointer", kind: "move", x: 0.5, y: 0.5, dx: 3.5, dy: -20_000, relative: true }, { t: "pointer", kind: "move", x: 0.5, y: 0.5, dx: 3, dy: 4 }, { t: "pointer", kind: "move", x: 0.5, y: 0.5, dx: 3 },
+    { t: "pointer", kind: "down", x: 0.5, y: 0.5, dx: 3, dy: 4, relative: true }, { t: "pointer", kind: "up", x: 0.5, y: 0.5, relative: true }, { t: "pointer", kind: "up", x: 0.5, y: 0.5, relative: 1 }, { t: "pointer", kind: "move", x: 0, y: 0, dx: "3", dy: 4, relative: true }, { t: "pointer", kind: "move", x: 0, y: 0, dx: 1, dy: 2, relative: 1 },
+    { t: "gamepad", index: 0, buttons: 5, lx: 0.5, ly: -2, rx: 0, ry: 0, lt: 1.5, rt: -1 }, { t: "gamepad", index: 3, connected: true, buttons: 0x3ffff, lx: 0, ly: 0, rx: 0.25, ry: -0.25, lt: 0, rt: 0.5 },
+    { t: "gamepad", index: 4, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }, { t: "gamepad", index: 1.5, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }, { t: "gamepad", index: 2, connected: false },
+    { t: "gamepad", index: 2, buttons: 1.5, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }, { t: "gamepad", index: 2, buttons: 1, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0 }, { t: "gamepad", index: 2, buttons: -1, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 },
   ];
   for (const v of inputs) {
     await same("parseScale", { v }, () => parseScale(v));
@@ -642,6 +654,8 @@ test("a view's frames, its ask and every frame a client sends, checked as screen
     { codecs: ["h264"], binaryCursor: true, customCursor: true }, { codecs: ["h264"], customCursor: true, peek: true }, { codecs: ["h264"], customCursor: 1 }, { codecs: ["h264"], customCursor: false },
     { codecs: ["h264"], datagrams: 77 }, { codecs: ["h264"], datagrams: 4294967295 }, { codecs: ["h264"], datagrams: 77, peek: true }, { codecs: ["h264"], datagrams: 0 },
     { codecs: ["h264"], datagrams: 1.5 }, { codecs: ["h264"], datagrams: 4294967296 }, { codecs: ["h264"], datagrams: "77" },
+    { codecs: ["h264"], privateClip: true }, { codecs: ["h264"], privateClip: true, peek: true }, { codecs: ["h264"], privateClip: 1 },
+    { codecs: ["h264"], chroma444: true, quality: "original" }, { codecs: ["h264"], chroma444: true, quality: "hd" }, { codecs: ["h264"], chroma444: true }, { codecs: ["h264"], chroma444: true, quality: "original", peek: true },
   ];
   for (const screen of screens) await same("asked", { screen }, () => asked(screen));
   for (const kind of [16, 19, 20]) await same("limitIn", { kind }, () => limitIn(kind));
@@ -1220,7 +1234,7 @@ class ScreenWorld {
         a?.(null);
       },
       ...(v.setClipboard ? { setClipboard: async (clip: Json, paste: boolean) => void w.calls.push(["setClipboard", clip.type === "text" ? clip : { type: "png", data: hex(clip.data) }, paste]) } : {}),
-      ...(v.watchClipboard ? { watchClipboard: (f: (c: Json) => void) => (w.listeners.set("clip", (c) => f(c.type === "png" ? { type: "png", data: new Uint8Array(bytesOf(c.data)) } : c)), () => (w.calls.push(["un:watchClipboard"]), w.listeners.delete("clip"))) } : {}),
+      ...(v.watchClipboard ? { watchClipboard: (f: (c: Json) => void) => (w.listeners.set("clip", (c) => f(c.type === "png" ? { type: "png", data: new Uint8Array(bytesOf(c.data)), ...(c.privacy ? { privacy: c.privacy } : {}) } : c)), () => (w.calls.push(["un:watchClipboard"]), w.listeners.delete("clip"))) } : {}),
       ...watch("watchCursor"),
       ...(v.cursorImages ? { cursorImage: (shape: string) => (typeof v.cursorImages[shape] === "string" ? new Uint8Array(bytesOf(v.cursorImages[shape])) : undefined) } : {}),
       ...watch("watchTurn"), ...watch("watchWindows"), ...watch("watchLogin"), ...watch("watchPasskey"),
@@ -1229,6 +1243,7 @@ class ScreenWorld {
       ...(v.fill ? { fill: async (f: Json) => void w.calls.push(["fill", f]) } : {}),
       ...(v.passkey ? { passkey: async (a: Json) => void w.calls.push(["passkey", a]) } : {}),
       ...(v.watchChild ? { watchChild: (f: (s: string) => void) => (w.listeners.set("watchChild", (s) => f(s)), () => (w.calls.push(["un:watchChild"]), w.listeners.delete("watchChild"))) } : {}),
+      ...watch("watchPointerLock"),
     };
     return {
       id: s.id, kind: s.kind ?? "browser",
@@ -1453,6 +1468,34 @@ test("a screen's view driven step by step: frames paced by acknowledgements, its
     { op: "clip", clip: { type: "text", text: "after" } }, vframe(6_000), { op: "advance", ms: 2_000 }, { op: "clientEnd" },
   ];
   await bothScreens(conf, steps, "driven");
+});
+
+test("a screen's view whose app holds the pointer: relative moves, controllers let go of, marked copies both ways", { skip }, async () => {
+  for (const privateClip of [true, false]) {
+    const conf = {
+      head: viewHead({ screen: { codecs: ["h264"], control: true, privateClip, chroma444: true, quality: "original" } }),
+      viewer: member, source: browserSource(), view: fullView({ watchPointerLock: true }), drive: { control: true },
+    };
+    const steps: Json[] = [
+      vframe(1_000, { key: true, config: { codec: "h264", width: 1920, height: 1080, description: "0142" } }),
+      { op: "listener", name: "watchPointerLock", value: true },
+      inputOf({ t: "pointer", kind: "move", x: 0.5, y: 0.5, buttons: 0, dx: 3, dy: -2, relative: true }),
+      inputOf({ t: "pointer", kind: "move", x: 0.5, y: 0.5, buttons: 0, dx: 1.5, dy: 0, relative: true }),
+      inputOf({ t: "pointer", kind: "move", x: 0.6, y: 0.5, buttons: 0, dx: 4, dy: 4 }),
+      inputOf({ t: "pointer", kind: "down", x: 0, y: 0, buttons: 1, relative: true }), inputOf({ t: "pointer", kind: "up", x: 0, y: 0, buttons: 0, relative: true }),
+      inputOf({ t: "gamepad", index: 1, buttons: 1, lx: 0.5, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }),
+      inputOf({ t: "gamepad", index: 0, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0.2, rt: 0 }),
+      inputOf({ t: "gamepad", index: 1, connected: false }),
+      inputOf({ t: "gamepad", index: 3, buttons: 2, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }),
+      clientFrame(19, Buffer.from([1 | (1 << 1), 1, 0x70, 0x77])), clientFrame(19, Buffer.from([2 << 1, 2, 0x89])), clientFrame(19, Buffer.from([3 << 1, 1, 0x61])),
+      { op: "clip", clip: { type: "text", text: "secret", privacy: "concealed" } }, { op: "clip", clip: { type: "text", text: "plain" } },
+      { op: "clip", clip: { type: "png", data: "89", privacy: "transient" } }, { op: "clip", clip: { type: "text", text: "made", privacy: "auto" } },
+      { op: "listener", name: "watchPointerLock", value: false }, { op: "listener", name: "watchPointerLock", value: true },
+      { op: "watchOnly", by: "Bob" }, { op: "listener", name: "watchPointerLock", value: false },
+      inputOf({ t: "gamepad", index: 2, buttons: 1, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }), { op: "advance", ms: 100 }, { op: "clientEnd" },
+    ];
+    await bothScreens(conf, steps, `held pointer (privateClip ${privateClip})`);
+  }
 });
 
 test("a screen's view ending every way it ends", { skip }, async () => {

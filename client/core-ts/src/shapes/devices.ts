@@ -410,6 +410,7 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["width", opt("u32")],
     ["height", opt("u32")],
     ["cursor", opt("ScreenCursor")],
+    ["pointerLock", opt("bool"), { doc: "While driving it: an app on the screen holds the pointer (a game, a 3D view, a page's Pointer Lock): the page\nsends moves with `dx`, `dy` and `relative: true` and keeps its own pointer hidden. None from a station before it." }],
     ["access", opt("ScreenAccess"), { doc: "What the station lacks for it, when it says (with `denied`, or while it is seen but cannot be driven)." }],
     ["clipboard", vec("String"), { default: true, doc: "While driving it: the clipboard types it carries both ways (`text`, `png`): a paste goes with\n`screen.clipboard`, a copy made on it comes as the call's `{clipboard}` value. None while only looking." }],
     ["drop", opt("ScreenDrop"), { doc: "While driving it: where a file dropped into the view goes (none while only looking, or from a station before files)." }],

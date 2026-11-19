@@ -185,7 +185,7 @@ pub fn AndroidInput::new() -> AndroidInput {
 ///|
 pub fn AndroidInput::messages(self : AndroidInput, e : ScreenInput, size : (Double, Double)) -> Array[Bytes] {
   match e {
-    Pointer(kind~, x~, y~, buttons~) => {
+    Pointer(kind~, x~, y~, buttons~, ..) => {
       let left = (buttons & 1) == 1
       if !self.finger {
         if kind != "down" || !left {
@@ -211,7 +211,7 @@ pub fn AndroidInput::messages(self : AndroidInput, e : ScreenInput, size : (Doub
       } else {
         []
       }
-    Pose(_) | Button(..) => []
+    Pose(_) | Button(..) | Gamepad(_) => []
   }
 }
 

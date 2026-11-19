@@ -11,6 +11,7 @@ Narrower rules:
 - `station/src/ops/AGENTS.md`: storage manifest, logs, background yielding, bounded walks, self-memory, stdin backpressure
 - `station/src/move/AGENTS.md`, `station/src/replica/AGENTS.md`: migration, chat handovers, backups, retirement (off)
 - `station/mb/src/station_main/AGENTS.md`, `station/docker/AGENTS.md`: MoonBit station, Docker
+- `station/src/screens/AGENTS.md`: clipboard privacy marks, pointer lock, gamepads
 
 ## Its shape
 

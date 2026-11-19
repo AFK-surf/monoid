@@ -43,6 +43,11 @@ pub let kind_cursor_image : Int = 8
 pub let cursor_images_most : Int = 64
 
 ///|
+/// A copy an app marked private (a password manager's), its mark first (`private_clip_payload`), to a client that asked
+/// `privateClip`; to one before it, a `clipboard` frame.
+pub let kind_private_clipboard : Int = 9
+
+///|
 pub let kind_input : Int = 16
 
 ///|
@@ -224,6 +229,33 @@ pub fn clip_payload(clip : Clip, flags? : Int? = None) -> Bytes {
   b.write_byte(kind.to_byte())
   b.write_bytes(body)
   b.to_bytes()
+}
+
+///|
+/// A clip's mark as its code (screens/source.ts `PRIVACY_CODE`): 0 none, 1 concealed, 2 transient, 3 auto.
+pub fn privacy_name(code : Int) -> String? {
+  match code {
+    1 => Some("concealed")
+    2 => Some("transient")
+    3 => Some("auto")
+    _ => None
+  }
+}
+
+///|
+/// A `privateClipboard` frame's payload: the clip's mark (1..3), its type byte, its bytes.
+pub fn private_clip_payload(clip : Clip, privacy : Int) -> Bytes {
+  clip_payload(clip, flags=Some(privacy))
+}
+
+///|
+/// The mark a client's `clipboard` frame gives its clip (its flags' bits 1..2): 0 none.
+pub fn parse_clip_privacy(payload : Bytes) -> Int {
+  if payload.length() < 1 {
+    0
+  } else {
+    (payload[0].to_int() >> 1) & 3
+  }
 }
 
 ///|
@@ -521,7 +553,68 @@ pub fn parse_input(v : Json) -> Json? {
         Some(b) => masked(b, 7)
         None => 0.0
       }
-      Some(jobj([("t", jstr("pointer")), ("kind", jstr(kind)), ("x", jnum(unit(x))), ("y", jnum(unit(y))), ("buttons", jnum(buttons))]))
+      let out = [("t", jstr("pointer")), ("kind", jstr(kind)), ("x", jnum(unit(x))), ("y", jnum(unit(y))), ("buttons", jnum(buttons))]
+      // How far the person's pointer moved (a move's alone), posted as only that where it says `relative`; a press
+      // with it is where the pointer is.
+      let relative = m.get("relative") is Some(True)
+      if kind != "move" {
+        if relative {
+          out.push(("relative", Json::boolean(true)))
+        }
+      } else if finite(m.get("dx")) is Some(dx) && finite(m.get("dy")) is Some(dy) {
+        let d = (n : Double) => dmax(-10_000.0, dmin(10_000.0, n))
+        out.push(("dx", jnum(d(dx))))
+        out.push(("dy", jnum(d(dy))))
+        if relative {
+          out.push(("relative", Json::boolean(true)))
+        }
+      }
+      Some(jobj(out))
+    }
+    "gamepad" => {
+      guard int_field(m, "index") is Some(index) && index >= 0.0 && index < 4.0 else { return None }
+      let zero = jnum(0.0)
+      if m.get("connected") is Some(False) {
+        return Some(
+          jobj([
+            ("t", jstr("gamepad")),
+            ("index", jnum(index)),
+            ("connected", Json::boolean(false)),
+            ("buttons", zero),
+            ("lx", zero),
+            ("ly", zero),
+            ("rx", zero),
+            ("ry", zero),
+            ("lt", zero),
+            ("rt", zero),
+          ]),
+        )
+      }
+      guard int_field(m, "buttons") is Some(buttons) &&
+        finite(m.get("lx")) is Some(lx) &&
+        finite(m.get("ly")) is Some(ly) &&
+        finite(m.get("rx")) is Some(rx) &&
+        finite(m.get("ry")) is Some(ry) &&
+        finite(m.get("lt")) is Some(lt) &&
+        finite(m.get("rt")) is Some(rt) else {
+        return None
+      }
+      let axis = (n : Double) => dmax(-1.0, dmin(1.0, n))
+      let trigger = (n : Double) => dmax(0.0, dmin(1.0, n))
+      Some(
+        jobj([
+          ("t", jstr("gamepad")),
+          ("index", jnum(index)),
+          ("connected", Json::boolean(true)),
+          ("buttons", jnum(masked(buttons, 0x1ffff))),
+          ("lx", jnum(axis(lx))),
+          ("ly", jnum(axis(ly))),
+          ("rx", jnum(axis(rx))),
+          ("ry", jnum(axis(ry))),
+          ("lt", jnum(trigger(lt))),
+          ("rt", jnum(trigger(rt))),
+        ]),
+      )
     }
     "wheel" => {
       guard finite(m.get("x")) is Some(x) &&
@@ -733,6 +826,13 @@ pub fn asked(screen : Json) -> Json {
     Some(Number(t, ..)) if !peek && t >= 1.0 && t <= 4294967295.0 && js_round(t) == t =>
       out.push(("datagrams", jnum(t)))
     _ => ()
+  }
+  // (it reads `privateClipboard` frames; it wants text sharp, with 原画 alone)
+  if m.get("privateClip") is Some(True) && !peek {
+    out.push(("privateClip", Json::boolean(true)))
+  }
+  if m.get("chroma444") is Some(True) && quality == Some("original") {
+    out.push(("chroma444", Json::boolean(true)))
   }
   jobj(out)
 }

@@ -87,7 +87,7 @@ fi
 # Copy all files produced by the station build, including workers in new directories. Naming individual workers here
 # left workspace activity, chat export and sign-in recovery without their programs in released stations.
 cp -R "$root/station/dist/." "$app/station/"
-case "$platform" in linux-*) ;; *) rm -f "$app/station/linux-portal.py" "$app/station/linux-x11.py" ;; esac
+case "$platform" in linux-*) ;; *) rm -f "$app/station/linux-portal.py" "$app/station/linux-x11.py" "$app/station/linux-gamepad.py" ;; esac
 # The bundle is an ES module: said, so Node neither guesses nor takes the type of a package.json above the release
 # (the Electron app had one around the station it carried: every command warned).
 printf '{"type":"module"}\n' > "$app/station/package.json"

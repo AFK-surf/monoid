@@ -3,7 +3,8 @@
 // to a view that asked `binaryCursor`; `cursorImage`, the picture of a pointer of an app's own, before the first that
 // names it "custom:<id>", to one that asked `customCursor`); the client `input`, `ack`, `keyframe` and
 // `look` (the part of the screen it shows, zoomed in); the screen's clipboard goes both ways (`clipboard`) while the
-// view drives it.
+// view drives it, a copy an app marked private (a password manager's) as `privateClipboard`, its mark first, to a view
+// that asked `privateClip`.
 // Read as the stream's pieces come, however they are cut: each frame's bytes are copied once, into an array of its own
 // (what goes to the UI, transferred on the web).
 import { fromBase64, fromUtf8, isObject, utf8 } from "./util.ts";
@@ -16,6 +17,7 @@ export const AUDIO_CONFIG = 5;
 export const AUDIO = 6;
 export const CURSOR = 7;
 export const CURSOR_IMAGE = 8;
+export const PRIVATE_CLIPBOARD = 9;
 export const INPUT = 16;
 export const ACK = 17;
 export const KEYFRAME = 18;
@@ -35,6 +37,13 @@ const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 export type ClipType = "text" | "png";
 const CLIP_BYTE: Record<ClipType, number> = { text: 1, png: 2 };
 const CLIP_OF_BYTE: Record<number, ClipType> = { 1: "text", 2: "png" };
+/// What the app that copied a clip marked it (station/src/screens/source.ts `ClipPrivacy`), and its code on the wire.
+export type ClipPrivacy = "concealed" | "transient" | "auto";
+const PRIVACY_CODE: Record<ClipPrivacy, number> = { concealed: 1, transient: 2, auto: 3 };
+const PRIVACY_OF_CODE: Record<number, ClipPrivacy> = { 1: "concealed", 2: "transient", 3: "auto" };
+export function privacyOf(v: unknown): ClipPrivacy | null {
+  return v === "concealed" || v === "transient" || v === "auto" ? v : null;
+}
 /// The most a clipboard carries each way (station/src/screens/source.ts): text's UTF-8 bytes, a picture's.
 export const CLIP_TEXT_MAX = 1024 * 1024;
 export const CLIP_PNG_MAX = 8 * 1024 * 1024;
@@ -59,7 +68,7 @@ export type StationFrame =
   | { audioConfig: { codec: "pcm_s16le" | "opus"; sampleRate: 48000; channels: 2 } }
   | { audio: { ts: number; data: Uint8Array } }
   /// The screen's clipboard, changed: its type and its bytes (text in UTF-8).
-  | { clipboard: { type: ClipType; data: Uint8Array } }
+  | { clipboard: { type: ClipType; data: Uint8Array; privacy?: ClipPrivacy } }
   /// The pointer moved (0..1 of the screen, to a ten-thousandth, and its shape where said), or none shown (null).
   | { cursor: { x: number; y: number; shape?: string } | null }
   /// The picture of a pointer of an app's own, by the shape that names it ("custom:<id>"): its size and hot spot in
@@ -153,6 +162,16 @@ export class FrameReader {
         }
         this.#skip(1);
         return { clipboard: { type, data: this.#take(length - 1) } };
+      }
+      case PRIVATE_CLIPBOARD: {
+        const privacy = length > 1 ? PRIVACY_OF_CODE[this.#peek(0)] : undefined;
+        const type = length > 1 ? CLIP_OF_BYTE[this.#peek(1)] : undefined;
+        if (privacy === undefined || type === undefined) {
+          this.#skip(length);
+          return { other: kind };
+        }
+        this.#skip(2);
+        return { clipboard: { type, data: this.#take(length - 2), privacy } };
       }
       default:
         this.#skip(length);
@@ -258,10 +277,11 @@ export function lookFrame(region: Region | null, maxWidth: number, maxHeight: nu
   return frame(LOOK, utf8(JSON.stringify(region ? { region, maxWidth, maxHeight } : { region: null })));
 }
 
-/// The screen's clipboard set (and pasted, with `paste`): flags, type, the bytes.
-export function clipboardFrame(type: ClipType, data: Uint8Array, paste: boolean): Uint8Array {
+/// The screen's clipboard set (and pasted, with `paste`): flags (bit 0 paste, bits 1..2 its mark: a station from before
+/// reads bit 0 alone), type, the bytes.
+export function clipboardFrame(type: ClipType, data: Uint8Array, paste: boolean, privacy: ClipPrivacy | null = null): Uint8Array {
   const payload = new Uint8Array(2 + data.length);
-  payload[0] = paste ? 1 : 0;
+  payload[0] = (paste ? 1 : 0) | (privacy ? PRIVACY_CODE[privacy] << 1 : 0);
   payload[1] = CLIP_BYTE[type];
   payload.set(data, 2);
   return frame(SET_CLIPBOARD, payload);
@@ -310,15 +330,16 @@ export function cursorImageFrame(image: { w: number; h: number; hx: number; hy: 
   return frame(CURSOR_IMAGE, payload);
 }
 
-export function copiedFrame(type: ClipType, data: Uint8Array): Uint8Array {
-  const payload = new Uint8Array(1 + data.length);
-  payload[0] = CLIP_BYTE[type];
-  payload.set(data, 1);
-  return frame(CLIPBOARD, payload);
+export function copiedFrame(type: ClipType, data: Uint8Array, privacy: ClipPrivacy | null = null): Uint8Array {
+  const head = privacy ? [PRIVACY_CODE[privacy], CLIP_BYTE[type]] : [CLIP_BYTE[type]];
+  const payload = new Uint8Array(head.length + data.length);
+  payload.set(head);
+  payload.set(data, head.length);
+  return frame(privacy ? PRIVATE_CLIPBOARD : CLIPBOARD, payload);
 }
 
 /// What the client sends, read (the test station's side).
-export type ClientFrame = { input: J } | { ack: number } | { keyframe: true } | { sound: boolean } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array } } | { other: number };
+export type ClientFrame = { input: J } | { ack: number } | { keyframe: true } | { sound: boolean } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array; privacy?: ClipPrivacy } } | { other: number };
 
 export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
   const frames: ClientFrame[] = [];
@@ -347,7 +368,7 @@ export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
         frames.push({ look: json(payload) });
         break;
       case SET_CLIPBOARD:
-        frames.push({ clipboard: { type: CLIP_OF_BYTE[payload[1] ?? 0] ?? null, paste: ((payload[0] ?? 0) & 1) === 1, data: payload.slice(2) } });
+        frames.push({ clipboard: { type: CLIP_OF_BYTE[payload[1] ?? 0] ?? null, paste: ((payload[0] ?? 0) & 1) === 1, data: payload.slice(2), ...(PRIVACY_OF_CODE[((payload[0] ?? 0) >> 1) & 3] ? { privacy: PRIVACY_OF_CODE[((payload[0] ?? 0) >> 1) & 3]! } : {}) } });
         break;
       default:
         frames.push({ other: buf[at]! });

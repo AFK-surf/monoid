@@ -78,6 +78,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   var transfer: VTPixelTransferSession?
   var pool: CVPixelBufferPool?
   var poolSize = (0, 0)
+  var poolFormat: OSType = 0
   /// The most frames a second (the view's 帧率, `fps`: 1…120; none asked, 60): what ScreenCaptureKit captures at most
   /// (`minimumFrameInterval`); the encoder's rate control expects no more than 60 of them (`ExpectedFrameRate`: fewer
   /// than 90 or 120 are often encoded, and each picture's bits would be sized for that many). A display that draws
@@ -95,6 +96,10 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   /// view, a client without either).
   let jpeg: Bool
   let hevc: Bool
+  /// Text sharp to the pixel asked (`chroma: "444"`, an H.265 view's): captured whole-chroma (BGRA) and encoded HEVC
+  /// 4:4:4 where this Mac's encoder takes it (`full`), else 4:2:0 as any (the encoder's name says which).
+  let chroma444: Bool
+  var full = false
   /// The pictures in Display P3 (`gamut: "p3"`, a video's only), else in sRGB: never the display's own space (a
   /// wide-gamut display's colours, shown as sRGB, come out washed out).
   let p3: Bool
@@ -119,6 +124,10 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   let queue = DispatchQueue(label: "fail.still.helper.screen", qos: .userInteractive)
   let input: ScreenInput
   lazy var clipboard = Clipboard(channel: channel, input: input)
+  /// Whether an app holds the pointer, looked at while a video's view lasts (PointerLock.swift).
+  let pointerLock: PointerLockWatch
+  /// It is of a display of the helper's own (VirtualDisplay.swift), counted among its views.
+  var onDisplayOfItsOwn = false
   var stream: SCStream?
   var configuration: SCStreamConfiguration?
   /// The made-up pictures' size (`synthetic`), as the bounds have it.
@@ -183,11 +192,14 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     opus = (options["audioCodec"] as? String) == "opus"
     jpeg = (options["codec"] as? String) == "jpeg"
     hevc = (options["codec"] as? String) == "h265"
+    chroma444 = hevc && (options["chroma"] as? String) == "444"
     p3 = !jpeg && (options["gamut"] as? String) == "p3"
     windowID = (options["window"] as? NSNumber).map { CGWindowID($0.uint32Value) }
     input = ScreenInput(channel: channel, displayID: displayID)
+    pointerLock = PointerLockWatch(channel: channel)
     super.init()
     input.area = { [weak self] in self?.area() ?? CGDisplayBounds(CGMainDisplayID()) }
+    input.moved = { [weak self] in self?.pointerLock.moved() }
   }
 
   /// The window shown alone and its frame as last looked at (none: the whole display).
@@ -313,13 +325,15 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     if transfer == nil {
       VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &transfer)
       // NV12 made (a made-up picture's) with the BT.709 matrix the encoder tags; the colours themselves left as they are.
-      if let transfer, !jpeg {
+      // (BGRA for a JPEG, and for HEVC 4:4:4, which the encoder takes as it is)
+      if let transfer, !jpeg, !full {
         VTSessionSetProperty(transfer, key: kVTPixelTransferPropertyKey_DestinationYCbCrMatrix, value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
       }
     }
-    if pool == nil || poolSize != size {
+    let format = jpeg || full ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    if pool == nil || poolSize != size || poolFormat != format {
       let attributes: [CFString: Any] = [
-        kCVPixelBufferPixelFormatTypeKey: jpeg ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        kCVPixelBufferPixelFormatTypeKey: format,
         kCVPixelBufferWidthKey: size.0,
         kCVPixelBufferHeightKey: size.1,
         kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any],
@@ -327,6 +341,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       pool = nil
       CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
       poolSize = size
+      poolFormat = format
     }
     guard let transfer, let pool else { return nil }
     var made: CVPixelBuffer?
@@ -391,6 +406,10 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   func start() {
     let display = Status.display(displayID)
+    if VirtualDisplays.shared.owns(displayID) {
+      VirtualDisplays.shared.opened()
+      onDisplayOfItsOwn = true
+    }
     if let mode = synthetic {
       let (width, height) = fitted(display["width"] as! Int, display["height"] as! Int)
       startSynthetic(width, height, moving: mode != "still")
@@ -413,7 +432,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
         let configuration = SCStreamConfiguration()
         configuration.width = width
         configuration.height = height
-        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        // (whole-chroma for 4:4:4: ScreenCaptureKit makes no 4:4:4 YCbCr, the encoder takes BGRA as it is)
+        configuration.pixelFormat = chroma444 ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         // The space the stream says it is in (`p3`), not the display's own.
         configuration.colorSpaceName = p3 ? CGColorSpace.displayP3 : CGColorSpace.sRGB
         configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
@@ -448,7 +468,11 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
           self.configuration = configuration
           self.sound = sound
           self.opened(width, height)
-          if !self.jpeg { self.followCursor() }
+          if !self.jpeg {
+            self.followCursor()
+            let watch = self.pointerLock
+            DispatchQueue.main.async { watch.begin() }
+          }
           self.followWindows()
         }
         followDisplay()
@@ -491,6 +515,15 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       following = false
     }
     sound?.end()
+    pointerLock.end()
+    // (the last view of a display of the helper's own takes it away)
+    if onDisplayOfItsOwn {
+      onDisplayOfItsOwn = false
+      VirtualDisplays.shared.ended()
+    }
+    // (what its controllers hold let go of, after the input before it)
+    let input = self.input
+    input.queue.async { input.pads.release() }
     queue.sync {
       ended = true
       timer?.cancel()
@@ -611,9 +644,13 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   // MARK: encoding
 
-  /// The profiles a session of `kind` asks for, best first (the first the encoder takes is kept).
-  static func profiles(_ kind: String) -> [CFString] {
-    if kind == "h265" { return [kVTProfileLevel_HEVC_Main_AutoLevel] }
+  /// HEVC Main 4:4:4 (Range Extensions, 8 bits): VideoToolbox names no constant of it in its headers, the encoder of an
+  /// Apple silicon Mac takes it by this name where it encodes it (one that does not refuses it: Main then).
+  static let hevcMain444 = "HEVC_Main444_AutoLevel" as CFString
+
+  /// The profiles a session of `kind` asks for, best first (the first the encoder takes is kept); `full`: 4:4:4 first.
+  static func profiles(_ kind: String, full: Bool = false) -> [CFString] {
+    if kind == "h265" { return (full ? [hevcMain444] : []) + [kVTProfileLevel_HEVC_Main_AutoLevel] }
     return [
       kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel,
       kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel, kVTProfileLevel_H264_Baseline_AutoLevel,
@@ -646,7 +683,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       // reordered (no B-frames, above); Constrained High where the low-latency encoder takes only that; then Main, then
       // Baseline (constrained where the system has it). H.265: Main.
       var profile = "default"
-      let profiles = ScreenView.profiles(kind)
+      let profiles = ScreenView.profiles(kind, full: chroma444)
       for p in profiles
       where set(kVTCompressionPropertyKey_ProfileLevel, p) == noErr {
         profile = p as String
@@ -664,7 +701,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       session = made
       size = (width, height)
       codec = kind
-      encoder = "\(name), \(profile), \(rate) bps"
+      full = profile == ScreenView.hevcMain444 as String
+      encoder = "\(name), \(profile)\(full ? ", 4:4:4" : ""), \(rate) bps"
       return true
     }
     return false

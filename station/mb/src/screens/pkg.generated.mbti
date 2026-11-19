@@ -3,6 +3,7 @@ package "station/screens"
 
 import {
   "mbui/effect",
+  "moonbitlang/core/debug",
   "station/host",
   "station/jsjson",
 }
@@ -199,6 +200,8 @@ pub fn meta_of(Int32) -> Int32
 pub fn nals_of(BytesView) -> Array[BytesView]
 
 pub fn open_app(Io) -> async (String, Array[(String, String)]) -> Unit
+
+pub fn pad_released(Int32) -> Pad
 
 pub fn page_size(Bytes) -> (Double, Double)?
 
@@ -683,11 +686,13 @@ pub async fn HelperView::next_audio(Self) -> AudioFrame?
 pub fn HelperView::rate(Self, Double) -> Unit
 pub fn HelperView::regions(Self) -> Bool
 pub fn HelperView::reveal(Self, String) -> Unit
-pub fn HelperView::set_clipboard(Self, Clip, Bool) -> Unit
+pub fn HelperView::set_clipboard(Self, Clip, Bool, privacy? : Int32) -> Unit
 pub fn HelperView::video(Self) -> ScreenVideo
 pub fn HelperView::view(Self) -> ScreenView
 pub fn HelperView::watch_clipboard(Self, (Clip) -> Unit) -> () -> Unit
+pub fn HelperView::watch_clipboard_marked(Self, (Clip, Int32) -> Unit) -> () -> Unit
 pub fn HelperView::watch_cursor(Self, (ScreenCursor) -> Unit) -> () -> Unit
+pub fn HelperView::watch_pointer_lock(Self, (Bool) -> Unit) -> () -> Unit
 pub fn HelperView::watch_turn(Self, (Int32) -> Unit) -> () -> Unit
 pub fn HelperView::watch_windows(Self, (ScreenWindows) -> Unit) -> () -> Unit
 pub fn HelperView::window(Self, Double?) -> Unit
@@ -844,6 +849,20 @@ pub(all) struct Os {
   code_dir : String
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) struct Pad {
+  index : Int32
+  connected : Bool
+  buttons : Int32
+  lx : Double
+  ly : Double
+  rx : Double
+  ry : Double
+  lt : Double
+  rt : Double
+}
+pub fn Pad::to_j(Self, op? : String?) -> @jsjson.JValue
+
 #derive(Eq)
 pub(all) struct Panel {
   width : Double
@@ -878,6 +897,13 @@ pub(all) struct Pixels {
   width : Int32
   height : Int32
   data : FixedArray[Byte]
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct PointerDelta {
+  dx : Double
+  dy : Double
+  relative : Bool
 }
 
 pub(all) struct PortalOptions {
@@ -1022,13 +1048,14 @@ pub fn ScreenHub::when_stopping(Self, () -> Unit) -> () -> Unit
 pub fn ScreenHub::yield_to_agent(Self, String, String) -> Int32
 
 pub(all) enum ScreenInput {
-  Pointer(kind~ : String, x~ : Double, y~ : Double, buttons~ : Int32)
+  Pointer(kind~ : String, x~ : Double, y~ : Double, buttons~ : Int32, delta~ : PointerDelta?)
   Wheel(x~ : Double, y~ : Double, dx~ : Double, dy~ : Double)
   Key(kind~ : String, key~ : String, code~ : String, mods~ : Int32)
   Text(String)
   Pose(String)
   Device(String)
   Button(page~ : Int32, usage~ : Int32, down~ : Bool)
+  Gamepad(Pad)
 }
 pub fn ScreenInput::to_j(Self) -> @jsjson.JValue
 
@@ -1127,6 +1154,9 @@ pub(all) struct ScreenView {
   watch_passkey : (((PasskeyAsk?) -> Unit) -> (() -> Unit))?
   passkey : (async (PasskeyAnswer) -> Unit)?
   watch_child : (((String) -> Unit) -> (() -> Unit))?
+  set_clipboard_marked : (async (Clip, Bool, Int32) -> Unit)?
+  watch_clipboard_marked : (((Clip, Int32) -> Unit) -> (() -> Unit))?
+  watch_pointer_lock : (((Bool) -> Unit) -> (() -> Unit))?
 }
 pub fn ScreenView::bare(async () -> Frame?, () -> Unit, async (ScreenInput) -> Unit, () -> Unit) -> Self
 
@@ -1313,6 +1343,7 @@ pub(all) struct ViewOptions {
   opus : Bool
   gamut : String?
   passkeys : Bool?
+  chroma : String?
 }
 pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?, passkeys? : Bool?) -> Self
 

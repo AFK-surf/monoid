@@ -145,6 +145,8 @@ pub let kind_keyframe : Int32
 
 pub let kind_look : Int32
 
+pub let kind_private_clipboard : Int32
+
 pub let kind_set_clipboard : Int32
 
 pub let kind_sound : Int32
@@ -229,6 +231,8 @@ pub fn own_rate(Double, Double) -> Double
 
 pub fn parse_clip(Bytes) -> (Clip, Bool)?
 
+pub fn parse_clip_privacy(Bytes) -> Int32
+
 pub fn parse_fill(@json.Json) -> @json.Json?
 
 pub fn parse_input(@json.Json) -> @json.Json?
@@ -254,6 +258,10 @@ pub let piece : Int32
 pub fn presence_refusal(ToolsDeps) -> String?
 
 pub async fn presence_tools(ToolsDeps, @json.Json?) -> @json.Json
+
+pub fn privacy_name(Int32) -> String?
+
+pub fn private_clip_payload(Clip, Int32) -> Bytes
 
 pub fn private_v4(String) -> Bool
 
@@ -698,6 +706,9 @@ pub(all) struct ScreenViewPort {
   watch_passkey : (((@json.Json) -> Unit) -> (() -> Unit))?
   passkey : (async (@json.Json) -> Unit)?
   watch_child : (((String) -> Unit) -> (() -> Unit))?
+  set_clipboard_marked : (async (Clip, Bool, Int32) -> Unit)?
+  watch_clipboard_marked : (((Clip, Int32) -> Unit) -> (() -> Unit))?
+  watch_pointer_lock : (((Bool) -> Unit) -> (() -> Unit))?
 }
 
 pub struct Served {

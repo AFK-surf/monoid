@@ -76,13 +76,29 @@ enum Resolution {
     return ["width": current.width, "height": current.height, "modeID": Int(current.id), "modes": sizes.map { ["width": $0.0, "height": $0.1] }]
   }
 
-  /// Sets `display` to `width`×`height` (one of its modes, `modeID` where given), then says it as `read` does.
-  static func set(_ display: CGDirectDisplayID, width: Int, height: Int, modeID: Int32? = nil) -> [String: Any] {
+  /// Sets `display` to `width`×`height` (one of its modes, `modeID` where given), then says it as `read` does. A size
+  /// none of its modes has (within VirtualDisplays' bounds) is a display of the helper's own that it mirrors
+  /// (VirtualDisplay.swift); one of its modes again (the station putting it back) takes that display away.
+  static func set(_ asked: CGDirectDisplayID, width: Int, height: Int, modeID: Int32? = nil) -> [String: Any] {
+    let own = VirtualDisplays.shared
+    if own.owns(asked) {
+      if let physical = own.physical, let had = modes(physical), modeID != nil || chosen(had.1.map(DisplayMode.init), now: DisplayMode(had.0), width: width, height: height) != nil {
+        own.remove()
+        return set(physical, width: width, height: height, modeID: modeID)
+      }
+      if VirtualDisplays.widths.contains(width), VirtualDisplays.heights.contains(height), let id = own.show(width: width, height: height, physical: own.physical) { return read(id) }
+      return ["error": "\(width)×\(height) is not a size of still.fail's display"]
+    }
+    // (a display gone since it was said: the main one)
+    let display = CGDisplayCopyDisplayMode(asked) == nil ? CGMainDisplayID() : asked
     guard let had = modes(display) else { return ["error": "macOS did not say the display's mode"] }
     let (now, all) = had
     let listed = all.map(DisplayMode.init)
     let current = DisplayMode(now)
     guard let want = chosen(listed, now: current, width: width, height: height, modeID: modeID), let at = listed.firstIndex(of: want) else {
+      if modeID == nil, VirtualDisplays.wanted(width: width, height: height, modes: offered(listed, now: current)), let id = own.show(width: width, height: height, physical: display) {
+        return read(id)
+      }
       return ["error": "\(width)×\(height) is not a mode of this display"]
     }
     if want.id != current.id {

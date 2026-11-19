@@ -1,0 +1,5 @@
+# Station screens: clipboard marks, pointer lock, controllers (for agents)
+
+- A clipboard mark (password managers' concealed, transient, auto: `source.ts` `ClipPrivacy`) rides in the client's flags bits 1..2 and goes to a client only as `privateClipboard` (9) when it asked `privateClip`. Never change `clipboard` (4)'s first byte: older readers take it as the type. Write the mark in the other machine's own format (nspasteboard.org types, Windows' registered formats) so its history and managers skip it.
+- Pointer lock (`watchPointerLock`) never follows from a hidden pointer alone (typing, video). It needs a second sign (a warp, a pointer held still while moves come, a clip or full screen), as `station/native/helper/Sources/StillfailHelper/PointerLock.swift` and `station/native/screen/src/pointer_lock.rs` check. Relative moves are never coalesced (`station/src/mesh/screens.ts` `#then`), and a press with `relative` goes where the pointer is, never to x, y.
+- Release every controller a view drove when the view switches to watch only or ends, including a browser tab's virtual ones (`station/src/browser/view.ts` `GAMEPAD_HOOK`), which outlive the view.

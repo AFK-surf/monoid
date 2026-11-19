@@ -27,7 +27,7 @@ import { ScreenRefused } from "./hub.ts";
 import { MacInput } from "./mac-input.ts";
 import { helperUi } from "./ui.ts";
 export type { HelperStatus } from "../helper/grants.ts";
-import { type AudioCodec, type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, CURSOR_IMAGES_MOST, CURSOR_SHAPE, OPUS_MAX, clipFits, codecFor, cursorImageShape, regionOf, resolutionOf, windowsOf } from "./source.ts";
+import { type AudioCodec, type AudioFrame, type Clip, type ClipType, PRIVACY_CODE, privacyOf, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, CURSOR_IMAGES_MOST, CURSOR_SHAPE, OPUS_MAX, clipFits, codecFor, cursorImageShape, regionOf, resolutionOf, windowsOf } from "./source.ts";
 
 export type DesktopOptions = {
   /// Whether this machine's display can be seen at all (platform.desktopScreen: the helper).
@@ -145,7 +145,7 @@ export class Desktop implements ScreenSource {
     // `audio` in its info, and none is pulled.
     const audio = options.audio === true && !options.peek;
     for (let attempt = 0; ; attempt++) {
-      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => (this.#views.delete(view), this.#putBack()), new MacInput(), "ScreenCaptureKit", audio);
+      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => (this.#views.delete(view), this.#putBack()), new MacInput(), "ScreenCaptureKit", audio);
       this.#views.add(view);
       try {
         await view.ready;
@@ -270,12 +270,14 @@ export class Desktop implements ScreenSource {
 type HelperError = Error & { code?: string };
 
 /// The helper's messages: a kind byte, the payload's length (4 bytes), the payload (native/helper's ScreenView.swift).
-/// To it: 1 next, 2 keyframe, 3 input, 4 clipboard (flags: bit 0 paste; type: 1 text, 2 PNG; the bytes), 5 watch the
+/// To it: 1 next, 2 keyframe, 3 input, 4 clipboard (flags: bit 0 paste, bits 1..2 the clip's mark, 1 concealed, 2
+/// transient, 3 auto, which a helper from before lets be; type: 1 text, 2 PNG; the bytes), 5 watch the
 /// clipboard (1 on, 0 off), 6 reveal (the path), 7 rate (bits a second, 4 bytes), 8 bounds (JSON {maxWidth, maxHeight,
 /// region?}: `region` a part of the display, 0..1 of it, framed alone; none, the whole); a helper from before 7 and 8
 /// lets them be, one from before regions frames the whole display (its info says `regions: true` where it frames parts);
 /// 9 audio (empty: the next 20 ms packet of system output, a view opened with `audio: true` whose info says `audio: true`).
-/// From it: 1 info, 2 config, 3 frame, 4 event, 5 clipboard (type, bytes), 6 cursor (JSON {x, y, shape}: a video's
+/// From it: 1 info, 2 config, 3 frame, 4 event (JSON: `{windows, window}`, `{pointerLock}` whether an app holds the
+/// pointer, else its log), 5 clipboard (type, bytes), 12 a clipboard marked private (its mark, type, bytes), 6 cursor (JSON {x, y, shape}: a video's
 /// pictures leave the pointer out), 7 region (JSON {region}: the part of the display the frames from the next on show,
 /// as it was framed; null the whole; said before the frame whose part is another than the last one's), 8 audio config
 /// (JSON {codec: "pcm_s16le" | "opus", sampleRate: 48000, channels: 2}, or {error}: no more audio; `opus` only to a
@@ -287,6 +289,7 @@ const CLIP_BYTE: Record<ClipType, number> = { text: 1, png: 2 };
 
 /// A clip as the helper's `clipboard` message has it: from the helper (`flags` none) or to it.
 export function helperClip(clip: Clip, flags?: number): Buffer {
+  if (flags !== undefined && clip.privacy !== undefined) flags |= PRIVACY_CODE[clip.privacy] << 1;
   const body = clip.type === "text" ? Buffer.from(clip.text, "utf8") : Buffer.from(clip.data);
   return Buffer.concat([Buffer.from(flags === undefined ? [CLIP_BYTE[clip.type]] : [flags, CLIP_BYTE[clip.type]]), body]);
 }
@@ -330,6 +333,9 @@ export class HelperView implements ScreenView {
   readonly #gone: () => void;
   /// Who hears the clipboard as it changes, while it is watched.
   #clipboard: ((clip: Clip) => void) | null = null;
+  /// Who hears whether an app holds the pointer, and the last it said (told at once to one who starts to hear it).
+  #pointerLock: ((locked: boolean) => void) | null = null;
+  #lastPointerLock = false;
   /// Who hears the pointer, and the last it said (told at once to one who starts to hear it).
   #cursor: ((cursor: ScreenCursor) => void) | null = null;
   #lastCursor: ScreenCursor | null = null;
@@ -452,6 +458,12 @@ export class HelperView implements ScreenView {
         try {
           said = JSON.parse(payload.toString());
         } catch {}
+        if (said !== null && typeof said === "object" && typeof said.pointerLock === "boolean") {
+          if (said.pointerLock === this.#lastPointerLock) return;
+          this.#lastPointerLock = said.pointerLock;
+          this.#pointerLock?.(said.pointerLock);
+          return;
+        }
         // The windows changed, or the one shown alone (asked, or it closed): told; anything else is the helper's log.
         if (said !== null && typeof said === "object" && (Array.isArray(said.windows) || said.window === null || typeof said.window === "number")) {
           const was = this.#windows ?? { windows: [], window: null };
@@ -499,6 +511,13 @@ export class HelperView implements ScreenView {
         const body = payload.subarray(1);
         const clip: Clip | null = payload[0] === 1 ? { type: "text", text: body.toString("utf8") } : payload[0] === 2 ? { type: "png", data: new Uint8Array(body) } : null;
         if (clip !== null && clipFits(clip)) this.#clipboard?.(clip);
+        return;
+      }
+      case 12: {
+        const privacy = privacyOf(payload[0] ?? 0);
+        const body = payload.subarray(2);
+        const clip: Clip | null = payload[1] === 1 ? { type: "text", text: body.toString("utf8") } : payload[1] === 2 ? { type: "png", data: new Uint8Array(body) } : null;
+        if (clip !== null && clipFits(clip)) this.#clipboard?.(privacy ? { ...clip, privacy } : clip);
         return;
       }
     }
@@ -569,6 +588,14 @@ export class HelperView implements ScreenView {
       if (this.#clipboard !== heard) return;
       this.#clipboard = null;
       this.#send(TO_HELPER.watch, Buffer.from([0]));
+    };
+  }
+
+  watchPointerLock(heard: (locked: boolean) => void): () => void {
+    this.#pointerLock = heard;
+    if (this.#lastPointerLock) heard(true);
+    return () => {
+      if (this.#pointerLock === heard) this.#pointerLock = null;
     };
   }
 

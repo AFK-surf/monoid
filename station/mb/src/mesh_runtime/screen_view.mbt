@@ -87,6 +87,11 @@ pub(all) struct ScreenViewPort {
   watch_passkey : (((Json) -> Unit) -> () -> Unit)?
   passkey : (async (Json) -> Unit)?
   watch_child : (((String) -> Unit) -> () -> Unit)?
+  /// The clipboard set and heard with its mark (0 none, 1 concealed, 2 transient, 3 auto), where the view carries marks.
+  set_clipboard_marked : (async (Clip, Bool, Int) -> Unit)?
+  watch_clipboard_marked : (((Clip, Int) -> Unit) -> () -> Unit)?
+  /// Hears whether an app on the screen holds the pointer.
+  watch_pointer_lock : (((Bool) -> Unit) -> () -> Unit)?
 }
 
 ///|
@@ -418,6 +423,9 @@ pub async fn answer_screen(
   if driven && no_passkeys {
     options.push(("passkeys", Json::boolean(false)))
   }
+  if field(ask, "chroma444") is Some(True) {
+    options.push(("chroma", jstr("444")))
+  }
   let view = (source.open)(jobj(options)) catch {
     ScreenRefused(status, key, args, access) => {
       let shown = access_shown(access, lang, tr)
@@ -500,6 +508,7 @@ pub async fn answer_screen(
     initial_rate,
     field(ask, "binaryCursor") is Some(True),
     field(ask, "customCursor") is Some(True),
+    field(ask, "privateClip") is Some(True),
   )
   session.run() catch {
     e => {
@@ -566,6 +575,11 @@ priv struct ViewSession {
   binary_cursor : Bool
   /// The client draws the pointers of apps' own (asked `customCursor`), and those whose pictures it was sent.
   custom_cursor : Bool
+  /// The client reads `privateClipboard` frames (asked `privateClip`).
+  private_clip : Bool
+  /// The controllers its input drove (their slots, as they came): let go of as it is made to only look.
+  pads : Array[Int]
+  mut unlock : () -> Unit
   cursor_images_sent : Map[String, Bool]
   mut closed : Bool
   over : @effect.Deferred[Unit]
@@ -639,6 +653,7 @@ fn ViewSession::new(
   start_rate : Double,
   binary_cursor : Bool,
   custom_cursor : Bool,
+  private_clip : Bool,
 ) -> ViewSession {
   let loss = LinkLoss::new(now)
   // (its counters as the view begins: what went before is no part of it)
@@ -678,6 +693,9 @@ fn ViewSession::new(
     start_rate,
     binary_cursor,
     custom_cursor,
+    private_clip,
+    pads: [],
+    unlock: () => (),
     cursor_images_sent: {},
     closed: false,
     over: @effect.Deferred::new(),
@@ -833,6 +851,7 @@ fn ViewSession::stop(self : ViewSession, reason : String?) -> Unit {
   }
   self.closed = true
   (self.unclip)()
+  (self.unlock)()
   (self.unlogin)()
   (self.unpasskey)()
   (self.unchild)()
@@ -866,6 +885,7 @@ fn ViewSession::watch_only(self : ViewSession, by : String?) -> Unit {
   }
   self.control = false
   (self.unclip)()
+  (self.unlock)()
   (self.unlogin)()
   (self.unpasskey)()
   (self.unchild)()
@@ -879,14 +899,28 @@ fn ViewSession::watch_only(self : ViewSession, by : String?) -> Unit {
   if at is Some(p) && !(field(p, "buttons") is Some(Number(0.0, ..))) {
     held.push(with_fields(p, [("kind", jstr("up")), ("buttons", jnum(0.0))]))
   }
+  for index in self.pads {
+    held.push(pad_released_json(index))
+  }
+  self.pads.clear()
   for e in held {
     self.then_(() => (self.view.input)(e))
   }
   let patch = [("control", Json::boolean(false)), ("login", Json::null()), ("passkey", Json::null())]
+  // (an app's hold on the pointer is a driver's: said gone, to a view that was told it)
+  if self.view.watch_pointer_lock is Some(_) {
+    patch.push(("pointerLock", Json::boolean(false)))
+  }
   if by is Some(b) {
     patch.push(("takenBy", jstr(b)))
   }
   ignore(self.state(jobj(patch)))
+}
+
+///|
+/// A controller let go of (source.ts `gamepadReleased`), as an input's JSON.
+fn pad_released_json(index : Int) -> Json {
+  parse_input(jobj([("t", jstr("gamepad")), ("index", jnum(index.to_double())), ("connected", Json::boolean(false))])).unwrap()
 }
 
 ///|
@@ -1168,6 +1202,7 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
   } else if kind == kind_set_clipboard {
     guard self.control && self.view.set_clipboard is Some(set) else { return }
     guard parse_clip(payload) is Some((clip, paste)) else { return }
+    let privacy = parse_clip_privacy(payload)
     let types = self.source.clipboard.map(f => f()).unwrap_or([])
     let t = match clip {
       Text(_) => "text"
@@ -1177,7 +1212,11 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
       return
     }
     self.clip_known = Some(clip_payload(clip))
-    self.then_(() => set(clip, paste))
+    // (with its mark where the view carries marks)
+    match self.view.set_clipboard_marked {
+      Some(marked) => self.then_(() => marked(clip, paste, privacy))
+      None => self.then_(() => set(clip, paste))
+    }
   }
 }
 
@@ -1259,6 +1298,14 @@ fn ViewSession::input(self : ViewSession, raw : Json) -> Unit {
   guard parse_input(raw) is Some(e) else { return }
   match (field(e, "t"), field(e, "kind")) {
     (Some(String("pointer")), _) => self.pointer = Some(e)
+    (Some(String("gamepad")), _) => {
+      let index = num_of(field(e, "index")).unwrap_or(0.0).to_int()
+      match (self.pads.search(index), field(e, "connected")) {
+        (None, Some(True)) => self.pads.push(index)
+        (Some(i), Some(False)) => ignore(self.pads.remove(i))
+        _ => ()
+      }
+    }
     (Some(String("key")), kind) => {
       let code = str_of(field(e, "code")).unwrap_or("")
       let which = if code != "" { code } else { str_of(field(e, "key")).unwrap_or("") }
@@ -1270,8 +1317,10 @@ fn ViewSession::input(self : ViewSession, raw : Json) -> Unit {
     }
     _ => ()
   }
+  // (relative moves add up, none coalesced away)
   let move_ = match (field(e, "t"), field(e, "kind"), field(e, "buttons")) {
-    (Some(String("pointer")), Some(String("move")), Some(Number(b, ..))) => Some(b.to_int())
+    (Some(String("pointer")), Some(String("move")), Some(Number(b, ..))) if !(field(e, "relative") is Some(True)) =>
+      Some(b.to_int())
     _ => None
   }
   self.then_(() => (self.view.input)(e), move_~)
@@ -1348,7 +1397,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   let types = if self.control { self.source.clipboard.map(f => f()).unwrap_or([]) } else { [] }
   if types.length() > 0 && self.view.watch_clipboard is Some(watch) {
-    self.unclip = watch(clip => {
+    let heard = (clip : Clip, privacy : Int) => {
       let t = match clip {
         Text(_) => "text"
         Png(_) => "png"
@@ -1361,8 +1410,21 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
         return
       }
       self.clip_known = Some(payload)
-      ignore(self.send(kind_clipboard, payload))
-    })
+      // Marked private (a password manager's): with its mark to a client that reads it, else as any copy.
+      if privacy >= 1 && privacy <= 3 && self.private_clip {
+        ignore(self.send(kind_private_clipboard, private_clip_payload(clip, privacy)))
+      } else {
+        ignore(self.send(kind_clipboard, payload))
+      }
+    }
+    self.unclip = match self.view.watch_clipboard_marked {
+      Some(marked) => marked(heard)
+      None => watch(clip => heard(clip, 0))
+    }
+  }
+  // Whether an app on the screen holds the pointer (a game's), to a person who drives it.
+  if self.control && self.view.watch_pointer_lock is Some(watch) {
+    self.unlock = watch(locked => if !self.closed { ignore(self.state(jobj([("pointerLock", Json::boolean(locked))]))) })
   }
   let told = (k : String) => (v : Json) => if !self.closed { ignore(self.state(jobj([(k, v)]))) }
   if self.control && self.view.watch_login is Some(watch) {

@@ -124,11 +124,13 @@ pub struct MacInput {
   priv mut at_x : Double
   priv mut at_y : Double
   priv mut press : (Double, Double, Double, Int, Int)?
+  /// The controllers it drove, let go of as it ends.
+  priv pads : Array[Int]
 }
 
 ///|
 pub fn MacInput::new() -> MacInput {
-  { buttons: 0, held: [], at_x: 0.0, at_y: 0.0, press: None }
+  { buttons: 0, held: [], at_x: 0.0, at_y: 0.0, press: None, pads: [] }
 }
 
 ///|
@@ -177,6 +179,10 @@ pub fn MacInput::release(self : MacInput) -> Array[J] {
     }
     ops.push(mac_key(mac_keycodes.get(code).unwrap_or(0), false, self.held_flags()))
   }
+  for index in self.pads {
+    ops.push(pad_released(index).to_j(op=Some("gamepad")))
+  }
+  self.pads.clear()
   ops
 }
 
@@ -184,14 +190,14 @@ pub fn MacInput::release(self : MacInput) -> Array[J] {
 /// What `e` is posted as, at `now` (ms).
 pub fn MacInput::ops(self : MacInput, e : ScreenInput, now : Double) -> Array[J] {
   match e {
-    Pointer(kind~, x~, y~, buttons~) => {
+    Pointer(kind~, x~, y~, buttons~, delta~) => {
       let before = self.buttons
       self.buttons = buttons & 7
       self.at_x = x
       self.at_y = y
       let flags = self.held_flags()
       if kind == "move" {
-        return [mac_mouse("move", x, y, 0, self.buttons, 0, flags)]
+        return [with_delta(mac_mouse("move", x, y, 0, self.buttons, 0, flags), delta)]
       }
       if kind == "down" {
         let bit = {
@@ -218,7 +224,7 @@ pub fn MacInput::ops(self : MacInput, e : ScreenInput, now : Double) -> Array[J]
         }
         self.press = Some((now, x, y, button, clicks))
         self.buttons = self.buttons | bit
-        return [mac_mouse("down", x, y, button, self.buttons, clicks, flags)]
+        return [with_delta(mac_mouse("down", x, y, button, self.buttons, clicks, flags), delta)]
       }
       let bit = {
         let b = lowest_bit(before & self.buttons.lnot())
@@ -239,7 +245,7 @@ pub fn MacInput::ops(self : MacInput, e : ScreenInput, now : Double) -> Array[J]
         Some((_, _, _, pbutton, c)) if pbutton == button => c
         _ => 1
       }
-      [mac_mouse("up", x, y, button, self.buttons, clicks, flags)]
+      [with_delta(mac_mouse("up", x, y, button, self.buttons, clicks, flags), delta)]
     }
     Wheel(x~, y~, dx~, dy~) =>
       [jo([("op", js("scroll")), ("x", jn(x)), ("y", jn(y)), ("dx", jn(dx)), ("dy", jn(dy)), ("flags", ji(self.held_flags()))])]
@@ -273,6 +279,10 @@ pub fn MacInput::ops(self : MacInput, e : ScreenInput, now : Double) -> Array[J]
       [mac_key(keycode, kind == "down", flags)]
     }
     Text(t) => if t == "" { [] } else { [jo([("op", js("text")), ("text", js(t))])] }
+    Gamepad(pad) => {
+      pad_held(self.pads, pad)
+      [pad.to_j(op=Some("gamepad"))]
+    }
     Pose(_) | Device(_) | Button(..) => []
   }
 }
@@ -280,4 +290,32 @@ pub fn MacInput::ops(self : MacInput, e : ScreenInput, now : Double) -> Array[J]
 ///|
 pub fn MacInput::input_ops(self : MacInput) -> InputOps {
   { ops: (e, now) => self.ops(e, now), release: Some(() => self.release()) }
+}
+
+///|
+/// A move's `dx`, `dy` and `relative` beside an op's fields, as the TypeScript's spread puts them.
+fn with_delta(op : J, delta : PointerDelta?) -> J {
+  match (op, delta) {
+    (Obj(fields), Some(d)) => {
+      let more = fields.copy()
+      if d.moved {
+        more.push((@jsjson.units("dx"), jn(d.dx)))
+        more.push((@jsjson.units("dy"), jn(d.dy)))
+      }
+      if d.relative {
+        more.push((@jsjson.units("relative"), jb(true)))
+      }
+      Obj(more)
+    }
+    _ => op
+  }
+}
+
+///|
+/// A controller's slot kept as held (`pads`, in the order they came: a Set's), or let go of.
+fn pad_held(pads : Array[Int], pad : Pad) -> Unit {
+  match pads.search(pad.index) {
+    Some(i) => if !pad.connected { ignore(pads.remove(i)) }
+    None => if pad.connected { pads.push(pad.index) }
+  }
 }

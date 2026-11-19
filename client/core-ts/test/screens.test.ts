@@ -80,7 +80,7 @@ each("a_views_frames_are_read_whole_however_the_stream_cuts_them", (seed) => {
     stateFrame({ cursor: { x: 0.5, y: 0.25, shape: "pointer" }, controlledBy: ["Bob"] }),
     videoFrame(false, 2 ** 40 + 33_333, bytesOf(3, seed + 1)),
     // A kind a later station may send: passed over.
-    new Uint8Array([9, 0, 0, 0, 2, 1, 2]),
+    new Uint8Array([10, 0, 0, 0, 2, 1, 2]),
     configFrame({ codec: "jpeg", width: 800, height: 600 }),
     videoFrame(true, 2 ** 40 + 66_666, bytesOf(12_345, seed + 2)),
   ];
@@ -99,7 +99,7 @@ each("a_views_frames_are_read_whole_however_the_stream_cuts_them", (seed) => {
   assert.equal(video.video.data.buffer.byteLength, 70_000);
   assert.deepEqual(read[2], { state: { cursor: { x: 0.5, y: 0.25, shape: "pointer" }, controlledBy: ["Bob"] } });
   assert.deepEqual(read[3], { video: { key: false, ts: 2 ** 40 + 33_333, data: bytesOf(3, seed + 1) } });
-  assert.deepEqual(read[4], { other: 9 });
+  assert.deepEqual(read[4], { other: 10 });
   assert.deepEqual(read[5], { config: { codec: "jpeg", width: 800, height: 600, description: null, region: null } });
   assert.equal((read[6] as J).video.ts, 2 ** 40 + 66_666);
 });
@@ -131,7 +131,7 @@ test("a_persons_input_is_checked_and_put_in_the_frame", () => {
   assert.equal(personShown("agent: 查询账号"), "Agent「查询账号」");
   assert.equal(personShown("agent: 这是一个超过十八个字符的聊天标题用来测试截断不丢右引号"), "Agent「这是一个超过十八个字符的聊天标题用来…」");
   const view = parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", maxWidth: 99999, codecs: ["vp9", "jpeg"] }) as J;
-  assert.deepEqual(view.call.ask, { maxWidth: 7680, maxHeight: 1080, codecs: ["jpeg"], control: true });
+  assert.deepEqual(view.call.ask, { maxWidth: 7680, maxHeight: 1080, codecs: ["jpeg"], control: true, privateClip: true });
   assert.equal(view.call.auto, true, "no mode asked: decided as it opens");
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", control: true }) as J).call.auto, false);
   assert.throws(() => parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", codecs: ["vp9"] }));
@@ -586,8 +586,8 @@ each("a_page_that_takes_the_pointer_alone_is_told_it_alone_as_it_moves_and_every
   await host.settle();
   assert.equal(views.length, 2);
   const [v, w] = views;
-  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, binaryCursor: true, customCursor: true }, "the station asked for cursor frames and the pictures of apps' own");
-  assert.deepEqual(w!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true }, "nothing new asked");
+  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, privateClip: true, binaryCursor: true, customCursor: true }, "the station asked for cursor frames and the pictures of apps' own");
+  assert.deepEqual(w!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, privateClip: true }, "nothing new asked");
   for (const x of [v!, w!]) x.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(100, seed))]));
   await host.settle();
   said(host, log);
@@ -653,7 +653,7 @@ each("a_view_brings_its_frames_with_their_bytes_and_takes_acks_key_frames_and_in
   const [v] = views;
   assert.equal(v!.head.method, "POST");
   assert.equal(v!.head.path, "/admin/api/screens/desktop/view");
-  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264", "jpeg"], control: true });
+  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264", "jpeg"], control: true, privateClip: true });
   const avcc = bytesOf(38, seed);
   const key = bytesOf(150_000, seed);
   const delta = bytesOf(900, seed + 1);
@@ -869,6 +869,23 @@ each("only_looking_is_opened_again_without_control_and_takes_no_input", async (s
   const all = states(log, 1);
   assert.equal(all.slice(all.findIndex((s: J) => s.phase === "live")).some((s: J) => s.phase !== "live"), false);
   core.close();
+});
+
+each("text_sharp_is_asked_as_原画_is_chosen_and_no_more_as_another_is", async (seed) => {
+  // (the view's own ask, as each bounds opens it again)
+  const opened = await viewing(seed);
+  call(opened.core, opened.ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1920, maxHeight: 1080, chroma444: true });
+  await opened.host.settle();
+  assert.equal(opened.views[0]!.ask.chroma444, undefined, "自动: not asked");
+  opened.views[0]!.send(join([configFrame({ codec: "jpeg", width: 1920, height: 1080 }), videoFrame(true, 1, bytesOf(500, seed))]));
+  await opened.host.settle();
+  call(opened.core, opened.ui, 2, "screen.bounds", { view: "v", maxWidth: 1920, maxHeight: 1080, quality: "original" });
+  await opened.host.settle();
+  assert.equal(opened.views.at(-1)!.ask.chroma444, true, "原画 chosen: asked");
+  call(opened.core, opened.ui, 3, "screen.bounds", { view: "v", maxWidth: 1920, maxHeight: 1080, quality: "hd" });
+  await opened.host.settle();
+  assert.equal(opened.views.at(-1)!.ask.chroma444, undefined, "高清 again: no more");
+  opened.core.close();
 });
 
 each("another_size_asked_opens_the_view_again_with_it_the_stream_before_kept_until_the_new_one_opened", async (seed) => {
@@ -1321,6 +1338,42 @@ each("the_clipboard_frames_both_ways_are_read_and_framed_however_cut", (seed) =>
   assert.deepEqual(frames, [{ clipboard: { type: "text", paste: true, data: text } }, { clipboard: { type: "png", paste: false, data: PNG } }]);
 });
 
+each("a_copy_marked_private_is_read_with_its_mark_and_a_paste_sends_its_own", (seed) => {
+  const text = new TextEncoder().encode("hunter2");
+  const reader = new FrameReader();
+  const read: StationFrame[] = [];
+  for (const piece of cut(join([copiedFrame("text", text, "concealed"), copiedFrame("png", PNG, "transient"), copiedFrame("text", text, "auto"), new Uint8Array([9, 0, 0, 0, 3, 7, 1, 9]), new Uint8Array([9, 0, 0, 0, 1, 1])]), random(seed))) {
+    reader.push(piece);
+    for (let f = reader.next(); f !== null; f = reader.next()) read.push(f);
+  }
+  assert.deepEqual(read, [
+    { clipboard: { type: "text", data: text, privacy: "concealed" } },
+    { clipboard: { type: "png", data: PNG, privacy: "transient" } },
+    { clipboard: { type: "text", data: text, privacy: "auto" } },
+    { other: 9 },
+    { other: 9 },
+  ], "a mark or a type this client does not know is passed over");
+  const [frames] = readClientFrames(join([clipboardFrame("text", text, true, "concealed"), clipboardFrame("png", PNG, false, "transient"), clipboardFrame("text", text, false, null)]));
+  assert.deepEqual(frames, [{ clipboard: { type: "text", paste: true, data: text, privacy: "concealed" } }, { clipboard: { type: "png", paste: false, data: PNG, privacy: "transient" } }, { clipboard: { type: "text", paste: false, data: text } }]);
+  // (a station from before reads bit 0 alone: the paste is as it was)
+  assert.equal(clipboardFrame("text", text, true, "auto")[5]! & 1, 1);
+  assert.equal((parseCall("screen.clipboard", { view: "v", text: "pw", privacy: "concealed" }) as J).call.privacy, "concealed");
+  assert.equal((parseCall("screen.clipboard", { view: "v", text: "pw", privacy: "secret" }) as J).call.privacy, null);
+});
+
+test("a_move_says_how_far_and_a_controller_is_checked", () => {
+  assert.deepEqual(checkInput({ t: "pointer", kind: "move", x: 0.5, y: 0.5, buttons: 0, dx: 3.5, dy: -20000, relative: true }), { t: "pointer", kind: "move", x: 0.5, y: 0.5, buttons: 0, dx: 3.5, dy: -10000, relative: true });
+  assert.deepEqual(checkInput({ t: "pointer", kind: "down", x: 0.5, y: 0.5, buttons: 1, dx: 3, dy: 4, relative: true }), { t: "pointer", kind: "down", x: 0.5, y: 0.5, buttons: 1, relative: true }, "a press where the pointer is: how far is a move's alone");
+  assert.deepEqual(checkInput({ t: "pointer", kind: "up", x: 0.5, y: 0.5, buttons: 0, relative: true }), { t: "pointer", kind: "up", x: 0.5, y: 0.5, buttons: 0, relative: true });
+  assert.deepEqual(checkInput({ t: "gamepad", index: 1, buttons: 0x3ffff, lx: 2, ly: -0.5, rx: 0, ry: 0, lt: -1, rt: 0.5 }), { t: "gamepad", index: 1, connected: true, buttons: 0x1ffff, lx: 1, ly: -0.5, rx: 0, ry: 0, lt: 0, rt: 0.5 });
+  assert.deepEqual(checkInput({ t: "gamepad", index: 3, connected: false }), { t: "gamepad", index: 3, connected: false, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 });
+  for (const bad of [{ t: "gamepad", index: 4 }, { t: "gamepad", index: 1.5 }, { t: "gamepad" }]) assert.throws(() => checkInput(bad), JSON.stringify(bad));
+  const asked = parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "original", chroma444: true }) as J;
+  assert.equal(asked.call.ask.chroma444, true, "text sharp asked with 原画");
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "hd", chroma444: true }) as J).call.ask.chroma444, undefined);
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v", peek: true }) as J).call.ask.privateClip, undefined, "a preview reads no clipboard");
+});
+
 test("a_paste_is_checked_its_size_bounded_and_a_reveal_is_an_input", () => {
   const text = parseCall("screen.clipboard", { view: "v", text: "hi" }) as J;
   assert.deepEqual([text.call.type, text.call.paste, [...text.call.data]], ["text", true, [104, 105]], "pasted unless asked not to");
@@ -1361,6 +1414,17 @@ each("while_driving_the_clipboard_goes_both_ways_and_where_files_go_is_said", as
   const copies = log.filter((m) => m.id === 1 && m.value?.clipboard);
   assert.deepEqual(copies[0].value, { clipboard: { type: "text", text: "从远端复制" } });
   assert.deepEqual([copies[1].value, [...copies[1].bytes]], [{ clipboard: { type: "png", size: PNG.length } }, [...PNG]]);
+  // A password manager's copy on it: its mark said, for the page to keep it out of this device's history; an app holding
+  // the pointer, said in the state.
+  views[0]!.send(join([copiedFrame("text", new TextEncoder().encode("pw"), "concealed"), stateFrame({ pointerLock: true })]));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual(log.filter((m) => m.id === 1 && m.value?.clipboard).at(-1).value, { clipboard: { type: "text", text: "pw", privacy: "concealed" } });
+  assert.equal(lastState(log, 1).pointerLock, true);
+  views[0]!.send(stateFrame({ pointerLock: false }));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).pointerLock, undefined);
   // A paste here, after the key before it; a reveal as input.
   call(core, ui, 2, "screen.input", { view: "v", input: { t: "key", kind: "down", key: "Meta", code: "MetaLeft", mods: 4 } });
   call(core, ui, 3, "screen.clipboard", { view: "v", text: "粘贴" });

@@ -29,8 +29,11 @@ export type Region = { x: number; y: number; w: number; h: number };
 export type Frame = { config?: FrameConfig; key: boolean; ts: number; data: Uint8Array };
 
 /// A person's input; coordinates are 0..1 of the screen (the whole of it, whatever part the frames show). `mods`: bit 0 alt, 1 ctrl, 2 meta, 3 shift (CDP's order).
+/// A move may carry how far the person's pointer moved (`dx`, `dy`: the screen's pixels, -10000..10000), and with
+/// `relative` it is only that: the screen's app holds the pointer (`ScreenView.watchPointerLock`), which goes nowhere
+/// while the move is posted as one of its own; a down or up with `relative` presses where the pointer is, never at x, y.
 export type ScreenInput =
-  | { t: "pointer"; kind: "down" | "up" | "move"; x: number; y: number; buttons: number }
+  | { t: "pointer"; kind: "down" | "up" | "move"; x: number; y: number; buttons: number; dx?: number; dy?: number; relative?: boolean }
   | { t: "wheel"; x: number; y: number; dx: number; dy: number }
   | { t: "key"; kind: "down" | "up"; key: string; code: string; mods: number }
   | { t: "text"; text: string }
@@ -39,7 +42,20 @@ export type ScreenInput =
   // What Device Hub does of a device besides its keys and a finger
   | { t: "device"; name: "volume_up" | "volume_down" | "memory_warning" | "rotate" }
   /// A button of a simulator's device, held as long as it is here (`ScreenSource.chrome`: its HID usage).
-  | { t: "button"; page: number; usage: number; down: boolean };
+  | { t: "button"; page: number; usage: number; down: boolean }
+  /// A game controller's state as the W3C Standard Gamepad has it, whole each time: `index` its slot (0..3), `buttons`
+  /// a bit for each of its 17 buttons (0..16), the sticks -1..1, the triggers 0..1; `connected: false` lets go of it
+  /// (every button up, sticks centred) and frees its slot.
+  | Gamepad;
+
+export type Gamepad = { t: "gamepad"; index: number; connected: boolean; buttons: number; lx: number; ly: number; rx: number; ry: number; lt: number; rt: number };
+/// How many controllers a view drives at once, and the bits of their buttons.
+export const GAMEPADS_MOST = 4;
+export const GAMEPAD_BUTTONS = 0x1ffff;
+/// A controller let go of: what a view sends for each slot it drove as it ends or is made to only look.
+export function gamepadReleased(index: number): Gamepad {
+  return { t: "gamepad", index, connected: false, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
+}
 
 /// `peek`: a preview (a link's card in a chat): it brings nothing forward, wakes nothing and is not among those on it.
 /// `bitrate`: what to encode at first (bits a second; none: the source's own), until `ScreenView.rate` says otherwise.
@@ -52,7 +68,9 @@ export type ScreenInput =
 /// where PCM is 1.5 Mbit/s), the others PCM.
 /// `gamut: "p3"`: the viewer shows a video tagged Display P3 as such: a source that has wider colours (this Mac's
 /// desktop) may send them; the others' stay sRGB, as they are without it.
-export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean };
+/// `chroma: "444"`: the viewer asked its pictures sharp to the pixel (画质 原画 with text sharp): a source that encodes
+/// full-chroma video (this Mac's desktop, HEVC Main 4:4:4 where the encoder has it) does; the others as without it.
+export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean; chroma?: "444" };
 export type ViewFit = { width: number; height: number; scale: number };
 
 /// The codec a source that makes `own` (best first) sends a view: the first of them the view takes; for a preview
@@ -79,9 +97,18 @@ export function regionOf(v: any): Region | null {
   return { x: r4(x), y: r4(y), w: r4(w), h: r4(h) };
 }
 
-/// What a screen's clipboard holds, as a view carries it: text, or a PNG picture.
+/// What a screen's clipboard holds, as a view carries it: text, or a PNG picture; `privacy`: what the app that copied it
+/// marked it (nspasteboard.org's types on macOS, the registered formats on Windows): `concealed` a password manager's,
+/// `transient` not to be kept, `auto` made by a program. Carried both ways so the other side's clipboard history and
+/// managers leave it out as the copying side's do.
 export type ClipType = "text" | "png";
-export type Clip = { type: "text"; text: string } | { type: "png"; data: Uint8Array };
+export type ClipPrivacy = "concealed" | "transient" | "auto";
+export type Clip = ({ type: "text"; text: string } | { type: "png"; data: Uint8Array }) & { privacy?: ClipPrivacy };
+/// A clip's privacy as its code on the wires (the view's, the helpers'): 0 none, 1 concealed, 2 transient, 3 auto.
+export const PRIVACY_CODE: Record<ClipPrivacy, number> = { concealed: 1, transient: 2, auto: 3 };
+export function privacyOf(code: number): ClipPrivacy | undefined {
+  return code === 1 ? "concealed" : code === 2 ? "transient" : code === 3 ? "auto" : undefined;
+}
 /// The most a clipboard carries each way: text (its UTF-8 bytes), a picture.
 export const CLIP_TEXT_MAX = 1024 * 1024;
 export const CLIP_PNG_MAX = 8 * 1024 * 1024;
@@ -120,6 +147,10 @@ export interface ScreenView {
   /// Hears the source's clipboard each time it changes (a copy made on it; not what it holds as this starts), until
   /// the returned function. Only a view a person drives is asked, for as long as it is open.
   watchClipboard?(heard: (clip: Clip) => void): () => void;
+  /// Hears whether an app on the source holds the pointer (a game, a 3D view, a page's Pointer Lock: hidden and kept
+  /// in place, checked so that a pointer hidden while typing or watching a video is not), as it changes, until the
+  /// returned function: the client then sends moves as `relative`. Only a view a person drives is asked.
+  watchPointerLock?(heard: (locked: boolean) => void): () => void;
   /// Hears where the pointer is on the source (0..1 of the screen) and its shape (a CSS cursor's name) as it moves or
   /// changes, until the returned function: a source whose pictures leave the pointer out (a video of the desktop) says
   /// it so; one without it draws it in its pictures, or has none.

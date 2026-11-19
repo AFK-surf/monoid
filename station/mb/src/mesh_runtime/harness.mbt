@@ -305,10 +305,21 @@ async fn Harness::call(self : Harness, name : String, a : Json) -> Json {
       let f = arg(a, "frame").unwrap_or(Json::null())
       hexj(video_payload(field(f, "key") is Some(True), num_of(field(f, "ts")).unwrap_or(0.0), hex_arg(field(f, "data"))))
     }
+    "privateClipPayload" =>
+      hexj(private_clip_payload(clip_arg(arg(a, "clip")), num_of(arg(a, "privacy")).unwrap_or(0.0).to_int()))
     "clipPayload" => hexj(clip_payload(clip_arg(arg(a, "clip")), flags=num_of(arg(a, "flags")).map(n => n.to_int())))
     "parseClip" =>
       match parse_clip(hex_arg(arg(a, "payload"))) {
-        Some((clip, paste)) => jobj([("clip", clip_json(clip)), ("paste", Json::boolean(paste))])
+        Some((clip, paste)) => {
+          let shown = match (clip_json(clip), privacy_name(parse_clip_privacy(hex_arg(arg(a, "payload"))))) {
+            (Object(m), Some(p)) => {
+              m["privacy"] = jstr(p)
+              Json::object(m)
+            }
+            (j, _) => j
+          }
+          jobj([("clip", shown), ("paste", Json::boolean(paste))])
+        }
         None => Json::null()
       }
     "regionOf" => region_json(region_of(arg(a, "v")))

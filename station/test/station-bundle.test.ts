@@ -37,7 +37,7 @@ esac
     file("mock-bin/pnpm", `#!/bin/sh
 set -eu
 for name in main.js future/another-worker.js \\
-  skills/example.md dsh-bridge.mjs cursor-bridge.mjs sandbox-bridge.mjs scrcpy-server linux-portal.py linux-x11.py; do
+  skills/example.md dsh-bridge.mjs cursor-bridge.mjs sandbox-bridge.mjs scrcpy-server linux-portal.py linux-x11.py linux-gamepad.py; do
   mkdir -p "dist/$(dirname "$name")"
   printf '%s' "$name" > "dist/$name"
 done
@@ -54,6 +54,7 @@ done
       }
       assert.equal(existsSync(join(station, "stale/old-worker.js")), false, `${platform}: nothing left from an earlier build`);
       assert.equal(existsSync(join(station, "linux-portal.py")), platform.startsWith("linux-"));
+      assert.equal(existsSync(join(station, "linux-gamepad.py")), platform.startsWith("linux-"));
       // the reader in MoonBit (scripts/native.ts `reader`), every platform's
       assert.ok(existsSync(join(station, platform === "win32-x64" ? "stillfail-reader.exe" : "stillfail-reader")), `${platform}: the MoonBit reader`);
     }

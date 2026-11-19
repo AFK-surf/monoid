@@ -1725,6 +1725,15 @@ const INPUTS: [Json, number][] = [
   [{ t: "button", page: 12, usage: 64, down: true }, 1610],
   [EV.down(0.2, 0.2, 5), 1700],
   [EV.up(0.2, 0.2, 4), 1710],
+  // how far a move went, and only that where an app holds the pointer; controllers, let go of as the view ends
+  [{ t: "pointer", kind: "move", x: 0.3, y: 0.3, buttons: 0, dx: 2.5, dy: -1 }, 1720],
+  [{ t: "pointer", kind: "move", x: 0.3, y: 0.3, buttons: 0, dx: 4, dy: 3, relative: true }, 1730],
+  [{ t: "pointer", kind: "down", x: 0.3, y: 0.3, buttons: 1, relative: true }, 1731],
+  [{ t: "pointer", kind: "up", x: 0.3, y: 0.3, buttons: 0, relative: true }, 1732],
+  [{ t: "gamepad", index: 1, connected: true, buttons: 3, lx: 0.5, ly: 0, rx: 0, ry: -1, lt: 0, rt: 0.25 }, 1740],
+  [{ t: "gamepad", index: 0, connected: true, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }, 1750],
+  [{ t: "gamepad", index: 0, connected: false, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }, 1760],
+  [{ t: "gamepad", index: 2, connected: true, buttons: 1, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 }, 1770],
 ];
 
 async function main() {

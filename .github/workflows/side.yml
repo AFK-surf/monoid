@@ -119,5 +119,6 @@ jobs:
           done
           /usr/bin/python3 test/linux-portal-text.py
           /usr/bin/python3 test/linux-portal-frames.py
+          /usr/bin/python3 test/linux-gamepad.py
           xvfb-run -a -s '-screen 0 800x600x24' /usr/bin/python3 test/linux-x11-gstreamer.py
           STILLFAIL_TEST_X11_APT=1 xvfb-run -a -s '-screen 0 1280x800x24' node --import ./test/setup-env.mjs --test --test-name-pattern='private APT pair' test/linux-screen-tools.test.ts

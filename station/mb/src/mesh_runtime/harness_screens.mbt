@@ -243,6 +243,41 @@ fn ScreenWorld::view(self : ScreenWorld) -> ScreenViewPort {
     } else {
       None
     },
+    // (the TypeScript's fake hears a text's mark in its clip, a picture's not)
+    set_clipboard_marked: if v("setClipboard") {
+      Some(async fn(clip, paste, mark) {
+        let shown = match (clip, clip_json(clip), privacy_name(mark)) {
+          (Text(_), Object(m), Some(p)) => {
+            m["privacy"] = jstr(p)
+            Json::object(m)
+          }
+          (_, j, _) => j
+        }
+        w.call([jstr("setClipboard"), shown, Json::boolean(paste)])
+      })
+    } else {
+      None
+    },
+    watch_clipboard_marked: if v("watchClipboard") {
+      Some(f => {
+        w.listeners["clip"] = c => {
+          let mark = match field(c, "privacy") {
+            Some(String("concealed")) => 1
+            Some(String("transient")) => 2
+            Some(String("auto")) => 3
+            _ => 0
+          }
+          f(clip_arg(Some(c)), mark)
+        }
+        () => {
+          w.call([jstr("un:watchClipboard")])
+          w.listeners.remove("clip")
+        }
+      })
+    } else {
+      None
+    },
+    watch_pointer_lock: watch_port(w, "watchPointerLock").map(watch => (k : (Bool) -> Unit) => watch(j => k(j is True))),
   }
 }
 

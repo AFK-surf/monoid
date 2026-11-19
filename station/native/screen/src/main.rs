@@ -18,9 +18,11 @@
 //                             its input ends:
 //   in   1 next      (empty)  the next new picture, encoded
 //        2 keyframe  (empty)  the next one a key frame, the screen changed or not
-//        3 input     JSON     win-input.ts's ops: {op:"mouse", type:"move"|"down"|"up", x, y, button},
+//        3 input     JSON     win-input.ts's ops: {op:"mouse", type:"move"|"down"|"up", x, y, button, dx?, dy?, relative?},
+//                             {op:"gamepad", index, connected, buttons, lx, ly, rx, ry, lt, rt} (gamepad.rs),
 //                             {op:"wheel", x, y, dx, dy}, {op:"key", scan, ext, vk, down}, {op:"text", text}
-//        4 clipboard 1 byte flags (bit 0: paste with Ctrl+V), 1 byte type (1 text, 2 PNG), the bytes
+//        4 clipboard 1 byte flags (bit 0: paste with Ctrl+V, bits 1..2 the clip's mark: privacy.rs), 1 byte type
+//                             (1 text, 2 PNG), the bytes
 //        5 watch     1 byte       1: say each copy made on the machine from now on (message 5 out), 0: stop
 //        6 reveal    UTF-8        a file's path, shown selected in Explorer
 //        7 rate      4 bytes      bits a second (big-endian) to encode at from the next frame on
@@ -33,8 +35,10 @@
 //        2 config    4 bytes width, 4 bytes height, then the avcC or hvcC (none for JPEG): before the first frame and whenever
 //                             it changes
 //        3 frame     1 byte flags (bit 0: key frame), 8 bytes timestamp (µs), then the frame (AVCC, or one JPEG)
-//        4 event     JSON     what the station logs
+//        4 event     JSON     {pointerLock: bool} whether an app holds the pointer (pointer_lock.rs), else what the
+//                             station logs
 //        5 clipboard 1 byte type (1 text, 2 PNG), the bytes: what was copied, while watched
+//       12 clipboard 1 byte its mark (1 concealed, 2 transient), then as 5: a copy an app marked private
 //        6 cursor    JSON     {x, y, shape}: the pointer (0..1 of the display, a CSS cursor's name; "none" hidden;
 //                             "custom:<id>" one of an app's own: message 11) as it moves or changes; a video's
 //                             pictures leave it out, a JPEG's have it drawn in
@@ -82,6 +86,14 @@ mod image;
 mod input;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod pace;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod pointer_lock;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod privacy;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod gamepad;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod mouse;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod region;
 #[cfg_attr(not(windows), allow(dead_code))]

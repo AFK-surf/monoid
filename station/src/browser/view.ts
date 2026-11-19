@@ -10,7 +10,7 @@
 // Pull-driven: Chrome casts a frame only once those before it are acknowledged (it keeps at most two out), and a frame
 // is acknowledged only when the one after it is asked for (`next`), so a slow viewer slows the casting rather than
 // having frames pile up. Of two waiting, the newer is given and the older let go.
-import { type Clip, type Frame, type FrameConfig, type LoginField, type LoginFill, type PasskeyAnswer, type PasskeyAsk, type ScreenInput, type ScreenVideo, type ScreenView, type ViewOptions, CLIP_TEXT_MAX } from "../screens/source.ts";
+import { type Clip, type Frame, type FrameConfig, type LoginField, type LoginFill, type PasskeyAnswer, type PasskeyAsk, type ScreenInput, type ScreenVideo, type ScreenView, type ViewOptions, CLIP_TEXT_MAX, gamepadReleased } from "../screens/source.ts";
 import type { Cdp, CdpEvent } from "./cdp.ts";
 import { randomUUID } from "node:crypto";
 import { sizeOf } from "../sessions/image-size.ts";
@@ -108,6 +108,43 @@ export function keyEvent(e: Extract<ScreenInput, { t: "key" }>): Record<string, 
 
 /// The binding a tab's copies call while a person driving it watches its clipboard.
 export const COPY_BINDING = "__stillfailCopied";
+
+/// What a tab's pages are given as the person's game controllers (`{t: "gamepad"}`): navigator.getGamepads as the W3C
+/// Standard Gamepad says one (an Xbox 360 controller's 17 buttons and 4 axes, mapping "standard"), with its
+/// gamepadconnected and gamepaddisconnected events, so a cloud game, a WebGL or HTML5 game takes it as one plugged in.
+/// Put in once a view first drives a controller (every page after it too); `window.__stillfailPad(state)` says a state.
+export const GAMEPAD_HOOK = `(() => {
+  if (typeof window.__stillfailPad === "function") return;
+  const pads = [null, null, null, null];
+  const made = (s, at) => {
+    const buttons = [];
+    for (let i = 0; i < 17; i++) {
+      const bit = (s.buttons & (1 << i)) !== 0;
+      const value = i === 6 ? Math.max(s.lt, bit ? 1 : 0) : i === 7 ? Math.max(s.rt, bit ? 1 : 0) : bit ? 1 : 0;
+      buttons.push(Object.freeze({ pressed: bit || value > 0.5, touched: bit || value > 0, value }));
+    }
+    return Object.freeze({ id: "Xbox 360 Controller (Standard Gamepad)", index: s.index, connected: true, mapping: "standard", timestamp: at, axes: Object.freeze([s.lx, s.ly, s.rx, s.ry]), buttons: Object.freeze(buttons), vibrationActuator: null, hapticActuators: Object.freeze([]) });
+  };
+  const told = (type, pad) => {
+    const e = new Event(type);
+    Object.defineProperty(e, "gamepad", { value: pad });
+    window.dispatchEvent(e);
+  };
+  Object.defineProperty(Navigator.prototype, "getGamepads", { configurable: true, value: function getGamepads() { return pads.slice(); } });
+  Object.defineProperty(window, "__stillfailPad", { value: (s) => {
+    const i = s && s.index;
+    if (!(i >= 0 && i < 4)) return;
+    const was = pads[i];
+    if (s.connected === false) {
+      if (was === null) return;
+      pads[i] = null;
+      told("gamepaddisconnected", Object.freeze({ ...was, connected: false }));
+      return;
+    }
+    pads[i] = made(s, performance.now());
+    if (was === null) told("gamepadconnected", pads[i]);
+  } });
+})();`;
 /// What hears a page's copies, run in it (and in each document it opens while watched): a copy's or a cut's text, as
 /// the page set it (read as the event reaches the window) or as it was selected (a field's selection, else the
 /// page's), and what it writes with navigator.clipboard.writeText. Once a page; it says nothing once the binding went.
@@ -394,6 +431,10 @@ export class TabView implements ScreenView {
   #viewport = { width: 0, height: 0 };
   #buttons = 0;
   #click = { count: 0, at: -Infinity, x: 0, y: 0, button: "none" };
+  /// The controllers' hook put in its pages (GAMEPAD_HOOK), once a controller first came.
+  #padHook: Promise<void> | null = null;
+  /// The slots its pages were told a controller is in: let go of as the view ends (the tab stays open).
+  readonly #padSlots = new Set<number>();
   #unlisten: () => void;
   /// A preview's (ViewOptions.peek): the tab is not brought forward for it, so what is behind another casts nothing.
   #peek = false;
@@ -502,6 +543,18 @@ export class TabView implements ScreenView {
       case "text":
         if (event.text !== "") await cdp.send("Input.insertText", { text: event.text }, session);
         return;
+      case "gamepad": {
+        this.#padHook ??= (async () => {
+          await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: GAMEPAD_HOOK }, session);
+          await cdp.send("Runtime.evaluate", { expression: GAMEPAD_HOOK }, session);
+        })();
+        await this.#padHook;
+        if (event.connected) this.#padSlots.add(event.index);
+        else this.#padSlots.delete(event.index);
+        const { t: _, ...state } = event;
+        await cdp.send("Runtime.evaluate", { expression: `window.__stillfailPad && window.__stillfailPad(${JSON.stringify(state)})` }, session);
+        return;
+      }
     }
   }
 
@@ -749,6 +802,12 @@ export class TabView implements ScreenView {
     void cdp.send("Page.stopScreencast", {}, session).catch(() => {});
     // As it was laid out before (its session going takes it away too; said, for a Chrome that would keep it).
     if (this.#fitted) void cdp.send("Emulation.clearDeviceMetricsOverride", {}, session).catch(() => {});
+    // Its controllers let go of in its pages, before its session goes (else navigator.getGamepads keeps them).
+    for (const index of this.#padSlots) {
+      const { t: _, ...state } = gamepadReleased(index);
+      void cdp.send("Runtime.evaluate", { expression: `window.__stillfailPad && window.__stillfailPad(${JSON.stringify(state)})` }, session).catch(() => {});
+    }
+    this.#padSlots.clear();
     void cdp.send("Target.detachFromTarget", { sessionId: session }).catch(() => {}).finally(() => cdp.close());
     this.#end();
   }
