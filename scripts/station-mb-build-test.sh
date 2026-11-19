@@ -15,9 +15,9 @@ fail() { echo "station-mb-build-test: $*" >&2; exit 1; }
 
 # The tree build.sh is run in: its own place, libs/mbui/scripts/mbc beside it, the tools on PATH.
 mkdir -p "$t/root/station/mb/src/reader" "$t/root/libs/mbui/scripts" "$t/bin" "$t/moon/lib/runtime" "$t/moon/include" "$t/log" \
-  "$t/root/rules/src" "$t/root/libs/mbui/src/effect" "$t/root/libs/mbui/src/halt"
+  "$t/root/rules/src" "$t/root/libs/base/src" "$t/root/libs/mbui/src/effect" "$t/root/libs/mbui/src/halt"
 # (what the prepared C's key reads: build.sh's own tree's files)
-for f in station/mb/moon.mod station/mb/moon.work station/mb/src/reader/reader.mbt rules/moon.mod rules/src/a.mbt \
+for f in station/mb/moon.mod station/mb/moon.work station/mb/src/reader/reader.mbt rules/moon.mod rules/src/a.mbt libs/base/moon.mod libs/base/src/a.mbt \
   libs/mbui/moon.mod libs/mbui/scripts/mbc-stub.sh libs/mbui/src/effect/a.mbt libs/mbui/src/halt/a.mbt; do
   echo "$f" > "$t/root/$f"
 done

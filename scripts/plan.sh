@@ -42,9 +42,9 @@ decide() {
   if has '^cloud/(src/(relay|relay-worker|limits|auth)\.ts|Dockerfile|relay-entrypoint\.sh|wrangler\.relay\.jsonc)$'; then relay=true; fi
   station=false
   # The station in TypeScript, its native parts (vendor/: the mesh addon's iroh), its programs in MoonBit (station/mb: the
-  # shell they link, client/shell, and mbui's effect), the rules it checks the lock and
+  # shell they link, client/shell, the base's packages they take, libs/base, and mbui's effect), the rules it checks the lock and
   # vaults by (rules/js), what it shares with the core (client/core-ts/src: scripts/plan-covers.ts finds which), the words it says, the installer it carries (cloud/src/install*.ts: scripts/installers.ts), its deltas (scripts/delta.ts, release-deltas.ts).
-  if has '^(station/(src|native|mb)/|client/shell/|libs/mesh-transport/|libs/mbui/src/effect/|rules/js/|client/core-ts/src/(shapes/(dsl|schema|model)|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
+  if has '^(station/(src|native|mb)/|libs/base/(src/|moon\.mod$)|client/shell/|libs/mesh-transport/|libs/mbui/src/effect/|rules/js/|client/core-ts/src/(shapes/(dsl|schema|model)|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
   # The beta Android app: mbui's in the Kotlin one's place (scripts/release.sh --beta android), released for a
   # change to what apps/mbui's beta is made of (scripts/beta.sh APP_SRC: its code, mbui's with its Android host's
   # Java, JZlib among it, the client's, media's, vendor's), to the tool that packs and repacks its APK (mbui's

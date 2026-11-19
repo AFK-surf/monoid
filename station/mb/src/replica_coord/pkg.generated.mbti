@@ -840,17 +840,6 @@ pub struct SessionReads {
   ran_on : async (String) -> Array[String]
 }
 
-pub struct Sha256 {
-  h : FixedArray[UInt32]
-  block : FixedArray[Byte]
-  mut fill : Int32
-  mut total : Int64
-  w : FixedArray[UInt32]
-}
-pub fn Sha256::hex(Self) -> String
-pub fn Sha256::new() -> Self
-pub fn Sha256::update(Self, BytesView) -> Unit
-
 type Taking
 
 pub struct Told {

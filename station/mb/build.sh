@@ -61,7 +61,7 @@ echo "$$" > "$lock/pid"
     moon version --all
     "$ROOT/libs/mbui/scripts/mbc" key
     find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
-      "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$D/src" "$ROOT/rules/src" "$ROOT/libs/mbui/src/effect" \
+      "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$ROOT/libs/base/moon.mod" "$D/src" "$ROOT/rules/src" "$ROOT/libs/base/src" "$ROOT/libs/mbui/src/effect" \
       "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
       | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
   } | shasum | awk '{print $1}')

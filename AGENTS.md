@@ -20,7 +20,8 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   UI framework at `libs/mbui`. `libs/comma-ui`: Comma's design system as a component library on mbui, of its own;
   `libs/sf-ui`: still.fail's, which the app is made of.
 - `libs/base/`: the first of the base in MoonBit, of no program (the Rust shell's binding, its SQLite (`sql`), a
-  lane's scheduler (`scheduler`), the mesh's wire and its device side).
+  lane's scheduler (`scheduler`), the mesh's wire and its device side, hashes (`hash`), sockets (`net`)); the station's
+  MoonBit takes those of no shell.
 - `libs/client-core/`: the first slice of the client core in MoonBit, on `libs/base` (a chat opened writing nothing
   before its first view, `MdStore`, `FrameOutbox`). Nothing runs it yet.
 - `web/`: the web's host of that app, a few pages of its own (Preact) and the design system `web/ui`.

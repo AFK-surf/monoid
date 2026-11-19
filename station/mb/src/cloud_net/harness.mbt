@@ -150,7 +150,7 @@ fn pure_case(c : Json) -> Json raise {
           errors: strings_of(arg(1)),
         }),
       )
-    "sha256" => Json::string(sha256_hex(text_of(arg(0)).unwrap_or("")))
+    "sha256" => Json::string(@hash.sha256_utf8_hex(text_of(arg(0)).unwrap_or("")))
     "rigsOf" => Json::array(rigs_of(arg(0)))
     "joinedOf" => Json::array(joined_of(arg(0)))
     "waysSaidOf" =>

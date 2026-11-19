@@ -441,15 +441,15 @@ test "a turn is noticed once, a led chat's none; people's words and the station'
 ///|
 test "sha256 as Node's" {
   assert_eq(
-    sha256_hex(""),
+    @hash.sha256_utf8_hex(""),
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   )
   assert_eq(
-    sha256_hex("abc"),
+    @hash.sha256_utf8_hex("abc"),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
   )
   assert_eq(
-    sha256_hex("é🚀".repeat(40)).length(),
+    @hash.sha256_utf8_hex("é🚀".repeat(40)).length(),
     64,
   )
 }

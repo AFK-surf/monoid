@@ -118,3 +118,8 @@ test "natively a tab's claim is held at once, and taking it over or letting it g
   assert_eq(told, [Held])
   assert_eq(other, [Held])
 }
+
+///|
+test "a shell's failure says the shell's words" {
+  assert_eq(Show::to_string(ShellError("no such endpoint")), "no such endpoint")
+}

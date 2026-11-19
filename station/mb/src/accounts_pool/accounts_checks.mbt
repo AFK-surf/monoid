@@ -818,7 +818,7 @@ async fn Accounts::lent_login_version(self : Accounts, home : String) -> String?
     None => Null
     Some(v) => v
   }
-  Some(sha256_hex(stringify(jarr([pick("id_token"), pick("access_token"), pick("account_id")]))))
+  Some(@hash.sha256_utf8_hex(stringify(jarr([pick("id_token"), pick("access_token"), pick("account_id")]))))
 }
 
 ///|

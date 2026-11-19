@@ -27,7 +27,7 @@ pub fn image_wanted(name : String) -> Bool {
 ///|
 /// thumbs.ts `idOf`: the first 16 bytes of the SHA-256 of the image's path, in hex.
 pub fn id_of(image : String) -> String {
-  hex(sha256_bytes(@utf8.encode(image))[0:16])
+  hex(@hash.sha256(@utf8.encode(image))[0:16])
 }
 
 ///|
@@ -117,4 +117,10 @@ pub fn keep(files : Array[JV], thumbs : String, codecs : Codecs?) -> Array[JV] {
       }
     }
   })
+}
+
+///|
+/// The SHA-256 of `data`: `@hash.sha256`'s, kept here for what calls it by this package.
+pub fn sha256_bytes(data : Bytes) -> Bytes {
+  @hash.sha256(data[:])
 }

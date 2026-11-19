@@ -34,12 +34,18 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   background is asked; the background waits for an idle step to end. A task runs in the fiber that asks
   (`Scheduler::run`); interrupted waiting or running, a `defer` lets its place or slot go.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
+- `src/hash`: SHA-256 (`Sha256` a piece at a time, `sha256`, `sha256_hex`, `sha256_utf8_hex`: a lone surrogate as
+  U+FFFD, as node:crypto hashes a string), HMAC-SHA-256 and hex both ways, of no dependency: what a program on the
+  base hashes with, never a copy of its own.
+- `src/net`: a connection's halves and a listener's loop over a transport its program gives (`Socket`, `Listener`,
+  `pipe_duplex`; net.mbt's head says what each holds): a handle closed exactly once however it ends, a failure to
+  accept that passes tried again, nothing a defect.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links,
   hello/pings/renewal, requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the
   endpoint is bound with, relays told again and connections peers dial to it or it dials itself in `bind.mbt`, where
   peers are dialled straight in `addrs.mbt`, a connection dialled once on a protocol of its program's in
-  `dial_once.mbt`, the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` (a program's to call
-  too) for the keys of relays' own endpoints, ways' speeds and the day's tally in `speed.mbt`, what it tells of itself
+  `dial_once.mbt`, the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` (`src/hash`'s
+  digest) for the keys of relays' own endpoints, ways' speeds and the day's tally in `speed.mbt`, what it tells of itself
   in `trace.mbt`, and a program's other asks in `hooks.mbt`, with Ed25519 and SHA-512 in `sign.mbt`).
 
 ## It knows no program
@@ -53,7 +59,11 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   by this library, and ask the owner before adding any external symbol. The script counts what is there, not what
   was, so that the table only falls is this file's rule: a count is raised or an entry added only in the change that
   needs it, its entry saying what takes it away.
-- The station's MoonBit programs keep their own host binding (`station/mb/src/host`) until moved onto this base whole.
+- The station's MoonBit programs keep their own host binding (`station/mb/src/host`) until moved onto this base whole:
+  they take its packages of no shell (`src/hash`, `src/net`) and never `src/shell`, whose `shell.c` binds the C
+  symbols `station/mb/src/host/host.c` binds too.
+- Every suberror of a package here shows as words for people (`impl Show` or a derived one), never its package's path
+  and constructor: `scripts/mb-base.ts` refuses one that does not.
 
 ## What is checked here, and what is not
 

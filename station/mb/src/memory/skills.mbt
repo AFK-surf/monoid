@@ -285,3 +285,10 @@ async fn skill_conflict(host : @host.Host, sep : String, dir : String, peer : St
     ),
   )
 }
+
+///|
+/// The SHA-256 digest of `data`, in lower-case hex (as Node's `digest("hex")`): `@hash.sha256_hex`'s, kept here for
+/// what calls it by this package.
+pub fn sha256_hex(data : BytesView) -> String {
+  @hash.sha256_hex(data)
+}

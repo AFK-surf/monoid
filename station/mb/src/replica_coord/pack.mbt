@@ -105,7 +105,7 @@ pub fn pack_bytes(fs : Fs, entries : Array[PackEntry], strict : Bool, took : Arr
     }
     staged.write_byte(tag_entry)
     staged.write_bytes(hex_bytes(f.hash))
-    let h = Sha256::new()
+    let h = @hash.Sha256::new()
     let mut at = 0.0
     while at < size {
       let n = if size - at < pack_piece { size - at } else { pack_piece }
@@ -187,7 +187,7 @@ priv struct PackIn {
   bad : Bool
   tmp : String?
   mut size : Double
-  h : Sha256?
+  h : @hash.Sha256?
 }
 
 ///|
@@ -332,7 +332,7 @@ async fn Unpacking::begin(self : Unpacking, hash : String) -> Unit {
   }
   let tmp = "\{path}.\{self.fs.random_hex(4)}.tmp"
   self.fs.files.write(tmp, b"")
-  self.entry = Some({ hash, path, bad, tmp: Some(tmp), size: 0.0, h: Some(Sha256::new()) })
+  self.entry = Some({ hash, path, bad, tmp: Some(tmp), size: 0.0, h: Some(@hash.Sha256::new()) })
 }
 
 ///|

@@ -41,6 +41,12 @@ pub(all) suberror TooLong {
 }
 
 ///|
+pub impl Show for TooLong with output(self, logger) {
+  let TooLong(most~) = self
+  logger.write_string("event block exceeds \{most} bytes")
+}
+
+///|
 pub struct Sse {
   /// What came and is not read yet: `held` from `start` to `end`; up to `looked` looked through for a blank line.
   priv mut held : FixedArray[Byte]

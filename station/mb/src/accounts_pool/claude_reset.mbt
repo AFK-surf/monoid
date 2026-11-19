@@ -190,7 +190,7 @@ pub fn claude_claim(ctx : Ctx, body : JV?, key : String, kind : String?) -> Clai
         jobj([
           ("program", js("cedar_ember")),
           ("grant_id", g.get("id").unwrap_or(Null)),
-          ("request_id", js(sha256_hex(key))),
+          ("request_id", js(@hash.sha256_utf8_hex(key))),
         ]),
       )
     None =>
