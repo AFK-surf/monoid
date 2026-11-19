@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6cf291ea5](https://github.com/AFK-surf/monoid/commit/6cf291ea545b22f158fe80ee246f662251c72a03) fix(mbui): carry a child's edge through its holder | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.34 | 119.5 |
 | [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.45 | 125.81 |
 | [365a36487](https://github.com/AFK-surf/monoid/commit/365a364872e9e2246418c5c926c27415f1c41853) fix(mbui): write the mac entitlements plist with p | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.45 | 125.81 |
 | [863e54da5](https://github.com/AFK-surf/monoid/commit/863e54da529268a1061330c142532434835c2073) ci(mbui): rebalance app 1/4..4/4 pages at the defa | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
-| [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6cf291ea5](https://github.com/AFK-surf/monoid/commit/6cf291ea545b22f158fe80ee246f662251c72a03) fix(mbui): carry a child's edge through its holder | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
 | [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
 | [365a36487](https://github.com/AFK-surf/monoid/commit/365a364872e9e2246418c5c926c27415f1c41853) fix(mbui): write the mac entitlements plist with p | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
 | [863e54da5](https://github.com/AFK-surf/monoid/commit/863e54da529268a1061330c142532434835c2073) ci(mbui): rebalance app 1/4..4/4 pages at the defa | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
 | [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.15 |
 | [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.12 |
-| [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
