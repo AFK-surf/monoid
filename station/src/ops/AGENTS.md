@@ -1,0 +1,25 @@
+# Station storage, background work, and self-memory (for agents)
+
+## Storage classes and log rotation
+
+- Register every top-level entry under `<data>` in `station/src/ops/storage.ts` `STORAGE_MANIFEST` with its class (`authoritative`, `session-bound`, `bounded-ephemeral`) and bound. `station/test/storage-classes.test.ts` scans the code and fails on unregistered paths joined onto `<data>`.
+- `Upkeep` enforces bounds on growing directories (logs, runner files, job logs, remote rooms, DB logs, caches).
+- Never rename or unlink a log held open by other processes (`stillfail.log` is opened with `O_APPEND` by launchd/systemd for the launcher, front, and Node across updates). Truncate in place (`rotateInPlace`) so writers do not fill the disk through an unlinked inode.
+
+## Background work yielding and bounded walks
+
+- Start non-interactive MoonBit builders (`station/src/read/mb-reader.ts` `BACKGROUND_BUILDERS`: backfills, `MbBackfill`, replica exports, workspace footprint) under `platform.backgrounded` (`mbSpawned`: `taskpolicy -b` on macOS for disk IO too, `ionice` and `nice` on Linux).
+- Keep interactive or permit-holding builders (`station/src/read/requested-builder.ts`) and device readers (`--data`, `--serve`, `--sessions`) at normal priority so they never stall users or hold the backfill permit.
+- Walk any tree the station does not own (workspaces, home directories, mirrored directories) through `station/src/ops/walk.ts` `walkBounded`: stay on one filesystem, skip symlinks (use `followLinks` with visited-real-dir tracking only for intentional link trees like `~/.agents/skills` in `codex.ts` `hostSkillsOff`), bound entries, depth, and time, and yield periodically. Codex rollouts (`station/src/read/machine.ts` `transcriptOf`) follow `ROLLOUT_DEPTH` and `ROLLOUT_ENTRIES`.
+
+## Station self-memory and stdin backpressure
+
+- The agent process memory watch (`station/src/jobs/memory.ts`) excludes the station itself. `station/src/ops/self-memory.ts` (run by `station/src/resources/module.ts`) tracks Node plus its MoonBit programs (`station/src/read/mb-reader.ts` `MbProcess.live`).
+- Under machine memory pressure or past soft limit, trim only idle resources (`Readers.trimIdle` in `station/src/read/pool.ts`, plus `onTrim` callbacks):
+  - Never cancel active reads.
+  - Never stop JS reader threads serving devices or streams (restarting them takes seconds, while MoonBit reader programs restart in milliseconds and may be trimmed).
+  - Never close the browser (`station/src/browser/browsers.ts`) because chat contexts hold in-memory sign-ins.
+- Under machine pressure (high or critical) only, not the station soft limit alone, evict idle session processes and idle app-servers (`Hub.evictAllIdle`, driver `evictIdle`). They resume on the next message.
+- When Node and its programs stay past their combined hard limit, request a launcher handover (`station/src/ops/restart.ts` `restarter`), never `becomeOther` or exit (which would kill sessions when no launcher exists).
+- Track the launcher's front separately. When it stays past its limit, ask the launcher to restart it (`restartFront` in `station/src/ops/launcher.ts`, `station/native/launcher/src/lifecycle.rs` `restart_front`) and hand Node over to the new front.
+- Bound stdin to MoonBit programs on both sides: Node kills a program leaving `STDIN_MOST` unread (`station/src/read/mb-reader.ts`), and the program pauses stdin reading past `STDIN_MOST` (`station/mb/src/host/host.c`) without blocking tokio answer threads.
