@@ -92,12 +92,12 @@ pub fn remove_tree(path : String) -> Bool {
 
 ///|
 fn jv_of(j : Json) -> @jsjson.JValue {
-  @drive.to_jv(j)
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
 fn p52_json_of_jv(v : @jsjson.JValue) -> Json {
-  @drive.of_jv(v)
+  v.to_json()
 }
 
 ///|

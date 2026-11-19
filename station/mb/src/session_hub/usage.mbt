@@ -155,11 +155,10 @@ pub async fn UsageCounter::start(self : UsageCounter) -> Unit {
   }
   self.started_at = self.hub.now()
   self.state = 2
-  // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too)
+  // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too;
+  // the counter finds those sessions itself, off this thread)
   let from = self.hub.now() - timed_back_ms
   ignore(self.read(None, time_from=from))
-  let active = self.hub.store.usage_active_sessions(Json::number(from)) catch { _ => [] }
-  ignore(self.read(Some(active.map(js_string)), time_from=from))
   self.due = self.hub.now() + self.safety
   self.waiting()
 }

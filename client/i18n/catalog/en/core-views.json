@@ -845,6 +845,11 @@
     "one": "1 station has an update",
     "other": "{n} stations have updates"
   },
+  "core-views.stationUpdates.staleOffered": {
+    "one": "1 station needs an update",
+    "other": "{n} stations need updates"
+  },
+  "core-views.stationUpdates.stale": "Over 7 days old, please update",
   "core-views.stationUpdates.going": {
     "one": "1 station is updating",
     "other": "{n} stations are updating"

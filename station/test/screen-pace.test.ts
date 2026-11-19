@@ -2,7 +2,7 @@
 // is asked for, from the acknowledgements alone, on a clock the test moves.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CUT, DOWN, DOWNSIZE_MS, FPS_CHOICES, FrameLatency, LoopStall, DOWNSIZE_SHARE, LOW_BOUNDS, MAX_RATE, MAX_UNACKED, MIN_RATE, Pacer, QUEUE_MS, START_RATE, START_UNACKED, START_UP, Sizer, UPSIZE_MS, UP, UP_AFTER_MS, UP_EVERY_MS, UP_FAST, ownRate, queueMs, rateCeiling } from "../src/mesh/screen-pace.ts";
+import { CUT, DOWN, DOWNSIZE_MS, FPS_CHOICES, FrameLatency, LoopStall, DOWNSIZE_SHARE, LOW_BOUNDS, MAX_RATE, MAX_UNACKED, MIN_RATE, Pacer, QUEUE_MS, START_RATE, START_UNACKED, START_UP, Sizer, UPSIZE_MS, UP, UP_AFTER_MS, UP_EVERY_MS, UP_FAST, MOVING_SHARPEN_MS, MOVING_SHARPEN_UP, STILL_MS, Sharpener, ownRate, queueMs, rateCeiling, startRate } from "../src/mesh/screen-pace.ts";
 
 function paced() {
   let now = 0;
@@ -136,7 +136,7 @@ test("lowered, the rate climbs back by UP, and by UP_FAST once nothing was held 
   assert.ok(by(UP)(steps[0]!), `first by UP: ${JSON.stringify(steps)}`);
   const fast = steps.findIndex(by(UP_FAST));
   assert.ok(fast > 0 && steps.slice(fast, -1).every(by(UP_FAST)), `then by UP_FAST: ${JSON.stringify(steps)}`);
-  // From about the link's 5 Mbit/s to 33 in under 5 s (by UP alone: 15 steps, 7.5 s).
+  // From about the link's 5 Mbit/s to 33 in under 5 s (by UP alone: 11 steps, 5.5 s).
   assert.ok(steps.at(-1)!.at - steps[0]!.at < 5000, `at the top soon: ${JSON.stringify(steps)}`);
   assert.equal(rates.at(-1), top);
 });
@@ -330,4 +330,65 @@ test("LoopStall counts how long the loop stood still past its tick, the stand it
   now = 100;
   assert.equal(used.stalled(), 90);
   used.done();
+});
+
+test("the rate a view starts at by its link as it opens: a near direct way higher, a near relay a little, else START_RATE", () => {
+  assert.equal(UP, 1.2);
+  assert.equal(startRate(), START_RATE);
+  assert.equal(startRate([]), START_RATE);
+  const direct = (rttMs: number | null, o = {}) => ({ selected: true, relay: null, ip: "192.168.1.5:7000", rttMs, ...o });
+  const relay = (rttMs: number | null, o = {}) => ({ selected: true, relay: "https://r1/", ip: null, rttMs, ...o });
+  assert.equal(startRate([direct(3)]), 12_000_000, "a LAN");
+  assert.equal(startRate([direct(12)]), 12_000_000);
+  assert.equal(startRate([direct(30)]), 6_000_000, "a near direct way");
+  assert.equal(startRate([direct(40)]), 6_000_000);
+  assert.equal(startRate([direct(80)]), 4_000_000, "a far direct way");
+  assert.equal(startRate([direct(null)]), 4_000_000, "a direct way not measured yet");
+  assert.equal(startRate([direct(0)]), 4_000_000, "a round trip of nothing is none");
+  assert.equal(startRate([direct(250)]), START_RATE, "across the world");
+  assert.equal(startRate([relay(20)]), 4_000_000, "a near relay");
+  assert.equal(startRate([relay(35)]), 4_000_000);
+  assert.equal(startRate([relay(36)]), START_RATE, "a far relay");
+  assert.equal(startRate([relay(null)]), START_RATE);
+  assert.equal(startRate([direct(5, { ip: "" })]), 4_000_000, "no address: taken as a relay of that round trip");
+  assert.equal(startRate([direct(50, { ip: "" })]), START_RATE);
+  // the selected way, else the first direct one, else the first
+  assert.equal(startRate([direct(5, { selected: false }), relay(200)]), START_RATE);
+  assert.equal(startRate([relay(200, { selected: false }), direct(30, { selected: false })]), 6_000_000);
+  assert.equal(startRate([relay(20, { selected: false }), relay(200, { selected: false })]), 4_000_000);
+});
+
+test("a still screen's picture sharper after STILL_MS; a moving one's key frame asked again once the rate doubled its key frame's", () => {
+  assert.equal(STILL_MS, 250);
+  const s = new Sharpener();
+  s.sent(0, 1_500_000, true);
+  assert.equal(s.left(100), UP_EVERY_MS - 100, "after a key frame (a step of sharpening): no sooner than the pace steps up");
+  s.sent(0, 1_500_000);
+  assert.equal(s.left(100), 150);
+  assert.equal(s.due(200, 3_000_000), false, "not still yet");
+  assert.equal(s.due(250, 3_000_000), true, "still for STILL_MS, the rate up");
+  assert.equal(s.due(250, 1_600_000), false, "up by no more than SHARPER");
+  // moving: a frame each 16 ms, none a key frame
+  let now = 0;
+  const moving = (rate: number) => {
+    now += 16;
+    s.sent(now, rate);
+    return s.dueMoving(now, rate);
+  };
+  assert.equal(moving(2_900_000), false, "under MOVING_SHARPEN_UP");
+  while (now < MOVING_SHARPEN_MS - 16) assert.equal(moving(3_000_000), false, `not before MOVING_SHARPEN_MS (${now})`);
+  assert.equal(moving(3_000_000), true, "MOVING_SHARPEN_MS since the key frame, the rate doubled");
+  assert.equal(moving(3_000_000), false, "asked once: not again for the frames before it comes");
+  assert.equal(moving(6_000_000), false, "not again before MOVING_SHARPEN_MS more");
+  now += MOVING_SHARPEN_MS;
+  assert.equal(s.dueMoving(now, 6_000_000), true);
+  // a key frame that came resets it
+  s.sent(now + 1, 6_000_000, true);
+  assert.equal(s.dueMoving(now + 1 + MOVING_SHARPEN_MS, 6_000_000 * MOVING_SHARPEN_UP - 1), false);
+  assert.equal(s.dueMoving(now + 1 + MOVING_SHARPEN_MS, 6_000_000 * MOVING_SHARPEN_UP), true);
+  // a source with no rate of its own (JPEG): never
+  const jpeg = new Sharpener();
+  jpeg.sent(0, null, true);
+  assert.equal(jpeg.dueMoving(10_000, 9_000_000), false);
+  assert.equal(jpeg.due(10_000, 9_000_000), false);
 });

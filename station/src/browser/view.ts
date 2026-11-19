@@ -23,8 +23,8 @@ export function viewportOf(m: any): { width: number; height: number } | null {
   return width > 0 && height > 0 ? { width, height } : null;
 }
 
-/// JPEG quality of the cast frames.
-const QUALITY = 70;
+/// JPEG quality of the cast frames: 82, as at 70 small text's edges rang (their colours bled round the strokes).
+const QUALITY = 82;
 /// The most pixels a CSS pixel is drawn with for a phone it is laid out for (`fit`): sharp on any phone, and frames a
 /// third the size of a 3× phone's own.
 const FIT_SCALE_MOST = 2;

@@ -477,13 +477,27 @@ fn WorkspaceConnects::moving_file(self : WorkspaceConnects, id : String) -> Stri
 }
 
 ///|
+/// How many names beside a file `write_beside` gave in this process.
+let beside_seq : Ref[Int64] = { val: 0L }
+
+///|
+/// `text` written to `path` whole: beside it under a name no other write of this process takes (`<path>.<n>.tmp`: two
+/// at once each rename their own, L13) and renamed over it; what was written beside let go of where that fails.
+async fn write_beside(fs : Fs, path : String, text : String) -> Unit {
+  beside_seq.val += 1L
+  let tmp = "\{path}.\{beside_seq.val}.tmp"
+  errdefer @effect.uninterruptible(async fn() { (fs.rm)(tmp) catch { _ => () } })
+  (fs.write_text)(tmp, text)
+  (fs.rename)(tmp, path)
+}
+
+///|
 async fn WorkspaceConnects::keep_moving(self : WorkspaceConnects, m : J) -> Unit {
   let fs = self.d.fs
   let id = js_text(at(Some(m), "id"))
   self.moving[id] = m
   (fs.mkdir)(self.moving_dir())
-  (fs.write_text)("\{self.moving_file(id)}.tmp", js_stringify(m))
-  (fs.rename)("\{self.moving_file(id)}.tmp", self.moving_file(id))
+  write_beside(fs, self.moving_file(id), js_stringify(m))
 }
 
 ///|
@@ -660,8 +674,7 @@ async fn WorkspaceConnects::save_awaiting(self : WorkspaceConnects) -> Unit {
   let path = fs.join([self.d.data, "replica", "awaiting.json"])
   (fs.mkdir)(fs.dirname(path))
   let kept = from_entries(self.awaiting.to_array().map(e => (e.0, jsa(e.1.iter().collect()))))
-  (fs.write_text)("\{path}.tmp", js_stringify(kept))
-  (fs.rename)("\{path}.tmp", path)
+  write_beside(fs, path, js_stringify(kept))
 }
 
 ///|
@@ -1007,8 +1020,7 @@ async fn WorkspaceConnects::hold(self : WorkspaceConnects, id : String, ws : Str
 ///|
 async fn WorkspaceConnects::write_held(self : WorkspaceConnects, lines : Array[String]) -> Unit {
   let fs = self.d.fs
-  (fs.write_text)("\{self.held_file}.tmp", lines.map(l => "\{l}\n").join(""))
-  (fs.rename)("\{self.held_file}.tmp", self.held_file)
+  write_beside(fs, self.held_file, lines.map(l => "\{l}\n").join(""))
 }
 
 ///|

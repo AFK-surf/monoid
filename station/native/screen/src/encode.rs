@@ -1,16 +1,17 @@
 // H.264 with Media Foundation: the hardware encoder (an asynchronous MFT, given the D3D11 textures themselves) where
 // the machine has one that takes them, else Microsoft's software encoder (given each picture's bytes). H.265 the same
 // way, on the hardware only (Main; where the machine has no HEVC encoder, the view goes on in H.264). Low latency (a
-// picture out for each in), no B-frames, constrained baseline where the encoder has it, a key frame when asked for and
-// at least every 10 s besides. One picture is in it at a time: the view asks for the next only once one went. A still
-// screen's picture sent again as a key frame (docs/remote-screens.md "Still") is encoded finer than the moving ones: its
-// QP no higher than STILL_QP and twice the bit rate for it, where the link carries STILL_FROM or more. That is another
-// encoder of the same kind, made for that picture with those set before it starts (`still`): an encoder takes them
-// once it started without heeding them (NVIDIA's, both codecs: the same picture again the same size to the byte).
-// The bit rate asked as it goes (the station's pace) the same: NVIDIA's encoders keep the one they started at whatever
-// CODECAPI_AVEncCommonMeanBitRate is set to (asked 6 Mbit/s, ~25 went on), but its output type set again with the new
-// MF_MT_AVG_BITRATE starts their rate control anew at it (`restart`: under a millisecond, its next picture a key frame,
-// the same parameter sets), which the view does when the rate asked has gone far enough from it (pace.rs `restarts`).
+// picture out for each in), no B-frames, High with CABAC where the encoder has them (`profiles`), a key frame when
+// asked for and at least every 10 s besides. One picture is in it at a time: the view asks for the next only once one
+// went. A still screen's picture sent again as a key frame (docs/remote-screens.md "Still") is encoded finer than the
+// moving ones: its QP no higher than STILL_QP and twice the bit rate for it, where the link carries STILL_FROM or more.
+// That is another encoder of the same kind, made for that picture with those set before it starts (`still`): an encoder
+// takes them once it started without heeding them (NVIDIA's, both codecs: the same picture again the same size to the
+// byte). The bit rate asked as it goes (the station's pace) the same: NVIDIA's encoders keep the one they started at
+// whatever CODECAPI_AVEncCommonMeanBitRate is set to (asked 6 Mbit/s, ~25 went on), but its output type set again with
+// the new MF_MT_AVG_BITRATE starts their rate control anew at it (`restart`: under a millisecond, its next picture a
+// key frame, the same parameter sets), which the view does when the rate asked has gone far enough from it (pace.rs
+// `restarts`).
 use std::collections::VecDeque;
 
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -72,6 +73,20 @@ const STILL_FROM: u32 = 4_000_000;
 
 fn set(codec: &ICodecAPI, api: &GUID, value: VARIANT) -> bool {
     unsafe { codec.SetValue(api, &value).is_ok() }
+}
+
+/// The profiles asked for, best first (the first the encoder takes is kept). H.264: High (CABAC and 8×8 transforms:
+/// small text finer at the same rate; no B-frames asked, so no frame waits for a later one), then Main, then
+/// constrained baseline and baseline where neither is taken. H.265: Main, 8 bits 4:2:0.
+fn profiles(hevc: bool) -> &'static [(u32, &'static str)] {
+    const H264: &[(u32, &str)] = &[
+        (eAVEncH264VProfile_High.0 as u32, "high"),
+        (eAVEncH264VProfile_Main.0 as u32, "main"),
+        (eAVEncH264VProfile_ConstrainedBase.0 as u32, "constrained baseline"),
+        (eAVEncH264VProfile_Base.0 as u32, "baseline"),
+    ];
+    const H265: &[(u32, &str)] = &[(eAVEncH265VProfile_Main_420_8.0 as u32, "H.265 main")];
+    if hevc { H265 } else { H264 }
 }
 
 /// The hardware encoders that take NV12 to H.264 (or H.265), best first.
@@ -204,6 +219,10 @@ impl H264 {
                     || set(c, &CODECAPI_AVEncCommonRateControlMode, VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32));
                 set(c, &CODECAPI_AVEncCommonMeanBitRate, VARIANT::from(bitrate));
                 set(c, &CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32));
+                // CABAC (High and Main have it): an encoder that has no such setting goes by its profile.
+                if !hevc {
+                    set(c, &CODECAPI_AVEncH264CABACEnable, VARIANT::from(true));
+                }
                 set(c, &CODECAPI_AVEncMPVGOPSize, VARIANT::from(fps * 10));
                 // A still picture's (bitrate already raised): an encoder that takes no QP bound keeps its own.
                 if still {
@@ -212,15 +231,8 @@ impl H264 {
             }
             let size = ((width as u64) << 32) | height as u64;
             let rate = ((fps as u64) << 32) | 1;
-            // H.264: constrained baseline, as every decoder takes it; baseline, then main (no B-frames asked) where not.
-            // H.265: Main, 8 bits 4:2:0.
             let mut profile = "";
-            let profiles: &[(u32, &str)] = if hevc {
-                &[(eAVEncH265VProfile_Main_420_8.0 as u32, "H.265 main")]
-            } else {
-                &[(eAVEncH264VProfile_ConstrainedBase.0 as u32, "constrained baseline"), (eAVEncH264VProfile_Base.0 as u32, "baseline"), (eAVEncH264VProfile_Main.0 as u32, "main")]
-            };
-            for &(p, named) in profiles {
+            for &(p, named) in profiles(hevc) {
                 let output = MFCreateMediaType()?;
                 output.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
                 output.SetGUID(&MF_MT_SUBTYPE, if hevc { &MFVideoFormat_HEVC } else { &MFVideoFormat_H264 })?;
@@ -547,6 +559,15 @@ mod tests {
             assert!(Instant::now() < until, "the encoder gave nothing back");
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn h264_asks_for_high_first_and_falls_back_to_baseline() {
+        let asked: Vec<u32> = profiles(false).iter().map(|&(p, _)| p).collect();
+        let want = [eAVEncH264VProfile_High, eAVEncH264VProfile_Main, eAVEncH264VProfile_ConstrainedBase, eAVEncH264VProfile_Base];
+        assert_eq!(asked, want.iter().map(|p| p.0 as u32).collect::<Vec<_>>());
+        assert_eq!(profiles(false)[0].1, "high");
+        assert_eq!(profiles(true), &[(eAVEncH265VProfile_Main_420_8.0 as u32, "H.265 main")]);
     }
 
     #[test]

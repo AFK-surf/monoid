@@ -15,7 +15,8 @@
 pub let default_size : (Double, Double, Double) = (1280.0, 800.0, 1.0)
 
 ///|
-let jpeg_quality : Int = 70
+/// JPEG quality of the frames asked for: 82, as at 70 small text's edges rang (as the browser's cast, view.ts).
+let jpeg_quality : Int = 82
 
 ///|
 fn size_j(s : (Double, Double, Double)) -> J {

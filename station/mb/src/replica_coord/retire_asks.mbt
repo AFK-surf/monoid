@@ -81,8 +81,11 @@ fn RetireAsks::save(self : RetireAsks) -> Run {
     try {
       let path = asks_file(fs, self.d.data)
       fs.mkdirs(fs.dirname(path))
-      fs.write_text("\{path}.tmp", text)
-      fs.rename("\{path}.tmp", path)
+      // (a name of its own, as the other writes here: two at once each rename theirs; let go of where this fails)
+      let tmp = "\{path}.\{fs.random_hex(4)}.tmp"
+      errdefer @effect.uninterruptible(async fn() { fs.rm_f(tmp) catch { _ => () } })
+      fs.write_text(tmp, text)
+      fs.rename(tmp, path)
     } catch {
       e => self.w.warn("retire", "station_retire's asks not written", jo([("error", js(message_of(e)))]))
     }

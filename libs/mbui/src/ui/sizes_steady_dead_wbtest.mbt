@@ -102,3 +102,41 @@ test "stopped dead: slowing at one rate through its top with frames twice as lon
   let (said, _) = sizes_steady_fault(still, period, turned=-1.0)
   assert_true(said is Some(s) && s.contains("stopped dead"), msg="\{Repr(said)}")
 }
+
+///|
+test "stopped dead: a sub-half-frame sliver under one device pixel is not a dead stop or spike; a real stop or jump still is" {
+  // 120 fps: 0.82 ms sliver across the 0.5-period bucket edge where a pixel-snapped coordinate (px = 0.5 pt) moves
+  // only ~0.30 pt (< 1 pixel)
+  let p120 = 1000.0 / 120.0
+  let sliver120 = [
+    (1458.3333333333333, 1458.3333333333333, 28.0),
+    (1465.12158203125, 1466.6666666666667, 24.0),
+    (1474.40771484375, 1475.0, 20.5),
+    (1483.28369140625, 1487.1875, 16.0),
+    (1488.0078125, 1488.0078125, 16.0),
+  ]
+  assert_eq(sizes_steady_fault(sliver120, p120, turned=-1.0, px=0.5).0, None)
+  // once a real display frame elapses without moving, stopped dead still fires
+  let real_stop = sliver120.copy()
+  real_stop[4] = (1488.0078125, 1491.6666666666667, 16.0)
+  let (stop_said, _) = sizes_steady_fault(real_stop, p120, turned=-1.0, px=0.5)
+  assert_true(stop_said is Some(s) && s.contains("stopped dead"), msg="\{Repr(stop_said)}")
+  // 60 fps: 0.022 ms sliver where a fast slide (-47.9 pt/frame) moves only 0.063 pt (< 1 pixel)
+  let p60 = 1000.0 / 60.0
+  let sliver60 = [
+    (5883.855021158854, 5891.446940104166, 368.0),
+    (5897.964518229166, 5900.0, 347.0),
+    (5906.303019205729, 5914.627482096354, 305.0),
+    (5914.649454752604, 5914.649454752604, 305.0),
+  ]
+  assert_eq(sizes_steady_fault(sliver60, p60, turned=-1.0, px=0.5).0, None)
+  // a real jump (42 pt >> 1 pixel) followed by a sub-half-frame tail is still caught
+  let real_jump = [
+    (5485.34, 5493.59, 348.2),
+    (5494.81, 5499.83, 348.2),
+    (5506.05, 5506.26, 306.2),
+    (5514.39, 5514.39, 306.2),
+  ]
+  let (jump_said, _) = sizes_steady_fault(real_jump, p60, turned=-1.0, px=0.5)
+  assert_true(jump_said is Some(_), msg="real jump must still be caught")
+}

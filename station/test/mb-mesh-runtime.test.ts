@@ -34,9 +34,9 @@ import type { Stream } from "../src/mesh/endpoint.ts";
 import { bindStation } from "../src/mesh/native.ts";
 import { subOf } from "../src/mesh/person-chains.ts";
 import { pathsOf, sentOn, slowly } from "../src/mesh/reply-watch.ts";
-import { FrameLatency, LinkLoss, LoopStall, Pacer, Sharpener, Sizer, isFps, ownRate, queueMs, rateCeiling } from "../src/mesh/screen-pace.ts";
+import { FrameLatency, LinkLoss, LoopStall, Pacer, Sharpener, Sizer, isFps, ownRate, queueMs, rateCeiling, startRate } from "../src/mesh/screen-pace.ts";
 import {
-  FrameIn, answerScreen, asked, clipPayload, configPayload, frame, limitIn, parseClip, parseFill, parseInput, parseLook, parsePasskey, parseResolution, parseReveal,
+  FrameIn, answerScreen, asked, clipPayload, configPayload, cursorPayload, frame, limitIn, parseClip, parseFill, parseInput, parseLook, parsePasskey, parseResolution, parseReveal,
   parseScale, parseWindowPick, videoPayload,
 } from "../src/mesh/screens.ts";
 import { SERVED_ROUTES, SERVED_STEADY_MS, Served, type ServingProcess } from "../src/mesh/served.ts";
@@ -354,6 +354,18 @@ test("what a view's pace asks, as screen-pace.ts's functions have it", { skip },
   }
   for (const v of [120, 90, 60, 30, 15, 0, 24, "60", null, 60.0000001, true]) await same("isFps", { v }, () => isFps(v));
   for (const rtt of [0, 10, 59, 60, 61, 300.5]) await same("queueMs", { rtt }, () => queueMs(rtt));
+  const way = (o: Json) => ({ selected: true, relay: null, ip: "10.0.0.2:7000", rttMs: 5, txPackets: 1, lostPackets: 0, ...o });
+  const ways: Json[] = [
+    [], [way({})], [way({ rttMs: 12 })], [way({ rttMs: 12.0001 })], [way({ rttMs: 40 })], [way({ rttMs: 41 })], [way({ rttMs: 100 })], [way({ rttMs: 100.5 })],
+    [way({ rttMs: null })], [way({ rttMs: 0 })], [way({ rttMs: -3 })], [way({ rttMs: "5" })], [way({ ip: "" })], [way({ ip: null })], [way({ relay: "" })],
+    [way({ relay: "https://r/", ip: null, rttMs: 35 })], [way({ relay: "https://r/", ip: null, rttMs: 35.5 })], [way({ relay: "https://r/", rttMs: 3 })], [way({ relay: "https://r/", rttMs: null })],
+    [way({ selected: false, rttMs: 3 }), way({ selected: false, relay: "https://r/", rttMs: 200 })], [way({ selected: false, relay: "https://r/", rttMs: 20 }), way({ selected: false, rttMs: 30 })],
+    [way({ selected: false, relay: "https://r/", ip: null, rttMs: 20 }), way({ selected: false, relay: "https://r2/", ip: null })], [way({ selected: false, rttMs: 3 }), way({ relay: "https://r/", rttMs: 200 })],
+  ];
+  await same("startRate", {}, () => startRate());
+  for (const paths of ways) await same("startRate", { paths }, () => startRate(paths));
+  const cursors: Json[] = [null, { x: 0.25, y: 0.5, shape: "text" }, { x: 0.123456, y: 0.987654 }, { x: -1, y: 2, shape: "" }, { x: 1, y: 0, shape: "x".repeat(64) }, { x: 1, y: 0, shape: "x".repeat(65) }, { x: 0.5, y: 0.5, shape: "é中".repeat(10) }, { x: 0.99999, y: 0.000007 }, { y: 0.5 }];
+  for (const cursor of cursors) await same("cursorPayload", { cursor }, () => hex(cursorPayload(cursor)));
 });
 
 /// The pace's things walked through random steps on both, each answer compared.
@@ -409,8 +421,9 @@ test("a view's pacer, sizer, sharpener and frame latency, step for step, on a ra
             latency.sent(capture);
             await ask(l, "sent", { ts: capture });
             const rate = r.next() < 0.2 ? null : pacer.rate();
-            sharpen.sent(NOW, rate);
-            await ask(h, "sent", { now: NOW, ...(rate !== null ? { rate } : {}) });
+            const key = r.next() < 0.1;
+            sharpen.sent(NOW, rate, key);
+            await ask(h, "sent", { now: NOW, ...(rate !== null ? { rate } : {}), key });
           }
           break;
         }
@@ -457,6 +470,8 @@ test("a view's pacer, sizer, sharpener and frame latency, step for step, on a ra
           const rate = r.pick([null, pacer.rate(), 5_000_000]);
           assert.equal(await ask(h, "left", { now: NOW }), sharpen.left(NOW), `${step_} left`);
           assert.equal(await ask(h, "due", { now: NOW, ...(rate !== null ? { rate } : {}) }), sharpen.due(NOW, rate), `${step_} due`);
+          const moving = r.pick([null, pacer.rate(), 5_000_000, 40_000_000]);
+          assert.equal(await ask(h, "dueMoving", { now: NOW, ...(moving !== null ? { rate: moving } : {}) }), sharpen.dueMoving(NOW, moving), `${step_} dueMoving`);
           break;
         }
         default:
@@ -623,6 +638,7 @@ test("a view's frames, its ask and every frame a client sends, checked as screen
     { control: true, fit: { width: 100, height: 844, scale: 3 } }, { control: false, fit: { width: 390, height: 844, scale: 3 } }, { control: true, fit: { width: 390.6, height: 2000, scale: 4.5 } },
     { codecs: ["jpeg", "jpeg"], fps: 24, quality: "best", gamut: "srgb", client: 5, app: "", self: "😀".repeat(40), taken: "yes", maxWidth: -3, maxHeight: Number.NaN },
     { client: "\u{e0001}tag\u{e0020}", app: "­؀x", maxWidth: 1919.5, maxHeight: 1080.49 },
+    { codecs: ["h264"], binaryCursor: true, taken: true }, { codecs: ["h264"], binaryCursor: true, peek: true }, { codecs: ["h264"], binaryCursor: 1 }, { codecs: ["h264"], binaryCursor: false },
   ];
   for (const screen of screens) await same("asked", { screen }, () => asked(screen));
   for (const kind of [16, 19, 20]) await same("limitIn", { kind }, () => limitIn(kind));
@@ -1468,6 +1484,24 @@ test("a screen's view ending every way it ends", { skip }, async () => {
     { op: "paths", paths: way(400, 90, "p2") }, { op: "advance", ms: 1000 }, { op: "paths", paths: [] }, { op: "advance", ms: 61_000 }, { op: "clientEnd" }, { op: "advance", ms: 1000 },
   ], "lost on its link");
   await bothScreens({ ...lossy, head: viewHead({ screen: { codecs: ["jpeg"], peek: true } }), source: browserSource({ peek: true }) }, [{ op: "paths", paths: way(300, 50) }, { op: "advance", ms: 2000 }], "a preview's loss");
+});
+
+test("a screen's view that reads `cursor` frames, started at the rate its link carries, its moving screen's key frames asked again", { skip }, async () => {
+  const lan = [{ id: "p1", selected: true, relay: null, ip: "192.168.1.9:7000", rttMs: 3, txPackets: 0, lostPackets: 0 }];
+  const cursorSteps: Json[] = [
+    vframe(1_000, { key: true, config: { codec: "h264", width: 1920, height: 1080 } }),
+    { op: "listener", name: "watchCursor", value: { x: 0.123456, y: 0.5, shape: "pointer" } }, { op: "listener", name: "watchCursor", value: null },
+    { op: "listener", name: "watchCursor", value: { x: 2, y: -1, shape: "x".repeat(65) } }, { op: "clientEnd" },
+  ];
+  const binary = { head: viewHead({ screen: { codecs: ["h264"], control: true, binaryCursor: true } }), viewer: member, source: browserSource(), view: fullView(), drive: { control: true }, paths: lan };
+  await bothScreens(binary, cursorSteps, "cursor frames on a LAN");
+  await bothScreens({ ...binary, head: viewHead({ screen: { codecs: ["h264"], control: true } }) }, cursorSteps, "a client before cursor frames");
+  await bothScreens({ ...binary, paths: [{ ...lan[0], relay: "https://r1/", ip: null, rttMs: 20 }] }, [{ op: "clientEnd" }], "a near relay");
+  // frames at 60 a second, each acknowledged: the rate climbs, a key frame asked once it doubled the last one's
+  const moving: Json[] = [vframe(1_000, { key: true, config: { codec: "h264", width: 1920, height: 1080 } })];
+  for (let i = 1; i < 200; i++) moving.push({ op: "advance", ms: 17 }, ackOf(i * 1_000), vframe((i + 1) * 1_000, i % 90 === 0 ? { key: true } : {}));
+  moving.push({ op: "clientEnd" });
+  await bothScreens({ ...binary, paths: undefined }, moving, "a screen that keeps changing");
 });
 
 test("a screen's view on a random link: frames, acknowledgements, sound and time, step for step", { skip }, async () => {

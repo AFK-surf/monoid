@@ -1,6 +1,8 @@
 // A view of one of the station's screens over a member's link ("Wire"): a stream whose head
 // line has a `screen` object, answered 200 `application/x-stillfail-screen`, then frames both ways, each a kind byte,
-// its payload's length (4 bytes, big-endian) and the payload. Station → client: `config`, `video`, `state`; client →
+// its payload's length (4 bytes, big-endian) and the payload. Station → client: `config`, `video`, `state`, and
+// `cursor` to a client that asked for it (`binaryCursor`: the pointer in a few bytes, cursorPayload, never a state's
+// JSON); client →
 // station: `input`, `ack`, `keyframe`, `sound` (1 byte: 0 the client muted the sound, none goes; 1 on again), `look`
 // (the part of the screen it shows, zoomed in: its frames are then of that part, as large as the client shows it, each
 // config saying which part); and the screen's clipboard both ways (`clipboard`), for a view that drives it
@@ -22,11 +24,11 @@ import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, typ
 import { type Viewer, readOnly } from "./credential.ts";
 import type { Connection } from "./endpoint.ts";
 import type { Stream } from "./native.ts";
-import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling } from "./screen-pace.ts";
+import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling, startRate } from "./screen-pace.ts";
 import { writeLine } from "./serve.ts";
 
 export const SCREEN_TYPE = "application/x-stillfail-screen";
-export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21 } as const;
+export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, cursor: 7, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21 } as const;
 /// A client's frame is an input event at most: one larger ends the view.
 export const MAX_IN = 64 * 1024;
 /// A client's `clipboard` frame is its flags, its type and a picture at most.
@@ -54,6 +56,21 @@ export function videoPayload(f: Frame): Buffer {
   head[0] = f.key ? 1 : 0;
   head.writeBigUInt64BE(BigInt(Math.max(0, Math.floor(f.ts))), 1);
   return Buffer.concat([head, f.data]);
+}
+
+/// The most of a pointer's shape a `cursor` frame carries (its UTF-8): a longer one goes without it.
+export const CURSOR_SHAPE_MAX = 64;
+
+/// A `cursor` frame's payload: none for no pointer shown; else x and y (0..1 of the screen, each in 16 bits,
+/// big-endian, of 65535) and the shape's UTF-8 (none: no shape said).
+export function cursorPayload(cursor: { x: number; y: number; shape?: string } | null): Buffer {
+  if (cursor === null) return Buffer.alloc(0);
+  const shape = typeof cursor.shape === "string" ? Buffer.from(cursor.shape, "utf8") : Buffer.alloc(0);
+  const out = Buffer.alloc(4 + (shape.length <= CURSOR_SHAPE_MAX ? shape.length : 0));
+  out.writeUInt16BE(Math.round(unit(num(cursor.x) ? cursor.x : 0) * 65535), 0);
+  out.writeUInt16BE(Math.round(unit(num(cursor.y) ? cursor.y : 0) * 65535), 2);
+  if (out.length > 4) shape.copy(out, 4);
+  return out;
 }
 
 /// A clip as a `clipboard` frame's payload has it after its flags (station → client: none): its type byte, its bytes.
@@ -215,8 +232,9 @@ const QUIET = 10;
 /// shows a video tagged Display P3 as such (none: sRGB's colours); `client` and `app`: the app's own name and kind, to tell
 /// its people which device a view is on; `audio: "pcm_s16le"` the computer's sound, with `opus` where the client
 /// decodes Opus too (a station from before sends PCM to it); `self`: the device's main id, for it to know its own views; `taken`: its person
-/// asked to drive it (控制, 接管): it takes it from whoever else drives it, and over having been made to only look (hub.ts `drive`).
-export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean } {
+/// asked to drive it (控制, 接管): it takes it from whoever else drives it, and over having been made to only look (hub.ts `drive`);
+/// `binaryCursor`: the client reads the pointer as `cursor` frames (none from a client before them, nor for a preview).
+export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; binaryCursor?: boolean } {
   const bound = (v: unknown, otherwise: number) => (num(v) ? Math.min(8192, Math.max(16, Math.round(v))) : otherwise);
   const codecs = Array.isArray(screen.codecs) ? CODECS.filter((c) => screen.codecs.includes(c)) : [];
   // A preview (`peek`, a link's card in a chat) only looks.
@@ -227,7 +245,7 @@ export function asked(screen: any): { maxWidth: number; maxHeight: number; codec
   const fit = control && f && side(f.width) && side(f.height) && num(f.scale) && f.scale >= 1 && f.scale <= 4 ? { width: Math.round(f.width), height: Math.round(f.height), scale: f.scale } : undefined;
   const quality: Quality | undefined = ["smooth", "hd", "original"].includes(screen.quality) && !peek ? screen.quality : undefined;
   const fps: Fps | undefined = isFps(screen.fps) && !peek ? screen.fps : undefined;
-  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}) };
+  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}) };
 }
 
 /// A word a client says of itself, as far as it is shown: a line's worth, none when it said none.
@@ -238,7 +256,7 @@ function said<K extends string>(field: K, v: unknown, most: number): { [F in K]?
 
 /// A stream whose head says `"screen"` (serve.ts dispatches it): a view of a screen, for as long as both sides keep it.
 /// `carry`: what came after the head line; `conn`: the connection it came on, whose paths say what of the view's link was
-/// lost (none: nothing said of it). Resolves once the view ended.
+/// lost (none: nothing said of it) and where it goes (what the view starts at: `startRate`). Resolves once the view ended.
 export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer, head: any, viewer: Viewer, up: () => boolean, clock: Clock.Clock = liveClock, conn?: Pick<Connection, "paths">): Promise<void> {
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(head.headers ?? {})) if (typeof v === "string") headers[k] = v;
@@ -273,11 +291,13 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   const driven = drives ? hub.drive(id, viewer.device, ask.taken === true, name) : { control: false, took: [] };
   // Asked once before the view opens: a front's connection reads its paths anew as it is asked, so what the view's loss
   // is counted from is the link's as the view begins, not as it was when last asked.
-  conn?.paths?.();
+  const initialPaths = conn?.paths?.();
+  // (a preview's at START_RATE: two pictures a second, no higher than the source's own)
+  const initialRate = ask.peek ? START_RATE : startRate(initialPaths);
   const noPasskeys = ask.passkeys === false || (ask.passkeys === undefined && (ask.app === "ios" || ask.app === "android" || ask.app === "web"));
   let view: ScreenView;
   try {
-    view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: START_RATE, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}) });
+    view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: initialRate, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}) });
   } catch (error) {
     if (error instanceof ScreenRefused) {
       // What is missing says it all, and where it is granted.
@@ -307,10 +327,10 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   // and taken from it they let a frame go past a queue the view's own time says is there (screens.test.ts, main
   // 167113d7, 40953448608: 18 frames asked for, not 17, on a loaded runner).
   const stall = clock === liveClock ? loopStall.use() : { stalled: () => 0, done: () => {} };
-  const pacer = new Pacer(now, START_RATE, ask.fps, stall.stalled);
+  const pacer = new Pacer(now, initialRate, ask.fps, stall.stalled);
   const sizer = new Sizer(now, { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ask.quality);
   const sleep = (ms: number) => Effect.runPromise(clock.sleep(Duration.millis(ms)));
-  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), now, sleep, ...(conn?.paths ? { conn } : {}) })
+  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true })
     .run()
     .finally(stall.done);
 }
@@ -349,8 +369,11 @@ class ViewSession {
   /// The keys down and the pointer as its input last left them: let go of if it is made to only look.
   readonly #keys = new Map<string, Extract<ScreenInput, { t: "key" }>>();
   #pointer: Extract<ScreenInput, { t: "pointer" }> | null = null;
-  /// The bit rate the source was last asked for.
+  /// The bit rate the source was last asked for, and the one it was opened at.
   #rate: number | null = null;
+  readonly #startRate: number;
+  /// The client reads the pointer as `cursor` frames (asked `binaryCursor`), not a state's JSON.
+  readonly #binaryCursor: boolean;
   /// A still screen's picture sent again sharper (screen-pace.ts Sharpener), on the view's clock.
   readonly #sharpen = new Sharpener();
   #stillWait = false;
@@ -394,7 +417,7 @@ class ViewSession {
   readonly #own: { maxWidth: number; maxHeight: number };
   #region: Region | null = null;
 
-  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths"> }) {
+  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean }) {
     this.hub = o.hub;
     this.id = o.id;
     this.source = o.source;
@@ -419,6 +442,8 @@ class ViewSession {
     this.#sleep = o.sleep;
     this.#lang = o.lang;
     this.#conn = o.conn;
+    this.#startRate = o.startRate ?? START_RATE;
+    this.#binaryCursor = o.binaryCursor === true;
     this.loss = new LinkLoss(o.now);
     // Its counters as the view begins: what went before is no part of it.
     if (this.#conn?.paths) this.loss.step(this.#conn.paths() ?? []);
@@ -429,9 +454,9 @@ class ViewSession {
 
   /// A frame went: once the screen has been still for STILL_MS (no frame after it), if the rate has gone up since, the
   /// source sends its picture again as a key frame at the rate it is asked now (a source with a rate of its own: a
-  /// video's, not JPEG's). One wait at a time, gone on from the last frame.
-  #still() {
-    this.#sharpen.sent(this.#now(), this.view.rate ? (this.#rate ?? START_RATE) : null);
+  /// video's, not JPEG's). One wait at a time, gone on from the last frame. `key`: the frame was a key frame.
+  #still(key = false) {
+    this.#sharpen.sent(this.#now(), this.view.rate ? (this.#rate ?? this.#startRate) : null, key);
     if (this.#stillWait) return;
     this.#stillWait = true;
     const wait = (ms: number) =>
@@ -571,7 +596,9 @@ class ViewSession {
     // The pointer, where the source's pictures leave it out (a video of the desktop): the client draws it.
     if (this.view.watchCursor) {
       this.#unpoint = this.view.watchCursor((cursor) => {
-        if (!this.#closed) void this.#state({ cursor });
+        if (this.#closed) return;
+        if (this.#binaryCursor) void this.#send(KIND.cursor, cursorPayload(cursor));
+        else void this.#state({ cursor });
       });
     }
     // A desktop's windows, and the one shown alone: the viewer's tabs (the user, 2026-11-13: 「远程控制也支持按窗口查看」).
@@ -739,7 +766,9 @@ class ViewSession {
       this.pacer.sent(next.ts, next.data.length);
       this.latency.sent(next.ts);
       await this.#send(KIND.video, videoPayload(next));
-      this.#still();
+      this.#still(next.key);
+      // A screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's.
+      if (!this.#closed && this.view.rate && this.#sharpen.dueMoving(this.#now(), this.#rate)) this.view.keyframe();
     }
   }
 

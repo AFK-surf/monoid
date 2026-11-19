@@ -28,6 +28,8 @@ pub fn pid() -> Int32
 
 pub fn run(shell_dir? : String, async (Host) -> Unit) -> Int32
 
+pub fn unique_tmp(String) -> String
+
 pub fn wall_ms() -> Int64
 
 // Errors
@@ -46,10 +48,13 @@ pub struct Host {
 }
 pub async fn Host::accept(Self, @json.Json) -> Conn
 pub fn Host::conn(Self, @json.Json, peer? : String) -> Conn
+pub async fn Host::file_sha256(Self, String) -> String?
 pub async fn Host::line(Self) -> String?
 pub async fn Host::listen_close(Self, @json.Json) -> Unit noraise
 pub fn Host::listener_of(Self, @json.Json, retry_ms? : Int32) -> @net.Listener[Conn]
 pub fn Host::out(Self, Bytes) -> Unit
+pub async fn Host::read_bytes(Self, String, from? : Int32, length? : Int32) -> Bytes?
+pub async fn Host::read_text(Self, String, strict? : Bool) -> String?
 pub fn Host::say(Self, String) -> Unit
 pub fn Host::say_bytes(Self, Bytes) -> Unit
 pub async fn Host::shell(Self, String, @json.Json, bytes? : Bytes, called? : (Int64) -> Unit) -> (@json.Json, Bytes?)
@@ -68,6 +73,8 @@ pub async fn Host::tcp_write(Self, @json.Json, Bytes) -> Unit
 pub fn Host::unended(Self) -> String
 pub async fn Host::unix_listen(Self, String) -> Listening
 pub async fn Host::unix_open(Self, String) -> Conn
+pub async fn Host::write_atomic(Self, String, Bytes, mode? : Int32, sync? : Bool, mkdir? : Bool, sep? : String) -> Unit
+pub async fn Host::write_private(Self, String, Bytes, sep? : String) -> Unit
 
 pub struct Listening {
   id : @json.Json

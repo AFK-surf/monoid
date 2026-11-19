@@ -40,19 +40,22 @@ export const sessionOps: Record<string, ReadOp> = {
     const keys = new Set(threads.flatMap((t) => t.sessions.map((m) => m.session)));
     const sessions = [...keys].flatMap((key) => {
       const row = getSession(s, key);
-      return row === null ? [] : [{ key: row.key, title: row.title, archivedAt: row.archivedAt, ws: row.ws }];
+      return row === null ? [] : [{ key: row.key, title: row.title, archivedAt: row.archivedAt, ws: row.ws, runtime: row.runtime, model: row.model, effort: row.effort, running: row.running, createdBy: row.createdBy }];
     });
     return { threads, sessions, total };
   },
   searchChatList: (s, a) => {
     const last = (id: number) => lastSaid(s, id);
-    if (a.limit === 0) return searchChats(s.db, a.ws, a.home, a.limit, a.query, last);
+    const filter = a.model !== undefined || a.createdBy !== undefined || a.archived !== undefined
+      ? { ...(typeof a.model === "string" ? { model: a.model } : {}), ...(typeof a.createdBy === "string" ? { createdBy: a.createdBy } : {}), ...(typeof a.archived === "boolean" ? { archived: a.archived } : {}) }
+      : undefined;
+    if (a.limit === 0) return searchChats(s.db, a.ws, a.home, a.limit, a.query, last, undefined, filter);
     // Keep the readiness decision and all the texts tested by this search in the same snapshot.
     s.db.exec("SAVEPOINT search_chat_list_read");
     try {
       const summary = legacyMergedReadReady(s.db) ? undefined
         : (id: number) => ({ saidText: lastSaidText(s, id), firstText: firstText(s, id) });
-      return searchChats(s.db, a.ws, a.home, a.limit, a.query, last, summary);
+      return searchChats(s.db, a.ws, a.home, a.limit, a.query, last, summary, filter);
     } finally { s.db.exec("RELEASE search_chat_list_read"); }
   },
   /// A thread's latest `limit` messages, oldest first: the archive review's (sessions/review.ts).

@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import { Events } from "../src/api/events.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
-import { FrameIn, KIND, MAX_CLIP_IN, MAX_IN, SCREEN_TYPE, answerScreen, asked, frame, parseClip, parseInput, parseWindowPick } from "../src/mesh/screens.ts";
+import { FrameIn, KIND, MAX_CLIP_IN, MAX_IN, SCREEN_TYPE, answerScreen, asked, cursorPayload, frame, parseClip, parseInput, parseWindowPick } from "../src/mesh/screens.ts";
 import { ALPN, Reader, writeLine } from "../src/mesh/serve.ts";
 import { HELPER_APP, HelperApp } from "../src/helper/app.ts";
 import { Desktop, HelperView, TO_HELPER, helperClip, helperMessage } from "../src/screens/desktop.ts";
@@ -30,7 +30,7 @@ import { KEYS, WinInput } from "../src/screens/win-input.ts";
 import { type AudioFrame, CLIP_PNG_MAX, CLIP_TEXT_MAX, type Clip, type ClipType, type Frame, type ScreenAccess, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, codecFor } from "../src/screens/source.ts";
 import { WINDOWS } from "../src/platform/index.ts";
 import { settle, testClock } from "./hub-fakes.ts";
-import { LOSS_EVERY_MS, LOSS_WINDOW_MS, LinkLoss, type LinkPath, MAX_UNACKED, QUEUE_MS, START_RATE, START_UNACKED, STILL_MS, rateCeiling } from "../src/mesh/screen-pace.ts";
+import { LOSS_EVERY_MS, LOSS_WINDOW_MS, LinkLoss, type LinkPath, MAX_UNACKED, MOVING_SHARPEN_MS, QUEUE_MS, START_RATE, START_UNACKED, STILL_MS, UP_EVERY_MS, rateCeiling } from "../src/mesh/screen-pace.ts";
 import type { Clock } from "effect";
 import { memoryMesh, vanish } from "./memory-mesh.ts";
 import { Superseded } from "../src/mesh/superseded.ts";
@@ -654,7 +654,10 @@ test("a link's loss over the window: a handful of packets says 0, a path gone or
   assert.equal(loss.step(at(350, 0)), null, "the same said once");
 });
 
-test("a still screen's picture goes again sharper as the rate goes up, a key frame each STILL_MS, until it is at the most it is asked at", async () => {
+/// A still screen's picture sharpened a step at a time: each a key frame, the next no sooner than the pace steps up.
+const STEP_MS = Math.max(STILL_MS, UP_EVERY_MS);
+
+test("a still screen's picture goes again sharper as the rate goes up, a key frame each step, until it is at the most it is asked at", async () => {
   const hub = new ScreenHub();
   const source = new FakeSource();
   source.make = () => new StillView();
@@ -670,7 +673,7 @@ test("a still screen's picture goes again sharper as the rate goes up, a key fra
   for (;;) {
     await v.stream.write(frame(KIND.ack, ts8(ts)));
     await settle();
-    await time.adjust(STILL_MS);
+    await time.adjust(STEP_MS);
     await settle();
     if (view.keyframes === steps.length) break;
     steps.push(view.rates.at(-1)!);
@@ -680,7 +683,7 @@ test("a still screen's picture goes again sharper as the rate goes up, a key fra
   }
   // Up from START_RATE by the pace's steps to the most 自动 asks (1920×1080's), and then no more.
   assert.deepEqual(steps, [2_250_000, 3_375_000, 5_062_500, 7_593_750, 11_390_625, 17_085_938, 25_628_906, rateCeiling(1920, 1080)]);
-  await time.adjust(5 * STILL_MS);
+  await time.adjust(5 * STEP_MS);
   await settle();
   assert.equal(view.keyframes, steps.length);
   await v.stream.finish();
@@ -701,7 +704,7 @@ test("the rate goes up to its pixels × 16 whatever the 画质 but 流畅, × 6 
     for (let i = 0; i < 20; i++) {
       await v.stream.write(frame(KIND.ack, ts8(ts)));
       await settle();
-      await time.adjust(STILL_MS);
+      await time.adjust(STEP_MS);
       await settle();
       if (view.keyframes === i) break;
       ts = Number((await until(v.frames, KIND.video)).readBigUInt64BE(1));
@@ -785,6 +788,115 @@ test("the pointer a source says beside its pictures goes to the view as its stat
   await v.stream.finish();
   await v.served;
   assert.equal(view.pointer, null, "no longer heard once the view ended");
+});
+
+test("a client that reads `cursor` frames is sent the pointer in a few bytes, never a state of it; one before them a state as before", async () => {
+  assert.equal(KIND.cursor, 7);
+  assert.equal(asked({ codecs: ["h264"], binaryCursor: true }).binaryCursor, true);
+  assert.equal("binaryCursor" in asked({ codecs: ["h264"], binaryCursor: true, peek: true }), false, "a preview shows no pointer");
+  for (const v of [undefined, false, 1, "true"]) assert.equal("binaryCursor" in asked({ codecs: ["h264"], binaryCursor: v }), false, String(v));
+  // the payload: x and y of 65535 (big-endian), the shape's UTF-8; none for no pointer
+  assert.deepEqual(cursorPayload(null), Buffer.alloc(0));
+  assert.deepEqual(cursorPayload({ x: 0.25, y: 0.5, shape: "text" }), Buffer.from([0x40, 0x00, 0x80, 0x00, ...Buffer.from("text")]));
+  assert.deepEqual(cursorPayload({ x: -1, y: 2 }), Buffer.from([0, 0, 0xff, 0xff]));
+  assert.deepEqual(cursorPayload({ x: 1, y: 0, shape: "x".repeat(65) }), Buffer.from([0xff, 0xff, 0, 0]), "a shape too long goes without it");
+  assert.equal(cursorPayload({ x: 1, y: 0, shape: "é".repeat(32) }).length, 4 + 64);
+  for (const binaryCursor of [true, false]) {
+    const hub = new ScreenHub();
+    const source = new FakeSource();
+    hub.add(source);
+    const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, ...(binaryCursor ? { binaryCursor } : {}) });
+    await until(v.frames, KIND.video);
+    const view = source.views[0]!;
+    view.pointer!({ x: 0.123456, y: 0.987654, shape: "pointer" });
+    (view.pointer as unknown as (c: null) => void)(null);
+    await v.stream.finish();
+    const cursors: Buffer[] = [];
+    const states: any[] = [];
+    for (;;) {
+      const got = await v.frames.next();
+      if (got === null) break;
+      if (got.kind === KIND.cursor) cursors.push(got.payload);
+      if (got.kind === KIND.state) states.push(json(got.payload));
+    }
+    await v.served;
+    const said = states.filter((s) => "cursor" in s).map((s) => s.cursor);
+    if (binaryCursor) {
+      assert.deepEqual(cursors, [Buffer.from([0x1f, 0x9b, 0xfc, 0xd6, ...Buffer.from("pointer")]), Buffer.alloc(0)]);
+      assert.equal(cursors[0]!.length + 5, 16, "a whole frame of 16 bytes");
+      assert.deepEqual(said, [], "no state of it");
+    } else {
+      assert.deepEqual(cursors, []);
+      assert.deepEqual(said, [{ x: 0.123456, y: 0.987654, shape: "pointer" }, null]);
+    }
+  }
+});
+
+test("a view starts at the rate its link is known to carry as it opens: a LAN's higher; a preview, or no link known, at START_RATE", async () => {
+  const way = (o: Partial<LinkPath>): LinkPath => ({ selected: true, relay: null, ip: "192.168.1.9:7000", rttMs: 4, txPackets: 0, lostPackets: 0, ...o });
+  for (const [paths, rate] of [[undefined, START_RATE], [[way({})], 12_000_000], [[way({ rttMs: 30 })], 6_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 20 })], 4_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 150 })], START_RATE]] as const) {
+    const hub = new ScreenHub();
+    const source = new FakeSource();
+    source.make = () => new StillView();
+    hub.add(source);
+    let asked = 0;
+    const v = await open(hub, member, undefined, undefined, undefined, paths ? () => (asked++, paths.map((p) => ({ ...p }))) : undefined);
+    assert.equal(source.opened[0]!.bitrate, rate, JSON.stringify(paths));
+    if (paths) assert.equal(asked, 2, "its ways asked as before: once as it opens, once for the loss's counters");
+    await until(v.frames, KIND.video);
+    await v.stream.finish();
+    await v.served;
+  }
+  const hub = new ScreenHub();
+  const source = Object.assign(new FakeSource(), { peek: true });
+  hub.add(source);
+  const card = await open(hub, member, { maxWidth: 480, maxHeight: 300, codecs: ["h264"], peek: true }, undefined, undefined, () => [way({})]);
+  assert.equal(source.opened[0]!.bitrate, START_RATE, "a preview");
+  await card.stream.finish();
+  await card.served;
+});
+
+test("a screen that keeps changing: a key frame asked once the rate doubled its last key frame's and MOVING_SHARPEN_MS went, never before", async () => {
+  class MovingView extends FakeView {
+    rates: number[] = [];
+    // (a 1080p picture: the rate may go up to its pixels × 16)
+    override next(): Promise<Frame | null> {
+      return super.next().then((f) => (f?.config ? { ...f, config: { ...f.config, width: 1920, height: 1080 } } : f));
+    }
+    rate(bits: number) {
+      this.rates.push(bits);
+    }
+  }
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new MovingView();
+  hub.add(source);
+  const time = testClock();
+  const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, fps: 60 }, undefined, time.clock);
+  const view = source.views[0] as MovingView;
+  // A frame each 1/60 s, each acknowledged as it comes: the rate goes up by START_UP from START_RATE each UP_EVERY_MS,
+  // the screen never still.
+  const read = (async () => {
+    for (;;) {
+      const got = await v.frames.next();
+      if (got === null) return;
+      if (got.kind === KIND.video) await v.stream.write(frame(KIND.ack, ts8(Number(got.payload.readBigUInt64BE(1)))));
+    }
+  })();
+  let asked: number | null = null;
+  // (to before the rate could double the asked key frame's again: 1.5 s on, START_UP twice more)
+  for (let elapsed = 0; elapsed < 2900; ) {
+    await time.adjust(5);
+    elapsed += 5;
+    await settle();
+    if (asked === null && view.keyframes > 0) asked = elapsed;
+  }
+  assert.ok(asked !== null && asked >= MOVING_SHARPEN_MS, `a key frame asked, not before MOVING_SHARPEN_MS: ${asked}; frames ${view.asked}, rates ${view.rates}`);
+  assert.ok(Math.max(...view.rates) >= 2 * START_RATE, `the rate doubled: ${view.rates}`);
+  assert.equal(view.keyframes, 1, "once: the rate no higher since than double its again");
+  await v.stream.finish();
+  await v.served;
+  await read;
 });
 
 test("the display's scale: told to a person who drives it, set as they ask; a read-only member neither hears nor sets it", async () => {

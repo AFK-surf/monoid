@@ -8,7 +8,7 @@
 
 ///|
 /// The connects' files on this machine (connects_hub's `Fs`), through the shell's calls.
-fn connects_fs() -> @connects_hub.Fs {
+fn connects_fs(host : @host.Host) -> @connects_hub.Fs {
   let s = sep()
   let fail = (e : Error) => BusError("\{e}")
   {
@@ -19,7 +19,12 @@ fn connects_fs() -> @connects_hub.Fs {
         None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
       }
     },
-    read_bytes: async fn(p) { @drive.read_all(p) catch { e => raise fail(e) } },
+    read_bytes: async fn(p) {
+      match (host.read_bytes(p) catch { e => raise fail(e) }) {
+        Some(b) => b
+        None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
+      }
+    },
     size: async fn(p) { (@drive.stat(p) catch { e => raise fail(e) }).size },
     write_text: async fn(p, t) {
       ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))
@@ -41,8 +46,7 @@ fn connects_fs() -> @connects_hub.Fs {
     mkdir: async fn(p) { @drive.mkdir(p, true) catch { e => raise fail(e) } },
     readdir: async fn(p) { @drive.names(p) catch { e => raise fail(e) } },
     write_private: async fn(p, t) {
-      ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))
-      @drive.write_private(p, t) catch { e => raise fail(e) }
+      host.write_private(p, @utf8.encode(t), sep=s) catch { e => raise fail(e) }
     },
   }
 }
@@ -302,7 +306,7 @@ async fn P55::start_connects(self : P55) -> Unit {
   let bus = self.bus
   let host = bus.host
   let data = bus.data
-  let fs = connects_fs()
+  let fs = connects_fs(host)
   let log = connects_log()
   let clock = p5_connects_clock()
   let (zh, en) = catalogs_json()

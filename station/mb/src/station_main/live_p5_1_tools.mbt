@@ -229,15 +229,8 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
       let got = if want <= 0 {
         b""
       } else {
-        let said = try {
-          host.shell_sync("fs.bytes", { "path": Json::string(p), "from": Json::number(offset.to_double()), "length": Json::number(want.to_double()) })
-        } catch {
-          e => raise ToolFailed("failed", "\{e}")
-        }
-        match said {
-          String(hex) => @cloud_lock.hex_bytes(hex)
-          _ => b""
-        }
+        let said = host.read_bytes(p, from=offset, length=want) catch { e => raise ToolFailed("failed", "\{e}") }
+        said.unwrap_or(b"")
       }
       Json::object({
         "content_base64": Json::string(@base64.encode(got)),

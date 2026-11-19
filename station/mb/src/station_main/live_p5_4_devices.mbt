@@ -344,9 +344,13 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::null()
     }
     // the files
-    "fs.read" => Json::string(@utf8.decode_lossy(@drive.read_all(s(0))))
+    "fs.read" =>
+      match host.read_text(s(0)) {
+        Some(t) => Json::string(t)
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
+      }
     "fs.write" => {
-      @drive.write_private(s(0), s(1))
+      host.write_private(s(0), @utf8.encode(s(1)), sep=sep())
       Json::null()
     }
     "fs.rename" => {
@@ -379,7 +383,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       @drive.mkdir(dir, true, mode=0o700)
       Json::string(dir)
     }
-    "fs.sha256" => Json::string(@drive.hex(@drive.sha256_bytes(@drive.read_all(s(0)))))
+    "fs.sha256" =>
+      match host.file_sha256(s(0)) {
+        Some(h) => Json::string(h)
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
+      }
     // the processes
     "proc.signal" => {
       ignore(kill(p54_int(a(0)), s(1)))

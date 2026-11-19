@@ -441,9 +441,12 @@ pub fn Store::usage_active_sessions(
   since : Json,
 ) -> Array[Json] raise {
   let out = []
+  let seen : Set[String] = Set([])
   for r in self.all(active_sessions, [since]) {
     let s = col(r, "session_key")
-    if !out.contains(s) {
+    let key = s.stringify()
+    if !seen.contains(key) {
+      seen.add(key)
       out.push(s)
     }
   }

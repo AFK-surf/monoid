@@ -1530,7 +1530,8 @@ test("the agents' side takes the sessions up and follows its workspaces, as agen
   assert.deepEqual(started.answer, { result: { $undefined: true } });
   const url = "http://127.0.0.1:4750/mcp";
   const both2 = (call: string, args: Json[] = []) => [["actor", "cl:C1:1000.000001", call, args], ["actor", "w2:C1:1100.000001", call, args]];
-  assert.deepEqual(started.did, [["agents.openDoor"], ...both2("toolsAt", [url]), ...both2("release"), ...both2("kick"), ["agents.along", "taken"], ...both2("kick"), ["agents.jobsRelaunch", null]]);
+  // (what was cut off found while turns are held, then each session let go once: released, never kicked as well)
+  assert.deepEqual(started.did, [["agents.openDoor"], ...both2("toolsAt", [url]), ["agents.along", "taken"], ...both2("release"), ["agents.jobsRelaunch", null]]);
   // Out of a workspace it joined: its sessions end; back in it: they resume, and the parts are told each time.
   const left = await pair.callB("agents.follow", place({ joined: [] }));
   assert.deepEqual(left.did, [["actor", "w2:C1:1100.000001", "suspend", ["the station left its workspace"]], ["agents.along", "changed"]]);
@@ -1541,7 +1542,7 @@ test("the agents' side takes the sessions up and follows its workspaces, as agen
   assert.deepEqual(out.did, [["actor", "cl:C1:1000.000001", "suspend", []], ["actor", "w2:C1:1100.000001", "suspend", []], ["drivers", "shutdown", [true]], ["agents.along", "left"], ["agents.jobsStopAll", "the station was removed from its workspace"]]);
   assert.deepEqual((await pair.callB("held", "cl:C1:1000.000001")).answer, { result: true });
   const inAgain = await pair.callB("agents.follow", place());
-  assert.deepEqual(inAgain.did, [["agents.along", "joined"], ...both2("kick"), ["agents.jobsRelaunch", null], ...both2("release"), ...both2("kick")]);
+  assert.deepEqual(inAgain.did, [["agents.along", "joined"], ["agents.jobsRelaunch", null], ...both2("release")]);
   assert.deepEqual((await pair.callB("held", "cl:C1:1000.000001")).answer, { result: false });
   // A new home: one it had joined took over (the old home's chats said to be that one's).
   assert.deepEqual((await pair.callB("agents.follow", place({ home: "ws2", joined: [], first: "ws2" }))).did, [["live", "cl:C1:1000.000001", false]]);

@@ -12,7 +12,7 @@ import * as keymap from "./keymap.ts";
 import { SCREEN_FPS, type ScreenFps } from "./station/wire.ts";
 import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
-import { setOwnBuild } from "./station/oldest.ts";
+import { isBuildStale, ownBuiltAt, setOwnBuild, setOwnBuiltAt, STALE_BUILD_MS } from "./station/oldest.ts";
 
 const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "experimental", "reports"];
 const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
@@ -162,11 +162,13 @@ export function setCounted(on: boolean): void {
 
 /// The prefs as they go out: the current product name, the reader's settings whole, the bottom bars (each workspace's
 /// too), the faces, and the keymap and the rail.
-export function shown(v: unknown): unknown {
+export function shown(v: unknown, c?: { now: number; reached?: (at: number, later?: boolean) => boolean }): unknown {
   if (!isObject(v)) return v;
   const by = isObject(v.barsBy) ? Object.fromEntries(Object.entries(v.barsBy).map(([ws, b]) => [ws, barsOf(b)])) : {};
   const test = brand.isTestChannel();
-  return { ...v, productName: brand.name(), product: brand.current().name, testChannel: test, experimental: experimentalOf(v), features: featuresOf(v, test), experimentalItems: experimentalItemsOf(v, test), listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v), ...(counted ? { counted: true } : {}) };
+  const built = ownBuiltAt();
+  const staleBuild = built > 0 && (c?.reached ? c.reached(built + STALE_BUILD_MS, true) : isBuildStale(built, c?.now ?? 0));
+  return { ...v, productName: brand.name(), product: brand.current().name, testChannel: test, experimental: experimentalOf(v), features: featuresOf(v, test), experimentalItems: experimentalItemsOf(v, test), listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v), ...(counted ? { counted: true } : {}), ...(staleBuild ? { staleBuild: true } : {}) };
 }
 
 /// What is kept, as kept (no defaults filled in).
@@ -374,6 +376,8 @@ export function device(data: Data, facts: unknown): void {
   if (!["web", "desktop", "android", "ios"].includes(app)) throw CoreError.invalid(t("core-misc.params.app"));
   const build = said("build");
   setOwnBuild(build);
+  const builtAt = isObject(facts) ? facts.builtAt : undefined;
+  if (typeof builtAt === "number" && Number.isFinite(builtAt) && builtAt > 0) setOwnBuiltAt(builtAt);
   const agent = said("userAgent");
   const model = said("model");
   const machine = said("machine").slice(0, 60);

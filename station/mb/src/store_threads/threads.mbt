@@ -622,6 +622,15 @@ pub fn Store::recent_chat_list(self : Store, ws : Json, home : Json, limit : Jso
       put_col(out, "title", r, "title")
       put_col(out, "archivedAt", r, "archived_at")
       out["ws"] = col(r, "ws")
+      out["runtime"] = col(r, "runtime")
+      out["model"] = col(r, "model")
+      out["effort"] = col(r, "effort")
+      out["running"] = match col(r, "running") {
+        Number(n, ..) => Json::boolean(n != 0.0)
+        True => Json::boolean(true)
+        _ => Json::boolean(false)
+      }
+      out["createdBy"] = col(r, "created_by")
       sessions.push(Json::object(out))
     }
   }
@@ -647,11 +656,15 @@ fn js_text(v : Json) -> String {
 }
 
 ///|
-pub fn Store::search_chat_list(self : Store, ws : Json, home : Json, limit : Json, query : Json) -> Json raise {
+pub fn Store::search_chat_list(self : Store, ws : Json, home : Json, limit : Json, query : Json, filter? : Json = Json::null()) -> Json raise {
   if is_num(limit, 0.0) {
     return { "threads": [], "sessions": [], "total": 0 }
   }
   let q = text_of(query).unwrap_or("")
+  let fget = (k : String) => match filter { Object(o) => o.get(k); _ => None }
+  let filter_model = match fget("model") { Some(String(s)) if s != "" => Some(@jscase.lower(s)); _ => None }
+  let filter_creator = match fget("createdBy") { Some(String(s)) if s != "" => Some(@jscase.lower(s)); _ => None }
+  let filter_archived = match fget("archived") { Some(True) => Some(true); Some(False) => Some(false); _ => None }
   let threads = []
   let sessions : Array[(String, Json)] = []
   let mut total = 0
@@ -669,29 +682,71 @@ pub fn Store::search_chat_list(self : Store, ws : Json, home : Json, limit : Jso
       Object(o) => o.get(k).unwrap_or(Json::null())
       _ => Json::null()
     }
-    let first_text = col(row, "first_text")
-    let titles = [col(row, "title"), col(row, "auto_title"), first_text, ..members.map(m => field_of(m, "title"))].filter(t => !(t is Null))
-    let said_text = col(row, "said_text")
-    let haystack = @jscase.lower(
-      titles.map(js_text).join(" ") +
-      " " +
-      (if said_text is Null { "" } else { js_text(said_text) }) +
-      " " +
-      members.map(m => js_text(field_of(m, "session"))).join(" "),
-    )
-    if !haystack.contains(q) {
-      continue
+    if filter_archived is Some(want_archived) {
+      let hidden = !(col(row, "hidden_at") is Null)
+      let home_archived = match col(row, "home") {
+        String(h) => members.iter().any(m => js_text(field_of(m, "session")) == h && !(field_of(m, "archivedAt") is Null))
+        _ => false
+      }
+      if (hidden || home_archived) != want_archived {
+        continue
+      }
+    }
+    if filter_model is Some(want_model) {
+      if !members.iter().any(m => @jscase.lower(js_text(field_of(m, "model"))).contains(want_model)) {
+        continue
+      }
+    }
+    if filter_creator is Some(want_creator) {
+      let tc = @jscase.lower(js_text(col(row, "created_by")))
+      let matches_creator = (tc != "" && tc.contains(want_creator)) ||
+        members.iter().any(m => {
+          let c = @jscase.lower(js_text(field_of(m, "createdBy")))
+          c != "" && c.contains(want_creator)
+        })
+      if !matches_creator {
+        continue
+      }
+    }
+    let mut first_text = Json::null()
+    if q != "" {
+      first_text = col(row, "first_text")
+      let titles = [col(row, "title"), col(row, "auto_title"), first_text, ..members.map(m => field_of(m, "title"))].filter(t => !(t is Null))
+      let said_text = col(row, "said_text")
+      let haystack = @jscase.lower(
+        titles.map(js_text).join(" ") +
+        " " +
+        (if said_text is Null { "" } else { js_text(said_text) }) +
+        " " +
+        members.map(m => js_text(field_of(m, "session"))).join(" "),
+      )
+      if !haystack.contains(q) {
+        continue
+      }
     }
     total += 1
     if threads.length().to_double() < num(limit) {
+      if q == "" && col(row, "title") is Null && col(row, "auto_title") is Null {
+        first_text = col(row, "first_text")
+      }
       for m in members {
         if !(field_of(m, "present") is (Number(0.0, ..) | Null | False)) {
           let key = js_text(field_of(m, "session"))
+          let running = match field_of(m, "running") {
+            Number(n, ..) => Json::boolean(n != 0.0)
+            True => Json::boolean(true)
+            _ => Json::boolean(false)
+          }
           let value : Json = {
             "key": field_of(m, "session"),
             "title": field_of(m, "title"),
             "archivedAt": field_of(m, "archivedAt"),
             "ws": field_of(m, "ws"),
+            "runtime": match field_of(m, "runtime") { String(s) => Json::string(s); _ => Json::string("") },
+            "model": field_of(m, "model"),
+            "effort": field_of(m, "effort"),
+            "running": running,
+            "createdBy": field_of(m, "createdBy"),
           }
           match sessions.search_by(s => s.0 == key) {
             Some(i) => sessions[i] = (key, value)

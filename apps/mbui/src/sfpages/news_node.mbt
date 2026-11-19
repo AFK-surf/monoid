@@ -85,3 +85,72 @@ pub fn update_card_node(parent : @view.View, src : Source) -> Unit {
   )
   |> ignore
 }
+
+///|
+/// The over-7-day upgrade prompt card in `parent` (Small, Medium, and Large), drawn with the canonical
+/// `@sf.news_card_node` (same compact list-top card as `changelog_news_node` and `update_card_node`):
+/// action title on the head line, concise platform-specific note underneath flush with the icon, optional
+/// progress bar while checking/downloading/installing, and the whole card clickable with zero dead ends.
+pub fn stale_build_card_node(parent : @view.View, src : Source) -> Unit {
+  let icon = if @sfbase.stale_build_kind() == "web" { "refresh" } else { "download" }
+  let body_text = fn() {
+    match @sfbase.stale_build_kind() {
+      "web" => @sf.t("web-main.staleBuild.web")
+      "ios" => @sf.t("web-main.staleBuild.ios")
+      "feed" =>
+        match @sfbase.update_now() {
+          Ready(_, ..) => @sf.t("web-main.staleBuild.ready")
+          Allow(_) => @sf.t("web-main.staleBuild.allow")
+          Coming(_, _) | Installing(_) => @sf.t("web-main.staleBuild.coming")
+          _ => @sf.t("web-main.staleBuild.body")
+        }
+      _ => @sf.t("web-main.staleBuild.downloadBody")
+    }
+  }
+  let button_label = fn() {
+    match @sfbase.stale_build_kind() {
+      "web" => @sf.t("web-main.staleBuild.reloadPage")
+      "ios" => @sf.t("web-main.staleBuild.openTestFlight")
+      "feed" =>
+        match @sfbase.update_now() {
+          Ready(_, ..) => @sf.t("desktop.update.restart")
+          Allow(_) => @sf.t("android-misc.updates.allow")
+          Coming(_, _) | Installing(_) => @sf.t("web-main.staleBuild.viewProgress")
+          _ => @sf.t("web-main.staleBuild.updateNow")
+        }
+      _ => @sf.t("web-main.staleBuild.download")
+    }
+  }
+  let progress_part = fn() -> Double? {
+    match @sfbase.update_now() {
+      Coming(_, part) => part
+      _ => None
+    }
+  }
+  @sf.news_card_node(
+    parent,
+    icon,
+    button_label,
+    button_label,
+    fn() { @sfbase.stale_build_action(src) },
+    fn(words) {
+      @sf.words_node(words, body_text, fn() { @sf.news_card_note }) |> ignore
+      words.show(
+        fn() {
+          @sfbase.stale_build_kind() == "feed" &&
+          (@sfbase.update_now() is (Coming(_, _) | Installing(_)) || @sfbase.update.checking.get())
+        },
+        fn(p) {
+          @sf.style_node(p, fn() { stale_build_progress })
+          @sf.progress_node(p, progress_part, fn() { @ui.tree_theme().line }, fn() { @sf.theme().p.accent }) |> ignore
+        },
+      )
+    },
+  )
+  |> ignore
+}
+
+///|
+/// Room over the progress bar inside the over-7-day upgrade card while checking or downloading.
+// kept across runs: a value (no field of it changes)
+let stale_build_progress : @ui.Style = @ui.css("w=Full pt=S1_5")

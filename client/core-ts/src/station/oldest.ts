@@ -6,8 +6,14 @@
 // keeps the same floor for cores (station/src/api/oldest.ts).
 import { t } from "../i18n.ts";
 import { CoreError } from "../error.ts";
+import { signal } from "../reactive.ts";
 
 export const BUILD_HEADER = "stillfail-build";
+
+/// How old a release build may be before the app prompts the user to upgrade (7 days, matching the compatibility floor).
+export const STALE_BUILD_MS = 7 * 86_400_000;
+
+declare const __STILLFAIL_BUILT_AT__: number | undefined;
 
 /// The oldest station build talked to; 0: any. 6968 said its build first (#3612), told every stream it leaves the
 /// sidebar to the device and keeps its marks (`made`), and told no `thread-view` or `chat` to one that makes them.
@@ -24,6 +30,8 @@ export const COUNTED_FROM = 1000;
 const ASKED_OF_ANY = /^\/(overview|updates)(\/|\?|$)/;
 
 let own = "";
+const compiledBuiltAt = typeof __STILLFAIL_BUILT_AT__ === "number" && Number.isFinite(__STILLFAIL_BUILT_AT__) && __STILLFAIL_BUILT_AT__ > 0 ? Math.trunc(__STILLFAIL_BUILT_AT__) : 0;
+const ownBuiltAtSignal = signal(compiledBuiltAt);
 
 /// This core's build as its host says it (`0.1.<n>`), said with every request.
 export function setOwnBuild(build: string): void {
@@ -31,6 +39,18 @@ export function setOwnBuild(build: string): void {
 }
 
 export const ownBuild = (): string => own;
+
+/// When this release build was built (Unix ms; 0 in local dev so dev builds never prompt to upgrade).
+export function setOwnBuiltAt(ms: number): void {
+  ownBuiltAtSignal.set(Number.isFinite(ms) && ms > 0 ? Math.trunc(ms) : 0);
+}
+
+export const ownBuiltAt = (): number => ownBuiltAtSignal.get();
+
+/// Whether a build with timestamp `builtAt` (Unix ms; 0 for dev) is at least 7 days old at `nowMs`.
+export function isBuildStale(builtAt: number, nowMs: number): boolean {
+  return Number.isFinite(builtAt) && builtAt > 0 && nowMs - builtAt >= STALE_BUILD_MS;
+}
 
 /// The build in `0.<m>.<n>` (or `<n>`), null for none: n, the commits up to it; m, the stable releases up to it, only
 /// said (`0.1.` until it was counted, the user, 2026-11-09).

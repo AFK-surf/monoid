@@ -1376,8 +1376,9 @@ let search_chat_list_sql : String =
   #|    CASE WHEN e.n IS NULL THEN NULL ELSE COALESCE((SELECT m.text FROM merged m WHERE m.thread = t.id AND m.n = s.said_n), '') END AS said_text,
   #|    (SELECT substr(m.text, 1, 300) FROM merged m WHERE m.thread = t.id AND m.n = s.person_n) AS first_text,
   #|    (SELECT json_group_array(json_object('session', x.session, 'connect', x.connect, 'joinedAt', x.joined_at,
-  #|       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'present', x.present))
-  #|     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.key IS NOT NULL AS present
+  #|       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'runtime', x.runtime, 'model', x.model, 'effort', x.effort,
+  #|       'running', x.running, 'createdBy', x.created_by, 'present', x.present))
+  #|     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.runtime, a.model, a.effort, a.running, a.created_by, a.key IS NOT NULL AS present
   #|       FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id
   #|       ORDER BY m.joined_at, m.rowid) x) AS members
   #|  FROM threads t

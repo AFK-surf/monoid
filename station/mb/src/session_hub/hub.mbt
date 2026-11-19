@@ -472,10 +472,15 @@ pub fn Hub::release(self : Hub, reason : String) -> Unit raise Refused {
   if self.holds_now.length() > 0 {
     return
   }
-  for key in self.actor_keys() {
+  // (an actor released goes on with what waits for it itself: hub.ts `release`)
+  let released = self.actor_keys()
+  for key in released {
     self.act(key, "release")
   }
   for key in self.sessions_with_pending() {
+    if released.contains(key) {
+      continue
+    }
     match self.get_session(key) {
       Some(row) => self.kick(row)
       None => ()

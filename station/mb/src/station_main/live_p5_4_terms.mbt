@@ -250,9 +250,14 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
       { "workspace": Json::string(workspace) },
     ),
     mkdir: async fn(p) { @drive.mkdir(p, true, mode=0o700) },
-    write_file: async fn(p, text) { @drive.write_private(p, text) },
+    write_file: async fn(p, text) { bus.host.write_private(p, @utf8.encode(text), sep=sep()) },
     remove: async fn(p) { @drive.rm_force(p) },
-    read_file: async fn(p) { @utf8.decode_lossy(@drive.read_all(p)) },
+    read_file: async fn(p) {
+      match bus.host.read_text(p) {
+        Some(t) => t
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
+      }
+    },
     start_runner: async fn(id, program, args, cwd, cols, rows) {
       let station_env : Map[String, String] = Map([])
       for kv in env_all() {
@@ -593,7 +598,12 @@ async fn p54_logins_start(
         None => []
       }
     },
-    read_file: async fn(p) { @utf8.decode_lossy(@drive.read_all(p)) },
+    read_file: async fn(p) {
+      match bus.host.read_text(p) {
+        Some(t) => t
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
+      }
+    },
     watch: (dir, _) => raise Failure("\{dir} is not watched here: its file is read as it is asked"),
     tr: (lang, key, args) => tr(lang, key, args=args.iter().map(kv => (kv.0, kv.1)).collect()),
     log: (said, about) => err_write("login: \{said} \{@jsjson.stringify(about)}\n"),
@@ -605,12 +615,13 @@ async fn p54_logins_start(
     run: run_io,
     mkdir: async fn(p) { @drive.mkdir(p, true) },
     make_command: async fn(p, text) {
-      @drive.write_private(p, text)
+      // (made 0o700 as it is written; chmod'd after, as the umask may have taken bits off)
+      bus.host.write_atomic(p, @utf8.encode(text), mode=0o700, sync=true, mkdir=true, sep=sep())
       ignore(host.shell("fs.chmod", { "path": Json::string(p), "mode": Json::number(0o700.to_double()) })) catch {
         _ => ()
       }
     },
-    write_private: async fn(p, text) { @drive.write_private(p, text) },
+    write_private: async fn(p, text) { bus.host.write_private(p, @utf8.encode(text), sep=sep()) },
     sleep: async fn(ms) { @effect.sleep(ms) },
     random4: () => @drive.hex(@drive.random_bytes(2)),
     relay: {

@@ -949,7 +949,8 @@ fn P52::wire_bus(self : P52) -> Unit {
   for
     meth in [
       "session.read", "session.file", "session.put", "session.create", "session.create.preset",
-      "session.create.speed", "session.create.preset.speed", "session.create.preset.tui", "session.archive", "session.notice",
+      "session.create.speed", "session.create.preset.speed", "session.create.preset.tui", "session.archive",
+      "session.configure", "session.list", "session.notice",
       "session.message",
     ] {
     bus.on_peer(meth, async fn(peer, ws, params, _bytes) {
@@ -984,6 +985,8 @@ async fn P52::peer_local(
     "file" => storage.file_for_peer(request, ws)
     "put" => storage.put_for_peer(peer, request, ws)
     "archive" => storage.archive_for_peer(request, ws)
+    "configure" => storage.configure_for_peer(request, ws)
+    "list" => storage.list_for_peer(request, ws)
     "create" =>
       p52_json_of_jv(
         @session_chats.create_for_peer(

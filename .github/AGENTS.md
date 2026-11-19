@@ -23,21 +23,24 @@
   image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
   unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
-  (any `ci-1` runner; a branch's Windows reader after it in `natives-win-reader`, one concurrency group there, each cold reader at -O2 a job's
-  five minutes' worth when two shared the cores), `natives-main` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
-  a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch missing only
+  (any `ci-1` runner; main's and a branch's Windows reader after it in `natives-win-reader`, one concurrency group there,
+  each cold reader at -O2 a job's five minutes' worth when they shared the cores), `natives-main` and cross-platform
+  `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to
+  `macos-ci`), unloading `Mini1`. Every `natives*` job builds only what plan found missing (`missing_list`,
+  `missing_win_list`, `missing_mac_list`), and fetches no Farview client (`mbui-moonbit`'s `farview: 'false'`). On
+  `ci-1` the readers keep `mbc`'s 768 KB package units and `MBC_DATA_LAYOUTS` (never `MBC_INIT_SPLIT=0`, which turns
+  the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
   `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
   published (plan's `natives_runner`, `natives_win_runner`), side by side, with no `natives-main`: on GitHub's runners
-  a reader's C is compiled at -O0 in a few units of 8 MB on every core (`MBC_UNIT_KB=8192`, `MBC_INIT_SPLIT=0`; zig
-  cc's UBSan off), which a cold runner ends in its five minutes with no store of units, where the thousand units of
-  768 KB did not and the C whole took one core 115-180 s (main's three readers at -O2 on ci-1 in units of 3 MB, so
-  that each is some tens of units, not 1,121 parses of its 34 MB header); `check` runs there only when
+  a branch's reader's C is compiled at -O0 in units of 2 MB on every core (`MBC_UNIT_KB=2048`; zig cc's UBSan off),
+  its units kept in the Actions cache by branch keys of their own (`mbui-reader-linux-branch-`, `-win-branch-`,
+  `-mac-branch-`, apart from main's -O2 `mbui-reader-mac-`); `check` runs there only when
   the Rust it tests changed (`scripts/plan.sh`'s `check_rust`: ci-1's sccache keeps those builds short), otherwise on
   `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
   line down every one queued until cancelled, 44383403135); a branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
   of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh` or
-  `shell-apple` is missing (cold builds there took 228 and 323 s before packing; a branch's reader compiles there in 8 MB units at -O0); the other Apple parts,
+  `shell-apple` is missing (cold builds there took 228 and 323 s before packing; a branch's reader compiles there at -O0); the other Apple parts,
   Xcode/Simulator checks (`side-mac`, iOS/macOS builds), Android's release and main's `station-update` stay on `Mini1`
   (`macos-ci`, `quick`; `vars.MINI1 = 'off'` leaves `station-update` out), the
   Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line

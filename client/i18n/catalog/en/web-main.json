@@ -1280,5 +1280,20 @@
   "web-main.share.mask": "Account names",
   "web-main.share.maskAll": "Hide all",
   "web-main.share.maskSome": "Hide partly",
-  "web-main.share.masked": "Hidden"
+  "web-main.share.masked": "Hidden",
+  "web-main.staleBuild.body": "This version is over 7 days old. Click to update to the latest version.",
+  "web-main.staleBuild.ready": "This version is over 7 days old. The latest version is ready—click to restart.",
+  "web-main.staleBuild.allow": "This version is over 7 days old. Allow app installs to finish updating.",
+  "web-main.staleBuild.coming": "This version is over 7 days old. Downloading the latest version…",
+  "web-main.staleBuild.ios": "This version is over 7 days old. Open TestFlight to update.",
+  "web-main.staleBuild.web": "This page is over 7 days old. Refresh to load the latest version.",
+  "web-main.staleBuild.downloadBody": "This version is over 7 days old. Open the download page to update.",
+  "web-main.staleBuild.updateNow": "Update now",
+  "web-main.staleBuild.openTestFlight": "Open TestFlight",
+  "web-main.staleBuild.reloadPage": "Refresh to update",
+  "web-main.staleBuild.download": "Download latest",
+  "web-main.staleBuild.viewProgress": "View update progress",
+  "web-main.staleBuild.sidebar": "Over 7 days old · Update now",
+  "web-main.staleBuild.sidebarWeb": "Over 7 days old · Refresh",
+  "web-main.staleBuild.sidebarIos": "Over 7 days old · TestFlight"
 }
