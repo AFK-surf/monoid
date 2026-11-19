@@ -114,6 +114,8 @@ fn own_agent(
   snapshot : () -> @jsjson.JValue,
   background : () -> Json,
   outlived : () -> Bool,
+  sign_in_expired? : () -> Bool = () => false,
+  lent_expired? : () -> Bool = () => false,
 ) -> Agent {
   {
     id: () => own.session_id,
@@ -122,6 +124,8 @@ fn own_agent(
     mcp_url: () => own.tools_url,
     can_compact: compact is Some(_),
     outlived,
+    sign_in_expired,
+    lent_expired,
     route: router => match hosted_of(own.proc) {
       Some(p) =>
         match router {
@@ -451,6 +455,8 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     mcp_url: () => s.tools_url,
     can_compact: true,
     outlived: () => false,
+    sign_in_expired: () => false,
+    lent_expired: () => false,
     route: router => match router {
       Some(took) => {
         let n = match hosted_of(s.host.proc) {
@@ -597,6 +603,8 @@ fn agy_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Wo
     () => s.acp.snapshot(),
     () => Json::array([]),
     () => s.outlived(),
+    sign_in_expired=() => s.sign_in_expired(),
+    lent_expired=() => s.lent_expired(),
   )
   {
     kind: "agy",

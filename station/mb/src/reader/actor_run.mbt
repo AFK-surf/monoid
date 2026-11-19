@@ -1603,16 +1603,26 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   let kind = str_of(outcome.value("kind")).unwrap_or("")
   let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
-  // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
-  // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on one
-  // lent anew and goes on once)
-  if a.runtime == "agy" && kind == "failed" && reason == "other" &&
-    message.to_lower().contains("agent execution terminated due to error") && a.agent is Some(g) {
-    if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
-      reason = "auth"
+  let mut lent_expired = false
+  if a.runtime == "agy" && kind == "failed" && a.agent is Some(g) {
+    // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
+    // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on
+    // one lent anew and goes on)
+    if reason == "other" && message.to_lower().contains("agent execution terminated due to error") {
+      if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
+        reason = "auth"
+      }
+      if !self.is_current(a, generation) {
+        return
+      }
     }
-    if !self.is_current(a, generation) {
-      return
+    // (a long-running turn on a borrowed agy sign-in outlives multiple 1-hour access tokens: if this `auth_retry`
+    // turn ran on a valid borrowed token until it naturally expired, reopen on one lent anew again)
+    if reason == "auth" && a.turn is Some({ auth_retried: true, .. }) {
+      lent_expired = truthy(self.agent_do(a, g, "lentExpired", []) catch { _ => Json::null() })
+      if !self.is_current(a, generation) {
+        return
+      }
     }
   }
   // (undefined: none shown; null: the account's; a name: that model's own)
@@ -1777,7 +1787,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
   // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
   if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
-    !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
+    !self.held(a) && turn is Some(t) && (!t.auth_retried || lent_expired) && t.declared is None {
     a.nudges = 0
     let agent = a.agent
     self.set_agent(a, None)

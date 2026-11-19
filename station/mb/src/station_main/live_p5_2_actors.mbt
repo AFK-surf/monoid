@@ -14,6 +14,8 @@ priv struct Agent {
   mcp_url : () -> String?
   can_compact : Bool
   outlived : () -> Bool
+  sign_in_expired : () -> Bool
+  lent_expired : () -> Bool
   /// Its events given its actor in the program (`route`): told each batch taken there, with its process's number.
   route : (((Int32, Int32) -> Bool)?) -> Unit
   prompt : async (String) -> Unit
@@ -1048,6 +1050,8 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       }
       "id" => jstr((s.id)())
       "outlived" => jb((s.outlived)())
+      "signInExpired" => jb((s.sign_in_expired)())
+      "lentExpired" => jb((s.lent_expired)())
       _ => Json::null()
     }
   }

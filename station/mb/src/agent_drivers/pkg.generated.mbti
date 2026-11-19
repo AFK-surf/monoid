@@ -449,9 +449,11 @@ pub struct AgySession {
   mut context_used : Double
   mut context_size : Double
   mut sign_in_until : Double?
+  mut sign_in_opened_at : Double?
 }
 pub fn AgySession::ending(Self, String, @jsjson.JValue) -> Unit
 pub fn AgySession::kept(Self) -> Array[(String, @jsjson.JValue)]
+pub fn AgySession::lent_expired(Self) -> Bool
 pub fn AgySession::opened(Self, @jsjson.JValue?) -> Unit
 pub fn AgySession::outlived(Self) -> Bool
 pub fn AgySession::retune(Self, @jsjson.JValue) -> Bool

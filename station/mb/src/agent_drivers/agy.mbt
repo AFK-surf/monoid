@@ -28,6 +28,14 @@ let agy_lent_renew_ms = 2400000.0
 let agy_lent_least_ms = 600000.0
 
 ///|
+/// Margin before a borrowed sign-in's expiry within which an auth failure is taken as it running out (`AGY_LENT_EXPIRE_MARGIN_MS`).
+let agy_lent_expire_margin_ms = 300000.0
+
+///|
+/// Minimum time a process must have been open on its borrowed sign-in before another mid-turn expiry reopens it (`AGY_LENT_MIN_RUN_MS`).
+let agy_lent_min_run_ms = 300000.0
+
+///|
 /// Where the station keeps its sessions' transcripts (`SESSIONS`).
 let agy_sessions = "sessions"
 
@@ -595,6 +603,7 @@ pub struct AgySession {
   mut context_used : Double
   mut context_size : Double
   mut sign_in_until : Double?
+  mut sign_in_opened_at : Double?
 }
 
 ///|
@@ -1147,6 +1156,7 @@ pub fn AgyDriver::session(self : AgyDriver, options : JValue, events : (JValue) 
     context_used: 0.0,
     context_size: 0.0,
     sign_in_until: None,
+    sign_in_opened_at: None,
   }
   acp.acp = {
     updated: (update, _) => session.updated(update),
@@ -1192,6 +1202,13 @@ pub fn AgySession::kept(self : AgySession) -> Array[(String, JValue)] {
         None => Null
       },
     ),
+    (
+      "signInOpenedAt",
+      match self.sign_in_opened_at {
+        Some(x) => d(x)
+        None => Null
+      },
+    ),
   ]
 }
 
@@ -1212,6 +1229,7 @@ pub fn AgySession::taken(self : AgySession, snapshot : JValue) -> Unit {
     _ => ()
   }
   self.sign_in_until = num_at(sn, "signInUntil")
+  self.sign_in_opened_at = num_at(sn, "signInOpenedAt")
 }
 
 ///|
@@ -1227,8 +1245,20 @@ pub fn AgySession::outlived(self : AgySession) -> Bool {
 /// Its borrowed sign-in has run out under the turn (`signInExpired`).
 pub fn AgySession::sign_in_expired(self : AgySession) -> Bool {
   match self.sign_in_until {
-    Some(until) => until - self.driver.m().now() <= 60000.0
+    Some(until) => until - self.driver.m().now() <= agy_lent_expire_margin_ms
     None => false
+  }
+}
+
+///|
+/// Its known borrowed sign-in ran at least AGY_LENT_MIN_RUN_MS and reached expiry (`lentExpired`).
+pub fn AgySession::lent_expired(self : AgySession) -> Bool {
+  match (self.sign_in_until, self.sign_in_opened_at) {
+    (Some(until), Some(opened_at)) if until > 0.0 => {
+      let now = self.driver.m().now()
+      until - now <= agy_lent_expire_margin_ms && now - opened_at >= agy_lent_min_run_ms
+    }
+    _ => false
   }
 }
 
@@ -1437,6 +1467,7 @@ pub fn AgyDriver::begin_once(
     }
     prepared.bind(_ => self.acp_begin(options, events, probe)).map(session => {
       session.sign_in_until = until
+      session.sign_in_opened_at = if borrowed { Some(m.now()) } else { None }
       session
     })
   })
@@ -1700,8 +1731,12 @@ pub fn AgyDriver::adopt(
     let session = made.val.unwrap()
     if !self.borrowed(profile) {
       session.sign_in_until = None
+      session.sign_in_opened_at = None
     } else if session.sign_in_until is None {
       session.sign_in_until = Some(0.0)
+      session.sign_in_opened_at = None
+    } else if session.sign_in_opened_at is None && session.sign_in_until is Some(u) && u > 0.0 {
+      session.sign_in_opened_at = Some(u - 3600000.0)
     }
     let checked = if Some(session.acp.own.session_id) != id {
       self

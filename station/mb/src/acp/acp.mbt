@@ -461,6 +461,9 @@ pub fn notice_failure(said : Array[Int]) -> String? {
     let reason = classify("agy", last)
     return Some(if reason == "model" { "other" } else { reason })
   }
+  if lower.has_prefix("\u{26a0} unauthenticated (code 401):") {
+    return Some("auth")
+  }
   if text[0] != 0x26a0 || text.contains(0x0a) {
     return None
   }

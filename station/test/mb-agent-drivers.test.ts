@@ -1320,6 +1320,8 @@ async function agyCase(name: string, setup: (data: string) => { profiles: Json[]
           return session.outlived();
         case "signInExpired":
           return session.signInExpired();
+        case "lentExpired":
+          return session.lentExpired();
         case "model":
           return { model: session.model, current: session.currentModelId };
         case "bringIn":
@@ -1403,6 +1405,7 @@ test("Antigravity CLI: a process with no models opened again after its waits; on
         { do: "open", options: o(lentP) },
         { do: "outlived", s: 1 },
         { do: "signInExpired", s: 1 },
+        { do: "lentExpired", s: 1 },
         { do: "catalog", profile: p },
         { do: "ownedRunners" },
       ],

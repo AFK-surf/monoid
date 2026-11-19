@@ -727,6 +727,7 @@ export function acpClassify(flavor: string, text: string): FailureReason {
 }
 const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
+const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   const last = text.slice(text.lastIndexOf("\n") + 1).trim();
@@ -736,6 +737,7 @@ export function noticeFailure(said: string): FailureReason | null {
     const reason = acpClassify("agy", last);
     return reason === "model" ? "other" : reason;
   }
+  if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   const reason = acpClassify("agy", text);
   return reason === "model" ? null : reason;
