@@ -1,4 +1,4 @@
-// The cloud's network in MoonBit (station/mb src/cloud_net: reader `--builder harness-cloud-net`) held to the
+// The cloud's network in MoonBit (station/mb src/cloud_net: `stillfail-reader-harness --builder harness-cloud-net`) held to the
 // TypeScript it replaces on the same inputs: the URLs as `new URL` reads them, the relays' and marks' records, what
 // is refused and in what words, which of two is kept, the relays each station is kept on and each peer is held to, a
 // dial's candidates on one clock, two stations brought level through failures and retries, the plane's frames and what
@@ -27,10 +27,10 @@ import { StationMarks, answerMarks, followMarks, markEmoji, markIcon, markName, 
 import { otlpBody } from "../src/mesh/traces.ts";
 import { Ways, addRelay, answerWays, followWays, offRelays, recordOf, relayUrl, removeRelay, sameUrl, setRelays, setWay, stillFails, waysOf, workspaceRelays } from "../src/mesh/ways.ts";
 import { wall } from "../src/ops/fibers.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const dirs: string[] = [];
 const fresh = (what: string) => {

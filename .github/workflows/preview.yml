@@ -147,19 +147,14 @@ jobs:
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
     steps:
-      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second (scripts/with-timeout.sh);
-      # and the runner's image (GitHub's ImageVersion; none, a runner of our own: own), for the units' store: GitHub
-      # gives a push one of two images while it moves to a newer one, and their compilers or headers make other units,
-      # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
-      # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
+      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second (scripts/with-timeout.sh))
       # (less the 1-5 s of "Set up job" before it, as windows')
       # (a branch's app: mbc's MBC_LIGHT_TESTS, each unit taken at -O2 where main's store has it as this program's would
       # be, what it has not compiled at -O0, as pipeline.yml's desktop-build: all at -O2 a push after main took a large
       # change and before it saved a store of it was cut. Main's stays -O2)
-      - name: The job's end and its image
+      - name: The job's end
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
-          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
           [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
@@ -169,6 +164,25 @@ jobs:
         with:
           name: mbui-linux-${{ matrix.arch }}
           packages: libgtk-4-dev libepoxy-dev libsoup-3.0-dev libsecret-1-dev clang
+      # (the runner's compiler and headers (IMG: cc and 12 hex digits of clang, its --version, the C standard headers
+      # as it preprocesses them and the GTK -dev packages' versions; none, a runner of our own: own), for the units' store: other compilers or headers make other units,
+      # so one store over two kept only the last run's units (used.sh), the other's run compiling all again (preview's
+      # ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16). Not the
+      # image's ImageVersion, as mbui-check.yml says: images of one clang and libc tore main's store apart)
+      - name: The runner's compiler
+        run: |
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(command -v clang || true)
+            img="cc$({
+              [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" -E -x c - 2>/dev/null || true
+              dpkg-query -W -f='${Package}=${Version}\n' libgtk-4-dev libepoxy-dev libsoup-3.0-dev libsecret-1-dev 2>/dev/null || true
+            } | sha256sum | cut -c1-12)"
+          fi
+          echo "IMG=$img" >> "$GITHUB_ENV"
+          echo "IMG=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
       # (Node alone here: pnpm and its store only for a core.hbc not kept, below)
       - uses: ./.github/actions/node
       # (mbc and chk alone, as pipeline.yml's desktop-build: the other tools' keys and caches were a step's 12 s)

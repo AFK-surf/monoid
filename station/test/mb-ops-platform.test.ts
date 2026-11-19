@@ -1,4 +1,4 @@
-// The station's operations and its platform in MoonBit (station/mb src/ops_platform: reader `--builder
+// The station's operations and its platform in MoonBit (station/mb src/ops_platform: `stillfail-reader-harness --builder
 // harness-ops-platform`) held to the TypeScript they port, on the same inputs: src/platform/ (what macOS', Linux's and
 // Windows' commands and files say, the commands made, Windows' paths and shims), src/ops/ (paths, config, the
 // launcher's channel, the logs, a command's output, the station's memory and its upkeep), src/resources/, the files and
@@ -15,7 +15,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import * as text from "../src/platform/text.ts";
 import { cpuShare } from "../src/platform/cpu-share.ts";
 import { treeOf } from "../src/platform/index.ts";
@@ -37,8 +37,8 @@ import { flag, portsToTry, positionals } from "../src/ops/files.ts";
 import * as out from "../src/ops/command-output.ts";
 import { answer as loopbackAnswer, langOfBrowser, moved } from "../src/ops/loopback.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 

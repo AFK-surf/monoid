@@ -1,4 +1,4 @@
-// The vault's formats, rules, keeper and plain library in MoonBit (station/mb src/vault_crypto, the reader's `--builder
+// The vault's formats, rules, keeper and plain library in MoonBit (station/mb src/vault_crypto, `stillfail-reader-harness --builder
 // harness-vault-crypto`, its primitives the shell's `crypto.*`) held to the TypeScript they are the MoonBit of
 // (src/vault/crypto.ts, keeper.ts, plain.ts, schema-install.ts): the vectors every part is tested on
 // (test/fixtures/vault-vectors.json), what one seals the other opens both ways, the same rules' answers in the same
@@ -16,7 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { type Entry, type LockState, entryHash, fold, genesis, signedBytes as lockBytes } from "../src/cloud/lock.ts";
 import { wall } from "../src/ops/fibers.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import {
   SCOPES, TAG, allows, boxPublic, browserListingOk, certOk, decrypt, encryptWith, grantContext, itemContext, itemOk, itemSupersedes,
   keyContext, openSeal, recoveryPair, saveContext, seal, sealWith, signedBytes, signedOk, signerOf, vaultOk, vaultSupersedes,
@@ -27,8 +27,8 @@ import { UnaccountedSchema, installSchema } from "../src/vault/schema-install.ts
 import { WS as RWS, bases, genesisOf, key, nextOf, people, rng, signers, spare } from "./lock-chains.ts";
 import V from "./fixtures/vault-vectors.json" with { type: "json" };
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const SEEDS = Number(process.env.VAULT_CRYPTO_SEEDS ?? 12);
 
 const dirs: string[] = [];

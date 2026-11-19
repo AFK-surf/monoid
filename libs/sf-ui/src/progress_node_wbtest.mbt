@@ -142,3 +142,37 @@ test "a progress bar as nodes, motion reduced, drawn as the old view's is: a par
     assert_true(!ticking, msg="\{what}: nothing read of the clock after")
   }
 }
+
+///|
+test "a progress bar as nodes finishing: read out whole (its most, 100%) as it is drawn full, however far it was told before; done finishing, read out as told again" {
+  let part : @signals.Signal[Double?] = @signals.signal(Some(0.4), same=fn(a, b) { a == b })
+  let ending = @signals.signal(false)
+  let t = @ui.Tester::new(fn(_c) {  }, w=300.0, h=60.0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(200.0))) |> ignore
+      progress_node(b, fn() { part.get() }, fn() { @ui.tree_theme().line }, fn() { theme().p.accent }, finishing=fn() {
+        ending.get()
+      }).width_share(Is(1.0))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let said = fn() raise {
+    let b = t.get(ProgressBar)
+    (b.value, b.range)
+  }
+  let told = said()
+  ending.set(true)
+  t.draw()
+  let finishing = said()
+  ending.set(false)
+  part.set(None)
+  t.draw()
+  let not_known = said()
+  assert_eq(told, ("40%", Some((0.0, 40.0, 100.0))))
+  assert_eq(finishing, ("100%", Some((0.0, 100.0, 100.0))))
+  assert_eq(not_known, ("", None))
+}

@@ -1,4 +1,4 @@
-// Feishu in MoonBit (station/mb src/feishu: reader `--builder harness-feishu`) held to the TypeScript it replaces
+// Feishu in MoonBit (station/mb src/feishu: `stillfail-reader-harness --builder harness-feishu`) held to the TypeScript it replaces
 // (src/feishu/) on the same inputs: the long connection's frames byte for byte (encoded, decoded, refused, put together
 // from parts), what each kind of event says, the cards and rich text posted, the connects as config.json says them,
 // the OpenAPI client against a stand-in (its token, its retries, its files and its refusals), the surface (what it
@@ -32,12 +32,12 @@ import { FeishuClient, FeishuFile, domainOf } from "../src/feishu/web.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { setStationLang } from "../src/ops/i18n.ts";
 import { log } from "../src/ops/log.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const ROOT = join(import.meta.dirname, "..", "..");
 
 const dirs: string[] = [];

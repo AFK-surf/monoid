@@ -1,5 +1,5 @@
 // What the MoonBit station's first live canaries found wrong, held through the program's parts (station/mb
-// src/station_main, `stillfail-reader --builder harness-station-main`, harness.mbt): a driver's words said by their key
+// src/station_main, `stillfail-reader-harness --builder harness-station-main`, harness.mbt): a driver's words said by their key
 // in the station's language (live_p5_2_io.mbt `said_of`), the log's lines one a line with their time (live_p5_1.mbt
 // `p51_log`, `noted`), a tree's size measured by the footprint builder in a process of its own (live_p5_3_remote.mbt
 // `p53_tree_bytes`), and still.fail Helper asked over the shell's Unix socket (screens/host_io.mbt: a connection's close
@@ -23,9 +23,12 @@ import { after, test } from "node:test";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
 import enStation from "../../client/i18n/catalog/en/station.json" with { type: "json" };
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
 const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "still.fail Helper's socket is a Unix socket" : false;
+/// (the tests' program, its harness: the station's own commands are the reader's)
+const harnessProgram = mbHarnessBinary();
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "still.fail Helper's socket is a Unix socket" : false;
 
 const dirs: string[] = [];
 // (short: a Unix socket's path is at most 104 bytes on macOS)
@@ -46,7 +49,7 @@ after(async () => {
 
 /// The program's parts, a line a call; what it writes on stderr kept, and waited for by what it must say.
 function harness() {
-  const child = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"] });
   children.push(child);
   let seq = 0;
   const waiting = new Map<number, (v: any) => void>();

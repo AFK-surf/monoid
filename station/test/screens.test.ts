@@ -28,7 +28,7 @@ import type { SimDebug } from "../src/screens/sim-debug.ts";
 import { SIMCTL, Simulators, bootedOf, runtimeName, screenOf } from "../src/screens/simulator.ts";
 import { WindowsDesktop, screenBinary } from "../src/screens/win-desktop.ts";
 import { KEYS, WinInput } from "../src/screens/win-input.ts";
-import { type AudioFrame, CLIP_PNG_MAX, CLIP_TEXT_MAX, type Clip, type ClipType, type Frame, type ScreenAccess, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, codecFor } from "../src/screens/source.ts";
+import { type AudioFrame, CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR_PNG_MAX, CURSOR_SHAPE, type Clip, type ClipType, type Frame, type ScreenAccess, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, codecFor, cursorImageShape } from "../src/screens/source.ts";
 import { WINDOWS } from "../src/platform/index.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 import { LOSS_EVERY_MS, LOSS_WINDOW_MS, LinkLoss, type LinkPath, MAX_UNACKED, MOVING_SHARPEN_MS, QUEUE_MS, START_RATE, START_UNACKED, STILL_MS, UP_EVERY_MS, rateCeiling } from "../src/mesh/screen-pace.ts";
@@ -831,6 +831,56 @@ test("a client that reads `cursor` frames is sent the pointer in a few bytes, ne
       assert.deepEqual(said, [{ x: 0.123456, y: 0.987654, shape: "pointer" }, null]);
     }
   }
+});
+
+test("a pointer of an app's own goes with its picture once, before the first frame that names it, to a client that draws them; to one before them it is the default", async () => {
+  assert.equal(KIND.cursorImage, 8);
+  assert.equal(asked({ codecs: ["h264"], customCursor: true }).customCursor, true);
+  assert.equal("customCursor" in asked({ codecs: ["h264"], customCursor: true, peek: true }), false, "a preview shows no pointer");
+  for (const v of [undefined, false, 1, "true"]) assert.equal("customCursor" in asked({ codecs: ["h264"], customCursor: v }), false, String(v));
+  const a = "custom:00112233445566aa", b = "custom:ffeeddccbbaa9988";
+  const picture = Buffer.from([16, 16, 4, 2, ...Buffer.from(a.slice(7)), 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+  for (const customCursor of [true, false]) {
+    const hub = new ScreenHub();
+    const source = new FakeSource();
+    source.make = () => Object.assign(new FakeView(), { cursorImage: (shape: string) => (shape === a ? new Uint8Array(picture) : undefined) });
+    hub.add(source);
+    const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, binaryCursor: true, ...(customCursor ? { customCursor } : {}) });
+    await until(v.frames, KIND.video);
+    const view = source.views[0]!;
+    for (const [x, shape] of [[0.25, a], [0.5, a], [0.5, b], [0.5, "text"], [0.75, a]] as const) view.pointer!({ x, y: 0, shape });
+    await v.stream.finish();
+    const told: [number, Buffer][] = [];
+    for (;;) {
+      const got = await v.frames.next();
+      if (got === null) break;
+      if (got.kind === KIND.cursor || got.kind === KIND.cursorImage) told.push([got.kind, got.payload]);
+    }
+    await v.served;
+    const shapes = told.map(([kind, p]) => (kind === KIND.cursorImage ? "picture" : p.subarray(4).toString()));
+    if (customCursor) {
+      assert.deepEqual(shapes, ["picture", a, a, "default", "text", a], "its picture once, before it; one without a picture the default");
+      assert.deepEqual(told[0]![1], picture);
+    } else assert.deepEqual(shapes, ["default", "default", "default", "text", "default"]);
+  }
+});
+
+test("a pointer's picture as the helpers say it: its size, hot spot, id and a PNG", () => {
+  const id = "0123456789abcdef";
+  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const of = (head: number[], hex = id, body = [...png, 1]) => cursorImageShape(new Uint8Array([...head, ...Buffer.from(hex), ...body]));
+  assert.equal(of([24, 24, 3, 5]), `custom:${id}`);
+  assert.equal(of([128, 1, 128, 1]), `custom:${id}`);
+  assert.equal(of([24, 24, 3, 5], id, png), `custom:${id}`, "a PNG of its signature alone is still taken");
+  for (const head of [[0, 24, 0, 0], [24, 0, 0, 0], [129, 24, 0, 0], [24, 129, 0, 0], [24, 24, 25, 0], [24, 24, 0, 25]]) assert.equal(of(head), null, String(head));
+  assert.equal(of([24, 24, 0, 0], "0123456789ABCDEF"), null);
+  assert.equal(of([24, 24, 0, 0], "0123456789abcdeg"), null);
+  assert.equal(of([24, 24, 0, 0], id, [...png.slice(0, 7), 0x0b, 1]), null);
+  assert.equal(of([24, 24, 0, 0], id, png.slice(0, 7)), null);
+  assert.equal(of([24, 24, 0, 0], id, [...png, ...new Array(CURSOR_PNG_MAX - png.length).fill(0)]), `custom:${id}`);
+  assert.equal(of([24, 24, 0, 0], id, [...png, ...new Array(CURSOR_PNG_MAX - png.length + 1).fill(0)]), null);
+  for (const shape of ["default", "nwse-resize", `custom:${id}`]) assert.ok(CURSOR_SHAPE.test(shape), shape);
+  for (const shape of ["", "Default", "x".repeat(25), "custom:0123", `custom:${id}0`, "custom:0123456789ABCDEF"]) assert.ok(!CURSOR_SHAPE.test(shape), shape);
 });
 
 test("a client that takes the frames as datagrams under its token is told so where the stream sends them so; a preview, a stream that cannot, or a client before it, on the stream", async () => {

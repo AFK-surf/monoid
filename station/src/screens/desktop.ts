@@ -27,7 +27,7 @@ import { ScreenRefused } from "./hub.ts";
 import { MacInput } from "./mac-input.ts";
 import { helperUi } from "./ui.ts";
 export type { HelperStatus } from "../helper/grants.ts";
-import { type AudioCodec, type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, OPUS_MAX, clipFits, codecFor, regionOf, resolutionOf, windowsOf } from "./source.ts";
+import { type AudioCodec, type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, CURSOR_IMAGES_MOST, CURSOR_SHAPE, OPUS_MAX, clipFits, codecFor, cursorImageShape, regionOf, resolutionOf, windowsOf } from "./source.ts";
 
 export type DesktopOptions = {
   /// Whether this machine's display can be seen at all (platform.desktopScreen: the helper).
@@ -280,7 +280,8 @@ type HelperError = Error & { code?: string };
 /// as it was framed; null the whole; said before the frame whose part is another than the last one's), 8 audio config
 /// (JSON {codec: "pcm_s16le" | "opus", sampleRate: 48000, channels: 2}, or {error}: no more audio; `opus` only to a
 /// view opened with `audioCodec: "opus"`, which a helper that encodes none lets be), 9 audio (8 bytes timestamp µs, then
-/// 3840 bytes of interleaved stereo PCM16, or one Opus packet of those 20 ms).
+/// 3840 bytes of interleaved stereo PCM16, or one Opus packet of those 20 ms), 11 cursor image (a pointer of an app's own,
+/// before the first 6 that names it "custom:<id>": source.ts `cursorImageShape`; a helper from before says "default").
 export const TO_HELPER = { next: 1, keyframe: 2, input: 3, clipboard: 4, watch: 5, reveal: 6, rate: 7, bounds: 8, audio: 9, window: 10 } as const;
 const CLIP_BYTE: Record<ClipType, number> = { text: 1, png: 2 };
 
@@ -332,6 +333,8 @@ export class HelperView implements ScreenView {
   /// Who hears the pointer, and the last it said (told at once to one who starts to hear it).
   #cursor: ((cursor: ScreenCursor) => void) | null = null;
   #lastCursor: ScreenCursor | null = null;
+  /// The pictures of the pointers of apps' own it said (message 11), by shape: "custom:<id>".
+  readonly #cursorImages = new Map<string, Uint8Array>();
   /// Who hears how a simulator's picture is turned, and the last it said (message 10).
   #turn: ((turn: number) => void) | null = null;
   #lastTurn: number | null = null;
@@ -469,8 +472,17 @@ export class HelperView implements ScreenView {
         } catch {}
         const unit = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
         if (said === null || !unit(said.x) || !unit(said.y)) return;
-        this.#lastCursor = { x: said.x, y: said.y, shape: typeof said.shape === "string" && /^[a-z-]{1,24}$/.test(said.shape) ? said.shape : "default" };
+        // (one of an app's own whose picture it did not say: the default)
+        const shape = typeof said.shape === "string" && CURSOR_SHAPE.test(said.shape) && (!said.shape.startsWith("custom:") || this.#cursorImages.has(said.shape)) ? said.shape : "default";
+        this.#lastCursor = { x: said.x, y: said.y, shape };
         this.#cursor?.(this.#lastCursor);
+        return;
+      }
+      case 11: {
+        const shape = cursorImageShape(payload);
+        if (shape === null) return;
+        if (this.#cursorImages.size >= CURSOR_IMAGES_MOST && !this.#cursorImages.has(shape)) this.#cursorImages.clear();
+        this.#cursorImages.set(shape, new Uint8Array(payload));
         return;
       }
       case 10: {
@@ -570,6 +582,10 @@ export class HelperView implements ScreenView {
     return () => {
       if (this.#cursor === heard) this.#cursor = null;
     };
+  }
+
+  cursorImage(shape: string): Uint8Array | undefined {
+    return this.#cursorImages.get(shape);
   }
 
   watchWindows(heard: (windows: ScreenWindows) => void): () => void {

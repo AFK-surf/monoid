@@ -850,8 +850,6 @@ fn main {
   let code = match (flag("--builder"), flag("--db"), flag("--data")) {
     (Some("archive-marks"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "archive mark", all(db => @marks.step(db))))
-    (Some("harness-store-schema"), Some(db), _) =>
-      @host.run(shell_dir=beside(db, "shell"), host => @store_schema.harness(host, db))
     (Some("session-bindings"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session binding", all(db => @bindings.step(db))))
     (Some("session-up-jobs"), Some(db), _) =>
@@ -862,24 +860,6 @@ fn main {
         { "session": String(session), .. } => Some(@upjobs.step(db, session))
         _ => None
       }))
-    (Some("harness-station-main"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @station_main.harness(host))
-    (Some("harness-mcp-tools"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mcp_tools.harness(host))
-    (Some("harness-session-hub"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_hub.harness(host))
-    (Some("harness-vault-service"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_service.harness(host))
-    (Some("harness-replica-coord"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @replica_coord.harness(host))
-    (Some("harness-connects-hub"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @connects_hub.harness(host))
-    (Some("harness-feishu"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @feishu.harness(host))
-    (Some("harness-comma"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @comma.harness(host))
-    (Some("harness-rigs-mode"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @rigs_mode.harness(host))
     (Some("workspace-up-jobs"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "workspace up jobs", all(db => @upjobs.workspace_step(db))))
     (Some("widget-sources"), Some(db), _) =>
@@ -887,15 +867,11 @@ fn main {
         { "thread": Number(thread, ..), .. } => Some(@widgets.step(db, thread.to_int64()))
         _ => None
       }))
-    (Some("harness-store-sessions"), Some(db), _) =>
-      @host.run(shell_dir=beside(db, "shell"), host => @store_sessions.harness(host, db))
     (Some("card-posts"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "card post", (db, ask) => match ask {
         { "thread": Number(thread, ..), .. } => Some(@cards.step(db, thread.to_int64()))
         _ => None
       }))
-    (Some("harness-accounts-oauth"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_oauth.harness(host))
     (Some("closed-cards"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "closed card", (db, ask) => match ask {
         { "thread": Number(thread, ..), .. } => Some(@lookups.closed_step(db, thread.to_int64()))
@@ -906,17 +882,11 @@ fn main {
         { "thread": Number(thread, ..), .. } => Some(@lookups.people_step(db, thread.to_int64()))
         _ => None
       }))
-    (Some("harness-move-coord"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @move_coord.harness(host))
-    (Some("harness-store-threads"), Some(db), _) =>
-      @host.run(shell_dir=beside(db, "shell"), host => @store_threads.harness(host, db))
     (Some("legacy-edits"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "legacy edits", (db, ask) => match ask {
         { "thread": Number(_, ..), .. } => Some(@legacy.edits_step(db))
         _ => None
       }))
-    (Some("harness-accounts-pool"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_pool.harness(host))
     (Some("legacy-said"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "legacy said", (db, ask) => match ask {
         { "thread": Number(_, ..), .. } => Some(@legacy.said_step(db))
@@ -925,10 +895,6 @@ fn main {
     (Some("session-counts"), Some(db), _) =>
       // (a backfill the station drives itself: each line, whatever it says, asks for the next batch)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session count", (db, _) => Some(@counts.step(db))))
-    (Some("harness-share-sync"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @share_sync.harness(host))
-    (Some("harness-cloud-lock"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_lock.harness(host))
     (Some("session-backfill"), Some(db), _) =>
       // (the backfills the station drives itself by `kind` (sessions/workspace-activity-builder.ts and the others with
       // `MbBackfill`), none: the activity; a kind not known here an error)
@@ -988,10 +954,6 @@ fn main {
           Some(@posts.step(db, thread.to_int64(), after.to_int64()))
         _ => None
       }))
-    (Some("harness-agent-drivers"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @agent_drivers.harness(host))
-    (Some("harness-cloud-net"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_net.harness(host))
     (Some("usage-retire"), Some(db), _) =>
       // (asked a step at a time: `{"drop": true}` the retired statistics, else the fill; each answers whether it is done)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "usage retirement", (db, ask) => match ask {
@@ -1005,8 +967,6 @@ fn main {
         String(session) => Some(@signin.step(db, session))
         _ => None
       }))
-    (Some("harness-agent-runtimes"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @agent_runtimes.harness(host))
     (Some("search"), Some(db), Some(data)) =>
       @host.run(shell_dir=beside(db, "shell"), host => search_program(host, db, data, flag("--sep").unwrap_or("/")))
     (Some("search-scope"), Some(db), _) => {
@@ -1021,12 +981,8 @@ fn main {
         _ => None
       }))
     }
-    (Some("harness-slack"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @slack.harness(host))
     (Some("live-locator"), Some(db), Some(data)) =>
       @host.run(shell_dir=beside(db, "shell"), host => live_locator(host, db, data, flag("--sep").unwrap_or("/")))
-    (Some("harness-mesh-door"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_door.harness(host))
     (Some("forward"), _, _) =>
       // (a listening socket, handed down or bound here, carried to a port of this machine: `{"listening": port}` said once
       // it listens; the shell's own files in `--shell-dir`)
@@ -1069,16 +1025,12 @@ fn main {
         }
         host.say(line)
       })
-    (Some("harness-session-chats"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_chats.harness(host))
     (Some("replica-carry"), _, _) =>
       // (the shell's own files, which this asks for none of, in `--shell-dir`)
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => replica_carry(host, flag("--sep").unwrap_or("/")))
     (Some("footprint"), _, _) =>
       // (no shell: it asks the shell for nothing)
       @host.run(host => footprint(host, flag("--sep").unwrap_or("/")))
-    (Some("harness-events"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @events.harness(host))
     (Some("memory"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => memory(host, flag("--sep").unwrap_or("/")))
     (Some("packed"), _, _) =>
@@ -1086,8 +1038,6 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => packed(host))
     (Some("vault-uses"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => vault_uses(host, db))
-    (Some("harness-session-storage"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_storage.harness(host))
     (Some("outflow-chats"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "outflow chat index", (db, ask) => match ask {
         { "scope": String(scope), .. } => {
@@ -1096,23 +1046,7 @@ fn main {
         }
         _ => None
       }))
-    (Some("harness-browser"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @browser.harness(host))
-    (Some("harness-screens"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @screens.harness(host))
-    (Some("harness-adb-devices"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @adb_devices.harness(host))
-    (Some("harness-terminals-logins"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @terminals_logins.harness(host))
-    (Some("harness-drive"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @drive.harness(host))
-    (Some("harness-updates"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @updates.harness(host))
-    (Some("harness-mesh-runtime"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_runtime.harness(host))
     (Some("said"), Some(db), _) => @host.run(shell_dir=beside(db, "shell"), host => said_builder(host, db))
-    (Some("harness-api-routes"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @api_routes.harness(host))
     (Some("archive-last"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => {
         let archive : Ref[@archivelast.Archive?] = Ref(None)
@@ -1131,8 +1065,6 @@ fn main {
           }
         })
       })
-    (Some("harness-jobs-host"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @jobs_host.harness(host))
     (Some("page-letters"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => {
         let letters : Ref[@letters.Letters?] = Ref(None)
@@ -1174,14 +1106,10 @@ fn main {
           Some(p.step(ws, home))
         })
       })
-    (Some("harness-ops-platform"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @ops_platform.harness(host))
     (Some("usage-check"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => usage_checker(host, db))
     (Some("cc-index"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => cc_builder(host, db))
-    (Some("harness-vault-crypto"), _, _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_crypto.harness(host))
     (Some("turn-counts"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => turn_builder(host, db))
     (Some("session-list"), Some(db), _) =>

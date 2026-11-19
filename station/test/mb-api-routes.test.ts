@@ -1,4 +1,4 @@
-// The admin API in MoonBit (station/mb/src/api_routes, the reader's `--builder harness-api-routes`) held to the
+// The admin API in MoonBit (station/mb/src/api_routes, `stillfail-reader-harness --builder harness-api-routes`) held to the
 // TypeScript one it replaces (src/api/admin.ts and every module of src/api/routes) on the same requests against the
 // same station: each request is asked of both, and each answer's status, headers and bytes, and every call either
 // made of the station's parts with what it gave them, must be the same.
@@ -448,9 +448,9 @@ const CASES: Case[] = [];
 const add = (name: string, ask: Asked, more: Omit<Case, "name" | "ask"> = {}) => CASES.push({ name, ask, ...more });
 
 async function main() {
-  const { mbReaderBinary } = await import("../src/read/mb-reader.ts");
-  const binary = mbReaderBinary();
-  const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const { mbHarnessBinary } = await import("./mb-harness.ts");
+  const binary = mbHarnessBinary();
+  const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   const zh = (await import("../../client/i18n/catalog/zh/station.json", { with: { type: "json" } })).default;
   const en = (await import("../../client/i18n/catalog/en/station.json", { with: { type: "json" } })).default;
   await installMocks();
@@ -1862,8 +1862,8 @@ function defineCases() {
 // ---------------------------------------------------------------------------------------------------------------
 
 if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-  const { mbReaderBinary } = await import("../src/read/mb-reader.ts");
-  const skip = mbReaderBinary() === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const { mbHarnessBinary } = await import("./mb-harness.ts");
+  const skip = mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   test("the MoonBit admin API answers as the TypeScript one (run with module mocks)", { skip }, async () => {
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;

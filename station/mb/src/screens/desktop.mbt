@@ -52,7 +52,8 @@ pub fn window_words(io : Io, lang : String) -> J {
 /// rate (bits a second, 4 bytes), 8 bounds (JSON {maxWidth, maxHeight, region?}), 9 audio (the next 20 ms packet), 10
 /// window (JSON {window}). From it: 1 info, 2 config, 3 frame, 4 event, 5 clipboard (type, bytes), 6 cursor (JSON
 /// {x, y, shape}), 7 region (JSON {region}), 8 audio config (JSON {codec, sampleRate, channels}, or {error}), 9 audio
-/// (8 bytes timestamp µs, then the packet), 10 turn (JSON {turn}).
+/// (8 bytes timestamp µs, then the packet), 10 turn (JSON {turn}), 11 cursor image (a pointer of an app's own, before
+/// the first 6 that names it "custom:<id>": source.mbt `cursor_image_shape`).
 pub const TO_NEXT : Int = 1
 
 ///|
@@ -161,6 +162,8 @@ pub struct HelperView {
   priv mut clipboard : (Int, (Clip) -> Unit)?
   priv mut cursor : (Int, (ScreenCursor) -> Unit)?
   priv mut last_cursor : ScreenCursor?
+  /// The pictures of the pointers of apps' own it said (message 11), by shape.
+  priv cursor_images : Map[String, Bytes]
   priv mut turn : (Int, (Int) -> Unit)?
   priv mut last_turn : Int?
   priv mut windows : ScreenWindows?
@@ -202,6 +205,7 @@ pub fn HelperView::new(
     clipboard: None,
     cursor: None,
     last_cursor: None,
+    cursor_images: {},
     turn: None,
     last_turn: None,
     windows: None,
@@ -390,8 +394,9 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
       if said is Null || !unit(get(Some(said), "x")) || !unit(get(Some(said), "y")) {
         return
       }
+      // (one of an app's own whose picture it did not say: the default)
       let shape = match text(get(Some(said), "shape")) {
-        Some(s) if cursor_shape(s) => s
+        Some(s) if cursor_shape(s) && (!s.has_prefix("custom:") || self.cursor_images.contains(s)) => s
         _ => "default"
       }
       let c = { x: num(get(Some(said), "x")).unwrap(), y: num(get(Some(said), "y")).unwrap(), shape }
@@ -401,6 +406,16 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
         None => ()
       }
     }
+    11 =>
+      match cursor_image_shape(payload[:]) {
+        Some(shape) => {
+          if self.cursor_images.length() >= CURSOR_IMAGES_MOST && !self.cursor_images.contains(shape) {
+            self.cursor_images.clear()
+          }
+          self.cursor_images[shape] = payload
+        }
+        None => ()
+      }
     10 => {
       let said = parse_or_null(payload)
       let turn = match get(Some(said), "turn") {
@@ -437,21 +452,6 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
     }
     _ => ()
   }
-}
-
-///|
-/// A CSS cursor's name as the helper says one: `/^[a-z-]{1,24}$/`.
-fn cursor_shape(s : String) -> Bool {
-  let n = s.length()
-  if n < 1 || n > 24 {
-    return false
-  }
-  for c in s {
-    if !((c >= 'a' && c <= 'z') || c == '-') {
-      return false
-    }
-  }
-  true
 }
 
 ///|
@@ -590,6 +590,11 @@ pub fn HelperView::watch_cursor(self : HelperView, heard : (ScreenCursor) -> Uni
 }
 
 ///|
+pub fn HelperView::cursor_image(self : HelperView, shape : String) -> Bytes? {
+  self.cursor_images.get(shape)
+}
+
+///|
 pub fn HelperView::watch_windows(self : HelperView, heard : (ScreenWindows) -> Unit) -> () -> Unit {
   let id = self.id()
   self.heard_windows = Some((id, heard))
@@ -690,6 +695,7 @@ pub fn HelperView::view(self : HelperView) -> ScreenView {
     watch_clipboard: Some(f => self.watch_clipboard(f)),
     reveal: Some(async fn(p) { self.reveal(p) }),
     watch_cursor: Some(f => self.watch_cursor(f)),
+    cursor_image: Some(s => self.cursor_image(s)),
     watch_windows: Some(f => self.watch_windows(f)),
     window: Some(i => self.window(i)),
     watch_turn: Some(f => self.watch_turn(f)),

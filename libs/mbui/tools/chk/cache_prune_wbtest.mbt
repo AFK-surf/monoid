@@ -280,6 +280,30 @@ test "an image's version and an apt spec in a key" {
   // v1's and v2's apt caches of a name: one family, every one a variant
   assert_eq(family_of("apt-mbui-host-linux-20ba3079a0cbad0f"), Some(("apt-mbui-host-linux", true)))
   assert_eq(family_of("apt-mbui-host-linux-131ce6adc482-bf9c7f2fe9dcddc1"), Some(("apt-mbui-host-linux", true)))
+  // a compiler's tag: cc and 12 hex digits, one family with the images' versions it replaced
+  assert_true(is_cc_tag("cc1234567890ab"))
+  assert_false(is_cc_tag("cc1234567890a"))
+  assert_false(is_cc_tag("cc1234567890abc"))
+  assert_false(is_cc_tag("cc1234567890aG"))
+  assert_false(is_cc_tag("dd1234567890ab"))
+  assert_false(is_cc_tag("cc"))
+  assert_eq(
+    family_of("mbui-linux-store-app-sfapp-m-cc1234567890ab-a19cbafad89f7953"),
+    Some(("mbui-linux-store-app-sfapp-m", true)),
+  )
+  assert_eq(
+    family_of("mbui-linux-store-app-sfapp-m-20261116.133.1-a19cbafad89f7953"),
+    Some(("mbui-linux-store-app-sfapp-m", true)),
+  )
+  assert_eq(
+    family_of("sf-ui-linux-store-cc1234567890ab-4aa52188713df8eadf6bdb338772e50ada19c5eb"),
+    Some(("sf-ui-linux-store", true)),
+  )
+  // the Mac's launcher, cc and 16 hex digits apart: a kind of its own, not a variant
+  assert_eq(
+    family_of("mbui-mac-cc-61e77a2d557f8677-00b78fb4840fdc3e"),
+    Some(("mbui-mac-cc-61e77a2d557f8677", false)),
+  )
   assert_eq(family_of("warp-1.0.21"), None)
   assert_eq(family_of("android-image-34-default-x86_64-2"), None)
   assert_eq(family_of("android-emulator-16428233"), None)
@@ -315,6 +339,16 @@ test "a family's variants go once it moved on, its newest and the fixed ones nev
   // the newest of a family is never taken, however long unread
   assert_eq(ids([{ ..b, accessed: now - 50.0 * h }]), [])
   assert_eq(ids([{ ..a, accessed: now - 60.0 * h }, { ..b, accessed: now - 50.0 * h }]), ["a"])
+  // the images' stores once the compiler's came: gone 12 hours after their last read, the compiler's kept; and a
+  // clang's store once another clang's was read since
+  let img_a = { ..c, id: "ia", key: "mbui-linux-store-app-pkgs-m-20261116.133.1-a19cbafad89f7953", accessed: now - 12.0 * h }
+  let img_b = { ..c, id: "ib", key: "mbui-linux-store-app-pkgs-m-20261111.370.1-b19cbafad89f7953", accessed: now - 13.0 * h }
+  let cc_new = { ..c, id: "cn", key: "mbui-linux-store-app-pkgs-m-cc1234567890ab-c19cbafad89f7953", accessed: now - 60.0 }
+  assert_eq(ids([img_a, img_b, cc_new]), ["ia", "ib"])
+  assert_eq(ids([{ ..img_a, accessed: now - 12.0 * h + 1.0 }, cc_new]), [])
+  let cc_old = { ..c, id: "co", key: "mbui-linux-store-app-pkgs-m-cc0987654321fe-d19cbafad89f7953", accessed: now - 12.0 * h }
+  assert_eq(ids([cc_old, cc_new]), ["co"])
+  assert_eq(ids([{ ..cc_old, accessed: now }, { ..cc_new, accessed: now - 50.0 * h }]), ["cn"])
   // an apt spec retired and v1's apt cache: gone at 12 hours, the spec read last kept
   let v1 = { ..c, id: "v1", key: "apt-mbui-host-linux-20ba3079a0cbad0f", accessed: now - 17.0 * h }
   let s_old = { ..c, id: "s1", key: "apt-mbui-host-linux-68b46ada6dcd-20ba3079a0cbad0f", accessed: now - 16.0 * h }

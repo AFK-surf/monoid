@@ -76,6 +76,8 @@ pub(all) struct ScreenViewPort {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> () -> Unit)?
   watch_cursor : (((Json) -> Unit) -> () -> Unit)?
+  /// The picture of a pointer of an app's own `watch_cursor` said as "custom:<id>".
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((Json) -> Unit) -> () -> Unit)?
   watch_windows : (((Json) -> Unit) -> () -> Unit)?
   window : ((Double?) -> Unit)?
@@ -497,6 +499,7 @@ pub async fn answer_screen(
     paths,
     initial_rate,
     field(ask, "binaryCursor") is Some(True),
+    field(ask, "customCursor") is Some(True),
   )
   session.run() catch {
     e => {
@@ -561,6 +564,9 @@ priv struct ViewSession {
   start_rate : Double
   /// The client reads the pointer as `cursor` frames (asked `binaryCursor`), not a state's JSON.
   binary_cursor : Bool
+  /// The client draws the pointers of apps' own (asked `customCursor`), and those whose pictures it was sent.
+  custom_cursor : Bool
+  cursor_images_sent : Map[String, Bool]
   mut closed : Bool
   over : @effect.Deferred[Unit]
   /// The writes, in order: each waits for the one before.
@@ -632,6 +638,7 @@ fn ViewSession::new(
   paths : (() -> Array[LinkPath])?,
   start_rate : Double,
   binary_cursor : Bool,
+  custom_cursor : Bool,
 ) -> ViewSession {
   let loss = LinkLoss::new(now)
   // (its counters as the view begins: what went before is no part of it)
@@ -670,6 +677,8 @@ fn ViewSession::new(
     sharpen: Sharpener::new(),
     start_rate,
     binary_cursor,
+    custom_cursor,
+    cursor_images_sent: {},
     closed: false,
     over: @effect.Deferred::new(),
     writes: done_now(),
@@ -722,6 +731,42 @@ fn ViewSession::send(self : ViewSession, kind : Int, payload : Bytes) -> @effect
     }),
   )
   mine
+}
+
+///|
+/// The pointer as the client is told it (`#cursorShown`): one of an app's own, its picture sent first (once a view), to
+/// a client that draws them; else, and where its source has no picture of it, "default".
+fn ViewSession::cursor_shown(self : ViewSession, cursor : Json) -> Json {
+  guard field(cursor, "shape") is Some(String(shape)) && shape.has_prefix("custom:") else { return cursor }
+  if self.custom_cursor && self.cursor_images_sent.contains(shape) {
+    return cursor
+  }
+  let image = match self.view.cursor_image {
+    Some(f) if self.custom_cursor => f(shape)
+    _ => None
+  }
+  match image {
+    Some(b) => {
+      if self.cursor_images_sent.length() >= cursor_images_most {
+        self.cursor_images_sent.clear()
+      }
+      self.cursor_images_sent[shape] = true
+      ignore(self.send(kind_cursor_image, b))
+      cursor
+    }
+    None =>
+      match cursor {
+        Object(m) => {
+          let out : Map[String, Json] = Map([])
+          for k, v in m {
+            out[k] = v
+          }
+          out["shape"] = Json::string("default")
+          Json::object(out)
+        }
+        _ => cursor
+      }
+  }
 }
 
 ///|
@@ -1331,6 +1376,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   if self.view.watch_cursor is Some(watch) {
     self.unpoint = watch(cursor => if !self.closed {
+      let cursor = self.cursor_shown(cursor)
       if self.binary_cursor {
         ignore(self.send(kind_cursor, cursor_payload(cursor)))
       } else {

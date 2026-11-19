@@ -21,6 +21,7 @@
 //   node scripts/native.ts iroh-pkg [dir]              the web's iroh (iroh-wasm) put in web/src/core/iroh-pkg
 //   node scripts/native.ts status                      every part and target: key, and whether cached / published
 //   node scripts/native.ts missing [--windows] [part[:target]…]    those (default: all of ours) the release lacks, one a line
+//   node scripts/native.ts parts [--windows|--mac|--linux]      what missing and ensure take by default, one a line
 //   node scripts/native.ts missing --prebuilt          the prebuilt ones (`msvc`: the shell and engine, Android's,
 //        Windows' and Linux', which the mbui app's jobs only fetch; `prebuilt`: ghostty-vt) in neither the store nor
 //        the release, one a line
@@ -144,6 +145,12 @@ const HERMES_CMAKE = ["-G", "Ninja", "-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX
 /// The bsdtar Windows has (Git Bash's GNU tar takes C:\… for a remote host).
 const TAR = osPlatform() === "win32" ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar";
 
+/// What the reader and its tests' program (reader-harness) are made of and how: one source, two programs.
+const READER_INPUTS = ["station/mb/src", "station/mb/moon.mod", "station/mb/moon.work", "station/mb/build.sh",
+  "rules/src", "rules/moon.mod", "libs/base/src", "libs/base/moon.mod",
+  "libs/mbui/src/effect", "libs/mbui/src/halt", "libs/mbui/moon.mod", "libs/mbui/scripts/mbc-stub.sh",
+  ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti"];
+const readerRecipe = (t: Target) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) });
 type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "wasm32" | "android-arm64" | "ios-arm64" | "ios-sim-arm64";
 type Part = {
   /// What the artifact holds.
@@ -467,11 +474,8 @@ const PARTS: Record<string, Part> = {
     targets: STATION_BINS,
     env: "STILLFAIL_MB_READER",
     rust: false,
-    inputs: ["station/mb/src", "station/mb/moon.mod", "station/mb/moon.work", "station/mb/build.sh",
-      "rules/src", "rules/moon.mod", "libs/base/src", "libs/base/moon.mod",
-      "libs/mbui/src/effect", "libs/mbui/src/halt", "libs/mbui/moon.mod", "libs/mbui/scripts/mbc-stub.sh",
-      ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti"],
-    recipe: (t) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) }),
+    inputs: READER_INPUTS,
+    recipe: readerRecipe,
     build(t, out) {
       const mac = osPlatform() === "darwin" && osArch() === "arm64";
       const linux = osPlatform() === "linux" && osArch() === "x64";
@@ -480,6 +484,28 @@ const PARTS: Record<string, Part> = {
       }
       const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
       run("bash", [join(ROOT, "station/mb/build.sh"), t, join(out, exe("stillfail-reader")(t))], { env: { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a") } });
+    },
+  },
+  // The tests' program beside it (station/mb/src/reader_harness: every package's harness, `--builder harness-*`, which
+  // station/test/mb-*.test.ts hold to the TypeScript), kept out of the reader every station runs: built as it is
+  // (build.sh --harness), for this machine's tests and CI's check-station alone (published for Linux x86-64 only: no
+  // station, release or Apple job takes it).
+  "reader-harness": {
+    files: (t) => [exe("stillfail-reader-harness")(t)],
+    targets: ["darwin-arm64", "linux-x64"],
+    publish: ["linux-x64"],
+    env: "STILLFAIL_MB_HARNESS",
+    rust: false,
+    inputs: READER_INPUTS,
+    recipe: (t) => ({ ...readerRecipe(t), harness: true }),
+    build(t, out) {
+      const mac = osPlatform() === "darwin" && osArch() === "arm64";
+      const linux = osPlatform() === "linux" && osArch() === "x64";
+      if (!mac && !(linux && t !== "darwin-arm64")) {
+        throw new Error(`the reader's harness for ${t} is built on an Apple Silicon Mac${t !== "darwin-arm64" ? " or a Linux x86-64 machine" : ""}`);
+      }
+      const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
+      run("bash", [join(ROOT, "station/mb/build.sh"), "--harness", t, join(out, exe("stillfail-reader-harness")(t))], { env: { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a") } });
     },
   },
   // The shell (client/shell) as a static library for the stations that are not Macs, the reader's (above): built on a
@@ -1639,6 +1665,11 @@ async function main(argv: string[]) {
       }
       return;
     }
+    case "parts": {
+      // What `ensure` and `missing` take without parts named, one a line (CI's natives-main takes them less one).
+      for (const [p, t] of defaults(args.includes("--windows"), args.includes("--mac"), args.includes("--linux"))) console.log(`${p}:${t}`);
+      return;
+    }
     case "missing": {
       // Each part (default: all of ours) the release lacks, one a line: CI's plan skips the natives job when none is.
       // --windows: those only Windows builds (the natives-win job's); --mac: Apple's (natives-mac); --linux: the rest
@@ -1655,14 +1686,7 @@ async function main(argv: string[]) {
       const windows = args.includes("--windows"), mac = args.includes("--mac"), linux = args.includes("--linux");
       const wanted: [string, Target][] = [];
       for (const a of args.filter((a) => !["--windows", "--mac", "--linux"].includes(a))) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
-      if (wanted.length === 0) {
-        for (const [p, t] of ours()) {
-          if (onWindows(p, t) !== windows || onLinux(p, t) || P(p).prebuilt) continue;
-          if (!windows && mac && !(t in APPLE_TRIPLES)) continue;
-          if (!windows && linux && (t in APPLE_TRIPLES)) continue;
-          wanted.push([p, t]);
-        }
-      }
+      if (wanted.length === 0) wanted.push(...defaults(windows, mac, linux));
       const remote = (await published()) ?? fail("the release's assets could not be listed");
       for (const [p, t] of wanted) if (!remote.has(asset(p, t, key(p, t)))) console.log(`${p}:${t}`);
       return;
@@ -1679,14 +1703,7 @@ async function main(argv: string[]) {
         else { const [p, t] = args[i]!.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
       }
       // Default: all of ours that this kind of machine builds (--windows: MSVC's; --mac: Apple's; --linux: ci-1's).
-      if (wanted.length === 0) {
-        for (const [p, t] of ours()) {
-          if (onWindows(p, t) !== windows || onLinux(p, t) || P(p).prebuilt) continue;
-          if (!windows && mac && !(t in APPLE_TRIPLES)) continue;
-          if (!windows && linux && (t in APPLE_TRIPLES)) continue;
-          wanted.push([p, t]);
-        }
-      }
+      if (wanted.length === 0) wanted.push(...defaults(windows, mac, linux));
       const listed = await published();
       const remote = listed ?? new Set<string>();
       // Its assets listed: it is there. Else asked again, and said missing only when GitHub says so: a request that did
@@ -1807,6 +1824,19 @@ async function main(argv: string[]) {
       process.stderr.write(readFileSync(new URL(import.meta.url), "utf8").split("\n").filter((l) => l.startsWith("//")).map((l) => l.slice(3)).join("\n") + "\n");
       process.exit(cmd ? 2 : 0);
   }
+}
+
+/// What `ensure` and `missing` take where no part is named: all of ours that this kind of machine builds (--windows:
+/// MSVC's; --mac: Apple's; --linux: ci-1's; none of them: all but MSVC's), never what is prebuilt by hand.
+function defaults(windows: boolean, mac: boolean, linux: boolean): [string, Target][] {
+  const wanted: [string, Target][] = [];
+  for (const [p, t] of ours()) {
+    if (onWindows(p, t) !== windows || onLinux(p, t) || P(p).prebuilt) continue;
+    if (!windows && mac && !(t in APPLE_TRIPLES)) continue;
+    if (!windows && linux && (t in APPLE_TRIPLES)) continue;
+    wanted.push([p, t]);
+  }
+  return wanted;
 }
 
 /// Every part and target of ours CI publishes (n0's relay is not ours to publish).

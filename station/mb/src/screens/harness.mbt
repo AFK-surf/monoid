@@ -408,6 +408,15 @@ async fn Harness::view_call(self : Harness, name : String, v : ScreenView, f : S
         }
         None => raise fail("no watchCursor")
       }
+    "cursorImage" =>
+      match v.cursor_image {
+        Some(g) =>
+          match g(text(arg("shape")).unwrap_or("")) {
+            Some(b) => js(b64(b))
+            None => Null
+          }
+        None => raise fail("no cursorImage")
+      }
     "watchTurn" =>
       match v.watch_turn {
         Some(g) => {

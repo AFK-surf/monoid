@@ -1,4 +1,4 @@
-// The connects' hub in MoonBit (station/mb src/connects_hub, the reader's `--builder harness-connects-hub`) held to the
+// The connects' hub in MoonBit (station/mb src/connects_hub, `stillfail-reader-harness --builder harness-connects-hub`) held to the
 // TypeScript it is written from (src/connects/*, src/group/*): each case run by both, on twins of one world made the
 // same way (a station's config.json, its store and hub, the mesh between stations, the files, a clock of the test's),
 // and the answers, what each asked of its world in order, what each wrote in its data directory, and its log the same.
@@ -14,7 +14,7 @@ import { extname, join, relative } from "node:path";
 import { createInterface } from "node:readline";
 import { after, mock, test } from "node:test";
 import { Clock, Effect, Exit, Layer, Scope } from "effect";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { setStationLang } from "../src/ops/i18n.ts";
 import { log as stationLog } from "../src/ops/log.ts";
 import { Refused as Declined, bytesOf, withBytes } from "../src/mesh/bus.ts";
@@ -42,8 +42,8 @@ import { ImServer } from "./group-im.ts";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
 import enStation from "../../client/i18n/catalog/en/station.json" with { type: "json" };
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];

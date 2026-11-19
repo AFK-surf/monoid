@@ -704,6 +704,11 @@ pub fn LastingView::watch_cursor(self : LastingView, heard : (ScreenCursor) -> U
 }
 
 ///|
+pub fn LastingView::cursor_image(self : LastingView, shape : String) -> Bytes? {
+  self.view_.cursor_image(shape)
+}
+
+///|
 pub fn LastingView::close(self : LastingView) -> Unit {
   if self.closed {
     return
@@ -731,6 +736,7 @@ pub fn LastingView::view(self : LastingView) -> ScreenView {
     watch_clipboard: Some(f => self.watch_clipboard(f)),
     reveal: Some(async fn(p) { self.reveal(p) }),
     watch_cursor: Some(f => self.watch_cursor(f)),
+    cursor_image: Some(s => self.cursor_image(s)),
   }
 }
 

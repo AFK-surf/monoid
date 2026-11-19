@@ -20,11 +20,14 @@ import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { type WebSocket, WebSocketServer } from "ws";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 import { FakeFeishu } from "./feishu-fake.ts";
 
 const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
+/// (the tests' program, its harness: the station's own commands are the reader's)
+const harnessProgram = mbHarnessBinary();
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
 
 const dirs: string[] = [];
 const fresh = (what: string) => {
@@ -365,7 +368,7 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
 // ── the same parts in the harness, asked as the admin API would ──
 
 function harness() {
-  const child = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode({ STILLFAIL_RELEASE_KEYS: RAW }) });
+  const child = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode({ STILLFAIL_RELEASE_KEYS: RAW }) });
   children.push(child);
   let seq = 0;
   const waiting = new Map<number, (v: any) => void>();

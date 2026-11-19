@@ -1,4 +1,4 @@
-// What a station shares with the others in MoonBit (station/mb/src/share_sync, the reader's `--builder
+// What a station shares with the others in MoonBit (station/mb/src/share_sync, `stillfail-reader-harness --builder
 // harness-share-sync`) held to the TypeScript it replaces (src/share/index.ts `Sharing`, src/share/memory.ts
 // `MemorySync`, src/xshare/index.ts `ChatShares`): one world of stations built twice, the TypeScript's here and the
 // program's in its harness, each with the same config.json, files, rosters and clock, its stations talking to each
@@ -29,6 +29,7 @@ import { writeBuiltinSkills } from "../src/sessions/agent-home.ts";
 import { Sharing, portable, shareRefusal, signInFiles } from "../src/share/index.ts";
 import { MemorySync, asideSkill, memoryFollowed, memoryPath, recOf } from "../src/share/memory.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { toChatShare } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 import { chatShareIndexReady, hasChatShareIndex } from "../src/store/chat-share-index.ts";
@@ -37,7 +38,9 @@ import { ChatShareIndexBuilder } from "../src/xshare/index-builder.ts";
 import { settle } from "./hub-fakes.ts";
 
 const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+/// (the tests' program, its harness: the station's own commands are the reader's)
+const harnessProgram = mbHarnessBinary();
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -413,7 +416,7 @@ class MbWorld {
   waiting: ((line: string) => void)[] = [];
   stderr = "";
   constructor() {
-    this.child = spawn(binary!, ["--builder", "harness-share-sync", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(harnessProgram!, ["--builder", "harness-share-sync", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"] });
     this.child.stderr.on("data", (d) => (this.stderr += d));
     // (a line that is no answer is the program saying it failed: the answer it stands for)
     createInterface({ input: this.child.stdout }).on("line", (line) => this.waiting.shift()?.(line.startsWith("{") ? line : JSON.stringify({ error: `the program said: ${line}`, kind: "ended" })));

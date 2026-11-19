@@ -1,4 +1,4 @@
-// The agents' runtimes in MoonBit (station/mb src/agent_runtimes: reader `--builder harness-agent-runtimes`) held to
+// The agents' runtimes in MoonBit (station/mb src/agent_runtimes: `stillfail-reader-harness --builder harness-agent-runtimes`) held to
 // the TypeScript they move (src/agents: instructions, migrations, profiles, providers, sandbox, sandbox-name,
 // no-keychain, machine-logins, repo-rules, rules-folder, the drivers of DeepSeek Harness, Cursor, Pi, Devin, Grok
 // Build and Hermes Agent with acp.ts; src/agenthome/module.ts) on the same inputs: every text word for word under each
@@ -39,12 +39,12 @@ import { startEnv } from "../src/ops/agent-env.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { platform } from "../src/platform/index.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { Agents } from "../src/sessions/agents.ts";
 import { ControlPlane, StationConfig } from "../src/services.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const posix = process.platform !== "win32";
 
 const dirs: string[] = [];

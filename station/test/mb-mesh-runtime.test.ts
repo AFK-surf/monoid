@@ -1,4 +1,4 @@
-// The mesh's runtime in MoonBit (station/mb src/mesh_runtime, the reader's `--builder harness-mesh-runtime`) held to the
+// The mesh's runtime in MoonBit (station/mb src/mesh_runtime, `stillfail-reader-harness --builder harness-mesh-runtime`) held to the
 // TypeScript it is written from (src/mesh/settings.ts, mesh.ts `applyNetwork`, native.ts `bindStation` with its DSCP,
 // lan.ts, traces.ts, screen-pace.ts, screens.ts' wire and checks, lock-events.ts, reply-watch.ts, tools.ts, files.ts,
 // served.ts): the same inputs given both, each answer the same; what keeps state (a view's pace, its sizer, its
@@ -22,7 +22,7 @@ import { ToolError } from "../src/device/tools.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { log } from "../src/ops/log.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { ScreenRefused } from "../src/screens/hub.ts";
 import { regionOf } from "../src/screens/source.ts";
 import { fileBytes, oneBytes, readBytes, stopBytes, writeBytes } from "../src/mesh/files.ts";
@@ -45,8 +45,8 @@ import { adminSessions, presenceTools, refusal, serveTools } from "../src/mesh/t
 import { Traces, otlpBody, parseParent, route } from "../src/mesh/traces.ts";
 import { childGone } from "./child-gone.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];
@@ -639,6 +639,7 @@ test("a view's frames, its ask and every frame a client sends, checked as screen
     { codecs: ["jpeg", "jpeg"], fps: 24, quality: "best", gamut: "srgb", client: 5, app: "", self: "😀".repeat(40), taken: "yes", maxWidth: -3, maxHeight: Number.NaN },
     { client: "\u{e0001}tag\u{e0020}", app: "­؀x", maxWidth: 1919.5, maxHeight: 1080.49 },
     { codecs: ["h264"], binaryCursor: true, taken: true }, { codecs: ["h264"], binaryCursor: true, peek: true }, { codecs: ["h264"], binaryCursor: 1 }, { codecs: ["h264"], binaryCursor: false },
+    { codecs: ["h264"], binaryCursor: true, customCursor: true }, { codecs: ["h264"], customCursor: true, peek: true }, { codecs: ["h264"], customCursor: 1 }, { codecs: ["h264"], customCursor: false },
     { codecs: ["h264"], datagrams: 77 }, { codecs: ["h264"], datagrams: 4294967295 }, { codecs: ["h264"], datagrams: 77, peek: true }, { codecs: ["h264"], datagrams: 0 },
     { codecs: ["h264"], datagrams: 1.5 }, { codecs: ["h264"], datagrams: 4294967296 }, { codecs: ["h264"], datagrams: "77" },
   ];
@@ -1220,7 +1221,9 @@ class ScreenWorld {
       },
       ...(v.setClipboard ? { setClipboard: async (clip: Json, paste: boolean) => void w.calls.push(["setClipboard", clip.type === "text" ? clip : { type: "png", data: hex(clip.data) }, paste]) } : {}),
       ...(v.watchClipboard ? { watchClipboard: (f: (c: Json) => void) => (w.listeners.set("clip", (c) => f(c.type === "png" ? { type: "png", data: new Uint8Array(bytesOf(c.data)) } : c)), () => (w.calls.push(["un:watchClipboard"]), w.listeners.delete("clip"))) } : {}),
-      ...watch("watchCursor"), ...watch("watchTurn"), ...watch("watchWindows"), ...watch("watchLogin"), ...watch("watchPasskey"),
+      ...watch("watchCursor"),
+      ...(v.cursorImages ? { cursorImage: (shape: string) => (typeof v.cursorImages[shape] === "string" ? new Uint8Array(bytesOf(v.cursorImages[shape])) : undefined) } : {}),
+      ...watch("watchTurn"), ...watch("watchWindows"), ...watch("watchLogin"), ...watch("watchPasskey"),
       ...(v.window ? { window: (id: number | null) => void w.calls.push(["window", id]) } : {}),
       ...(v.reveal ? { reveal: async (p: string) => void w.calls.push(["reveal", p]) } : {}),
       ...(v.fill ? { fill: async (f: Json) => void w.calls.push(["fill", f]) } : {}),
@@ -1500,6 +1503,21 @@ test("a screen's view that reads `cursor` frames, started at the rate its link c
   const binary = { head: viewHead({ screen: { codecs: ["h264"], control: true, binaryCursor: true } }), viewer: member, source: browserSource(), view: fullView(), drive: { control: true }, paths: lan };
   await bothScreens(binary, cursorSteps, "cursor frames on a LAN");
   await bothScreens({ ...binary, head: viewHead({ screen: { codecs: ["h264"], control: true } }) }, cursorSteps, "a client before cursor frames");
+  // pointers of apps' own: each picture once, before the first that names it; to a client that does not draw them, or
+  // one whose source has no picture of it, the default
+  const a = "custom:00112233445566aa", b = "custom:ffeeddccbbaa9988";
+  const picture = (w: number) => `${w.toString(16).padStart(2, "0")}100402${Buffer.from(a.slice(7)).toString("hex")}89504e470d0a1a0a0001`;
+  const customSteps: Json[] = [
+    vframe(1_000, { key: true, config: { codec: "h264", width: 1920, height: 1080 } }),
+    { op: "listener", name: "watchCursor", value: { x: 0.1, y: 0.2, shape: a } }, { op: "listener", name: "watchCursor", value: { x: 0.3, y: 0.2, shape: a } },
+    { op: "listener", name: "watchCursor", value: { x: 0.3, y: 0.4, shape: b } }, { op: "listener", name: "watchCursor", value: { x: 0.3, y: 0.4, shape: "text" } },
+    { op: "listener", name: "watchCursor", value: { x: 0.5, y: 0.5, shape: a } }, { op: "listener", name: "watchCursor", value: null }, { op: "clientEnd" },
+  ];
+  const custom = { ...binary, head: viewHead({ screen: { codecs: ["h264"], control: true, binaryCursor: true, customCursor: true } }), view: fullView({ cursorImages: { [a]: picture(16) } }) };
+  await bothScreens(custom, customSteps, "pointers of apps' own");
+  await bothScreens({ ...custom, head: viewHead({ screen: { codecs: ["h264"], control: true, customCursor: true } }) }, customSteps, "pointers of apps' own in a state");
+  await bothScreens({ ...custom, head: viewHead({ screen: { codecs: ["h264"], control: true, binaryCursor: true } }) }, customSteps, "pointers of apps' own to a client before them");
+  await bothScreens({ ...custom, view: fullView() }, customSteps, "pointers of apps' own from a source without their pictures");
   await bothScreens({ ...binary, paths: [{ ...lan[0], relay: "https://r1/", ip: null, rttMs: 20 }] }, [{ op: "clientEnd" }], "a near relay");
   // frames as datagrams: the client's token, the stream asked, the reply saying so where it sends them so
   const dgram = { ...binary, head: viewHead({ screen: { codecs: ["h264"], control: true, datagrams: 3_000_000_007 } }) };

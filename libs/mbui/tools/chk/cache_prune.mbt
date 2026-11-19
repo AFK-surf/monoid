@@ -265,6 +265,18 @@ fn is_image_version(s : String) -> Bool {
 }
 
 ///|
+/// A Linux runner's compiler in a key: cc and 12 hex digits (mbui-check.yml's IMG, of clang and the C headers it preprocesses)
+fn is_cc_tag(s : String) -> Bool {
+  s.length() == 14 && s.has_prefix("cc") && is_hex(s)
+}
+
+///|
+/// What a store of an image's or a compiler's is kept apart by: an image's version or a compiler's tag
+fn is_store_variant(s : String) -> Bool {
+  is_image_version(s) || is_cc_tag(s)
+}
+
+///|
 /// An apt cache's spec, 12 hex digits (apt-<name>-<spec>-<inputs>)
 fn is_apt_spec(s : String) -> Bool {
   s.length() == 12 && is_hex(s)
@@ -272,8 +284,11 @@ fn is_apt_spec(s : String) -> Bool {
 
 ///|
 /// A rolling cache's family and whether it is a variant of it: an apt cache's kind less its spec (v1's
-/// apt-<name>-<inputs> and v2's apt-<name>-<spec>-<inputs> both apt-<name>), a kind naming an image's version less it
-/// (mbui-linux-moon-x64-20261111.127.1: mbui-linux-moon-x64); any other kind is its own family, not a variant. None
+/// apt-<name>-<inputs> and v2's apt-<name>-<spec>-<inputs> both apt-<name>), a kind naming an image's version or a
+/// compiler's tag less it (mbui-linux-moon-x64-20261111.127.1: mbui-linux-moon-x64; mbui-linux-store-app-pkgs-m-
+/// cc0123456789ab and the -m-20261116.133.1 it replaced: mbui-linux-store-app-pkgs-m, so the images' stores go 12 hours
+/// after the compiler's was first read, and a clang's once another's took its place); any other kind is its own
+/// family, not a variant. None
 /// for a cache kept by its own name.
 fn family_of(key : String) -> (String, Bool)? {
   if key.has_prefix("moonbit-") || key.has_prefix("pnpm-") {
@@ -290,8 +305,8 @@ fn family_of(key : String) -> (String, Bool)? {
     }
     return Some((fam, true))
   }
-  if parts.iter().any(is_image_version) {
-    return Some((parts.filter(fn(p) { !is_image_version(p) }).join("-"), true))
+  if parts.iter().any(is_store_variant) {
+    return Some((parts.filter(fn(p) { !is_store_variant(p) }).join("-"), true))
   }
   Some((k, false))
 }

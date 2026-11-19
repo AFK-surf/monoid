@@ -18,6 +18,10 @@ pub const CLIP_PNG_MAX : Int32 = 8388608
 
 pub const CLIP_TEXT_MAX : Int32 = 1048576
 
+pub const CURSOR_IMAGES_MOST : Int32 = 64
+
+pub const CURSOR_PNG_MAX : Int32 = 65536
+
 pub const FLAG_ALT : Int32 = 0x80000
 
 pub const FLAG_COMMAND : Int32 = 0x100000
@@ -113,6 +117,10 @@ pub fn clip_of(@jsjson.JValue) -> Clip?
 pub fn codec_for(ViewOptions, Array[Codec]) -> Codec?
 
 pub fn codec_of(String) -> Codec?
+
+pub fn cursor_image_shape(BytesView) -> String?
+
+pub fn cursor_shape(String) -> Bool
 
 pub fn date_parse_utc(String) -> Double
 
@@ -665,6 +673,7 @@ pub struct HelperView {
 }
 pub fn HelperView::bounds(Self, Double, Double, Region?) -> Unit
 pub fn HelperView::close(Self) -> Unit
+pub fn HelperView::cursor_image(Self, String) -> Bytes?
 pub fn HelperView::has_audio(Self) -> Bool
 pub fn HelperView::input(Self, ScreenInput) -> Unit
 pub fn HelperView::keyframe(Self) -> Unit
@@ -713,6 +722,7 @@ pub struct LastingView {
 }
 pub fn LastingView::bounds(Self, Double, Double, Region?) -> Unit
 pub fn LastingView::close(Self) -> Unit
+pub fn LastingView::cursor_image(Self, String) -> Bytes?
 pub fn LastingView::input(Self, ScreenInput) -> Unit
 pub fn LastingView::keyframe(Self) -> Unit
 pub fn LastingView::new(Io, HelperView, async () -> HelperView, () -> Unit) -> Self
@@ -1107,6 +1117,7 @@ pub(all) struct ScreenView {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
   watch_cursor : (((ScreenCursor) -> Unit) -> (() -> Unit))?
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((Int32) -> Unit) -> (() -> Unit))?
   watch_windows : (((ScreenWindows) -> Unit) -> (() -> Unit))?
   window : ((Double?) -> Unit)?

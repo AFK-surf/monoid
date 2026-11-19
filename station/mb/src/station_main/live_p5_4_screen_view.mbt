@@ -67,6 +67,7 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     set_clipboard: v.set_clipboard.map(f => async fn(c, b) { f(p54_clip_of(c), b) }),
     watch_clipboard: v.watch_clipboard.map(w => (k : (@mesh_runtime.Clip) -> Unit) => w(c => k(p54_clip(c)))),
     watch_cursor: v.watch_cursor.map(w => (k : (Json) -> Unit) => w(c => k(p54_of_jv(c.to_j())))),
+    cursor_image: v.cursor_image,
     watch_turn: v.watch_turn.map(w => (k : (Json) -> Unit) => w(n => k(Json::number(n.to_double())))),
     watch_windows: v.watch_windows.map(w => (k : (Json) -> Unit) => w(x => k(p54_of_jv(x.to_j())))),
     window: v.window,

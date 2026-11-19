@@ -391,12 +391,82 @@ pub fn ScreenVideo::to_j(self : ScreenVideo) -> J {
   jsome([("capture", Some(js(self.capture))), ("encoder", self.encoder.map(js)), ("hardware", self.hardware.map(jb))])
 }
 
-/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it.
+/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it, or "custom:<id>" (one of an app's
+/// own: its picture `ScreenView::cursor_image`).
 #derive(Eq)
 pub(all) struct ScreenCursor {
   x : Double
   y : Double
   shape : String
+}
+
+///|
+/// The most of a pointer's picture (its PNG), and how many pictures a view keeps.
+pub const CURSOR_PNG_MAX : Int = 65536
+
+///|
+pub const CURSOR_IMAGES_MOST : Int = 64
+
+///|
+/// A pointer's shape as a helper says one (source.ts `CURSOR_SHAPE`): a CSS cursor's name, `/^[a-z-]{1,24}$/`, or one
+/// of an app's own, `custom:` and 16 lowercase hex digits.
+pub fn cursor_shape(s : String) -> Bool {
+  let n = s.length()
+  if s.has_prefix("custom:") {
+    return n == 23 && hex16(s, 7)
+  }
+  if n < 1 || n > 24 {
+    return false
+  }
+  for c in s {
+    if !((c >= 'a' && c <= 'z') || c == '-') {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// 16 lowercase hex digits from `at` to its end.
+fn hex16(s : String, at : Int) -> Bool {
+  let mut i = 0
+  for c in s {
+    if i >= at && !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+      return false
+    }
+    i += 1
+  }
+  i == at + 16
+}
+
+///|
+/// The shape ("custom:<id>") a pointer's picture is of (source.ts `cursorImageShape`): its width and height (points,
+/// 1..128), its hot spot (0..width, 0..height), its id (16 lowercase hex digits), then a PNG of at most 64 KiB; None
+/// for any other.
+pub fn cursor_image_shape(payload : BytesView) -> String? {
+  let n = payload.length()
+  if n < 28 || n > 20 + CURSOR_PNG_MAX {
+    return None
+  }
+  let (w, h, hx, hy) = (payload[0].to_int(), payload[1].to_int(), payload[2].to_int(), payload[3].to_int())
+  if w < 1 || w > 128 || h < 1 || h > 128 || hx > w || hy > h {
+    return None
+  }
+  let id = StringBuilder::new()
+  for i in 4..<20 {
+    id.write_char(payload[i].to_int().unsafe_to_char())
+  }
+  let id = id.to_string()
+  if !hex16(id, 0) {
+    return None
+  }
+  let png : FixedArray[Byte] = [b'\x89', b'P', b'N', b'G', b'\r', b'\n', b'\x1a', b'\n']
+  for i in 0..<8 {
+    if payload[20 + i] != png[i] {
+      return None
+    }
+  }
+  Some("custom:" + id)
 }
 
 ///|
@@ -552,6 +622,8 @@ pub(all) struct ScreenView {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
   watch_cursor : (((ScreenCursor) -> Unit) -> (() -> Unit))?
+  /// The picture of a pointer of an app's own `watch_cursor` said as "custom:<id>" (`cursor_image_shape`'s payload).
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((Int) -> Unit) -> (() -> Unit))?
   watch_windows : (((ScreenWindows) -> Unit) -> (() -> Unit))?
   window : ((Double?) -> Unit)?
@@ -585,6 +657,7 @@ pub fn ScreenView::bare(
     set_clipboard: None,
     watch_clipboard: None,
     watch_cursor: None,
+    cursor_image: None,
     watch_turn: None,
     watch_windows: None,
     window: None,

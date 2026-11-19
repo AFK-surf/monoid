@@ -1,4 +1,4 @@
-// Comma on the station in MoonBit (station/mb src/comma, the reader's `--builder harness-comma`) held to the TypeScript
+// Comma on the station in MoonBit (station/mb src/comma, `stillfail-reader-harness --builder harness-comma`) held to the TypeScript
 // it is written from (src/comma/): each case run by both on the same data, its answer (or what it threw) the same; the
 // statistics' and the Task index's databases (stats.ts, stats-age.ts) written by each from copies of one file and
 // compared table by table, the Tasks' file (tasks.ts) byte for byte, the Router's reads and writes (chats.ts) against a
@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, mock, test } from "node:test";
 import { Worker } from "node:worker_threads";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { log } from "../src/ops/log.ts";
 import { setStationLang } from "../src/ops/i18n.ts";
@@ -38,8 +38,8 @@ import enStation from "../../client/i18n/catalog/en/station.json" with { type: "
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const dirs: string[] = [];
 const fresh = (prefix: string) => {

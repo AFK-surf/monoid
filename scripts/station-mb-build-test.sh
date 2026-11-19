@@ -2,8 +2,8 @@
 # station/mb/build.sh with every tool it runs made up (moon, mbc, cc, ar, getconf: none compiles anything): the jobs it
 # gives mbc (every core alone, shared among the readers scripts/native.ts builds side by side, MBC_JOBS over both),
 # moonbit.h taken from the store by its content (so two moons of one machine, ci-1's runners, compile the same units),
-# MoonBit's runtime archived once and kept in MBC_STORE until what it is made of changes, and moon's lock left by a
-# build gone taken over.
+# MoonBit's runtime archived once and kept in MBC_STORE until what it is made of changes, moon's lock left by a
+# build gone taken over, and --harness building the tests' program (src/reader_harness) beside the reader, each its own.
 #   bash scripts/station-mb-build-test.sh [BUILD_SH]     (BUILD_SH: another build.sh to hold to the same, e.g. an older one)
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -39,8 +39,10 @@ if [ -n "$dir" ]; then
   chmod +x "$dir/native/release/build/station/cprep/cprep.exe"
   exit 0
 fi
-mkdir -p _build/native/release/build/station/reader
-echo 'int main(void){return 0;}' > _build/native/release/build/station/reader/reader.c
+pkg=$(basename "${@: -1}")
+mkdir -p "_build/native/release/build/station/$pkg"
+echo "int main(void){return 0;} /* $pkg */" > "_build/native/release/build/station/$pkg/$pkg.c"
+echo "$pkg" >> "$LOG/moon-builds"
 EOF
 cat > "$t/bin/getconf" <<'EOF'
 #!/bin/bash
@@ -56,6 +58,7 @@ for a in "$@"; do
   [ "$prev" = -j ] && j=$a
   prev=$a
 done
+cat "$a" > "$LOG/c"
 echo "$j" > "$LOG/jobs"
 mkdir -p "$obj"; echo unit > "$obj/unit.o"; echo "$obj/unit.o"
 EOF
@@ -173,4 +176,21 @@ bounded "$p" "a build after one gone left moon's lock" || fail "a build after on
 pids=()
 [ ! -e "$t/root/station/mb/_build/moon-gen.lock" ] || fail "moon's lock left after a build ended"
 
-echo "station-mb-build-test: mbc's jobs by the builds side by side, the runtime kept until it changes, a gone build's lock taken over"
+# 5. --harness: the tests' program from src/reader_harness, into stillfail-reader-harness-TARGET by default, its C
+#    prepared and kept apart from the reader's (prepped-reader_harness.c), each taken as it was made thereafter.
+rm -rf "$t/root/station/mb/_build"; fresh
+bash "$t/root/station/mb/build.sh" --harness darwin-arm64 > "$t/log/build-harness.out" 2>&1 || fail "--harness: $(cat "$t/log/build-harness.out")"
+[ -f "$t/root/station/mb/_build/stillfail-reader-harness-darwin-arm64" ] || fail "--harness: not built into _build/stillfail-reader-harness-darwin-arm64"
+[ ! -e "$t/root/station/mb/_build/stillfail-reader-darwin-arm64" ] || fail "--harness: built the reader too"
+[ "$(cat "$t/log/moon-builds")" = reader_harness ] || fail "--harness: moon built $(cat "$t/log/moon-builds"), not reader_harness"
+grep -q 'reader_harness' "$t/log/c" || fail "--harness: mbc given $(cat "$t/log/c"), not the harness's C"
+[ -f "$t/root/station/mb/_build/prepped-reader_harness.c" ] || fail "--harness: its prepared C not kept as prepped-reader_harness.c"
+fresh; run plain || fail "the reader after the harness: $(cat "$t/log/build-plain.out")"
+[ "$(cat "$t/log/moon-builds")" = reader ] || fail "the reader after the harness: moon built $(cat "$t/log/moon-builds"), not reader"
+grep -q '/\* reader \*/' "$t/log/c" || fail "the reader after the harness: mbc given $(cat "$t/log/c"), not the reader's C"
+fresh; bash "$t/root/station/mb/build.sh" --harness darwin-arm64 "$t/out/harness2" > "$t/log/build-harness2.out" 2>&1 || fail "--harness again: $(cat "$t/log/build-harness2.out")"
+[ ! -e "$t/log/moon-builds" ] || fail "--harness again, nothing changed: moon built $(cat "$t/log/moon-builds") again"
+grep -q 'reader_harness' "$t/log/c" || fail "--harness again: mbc given $(cat "$t/log/c"), not the harness's kept C"
+grep -q 'unit.o' "$t/out/harness2" || fail "--harness into OUT: not linked there"
+
+echo "station-mb-build-test: mbc's jobs by the builds side by side, the runtime kept until it changes, a gone build's lock taken over, --harness's program apart from the reader"

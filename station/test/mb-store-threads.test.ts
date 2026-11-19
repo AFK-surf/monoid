@@ -1,4 +1,4 @@
-// The store of threads in MoonBit (station/mb/src/store_threads, reader `--builder harness-store-threads`) against
+// The store of threads in MoonBit (station/mb/src/store_threads, `stillfail-reader-harness --builder harness-store-threads`) against
 // the TypeScript store (src/store/store.ts) on twin databases with one clock: each step is played on both, the value
 // given back, what was told (StoreChange) and what was asked to be prepared held equal, and the two databases are held
 // equal row for row at the end of each scenario and between its parts. The queued card outcomes' consumer
@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MbProcess } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { cardEditPage, cardMessagePage, cardOutcomeHeads, saveWithCardOutcome, type CardOutcome } from "../src/store/card-outbox.ts";
 import { CardOutcomeWorker } from "../src/store/card-outbox-worker.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
@@ -18,7 +19,7 @@ import { Store, archiveLookOf } from "../src/store/store.ts";
 import { installWidgetSources } from "../src/store/widget-sources.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
-const binary = mbReaderBinary();
+const binary = mbHarnessBinary();
 
 type Json = any;
 type Hook = { sql: string; args?: unknown[] } | { throw: string } | null | undefined;
@@ -121,7 +122,7 @@ class Twin {
 
   /// The MoonBit store on the twin, which reads what it reads once (the old lookups there) as it starts.
   start(): void {
-    assert.notEqual(binary, null, "the MoonBit reader is built (station/mb/build.sh, or STILLFAIL_MB_READER)");
+    assert.notEqual(binary, null, "the tests' MoonBit program is built (station/mb/build.sh --harness, or STILLFAIL_MB_HARNESS)");
     this.mb = new MbProcess(binary!, ["--builder", "harness-store-threads", "--db", this.paths[1]]);
     this.mb.on("message", (m: Json) => {
       const answer = this.#answers.get(m.id);

@@ -297,6 +297,8 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   // A sign-in lent by another station run out under the process (1.5.9's words): a sign-in's failure, which reopens it.
   assert.equal(noticeFailure('⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set'), "auth");
   assert.equal(noticeFailure('partial\n⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set\n'), "auth");
+  assert.equal(noticeFailure("⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials."), "auth");
+  assert.equal(noticeFailure("partial\n⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"), "auth");
   assert.equal(noticeFailure("⚠ agent executor error: unexpected EOF"), "other");
 });
 
@@ -716,6 +718,53 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     assert.equal(rpc(dump).filter((m) => m.method === "session/load").length, 2);
     assert.equal(chat.texts().some((t) => t.includes("terminated due to error") || t.includes("模型服务出错") || t.includes("认证失败")), false);
     assert.equal(chat.texts().length, postsBefore + 1);
+
+    // A long-running task crossing a SECOND hourly borrowed-token expiry inside an `auth_retry` turn:
+    // Turn 1 expires -> `auth_retry` opens process #4 -> after running past AGY_LENT_MIN_RUN_MS its borrowed token
+    // also expires (`⚠ UNAUTHENTICATED (code 401):`) -> reopens process #5 on a newly lent token instead of failing.
+    const live2 = [...(driver as any).live][0];
+    const postsBeforeLong = chat.texts().length;
+    writeFileSync(dump + ".hold-auth-retry", "1");
+    await hub.accept("cl", reply(m1, "2000.6", "<@UBOT> hold-turn", { addressed: true }));
+    await until(() => live2.busy());
+    live2.signInOpenedAt = Date.now() - 55 * 60_000;
+    live2.signInUntil = Date.now() - 60_000;
+    writeFileSync(agyToken(home), signIn(-1));
+    await hub.accept("cl", reply(m1, "2000.7", "<@UBOT> unauth-mid-turn", { addressed: true }));
+    await until(() => opens() === 4 && [...(driver as any).live][0]?.busy() === true);
+    const live3 = [...(driver as any).live][0];
+    // Simulate the `auth_retry` turn running for 55 min until its newly lent token also expires.
+    live3.signInOpenedAt = Date.now() - 55 * 60_000;
+    live3.signInUntil = Date.now() - 60_000;
+    writeFileSync(agyToken(home), signIn(-1));
+    rmSync(dump + ".hold-auth-retry", { force: true });
+    await hub.accept("cl", reply(m1, "2000.8", "<@UBOT> unauth-mid-turn", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && opens() === 5);
+    await settle();
+    assert.deepEqual(lends, [55, 55, 55, 55]);
+    assert.equal(store.getSession(key)!.runtimeSessionId, id);
+    assert.equal(rpc(dump).filter((m) => m.method === "session/load").length, 4);
+    assert.equal(chat.texts().some((t) => t.includes("UNAUTHENTICATED") || t.includes("认证失败") || t.includes("Sign-in failed")), false);
+    assert.equal(chat.texts().length, postsBeforeLong + 1);
+
+    // Negative guard: if an `auth_retry` turn fails with 401 right after reopening (before its fresh borrowed token
+    // expires / before AGY_LENT_MIN_RUN_MS), it does NOT loop — it stops and posts the auth failure notice.
+    const live4 = [...(driver as any).live][0];
+    writeFileSync(dump + ".hold-auth-retry", "1");
+    await hub.accept("cl", reply(m1, "2000.9", "<@UBOT> hold-turn", { addressed: true }));
+    await until(() => live4.busy());
+    live4.signInOpenedAt = Date.now() - 55 * 60_000;
+    live4.signInUntil = Date.now() - 60_000;
+    writeFileSync(agyToken(home), signIn(-1));
+    await hub.accept("cl", reply(m1, "2000.10", "<@UBOT> unauth-mid-turn", { addressed: true }));
+    await until(() => opens() === 6 && [...(driver as any).live][0]?.busy() === true);
+    rmSync(dump + ".hold-auth-retry", { force: true });
+    // Do NOT expire live5's fresh token: an immediate 401 must stop instead of retrying again.
+    await hub.accept("cl", reply(m1, "2000.11", "<@UBOT> unauth-mid-turn", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && chat.texts().some((t) => t.includes("UNAUTHENTICATED")));
+    await settle();
+    assert.equal(opens(), 6);
+    assert.deepEqual(lends, [55, 55, 55, 55, 55]);
   } finally {
     await hub.shutdown();
     await driver.shutdown();

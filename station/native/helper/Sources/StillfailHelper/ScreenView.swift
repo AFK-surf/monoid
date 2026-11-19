@@ -35,9 +35,9 @@
 //                             {windows: [...]} as the windows change (looked at each second); {window: id | null} as the
 //                             one shown alone changes (asked, or it closed: the whole display again)
 //        5 clipboard 1 byte type (1 text, 2 PNG), the bytes: what was copied, while watched
-//        6 cursor    JSON     {x, y, shape} (x, y 0..1 of the display; shape a CSS cursor's name) as it moves or
-//                             changes: a video's pictures leave the pointer out (the client draws it, or shows its own in
-//                             its shape); a JPEG's have it drawn in
+//        6 cursor    JSON     {x, y, shape} (x, y 0..1 of the display; shape a CSS cursor's name, or "custom:<id>"
+//                             for one of an app's own: message 11) as it moves or changes: a video's pictures leave the
+//                             pointer out (the client draws it, or shows its own in its shape); a JPEG's have it drawn in
 //        7 region    JSON     {region: {x, y, w, h} | null}: the part of the display the frames from the next one on
 //                             show, as it was framed (0..1 of the display; null the whole), said before a frame whose
 //                             part is another than the last one's (that frame a key frame)
@@ -45,6 +45,9 @@
 //                             (no more audio); `opus` to a view opened with `audioCodec: "opus"` where the Mac encodes it
 //        9 audio     8 bytes timestamp (µs, the frames' clock), then 3840 bytes: 960 frames of stereo PCM16 little-endian;
 //                             or one Opus packet of those 960 frames
+//       11 cursor image       a pointer of an app's own, before the first message 6 that names it on this connection:
+//                             1 byte width, 1 byte height (points, 1…128), 1 byte hot spot x, 1 byte y (0…width,
+//                             0…height, from the top left), the id's 16 lowercase hex digits, then a PNG (at most 64 KiB)
 // The view ends when the connection does. `synthetic: "moving"|"still"` encodes made-up pictures instead of capturing
 // (the side test's measurement of the encoder and the link), and with `audio` a made-up tone: never what a person sees.
 import AppKit
@@ -126,6 +129,9 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   var cursorSaid: [String: Any] = [:]
   var cursorTicks = 0
   var cursorShape = "default"
+  /// The picture of the shape looked at last where it is an app's own, and the ids of those said on this connection.
+  var cursorImage: CursorShapes.Custom?
+  var sentCursorImages: Set<String> = []
   var session: VTCompressionSession?
   var size = (0, 0)
   var encoder = ""
@@ -800,7 +806,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   }
 
   /// The pointer said (message 6) as it moves or changes shape, while the view lasts: where it is on the display (0..1),
-  /// and its shape as CSS names it (the standard cursors; any other "default"). A shape is looked at 10 times a second.
+  /// and its shape as CSS names it (the standard cursors; an app's own "custom:<id>", its picture said first as message
+  /// 11 once a connection; any other "default"). A shape is looked at 10 times a second.
   func followCursor() {
     let timer = DispatchSource.makeTimerSource(queue: .main)
     timer.schedule(deadline: .now(), repeating: .milliseconds(16))
@@ -810,12 +817,17 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let at = CGEvent(source: nil)?.location else { return }
         let b = self.area()
         guard b.width > 0, b.height > 0 else { return }
-        if self.cursorTicks % 6 == 0 { self.cursorShape = CursorShapes.name(of: NSCursor.currentSystem) }
+        if self.cursorTicks % 6 == 0 { (self.cursorShape, self.cursorImage) = CursorShapes.shape(of: NSCursor.currentSystem) }
         self.cursorTicks += 1
         let x = min(1, max(0, (at.x - b.minX) / b.width)), y = min(1, max(0, (at.y - b.minY) / b.height))
         let said: [String: Any] = ["x": (x * 10000).rounded() / 10000, "y": (y * 10000).rounded() / 10000, "shape": self.cursorShape]
         if NSDictionary(dictionary: said).isEqual(to: self.cursorSaid) { return }
         self.cursorSaid = said
+        if let custom = self.cursorImage, !self.sentCursorImages.contains(custom.id) {
+          if self.sentCursorImages.count >= CursorShapes.most { self.sentCursorImages.removeAll() }
+          self.sentCursorImages.insert(custom.id)
+          self.channel.send(11, custom.payload)
+        }
         self.channel.sendJSON(6, said)
       }
     }
@@ -1046,14 +1058,26 @@ struct WindowsLook: Equatable {
 }
 
 /// The system's standard cursors by the CSS names a client shows them with, told apart by their hot spots and pixels
-/// (an NSCursor is made anew each time it is asked for: the same object it never is). One not told apart (a picture
-/// macOS draws itself, an app's own) is "default".
+/// (an NSCursor is made anew each time it is asked for: the same object it never is). Any other (an app's own, one
+/// macOS draws itself) is "custom:<id>", its picture said to the client (`Custom`), where it is 1…128 points a side and
+/// fits a PNG of 64 KiB; else "default".
 @MainActor
 enum CursorShapes {
   struct Look: Equatable {
     let hotSpot: NSPoint
     let pixels: Data
   }
+
+  /// A pointer of an app's own: its id (the FNV-1a hash of its pixels, size and hot spot, as 16 lowercase hex digits)
+  /// and message 11's payload (its size and hot spot in points, the id, its picture as a PNG).
+  struct Custom: Equatable {
+    let id: String
+    let payload: Data
+  }
+
+  /// The most pictures kept here, and said on a connection before it says them again.
+  static let most = 64
+  static let pngMost = 65536
 
   static func look(_ cursor: NSCursor) -> Look? {
     guard let image = cursor.image.cgImage(forProposedRect: nil, context: nil, hints: nil), let data = image.dataProvider?.data else { return nil }
@@ -1067,8 +1091,42 @@ enum CursorShapes {
     (NSCursor.iBeamCursorForVerticalLayout, "vertical-text"), (NSCursor.arrow, "default"),
   ].compactMap { cursor, name in look(cursor).map { ($0, name) } }
 
-  static func name(of cursor: NSCursor?) -> String {
-    guard let cursor, let seen = look(cursor) else { return "default" }
-    return known.first { $0.0 == seen }?.1 ?? "default"
+  /// The pictures made, by id: each encoded once, not each time it is looked at.
+  static var made: [String: Custom] = [:]
+
+  static func shape(of cursor: NSCursor?) -> (String, Custom?) {
+    guard let cursor, let image = cursor.image.cgImage(forProposedRect: nil, context: nil, hints: nil), let data = image.dataProvider?.data else { return ("default", nil) }
+    let seen = Look(hotSpot: cursor.hotSpot, pixels: data as Data)
+    if let name = known.first(where: { $0.0 == seen })?.1 { return (name, nil) }
+    guard let custom = custom(cursor, image: image, pixels: seen.pixels) else { return ("default", nil) }
+    return ("custom:\(custom.id)", custom)
+  }
+
+  static func custom(_ cursor: NSCursor, image: CGImage, pixels: Data) -> Custom? {
+    let size = cursor.image.size
+    let w = Int(size.width.rounded()), h = Int(size.height.rounded())
+    guard (1...128).contains(w), (1...128).contains(h) else { return nil }
+    let hx = min(w, max(0, Int(cursor.hotSpot.x.rounded()))), hy = min(h, max(0, Int(cursor.hotSpot.y.rounded())))
+    let head = [UInt8(w), UInt8(h), UInt8(hx), UInt8(hy)]
+    let id = String(format: "%016llx", fnv1a(pixels + Data(head)))
+    if let made = made[id] { return made }
+    let png = NSMutableData()
+    guard let out = CGImageDestinationCreateWithData(png as CFMutableData, "public.png" as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(out, image, nil)
+    guard CGImageDestinationFinalize(out), png.length >= 1, png.length <= pngMost else { return nil }
+    let custom = Custom(id: id, payload: Data(head) + Data(id.utf8) + (png as Data))
+    if made.count >= most { made.removeAll() }
+    made[id] = custom
+    return custom
+  }
+
+  /// 64-bit FNV-1a.
+  static func fnv1a(_ data: Data) -> UInt64 {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in data {
+      hash ^= UInt64(byte)
+      hash = hash &* 0x0000_0100_0000_01b3
+    }
+    return hash
   }
 }

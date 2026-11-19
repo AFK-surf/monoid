@@ -4,7 +4,7 @@
 // its own language: the hello let in or refused (its line, then the close with its code and reason once the clock
 // passed REFUSED_CLOSE_MS), renewals answered, refused, and one that ends the connection (the streams after it reset),
 // requests on streams at once (a body of 300 KB both ways in pieces, JSON and an event stream compressed with zstd).
-// The program is `stillfail-reader --builder harness-mesh-door` (mesh_door/harness.mbt), its connections carried as
+// The program is `stillfail-reader-harness --builder harness-mesh-door` (mesh_door/harness.mbt), its connections carried as
 // lines (mesh_door/bridge.mbt) on a clock each side moves only as the test says.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { constants, zstdDecompressSync } from "node:zlib";
 import { after, mock, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { type Admit, Ending, door } from "../src/mesh/door.ts";
 import { type Answer, Reader, send, writeLine } from "../src/mesh/wire.ts";
 import { compressed } from "../src/mesh/compress.ts";
@@ -35,8 +35,8 @@ import { STILLFAIL } from "../src/cloud/provider.ts";
 import { COUNTED_FROM, OLDEST_CORE } from "../src/api/oldest.ts";
 import { LOGS_ANY_FROM_BUILD, LOGS_BEFORE, MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../src/api/moved-from.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 // The machine's timers are the test's (door.ts arms a refusal's close by `wall.after`): moved on only by `fire`.
 type Timer = { ms: number; fire: () => void; off: boolean };

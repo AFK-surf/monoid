@@ -1,4 +1,4 @@
-// The rigs in MoonBit (station/mb src/rigs_mode, the reader's `--builder harness-rigs-mode`) held to the TypeScript it
+// The rigs in MoonBit (station/mb src/rigs_mode, `stillfail-reader-harness --builder harness-rigs-mode`) held to the TypeScript it
 // is written from: src/rig (a rig's grants, its command log, what it answers and tells the stations), src/rigs (the
 // workspace's rigs on a station: the outbox, the requests and their cards, security mode's adds, station_use,
 // station_list's and the devices' rows, the routes) and src/elevation (running as administrator, its scripts and
@@ -31,7 +31,7 @@ import { Refused as PeerRefused } from "../src/mesh/bus.ts";
 import { diskEvery, diskSoft, diskTier } from "../src/ops/disk.ts";
 import { portsToTry } from "../src/ops/files.ts";
 import { Fibers, wall } from "../src/ops/fibers.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { RigGrants, signatureHolds } from "../src/rig/grants.ts";
 import { Rig } from "../src/rig/module.ts";
 import { addRefusal } from "../src/rigs/adds.ts";
@@ -44,8 +44,8 @@ import { cardPlace, postCard } from "../src/sessions/card-place.ts";
 import { STILLFAIL_SURFACE } from "../src/store/store.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];

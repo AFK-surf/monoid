@@ -101,13 +101,26 @@ jobs:
       OWN: ${{ github.event_name == 'workflow_run' && 'a-' || github.ref == 'refs/heads/main' && 'm-' || 'b-' }}
     steps: &native-steps
       # (when the job is cut, its timeout-minutes (the day's run's native 10, app-build's and replay-build's always 5), for the tests' own limit to the second (scripts/with-timeout.sh); and the
-      # runner's image (GitHub's ImageVersion; on ci-1: own), for the units' store, each image's kept apart: GitHub gives
-      # a push one of two images while it moves to a newer one, and one store over both kept only the last run's image's
-      # units, preview.yml's jobs say how)
-      - name: The job's end and its image
+      # runner's compiler (IMG: cc and 12 hex digits of clang, its --version and the C standard headers as it
+      # preprocesses them, not linux-libc-dev's version, which moves each week with the kernel; on ci-1: own), for the
+      # units' store, each compiler's kept apart, units of another clang or headers being other units. Not
+      # the image's ImageVersion: ubuntu-24.04 ran four at once (20261111.127.1, .370.1, 20261116.133.1, .376.1) with
+      # one clang and libc, and main's store, torn in four, left a push's image's part hours behind main and its app
+      # build cut at its 221 s (exit 124). pipeline.yml's check-sf-ui reckons it as here, to take this store)
+      - name: The job's end and its compiler
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ (github.event_name != 'schedule' || env.GROUP == 'build') && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
-          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(command -v clang || true)
+            img="cc$({
+              [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" -E -x c - 2>/dev/null || true
+            } | sha256sum | cut -c1-12)"
+          fi
+          echo "IMG=$img" >> "$GITHUB_ENV"
+          echo "IMG=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
       - uses: actions/checkout@v5
         # (arch/next's commit, on main's ref: workflow_run, above)
         with: { ref: "${{ github.event.workflow_run.head_sha || github.sha }}" }

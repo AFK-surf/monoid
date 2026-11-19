@@ -1,4 +1,4 @@
-// The accounts in MoonBit (station/mb src/accounts_pool, the reader's `--builder harness-accounts-pool`) held to the
+// The accounts in MoonBit (station/mb src/accounts_pool, `stillfail-reader-harness --builder harness-accounts-pool`) held to the
 // TypeScript they are the MoonBit of: src/accounts/{index,quota,agy-quota,claude-reset,cursor,kimi,check,pace}.ts,
 // src/sessions/accounts.ts and the pool (src/sessions/pool.ts). Each side is given the same world and asked the same:
 // the functions on the same values (seeded random ones too), what reads a provider or a file against the same local
@@ -17,7 +17,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { after, before, describe, test } from "node:test";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
 import enStation from "../../client/i18n/catalog/en/station.json" with { type: "json" };
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { Store } from "../src/store/store.ts";
 import { ConfigFile } from "../src/ops/config.ts";
@@ -52,8 +52,8 @@ import { provider, temp } from "./accounts-fakes.ts";
 import { rng } from "./lock-chains.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const SEEDS = Number(process.env.ACCOUNTS_POOL_SEEDS ?? 300);
 const TZ = -new Date(Date.UTC(2026, 10, 16)).getTimezoneOffset() * 60_000;
 

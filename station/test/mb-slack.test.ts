@@ -1,4 +1,4 @@
-// Slack's parts in MoonBit (station/mb src/slack: reader `--builder harness-slack`) held to the TypeScript they are
+// Slack's parts in MoonBit (station/mb src/slack: `stillfail-reader-harness --builder harness-slack`) held to the TypeScript they are
 // written from (src/slack/*.ts, with connects/card-ends.ts' `endedWords`): each case run by both, its answer (or what it
 // threw) the same. The functions of no connection on the same inputs: Block Kit's cards, the `/sf` form, the manifest
 // and its permissions, the overview, mrkdwn's tables, a Socket Mode event as a chat's. The rest against a stand-in for
@@ -24,7 +24,7 @@ import { endedWords } from "../src/connects/card-ends.ts";
 import { NameBook } from "../src/connects/names.ts";
 import { maskValue } from "../src/ops/agent-env.ts";
 import { setStationLang } from "../src/ops/i18n.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import {
   SLACK_GROUPS, SlackApps, SlackWords, appIdOf, applySettings, botScopes, createAppUrl, exchangeInstallCode, ownerOfConfigToken,
   rotateConfigToken, settingsOf, shapeOf, slackAppLinks, slackError, slackManifest, upgraded, upsertToken, withCommand, withSocketMode, withStopEvent,
@@ -37,8 +37,8 @@ import { SlackApiError, SlackClient, apiBase, field } from "../src/slack/web.ts"
 import { connectBlocked, zipOne } from "../src/slack/zip.ts";
 import { updateTooLong } from "./slack-fake.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];

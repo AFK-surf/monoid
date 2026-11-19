@@ -597,9 +597,10 @@ if [ $full = 1 ]; then
   # scripts/plan.sh reads it from this line for CI's check-station).
   station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/mbui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
-  # the Rust station's archive command and the launcher, which runs the whole station in mb-live-station.test.ts).
+  # the Rust station's archive command, the launcher, which runs the whole station in mb-live-station.test.ts, and the
+  # tests' MoonBit program with every package's harness, reader-harness: the mb-*.test.ts files').
   station_natives="mesh runner reader"
-  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader" ;; esac
+  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader reader-harness" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below),

@@ -1,4 +1,4 @@
-// A session's storage in MoonBit (station/mb/src/session_storage, the reader's `--builder harness-session-storage`)
+// A session's storage in MoonBit (station/mb/src/session_storage, `stillfail-reader-harness --builder harness-session-storage`)
 // held to the TypeScript it is written from (src/sessions/archive.ts, cold.ts, archive-policy.ts, chat-archive.ts,
 // clones.ts, agent-home.ts, others.ts, peer-files.ts, relay.ts): each scenario is played on two worlds made alike, one
 // given the TypeScript and one the program, in real temporary directories, and what each answered, what it wrote on
@@ -586,9 +586,9 @@ function thread(w: World, id: number, over: Partial<Thread> = {}, members: { ses
 // The scenarios
 
 async function main() {
-  const binary = (await import(src("read/mb-reader.ts"))).mbReaderBinary();
+  const binary = (await import("./mb-harness.ts")).mbHarnessBinary();
   if (binary === null) {
-    test("session storage in MoonBit", { skip: "the MoonBit program (stillfail-reader) is not built here" }, () => {});
+    test("session storage in MoonBit", { skip: "the tests' MoonBit program (stillfail-reader-harness) is not built here" }, () => {});
     return;
   }
   await installMocks();
@@ -1195,8 +1195,8 @@ async function main() {
 }
 
 if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-  const { mbReaderBinary } = await import("../src/read/mb-reader.ts");
-  const skip = mbReaderBinary() === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const { mbHarnessBinary } = await import("./mb-harness.ts");
+  const skip = mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   test("session storage in MoonBit does as the TypeScript (run with module mocks)", { skip }, () => {
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;

@@ -35,8 +35,9 @@
 //        3 frame     1 byte flags (bit 0: key frame), 8 bytes timestamp (µs), then the frame (AVCC, or one JPEG)
 //        4 event     JSON     what the station logs
 //        5 clipboard 1 byte type (1 text, 2 PNG), the bytes: what was copied, while watched
-//        6 cursor    JSON     {x, y, shape}: the pointer (0..1 of the display, a CSS cursor's name; "none" hidden) as it
-//                             moves or changes; a video's pictures leave it out, a JPEG's have it drawn in
+//        6 cursor    JSON     {x, y, shape}: the pointer (0..1 of the display, a CSS cursor's name; "none" hidden;
+//                             "custom:<id>" one of an app's own: message 11) as it moves or changes; a video's
+//                             pictures leave it out, a JPEG's have it drawn in
 //        7 region    JSON     {region: {x, y, w, h} | null}: the part of the display the frames from the next one on
 //                             show, as it was cut (null the whole), said before a frame whose part is another than the
 //                             last one's (that frame a key frame)
@@ -45,6 +46,7 @@
 //                             the view asked `audioCodec: "opus"`
 //        9 audio     8 bytes timestamp (µs), then 3840 bytes stereo PCM16 little-endian, or one Opus packet of those
 //                             20 ms (audio_packets.rs); none for digital silence
+//       11 cursor image       a pointer of an app's own, before the first message 6 that names it (cursor_image.rs)
 //
 // Windows.Graphics.Capture captures the main display (the cursor drawn in, no border), a picture only when the screen
 // changed (an HDR display's as FP16, made SDR by a pixel shader: hdr.rs); the GPU's video processor scales it into the
@@ -68,6 +70,8 @@ mod capture;
 mod clipboard;
 #[cfg(windows)]
 mod cursor;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod cursor_image;
 #[cfg(windows)]
 mod encode;
 #[cfg_attr(not(windows), allow(dead_code))]

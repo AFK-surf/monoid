@@ -1,4 +1,4 @@
-// The screens and still.fail Helper's parts in MoonBit (station/mb src/screens: reader `--builder harness-screens`)
+// The screens and still.fail Helper's parts in MoonBit (station/mb src/screens: `stillfail-reader-harness --builder harness-screens`)
 // held to the TypeScript they are a port of (src/screens/, src/helper/): each scenario is played twice, on two worlds
 // made alike, once by the TypeScript and once by the program, and what each answered, what it did in its world (every
 // child process started, written to, ended and killed, every connection opened, written to and let go, every timer
@@ -27,6 +27,7 @@ import * as realZlib from "node:zlib";
 import { tmpdir as realTmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
 type Json = any;
 
@@ -39,11 +40,6 @@ const ROOT = join(station, "..");
 const ZH = JSON.parse(readFileSync(join(ROOT, "client/i18n/catalog/zh/station.json"), "utf8"));
 const EN = JSON.parse(readFileSync(join(ROOT, "client/i18n/catalog/en/station.json"), "utf8"));
 const SCREENS_DIR = join(station, "src/screens");
-
-function readerBinary(): string | null {
-  const candidates = [process.env.STILLFAIL_MB_READER, join(station, "mb/_build/stillfail-reader-darwin-arm64"), join(station, "mb/_build/stillfail-reader-linux-x64"), join(station, "mb/_build/stillfail-reader-linux-arm64")];
-  return candidates.find((p) => p !== undefined && p !== "" && existsSync(p)) ?? null;
-}
 
 const b64 = (b: Uint8Array | Buffer) => Buffer.from(b).toString("base64");
 const unb64 = (s: string) => Buffer.from(s, "base64");
@@ -949,6 +945,7 @@ class TsSide implements Side {
       case "setClipboard": need("setClipboard"); await v.setClipboard(a.clip.type === "png" ? { type: "png", data: unb64(a.clip.data) } : a.clip, a.paste === true); return null;
       case "watchClipboard": need("watchClipboard"); this.insts.set(`${name}.unwatchClipboard`, { close: v.watchClipboard((c: Json) => this.#cbWith(`${name}.clipboard`, c)) }); return null;
       case "watchCursor": need("watchCursor"); this.insts.set(`${name}.unwatchCursor`, { close: v.watchCursor((c: Json) => this.#cbWith(`${name}.cursor`, c)) }); return null;
+      case "cursorImage": need("cursorImage"); { const b = v.cursorImage(a.shape); return b === undefined ? null : b64(b); }
       case "watchTurn": need("watchTurn"); this.insts.set(`${name}.unwatchTurn`, { close: v.watchTurn((t: Json) => this.#cbWith(`${name}.turn`, t)) }); return null;
       case "watchWindows": need("watchWindows"); this.insts.set(`${name}.unwatchWindows`, { close: v.watchWindows((w: Json) => this.#cbWith(`${name}.windows`, w)) }); return null;
       case "window": need("window"); v.window(a.id ?? null); return null;
@@ -1251,7 +1248,7 @@ class TsSide implements Side {
 // The program's side: the harness, its world the test's
 
 class MbProgram {
-  readonly child = realSpawn(readerBinary()!, ["--builder", "harness-screens", "--shell-dir", join(process.env.STILLFAIL_TEST_TMP ?? "/tmp", "mbscreens-shell")], { stdio: ["pipe", "pipe", "pipe"] });
+  readonly child = realSpawn(mbHarnessBinary()!, ["--builder", "harness-screens", "--shell-dir", join(process.env.STILLFAIL_TEST_TMP ?? "/tmp", "mbscreens-shell")], { stdio: ["pipe", "pipe", "pipe"] });
   #next = 0;
   readonly #done = new Map<number, (m: Json) => void>();
   #stderr = "";
@@ -1961,6 +1958,18 @@ async function helperViewScenario(s: Play) {
   await s.call("v", "watchCursor");
   c().send(Buffer.concat([hm(6, j({ x: 0.5, y: 0.25, shape: "pointer" })), hm(6, j({ x: 2, y: 0 })), hm(6, j({ x: 0.1, y: 0.1, shape: "Not A Shape" })), hm(6, "junk")]));
   await s.settle();
+  // pointers of apps' own: a picture said (message 11) before the shape that names it; one not said, or not well
+  // made, and the shape is the default
+  const id = "0123456789abcdef", png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7];
+  const picture = (head: number[], hex = id, body = png) => hm(11, Buffer.from([...head, ...Buffer.from(hex), ...body]));
+  c().send(Buffer.concat([
+    picture([24, 24, 3, 5]), hm(6, j({ x: 0.2, y: 0.2, shape: `custom:${id}` })), hm(6, j({ x: 0.2, y: 0.2, shape: "custom:fedcba9876543210" })),
+    picture([0, 24, 0, 0], "fedcba9876543210"), picture([24, 129, 0, 0], "fedcba9876543210"), picture([24, 24, 25, 0], "fedcba9876543210"),
+    picture([24, 24, 0, 0], "FEDCBA9876543210"), picture([24, 24, 0, 0], "fedcba9876543210", [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0b, 7]), picture([24, 24, 0, 0], "fedcba9876543210", []),
+    hm(6, j({ x: 0.3, y: 0.3, shape: "custom:fedcba9876543210" })), hm(6, j({ x: 0.3, y: 0.3, shape: "custom:0123" })), hm(6, j({ x: 0.3, y: 0.3, shape: `custom:${id}x` })),
+  ]));
+  await s.settle();
+  for (const shape of [`custom:${id}`, "custom:fedcba9876543210", "pointer"]) await s.call("v", "cursorImage", { shape });
   await s.call("v", "watchWindows");
   c().send(Buffer.concat([hm(4, j({ windows: [{ id: 9, app: "Mail", title: "Inbox" }] })), hm(4, j({ window: 9 })), hm(4, j({ said: "a log line" }))]));
   await s.settle();
@@ -3132,7 +3141,7 @@ async function uiScenario(s: Play) {
 }
 
 if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-  const skip = readerBinary() === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const skip = mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   test("the MoonBit screens answer as the TypeScript ones (run with module mocks)", { skip }, async () => {
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
