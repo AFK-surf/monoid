@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e8d64fae7](https://github.com/AFK-surf/monoid/commit/e8d64fae7f73cd4011cef67567c24ee70a6011b3) feat(mbui): draw the 小屏 bottom bar and the finger' | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.03 | 207.49 |
 | [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.03 | 207.49 |
 | [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 2.59 | 3.48 | 14.18 | 36.26 | 54.59 | 31.76 | 63.92 | 97.13 | 121.06 |
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 2.58 | 3.47 | 14.17 | 36.24 | 54.53 | 31.76 | 63.92 | 97.13 | 102.26 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [28154207f](https://github.com/AFK-surf/monoid/commit/28154207fcef82650a0d589a5bf56b69c577f7ea) fix(mbui): read files dropped on a chat where they | 2.57 | 3.46 | 14.12 | 36.13 | 54.34 | 31.66 | 63.79 | 97.47 | 123.88 |
 | [5d389fb3e](https://github.com/AFK-surf/monoid/commit/5d389fb3e91367d2b0541a20b989b66096a0f712) fix(station): bind the front's endpoint one ask at | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [240d688cc](https://github.com/AFK-surf/monoid/commit/240d688cc95cfde195c0e647f946ebcb18bb90a8) fix(screens): stop hanging WebAuthn sign-in on vie | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
-| [4c5639bf7](https://github.com/AFK-surf/monoid/commit/4c5639bf72134b3afb12a67e35935cd37a72f31d) fix(ci): keep main's switches, station and build c | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e8d64fae7](https://github.com/AFK-surf/monoid/commit/e8d64fae7f73cd4011cef67567c24ee70a6011b3) feat(mbui): draw the 小屏 bottom bar and the finger' | 0.44 | 0.58 | 2.22 | 3.31 | 5.32 | 1.62 | 4.38 | 54.2 |
 | [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [28154207f](https://github.com/AFK-surf/monoid/commit/28154207fcef82650a0d589a5bf56b69c577f7ea) fix(mbui): read files dropped on a chat where they | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [5d389fb3e](https://github.com/AFK-surf/monoid/commit/5d389fb3e91367d2b0541a20b989b66096a0f712) fix(station): bind the front's endpoint one ask at | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [240d688cc](https://github.com/AFK-surf/monoid/commit/240d688cc95cfde195c0e647f946ebcb18bb90a8) fix(screens): stop hanging WebAuthn sign-in on vie | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54 |
-| [4c5639bf7](https://github.com/AFK-surf/monoid/commit/4c5639bf72134b3afb12a67e35935cd37a72f31d) fix(ci): keep main's switches, station and build c | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.13 |
