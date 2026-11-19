@@ -167,3 +167,32 @@ test "an allowance's windows as an hour keeps them" {
   inspect(base_name("a\\b/c.html"), content="c.html")
   inspect(safe_id(jstr("a\u{0}b")), content="false")
 }
+
+///|
+test "usage_files_of preserves first-seen order, overwrites duplicates in place, and scales linearly" {
+  let rows : Array[Map[String, Json]] = [
+    { "path": "/a.jsonl", "session": "s1", "offset": 10, "model": "m1", "speed": 1 },
+    { "path": "/b.jsonl", "session": "s2", "offset": 20, "model": "m2", "speed": 2 },
+    { "path": "/a.jsonl", "session": "s1", "offset": 99, "model": "m1b", "speed": 3 },
+  ]
+  let got = usage_files_of(rows)
+  inspect(
+    js(got),
+    content="[[\"/a.jsonl\",{\"session\":\"s1\",\"offset\":99,\"model\":\"m1b\",\"speed\":3}],[\"/b.jsonl\",{\"session\":\"s2\",\"offset\":20,\"model\":\"m2\",\"speed\":2}]]",
+  )
+  let many : Array[Map[String, Json]] = []
+  for i in 0..<2000 {
+    many.push({ "path": "/p/\{i}.jsonl", "session": "s-\{i}", "offset": i, "model": "m", "speed": 0 })
+  }
+  many.push({ "path": "/p/42.jsonl", "session": "s-42", "offset": 9999, "model": "m-new", "speed": 1 })
+  match usage_files_of(many) {
+    Array(items) => {
+      assert_eq(items.length(), 2000)
+      inspect(
+        js(items[42]),
+        content="[\"/p/42.jsonl\",{\"session\":\"s-42\",\"offset\":9999,\"model\":\"m-new\",\"speed\":1}]",
+      )
+    }
+    _ => abort("expected array")
+  }
+}
