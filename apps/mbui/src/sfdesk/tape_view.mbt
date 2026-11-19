@@ -859,13 +859,20 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     // moved as a whole, as far as the tape has got: nothing in it laid out again as it moves
     .offset(By(fn() {
       let r = tape_room_now()
-      (tape_x_at(r, tape_drawn_at(row)), 0.0)
+      let x = tape_x_at(r, tape_drawn_at(row))
+      native_floating_schedule()
+      (x, 0.0)
     }))
     |> ignore
     // the rail and the sidebar's column (its panel 6 in from the window's edge and the bars, 8 from the page's)
     row.box(fn(side) {
       tape_goes.parts.push(side)
-      side.width(By(fn() { Some(tape_col_at(tape_drawn_at(side))) })) |> ignore
+      side.width(By(fn() {
+        let w = tape_col_at(tape_drawn_at(side))
+        native_floating_schedule()
+        Some(w)
+      }))
+      |> ignore
       tape_in_use(side, Side)
       tape_swipes(side, Side)
       // (the block, the tree's: its ground, the rail and a place's sidebar not made once in it, dock_node)

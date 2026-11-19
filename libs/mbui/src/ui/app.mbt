@@ -235,13 +235,6 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     c.wants_frame = true
   }
   let t3 = work_now()
-  if !looks_drawn.val {
-    @signals.untracked(fn() {
-      for f in after_paint_hooks {
-        f(c)
-      }
-    })
-  }
   h_present(c.inst, c.ninst)
   if perf_touch_at.val >= 0.0 {
     perf_touch_submitted(work_now())

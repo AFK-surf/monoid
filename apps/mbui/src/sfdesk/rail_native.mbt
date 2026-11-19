@@ -26,6 +26,12 @@ let native_sidebar_items : Map[Int, @hostapi.NavItem] = Map([])
 let floating_bar : Ref[@hostapi.NavBar?] = { val: None }
 
 ///|
+let floating_ctx : Ref[@ui.Ctx?] = { val: None }
+
+///|
+let floating_scheduled : Ref[Bool] = { val: false }
+
+///|
 let native_floating : Ref[Array[@hostapi.NavFloating]] = { val: [] }
 
 ///|
@@ -44,16 +50,37 @@ fn native_workspace_item(src : Source, w : Workspace) -> @hostapi.NavItem {
 }
 
 ///|
-/// What hands the glass's buttons to the host once each painted frame is positioned, put up once.
+/// What hands the glass's buttons to the host once the frame is laid out, put up once.
 fn native_workspace_hooked() -> Unit {
   if !floating_installed.val {
     floating_installed.val = true
-    @ui.on_after_paint(native_workspace_placed)
+    @ui.on_after_layout(native_workspace_placed)
   }
 }
 
 ///|
+/// Schedules floating glass placement to re-sync at the end of a paint-only frame (e.g., while the tape slides or
+/// resizes without re-running `on_after_layout`).
+fn native_floating_schedule() -> Unit {
+  if floating_bar.val is None || floating_scheduled.val {
+    return
+  }
+  floating_scheduled.val = true
+  @ui.after_frame(fn() {
+    if floating_scheduled.val {
+      floating_scheduled.val = false
+      match floating_ctx.val {
+        Some(c) => @signals.untracked(fn() { native_workspace_placed(c) })
+        None => ()
+      }
+    }
+  })
+}
+
+///|
 fn native_workspace_placed(c : @ui.Ctx) -> Unit {
+  floating_ctx.val = Some(c)
+  floating_scheduled.val = false
   guard floating_bar.val is Some(bar) else { return }
   let floating : Array[@hostapi.NavFloating] = []
   let blocked = @sf.presenter_visible()
@@ -868,6 +895,8 @@ fn rail_native_reset() -> Unit {
   nav_untaken.val = false
   native_sidebar_items.clear()
   floating_bar.val = None
+  floating_ctx.val = None
+  floating_scheduled.val = false
   native_floating.val = []
   nav_page.clear()
   bar_chat_of.val = None
