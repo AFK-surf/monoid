@@ -1,5 +1,6 @@
 // SHA-256 against FIPS 180-4's vectors and the padding's edges, taken at once and a piece at a time; HMAC-SHA-256
-// against RFC 4231's; a text's UTF-8 as node:crypto takes it; hex both ways. On both targets.
+// against RFC 4231's; SHA-1 against RFC 3174's and node:crypto's, the same ways; a text's UTF-8 as node:crypto takes
+// it; hex both ways. On both targets.
 
 ///|
 test "sha256 gives FIPS 180-4's digests" {
@@ -106,4 +107,79 @@ test "hex both ways" {
   assert_eq(@hash.hex_decode("é0"), None)
   let all = Bytes::makei(256, i => i.to_byte())
   assert_eq(@hash.hex_decode(@hash.hex_encode(all)), Some(all))
+}
+
+///|
+test "sha1 gives FIPS 180-4's and RFC 3174's digests" {
+  assert_eq(@hash.sha1_hex(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+  assert_eq(@hash.sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d")
+  // 448 bits: the padding's length no longer fits the block, so it takes a second
+  assert_eq(
+    @hash.sha1_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+    "84983e441c3bd26ebaae4aa1f95129e5e54670f1",
+  )
+  // 896 bits: two blocks whole of data
+  assert_eq(
+    @hash.sha1_hex(
+      b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+    ),
+    "a49b2446a02c645bf419f995b67091253a04a259",
+  )
+  let abc = @hash.sha1(b"abc")
+  assert_eq(abc.length(), 20)
+  assert_eq(@hash.hex_encode(abc), "a9993e364706816aba3e25717850c26c9cd0d89d")
+}
+
+///|
+test "sha1 at the padding's edges, as node:crypto gives them" {
+  let cases : Array[(Int, String)] = [
+    (0, "da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+    (55, "c1c8bbdc22796e28c0e15163d20899b65621d65a"),
+    (56, "c2db330f6083854c99d4b5bfb6e8f29f201be699"),
+    (63, "03f09f5b158a7a8cdad920bddc29b81c18a551f5"),
+    (64, "0098ba824b5c16427bd7a1122a5a442a25ec644d"),
+    (65, "11655326c708d70319be2610e8a57d9a5b959d3b"),
+    (1000, "291e9a6c66994949b57ba5e650361e98fc36b1ba"),
+  ]
+  for one in cases {
+    assert_eq(@hash.sha1_hex(Bytes::make(one.0, b'a')), one.1)
+  }
+}
+
+///|
+test "a sha1 taken a piece at a time is the sha1 taken at once, whatever the pieces" {
+  let data = Bytes::makei(1000, i => ((i * 7 + 3) % 256).to_byte())
+  let whole = "4231a8a50a10fa9758db8ec71fdef855b751048a"
+  assert_eq(@hash.sha1_hex(data), whole)
+  for size in [1, 3, 55, 56, 63, 64, 65, 127, 999, 1000] {
+    let s = @hash.Sha1::new()
+    let mut at = 0
+    while at < data.length() {
+      let end = if at + size < data.length() { at + size } else { data.length() }
+      s.update(data[at:end])
+      at = end
+    }
+    assert_eq(s.hex(), whole)
+  }
+  // A digest spends nothing: asked half way, the hash goes on.
+  let s = @hash.Sha1::new()
+  s.update(data[0:500])
+  assert_eq(s.hex(), "bca4aa6c5708ac105943c9ee56e5d7316982c8b4")
+  s.update(data[500:])
+  assert_eq(s.hex(), whole)
+  assert_eq(@hash.hex_encode(s.digest()), whole)
+}
+
+///|
+test "sha1_utf8_hex hashes a text's UTF-8 as node:crypto does, a lone surrogate as U+FFFD" {
+  assert_eq(@hash.sha1_utf8_hex(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+  assert_eq(@hash.sha1_utf8_hex("é🚀 中"), "65edcae64374472b033d9c2bf528728096065a31")
+  assert_eq(@hash.sha1_utf8_hex("é🚀 中"), @hash.sha1_hex(@utf8.encode("é🚀 中")))
+  let lone = StringBuilder()
+  lone.write_char('a')
+  lone.write_char((0xD800).unsafe_to_char())
+  lone.write_char('b')
+  assert_eq(@hash.sha1_utf8_hex(lone.to_string()), "c3693aea616c886c93746deab3d42921ca20f04e")
+  lone.write_char((0xDC00).unsafe_to_char())
+  assert_eq(@hash.sha1_utf8_hex(lone.to_string()), "100bcf494247472b60afe6f0d383d037b522cd76")
 }

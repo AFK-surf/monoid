@@ -247,6 +247,9 @@ priv struct Health {
   updated_at : Double
   front : String
   relay_conflict : Bool
+  /// Its open descriptors and resident memory (none from a release from before it said them).
+  open_fds : Int?
+  rss_bytes : Double?
 }
 
 ///|
@@ -255,7 +258,15 @@ fn health_of(v : Json?) -> Health? {
   guard h.get("pid") is Some(Number(pid, ..)) && pid == pid.floor() else { None }
   guard h.get("updatedAt") is Some(Number(at, ..)) else { None }
   guard h.get("front") is Some(String(front)) && ["ok", "reconnecting", "direct"].contains(front) else { None }
-  Some({ pid: pid.to_int(), updated_at: at, front, relay_conflict: h.get("relayConflict") is Some(True) })
+  let open_fds = match h.get("openFds") {
+    Some(Number(n, ..)) if n >= 0.0 && n == n.floor() => Some(n.to_int())
+    _ => None
+  }
+  let rss_bytes = match h.get("rssBytes") {
+    Some(Number(n, ..)) if n >= 0.0 => Some(n)
+    _ => None
+  }
+  Some({ pid: pid.to_int(), updated_at: at, front, relay_conflict: h.get("relayConflict") is Some(True), open_fds, rss_bytes })
 }
 
 ///|

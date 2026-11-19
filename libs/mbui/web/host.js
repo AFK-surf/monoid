@@ -823,6 +823,26 @@
     return texture(u_img, clamp(p * u_rmap.xy + u_rmap.zw, u_ruvc.xy, u_ruvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  // ColorFilter.kt's colorControls on what a Backdrop lens sees (k: its saturation, contrast, brightness): each sample
+  // as Kyant's lens samples what the filter made of it
+  vec3 color_controls(vec3 c, vec3 k) {
+    if (k.x == 1.0 && k.y == 1.0 && k.z == 0.0) return c;
+    float l = dot(c, vec3(0.213, 0.715, 0.072));
+    return clamp(k.y * (l * (1.0 - k.x) + c * k.x) + (0.5 - 0.5 * k.y + k.z), 0.0, 1.0);
+  }
+  // BlendMode.Hue (the W3C's, Skia's): the hue of s with the saturation and luminosity of b
+  float hue_lum(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
+  vec3 blend_hue(vec3 b, vec3 s) {
+    float sb = max(max(b.r, b.g), b.b) - min(min(b.r, b.g), b.b);
+    float mn = min(min(s.r, s.g), s.b), mx = max(max(s.r, s.g), s.b);
+    vec3 c = mx > mn ? (s - mn) * sb / (mx - mn) : vec3(0.0, 0.0, 0.0);
+    c += hue_lum(b) - hue_lum(c);
+    float l = hue_lum(c);
+    float n = min(min(c.r, c.g), c.b), x = max(max(c.r, c.g), c.b);
+    if (n < 0.0) c = l + (c - l) * l / (l - n);
+    if (x > 1.0) c = l + (c - l) * (1.0 - l) / (x - l);
+    return c;
+  }
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
   // each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it
   float clip_cover(vec2 p, vec4 c, vec4 r, vec4 s, float scale) {
@@ -886,9 +906,31 @@
     if (kind == 6) {
       // Copyright 2025 Kyant. Adapted from AndroidLiquidGlass Shaders.kt at eb4a0ea2, Apache-2.0.
       if (v_c2.z < 0.0) {
+        // its mode (minus c2.z, ui's glass.mbt backdrop_mode): the highlight's style (bits 0-1: 1 Default, 2 Ambient, 3
+        // Plain), depthEffect (2), its tint laid on by hue first (3), its InnerShadow a whole radius lower (4), the highlight's
+        // angle (5-11: 0 45 degrees, else 1 + a 126th of a turn each) and falloff (12-15: 0 one, else halves), brightness (16-22: 0
+        // none, else 64 + 63rds); p.z its saturation, or below 0 its saturation and contrast (thousandths, bits 0-11 and
+        // 12-22); pad.w its InnerShadow's radius, or below 0 where its spot is (127ths across and down), how much it lights
+        // (63rds) and the shadow's radius (fours): backdrop_saturation's, backdrop_rim's
+        int mode = int(-v_c2.z + 0.5);
+        int style = mode & 3;
+        vec3 ctl = vec3(1.0, 1.0, 0.0);
+        if (v_p.z >= 0.0) ctl.x = v_p.z;
+        else { int pk = int(-v_p.z + 0.5); ctl.x = float(pk & 4095) / 1000.0; ctl.y = float((pk >> 12) & 2047) / 1000.0; }
+        int bq = (mode >> 16) & 127;
+        if (bq != 0) ctl.z = float(bq - 64) / 63.0;
+        float innerR = v_pad.w;
+        vec3 spot = vec3(0.0, 0.0, 0.0);
+        if (innerR < 0.0) {
+          int sp = int(-innerR + 0.5);
+          spot = vec3(float(sp & 127) / 127.0, float((sp >> 7) & 127) / 127.0, float((sp >> 14) & 63) / 63.0);
+          innerR = float((sp >> 20) & 7) * 4.0;
+        }
         vec2 halfSize = v_rect.zw * 0.5;
         vec2 centeredCoord = p - v_rect.xy - halfSize;
-        float radius = min(v_p.x, min(halfSize.x, halfSize.y));
+        // (each corner its own where it has them, rr: Shaders.kt's radiusAt; else its radius)
+        float rawRadius = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? mb_corner_of(centeredCoord, v_rr) : v_p.x;
+        float radius = min(rawRadius, min(halfSize.x, halfSize.y));
         vec2 cornerCoord = abs(centeredCoord) - (halfSize - radius);
         float sd = length(max(cornerCoord, 0.0)) - radius + min(max(cornerCoord.x, cornerCoord.y), 0.0);
         float a = clamp(0.5 - sd * u_scale, 0.0, 1.0);
@@ -899,49 +941,74 @@
         float outsideLength = length(outside);
         float gradX = step(q.y, q.x);
         vec2 grad = sign(centeredCoord) * (outsideLength > 0.0 ? outside / outsideLength : vec2(gradX, 1.0 - gradX));
+        // (Lens.kt's depthEffect: bent towards its middle too; its highlight by the outline's own grad)
+        vec2 bend = grad;
+        if (((mode >> 2) & 1) != 0 && length(centeredCoord) > 1e-4) bend = normalize(grad + normalize(centeredCoord));
         vec3 c;
         if (v_c2.y <= 0.0 || -sd >= v_c2.y) {
-          c = backdrop(p);
+          c = color_controls(backdrop(p), ctl);
         } else {
           float x = 1.0 - max(-sd, 0.0) / v_c2.y;
           float d = -(1.0 - sqrt(1.0 - x * x)) * v_pad.y;
-          vec2 refractedCoord = p + d * grad;
+          vec2 refractedCoord = p + d * bend;
           if (v_pad.z == 0.0) {
-            c = backdrop(refractedCoord);
+            c = color_controls(backdrop(refractedCoord), ctl);
           } else {
             float dispersionIntensity = v_pad.z * clamp(centeredCoord.x * centeredCoord.y / (halfSize.x * halfSize.y), -1.0, 1.0);
-            vec2 dispersedCoord = d * grad * dispersionIntensity;
-            vec3 red = backdrop(refractedCoord + dispersedCoord);
-            vec3 orange = backdrop(refractedCoord + dispersedCoord * (2.0 / 3.0));
-            vec3 yellow = backdrop(refractedCoord + dispersedCoord * (1.0 / 3.0));
-            vec3 green = backdrop(refractedCoord);
-            vec3 cyan = backdrop(refractedCoord - dispersedCoord * (1.0 / 3.0));
-            vec3 blue = backdrop(refractedCoord - dispersedCoord * (2.0 / 3.0));
-            vec3 purple = backdrop(refractedCoord - dispersedCoord);
+            vec2 dispersedCoord = d * bend * dispersionIntensity;
+            vec3 red = color_controls(backdrop(refractedCoord + dispersedCoord), ctl);
+            vec3 orange = color_controls(backdrop(refractedCoord + dispersedCoord * (2.0 / 3.0)), ctl);
+            vec3 yellow = color_controls(backdrop(refractedCoord + dispersedCoord * (1.0 / 3.0)), ctl);
+            vec3 green = color_controls(backdrop(refractedCoord), ctl);
+            vec3 cyan = color_controls(backdrop(refractedCoord - dispersedCoord * (1.0 / 3.0)), ctl);
+            vec3 blue = color_controls(backdrop(refractedCoord - dispersedCoord * (2.0 / 3.0)), ctl);
+            vec3 purple = color_controls(backdrop(refractedCoord - dispersedCoord), ctl);
             c = vec3((red.r + orange.r + yellow.r) / 3.5 + purple.r / 7.0,
                    orange.g / 7.0 + (yellow.g + green.g + cyan.g) / 3.5,
                    (cyan.b + blue.b + purple.b) / 3.0);
           }
         }
+        // (its tint: LiquidButton's by hue first, then over it at its own alpha)
+        if (((mode >> 3) & 1) != 0 && col.a > 0.0) c = blend_hue(c, col.rgb);
         c = mix(c, col.rgb, col.a);
-        // InnerShadow (Kyant's): the shape's outside blurred into it by pad.w (its radius: a deviation of half of it), a
-        // sixth of it lower, black at 15% times the highlight's strength (c2.x, the press); none where pad.w is 0
-        if (v_pad.w > 0.0) {
-          vec2 sc = abs(centeredCoord - vec2(0.0, v_pad.w / 6.0)) - (halfSize - radius);
+        // InteractiveHighlight's: 8% white over it all and 15% round its spot, out to one and a half times its shorter side,
+        // each times how much (spot.z)
+        if (spot.z > 0.0) {
+          c = clamp(c + 0.08 * spot.z, 0.0, 1.0);
+          float spotR = min(v_rect.z, v_rect.w) * 1.5;
+          float lit = 1.0 - smoothstep(spotR * 0.5, spotR, length(centeredCoord + halfSize - spot.xy * v_rect.zw));
+          c = clamp(c + 0.15 * spot.z * lit, 0.0, 1.0);
+        }
+        // InnerShadow (Kyant's): the shape's outside blurred into it by its radius (a deviation of half of it), a sixth of it
+        // lower (a whole one where the mode says: InnerShadow.kt's default), black at 15% times the highlight's strength (c2.x,
+        // the press); none where its radius is 0
+        if (innerR > 0.0) {
+          float offY = ((mode >> 4) & 1) != 0 ? innerR : innerR / 6.0;
+          vec2 sc = abs(centeredCoord - vec2(0.0, offY)) - (halfSize - radius);
           float ssd = length(max(sc, 0.0)) - radius + min(max(sc.x, sc.y), 0.0);
-          float inner = 0.5 * (1.0 + mb_erf(ssd * 0.70710678 / (v_pad.w * 0.5)));
+          float inner = 0.5 * (1.0 + mb_erf(ssd * 0.70710678 / (innerR * 0.5)));
           c = mix(c, vec3(0.0, 0.0, 0.0), 0.15 * v_c2.x * inner);
         }
-        bool ambient = v_c2.z == -2.0;
+        bool ambient = style == 2;
         float w = ambient ? 0.5 / 1.5 : 0.5;
         // HighlightModifier uses a clipped stroke, with its width ceiled in device pixels.
         float stroke = ceil(w * u_scale) / u_scale;
         float blur = w * 0.5;
         float mask = 0.5 * (mb_erf((stroke - sd) * 0.70710678 / blur) - mb_erf((-stroke - sd) * 0.70710678 / blur));
-        float normal = dot(grad, vec2(0.70710678, 0.70710678));
-        float h = v_c2.x * abs(normal) * mask;
-        if (ambient) c = mix(c, vec3(step(0.0, normal), step(0.0, normal), step(0.0, normal)), h);
-        else c = clamp(c + h, 0.0, 1.0);
+        if (style == 3) {
+          // (Plain: white at 38%, added, all round)
+          c = clamp(c + v_c2.x * 0.38 * mask, 0.0, 1.0);
+        } else {
+          // (Default along its angle, its falloff; Ambient at 45 degrees, falling off as one)
+          int aq = (mode >> 5) & 127;
+          int fq = (mode >> 12) & 15;
+          vec2 toward = vec2(0.70710678, 0.70710678);
+          if (!ambient && aq != 0) { float t = float(aq - 1) * (6.28318531 / 126.0); toward = vec2(cos(t), sin(t)); }
+          float normal = dot(grad, toward);
+          float h = v_c2.x * ((ambient || fq == 0) ? abs(normal) : pow(abs(normal), float(fq) * 0.5)) * mask;
+          if (ambient) c = mix(c, vec3(step(0.0, normal), step(0.0, normal), step(0.0, normal)), h);
+          else c = clamp(c + h, 0.0, 1.0);
+        }
         o = vec4(c, 1.0) * (a * v_c2.w); return;
       }
       // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus
@@ -1342,7 +1409,7 @@
     const a = start * INST;
     // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
     const blur = Math.abs(f32[a + 7]), kind = Math.round(f32[a + 5]);
-    const margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + f32[a + 23] : 0) + 2;
+    const margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     gn = 0;
     for (let i = start; i < end; i++) {
@@ -1350,7 +1417,7 @@
       let bx0 = Math.max(f32[b], f32[b + 16]), by0 = Math.max(f32[b + 1], f32[b + 17]);
       let bx1 = Math.min(f32[b] + f32[b + 2], f32[b + 18]), by1 = Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]);
       if (kind === 6) {
-        const m = f32[a + 23];
+        const m = Math.max(f32[a + 23], 0);
         bx0 = f32[b] - m; by0 = f32[b + 1] - m; bx1 = f32[b] + f32[b + 2] + m; by1 = f32[b + 1] + f32[b + 3] + m;
         if (gn < 8) {
           for (let k = 0; k < 4; k++) gshape[gn * 4 + k] = f32[b + k];

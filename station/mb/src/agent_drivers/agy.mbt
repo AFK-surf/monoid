@@ -332,13 +332,7 @@ pub fn date_parse(text : String) -> Double? {
 ///|
 /// Days since 1970-01-01 of a date of the proleptic Gregorian calendar.
 pub fn days_from_civil(y0 : Int, m : Int, d : Int) -> Int {
-  let y = if m <= 2 { y0 - 1 } else { y0 }
-  let era = (if y >= 0 { y } else { y - 399 }) / 400
-  let yoe = y - era * 400
-  let mp = if m > 2 { m - 3 } else { m + 9 }
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
+  @time.days_from_civil(y0, m, d).to_int()
 }
 
 ///|

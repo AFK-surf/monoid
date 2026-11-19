@@ -165,14 +165,10 @@
     "read-before-run": {},
     "reset-by-hand": {},
     "app-word": {},
-    "frame-walk": {
-      "src/sheet_sink_wbtest.mbt": 2
-    },
+    "frame-walk": {},
     "scoped-computed": {},
     "raw-effect": {},
     "pick-loop": {
-      "src/image_reveal_node.mbt": 1,
-      "src/quota_lines_node.mbt": 1,
       "src/seg_node.mbt": 2,
       "src/way_node.mbt": 1
     },

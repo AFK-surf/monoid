@@ -698,7 +698,7 @@ pub fn win_within(String, String) -> Bool
 
 pub fn windows_register_script(String, String, String, String, Bool) -> String
 
-pub fn windows_task_of(String?) -> (String, Bool)
+pub fn windows_task_of(String?, data_dir? : String) -> (String, Bool)
 
 pub fn windows_update_script(String, Array[(String, String)], String) -> String
 

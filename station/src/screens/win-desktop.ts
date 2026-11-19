@@ -16,7 +16,8 @@ import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type HelperPipe, HelperView } from "./desktop.ts";
 import { ScreenRefused } from "./hub.ts";
-import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor } from "./source.ts";
+import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor, resolutionOf } from "./source.ts";
+export { resolutionOf } from "./source.ts";
 import { processUi } from "./ui.ts";
 import { WinInput } from "./win-input.ts";
 
@@ -48,14 +49,6 @@ export function scaleOf(told: any): ScreenScale | null {
   const n = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 100 && v <= 500;
   if (told === null || typeof told !== "object" || !n(told.percent) || !n(told.recommended) || !Array.isArray(told.steps) || !told.steps.every(n)) return null;
   return { percent: told.percent, recommended: told.recommended, steps: [...told.steps] };
-}
-
-/// A resolution as stillfail-screen says it, checked: null when it is not one.
-export function resolutionOf(told: any): ScreenResolution | null {
-  const n = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= 16384;
-  const size = (v: any) => v !== null && typeof v === "object" && n(v.width) && n(v.height);
-  if (!size(told) || !Array.isArray(told.modes) || !told.modes.every(size)) return null;
-  return { width: told.width, height: told.height, modes: told.modes.map((m: any) => ({ width: m.width, height: m.height })) };
 }
 
 /// How the process is started (a test's fake in tests).

@@ -44,6 +44,16 @@ export function group(p: J): (typeof GROUPS)[number] {
 /// A kind of account in words: Claude 订阅.
 export const groupTitle = (kind: (typeof GROUPS)[number]) => t(`core-views.profiles.group.${kind}`);
 
+/// A station's profiles as its overview lists them, less a copy of another station's that the viewer's workspace may
+/// not run on: that account is lent to another workspace's people. A newer station leaves those out itself.
+/// `station`: the `stations` view's item (`station`) or the station page's (`address`).
+function listedProfiles(overview: J, station: J): J[] {
+  const profiles = Array.isArray(overview?.profiles) ? overview.profiles : [];
+  const ws = String(station?.station ?? station?.address ?? "").split("/")[0] ?? "";
+  const joined = station?.joined === true;
+  return profiles.filter((p: J) => !(isObject(p?.share) && p.share.role === "user" && !profileServes(p, ws, joined)));
+}
+
 /// `stations`: the `stations` view's items (each with its decorated overview).
 export function workspaceProfiles(stations: J[]): J {
   const byId = new Map(stations.map((s) => [String(s.id), s]));
@@ -51,7 +61,7 @@ export function workspaceProfiles(stations: J[]): J {
   // A host and its copies are one share even when an older station did not tell a copy the account's email. The
   // host's account is authoritative: a copy can still carry the email from before the host signed in again.
   const identities = new Map<string, { host: boolean; account: string | null; copies: Set<string> }>();
-  for (const s of stations) for (const p of Array.isArray(s.overview?.profiles) ? s.overview.profiles : []) {
+  for (const s of stations) for (const p of listedProfiles(s.overview, s)) {
     const share = isObject(p.share) ? p.share : null;
     if (typeof share?.id !== "string") continue;
     const identity = identities.get(share.id) ?? { host: false, account: null, copies: new Set<string>() };
@@ -72,7 +82,7 @@ export function workspaceProfiles(stations: J[]): J {
       }
       continue;
     }
-    for (const p of Array.isArray(overview.profiles) ? overview.profiles : []) {
+    for (const p of listedProfiles(overview, s)) {
       const share = isObject(p.share) ? p.share : null;
       const identity = typeof share?.id === "string" ? identities.get(share.id) : undefined;
       const sharedAccount = identity?.host ? identity.account : identity?.copies.size === 1 ? [...identity.copies][0] : null;
@@ -209,7 +219,7 @@ export function workspaceProfiles(stations: J[]): J {
 
 /// A station's profiles by account kind; those needing a look come first within their kind.
 export function stationProfileSummary(overview: J, station: J, byId: Map<string, J>): { profileGroups: J[]; profileStates: Record<string, J> } {
-  const profiles = Array.isArray(overview?.profiles) ? overview.profiles : [];
+  const profiles = listedProfiles(overview, station);
   const profileStates: Record<string, J> = {};
   const groups = new Map<string, { group: string; title: string; troubled: string[]; fine: string[] }>();
   for (const p of profiles) {

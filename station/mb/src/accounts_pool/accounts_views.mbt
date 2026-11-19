@@ -845,9 +845,22 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
       }
     None => Null
   }
-  self.read_homes_soon(config.profiles)
+  // A copy of another station's profile only to the workspaces that station lends it in (`profilesView`).
+  let visible = match viewer {
+    None => config.profiles
+    Some(v) => {
+      let effective_home = match home {
+        Some(_) => home
+        None => jstr(v.get("workspace"))
+      }
+      config.profiles.filter(p => {
+        !borrowed(p.raw) || allowed_in(p, joined, effective_home)
+      })
+    }
+  }
+  self.read_homes_soon(visible)
   let views = []
-  for p in config.profiles {
+  for p in visible {
     let says = self.home_says(p)
     let kind = access_kind(p.raw)
     let a = match p.get("access") {

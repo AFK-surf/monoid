@@ -1,0 +1,26 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/i18n"
+
+import {
+  "moonbitlang/core/json",
+  "station/jsjson",
+}
+
+// Values
+pub fn branded(String, String) -> String
+
+pub fn fill(String, Array[(String, String)]) -> String
+
+pub fn tr_json(Map[String, @json.Json], Map[String, @json.Json], String, String, args? : Array[(String, String)], product? : String) -> String
+
+pub fn tr_jv(@jsjson.JV, @jsjson.JV, String, String, String, args? : Array[(String, String)]) -> String
+
+pub fn tr_jvalue(@jsjson.JValue, @jsjson.JValue, String, String, String, args? : Array[(String, String)]) -> String
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

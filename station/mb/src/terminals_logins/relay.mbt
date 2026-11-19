@@ -110,9 +110,9 @@ fn form_decode(s : String) -> String {
       i += 1
     } else if c == '%'.to_int() &&
       i + 2 < src.length() + 0 &&
-      hex_value(src[i + 1].to_int()) >= 0 &&
-      hex_value(src[i + 2].to_int()) >= 0 {
-      bytes.write_byte((hex_value(src[i + 1].to_int()) * 16 + hex_value(src[i + 2].to_int())).to_byte())
+      @codec.hex_digit(src[i + 1].to_int()) is Some(hi) &&
+      @codec.hex_digit(src[i + 2].to_int()) is Some(lo) {
+      bytes.write_byte((hi * 16 + lo).to_byte())
       i += 3
     } else {
       bytes.write_byte(src[i])
@@ -120,19 +120,6 @@ fn form_decode(s : String) -> String {
     }
   }
   utf8_text(bytes.to_bytes())
-}
-
-///|
-fn hex_value(c : Int) -> Int {
-  if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int()
-  } else if c >= 'a'.to_int() && c <= 'f'.to_int() {
-    c - 'a'.to_int() + 10
-  } else if c >= 'A'.to_int() && c <= 'F'.to_int() {
-    c - 'A'.to_int() + 10
-  } else {
-    -1
-  }
 }
 
 ///|

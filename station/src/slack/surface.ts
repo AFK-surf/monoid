@@ -256,22 +256,33 @@ export type SlackSurfaceOptions = {
 /// The most of a question's words its card carries (Slack takes 12,000 characters of Markdown in a message, and long
 /// options are listed with them).
 const QUESTION_CHARS = 8_000;
-/// The most UTF-8 bytes chat.update takes in `text` (more is msg_too_long), though chat.postMessage takes 40,000 and the
-/// message's Markdown block 12,000 characters: a message posted whole is changed with its blocks whole and its `text`,
-/// only the notification's fallback, cut to fit.
-const UPDATE_TEXT_BYTES = 4_000;
+/// The most bytes a chat.update's `text` is cut to, though chat.postMessage takes 40,000 and the message's Markdown block
+/// 12,000 characters: a message posted whole is changed with its blocks whole and its `text`, only the notification's
+/// fallback, cut to fit. Slack refuses a `text` over 4,000 UTF-8 bytes (msg_too_long) as it stands after Slack's own
+/// changes to it: `&`, `<` and `>` escaped (`&amp;`, `&lt;`, `&gt;`) and bare links and emails made `<url>` /
+/// `<mailto:…|…>`. Each character is counted as escaped (`slackTextBytes`); the 500 bytes left are for the links.
+const UPDATE_TEXT_BYTES = 3_500;
+/// What `text` is cut to on a second try where Slack still found it too long (a message of nothing but links).
+const UPDATE_TEXT_FALLBACK_BYTES = 200;
 
-/// `said` cut to UPDATE_TEXT_BYTES of UTF-8 at a whole code point, "…" after it where cut (mb slack `update_text`).
-export function updateText(said: string): string {
-  const bytesOf = (cp: number) => (cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4);
+/// A code point's bytes in a `text` as Slack measures it: `&`, `<` and `>` as their escapes, the rest as UTF-8.
+function slackTextBytes(cp: number): number {
+  if (cp === 0x26) return 5;
+  if (cp === 0x3c || cp === 0x3e) return 4;
+  return cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+}
+
+/// `said` cut to `maxBytes` as Slack counts them (`slackTextBytes`) at a whole code point, "…" after it where cut (mb
+/// slack `update_text`).
+export function updateText(said: string, maxBytes: number = UPDATE_TEXT_BYTES): string {
   let total = 0;
-  for (const c of said) total += bytesOf(c.codePointAt(0)!);
-  if (total <= UPDATE_TEXT_BYTES) return said;
+  for (const c of said) total += slackTextBytes(c.codePointAt(0)!);
+  if (total <= maxBytes) return said;
   let used = 0;
   let out = "";
   for (const c of said) {
-    const bytes = bytesOf(c.codePointAt(0)!);
-    if (used + bytes > UPDATE_TEXT_BYTES - 3) break;
+    const bytes = slackTextBytes(c.codePointAt(0)!);
+    if (used + bytes > maxBytes - 3) break;
     used += bytes;
     out += c;
   }
@@ -901,17 +912,28 @@ export class SlackSurface extends ConnectedSurface {
     this.heard(thread.channel, thread.threadTs, ts);
   }
 
-  private update(channel: string, ts: string, said: string, blocks: Json[]) {
-    return this.client.api(
-      "chat.update",
-      [
-        ["channel", channel],
-        ["ts", ts],
-        ["text", updateText(said)],
-        ["blocks", JSON.stringify(blocks)],
-      ],
-      this.botToken,
-    );
+  /// A message changed in place, its blocks whole; where Slack still finds the cut text too long once its links are
+  /// made, once more with a text cut shorter (mb slack `update`).
+  private async update(channel: string, ts: string, said: string, blocks: Json[]) {
+    const call = (text: string) =>
+      this.client.api(
+        "chat.update",
+        [
+          ["channel", channel],
+          ["ts", ts],
+          ["text", text],
+          ["blocks", JSON.stringify(blocks)],
+        ],
+        this.botToken,
+      );
+    const first = updateText(said);
+    try {
+      return await call(first);
+    } catch (error) {
+      const shorter = updateText(said, UPDATE_TEXT_FALLBACK_BYTES);
+      if (blocks.length === 0 || !(error as Error).message.includes("msg_too_long") || shorter === first) throw error;
+      return await call(shorter);
+    }
   }
 
   /// It works again: where it stood is no longer so.

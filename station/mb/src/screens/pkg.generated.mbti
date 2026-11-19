@@ -499,6 +499,8 @@ pub async fn Desktop::helper_back(Self) -> Unit
 pub fn Desktop::new(Io, DesktopOptions) -> Self
 pub async fn Desktop::open(Self, ViewOptions) -> ScreenView
 pub async fn Desktop::refresh(Self, force? : Bool) -> Unit
+pub async fn Desktop::resolution(Self) -> ScreenResolution?
+pub async fn Desktop::set_resolution(Self, Double, Double) -> ScreenResolution
 pub fn Desktop::size(Self) -> (Double, Double)
 pub fn Desktop::source(Self) -> ScreenSource
 pub fn Desktop::title(Self) -> String

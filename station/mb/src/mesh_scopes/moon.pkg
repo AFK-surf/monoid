@@ -1,4 +1,5 @@
 import {
+  "base/codec",
   "station/sql",
   "station/cloud_net",
   "station/mesh_door/door",

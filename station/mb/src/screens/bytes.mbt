@@ -95,13 +95,7 @@ fn index_of_byte(b : BytesView, v : Byte, from? : Int = 0) -> Int {
 
 ///|
 fn hex_of(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder()
-  for x in b {
-    out.write_char(digits.unsafe_get(x.to_int() >> 4).unsafe_to_char())
-    out.write_char(digits.unsafe_get(x.to_int() & 15).unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|

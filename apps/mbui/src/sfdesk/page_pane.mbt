@@ -160,6 +160,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
     b.reacts(fn() { native_workspace_item(src, w) }, fn(item) {
       native_sidebar_items[id] = item
       native_workspace_anchor.val = Node(b)
+      native_floating_schedule()
     })
     b.owns(fn() {
       native_sidebar_items.remove(id)
@@ -167,6 +168,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
         Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
         _ => ()
       }
+      native_floating_schedule()
     })
     |> ignore
   })

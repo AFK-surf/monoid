@@ -27,7 +27,7 @@ test "a frame encodes as the TypeScript's and reads back" {
   let f = data_frame([("type", "event")], b"{}")
   let bytes = encode(f)
   assert_eq(
-    hex_of(bytes),
+    @codec.hex_encode(bytes),
     "0805100018ffffffffffffffffff0120012a0d0a047479706512056576656e7442027b7d",
   )
   let back = decode(bytes)
@@ -98,10 +98,4 @@ test "a ping with a service no BigInt can be is refused as JavaScript refuses it
   assert_eq(ping.service, -7L)
   assert_eq(ping.meth, method_control)
   assert_eq(ping.headers, [("type", "ping")])
-}
-
-///|
-test "gzip's check is CRC-32" {
-  assert_eq(crc32(b""), 0U)
-  assert_eq(crc32(b"123456789"), 0xCBF43926U)
 }

@@ -3,6 +3,7 @@ import {
   "station/wire",
   "station/sql",
   "station/jsjson",
+  "station/i18n",
   "station/jscase",
   "station/nodepath",
   "station/memory",

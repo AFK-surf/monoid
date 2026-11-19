@@ -52,14 +52,24 @@ test "an agent session's stop is taken only with its thread and a plain time" {
 }
 
 ///|
-test "chat.update's text is cut to 4,000 UTF-8 bytes at a whole character, \"…\" after it" {
+test "chat.update's text is cut to 3,500 bytes as Slack counts them at a whole character, \"…\" after it" {
   assert_eq(update_text("短"), "短")
-  let fits = "长".repeat(1333) + "a"
+  let fits = "长".repeat(1166) + "aa"
   assert_eq(update_text(fits), fits)
-  // (the rocket's four bytes after 3,996 would cross the 3,997 kept before "…")
-  let long = "长".repeat(1332) + "🚀" + "长".repeat(1267)
-  assert_eq(update_text(long), "长".repeat(1332) + "…")
-  assert_eq(update_text("a".repeat(4001)), "a".repeat(3997) + "…")
-  assert_eq(update_text("a".repeat(3996) + "🚀" + "b"), "a".repeat(3996) + "…")
-  assert_eq(update_text("a".repeat(3993) + "🚀" + "b".repeat(9)), "a".repeat(3993) + "🚀" + "…")
+  // (the rocket's four bytes after 3,495 would cross the 3,497 kept before "…")
+  let long = "长".repeat(1165) + "🚀" + "长".repeat(1267)
+  assert_eq(update_text(long), "长".repeat(1165) + "…")
+  assert_eq(update_text("a".repeat(3501)), "a".repeat(3497) + "…")
+  assert_eq(update_text("a".repeat(3496) + "🚀" + "b"), "a".repeat(3496) + "…")
+  assert_eq(update_text("a".repeat(3493) + "🚀" + "b".repeat(9)), "a".repeat(3493) + "🚀" + "…")
+  // `&`, `<` and `>` counted as Slack escapes them: five bytes and four
+  assert_eq(update_text("&".repeat(700)), "&".repeat(700))
+  assert_eq(update_text("&".repeat(701)), "&".repeat(699) + "…")
+  assert_eq(update_text("<".repeat(875)), "<".repeat(875))
+  assert_eq(update_text("<".repeat(876)), "<".repeat(874) + "…")
+  assert_eq(update_text(">".repeat(876)), ">".repeat(874) + "…")
+  // the shorter cut of a second try
+  assert_eq(update_text("a".repeat(200), max_bytes=200), "a".repeat(200))
+  assert_eq(update_text("a".repeat(201), max_bytes=200), "a".repeat(197) + "…")
+  assert_eq(update_text("&".repeat(41), max_bytes=200), "&".repeat(39) + "…")
 }

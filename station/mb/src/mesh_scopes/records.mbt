@@ -45,13 +45,7 @@ fn hex128(s : String) -> Bool {
 
 ///|
 pub fn hex_of(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder()
-  for x in b {
-    out.write_char(digits.get_char(x.to_int() >> 4).unwrap())
-    out.write_char(digits.get_char(x.to_int() & 15).unwrap())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|

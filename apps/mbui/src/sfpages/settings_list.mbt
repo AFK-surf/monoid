@@ -605,8 +605,8 @@ fn settings_children_of(
       if @ui.takes_drops() {
         a.push(("drop", @sf.t("web-pages.appearance.drop.title"), Appearance, "拖拽 拖放 发送文件 引用路径 drag drop file path"))
       }
-      // (the rail's own, beside the settings' sidebar alone)
-      if wide {
+      // (the rail's own, beside the settings' sidebar alone, not an iPhone Duo's)
+      if wide && !@sf.native_on() {
         a.push(("rail", @sf.t("web-main.rail.title"), Appearance, "侧栏 侧边栏 导航条 自定义侧边条 rail sidebar customize"))
       }
       a
@@ -826,10 +826,10 @@ pub fn settings_side_rows_node(
   at : @sf.ListAt,
 ) -> () -> Array[SettingsRow] {
   let query = fn() { settings_search_field.text().trim(chars=" \t\n\r\u{3000}").to_owned().to_lower() }
-  // (no bottom bar beside a sidebar: a medium or large screen's; what is kept asked of the core as it is asked to be
-  // read again, as the page's list asks it)
+  // (no bottom bar beside a sidebar: a medium or large screen's, except an iPhone Duo's, where the system's tab
+  // bar is the bar; what is kept asked of the core as it is asked to be read again, as the page's list asks it)
   let parts = @signals.computed(fn(_) {
-    settings_found(settings_parts_of(core, here(), bars=false, kept=@settings.kept_told()), core, here(), query(), true)
+    settings_found(settings_parts_of(core, here(), bars=@sf.native_on(), kept=@settings.kept_told()), core, here(), query(), true)
   })
   let searching = fn() { query() != "" }
   // (while the search finds: the one row lit, by its key (settings_side_rows_node's order of them); none at all with

@@ -183,19 +183,6 @@ fn form_encode(s : String) -> String {
 }
 
 ///|
-fn hex_digit(c : Int) -> Int? {
-  if c >= '0' && c <= '9' {
-    Some(c - '0')
-  } else if c >= 'a' && c <= 'f' {
-    Some(c - 'a' + 10)
-  } else if c >= 'A' && c <= 'F' {
-    Some(c - 'A' + 10)
-  } else {
-    None
-  }
-}
-
-///|
 /// application/x-www-form-urlencoded's parser's percent-decoding of one name or value (`+` a space).
 fn form_decode(s : String) -> String {
   let bytes = utf8(s)
@@ -209,8 +196,8 @@ fn form_decode(s : String) -> String {
       i += 1
     } else if c == '%' &&
       i + 2 < n &&
-      hex_digit(bytes[i + 1].to_int()) is Some(h) &&
-      hex_digit(bytes[i + 2].to_int()) is Some(l) {
+      @codec.hex_digit(bytes[i + 1].to_int()) is Some(h) &&
+      @codec.hex_digit(bytes[i + 2].to_int()) is Some(l) {
       out.push((h * 16 + l).to_byte())
       i += 3
     } else {

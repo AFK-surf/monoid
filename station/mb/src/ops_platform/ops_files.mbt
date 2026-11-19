@@ -124,42 +124,7 @@ pub fn invalid_json_message(catalog : Catalog, lang : String, path : String, pro
 ///|
 /// `new Date(ms).toISOString()`.
 pub fn iso_time(ms : Double) -> String {
-  let t = ms.floor()
-  let days = (t / 86400000.0).floor()
-  let rem = (t - days * 86400000.0).to_int64()
-  let (y, m, d) = civil_from_days(days.to_int64())
-  let h = rem / 3600000L
-  let mi = rem % 3600000L / 60000L
-  let s = rem % 60000L / 1000L
-  let msp = rem % 1000L
-  let year = if y >= 0L && y <= 9999L {
-    y.to_string().pad_start(4, '0')
-  } else if y < 0L {
-    "-" + (-y).to_string().pad_start(6, '0')
-  } else {
-    "+" + y.to_string().pad_start(6, '0')
-  }
-  "\{year}-\{p2(m)}-\{p2(d)}T\{p2(h)}:\{p2(mi)}:\{p2(s)}.\{msp.to_string().pad_start(3, '0')}Z"
-}
-
-///|
-fn p2(n : Int64) -> String {
-  n.to_string().pad_start(2, '0')
-}
-
-///|
-/// Howard Hinnant's civil_from_days.
-fn civil_from_days(z0 : Int64) -> (Int64, Int64, Int64) {
-  let z = z0 + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  (if m <= 2L { y + 1L } else { y }, m, d)
+  @time.format_iso_ms(ms.floor().to_int64())
 }
 
 ///|

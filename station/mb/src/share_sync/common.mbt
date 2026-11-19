@@ -412,59 +412,25 @@ fn text_most(v : Json?, max : Int) -> String {
 /// Base64 as `Buffer.from(s, "base64")` reads it: what is not of its alphabet passed over, `-` and `_` as `+` and `/`,
 /// padding or none.
 fn base64_loose(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
+  let kept = StringBuilder()
   for c in s {
-    let v = match c {
-      'A'..='Z' => c.to_int() - 'A'.to_int()
-      'a'..='z' => c.to_int() - 'a'.to_int() + 26
-      '0'..='9' => c.to_int() - '0'.to_int() + 52
-      '+' | '-' => 62
-      '/' | '_' => 63
-      '=' => break
-      _ => continue
+    if c == '=' {
+      break
     }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 0xff).to_byte())
+    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
+      kept.write_char(c)
     }
   }
-  out.to_bytes()
+  let kept = kept.to_string()
+  // (a lone letter at the end makes no byte)
+  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
+  @codec.base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
 }
-
-///|
-let b64_chars : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 ///|
 /// `Buffer.toString("base64")`.
 fn base64_of(b : BytesView) -> String {
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let x = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(b64_chars.unsafe_get((x >> 18) & 63).unsafe_to_char())
-    out.write_char(b64_chars.unsafe_get((x >> 12) & 63).unsafe_to_char())
-    out.write_char(b64_chars.unsafe_get((x >> 6) & 63).unsafe_to_char())
-    out.write_char(b64_chars.unsafe_get(x & 63).unsafe_to_char())
-    i += 3
-  }
-  if n - i == 1 {
-    let x = b[i].to_int() << 16
-    out.write_char(b64_chars.unsafe_get((x >> 18) & 63).unsafe_to_char())
-    out.write_char(b64_chars.unsafe_get((x >> 12) & 63).unsafe_to_char())
-    out.write_string("==")
-  } else if n - i == 2 {
-    let x = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(b64_chars.unsafe_get((x >> 18) & 63).unsafe_to_char())
-    out.write_char(b64_chars.unsafe_get((x >> 12) & 63).unsafe_to_char())
-    out.write_char(b64_chars.unsafe_get((x >> 6) & 63).unsafe_to_char())
-    out.write_string("=")
-  }
-  out.to_string()
+  @codec.base64_encode(b)
 }
 
 ///|

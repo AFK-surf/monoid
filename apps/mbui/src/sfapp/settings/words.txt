@@ -154,6 +154,7 @@ android-misc.bar.moveLeft
 android-misc.bar.moveRight
 android-misc.bar.new
 android-misc.bar.note
+android-misc.bar.noteOne
 android-misc.bar.pick.full
 android-misc.bar.pick.left
 android-misc.bar.pick.there

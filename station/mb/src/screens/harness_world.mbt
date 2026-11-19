@@ -493,13 +493,6 @@ pub fn date_parse_utc(s : String) -> Double {
 
 ///|
 fn utc_ms(y : Int, mo : Int, d : Int, h : Int, mi : Int, s : Int, ms : Int) -> Double {
-  // days from 1970-01-01 (civil from days, Howard Hinnant's)
-  let y2 = if mo <= 2 { y - 1 } else { y }
-  let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400
-  let yoe = y2 - era * 400
-  let mp = (mo + 9) % 12
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  let days = era * 146097 + doe - 719468
+  let days = @time.days_from_civil(y, mo, d)
   days.to_double() * 86400000.0 + (h * 3600000 + mi * 60000 + s * 1000 + ms).to_double()
 }

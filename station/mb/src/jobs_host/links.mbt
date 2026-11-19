@@ -86,19 +86,6 @@ fn entity(name : String) -> String? {
 }
 
 ///|
-fn hex_unit(c : Int) -> Int? {
-  if is_digit(c) {
-    Some(c - '0')
-  } else if c >= 'a' && c <= 'f' {
-    Some(c - 'a' + 10)
-  } else if c >= 'A' && c <= 'F' {
-    Some(c - 'A' + 10)
-  } else {
-    None
-  }
-}
-
-///|
 fn write_point(out : StringBuilder, code : Int) -> Unit {
   if code < 0x10000 {
     out.write_char(Int::unsafe_to_char(code))
@@ -129,7 +116,7 @@ pub fn html_text(s : String) -> String {
       if j + 1 < n && lower_unit(s.unsafe_charcode_at(j + 1)) == 'x' {
         let start = j + 2
         let mut k = start
-        while k < n && hex_unit(s.unsafe_charcode_at(k)) is Some(_) {
+        while k < n && @codec.hex_digit(s.unsafe_charcode_at(k)) is Some(_) {
           k += 1
         }
         if k > start && k < n && s.unsafe_charcode_at(k) == ';' {
@@ -171,7 +158,7 @@ pub fn html_text(s : String) -> String {
         let mut code = 0.0
         let digits = if kind == 1 { from(e, 2) } else { from(e, 1) }
         for k in 0..<digits.length() {
-          let d = hex_unit(digits.unsafe_charcode_at(k)).unwrap_or(0)
+          let d = @codec.hex_digit(digits.unsafe_charcode_at(k)).unwrap_or(0)
           code = code * (if kind == 1 { 16.0 } else { 10.0 }) + d.to_double()
         }
         if code > 0.0 && code < 1114112.0 {
@@ -464,7 +451,7 @@ pub fn is_ipv6(s : String) -> Bool {
         return false
       }
       for c in 0..<g.length() {
-        if hex_unit(g.unsafe_charcode_at(c)) is None {
+        if @codec.hex_digit(g.unsafe_charcode_at(c)) is None {
           return false
         }
       }
@@ -514,7 +501,7 @@ pub fn is_public(address : String) -> Bool {
     let high = split(from(v6, 7), ":")[0]
     let mut value = 0
     for i in 0..<high.length() {
-      value = value * 16 + hex_unit(high.unsafe_charcode_at(i)).unwrap_or(0)
+      value = value * 16 + @codec.hex_digit(high.unsafe_charcode_at(i)).unwrap_or(0)
     }
     Some((value >> 8, value & 255))
   } else {
@@ -918,17 +905,6 @@ fn truthy(v : Json?) -> Bool {
 }
 
 ///|
-fn days_from_civil(y : Int, m : Int, d : Int) -> Int {
-  let y2 = if m <= 2 { y - 1 } else { y }
-  let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400
-  let yoe = y2 - era * 400
-  let mp = (m + 9) % 12
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
-}
-
-///|
 /// `Date.parse` of an ISO 8601 time (as GitHub writes them: `YYYY-MM-DDTHH:MM:SS(.sss)Z` or with an offset; a date
 /// alone is UTC); None where it is not one.
 pub fn iso_time(s : String) -> Double? {
@@ -950,7 +926,7 @@ pub fn iso_time(s : String) -> Double? {
   if mo < 1 || mo > 12 || d < 1 || d > 31 {
     return None
   }
-  let days = days_from_civil(y, mo, d).to_double()
+  let days = @time.days_from_civil(y, mo, d).to_double()
   if n == 10 {
     return Some(days * 86400000.0)
   }

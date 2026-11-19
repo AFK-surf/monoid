@@ -12,6 +12,11 @@
 //
 // A view a person drives carries the Mac's clipboard both ways (text, PNG): the helper sets NSPasteboard and pastes with
 // ⌘V, and, while the view watches it, looks at its changeCount every half a second and says what was copied.
+//
+// A person who drives it sets the display's resolution (the helper's `resolution`: Resolution.swift, its sizes in
+// points, HiDPI kept on a Retina display), for this login session alone; once the last view ends, or the station
+// stops, the mode it was in before the first change is put back. A helper from before it has no resolution to give:
+// none is told, and nothing is set.
 import { hostname } from "node:os";
 import type { HelperApp } from "../helper/app.ts";
 import { HelperGrants } from "../helper/grants.ts";
@@ -22,7 +27,7 @@ import { ScreenRefused } from "./hub.ts";
 import { MacInput } from "./mac-input.ts";
 import { helperUi } from "./ui.ts";
 export type { HelperStatus } from "../helper/grants.ts";
-import { type AudioCodec, type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, OPUS_MAX, clipFits, codecFor, regionOf, windowsOf } from "./source.ts";
+import { type AudioCodec, type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, OPUS_MAX, clipFits, codecFor, regionOf, resolutionOf, windowsOf } from "./source.ts";
 
 export type DesktopOptions = {
   /// Whether this machine's display can be seen at all (platform.desktopScreen: the helper).
@@ -76,6 +81,11 @@ export class Desktop implements ScreenSource {
   readonly #views = new Set<HelperView>();
   /// Its window was put up for grants not all taken yet: up again when the helper comes back still lacking one.
   #wanted = false;
+  /// The display's mode before a view first changed it (its size, and its id where the helper said it), put back once
+  /// the last view ends; null while unchanged.
+  #originalMode: { width: number; height: number; modeID?: number } | null = null;
+  /// Resolution changes, one after another.
+  #sizing: Promise<unknown> = Promise.resolve();
 
   constructor(options: DesktopOptions) {
     this.#o = options;
@@ -135,7 +145,7 @@ export class Desktop implements ScreenSource {
     // `audio` in its info, and none is pulled.
     const audio = options.audio === true && !options.peek;
     for (let attempt = 0; ; attempt++) {
-      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => this.#views.delete(view), new MacInput(), "ScreenCaptureKit", audio);
+      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => (this.#views.delete(view), this.#putBack()), new MacInput(), "ScreenCaptureKit", audio);
       this.#views.add(view);
       try {
         await view.ready;
@@ -189,10 +199,71 @@ export class Desktop implements ScreenSource {
     return helperUi(helper)(args);
   }
 
-  /// The station stopping: every view ends, and the helper (resolved once it is gone).
-  close(): Promise<void> {
+  /// The helper's `resolution` op for its display, with `more` (a size to set).
+  #resolutionOp(more: Record<string, unknown> = {}): Record<string, unknown> {
+    const display = this.#status?.display?.id;
+    return { op: "resolution", ...more, ...(display !== undefined ? { display } : {}) };
+  }
+
+  /// As it is once the changes asked before are made; null where it is not had (no helper, one from before it).
+  resolution(): Promise<ScreenResolution | null> {
+    const helper = this.#o.helper;
+    if (!this.#o.supported || helper === null) return Promise.resolve(null);
+    const read = this.#sizing.then(() => helper.request(this.#resolutionOp())).then(resolutionOf, (error) => {
+      log.info("screens", "the display's resolution was not had", { error: (error as Error).message });
+      return null;
+    });
+    this.#sizing = read;
+    return read;
+  }
+
+  setResolution(width: number, height: number): Promise<ScreenResolution> {
+    const helper = this.#o.helper;
+    if (!this.#o.supported || helper === null) return Promise.reject(new Error("the display's resolution was not had"));
+    const set = this.#sizing.then(async () => {
+      if (this.#originalMode === null) {
+        const told = await helper.request(this.#resolutionOp());
+        const before = resolutionOf(told);
+        if (before === null) throw new Error("the display's resolution was not had");
+        this.#originalMode = { width: before.width, height: before.height, ...(Number.isInteger(told.modeID) ? { modeID: told.modeID } : {}) };
+      }
+      const now = resolutionOf(await helper.request(this.#resolutionOp({ width: Math.round(width), height: Math.round(height) })));
+      if (now === null) throw new Error("the display's resolution was not had");
+      log.info("screens", "the display's resolution set", { width: now.width, height: now.height, was: this.#originalMode });
+      // (its size in pixels another now: had again, and listed anew)
+      await this.refresh(true);
+      this.#o.changed();
+      return now;
+    });
+    this.#sizing = set.catch(() => {});
+    return set;
+  }
+
+  /// The last view ended: the display's mode as it was before a view changed it.
+  #putBack() {
+    const helper = this.#o.helper;
+    const mode = this.#originalMode;
+    if (this.#views.size > 0 || mode === null || helper === null) return;
+    this.#originalMode = null;
+    this.#sizing = this.#sizing.then(() =>
+      helper.request(this.#resolutionOp(mode)).then(
+        async () => {
+          log.info("screens", "the display's resolution put back", mode);
+          await this.refresh(true);
+          this.#o.changed();
+        },
+        (error) => log.warn("screens", "the display's resolution was not put back", { ...mode, error: (error as Error).message }),
+      ),
+    );
+  }
+
+  /// The station stopping: every view ends, the display's resolution is put back, then the helper goes (resolved once
+  /// it is gone).
+  async close(): Promise<void> {
     for (const view of [...this.#views]) view.close();
-    return this.#o.helper?.quit().catch(() => {}) ?? Promise.resolve();
+    // (put back before the helper quits: it is the helper that sets it)
+    await this.#sizing;
+    await this.#o.helper?.quit().catch(() => {});
   }
 }
 

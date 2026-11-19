@@ -10,10 +10,19 @@
 #   stillfail uninstall [--purge]                 stops the station for good: its scheduled tasks, its processes, its
 #                                                 release and ~\.local\bin's command gone; its chats, memory and secrets
 #                                                 kept in the data (<data>\uninstalled says so) unless --purge
-# The data is in $env:STILLFAIL_DATA, default ~\.stillfail.
+# The data is in $env:STILLFAIL_DATA, default ~\.stillfail (another product's own: below).
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $PSScriptRoot
-$data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { Join-Path $env:USERPROFILE '.stillfail' }
+# From a release in another product's data directory beside still.fail's (~\.monoid\app, as its app and its command run
+# it: client/i18n/brand.ts), that product's.
+$own = Join-Path $env:USERPROFILE '.stillfail'
+$release = try { [IO.Path]::GetFullPath($here).TrimEnd('\', '/') } catch { '' }
+$userDir = try { [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\', '/') } catch { '' }
+if ($release -and $userDir -and (Split-Path -Leaf $release) -eq 'app') {
+  $dir = Split-Path -Parent $release
+  if ((Split-Path -Parent $dir) -eq $userDir -and (Split-Path -Leaf $dir) -match '^\.[^.]') { $own = $dir }
+}
+$data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { $own }
 $station = if ($env:STILLFAIL_STATION_BIN) { $env:STILLFAIL_STATION_BIN } else { Join-Path $here 'mesh\target\release\stillfail-station.exe' }
 $usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail uninstall [--purge]'
 $a = @($args)

@@ -245,7 +245,7 @@ fn spin_part(k : Double) -> Double {
 /// turning in 0.8s; 14, or 12 in a line of small text. `sweep` (of a turn) and `period` for other rings that turn (a
 /// chat's mark at work: three quarters, 1.2s). Its lines drawn once (mbui's Ctx::lines), turned by the clock as each
 /// frame is drawn (Ctx::cycle_look): nothing built anew for it, nothing to make, nothing to wait for. `stroke` its
-/// line's width (an icon's, where it is drawn as one: @sf.coming_mark).
+/// line's width (an icon's, where it is drawn as one: @sf.coming_mark_node).
 pub fn spinner(
   c : @ui.Ctx,
   size? : Double = 14.0,

@@ -317,9 +317,9 @@ async fn start_installer(host : @host.Host, script : String, run_dir : String, e
   if is_windows() {
     let ps1 = path([run_dir, "update.ps1"])
     let hidden = path([run_dir, "stillfail-update-w.exe"])
-    let kept = read_text(path([@nodepath.dirname(sep(), run_dir), "windows.json"]))
-    let (task, admin) = @ops_platform.windows_task_of(kept)
-    let task = task + " update"
+    let data_dir = @nodepath.dirname(sep(), run_dir)
+    let kept = read_text(path([data_dir, "windows.json"]))
+    let (task, admin) = @ops_platform.windows_task_of(kept, data_dir~)
     let made = try {
       @drive.rm_force(path([run_dir, "update.err"]))
       // (copied over what the update before left: node's copyFile replaces, the drive's makes a new file only)

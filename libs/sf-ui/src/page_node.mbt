@@ -2634,3 +2634,57 @@ pub fn[K : Hash + Eq] pg_blocks_read(was : Ref[Set[K]], other : Ref[Bool], now :
   was.val = seen
   now
 }
+
+///|
+/// A column of rows inside a list card (`group_node`), spaced as the card's rows are on either screen (`desk_list_gap`
+/// wide, none narrow).
+#callsite(autofill(loc))
+pub fn list_rows_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.box(made_for=loc, fn(r) {
+    if wide {
+      r.gap(Is(desk_list_gap)) |> ignore
+    }
+    make(r)
+  })
+  |> ignore
+}
+
+///|
+/// The leading face of a list card's row that holds its own gesture or trailing control beside it (`bars.mbt`):
+/// `mark` (20 wide, 24 high) before `title`, laid out with the room and words of the card's other rows on either
+/// screen (`link_row_node` narrow, `wide_link_row_node` wide); `make` given the face node itself.
+#callsite(autofill(loc))
+pub fn list_row_face_node(
+  parent : @view.View,
+  mark : (@view.View) -> Unit,
+  title : () -> String,
+  make? : (@view.View) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  let over = if wide { wide_row_over } else { text_in }
+  parent.box(made_for=loc, fn(face) {
+    face
+    .row(Is(true))
+    .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    .padding(Is((text_in, over, 12.0, over)))
+    .gap(Is(12.0))
+    .lines_up(Is(Some(Middle)))
+    |> ignore
+    make(face)
+    face.box(fn(m) {
+      m.width(Is(Some(20.0))).height(Is(Some(24.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+      mark(m)
+    })
+    |> ignore
+    face.box(fn(w) {
+      w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      words_node(w, title, fn() { if wide { desk_list_title } else { pg_row_title } }) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}

@@ -495,7 +495,7 @@ pub fn http_date(s : String) -> Double? {
   }
   match (day, year, h, mi, se) {
     (Some(d), Some(y), Some(hh), Some(mm), Some(ss)) if d >= 1 && d <= 31 && hh < 24 && mm < 60 && ss < 60 => {
-      let days = days_from_civil(y, month + 1, d)
+      let days = @time.days_from_civil(y, month + 1, d)
       Some(
         ((days.to_double() * 86400.0 + (hh * 3600 + mm * 60 + ss).to_double()) * 1000.0) -
         offset.to_double(),
@@ -515,16 +515,4 @@ fn small_int(s : String) -> Int? {
     n = n * 10 + (c.to_int() - '0'.to_int())
   }
   Some(n)
-}
-
-///|
-/// Days since 1970-01-01 of a date of the proleptic Gregorian calendar.
-fn days_from_civil(y0 : Int, m : Int, d : Int) -> Int {
-  let y = if m <= 2 { y0 - 1 } else { y0 }
-  let era = (if y >= 0 { y } else { y - 399 }) / 400
-  let yoe = y - era * 400
-  let mp = (m + 9) % 12
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
 }

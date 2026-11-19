@@ -1207,6 +1207,9 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
         case "shared.lendCodex": return m.shared.lendCodex(args[0]);
         case "shared.loginUpdated": m.shared.loginUpdated(args[0]); return null;
         case "shared.hostName": return m.shared.hostName();
+        case "shared.view": return m.shared.view() ?? { $undef: 1 };
+        case "share.shareRefusal": return (await import("../src/share/index.ts")).shareRefusal(args[0]);
+        case "profiles.loginCommand": return (await import("../src/accounts/profiles.ts")).loginCommand(args[0], args[1], args[2]);
         case "codex.rateLimits": return m.codex.rateLimits();
         case "codex.models": { const c = await m.codex.models(); return { models: c.models, efforts: Object.fromEntries(c.efforts), defaults: Object.fromEntries(c.defaults), ultrafastModels: c.ultrafastModels }; }
         case "codex.loginChanged": await m.codex.loginChanged(args[0]); return null;
@@ -1307,6 +1310,11 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
       reply = () => ({ status: 401, body: { error: { message: "token revoked" } } });
       await both("borrowed allowance refused", () => tsAccounts.refreshQuota("bx"), "refreshQuota", "bx");
       await alike("borrowed");
+      // Listed to the workspaces its host lends it in alone (ws1 here), and to no viewer all of them.
+      for (const v of [viewer, { ...viewer, home: false, workspace: "ws2" }, undefined]) {
+        const seen = (await both(`profiles view ${v?.workspace}`, () => tsAccounts.profilesView(v as any), "profilesView", v)) as Json[];
+        assert.equal(seen.some((x) => x.id === "bx"), v?.workspace !== "ws2", `bx listed to ${v?.workspace}`);
+      }
       // Sign-ins: one for a new profile made once it is done, named by its account; one dropped; one of a profile.
       const tsNew = await tsAccounts.newLogin({ runtime: "claude" }, viewer as any, "zh");
       const mbNew = await p.ask("accounts.newLogin", { runtime: "claude" }, viewer, "zh");

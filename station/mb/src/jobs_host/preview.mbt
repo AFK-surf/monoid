@@ -288,7 +288,7 @@ fn Conn::body(self : Conn, method : String, status : Int, headers : Array[(Strin
         let size_text = trim(split(line, ";")[0])
         let mut size = 0
         for i in 0..<size_text.length() {
-          size = size * 16 + hex_unit(size_text.unsafe_charcode_at(i)).unwrap_or(0)
+          size = size * 16 + @codec.hex_digit(size_text.unsafe_charcode_at(i)).unwrap_or(0)
         }
         if size == 0 {
           done.val = true
