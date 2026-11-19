@@ -22,39 +22,17 @@ fn coverage_tester(key : String, w : Double) -> @ui.Tester {
 }
 
 ///|
-/// What the library's parts themselves break where a story shows them as the app does, not this page's: a story's key,
-/// what its fault says, how many times it is found at 390 and 1280 together. Only falls (mended in libs/sf-ui, its
-/// line goes).
-/// - choices: each card's radio, 18 round in its top right corner 13 to 14 in, not concentric with the card's corner
-///   (choices_node.mbt's radio_mark against choice_card); 3 cards at each width.
-/// - notify: the banner's picture in a way's tile (way_tile_node's BannerWay), its 4-round banner 5 in from the tile's
-///   8-round corners, wanting 3; at both top corners, at each width.
-// kept across runs: a value (no field of it changes)
-let library_known : Array[(String, String, Int)] = [
-  ("choices", "(corner 9) in the top right of", 6),
-  ("notify", "wants corner 3", 4),
-]
-
-///|
 test "each part of the overlays, the controls and the data shows keeps every rule at 390 and 1280" {
   let all : Array[String] = []
-  let known : Map[String, Int] = Map([])
   for key in coverage_keys() {
     for w in [390.0, 1280.0] {
       let t = coverage_tester(key, w)
       for f in page_faults(t) {
-        match library_known.iter().find_first(fn(k) { k.0 == key && f.contains(k.1) }) {
-          Some(k) => known[k.0] = known.get(k.0).unwrap_or(0) + 1
-          None => all.push("\{key} at \{w}: \{f}")
-        }
+        all.push("\{key} at \{w}: \{f}")
       }
     }
   }
   assert_true(all.is_empty(), msg=all.join("\n"))
-  // (what the library's own parts are known to break, as many times as they do: fixed there, the count here falls)
-  for k in library_known {
-    assert_eq(known.get(k.0).unwrap_or(0), k.2, msg="\{k.0}: \{k.1}")
-  }
 }
 
 ///|
