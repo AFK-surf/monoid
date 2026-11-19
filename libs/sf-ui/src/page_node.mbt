@@ -391,7 +391,7 @@ pub fn page_node(
     None => TipLayer::new(fn() { tips_at.val })
   }
   v.pick(look, fn(p, l) {
-    p.grow(Is(1.0)).min_height(Is(Some(0.0))).lends(part_at, { look: l, section: false, list: false }) |> ignore
+    p.grow(Is(1.0)).min_height(Is(Some(0.0))).lends(part_at, { look: l, section: false, list: false, card: false }) |> ignore
     // (where its list is scrolled to, kept by whoever holds the page where it says (a part of a page a page each,
     // each as it was left), else the page's own; the same through its arrangements)
     let scroll = match scroll {
@@ -416,11 +416,14 @@ pub fn page_node(
 
 ///|
 /// Where a part of a page made once is (page_node's, lent to all of it): how the page is laid out, whether it is in a
-/// section of a wide page (wide_alone's), and whether on a list's card (its rows a wide list's: wide_in_list's).
+/// section of a wide page (wide_alone's), whether on a list's card (its rows a wide list's: wide_in_list's), and
+/// whether on a card of words (a wide group's card, page_card_node's: its rows its padding in, a control at their end
+/// held out of its corner where that is rounder).
 priv struct PartAt {
   look : Look
   section : Bool
   list : Bool
+  card : Bool
 }
 
 ///|
@@ -443,14 +446,14 @@ fn in_pane_node(v : @view.View) -> Bool {
 ///|
 /// Where node `v` of a page made once is (page_node's: lent it); narrow, in nothing, outside one.
 fn part_of(v : @view.View) -> PartAt {
-  v.lent(part_at).unwrap_or({ look: Narrow, section: false, list: false })
+  v.lent(part_at).unwrap_or({ look: Narrow, section: false, list: false, card: false })
 }
 
 ///|
 /// What is made in node `v` laid out as a page laid out `look` lays out its parts (what a frame puts by a page made once,
 /// as its page is: a bar's actions), in no section or list of it.
 pub fn look_lent(v : @view.View, look : Look) -> Unit {
-  v.lends(part_at, { look, section: false, list: false }) |> ignore
+  v.lends(part_at, { look, section: false, list: false, card: false }) |> ignore
 }
 
 ///|
@@ -923,9 +926,11 @@ fn line_end_while_node(parent : @view.View, on : () -> Bool, make : (@view.View)
     .height(By(fn() {
       guard on() else { return None }
       let th = @ui.tree_theme()
-      let line = match look_node(l) {
-        Narrow => th.text_size(Body).1
-        Wide => th.leading(L6).unwrap_or(th.text_size(Ui).1)
+      // (a title's line: the body's narrow or on touch, where a wide row's title is the body's too; else the list's)
+      let line = if theme().touch || look_node(l) is Narrow {
+        th.text_size(Body).1
+      } else {
+        th.leading(L6).unwrap_or(th.text_size(Ui).1)
       }
       Some(node_sp(l, line))
     }))
@@ -960,7 +965,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
   if parent.lent(panel_in_lent) is Some(p) && !p.small {
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() { panel_card_group.then(panel_card_rows).then(panel_card_out_node(k)) })
-      k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide }) |> ignore
+      k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false }) |> ignore
       rows(k)
     })
     |> ignore
@@ -1959,7 +1964,8 @@ let switch_disabled_alpha : Double = 0.5
 
 ///|
 /// A row on a group's card that turns something on or off (switch_row's; narrow, in a card: its title, `note` quieter
-/// under it, its switch at its end across their middle; wide: wide_control_row_node's); the switch alone answers. `on`,
+/// under it, its switch at its end on the title's line where there is a note, else in the row's middle; wide:
+/// wide_control_row_node's, the same); the switch alone answers. `on`,
 /// `turn`: switch_node's. `in_words`: on a page's card of words (page_card_node), where narrow it is a row of its words
 /// (16 between them and the switch), not a group's row. `busy`: what it set is on its way (switch_row's: a spinner
 /// before its switch, not turned again meanwhile).
@@ -1980,38 +1986,61 @@ pub fn switch_row_node(
     r.show(busy, fn(s) { spinner_node(s, size=spinner_size) |> ignore })
     switch_node(r, on, turn, title, disabled=fn() { disabled() || busy() })
   }
+  // (with a note under its title the switch is on the title's first line, never across their middle; alone, in the
+  // row's middle as it was)
+  let noted = fn() { note() != "" }
   if look_node(parent) is Wide {
     // (among a card's words, its title as strong as a setting's: switch_row's wide)
     if in_words {
-      wide_control_row_node(parent, title, note, lead, control, looks=(fn() { setting_title() }, fn() { theme().rows.note }))
+      wide_control_row_node(
+        parent,
+        title,
+        note,
+        lead,
+        control,
+        looks=(fn() { setting_title() }, fn() { theme().rows.note }),
+        first_line=true,
+        first_line_while=noted,
+      )
     } else {
-      wide_control_row_node(parent, title, note, lead, control)
+      wide_control_row_node(parent, title, note, lead, control, first_line=true, first_line_while=noted)
     }
     return
   }
   // (narrow, among a card's words: a row of words with its switch, no row's ground or room of its own, switch_row's
   // in_words)
   if in_words {
-    wide_control_row_node(parent, title, note, lead, control, looks=(fn() { pg_switch_title }, fn() { meta.then(full_words) }))
+    wide_control_row_node(
+      parent,
+      title,
+      note,
+      lead,
+      control,
+      looks=(fn() { pg_switch_title }, fn() { meta.then(full_words) }),
+      first_line=true,
+      first_line_while=noted,
+    )
     return
   }
   parent.box(made_for=loc, fn(r) {
     r
     .row(Is(true))
     .gap(Is(12.0))
-    .padding(Is((text_in, text_in, text_in, text_in)))
+    // (at its end as far in as holds a switch on its title's line out of the row's and the card's corners, every
+    // switch of a card at one edge)
+    .padding(Is((text_in, text_in, dmax(text_in, group_corner - list_pad), text_in)))
     .radius(Is(@ui.concentric(group_corner, list_pad)))
     .min_height(By(fn() { Some(theme().items.least) }))
-    .lines_up(Is(Some(Middle)))
+    .lines_up(By(fn() { Some(if noted() { Start } else { Middle }) }))
     |> ignore
     r.box(fn(words) {
       // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       led_title_node(words, title, fn() { pg_switch_title }, lead)
-      words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
+      words.show(noted, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
     })
     |> ignore
-    control(r)
+    line_end_while_node(r, noted, control)
   })
   |> ignore
 }
@@ -2051,7 +2080,7 @@ pub fn block_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : Sourc
   let narrow = look_node(parent) is Narrow
   let listed = !narrow && part_of(parent).list
   let room = if narrow { (text_in, text_in, text_in, text_in) } else if listed {
-    (text_in, wide_row_over, if in_pane_node(parent) { text_in } else { list_control_end }, wide_row_over)
+    (text_in, wide_row_over, if in_pane_node(parent) { card_control_end } else { list_control_end }, wide_row_over)
   } else {
     (0.0, 0.0, 0.0, 0.0)
   }
@@ -2246,6 +2275,7 @@ pub fn page_card_node(
   layered? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
+  let at = part_of(parent)
   let card = fn(v : @view.View) {
     v.box(fn(k) {
       k
@@ -2253,12 +2283,12 @@ pub fn page_card_node(
       .gap(Is(page_card_gap))
       .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
+      .lends(part_at, { ..at, list: false, card: true })
       |> ignore
       body(k)
     })
     |> ignore
   }
-  let at = part_of(parent)
   if layered || (at.look is Wide && at.section) {
     card(parent)
   } else {

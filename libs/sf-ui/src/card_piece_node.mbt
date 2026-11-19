@@ -118,7 +118,7 @@ pub fn card_piece_node(
       style_node(k, fn() {
         panel_card_ground.then(@ui.style(px=room(corner_inset))).then(panel_card_out_node(k))
       })
-      k.grow(Is(1.0)).min_height(By(fn() { least(card_corner) })).corners(By(fn() { corners(card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide })
+      k.grow(Is(1.0)).min_height(By(fn() { least(card_corner) })).corners(By(fn() { corners(card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false })
       |> ignore
       held(k, fn() { if top() { corner_inset } else { 0.0 } }, fn() { if foot() { corner_inset } else { 0.0 } })
     })
@@ -139,7 +139,7 @@ pub fn card_piece_node(
         .corners(By(fn() { corners(corner) }))
         .ground(By(fn() { @ui.tree_theme().color(Card) }))
         .clips(Is(true))
-        .lends(part_at, { ..at, list: true })
+        .lends(part_at, { ..at, list: true, card: false })
         |> ignore
         rows(card)
       })
@@ -159,6 +159,7 @@ pub fn card_piece_node(
         .corners(By(fn() { corners(@ui.tree_theme().corner(Xl3)) }))
         .ground(By(fn() { @ui.tree_theme().color(Card) }))
         .clips(Is(true))
+        .lends(part_at, { ..at, list: false, card: true })
         |> ignore
         held(card, fn() { if top() { card_pad } else { wide_gap } }, fn() { if foot() { card_pad } else { 0.0 } })
       })
@@ -181,7 +182,7 @@ pub fn card_piece_node(
         .padding(Is((pad, 0.0, pad, 0.0)))
         .corners(By(fn() { corners(corner) }))
         .ground(By(fn() { @ui.tree_theme().color(Card) }))
-        .lends(part_at, { ..at, list: true })
+        .lends(part_at, { ..at, list: true, card: false })
         |> ignore
         held(card, fn() { if top() { ends } else { 0.0 } }, fn() { if foot() { ends } else { desk_list_gap } })
       })

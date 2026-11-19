@@ -661,10 +661,10 @@ fn Ctx::shows_after(self : Ctx, k : Int) -> Bool {
 
 ///|
 /// Whether words `i` that go on in lines are a line under a title (in a column of words, after what stands over them)
-/// beside what keeps its width standing across the middle of the whole column, not on their line (a switch, a
-/// button at a row's end, across the middle of a title and its note: settings' rows, @sf.switch_row): there they
-/// may take the lines the row leaves them, as a note beside a control does. A title itself, words beside words that
-/// give way too, or what is on the line of its words are not.
+/// beside what keeps its width standing across the middle of the whole column or of its first line of words, not on
+/// a line of their own (a switch, a button at a row's end, across the middle of a title and its note, or of the
+/// title alone: settings' rows, @sf.switch_row): there they may take the lines the row leaves them, as a note beside
+/// a control does. A title itself, words beside words that give way too, or what only shares their top are not.
 fn Ctx::sub_lines_beside(self : Ctx, i : Int) -> Bool {
   let n = self.count
   let mut k = i
@@ -679,14 +679,17 @@ fn Ctx::sub_lines_beside(self : Ctx, i : Int) -> Bool {
       guard under else { return false }
       let words = self.nodes[k]
       let middle = words.y + words.fh / 2.0
+      let first_mid = self.first_words_middle(k)
       let mut beside = false
       let mut ch = words.next
       while ch >= 0 {
         let cn = self.nodes[ch]
         if !self.squeeze_aside_at(ch) && cn.fw > squeeze_slack && cn.opacity > 0.01 && (cn.first >= 0 || self.squeeze_shows_at(ch)) {
-          // (what gives way too, or stands on a line of the words, not across their middle: as before)
-          if self.squeeze_gives(ch) || cn.fh + squeeze_slack >= words.fh ||
-            (cn.y + cn.fh / 2.0 - middle).abs() > squeeze_slack {
+          // (what gives way too, or stands at neither the middle of the words nor that of their first line: as before)
+          let cn_mid = cn.y + cn.fh / 2.0
+          let across = (cn_mid - middle).abs() <= squeeze_slack ||
+            (first_mid is Some(fm) && (cn_mid - fm).abs() <= squeeze_slack)
+          if self.squeeze_gives(ch) || cn.fh + squeeze_slack >= words.fh || !across {
             return false
           }
           beside = true
@@ -705,6 +708,34 @@ fn Ctx::sub_lines_beside(self : Ctx, i : Int) -> Bool {
     p = a.parent
   }
   false
+}
+
+///|
+/// The middle of the first line of the first words shown in node `k` (its own, or the first in what it holds, in
+/// order), drawn, not apart from the flow: where what stands beside a title is put on its line (@sf.switch_row).
+fn Ctx::first_words_middle(self : Ctx, k : Int) -> Double? {
+  let b = self.nodes[k]
+  if self.squeeze_aside_at(k) || b.opacity <= 0.01 || b.fw <= squeeze_slack || b.fh <= squeeze_slack {
+    return None
+  }
+  if b.kind == kind_text || b.kind == kind_rich {
+    if b.text.trim().length() == 0 {
+      return None
+    }
+    let line = match b.tl {
+      Some(tl) if tl.line_h > 0.0 => dmin(b.fh, tl.line_h)
+      _ => if b.line_h > 0.0 { dmin(b.fh, b.line_h) } else { b.fh }
+    }
+    return Some(b.y + line / 2.0)
+  }
+  let mut ch = b.first
+  while ch >= 0 {
+    if self.first_words_middle(ch) is Some(m) {
+      return Some(m)
+    }
+    ch = self.nodes[ch].next
+  }
+  None
 }
 
 ///|
