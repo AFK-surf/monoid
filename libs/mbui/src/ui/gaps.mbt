@@ -1021,6 +1021,32 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       if list.is_empty() {
         continue
       }
+      // (a row of theirs with a ground at rest, the one chosen or one opened in place to its body: as wide and as far in
+      // from both sides as they are, its ground a row's, what it holds held to their words' line)
+      let kept_rows : Array[Int] = []
+      for i in 0..<n {
+        let b = self.nodes[i]
+        if !whole[i] ||
+          layer[i] != layer[q] ||
+          list.contains(i) ||
+          b.kind != kind_box ||
+          !b.grounded() ||
+          b.radius < 0.5 ||
+          b.fw < a.fw * gap_spans {
+          continue
+        }
+        let mut p = b.parent
+        while p >= 0 && p != q && ground_of(p) is None {
+          p = self.nodes[p].parent
+        }
+        if p != q {
+          continue
+        }
+        let reach = self.lit_reach_in(ground, i)
+        if (b.x - a.x - reach).abs() <= gap_slack && (a.x + a.fw - b.x - b.fw - reach).abs() <= gap_slack {
+          kept_rows.push(i)
+        }
+      }
       let in_rows = fn(k : Int) {
         let mut p = k
         while p >= 0 && p != q {
@@ -1035,7 +1061,12 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       let mut words_in = 1.0e9
       for k in 0..<n {
         let b = self.nodes[k]
-        if whole[k] && !list.contains(k) && b.gap_content() && in_rows(k) {
+        if whole[k] &&
+          layer[k] == layer[q] &&
+          !list.contains(k) &&
+          (b.gap_content() || self.tree_draws(k)) &&
+          !self.in_picture(k, pictures) &&
+          in_rows(k) {
           words_in = dmin(words_in, b.x - a.x)
         }
       }
@@ -1044,12 +1075,17 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       }
       for k in 0..<n {
         let b = self.nodes[k]
-        if !whole[k] || layer[k] != layer[q] || !b.gap_content() || in_rows(k) {
+        if !whole[k] ||
+          layer[k] != layer[q] ||
+          !(b.gap_content() || self.tree_draws(k)) ||
+          self.in_picture(k, pictures) ||
+          in_rows(k) ||
+          kept_rows.contains(k) {
           continue
         }
-        // (in this box: the nearest box with a ground round it is it)
+        // (in this box: the nearest box with a ground round it is it, a row of theirs with a ground at rest seen through)
         let mut p = b.parent
-        while p >= 0 && p != q && ground_of(p) is None {
+        while p >= 0 && p != q && (ground_of(p) is None || kept_rows.contains(p)) {
           p = self.nodes[p].parent
         }
         if p != q {

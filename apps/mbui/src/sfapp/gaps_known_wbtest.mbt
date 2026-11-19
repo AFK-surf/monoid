@@ -38,7 +38,10 @@
 /// title 12 in, its faces 6 from its end); 2026-11-18, chat-info-bare swept (the chat's sheet with nothing in its thread,
 /// its station's screen an agent drives): rule 4's one more in each, its wide chat's head as every wide chat's. The
 /// Chinese odd windows run in two groups to fit the CI time limit.
-/// Their counts add up to the earlier counts for all odd windows.
+/// Their counts add up to the earlier counts for all odd windows. 2026-11-19, rule 8 counting the tree's marks among
+/// the rows' words (Ctx::tree_draws) and taking a row with a ground at rest as wide and as far in as the rows (the one
+/// chosen, one opened in place) for one of them, its words held to their line: one fewer in zh 0/4, zh 1/2 and both
+/// English halves.
 let gaps_known : Map[String, Int] = {
   "zh 0/4 rule 1": 0,
   "zh 0/4 rule 2": 0,
@@ -47,7 +50,7 @@ let gaps_known : Map[String, Int] = {
   "zh 0/4 rule 5": 1,
   "zh 0/4 rule 6": 0,
   "zh 0/4 rule 7": 0,
-  "zh 0/4 rule 8": 3,
+  "zh 0/4 rule 8": 2,
   "zh 0/4 rule 9": 0,
   "zh 2/4 rule 1": 0,
   "zh 2/4 rule 2": 0,
@@ -65,7 +68,7 @@ let gaps_known : Map[String, Int] = {
   "zh 1/2 rule 5": 0,
   "zh 1/2 rule 6": 0,
   "zh 1/2 rule 7": 0,
-  "zh 1/2 rule 8": 5,
+  "zh 1/2 rule 8": 4,
   "zh 1/2 rule 9": 0,
   "en 0/2 rule 1": 0,
   "en 0/2 rule 2": 0,
@@ -74,7 +77,7 @@ let gaps_known : Map[String, Int] = {
   "en 0/2 rule 5": 1,
   "en 0/2 rule 6": 0,
   "en 0/2 rule 7": 0,
-  "en 0/2 rule 8": 5,
+  "en 0/2 rule 8": 4,
   "en 0/2 rule 9": 0,
   "en 1/2 rule 1": 0,
   "en 1/2 rule 2": 0,
@@ -83,7 +86,7 @@ let gaps_known : Map[String, Int] = {
   "en 1/2 rule 5": 0,
   "en 1/2 rule 6": 0,
   "en 1/2 rule 7": 0,
-  "en 1/2 rule 8": 5,
+  "en 1/2 rule 8": 4,
   "en 1/2 rule 9": 0,
 }
 
