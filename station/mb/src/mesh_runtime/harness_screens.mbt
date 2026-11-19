@@ -215,6 +215,15 @@ fn ScreenWorld::view(self : ScreenWorld) -> ScreenViewPort {
       None
     },
     watch_cursor: watch_port(w, "watchCursor"),
+    // (the pictures it has, by shape: hex)
+    cursor_image: if cfg(w, ["view", "cursorImages"]) is Some(Object(_)) {
+      Some(shape => match cfg(w, ["view", "cursorImages", shape]) {
+        Some(String(_)) as h => Some(hex_arg(h))
+        _ => None
+      })
+    } else {
+      None
+    },
     watch_turn: watch_port(w, "watchTurn"),
     watch_windows: watch_port(w, "watchWindows"),
     window: if v("window") { Some(id => w.call([jstr("window"), opt_json(id)])) } else { None },

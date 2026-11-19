@@ -124,6 +124,9 @@ export interface ScreenView {
   /// changes, until the returned function: a source whose pictures leave the pointer out (a video of the desktop) says
   /// it so; one without it draws it in its pictures, or has none.
   watchCursor?(heard: (cursor: ScreenCursor) => void): () => void;
+  /// The picture of a pointer of an app's own its `watchCursor` said as "custom:<id>" (`cursorImageShape`'s payload),
+  /// had before the shape is said; none where it has none of that id.
+  cursorImage?(shape: string): Uint8Array | undefined;
   /// Hears how far a device's picture is turned clockwise, in quarter turns, as it changes and at once, until the returned
   /// function: a simulator's, whose case is drawn turned with it.
   watchTurn?(heard: (turn: number) => void): () => void;
@@ -177,8 +180,33 @@ export type ScreenKind = "desktop" | "browser" | "simulator";
 /// (none: a JPEG a picture, nothing to say).
 export type ScreenVideo = { capture: string; encoder?: string; hardware?: boolean };
 
-/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it.
+/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it, or "custom:<id>" (one of an app's
+/// own: its picture `ScreenView.cursorImage`).
 export type ScreenCursor = { x: number; y: number; shape: string };
+
+/// A pointer's shape as a helper says one: a CSS cursor's name, or one of an app's own by its id.
+export const CURSOR_SHAPE = /^(?:[a-z-]{1,24}|custom:[0-9a-f]{16})$/;
+/// The most of a pointer's picture (its PNG), and how many pictures a view keeps.
+export const CURSOR_PNG_MAX = 65536;
+export const CURSOR_IMAGES_MOST = 64;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// The shape ("custom:<id>") a pointer's picture is of, as still.fail Helper and stillfail-screen say one (their message
+/// 11) and a view's `cursorImage` frame carries it: its width and height (1 byte each, points, 1..128), its hot spot
+/// (1 byte each, 0..width, 0..height), its id (16 lowercase hex digits), then a PNG of at most 64 KiB; null for any other.
+export function cursorImageShape(payload: Uint8Array): string | null {
+  if (payload.length < 20 + PNG_SIGNATURE.length || payload.length > 20 + CURSOR_PNG_MAX) return null;
+  const [w, h, hx, hy] = [payload[0]!, payload[1]!, payload[2]!, payload[3]!];
+  if (w < 1 || w > 128 || h < 1 || h > 128 || hx > w || hy > h) return null;
+  let id = "";
+  for (let i = 4; i < 20; i++) {
+    const c = payload[i]!;
+    if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66))) return null;
+    id += String.fromCharCode(c);
+  }
+  if (PNG_SIGNATURE.some((b, i) => payload[20 + i] !== b)) return null;
+  return `custom:${id}`;
+}
 
 /// The key an app makes for a person's tab of the station's browser it opens (`browser:<key>`), as the browser's
 /// user-tabs.ts `#freshKey` makes them.

@@ -34,6 +34,15 @@ pub let kind_audio : Int = 6
 pub let kind_cursor : Int = 7
 
 ///|
+/// A pointer of an app's own, before the first `cursor` or state naming it "custom:<id>", to a client that asked
+/// `customCursor` (screens/source.mbt `cursor_image_shape`).
+pub let kind_cursor_image : Int = 8
+
+///|
+/// How many pictures of pointers a view sends before it sends them again.
+pub let cursor_images_most : Int = 64
+
+///|
 pub let kind_input : Int = 16
 
 ///|
@@ -715,6 +724,9 @@ pub fn asked(screen : Json) -> Json {
   }
   if m.get("binaryCursor") is Some(True) && !peek {
     out.push(("binaryCursor", Json::boolean(true)))
+  }
+  if m.get("customCursor") is Some(True) && !peek {
+    out.push(("customCursor", Json::boolean(true)))
   }
   // (the token the client takes the video and audio frames under as datagrams: client/shell screen_dgram.rs)
   match m.get("datagrams") {

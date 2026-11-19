@@ -426,6 +426,10 @@ export class LastingView implements ScreenView {
     };
   }
 
+  cursorImage(shape: string): Uint8Array | undefined {
+    return this.#view.cursorImage(shape);
+  }
+
   close() {
     if (this.#closed) return;
     this.#closed = true;

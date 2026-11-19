@@ -49,6 +49,8 @@ pub fn congestion_of(@json.Json?) -> String
 
 pub fn control_or_format(Int32) -> Bool
 
+pub let cursor_images_most : Int32
+
 pub fn cursor_payload(@json.Json) -> Bytes
 
 pub let cursor_shape_max : Int32
@@ -134,6 +136,8 @@ pub let kind_clipboard : Int32
 pub let kind_config : Int32
 
 pub let kind_cursor : Int32
+
+pub let kind_cursor_image : Int32
 
 pub let kind_input : Int32
 
@@ -684,6 +688,7 @@ pub(all) struct ScreenViewPort {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
   watch_cursor : (((@json.Json) -> Unit) -> (() -> Unit))?
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((@json.Json) -> Unit) -> (() -> Unit))?
   watch_windows : (((@json.Json) -> Unit) -> (() -> Unit))?
   window : ((Double?) -> Unit)?

@@ -8,7 +8,7 @@ import { Deferred, Effect, Queue } from "effect";
 import { linkTarget } from "../src/asks.ts";
 import { parseCall } from "../src/core/calls.ts";
 import { CoreError } from "../src/error.ts";
-import { CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, cursorFrame, inputFrame, keyframeFrame, lookFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
+import { CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR, CURSOR_IMAGE, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, cursorFrame, cursorImageFrame, inputFrame, keyframeFrame, lookFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
 import { LOOK_MS, accessOf, checkInput, othersOf, personShown } from "../src/screens.ts";
 import { HostWire, type RequestHead, type ScreenAsk, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
@@ -199,6 +199,55 @@ each("the_pointer_in_a_cursor_frame_is_read_to_a_ten_thousandth_with_its_shape_o
     { other: CURSOR },
     { cursor: { x: 0.5, y: 0.5, shape: "text" } },
   ]);
+});
+
+each("a_pointers_picture_is_read_with_its_size_hot_spot_and_shape_and_one_not_well_made_passed_over", (seed) => {
+  assert.equal(CURSOR_IMAGE, 8);
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const id = "0123456789abcdef";
+  const frames = [
+    cursorImageFrame({ w: 24, h: 32, hx: 3, hy: 5, id, png }),
+    cursorImageFrame({ w: 0, h: 32, hx: 0, hy: 0, id, png }),
+    cursorImageFrame({ w: 24, h: 129, hx: 0, hy: 0, id, png }),
+    cursorImageFrame({ w: 24, h: 24, hx: 25, hy: 0, id, png }),
+    cursorImageFrame({ w: 24, h: 24, hx: 0, hy: 0, id: "0123456789ABCDEF", png }),
+    cursorImageFrame({ w: 24, h: 24, hx: 0, hy: 0, id, png: png.subarray(1) }),
+    cursorImageFrame({ w: 24, h: 24, hx: 0, hy: 0, id, png: png.subarray(0, 7) }),
+    cursorImageFrame({ w: 24, h: 24, hx: 0, hy: 0, id, png: new Uint8Array(65537).fill(0x89) }),
+    cursorImageFrame({ w: 128, h: 1, hx: 128, hy: 1, id, png }),
+  ];
+  const reader = new FrameReader();
+  const read: StationFrame[] = [];
+  for (const piece of cut(join(frames), random(seed))) {
+    reader.push(piece);
+    for (let f = reader.next(); f !== null; f = reader.next()) read.push(f);
+  }
+  const other = { other: CURSOR_IMAGE };
+  assert.deepEqual(read, [
+    { cursorImage: { shape: `custom:${id}`, w: 24, h: 32, hx: 3, hy: 5, data: png } },
+    other, other, other, other, other, other, other,
+    { cursorImage: { shape: `custom:${id}`, w: 128, h: 1, hx: 128, hy: 1, data: png } },
+  ]);
+});
+
+each("a_pointer_of_an_apps_own_comes_to_the_page_with_its_picture_before_the_pointer_that_names_it", async (seed) => {
+  const { host, core, ui, views } = await viewing(seed);
+  const log: J[] = [];
+  call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"], cursorUpdates: true });
+  await host.settle();
+  const [v] = views;
+  v!.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(100, seed))]));
+  await host.settle();
+  said(host, log);
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7]);
+  const shape = "custom:00112233445566aa";
+  v!.send(join([cursorImageFrame({ w: 16, h: 16, hx: 4, hy: 2, id: shape.slice(7), png }), cursorFrame({ x: 0.5, y: 0.25, shape })]));
+  await host.settle();
+  said(host, log);
+  const told = log.filter((m) => m.id === 1 && m.value && ("cursor" in m.value || "cursorImage" in m.value));
+  assert.deepEqual(told.map((m) => m.value), [{ cursorImage: { shape, w: 16, h: 16, hx: 4, hy: 2 } }, { cursor: { x: 0.5, y: 0.25, shape } }]);
+  assert.deepEqual([...told[0].bytes], [...png], "its PNG beside it");
+  core.close();
 });
 
 /// One view the fake station has open: what the client asked, what it sent, and the station's side of the stream.
@@ -537,7 +586,7 @@ each("a_page_that_takes_the_pointer_alone_is_told_it_alone_as_it_moves_and_every
   await host.settle();
   assert.equal(views.length, 2);
   const [v, w] = views;
-  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, binaryCursor: true }, "the station asked for cursor frames");
+  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, binaryCursor: true, customCursor: true }, "the station asked for cursor frames and the pictures of apps' own");
   assert.deepEqual(w!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true }, "nothing new asked");
   for (const x of [v!, w!]) x.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(100, seed))]));
   await host.settle();

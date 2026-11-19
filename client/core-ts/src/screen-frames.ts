@@ -1,6 +1,7 @@
 // A screen view's frames on its stream (Wire): a kind byte, the payload's length (4 bytes,
 // big-endian), the payload. The station sends `config`, `video` and `state` (and `cursor`, the pointer in a few bytes,
-// to a view that asked `binaryCursor`); the client `input`, `ack`, `keyframe` and
+// to a view that asked `binaryCursor`; `cursorImage`, the picture of a pointer of an app's own, before the first that
+// names it "custom:<id>", to one that asked `customCursor`); the client `input`, `ack`, `keyframe` and
 // `look` (the part of the screen it shows, zoomed in); the screen's clipboard goes both ways (`clipboard`) while the
 // view drives it.
 // Read as the stream's pieces come, however they are cut: each frame's bytes are copied once, into an array of its own
@@ -14,6 +15,7 @@ export const CLIPBOARD = 4;
 export const AUDIO_CONFIG = 5;
 export const AUDIO = 6;
 export const CURSOR = 7;
+export const CURSOR_IMAGE = 8;
 export const INPUT = 16;
 export const ACK = 17;
 export const KEYFRAME = 18;
@@ -24,6 +26,10 @@ export const SOUND = 21;
 const AUDIO_MAX = 3840;
 /// A `cursor` frame: x and y (16 bits each, of 65535), then the pointer's shape (UTF-8, at most this many bytes).
 const CURSOR_SHAPE_MAX = 64;
+/// A `cursorImage` frame: width and height (points, 1..128), the hot spot (0..width, 0..height), 1 byte each; the id's 16
+/// lowercase hex digits; then a PNG of at most this many bytes.
+const CURSOR_PNG_MAX = 65536;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 /// A clip's type on the wire.
 export type ClipType = "text" | "png";
@@ -56,6 +62,9 @@ export type StationFrame =
   | { clipboard: { type: ClipType; data: Uint8Array } }
   /// The pointer moved (0..1 of the screen, to a ten-thousandth, and its shape where said), or none shown (null).
   | { cursor: { x: number; y: number; shape?: string } | null }
+  /// The picture of a pointer of an app's own, by the shape that names it ("custom:<id>"): its size and hot spot in
+  /// points, and its PNG.
+  | { cursorImage: { shape: string; w: number; h: number; hx: number; hy: number; data: Uint8Array } }
   /// A kind this client does not know (a later station's): passed over.
   | { other: number };
 
@@ -122,6 +131,19 @@ export class FrameReader {
         const b = this.#take(length);
         const at = (hi: number) => Math.round((((b[hi]! << 8) | b[hi + 1]!) / 65535) * 10000) / 10000;
         return { cursor: { x: at(0), y: at(2), ...(length > 4 ? { shape: fromUtf8(b.subarray(4)) } : {}) } };
+      }
+      case CURSOR_IMAGE: {
+        // (one not well made: passed over, as a kind not known)
+        if (length < 20 + PNG_SIGNATURE.length || length > 20 + CURSOR_PNG_MAX) {
+          this.#skip(length);
+          return { other: kind };
+        }
+        const b = this.#take(length);
+        const [w, h, hx, hy] = [b[0]!, b[1]!, b[2]!, b[3]!];
+        let id = "";
+        for (let i = 4; i < 20; i++) id += String.fromCharCode(b[i]!);
+        if (w < 1 || w > 128 || h < 1 || h > 128 || hx > w || hy > h || !/^[0-9a-f]{16}$/.test(id) || PNG_SIGNATURE.some((s, i) => b[20 + i] !== s)) return { other: kind };
+        return { cursorImage: { shape: `custom:${id}`, w, h, hx, hy, data: b.subarray(20) } };
       }
       case CLIPBOARD: {
         const type = length > 0 ? CLIP_OF_BYTE[this.#peek(0)] : undefined;
@@ -277,6 +299,15 @@ export function cursorFrame(cursor: { x: number; y: number; shape?: string } | n
   view.setUint16(2, q(cursor.y));
   if (payload.length > 4) payload.set(shape, 4);
   return frame(CURSOR, payload);
+}
+
+/// A `cursorImage` frame (the station's): its size and hot spot, the id, the PNG.
+export function cursorImageFrame(image: { w: number; h: number; hx: number; hy: number; id: string; png: Uint8Array }): Uint8Array {
+  const payload = new Uint8Array(20 + image.png.length);
+  payload.set([image.w, image.h, image.hx, image.hy]);
+  payload.set(utf8(image.id).subarray(0, 16), 4);
+  payload.set(image.png, 20);
+  return frame(CURSOR_IMAGE, payload);
 }
 
 export function copiedFrame(type: ClipType, data: Uint8Array): Uint8Array {

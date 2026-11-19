@@ -655,8 +655,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     const client = deviceName(inner.data);
     const app = deviceApp(inner.data);
     // A page that takes the pointer alone (`cursorUpdates`) has the station send it as `cursor` frames (a station from
-    // before them sends it in a state, taken the same way below).
-    let bounds: ScreenAsk & { binaryCursor?: true } = { ...c.ask, ...(client ? { client } : {}), ...(app ? { app } : {}), ...(c.cursorUpdates === true && !c.ask.peek ? { binaryCursor: true as const } : {}) };
+    // before them sends it in a state, taken the same way below), and the pictures of the pointers of apps' own
+    // (`customCursor`: a station from before them says those "default").
+    let bounds: ScreenAsk & { binaryCursor?: true; customCursor?: true } = { ...c.ask, ...(client ? { client } : {}), ...(app ? { app } : {}), ...(c.cursorUpdates === true && !c.ask.peek ? { binaryCursor: true as const, customCursor: true as const } : {}) };
     // The stream open now: where acks, key frames and input go (in order, one writer); null between streams.
     let out: Queue.Queue<Uint8Array> | null = null;
     let reopen: Deferred.Deferred<void> | null = null;
@@ -985,6 +986,11 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 else state.cursor = { x: k.x, y: k.y, ...(k.shape !== undefined ? { shape: k.shape } : {}) };
                 if (c.cursorUpdates !== true) tell();
                 else if (tapped !== "cursor") progress({ cursor: state.cursor ?? null });
+              } else if ("cursorImage" in frame) {
+                // A pointer of an app's own, before the first that names it: its picture to the page, kept there by
+                // its shape.
+                const { shape, w, h, hx, hy, data } = frame.cursorImage;
+                progress({ cursorImage: { shape, w, h, hx, hy } }, data);
               } else if ("state" in frame) {
                 const s = frame.state;
                 if (!isObject(s)) continue;

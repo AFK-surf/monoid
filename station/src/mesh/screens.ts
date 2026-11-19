@@ -2,7 +2,8 @@
 // line has a `screen` object, answered 200 `application/x-stillfail-screen`, then frames both ways, each a kind byte,
 // its payload's length (4 bytes, big-endian) and the payload. Station → client: `config`, `video`, `state`, and
 // `cursor` to a client that asked for it (`binaryCursor`: the pointer in a few bytes, cursorPayload, never a state's
-// JSON); client →
+// JSON), `cursorImage` to one that asked `customCursor` (a pointer of an app's own, before the first `cursor` or state
+// naming it "custom:<id>": source.ts `cursorImageShape`; to one that did not, such a shape is "default"); client →
 // station: `input`, `ack`, `keyframe`, `sound` (1 byte: 0 the client muted the sound, none goes; 1 on again), `look`
 // (the part of the screen it shows, zoomed in: its frames are then of that part, as large as the client shows it, each
 // config saying which part); and the screen's clipboard both ways (`clipboard`), for a view that drives it
@@ -20,7 +21,7 @@ import { liveClock } from "../ops/fibers.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { type AccessShown, type ScreenHub, ScreenRefused, accessShown, addressShown } from "../screens/hub.ts";
-import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type LoginFill, type PasskeyAnswer, type Region, type ScreenInput, type ScreenSource, type ScreenView, type ViewFit, CLIP_PNG_MAX, clipFits, regionOf } from "../screens/source.ts";
+import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type LoginFill, type PasskeyAnswer, type Region, type ScreenCursor, type ScreenInput, type ScreenSource, type ScreenView, type ViewFit, CLIP_PNG_MAX, CURSOR_IMAGES_MOST, clipFits, regionOf } from "../screens/source.ts";
 import { type Viewer, readOnly } from "./credential.ts";
 import type { Connection } from "./endpoint.ts";
 import type { Stream } from "./native.ts";
@@ -30,7 +31,7 @@ import { writeLine } from "./serve.ts";
 export const SCREEN_TYPE = "application/x-stillfail-screen";
 /// The header of a view's reply that says its frames go as datagrams, with the client's token.
 export const DGRAM_HEADER = "x-screen-dgram";
-export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, cursor: 7, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21 } as const;
+export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, cursor: 7, cursorImage: 8, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21 } as const;
 /// A client's frame is an input event at most: one larger ends the view.
 export const MAX_IN = 64 * 1024;
 /// A client's `clipboard` frame is its flags, its type and a picture at most.
@@ -236,9 +237,11 @@ const QUIET = 10;
 /// decodes Opus too (a station from before sends PCM to it); `self`: the device's main id, for it to know its own views; `taken`: its person
 /// asked to drive it (控制, 接管): it takes it from whoever else drives it, and over having been made to only look (hub.ts `drive`);
 /// `binaryCursor`: the client reads the pointer as `cursor` frames (none from a client before them, nor for a preview);
+/// `customCursor`: it draws the pointers of apps' own from their `cursorImage` frames (none from a client before them,
+/// nor for a preview);
 /// `datagrams`: the token the client takes the video and audio frames under as datagrams (client/shell screen_dgram.rs;
 /// none for a preview).
-export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; binaryCursor?: boolean; datagrams?: number } {
+export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; binaryCursor?: boolean; customCursor?: boolean; datagrams?: number } {
   const bound = (v: unknown, otherwise: number) => (num(v) ? Math.min(8192, Math.max(16, Math.round(v))) : otherwise);
   const codecs = Array.isArray(screen.codecs) ? CODECS.filter((c) => screen.codecs.includes(c)) : [];
   // A preview (`peek`, a link's card in a chat) only looks.
@@ -249,7 +252,7 @@ export function asked(screen: any): { maxWidth: number; maxHeight: number; codec
   const fit = control && f && side(f.width) && side(f.height) && num(f.scale) && f.scale >= 1 && f.scale <= 4 ? { width: Math.round(f.width), height: Math.round(f.height), scale: f.scale } : undefined;
   const quality: Quality | undefined = ["smooth", "hd", "original"].includes(screen.quality) && !peek ? screen.quality : undefined;
   const fps: Fps | undefined = isFps(screen.fps) && !peek ? screen.fps : undefined;
-  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}), ...(Number.isInteger(screen.datagrams) && screen.datagrams > 0 && screen.datagrams <= 0xffff_ffff && !peek ? { datagrams: screen.datagrams as number } : {}) };
+  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}), ...(screen.customCursor === true && !peek ? { customCursor: true } : {}), ...(Number.isInteger(screen.datagrams) && screen.datagrams > 0 && screen.datagrams <= 0xffff_ffff && !peek ? { datagrams: screen.datagrams as number } : {}) };
 }
 
 /// A word a client says of itself, as far as it is shown: a line's worth, none when it said none.
@@ -337,7 +340,7 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   const pacer = new Pacer(now, initialRate, ask.fps, stall.stalled);
   const sizer = new Sizer(now, { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ask.quality);
   const sleep = (ms: number) => Effect.runPromise(clock.sleep(Duration.millis(ms)));
-  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true })
+  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true, customCursor: ask.customCursor === true })
     .run()
     .finally(stall.done);
 }
@@ -381,6 +384,9 @@ class ViewSession {
   readonly #startRate: number;
   /// The client reads the pointer as `cursor` frames (asked `binaryCursor`), not a state's JSON.
   readonly #binaryCursor: boolean;
+  /// The client draws the pointers of apps' own (asked `customCursor`), and those whose pictures it was sent.
+  readonly #customCursor: boolean;
+  readonly #cursorImagesSent = new Set<string>();
   /// A still screen's picture sent again sharper (screen-pace.ts Sharpener), on the view's clock.
   readonly #sharpen = new Sharpener();
   #stillWait = false;
@@ -424,7 +430,7 @@ class ViewSession {
   readonly #own: { maxWidth: number; maxHeight: number };
   #region: Region | null = null;
 
-  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean }) {
+  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean; customCursor?: boolean }) {
     this.hub = o.hub;
     this.id = o.id;
     this.source = o.source;
@@ -451,6 +457,7 @@ class ViewSession {
     this.#conn = o.conn;
     this.#startRate = o.startRate ?? START_RATE;
     this.#binaryCursor = o.binaryCursor === true;
+    this.#customCursor = o.customCursor === true;
     this.loss = new LinkLoss(o.now);
     // Its counters as the view begins: what went before is no part of it.
     if (this.#conn?.paths) this.loss.step(this.#conn.paths() ?? []);
@@ -481,6 +488,19 @@ class ViewSession {
     const written = this.#writes.then(() => this.stream.write(frame(kind, payload)));
     this.#writes = written.catch(() => this.#stop(null));
     return written.catch(() => {});
+  }
+
+  /// The pointer as the client is told it: one of an app's own, its picture sent first (once a view), to a client that
+  /// draws them; else, and where its source has no picture of it, "default".
+  #cursorShown(cursor: ScreenCursor | null): ScreenCursor | null {
+    const shape = cursor?.shape;
+    if (cursor === null || typeof shape !== "string" || !shape.startsWith("custom:") || (this.#customCursor && this.#cursorImagesSent.has(shape))) return cursor;
+    const image = this.#customCursor ? this.view.cursorImage?.(shape) : undefined;
+    if (image === undefined) return { ...cursor, shape: "default" };
+    if (this.#cursorImagesSent.size >= CURSOR_IMAGES_MOST) this.#cursorImagesSent.clear();
+    this.#cursorImagesSent.add(shape);
+    void this.#send(KIND.cursorImage, Buffer.from(image));
+    return cursor;
   }
 
   #state(state: Record<string, unknown>): Promise<void> {
@@ -604,8 +624,9 @@ class ViewSession {
     if (this.view.watchCursor) {
       this.#unpoint = this.view.watchCursor((cursor) => {
         if (this.#closed) return;
-        if (this.#binaryCursor) void this.#send(KIND.cursor, cursorPayload(cursor));
-        else void this.#state({ cursor });
+        const shown = this.#cursorShown(cursor);
+        if (this.#binaryCursor) void this.#send(KIND.cursor, cursorPayload(shown));
+        else void this.#state({ cursor: shown });
       });
     }
     // A desktop's windows, and the one shown alone: the viewer's tabs (the user, 2026-11-13: 「远程控制也支持按窗口查看」).
