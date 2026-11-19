@@ -119,6 +119,7 @@ case "${1:-build}" in
     # moon's build, with the C that moonc generates split and compiled by cl in parallel, moonbit_init at /O1
     # (scripts/mbc: a cl.exe first on PATH, every other command passed to the real one; MBC_SPLIT=0 compiles it
     # whole)
+    win_compiler
     SHIM=$(cygpath -u "$("$D/mbc" shim "$(cygpath -w "$PWD/out/mbc/win")" | tr -d '\r')")
     # cl's and link's outputs reproducible (-Brepro: no time stamps in them; lib's is mbc shim's), so that the same C
     # makes the same objects and mbc's link, finding its inputs as they were, is not run again (an LTCG link is run
