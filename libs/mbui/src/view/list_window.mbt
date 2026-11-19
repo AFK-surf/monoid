@@ -4482,12 +4482,10 @@ fn View::scrolls_window_ids(
         let (_, ly, _, lh) = self.placed_window_now()
         before_list_y = ly
         before_list_h = lh
-        // (only one drawn as the change came, measured: one in the slots' margin alone holds a spacer as tall as it
-        // is counted, drawn nowhere, so it has no place to come from)
+        // (only one whose block showed as the change came: a slot in the slots' margin alone holds no block, as tall
+        // as it is counted, drawn nowhere, so it has no place to come from)
         for k, v in slot_views {
-          guard seen_rows.contains(k) && row_ready(k) && v.alive() && v.was_placed() && !self.tree.out_at(v.at) else {
-            continue
-          }
+          guard showing.contains(k) && v.alive() && v.was_placed() && !self.tree.out_at(v.at) else { continue }
           let (x, y, w, h) = v.placed_window_now()
           // (one a flight carries: drawn off as its slot is (where a change before moved it), open all the way; within a
           // pixel of the host's grid of its rest, drawn at its rest already: slot's drawn_off)
@@ -4571,7 +4569,7 @@ fn View::scrolls_window_ids(
           }
           let after : Map[Int, (Double, Double, Double, Double)] = Map([])
           for k, v in slot_views {
-            if row_ready(k) && v.alive() {
+            if v.alive() {
               after[k] = v.laid_window_now()
             }
           }
@@ -4603,7 +4601,7 @@ fn View::scrolls_window_ids(
               foot_room.set(foot_room.untracked() + down)
               self.tree.laid_now() |> ignore
               for k, v in slot_views {
-                if row_ready(k) && v.alive() {
+                if v.alive() {
                   after[k] = v.laid_window_now()
                 }
               }
