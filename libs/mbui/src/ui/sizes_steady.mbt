@@ -92,7 +92,11 @@ const MEASURE_LEFT : Int = 3
 /// where they say another thing: their place across seen anew); which slots this frame measured (`touched`, as of
 /// `at`): one it did not is let go as the frame ends, as one never seen. And for each slot whether the frame of its
 /// second sample came with nothing to cause it (`first_unasked`: frame_quiet), its first two frames its first ever
-/// (`ever`: the slots seen so far, a slot seen anew after a gap no node's first frame).
+/// (`ever`: the slots seen so far, a slot seen anew after a gap no node's first frame). And how big it was drawn across and
+/// down (its holders' scales and its own, as one) in its last frame and the one before, the frames as its samples have
+/// them (a frame laid out again in half a period the same frame, `scale_at` when that frame began, `scale_end` when it was
+/// last seen): what holds it grown or shrunk about a point since carries what is in it by as much more as it is further
+/// from that holder's edge (Ctx::sizes_faults' carried).
 priv struct SizesSeen {
   seen : FixedArray[Array[(Double, Double, Double)]]
   turned : FixedArray[Double]
@@ -101,6 +105,10 @@ priv struct SizesSeen {
   mut touched : Int
   first_unasked : FixedArray[Bool]
   mut ever : Int
+  mut scale_at : Double
+  mut scale_end : Double
+  mut scale_prev : (Double, Double)
+  mut scale_now : (Double, Double)
 }
 
 ///|
@@ -113,6 +121,10 @@ fn SizesSeen::new(text : String) -> SizesSeen {
     touched: 0,
     first_unasked: FixedArray::make(6, false),
     ever: 0,
+    scale_at: -1.0e9,
+    scale_end: -1.0e9,
+    scale_prev: (1.0, 1.0),
+    scale_now: (1.0, 1.0),
   }
 }
 
@@ -497,6 +509,13 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // what shows held where it was by it: worked out from what holds it)
     let k = self.count
     let ya = Array::make(k, 1.0)
+    // (and how big it is drawn across and down, its holders' scales and its own (corner_scale_at for a node of the
+    // window's tree, as the tree's walk worked it out; else its holder's by its look's); its drawn edges, left and top, in
+    // the window's terms; and how big it was drawn in the frame before over how big now, across and down)
+    let sx_at = Array::make(k, 1.0)
+    let sy_at = Array::make(k, 1.0)
+    let drawn_pos : Array[(Double, Double)] = Array::make(k, (0.0, 0.0))
+    let scale_ratio : Array[(Double, Double)] = Array::make(k, (1.0, 1.0))
     let yb = Array::make(k, 0.0)
     let al = Array::make(k, 1.0)
     let c_top = Array::make(k, -1.0e9)
@@ -551,13 +570,21 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       let n = self.nodes[i]
       let p = n.parent
       let (pa, pb, palpha) = if p >= 0 && p < k { (ya[p], yb[p], al[p]) } else { (1.0, 0.0, 1.0) }
-      let (la, lb, lalpha, ldx) = match self.drawn_entry(i) {
+      let (la, lb, lalpha, ldx, lax) = match self.drawn_entry(i) {
         Some(e) => {
           let l = e.look_now()
           let oy = n.y + l.oy * n.fh
-          (l.sy, oy * (1.0 - l.sy) + l.dy, l.alpha, l.dx)
+          (l.sy, oy * (1.0 - l.sy) + l.dy, l.alpha, l.dx, l.sx)
         }
-        None => (1.0, 0.0, 1.0, 0.0)
+        None => (1.0, 0.0, 1.0, 0.0, 1.0)
+      }
+      if tree_frame_ids.contains(i) {
+        let ts = corner_scale_at.get(i).unwrap_or(1.0)
+        sx_at[i] = ts
+        sy_at[i] = ts
+      } else {
+        sx_at[i] = (if p >= 0 && p < k { sx_at[p] } else { 1.0 }) * lax
+        sy_at[i] = (if p >= 0 && p < k { sy_at[p] } else { 1.0 }) * la
       }
       xb[i] = (if p >= 0 && p < k { xb[p] } else { 0.0 }) + ldx
       ya[i] = pa * la
@@ -822,10 +849,37 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           s
         }
       }
+      drawn_pos[i] = (left0, top0)
       if ns.at != now {
         ns.at = now
         ns.touched = 0
+        // (how big it is drawn, its frames as its samples': once a frame)
+        let scale = (sx_at[i], sy_at[i])
+        let scale_gap = ns.scale_end > -1.0e8 && now - ns.scale_end > 2.5 * period
+        if scale_gap || resized || !shows || self.down || view_holds() || (hand_now && by_scroll[i]) || put_now[i] {
+          ns.scale_at = -1.0e9
+          ns.scale_end = -1.0e9
+          ns.scale_prev = scale
+          ns.scale_now = scale
+        } else if ns.scale_at < -1.0e8 {
+          ns.scale_at = now
+          ns.scale_end = now
+          ns.scale_prev = scale
+          ns.scale_now = scale
+        } else if now - ns.scale_at < 0.5 * period {
+          ns.scale_end = now
+          ns.scale_now = scale
+        } else {
+          ns.scale_at = now
+          ns.scale_end = now
+          ns.scale_prev = ns.scale_now
+          ns.scale_now = scale
+        }
       }
+      scale_ratio[i] = (
+        if sx_at[i] > 0.0 { ns.scale_prev.0 / sx_at[i] } else { 1.0 },
+        if sy_at[i] > 0.0 { ns.scale_prev.1 / sy_at[i] } else { 1.0 },
+      )
       // (words saying another thing: new words where they stand across)
       if words && !physical_equal(ns.text, n.text) && ns.text != n.text {
         ns.text = n.text
@@ -908,7 +962,9 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
     }
     // (what goes as what holds it went, by as far in the frame, carried by it: that one said, the outermost so carried,
-    // not each thing in it; down by its top, across by its left edge)
+    // not each thing in it; down by its top, across by its left edge. What holds it drawn grown or shrunk about a point
+    // since the frame before, from s0 to s1, carries it by as far again as it stands from that holder's edge times
+    // 1 - s0 / s1, where it is now: what is further in goes further as it grows, nothing of its own)
     let placed : Map[(Int, Bool), Double] = Map([])
     for f in faults {
       if measure_place(f.2) {
@@ -920,14 +976,21 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       if !measure_place(f.2) {
         continue
       }
+      let across = measure_across(f.2)
+      let cpos = if across { drawn_pos[f.0].0 } else { drawn_pos[f.0].1 }
       let mut p = self.nodes[f.0].parent
       while p >= 0 {
-        match placed.get((p, measure_across(f.2))) {
-          Some(w) if (w - f.3).abs() < 0.01 => {
-            carried.add(k)
-            break
+        match placed.get((p, across)) {
+          Some(w) => {
+            let ppos = if across { drawn_pos[p].0 } else { drawn_pos[p].1 }
+            let ratio = if across { scale_ratio[p].0 } else { scale_ratio[p].1 }
+            let expected = w + (cpos - ppos) * (1.0 - ratio)
+            if (expected - f.3).abs() < 0.01 {
+              carried.add(k)
+              break
+            }
           }
-          _ => ()
+          None => ()
         }
         p = self.nodes[p].parent
       }
