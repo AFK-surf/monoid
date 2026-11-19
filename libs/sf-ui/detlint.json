@@ -169,6 +169,7 @@
     "scoped-computed": {},
     "raw-effect": {},
     "pick-loop": {
+      "src/seg_node.mbt": 2,
       "src/way_node.mbt": 1
     },
     "each-min-height": {},

@@ -176,12 +176,9 @@ pub fn seg_node(
               |> ignore
               // its options (as many as there are as it is made; their words as they are said, in the language as it is): their
               // words in their middle, in the chosen weight and ink where chosen or pointed at, smaller as fitted
-              // (each one a row of an each by where it stands, as many as there are as it is made: none comes or goes
-              // after)
-              strip.each(fn() { Array::makei(n, fn(k) { k }) }, fn(k) { k }, at_once=true, fn(slot, k) {
-                let k = k.untracked()
+              for k in 0..<@signals.untracked(labels).length() {
                 let label = fn() { labels().get(k).unwrap_or("") }
-                rg.item(slot, fn() { k }, label, fn(o, item) {
+                rg.item(strip, fn() { k }, label, fn(o, item) {
                   let on = fn() { item.chosen() }
                   o
                   .width(By(fn() { Some(w_of(k)) }))
@@ -211,7 +208,7 @@ pub fn seg_node(
                   |> ignore
                 })
                 |> ignore
-              })
+              }
             })
             // not side by side: the chosen one's words as its option has them (cut short where they must be), a chevron at its
             // end; pressed, a pick of them all beside it, the chosen one marked (search none: a few short words)
@@ -552,11 +549,9 @@ pub fn seg_fill_node(
           })
           // its options: each its share of the room it is given, its words in its middle, the
           // chosen one's in the ink, the others muted, smaller as fitted
-          // (each one a row of an each by where it stands, as many as there are as it is made: none comes or goes after)
-          strip.each(fn() { Array::makei(n, fn(k) { k }) }, fn(k) { k }, at_once=true, fn(slot, k) {
-            let k = k.untracked()
+          for k in 0..<n {
             let label = fn() { labels().get(k).unwrap_or("") }
-            rg.item(slot, fn() { k }, label, slop=@ui.touch_slop(), slide=(seg_hold_ms, fn(d) { preview(k, d) }), fn(o, item) {
+            rg.item(strip, fn() { k }, label, slop=@ui.touch_slop(), slide=(seg_hold_ms, fn(d) { preview(k, d) }), fn(o, item) {
               let on = fn() { item.chosen() }
               o
               // (its share, or as fitted)
@@ -585,7 +580,7 @@ pub fn seg_fill_node(
               |> ignore
             })
             |> ignore
-          })
+          }
           // held by a finger: the thumb a lens of liquid glass over the options (iOS 26's), a capsule on the thumb's way,
           // larger as it is held (past the track's edges), raised off it by a shadow as far as it is in the finger
           strip.show(fn() { lens() > 0.0 }, fn(l) {
