@@ -1680,6 +1680,19 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       ignore(self.store(a, "setWaitFor", [jstr(t.id), jstr(self.t(a, "station.wait.overloaded")), jbool(false)]))
     }
   }
+  // (a turn that said nothing, its process never having reached the station's tools at all: Antigravity CLI tells
+  // nothing of an MCP server it could not connect, so no call of one failed; Node keeps what its token made, `toolsUnheard`)
+  if a.tools_lost is None && kind == "completed" && !stop_requested && !a.posted && turn is Some({ declared: None, .. }) &&
+    a.agent is Some(g) {
+    let unheard = self.rpc(a.key, "node.toolsUnheard", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+    match unheard {
+      String(why) => {
+        self.log(a, "warn", "the agent cannot reach the station's tools", fields={ "why": jstr(why) })
+        a.tools_lost = Some(why)
+      }
+      _ => ()
+    }
+  }
   let lost = a.tools_lost
   a.tools_lost = None
   if lost is Some(why) {

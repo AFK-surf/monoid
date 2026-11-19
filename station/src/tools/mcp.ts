@@ -161,6 +161,8 @@ export class McpEndpoint {
   private gate?: (session: string) => string | undefined;
   /// What a session's runtime needs of its list, where it needs anything.
   private listing?: (session: string) => Listing | undefined;
+  /// How many requests each session's token made here (`heard`).
+  private heardBy = new Map<string, number>();
 
   constructor(resolve: (token: string) => string | undefined, tools: readonly Tool[] | (() => readonly Tool[]), gate?: (session: string) => string | undefined, listing?: (session: string) => Listing | undefined) {
     this.tools = typeof tools === "function" ? tools : () => tools;
@@ -182,11 +184,18 @@ export class McpEndpoint {
     return (indirect.length === 0 ? fit : [...fit, indirectTool(indirect)]).map(say);
   }
 
+  /// How many requests session `session`'s token made of the endpoint since the station started: a process opened while
+  /// it stays the same never reached the station's tools (mb-actor.ts `toolsUnheard`).
+  heard(session: string): number {
+    return this.heardBy.get(session) ?? 0;
+  }
+
   async handle(method: string, authorization: string | undefined, body: Buffer | string, signal?: AbortSignal): Promise<Reply> {
     if (method !== "POST") return { status: 405 };
     const token = (authorization ?? "").replace(/^(Bearer |bearer )/, "").trim();
     const session = token ? this.resolve(token) : undefined;
     if (!session) return { status: 401, body: { error: "unknown session token" } };
+    this.heardBy.set(session, this.heard(session) + 1);
     let message: any;
     try {
       message = JSON.parse(body.toString());

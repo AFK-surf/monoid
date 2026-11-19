@@ -322,6 +322,7 @@ export const AgentsLive = (control: Control) =>
           new PiDriver({ data }),
         ],
         mcpUrl: () => door?.url ?? "",
+        toolsHeard: (session) => mcp.heard(session),
         internal: new InternalChat(),
         link: pageOf,
         workspaces: () => cloud.memberships().map((m) => m.workspace),

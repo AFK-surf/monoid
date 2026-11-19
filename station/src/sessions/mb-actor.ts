@@ -325,7 +325,8 @@ export class MbActor {
   #sent = 0;
   #next = 0;
   /// Its runtime sessions, by the number the program knows each by.
-  readonly #agents = new Map<number, { generation: number; session: AgentSession }>();
+  /// `heard`: how many requests its token had made of the station's tools as it was opened (none for one taken up).
+  readonly #agents = new Map<number, { generation: number; session: AgentSession; heard?: number }>();
   #generation = 0;
   #closed = false;
   /// What is being read and formatted for it (`pendingAndFormat`): given up at once on a stop or a suspension.
@@ -734,6 +735,7 @@ export class MbActor {
       case "open": {
         const [stopped, readBack, profile] = args;
         let generation = 0;
+        const heard = deps.toolsHeard?.(this.key);
         const opened = await openAgent(deps, this.key, {
           stopped,
           readBack,
@@ -743,7 +745,7 @@ export class MbActor {
           listener: (g) => this.listener(g),
         });
         const handle = ++this.#next;
-        this.#agents.set(handle, { generation, session: opened.session });
+        this.#agents.set(handle, { generation, session: opened.session, ...(heard === undefined ? {} : { heard }) });
         this.#route(opened.session, generation);
         const { session: _, ...rest } = opened;
         return { ...rest, handle, runtime: this.runtime };
@@ -755,6 +757,14 @@ export class MbActor {
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
       case "profileId": return deps.runOn(this.key, args[0] === true, true).id;
+      // A process this station opened whose turn ended saying nothing, that never once reached the station's tools
+      // (not even to list them: its MCP connection failed as it opened, 2026-11-19 with the station out of file
+      // handles), is one that lost them: why, else null. Not a Codex app-server's, shared by sessions and opened before.
+      case "toolsUnheard": {
+        const heard = this.#agents.get(args[0])?.heard;
+        if (heard === undefined || this.runtime === "codex" || deps.toolsHeard === undefined) return null;
+        return deps.toolsHeard(this.key) === heard ? "its process never reached the station's tools" : null;
+      }
       case "outlived": {
         const session = this.#agents.get(args[0])?.session;
         return session?.outlived?.() === true;

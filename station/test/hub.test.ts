@@ -1403,6 +1403,34 @@ test("an agent that loses the station's tools is started again rather than nudge
   await r.close();
 });
 
+test("an agent whose process never reached the station's tools is started again rather than nudged; one that reached them is nudged", async () => {
+  // (2026-11-19: the station out of file handles, Antigravity CLI's MCP connection failed as it opened and it said so
+  // only in words; no call of a tool failed, so nothing told the tools lost and it was nudged twice in vain)
+  const heard = new Map<string, number>();
+  const r = new Rig({ maxNudges: 2, toolsHeard: heard });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const first = r.claude.last();
+  const key = first.options.route;
+  first.says("I have no chat_post tool.");
+  first.complete();
+  await settle();
+  assert.ok(first.disposed, "the process that never reached them ends");
+  const second = r.claude.last();
+  assert.notEqual(second, first);
+  assert.equal(second.options.resume, first.sessionId);
+  assert.deepEqual(second.prompts.map(untimed), [TOOLS_LOST]);
+  // This one lists them, then ends saying no state: nudged, in the same process.
+  heard.set(key, (heard.get(key) ?? 0) + 1);
+  second.complete();
+  await settle();
+  assert.ok(!second.disposed);
+  assert.equal(r.claude.count(), 2);
+  assert.deepEqual(second.prompts.map(untimed), [TOOLS_LOST, NUDGE]);
+  await r.close();
+});
+
 test("a turn given up on for want of a state (回复即可继续) is tried again by its notice's 重试", async () => {
   const r = new Rig({ maxNudges: 0 });
   const m = message();

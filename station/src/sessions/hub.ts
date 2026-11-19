@@ -122,6 +122,8 @@ export type HubOptions = {
   drivers: AgentDriver[];
   /// The agents' MCP endpoint (a function when it is known only once its server listens).
   mcpUrl: string | (() => string);
+  /// How many requests a session's token made of that endpoint (mcp.ts `heard`); absent where unknown.
+  toolsHeard?: (session: string) => number;
   /// The station's own chat on its pages; sessions can be talked to there too.
   internal?: InternalChat | null;
   /// How the directories and files people and agents name are looked at (ops/places.ts: never on this thread in a
@@ -1773,6 +1775,7 @@ export class Hub {
       recheck: (profile) => this.accounts.recheck(profile),
       limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
+      ...(this.options.toolsHeard ? { toolsHeard: this.options.toolsHeard } : {}),
       reposDir: () => this.reposDir(),
       siteInstructions: () => this.options.siteInstructions ?? "",
       moveOn: () => this.options.moveOn?.() ?? true,
