@@ -623,6 +623,11 @@ pub fn open_mode(mode : String) -> Unit {
   if mode == "newchat-preset-theirs" || mode == "newchat-preset-theirs-long" {
     @sffixture.new_fix.preset = "p-ops"
   }
+  if mode == "newchat-preset-many" {
+    @sffixture.new_fix.presets.clear()
+    @sffixture.new_fix.presets.push_iter(@sffixture.fix_preset_many().iter())
+    @sffixture.new_fix.preset = "p-arch"
+  }
   // (as long a name as a person gives one: its 复制「X」为我的预设 cut as 编辑「X」 is)
   if mode == "newchat-preset-theirs-long" {
     @sffixture.fix_other_rename("p-ops", "线上排障：告警、回滚与值班交接的完整手册")
@@ -676,7 +681,7 @@ pub fn open_mode(mode : String) -> Unit {
     }
     match mode {
       "newchat-station" => @sfpages.new_chat_ask("station")
-      "newchat-preset" => @sfpages.new_chat_ask("preset")
+      "newchat-preset" | "newchat-preset-many" => @sfpages.new_chat_ask("preset")
       "newchat-preset-new" => @sfpages.new_chat_ask("preset-new")
       "newchat-preset-edit" => @sfpages.new_chat_ask("preset-edit")
       "newchat-preset-add" => @sfpages.new_chat_ask("preset-add")
@@ -985,8 +990,8 @@ pub fn fixture_corner_modes() -> Array[String] {
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)
     "newchat-preset-new", "newchat-preset-new-add", "newchat-preset-new-browse", "newchat-preset-new-browse-repos",
     "newchat-preset-new-clone", "newchat-preset-new-clones",
-    // (the presets' menu: one's own; the other members', a level further in, and none of them; someone else's picked)
-    "newchat-preset", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
+    // (the presets' menu: one's own; many with search; the other members', a level further in, and none of them; someone else's picked)
+    "newchat-preset", "newchat-preset-many", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
     "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
     "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized", "service-stopped", "share-in",
     "share-in-files", "share-in-stations", "lock-checking", "lock-confirming", "lock-code", "lock-failed", "lock-finding", "lock-nocode",

@@ -247,8 +247,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // the window's tree (sf sheet_shows_node.mbt), what the old view built of it before now made, laid out and measured in
   // the tree's count, nothing more shown; the wide one's was so already.
   "phone newchat-preset": (830, 530, 60),
-  "phone newchat-preset-others": (913, 574, 79),
-  "phone newchat-preset-others-none": (913, 574, 79),
+  "phone newchat-preset-many": (830, 530, 60),
+  // Raised 2026-11-19: preset others upgraded from flat menu to structured panel_nodes with icons, summaries and copy buttons.
+  "phone newchat-preset-others": (1085, 751, 120),
+  "phone newchat-preset-others-none": (1085, 751, 120),
   "phone newchat-preset-theirs": (830, 530, 60),
   "phone newchat-preset-theirs-long": (830, 530, 60),
   // (written again, 2026-11-17: the drive's film and song played as nodes, @sf.player_node, over 文件 made as nodes:
@@ -663,8 +665,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide newchat-preset-new-clone": (1314, 890, 86),
   "wide newchat-preset-new-clones": (1348, 916, 91),
   "wide newchat-preset": (1289, 862, 81),
-  "wide newchat-preset-others": (1383, 911, 96),
-  "wide newchat-preset-others-none": (1383, 911, 96),
+  "wide newchat-preset-many": (1291, 863, 84),
+  // Raised 2026-11-19: preset others upgraded from flat menu to structured panel_nodes with icons, summaries and copy buttons.
+  "wide newchat-preset-others": (1558, 1073, 139),
+  "wide newchat-preset-others-none": (1558, 1073, 139),
   "wide newchat-preset-theirs": (1289, 862, 81),
   "wide newchat-preset-theirs-long": (1289, 862, 81),
   // (written again, 2026-11-17: the drive's film and song played as nodes, @sf.player_node, over 文件 made as nodes:

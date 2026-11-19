@@ -138,7 +138,8 @@ test "a phone's new chat shows its preset's control, the composer a capsule as t
   // pressed: the presets to pick, from the foot
   press(t, "预设")
   t.run_for(@ui.move_most_ms)
-  assert_true(shows(t, "不用预设") && shows(t, "新预设"), msg=runs(t))
+  assert_false(shows(t, "不用预设"), msg=runs(t))
+  assert_true(shows(t, "still.fail 开发") && shows(t, "新预设"), msg=runs(t))
 }
 
 ///|
@@ -265,7 +266,7 @@ test "editing another station's preset still starts browsing on the composer's s
   let t = preset_mode("newchat", wide=true, src~)
   press(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
-  t.tap_text("编辑「still.fail 开发」")
+  press(t, "编辑 still.fail 开发")
   t.run_for(@ui.move_most_ms)
   press(t, "添加目录")
   t.run_for(@ui.move_most_ms)
@@ -290,6 +291,22 @@ test "editing a preset made on a station no longer up picks its model of the com
         Some(Object(m)) if name == "newChat" => {
           let v = m.copy()
           v["presetStation"] = "ws1/gone"
+          match v.get("presets") {
+            Some(Array(ps)) =>
+              v["presets"] = Json::array(
+                ps.map(fn(p) {
+                  match p {
+                    Object(pm) if text(Some(p), "id") == "p-sf" => {
+                      let c = pm.copy()
+                      c["station"] = "ws1/gone"
+                      Json::object(c)
+                    }
+                    other => other
+                  }
+                }),
+              )
+            _ => ()
+          }
           { ..got, value: Some(Json::object(v)) }
         }
         // (as the core: a station it has no overview of offers no pick)
@@ -305,7 +322,7 @@ test "editing a preset made on a station no longer up picks its model of the com
   let t = preset_mode("newchat", src~)
   press(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
-  t.tap_text("编辑「still.fail 开发」")
+  press(t, "编辑 still.fail 开发")
   t.run_for(@ui.move_most_ms)
   press(t, "不限模型")
   t.run_for(@ui.move_most_ms)

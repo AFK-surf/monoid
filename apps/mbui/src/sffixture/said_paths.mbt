@@ -823,6 +823,8 @@ pub let said_paths : Map[String, Array[String]] = {
     "presetName",
     "presets.*.name",
     "presets.*.stationName",
+    "presets.*.summary",
+    "presets.*.dirName",
     "presetMarks.*.name",
   ],
   "notices": [
@@ -837,6 +839,8 @@ pub let said_paths : Map[String, Array[String]] = {
     "presets.*.name",
     "presets.*.whose",
     "presets.*.stationName",
+    "presets.*.summary",
+    "presets.*.dirName",
   ],
   "overview": [
     "automaticDecisions.recent.*.error",
@@ -922,6 +926,7 @@ pub let said_paths : Map[String, Array[String]] = {
     "dirs.*.path",
     "dirs.*.stationName",
     "instructions",
+    "summary",
     "whose",
     "homeName",
   ],

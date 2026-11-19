@@ -1254,7 +1254,7 @@ export function presetRecordsChanged(base: number, at: number): J {
 export function othersPresetsOf(now: number): J[] {
   return PEOPLE.slice(1, 12).flatMap((p, i) => [0, 1].map((j) => ({
     id: `p-${p.sub}-${j}`, name: j === 0 ? `${p.name} 的代码审查` : `${pick(TITLES, i * 2 + j)}`.slice(0, 40), dirs: [{ path: `/Users/maple/src/${["app", "station", "infra"][(i + j) % 3]}`, repo: `github.com/acme/${["app", "station", "infra"][(i + j) % 3]}`, station: "ws/maple" }],
-    instructions: "先跑测试再提交；改动大的先在 thread 里说一声。", createdBy: p.email, createdAt: now - (40 - i) * DAY - j * HOUR, updatedAt: now - i * HOUR, owner: p.sub, rev: 1 + j, home: "maple",
+    instructions: "先跑测试再提交；改动大的先在 thread 里说一声。", ...(i === 0 && j === 0 ? { model: { model: "claude-opus-5-5", runtime: "claude", effort: "high" } } : {}), createdBy: p.email, createdAt: now - (40 - i) * DAY - j * HOUR, updatedAt: now - i * HOUR, owner: p.sub, rev: 1 + j, home: "maple",
   })));
 }
 
@@ -1329,6 +1329,7 @@ export function records(now: number): [string, string, unknown][] {
     ["me", "s1", me],
     ["choice", "ws:ws:frequent", frequent],
     ["choice", "ws:ws:preset", { id: "p-app", station: "ws/maple" }],
+    ["choice", "ws:ws:presetUsage", [{ id: "p-app", count: 5, last: now - 2 * HOUR }]],
     ["presetRecords", "ws", presetRecordsOf(now)],
     ...UP.map((at, st): [string, string, unknown] => ["memberships", at, { workspaces: [{ workspace: "ws", workspaceName: "Acme", name: STATIONS[st]!.name, home: true }], canJoin: true }]),
     ["lock", "ws", lockOf(now)],

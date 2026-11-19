@@ -1,8 +1,13 @@
 // The Rust core's choose.rs tests, ported.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { frequentCombos, recordCombo, resolve } from "../src/choose.ts";
+import { Effect } from "effect";
+import { Choose, frequentCombos, presetMeta, recordCombo, recordPresetUsage, resolve } from "../src/choose.ts";
+import { Data } from "../src/data.ts";
 import { holdLanguage } from "../src/i18n.ts";
+import { Runner } from "../src/runtime.ts";
+import { Store } from "../src/store.ts";
+import { FakeHost } from "../src/testing.ts";
 import { choices, machineMeta, models, quotaLine } from "../src/views/models.ts";
 
 holdLanguage();
@@ -358,4 +363,106 @@ test("frequent Claude configurations offer TUI only on stations that run it", ()
   assert.deepEqual(offered.map((x) => x.tui === true), [true, false]);
   assert.equal(offered[0].selected, true);
   assert.deepEqual(frequentCombos(history, [option], current).map((x) => x.tui === true), [false]);
+});
+
+test("presetMeta builds summary, maker, runtime, and first folder metadata", () => {
+  const names = new Map([["ws1/st1", "Willow"], ["st1", "Willow"], ["st2", "Maple"]]);
+  const full = presetMeta({
+    model: { model: "claude-opus-5-5", runtime: "claude", effort: "high", fast: true },
+    dirs: [
+      { path: "/Users/me/projects/still.fail", repo: "github.com/AFK-surf/still.fail" },
+      { path: "/Users/me/code/web-app", repo: "github.com/acme/web-app" },
+      { path: "/Users/me/code/backend" },
+    ],
+    station: "ws1/st1",
+    instructions: "先跑测试",
+  }, names);
+  assert.equal(full.summary, "Opus 5.5 高 Fast · still.fail, web-app +1 · Willow · 含指令");
+  assert.equal(full.runtime, "claude");
+  assert.equal(full.maker?.id, "anthropic");
+  assert.equal(full.dirName, "still.fail");
+  assert.equal(full.dirRepo, "github.com/AFK-surf/still.fail");
+
+  const auto = presetMeta({
+    model: { model: "gpt-6-astra", runtime: "codex", effort: "high", speed: "ultrafast" },
+    dirs: [],
+    autoStation: true,
+    instructions: "   ",
+  }, names);
+  assert.equal(auto.summary, "GPT-6 Astra 高 Ultrafast · 自动分配");
+  assert.equal(auto.dirName, undefined);
+
+  const multi = presetMeta({ dirs: [], stations: ["st1", "st2"], instructions: "" }, names);
+  assert.equal(multi.summary, "2 台 station");
+  assert.equal(multi.maker, undefined);
+});
+
+test("preset usage ranks frequently and recently used presets first while keeping createdAt order without history", () => {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const data = new Data(host, runner, { owner: () => "s1" });
+  Effect.runSync(data.open(["s1"]));
+  const store = new Store(host, runner);
+  let now = 1_000;
+  const choose = new Choose({ store, data, now: () => now, agent: () => null });
+  store.watch({ topic: "stations", scope: "ws1" }, () => {});
+  store.set({ topic: "stations", scope: "ws1" }, {
+    ok: [{ id: "st1", station: "ws1/st1", name: "Willow", online: true }],
+  });
+  data.put("presetRecords", "ws1", {
+    before: [],
+    records: {
+      "p-a": { id: "p-a", name: "A", dirs: [], instructions: "", owner: "u1", createdBy: "u1@x", createdAt: 100, updatedAt: 100, rev: 1, home: "st1" },
+      "p-b": { id: "p-b", name: "B", dirs: [], instructions: "", owner: "u1", createdBy: "u1@x", createdAt: 200, updatedAt: 200, rev: 1, home: "st1" },
+      "p-c": { id: "p-c", name: "C", dirs: [], instructions: "", owner: "u1", createdBy: "u1@x", createdAt: 300, updatedAt: 300, rev: 1, home: "st1" },
+    },
+  }, false);
+
+  const listIds = () => {
+    const v = choose.compute({ topic: "newChat", scope: "ws1" });
+    assert.ok(v !== undefined && "ok" in v);
+    return ((v.ok as J).presets as J[]).map((p) => ({ id: p.id, used: p.used }));
+  };
+
+  // Without usage history: strictly createdAt asc
+  assert.deepEqual(listIds(), [
+    { id: "p-a", used: undefined },
+    { id: "p-b", used: undefined },
+    { id: "p-c", used: undefined },
+  ]);
+
+  // Pick p-c (count 1, last 1000) -> p-c moves to front
+  choose.pickNew("ws1", { preset: "p-c", presetStation: "ws1/st1" });
+  assert.deepEqual(listIds(), [
+    { id: "p-c", used: true },
+    { id: "p-a", used: undefined },
+    { id: "p-b", used: undefined },
+  ]);
+
+  // Pick p-b later (count 1, last 2000) -> same count as p-c, more recent -> p-b first
+  now = 2_000;
+  choose.pickNew("ws1", { preset: "p-b", presetStation: "ws1/st1" });
+  assert.deepEqual(listIds(), [
+    { id: "p-b", used: true },
+    { id: "p-c", used: true },
+    { id: "p-a", used: undefined },
+  ]);
+
+  // Creating a chat while p-b is active adds weight 2 (count 3)
+  now = 3_000;
+  choose.used("ws1/st1", { model: "claude-opus-5-5", runtime: "claude" });
+  now = 4_000;
+  choose.pickNew("ws1", { preset: "p-c", presetStation: "ws1/st1" }); // p-c count 2, last 4000
+  // p-b (count 3) still beats p-c (count 2) even though p-c was picked more recently
+  assert.deepEqual(listIds(), [
+    { id: "p-b", used: true },
+    { id: "p-c", used: true },
+    { id: "p-a", used: undefined },
+  ]);
+
+  // Cap at 50 entries
+  let hist: { id: string; count: number; last: number }[] = [];
+  for (let i = 0; i < 60; i++) hist = recordPresetUsage(hist, `p-${i}`, 1, i);
+  assert.equal(hist.length, 50);
+  assert.equal(hist[0]!.id, "p-59");
 });
