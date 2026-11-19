@@ -16,7 +16,7 @@ pub let stillfail_surface : String = "chat"
 /// args.ts `jsString`.
 pub fn js_string(v : J) -> String {
   match v {
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Null => "null"
     other => stringify(other)
   }

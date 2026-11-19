@@ -9,7 +9,7 @@ using @jsjson {type JValue}
 
 ///|
 using @live_wire {
-  u, jstr, obj, field, str, non_empty, is_str, joined, failed,
+  jstr, obj, field, str, non_empty, is_str, joined, failed,
 }
 
 ///|
@@ -31,46 +31,22 @@ fn integer(v : J?) -> Double? {
 
 ///|
 /// At most `n` characters (live.ts `chars`: Array.from, a lone surrogate one).
-pub fn chars(text : Array[Int], n : Int) -> Array[Int] {
-  if text.length() <= n {
-    return text
-  }
-  let out = []
-  let mut count = 0
-  let mut i = 0
-  while i < text.length() && count < n {
-    let c = text[i]
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < text.length() && text[i + 1] >= 0xdc00 && text[i + 1] <= 0xdfff {
-      out.push(c)
-      out.push(text[i + 1])
-      i += 2
-    } else {
-      out.push(c)
-      i += 1
-    }
-    count += 1
-  }
-  out
-}
-
-///|
-fn has_prefix(s : Array[Int], p : String) -> Bool {
-  let q = u(p)
-  s.length() >= q.length() && s[0:q.length()].to_array() == q
+pub fn chars(text : String, n : Int) -> String {
+  @jsjson.chars(text, n)
 }
 
 ///|
 /// A JavaScript number as `${n}` says it.
-fn number_text(d : Double) -> Array[Int] {
-  u(@jsjson.stringify(Num(d)))
+fn number_text(d : Double) -> String {
+  @jsjson.stringify(Num(d))
 }
 
 ///|
 /// A task it runs, as claude.ts `Task` keeps it.
 pub(all) struct Task {
-  id : Array[Int]
+  id : String
   kind : String
-  description : Array[Int]
+  description : String
   background : Bool
   started_at : Double?
 }
@@ -80,14 +56,14 @@ pub(all) struct Task {
 pub(all) struct Turn {
   mut busy : Bool
   mut aborting : Bool
-  mut auth_failure : Array[Int]?
+  mut auth_failure : String?
   mut closed : Bool
   mut renews : Bool?
   mut renewed : Bool?
   /// by id, as the object keeps them (Object.values' order: `ordered`)
-  mut tasks : Array[(Array[Int], Task)]?
+  mut tasks : Array[(String, Task)]?
   mut compacting : Bool?
-  mut compact_error : Array[Int]?
+  mut compact_error : String?
 }
 
 ///|
@@ -106,32 +82,16 @@ pub fn Turn::new() -> Turn {
 }
 
 ///|
-/// An array index's number, which JavaScript orders before the other keys of an object.
-fn index_key(key : Array[Int]) -> Double? {
-  if key.length() == 0 || key.length() > 10 || (key.length() > 1 && key[0] == 0x30) {
-    return None
-  }
-  let mut v = 0.0
-  for c in key {
-    if c < 0x30 || c > 0x39 {
-      return None
-    }
-    v = v * 10.0 + (c - 0x30).to_double()
-  }
-  if v < 4294967295.0 { Some(v) } else { None }
-}
-
-///|
 /// An object's entries in the order JavaScript gives them: array indices first, ascending, then as they were put.
-fn ordered(entries : Array[(Array[Int], Task)]) -> Array[(Array[Int], Task)] {
-  let indexed = entries.filter(e => index_key(e.0) is Some(_))
-  indexed.sort_by((a, b) => index_key(a.0).unwrap().compare(index_key(b.0).unwrap()))
-  indexed + entries.filter(e => index_key(e.0) is None)
+fn ordered(entries : Array[(String, Task)]) -> Array[(String, Task)] {
+  let indexed = entries.filter(e => @jsjson.index_key(e.0) is Some(_))
+  indexed.sort_by((a, b) => @jsjson.index_key(a.0).unwrap().compare(@jsjson.index_key(b.0).unwrap()))
+  indexed + entries.filter(e => @jsjson.index_key(e.0) is None)
 }
 
 ///|
 /// `{ ...tasks, [id]: task }`: in its place where it was there, else after the rest.
-fn put(entries : Array[(Array[Int], Task)], id : Array[Int], task : Task) -> Array[(Array[Int], Task)] {
+fn put(entries : Array[(String, Task)], id : String, task : Task) -> Array[(String, Task)] {
   let out = ordered(entries)
   for i, e in out {
     if e.0 == id {
@@ -194,37 +154,37 @@ fn frame_does(
   note : (String) -> Unit,
 ) -> Unit {
   let f = Some(frame)
-  let kind = str(field(f, "type")).unwrap_or([])
-  let subtype = str(field(f, "subtype")).unwrap_or([])
-  let system = kind == u("system")
-  if kind == u("control_response") && is_str(field(field(f, "response"), "subtype"), "error") {
+  let kind = str(field(f, "type")).unwrap_or("")
+  let subtype = str(field(f, "subtype")).unwrap_or("")
+  let system = kind == "system"
+  if kind == "control_response" && is_str(field(field(f, "response"), "subtype"), "error") {
     note("claude refused a control request")
   }
-  if system && subtype == u("init") {
+  if system && subtype == "init" {
     let was = turn.busy
     turn.busy = true
     if !was {
       emit(obj([("type", jstr("turnStarted"))]))
     }
-  } else if system && subtype == u("api_retry") {
+  } else if system && subtype == "api_retry" {
     let status = integer(field(f, "error_status")).unwrap_or(0.0)
     let attempt = integer(field(f, "attempt")).unwrap_or(1.0)
     let renewing = status == 401.0 && turn.renews == Some(true) && turn.renewed != Some(true) && attempt <= RENEW_ATTEMPTS
     if (status == 401.0 || status == 403.0) && turn.auth_failure is None && !renewing {
       let error = match field(f, "error") {
-        None => u("authentication failed")
+        None => "authentication failed"
         Some(Str(s)) => s
-        Some(v) => u(@jsjson.stringify(v))
+        Some(v) => @jsjson.stringify(v)
       }
-      turn.auth_failure = Some(number_text(status) + [0x20] + error)
+      turn.auth_failure = Some(number_text(status) + " " + error)
       interrupt()
       turn.aborting = true
     }
   } else if system &&
-    subtype == u("task_started") &&
+    subtype == "task_started" &&
     str(field(f, "task_id")) is Some(id) &&
     !is_true(field(f, "owned_by_subagent")) {
-    let description = str(field(f, "description")).unwrap_or([])
+    let description = str(field(f, "description")).unwrap_or("")
     let task = {
       id,
       kind: if is_str(field(f, "task_type"), "local_agent") { "agent" } else { "command" },
@@ -234,11 +194,11 @@ fn frame_does(
     }
     turn.tasks = Some(put(turn.tasks.unwrap_or([]), id, task))
   } else if system &&
-    (subtype == u("task_notification") || subtype == u("task_updated")) &&
+    (subtype == "task_notification" || subtype == "task_updated") &&
     str(field(f, "task_id")) is Some(id) &&
     turn.tasks is Some(tasks) &&
     tasks.iter().find_first(e => e.0 == id) is Some((_, task)) {
-    let notified = subtype == u("task_notification")
+    let notified = subtype == "task_notification"
     let status = if notified { field(f, "status") } else { field(field(f, "patch"), "status") }
     let rest = ordered(tasks).filter(e => e.0 != id)
     let ended = ["completed", "failed", "killed", "stopped"].iter().any(s => is_str(status, s))
@@ -247,25 +207,25 @@ fn frame_does(
     } else if is_true(field(field(f, "patch"), "is_backgrounded")) {
       turn.tasks = Some(put(rest, id, { ..task, background: true }))
     }
-  } else if system && subtype == u("status") && turn.compacting == Some(true) && is_str(field(f, "compact_result"), "failed") {
+  } else if system && subtype == "status" && turn.compacting == Some(true) && is_str(field(f, "compact_result"), "failed") {
     turn.compact_error = match str(field(f, "compact_error")) {
       Some(e) if e.length() > 0 => Some(e)
-      _ => Some(u("compaction failed"))
+      _ => Some("compaction failed")
     }
-  } else if system && subtype == u("compact_boundary") {
+  } else if system && subtype == "compact_boundary" {
     emit(obj([("type", jstr("compacted"))]))
-  } else if kind == u("result") {
+  } else if kind == "result" {
     let errors = match field(f, "errors") {
       Some(Arr(all)) =>
         all.filter_map(e => match e {
-          Str(s) if @jscase.trim(@jsjson.raw_text(s)) != "" => Some(s)
+          Str(s) if @jscase.trim(s) != "" => Some(s)
           _ => None
         })
       _ => []
     }
     let text = match str(field(f, "result")) {
-      Some(r) if @jscase.trim(@jsjson.raw_text(r)) != "" => r
-      _ => if errors.length() > 0 { joined(errors, [0x0a]) } else { subtype }
+      Some(r) if @jscase.trim(r) != "" => r
+      _ => if errors.length() > 0 { joined(errors, "\n") } else { subtype }
     }
     let outcome = if turn.auth_failure is Some(failure) {
       auth_outcome(failure)
@@ -294,7 +254,7 @@ fn frame_does(
 ///|
 /// The station's calls of its own tools not answered yet, and what a frame says of those tools out of reach
 /// (claude.ts `toolsLostIn`): a server that failed as the turn started, or a call's error saying so.
-pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
+pub fn tools_lost_in(frame : J, calls : Array[String]) -> String? {
   let f = Some(frame)
   let kind = field(f, "type")
   let content = match field(field(f, "message"), "content") {
@@ -304,7 +264,7 @@ pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
   if is_str(kind, "system") && is_str(field(f, "subtype"), "init") && field(f, "mcp_servers") is Some(Arr(servers)) {
     let server = servers.iter().find_first(s => is_str(field(Some(s), "name"), "stillfail"))
     if server is Some(s) && is_str(field(Some(s), "status"), "failed") {
-      return Some(u("the stillfail MCP server failed to connect"))
+      return Some("the stillfail MCP server failed to connect")
     }
   } else if is_str(kind, "assistant") {
     for c in content {
@@ -312,7 +272,7 @@ pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
       if is_str(field(cc, "type"), "tool_use") &&
         str(field(cc, "id")) is Some(id) &&
         str(field(cc, "name")) is Some(name) &&
-        has_prefix(name, "mcp__stillfail__") &&
+        name.has_prefix("mcp__stillfail__") &&
         !calls.contains(id) {
         calls.push(id)
       }
@@ -339,8 +299,8 @@ pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
       }
       let text = match field(cc, "content") {
         Some(Str(s)) => s
-        Some(Arr(parts)) => joined(parts.map(x => str(field(Some(x), "text")).unwrap_or([])), [0x0a])
-        _ => []
+        Some(Arr(parts)) => joined(parts.map(x => str(field(Some(x), "text")).unwrap_or("")), "\n")
+        _ => ""
       }
       if unreachable(text) {
         return Some(chars(text, 300))
@@ -353,29 +313,29 @@ pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
 ///|
 /// A content block of the model's response being said (live.ts `Block`).
 pub(all) struct Block {
-  id : Array[Int]
+  id : String
   step : String
-  tool : Array[Int]?
-  mut input : Array[Int]?
-  subagent : Array[Int]?
+  tool : String?
+  mut input : String?
+  subagent : String?
 }
 
 ///|
 /// Claude Code's partial messages as live steps (live.ts `LiveFromClaude`).
 pub(all) struct Live {
-  mut message : Array[Int]
+  mut message : String
   /// by index, as a Map keeps them
   mut blocks : Array[(Int, Block)]
-  mut tools : Array[Array[Int]]
+  mut tools : Array[String]
 }
 
 ///|
 pub fn Live::new() -> Live {
-  { message: [], blocks: [], tools: [] }
+  { message: "", blocks: [], tools: [] }
 }
 
 ///|
-fn start(id : Array[Int], step : String, tool : Array[Int]?, input : Array[Int]?, parent : Array[Int]?) -> J {
+fn start(id : String, step : String, tool : String?, input : String?, parent : String?) -> J {
   let fields : Array[(String, J)] = [("kind", jstr("start")), ("id", Str(id)), ("step", jstr(step))]
   if tool is Some(t) {
     fields.push(("tool", Str(t)))
@@ -405,25 +365,25 @@ fn Live::block(self : Live, index : Int) -> Block? {
 pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
   let out = []
   let f = Some(frame)
-  let kind = str(field(f, "type")).unwrap_or([])
+  let kind = str(field(f, "type")).unwrap_or("")
   let phase = (p : String) => obj([("kind", jstr("phase")), ("phase", jstr(p))])
-  if kind == u("system") && is_str(field(f, "subtype"), "status") && is_str(field(f, "status"), "requesting") {
+  if kind == "system" && is_str(field(f, "subtype"), "status") && is_str(field(f, "status"), "requesting") {
     out.push(phase("requesting"))
-  } else if kind == u("stream_event") {
+  } else if kind == "stream_event" {
     let e = match field(f, "event") {
       None | Some(Null) => None
       some => some
     }
     let parent = non_empty(field(f, "parent_tool_use_id"))
-    let event = str(field(e, "type")).unwrap_or([])
-    if event == u("message_stop") && parent is None {
+    let event = str(field(e, "type")).unwrap_or("")
+    if event == "message_stop" && parent is None {
       out.push(phase("working"))
     }
     let index = match integer(field(e, "index")) {
       Some(i) => i.to_int()
       None => -1
     }
-    if event == u("message_start") {
+    if event == "message_start" {
       self.message = match str(field(field(e, "message"), "id")) {
         Some(id) => id
         None => number_text(now())
@@ -432,24 +392,24 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
       if parent is None {
         out.push(phase("responding"))
       }
-    } else if event == u("content_block_start") {
+    } else if event == "content_block_start" {
       let b = field(e, "content_block")
       let step = match str(field(b, "type")) {
-        Some(t) if t == u("text") => "text"
-        Some(t) if t == u("thinking") => "thinking"
-        Some(t) if t == u("tool_use") => "tool"
+        Some("text") => "text"
+        Some("thinking") => "thinking"
+        Some("tool_use") => "tool"
         _ => return out
       }
       let id = match str(field(b, "id")) {
         Some(id) if step == "tool" => id
-        _ => self.message + u(":") + number_text(index.to_double())
+        _ => self.message + ":" + number_text(index.to_double())
       }
-      let tool = if step == "tool" { Some(str(field(b, "name")).unwrap_or(u("tool"))) } else { None }
+      let tool = if step == "tool" { Some(str(field(b, "name")).unwrap_or("tool")) } else { None }
       if step == "tool" && !self.tools.contains(id) {
         self.tools.push(id)
       }
       out.push(start(id, step, tool, None, parent))
-      let block = { id, step, tool, input: if tool is Some(_) { Some([]) } else { None }, subagent: parent }
+      let block = { id, step, tool, input: if tool is Some(_) { Some("") } else { None }, subagent: parent }
       let mut placed = false
       for i, kept in self.blocks {
         if kept.0 == index {
@@ -461,27 +421,27 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
       if !placed {
         self.blocks.push((index, block))
       }
-    } else if event == u("content_block_delta") {
+    } else if event == "content_block_delta" {
       guard self.block(index) is Some(block) else { return out }
       let d = field(e, "delta")
-      let delta = (name : String, text : Array[Int]) => obj([
+      let delta = (name : String, text : String) => obj([
         ("kind", jstr("delta")),
         ("id", Str(block.id)),
         ("field", jstr(name)),
         ("text", Str(text)),
       ])
       match str(field(d, "type")) {
-        Some(t) if t == u("text_delta") =>
+        Some("text_delta") =>
           if non_empty(field(d, "text")) is Some(text) {
             out.push(delta("text", text))
           }
-        Some(t) if t == u("thinking_delta") =>
+        Some("thinking_delta") =>
           if non_empty(field(d, "thinking")) is Some(text) {
             out.push(delta("text", text))
           } else if field(d, "estimated_tokens") is Some(Num(n)) && n > 0.0 {
-            out.push(obj([("kind", jstr("delta")), ("id", Str(block.id)), ("field", jstr("text")), ("text", Str([])), ("tokens", Num(n))]))
+            out.push(obj([("kind", jstr("delta")), ("id", Str(block.id)), ("field", jstr("text")), ("text", Str("")), ("tokens", Num(n))]))
           }
-        Some(t) if t == u("input_json_delta") =>
+        Some("input_json_delta") =>
           if non_empty(field(d, "partial_json")) is Some(partial) {
             if block.input is Some(input) && input.length() < @live_wire.INPUT_MOST {
               block.input = Some(input + partial)
@@ -490,7 +450,7 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
           }
         _ => ()
       }
-    } else if event == u("content_block_stop") {
+    } else if event == "content_block_stop" {
       if self.block(index) is Some(block) {
         if block.step != "tool" {
           out.push(obj([("kind", jstr("end")), ("id", Str(block.id))]))
@@ -499,19 +459,19 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
         }
       }
     }
-  } else if kind == u("user") {
+  } else if kind == "user" {
     let content = match field(field(f, "message"), "content") {
       Some(Arr(c)) => c
       _ => []
     }
     for c in content {
       let cc = Some(c)
-      let id = str(field(cc, "tool_use_id")).unwrap_or([])
+      let id = str(field(cc, "tool_use_id")).unwrap_or("")
       guard is_str(field(cc, "type"), "tool_result") && self.tools.contains(id) else { continue }
       let text = match field(cc, "content") {
         Some(Str(s)) => s
-        Some(Arr(parts)) => joined(parts.map(x => str(field(Some(x), "text")).unwrap_or([])), [0x0a])
-        _ => []
+        Some(Arr(parts)) => joined(parts.map(x => str(field(Some(x), "text")).unwrap_or("")), "\n")
+        _ => ""
       }
       if text.length() > 0 {
         out.push(obj([("kind", jstr("delta")), ("id", Str(id)), ("field", jstr("output")), ("text", Str(chars(text, 8000)))]))
@@ -556,7 +516,7 @@ pub fn Live::of_state(state : J) -> Live {
         Arr([Num(i), Obj(_) as b]) => {
           let bb = Some(b)
           Some((i.to_int(), {
-            id: str(field(bb, "id")).unwrap_or([]),
+            id: str(field(bb, "id")).unwrap_or(""),
             step: if is_str(field(bb, "step"), "tool") { "tool" } else if is_str(field(bb, "step"), "thinking") { "thinking" } else { "text" },
             tool: str(field(bb, "tool")),
             input: str(field(bb, "input")),
@@ -571,33 +531,16 @@ pub fn Live::of_state(state : J) -> Live {
     Some(Arr(all)) => all.filter_map(t => str(Some(t)))
     _ => []
   }
-  { message: str(field(s, "message")).unwrap_or([]), blocks, tools }
+  { message: str(field(s, "message")).unwrap_or(""), blocks, tools }
 }
 
 ///|
 /// runtime.ts `unreachable`: its words, ASCII letters in either case (a regular expression's `i` folds no other letter
 /// to one of those).
-pub fn unreachable(text : Array[Int]) -> Bool {
-  let lower = text.map(c => if c >= 0x41 && c <= 0x5a { c + 32 } else { c })
+pub fn unreachable(text : String) -> Bool {
+  let lower = ascii_lower(text)
   [
     "econnrefused", "econnreset", "unable to connect", "is not connected", "fetch failed", "socket hang up", "connection refused",
     "failed to connect to mcp server",
-  ].iter().any(w => contains(lower, u(w)))
-}
-
-///|
-fn contains(s : Array[Int], w : Array[Int]) -> Bool {
-  if w.length() == 0 {
-    return true
-  }
-  for i = 0; i + w.length() <= s.length(); i = i + 1 {
-    let mut j = 0
-    while j < w.length() && s[i + j] == w[j] {
-      j += 1
-    }
-    if j == w.length() {
-      return true
-    }
-  }
-  false
+  ].iter().any(w => lower.contains(w))
 }

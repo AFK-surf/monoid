@@ -10,28 +10,34 @@ pub fn JValue::of_json(v : Json) -> JValue {
     True => Bool(true)
     False => Bool(false)
     Number(n, ..) => Num(n)
-    String(s) => Str(units(s))
+    String(s) => Str(s)
     Array(xs) => Arr(xs.map(JValue::of_json))
-    Object(m) => Obj(m.iter().map(kv => (units(kv.0), JValue::of_json(kv.1))).collect())
+    Object(m) => {
+      let out = Array::new(capacity=m.length())
+      for k, val in m {
+        out.push((k, JValue::of_json(val)))
+      }
+      Obj(out)
+    }
   }
 }
 
 ///|
 /// The value as MoonBit's JSON, what `@json.parse(stringify(v))` reads: NaN and the infinities as null, an object's
 /// keys in JavaScript's order (integer-like ones first) and a repeated key's last value. A string's lone surrogates
-/// are kept (`raw_text`, as JSON.parse reads back the `\ud800` JSON.stringify writes), where `@json.parse` refuses
-/// that text whole; `of_json` gives the same code units back.
+/// are kept (as JSON.parse reads back the `\ud800` JSON.stringify writes), where `@json.parse` refuses that text whole;
+/// `of_json` gives the same code units back.
 pub fn JValue::to_json(self : JValue) -> Json {
   match self {
     Null => Json::null()
     Bool(b) => Json::boolean(b)
     Num(n) => if n.is_nan() || n.is_inf() { Json::null() } else { Json::number(n) }
-    Str(u) => Json::string(raw_text(u))
+    Str(s) => Json::string(s)
     Arr(xs) => Json::array(xs.map(JValue::to_json))
     Obj(fs) => {
       let m : Map[String, Json] = Map([])
       for f in ordered(fs) {
-        m[raw_text(f.0)] = f.1.to_json()
+        m[f.0] = f.1.to_json()
       }
       Json::object(m)
     }
@@ -39,46 +45,32 @@ pub fn JValue::to_json(self : JValue) -> Json {
 }
 
 ///|
-pub fn JValue::of_string(s : String) -> JValue {
-  Str(units(s))
-}
+pub fn JValue::of_string(s : String) -> JValue { Str(s) }
 
 ///|
-pub fn JValue::of_double(d : Double) -> JValue {
-  Num(d)
-}
+pub fn JValue::of_double(d : Double) -> JValue { Num(d) }
 
 ///|
-pub fn JValue::of_int(i : Int) -> JValue {
-  Num(i.to_double())
-}
+pub fn JValue::of_int(i : Int) -> JValue { Num(i.to_double()) }
 
 ///|
-pub fn JValue::of_bool(b : Bool) -> JValue {
-  Bool(b)
-}
+pub fn JValue::of_bool(b : Bool) -> JValue { Bool(b) }
 
 ///|
 /// An object of these entries, in this order (a repeated key kept twice).
-pub fn JValue::of_object(fields : Array[(String, JValue)]) -> JValue {
-  Obj(fields.map(f => (units(f.0), f.1)))
-}
+pub fn JValue::of_object(fields : Array[(String, JValue)]) -> JValue { Obj(fields) }
 
 ///|
-pub fn JValue::of_array(items : Array[JValue]) -> JValue {
-  Arr(items)
-}
+pub fn JValue::of_array(items : Array[JValue]) -> JValue { Arr(items) }
 
 ///|
-pub fn JValue::of_strings(items : Array[String]) -> JValue {
-  Arr(items.map(JValue::of_string))
-}
+pub fn JValue::of_strings(items : Array[String]) -> JValue { Arr(items.map(JValue::of_string)) }
 
 ///|
 /// The string, or null.
 pub fn JValue::of_opt_string(s : String?) -> JValue {
   match s {
-    Some(t) => Str(units(t))
+    Some(t) => Str(t)
     None => Null
   }
 }
@@ -102,10 +94,10 @@ pub fn jval_at_i(v : JValue?, i : Int) -> JValue? {
 }
 
 ///|
-/// A string's text (`text`: a lone surrogate as U+FFFD), none for what is not a string.
+/// A string's text (`sanitize_str`: a lone surrogate as U+FFFD), none for what is not a string.
 pub fn jval_str_of(v : JValue?) -> String? {
   match v {
-    Some(Str(u)) => Some(text(u))
+    Some(Str(s)) => Some(sanitize_str(s))
     _ => None
   }
 }
@@ -139,7 +131,7 @@ pub fn jval_arr_of(v : JValue?) -> Array[JValue]? {
 /// `JValue::keys` is `Object.keys`'s order.
 pub fn jval_keys_of(v : JValue) -> Array[String] {
   match v {
-    Obj(fs) => fs.map(f => text(f.0))
+    Obj(fs) => fs.map(f => sanitize_str(f.0))
     _ => []
   }
 }
@@ -155,11 +147,10 @@ pub fn jval_is_true(v : JValue?) -> Bool {
 /// is given back as it is.
 pub fn jval_set(o : JValue, k : String, v : JValue) -> JValue {
   guard o is Obj(fs) else { return o }
-  let ku = units(k)
   let out = fs.copy()
-  match out.search_by(f => f.0 == ku) {
-    Some(i) => out[i] = (ku, v)
-    None => out.push((ku, v))
+  match out.search_by(f => f.0 == k) {
+    Some(i) => out[i] = (k, v)
+    None => out.push((k, v))
   }
   Obj(out)
 }
@@ -174,20 +165,26 @@ pub fn jval_set_or_new(o : JValue, k : String, v : JValue) -> JValue {
 /// `delete o[k]` (each entry of that key); what is not an object is given back as it is.
 pub fn jval_del(o : JValue, k : String) -> JValue {
   guard o is Obj(fs) else { return o }
-  let ku = units(k)
-  Obj(fs.filter(f => f.0 != ku))
+  Obj(fs.filter(f => f.0 != k))
 }
 
 ///|
 /// `{ ...a, ...b }`: what is not an object adds nothing.
 pub fn jval_spread(a : JValue, b : JValue) -> JValue {
-  let mut out = if a is Obj(_) { a } else { Obj([]) }
+  let out = match a {
+    Obj(fs) => fs.copy()
+    _ => []
+  }
   if b is Obj(fs) {
     for f in fs {
-      out = jval_set(out, text(f.0), f.1)
+      let k = sanitize_str(f.0)
+      match out.search_by(e => e.0 == k) {
+        Some(i) => out[i] = (k, f.1)
+        None => out.push((k, f.1))
+      }
     }
   }
-  out
+  Obj(out)
 }
 
 ///|
@@ -196,25 +193,25 @@ pub fn jval_truthy(v : JValue?) -> Bool {
   match v {
     None | Some(Null) | Some(Bool(false)) => false
     Some(Num(n)) => n != 0.0 && !n.is_nan()
-    Some(Str(u)) => u.length() > 0
+    Some(Str(s)) => s.length() > 0
     Some(_) => true
   }
 }
 
 ///|
-/// The value as MoonBit's JSON with well-formed strings (`text`: lone surrogates as U+FFFD) and entries in insertion
-/// order, numbers kept as given.
+/// The value as MoonBit's JSON with well-formed strings (`sanitize_str`: lone surrogates as U+FFFD) and entries in
+/// insertion order, numbers kept as given.
 pub fn JValue::to_json_lossy(self : JValue) -> Json {
   match self {
     Null => Json::null()
     Bool(b) => Json::boolean(b)
     Num(n) => Json::number(n)
-    Str(u) => Json::string(text(u))
+    Str(s) => Json::string(sanitize_str(s))
     Arr(xs) => Json::array(xs.map(JValue::to_json_lossy))
     Obj(fs) => {
       let m : Map[String, Json] = Map([])
       for f in fs {
-        m[text(f.0)] = f.1.to_json_lossy()
+        m[sanitize_str(f.0)] = f.1.to_json_lossy()
       }
       Json::object(m)
     }
@@ -234,10 +231,9 @@ pub fn jval_try_parse(text : String) -> JValue? {
 pub fn jval_at_last(v : JValue?, name : String) -> JValue? {
   match v {
     Some(Obj(fs)) => {
-      let ku = units(name)
       let mut found = None
       for f in fs {
-        if f.0 == ku {
+        if f.0 == name {
           found = Some(f.1)
         }
       }
@@ -280,10 +276,10 @@ pub fn jval_arr(v : JValue?) -> Array[JValue] {
 }
 
 ///|
-/// An object's entries as `(name, value)` pairs (`text` on keys); `[]` for anything else.
+/// An object's entries as `(name, value)` pairs (`sanitize_str` on keys); `[]` for anything else.
 pub fn jval_entries(v : JValue?) -> Array[(String, JValue)] {
   match v {
-    Some(Obj(fs)) => fs.map(f => (text(f.0), f.1))
+    Some(Obj(fs)) => fs.map(f => (sanitize_str(f.0), f.1))
     _ => []
   }
 }
@@ -294,7 +290,7 @@ pub fn jval_js_str(v : JValue?) -> String {
   match v {
     None => "undefined"
     Some(Null) => "null"
-    Some(Str(u)) => text(u)
+    Some(Str(s)) => sanitize_str(s)
     Some(Bool(b)) => if b { "true" } else { "false" }
     Some(Num(d)) => num_text(d)
     Some(Arr(xs)) =>
@@ -316,7 +312,7 @@ pub fn jval_js_num(v : JValue?) -> Double {
     Some(Null) => 0.0
     Some(Bool(b)) => if b { 1.0 } else { 0.0 }
     Some(Num(d)) => d
-    Some(Str(u)) => js_number(text(u))
+    Some(Str(s)) => js_number(sanitize_str(s))
     Some(Arr(xs)) =>
       match xs {
         [] => 0.0
@@ -380,7 +376,7 @@ pub fn jval_strs(items : Array[String]) -> JValue { JValue::of_strings(items) }
 pub fn jval_opt_str(s : String?) -> JValue { JValue::of_opt_string(s) }
 
 ///|
-pub fn jval_keys(v : JValue) -> Array[Array[Int]] { v.keys() }
+pub fn jval_keys(v : JValue) -> Array[String] { v.keys() }
 
 ///|
 /// `Array.isArray(v)`.
@@ -395,10 +391,10 @@ pub fn jval_is_obj(v : JValue?) -> Bool { v is Some(Obj(_) | Arr(_)) }
 pub fn jval_is_record(v : JValue?) -> Bool { v is Some(Obj(_)) }
 
 ///|
-/// Non-empty string (`text`: lone surrogates as U+FFFD), else `None`.
+/// Non-empty string (`sanitize_str`: lone surrogates as U+FFFD), else `None`.
 pub fn jval_nonempty(v : JValue?) -> String? {
   match v {
-    Some(Str(u)) if u.length() > 0 => Some(text(u))
+    Some(Str(s)) if s.length() > 0 => Some(sanitize_str(s))
     _ => None
   }
 }
@@ -435,10 +431,10 @@ pub fn jval_num_text_of(v : JValue) -> String {
 pub fn jval_stringify_num(d : Double) -> String { stringify(Num(d)) }
 
 ///|
-/// `typeof v === "string" && v === s` (`text` on `v`).
+/// `typeof v === "string" && v === s` (`sanitize_str` on `v`).
 pub fn jval_str_eq(v : JValue?, s : String) -> Bool {
   match v {
-    Some(Str(u)) => text(u) == s
+    Some(Str(u)) => sanitize_str(u) == s
     _ => false
   }
 }
@@ -613,15 +609,10 @@ pub fn json_finite(v : Json?) -> Double? {
 pub fn jval_or_null(v : JValue?) -> JValue { v.unwrap_or(Null) }
 
 ///|
-pub fn jval_str_raw_of(v : JValue?) -> String? {
-  match v {
-    Some(Str(u)) => Some(raw_text(u))
-    _ => None
-  }
-}
+pub fn jval_str_raw_of(v : JValue?) -> String? { jstr(v) }
 
 ///|
-pub fn jval_js_str_raw(v : JValue) -> String { raw_text(js_string(v)) }
+pub fn jval_js_str_raw(v : JValue) -> String { js_string(v) }
 
 ///|
 pub fn json_stringify(v : Json) -> String { stringify(JValue::of_json(v)) }

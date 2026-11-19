@@ -56,7 +56,7 @@ fn driver_words(argv0 : String, app : String) -> @agent_drivers.Words {
 ///|
 fn fields_pairs(f : @agent_runtimes.Fields) -> Array[(String, String)] {
   f.keys.filter_map(k => match f.get(k) {
-    Some(Str(v)) => Some((k, @jsjson.text(v)))
+    Some(Str(v)) => Some((k, @jsjson.sanitize_str(v)))
     Some(Num(n)) => Some((k, n.to_string()))
     _ => None
   })
@@ -176,7 +176,7 @@ fn p52_claude_logins(pump : Pump, host : @host.Host, ask : async (String, Json) 
         Null => {
           let fields = @agent_runtimes.Fields::new()
           for kv in env_all() {
-            fields.set(kv.0, @jsjson.JValue::Str(@jsjson.units(kv.1)))
+            fields.set(kv.0, @jsjson.JValue::Str(kv.1))
           }
           match @agent_runtimes.machine_claude_token(host, fields, platform() == "darwin", wall_ms().to_double()) {
             Ok(t) => (t.token, t.expires_at)
@@ -416,7 +416,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     link_auth: dir => pump.later("codex auth", async fn() {
       let fields = @agent_runtimes.Fields::new()
       for kv in env_all() {
-        fields.set(kv.0, @jsjson.JValue::Str(@jsjson.units(kv.1)))
+        fields.set(kv.0, @jsjson.JValue::Str(kv.1))
       }
       @agent_runtimes.link_codex_auth_soon(host, dir, fields)
     }),

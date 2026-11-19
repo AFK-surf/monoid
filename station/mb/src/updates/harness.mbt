@@ -210,7 +210,7 @@ fn trusted_of(j : J) -> Array[(String, String)]? {
     Arr(xs) =>
       Some(
         xs.filter_map(p => match p {
-          Arr([Str(a), Str(b), ..]) => Some((@jsjson.text(a), @jsjson.text(b)))
+          Arr([Str(a), Str(b), ..]) => Some((@jsjson.sanitize_str(a), @jsjson.sanitize_str(b)))
           _ => None
         }),
       )
@@ -274,7 +274,7 @@ fn old_arg(j : J) -> Old {
 fn plan_arg(j : J) -> Plan {
   let env = match get(Some(j), "env") {
     Some(Obj(ps)) =>
-      ps.map(p => (@jsjson.text(p.0), match p.1 { Str(u) => @jsjson.text(u); v => js_string(v) }))
+      ps.map(p => (@jsjson.sanitize_str(p.0), match p.1 { Str(u) => @jsjson.sanitize_str(u); v => js_string(v) }))
     _ => []
   }
   let delta = match get(Some(j), "delta") {
@@ -510,7 +510,7 @@ async fn Harness::call_fn(self : Harness, w : World, name : String, a : Array[J]
       } else {
         None
       }
-      let applier = if get(Some(o), "apply") is Some(Str(u)) && @jsjson.text(u) == "apart" {
+      let applier = if get(Some(o), "apply") is Some(Str(u)) && @jsjson.sanitize_str(u) == "apart" {
         apply_apart(w)
       } else {
         apply_here(w, self.deflate())
@@ -801,7 +801,7 @@ async fn Harness::run_op(self : Harness, w : World, c : J) -> J {
     "updates.call" => self.call_updates(text(get(Some(c), "method")).unwrap_or(""), args)
     "set" => {
       match get(Some(c), "origin") {
-        Some(Str(u)) => self.origin = Some(@jsjson.text(u))
+        Some(Str(u)) => self.origin = Some(@jsjson.sanitize_str(u))
         Some(Null) => self.origin = None
         _ => ()
       }

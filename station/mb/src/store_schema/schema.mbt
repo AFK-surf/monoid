@@ -798,10 +798,10 @@ fn add_letter_column(db : @sql.Db) -> Unit raise {
       let (title, link) = headed_from(text)
       let letter = @jsjson.stringify(
         Obj([
-          (@jsjson.units("way"), Str(@jsjson.units("in"))),
-          (@jsjson.units("title"), Str(@jsjson.units(title))),
-          (@jsjson.units("link"), match link {
-            Some(l) => Str(@jsjson.units(l))
+          ("way", Str("in")),
+          ("title", Str(title)),
+          ("link", match link {
+            Some(l) => Str(l)
             None => Null
           }),
         ]),

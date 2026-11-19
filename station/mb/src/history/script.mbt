@@ -301,12 +301,11 @@ fn read_literal(src : Array[String], from : Int) -> (@jsjson.JValue, Int)? {
     guard at(src, i) is Some(c) else { return None }
     if c == "{" {
       i += 1
-      let fields : Array[(Array[Int], @jsjson.JValue)] = []
+      let fields : Array[(String, @jsjson.JValue)] = []
       let put = (key : String, v : @jsjson.JValue) => {
-        let units = @jsjson.units(key)
-        match fields.search_by(f => f.0 == units) {
-          Some(p) => fields[p] = (units, v)
-          None => fields.push((units, v))
+        match fields.search_by(f => f.0 == key) {
+          Some(p) => fields[p] = (key, v)
+          None => fields.push((key, v))
         }
       }
       while true {
@@ -370,7 +369,7 @@ fn read_literal(src : Array[String], from : Int) -> (@jsjson.JValue, Int)? {
       None
     } else if c == "\"" || c == "'" || c == "`" {
       match string() {
-        Some(s) => Some(Str(@jsjson.units(s)))
+        Some(s) => Some(Str(s))
         None => None
       }
     } else {

@@ -310,7 +310,7 @@ pub fn codex_config(text : String) -> J? {
     let value = trim(v0)
     let text_v = if starts(value, "\"") && ends(value, "\"") && value.length() >= 2 && basic_ok(slice(value, 1, b=-1)) {
       match parse_opt("\"" + slice(value, 1, b=-1) + "\"") {
-        Some(Str(u)) => @jsjson.text(u)
+        Some(Str(u)) => @jsjson.sanitize_str(u)
         _ => return None
       }
     } else if starts(value, "'") && ends(value, "'") && value.length() >= 2 && !slice(value, 1, b=-1).contains("'") {
@@ -572,7 +572,7 @@ pub async fn resolved_model(w : World, profile : J, capability : J, chosen : J) 
     return None
   }
   guard chosen is Str(u) else { return None }
-  let model = @jsjson.text(u)
+  let model = @jsjson.sanitize_str(u)
   let models = arr_of(at(Some(capability), "models")).unwrap_or([])
   if !jincludes(models, chosen) && str_of(at(Some(capability), "model")) != Some(model) {
     return None

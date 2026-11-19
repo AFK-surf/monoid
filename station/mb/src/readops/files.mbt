@@ -110,7 +110,7 @@ fn truthy(v : @jsjson.JValue?) -> Bool {
 /// Object.entries of a value `typeof` calls an object (an object's own keys, an array's indices).
 fn entries_of(v : @jsjson.JValue?) -> Array[(String, @jsjson.JValue)] {
   match v {
-    Some(Obj(es)) => es.map(e => (@jsjson.raw_text(e.0), e.1))
+    Some(Obj(es)) => es.map(e => (e.0, e.1))
     Some(Arr(xs)) => xs.mapi((i, x) => (i.to_string(), x))
     _ => []
   }

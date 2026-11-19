@@ -118,7 +118,7 @@ pub fn bytes_of(j : J?) -> Bytes {
         Some(b) => base64_bytes(b)
         None => b""
       }
-    Some(Str(u)) => @utf8.encode(@jsjson.text(u))
+    Some(Str(u)) => @utf8.encode(@jsjson.sanitize_str(u))
     _ => b""
   }
 }

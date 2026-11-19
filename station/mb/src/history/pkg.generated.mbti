@@ -3,7 +3,6 @@ package "station/history"
 
 import {
   "moonbitlang/core/json",
-  "moonbitlang/core/ref",
   "station/host",
   "station/jsjson",
   "station/locate",
@@ -25,8 +24,6 @@ pub fn date_parse(String) -> Double?
 pub fn entries_of(@host.Host, String, Array[Marked], Double, Double, Bool) -> Array[@json.Json]
 
 pub fn entry_json(Entry, Bool) -> @json.Json
-
-pub let in_script_output : @ref.Ref[String]
 
 pub fn is_alphanumeric(Int32) -> Bool
 
@@ -54,6 +51,7 @@ pub(all) struct Entry {
   call_id : String?
   subagent : Bool
   said : String?
+  in_script : Bool
 }
 
 pub struct Histories {

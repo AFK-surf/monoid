@@ -175,25 +175,7 @@ pub fn stringify(v : Json) -> String {
 }
 
 ///|
-fn of_js(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.raw_text(s))
-    Arr(xs) => Json::array(xs.map(of_js))
-    Obj(kvs) => {
-      let m : Map[String, Json] = Map([])
-      for kv in kvs {
-        m[@jsjson.raw_text(kv.0)] = of_js(kv.1)
-      }
-      Json::object(m)
-    }
-  }
-}
-
-///|
 /// `JSON.parse(text)`: a lone surrogate kept, a duplicate key's last value in its first place, integer-like keys first.
 pub fn parse_js(text : String) -> Json raise {
-  of_js(@jsjson.parse(text))
+  @jsjson.parse(text).to_json()
 }

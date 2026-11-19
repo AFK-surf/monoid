@@ -158,7 +158,7 @@ fn who(person : J?, ref_ : J) -> J {
 /// A string's first `max` characters; None for anything else, or none.
 fn cut(value : J?, max : Int) -> String? {
   match value {
-    Some(Str(u)) if u.length() > 0 => Some(first_points(utext(u), max))
+    Some(Str(u)) if u.length() > 0 => Some(first_points(u, max))
     _ => None
   }
 }
@@ -225,7 +225,7 @@ pub fn stats_rows_of(given : StationRows, from_day : String) -> Map[String, (Str
   for r in usage_rows {
     let rr = Some(r)
     let day = match prop(rr, "day") {
-      Some(Str(u)) => utext(u)
+      Some(Str(u)) => u
       _ => continue
     }
     guard prop(rr, "session") is Some(Str(session)) else { continue }
@@ -343,13 +343,13 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
     return []
   }
   let kind = match prop(a, "kind") {
-    Some(Str(u)) if attention_kinds.contains(utext(u)) => utext(u)
+    Some(Str(u)) if attention_kinds.contains(u) => u
     _ => return []
   }
   let waits : Array[String] = []
   for w in arr_of(prop(a, "waitsFor")).unwrap_or([]) {
     let email = match w {
-      Str(u) => @jscase.lower(js_trim(utext(u)))
+      Str(u) => @jscase.lower(js_trim(u))
       _ => ""
     }
     if email_like(email) && email.length() <= max_text && waits.length() < max_waits && !waits.contains(email) {
@@ -357,11 +357,11 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
     }
   }
   let note = match prop(a, "note") {
-    Some(Str(u)) => cut(Some(jstr(js_trim(utext(u)))), max_note)
+    Some(Str(u)) => cut(Some(jstr(js_trim(u))), max_note)
     _ => None
   }
   let card = match prop(a, "card") {
-    Some(Str(u)) if kind == "need" && card_kinds.contains(utext(u)) => Some(jstr(utext(u)))
+    Some(Str(u)) if kind == "need" && card_kinds.contains(u) => Some(jstr(u))
     _ => None
   }
   [
@@ -376,7 +376,7 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
 /// A chat's link in the app, as Comma takes one: https, at most MAX_URL.
 fn url_of(url : J?) -> J? {
   match url {
-    Some(Str(u)) if utext(u).has_prefix("https://") && u.length() <= max_url => Some(Str(u))
+    Some(Str(u)) if u.has_prefix("https://") && u.length() <= max_url => Some(Str(u))
     _ => None
   }
 }
@@ -1056,7 +1056,7 @@ fn CommaStats::apply_(
   }
   let read = fn(row : J) raise { match prop(Some(row), "station") {
     Some(Null) | None => !unread.contains("")
-    Some(Str(u)) => !unread.contains(utext(u))
+    Some(Str(u)) => !unread.contains(u)
     Some(_) => true
   } }
   // (the write taken first: begun deferred, its read then write was refused at once while the process beside it wrote)
@@ -1104,7 +1104,7 @@ fn CommaStats::apply_(
 /// array as the string it makes, anything else as numbers (a date's string is NaN as a number: never).
 fn js_ge(v : J, text : String) -> Bool {
   match v {
-    Str(u) => units_cmp(utext(u), text) >= 0
+    Str(u) => units_cmp(u, text) >= 0
     Obj(_) | Arr(_) => units_cmp(js_text(v), text) >= 0
     Null => 0.0 >= js_number(text)
     Bool(b) => (if b { 1.0 } else { 0.0 }) >= js_number(text)
@@ -1228,7 +1228,7 @@ pub fn task_wire(row : IndexRow) -> J? {
   let tt = Some(t)
   let attention = prop(tt, "attention") is Some(Str(_))
   let labels : Array[J] = match (prop(tt, "attention"), prop(tt, "card")) {
-    (Some(Str(att)), Some(Str(c))) if utext(att) == "need" && card_kinds.contains(utext(c)) => [jstr("card:\{utext(c)}")]
+    (Some(Str(att)), Some(Str(c))) if att == "need" && card_kinds.contains(c) => [jstr("card:\{c}")]
     _ => []
   }
   Some(
@@ -1453,7 +1453,7 @@ pub fn held_from(result : J?) -> Held? {
   guard result is Some(Obj(_) | Arr(_)) else { return None }
   let epoch = match prop(result, "epoch") {
     None | Some(Null) => None
-    Some(Str(u)) => Some(utext(u))
+    Some(Str(u)) => Some(u)
     Some(_) => return None
   }
   let through = match prop(result, "through") {

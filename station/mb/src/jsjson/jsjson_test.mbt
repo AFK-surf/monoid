@@ -4,10 +4,11 @@ test "JavaScript's reading and writing" {
   let w = parse("{\"vault\":\"a\\ud800b\"}")
   match w.get("vault") {
     Some(Str(s)) => {
-      inspect(s, content="[97, 55296, 98]")
+      inspect(units(s), content="[97, 55296, 98]")
       inspect(stringify(Str(s)), content="\"a\\ud800b\"")
-      inspect(text(s), content="a\u{fffd}b")
-      inspect(utf16le(s), content="[97, 0, 0, 216, 98, 0]")
+      inspect(sanitize_str(s), content="a\u{fffd}b")
+      inspect(text(units(s)), content="a\u{fffd}b")
+      inspect(utf16le(units(s)), content="[97, 0, 0, 216, 98, 0]")
     }
     _ => fail("no vault")
   }
@@ -58,33 +59,32 @@ test "JV: undefined left out, @json.Json both ways" {
 
 ///|
 test "JValue::to_json: what @json.parse reads of JSON.stringify's text" {
-  let k = (s : String) => @jsjson.units(s)
-  let lone : @jsjson.JValue = Str([0x61, 0xd800, 0x62])
+  let lone : @jsjson.JValue = Str(@jsjson.raw_text([0x61, 0xd800, 0x62]))
   let cases : Array[@jsjson.JValue] = [
     Null,
     Bool(true),
     Num(1.5),
     Num(-3.0),
-    Str(k("é😀\u{2028}\"\\\n")),
+    Str("é😀\u{2028}\"\\\n"),
     Arr([Num(1.0), Null, Arr([]), Obj([])]),
-    Obj([(k("b"), Num(1.0)), (k("10"), Str(k("x"))), (k("2"), Bool(false)), (k("a"), Obj([(k("z"), Null)]))]),
-    Obj([(k("a"), Num(1.0)), (k("b"), Num(2.0)), (k("a"), Num(3.0))]),
+    Obj([("b", Num(1.0)), ("10", Str("x")), ("2", Bool(false)), ("a", Obj([("z", Null)]))]),
+    Obj([("a", Num(1.0)), ("b", Num(2.0)), ("a", Num(3.0))]),
   ]
   for v in cases {
     let reread = @json.parse(@jsjson.stringify(v))
     assert_eq(v.to_json().stringify(), reread.stringify())
     assert_true(v.to_json() == reread)
   }
-  let dup = @jsjson.JValue::Obj([(k("a"), Num(1.0)), (k("b"), Num(2.0)), (k("a"), Num(3.0))])
+  let dup = @jsjson.JValue::Obj([("a", Num(1.0)), ("b", Num(2.0)), ("a", Num(3.0))])
   inspect(dup.to_json().stringify(), content="{\"a\":3,\"b\":2}")
-  inspect(@jsjson.JValue::Obj([(k("b"), Num(1.0)), (k("10"), Num(2.0)), (k("2"), Num(3.0))]).to_json().stringify(), content="{\"2\":3,\"10\":2,\"b\":1}")
-  // a lone surrogate kept (raw_text), not U+FFFD, in a key too: @json.parse refuses the `\ud800` JSON.stringify
+  inspect(@jsjson.JValue::Obj([("b", Num(1.0)), ("10", Num(2.0)), ("2", Num(3.0))]).to_json().stringify(), content="{\"2\":3,\"10\":2,\"b\":1}")
+  // a lone surrogate kept, not U+FFFD, in a key too: @json.parse refuses the `\ud800` JSON.stringify
   // writes of it, so stringify and @json.parse again gives nothing there
   match lone.to_json() {
     String(s) => inspect(@jsjson.units(s), content="[97, 55296, 98]")
     _ => fail("not a string")
   }
-  let keyed : @jsjson.JValue = Obj([(k("x") + [0xd800], lone)])
+  let keyed : @jsjson.JValue = Obj([("x" + @jsjson.raw_text([0xd800]), lone)])
   assert_true((try Some(@json.parse(@jsjson.stringify(keyed))) catch { _ => None }) is None)
   assert_eq(@jsjson.stringify(@jsjson.JValue::of_json(keyed.to_json())), @jsjson.stringify(keyed))
   // NaN and the infinities as null, as JSON.stringify writes them
@@ -110,7 +110,7 @@ test "JValue::of_json: what JSON.parse reads of the JSON's text, keys in the map
     assert_eq(v.to_json().stringify(), j.stringify())
   }
   match @jsjson.JValue::of_json(Json::string(@jsjson.raw_text([0x61, 0xd800, 0x62]))) {
-    Str(u) => inspect(u, content="[97, 55296, 98]")
+    Str(s) => inspect(@jsjson.units(s), content="[97, 55296, 98]")
     _ => fail("not a string")
   }
   // insertion order kept where JSON.stringify would put integer keys first
@@ -154,7 +154,7 @@ test "JValue's makers and readers" {
   inspect(@jsjson.jval_at_i(ss, -1) is None, content="true")
   inspect(@jsjson.jval_at_i(v, 0) is None, content="true")
   // a lone surrogate's text as U+FFFD
-  inspect(@jsjson.jval_str_of(Some(Str([0xd800]))), content="Some(\u{fffd})")
+  inspect(@jsjson.jval_str_of(Some(Str(@jsjson.raw_text([0xd800])))), content="Some(\u{fffd})")
   inspect(@jsjson.jval_keys_of(o), content="[s, d, i, b, a, ss, o, n, s]")
   inspect(@jsjson.jval_keys_of(Null), content="[]")
   inspect(@jsjson.jval_is_true(Some(Bool(true))), content="true")
@@ -164,8 +164,7 @@ test "JValue's makers and readers" {
 
 ///|
 test "JValue's changes as JavaScript makes them" {
-  let k = (s : String) => @jsjson.units(s)
-  let o : @jsjson.JValue = Obj([(k("a"), Num(1.0)), (k("b"), Num(2.0)), (k("a"), Num(3.0))])
+  let o : @jsjson.JValue = Obj([("a", Num(1.0)), ("b", Num(2.0)), ("a", Num(3.0))])
   // `o[k] = v`: the first of a repeated key in its place, a new one at the end, the value given kept as it was
   inspect(@jsjson.stringify(@jsjson.jval_set(o, "a", Null)), content="{\"a\":null,\"b\":2,\"a\":3}")
   inspect(@jsjson.stringify(@jsjson.jval_set(o, "c", Null)), content="{\"a\":1,\"b\":2,\"a\":3,\"c\":null}")
@@ -175,13 +174,13 @@ test "JValue's changes as JavaScript makes them" {
   inspect(@jsjson.stringify(@jsjson.jval_set_or_new(o, "b", Bool(true))), content="{\"a\":1,\"b\":true,\"a\":3}")
   // `delete o[k]`: each entry of it
   inspect(@jsjson.stringify(@jsjson.jval_del(o, "a")), content="{\"b\":2}")
-  inspect(@jsjson.stringify(@jsjson.jval_del(Str(k("x")), "a")), content="\"x\"")
+  inspect(@jsjson.stringify(@jsjson.jval_del(Str("x"), "a")), content="\"x\"")
   // `{ ...a, ...b }`
-  let b : @jsjson.JValue = Obj([(k("b"), Str(k("B"))), (k("c"), Null)])
+  let b : @jsjson.JValue = Obj([("b", Str("B")), ("c", Null)])
   inspect(@jsjson.stringify(@jsjson.jval_spread(o, b)), content="{\"a\":1,\"b\":\"B\",\"a\":3,\"c\":null}")
   inspect(@jsjson.stringify(@jsjson.jval_spread(Null, b)), content="{\"b\":\"B\",\"c\":null}")
   inspect(@jsjson.stringify(@jsjson.jval_spread(b, Arr([Num(1.0)]))), content="{\"b\":\"B\",\"c\":null}")
-  inspect(@jsjson.stringify(@jsjson.jval_spread(Num(1.0), Str(k("s")))), content="{}")
+  inspect(@jsjson.stringify(@jsjson.jval_spread(Num(1.0), Str("s"))), content="{}")
   // `!!v` and `v == null`
   let vs : Array[@jsjson.JValue?] = [
     None,
@@ -192,8 +191,8 @@ test "JValue's changes as JavaScript makes them" {
     Some(Num(-0.0)),
     Some(Num(@double.not_a_number)),
     Some(Num(2.0)),
-    Some(Str([])),
-    Some(Str(k("0"))),
+    Some(Str("")),
+    Some(Str("0")),
     Some(Arr([])),
     Some(Obj([])),
   ]
@@ -203,17 +202,16 @@ test "JValue's changes as JavaScript makes them" {
 
 ///|
 test "JValue extended ops: at_last, at_path, text, arr, entries, js_str, js_num, safe_int, to_json_lossy" {
-  let k = (s : String) => @jsjson.units(s)
   let o : @jsjson.JValue = Obj([
-    (k("a"), Num(1.0)),
-    (k("b"), Obj([(k("c"), Str(k("hi"))), (k("c"), Str(k("last")))])),
-    (k("a"), Num(2.0)),
+    ("a", Num(1.0)),
+    ("b", Obj([("c", Str("hi")), ("c", Str("last"))])),
+    ("a", Num(2.0)),
   ])
   inspect(@jsjson.jval_num_of(@jsjson.jval_at(Some(o), "a")), content="Some(1)")
   inspect(@jsjson.jval_num_of(@jsjson.jval_at_last(Some(o), "a")), content="Some(2)")
   inspect(@jsjson.jval_str_of(@jsjson.jval_at_path(Some(o), ["b", "c"])), content="Some(hi)")
   inspect(@jsjson.jval_str_of(@jsjson.jval_at_path_last(Some(o), ["b", "c"])), content="Some(last)")
-  inspect(@jsjson.jval_text(Some(Str(k("ok")))), content="ok")
+  inspect(@jsjson.jval_text(Some(Str("ok"))), content="ok")
   inspect(@jsjson.jval_text(Some(Num(1.0))), content="")
   inspect(@jsjson.jval_arr(Some(Arr([Num(1.0)]))).length(), content="1")
   inspect(@jsjson.jval_arr(Some(Null)).length(), content="0")
@@ -223,18 +221,18 @@ test "JValue extended ops: at_last, at_path, text, arr, entries, js_str, js_num,
   inspect(@jsjson.jval_js_str(None), content="undefined")
   inspect(@jsjson.jval_js_str(Some(Null)), content="null")
   inspect(@jsjson.jval_js_str(Some(Arr([Null]))), content="")
-  inspect(@jsjson.jval_js_str(Some(Arr([Num(1.0), Null, Str(k("x"))]))), content="1,,x")
+  inspect(@jsjson.jval_js_str(Some(Arr([Num(1.0), Null, Str("x")]))), content="1,,x")
   inspect(@jsjson.jval_js_str(Some(Obj([]))), content="[object Object]")
   // Number(v)
   inspect(@jsjson.jval_js_num(None).is_nan(), content="true")
   inspect(@jsjson.jval_js_num(Some(Null)), content="0")
   inspect(@jsjson.jval_js_num(Some(Bool(true))), content="1")
-  inspect(@jsjson.jval_js_num(Some(Str(k("")))), content="0")
-  inspect(@jsjson.jval_js_num(Some(Str(k(" \t\n")))), content="0")
-  inspect(@jsjson.jval_js_num(Some(Str(k("007")))), content="7")
+  inspect(@jsjson.jval_js_num(Some(Str(""))), content="0")
+  inspect(@jsjson.jval_js_num(Some(Str(" \t\n"))), content="0")
+  inspect(@jsjson.jval_js_num(Some(Str("007"))), content="7")
   inspect(@jsjson.jval_js_num(Some(Arr([]))), content="0")
   inspect(@jsjson.jval_js_num(Some(Arr([Null]))), content="0")
-  inspect(@jsjson.jval_js_num(Some(Arr([Str(k("42"))]))), content="42")
+  inspect(@jsjson.jval_js_num(Some(Arr([Str("42")]))), content="42")
   inspect(@jsjson.jval_js_num(Some(Arr([Num(1.0), Num(2.0)]))).is_nan(), content="true")
   // is_integer / safe_int
   inspect(@jsjson.jval_is_integer(Some(Num(42.0))), content="true")
@@ -242,7 +240,7 @@ test "JValue extended ops: at_last, at_path, text, arr, entries, js_str, js_num,
   inspect(@jsjson.jval_safe_int(Some(Num(9007199254740991.0))), content="true")
   inspect(@jsjson.jval_safe_int(Some(Num(9007199254740992.0))), content="false")
   // to_json_lossy replaces lone surrogate with U+FFFD
-  let lone : @jsjson.JValue = Str([0x61, 0xd800, 0x62])
+  let lone : @jsjson.JValue = Str(@jsjson.raw_text([0x61, 0xd800, 0x62]))
   inspect(lone.to_json_lossy().stringify(), content="\"a\u{fffd}b\"")
   inspect(@jsjson.jval_try_parse("{bad}") is None, content="true")
   inspect(@jsjson.jval_try_parse("{\"x\":1}") is Some(_), content="true")

@@ -23,7 +23,7 @@ pub(all) struct World {
 /// Whether an answer is `undefined` (said `{"$u": 1}`).
 pub fn is_undefined(v : J) -> Bool {
   match v {
-    Obj([(k, Num(_))]) => @jsjson.text(k) == "$u"
+    Obj([(k, Num(_))]) => @jsjson.sanitize_str(k) == "$u"
     _ => false
   }
 }

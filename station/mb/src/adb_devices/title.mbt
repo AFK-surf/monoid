@@ -28,7 +28,7 @@ fn without_mentions(text : String) -> String {
 /// A field of a thread's row as a title reads it: a string trimmed of white space, else "".
 fn titled(t : J, k : String) -> String {
   match at(Some(t), k) {
-    Some(Str(u)) => @jscase.trim_white(@jsjson.text(u))
+    Some(Str(u)) => @jscase.trim_white(@jsjson.sanitize_str(u))
     _ => ""
   }
 }

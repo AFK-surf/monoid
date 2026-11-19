@@ -476,7 +476,7 @@ pub fn lang_of_core(headers : J) -> String {
   match headers {
     Obj(fs) =>
       for f in fs {
-        if @jsjson.text(f.0).to_lower() == "stillfail-lang" {
+        if @jsjson.sanitize_str(f.0).to_lower() == "stillfail-lang" {
           let l = js_trim(js_text(f.1)).to_lower()
           return if l == "" || l.has_prefix("zh") { "zh" } else { "en" }
         }
@@ -1147,7 +1147,7 @@ async fn tunnel(
     })
     while true {
       guard w.ask("net.read", [socket]) is Str(chunk) else { break }
-      let bytes = unb64(@jsjson.text(chunk))
+      let bytes = unb64(@jsjson.sanitize_str(chunk))
       match activity {
         Some(a) => a.take(bytes)
         _ => ()

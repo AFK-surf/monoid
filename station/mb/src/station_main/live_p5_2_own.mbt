@@ -162,7 +162,7 @@ fn bridged_runtime_driver(
 fn fields_of_env(pairs : Array[(String, String)]) -> @agent_runtimes.Fields {
   let f = @agent_runtimes.Fields::new()
   for kv in pairs {
-    f.set(kv.0, @jsjson.JValue::Str(@jsjson.units(kv.1)))
+    f.set(kv.0, @jsjson.JValue::Str(kv.1))
   }
   f
 }

@@ -9,77 +9,77 @@ import {
 }
 
 // Values
-pub fn access_kind(@jsjson.JV) -> String
+pub fn access_kind(@jsjson.JValue) -> String
 
-pub fn access_kind_of(@jsjson.JV?) -> String?
+pub fn access_kind_of(@jsjson.JValue?) -> String?
 
 pub fn access_kinds(String) -> Array[String]
 
-pub fn agy_allowance(Ctx, @jsjson.JV?) -> (Array[@jsjson.JV], Array[@jsjson.JV])
+pub fn agy_allowance(Ctx, @jsjson.JValue?) -> (Array[@jsjson.JValue], Array[@jsjson.JValue])
 
 pub fn agy_base_model(String) -> String
 
-pub async fn agy_quota(Ctx, String, @jsjson.JV, String, command? : String) -> @jsjson.JV
+pub async fn agy_quota(Ctx, String, @jsjson.JValue, String, command? : String) -> @jsjson.JValue
 
 pub fn agy_scope_for_model(String?) -> String
 
-pub fn agy_windows(Ctx, @jsjson.JV?) -> Array[@jsjson.JV]
+pub fn agy_windows(Ctx, @jsjson.JValue?) -> Array[@jsjson.JValue]
 
 pub fn allowed_in(Profile, String?, String?) -> Bool
 
-pub fn api_providers() -> @jsjson.JV
+pub fn api_providers() -> @jsjson.JValue
 
 pub fn api_source(Via) -> (Source, Endpoints)?
 
-pub fn arg(@jsjson.JV?) -> @jsjson.JV
+pub fn arg(@jsjson.JValue?) -> @jsjson.JValue
 
-pub fn at(Ctx, @jsjson.JV?) -> Double?
+pub fn at(Ctx, @jsjson.JValue?) -> Double?
 
-pub fn available_efforts(String, String?, @jsjson.JV?) -> Array[String]
+pub fn available_efforts(String, String?, @jsjson.JValue?) -> Array[String]
 
 pub fn base64url(Bytes) -> String
 
 pub fn base64url_text(String) -> String
 
-pub fn billed_per_use(@jsjson.JV) -> Bool
+pub fn billed_per_use(@jsjson.JValue) -> Bool
 
 pub fn blocked(String) -> Bool
 
-pub fn borrowed(@jsjson.JV) -> Bool
+pub fn borrowed(@jsjson.JValue) -> Bool
 
 pub fn chars(String, Int32) -> String
 
 pub fn cheap_to_leave(Array[ContextCall], Map[String, Double]) -> Bool
 
-pub fn check_agent_env(@jsjson.JV?) -> Unit raise Thrown
+pub fn check_agent_env(@jsjson.JValue?) -> Unit raise Thrown
 
-pub fn check_automatic_decisions(@jsjson.JV?) -> Unit raise Thrown
+pub fn check_automatic_decisions(@jsjson.JValue?) -> Unit raise Thrown
 
-pub fn check_config(@jsjson.JV?, String) -> Unit raise Thrown
+pub fn check_config(@jsjson.JValue?, String) -> Unit raise Thrown
 
-pub fn check_label(Ctx, @jsjson.JV?, String) -> String
+pub fn check_label(Ctx, @jsjson.JValue?, String) -> String
 
-pub fn check_network(@jsjson.JV?) -> Unit raise Thrown
+pub fn check_network(@jsjson.JValue?) -> Unit raise Thrown
 
-pub async fn check_quota(Ctx, Profile, Bool, String, String?) -> @jsjson.JV
+pub async fn check_quota(Ctx, Profile, Bool, String, String?) -> @jsjson.JValue
 
-pub fn check_sandboxes(@jsjson.JV) -> Unit raise Thrown
+pub fn check_sandboxes(@jsjson.JValue) -> Unit raise Thrown
 
-pub fn claim_outcome(@jsjson.JV?) -> String
+pub fn claim_outcome(@jsjson.JValue?) -> String
 
-pub fn claude_claim(Ctx, @jsjson.JV?, String, String?) -> Claim
+pub fn claude_claim(Ctx, @jsjson.JValue?, String, String?) -> Claim
 
 pub fn claude_headers(String, String?) -> Array[(String, String)]
 
 pub async fn claude_oauth_token(Ctx, String?, String?, String, String, margin? : Double, lent? : Bool) -> (String, Double)
 
-pub async fn claude_reset_with(Ctx, String, String, String, String, String?) -> @jsjson.JV
+pub async fn claude_reset_with(Ctx, String, String, String, String, String?) -> @jsjson.JValue
 
-pub fn claude_resets(Ctx, @jsjson.JV?, String?) -> Array[@jsjson.JV]
+pub fn claude_resets(Ctx, @jsjson.JValue?, String?) -> Array[@jsjson.JValue]
 
-pub async fn claude_usage(Ctx, String, String, String, String?) -> @jsjson.JV
+pub async fn claude_usage(Ctx, String, String, String, String?) -> @jsjson.JValue
 
-pub async fn claude_with_refresh(Ctx, String?, String, String?) -> @jsjson.JV
+pub async fn claude_with_refresh(Ctx, String?, String, String?) -> @jsjson.JValue
 
 pub fn clean_endpoint(String) -> String?
 
@@ -87,13 +87,13 @@ pub fn code_points(String) -> Int32
 
 pub async fn codex_auth_file(Ctx) -> String
 
-pub fn codex_quota(Ctx, @jsjson.JV?, String) -> @jsjson.JV
+pub fn codex_quota(Ctx, @jsjson.JValue?, String) -> @jsjson.JValue
 
 pub fn codex_quota_failure(String) -> (String, Double?)
 
-pub async fn codex_usage(Ctx, String, String) -> @jsjson.JV?
+pub async fn codex_usage(Ctx, String, String) -> @jsjson.JValue?
 
-pub fn codex_windows(Ctx, @jsjson.JV?) -> Array[@jsjson.JV]
+pub fn codex_windows(Ctx, @jsjson.JValue?) -> Array[@jsjson.JValue]
 
 pub fn common_efforts(Array[Array[String]], String) -> Array[String]
 
@@ -101,11 +101,11 @@ pub let compacted_from : Double
 
 pub fn cursor_auth_file(String) -> String
 
-pub async fn cursor_handshake(Io, CursorUrls) -> @jsjson.JV
+pub async fn cursor_handshake(Io, CursorUrls) -> @jsjson.JValue
 
 pub fn cursor_in(String) -> CursorLogin? raise Thrown
 
-pub async fn cursor_me(Io, CursorUrls, String) -> @jsjson.JV
+pub async fn cursor_me(Io, CursorUrls, String) -> @jsjson.JValue
 
 pub async fn cursor_models(Io, CursorUrls, String) -> Array[String]?
 
@@ -113,7 +113,7 @@ pub let cursor_urls : CursorUrls
 
 pub fn date_parse(String, (Double) -> Double) -> Double?
 
-pub fn defined(@jsjson.JV) -> @jsjson.JV?
+pub fn defined(@jsjson.JValue) -> @jsjson.JValue?
 
 pub fn devin_fusion_base(String) -> String
 
@@ -125,13 +125,13 @@ pub fn endpoints(Source, String?, String?) -> Endpoints?
 
 pub fn env_name_ok(String) -> Bool
 
-pub fn expand_devin_fusion(@jsjson.JV?) -> Array[String]
+pub fn expand_devin_fusion(@jsjson.JValue?) -> Array[String]
 
-pub fn failed(Ctx, Error, String) -> @jsjson.JV
+pub fn failed(Ctx, Error, String) -> @jsjson.JValue
 
 pub fn fallback_efforts(String) -> Array[String]
 
-pub fn fast_needs_credits(@jsjson.JV) -> Bool
+pub fn fast_needs_credits(@jsjson.JValue) -> Bool
 
 pub let fast_runtimes : Array[String]
 
@@ -139,65 +139,65 @@ pub fn find_source(String) -> Source?
 
 pub fn form_encode(String) -> String
 
-pub fn grant_kind(@jsjson.JV?) -> String
+pub fn grant_kind(@jsjson.JValue?) -> String
 
-pub fn grok_quota_of(Ctx, @jsjson.JV?, String) -> @jsjson.JV
+pub fn grok_quota_of(Ctx, @jsjson.JValue?, String) -> @jsjson.JValue
 
 pub fn group_of(String) -> String
 
 pub async fn harness(@host.Host) -> Unit
 
-pub fn headers_jv(Array[(String, String)]) -> @jsjson.JV
+pub fn headers_jv(Array[(String, String)]) -> @jsjson.JValue
 
 pub fn hex_bytes(String) -> Bytes
 
 pub let hour_ms : Double
 
-pub fn hub_config(@jsjson.JV, String, found? : (String) -> Array[String]?) -> HubConfig
+pub fn hub_config(@jsjson.JValue, String, found? : (String) -> Array[String]?) -> HubConfig
 
 pub fn id_ok(String) -> Bool
 
-pub fn is_array(@jsjson.JV?) -> Bool
+pub fn is_array(@jsjson.JValue?) -> Bool
 
 pub fn is_integer(Double) -> Bool
 
-pub fn is_object(@jsjson.JV?) -> Bool
+pub fn is_object(@jsjson.JValue?) -> Bool
 
-pub fn is_objectish(@jsjson.JV?) -> Bool
+pub fn is_objectish(@jsjson.JValue?) -> Bool
 
 pub fn is_safe_integer(Double) -> Bool
 
-pub fn is_truthy(@jsjson.JV?) -> Bool
+pub fn is_truthy(@jsjson.JValue?) -> Bool
 
-pub fn is_undef(@jsjson.JV) -> Bool
+pub fn is_undef(@jsjson.JValue) -> Bool
 
-pub fn jarr(Array[@jsjson.JV]) -> @jsjson.JV
+pub fn jarr(Array[@jsjson.JValue]) -> @jsjson.JValue
 
-pub fn jbool(Bool) -> @jsjson.JV
+pub fn jbool(Bool) -> @jsjson.JValue
 
-pub fn jdel(@jsjson.JV, String) -> @jsjson.JV
+pub fn jdel(@jsjson.JValue, String) -> @jsjson.JValue
 
-pub fn jfields(@jsjson.JV?) -> Array[(String, @jsjson.JV)]
+pub fn jfields(@jsjson.JValue?) -> Array[(String, @jsjson.JValue)]
 
-pub fn jget(@jsjson.JV?, String) -> @jsjson.JV?
+pub fn jget(@jsjson.JValue?, String) -> @jsjson.JValue?
 
-pub fn jhas(@jsjson.JV, String) -> Bool
+pub fn jhas(@jsjson.JValue, String) -> Bool
 
-pub fn jint(Int32) -> @jsjson.JV
+pub fn jint(Int32) -> @jsjson.JValue
 
-pub fn jitems(@jsjson.JV?) -> Array[@jsjson.JV]
+pub fn jitems(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
-pub fn jnum(Double) -> @jsjson.JV
+pub fn jnum(Double) -> @jsjson.JValue
 
-pub fn jnumber(@jsjson.JV?) -> Double?
+pub fn jnumber(@jsjson.JValue?) -> Double?
 
-pub fn jobj(Array[(String, @jsjson.JV)]) -> @jsjson.JV
+pub fn jobj(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
 
 pub fn join_path(Array[String]) -> String
 
-pub fn jopt(String?) -> @jsjson.JV
+pub fn jopt(String?) -> @jsjson.JValue
 
-pub fn js(String) -> @jsjson.JV
+pub fn js(String) -> @jsjson.JValue
 
 pub fn js_compare(String, String) -> Int32
 
@@ -213,19 +213,19 @@ pub fn js_number(String) -> Double
 
 pub fn js_round(Double) -> Double
 
-pub fn js_string(@jsjson.JV?) -> String
+pub fn js_string(@jsjson.JValue?) -> String
 
-pub fn jset(@jsjson.JV, String, @jsjson.JV) -> @jsjson.JV
+pub fn jset(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
 
-pub fn json_parse(String) -> @jsjson.JV raise Thrown
+pub fn json_parse(String) -> @jsjson.JValue raise Thrown
 
-pub fn jspread(@jsjson.JV, @jsjson.JV) -> @jsjson.JV
+pub fn jspread(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 
-pub fn jstr(@jsjson.JV?) -> String?
+pub fn jstr(@jsjson.JValue?) -> String?
 
-pub fn jstrs(Array[String]) -> @jsjson.JV
+pub fn jstrs(Array[String]) -> @jsjson.JValue
 
-pub let jundef : @jsjson.JV
+pub let jundef : @jsjson.JValue
 
 pub fn keyed(String) -> Bool
 
@@ -233,7 +233,7 @@ pub let kimi_auth : String
 
 pub let kimi_code : String
 
-pub async fn kimi_device_token(Io, String, String, String) -> @jsjson.JV
+pub async fn kimi_device_token(Io, String, String, String) -> @jsjson.JValue
 
 pub fn kimi_due(KimiLogin, Double) -> Bool
 
@@ -243,29 +243,29 @@ pub async fn kimi_headers(Io, String) -> Array[(String, String)]
 
 pub fn kimi_in(String) -> KimiLogin?
 
-pub fn kimi_signed_in(@jsjson.JV) -> Bool
+pub fn kimi_signed_in(@jsjson.JValue) -> Bool
 
 pub let kimi_token_file : String
 
-pub fn kimi_windows(Ctx, @jsjson.JV?) -> Array[@jsjson.JV]
+pub fn kimi_windows(Ctx, @jsjson.JValue?) -> Array[@jsjson.JValue]
 
 pub fn kind_of(Error) -> String
 
 pub fn legacy_source(String) -> Bool
 
-pub async fn lent_codex_usage(Ctx, String, Double, String) -> @jsjson.JV?
+pub async fn lent_codex_usage(Ctx, String, Double, String) -> @jsjson.JValue?
 
 pub let login_browser_file : String
 
-pub async fn machine_usage(Ctx, String, String) -> @jsjson.JV?
+pub async fn machine_usage(Ctx, String, String) -> @jsjson.JValue?
 
-pub fn manages_station(@jsjson.JV) -> Bool
+pub fn manages_station(@jsjson.JValue) -> Bool
 
 pub fn mask(String) -> String
 
 pub fn message_of(Error) -> String
 
-pub async fn mint_cursor_key(Io, CursorUrls, String, String) -> @jsjson.JV
+pub async fn mint_cursor_key(Io, CursorUrls, String, String) -> @jsjson.JValue
 
 pub fn model_key(String) -> String
 
@@ -277,15 +277,15 @@ pub fn normalize_path(String) -> String
 
 pub fn num_text(Double) -> String
 
-pub fn ok_or_unavailable(Array[@jsjson.JV], String) -> @jsjson.JV
+pub fn ok_or_unavailable(Array[@jsjson.JValue], String) -> @jsjson.JValue
 
 pub let pace_hours : Double
 
-pub fn pace_view(Catalog, Double, @jsjson.JV, (String) -> Bool) -> @jsjson.JV
+pub fn pace_view(Catalog, Double, @jsjson.JValue, (String) -> Bool) -> @jsjson.JValue
 
-pub fn parse(String) -> @jsjson.JV raise @jsjson.SyntaxError
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
-pub fn percent(@jsjson.JV?) -> Double
+pub fn percent(@jsjson.JValue?) -> Double
 
 pub fn pick_profile(Array[Profile], String?, PoolSignals, Bool) -> Profile raise Thrown
 
@@ -293,19 +293,19 @@ pub fn plain_error(String) -> Thrown
 
 pub fn points(String) -> Array[String]
 
-pub fn poll_answer(@jsjson.JV?, () -> String) -> @jsjson.JV
+pub fn poll_answer(@jsjson.JValue?, () -> String) -> @jsjson.JValue
 
-pub async fn poll_cursor(Io, CursorUrls, @jsjson.JV) -> @jsjson.JV
+pub async fn poll_cursor(Io, CursorUrls, @jsjson.JValue) -> @jsjson.JValue
 
 pub let prices : Array[(String, Price)]
 
-pub fn profile_of(@jsjson.JV, String, (String) -> Array[String]?) -> Profile
+pub fn profile_of(@jsjson.JValue, String, (String) -> Array[String]?) -> Profile
 
-pub fn profile_runtimes(@jsjson.JV) -> Array[String]
+pub fn profile_runtimes(@jsjson.JValue) -> Array[String]
 
-pub fn profile_via(@jsjson.JV) -> Via
+pub fn profile_via(@jsjson.JValue) -> Via
 
-pub fn quota(String, Array[@jsjson.JV], String?) -> @jsjson.JV
+pub fn quota(String, Array[@jsjson.JValue], String?) -> @jsjson.JValue
 
 pub async fn read_cursor(Io, String) -> CursorLogin?
 
@@ -313,23 +313,23 @@ pub async fn read_kimi(Io, String) -> KimiLogin?
 
 pub fn refusal(Int32, String) -> Thrown
 
-pub fn refused(Ctx, String, Response, String) -> @jsjson.JV
+pub fn refused(Ctx, String, Response, String) -> @jsjson.JValue
 
 pub async fn renew_kimi_token(Io, String, String, String) -> KimiToken
 
 pub fn renew_refused(Int32, String) -> Thrown
 
-pub fn reported_efforts(String, String?, @jsjson.JV?) -> Array[String]?
+pub fn reported_efforts(String, String?, @jsjson.JValue?) -> Array[String]?
 
 pub fn runs(Profile, String) -> Bool
 
-pub fn runtime_kind(@jsjson.JV?) -> String?
+pub fn runtime_kind(@jsjson.JValue?) -> String?
 
 pub let runtime_kinds : Array[String]
 
 pub fn runtime_label(String) -> String
 
-pub fn runtimes_for(@jsjson.JV?, @jsjson.JV?) -> Array[String]
+pub fn runtimes_for(@jsjson.JValue?, @jsjson.JValue?) -> Array[String]
 
 pub fn runtimes_of_endpoints(Endpoints) -> Array[String]
 
@@ -359,33 +359,33 @@ pub fn split_agy_tier(String) -> (String, String)?
 
 pub fn[T] stable_sort(Array[T], (T, T) -> Double) -> Unit
 
-pub async fn start_kimi_device(Io, String, String) -> @jsjson.JV
+pub async fn start_kimi_device(Io, String, String) -> @jsjson.JValue
 
-pub async fn station_env(Ctx) -> @jsjson.JV
+pub async fn station_env(Ctx) -> @jsjson.JValue
 
-pub fn stringify(@jsjson.JV) -> String
+pub fn stringify(@jsjson.JValue) -> String
 
-pub fn stringify_opt(@jsjson.JV?) -> String?
+pub fn stringify_opt(@jsjson.JValue?) -> String?
 
-pub fn stringify_pretty(@jsjson.JV) -> String
+pub fn stringify_pretty(@jsjson.JValue) -> String
 
-pub fn takes_fast(@jsjson.JV) -> Bool
+pub fn takes_fast(@jsjson.JValue) -> Bool
 
-pub fn text_of(@jsjson.JV?) -> String
+pub fn text_of(@jsjson.JValue?) -> String
 
-pub fn to_number(@jsjson.JV?) -> Double
+pub fn to_number(@jsjson.JValue?) -> Double
 
 pub fn trim_js(String) -> String
 
 pub fn trunc(Double) -> Double
 
-pub fn try_parse(String) -> @jsjson.JV?
+pub fn try_parse(String) -> @jsjson.JValue?
 
 pub fn unanswered(Error) -> Bool
 
 pub fn unique_id(String, Map[String, Unit]) -> String
 
-pub fn urgency(@jsjson.JV?, Double) -> Urgency
+pub fn urgency(@jsjson.JValue?, Double) -> Urgency
 
 pub fn usable(Health, now? : Double) -> Bool
 
@@ -397,7 +397,7 @@ pub fn utf8_text(Bytes) -> String
 
 pub fn window_label(Double?, String) -> String
 
-pub fn windows_of(@jsjson.JV?) -> Array[@jsjson.JV]
+pub fn windows_of(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
 pub async fn write_cursor(Io, String, CursorLogin) -> Unit
 
@@ -405,7 +405,7 @@ pub async fn write_kimi(Io, String, KimiLogin) -> Unit
 
 // Errors
 pub(all) suberror Thrown {
-  Thrown(String, @jsjson.JV)
+  Thrown(String, @jsjson.JValue)
 }
 pub impl Show for Thrown
 
@@ -416,11 +416,11 @@ pub struct Accounts {
   given : Given
   rt : @effect.Runtime
   background : Background
-  mut config_raw : @jsjson.JV
+  mut config_raw : @jsjson.JValue
   mut hub_cache : HubConfig?
   catalog : Catalog
-  checks : Map[String, @jsjson.JV]
-  quotas : Map[String, @jsjson.JV]
+  checks : Map[String, @jsjson.JValue]
+  quotas : Map[String, @jsjson.JValue]
   quota_busy : Map[String, @effect.Deferred[Unit]]
   quota_unanswered : Map[String, (String, Double)]
   reset_details_asked : Map[String, (Double, Double)]
@@ -440,25 +440,25 @@ pub struct Accounts {
   mut homes_changed : Int32
   emails : Map[String, (String, String?)]
   mut hub_accounts : SessionAccounts?
-  mut pace_read : (Double, Int32, Double, @jsjson.JV)?
+  mut pace_read : (Double, Int32, Double, @jsjson.JValue)?
   mut pace_rev : Int32
   mut unchecking : @effect.Deferred[Unit]?
   machine_said : @ref.Ref[Map[String, String]?]
 }
 pub async fn Accounts::account_email(Self, String, String) -> String?
-pub async fn Accounts::asked_quota(Self, String) -> @jsjson.JV?
-pub async fn Accounts::automatic_decisions_view(Self, @jsjson.JV, include_policy? : Bool, visible? : async (String) -> Bool, title? : async (String) -> String, models? : @jsjson.JV) -> @jsjson.JV
-pub async fn Accounts::check(Self, String, String) -> @jsjson.JV
-pub async fn Accounts::claude_token(Self, @jsjson.JV, String?, Bool) -> @jsjson.JV
+pub async fn Accounts::asked_quota(Self, String) -> @jsjson.JValue?
+pub async fn Accounts::automatic_decisions_view(Self, @jsjson.JValue, include_policy? : Bool, visible? : async (String) -> Bool, title? : async (String) -> String, models? : @jsjson.JValue) -> @jsjson.JValue
+pub async fn Accounts::check(Self, String, String) -> @jsjson.JValue
+pub async fn Accounts::claude_token(Self, @jsjson.JValue, String?, Bool) -> @jsjson.JValue
 pub async fn Accounts::close(Self) -> Unit
 pub async fn Accounts::codex_accounts_read(Self) -> Unit
-pub fn Accounts::config_said(Self, @jsjson.JV) -> Unit
-pub async fn Accounts::decision_models(Self) -> @jsjson.JV
-pub async fn Accounts::delete_profile(Self, String, @jsjson.JV, String) -> Unit
+pub fn Accounts::config_said(Self, @jsjson.JValue) -> Unit
+pub async fn Accounts::decision_models(Self) -> @jsjson.JValue
+pub async fn Accounts::delete_profile(Self, String, @jsjson.JValue, String) -> Unit
 pub async fn Accounts::drop_login(Self, String) -> Unit
 pub fn Accounts::followed(Self) -> Unit
 pub fn Accounts::found(Self, String) -> Array[String]?
-pub fn Accounts::fusion_view(Self, String) -> @jsjson.JV raise Thrown
+pub fn Accounts::fusion_view(Self, String) -> @jsjson.JValue raise Thrown
 pub fn Accounts::has_pending(Self, String) -> Bool
 pub fn Accounts::health(Self, String) -> Health
 pub async fn Accounts::homes_read_soon(Self) -> Unit
@@ -466,43 +466,43 @@ pub fn Accounts::hub_config(Self) -> HubConfig
 pub async fn Accounts::lent_health(Self, String) -> Health
 pub async fn Accounts::login_changed(Self, String) -> Unit
 pub async fn Accounts::login_state_file(Self, String) -> String?
-pub async fn Accounts::logins_view(Self) -> @jsjson.JV
+pub async fn Accounts::logins_view(Self) -> @jsjson.JValue
 pub async fn Accounts::machine_changed(Self) -> Unit
-pub async fn Accounts::machine_logins(Self) -> @jsjson.JV
-pub async fn Accounts::machine_token(Self, String?, Bool) -> @jsjson.JV
-pub async fn Accounts::new(Backend, Ctx, Given, @effect.Runtime, Clock, @jsjson.JV, Catalog) -> Self
-pub async fn Accounts::new_keyed_profile(Self, @jsjson.JV, @jsjson.JV, String) -> String
-pub async fn Accounts::new_login(Self, @jsjson.JV, @jsjson.JV, String) -> @jsjson.JV
-pub async fn Accounts::new_machine_profile(Self, @jsjson.JV, @jsjson.JV, String) -> String
+pub async fn Accounts::machine_logins(Self) -> @jsjson.JValue
+pub async fn Accounts::machine_token(Self, String?, Bool) -> @jsjson.JValue
+pub async fn Accounts::new(Backend, Ctx, Given, @effect.Runtime, Clock, @jsjson.JValue, Catalog) -> Self
+pub async fn Accounts::new_keyed_profile(Self, @jsjson.JValue, @jsjson.JValue, String) -> String
+pub async fn Accounts::new_login(Self, @jsjson.JValue, @jsjson.JValue, String) -> @jsjson.JValue
+pub async fn Accounts::new_machine_profile(Self, @jsjson.JValue, @jsjson.JValue, String) -> String
 pub fn Accounts::new_models(Self, Array[String]) -> Unit
-pub async fn Accounts::pace_view(Self, @jsjson.JV?) -> @jsjson.JV
+pub async fn Accounts::pace_view(Self, @jsjson.JValue?) -> @jsjson.JValue
 pub fn Accounts::profiles(Self) -> Array[Profile]
-pub async fn Accounts::profiles_view(Self, @jsjson.JV?) -> @jsjson.JV
-pub async fn Accounts::put_archive_policy(Self, @jsjson.JV, @jsjson.JV, String) -> Unit
-pub async fn Accounts::put_archiving(Self, @jsjson.JV, @jsjson.JV, String) -> Unit
-pub async fn Accounts::put_automatic_decisions(Self, @jsjson.JV, @jsjson.JV, String) -> Unit
-pub async fn Accounts::put_profile(Self, String, @jsjson.JV, @jsjson.JV, String) -> Unit
+pub async fn Accounts::profiles_view(Self, @jsjson.JValue?) -> @jsjson.JValue
+pub async fn Accounts::put_archive_policy(Self, @jsjson.JValue, @jsjson.JValue, String) -> Unit
+pub async fn Accounts::put_archiving(Self, @jsjson.JValue, @jsjson.JValue, String) -> Unit
+pub async fn Accounts::put_automatic_decisions(Self, @jsjson.JValue, @jsjson.JValue, String) -> Unit
+pub async fn Accounts::put_profile(Self, String, @jsjson.JValue, @jsjson.JValue, String) -> Unit
 pub fn Accounts::recheck_borrowed(Self) -> Unit
-pub async fn Accounts::refresh_decision_models(Self, @jsjson.JV, String) -> Unit
-pub async fn Accounts::refresh_quota(Self, String) -> @jsjson.JV?
+pub async fn Accounts::refresh_decision_models(Self, @jsjson.JValue, String) -> Unit
+pub async fn Accounts::refresh_quota(Self, String) -> @jsjson.JValue?
 pub fn Accounts::refresh_quotas(Self, Bool) -> Unit
 pub async fn Accounts::renew_console(Self, String) -> Unit
 pub async fn Accounts::renew_kimi(Self, String) -> Unit
-pub async fn Accounts::reset_quota(Self, String, String, String, String?) -> @jsjson.JV
-pub async fn Accounts::review_undecided(Self, @jsjson.JV, String) -> Double
+pub async fn Accounts::reset_quota(Self, String, String, String, String?) -> @jsjson.JValue
+pub async fn Accounts::review_undecided(Self, @jsjson.JValue, String) -> Double
 pub fn Accounts::set_hub_accounts(Self, SessionAccounts) -> Unit
 pub async fn Accounts::shared_changed(Self, String, Bool) -> Unit
 pub async fn Accounts::shared_quota_reset(Self, String) -> Unit
 pub fn Accounts::start(Self) -> Unit
-pub async fn Accounts::start_login(Self, String, @jsjson.JV, String) -> @jsjson.JV
-pub fn Accounts::state(Self) -> @jsjson.JV
-pub async fn Accounts::update_config(Self, (@jsjson.JV) -> @jsjson.JV raise Thrown) -> @jsjson.JV
+pub async fn Accounts::start_login(Self, String, @jsjson.JValue, String) -> @jsjson.JValue
+pub fn Accounts::state(Self) -> @jsjson.JValue
+pub async fn Accounts::update_config(Self, (@jsjson.JValue) -> @jsjson.JValue raise Thrown) -> @jsjson.JValue
 
 pub struct Backend {
-  call : async (String, Array[@jsjson.JV]) -> @jsjson.JV
+  call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
 }
-pub async fn Backend::ask(Self, String, Array[@jsjson.JV]) -> @jsjson.JV
-pub fn Backend::new(async (String, Array[@jsjson.JV]) -> @jsjson.JV) -> Self
+pub async fn Backend::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub fn Backend::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue) -> Self
 
 pub struct Background {
   rt : @effect.Runtime
@@ -523,15 +523,15 @@ pub fn Background::spawn(Self, async () -> Unit) -> Unit
 pub fn Background::track(Self, async () -> Unit) -> Unit
 
 pub(all) struct Catalog {
-  mut models : Map[String, @jsjson.JV]
+  mut models : Map[String, @jsjson.JValue]
 }
-pub fn Catalog::facts(Self, String) -> @jsjson.JV?
+pub fn Catalog::facts(Self, String) -> @jsjson.JValue?
 pub fn Catalog::new() -> Self
-pub fn Catalog::of_jv(@jsjson.JV?) -> Self
+pub fn Catalog::of_jv(@jsjson.JValue?) -> Self
 pub fn Catalog::price(Self, String) -> Price?
 
 pub(all) enum Claim {
-  Use(@jsjson.JV)
+  Use(@jsjson.JValue)
   NoneNow
   NoCredit
 }
@@ -542,7 +542,7 @@ pub(all) struct Clock {
 }
 
 pub(all) struct Connect {
-  raw : @jsjson.JV
+  raw : @jsjson.JValue
   id : String
   workspace : String?
   runtime : String
@@ -551,7 +551,7 @@ pub(all) struct Connect {
 }
 
 pub(all) struct ContextCall {
-  turn : @jsjson.JV
+  turn : @jsjson.JValue
   profile : String?
   model : String?
   context : Double?
@@ -560,7 +560,7 @@ pub(all) struct ContextCall {
 pub(all) struct Ctx {
   io : Io
   words : Words
-  urls : @jsjson.JV
+  urls : @jsjson.JValue
   station_lang : String
   tz_offset_ms : (Double) -> Double
 }
@@ -574,14 +574,14 @@ pub(all) struct CursorLogin {
   key_name : String
   created_at : Double
 }
-pub fn CursorLogin::to_jv(Self) -> @jsjson.JV
+pub fn CursorLogin::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct CursorUrls {
   website : String
   backend : String
   api : String
 }
-pub fn CursorUrls::of_jv(@jsjson.JV?) -> Self
+pub fn CursorUrls::of_jv(@jsjson.JValue?) -> Self
 
 pub(all) struct Endpoints {
   chat : String?
@@ -620,18 +620,18 @@ pub(all) struct Given {
   shared_host_name : Bool
   config_checked : Bool
 }
-pub fn Given::of_jv(@jsjson.JV, String) -> Self
+pub fn Given::of_jv(@jsjson.JValue, String) -> Self
 
 #derive(Eq)
 pub(all) struct Health {
-  check : @jsjson.JV?
-  quota : @jsjson.JV?
+  check : @jsjson.JValue?
+  quota : @jsjson.JValue?
   account : String?
   spent : Bool
 }
 pub fn Health::empty() -> Self
-pub fn Health::of_jv(@jsjson.JV) -> Self
-pub fn Health::to_jv(Self) -> @jsjson.JV
+pub fn Health::of_jv(@jsjson.JValue) -> Self
+pub fn Health::to_jv(Self) -> @jsjson.JValue
 
 type HomeRead
 
@@ -653,8 +653,8 @@ pub async fn Io::fetch(Self, Request) -> Response
 pub async fn Io::get(Self, String, Array[(String, String)], Int32) -> Response
 pub async fn Io::mkdir(Self, String) -> Unit
 pub fn Io::new(Backend) -> Self
-pub async fn Io::os(Self) -> @jsjson.JV
-pub async fn Io::post_form(Self, String, Array[(String, String)], Array[(String, String)]) -> (Int32, @jsjson.JV)
+pub async fn Io::os(Self) -> @jsjson.JValue
+pub async fn Io::post_form(Self, String, Array[(String, String)], Array[(String, String)]) -> (Int32, @jsjson.JValue)
 pub async fn Io::random_hex(Self, Int32) -> String
 pub async fn Io::read_file(Self, String) -> String
 pub async fn Io::read_file_or_none(Self, String) -> String?
@@ -673,7 +673,7 @@ pub(all) struct KimiLogin {
   life_ms : Double
   device_id : String
 }
-pub fn KimiLogin::to_jv(Self) -> @jsjson.JV
+pub fn KimiLogin::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct KimiToken {
   access : String
@@ -713,7 +713,7 @@ pub(all) struct Price {
 }
 
 pub(all) struct Profile {
-  raw : @jsjson.JV
+  raw : @jsjson.JValue
   id : String
   name : String
   runtime : String
@@ -727,9 +727,9 @@ pub(all) struct Profile {
   background_on_message : Bool
   withheld : Array[String]?
 }
-pub fn Profile::get(Self, String) -> @jsjson.JV?
-pub fn Profile::of_hub(@jsjson.JV) -> Self
-pub fn Profile::to_jv(Self) -> @jsjson.JV
+pub fn Profile::get(Self, String) -> @jsjson.JValue?
+pub fn Profile::of_hub(@jsjson.JValue) -> Self
+pub fn Profile::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct Request {
   url : String
@@ -743,11 +743,11 @@ pub(all) struct Response {
   status : Int32
   text : String
 }
-pub fn Response::json(Self) -> @jsjson.JV raise Thrown
+pub fn Response::json(Self) -> @jsjson.JValue raise Thrown
 pub fn Response::ok(Self) -> Bool
 
 pub(all) struct Row {
-  raw : @jsjson.JV
+  raw : @jsjson.JValue
   key : String
   runtime : String
   profile : String
@@ -757,7 +757,7 @@ pub(all) struct Row {
   effort : String?
   runtime_session : String?
 }
-pub fn Row::of_jv(@jsjson.JV) -> Self
+pub fn Row::of_jv(@jsjson.JValue) -> Self
 
 pub struct SessionAccounts {
   b : Backend
@@ -779,7 +779,7 @@ pub struct SessionAccounts {
   rt : @effect.Runtime
 }
 pub async fn SessionAccounts::allows(Self, String, Profile) -> Bool
-pub async fn SessionAccounts::change(Self, String, @jsjson.JV, String) -> @jsjson.JV
+pub async fn SessionAccounts::change(Self, String, @jsjson.JValue, String) -> @jsjson.JValue
 pub async fn SessionAccounts::goes_on_with(Self, Row, String) -> Bool
 pub fn SessionAccounts::health_of(Self, HubConfig, String) -> Health
 pub async fn SessionAccounts::limit_after(Self, String, String?) -> LimitAfter
@@ -826,7 +826,7 @@ pub(all) struct SpendHour {
   gen_ms : Double
   gen_output : Double
 }
-pub fn SpendHour::of_jv(@jsjson.JV) -> Self
+pub fn SpendHour::of_jv(@jsjson.JValue) -> Self
 
 pub(all) struct Urgency {
   crowded : Bool
@@ -841,14 +841,14 @@ pub(all) struct Via {
 }
 
 pub struct Words {
-  zh : @jsjson.JV
-  en : @jsjson.JV
+  zh : @jsjson.JValue
+  en : @jsjson.JValue
   product : String
 }
-pub fn Words::new(@jsjson.JV, @jsjson.JV, product? : String) -> Self
+pub fn Words::new(@jsjson.JValue, @jsjson.JValue, product? : String) -> Self
 pub fn Words::tr(Self, String, String, args? : Array[(String, String)]) -> String
 
 // Type aliases
-pub using @jsjson {type JV}
+pub using @jsjson {type JValue as JV}
 
 // Traits

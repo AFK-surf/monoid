@@ -20,7 +20,7 @@ pub fn on_the_way(e : Error) -> Bool {
   let k = kind_of(e)
   k == "OnTheWay" ||
   k == "TypeError" ||
-  (field_of(e, "name") is Some(Str(u)) && @jsjson.text(u) == "TimeoutError")
+  (field_of(e, "name") is Some(Str(u)) && @jsjson.sanitize_str(u) == "TimeoutError")
 }
 
 ///|
@@ -209,7 +209,7 @@ pub fn delta_for(said : J, build : J, platform : String?, current : Double?, bas
     None => return None
   }
   let file = match get(Some(d), "file") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     _ => return None
   }
   if !release_file(file) || !sha_test(get(Some(d), "sha256")) || !is_safe_integer(get(Some(d), "size")) {
@@ -353,12 +353,12 @@ pub fn apply_apart(w : World) -> Applier {
     let mut said = ""
     for ev in events_of(child) {
       match ev {
-        Arr([Str(k), Str(t), ..]) if @jsjson.text(k) == "stderr" => {
-          said = said + @jsjson.text(t)
+        Arr([Str(k), Str(t), ..]) if @jsjson.sanitize_str(k) == "stderr" => {
+          said = said + @jsjson.sanitize_str(t)
           said = slice(said, -2000)
         }
-        Arr([Str(k), Str(m), ..]) if @jsjson.text(k) == "error" => raise fail(@jsjson.text(m))
-        Arr([Str(k), code, ..rest]) if @jsjson.text(k) == "close" => {
+        Arr([Str(k), Str(m), ..]) if @jsjson.sanitize_str(k) == "error" => raise fail(@jsjson.sanitize_str(m))
+        Arr([Str(k), code, ..rest]) if @jsjson.sanitize_str(k) == "close" => {
           if code is Num(0.0) {
             return
           }
@@ -371,7 +371,7 @@ pub fn apply_apart(w : World) -> Applier {
             Num(c) => num_text(c)
             _ =>
               match rest {
-                [Str(s), ..] => @jsjson.text(s)
+                [Str(s), ..] => @jsjson.sanitize_str(s)
                 _ => "null"
               }
           }
@@ -505,7 +505,7 @@ async fn download_checked(
   if got < size {
     raise on_way("the \{what} broke off at \{num_text(got)} of the \{num_text(size)} bytes the feed says")
   }
-  if !(sha is Str(u) && @jsjson.text(u) == sha256(all.to_bytes())) {
+  if !(sha is Str(u) && @jsjson.sanitize_str(u) == sha256(all.to_bytes())) {
     raise fail("the \{what}'s sha256 is not the feed's")
   }
 }
@@ -559,7 +559,7 @@ pub async fn take_delta(
     w.rm(file)
     signal.throw_if_aborted()
     let (sum, size) = w.hash_file(made)
-    let raw_ok = (d.raw_size is Num(n) && n == size) && (d.raw_sha256 is Str(u) && @jsjson.text(u) == sum)
+    let raw_ok = (d.raw_size is Num(n) && n == size) && (d.raw_sha256 is Str(u) && @jsjson.sanitize_str(u) == sum)
     if !raw_ok {
       raise fail("what it made (\{num_text(size)} bytes) is not the release's signed raw archive")
     }

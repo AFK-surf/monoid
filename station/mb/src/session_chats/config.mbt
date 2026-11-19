@@ -62,7 +62,7 @@ pub fn js_string_of(v : J?) -> String {
     Some(Null) => "null"
     Some(Bool(b)) => if b { "true" } else { "false" }
     Some(Num(d)) => num_text(d)
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(Arr(xs)) => xs.map(x => if x is Null { "" } else { js_string_of(Some(x)) }).join(",")
     Some(Obj(_)) => "[object Object]"
   }
@@ -372,7 +372,7 @@ pub fn allowed_in(profile : J, ws : String?, home : String?) -> Bool {
     None => home
   }
   match (only, at_) {
-    (Some(list), Some(a)) => if !list.iter().any(x => x is Str(u) && @jsjson.text(u) == a) { return false }
+    (Some(list), Some(a)) => if !list.iter().any(x => x is Str(u) && @jsjson.sanitize_str(u) == a) { return false }
     _ => ()
   }
   match (ws, home) {

@@ -230,21 +230,7 @@ fn[T] Hub::tw(self : Hub, f : () -> T raise) -> T raise {
 ///|
 /// A JSON value as the threads' store takes it (station/jsjson).
 pub fn jv(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(a) => Arr(a.map(jv))
-    Object(m) => {
-      let out = []
-      for k, x in m {
-        out.push((@jsjson.units(k), jv(x)))
-      }
-      Obj(out)
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|

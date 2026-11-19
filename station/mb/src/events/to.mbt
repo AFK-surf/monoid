@@ -43,7 +43,7 @@ pub fn manages_station(role : String) -> Bool {
 /// store/rows.ts `sees`: a chat of workspace `ws` (null: the home one) is the viewer's.
 pub fn sees(viewer : Viewer, ws : J) -> Bool {
   match ws {
-    Str(s) => @jsjson.raw_text(s) == viewer.workspace
+    Str(s) => s == viewer.workspace
     Null => viewer.home != Some(false)
     _ => false
   }

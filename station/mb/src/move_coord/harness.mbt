@@ -1753,7 +1753,7 @@ async fn Rpc::command(self : Rpc, c : J) -> J {
       match (i, meth) {
         (ReposI(r), "answer") => r.answer(arg_text(c, 0), arg(c, 1), match arg(c, 2) {
           Str(u) => {
-            let bytes = Ref(Some(@utf8.encode(@jsjson.text(u))))
+            let bytes = Ref(Some(@utf8.encode(@jsjson.sanitize_str(u))))
             Some(Came(async fn() {
               let b = bytes.val
               bytes.val = None
@@ -1885,14 +1885,7 @@ fn pure_case(c : J) -> J raise {
 
 ///|
 fn to_jv(j : J) -> @api_routes.JV {
-  match j {
-    Null => Null
-    Bool(b) => Bool(b)
-    Num(d) => Num(d)
-    Str(u) => Str(@jsjson.text(u))
-    Arr(xs) => Arr(xs.map(to_jv))
-    Obj(ps) => Obj(ps.map(p => (@jsjson.text(p.0), to_jv(p.1))))
-  }
+  @jsjson.JValue::of_js(j)
 }
 
 ///|

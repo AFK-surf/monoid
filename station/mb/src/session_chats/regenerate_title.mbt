@@ -57,7 +57,7 @@ pub async fn regenerate_title(w : World, thread : J, members : Array[J]) -> Stri
   w.state("titleRequestSet", [thread, js(id)]) |> ignore
   let mut agent : J = Null
   let finish = async fn() {
-    if w.state("titleRequestGet", [thread]) is Str(u) && @jsjson.text(u) == id {
+    if w.state("titleRequestGet", [thread]) is Str(u) && @jsjson.sanitize_str(u) == id {
       w.state("titleRequestDelete", [thread]) |> ignore
     }
   }
@@ -93,7 +93,7 @@ pub async fn regenerate_title(w : World, thread : J, members : Array[J]) -> Stri
     let first = w.store("firstText", [thread])
     let input = stringify(
       jo([
-        ("firstMessage", match first { Str(u) => js(first_chars(@jsjson.text(u), 800)); _ => J::Null }),
+        ("firstMessage", match first { Str(u) => js(first_chars(@jsjson.sanitize_str(u), 800)); _ => J::Null }),
         ("conversation", ja(conversation)),
       ]),
     )
@@ -181,7 +181,7 @@ pub async fn regenerate_title(w : World, thread : J, members : Array[J]) -> Stri
       raise title_error("failed")
     }
     let still = match w.state("titleRequestGet", [thread]) {
-      Str(u) => @jsjson.text(u) == id
+      Str(u) => @jsjson.sanitize_str(u) == id
       _ => false
     }
     if !still || !jeq(w.store("titleRevision", [thread]), revision) || w.store("getThread", [thread]) is Null {

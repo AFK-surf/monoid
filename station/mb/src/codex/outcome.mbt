@@ -5,19 +5,19 @@ fn word_unit(c : Int) -> Bool {
 }
 
 ///|
-fn boundary(s : Array[Int], at : Int) -> Bool {
-  let before = at > 0 && word_unit(s[at - 1])
-  let after = at < s.length() && word_unit(s[at])
+fn boundary(s : String, at : Int) -> Bool {
+  let before = at > 0 && word_unit(s.unsafe_get(at - 1).to_int())
+  let after = at < s.length() && word_unit(s.unsafe_get(at).to_int())
   before != after
 }
 
 ///|
-fn at_is(s : Array[Int], at : Int, w : Array[Int]) -> Bool {
+fn at_is(s : String, at : Int, w : String) -> Bool {
   if at < 0 || at + w.length() > s.length() {
     return false
   }
   for j in 0..<w.length() {
-    if s[at + j] != w[j] {
+    if s.unsafe_get(at + j) != w.unsafe_get(j) {
       return false
     }
   }
@@ -27,18 +27,22 @@ fn at_is(s : Array[Int], at : Int, w : Array[Int]) -> Bool {
 ///|
 /// `/\b(?:401|unauthorized|token_revoked)\b|invalidated oauth token/i.test(s)`: a regular expression's `i` folds ASCII
 /// letters alone.
-fn says_unauthorized(s : Array[Int]) -> Bool {
-  let folded = s.map(c => if c >= 0x41 && c <= 0x5a { c + 32 } else { c })
+fn says_unauthorized(s : String) -> Bool {
+  let b = StringBuilder(capacity=s.length())
+  for i in 0..<s.length() {
+    let c = s.unsafe_get(i).to_int()
+    b.write_char((if c >= 0x41 && c <= 0x5a { c + 32 } else { c }).unsafe_to_char())
+  }
+  let folded = b.to_string()
   for i = 0; i < folded.length(); i = i + 1 {
-    if at_is(folded, i, u("invalidated oauth token")) {
+    if at_is(folded, i, "invalidated oauth token") {
       return true
     }
     if !boundary(folded, i) {
       continue
     }
     for w in ["401", "unauthorized", "token_revoked"] {
-      let q = u(w)
-      if at_is(folded, i, q) && boundary(folded, i + q.length()) {
+      if at_is(folded, i, w) && boundary(folded, i + w.length()) {
         return true
       }
     }
@@ -49,10 +53,10 @@ fn says_unauthorized(s : Array[Int]) -> Bool {
 ///|
 /// Why a Codex turn failed (codex.ts `classifyCodexError`), from its error's `codexErrorInfo` (a code, or a code with
 /// the HTTP status it came with) and message: the code first, then the status, then what the message says.
-pub fn classify_error(info : J?, message : Array[Int]) -> String {
+pub fn classify_error(info : J?, message : String) -> String {
   let code : String? = match info {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
-    Some(Obj(_) as o) => o.keys().get(0).map(k => @jsjson.raw_text(k))
+    Some(Str(s)) => Some(s)
+    Some(Obj(_) as o) => o.keys().get(0)
     _ => None
   }
   match code {
@@ -76,7 +80,7 @@ pub fn classify_error(info : J?, message : Array[Int]) -> String {
     _ => None
   }
   if status is Some(n) && [401.0, 403.0, 429.0, 529.0].contains(n) {
-    return @claude.failure_of(u("\{n.to_int()} ") + message)
+    return @claude.failure_of("\{n.to_int()} " + message)
   }
   // Some versions report the HTTP refusal in the message without an unauthorized codexErrorInfo.
   if says_unauthorized(message) {
@@ -100,12 +104,12 @@ let tool_servers : Array[String] = ["stillfail"]
 ///|
 /// What a notification says of the station's tools being out of reach (codex.ts `codexToolsLost`): a call to one of
 /// them that failed as unreachable, its error's first 300 characters.
-pub fn tools_lost(method : Array[Int], params : J) -> Array[Int]? {
+pub fn tools_lost(method : String, params : J) -> String? {
   let item = field(Some(params), "item")
-  guard @jsjson.raw_text(method) == "item/completed" &&
+  guard method == "item/completed" &&
     is_str(field(item, "type"), "mcpToolCall") &&
     (match field(item, "server") {
-      Some(Str(s)) => tool_servers.contains(@jsjson.raw_text(s))
+      Some(Str(s)) => tool_servers.contains(s)
       _ => false
     }) &&
     is_str(field(item, "status"), "failed") else {
@@ -122,8 +126,8 @@ pub fn tools_lost(method : Array[Int], params : J) -> Array[Int]? {
 ///|
 /// Whether a notification says its thread compacted its context, on its own as it filled or by thread/compact/start
 /// (codex.ts `codexCompacted`): a contextCompaction item done.
-pub fn compacted(method : Array[Int], params : J) -> Bool {
-  @jsjson.raw_text(method) == "item/completed" && is_str(field(field(Some(params), "item"), "type"), "contextCompaction")
+pub fn compacted(method : String, params : J) -> Bool {
+  method == "item/completed" && is_str(field(field(Some(params), "item"), "type"), "contextCompaction")
 }
 
 ///|
@@ -147,8 +151,8 @@ pub fn outcome(params : J) -> J {
     }
     return obj([
       ("kind", jstr("failed")),
-      ("reason", jstr(classify_error(info, message.unwrap_or([])))),
-      ("message", Str(@claude.chars(message.unwrap_or(u("turn failed")), 1000))),
+      ("reason", jstr(classify_error(info, message.unwrap_or("")))),
+      ("message", Str(@claude.chars(message.unwrap_or("turn failed"), 1000))),
     ])
   }
   obj([("kind", jstr("completed"))])
@@ -158,7 +162,7 @@ pub fn outcome(params : J) -> J {
 /// What a thread's notification comes to for its session (codex.ts `CodexSession.sink`), its live steps fed: its live
 /// steps, the station's tools out of reach, a compaction, a turn's start (with the turn's id where it says one) and its
 /// end with its outcome, as runtime events.
-pub fn events(live : Live, method : Array[Int], params : J) -> Array[J] {
+pub fn events(live : Live, method : String, params : J) -> Array[J] {
   let out = live.feed(method, params).map(e => obj([("type", jstr("live")), ("event", e)]))
   if tools_lost(method, params) is Some(why) {
     out.push(obj([("type", jstr("toolsLost")), ("why", Str(why))]))
@@ -166,11 +170,11 @@ pub fn events(live : Live, method : Array[Int], params : J) -> Array[J] {
   if compacted(method, params) {
     out.push(obj([("type", jstr("compacted"))]))
   }
-  match @jsjson.raw_text(method) {
+  match method {
     "turn/started" => {
-      let fields = [(u("type"), jstr("turnStarted"))]
+      let fields = [("type", jstr("turnStarted"))]
       if field(field(Some(params), "turn"), "id") is Some(Str(id)) {
-        fields.push((u("turnId"), Str(id)))
+        fields.push(("turnId", Str(id)))
       }
       out.push(Obj(fields))
     }

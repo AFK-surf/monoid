@@ -350,7 +350,7 @@ fn stat_of(j : J) -> Stat {
 /// `readFile(path, "utf8")`.
 pub async fn World::read_text(self : World, path : String) -> String {
   match self.call("fs.readFile", [js(path), js("utf8")]) {
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     _ => ""
   }
 }
@@ -569,7 +569,7 @@ pub fn Response::ok(self : Response) -> Bool {
 /// `headers.get(name)` (names as the world gives them, lowercase).
 pub fn Response::header(self : Response, name : String) -> String? {
   match get(Some(self.headers), name) {
-    Some(Str(u)) => Some(@jsjson.text(u))
+    Some(Str(u)) => Some(@jsjson.sanitize_str(u))
     Some(Num(n)) => Some(num_text(n))
     _ => None
   }

@@ -250,20 +250,7 @@ fn env_set(env : Array[(String, String)], k : String, v : String) -> Unit {
 
 ///|
 fn from_jvalue(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.raw_text(s))
-    Arr(a) => Json::array(a.map(from_jvalue))
-    Obj(kv) => {
-      let m = Map([])
-      for p in kv {
-        m[@jsjson.raw_text(p.0)] = from_jvalue(p.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json()
 }
 
 ///|

@@ -40,11 +40,11 @@ pub(all) struct PeerAnswer {
 
 ///|
 /// `{...v}` of what may be anything: an object's fields, an array's or a string's by their indexes, nothing else's.
-fn spread(v : J?) -> Array[(Array[Int], J)] {
+fn spread(v : J?) -> Array[(String, J)] {
   match v {
     Some(Obj(entries)) => entries.copy()
-    Some(Arr(items)) => items.mapi((i, x) => (@jsjson.units(i.to_string()), x))
-    Some(Str(u)) => u.mapi((i, c) => (@jsjson.units(i.to_string()), Str([c])))
+    Some(Arr(items)) => items.mapi((i, x) => (i.to_string(), x))
+    Some(Str(u)) => Array::makei(u.length(), i => (i.to_string(), Str(u.unsafe_substring(start=i, end=i + 1))))
     _ => []
   }
 }
@@ -62,7 +62,7 @@ pub fn peer_read(
 ) -> async (String, J, String?) -> PeerAnswer {
   async fn(peer, request, workspace) {
     let op = match prop(Some(request), "op") {
-      Some(Str(u)) => utext(u)
+      Some(Str(u)) => u
       _ => ""
     }
     if !ops.contains(op) {
@@ -186,7 +186,7 @@ async fn station_rows(ask : async (String, J) -> String, from : Double, to : Dou
       break
     }
     let next = match (more, prop(Some(page), "next")) {
-      (Some(Bool(true)), Some(Str(u))) if u.length() > 0 && !cursors.contains(utext(u)) => utext(u)
+      (Some(Bool(true)), Some(Str(u))) if u.length() > 0 && !cursors.contains(u) => u
       _ => raise fail_("that station's chat cursor does not continue")
     }
     cursors.add(next)

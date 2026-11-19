@@ -12,7 +12,7 @@ pub fn js_number(v : J) -> Double? {
   match v {
     Num(d) => Some(d)
     Str(u) => {
-      let t = trim(@jsjson.text(u))
+      let t = trim(@jsjson.sanitize_str(u))
       let low = lower(t)
       let body = if starts(low, "+") || starts(low, "-") { slice(low, 1) } else { low }
       if body == "inf" || body == "infinity" {
@@ -323,7 +323,7 @@ pub async fn thread_history(
     _ => 30.0
   }
   let before = match at(Some(args), "before") {
-    Some(Str(u)) if u.length() > 0 => Some(@jsjson.text(u))
+    Some(Str(u)) if u.length() > 0 => Some(@jsjson.sanitize_str(u))
     _ => None
   }
   let tid = at(Some(thread), "id").unwrap_or(Null)

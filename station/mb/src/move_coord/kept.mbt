@@ -41,7 +41,7 @@ pub fn KeptSet::new(disk : Disk, path : String) -> KeptSet {
         Ok(Arr(xs)) =>
           for x in xs {
             if x is Str(u) {
-              let s = @jsjson.text(u)
+              let s = @jsjson.sanitize_str(u)
               if !ids.contains(s) {
                 ids.push(s)
               }
@@ -195,7 +195,7 @@ pub fn KeptLog::new(
           Err(_) => continue
         }
         let k = match get(Some(r), "k") {
-          Some(Str(u)) => @jsjson.text(u)
+          Some(Str(u)) => @jsjson.sanitize_str(u)
           _ => continue
         }
         lines += 1

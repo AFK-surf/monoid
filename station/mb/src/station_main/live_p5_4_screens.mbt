@@ -74,7 +74,7 @@ fn p54_screen_procs(host : @host.Host) -> @screens.Procs {
         e =>
           raise @screens.ExecFailed(
             message=p54_message(e),
-            code=@jsjson.JValue::Str(@jsjson.units("ENOENT")),
+            code=@jsjson.JValue::Str("ENOENT"),
             signal=None,
             stdout="",
             stderr="",

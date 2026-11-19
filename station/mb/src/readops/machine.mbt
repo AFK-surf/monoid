@@ -40,7 +40,7 @@ priv struct Roots {
 ///|
 fn str_of(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    Some(Str(s)) => Some(s)
     _ => None
   }
 }
@@ -159,7 +159,7 @@ fn claude_said(r : @jsjson.JValue) -> Array[(Bool, String)] {
   let person = kind == "user"
   let content = jget(jget(Some(r), "message"), "content")
   let texts = match content {
-    Some(Str(s)) => [@jsjson.raw_text(s)]
+    Some(Str(s)) => [s]
     Some(Arr(parts)) => parts.filter_map(b => if is_text(jget(Some(b), "type"), "text") { str_of(jget(Some(b), "text")) } else { None })
     _ => []
   }

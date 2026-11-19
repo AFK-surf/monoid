@@ -363,7 +363,7 @@ pub fn Stands::of_j(v : J?) -> Stands? {
       Some({
         kind: text(at(v, "kind")),
         words: match at(v, "words") {
-          Some(Str(u)) => Some(@jsjson.text(u))
+          Some(Str(u)) => Some(@jsjson.sanitize_str(u))
           _ => None
         },
       })
@@ -405,7 +405,7 @@ pub fn answer_of(payload : J?) -> (String, Bool)? {
   }
   let sent = {
     let raw = match at(Some(action), "value") {
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       _ => "{}"
     }
     match (try Ok(parse(raw)) catch { e => Err(e) }) {

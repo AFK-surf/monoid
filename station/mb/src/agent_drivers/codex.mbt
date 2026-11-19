@@ -187,7 +187,7 @@ pub fn ModelCatalog::take_page(self : ModelCatalog, answer : JValue?) -> Unit ra
       continue
     }
     let id = match get(Some(m), "id") {
-      Some(Str(u)) => Some(@jsjson.text(u))
+      Some(Str(u)) => Some(@jsjson.sanitize_str(u))
       None => str_at(Some(m), "model")
       _ => None
     }
@@ -1893,7 +1893,7 @@ pub fn lent_expiry(m : Machine, home : String) -> Later[Double] {
     let token = match parse_json(text) {
       Some(j) =>
         match get(get(Some(j), "tokens"), "access_token") {
-          Some(Str(u)) => @jsjson.text(u)
+          Some(Str(u)) => @jsjson.sanitize_str(u)
           Some(other) => js_string_of(other)
           None => "undefined"
         }
@@ -1917,7 +1917,7 @@ pub fn js_string_of(v : JValue) -> String {
     Null => "null"
     Bool(x) => x.to_string()
     Num(_) => @jsjson.stringify(v)
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Arr(_) => "[array]"
     Obj(_) => "[object Object]"
   }
@@ -3206,7 +3206,7 @@ pub fn remember_rollout(
   path : JValue,
 ) -> Later[String?] {
   guard path is Str(u) else { return Later::ok(m.lp, None) }
-  let p = @jsjson.text(u)
+  let p = @jsjson.sanitize_str(u)
   if !p.has_prefix("/") || id.contains("/") || id.contains("\\") || id.contains("\u{0}") {
     return Later::ok(m.lp, None)
   }

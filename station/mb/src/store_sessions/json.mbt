@@ -144,7 +144,7 @@ fn parsed(v : Json) -> Json? {
 ///|
 /// `String(v)`.
 fn js_string(v : Json) -> String {
-  @jsjson.raw_text(@jsjson.js_string(to_js(v)))
+  @jsjson.js_string(to_js(v))
 }
 
 ///|

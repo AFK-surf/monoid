@@ -72,7 +72,7 @@ pub impl Show for SlackWords with output(self, logger) {
 /// A value as a form field: strings as they are, anything else as JSON (blocks, arrays), as Slack takes them.
 pub fn field(v : J) -> String {
   match v {
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     other => stringify(other)
   }
 }
@@ -313,7 +313,7 @@ pub async fn SlackClient::api(self : SlackClient, meth : String, params : Params
   if !is_true(at(Some(body), "ok")) {
     let code = match at(Some(body), "error") {
       None => "undefined"
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       Some(e) => stringify(e)
     }
     raise fail_("slack \{meth}: \{code}")
@@ -337,7 +337,7 @@ pub async fn SlackClient::app(
   }
   if !is_true(at(Some(data), "ok")) {
     let code = match at(Some(data), "error") {
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       None | Some(Null) => "HTTP \{status}"
       Some(e) => stringify(e)
     }

@@ -296,14 +296,7 @@ pub fn Pages::result(self : Pages) -> Array[Json] {
 ///|
 /// Strings by their UTF-16 units, as JavaScript compares them.
 pub fn compare_units(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let d = a.unsafe_charcode_at(i) - b.unsafe_charcode_at(i)
-    if d != 0 {
-      return d
-    }
-  }
-  a.length() - b.length()
+  @jsjson.js_compare(a, b)
 }
 
 ///|

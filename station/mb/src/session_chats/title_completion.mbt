@@ -57,7 +57,7 @@ pub async fn title_completion(w : World, profile : J, model : String?, session :
     href = slice(href, 0, b=href.length() - 1)
   }
   let key_text = match key {
-    Some(Str(u)) => if @jsjson.text(u) == "none" { "" } else { @jsjson.text(u) }
+    Some(Str(u)) => if @jsjson.sanitize_str(u) == "none" { "" } else { @jsjson.sanitize_str(u) }
     _ => ""
   }
   Some(jo([("endpoint", js("\{href}/chat/completions")), ("key", js(key_text)), ("model", js(chosen)), ("headers", headers)]))

@@ -122,7 +122,7 @@ pub fn yes_at(v : J, key : String) -> Bool {
 /// `Object.fromEntries(Object.entries(v ?? {}).filter(([, x]) => typeof x === "string"))`.
 pub fn string_map(v : J?) -> Array[(String, String)] {
   entries(v).filter_map(e => match e.1 {
-    Str(u) => Some((e.0, @jsjson.text(u)))
+    Str(u) => Some((e.0, @jsjson.sanitize_str(u)))
     _ => None
   })
 }

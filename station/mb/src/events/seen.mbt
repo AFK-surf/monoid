@@ -174,7 +174,7 @@ pub fn went(store : SeenStore, path : String, viewer : Viewer) -> J? {
   for key in keys {
     guard (store.handed_to)(key) is Some(h) else { continue }
     guard (store.session_ws)(key) is Some(Str(ws)) &&
-      @jsjson.raw_text(ws).has_prefix("handed:") else {
+      ws.has_prefix("handed:") else {
       continue
     }
     if !sees(viewer, h.get("ws").unwrap_or(Null)) {

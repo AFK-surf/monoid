@@ -143,7 +143,6 @@ pub(all) struct Asked {
   brief : Bool
   logins : Array[String]
   running : Bool
-  shared : Bool
 }
 
 type Client
@@ -225,7 +224,6 @@ pub struct Events {
   mut lingering : (() -> Unit)?
   mut last : (Viewer, String)?
   mut shared_told : Map[String, String]?
-  mut shared_until : Double
   mut shared_reading : Array[(Bool) -> Unit]?
   mut opening_shared : Int32
   overview_told : Map[String, String]
@@ -356,6 +354,7 @@ pub(all) struct OverviewDeps {
   chat_title : (String) -> String
   rooted : (String) -> Bool
   clean : (String) -> String
+  built_at : Double?
 }
 
 pub struct OverviewKept {

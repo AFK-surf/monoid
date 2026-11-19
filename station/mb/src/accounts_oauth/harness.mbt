@@ -1078,12 +1078,5 @@ pub async fn harness(host : @host.Host) -> Unit {
 
 ///|
 fn jv(v : @jsjson.JValue) -> @api_routes.JV {
-  match v {
-    Null => Null
-    Bool(b) => Bool(b)
-    Num(n) => Num(n)
-    Str(u) => Str(@jsjson.text(u))
-    Arr(a) => Arr(a.map(jv))
-    Obj(f) => Obj(f.map(p => (@jsjson.text(p.0), jv(p.1))))
-  }
+  @jsjson.JValue::of_js(v)
 }

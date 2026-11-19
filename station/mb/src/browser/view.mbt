@@ -844,7 +844,7 @@ fn TabView::watch_binding(
 ///|
 pub fn TabView::watch_clipboard(self : TabView, heard : (Clip) -> Unit) -> () -> Unit {
   self.watch_binding(copy_binding, copy_hook(), params => match at(Some(params), "payload") {
-    Some(Str(u)) if u.length() > 0 => heard({ type_: "text", text: @jsjson.text(u) })
+    Some(Str(u)) if u.length() > 0 => heard({ type_: "text", text: @jsjson.sanitize_str(u) })
     _ => ()
   })
 }
@@ -920,7 +920,7 @@ pub async fn TabView::fill(self : TabView, f : J) -> Unit {
 fn b64_ok(v : J?, most? : Int = 1366) -> Bool {
   match v {
     Some(Str(u)) => {
-      let s = @jsjson.text(u)
+      let s = @jsjson.sanitize_str(u)
       s != "" &&
       s.length() <= most &&
       s.iter().all(c => is_ascii_alpha(c) || is_ascii_digit(c) || c == '_' || c == '-')
@@ -978,7 +978,7 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
       let said = parse_obj(js_str(at(Some(params), "payload")))
       guard text(at(said, "owner")) == owner && at(said, "owner") is Some(Str(_)) else { return }
       guard at(said, "id") is Some(Str(iu)) && iu.length() > 0 && iu.length() <= 32 else { return }
-      let id = @jsjson.text(iu)
+      let id = @jsjson.sanitize_str(iu)
       if is_true(at(said, "gone")) {
         pending.remove(id)
         match self.asked {
@@ -991,7 +991,7 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
         return
       }
       if at(said, "uvpa") is Some(Str(uu)) && uu.length() <= 253 {
-        let raw = lower(@jsjson.text(uu))
+        let raw = lower(@jsjson.sanitize_str(uu))
         let h = if raw.has_suffix(".") { slice(raw, 0, b=raw.length() - 1) } else { raw }
         let mut available = false
         match self.p.own_passkey {
@@ -1019,11 +1019,11 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
         allow.iter().all(a => b64_ok(Some(a))) else {
         return
       }
-      let rp_id = @jsjson.text(ru)
+      let rp_id = @jsjson.sanitize_str(ru)
       let challenge = text(at(said, "challenge"))
       let user_verification = match at(said, "userVerification") {
         Some(Str(u)) =>
-          match @jsjson.text(u) {
+          match @jsjson.sanitize_str(u) {
             "required" | "preferred" | "discouraged" as v => v
             _ => "preferred"
           }

@@ -28,20 +28,14 @@ pub using @codec {hex_encode as hex}
 pub using @utf8 {decode_lossy as text_of}
 
 ///|
-/// Whether `key` is an array index as JavaScript keeps an object's keys: those come first, ascending.
-fn index_key(key : Array[Int]) -> Double? {
-  @jsjson.index_key(@jsjson.raw_text(key))
-}
-
-///|
 /// A value with each object's keys in JavaScript's order.
 pub fn js_ordered(v : J) -> J {
   match v {
     Obj(fs) => {
-      let ints : Array[(Double, (Array[Int], J))] = []
-      let rest : Array[(Array[Int], J)] = []
+      let ints : Array[(Double, (String, J))] = []
+      let rest : Array[(String, J)] = []
       for f in fs {
-        match index_key(f.0) {
+        match @jsjson.index_key(f.0) {
           Some(n) => ints.push((n, (f.0, js_ordered(f.1))))
           None => rest.push((f.0, js_ordered(f.1)))
         }
@@ -66,12 +60,11 @@ pub fn js_stringify(v : J) -> String {
 ///|
 /// An object of entries in their order (`Object.fromEntries`): a key said again keeps its first place, its last value.
 pub fn from_entries(entries : Array[(String, J)]) -> J {
-  let out : Array[(Array[Int], J)] = []
+  let out : Array[(String, J)] = []
   for e in entries {
-    let k = @jsjson.units(e.0)
-    match out.search_by(f => f.0 == k) {
-      Some(i) => out[i] = (k, e.1)
-      None => out.push((k, e.1))
+    match out.search_by(f => f.0 == e.0) {
+      Some(i) => out[i] = (e.0, e.1)
+      None => out.push((e.0, e.1))
     }
   }
   Obj(out)
@@ -83,7 +76,7 @@ pub fn entries_of(v : J?) -> Array[(String, J)] {
   match v {
     Some(Obj(_) as o) =>
       match js_ordered(o) {
-        Obj(fs) => fs.map(f => (@jsjson.text(f.0), f.1))
+        Obj(fs) => fs.map(f => (@jsjson.sanitize_str(f.0), f.1))
         _ => []
       }
     _ => []

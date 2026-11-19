@@ -10,7 +10,7 @@ type J = JValue
 
 ///|
 fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  Str(s)
 }
 
 ///|
@@ -21,7 +21,7 @@ fn jn(d : Double) -> J {
 ///|
 /// An object of these properties, in this order.
 fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
+  Obj(pairs)
 }
 
 ///|
@@ -30,7 +30,7 @@ fn jopt(pairs : Array[(String, J?)]) -> J {
   let out = []
   for p in pairs {
     if p.1 is Some(v) {
-      out.push((@jsjson.units(p.0), v))
+      out.push((p.0, v))
     }
   }
   Obj(out)
@@ -45,7 +45,7 @@ fn ja(items : Array[J]) -> J {
 /// The text of a string (its code units as they are).
 fn text_of(v : J?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    Some(Str(s)) => Some(s)
     _ => None
   }
 }
@@ -73,14 +73,13 @@ fn has(v : J, name : String) -> Bool {
 /// `{ ...v, [name]: value }`: an object's property set where it is, or put after the rest (anything but an object
 /// spread as none).
 fn with_prop(v : J, name : String, value : J) -> J {
-  let key = @jsjson.units(name)
   let out = []
   let mut set = false
   if v is Obj(entries) {
     for e in entries {
-      if e.0 == key {
+      if e.0 == name {
         if !set {
-          out.push((key, value))
+          out.push((name, value))
           set = true
         }
       } else {
@@ -89,7 +88,7 @@ fn with_prop(v : J, name : String, value : J) -> J {
     }
   }
   if !set {
-    out.push((key, value))
+    out.push((name, value))
   }
   Obj(out)
 }
@@ -116,7 +115,7 @@ fn parse(text : String) -> J? {
 fn string_of(v : J?) -> String {
   match v {
     None | Some(Null) => ""
-    Some(v) => @jsjson.raw_text(@jsjson.js_string(v))
+    Some(v) => @jsjson.js_string(v)
   }
 }
 
@@ -137,10 +136,10 @@ fn at(v : J, i : Int32) -> J? {
 fn spread(v : J) -> J {
   match v {
     Obj(_) => v
-    Str(units) =>
-      Obj(units.mapi((i, u) => (@jsjson.units(i.to_string()), Str([u]))))
+    Str(s) =>
+      Obj(Array::makei(s.length(), i => (i.to_string(), Str(s.unsafe_substring(start=i, end=i + 1)))))
     Arr(items) =>
-      Obj(items.mapi((i, item) => (@jsjson.units(i.to_string()), item)))
+      Obj(items.mapi((i, item) => (i.to_string(), item)))
     _ => Obj([])
   }
 }
@@ -158,7 +157,7 @@ fn to_number(v : J) -> Double {
     Num(n) => n
     Null => 0.0
     Bool(b) => if b { 1.0 } else { 0.0 }
-    Str(s) => js_number(@jsjson.raw_text(s))
+    Str(s) => js_number(s)
     Arr([]) => 0.0
     Arr([one]) => to_number(Str(@jsjson.js_string(one)))
     _ => @double.not_a_number

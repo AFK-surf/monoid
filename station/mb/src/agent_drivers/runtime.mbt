@@ -13,7 +13,7 @@ let runtime_kinds : Array[String] = [
 pub fn runtime_kind(v : JValue?) -> String? {
   match v {
     Some(Str(u)) => {
-      let t = @jsjson.text(u)
+      let t = @jsjson.sanitize_str(u)
       if runtime_kinds.contains(t) {
         Some(t)
       } else {
@@ -47,7 +47,7 @@ let tool_servers : Array[String] = ["stillfail"]
 ///|
 /// A tool call's error that says the station's tools could not be reached at all.
 pub fn tools_unreachable(text : String) -> Bool {
-  @claude.unreachable(@jsjson.units(text))
+  @claude.unreachable(text)
 }
 
 ///|
@@ -65,7 +65,7 @@ pub fn failure_of(
   limit_codes? : Array[String] = [],
   limit? : Array[String] = [],
 ) -> String {
-  @claude.failure_of(@jsjson.units(text), auth_codes~, auth~, limit_codes~, limit~)
+  @claude.failure_of(text, auth_codes~, auth~, limit_codes~, limit~)
 }
 
 ///|
@@ -74,7 +74,7 @@ pub fn chars(text : String, count : Int) -> String {
   if text.length() <= count {
     return text
   }
-  @jsjson.text(@claude.chars(@jsjson.units(text), count))
+  @jsjson.sanitize_str(@claude.chars(text, count))
 }
 
 ///|

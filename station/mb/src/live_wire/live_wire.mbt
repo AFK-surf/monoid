@@ -6,18 +6,13 @@
 using @jsjson {type JValue}
 
 ///|
-pub fn u(s : String) -> Array[Int32] {
-  @jsjson.units(s)
-}
-
-///|
 pub fn jstr(s : String) -> JValue {
-  Str(u(s))
+  Str(s)
 }
 
 ///|
 pub fn obj(fields : Array[(String, JValue)]) -> JValue {
-  Obj(fields.map(f => (u(f.0), f.1)))
+  Obj(fields)
 }
 
 ///|
@@ -31,7 +26,7 @@ pub fn field(v : JValue?, name : String) -> JValue? {
 
 ///|
 /// `str(v)`: the string it is.
-pub fn str(v : JValue?) -> Array[Int32]? {
+pub fn str(v : JValue?) -> String? {
   match v {
     Some(Str(s)) => Some(s)
     _ => None
@@ -40,7 +35,7 @@ pub fn str(v : JValue?) -> Array[Int32]? {
 
 ///|
 /// `nonEmpty(v)`.
-pub fn non_empty(v : JValue?) -> Array[Int32]? {
+pub fn non_empty(v : JValue?) -> String? {
   match v {
     Some(Str(s)) if s.length() > 0 => Some(s)
     _ => None
@@ -49,12 +44,12 @@ pub fn non_empty(v : JValue?) -> Array[Int32]? {
 
 ///|
 pub fn is_str(v : JValue?, s : String) -> Bool {
-  v is Some(Str(t)) && t == u(s)
+  v is Some(Str(t)) && t == s
 }
 
 ///|
-pub fn has_prefix(s : Array[Int32], p : Array[Int32]) -> Bool {
-  s.length() >= p.length() && s[0:p.length()].to_owned() == p
+pub fn has_prefix(s : String, p : String) -> Bool {
+  s.has_prefix(p)
 }
 
 ///|
@@ -72,29 +67,22 @@ pub const INPUT_MOST : Int32 = 262144
 
 ///|
 /// live.ts `pretty`: JSON.stringify(v ?? {}, null, 2).
-pub fn pretty(v : JValue?) -> Array[Int32] {
-  u(@jsjson.stringify_pretty(or_else(v, Obj([]))))
+pub fn pretty(v : JValue?) -> String {
+  @jsjson.stringify_pretty(or_else(v, Obj([])))
 }
 
 ///|
-pub fn joined(parts : Array[Array[Int32]], sep : Array[Int32]) -> Array[Int32] {
-  let out = []
-  for i, p in parts {
-    if i > 0 {
-      out.append(sep)
-    }
-    out.append(p)
-  }
-  out
+pub fn joined(parts : Array[String], sep : String) -> String {
+  parts.join(sep)
 }
 
 ///|
 /// A step's start as live.ts `start` makes it: what is none left out.
 pub fn start(
-  id : Array[Int32],
+  id : String,
   step : String,
-  tool : Array[Int32]?,
-  input : Array[Int32]?,
+  tool : String?,
+  input : String?,
 ) -> JValue {
   let fields : Array[(String, JValue)] = [
     ("kind", jstr("start")),
@@ -112,9 +100,9 @@ pub fn start(
 
 ///|
 pub fn delta(
-  id : Array[Int32],
+  id : String,
   field_name : String,
-  text : Array[Int32],
+  text : String,
 ) -> JValue {
   obj([
     ("kind", jstr("delta")),
@@ -125,7 +113,7 @@ pub fn delta(
 }
 
 ///|
-pub fn end_event(id : Array[Int32]) -> JValue {
+pub fn end_event(id : String) -> JValue {
   obj([("kind", jstr("end")), ("id", Str(id))])
 }
 
@@ -137,7 +125,7 @@ pub fn live(e : JValue) -> JValue {
 
 ///|
 /// A turn's failed outcome (runtime.ts `TurnOutcome`).
-pub fn failed(reason : String, message : Array[Int32]) -> JValue {
+pub fn failed(reason : String, message : String) -> JValue {
   obj([
     ("kind", jstr("failed")),
     ("reason", jstr(reason)),

@@ -31,7 +31,7 @@ fn pairs_of(v : J?) -> Array[(String, String)] {
     Some(Arr(items)) =>
       items.map(p => (string_of(at(p, 0)), string_of(at(p, 1))))
     Some(Obj(entries)) =>
-      entries.map(e => (@jsjson.raw_text(e.0), string_of(Some(e.1))))
+      entries.map(e => (e.0, string_of(Some(e.1))))
     _ => []
   }
 }

@@ -813,7 +813,7 @@ fn chat_shares(db : @sql.Db, ids : Array[String]?, now : Double) -> Map[String, 
         _ => num(field(r, "at"))
       }
       if now - used < 6.0 * 3600000.0 {
-        live.push(Json::string(@jsjson.text(ws)))
+        live.push(Json::string(@jsjson.sanitize_str(ws)))
       }
     }
     if live.length() > 0 {

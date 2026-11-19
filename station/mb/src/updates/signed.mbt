@@ -40,7 +40,7 @@ pub fn js_string(j : J) -> String {
     Null => "null"
     Bool(b) => if b { "true" } else { "false" }
     Num(n) => num_text(n)
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Arr(xs) => xs.map(x => if x is Null { "" } else { js_string(x) }).join(",")
     Obj(_) => "[object Object]"
   }
@@ -74,13 +74,13 @@ fn unverified(message : String) -> Error {
 /// `trusted`. Raises Unverified otherwise.
 pub async fn verify_signed(w : World, signed : J, trusted : Array[(String, String)]) -> J {
   let (release, signature) = match (get(Some(signed), "release"), get(Some(signed), "signature")) {
-    (Some(Str(r)), Some(Str(s))) => (@jsjson.text(r), @jsjson.text(s))
+    (Some(Str(r)), Some(Str(s))) => (@jsjson.sanitize_str(r), @jsjson.sanitize_str(s))
     _ => raise unverified("the release is not signed")
   }
   let k = get(Some(signed), "key")
   let key = match k {
     Some(Str(u)) =>
-      match trusted.search_by(p => p.0 == @jsjson.text(u)) {
+      match trusted.search_by(p => p.0 == @jsjson.sanitize_str(u)) {
         Some(i) => Some(trusted[i].1)
         None => None
       }
@@ -115,7 +115,7 @@ fn version_says(version : String, build : String) -> Bool {
 /// The builds of a release's words as pairs (Object.entries: an array's by its indices).
 fn entries(j : J) -> Array[(String, J)] {
   match j {
-    Obj(ps) => ps.map(p => (@jsjson.text(p.0), p.1))
+    Obj(ps) => ps.map(p => (@jsjson.sanitize_str(p.0), p.1))
     Arr(xs) => xs.mapi((i, x) => (i.to_string(), x))
     _ => []
   }
@@ -127,7 +127,7 @@ fn entries(j : J) -> Array[(String, J)] {
 pub async fn verify_feed(w : World, feed_said : J, trusted : Array[(String, String)]) -> J {
   let r = verify_signed(w, feed_said, trusted)
   let builds = get(Some(r), "builds")
-  let well = (get(Some(r), "kind") is Some(Str(u)) && @jsjson.text(u) == "stillfail-station-release") &&
+  let well = (get(Some(r), "kind") is Some(Str(u)) && @jsjson.sanitize_str(u) == "stillfail-station-release") &&
     (get(Some(r), "version") is Some(Str(_))) &&
     is_safe_integer(get(Some(r), "build")) &&
     (builds is Some(Obj(_)) || builds is Some(Arr(_)))
@@ -139,7 +139,7 @@ pub async fn verify_feed(w : World, feed_said : J, trusted : Array[(String, Stri
   let fed = get(Some(feed_said), "version")
   let feed_differs = match fed {
     None => false
-    Some(Str(u)) => @jsjson.text(u) != version
+    Some(Str(u)) => @jsjson.sanitize_str(u) != version
     Some(_) => true
   }
   if !version_says(version, build) || feed_differs {

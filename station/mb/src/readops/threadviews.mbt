@@ -125,11 +125,11 @@ fn shares_of(db : @sql.Db, ids : Array[String], now : Double) -> Map[String, Jso
       }
       if now - used < 6.0 * 3600000.0 {
         let name = match jget(Some(t), "name") {
-          None | Some(Null) => @jsjson.text(ws)
-          Some(Str(n)) => @jsjson.text(n)
+          None | Some(Null) => @jsjson.sanitize_str(ws)
+          Some(Str(n)) => @jsjson.sanitize_str(n)
           Some(other) => js_string(to_json(other))
         }
-        live.push({ "workspace": Json::string(@jsjson.text(ws)), "name": Json::string(name) })
+        live.push({ "workspace": Json::string(@jsjson.sanitize_str(ws)), "name": Json::string(name) })
       }
     }
     if live.length() > 0 {

@@ -74,7 +74,7 @@ pub fn jo(fields : Array[(String, J?)]) -> J {
   let out = []
   for f in fields {
     match f.1 {
-      Some(v) => out.push((@jsjson.units(f.0), v))
+      Some(v) => out.push((f.0, v))
       None => ()
     }
   }
@@ -86,9 +86,8 @@ pub fn jo(fields : Array[(String, J?)]) -> J {
 pub fn prop(v : J?, key : String) -> J? {
   match v {
     Some(Obj(entries)) => {
-      let k = @jsjson.units(key)
       for e in entries {
-        if e.0 == k {
+        if e.0 == key {
           return Some(e.1)
         }
       }
@@ -108,7 +107,7 @@ pub fn prop(v : J?, key : String) -> J? {
         Some(Num(u.length().to_double()))
       } else {
         match index_key(key) {
-          Some(i) if i < u.length() => Some(Str([u[i]]))
+          Some(i) if i < u.length() => Some(Str(u.unsafe_substring(start=i, end=i + 1)))
           _ => None
         }
       }
@@ -151,13 +150,13 @@ pub fn num_text(n : Double) -> String {
 ///|
 /// A string as node writes it to UTF-8 (a lone surrogate as U+FFFD).
 pub fn utf8_of(s : String) -> Bytes {
-  @utf8.encode(@jsjson.text(@jsjson.units(s)))
+  @utf8.encode(@jsjson.sanitize_str(s))
 }
 
 ///|
 /// A text parameter as node binds a string: a lone surrogate as U+FFFD.
 pub fn bind_text(s : String) -> Json {
-  Json::string(@jsjson.text(@jsjson.units(s)))
+  Json::string(@jsjson.sanitize_str(s))
 }
 
 ///|

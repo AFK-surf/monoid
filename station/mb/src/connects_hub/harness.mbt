@@ -261,7 +261,7 @@ fn Harness::chat_surface(self : Harness, id : String, said : J) -> Surface {
         }
         "sessionLink" =>
           match at(s, "link") {
-            Some(Str(u)) => js(replace_first(replace_first(@jsjson.text(u), "\u{1}", js_text(args.get(0))), "\u{2}", js_text(args.get(1))))
+            Some(Str(u)) => js(replace_first(replace_first(@jsjson.sanitize_str(u), "\u{1}", js_text(args.get(0))), "\u{2}", js_text(args.get(1))))
             _ => Null
           }
         "knownPerson" | "knownChannel" | "working" | "standsAt" => {

@@ -168,12 +168,9 @@ fn to_js(v : JV) -> @jsjson.JValue {
     Null => Null
     Bool(b) => Bool(b)
     Num(n) => Num(n)
-    Str(s) => Str(@jsjson.units(s))
+    Str(s) => Str(s)
     Arr(a) => Arr(a.map(x => if is_undef(x) { @jsjson.JValue::Null } else { to_js(x) }))
-    Obj(f) =>
-      Obj(
-        f.filter(p => !is_undef(p.1)).map(p => (@jsjson.units(p.0), to_js(p.1))),
-      )
+    Obj(f) => Obj(f.filter(p => !is_undef(p.1)).map(p => (p.0, to_js(p.1))))
   }
 }
 

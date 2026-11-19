@@ -254,7 +254,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
     "machine.codexAuthFile" => {
       let fields = @agent_runtimes.Fields::new()
       for kv in env_all() {
-        fields.set(kv.0, @jsjson.JValue::Str(@jsjson.units(kv.1)))
+        fields.set(kv.0, @jsjson.JValue::Str(kv.1))
       }
       Some(Str(@agent_runtimes.codex_auth_file(fields, windows=is_windows())))
     }
@@ -421,7 +421,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     link_codex_auth: async fn(home, env) {
       let fields = @agent_runtimes.Fields::new()
       for k, v in env {
-        fields.set(k, @jsjson.JValue::Str(@jsjson.units(v)))
+        fields.set(k, @jsjson.JValue::Str(v))
       }
       @agent_runtimes.link_codex_auth_soon(host, home, fields) catch {
         _ => ()
@@ -480,7 +480,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     machine_token: Some(async fn(e) {
       let fields = @agent_runtimes.Fields::new()
       for k, v in e {
-        fields.set(k, @jsjson.JValue::Str(@jsjson.units(v)))
+        fields.set(k, @jsjson.JValue::Str(v))
       }
       match @agent_runtimes.machine_claude_token(host, fields, mac, wall_ms().to_double()) {
         Ok(t) => t.token
@@ -534,7 +534,7 @@ async fn p53_codex_account_identity(host : @host.Host, home : String) -> @accoun
 fn p53_fields(env : Map[String, String]) -> @agent_runtimes.Fields {
   let fields = @agent_runtimes.Fields::new()
   for k, v in env {
-    fields.set(k, @jsjson.JValue::Str(@jsjson.units(v)))
+    fields.set(k, @jsjson.JValue::Str(v))
   }
   fields
 }
@@ -547,7 +547,7 @@ fn p53_fields_env(fields : @agent_runtimes.Fields) -> Map[String, String] {
     Obj(kvs) =>
       for kv in kvs {
         if kv.1 is Str(v) {
-          out[@jsjson.text(kv.0)] = @jsjson.text(v)
+          out[@jsjson.sanitize_str(kv.0)] = @jsjson.sanitize_str(v)
         }
       }
     _ => ()

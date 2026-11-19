@@ -59,7 +59,7 @@ fn get(v : @jsjson.JValue?, key : String) -> @jsjson.JValue? {
 ///|
 fn string_of(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    Some(Str(s)) => Some(s)
     _ => None
   }
 }
@@ -117,15 +117,15 @@ fn pretty(v : @jsjson.JValue?) -> String {
 /// transcript.ts `toText`.
 fn to_text(v : @jsjson.JValue) -> String {
   match v {
-    Str(s) => @jsjson.raw_text(s)
+    Str(s) => s
     Arr(items) =>
       items
       .map(item => {
-        if get(Some(item), "type") is Some(Str(t)) && @jsjson.raw_text(t) == "image" {
+        if get(Some(item), "type") is Some(Str(t)) && t == "image" {
           return "[image]"
         }
         match get(Some(item), "text") {
-          Some(Str(t)) => @jsjson.raw_text(t)
+          Some(Str(t)) => t
           Some(t) => @jsjson.stringify(t)
           None => to_text(item)
         }
@@ -205,7 +205,7 @@ fn dsh_text(content : @jsjson.JValue?) -> String {
   match content {
     Some(Arr(parts)) =>
       parts
-      .map(c => if get(Some(c), "type") is Some(Str(t)) && @jsjson.raw_text(t) == "image" {
+      .map(c => if get(Some(c), "type") is Some(Str(t)) && t == "image" {
         "[image]"
       } else {
         string_of(get(Some(c), "text")).unwrap_or("")
@@ -259,7 +259,7 @@ fn grok_query(text : String) -> String {
 fn cursor_result(result : @jsjson.JValue?) -> String {
   let mut r = result
   if result is Some(Str(s)) {
-    let text = @jsjson.raw_text(s)
+    let text = s
     match (try { Ok(@jsjson.parse(text)) } catch { e => Err(e) }) {
       Ok(v) => r = Some(v)
       Err(_) => return text
@@ -285,7 +285,7 @@ fn cursor_result(result : @jsjson.JValue?) -> String {
   }
   match r {
     None | Some(Null) => ""
-    Some(Str(s)) => @jsjson.raw_text(s)
+    Some(Str(s)) => s
     Some(x) => @jsjson.stringify_pretty(x)
   }
 }
@@ -374,7 +374,7 @@ fn wrapped(text : String) -> Bool {
 /// transcript.ts `typedParts`.
 fn typed_parts(content : @jsjson.JValue?) -> String {
   match content {
-    Some(Str(s)) => @jsjson.raw_text(s)
+    Some(Str(s)) => s
     Some(Arr(blocks)) =>
       blocks
       .filter_map(b => string_of(get(Some(b), "text")))

@@ -167,7 +167,7 @@ fn feishu_jv(j : @jsjson.JValue) -> @feishu.JV {
 
 ///|
 fn of_feishu(v : @feishu.JV) -> @jsjson.JValue {
-  @jsjson.JV::to_js(v)
+  v
 }
 
 ///|
@@ -255,7 +255,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       None => None
     }
   }, look_up_email=async fn(user) { s.look_up_email(user) })
-  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
+  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
   let opt = (v : String?) => match v { Some(t) => to_jv(Json::string(t)); None => @jsjson.JValue::Null }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
     match name {
@@ -270,7 +270,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       "permalink" => Some(opt((try { Ok(s.permalink(feishu_thread(a.get(0)))) } catch { e => Err(e) }).to_option()))
       "platform" => Some(to_jv(Json::string(s.platform())))
       "working" => {
-        s.working(feishu_thread(a.get(0)), match a.get(1) { Some(Str(u)) => Some(@jsjson.text(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.text(u))); _ => None })
+        s.working(feishu_thread(a.get(0)), match a.get(1) { Some(Str(u)) => Some(@jsjson.sanitize_str(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.sanitize_str(u))); _ => None })
         Some(Null)
       }
       _ => None
@@ -583,7 +583,7 @@ fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, boo
       ping: _ => (),
     }, headers=s.headers())
   }, look_up=async fn(user) { Some(s.look_up(user)) }, look_up_email=async fn(user) { s.look_up_email(user) })
-  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
+  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
     match name {
       "sessionLink" => Some(to_jv(jopt(s.session_link())))

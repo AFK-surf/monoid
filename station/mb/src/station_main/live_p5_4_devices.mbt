@@ -740,7 +740,7 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     f => {
       let id = w0.id()
       w0.fns[id] = f
-      @jsjson.JValue::Obj([(@jsjson.units("$fn"), @jsjson.JValue::Num(id.to_double()))])
+      @jsjson.JValue::Obj([("$fn", @jsjson.JValue::Num(id.to_double()))])
     },
     () => wall_ms().to_double(),
     f => ignore(host.rt.fork_quiet(name="devices", async fn() { f() catch { _ => () } })),

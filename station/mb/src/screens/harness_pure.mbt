@@ -328,7 +328,7 @@ pub async fn harness(host : @host.Host) -> Unit {
       Some(Obj(ps)) => {
         let m : Map[String, J] = Map::new()
         for p in ps {
-          m[@jsjson.text(p.0)] = p.1
+          m[@jsjson.sanitize_str(p.0)] = p.1
         }
         rpc.files = m
       }

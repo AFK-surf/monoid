@@ -399,9 +399,9 @@ fn call(name : String, args : Array[J]) -> J {
       result_json(dsh_setup(route, o(1), o(2), s(3), s(4), s(5), s(6), s(7), facts_of(a(8))))
     }
     "patchText" => js(patch_text(a(0).unwrap_or(Arr([]))))
-    "dshClassifyFailure" => js(@dsh.classify_failure(u(s(0)), u(s(1))))
+    "dshClassifyFailure" => js(@dsh.classify_failure(s(0), s(1)))
     "dshOutcomeOf" => @dsh.outcome_of(a(0))
-    "cursorClassifyFailure" => js(@claude.failure_of(u(s(0)) + [0x20] + u(s(1))))
+    "cursorClassifyFailure" => js(@claude.failure_of(s(0) + " " + s(1)))
     "cursorOutcomeOf" => @cursor.outcome_of(a(0))
     "cursorKeyOf" => opt_json(cursor_key_of(o(0)))
     "cursorSdkPrefix" => js(cursor_sdk_prefix(s(0)))
@@ -468,14 +468,14 @@ fn call(name : String, args : Array[J]) -> J {
     "devinArgs" => arr_of(devin_args(s(0), o(1), o(2)))
     "devinEnv" => devin_env(Options::of(a(0).unwrap_or(obj([]))), fields_of(a(1))).json()
     "devinOutcomeOf" => acp_outcome_of("devin", a(0).unwrap_or(Null))
-    "devinClassifyFailure" => js(@claude.failure_of(u(s(0))))
+    "devinClassifyFailure" => js(@claude.failure_of(s(0)))
     // grok.ts
     "grokEffort" => opt_json(grok_effort(o(0)))
     "usageLine" => opt_json(grok_usage_line(a(0), num_of(a(1)).unwrap_or(0.0), a(2).unwrap_or(Null)))
     "grokRules" => js(grok_rules(s(0)))
     "grokArgs" => arr_of(grok_args(o(0), o(1)))
     "grokEnv" => grok_env(Options::of(a(0).unwrap_or(obj([]))), fields_of(a(1))).json()
-    "grokClassifyFailure" => js(@acp.classify("grok", u(s(0))))
+    "grokClassifyFailure" => js(@acp.classify("grok", s(0)))
     "grokOutcomeOf" => acp_outcome_of("grok", a(0).unwrap_or(Null))
     // hermes.ts
     "hermesCatalog" => arr_of(hermes_catalog(a(0), a(1).unwrap_or(obj([]))))

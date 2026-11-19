@@ -171,7 +171,7 @@ fn replace_all(s : String, sub : String, with_ : String) -> String {
 fn hidden(login : J, s : String) -> String {
   let out = hide_links(s)
   match get(Some(login), "code") {
-    Some(Str(c)) if c.length() > 0 => replace_all(out, @jsjson.raw_text(c), "<code>")
+    Some(Str(c)) if c.length() > 0 => replace_all(out, c, "<code>")
     _ => out
   }
 }
@@ -282,7 +282,7 @@ pub fn told_with(shown_screen : Screen?, login : J, link : String?, where_? : Wh
       "It was cancelled."
     } else {
       let error = match get(l, "error") {
-        Some(Str(e)) if e.length() > 0 => ": " + hidden(login, @jsjson.raw_text(e))
+        Some(Str(e)) if e.length() > 0 => ": " + hidden(login, e)
         _ => "."
       }
       "It failed\{if get(l, "timedOut") is Some(Bool(true)) { " (out of time)" } else { "" }}\{error}"
@@ -325,8 +325,8 @@ pub fn told_with(shown_screen : Screen?, login : J, link : String?, where_? : Wh
         Obj(xs) => xs.copy()
         _ => []
       }
-      out.push((@jsjson.units("station"), js(w.station)))
-      out.push((@jsjson.units("stationName"), js(w.name)))
+      out.push(("station", js(w.station)))
+      out.push(("stationName", js(w.name)))
       J::Obj(out)
     }
     None => state_json
@@ -351,7 +351,7 @@ pub async fn act(logins : Logins, args : J, o : Acting) -> String {
   let a = Some(args)
   match get(a, "id") {
     Some(Str(u)) if u.length() > 0 => {
-      let id = @jsjson.raw_text(u)
+      let id = u
       if logins.get(id) is None ||
         (match o.mine {
           Some(m) => !m(id)
@@ -366,7 +366,7 @@ pub async fn act(logins : Logins, args : J, o : Acting) -> String {
       } else if get(a, "input") is Some(Str(_)) || get(a, "key") is Some(Str(_)) {
         let key = match get(a, "key") {
           Some(Str(k)) => {
-            let low = @jscase.lower(@jsjson.raw_text(k))
+            let low = @jscase.lower(k)
             match tool_keys.search_by(p => p.0 == low) {
               Some(i) => Some(tool_keys[i].1)
               None => raise Failure("key: one of " + tool_keys.map(p => p.0).join(", "))
@@ -429,11 +429,11 @@ pub(all) struct LoginToolDeps {
 /// The tool's call by `session`.
 pub async fn run_login_tool(deps : LoginToolDeps, session : String, args : J) -> String {
   match get(Some(args), "station") {
-    Some(Str(u)) if @jscase.trim(@jsjson.raw_text(u)) != "" => {
+    Some(Str(u)) if @jscase.trim(u) != "" => {
       guard deps.remote is Some(remote) else {
         raise Failure("logging in another station is not there yet: log in on this station")
       }
-      return remote(@jscase.trim(@jsjson.raw_text(u)), session, args)
+      return remote(@jscase.trim(u), session, args)
     }
     _ => ()
   }
@@ -459,7 +459,7 @@ pub fn ended_notice(login : J, link : String?, where_? : Where) -> String {
   } else {
     let error = match get(l, "error") {
       Some(Str(e)) if e.length() > 0 => {
-        let lines = @jsjson.raw_text(e).split("\n").map(x => x.to_string()).collect()
+        let lines = e.split("\n").map(x => x.to_string()).collect()
         ": " + hidden(login, lines[@cmp.maximum(0, lines.length() - 9):].to_array().join(" / "))
       }
       _ => ""

@@ -210,7 +210,7 @@ fn js_text(v : @jsjson.JValue?) -> String {
     None => "undefined"
     Some(Null) => "null"
     Some(Bool(b)) => b.to_string()
-    Some(Str(s)) => @jsjson.text(s)
+    Some(Str(s)) => @jsjson.sanitize_str(s)
     Some(Num(_)) | Some(Arr(_)) | Some(Obj(_)) => {
       let s = @jsjson.stringify(v.unwrap())
       match v {
@@ -234,7 +234,7 @@ fn js_text(v : @jsjson.JValue?) -> String {
 fn bound(v : @jsjson.JValue?) -> Json {
   match v {
     Some(Num(n)) => Json::number(n)
-    Some(Str(s)) => Json::string(@jsjson.text(s))
+    Some(Str(s)) => Json::string(@jsjson.sanitize_str(s))
     Some(Bool(b)) => Json::boolean(b)
     _ => Json::null()
   }
@@ -287,13 +287,13 @@ fn attachment(a : @jsjson.JValue) -> @jsjson.JValue raise {
     refuse("attachment")
   }
   let out = [
-    (units("name"), a.get("name").unwrap()),
-    (units("path"), a.get("path").unwrap()),
-    (units("size"), a.get("size").unwrap()),
+    ("name", a.get("name").unwrap()),
+    ("path", a.get("path").unwrap()),
+    ("size", a.get("size").unwrap()),
   ]
   for k in ["width", "height", "thumbhash", "duration", "frames"] {
     if !absent(a.get(k)) {
-      out.push((units(k), a.get(k).unwrap()))
+      out.push((k, a.get(k).unwrap()))
     }
   }
   Obj(out)
@@ -311,13 +311,13 @@ fn quote(q : @jsjson.JValue) -> @jsjson.JValue raise {
     refuse("quote")
   }
   let out = [
-    (units("author"), q.get("author").unwrap()),
-    (units("text"), q.get("text").unwrap()),
-    (units("comment"), q.get("comment").unwrap()),
+    ("author", q.get("author").unwrap()),
+    ("text", q.get("text").unwrap()),
+    ("comment", q.get("comment").unwrap()),
   ]
   for k in ["ts", "role", "file"] {
     if !absent(q.get(k)) {
-      out.push((units(k), q.get(k).unwrap()))
+      out.push((k, q.get(k).unwrap()))
     }
   }
   Obj(out)
@@ -354,12 +354,12 @@ fn stringified(v : @jsjson.JValue?) -> Json {
 /// rows.ts `letterOf` of an archived entry's letter, as its column keeps it.
 fn letter_column(v : @jsjson.JValue?) -> Json {
   let l = match v {
-    Some(Str(s)) => (try Some(@jsjson.parse(@jsjson.text(s))) catch { _ => None })
+    Some(Str(s)) => (try Some(@jsjson.parse(@jsjson.sanitize_str(s))) catch { _ => None })
     other => other
   }
   guard l is Some(Obj(_) as letter) else { return Json::null() }
   let way = match letter.get("way") {
-    Some(Str(w)) if @jsjson.text(w) == "in" || @jsjson.text(w) == "out" => Some(@jsjson.JValue::Str(w))
+    Some(Str(w)) if @jsjson.sanitize_str(w) == "in" || @jsjson.sanitize_str(w) == "out" => Some(@jsjson.JValue::Str(w))
     _ => None
   }
   guard way is Some(way) && letter.get("title") is Some(Str(_) as title) else { return Json::null() }
@@ -367,14 +367,14 @@ fn letter_column(v : @jsjson.JValue?) -> Json {
     Some(Str(_) as s) => s
     _ => Null
   }
-  Json::string(@jsjson.stringify(Obj([(units("way"), way), (units("title"), title), (units("link"), link)])))
+  Json::string(@jsjson.stringify(Obj([("way", way), ("title", title), ("link", link)])))
 }
 
 ///|
 /// rows.ts `withChange` of an archived entry's change, as its column keeps it.
 fn change_column(v : @jsjson.JValue?) -> Json {
   let c = match v {
-    Some(Str(s)) => (try Some(@jsjson.parse(@jsjson.text(s))) catch { _ => None })
+    Some(Str(s)) => (try Some(@jsjson.parse(@jsjson.sanitize_str(s))) catch { _ => None })
     other => other
   }
   match c {
@@ -392,16 +392,16 @@ fn change_column(v : @jsjson.JValue?) -> Json {
 /// An archived entry's columns, as `#insertEntry` writes `entryColumns(archivedEntry(line))`.
 fn archived_columns(e : @jsjson.JValue) -> Array[Json] raise {
   let kind = match e.get("kind") {
-    Some(Str(k)) if @jsjson.text(k) == "message" || @jsjson.text(k) == "edit" => @jsjson.text(k)
+    Some(Str(k)) if @jsjson.sanitize_str(k) == "message" || @jsjson.sanitize_str(k) == "edit" => @jsjson.sanitize_str(k)
     other => refuse("unknown entry kind \{js_text(other)}")
   }
   let author_kind = match e.get("authorKind") {
     Some(Str(k)) =>
-      match @jsjson.text(k) {
+      match @jsjson.sanitize_str(k) {
         "agent" => "agent"
         "station" | "ember" | "stillfail" => "station"
         "person" => "person"
-        _ => refuse("unknown author kind \{@jsjson.text(k)}")
+        s => refuse("unknown author kind \{s}")
       }
     other => refuse("unknown author kind \{js_text(other)}")
   }
@@ -441,9 +441,9 @@ fn upgrade_from_12(db : @sql.Db, host : @host.Host, archive : String) -> Unit ra
     let mut old_cards = false
     let mut last_person : Double? = None
     for e in entries {
-      let message = e.get("kind") is Some(Str(k)) && @jsjson.text(k) == "message"
+      let message = e.get("kind") is Some(Str(k)) && @jsjson.sanitize_str(k) == "message"
       let author = match e.get("authorKind") {
-        Some(Str(k)) => @jsjson.text(k)
+        Some(Str(k)) => @jsjson.sanitize_str(k)
         _ => ""
       }
       if message && author == "agent" {
@@ -451,14 +451,14 @@ fn upgrade_from_12(db : @sql.Db, host : @host.Host, archive : String) -> Unit ra
           Some(Null) | None =>
             match e.get("options") {
               Some(Arr(_) as options) =>
-                Some(@jsjson.JValue::Obj([(units("type"), @jsjson.JValue::Str(units("options"))), (units("options"), options)]))
+                Some(@jsjson.JValue::Obj([("type", @jsjson.JValue::Str("options")), ("options", options)]))
               _ => None
             }
           other => other
         }
         if card is Some(c) &&
           c.get("type") is Some(Str(t)) &&
-          @jsjson.text(t) == "options" &&
+          @jsjson.sanitize_str(t) == "options" &&
           c.get("options") is Some(Arr(_)) {
           old_cards = true
         }

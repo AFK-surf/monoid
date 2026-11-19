@@ -165,7 +165,7 @@ pub fn env_of(j : J) -> Env {
   match j {
     Obj(ps) =>
       ps.filter_map(p => match p.1 {
-        Str(u) => Some((@jsjson.text(p.0), @jsjson.text(u)))
+        Str(u) => Some((@jsjson.sanitize_str(p.0), @jsjson.sanitize_str(u)))
         _ => None
       })
     _ => []

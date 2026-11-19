@@ -169,7 +169,7 @@ async fn Settings::save(self : Settings) -> Unit {
 fn key_text(v : J?) -> String {
   match v {
     None | Some(Null) => ""
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(x) => stringify(x)
   }
 }

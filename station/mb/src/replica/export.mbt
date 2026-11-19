@@ -57,7 +57,7 @@ fn digest(row : JValue) -> String {
 ///|
 /// A record of two fields, in their order.
 fn rec2(k1 : String, v1 : JValue, k2 : String, v2 : JValue) -> JValue {
-  Obj([(@jsjson.units(k1), v1), (@jsjson.units(k2), v2)])
+  Obj([(k1, v1), (k2, v2)])
 }
 
 ///|
@@ -256,12 +256,12 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
 ///|
 /// The heads of this station's generations now, by workspace.
 pub fn Exporter::heads(self : Exporter) -> JValue raise {
-  let out : Array[(Array[Int], JValue)] = []
+  let out : Array[(String, JValue)] = []
   for w in self.places.workspaces {
     match self.meta("gen:\{w.0}") {
       Some(gen) =>
         match self.read_head(self.gen_dir(w.0, gen)) {
-          Some(head) => out.push((@jsjson.units(w.0), head))
+          Some(head) => out.push((w.0, head))
           None => ()
         }
       None => ()
@@ -276,11 +276,11 @@ pub fn Exporter::heads(self : Exporter) -> JValue raise {
 pub fn Exporter::pass(self : Exporter, told : JValue) -> JValue raise {
   guard self.places.home is Some(home) && self.places.workspaces.length() > 0 else {
     return Obj([
-      (@jsjson.units("heads"), Obj([])),
-      (@jsjson.units("more"), Bool(false)),
-      (@jsjson.units("wrote"), Num(0.0)),
-      (@jsjson.units("read"), Num(0.0)),
-      (@jsjson.units("empty"), Bool(self.empty())),
+      ("heads", Obj([])),
+      ("more", Bool(false)),
+      ("wrote", Num(0.0)),
+      ("read", Num(0.0)),
+      ("empty", Bool(self.empty())),
     ])
   }
   self.state.exec("BEGIN IMMEDIATE")
@@ -308,7 +308,7 @@ fn list_of(v : JValue?) -> Array[JValue] {
 fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue raise {
   let names = self.places.workspaces
   let ws_of_session = (ws : JValue?) => match ws {
-    Some(Str(u)) if u.length() > 0 => @jsjson.text(u)
+    Some(Str(u)) if u.length() > 0 => @jsjson.sanitize_str(u)
     _ => home
   }
   let outs : Map[String, Out] = Map([])
@@ -320,20 +320,20 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
       Some(h) => h
       None =>
         Obj([
-          (@jsjson.units("v"), Num(version.to_double())),
-          (@jsjson.units("origin"), str(self.origin)),
-          (@jsjson.units("workspace"), str(ws)),
-          (@jsjson.units("gen"), str(gen)),
-          (@jsjson.units("name"), match w.1 { Null => str(""); v => v }),
-          (@jsjson.units("dataDir"), str(self.data_dir)),
-          (@jsjson.units("made"), Num(0.0)),
-          (@jsjson.units("to"), Num(0.0)),
-          (@jsjson.units("batches"), Arr([])),
-          (@jsjson.units("files"), Obj([])),
-          (@jsjson.units("chats"), Num(0.0)),
-          (@jsjson.units("messages"), Num(0.0)),
-          (@jsjson.units("bytes"), Num(0.0)),
-          (@jsjson.units("runs"), Arr([])),
+          ("v", Num(version.to_double())),
+          ("origin", str(self.origin)),
+          ("workspace", str(ws)),
+          ("gen", str(gen)),
+          ("name", match w.1 { Null => str(""); v => v }),
+          ("dataDir", str(self.data_dir)),
+          ("made", Num(0.0)),
+          ("to", Num(0.0)),
+          ("batches", Arr([])),
+          ("files", Obj([])),
+          ("chats", Num(0.0)),
+          ("messages", Num(0.0)),
+          ("bytes", Num(0.0)),
+          ("runs", Arr([])),
         ])
     }
     outs[ws] = { head, lines: [], bytes: 0, files: [], gone: false, messages: 0.0 }
@@ -354,7 +354,7 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
       out.gone = true
     }
     if get(rec, "file") is Some(Str(f)) {
-      let h = @jsjson.text(f)
+      let h = @jsjson.sanitize_str(f)
       let size = num(get(rec, "size"))
       match out.files.search_by(e => e.0 == h) {
         Some(i) => out.files[i] = (h, size)
@@ -462,7 +462,7 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
     }
   }
   let count_message = (ws : String, table : String, r : JValue) => {
-    if table == "entries" && get(r, "kind") is Some(Str(k)) && @jsjson.text(k) == "message" {
+    if table == "entries" && get(r, "kind") is Some(Str(k)) && @jsjson.sanitize_str(k) == "message" {
       match outs.get(ws) {
         Some(o) => o.messages += 1.0
         None => ()
@@ -612,13 +612,13 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
           drop_digest(ws, k)
           if table == "sessions" {
             let v = key.get(0).unwrap_or(Null)
-            say(ws, rec2("gone", str("session"), "key", str(match v { Str(u) => @jsjson.text(u); Null => "null"; x => stringify(x) })))
+            say(ws, rec2("gone", str("session"), "key", str(match v { Str(u) => @jsjson.sanitize_str(u); Null => "null"; x => stringify(x) })))
           } else if table == "threads" {
             let id = num(key.get(0))
             say(ws, rec2("gone", str("thread"), "id", Num(id)))
             drop_thread(ws, id)
           } else {
-            let named = key_columns(table).mapi((i, c) => (@jsjson.units(c), key.get(i).unwrap_or(Null)))
+            let named = key_columns(table).mapi((i, c) => (c, key.get(i).unwrap_or(Null)))
             say(ws, rec2("del", str(table), "key", Obj(named)))
           }
         }
@@ -742,31 +742,31 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
       }
       guard self.hashed(path) is Some((hash, size)) else { continue }
       ignore(self.state.run("INSERT OR IGNORE INTO sent (ws, path) VALUES (?, ?)", [s(ws), s(path)]))
-      say(ws, Obj([(@jsjson.units("file"), str(hash)), (@jsjson.units("size"), Num(size)), (@jsjson.units("path"), str(path))]))
+      say(ws, Obj([("file", str(hash)), ("size", Num(size)), ("path", str(path))]))
     }
   }
   let mut wrote = 0
-  let heads : Array[(Array[Int], JValue)] = []
+  let heads : Array[(String, JValue)] = []
   for w in names {
     guard outs.get(w.0) is Some(out) else { continue }
     if out.lines.length() > 0 {
       self.write(w.0, out)
       wrote += 1
     }
-    heads.push((@jsjson.units(w.0), out.head))
+    heads.push((w.0, out.head))
   }
   Obj([
-    (@jsjson.units("heads"), Obj(heads)),
-    (@jsjson.units("more"), Bool(more)),
-    (@jsjson.units("wrote"), Num(wrote.to_double())),
-    (@jsjson.units("read"), Num(self.read.to_double())),
+    ("heads", Obj(heads)),
+    ("more", Bool(more)),
+    ("wrote", Num(wrote.to_double())),
+    ("read", Num(self.read.to_double())),
   ])
 }
 
 ///|
 fn Exporter::session_ws(self : Exporter, table : String, row : JValue, ws_of : (JValue?) -> String) -> Array[String] raise {
   let key = get(row, if table == "sessions" { "key" } else if table == "pins" { "session" } else if table == "opened_chats" { "child" } else { "session_key" })
-  if table == "opened_chats" && !(get(row, "child_station") is Some(Str([]))) {
+  if table == "opened_chats" && !(get(row, "child_station") is Some(Str(""))) {
     return []
   }
   if table == "sessions" {
@@ -847,7 +847,7 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
     None => None
   }
   let runs_list = if runs_list.length() == 0 || last_run != Some(self.run) {
-    runs_list + [Obj([(@jsjson.units("run"), str(self.run)), (@jsjson.units("from"), Num(first.to_double()))])]
+    runs_list + [Obj([("run", str(self.run)), ("from", Num(first.to_double()))])]
   } else {
     runs_list
   }
@@ -937,9 +937,9 @@ fn Exporter::fold_gen(self : Exporter, dir : String, head : JValue, everything :
       let mut next = h
       next = set(next, "batches", strs(bs[0:bs.length() - take.length()].to_array() + names))
       if whole {
-        let files : Array[(Array[Int], JValue)] = []
+        let files : Array[(String, JValue)] = []
         folded.each_named_file((_, hash, sz) => {
-          let key = @jsjson.units(hash)
+          let key = hash
           match files.search_by(e => e.0 == key) {
             Some(i) => files[i] = (key, Num(sz))
             None => files.push((key, Num(sz)))
@@ -1014,12 +1014,12 @@ pub fn Exporter::empty(self : Exporter) -> Bool raise {
 ///|
 /// Where the files of `hashes` are now on this station, for a place that lacks them (`sources`).
 pub fn Exporter::sources(self : Exporter, hashes : Array[String]) -> JValue raise {
-  let out : Array[(Array[Int], JValue)] = []
+  let out : Array[(String, JValue)] = []
   for h in hashes {
     for r in self.state.all("SELECT path FROM files WHERE hash = ?", [s(h)]) {
       let path = field_text(r, "path")
       if self.files.kind(path) is Some("file") {
-        let key = @jsjson.units(h)
+        let key = h
         match out.search_by(e => e.0 == key) {
           Some(i) => out[i] = (key, str(path))
           None => out.push((key, str(path)))

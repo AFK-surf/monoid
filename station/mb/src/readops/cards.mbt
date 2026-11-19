@@ -162,20 +162,7 @@ fn parsed(v : Json) -> @jsjson.JValue? {
 ///|
 /// A value JSON.parse read, as the answer carries it.
 pub fn to_json(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.text(s))
-    Arr(xs) => Json::array(xs.map(to_json))
-    Obj(fields) => {
-      let m : Map[String, Json] = Map([])
-      for f in fields {
-        m[@jsjson.text(f.0)] = to_json(f.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json_lossy()
 }
 
 ///|

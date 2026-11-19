@@ -203,7 +203,7 @@ pub struct PhoneGrants {
 ///|
 fn sql_j(v : J) -> Json {
   match v {
-    Str(u) => Json::string(@jsjson.text(u))
+    Str(u) => Json::string(@jsjson.sanitize_str(u))
     Num(d) => Json::number(d)
     Bool(b) => Json::boolean(b)
     _ => Json::null()
@@ -838,7 +838,7 @@ async fn PhoneGrants::post(
   // (asked of someone the chat's agent does not work for: they are named, so the chat sees whose phone it asks)
   let starter = self.w.store("starter", [js(session)])
   let starter = match starter {
-    Str(u) => Some(@jsjson.text(u).to_lower())
+    Str(u) => Some(@jsjson.sanitize_str(u).to_lower())
     _ => None
   }
   let whose = if starter == Some(r.owner()) {
@@ -1337,7 +1337,7 @@ pub fn link_said(r : Req) -> String {
 /// `String(v)` of what JSON holds.
 pub fn js_text(v : J) -> String {
   match v {
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Null => "null"
     Bool(b) => if b { "true" } else { "false" }
     Num(d) => num_text(d)

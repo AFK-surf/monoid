@@ -1266,7 +1266,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
             write(of_jv(given.get(0).unwrap_or(Null)))
             Null
           }
-          ignore(record_fn([Obj([(@jsjson.units("$fn"), Num(write_id.to_double()))])])) catch {
+          ignore(record_fn([Obj([("$fn", Num(write_id.to_double()))])])) catch {
             e => {
               chat_state.callbacks.remove(write_id)
               raise e

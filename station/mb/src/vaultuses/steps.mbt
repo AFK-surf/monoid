@@ -123,7 +123,7 @@ fn use_time(v : @jsjson.JValue?) -> Json {
     None | Some(Null) => Json::null()
     Some(Bool(b)) => flag(b)
     Some(Num(d)) => Json::number(d)
-    Some(Str(s)) => Json::string(@jsjson.text(s))
+    Some(Str(s)) => Json::string(@jsjson.sanitize_str(s))
     Some(other) => Json::string(@jsjson.stringify(other))
   }
 }
@@ -169,11 +169,11 @@ fn repair_ambiguous(db : @sql.Db, ws : Json, limit? : Int = 32) -> Bool raise {
         db.run("UPDATE vault_use_ambiguous_v2 SET dirty = 0, is_use = ?, vault = ?, owner = ?, at = ? WHERE ws = ? AND id = ?", [
           flag(vault is Some(_) && no_save),
           match vault {
-            Some(v) => blob(v)
+            Some(v) => blob(@jsjson.units(v))
             None => Json::null()
           },
           match owner {
-            Some(o) => blob(o)
+            Some(o) => blob(@jsjson.units(o))
             None => Json::null()
           },
           use_time(field("at")),

@@ -236,7 +236,7 @@ pub fn compact_failed_notice(words : Words, outcome : Json) -> String {
 ///|
 /// What failed as the runtime said it (runtime.ts `failureOf`, the claude package's).
 pub fn failure_reason(message : String) -> String {
-  @claude.failure_of(@jsjson.units(message))
+  @claude.failure_of(message)
 }
 
 ///|

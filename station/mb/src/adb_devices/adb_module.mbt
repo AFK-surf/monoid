@@ -197,7 +197,7 @@ fn cwds_of(v : J) -> Map[Int, String] {
   match v {
     Obj(fs) =>
       for f in fs {
-        match @session_chats.js_number(js(@jsjson.text(f.0))) {
+        match @session_chats.js_number(js(@jsjson.sanitize_str(f.0))) {
           Some(n) => out[n.to_int()] = js_text(f.1)
           None => ()
         }

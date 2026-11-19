@@ -313,7 +313,7 @@ fn Rpc::io(self : Rpc) -> Io {
           let m : Map[String, Json] = Map::new()
           match args {
             Obj(ps) => for p in ps {
-              m[@jsjson.text(p.0)] = core_json(p.1)
+              m[@jsjson.sanitize_str(p.0)] = core_json(p.1)
             }
             _ => ()
           }

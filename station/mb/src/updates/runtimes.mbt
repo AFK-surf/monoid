@@ -272,7 +272,7 @@ pub async fn how_to_update_soon(w : World, kind : String, found : Found, env : E
   // A package manager's of this machine's kind.
   let shim = w.call("platform.shimUpdate", [found.to_j(), js(kind_package(kind)), env_j(env)])
   match shim {
-    Str(u) if @jsjson.text(u) == "no-npm" => return Cannot(unable("station.updates.noNpm", args=[("name", js(name))]))
+    Str(u) if @jsjson.sanitize_str(u) == "no-npm" => return Cannot(unable("station.updates.noNpm", args=[("name", js(name))]))
     Obj(_) => return Can(how_of(shim))
     _ => ()
   }
@@ -573,13 +573,13 @@ pub async fn run_both(
   }
   for ev in events_of(child) {
     match ev {
-      Arr([Str(k), Str(t), ..]) if @jsjson.text(k) == "stdout" => take(0, @jsjson.text(t))
-      Arr([Str(k), Str(t), ..]) if @jsjson.text(k) == "stderr" => take(1, @jsjson.text(t))
-      Arr([Str(k), Str(m), ..]) if @jsjson.text(k) == "error" => {
+      Arr([Str(k), Str(t), ..]) if @jsjson.sanitize_str(k) == "stdout" => take(0, @jsjson.sanitize_str(t))
+      Arr([Str(k), Str(t), ..]) if @jsjson.sanitize_str(k) == "stderr" => take(1, @jsjson.sanitize_str(t))
+      Arr([Str(k), Str(m), ..]) if @jsjson.sanitize_str(k) == "error" => {
         cancel()
-        raise fail(@jsjson.text(m))
+        raise fail(@jsjson.sanitize_str(m))
       }
-      Arr([Str(k), code, ..]) if @jsjson.text(k) == "close" => {
+      Arr([Str(k), code, ..]) if @jsjson.sanitize_str(k) == "close" => {
         end(0)
         end(1)
         cancel()

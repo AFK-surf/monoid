@@ -86,28 +86,11 @@ pub fn thread_ts_of(task : String) -> String {
 ///|
 /// An object's entries as JavaScript goes through them (Object.values, `in`): its array-index keys first, ascending,
 /// then the rest as they were put.
-fn js_order(entries : Array[(Array[Int], J)]) -> Array[(Array[Int], J)] {
-  let index = (k : Array[Int]) => {
-    if k.length() == 0 || k.length() > 10 || (k.length() > 1 && k[0] == '0') {
-      return None
-    }
-    let mut v = 0.0
-    for c in k {
-      if c < '0' || c > '9' {
-        return None
-      }
-      v = v * 10.0 + (c - '0').to_double()
-    }
-    if v < 4294967295.0 {
-      Some(v)
-    } else {
-      None
-    }
-  }
+fn js_order(entries : Array[(String, J)]) -> Array[(String, J)] {
   let ints = []
   let rest = []
   for e in entries {
-    match index(e.0) {
+    match @jsjson.index_key(e.0) {
       Some(v) => ints.push((v, e))
       None => rest.push(e)
     }
@@ -117,10 +100,9 @@ fn js_order(entries : Array[(Array[Int], J)]) -> Array[(Array[Int], J)] {
 }
 
 ///|
-fn entry_at(entries : Array[(Array[Int], J)], key : String) -> Int? {
-  let k = @jsjson.units(key)
+fn entry_at(entries : Array[(String, J)], key : String) -> Int? {
   for i, e in entries {
-    if e.0 == k {
+    if e.0 == key {
       return Some(i)
     }
   }
@@ -129,10 +111,10 @@ fn entry_at(entries : Array[(Array[Int], J)], key : String) -> Int? {
 
 ///|
 /// `o[key] = v`: in its place where it was there, last where it was not.
-fn put_field(entries : Array[(Array[Int], J)], key : String, v : J) -> Unit {
+fn put_field(entries : Array[(String, J)], key : String, v : J) -> Unit {
   match entry_at(entries, key) {
     Some(i) => entries[i] = (entries[i].0, v)
-    None => entries.push((@jsjson.units(key), v))
+    None => entries.push((key, v))
   }
 }
 
@@ -141,7 +123,7 @@ pub struct CommaTasks {
   path : String
   priv io : Io
   /// What is kept, as the file holds it: by connect, by Task.
-  priv mut kept : Array[(Array[Int], J)]
+  priv mut kept : Array[(String, J)]
   /// What is to be written next, and the writer at work (PrivateFile's `#latest`, `#writing`).
   priv mut latest : String?
   priv mut writing : @effect.Deferred[Unit]?
@@ -222,7 +204,7 @@ pub async fn CommaTasks::written(self : CommaTasks) -> Unit {
 }
 
 ///|
-fn CommaTasks::of(self : CommaTasks, connect : String) -> Array[(Array[Int], J)]? {
+fn CommaTasks::of(self : CommaTasks, connect : String) -> Array[(String, J)]? {
   match entry_at(self.kept, connect) {
     Some(i) =>
       match self.kept[i].1 {
@@ -378,7 +360,7 @@ pub fn CommaTasks::left(self : CommaTasks, connect : String, task : String) -> U
   match prop(Some(Obj(t)), "left") {
     Some(Null | Bool(false)) | None => ()
     Some(Num(n)) if n == 0.0 || n.is_nan() => ()
-    Some(Str([])) => ()
+    Some(Str("")) => ()
     Some(_) => return
   }
   put_field(t, "left", Bool(true))

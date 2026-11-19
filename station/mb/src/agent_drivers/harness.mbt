@@ -67,7 +67,7 @@ fn pure_case(c : JValue) -> JValue raise {
     "hooksOf" => hooks_of(arr_of(Some(arg(c, 0))).unwrap_or([]))
     "backgroundOf" => background_of(arg(c, 0))
     "toolsLostIn" => {
-      let calls : Array[Array[Int]] = []
+      let calls : Array[String] = []
       arr(arr_of(Some(arg(c, 0))).unwrap_or([]).map(f => opt_json(tools_lost_in(f, calls))))
     }
     "claudeProject" => opt_json(claude_project(arg_s(c, 0)))
@@ -319,7 +319,7 @@ fn profiles_of(c : JValue) -> ProfileSays {
     codex_overrides: p => arr_at(get(said, profile_id(p)), "codexOverrides")
       .unwrap_or([])
       .map(x => match x {
-        Arr([Str(k), Str(v), ..]) => (@jsjson.text(k), @jsjson.text(v))
+        Arr([Str(k), Str(v), ..]) => (@jsjson.sanitize_str(k), @jsjson.sanitize_str(v))
         _ => ("", "")
       }),
   }

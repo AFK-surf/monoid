@@ -13,7 +13,7 @@ pub fn fill(String, Array[(String, String)]) -> String
 
 pub fn tr_json(Map[String, @json.Json], Map[String, @json.Json], String, String, args? : Array[(String, String)], product? : String) -> String
 
-pub fn tr_jv(@jsjson.JV, @jsjson.JV, String, String, String, args? : Array[(String, String)]) -> String
+pub fn tr_jv(@jsjson.JValue, @jsjson.JValue, String, String, String, args? : Array[(String, String)]) -> String
 
 pub fn tr_jvalue(@jsjson.JValue, @jsjson.JValue, String, String, String, args? : Array[(String, String)]) -> String
 

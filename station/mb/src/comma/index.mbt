@@ -37,8 +37,8 @@ pub fn ScopedConnect::to_j(self : ScopedConnect) -> J {
   match self.connect.to_j() {
     Obj(entries) => {
       let out = entries.copy()
-      out.push((@jsjson.units("scope"), self.scope.map(jstr).unwrap_or(Null)))
-      out.push((@jsjson.units("scopeVersion"), ji(self.scope_version)))
+      out.push(("scope", self.scope.map(jstr).unwrap_or(Null)))
+      out.push(("scopeVersion", ji(self.scope_version)))
       Obj(out)
     }
     v => v
@@ -48,7 +48,7 @@ pub fn ScopedConnect::to_j(self : ScopedConnect) -> J {
 ///|
 fn non_empty(v : J?) -> String? {
   match v {
-    Some(Str(u)) if u.length() > 0 => Some(utext(u))
+    Some(Str(u)) if u.length() > 0 => Some(u)
     _ => None
   }
 }

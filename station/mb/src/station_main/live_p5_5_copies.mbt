@@ -612,13 +612,13 @@ fn P55::export_runner(self : P55, db : String, replica : String, data : String, 
       match said.get("failed") {
         Some(Str(why)) => {
           proc.val = None
-          raise BusError("the copies' thread failed: \{@jsjson.text(why)}")
+          raise BusError("the copies' thread failed: \{@jsjson.sanitize_str(why)}")
         }
         _ => ()
       }
       guard said.get("id") is Some(Num(n)) && n == id.to_double() else { continue }
       match said.get("error") {
-        Some(Str(e)) => raise BusError(@jsjson.text(e))
+        Some(Str(e)) => raise BusError(@jsjson.sanitize_str(e))
         _ => return said.get("answer").unwrap_or(Null)
       }
     }

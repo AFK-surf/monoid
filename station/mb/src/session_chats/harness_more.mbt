@@ -58,7 +58,7 @@ fn pure_more(h : Harness, name : String, args : Array[J]) -> J raise Thrown {
     "goneKept" => ja(gone_kept(arr_of(arg(args, 0)).unwrap_or([])))
     "recordsKept" => {
       let pairs = match a(0) {
-        Obj(fs) => fs.map(f => (@jsjson.text(f.0), f.1))
+        Obj(fs) => fs.map(f => (@jsjson.sanitize_str(f.0), f.1))
         _ => []
       }
       jo(records_kept(pairs))

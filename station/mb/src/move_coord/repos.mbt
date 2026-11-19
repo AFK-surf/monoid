@@ -721,7 +721,7 @@ pub async fn Repos::answer(self : Repos, peer : String, request : J, bytes : Byt
       let done : @effect.Deferred[Unit] = @effect.Deferred::new()
       self.clones[url] = done
       let named = match get(Some(request), "name") {
-        Some(Str(u)) => @jsjson.text(u)
+        Some(Str(u)) => @jsjson.sanitize_str(u)
         None | Some(Null) => ""
         Some(v) => stringify(v)
       }

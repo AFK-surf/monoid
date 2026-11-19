@@ -144,7 +144,7 @@ pub fn host_world(
       "fetch" => {
         let init = jarg(a, 1)
         let headers = match get(Some(init), "headers") {
-          Some(Obj(ps)) => ps.map(p => (@jsjson.text(p.0), js_string(p.1)))
+          Some(Obj(ps)) => ps.map(p => (@jsjson.sanitize_str(p.0), js_string(p.1)))
           _ => []
         }
         let r = host.fetch(

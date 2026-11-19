@@ -11,57 +11,57 @@ pub fn chars(String, Int32) -> String
 
 pub fn code_points(String) -> Int32
 
-pub fn defined(JV) -> JV?
+pub fn defined(JValue) -> JValue?
 
 pub fn index_key(String) -> Double?
 
-pub fn is_array(JV?) -> Bool
+pub fn is_array(JValue?) -> Bool
 
 pub fn is_finite(Double) -> Bool
 
 pub fn is_integer(Double) -> Bool
 
-pub fn is_object(JV?) -> Bool
+pub fn is_object(JValue?) -> Bool
 
-pub fn is_objectish(JV?) -> Bool
+pub fn is_objectish(JValue?) -> Bool
 
 pub fn is_safe_integer(Double) -> Bool
 
-pub fn is_undef(JV) -> Bool
+pub fn is_undef(JValue) -> Bool
 
-pub fn jarr(Array[JV]) -> JV
+pub fn jarr(Array[JValue]) -> JValue
 
-pub fn jat(JV?, Int32) -> JV?
+pub fn jat(JValue?, Int32) -> JValue?
 
-pub fn jbool(Bool) -> JV
+pub fn jbool(Bool) -> JValue
 
-pub fn jdel(JV, String) -> JV
+pub fn jdel(JValue, String) -> JValue
 
-pub fn jdelete(JV, String) -> Unit
+pub fn jdelete(JValue, String) -> Unit
 
-pub fn jfields(JV?) -> Array[(String, JV)]
+pub fn jfields(JValue?) -> Array[(String, JValue)]
 
-pub fn jget(JV?, String) -> JV?
+pub fn jget(JValue?, String) -> JValue?
 
-pub fn jhas(JV, String) -> Bool
+pub fn jhas(JValue, String) -> Bool
 
-pub fn jint(Int32) -> JV
+pub fn jint(Int32) -> JValue
 
-pub fn jitems(JV?) -> Array[JV]
+pub fn jitems(JValue?) -> Array[JValue]
 
-pub fn jkeys(JV) -> Array[String]
+pub fn jkeys(JValue) -> Array[String]
 
-pub fn jnum(Double) -> JV
+pub fn jnum(Double) -> JValue
 
-pub fn jnumber(JV?) -> Double?
+pub fn jnumber(JValue?) -> Double?
 
-pub fn jobj(Array[(String, JV)]) -> JV
+pub fn jobj(Array[(String, JValue)]) -> JValue
 
-pub fn jopt(String?) -> JV
+pub fn jopt(String?) -> JValue
 
-pub fn jput(JV, String, JV) -> Unit
+pub fn jput(JValue, String, JValue) -> Unit
 
-pub fn js(String) -> JV
+pub fn js(String) -> JValue
 
 pub fn js_all_digits(String) -> Bool
 
@@ -93,7 +93,7 @@ pub fn js_split_lines(String) -> Array[String]
 
 pub fn js_starts(String, String) -> Bool
 
-pub fn js_string(JValue) -> Array[Int32]
+pub fn js_string(JValue) -> String
 
 pub fn js_trunc(Double) -> Double
 
@@ -103,7 +103,7 @@ pub fn js_upper_ascii(String) -> String
 
 pub fn js_utf8_len(String) -> Int32
 
-pub fn jset(JV, String, JV) -> JV
+pub fn jset(JValue, String, JValue) -> JValue
 
 pub fn json_arr(Array[@json.Json]) -> @json.Json
 
@@ -175,23 +175,23 @@ pub fn json_strs(Array[String]) -> @json.Json
 
 pub fn json_truthy(@json.Json?) -> Bool
 
-pub fn jspread(JV, JV) -> JV
+pub fn jspread(JValue, JValue) -> JValue
 
-pub fn jstr(JV?) -> String?
+pub fn jstr(JValue?) -> String?
 
-pub fn jstrs(Array[String]) -> JV
+pub fn jstrs(Array[String]) -> JValue
 
-pub let jundef : JV
+pub let jundef : JValue
 
-pub fn jv_js_string(JV?) -> String
+pub fn jv_js_string(JValue?) -> String
 
-pub fn jv_parse(String) -> JV raise SyntaxError
+pub fn jv_parse(String) -> JValue raise SyntaxError
 
-pub fn jv_parse_raw(String) -> JV raise SyntaxError
+pub fn jv_parse_raw(String) -> JValue raise SyntaxError
 
-pub fn jv_stringify(JV) -> String
+pub fn jv_stringify(JValue) -> String
 
-pub fn jv_stringify_pretty(JV) -> String
+pub fn jv_stringify_pretty(JValue) -> String
 
 pub fn jval_arr(JValue?) -> Array[JValue]
 
@@ -243,7 +243,7 @@ pub fn jval_js_str(JValue?) -> String
 
 pub fn jval_js_str_raw(JValue) -> String
 
-pub fn jval_keys(JValue) -> Array[Array[Int32]]
+pub fn jval_keys(JValue) -> Array[String]
 
 pub fn jval_keys_of(JValue) -> Array[String]
 
@@ -305,7 +305,7 @@ pub fn jval_truthy(JValue?) -> Bool
 
 pub fn jval_try_parse(String) -> JValue?
 
-pub fn jvalues(JV) -> Array[JV]
+pub fn jvalues(JValue) -> Array[JValue]
 
 pub fn num_text(Double) -> String
 
@@ -315,23 +315,25 @@ pub fn points(String) -> Array[String]
 
 pub fn raw_text(Array[Int32]) -> String
 
+pub fn sanitize_str(String) -> String
+
 pub fn stringify(JValue) -> String
 
 pub fn stringify_indent(JValue, Int32) -> String
 
-pub fn stringify_opt(JV?) -> String?
+pub fn stringify_opt(JValue?) -> String?
 
 pub fn stringify_pretty(JValue) -> String
 
 pub fn text(Array[Int32]) -> String
 
-pub fn text_of(JV?) -> String
+pub fn text_of(JValue?) -> String
 
 pub fn trim_js(String) -> String
 
-pub fn try_parse(String) -> JV?
+pub fn try_parse(String) -> JValue?
 
-pub fn try_parse_raw(String) -> JV?
+pub fn try_parse_raw(String) -> JValue?
 
 pub fn units(String) -> Array[Int32]
 
@@ -351,44 +353,33 @@ pub fn SyntaxError::to_string(Self) -> String
 pub impl Show for SyntaxError
 
 // Types and methods
+#alias(JV)
 #derive(Eq)
-pub(all) enum JV {
-  Null
-  Bool(Bool)
-  Num(Double)
-  Str(String)
-  Arr(Array[JV])
-  Obj(Array[(String, JV)])
-}
-pub fn JV::delete(Self, String) -> Unit
-pub fn JV::filter_undef(Self) -> Self
-pub fn JV::get(Self, String) -> Self?
-pub fn JV::of_js(JValue) -> Self
-pub fn JV::of_js_raw(JValue) -> Self
-pub fn JV::of_json(@json.Json) -> Self
-pub fn JV::put(Self, String, Self) -> Unit
-pub fn JV::to_js(Self) -> JValue
-pub fn JV::to_json(Self) -> @json.Json
-
 pub(all) enum JValue {
   Null
   Bool(Bool)
   Num(Double)
-  Str(Array[Int32])
+  Str(String)
   Arr(Array[JValue])
-  Obj(Array[(Array[Int32], JValue)])
+  Obj(Array[(String, JValue)])
 }
+pub fn JValue::delete(Self, String) -> Unit
+pub fn JValue::filter_undef(Self) -> Self
 pub fn JValue::get(Self, String) -> Self?
-pub fn JValue::keys(Self) -> Array[Array[Int32]]
+pub fn JValue::keys(Self) -> Array[String]
 pub fn JValue::of_array(Array[Self]) -> Self
 pub fn JValue::of_bool(Bool) -> Self
 pub fn JValue::of_double(Double) -> Self
 pub fn JValue::of_int(Int32) -> Self
+pub fn JValue::of_js(Self) -> Self
+pub fn JValue::of_js_raw(Self) -> Self
 pub fn JValue::of_json(@json.Json) -> Self
 pub fn JValue::of_object(Array[(String, Self)]) -> Self
 pub fn JValue::of_opt_string(String?) -> Self
 pub fn JValue::of_string(String) -> Self
 pub fn JValue::of_strings(Array[String]) -> Self
+pub fn JValue::put(Self, String, Self) -> Unit
+pub fn JValue::to_js(Self) -> Self
 pub fn JValue::to_json(Self) -> @json.Json
 pub fn JValue::to_json_lossy(Self) -> @json.Json
 

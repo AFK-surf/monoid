@@ -19,7 +19,7 @@ fn jfield(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
 ///|
 fn jstr(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
+    Some(Str(s)) => Some(@jsjson.sanitize_str(s))
     _ => None
   }
 }

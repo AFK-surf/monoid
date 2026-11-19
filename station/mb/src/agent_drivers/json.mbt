@@ -36,7 +36,7 @@ pub fn map_json(m : Array[(String, String)]) -> JValue {
 /// An object of strings as an ordered map (what is not a string left out).
 pub fn string_entries(v : JValue?) -> Array[(String, String)] {
   entries_of(v).filter_map(e => match e.1 {
-    Str(u) => Some((e.0, @jsjson.text(u)))
+    Str(u) => Some((e.0, @jsjson.sanitize_str(u)))
     _ => None
   })
 }

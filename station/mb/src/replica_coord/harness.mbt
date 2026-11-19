@@ -49,7 +49,7 @@ fn jc(v : Json) -> J {
     Number(n, ..) => Num(n)
     String(s) => js(s)
     Array(xs) => Arr(xs.map(jc))
-    Object(m) => Obj(m.iter().map(e => (@jsjson.units(e.0), jc(e.1))).collect())
+    Object(m) => Obj(m.iter().map(e => (e.0, jc(e.1))).collect())
   }
 }
 
@@ -66,7 +66,7 @@ fn b64(b : Bytes) -> J {
 ///|
 fn unb64(v : J?) -> Bytes? {
   match v {
-    Some(Str(u)) => Some(@base64.decode(@jsjson.text(u))) catch { _ => None }
+    Some(Str(u)) => Some(@base64.decode(@jsjson.sanitize_str(u))) catch { _ => None }
     _ => None
   }
 }

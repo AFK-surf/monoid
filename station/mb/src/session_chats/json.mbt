@@ -70,10 +70,7 @@ pub fn keys_of(v : J?) -> Array[String] {
 /// An object without field `k` (`delete o[k]`, or a destructuring leaving it out).
 pub fn without(o : J, ks : Array[String]) -> J {
   match o {
-    Obj(fs) => {
-      let us = ks.map(@jsjson.units)
-      Obj(fs.filter(f => !us.contains(f.0)))
-    }
+    Obj(fs) => Obj(fs.filter(f => !ks.contains(f.0)))
     other => other
   }
 }

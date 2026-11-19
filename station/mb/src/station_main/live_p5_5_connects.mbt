@@ -103,7 +103,7 @@ let slack_calls : Array[String] = [
 ///|
 /// A Slack surface as the connects and the hub take it (connects_hub's `Connection`, its `Surface` called by name).
 fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
-  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
+  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
   let opt = (v : String?) => match v { Some(t) => to_jv(Json::string(t)); None => @jsjson.JValue::Null }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
     match name {
@@ -127,7 +127,7 @@ fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
       }
       "working" => {
         let (ch, ts) = thread_of_j(a.get(0))
-        s.working(ch, ts, match a.get(1) { Some(Str(u)) => Some(@jsjson.text(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.text(u))); _ => None })
+        s.working(ch, ts, match a.get(1) { Some(Str(u)) => Some(@jsjson.sanitize_str(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.sanitize_str(u))); _ => None })
         Null
       }
       "standsAt" => {

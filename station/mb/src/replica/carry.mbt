@@ -401,43 +401,13 @@ fn Files::each_line(self : Files, path : String, f : (String) -> Unit raise) -> 
 ///|
 /// As JavaScript's sort() compares strings: by their UTF-16 code units (MoonBit's compare puts the shorter first).
 fn compare_units(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let d = a.unsafe_charcode_at(i) - b.unsafe_charcode_at(i)
-    if d != 0 {
-      return d
-    }
-  }
-  a.length() - b.length()
+  @jsjson.js_compare(a, b)
 }
 
 ///|
 /// String.prototype.trim: JavaScript's white space and line ends off both ends.
 fn js_trim(s : String) -> String {
-  let white = (c : Int) => c == 0x09 ||
-    c == 0x0a ||
-    c == 0x0b ||
-    c == 0x0c ||
-    c == 0x0d ||
-    c == 0x20 ||
-    c == 0xa0 ||
-    c == 0x1680 ||
-    (c >= 0x2000 && c <= 0x200a) ||
-    c == 0x2028 ||
-    c == 0x2029 ||
-    c == 0x202f ||
-    c == 0x205f ||
-    c == 0x3000 ||
-    c == 0xfeff
-  let mut start = 0
-  let mut end = s.length()
-  while start < end && white(s.unsafe_charcode_at(start)) {
-    start += 1
-  }
-  while end > start && white(s.unsafe_charcode_at(end - 1)) {
-    end -= 1
-  }
-  s.view(start_offset=start, end_offset=end).to_string()
+  @jsjson.trim_js(s)
 }
 
 ///|
@@ -620,7 +590,7 @@ fn jnum(d : Double) -> JValue {
 
 ///|
 fn jobj(entries : Array[(String, JValue)]) -> JValue {
-  Obj(entries.map(e => (@jsjson.units(e.0), e.1)))
+  Obj(entries)
 }
 
 ///|
@@ -1007,7 +977,7 @@ fn Gathering::read_before(self : Gathering, at : String) -> Unit raise {
   self.files.each_line(at, line => {
     guard (try Some(@jsjson.parse(line)) catch { _ => None }) is Some(f) else { return }
     if get(f, "hash") is Some(Str(h)) && get(f, "path") is Some(Str(p)) {
-      self.before[@jsjson.text(p)] = (num(get(f, "size")), num(get(f, "mtimeMs")), @jsjson.text(h))
+      self.before[@jsjson.sanitize_str(p)] = (num(get(f, "size")), num(get(f, "mtimeMs")), @jsjson.sanitize_str(h))
     }
   })
 }
@@ -1582,7 +1552,7 @@ pub fn carry_place(
         return
       }
       let link = match f {
-        Obj(entries) => entries.iter().any(e => e.0 == @jsjson.units("link"))
+        Obj(entries) => entries.iter().any(e => e.0 == "link")
         _ => false
       }
       let hash = text_of(get(f, "hash")).unwrap_or("")

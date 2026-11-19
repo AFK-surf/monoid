@@ -33,7 +33,7 @@ fn keys_of(o : J) -> Array[String] {
   match o {
     Obj(fs) =>
       for f in fs {
-        let k = @jsjson.text(f.0)
+        let k = @jsjson.sanitize_str(f.0)
         if !out.contains(k) {
           out.push(k)
         }

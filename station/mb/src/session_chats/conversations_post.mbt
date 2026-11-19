@@ -258,7 +258,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       raise fail_("withdraw uses only to and withdraw; post updates and record your ending separately")
     }
     let ts = match withdraw {
-      Str(u) if trim(@jsjson.text(u)) != "" => @jsjson.text(u)
+      Str(u) if trim(@jsjson.sanitize_str(u)) != "" => @jsjson.sanitize_str(u)
       _ => raise fail_("withdraw must be your question's message ts")
     }
     let thread = target(w, key, at(Some(args), "to"))
@@ -281,7 +281,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       raise fail_("titling alone uses only to and title; post updates and record your ending separately")
     }
     let t = match title {
-      Str(u) if clean_title(@jsjson.text(u)) != "" => @jsjson.text(u)
+      Str(u) if clean_title(@jsjson.sanitize_str(u)) != "" => @jsjson.sanitize_str(u)
       _ => raise fail_("title is empty")
     }
     let thread = target(w, key, at(Some(args), "to"))
@@ -600,7 +600,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
     }
   }
   let titled = match at(Some(args), "title") {
-    Some(Str(u)) => name_chat(w, row.unwrap_or(Null), @jsjson.text(u))
+    Some(Str(u)) => name_chat(w, row.unwrap_or(Null), @jsjson.sanitize_str(u))
     _ => ""
   }
   let place = address_of_row(row) +

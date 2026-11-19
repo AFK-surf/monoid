@@ -151,9 +151,9 @@ fn profiles(host : @host.Host, data : String, sep : String) -> Array[(String, St
   guard raw.get("profiles") is Some(Arr(ps)) else { return out }
   for p in ps {
     guard jfield(p, "id") is Some(Str(id)) && jfield(p, "home") is Some(Str(home)) else { continue }
-    let home = @jsjson.text(home)
+    let home = @jsjson.sanitize_str(home)
     let absolute = home.has_prefix("/") || (sep == "\\" && (home.has_prefix("\\") || (home.length() >= 2 && home.unsafe_charcode_at(1) == ':')))
-    out.push((@jsjson.text(id), if absolute { home } else { @nodepath.join(sep, [data, home]) }))
+    out.push((@jsjson.sanitize_str(id), if absolute { home } else { @nodepath.join(sep, [data, home]) }))
   }
   out
 }

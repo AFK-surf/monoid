@@ -24,7 +24,7 @@ pub fn present(j : J?) -> Bool {
 
 ///|
 pub fn has_key(o : J, k : String) -> Bool {
-  let u = @jsjson.units(k)
+  let u = k
   match o {
     Obj(ps) => ps.iter().any(p => p.0 == u)
     _ => false
