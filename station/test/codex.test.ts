@@ -773,7 +773,8 @@ describe("the Codex driver", { concurrency: true }, () => {
     const mcp = gates(p.dump, "mcp");
     const a = listen();
     const opening = d.open(options(p, { resume: "th-held" }), a.push);
-    await eventually(() => existsSync(`${p.dump}.stdin`) && stdin(p.dump).some((m) => m.method === "mcpServerStatus/list"));
+    // (read as text: the fake may be writing a line of it)
+    await eventually(() => existsSync(`${p.dump}.stdin`) && readFileSync(`${p.dump}.stdin`, "utf8").includes(`"method":"mcpServerStatus/list"`));
     // Outgrown now: another session opened meanwhile does not end it under the first.
     (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
     const two = await d.open(options(p), listen().push);
