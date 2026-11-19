@@ -2193,3 +2193,13 @@ fn chat_live_causes(
 /// The most pieces come at a chat list's end in one change that are judged a live cause (chat_live_causes): more is a
 /// page read in or what was said while it did not show, there at once.
 let chat_live_tail_most : Int = 4
+
+///|
+/// The larger of two whole numbers.
+fn dmax_int(a : Int, b : Int) -> Int {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}

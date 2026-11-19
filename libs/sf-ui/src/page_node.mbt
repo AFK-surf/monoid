@@ -2051,7 +2051,7 @@ pub fn block_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : Sourc
   let narrow = look_node(parent) is Narrow
   let listed = !narrow && part_of(parent).list
   let room = if narrow { (text_in, text_in, text_in, text_in) } else if listed {
-    (text_in, wide_row_over, if in_pane_node(parent) { text_in } else { list_control_end }, wide_row_over)
+    (text_in, wide_row_over, if in_pane_node(parent) { card_control_end } else { list_control_end }, wide_row_over)
   } else {
     (0.0, 0.0, 0.0, 0.0)
   }

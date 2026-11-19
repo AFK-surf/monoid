@@ -1633,3 +1633,47 @@ test "an iPhone Duo on its side: 全屏 of a screen in the side panel fills the 
   duo_browser_bar(t, "after 全屏")
   assert_eq(duo_panel_audit(t), [])
 }
+
+///|
+test "an iPhone Duo: 下方栏 in the settings sets the places of the system's tabs, one bar, 侧边条 not offered" {
+  let t = native_chat(951.0, 669.0, true, side=84.0)
+  // (the tabs as before the bar is set: 对话, 文件, Station)
+  for id in ["place/chats", "place/files", "place/stations"] {
+    assert_true(t.nav_said().contains("\"id\":\"\{id}\""), msg="no \{id}: \{t.nav_said()}")
+  }
+  t.post(@hostapi.system_channel, "{\"nav\":\"settings\"}")
+  t.run_for(@ui.move_most_ms)
+  // (此设备's 下方栏 in the sidebar; what the bar holds, the row's value, left out where the sidebar has not the room)
+  assert_true(t.find("下方栏") is Some(_), msg="no 下方栏 in the settings")
+  // (外观 with no 侧边条: the places are the tabs')
+  @sfbase.open_page(Setting(@settings.Route::Appearance))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Setting(@settings.Route::Appearance))
+  assert_true(t.find("自定义侧边条") is None, msg="侧边条 offered beside the system's tabs")
+  // (下方栏: the one bar's places and room for a fourth, no other bar to make)
+  // (its row past the sidebar's foot unscrolled: opened as the row opens it)
+  @sfbase.open_page(Setting(@settings.Route::BarSettings))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Setting(@settings.Route::BarSettings), msg="下方栏 not opened")
+  // (the page brought over from beside the sidebar in use)
+  guard covered(t, "收起侧边栏") is Some((px, _)) else { fail("the page beside the sidebar not to be brought over") }
+  t.tap(px + 20.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  for words in ["对话", "文件", "Station", "添加"] {
+    assert_true(t.find(words) is Some(_), msg="下方栏 shows no \{words}")
+  }
+  assert_true(t.find("新建栏") is None, msg="another bar offered")
+  assert_true(t.find("第 1 栏") is None, msg="the one bar named")
+  assert_eq(t.audit(), [])
+  // (远程 added: a tab of its own, chosen there it is the one lit)
+  t.tap_text("添加")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("远程")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.nav_said().contains("\"id\":\"place/remote\""), msg="no 远程 tab: \{t.nav_said()}")
+  t.post(@hostapi.system_channel, "{\"nav\":\"place/remote\"}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Place("remote"), msg="远程 not gone to")
+  assert_true(t.nav_said().contains("\"selected\":\"place/remote\""), msg="远程 not lit: \{t.nav_said()}")
+  assert_eq(t.audit(), [])
+}

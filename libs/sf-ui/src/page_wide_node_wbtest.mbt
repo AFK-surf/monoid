@@ -157,3 +157,19 @@ test "a page made once by the width it is given: made again only as its arrangem
   assert_true(made == [Wide, Narrow])
   assert_true(later == [Wide, Narrow])
 }
+
+///|
+test "a wide panel's list card holds a one-line setting's control out of its corners at its first and last rows" {
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=760.0, h=400.0)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.lends(pane_lent, true).lends(part_at, { look: Wide, section: false, list: false }) |> ignore
+      group_node(b, fn(g) {
+        setting_choice_node(g, fn() { "语言" }, fn() { ["跟随系统", "中文", "English"] }, fn() { 0 }, fn(_) {  })
+      })
+    })
+    |> ignore
+  })
+  t.draw()
+  assert_eq(t.corner_faults(), [])
+}

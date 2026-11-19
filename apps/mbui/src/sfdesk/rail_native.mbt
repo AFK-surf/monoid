@@ -622,31 +622,36 @@ let native_bell_up : Double = 156.0
 /// other places, the settings, the workspaces), and at its foot what is most wanted, where the thumb rests: 待处理 and
 /// 新建对话 (on the accent's glass). The place lit chosen (更多 for one in it).
 fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@hostapi.NavItem]) -> @hostapi.NavBar {
-  let places = rail_items(src, w.id)
+  let places = native_places(src, w.id)
   let lit = lit_place()
   let item = fn(id : String, title : String, icon : String) -> @hostapi.NavItem {
     { id, title, icon: @sf.icon_path(icon), dot: false, prominent: false, menu: [] }
   }
-  // 对话, 文件, Station, 待处理 (the chats that want the viewer), 我的 (the settings, the other places' pages in them)
-  let tabs : Array[@hostapi.NavItem] = [item("place/chats", rail_label(src, "chats"), rail_icon("chats"))]
-  if places.contains("files") {
-    tabs.push(item("place/files", rail_label(src, "files"), rail_icon("files")))
+  // the bar's places (对话, 文件, Station by default: native_places), 待处理 (the chats that want the viewer), 我的 (the
+  // settings, the other places' pages in them)
+  let tabs : Array[@hostapi.NavItem] = []
+  for p in places {
+    if p == "stations" {
+      // (its icon the stations at a glance, as the rail's: online ones lit, a dot while one fails)
+      let glance = stations_at_glance(src, w.id).0
+      tabs.push({
+        ..item("place/stations", rail_label(src, "stations"), "stations"),
+        icon: @sf.station_glyph_icon(glance),
+        dot: glance.failing > 0,
+      })
+    } else {
+      // (密钥 is no place of the rail's: its words the bar's)
+      let title = if p == "vault" { @sf.t("android-misc.bar.place.vault") } else { rail_label(src, p) }
+      tabs.push(item("place/" + p, title, @sfbase.place_icon(p)))
+    }
   }
-  // (the workspace's stations, whatever the rail shows: the user, 2026-10-26)
-  // (its icon the stations at a glance, as the rail's: online ones lit, a dot while one fails)
-  let glance = stations_at_glance(src, w.id).0
-  tabs.push({
-    ..item("place/stations", rail_label(src, "stations"), "stations"),
-    icon: @sf.station_glyph_icon(glance),
-    dot: glance.failing > 0,
-  })
   // Workspace selection lives at the list heading; settings remains a separate action.
   let at = if @sf.native_side() { "act/" } else { "lead/" }
   tabs.push(item("settings", @sf.t("android-settings.title"), "settings"))
   // (待处理 a popover over the page, as the bell's: pressed, never chosen; in the column down the side, upright at the
   // bar's lead, left of the top, on the status bar's row: the user 2026-10-27)
   tabs.push({ ..item(at + "attention", rail_label(src, "attention"), "bell"), dot: bell_lit(src, w) })
-  let selected = tab_of_place(lit)
+  let selected = tab_of_place(places, lit)
   let t = @sf.theme()
   {
     floating: native_floating.val,
@@ -669,14 +674,40 @@ fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@
 }
 
 ///|
-/// The tab the place shown is in (rail_nav's `selected`).
-fn tab_of_place(lit : String) -> String {
+/// The places the system's tabs hold, in their order: this device's bar for the workspace (下方栏, @sfbase.bars_in: one
+/// bar, the one in view), 文件 left out of the one it starts with where the rail has none (as before the bar could be
+/// set), none twice.
+fn native_places(src : Source, ws : String) -> Array[String] {
+  let (sets, cur) = @sfbase.bars_in(src, ws)
+  let raw = sets.get(cur).unwrap_or([])
+  let prefs = src.topic("prefs", {}).get().value
+  let set = @sfbase.bars_picked.get() is Some(_) || field(field(prefs, "barsBy"), ws) is Some(Object(_))
+  let out : Array[String] = []
+  for p in raw {
+    if p == "files" && !set && !rail_items(src, ws).contains("files") {
+      continue
+    }
+    if !out.contains(p) {
+      out.push(p)
+    }
+  }
+  out
+}
+
+///|
+/// The tab the place shown is in (rail_nav's `selected`), of the tabs of `places`: 已归档 its own where it has one, else
+/// the chats'; none where the place has no tab.
+fn tab_of_place(places : Array[String], lit : String) -> String {
+  // (the settings, opened from the workspace's button: no tab of theirs)
+  if lit == "settings" {
+    return ""
+  }
+  if lit == "chats" && places.contains("archive") && app.nav.pages().contains(Archived) {
+    return "place/archive"
+  }
   match lit {
-    "chats" | "mine" | "watching" | "hidden" | "archive" => "place/chats"
-    "files" => "place/files"
-    "stations" => "place/stations"
-    // (the settings, opened from the workspace's button: no tab of theirs)
-    _ => ""
+    "chats" | "mine" | "watching" | "hidden" | "archive" => if places.contains("chats") { "place/chats" } else { "" }
+    p => if places.contains(p) { "place/" + p } else { "" }
   }
 }
 
@@ -698,6 +729,8 @@ fn tab_kept_key(ws : String, tab : String) -> String {
 /// bars since the last frame done.
 fn native_frame(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspace]) -> Unit {
   nav_want.val = Some((src, w, all))
+  // (read so: this island built again as the bar's places change, the tabs handed anew: rail_nav)
+  native_places(src, w.id) |> ignore
   column_short.set(@sf.native_side() && c.window_size().0 < column_short_below)
   // (the host says the screen's corner only where it lays out the tabs, ios_nav.h mb_host_window_corner; said once the
   // window is on the screen, what was kept before it is drawn anew, its corners its own then)
@@ -729,7 +762,7 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
     }
     // (a tab left keeps what it showed, given back as it is chosen again; the one shown chosen again changes nothing,
     // as the system's tab apps have it: the user, 2026-10-26)
-    let now = tab_of_place(lit_place())
+    let now = tab_of_place(native_places(src, w.id), lit_place())
     if id.has_prefix("place/") && id != now {
       tabs_kept[tab_kept_key(w.id, now)] = app.nav.pages()
       // (what was open over the tab left closed with it: a chat's ⋯, a menu)

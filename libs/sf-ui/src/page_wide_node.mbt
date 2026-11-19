@@ -911,7 +911,7 @@ fn wide_control_row_node(
       cell
       // (as wide_in_list's: a row's room in at its start, at its end what holds its switch out of the card's corner,
       // 10 over and under)
-      .padding(Is((text_in, wide_row_over, if in_pane_node(parent) { text_in } else { list_control_end }, wide_row_over)))
+      .padding(Is((text_in, wide_row_over, if in_pane_node(parent) { card_control_end } else { list_control_end }, wide_row_over)))
       .lies_along(Is(Middle))
       .radius(Is(if in_pane_node(parent) { 0.0 } else { list_row_corner(cell) }))
       .min_height(By(fn() { Some(theme().items.least) }))
