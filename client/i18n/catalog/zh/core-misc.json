@@ -374,6 +374,7 @@
   "core-misc.personal.noAccount": "这台设备没有登录对应的账号",
   "core-misc.personal.noRequest": "找不到这个申请，它可能已经结束了",
   "core-misc.personal.reason.grant": "允许这个对话调试你的手机",
+  "core-misc.personal.reason.revoke": "收回这个对话调试你的手机的授权",
   "core-misc.personal.reason.add": "批准你的新设备",
   "core-misc.personal.reason.remove": "移除你的一台设备",
   "core-misc.personal.reason.forget": "确认你的受信任设备被重新设置过",

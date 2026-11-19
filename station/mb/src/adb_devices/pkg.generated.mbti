@@ -161,6 +161,8 @@ pub let retry : Double
 
 pub let retry_most : Double
 
+pub let revokes_per_owner_max : Int32
+
 pub fn root_tasks_on(String, Int32) -> Array[Int32]
 
 pub async fn run(World, String, Array[String], Double?) -> String
@@ -176,6 +178,8 @@ pub let server_version : String
 pub async fn servers_of(Shares, Share) -> Array[Array[String]]?
 
 pub let settle : Double
+
+pub let signed_revoke_max : Int32
 
 pub let silent_ms : Double
 
@@ -349,6 +353,7 @@ pub struct PhoneGrants {
   db : @sql.Db
   title : async (Req) -> String?
   told : async (@jsjson.JValue, @jsjson.JValue, String) -> Unit
+  told_revoke : (async (@jsjson.JValue, String, String, String) -> Unit)?
   outcomes : Bool
   titles : Map[String, (String, String?)]
   shown_by_session : Map[String, Array[String]]
@@ -361,12 +366,14 @@ pub async fn PhoneGrants::decide(Self, String, String, String?, String, signed? 
 pub fn PhoneGrants::get(Self, String) -> Req? raise
 pub async fn PhoneGrants::granted_of_owner(Self, String) -> Array[Req]
 pub async fn PhoneGrants::held(Self, String) -> Array[Req]
+pub async fn PhoneGrants::keep_revoke(Self, String, @jsjson.JValue?, String) -> String?
 pub async fn PhoneGrants::linked(Self, String, @jsjson.JValue) -> Unit
 pub async fn PhoneGrants::live_all(Self) -> Array[Req]
-pub fn PhoneGrants::new(World, @sql.Db, async (Req) -> String?, async (@jsjson.JValue, @jsjson.JValue, String) -> Unit, outcomes? : Bool) -> Self raise
+pub fn PhoneGrants::new(World, @sql.Db, async (Req) -> String?, async (@jsjson.JValue, @jsjson.JValue, String) -> Unit, outcomes? : Bool, told_revoke? : async (@jsjson.JValue, String, String, String) -> Unit) -> Self raise
 pub async fn PhoneGrants::of_owner(Self, String, workspace? : String) -> Array[@jsjson.JValue]
 pub async fn PhoneGrants::release(Self, String, owner? : String) -> Array[Req]
-pub async fn PhoneGrants::revoke(Self, String, String, String) -> String?
+pub async fn PhoneGrants::revoke(Self, String, String, String, signed? : @jsjson.JValue) -> String?
+pub fn PhoneGrants::revokes_of_owner(Self, String) -> Array[@jsjson.JValue] raise
 pub async fn PhoneGrants::shown(Self, Req) -> @jsjson.JValue
 pub async fn PhoneGrants::sign(Self, String, String, @jsjson.JValue?, String) -> String?
 pub async fn PhoneGrants::starter(Self, String) -> String?

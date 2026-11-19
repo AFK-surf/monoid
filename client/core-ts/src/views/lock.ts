@@ -2311,7 +2311,7 @@ function heardTail(inner: Inner, ws: string, raw: unknown): void {
 }
 
 /// The stations of `sub`'s workspaces here, each once (one in two of them is asked in the first).
-function personStations(inner: Inner, sub: string): StationAddr[] {
+export function personStations(inner: Inner, sub: string): StationAddr[] {
   const out = new Map<string, StationAddr>();
   for (const [ws, owner] of inner.workspaces.owned()) {
     if (owner !== sub) continue;

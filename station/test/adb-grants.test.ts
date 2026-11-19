@@ -526,3 +526,67 @@ test("a phone granted until idle an hour: kept while the chat uses it, ended an 
     w.db.close();
   }
 });
+
+test("what the owner's device signed to take a grant back is kept until the grant would have ended, told to their devices and given as they read", async () => {
+  const w = world();
+  const file = new DatabaseSync(":memory:");
+  let now = 1_800_000_000_000;
+  const told: [unknown, string, string, string][] = [];
+  const make = () => new PhoneGrants({ db: file, hub: w.hub, home: () => "home", title: () => null, now: () => now, toldRevoke: (s, owner, request, ws) => void told.push([s, owner, request, ws]) });
+  try {
+    const grants = make();
+    const secs = now / 1000;
+    const signed = (request: string, exp = secs + 3600) => ({ body: { v: 1, sub: "s", station: "ws/st1", request, exp }, sig: { key: "ed25519:aa", sig: "bb" } });
+    // Another station's grant (relayed): kept and told, whatever its own station says.
+    assert.equal(grants.keepRevoke("PAT@example.com", signed("p9"), "work-a"), null);
+    assert.deepEqual(told, [[signed("p9"), "pat@example.com", "p9", "work-a"]]);
+    assert.deepEqual(grants.revokesOfOwner("pat@example.com"), [signed("p9")]);
+    assert.deepEqual(grants.revokesOfOwner("other@example.com"), [], "another member's not given");
+    // Another member naming the same request keeps a row of their own, not the owner's.
+    assert.equal(grants.keepRevoke("other@example.com", signed("p9", secs + 60), "work-a"), null);
+    assert.deepEqual(grants.revokesOfOwner("pat@example.com"), [signed("p9")]);
+    // Kept across a restart.
+    assert.deepEqual(make().revokesOfOwner("pat@example.com"), [signed("p9")]);
+    // Not a signature: refused, nothing told.
+    const before = told.length;
+    for (const bad of [null, "x", { body: {} }, { body: { request: "p1", station: "ws/st1", exp: secs + 10 } }, { body: { request: "", station: "ws/st1", exp: secs + 10 }, sig: {} },
+      { body: { request: "p1", station: "", exp: secs + 10 }, sig: {} }, { body: { request: "p1", station: "ws/st1", exp: 1.5 }, sig: {} }, { body: { request: "x".repeat(129), station: "ws/st1", exp: secs + 10 }, sig: {} },
+      { body: { request: "p1", station: "ws/st1", exp: secs + 10 }, sig: { sig: "x".repeat(5000) } }])
+      assert.equal(grants.keepRevoke("pat@example.com", bad, "work-a"), "not a signature");
+    assert.equal(told.length, before);
+    // Ended already: nothing kept.
+    assert.equal(grants.keepRevoke("pat@example.com", signed("old", secs), "work-a"), null);
+    assert.equal(told.length, before);
+    // At most so many an owner's: those ending first let go.
+    for (let i = 0; i < 300; i++) grants.keepRevoke("pat@example.com", signed(`m${i}`, secs + 7200 + i), "work-a");
+    const kept = grants.revokesOfOwner("pat@example.com").map((s) => (s.body as { request: string }).request);
+    assert.equal(kept.length, 256);
+    assert.ok(!kept.includes("p9") && !kept.includes("m0") && kept.includes("m299"));
+    // Let go as they end.
+    now += 7200_000 + 300_000;
+    assert.deepEqual(grants.revokesOfOwner("pat@example.com"), []);
+    // Read by its index, bounded.
+    const plan = file.prepare("EXPLAIN QUERY PLAN SELECT body FROM adb_revokes WHERE owner = ? ORDER BY exp LIMIT ?").all("pat@example.com", 256) as { detail: string }[];
+    assert.ok(plan.some((p) => /adb_revokes_by_owner/.test(p.detail)), JSON.stringify(plan));
+  } finally {
+    file.close();
+    w.db.close();
+  }
+});
+
+test("a grant taken back on its own station keeps what was signed for it and tells it; one from before signatures takes it back as before", async () => {
+  const w = world();
+  const told: string[] = [];
+  const grants = new PhoneGrants({ db: w.db, hub: w.hub, home: () => "home", title: () => null, now: () => 1_800_000_000_000, toldRevoke: (_s, _o, request) => void told.push(request), id: () => "q1" });
+  try {
+    await grants.ask("s1", "debug");
+    assert.equal(grants.decide("pat@example.com", "q1", "hour", "work-a"), null);
+    const signed = { body: { v: 1, sub: "s", station: "ws/st1", request: "q1", exp: 1_800_003_600 }, sig: { key: "ed25519:aa", sig: "bb" } };
+    assert.equal(grants.revoke("pat@example.com", "q1", "work-a", signed), null);
+    assert.equal(grants.get("q1")!.status, "ended");
+    assert.deepEqual(told, ["q1"]);
+    assert.deepEqual(grants.revokesOfOwner("pat@example.com"), [signed]);
+  } finally {
+    w.db.close();
+  }
+});

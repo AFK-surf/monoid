@@ -75,7 +75,21 @@ CREATE TABLE IF NOT EXISTS adb_lasts (
   owner TEXT PRIMARY KEY,
   lasts TEXT NOT NULL,
   at INTEGER NOT NULL
-);`;
+);
+-- (what the owner's devices signed to take a grant back, kept until the grant would have ended: given to their devices
+-- as they read their grants, told to them as it comes, the grant's own station or another of theirs)
+CREATE TABLE IF NOT EXISTS adb_revokes (
+  id TEXT PRIMARY KEY, -- owner, a space, request: another member naming the same request keeps a row of their own
+  owner TEXT NOT NULL,
+  exp INTEGER NOT NULL,
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS adb_revokes_by_owner ON adb_revokes (owner, exp);`;
+
+/// How large a signed taking back is kept at most (bytes of its JSON), and how many of an owner's at most (those that
+/// end first let go).
+export const SIGNED_REVOKE_MAX = 4096;
+export const REVOKES_PER_OWNER_MAX = 256;
 
 /// What it needs of the station: the chats (`hub`), its time (ms), and who hears of a change (the owner's devices).
 export type GrantsDeps = {
@@ -108,6 +122,8 @@ export type GrantsDeps = {
   title(r: PhoneRequest): string | null;
   now(): number;
   told?(r: PhoneRequest, workspace: string | null, change: "grant" | "used" | "title"): void;
+  /// A signed taking back kept (`keepRevoke`): told to its owner's devices (`adb-revoke`).
+  toldRevoke?(signed: unknown, owner: string, request: string, workspace: string): void;
   /// A request's id (tests give their own).
   id?(): string;
 };
@@ -468,8 +484,42 @@ export class PhoneGrants {
     return null;
   }
 
-  /// The owner takes a grant (or a request) of theirs back.
-  revoke(email: string, id: string, workspace: string): string | null {
+  /// What the owner's device signed to take a grant of theirs back (personal-lock.ts `SignedRevoke`), this station's or
+  /// another's: kept until the grant would have ended and told to their devices, each of which checks it itself. Why it
+  /// is not kept, or null.
+  keepRevoke(email: string, signed: unknown, workspace: string): string | null {
+    const s = signed as { body?: unknown; sig?: unknown } | null | undefined;
+    if (s == null || typeof s !== "object" || s.body == null || typeof s.body !== "object" || s.sig == null || typeof s.sig !== "object") return "not a signature";
+    const body = s.body as { request?: unknown; station?: unknown; exp?: unknown };
+    if (typeof body.request !== "string" || body.request.length === 0 || body.request.length > 128) return "not a signature";
+    if (typeof body.station !== "string" || body.station.length === 0 || !Number.isSafeInteger(body.exp)) return "not a signature";
+    const kept = { body: s.body, sig: s.sig };
+    const text = JSON.stringify(kept);
+    if (text.length > SIGNED_REVOKE_MAX) return "not a signature";
+    const now = this.#secs();
+    const exp = body.exp as number;
+    // (ended already: the grant it takes back ended with it)
+    if (exp <= now) return null;
+    const owner = email.toLowerCase();
+    this.#d.db.prepare("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?").run(owner, now);
+    this.#d.db.prepare("INSERT OR REPLACE INTO adb_revokes (id, owner, exp, body) VALUES (?, ?, ?, ?)").run(`${owner} ${body.request}`, owner, exp, text);
+    this.#d.db.prepare(`DELETE FROM adb_revokes WHERE id IN (SELECT id FROM adb_revokes WHERE owner = ?1 ORDER BY exp DESC LIMIT -1 OFFSET ?2)`)
+      .run(owner, REVOKES_PER_OWNER_MAX);
+    this.#d.toldRevoke?.(kept, owner, body.request, workspace);
+    return null;
+  }
+
+  /// The signed takings back of `email`'s grants kept here (those ended let go).
+  revokesOfOwner(email: string): { body: unknown; sig: unknown }[] {
+    const owner = email.toLowerCase();
+    this.#d.db.prepare("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?").run(owner, this.#secs());
+    return (this.#d.db.prepare("SELECT body FROM adb_revokes WHERE owner = ? ORDER BY exp LIMIT ?").all(owner, REVOKES_PER_OWNER_MAX) as { body: string }[])
+      .map((row) => JSON.parse(row.body) as { body: unknown; sig: unknown });
+  }
+
+  /// The owner takes a grant (or a request) of theirs back; `signed`, what their device signed for it (`keepRevoke`).
+  revoke(email: string, id: string, workspace: string, signed?: unknown): string | null {
+    if (signed !== undefined) this.keepRevoke(email, signed, workspace);
     const r = this.get(id);
     if (r === null || this.#workspace(r) !== workspace) return "no such request";
     if (r.owner !== email.toLowerCase()) return "only its owner takes a grant back";

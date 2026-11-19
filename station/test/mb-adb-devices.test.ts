@@ -2104,6 +2104,13 @@ test("the phones' part: a phone lent, asked for by a chat, decided and taken bac
     out.push(await settled(() => ask({ adb: { op: "revoke", request: first } }), 1, 2));
     out.push(await ask({ adb: { op: "revoke", request: first } }));
     out.push(await phones("done", "work-a", "s1", null), await phones("shown", "work-a"), await tool("phone_use", "s1", { done: true }));
+    // What the owner's device signed to take a grant back: kept, told and given with the grants, its own station's or
+    // another's (relayed); one that is no signature refused.
+    const signedFor = (request: string) => ({ body: { v: 1, sub: "u1", station: "work-a/st-x", request, exp: 4_000_000_000 }, sig: { key: "ed25519:aa", sig: "bb" } });
+    out.push(await ask({ adb: { op: "revoke", request: first, signed: signedFor(first) } }));
+    out.push(await ask({ adb: { op: "revoke", relay: true, signed: signedFor("p-other") } }), await ask({ adb: { op: "revoke", relay: true, signed: { body: {} } } }));
+    out.push(await ask({ adb: { op: "revoke", relay: true, signed: signedFor("p-other") } }, { ...PAT, email: "kim@example.com" }));
+    out.push(await ask({ adb: { op: "grants" } }), await ask({ adb: { op: "grants" } }, { ...PAT, email: "kim@example.com" }));
     // The station stops: the offer ends with it, adb not told (the next station takes the phone on as it offers again).
     if (side === "ts") await close();
     else await mbCall(id, "close");
