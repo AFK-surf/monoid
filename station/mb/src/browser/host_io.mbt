@@ -245,35 +245,18 @@ pub fn host_machine(host : @host.Host, clock : Clock, procs : MachineProcs) -> M
       }
     },
     version: async fn(port) {
-      let got = @effect.timeout(3000, async fn() {
-        host.shell("fetch", {
-          "url": Json::string("http://127.0.0.1:\{port}/json/version"),
-          "method": "GET",
-          "headers": Json::array([]),
-        })
-      }) catch {
-        _ => None
+      let got = host.fetch("http://127.0.0.1:\{port}/json/version", timeout_ms=3000) catch { _ => return None }
+      if got.status < 200 || got.status > 299 {
+        return None
       }
-      match got {
-        Some((answer, Some(body))) => {
-          let status = match shell_field(answer, "status") {
-            Some(Number(n, ..)) => n
-            _ => 0.0
+      let v = parse(from_utf8(got.body)) catch { _ => return None }
+      match at(Some(v), "webSocketDebuggerUrl") {
+        Some(Str(u)) => {
+          let agent = match at(Some(v), "User-Agent") {
+            None | Some(Null) => ""
+            a => js_str(a)
           }
-          if status < 200.0 || status > 299.0 {
-            return None
-          }
-          let v = parse(from_utf8(body)) catch { _ => return None }
-          match at(Some(v), "webSocketDebuggerUrl") {
-            Some(Str(u)) => {
-              let agent = match at(Some(v), "User-Agent") {
-                None | Some(Null) => ""
-                a => js_str(a)
-              }
-              Some((@jsjson.text(u), agent))
-            }
-            _ => None
-          }
+          Some((@jsjson.text(u), agent))
         }
         _ => None
       }

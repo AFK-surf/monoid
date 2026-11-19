@@ -16,6 +16,8 @@ pub fn epoch_ms() -> Int64
 
 pub fn exit(Int32) -> Unit
 
+pub let fetch_timed_out : String
+
 pub fn listener_gone(Error) -> Bool
 
 pub fn note(String) -> Unit
@@ -33,6 +35,8 @@ pub fn unique_tmp(String) -> String
 pub fn wall_ms() -> Int64
 
 // Errors
+pub suberror FetchTimeout
+pub impl Show for FetchTimeout
 
 // Types and methods
 pub struct Conn {
@@ -41,13 +45,23 @@ pub struct Conn {
   socket : @net.Socket
 }
 
+pub struct FetchResponse {
+  status : Int32
+  headers : Array[(String, String)]
+  body : Bytes
+}
+pub fn FetchResponse::header(Self, String) -> String?
+pub fn FetchResponse::text(Self) -> String
+
 pub struct Host {
   rt : @effect.Runtime
   lines : @effect.Queue[String]
   // private fields
 }
 pub async fn Host::accept(Self, @json.Json) -> Conn
+pub fn Host::cancel_fetch(Self, Int64) -> Unit
 pub fn Host::conn(Self, @json.Json, peer? : String) -> Conn
+pub async fn Host::fetch(Self, String, method_? : String, headers? : Array[(String, String)], body? : Bytes, entry? : (String, Int32), head_ms? : Int32, stall_ms? : Int32, timeout_ms? : Int32, called? : (Int64) -> Unit) -> FetchResponse
 pub async fn Host::file_sha256(Self, String) -> String?
 pub async fn Host::line(Self) -> String?
 pub async fn Host::listen_close(Self, @json.Json) -> Unit noraise

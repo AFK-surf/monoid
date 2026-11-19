@@ -98,6 +98,8 @@ pub async fn Host::shell(
     Some(b) => shell_call_ffi(id, cstr(op), @utf8.encode(args.stringify()), b, 1)
     None => shell_call_ffi(id, cstr(op), @utf8.encode(args.stringify()), b"", 0)
   }
+  // (given up before its answer, interrupted: its answer, should one still come, finds no one waiting and is let go)
+  errdefer self.waiting.remove(id)
   done.wait()
 }
 

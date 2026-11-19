@@ -186,9 +186,7 @@ async fn tui_serve_mcp(host : @host.Host, url : String) -> Int {
   let abort = (call : (Ref[Int64], Ref[Bool])) => {
     call.1.val = true
     if call.0.val > 0L {
-      ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.0.val.to_double()) })) catch {
-        _ => ()
-      }
+      host.cancel_fetch(call.0.val)
     }
   }
   let running : Ref[Int] = Ref(0)
@@ -212,33 +210,20 @@ async fn tui_serve_mcp(host : @host.Host, url : String) -> Int {
     }
     let mut listed = false
     let attempt = try {
-      let (answer, body) = host.shell(
-        "fetch",
-        {
-          "url": Json::string(url),
-          "method": Json::string("POST"),
-          "headers": Json::array([
-            Json::array([Json::string("content-type"), Json::string("application/json")]),
-            Json::array([Json::string("authorization"), Json::string("Bearer " + token)]),
-          ]),
-        },
-        bytes=@utf8.encode(line),
+      let r = host.fetch(
+        url,
+        method_="POST",
+        headers=[("content-type", "application/json"), ("authorization", "Bearer " + token)],
+        body=@utf8.encode(line),
         called=i => call.0.val = i,
       )
-      let status = match tui_field(answer, "status") {
-        Some(Number(n, ..)) => n.to_int()
-        _ => 0
-      }
+      let status = r.status
       // (as fetch's `redirect: "error"`: one sent elsewhere is no answer)
       if status < 200 || status >= 300 {
         raise LiveError("Station MCP returned HTTP \{status}")
       }
       if expects_reply {
-        let text = match body {
-          Some(b) => @utf8.decode_lossy(b)
-          None => ""
-        }
-        let result = @json.parse(text)
+        let result = @json.parse(r.text())
         host.say(result.stringify())
         listed = tui_field(request, "method") == Some(Json::string("tools/list")) &&
           (match tui_field(result, "result") {

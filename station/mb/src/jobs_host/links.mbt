@@ -747,22 +747,18 @@ pub async fn github_api_on(host : @host.Host, path : String) -> Json {
       }
     None => ()
   }
-  let got = @effect.timeout(link_timeout_ms, async fn() {
-    host.shell("fetch", {
-      "url": jstr("https://api.github.com/\{path}"),
-      "method": jstr("GET"),
-      "headers": Json::array([
-        Json::array([jstr("user-agent"), jstr(user_agent)]),
-        Json::array([jstr("accept"), jstr("application/vnd.github+json")]),
-      ]),
-    })
-  })
-  guard got is Some((said, body)) else { raise HostError("The operation was aborted due to timeout") }
-  let status = num(field(said, "status")).unwrap_or(0.0).to_int()
-  if status < 200 || status > 299 {
-    raise HostError("GitHub answered \{status}")
+  let got = host.fetch(
+    "https://api.github.com/\{path}",
+    headers=[("user-agent", user_agent), ("accept", "application/vnd.github+json")],
+    timeout_ms=link_timeout_ms,
+  ) catch {
+    @host.FetchTimeout => raise HostError(@host.fetch_timed_out)
+    e => raise e
   }
-  @json.parse(@utf8.decode_lossy(body.unwrap_or(b"")))
+  if got.status < 200 || got.status > 299 {
+    raise HostError("GitHub answered \{got.status}")
+  }
+  @json.parse(got.text())
 }
 
 ///|

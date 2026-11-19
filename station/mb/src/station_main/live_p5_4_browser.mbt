@@ -479,12 +479,11 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
     config: () => @browser.farview_config(Some(p54_jv((bus.config_raw.val)())), release_target, @browser.farview_releases(), native_cache),
     screens: Some(station_screens),
     fetch: async fn(url) {
-      let (answer, body) = host.shell("fetch", { "url": Json::string(url), "method": "GET", "headers": Json::array([]) }) catch {
-        _ => return None
-      }
-      match p54_num(p54_get(Some(answer), "status")) {
-        Some(s) if s >= 200.0 && s < 300.0 => body
-        _ => None
+      let r = host.fetch(url) catch { _ => return None }
+      if r.status >= 200 && r.status < 300 {
+        Some(r.body)
+      } else {
+        None
       }
     },
     sources: name => @browser.farview_sources(name, env_map),
