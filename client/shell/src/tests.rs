@@ -1,0 +1,1184 @@
+use std::ffi::c_void;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Mutex as StdMutex};
+
+use futures::SinkExt;
+use iroh::endpoint::presets::Minimal;
+use iroh::{Endpoint, RelayMode, SecretKey};
+use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::iroh_ops::endpoint_addr;
+use crate::istream::{PIPE_END, PIPE_FAILED};
+use crate::sql::DB_WAIT;
+use crate::{Handle, Shell, counted, stats_json};
+
+/// The answers of every test's shells, each told by its test (the shell's `ctx`, the test's thread's tag) and its id:
+/// ids alike in tests run at once were taken by either (94_001, a dial's test's and a listening socket's, 2026-11-12).
+static ANSWERS: StdMutex<Vec<(usize, u64, String, String, Option<Vec<u8>>)>> = StdMutex::new(Vec::new());
+static ANSWERED: Condvar = Condvar::new();
+static TAGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+thread_local! {
+    static TAG: usize = TAGS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// What a shell started on this test's thread is given to say whose its answers are.
+fn ctx() -> *mut c_void {
+    TAG.with(|t| *t as *mut c_void)
+}
+
+extern "C" fn complete(ctx: *mut c_void, id: u64, json: *const u8, jl: usize, e: *const u8, el: usize, b: *const u8, bl: usize, has: u8) {
+    let s = |p: *const u8, l: usize| if l == 0 { String::new() } else { String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, l) }).into_owned() };
+    let bytes = (has != 0).then(|| if bl == 0 { Vec::new() } else { unsafe { std::slice::from_raw_parts(b, bl) }.to_vec() });
+    ANSWERS.lock().unwrap().push((ctx as usize, id, s(json, jl), s(e, el), bytes));
+    ANSWERED.notify_all();
+}
+
+/// A directory of its own under the system's temporary one, removed when dropped (after the shell started in it,
+/// made after it). Not tempfile's: a dev-dependency gives the tests' build other features of the crates below it, so
+/// that build compiled iroh and the rest a second time (the Windows shell's prebuild, 2026-10-23).
+struct TempDir(PathBuf);
+impl TempDir {
+    fn new() -> Self {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("stillfail-shell-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The answer to `id`, once it comes (however long that takes).
+fn answer(id: u64) -> (String, String, Option<Vec<u8>>) {
+    let tag = TAG.with(|t| *t);
+    let mut answers = ANSWERS.lock().unwrap();
+    loop {
+        if let Some(i) = answers.iter().position(|a| a.0 == tag && a.1 == id) {
+            let (_, _, j, e, b) = answers.remove(i);
+            return (j, e, b);
+        }
+        answers = ANSWERED.wait(answers).unwrap();
+    }
+}
+
+/// A named pipe (a runner's on Windows, station/native/runner) opened as `unix.open`, read and written as a socket:
+/// what one side wrote is read by the other, and the server's closing is the client's end.
+#[cfg(windows)]
+#[test]
+fn opens_a_named_pipe_as_a_socket() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+        let (json, error, bytes) = answer(id);
+        assert_eq!(error, "", "{op}");
+        (serde_json::from_str::<Value>(&json).unwrap(), bytes)
+    };
+    let path = format!(r"\\.\pipe\stillfail-shell-test-{}", std::process::id());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let server = rt.block_on(async { ServerOptions::new().first_pipe_instance(true).create(&path).unwrap() });
+    let served = std::thread::spawn(move || {
+        rt.block_on(async move {
+            let mut server = server;
+            server.connect().await.unwrap();
+            let mut got = [0u8; 4];
+            server.read_exact(&mut got).await.unwrap();
+            assert_eq!(&got, b"ping");
+            server.write_all(b"pong").await.unwrap();
+            server.flush().await.unwrap();
+            // (read up to what the client sends last, then closed: the client reads its end)
+            let mut last = [0u8; 5];
+            server.read_exact(&mut last).await.unwrap();
+            assert_eq!(&last, b"leave");
+            server.disconnect().unwrap();
+        })
+    });
+    let (opened, _) = call(97_001, "unix.open", json!({ "path": path }), None);
+    let conn = opened["id"].as_u64().unwrap();
+    call(97_002, "tcp.write", json!({ "id": conn }), Some(b"ping".to_vec()));
+    let (_, got) = call(97_003, "tcp.read", json!({ "id": conn }), None);
+    assert_eq!(got.unwrap(), b"pong");
+    call(97_004, "tcp.write", json!({ "id": conn }), Some(b"leave".to_vec()));
+    let (end, _) = call(97_005, "tcp.read", json!({ "id": conn }), None);
+    assert_eq!(end, json!({ "end": true }));
+    call(97_006, "tcp.close", json!({ "id": conn }), None);
+    served.join().unwrap();
+}
+
+#[test]
+fn serves_a_listening_socket_bound_here_handed_down_or_unix() {
+    use std::io::{Read, Write};
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+        let (json, error, bytes) = answer(id);
+        assert_eq!(error, "", "{op}");
+        (serde_json::from_str::<Value>(&json).unwrap(), bytes)
+    };
+    // Each socket: a connection taken, what it sent read, an answer written, the end said.
+    let serve = |base: u64, listener: u64, connect: &dyn Fn() -> Box<dyn ReadWrite>| {
+        let mut client = connect();
+        client.write_all(b"ping").unwrap();
+        let (accepted, _) = call(base, "tcp.accept", json!({ "id": listener }), None);
+        let conn = accepted["id"].as_u64().unwrap();
+        let (_, got) = call(base + 1, "tcp.read", json!({ "id": conn }), None);
+        assert_eq!(got.unwrap(), b"ping");
+        call(base + 2, "tcp.write", json!({ "id": conn }), Some(b"pong".to_vec()));
+        call(base + 3, "tcp.end", json!({ "id": conn }), None);
+        let mut back = Vec::new();
+        client.read_to_end(&mut back).unwrap();
+        assert_eq!(back, b"pong");
+    };
+    // bound here, on 127.0.0.1, its port said
+    let (bound, _) = call(96_001, "tcp.listen", json!({ "port": 0 }), None);
+    let port = bound["port"].as_u64().unwrap() as u16;
+    serve(96_010, bound["id"].as_u64().unwrap(), &|| Box::new(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap()));
+    #[cfg(unix)]
+    {
+        use std::os::fd::IntoRawFd;
+        // one a launcher bound and handed down by its descriptor
+        let launcher = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = launcher.local_addr().unwrap().port();
+        let (handed, _) = call(96_020, "tcp.listen", json!({ "fd": launcher.into_raw_fd() }), None);
+        assert_eq!(handed["port"].as_u64().unwrap() as u16, port);
+        serve(96_030, handed["id"].as_u64().unwrap(), &|| Box::new(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap()));
+        // a Unix socket, by its path (one left there before replaced)
+        let path = dir.path().join("front.sock");
+        std::fs::write(&path, "left").unwrap();
+        let (unix, _) = call(96_040, "unix.listen", json!({ "path": path.display().to_string() }), None);
+        let p = path.clone();
+        serve(96_050, unix["id"].as_u64().unwrap(), &move || Box::new(std::os::unix::net::UnixStream::connect(&p).unwrap()));
+    }
+}
+
+#[test]
+fn pipes_two_sockets_into_each_other() {
+    use std::io::{Read, Write};
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let front = call(95_001, "tcp.listen", json!({ "port": 0 }));
+    let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", front["port"].as_u64().unwrap() as u16)).unwrap();
+    let accepted = call(95_002, "tcp.accept", json!({ "id": front["id"] }));
+    let opened = call(95_003, "tcp.open", json!({ "port": target.local_addr().unwrap().port() }));
+    let (mut server, _) = target.accept().unwrap();
+    shell.call(95_004, "tcp.pipe".into(), json!({ "ids": [accepted["id"], opened["id"]] }).to_string().as_bytes(), None);
+    client.write_all(b"hello").unwrap();
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut got = Vec::new();
+    server.read_to_end(&mut got).unwrap();
+    assert_eq!(got, b"hello", "carried there, and its end");
+    server.write_all(b"back").unwrap();
+    drop(server);
+    let mut back = Vec::new();
+    client.read_to_end(&mut back).unwrap();
+    assert_eq!(back, b"back", "carried back, and its end");
+    let (json, error, _) = answer(95_004);
+    assert_eq!(error, "");
+    assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), json!({ "there": 5, "back": 4 }));
+    // the sockets are the pipe's now: not the shell's to read
+    shell.call(95_005, "tcp.read".into(), json!({ "id": accepted["id"] }).to_string().as_bytes(), None);
+    assert_ne!(answer(95_005).1, "");
+}
+
+trait ReadWrite: std::io::Read + std::io::Write {}
+impl<T: std::io::Read + std::io::Write> ReadWrite for T {}
+
+#[test]
+fn cancelling_a_fetch_closes_the_socket_while_headers_or_body_are_stalled() {
+    for (id, body) in [(93_001, false), (93_002, true)] {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        let (listener, addr) = shell.runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            (listener, addr)
+        });
+        let (ready, arrived) = tokio::sync::oneshot::channel();
+        let closed = shell.runtime.spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+            }
+            if body {
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na").await.unwrap();
+            }
+            ready.send(()).unwrap();
+            // No more response bytes arrive. Cancelling the fetch must drop the actual HTTP exchange.
+            socket.read_u8().await
+        });
+        shell.call(id, "fetch".into(), serde_json::to_vec(&json!({ "url": format!("http://{addr}/credential"), "method": "GET", "headers": [] })).unwrap().as_slice(), None);
+        shell.runtime.block_on(arrived).unwrap();
+        let cancel = || serde_json::from_slice::<Value>(&shell.call_sync("fetch.cancel", serde_json::to_vec(&json!({ "id": id })).unwrap().as_slice())).unwrap();
+        assert_eq!(cancel(), json!({ "value": true }));
+        assert_eq!(answer(id).1, "cancelled");
+        assert!(shell.runtime.block_on(closed).unwrap().is_err());
+        assert_eq!(cancel(), json!({ "value": false }));
+    }
+}
+
+/// A fetch given `timeoutMs` ends with an error once its answer's head has not come by then, and one given `stallMs`
+/// once its body stayed silent that long: a server that never answers holds nobody's reading for good (the station's
+/// program's updates, whose deadlines the TypeScript's `AbortSignal`s were).
+#[test]
+fn a_fetch_ends_when_its_answer_does_not_come_in_time() {
+    for (id, body) in [(93_101, false), (93_102, true)] {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        let (listener, addr) = shell.runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            (listener, addr)
+        });
+        shell.runtime.spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+            }
+            if body {
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na").await.unwrap();
+            }
+            // Nothing more comes, and the socket stays open.
+            let _ = socket.read_u8().await;
+        });
+        let within = if body { json!({ "stallMs": 200 }) } else { json!({ "timeoutMs": 200 }) };
+        let mut args = json!({ "url": format!("http://{addr}/feed"), "method": "GET", "headers": [] });
+        args.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+        shell.call(id, "fetch".into(), serde_json::to_vec(&args).unwrap().as_slice(), None);
+        let (_, error, _) = answer(id);
+        let said = if body { "nothing more came within 200 ms" } else { "no answer within 200 ms" };
+        assert_eq!(error, said);
+    }
+}
+
+/// A request through a cloud entry (`entry`): its TCP goes to the entry, its Host (and TLS, where it is https) stays the
+/// URL's; a WebSocket's too, with the headers it is given.
+#[test]
+fn a_request_and_a_websocket_go_through_a_cloud_entry() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (listener, addr) = shell.runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (listener, addr)
+    });
+    let entry = json!({ "host": "127.0.0.1", "port": addr.port() });
+    let served = shell.runtime.spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(socket.read_u8().await.unwrap());
+        }
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let kept = heard.clone();
+        let mut ws = tokio_tungstenite::accept_hdr_async(socket, move |req: &tokio_tungstenite::tungstenite::handshake::server::Request, res| {
+            for (k, v) in req.headers() {
+                kept.lock().unwrap().push(format!("{k}: {}", v.to_str().unwrap()));
+            }
+            Ok(res)
+        })
+        .await
+        .unwrap();
+        ws.send(Message::text("hi")).await.unwrap();
+        let heard = heard.lock().unwrap().clone();
+        (String::from_utf8(request).unwrap().to_lowercase(), heard)
+    });
+    shell.call(95_001, "fetch".into(), serde_json::to_vec(&json!({ "url": "http://cloud.invalid/v1/me", "method": "GET", "headers": [], "entry": entry })).unwrap().as_slice(), None);
+    let (head, error, body) = answer(95_001);
+    assert_eq!(error, "");
+    assert_eq!(serde_json::from_str::<Value>(&head).unwrap()["status"], json!(200));
+    assert_eq!(body.unwrap(), b"ok");
+    shell.call(95_002, "ws.open".into(), serde_json::to_vec(&json!({ "url": "ws://cloud.invalid/v1/presence", "headers": [["x-stillfail-station", "s1"]], "entry": entry })).unwrap().as_slice(), None);
+    let (opened, error, _) = answer(95_002);
+    assert_eq!(error, "");
+    assert!(serde_json::from_str::<Value>(&opened).unwrap()["id"].is_u64());
+    let (request, heard) = shell.runtime.block_on(served).unwrap();
+    assert!(request.starts_with("get /v1/me http/1.1\r\n") && request.contains("host: cloud.invalid\r\n"), "{request}");
+    assert!(heard.contains(&"host: cloud.invalid".to_string()) && heard.contains(&"x-stillfail-station: s1".to_string()), "{heard:?}");
+    // an entry that is none is refused before anything is dialed
+    shell.call(95_003, "fetch".into(), serde_json::to_vec(&json!({ "url": "http://cloud.invalid/", "method": "GET", "headers": [], "entry": { "host": "", "port": 1 } })).unwrap().as_slice(), None);
+    assert_eq!(answer(95_003).1, "an entry has a host");
+}
+
+/// A dial the core gave up (its opening ended: client/core-ts mesh.ts) is cancelled here as a fetch is: its
+/// handshake dropped, which closes it (what that stops, the Initial sent again for ten minutes, the station addon's
+/// `a_dial_given_up_sends_no_more` counts), and the endpoint closes at once.
+#[test]
+fn cancelling_a_dial_drops_its_handshake() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    // A station that never answers: a socket that takes what comes.
+    let quiet = shell.runtime.block_on(tokio::net::UdpSocket::bind("127.0.0.1:0")).unwrap();
+    shell.call(94_001, "iroh.bind".into(), serde_json::to_vec(&json!({ "relayUrls": [], "alpns": [] })).unwrap().as_slice(), Some(vec![3; 32]));
+    let endpoint = serde_json::from_str::<Value>(&answer(94_001).0).unwrap()["id"].clone();
+    let station = json!({ "id": hex::encode(SecretKey::from_bytes(&[7; 32]).public().as_bytes()), "ips": [quiet.local_addr().unwrap().to_string()] });
+    shell.call(94_002, "iroh.connect".into(), serde_json::to_vec(&json!({ "id": endpoint, "addr": station })).unwrap().as_slice(), Some(b"test".to_vec()));
+    // Its Initial came: the dial is under way.
+    shell.runtime.block_on(quiet.recv(&mut [0u8; 2048])).unwrap();
+    let cancel = || serde_json::from_slice::<Value>(&shell.call_sync("fetch.cancel", serde_json::to_vec(&json!({ "id": 94_002 })).unwrap().as_slice())).unwrap();
+    assert_eq!(cancel(), json!({ "value": true }));
+    assert_eq!(answer(94_002).1, "cancelled");
+    assert_eq!(cancel(), json!({ "value": false }));
+    shell.call(94_003, "iroh.close".into(), serde_json::to_vec(&json!({ "id": endpoint })).unwrap().as_slice(), None);
+    assert_eq!(answer(94_003).1, "");
+}
+
+/// A DSCP out of range fails the bind, said, before anything is bound or marked (`mark_with_dscp`).
+#[test]
+fn a_dscp_out_of_range_fails_the_bind() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    for (id, dscp) in [(96_001, json!(0)), (96_002, json!(64)), (96_003, json!(-1)), (96_004, json!(4.5)), (96_005, json!("43"))] {
+        shell.call(id, "iroh.bind".into(), serde_json::to_vec(&json!({ "relayUrls": [], "alpns": [], "dscp": dscp })).unwrap().as_slice(), Some(vec![3; 32]));
+        let (_, error, _) = answer(id);
+        assert!(error.contains("must be 1 to 63"), "{dscp}: {error}");
+    }
+}
+
+#[test]
+fn keeps_files_and_records_as_client_ffi_does() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    shell.call(1, "storage.set".into(), br#"{"key":"device"}"#, Some(vec![1, 2, 3]));
+    assert_eq!(answer(1).1, "");
+    assert!(dir.path().join("device").exists());
+    // A value kept is its user's alone, whatever the process's umask (0644 by the umask of most, before): made
+    // so, and one written over a file from before, or over a partial one a crash left, is made so too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |name: &str| std::fs::metadata(dir.path().join(name)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode("device"), 0o600);
+        std::fs::set_permissions(dir.path().join("device"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(dir.path().join("device.partial"), b"left").unwrap();
+        std::fs::set_permissions(dir.path().join("device.partial"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        shell.call(1, "storage.set".into(), br#"{"key":"device"}"#, Some(vec![1, 2, 3]));
+        assert_eq!(answer(1).1, "");
+        assert_eq!(mode("device"), 0o600);
+        assert!(!dir.path().join("device.partial").exists());
+        // A partial one left that is a link to somewhere is taken away, never written through: what it led to
+        // is as it was, and the value is a file of its own.
+        std::fs::write(dir.path().join("elsewhere"), b"another's").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("elsewhere"), dir.path().join("device.partial")).unwrap();
+        shell.call(1, "storage.set".into(), br#"{"key":"device"}"#, Some(vec![4, 5]));
+        assert_eq!(answer(1).1, "");
+        assert_eq!(std::fs::read(dir.path().join("elsewhere")).unwrap(), b"another's");
+        assert_eq!(std::fs::read(dir.path().join("device")).unwrap(), vec![4, 5]);
+        assert!(std::fs::symlink_metadata(dir.path().join("device")).unwrap().file_type().is_file());
+        assert_eq!(mode("device"), 0o600);
+        shell.call(1, "storage.set".into(), br#"{"key":"device"}"#, Some(vec![1, 2, 3]));
+        assert_eq!(answer(1).1, "");
+    }
+    shell.call(2, "storage.get".into(), br#"{"key":"device"}"#, None);
+    assert_eq!(answer(2).2, Some(vec![1, 2, 3]));
+    shell.call(3, "storage.get".into(), br#"{"key":"a/b"}"#, None);
+    assert_eq!(answer(3).0, r#"{"none":true}"#);
+    // Where a value is kept, read there by the app itself: none while it is not.
+    let path = |key: &str| -> Value { serde_json::from_slice::<Value>(&shell.call_sync("storage.path", format!(r#"{{"key":"{key}"}}"#).as_bytes())).unwrap()["value"].clone() };
+    assert_eq!(path("device"), json!(dir.path().join("device").to_string_lossy()));
+    assert_eq!(path("a/b"), Value::Null);
+    // The former records store, as client/ffi wrote it: read only.
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("core.db")).unwrap();
+        conn.execute_batch("CREATE TABLE records (tbl TEXT NOT NULL, key TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY (tbl, key)) WITHOUT ROWID;").unwrap();
+        for (k, v) in [("s\u{1}a", b"1".to_vec()), ("s\u{1}b", b"22".to_vec()), ("t\u{1}a", Vec::new())] {
+            conn.execute("INSERT INTO records (tbl, key, value) VALUES ('row', ?1, ?2)", rusqlite::params![k, v]).unwrap();
+        }
+    }
+    shell.call(5, "db.read".into(), "{\"table\":\"row\",\"from\":\"s\\u0001\",\"to\":\"s\\u0002\"}".as_bytes(), None);
+    let (json, _, bytes) = answer(5);
+    assert_eq!(json, "{\"keys\":[\"s\\u0001a\",\"s\\u0001b\"],\"sizes\":[1,2]}");
+    assert_eq!(bytes, Some(b"122".to_vec()));
+    assert!(dir.path().join("core.db").exists());
+    let out = shell.call_sync("conn.remoteId", br#"{"id":999}"#);
+    assert_eq!(String::from_utf8(out).unwrap(), r#"{"error":"no handle 999"}"#);
+}
+
+#[test]
+fn takes_zstd_apart_a_piece_at_a_time() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    // A reply as a station compresses it (two frames, as a stream flushed twice sends them, and a JSON reply),
+    // given in pieces cut anywhere.
+    let first: Vec<u8> = (0..40_000).map(|i| format!("{{\"seq\":{i}}},")).collect::<String>().into_bytes();
+    let second = b"{\"entries\":[]}".to_vec();
+    let mut packed = zstd::stream::encode_all(&first[..], 3).unwrap();
+    packed.extend(zstd::stream::encode_all(&second[..], 9).unwrap());
+    shell.call(9001, "zstd.open".into(), b"{}", None);
+    let id = serde_json::from_str::<Value>(&answer(9001).0).unwrap()["id"].as_u64().unwrap();
+    let mut made = Vec::new();
+    let mut call = 9002;
+    let mut whole = Vec::new();
+    for piece in packed.chunks(7_001) {
+        shell.call(call, "zstd.push".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), Some(piece.to_vec()));
+        let (json, error, bytes) = answer(call);
+        assert_eq!(error, "");
+        made.extend(bytes.unwrap_or_default());
+        whole.push(serde_json::from_str::<Value>(&json).unwrap()["whole"] == json!(true));
+        call += 1;
+    }
+    let mut both = first.clone();
+    both.extend(&second);
+    assert_eq!(made, both);
+    // mid frame, not whole; at the end, whole
+    assert!(!whole[0]);
+    assert!(whole[whole.len() - 1]);
+    shell.call(call, "zstd.close".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), None);
+    assert_eq!(answer(call).1, "");
+    // gone once closed
+    shell.call(call + 1, "zstd.push".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), Some(vec![0]));
+    assert_eq!(answer(call + 1).1, format!("no handle {id}"));
+    // cut short: what came is given, and it is not whole
+    let cut = zstd::stream::encode_all(&first[..], 3).unwrap();
+    shell.call(call + 2, "zstd.open".into(), b"{}", None);
+    let id = serde_json::from_str::<Value>(&answer(call + 2).0).unwrap()["id"].as_u64().unwrap();
+    shell.call(call + 3, "zstd.push".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), Some(cut[..cut.len() - 1].to_vec()));
+    let (json, error, bytes) = answer(call + 3);
+    assert_eq!(error, "");
+    assert!(first.starts_with(&bytes.unwrap_or_default()));
+    assert_eq!(serde_json::from_str::<Value>(&json).unwrap()["whole"], json!(false));
+    // and what is not zstd fails
+    shell.call(call + 4, "zstd.open".into(), b"{}", None);
+    let id = serde_json::from_str::<Value>(&answer(call + 4).0).unwrap()["id"].as_u64().unwrap();
+    shell.call(call + 5, "zstd.push".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), Some(b"not zstd at all".to_vec()));
+    assert_ne!(answer(call + 5).1, "");
+}
+
+#[test]
+fn packs_a_syncs_pieces_checking_each_files_id_and_scans_files() {
+    use sha1::Digest;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let at = |p: &str| dir.path().join(p).display().to_string();
+    let blob = |b: &[u8]| {
+        let mut h = sha1::Sha1::new();
+        h.update(format!("blob {}\0", b.len()).as_bytes());
+        h.update(b);
+        hex::encode(h.finalize())
+    };
+    let content: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(at("f"), &content).unwrap();
+    std::fs::write(at("empty"), b"").unwrap();
+    let id_f = blob(&content);
+    let call = |n: u64, op: &str, a: Value| {
+        shell.call(n, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(n);
+        (serde_json::from_str::<Value>(&json).unwrap_or(Value::Null), error)
+    };
+    let pack = call(9201, "pack.open", json!({})).0["id"].as_u64().unwrap();
+    // in two calls, the file's id checked at its last piece; the empty one in the first
+    let (one, e) = call(9202, "zstd.pack", json!({ "id": pack, "out": at("1.zst"), "pieces": [[at("f"), 0, 200_000, 300_000, id_f, false], [at("empty"), 0, 0, 0, blob(b""), false]] }));
+    assert_eq!((one["raw"].clone(), e.as_str()), (json!(200_000), ""));
+    // packed anew (a station from before, its request split): not counted twice
+    let (again, _) = call(9203, "zstd.pack", json!({ "id": pack, "out": at("1.zst"), "pieces": [[at("f"), 0, 200_000, 300_000, id_f, false]] }));
+    assert_eq!(again["raw"], json!(200_000));
+    let (two, e) = call(9204, "zstd.pack", json!({ "id": pack, "out": at("2.zst"), "pieces": [[at("f"), 200_000, 100_000, 300_000, id_f, false]] }));
+    assert_eq!((two["raw"].clone(), e.as_str()), (json!(100_000), ""));
+    let mut whole = zstd::decode_all(std::fs::File::open(at("1.zst")).unwrap()).unwrap();
+    whole.extend(zstd::decode_all(std::fs::File::open(at("2.zst")).unwrap()).unwrap());
+    assert_eq!(whole, content);
+    assert_eq!(two["packed"].as_u64().unwrap(), std::fs::metadata(at("2.zst")).unwrap().len());
+    // its last piece packed again after its id was checked: as it was
+    assert_eq!(call(9205, "zstd.pack", json!({ "id": pack, "out": at("2.zst"), "pieces": [[at("f"), 200_000, 100_000, 300_000, id_f, false]] })).0["raw"], json!(100_000));
+    // grown since it was listed, its first bytes as they were (and an empty one written in): changed
+    std::fs::write(at("g"), b"").unwrap();
+    let (one, _) = call(9215, "zstd.pack", json!({ "id": pack, "out": at("g.zst"), "pieces": [[at("g"), 0, 0, 0, blob(b""), false]] }));
+    assert_eq!(one["raw"], json!(0));
+    std::fs::write(at("g"), b"now").unwrap();
+    assert_eq!(call(9216, "zstd.pack", json!({ "id": pack, "out": at("g.zst"), "pieces": [[at("g"), 0, 0, 0, blob(b""), false]] })).0, json!({ "changed": 0 }));
+    let mut longer = content.clone();
+    longer.extend_from_slice(b"more");
+    std::fs::write(at("f"), &longer).unwrap();
+    assert_eq!(call(9217, "zstd.pack", json!({ "id": pack, "out": at("3.zst"), "pieces": [[at("f"), 0, 300_000, 300_000, id_f, false]] })).0, json!({ "changed": 0 }));
+    // changed since it was listed: its piece named
+    std::fs::write(at("f"), &content[..299_999]).unwrap();
+    let changed = json!([[at("empty"), 0, 0, 0, blob(b""), false], [at("f"), 0, 300_000, 300_000, id_f, false]]);
+    assert_eq!(call(9206, "zstd.pack", json!({ "id": pack, "out": at("3.zst"), "pieces": changed })).0, json!({ "changed": 1 }));
+    let mut other = content.clone();
+    other[5] ^= 1;
+    std::fs::write(at("f"), &other).unwrap();
+    assert_eq!(call(9207, "zstd.pack", json!({ "id": pack, "out": at("3.zst"), "pieces": [[at("f"), 0, 300_000, 300_000, id_f, false]] })).0, json!({ "changed": 0 }));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("f", at("l")).unwrap();
+        assert_eq!(call(9208, "zstd.pack", json!({ "id": pack, "out": at("4.zst"), "pieces": [[at("l"), 0, 1, 1, blob(b"f"), true]] })).0["raw"], json!(1));
+        assert_eq!(zstd::decode_all(std::fs::File::open(at("4.zst")).unwrap()).unwrap(), b"f");
+        assert_eq!(call(9209, "zstd.pack", json!({ "id": pack, "out": at("4.zst"), "pieces": [[at("l"), 0, 1, 1, blob(b"g"), true]] })).0, json!({ "changed": 0 }));
+        // a file made a link (to one outside, say): not followed, changed
+        std::fs::write(at("h"), b"h").unwrap();
+        std::fs::remove_file(at("h")).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", at("h")).unwrap();
+        assert_eq!(call(9218, "zstd.pack", json!({ "id": pack, "out": at("4.zst"), "pieces": [[at("h"), 0, 1, 1, blob(b"h"), false]] })).0, json!({ "changed": 0 }));
+        // scanned: kinds, a file's id (of one within `most`), a link's target, nothing there
+        std::fs::write(at("f"), &content).unwrap();
+        let (scan, e) = call(9210, "fs.scan", json!({ "paths": [at("f"), at("l"), at("none"), at("empty")], "hash": true, "most": 1_000_000 }));
+        assert_eq!(e, "");
+        assert_eq!((scan[0]["kind"].clone(), scan[0]["hash"].clone(), scan[0]["size"].clone()), (json!("file"), json!(id_f), json!(300_000)));
+        assert_eq!((scan[1]["kind"].clone(), scan[1]["link"].clone()), (json!("link"), json!("f")));
+        assert_eq!(scan[2], Value::Null);
+        assert_eq!(scan[3]["hash"], json!(blob(b"")));
+        assert!(scan[0]["dev"].as_u64().unwrap() > 0);
+        let (small, _) = call(9211, "fs.scan", json!({ "paths": [at("f"), at("l")], "hash": true, "most": 10 }));
+        assert_eq!(small[0]["hash"], Value::Null);
+        let (followed, _) = call(9212, "fs.scan", json!({ "paths": [at("l")], "follow": true }));
+        assert_eq!((followed[0]["kind"].clone(), followed[0]["link"].clone()), (json!("file"), Value::Null));
+    }
+    assert_eq!(call(9213, "pack.close", json!({ "id": pack })).1, "");
+    assert_eq!(call(9214, "zstd.pack", json!({ "id": pack, "out": at("5.zst"), "pieces": [] })).1, format!("no handle {pack}"));
+}
+
+#[test]
+fn unpacks_zstd_whole_up_to_its_bound() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let plain: Vec<u8> = (0..100_000u32).flat_map(|i| i.to_le_bytes()).collect();
+    let packed = zstd::stream::encode_all(&plain[..], 3).unwrap();
+    // given, or in a file
+    shell.call(9101, "zstd.unpack".into(), br#"{"most":400000}"#, Some(packed.clone()));
+    assert_eq!(answer(9101).2, Some(plain.clone()));
+    let at = dir.path().join("packed.zst");
+    std::fs::write(&at, &packed).unwrap();
+    let args = json!({ "path": at.to_string_lossy(), "most": 400_000 }).to_string();
+    shell.call(9102, "zstd.unpack".into(), args.as_bytes(), None);
+    assert_eq!(answer(9102).2, Some(plain.clone()));
+    // a byte more than its bound is refused, as is what is not zstd
+    shell.call(9103, "zstd.unpack".into(), br#"{"most":399999}"#, Some(packed));
+    assert_eq!(answer(9103).1, "more than 399999 bytes unpacked");
+    shell.call(9104, "zstd.unpack".into(), br#"{"most":10}"#, Some(b"not zstd at all".to_vec()));
+    assert_ne!(answer(9104).1, "");
+}
+
+#[test]
+fn attaches_a_database_another_process_keeps() {
+    let dir = TempDir::new();
+    let path = dir.path().join("station.db");
+    // the station's own connection, in WAL, holding it while the shell's is open beside it
+    let station = rusqlite::Connection::open(&path).unwrap();
+    station.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE t (k TEXT, n INTEGER); INSERT INTO t VALUES ('a', 1);").unwrap();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let sync = |op: &str, json: &str| -> Value { serde_json::from_slice(&shell.call_sync(op, json.as_bytes())).unwrap() };
+    let at = serde_json::to_string(&path.display().to_string()).unwrap();
+    let id = sync("sql.attach", &format!(r#"{{"path":{at},"wait":0}}"#))["value"]["id"].as_u64().unwrap();
+    let rows = sync("sql.all", &format!(r#"{{"id":{id},"sql":"SELECT k, n FROM t","named":true}}"#));
+    assert_eq!(rows["value"], json!({ "columns": ["k", "n"], "rows": [["a", 1]] }));
+    // both write: neither holds it for itself
+    station.execute("INSERT INTO t VALUES ('b', 2)", []).unwrap();
+    let checkpoint = sync("sql.all", &format!(r#"{{"id":{id},"sql":"PRAGMA wal_checkpoint(PASSIVE)","named":true}}"#));
+    assert_eq!(checkpoint["value"]["columns"], json!(["busy", "log", "checkpointed"]));
+    // a path with no database is not made one
+    let missing = serde_json::to_string(&dir.path().join("none.db").display().to_string()).unwrap();
+    assert!(sync("sql.attach", &format!(r#"{{"path":{missing}}}"#))["error"].is_string());
+    assert!(!dir.path().join("none.db").exists());
+}
+
+#[test]
+fn writes_hashes_and_moves_the_station_programs_files() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let sync = |op: &str, a: Value| -> Value { serde_json::from_slice(&shell.call_sync(op, a.to_string().as_bytes())).unwrap() };
+    let at = |p: &str| dir.path().join(p).display().to_string();
+    // written whole, its folders made, nothing left beside it; zstd's frame of it read back as what it holds
+    let plain = sync("fs.write", json!({ "path": at("a/b/plain.txt"), "text": "中\n" }));
+    use sha2::Digest;
+    assert_eq!(plain["value"]["sha256"], json!(hex::encode(sha2::Sha256::digest("中\n".as_bytes()))));
+    assert_eq!(plain["value"]["size"], json!(4));
+    assert_eq!(std::fs::read(dir.path().join("a/b/plain.txt")).unwrap(), "中\n".as_bytes());
+    let packed = sync("fs.write", json!({ "path": at("a/packed.zst"), "text": "x".repeat(1000), "zstd": true }));
+    let bytes = std::fs::read(dir.path().join("a/packed.zst")).unwrap();
+    assert!(bytes.len() < 100);
+    assert_eq!(packed["value"], json!({ "sha256": hex::encode(sha2::Sha256::digest(&bytes)), "size": bytes.len() }));
+    assert_eq!(sync("fs.read", json!({ "path": at("a/packed.zst"), "zstd": true }))["value"], json!("x".repeat(1000)));
+    assert_eq!(std::fs::read_dir(dir.path().join("a")).unwrap().count(), 2);
+    assert_eq!(sync("fs.hash", json!({ "path": at("a/b/plain.txt") }))["value"], plain["value"]["sha256"]);
+    // a piece of a file as hex, a frame of it decompressed, and one that ends early
+    assert_eq!(sync("fs.bytes", json!({ "path": at("a/packed.zst"), "zstd": true }))["value"], json!(hex::encode("x".repeat(1000))));
+    let whole = sync("fs.bytes", json!({ "path": at("a/b/plain.txt") }))["value"].as_str().unwrap().to_string();
+    assert_eq!(sync("fs.bytes", json!({ "path": at("a/b/plain.txt"), "from": 1, "length": 2 }))["value"], json!(whole[2..6]));
+    assert!(sync("fs.bytes", json!({ "path": at("a/b/plain.txt"), "from": 1, "length": 1_000_000, "exact": true }))["error"].is_string());
+    assert_eq!(sync("fs.bytes", json!({ "path": at("none") }))["value"], Value::Null);
+    assert_eq!(sync("fs.hash", json!({ "path": at("none") }))["value"], Value::Null);
+    // a program's output, and one that fails, runs too long or writes too much; a link as lstat says it
+    #[cfg(unix)]
+    {
+        assert_eq!(sync("proc.run", json!({ "command": "printf", "args": ["a\\nb"] }))["value"], json!("a\nb"));
+        assert_eq!(sync("proc.run", json!({ "command": "false" }))["value"], Value::Null);
+        assert_eq!(sync("proc.run", json!({ "command": "sleep", "args": ["5"], "timeoutMs": 50 }))["value"], Value::Null);
+        assert_eq!(sync("proc.run", json!({ "command": "printf", "args": ["abcdef"], "maxBytes": 3 }))["value"], Value::Null);
+        assert_eq!(sync("proc.run", json!({ "command": "/no/such/program" }))["value"], Value::Null);
+        std::os::unix::fs::symlink(at("a/b/plain.txt"), at("a/link")).unwrap();
+        assert_eq!(sync("fs.stat", json!({ "path": at("a/link"), "lstat": true }))["value"], json!("link"));
+        assert_eq!(sync("fs.stat", json!({ "path": at("a/link") }))["value"], json!("file"));
+        std::fs::remove_file(at("a/link")).unwrap();
+        // what lstat says, a link made, a mode set, a hard link once, a Git blob id (`printf '中\n' | git hash-object --stdin`)
+        let st = sync("fs.lstat", json!({ "path": at("a/b/plain.txt") }))["value"].clone();
+        assert_eq!((st["kind"].clone(), st["size"].clone()), (json!("file"), json!(4)));
+        assert!(st["ino"].as_u64().unwrap() > 0 && st["mtimeMs"].as_f64().unwrap() > 0.0 && st["ctimeMs"].as_f64().unwrap() > 0.0);
+        assert_eq!(sync("fs.symlink", json!({ "target": "b/plain.txt", "path": at("a/rel") }))["value"], Value::Null);
+        assert_eq!(sync("fs.lstat", json!({ "path": at("a/rel") }))["value"]["kind"], json!("link"));
+        assert_eq!(sync("fs.chmod", json!({ "path": at("a/b/plain.txt"), "mode": 0o755 }))["value"], Value::Null);
+        assert_eq!(sync("fs.lstat", json!({ "path": at("a/b/plain.txt") }))["value"]["mode"].as_u64().unwrap() & 0o777, 0o755);
+        assert_eq!(sync("fs.link", json!({ "from": at("a/b/plain.txt"), "to": at("a/hard") }))["value"], json!(true));
+        assert_eq!(sync("fs.link", json!({ "from": at("a/b/plain.txt"), "to": at("a/hard") }))["value"], json!(false));
+        assert_eq!(sync("fs.gitblob", json!({ "path": at("a/b/plain.txt"), "size": 4 }))["value"], json!("74088efd486cfe7ecada1b668aa911b8f767b99a"));
+        assert!(sync("fs.gitblob", json!({ "path": at("a/b/plain.txt"), "size": 5 }))["error"].is_string());
+        assert_eq!(sync("fs.lstat", json!({ "path": at("nothing") }))["value"], Value::Null);
+        assert_eq!(sync("proc.run", json!({ "command": "sh", "args": ["-c", "printf '\\001'; exit 1"], "hex": true, "code": true }))["value"], json!({ "code": 1, "out": "01" }));
+        assert_eq!(sync("proc.run", json!({ "command": "sh", "args": ["-c", "printf %s \"$X\""], "env": { "X": "y" } }))["value"], json!("y"));
+        std::fs::remove_file(at("a/rel")).unwrap();
+        std::fs::remove_file(at("a/hard")).unwrap();
+    }
+    // copied, renamed, a folder made, then let go with what it holds; nothing there is no failure
+    assert_eq!(sync("fs.copy", json!({ "from": at("a/b/plain.txt"), "to": at("a/copy.txt") }))["value"], Value::Null);
+    assert_eq!(sync("fs.rename", json!({ "from": at("a/copy.txt"), "to": at("a/moved.txt") }))["value"], Value::Null);
+    assert_eq!(std::fs::read(dir.path().join("a/moved.txt")).unwrap(), "中\n".as_bytes());
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d") }))["value"], Value::Null);
+    assert!(dir.path().join("c/d").is_dir());
+    assert!(sync("fs.remove", json!({ "path": at("a") }))["error"].is_string());
+    assert_eq!(sync("fs.remove", json!({ "path": at("a"), "recursive": true }))["value"], Value::Null);
+    assert!(!dir.path().join("a").exists());
+    assert_eq!(sync("fs.remove", json!({ "path": at("a") }))["value"], Value::Null);
+    assert_eq!(sync("crypto.random", json!({ "bytes": 4 }))["value"].as_str().unwrap().len(), 8);
+    // a database of the program's own, made with `create`
+    assert!(sync("sql.attach", json!({ "path": at("own.db") }))["error"].is_string());
+    assert!(sync("sql.attach", json!({ "path": at("own.db"), "create": true }))["value"]["id"].is_u64());
+    assert!(dir.path().join("own.db").exists());
+}
+
+#[test]
+fn keeps_an_accounts_database() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let sync = |op: &str, json: &str| -> Value { serde_json::from_slice(&shell.call_sync(op, json.as_bytes())).unwrap() };
+    let id = sync("sql.open", r#"{"name":"account-a"}"#)["value"]["id"].as_u64().unwrap();
+    assert!(dir.path().join("databases/account-a.db").exists());
+    assert_eq!(sync("sql.exec", &format!(r#"{{"id":{id},"sql":"CREATE TABLE t (k TEXT PRIMARY KEY, n INTEGER, x REAL, j TEXT)"}}"#))["value"], Value::Null);
+    assert_eq!(sync("sql.run", &format!(r#"{{"id":{id},"sql":"INSERT INTO t VALUES (?, ?, ?, ?)","params":["a",1,1.5,"{{\"x\":\"中\"}}"]}}"#))["value"], json!(1));
+    assert_eq!(sync("sql.run", &format!(r#"{{"id":{id},"sql":"INSERT INTO t VALUES (?, ?, ?, ?)","params":["b",null,null,null]}}"#))["value"], json!(1));
+    let rows = sync("sql.all", &format!(r#"{{"id":{id},"sql":"SELECT k, n, x, j FROM t ORDER BY k","params":[]}}"#));
+    assert_eq!(rows["value"], json!([["a", 1, 1.5, "{\"x\":\"中\"}"], ["b", null, null, null]]));
+    let bad = sync("sql.run", &format!(r#"{{"id":{id},"sql":"INSERT INTO t VALUES (?, 1, 1, 1)","params":["a"]}}"#));
+    assert!(bad["error"].as_str().unwrap().contains("UNIQUE"));
+    assert_eq!(sync("sql.inTransaction", &format!(r#"{{"id":{id}}}"#))["value"], json!(false));
+    assert_eq!(sync("sql.exec", &format!(r#"{{"id":{id},"sql":"BEGIN IMMEDIATE"}}"#))["value"], Value::Null);
+    assert_eq!(sync("sql.inTransaction", &format!(r#"{{"id":{id}}}"#))["value"], json!(true));
+    assert_eq!(sync("sql.exec", &format!(r#"{{"id":{id},"sql":"COMMIT"}}"#))["value"], Value::Null);
+    assert_eq!(sync("sql.inTransaction", &format!(r#"{{"id":{id}}}"#))["value"], json!(false));
+    assert_eq!(sync("sql.close", &format!(r#"{{"id":{id}}}"#))["value"], Value::Null);
+    assert!(sync("sql.all", &format!(r#"{{"id":{id},"sql":"SELECT 1"}}"#))["error"].is_string());
+    assert_eq!(sync("sql.delete", r#"{"name":"account-a"}"#)["value"], Value::Null);
+    assert!(!dir.path().join("databases/account-a.db").exists());
+    assert!(sync("sql.open", r#"{"name":"../x"}"#)["error"].is_string());
+    let memory = sync("sql.open", r#"{"name":":memory:"}"#)["value"]["id"].as_u64().unwrap();
+    assert_eq!(sync("sql.all", &format!(r#"{{"id":{memory},"sql":"SELECT 2"}}"#))["value"], json!([[2]]));
+}
+
+#[test]
+fn a_window_of_its_own_finds_an_accounts_database_held_busy_at_once() {
+    let dir = TempDir::new();
+    let app = Shell::start_waiting(dir.path().to_path_buf(), complete, ctx(), DB_WAIT).unwrap();
+    let window = Shell::start_waiting(dir.path().to_path_buf(), complete, ctx(), std::time::Duration::ZERO).unwrap();
+    let sync = |shell: &Shell, op: &str, json: &str| -> Value { serde_json::from_slice(&shell.call_sync(op, json.as_bytes())).unwrap() };
+    assert!(sync(&app, "sql.open", r#"{"name":"account-a"}"#)["value"]["id"].is_u64());
+    // held by the app's run: busy, said at once (not after DB_WAIT)
+    let asked = std::time::Instant::now();
+    let busy = sync(&window, "sql.open", r#"{"name":"account-a"}"#);
+    assert!(busy["error"].as_str().unwrap().contains("locked"), "{busy}");
+    assert!(asked.elapsed() < DB_WAIT / 5, "{:?}", asked.elapsed());
+    // one no one holds: opened as ever
+    assert!(sync(&window, "sql.open", r#"{"name":"account-b"}"#)["value"]["id"].is_u64());
+}
+
+#[test]
+fn signs_with_an_ed25519_seed() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let sync = |op: &str, json: &str| -> Value { serde_json::from_slice(&shell.call_sync(op, json.as_bytes())).unwrap() };
+    // RFC 8032's test 2
+    let signed = sync("ed25519.sign", r#"{"seed":"4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb","message":"72"}"#);
+    assert_eq!(signed["value"]["publicKey"], json!("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"));
+    assert_eq!(
+        signed["value"]["signature"],
+        json!("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")
+    );
+    assert!(sync("ed25519.sign", r#"{"seed":"4ccd","message":"72"}"#)["error"].is_string());
+}
+
+#[test]
+fn checks_ed25519_and_p256_signatures() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let sync = |op: &str, json: &str| -> Value { serde_json::from_slice(&shell.call_sync(op, json.as_bytes())).unwrap() };
+    // RFC 8032's test 2; then the message changed
+    let ed = |message: &str| sync("crypto.verify", &format!(r#"{{"alg":"Ed25519","key":"3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c","signature":"92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00","message":"{message}"}}"#));
+    assert_eq!(ed("72")["value"], json!(true));
+    assert_eq!(ed("73")["value"], json!(false));
+    // RFC 6979 A.2.5, P-256 with SHA-256, message "sample": r‖s, then DER
+    let key = "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299";
+    let r = "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716";
+    let s = "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8";
+    let p = |alg: &str, signature: &str, message: &str| sync("crypto.verify", &format!(r#"{{"alg":"{alg}","key":"{key}","signature":"{signature}","message":"{message}"}}"#));
+    assert_eq!(p("ES256", &format!("{r}{s}"), "73616d706c65")["value"], json!(true));
+    assert_eq!(p("ES256", &format!("{r}{s}"), "73616d706c66")["value"], json!(false));
+    assert_eq!(p("ES256-der", &format!("3046022100{r}022100{s}"), "73616d706c65")["value"], json!(true));
+    assert_eq!(p("ES256", "00", "73616d706c65")["value"], json!(false));
+    assert!(sync("crypto.verify", r#"{"alg":"RS256","key":"00","signature":"00","message":"00"}"#)["error"].is_string());
+}
+
+#[test]
+fn counts_calls_by_operation() {
+    counted("test.op", true);
+    counted("test.op", true);
+    counted("test.op", false);
+    let stats = stats_json();
+    assert_eq!(stats["calls"]["test.op"], json!([2, 1]));
+}
+
+// The DHT's lines as the core takes them: none kept until it takes with `keep`, none once it takes without.
+#[test]
+fn dht_said() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let said = |keep: bool| shell.inner.run_sync("dht.said", &json!({ "keep": keep })).unwrap();
+    assert_eq!(said(false), json!({ "lines": [], "dropped": 0 }));
+    assert_eq!(said(true), json!({ "lines": [], "dropped": 0 }));
+}
+
+#[test]
+fn answers_of_a_closed_endpoint() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let endpoint = Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap();
+        let id = inner.keep(Handle::Endpoint(endpoint.clone(), Arc::default()));
+        inner.run("iroh.close", json!({ "id": id }), None).await.unwrap();
+        // A dial on it failing after another was bound in its place asks it still (the app's core died of "no handle 3").
+        assert_eq!(inner.run_sync("iroh.endpointId", &json!({ "id": id })).unwrap(), json!(hex::encode(endpoint.id().as_bytes())));
+        assert_eq!(inner.run_sync("iroh.relayStatus", &json!({ "id": id })).unwrap(), json!([]));
+        assert_eq!(inner.run("iroh.accept", json!({ "id": id }), None).await.unwrap().json, json!({ "end": true }));
+        let addr = json!({ "id": hex::encode(endpoint.id().as_bytes()), "ips": ["127.0.0.1:1"] });
+        assert!(inner.run("iroh.connect", json!({ "id": id, "addr": addr }), Some(b"stillfail/test".to_vec())).await.is_err());
+        assert!(inner.run("iroh.close", json!({ "id": id }), None).await.is_ok());
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn pipes_a_stream_into_a_socket_in_frames() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taking = b.clone();
+        let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let (ours, node) = tokio::net::UnixStream::pair().unwrap();
+        let (read, write) = ours.into_split();
+        let socket = inner.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+        let piping = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("istream.pipe", json!({ "id": stream, "to": socket }), None).await })
+        };
+        // what the socket's side writes, in frames, its end finishing the stream
+        let (mut node_read, mut node_write) = node.into_split();
+        let sent: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let mut framed = Vec::new();
+        for piece in sent.chunks(70_000) {
+            framed.extend((piece.len() as u32).to_be_bytes());
+            framed.extend(piece);
+        }
+        framed.extend(PIPE_END.to_be_bytes());
+        node_write.write_all(&framed).await.unwrap();
+        let (mut send, mut recv) = theirs.accept_bi().await.unwrap();
+        assert_eq!(recv.read_to_end(1 << 20).await.unwrap(), sent);
+        // what comes on the stream, read in frames by the socket's side, then its end
+        send.write_all(b"back").await.unwrap();
+        send.finish().unwrap();
+        let mut got = Vec::new();
+        node_read.read_to_end(&mut got).await.unwrap();
+        let mut want = 4u32.to_be_bytes().to_vec();
+        want.extend(b"back");
+        want.extend(PIPE_END.to_be_bytes());
+        assert_eq!(got, want);
+        piping.await.unwrap().unwrap();
+
+        // the socket ending without its end resets the stream; the other end's reset is said as what failed it
+        let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let (ours, node) = tokio::net::UnixStream::pair().unwrap();
+        let (read, write) = ours.into_split();
+        let socket = inner.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+        let piping = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("istream.pipe", json!({ "id": stream, "to": socket }), None).await })
+        };
+        let (mut node_read, mut node_write) = node.into_split();
+        node_write.write_all(&[0, 0, 0, 1, 7]).await.unwrap();
+        let (mut send, mut recv) = theirs.accept_bi().await.unwrap();
+        let mut one = [0u8; 1];
+        recv.read_exact(&mut one).await.unwrap();
+        drop(node_write);
+        assert!(recv.read_to_end(1024).await.is_err());
+        send.reset(5u32.into()).unwrap();
+        let mut got = Vec::new();
+        node_read.read_to_end(&mut got).await.unwrap();
+        assert_eq!(&got[..4], &PIPE_FAILED.to_be_bytes());
+        assert!(String::from_utf8_lossy(&got[8..]).contains('5'), "{}", String::from_utf8_lossy(&got[8..]));
+        piping.await.unwrap().unwrap();
+    });
+}
+
+/// A stand-in for what `conn.hand` gives streams to (Node's socket, a `--serve` program's): each connection's head
+/// read, a skip said as it is, else the stream's first frame said and answered with `who`; kept open till its end.
+#[cfg(unix)]
+fn taking_streams(listener: tokio::net::UnixListener, who: &'static str, said: tokio::sync::mpsc::UnboundedSender<(&'static str, u8, u64, Vec<u8>)>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let said = said.clone();
+            tokio::spawn(async move {
+                let (mut read, mut write) = socket.into_split();
+                let mut head = [0u8; 25];
+                if read.read_exact(&mut head).await.is_err() {
+                    return;
+                }
+                let index = u64::from_be_bytes(head[17..25].try_into().unwrap());
+                if head[16] == 3 {
+                    let _ = said.send((who, 3, index, vec![]));
+                    return;
+                }
+                let mut len = [0u8; 4];
+                read.read_exact(&mut len).await.unwrap();
+                let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+                read.read_exact(&mut body).await.unwrap();
+                let _ = said.send((who, head[16], index, body));
+                let mut out = (who.len() as u32).to_be_bytes().to_vec();
+                out.extend(who.as_bytes());
+                out.extend(PIPE_END.to_be_bytes());
+                write.write_all(&out).await.unwrap();
+                let mut rest = vec![];
+                let _ = read.read_to_end(&mut rest).await;
+            });
+        }
+    })
+}
+
+// A `--serve` program ended and the next not listening yet (station/mb's served.ts starts one again): a routed
+// request on a connection already handed went to it, Node was told to skip its index, and the stream was reset.
+#[cfg(unix)]
+#[test]
+fn a_routed_stream_goes_to_the_next_program_listening_or_else_to_node_never_reset() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    let (node, live, dead) = (dir.path().join("node.sock"), dir.path().join("serve-b.sock"), dir.path().join("serve-a.sock"));
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taking = b.clone();
+        let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+        let _node = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+        let serving = taking_streams(tokio::net::UnixListener::bind(&live).unwrap(), "served", said_to);
+        let handing = {
+            let inner = inner.clone();
+            // the one that is not there first in turn for the routed stream (index 1)
+            let a = json!({ "id": id, "path": node.to_str().unwrap(), "front": [live.to_str().unwrap(), dead.to_str().unwrap()], "routes": ["GET /served"] });
+            tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+        };
+        let ask = |line: &'static str| {
+            let theirs = theirs.clone();
+            async move {
+                let (mut send, mut recv) = theirs.open_bi().await.unwrap();
+                send.write_all(line.as_bytes()).await.unwrap();
+                send.finish().unwrap();
+                String::from_utf8(recv.read_to_end(1 << 16).await.expect("answered, not reset")).unwrap()
+            }
+        };
+        // the credential's (first) stream: Node's
+        assert_eq!(ask("{\"hello\":1}\n").await, "node");
+        assert_eq!(said.recv().await.unwrap(), ("node", 2, 0, b"{\"hello\":1}\n".to_vec()));
+        // routed: the program not listening passed over for the next, Node told the index went elsewhere
+        let routed = "{\"method\":\"GET\",\"path\":\"/served?x=1\"}\n";
+        assert_eq!(ask(routed).await, "served");
+        let mut got = vec![said.recv().await.unwrap(), said.recv().await.unwrap()];
+        got.sort();
+        assert_eq!(got, [("node", 3, 1, vec![]), ("served", 2, 1, routed.as_bytes().to_vec())]);
+        // none listening: Node answers it, with what was read of it, and is told no skip
+        serving.abort();
+        let _ = serving.await;
+        std::fs::remove_file(&live).unwrap();
+        assert_eq!(ask(routed).await, "node");
+        assert_eq!(said.recv().await.unwrap(), ("node", 2, 2, routed.as_bytes().to_vec()));
+        // and one not routed, as before
+        assert_eq!(ask("{\"method\":\"GET\",\"path\":\"/host\"}\n").await, "node");
+        assert_eq!(said.recv().await.unwrap(), ("node", 2, 3, b"{\"method\":\"GET\",\"path\":\"/host\"}\n".to_vec()));
+        assert!(said.try_recv().is_err(), "nothing else said");
+        theirs.close(0u32.into(), b"bye");
+        handing.await.unwrap().unwrap();
+    });
+}
+
+#[test]
+fn lets_a_closed_connection_and_its_streams_go() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        // The other end kept, so its close is sent rather than its endpoint gone.
+        let taking = b.clone();
+        let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let opened = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap();
+        let stream = opened.json["id"].as_u64().unwrap();
+        assert!(matches!(inner.handle(stream), Ok(Handle::IStream(_))));
+        let remote = inner.run_sync("conn.remoteId", &json!({ "id": id })).unwrap();
+        theirs.close(7u32.into(), b"bye");
+        for _ in 0..200 {
+            if matches!(inner.handle(id), Ok(Handle::Gone { .. })) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // Let go, its stream with it; what the core asks after still answers.
+        assert!(matches!(inner.handle(id), Ok(Handle::Gone { .. })));
+        assert!(inner.handle(stream).is_err());
+        assert_eq!(inner.run_sync("conn.closeReason", &json!({ "id": id })).unwrap(), json!({ "kind": "application", "reason": "bye", "text": "closed by peer: bye (code 7)" }));
+        assert_eq!(inner.run_sync("conn.remoteId", &json!({ "id": id })).unwrap(), remote);
+        assert_eq!(inner.run_sync("conn.paths", &json!({ "id": id })).unwrap(), json!([]));
+        assert_eq!(inner.run("conn.closed", json!({ "id": id }), None).await.unwrap().json, json!({ "kind": "application", "reason": "bye", "text": "closed by peer: bye (code 7)" }));
+        assert!(inner.run("conn.openBi", json!({ "id": id }), None).await.is_err());
+        assert_eq!(inner.run("conn.acceptBi", json!({ "id": id }), None).await.unwrap().json, json!({ "end": true }));
+    });
+}
+
+#[test]
+fn forgets_closed_connections_and_endpoints_when_asked() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let dial = || {
+            let (inner, a, b, addr, alpn) = (inner.clone(), a.clone(), b.clone(), addr.clone(), alpn.clone());
+            async move {
+                let taken = tokio::spawn(async move { b.accept().await.unwrap().await.unwrap() });
+                let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+                (id, taken.await.unwrap())
+            }
+        };
+
+        // Closed by us, live with a stream open: let go at once, and its close later keeps nothing of it.
+        let (id, theirs) = dial().await;
+        let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
+        assert!(matches!(inner.handle(stream), Ok(Handle::IStream(_))));
+        inner.run("conn.close", json!({ "id": id, "code": 3, "reason": "done", "forget": true }), None).await.unwrap();
+        theirs.closed().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(inner.handle(id).is_err());
+        assert!(inner.handle(stream).is_err());
+        assert!(inner.run("conn.close", json!({ "id": id, "forget": true }), None).await.is_err());
+
+        // Closed by the peer first: what was kept of it goes when the core is done with it.
+        let (id, theirs) = dial().await;
+        theirs.close(7u32.into(), b"bye");
+        for _ in 0..200 {
+            if matches!(inner.handle(id), Ok(Handle::Gone { .. })) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(matches!(inner.handle(id), Ok(Handle::Gone { .. })));
+        inner.run("conn.close", json!({ "id": id, "forget": true }), None).await.unwrap();
+        assert!(inner.handle(id).is_err());
+
+        // Not a connection: refused, and kept.
+        let other = inner.keep(Handle::Unbound { id: "x".into() });
+        assert!(inner.run("conn.close", json!({ "id": other, "forget": true }), None).await.is_err());
+        assert!(matches!(inner.handle(other), Ok(Handle::Unbound { .. })));
+
+        // An endpoint let go as it closes, and one closed before let go after.
+        let endpoint = inner.keep(Handle::Endpoint(bind(vec![]).await.unwrap(), Arc::default()));
+        inner.run("iroh.close", json!({ "id": endpoint, "forget": true }), None).await.unwrap();
+        assert!(inner.handle(endpoint).is_err());
+        let endpoint = inner.keep(Handle::Endpoint(bind(vec![]).await.unwrap(), Arc::default()));
+        inner.run("iroh.close", json!({ "id": endpoint }), None).await.unwrap();
+        assert!(matches!(inner.handle(endpoint), Ok(Handle::Unbound { .. })));
+        inner.run("iroh.close", json!({ "id": endpoint, "forget": true }), None).await.unwrap();
+        assert!(inner.handle(endpoint).is_err());
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn closing_a_connection_stops_a_half_open_piped_socket() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taking = b.clone();
+        let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let (ours, node) = tokio::net::UnixStream::pair().unwrap();
+        let (read, write) = ours.into_split();
+        let socket = inner.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+        let piping = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("istream.pipe", json!({ "id": stream, "to": socket }), None).await })
+        };
+        let (mut _node_read, mut node_write) = node.into_split();
+        node_write.write_all(&[0, 0, 0, 1, 9]).await.unwrap();
+        let _peer = theirs.accept_bi().await.unwrap();
+        // Even while Node keeps its Unix socket open, closing the connection ends the pipe.
+        theirs.close(0u32.into(), b"bye");
+        piping.await.unwrap().unwrap();
+        assert!(inner.handle(stream).is_err());
+    });
+}
+
+#[test]
+fn puts_a_transcript_away_in_segments_and_reads_it_back_whole() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    let at = |p: &str| dir.path().join(p).display().to_string();
+    let run = |op: &str, a: Value| shell.runtime.block_on(inner.run(op, a, None)).map(|answer| answer.json);
+    let sizes = |v: &Value| v["frames"].as_array().unwrap().iter().map(|f| f[1].as_u64().unwrap()).collect::<Vec<_>>();
+    // The frames as a table lists them: [at, packed, size].
+    let listed = |v: &Value| {
+        let mut from = 0;
+        Value::Array(v["frames"].as_array().unwrap().iter().map(|f| {
+            let (packed, size) = (f[0].as_u64().unwrap(), f[1].as_u64().unwrap());
+            from += packed;
+            json!([from - packed, packed, size])
+        }).collect())
+    };
+    // Where each segment ends, 8 bytes at most: at its last line's end, at 8 where a line is longer, one made only
+    // once more than 8 came (exactly 8: one; nothing: one, empty).
+    for (content, want) in [
+        (&b"abcdefg\n"[..], vec![8]),
+        (b"abc\ndefgh", vec![4, 5]),
+        (b"abcdefghijklmnopqrst", vec![8, 8, 4]),
+        (b"", vec![0]),
+        (b"1234567\n12345678", vec![8, 8]),
+        (b"a\nb\nc\nd\ne\nf\ng\nh\n", vec![8, 8]),
+        ("中文\n😀😀\n".as_bytes(), vec![7, 8, 1]),
+    ] {
+        std::fs::write(at("t.jsonl"), content).unwrap();
+        let made = run("zstd.segments", json!({ "path": at("t.jsonl"), "out": at("t.zst"), "segment": 8 })).unwrap();
+        assert_eq!(sizes(&made), want, "{content:?}");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(at("t.zst")).unwrap().permissions()) & 0o777, 0o600);
+        // Each frame level 3 with its checksum, one stream to any zstd reader.
+        let packed = std::fs::read(at("t.zst")).unwrap();
+        assert_eq!(zstd::decode_all(packed.as_slice()).unwrap(), content);
+        assert_ne!(packed[4] & 4, 0, "checksummed");
+        let checked = run("zstd.check", json!({ "path": at("t.zst"), "frames": listed(&made), "same": at("t.jsonl") })).unwrap();
+        use sha2::Digest;
+        assert_eq!(checked, json!({ "size": content.len(), "sha256": hex::encode(sha2::Sha256::digest(content)) }));
+    }
+    // Compared with a file that changed meanwhile: how.
+    let content: Vec<u8> = (0..5000u32).map(|i| if i % 97 == 96 { b'\n' } else { b'a' + (i % 26) as u8 }).collect();
+    std::fs::write(at("t.jsonl"), &content).unwrap();
+    let made = run("zstd.segments", json!({ "path": at("t.jsonl"), "out": at("t.zst"), "segment": 1000 })).unwrap();
+    assert!(sizes(&made).len() >= 5);
+    let check = |same: &str| run("zstd.check", json!({ "path": at("t.zst"), "frames": listed(&made), "same": at(same) })).unwrap();
+    std::fs::write(at("short"), &content[..4000]).unwrap();
+    assert_eq!(check("short"), json!({ "differs": "shortened" }));
+    let mut longer = content.clone();
+    longer.push(b'x');
+    std::fs::write(at("longer"), &longer).unwrap();
+    assert_eq!(check("longer"), json!({ "differs": "changed" }));
+    let mut other = content.clone();
+    other[4321] ^= 1;
+    std::fs::write(at("other"), &other).unwrap();
+    assert_eq!(check("other"), json!({ "differs": "changed" }));
+    // Restored: written whole, 0600, as the frames hold it; without a table too.
+    let whole = run("zstd.check", json!({ "path": at("t.zst"), "frames": listed(&made), "into": at("back") })).unwrap();
+    assert_eq!((whole["size"].as_u64(), std::fs::read(at("back")).unwrap()), (Some(5000), content.clone()));
+    assert_eq!(run("zstd.check", json!({ "path": at("t.zst"), "into": at("back2") })).unwrap(), whole);
+    assert_eq!(std::fs::read(at("back2")).unwrap(), content);
+    // Put away again from what zstd frames hold: one frame, several, with a skippable frame among them.
+    let mut old = zstd::encode_all(&content[..3000], 19).unwrap();
+    old.extend([0x5e, 0x2a, 0x4d, 0x18, 3, 0, 0, 0, 1, 2, 3]);
+    old.extend(zstd::encode_all(&content[3000..], 1).unwrap());
+    std::fs::write(at("old.zst"), &old).unwrap();
+    let again = run("zstd.segments", json!({ "path": at("old.zst"), "unzstd": true, "out": at("new.zst"), "segment": 1000 })).unwrap();
+    assert_eq!(sizes(&again), sizes(&made));
+    assert_eq!(run("zstd.check", json!({ "path": at("new.zst"), "frames": listed(&again) })).unwrap(), whole);
+    assert_eq!(run("zstd.check", json!({ "path": at("old.zst") })).unwrap(), whole);
+    // A frame cut (its checksum's last byte), no frame at all, bytes after a frame within its place, a size the
+    // table does not say: none read as whole.
+    let one = {
+        let mut z = zstd::bulk::Compressor::new(3).unwrap();
+        z.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true)).unwrap();
+        z.compress(b"the only copy of this history\n").unwrap()
+    };
+    std::fs::write(at("cut.zst"), &one[..one.len() - 1]).unwrap();
+    assert!(run("zstd.check", json!({ "path": at("cut.zst") })).is_err());
+    assert!(run("zstd.check", json!({ "path": at("cut.zst"), "frames": [[0, one.len() - 1, 30]] })).is_err());
+    assert!(run("zstd.segments", json!({ "path": at("cut.zst"), "unzstd": true, "out": at("x.zst"), "segment": 8 })).is_err());
+    assert!(run("zstd.check", json!({ "path": at("cut.zst"), "frames": [[0, 0, 0]] })).is_err());
+    std::fs::write(at("empty.zst"), b"").unwrap();
+    assert!(run("zstd.check", json!({ "path": at("empty.zst") })).is_err());
+    assert!(run("zstd.segments", json!({ "path": at("empty.zst"), "unzstd": true, "out": at("x.zst"), "segment": 8 })).is_err());
+    let mut trailing = one.clone();
+    trailing.extend(b"xy");
+    std::fs::write(at("trailing.zst"), &trailing).unwrap();
+    assert!(run("zstd.check", json!({ "path": at("trailing.zst"), "frames": [[0, trailing.len(), 30]] })).is_err());
+    std::fs::write(at("one.zst"), &one).unwrap();
+    assert!(run("zstd.check", json!({ "path": at("one.zst"), "frames": [[0, one.len(), 31]] })).is_err());
+    assert_eq!(run("zstd.check", json!({ "path": at("one.zst"), "frames": [[0, one.len(), 30]] })).unwrap()["size"], json!(30));
+    assert!(run("zstd.segments", json!({ "path": at("none"), "out": at("x.zst"), "segment": 8 })).is_err());
+}
+
