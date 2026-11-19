@@ -509,6 +509,8 @@ pub fn old_went() -> @view.Side?
 
 pub fn on_after_layout((Ctx) -> Unit) -> Unit
 
+pub fn on_after_paint((Ctx) -> Unit) -> Unit
+
 pub fn on_app_change((Bool, Bool) -> Unit) -> Unit
 
 pub fn on_frame_built((Ctx) -> Unit) -> Unit

@@ -932,6 +932,41 @@ test "Duo sidebar glass circles share a baseline and keep their inset with a lar
 }
 
 ///|
+test "Duo sidebar glass controls track the tape slide back from the chat page" {
+  for size in [(669.0, 951.0, 0.0), (951.0, 669.0, 84.0)] {
+    let t = native_chat(size.0, size.1, true, side=size.2)
+    t.check_looks(false)
+    guard covered(t, "收起侧边栏") is Some((px, _)) else { fail("page cover missing") }
+    t.tap(px + 20.0, 400.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+    assert_false(t.nav_said().contains("workspace-switch"))
+    guard covered(t, "展开侧边栏") is Some((sx, _)) else { fail("sidebar cover missing") }
+    t.tap(sx + 20.0, 400.0)
+    // Mid-slide and at rest, native floating buttons must stay aligned with the painted sidebar.
+    for span in [120.0, @ui.move_most_ms] {
+      t.run_for(span)
+      assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+      let spec = @json.parse(t.nav_said())
+      let circles = items(Some(spec), "floating")
+      assert_eq(circles.length(), 3)
+      let x = number(Some(circles[0]), "x")
+      guard t.words().filter(fn(word) { word.0 == "今天" }) is [(_, heading_x, _, _, _, _), ..] else {
+        fail("day heading not drawn")
+      }
+      assert_true((x - heading_x).abs() < 0.5, msg="\{size.0}x\{size.1} at +\{span}ms: glass edge \{x}, day heading \{heading_x}")
+    }
+    let spec = @json.parse(t.nav_said())
+    let circles = items(Some(spec), "floating")
+    let y = number(Some(circles[0]), "y")
+    for circle in circles {
+      assert_true(number(Some(circle), "x") >= 0.0, msg="off-screen floating control: \{Repr(circle)}")
+      assert_true((number(Some(circle), "y") - y).abs() < 0.5)
+    }
+  }
+}
+
+///|
 test "an iPhone Duo: the system's bars told as the app starts put the sidebar where they have it at once, moving nothing" {
   let t = native_chat(951.0, 669.0, true, side=84.0)
   assert_true(@sf.native_on())

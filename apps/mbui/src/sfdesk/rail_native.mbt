@@ -44,11 +44,11 @@ fn native_workspace_item(src : Source, w : Workspace) -> @hostapi.NavItem {
 }
 
 ///|
-/// What hands the glass's buttons to the host once each frame is laid out, put up once.
+/// What hands the glass's buttons to the host once each painted frame is positioned, put up once.
 fn native_workspace_hooked() -> Unit {
   if !floating_installed.val {
     floating_installed.val = true
-    @ui.on_after_layout(native_workspace_placed)
+    @ui.on_after_paint(native_workspace_placed)
   }
 }
 
@@ -57,8 +57,8 @@ fn native_workspace_placed(c : @ui.Ctx) -> Unit {
   guard floating_bar.val is Some(bar) else { return }
   let floating : Array[@hostapi.NavFloating] = []
   let blocked = @sf.presenter_visible()
-  let semantics = c.semantics_tree()
   if !bar.bare && !switcher_open() && (!wide.tape.get() || wide.tape_at.get() == Side) {
+    let semantics = c.semantics_tree()
     // Semantic anchors also survive a sidebar drawn from its kept part.
     for s in semantics {
       if !s.hidden || blocked {

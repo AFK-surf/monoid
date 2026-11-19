@@ -291,6 +291,12 @@ let mode_draw : Int = 2
 let after_layout_hooks : Array[(Ctx) -> Unit] = []
 
 ///|
+/// What runs after a frame is painted (full build or paint-only frame), before it is presented to the host: for host
+/// overlays positioned from the painted window tree.
+// kept across runs: installed once in the process by the packages over ui (their `installed`)
+let after_paint_hooks : Array[(Ctx) -> Unit] = []
+
+///|
 /// What runs once a frame's builds are over (each built and laid out), before it is painted: what it tells is for the
 /// next frame (the motion package: a measure laid out the frame before and not in this one, none from the next).
 // kept across runs: installed once in the process by the packages over ui (their `installed`)
@@ -316,6 +322,12 @@ let reset_hooks : Array[() -> Unit] = []
 /// where things are laid out.
 pub fn on_after_layout(f : (Ctx) -> Unit) -> Unit {
   after_layout_hooks.push(f)
+}
+
+///|
+/// `f` runs after every painted frame (full build or paint-only) and before it is presented, outside signal tracking.
+pub fn on_after_paint(f : (Ctx) -> Unit) -> Unit {
+  after_paint_hooks.push(f)
 }
 
 ///|
