@@ -142,6 +142,8 @@
   "core-views.agent.cacheColdUnknownDetail": "Reread cost unknown",
   "core-views.agent.context": "{used} / {window}",
   "core-views.agent.contextCompacts": "Compacts to {window} after this turn",
+  "core-views.agent.compacted_one": "This session has compacted once",
+  "core-views.agent.compacted": "This session has compacted {n} times",
   "core-views.agent.hours": "{h}h {m}m",
   "core-views.agent.minutes": "{m}m",
   "core-views.agent.running": {

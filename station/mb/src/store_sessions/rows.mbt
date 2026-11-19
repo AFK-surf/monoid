@@ -112,6 +112,9 @@ fn to_session(r : Map[String, Json]) -> Json {
   } else {
     Json::null()
   }
+  if col(r, "compactions") is (Number(n, ..) as c) && n > 0.0 {
+    o["compactions"] = c
+  }
   o["runtimeSessionId"] = col(r, "runtime_session_id")
   o["workspace"] = col(r, "workspace")
   o["cwd"] = col(r, "cwd")

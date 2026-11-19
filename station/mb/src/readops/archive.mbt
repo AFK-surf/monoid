@@ -100,6 +100,7 @@ fn session_json(r : Map[String, Json]) -> Json {
   out["afresh"] = flag_or_null(col(r, "afresh"))
   out["context"] = number_or_null(col(r, "context"))
   out["contextBefore"] = number_or_null(col(r, "context_before"))
+  match col(r, "compactions") { Some(Number(n, ..) as c) if n > 0.0 => out["compactions"] = c; _ => () }
   put_col(out, "runtimeSessionId", col(r, "runtime_session_id"))
   put_col(out, "workspace", col(r, "workspace"))
   out["cwd"] = or_null(col(r, "cwd"))

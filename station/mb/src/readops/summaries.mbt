@@ -31,8 +31,8 @@ fn profiles_of(r : Map[String, Json]) -> Json {
 }
 
 ///|
-/// sessions.ts `sessionJson` of rows.ts `toSession`: the token skipped, `cwd`, `profiles`, `context`, `contextBefore`
-/// left out when none.
+/// sessions.ts `sessionJson` of rows.ts `toSession`: the token skipped, `cwd`, `profiles`, `context`, `contextBefore`,
+/// `compactions` left out when none.
 fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   let flag = (k : String) => match field(r, k) {
     Null => Json::null()
@@ -68,6 +68,9 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   }
   if field(r, "context_before") is (Number(_, ..) as c) {
     v["contextBefore"] = c
+  }
+  if field(r, "compactions") is (Number(n, ..) as c) && n > 0.0 {
+    v["compactions"] = c
   }
   v["running"] = Json::boolean(field(r, "running") == Json::number(1.0))
   v["createdAt"] = field(r, "created_at")

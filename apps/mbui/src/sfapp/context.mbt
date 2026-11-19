@@ -1,7 +1,8 @@
 // An agent's context by hand, between turns (openContext):
 // its context's tile in the agent's card opens, a step further in from the card (the card closed for it: the
 // presenters' step, its back key back to the card), what compacts it (its chat is told when it is done) or clears it
-// (asked first in a sheet of its own): its next message starts a new session.
+// (asked first in a sheet of its own): its next message starts a new session. Over them, how often its runtime session
+// compacted it, where it has (the core's card: views/brief.ts `card`).
 
 ///|
 /// What is under way or failed of `call` on `key`'s session (the core's doing, as AppState.isDoing has it).
@@ -51,6 +52,12 @@ fn open_context(src : Source, r : ChatRef, key : String) -> Unit {
   @sf.panel_nodes(tr("web-pages.chat.context"), from=Unanchored, fn(v, close) {
     let s = fn() { field(agent_json(src.topic("chat", chat_params(r)).get().value, key), "session") }
     let params = fn() -> Json { { "station": Json::string(r.station), "key": Json::string(key) } }
+    let compacted = fn() {
+      let card = src.topic("agentCard", { "station": Json::string(r.station), "key": Json::string(key) }).get().value
+      text(field(card, "context"), "compacted")
+    }
+    // (quiet, at the rows' words' start: none of them, and no press)
+    v.show(fn() { compacted() != "" }, fn(n) { @sf.words_node(n, compacted, fn() { context_compacted_words }) |> ignore })
     v.show(fn() { flag(s(), "canCompact") }, fn(row) {
       @sf.choice_row_node(
         row,
@@ -82,3 +89,8 @@ fn open_context(src : Source, r : ChatRef, key : String) -> Unit {
     })
   })
 }
+
+///|
+/// How often its runtime session compacted it, over the panel's rows: a note's size, muted.
+// kept across runs: a value (no field of it changes)
+let context_compacted_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)

@@ -490,6 +490,7 @@ fn session_of(r : Map[String, Json]) -> Json {
   out["afresh"] = flag_or_null(r.get("afresh"))
   out["context"] = if col(r, "context") is Number(_, ..) { col(r, "context") } else { Json::null() }
   out["contextBefore"] = if col(r, "context_before") is Number(_, ..) { col(r, "context_before") } else { Json::null() }
+  if col(r, "compactions") is (Number(n, ..) as c) && n > 0.0 { out["compactions"] = c }
   put_col(out, "runtimeSessionId", r, "runtime_session_id")
   put_col(out, "workspace", r, "workspace")
   out["cwd"] = col(r, "cwd")

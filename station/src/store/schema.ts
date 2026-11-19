@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   afresh INTEGER,
   context INTEGER,
   context_before INTEGER,
+  compactions INTEGER,
   runtime_session_id TEXT,
   workspace TEXT NOT NULL,
   token TEXT NOT NULL UNIQUE,
@@ -575,7 +576,7 @@ export function hasRuntimeOrderIndex(db: DatabaseSync): boolean {
 /// add_archive_columns: columns archiving came with, added to a database made before them. When they come, each
 /// session's first chat on the page is taken as its own, and chats of sessions archived then as archived with them.
 export function addArchiveColumns(db: DatabaseSync): void {
-  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["tui", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"]]) {
+  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["tui", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"], ["compactions", "INTEGER"]]) {
     if (!has(db, "sessions", column!)) db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${kind}`);
   }
   // Came with waiting's limit, after the turns table.

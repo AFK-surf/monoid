@@ -609,6 +609,16 @@ pub fn Store::set_session_context_before(
 }
 
 ///|
+/// store.ts `noteCompacted`: its runtime session compacted its context once more.
+pub fn Store::note_compacted(self : Store, key : String) -> Unit raise {
+  self.update_session(
+    key,
+    "UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1",
+    [jstr(key)],
+  )
+}
+
+///|
 pub fn Store::set_session_afresh(
   self : Store,
   key : String,
@@ -691,7 +701,7 @@ pub fn Store::set_runtime_session_id(
 ) -> Unit raise {
   self.with_changes(changes => {
     ignore(
-      self.run("UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", [
+      self.run("UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2", [
         id,
         jstr(key),
       ]),

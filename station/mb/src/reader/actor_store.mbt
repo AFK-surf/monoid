@@ -146,8 +146,13 @@ fn Actors::local_store(self : Actors, f : String, args : Array[Json]) -> Json? r
       self.changed_store([session_changed(key)])
       Some(Json::null())
     }
+    "noteCompacted" => {
+      ignore(db.run("UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1", [arg(0)]))
+      self.changed_store([session_changed(key)])
+      Some(Json::null())
+    }
     "setRuntimeSessionId" => {
-      ignore(db.run("UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", [arg(1), arg(0)]))
+      ignore(db.run("UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2", [arg(1), arg(0)]))
       self.changed_store([session_changed(key), { "type": "conversation", "key": jstr(key) }])
       Some(Json::null())
     }

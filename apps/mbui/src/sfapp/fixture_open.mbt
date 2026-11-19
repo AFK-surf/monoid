@@ -204,7 +204,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
       open_letters(src, r, 7.0)
       @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
-    "chat-agent" | "chat-agent-unsaid" | "chat-agent-screens" => open_agent(src, r, "s-c1")
+    "chat-agent" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
     "chat-job" => {
       dui.job_tab = 0

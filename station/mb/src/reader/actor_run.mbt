@@ -1599,6 +1599,8 @@ async fn Actors::on_compacted(self : Actors, a : Actor, generation : Int) -> Uni
   if !self.is_current(a, generation) {
     return
   }
+  // (counted for its card, on its own or by hand: store.ts `noteCompacted`)
+  ignore(self.store(a, "noteCompacted", [jstr(a.key)]))
   if !a.compacting && self.busy_agent(a) is Some(agent) {
     match self.deps(a, "longChat", [jstr(a.key)]) {
       String(long) => {
