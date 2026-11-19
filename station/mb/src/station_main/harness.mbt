@@ -17,7 +17,10 @@
 // - "pipeTcpLost": a member's stream handed to a slice as a connection of 127.0.0.1 (live_p5_1_local.mbt
 //   `shell_handle`) whose stream is lost after its first bytes; "driverErrors": the accounts' failures as the drivers
 //   are given them (live_p5_2_io.mbt `driver_error_of`); "claudeLogins": what Claude's logins ask of the accounts
-//   (live_p5_2_drivers.mbt `p52_claude_logins`), each with the token refused: the same test's too.
+//   (live_p5_2_drivers.mbt `p52_claude_logins`), each with the token refused: the same test's too;
+// - "fsOp" {name, args}: what the conversations' `fs.*` answers (live_p5_2_chats.mbt `host_fs_op`: `{ok}`, or
+//   `{code, message}` as it throws); "repoWalk" {root, file}: the repositories' index walking `root` through it,
+//   with whether each folder's listing let the program's other fibers run while it waited (never on its thread).
 
 ///|
 pub async fn harness(host : @host.Host) -> Unit {
@@ -271,6 +274,8 @@ pub async fn harness(host : @host.Host) -> Unit {
       "pipeTcpLost" => Ok(pipe_tcp_lost(host))
       "driverErrors" => Ok(driver_errors_said())
       "claudeLogins" => Ok(claude_logins_asked(host))
+      "fsOp" => Ok(fs_op_said(host, s("name"), match v("args") { Some(Array(a)) => a; _ => [] }))
+      "repoWalk" => Ok(repo_walk_probed(host, s("root"), s("file")))
       other => Err("no op \{other}")
     }
     let said : Json = match answer {
@@ -458,4 +463,61 @@ async fn claude_logins_asked(host : @host.Host) -> Json {
   took(pump.wait((logins.lent_token.unwrap())(own)(Some("tok-old"))))
   took(pump.wait((logins.machine_token)(None)))
   { "asked": Json::array(asked), "given": Json::array(given) }
+}
+
+///|
+/// What `host_fs_op` answers `name` with `args`: `{ok}`, or what it threw (`{code, message}`).
+async fn fs_op_said(host : @host.Host, name : String, args : Array[Json]) -> Json {
+  try {
+    { "ok": host_fs_op(host, name, args) }
+  } catch {
+    @session_chats.Thrown(code, message) => { "code": Json::string(code), "message": Json::string(message) }
+    e => { "code": Json::string(""), "message": Json::string(said_of(e)) }
+  }
+}
+
+///|
+/// The repositories' index (session_chats `RepoIndex::walk`) over `root`, its folders listed and its files read by
+/// `host_fs_op` as the station's own conversations have them. Before each listing a fiber is started that only notes
+/// it ran: a listing that waits off the program's thread lets it run before it is answered, one done on the program's
+/// thread (the walk's 28–40 s with every fiber held) answers first. The repositories' paths, how many folders were
+/// listed and how many of those let the noting fiber run.
+async fn repo_walk_probed(host : @host.Host, root : String, file : String) -> Json {
+  let lists = Ref(0)
+  let yielded = Ref(0)
+  let w : @session_chats.World = {
+    call: async fn(name, args) {
+      let a = args.map(p52_json_of_jv)
+      let text = (i : Int) => match a.get(i) { Some(String(t)) => t; _ => "" }
+      match name {
+        "repoIndex.roots" => jv_of([Json::string(root)])
+        "repoIndex.besides" => jv_of([])
+        "repoIndex.guarded" => jv_of(false)
+        "repoIndex.file" => jv_of(Json::string(file))
+        "repoIndex.now" => jv_of(0.0)
+        "path.resolve" => jv_of(Json::string(text(0)))
+        "repoIndex.list" => {
+          lists.val += 1
+          let ran = Ref(false)
+          ignore(host.rt.fork_quiet(name="listing's probe", fn() { ran.val = true }))
+          let got = host_fs_op(host, "readdirTypes", a)
+          if ran.val {
+            yielded.val += 1
+          }
+          jv_of(got)
+        }
+        n if n.has_prefix("fs.") => jv_of(host_fs_op(host, n[3:].to_owned(), a))
+        _ => jv_of(Json::null())
+      }
+    },
+    callback: _ => jv_of(Json::null()),
+    words: @session_chats.Words::empty(),
+    lang: Ref("zh"),
+    thrown: Ref(jv_of(Json::null())),
+  }
+  let index = @session_chats.RepoIndex::new()
+  index.walk(w)
+  let (repos, _) = index.repos(w)
+  let paths = repos.map(r => p52_json_of_jv(r)).filter_map(r => match r { { "path": String(p), .. } => Some(Json::string(p)); _ => None })
+  { "repos": Json::array(paths), "lists": Json::number(lists.val.to_double()), "yielded": Json::number(yielded.val.to_double()) }
 }

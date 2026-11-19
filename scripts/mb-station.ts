@@ -75,36 +75,36 @@ const SHARED_TMP = [
 ];
 /// A wait on the disk on the program's thread: `@drive`'s calls, and the shell's `fs.*` asked synchronously.
 const SYNC_FS =
-  /(?<![A-Za-z0-9_])@drive\.(?:read_all|read_text|write_text|write_private|write_private_bytes|stat|readdir|mkdir|remove|rename|exists|is_dir|lstat|read_bytes|copy)\s*\(|\bshell_sync\s*\(\s*"fs\.[^"]+"/g;
+  /(?<![A-Za-z0-9_])@drive\.(?:read_all|read_text|write_text|write_private|write_private_bytes|stat|readdir|mkdir|remove|rename|exists|is_dir|lstat|read_bytes|copy|names|rm_force)\s*\(|\bshell_sync\s*\(\s*"fs\.[^"]+"/g;
 /// How many of them each whole station's slice (`station_main/live_*.mbt`, its harnesses' aside) has at most; only
 /// falls. A new one reads or writes through `@host.Host::{read_bytes, read_text, file_sha256, write_atomic,
 /// write_private}` or the shell's `fs.*` asked by `host.shell`, off the program's thread.
 const MAIN_THREAD_SYNC_FS: Record<string, number> = {
-  "station_main/live_p5_1_admin.mbt": 6,
-  "station_main/live_p5_1_events.mbt": 3,
+  "station_main/live_p5_1_admin.mbt": 2,
+  "station_main/live_p5_1_events.mbt": 5,
   "station_main/live_p5_1_tools.mbt": 1,
-  "station_main/live_p5_2_chats.mbt": 9,
+  "station_main/live_p5_2_chats.mbt": 1,
   "station_main/live_p5_2_ctx.mbt": 3,
-  "station_main/live_p5_2_drivers.mbt": 1,
+  "station_main/live_p5_2_drivers.mbt": 2,
   "station_main/live_p5_2_home.mbt": 1,
   "station_main/live_p5_2_hubops.mbt": 1,
-  "station_main/live_p5_2_io.mbt": 14,
-  "station_main/live_p5_2_main.mbt": 5,
+  "station_main/live_p5_2_io.mbt": 15,
+  "station_main/live_p5_2_main.mbt": 4,
   "station_main/live_p5_2_own.mbt": 3,
-  "station_main/live_p5_2_program.mbt": 7,
+  "station_main/live_p5_2_program.mbt": 8,
   "station_main/live_p5_2_world.mbt": 4,
   "station_main/live_p5_3_accounts_io.mbt": 2,
   "station_main/live_p5_3_jobs.mbt": 2,
   "station_main/live_p5_4.mbt": 1,
   "station_main/live_p5_4_browser.mbt": 1,
-  "station_main/live_p5_4_devices.mbt": 8,
-  "station_main/live_p5_4_drive.mbt": 1,
+  "station_main/live_p5_4_devices.mbt": 10,
+  "station_main/live_p5_4_drive.mbt": 2,
   "station_main/live_p5_4_helperfs.mbt": 1,
   "station_main/live_p5_4_screens.mbt": 1,
-  "station_main/live_p5_4_terms.mbt": 4,
+  "station_main/live_p5_4_terms.mbt": 6,
   "station_main/live_p5_4_util.mbt": 1,
-  "station_main/live_p5_4_vault.mbt": 3,
-  "station_main/live_p5_5_connects.mbt": 6,
+  "station_main/live_p5_4_vault.mbt": 7,
+  "station_main/live_p5_5_connects.mbt": 8,
   "station_main/live_p5_5_copies.mbt": 2,
   "station_main/live_p5_5_moves.mbt": 2,
 };

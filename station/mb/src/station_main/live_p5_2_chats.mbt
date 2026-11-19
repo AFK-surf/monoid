@@ -770,6 +770,13 @@ fn protected_place(p : String) -> Bool {
 ///|
 /// The files as the station's own file system answers (session_chats' `fs.*`).
 async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
+  host_fs_op(self.host, op, args)
+}
+
+///|
+/// What `P52::fs_op` answers, each call the shell's `fs.*` off the program's thread but `symlink`, `statfs`, `readHead`
+/// and an exclusive `copyFile`.
+async fn host_fs_op(host : @host.Host, op : String, args : Array[Json]) -> Json raise {
   let s = (i : Int32) => {
     match args.get(i) {
       Some(String(x)) => x
@@ -793,9 +800,15 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
       other => @session_chats.Thrown("", said_of(other))
     }
   }
+  // (the shell's `fs.*` failing, by Node's code and words for `call` on `p`)
+  let shell_fail = (e : Error, call : String, p : String) => {
+    let code = shell_fs_code(e)
+    @session_chats.Thrown(code, fs_code_said(code, call, p))
+  }
+  let missing = (call : String, p : String) => @session_chats.Thrown("ENOENT", fs_code_said("ENOENT", call, p))
   // (read off the program's thread; Node's ENOENT where it does not open, as `@drive.read_all`'s)
   let read_whole = async fn(p : String) -> Bytes raise {
-    match (self.host.read_bytes(p) catch { e => raise fail(e) }) {
+    match (host.read_bytes(p) catch { e => raise fail(e) }) {
       Some(b) => b
       None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
     }
@@ -806,43 +819,34 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
         @utf8.decode_lossy(read_whole(s(0))),
       )
     "writeFile" => {
-      // (node's `flag: "wx"`: refused where the file is there, as the hub's uploads ask it)
-      if args.get(2) is Some(Object({ "flag": String("wx"), .. })) &&
-        attempt(() => @drive.lstat(s(0))) is Ok(_) {
-        raise @session_chats.Thrown(
-          "EEXIST",
-          "EEXIST: file already exists, open '\{s(0)}'",
-        )
+      // (node's `flag: "wx"`: refused where the file is there, as the hub's uploads ask it; made only where none is)
+      let excl = args.get(2) is Some(Object({ "flag": String("wx"), .. }))
+      let put : Json = {
+        "path": jstr(s(0)),
+        "offset": jn(0.0),
+        "truncate": jb(true),
+        "exclusive": jb(excl),
+        "mode": jn(0o644.to_double()),
       }
-      if live_write_ffi(live_c(s(0)), data(1), 0) != 0 {
-        raise @session_chats.Thrown("EIO", "EIO: i/o error, open '\{s(0)}'")
+      ignore(host.shell("fs.put", put, bytes=data(1))) catch {
+        e => raise shell_fail(e, "open", s(0))
       }
       Json::null()
     }
     "appendFile" => {
       // (the hub's uploads add each part at the file's end, making it with the first)
-      // (made only where it is not there: another failure is the append's, never a part written over)
-      let had = match attempt(() => @drive.stat(s(0))) {
-        Ok(st) => Some(st.size)
-        Err(@drive.FsError(f)) if f.code == "ENOENT" => None
-        Err(e) => raise fail(e)
+      ignore(host.shell("fs.put", { "path": jstr(s(0)), "mode": jn(0o644.to_double()) }, bytes=data(1))) catch {
+        e => raise shell_fail(e, "open", s(0))
       }
-      ignore(
-        @drive.write_part(s(0), {
-          create: had is None,
-          offset: had.unwrap_or(0.0),
-          data: data(1),
-          at_least: None,
-          truncate: None,
-          sync: false,
-        }) catch {
-          e => raise fail(e)
-        },
-      )
       Json::null()
     }
     "access" => {
-      ignore(@drive.stat(s(0)) catch { e => raise fail(e) })
+      let (kind, _) = host.shell("fs.stat", { "path": jstr(s(0)) }) catch {
+        e => raise shell_fail(e, "access", s(0))
+      }
+      if kind is Null {
+        raise missing("access", s(0))
+      }
       Json::null()
     }
     "statfs" =>
@@ -857,19 +861,19 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
           )
       }
     "rename" => {
-      @drive.rename(s(0), s(1)) catch {
-        e => raise fail(e)
+      ignore(host.shell("fs.rename", { "from": jstr(s(0)), "to": jstr(s(1)) })) catch {
+        e => raise shell_fail(e, "rename", s(0))
       }
       Json::null()
     }
     "mkdir" => {
-      @drive.mkdir(s(0), true) catch {
-        e => raise fail(e)
+      ignore(host.shell("fs.mkdir", { "path": jstr(s(0)) })) catch {
+        e => raise shell_fail(e, "mkdir", s(0))
       }
       Json::null()
     }
     "rm" => {
-      ignore(remove_tree(s(0)))
+      host_remove_tree(host, s(0))
       Json::null()
     }
     "copyFile" => {
@@ -883,8 +887,8 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
           e => raise fail(e)
         }
       } else {
-        copy_file_over(s(0), s(1)) catch {
-          e => raise fail(e)
+        host_copy_over(host, s(0), s(1)) catch {
+          e => raise shell_fail(e, "copyfile", s(0))
         }
       }
       Json::null()
@@ -901,28 +905,17 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
     "readdir" =>
       // (`withFileTypes`: each entry's name and whether it is a folder, as the routes read it)
       if args.get(1) is Some(Object({ "withFileTypes": True, .. })) {
-        Json::array(
-          (@drive.readdir(s(0)) catch { e => raise fail(e) }).map(d => {
-            ({ "name": Json::string(d.name), "dir": Json::boolean(d.is_dir) } : Json)
-          }),
-        )
+        guard host_readdir_types(host, s(0)) is Some(entries) else { raise missing("scandir", s(0)) }
+        Json::array(entries.map(e => ({ "name": jstr(e.0), "dir": jb(e.1 == "dir") } : Json)))
       } else {
-        Json::array(
-          (@drive.names(s(0)) catch { e => raise fail(e) }).map(Json::string),
-        )
+        guard host_readdir_names(host, s(0)) is Some(names) else { raise missing("scandir", s(0)) }
+        Json::array(names.map(Json::string))
       }
     "readdirTypes" => {
-      let names = @drive.names(s(0)) catch { e => raise fail(e) }
+      // (the kinds the folder gives, a link neither a file nor a folder, as lstat says: no call for each entry)
+      guard host_readdir_types(host, s(0)) is Some(entries) else { raise missing("scandir", s(0)) }
       Json::array(
-        names.map(n => {
-          let st = attempt(() => @drive.lstat(path([s(0), n])))
-          (
-            {
-              "name": jstr(n),
-              "isFile": jb(st is Ok(x) && x.file),
-              "isDirectory": jb(st is Ok(x) && x.dir),
-            } : Json)
-        }),
+        entries.map(e => ({ "name": jstr(e.0), "isFile": jb(e.1 == "file"), "isDirectory": jb(e.1 == "dir") } : Json)),
       )
     }
     "readBase64" =>
@@ -930,13 +923,8 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
         @drive.base64(read_whole(s(0))),
       )
     "stat" => {
-      let st = @drive.stat(s(0)) catch { e => raise fail(e) }
-      {
-        "isFile": jb(st.file),
-        "isDirectory": jb(st.dir),
-        "size": jn(st.size),
-        "mtimeMs": jn(st.mtime_ms),
-      }
+      guard host_stat_follow(host, s(0)) is Some((kind, size, mtime)) else { raise missing("stat", s(0)) }
+      { "isFile": jb(kind == "file"), "isDirectory": jb(kind == "dir"), "size": jn(size), "mtimeMs": jn(mtime) }
     }
     "readHead" => {
       let want = match args.get(1) {

@@ -148,8 +148,6 @@ pub fn process_usage(Array[Int32]) -> Array[@json.Json?]
 
 pub fn read_lines(@host.Host, Int32, (String) -> Unit, () -> Unit) -> Unit
 
-pub fn remove_tree(String) -> Bool
-
 pub fn repo_rules_hook(RulesWorld, String) -> String
 
 pub async fn run_claude_tui(@host.Host, String, Array[String]) -> Int32

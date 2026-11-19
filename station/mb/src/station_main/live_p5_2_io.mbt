@@ -14,22 +14,12 @@ extern "C" fn live_append_ffi(path : Bytes, data : Bytes) -> Int = "sflive_appen
 extern "C" fn live_write_ffi(path : Bytes, data : Bytes, mode : Int) -> Int = "sflive_write"
 
 ///|
-/// A file written whole as `sflive_write`, or only where none is (`excl`: O_EXCL, Win32's CREATE_NEW): 0, else the
-/// system's error number (EEXIST where it is there).
-#borrow(path, data)
-extern "C" fn live_write_flags_ffi(path : Bytes, data : Bytes, mode : Int, excl : Int) -> Int = "sflive_write_flags"
-
-///|
 #borrow(target, path)
 extern "C" fn live_symlink_ffi(target : Bytes, path : Bytes) -> Int = "sflive_symlink"
 
 ///|
 #borrow(from, to)
 extern "C" fn live_link_ffi(from : Bytes, to : Bytes) -> Int = "sflive_link"
-
-///|
-#borrow(path)
-extern "C" fn live_rm_tree_ffi(path : Bytes) -> Int = "sflive_rm_tree"
 
 ///|
 extern "C" fn live_start_time_ffi(pid : Int) -> Double = "sflive_start_time"
@@ -82,10 +72,167 @@ pub fn write_text_mode(path : String, text : String, mode : Int) -> Bool {
   live_write_ffi(live_c(path), @utf8.encode(text), mode) == 0
 }
 
+// ── the shell's files, off the program's thread ──
+// A folder walked or a tree removed on the program's thread held every fiber while it ran (a repository index's pass
+// over a home of many folders, 28–40 s, 2026-11-19): each is the shell's `fs.*` instead, answered on its own threads.
+
 ///|
-/// A tree removed, what is not there taken as gone.
-pub fn remove_tree(path : String) -> Bool {
-  live_rm_tree_ffi(live_c(path)) == 0
+/// A folder's names with their kinds as the folder says them ("file", "dir", "link" or "other", links not followed);
+/// none where it does not read.
+async fn host_readdir_types(host : @host.Host, dir : String) -> Array[(String, String)]? {
+  let (said, _) = host.shell("fs.readdir", { "path": Json::string(dir), "types": Json::boolean(true) })
+  match said {
+    Array(items) =>
+      Some(
+        items.filter_map(it => match it {
+          [String(name), String(kind)] => Some((name, kind))
+          _ => None
+        }),
+      )
+    _ => None
+  }
+}
+
+///|
+/// A folder's names; none where it does not read.
+async fn host_readdir_names(host : @host.Host, dir : String) -> Array[String]? {
+  let (said, _) = host.shell("fs.readdir", { "path": Json::string(dir) })
+  match said {
+    Array(items) =>
+      Some(
+        items.filter_map(it => match it {
+          String(name) => Some(name)
+          _ => None
+        }),
+      )
+    _ => None
+  }
+}
+
+///|
+/// What lstat says of `p` (its kind, size and mtime in ms); none where nothing is there.
+async fn host_lstat(host : @host.Host, p : String) -> (String, Double, Double)? {
+  let (said, _) = host.shell("fs.lstat", { "path": Json::string(p) })
+  match said {
+    { "kind": String(kind), "size": Number(size, ..), "mtimeMs": Number(mtime, ..), .. } => Some((kind, size, mtime))
+    _ => None
+  }
+}
+
+///|
+/// What stat says of `p`, its links followed (a link that names nothing is not there, as stat's ENOENT).
+async fn host_stat_follow(host : @host.Host, p : String) -> (String, Double, Double)? {
+  match host_lstat(host, p) {
+    Some(("link", _, _)) => {
+      let (real, _) = host.shell("fs.realpath", { "path": Json::string(p) })
+      match real {
+        String(r) =>
+          match host_lstat(host, r) {
+            Some(("link", _, _)) => None
+            other => other
+          }
+        _ => None
+      }
+    }
+    other => other
+  }
+}
+
+///|
+/// What is at `p` removed, a folder with all it holds; what is not there, or does not go, let go.
+async fn host_remove_tree(host : @host.Host, p : String) -> Unit {
+  ignore(host.shell("fs.remove", { "path": Json::string(p), "recursive": Json::boolean(true) })) catch {
+    _ => ()
+  }
+}
+
+///|
+/// node's `copyFile` through the shell: `to` replaced where it is there (a link there replaced, not written through),
+/// never `from` itself; `from`'s absence is the shell's failure (os error 2).
+async fn host_copy_over(host : @host.Host, from : String, to : String) -> Unit {
+  let (kind, _) = host.shell("fs.stat", { "path": Json::string(from) })
+  if kind is Null {
+    raise @wire.ShellError("No such file or directory (os error 2)")
+  }
+  if from == to {
+    return
+  }
+  match host_lstat(host, to) {
+    Some((kind, _, _)) if kind != "dir" =>
+      ignore(host.shell("fs.remove", { "path": Json::string(to) })) catch {
+        _ => ()
+      }
+    _ => ()
+  }
+  ignore(host.shell("fs.copy", { "from": Json::string(from), "to": Json::string(to) }))
+}
+
+///|
+/// The code Node gives a failure of the shell's `fs.*` (its `… (os error N)`, Windows' numbers as libuv maps them);
+/// `EIO` where it says none.
+fn shell_fs_code(e : Error) -> String {
+  let said = said_of(e)
+  let n = match said.find("(os error ") {
+    Some(i) => {
+      let digits = StringBuilder()
+      for c in said[i + 10:] {
+        if c >= '0' && c <= '9' {
+          digits.write_char(c)
+        } else {
+          break
+        }
+      }
+      @string.parse_int(digits.to_string()) catch {
+        _ => -1
+      }
+    }
+    None => -1
+  }
+  if platform() == "win32" {
+    match n {
+      2 | 3 | 123 => "ENOENT"
+      5 | 32 | 33 => "EPERM"
+      80 | 183 => "EEXIST"
+      112 => "ENOSPC"
+      145 => "ENOTEMPTY"
+      267 => "ENOTDIR"
+      17 => "EXDEV"
+      _ => "EIO"
+    }
+  } else {
+    match n {
+      1 => "EPERM"
+      2 => "ENOENT"
+      13 => "EACCES"
+      16 => "EBUSY"
+      17 => "EEXIST"
+      18 => "EXDEV"
+      20 => "ENOTDIR"
+      21 => "EISDIR"
+      28 => "ENOSPC"
+      39 | 66 => "ENOTEMPTY"
+      _ => "EIO"
+    }
+  }
+}
+
+///|
+/// Node's words for a file system's code, as it throws it: `<code>: <words>, <call> '<p>'`.
+fn fs_code_said(code : String, call : String, p : String) -> String {
+  let words = match code {
+    "EPERM" => "operation not permitted"
+    "ENOENT" => "no such file or directory"
+    "EACCES" => "permission denied"
+    "EBUSY" => "resource busy or locked"
+    "EEXIST" => "file already exists"
+    "EXDEV" => "cross-device link not permitted"
+    "ENOTDIR" => "not a directory"
+    "EISDIR" => "illegal operation on a directory"
+    "ENOSPC" => "no space left on device"
+    "ENOTEMPTY" => "directory not empty"
+    _ => "i/o error"
+  }
+  "\{code}: \{words}, \{call} '\{p}'"
 }
 
 // ── converting between the three JSONs the packages speak ──
@@ -428,10 +575,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
     } else {
       @agent_drivers.Later::fail(lp, @agent_drivers.Failed("EIO"))
     },
-    remove_tree: p => {
-      ignore(remove_tree(p))
-      lok(lp, ())
-    },
+    remove_tree: p => self.later("remove tree", async fn() { host_remove_tree(self.host, p) }),
     rename: (from, to) => match attempt(() => @drive.rename(from, to)) {
       Ok(_) => lok(lp, ())
       Err(e) => lfail(lp, e)

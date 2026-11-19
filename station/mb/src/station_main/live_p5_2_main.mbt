@@ -764,17 +764,17 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
           None => ()
         }
       }
-      match attempt(() => @drive.read_all(p)) {
-        Ok(b) => jstr(@utf8.decode_lossy(b))
-        Err(_) => Json::null()
+      match (self.host.read_text(p) catch { _ => None }) {
+        Some(t) => jstr(t)
+        None => Json::null()
       }
     }
     "fs.rm" => {
-      @drive.rm_force(s("path"))
+      host_remove_tree(self.host, s("path"))
       Json::null()
     }
     "fs.rmRoom" => {
-      ignore(remove_tree(s("home")))
+      host_remove_tree(self.host, s("home"))
       Json::null()
     }
     "actors.settled" => {

@@ -135,19 +135,15 @@ fn p51_fs_thrown(e : Error) -> Error {
 }
 
 ///|
-/// The system's error number `n` of `call` on `p` (live_p5_2_sys.c's), as Node throws it.
-fn p51_errno_thrown(n : Int, call : String, p : String) -> Error {
-  let (code, words) = match n {
-    1 => ("EPERM", "operation not permitted")
-    2 => ("ENOENT", "no such file or directory")
-    13 => ("EACCES", "permission denied")
-    17 => ("EEXIST", "file already exists")
-    20 => ("ENOTDIR", "not a directory")
-    21 => ("EISDIR", "illegal operation on a directory")
-    28 => ("ENOSPC", "no space left on device")
-    _ => ("EIO", "i/o error")
-  }
-  @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{code}: \{words}, \{call} '\{p}'"), "code": Json::string(code) }))
+/// Node's error of code `code` for `call` on `p`, as it throws it.
+fn p51_code_thrown(code : String, call : String, p : String) -> Error {
+  @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(fs_code_said(code, call, p)), "code": Json::string(code) }))
+}
+
+///|
+/// A failure of the shell's `fs.*` in `call` on `p`, as Node throws it.
+fn p51_shell_thrown(e : Error, call : String, p : String) -> Error {
+  p51_code_thrown(shell_fs_code(e), call, p)
 }
 
 ///|
@@ -474,42 +470,54 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           )
         _ => (false, 0)
       }
-      let n = live_write_flags_ffi(live_c(text(0)), data, mode, if excl { 1 } else { 0 })
-      if n != 0 {
-        raise p51_errno_thrown(n, "open", text(0))
+      // (made with `mode` where it is not, 0644 where none is given; a mode given set on it where it was, as fchmod)
+      let put : Json = {
+        "path": Json::string(text(0)),
+        "offset": Json::number(0.0),
+        "truncate": Json::boolean(true),
+        "exclusive": Json::boolean(excl),
+        "mode": Json::number((if mode > 0 { mode } else { 0o644 }).to_double()),
+      }
+      ignore(self.host.shell("fs.put", put, bytes=data)) catch {
+        e => raise p51_shell_thrown(e, "open", text(0))
+      }
+      if mode > 0 {
+        ignore(self.host.shell("fs.chmod", { "path": Json::string(text(0)), "mode": Json::number(mode.to_double()) })) catch {
+          _ => ()
+        }
       }
       Null
     }
     "fs.appendFile" => {
       let data = @api_routes.bytes_of(args.get(1).unwrap_or(Null)).unwrap_or_else(() => @utf8.encode(text(1)))
-      let n = live_append_ffi(live_c(text(0)), data)
-      if n != 0 {
-        raise p51_errno_thrown(n, "open", text(0))
+      ignore(self.host.shell("fs.put", { "path": Json::string(text(0)), "mode": Json::number(0o644.to_double()) }, bytes=data)) catch {
+        e => raise p51_shell_thrown(e, "open", text(0))
       }
       Null
     }
     "fs.access" => {
-      ignore(@drive.stat(text(0)) catch { e => raise p51_fs_thrown(e) })
+      let (kind, _) = self.host.shell("fs.stat", { "path": Json::string(text(0)) }) catch {
+        e => raise p51_shell_thrown(e, "access", text(0))
+      }
+      if kind is Null {
+        raise p51_code_thrown("ENOENT", "access", text(0))
+      }
       Null
     }
     "fs.readdir" => {
       let dir = text(0)
-      let names = @drive.names(dir) catch { e => raise p51_fs_thrown(e) }
       if arg(1) is { "withFileTypes": True, .. } {
         // (a Dirent as the routes take it, `{name, file, dir}`: a link is neither, as Node's isFile and isDirectory)
+        guard host_readdir_types(self.host, dir) is Some(entries) else { raise p51_code_thrown("ENOENT", "scandir", dir) }
         @jsjson.JV::of_json(
           Json::array(
-            names.map(n => {
-              let st = attempt(() => @drive.lstat(path([dir, n])))
-              {
-                "name": Json::string(n),
-                "file": Json::boolean(st is Ok(x) && x.file),
-                "dir": Json::boolean(st is Ok(x) && x.dir),
-              }
+            entries.map(e => {
+              { "name": Json::string(e.0), "file": Json::boolean(e.1 == "file"), "dir": Json::boolean(e.1 == "dir") }
             }),
           ),
         )
       } else {
+        guard host_readdir_names(self.host, dir) is Some(names) else { raise p51_code_thrown("ENOENT", "scandir", dir) }
         Arr(names.map(n => @api_routes.JV::Str(n)))
       }
     }
@@ -524,33 +532,30 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           e => raise p51_fs_thrown(e)
         }
       } else {
-        copy_file_over(text(0), text(1)) catch {
-          e => raise p51_fs_thrown(e)
+        host_copy_over(self.host, text(0), text(1)) catch {
+          e => raise p51_shell_thrown(e, "copyfile", text(0))
         }
       }
       Null
     }
     "fs.rename" => {
-      @drive.rename(text(0), text(1)) catch {
-        e => raise p51_fs_thrown(e)
+      ignore(self.host.shell("fs.rename", { "from": Json::string(text(0)), "to": Json::string(text(1)) })) catch {
+        e => raise p51_shell_thrown(e, "rename", text(0))
       }
       Null
     }
     "fs.rm" => {
-      if !(arg(1) is { "force": True, .. }) {
-        match attempt(() => @drive.lstat(text(0))) {
-          Err(e) => raise p51_fs_thrown(e)
-          Ok(_) => ()
-        }
+      if !(arg(1) is { "force": True, .. }) && host_lstat(self.host, text(0)) is None {
+        raise p51_code_thrown("ENOENT", "lstat", text(0))
       }
-      ignore(remove_tree(text(0)))
+      host_remove_tree(self.host, text(0))
       Null
     }
     "fs.statfs" =>
       match disk_of(text(0)) {
         Some((free, total)) =>
           @jsjson.JV::of_json({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })
-        None => raise p51_errno_thrown(2, "statfs", text(0))
+        None => raise p51_code_thrown("ENOENT", "statfs", text(0))
       }
     "fs.open" => {
       let p = text(0)
