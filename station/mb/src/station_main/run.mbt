@@ -304,7 +304,7 @@ fn Station::say_health(self : Station) -> Unit {
   if !self.health_said {
     return
   }
-  let health : Json = {
+  let health : Map[String, Json] = {
     "pid": Json::number(@drive.pid().to_double()),
     "updatedAt": Json::number(wall_ms().to_double()),
     "heldMaxMs": Json::number(self.held_ms.round()),
@@ -312,7 +312,14 @@ fn Station::say_health(self : Station) -> Unit {
     "presenceOnline": Json::boolean(match self.bus { Some(b) => (b.cloud_reached.val)(); None => false }),
     "relayConflict": Json::boolean(match self.bus { Some(b) => (b.mesh_relay_conflict.val)(); None => false }),
   }
-  write_whole(path([self.data, "run", "health.json"]), health.stringify() + "\n")
+  // Its descriptors and resident memory, where the system says them (a leak, a drift seen from outside).
+  if open_fds() is Some(n) {
+    health["openFds"] = Json::number(n.to_double())
+  }
+  if self_rss_bytes() is Some(rss) {
+    health["rssBytes"] = Json::number(rss.round())
+  }
+  write_whole(path([self.data, "run", "health.json"]), Json::object(health).stringify() + "\n")
 }
 
 ///|

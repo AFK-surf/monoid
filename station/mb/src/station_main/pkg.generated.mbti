@@ -122,6 +122,8 @@ pub fn moved_to(String, String?, String, String, String) -> String
 
 pub fn on_signals(@host.Host, (String) -> Unit) -> Unit
 
+pub fn open_fds() -> Int32?
+
 pub fn out_write(String) -> Unit
 
 pub fn parent_pid() -> Int32
@@ -163,6 +165,8 @@ pub fn runner_binary(String, String, String) -> String?
 pub fn sandbox_bridge_of(Array[String]) -> Bool
 
 pub fn sandbox_bridge_shell(Array[String]) -> String
+
+pub fn self_rss_bytes() -> Double?
 
 pub fn sep() -> String
 

@@ -706,6 +706,9 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   const health = JSON.parse(readFileSync(join(data, "run", "health.json"), "utf8"));
   assert.equal(health.pid, a.child.pid);
   assert.ok(Math.abs(health.updatedAt - Date.now()) < 5_000);
+  // its descriptors and resident memory, from the system's own counters
+  assert.ok(Number.isInteger(health.openFds) && health.openFds > 0, `openFds ${health.openFds}`);
+  assert.ok(Number.isInteger(health.rssBytes) && health.rssBytes > 0, `rssBytes ${health.rssBytes}`);
   // the loopback port
   assert.equal((await get(admin.port, "/healthz")).status, 200);
   const unjoined = await get(admin.port, "/admin");

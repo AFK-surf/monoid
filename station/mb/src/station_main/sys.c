@@ -307,6 +307,19 @@ moonbit_bytes_t sfs_machine(void) {
   return sb_bytes(&b);
 }
 
+/// This process's open handles (health.json's `openFds`), or -1 where not read: one call, no child.
+int32_t sfs_open_fds(void) {
+  DWORD count = 0;
+  return GetProcessHandleCount(GetCurrentProcess(), &count) ? (int32_t)count : -1;
+}
+
+/// This process's resident memory in bytes (health.json's `rssBytes`), or -1 where not read: only its own counters,
+/// never the whole machine as `sfs_machine` reads it.
+double sfs_self_rss(void) {
+  PROCESS_MEMORY_COUNTERS pmc;
+  return K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc) ? (double)pmc.WorkingSetSize : -1.0;
+}
+
 /// A disk's free and whole size where `path` is, JSON `{free, total}`; empty where it is not read.
 /// Whether `path` is a file that can be run (platform `findCommandSoon`'s check): on Windows, a file at all.
 int32_t sfs_executable(moonbit_bytes_t path) {
@@ -763,6 +776,7 @@ void sfs_signals(int64_t id, int32_t ignore) {
 extern char **environ;
 #else
 #include <sys/sysinfo.h>
+#include <dirent.h>
 extern char **environ;
 #endif
 
@@ -1165,6 +1179,45 @@ moonbit_bytes_t sfs_process_usage(int32_t pid) {
 #else
   (void)pid;
   return bytes_of("", 0);
+#endif
+}
+
+/// This process's open descriptors (health.json's `openFds`), or -1 where not read: the kernel's count, no child.
+int32_t sfs_open_fds(void) {
+#if defined(__APPLE__)
+  int n = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, NULL, 0);
+  return n >= 0 ? (int32_t)(n / (int)sizeof(struct proc_fdinfo)) : -1;
+#elif defined(__linux__)
+  DIR *d = opendir("/proc/self/fd");
+  if (!d) return -1;
+  int32_t n = 0;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) n++;
+  }
+  closedir(d);
+  return n > 0 ? n - 1 : -1; // (the directory's own descriptor, counted while it was open)
+#else
+  return -1;
+#endif
+}
+
+/// This process's resident memory in bytes (health.json's `rssBytes`), or -1 where not read: only its own counters,
+/// never the whole machine as `sfs_machine` reads it.
+double sfs_self_rss(void) {
+#if defined(__APPLE__)
+  mach_task_basic_info_data_t basic;
+  mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
+  return task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&basic, &n) == KERN_SUCCESS ? (double)basic.resident_size : -1.0;
+#elif defined(__linux__)
+  FILE *f = fopen("/proc/self/statm", "r");
+  if (!f) return -1.0;
+  unsigned long size = 0, resident = 0;
+  double rss = fscanf(f, "%lu %lu", &size, &resident) == 2 ? (double)resident * (double)sysconf(_SC_PAGESIZE) : -1.0;
+  fclose(f);
+  return rss;
+#else
+  return -1.0;
 #endif
 }
 
