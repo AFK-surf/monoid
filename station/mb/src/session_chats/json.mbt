@@ -70,10 +70,7 @@ pub fn keys_of(v : J?) -> Array[String] {
 /// An object without field `k` (`delete o[k]`, or a destructuring leaving it out).
 pub fn without(o : J, ks : Array[String]) -> J {
   match o {
-    Obj(fs) => {
-      let us = ks.map(@jsjson.units)
-      Obj(fs.filter(f => !us.contains(f.0)))
-    }
+    Obj(fs) => Obj(fs.filter(f => !ks.contains(f.0)))
     other => other
   }
 }
@@ -111,4 +108,34 @@ pub fn jincludes(xs : Array[J], v : J) -> Bool {
 /// What stands for `undefined` in what is said to the station.
 pub fn undefined_j() -> J {
   jo([("$u", ji(1))])
+}
+
+///|
+fn[T] hub_ok(f : () -> T raise @session_hub.Refused) -> T raise Thrown {
+  f() catch {
+    @session_hub.Refused(m) => raise fail_(m)
+  }
+}
+
+///|
+fn opt_json(v : J?) -> Json? {
+  match v {
+    None | Some(Null) => None
+    Some(x) if is_undefined(x) => None
+    Some(x) => Some(x.to_json())
+  }
+}
+
+///|
+fn json_items(v : J) -> Array[Json] {
+  arr_of(Some(v)).unwrap_or([]).map(x => x.to_json())
+}
+
+///|
+fn need_arg_of(args : J, kind : Json, said : String) -> J raise Thrown {
+  let m = match args.to_json() {
+    Object(m) => m
+    _ => return Null
+  }
+  jopt(hub_ok(() => @session_hub.need_arg(m, kind, said)))
 }

@@ -1463,7 +1463,7 @@ async fn Serving::say(
   }
   let said = match js.get("text") {
     None | Some(Null) => ""
-    Some(Str(u)) => @jscase.trim(@jsjson.raw_text(u))
+    Some(Str(u)) => @jscase.trim(u)
     Some(v) => @jscase.trim(@jsjson.stringify(v))
   }
   let given_quotes = js.get("quotes")
@@ -1515,7 +1515,7 @@ async fn Serving::say(
     Some(Str(u)) => {
       let kept = StringBuilder::new()
       let mut count = 0
-      for ch in @jscase.trim(@jsjson.text(u)) {
+      for ch in @jscase.trim(@jsjson.sanitize_str(u)) {
         let code = ch.to_int()
         if code < 0x20 || (code >= 0x7F && code < 0xA0) {
           continue
@@ -1597,7 +1597,7 @@ async fn Serving::say(
         ignore(
           db.run(
             "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change) VALUES (?, ?, 'message', NULL, ?, 'person', ?, ?, NULL, ?, NULL, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL)",
-            [thread, k, ts, email, Json::string(@jsjson.text(@jsjson.units(said))), kept_quotes, client, at],
+            [thread, k, ts, email, Json::string(@jsjson.sanitize_str(said)), kept_quotes, client, at],
           ),
         )
         match db.all("SELECT thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change FROM entries WHERE thread = ? AND n = ?", [thread, k]) {
@@ -1684,7 +1684,7 @@ fn Serving::pending_card(self : Serving, db : @sql.Db, thread : Json) -> Pending
     Some(c) => Some(c)
     None =>
       match parsed(row.get("options")) {
-        Some(o) => Some(@jsjson.JValue::Obj([(@jsjson.units("type"), Str(@jsjson.units("options"))), (@jsjson.units("options"), o)]))
+        Some(o) => Some(@jsjson.JValue::Obj([("type", Str("options")), ("options", o)]))
         None => None
       }
   }
@@ -1698,23 +1698,8 @@ fn Serving::pending_card(self : Serving, db : @sql.Db, thread : Json) -> Pending
 
 ///|
 /// The first `max` characters of code units (`[...s].slice(0, max)`: a pair one, a lone surrogate one).
-fn js_chars(u : Array[Int], max : Int) -> Array[Int] {
-  let out = []
-  let mut count = 0
-  let mut i = 0
-  while i < u.length() && count < max {
-    let c = u[i]
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < u.length() && u[i + 1] >= 0xdc00 && u[i + 1] <= 0xdfff {
-      out.push(c)
-      out.push(u[i + 1])
-      i += 2
-    } else {
-      out.push(c)
-      i += 1
-    }
-    count += 1
-  }
-  out
+fn js_chars(u : String, max : Int) -> String {
+  @jsjson.chars(u, max)
 }
 
 ///|
@@ -1729,28 +1714,28 @@ fn quotes_of(given : @jsjson.JValue?) -> Array[@jsjson.JValue] {
     let o : @jsjson.JValue = if q is Obj(_) { q } else { Obj([]) }
     let field = (name : String, fallback : String, max : Int) => {
       let v = match o.get(name) {
-        None | Some(Null) => @jsjson.units(fallback)
+        None | Some(Null) => fallback
         Some(Str(s)) => s
-        Some(v) => @jsjson.units(@jsjson.stringify(v))
+        Some(v) => @jsjson.stringify(v)
       }
       js_chars(v, max)
     }
     let text = field("text", "", 4000)
-    let quote : Array[(Array[Int], @jsjson.JValue)] = [
-      (@jsjson.units("author"), Str(field("author", "消息", 100))),
-      (@jsjson.units("text"), Str(text)),
-      (@jsjson.units("comment"), Str(field("comment", "", 4000))),
+    let quote : Array[(String, @jsjson.JValue)] = [
+      ("author", Str(field("author", "消息", 100))),
+      ("text", Str(text)),
+      ("comment", Str(field("comment", "", 4000))),
     ]
     if o.get("ts") is Some(Str(ts)) && ts_like(ts) {
-      quote.push((@jsjson.units("ts"), Str(ts)))
+      quote.push(("ts", Str(ts)))
     }
-    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image"].iter().any(r => @jsjson.units(r) == role) {
-      quote.push((@jsjson.units("role"), Str(role)))
+    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image"].contains(role) {
+      quote.push(("role", Str(role)))
     }
     if o.get("file") is Some(Str(file)) && file.length() > 0 {
-      quote.push((@jsjson.units("file"), Str(js_chars(file, 200))))
+      quote.push(("file", Str(js_chars(file, 200))))
     }
-    if @jscase.trim(@jsjson.raw_text(text)) != "" {
+    if @jscase.trim(text) != "" {
       out.push(@jsjson.JValue::Obj(quote))
     }
   }
@@ -1759,9 +1744,10 @@ fn quotes_of(given : @jsjson.JValue?) -> Array[@jsjson.JValue] {
 
 ///|
 /// `^[0-9]+\.[0-9]+$`
-fn ts_like(u : Array[Int]) -> Bool {
+fn ts_like(u : String) -> Bool {
   let mut dot = -1
-  for i, c in u {
+  for i in 0..<u.length() {
+    let c = u.unsafe_get(i).to_int()
     if c == '.'.to_int() {
       if dot >= 0 {
         return false
@@ -1778,7 +1764,7 @@ fn ts_like(u : Array[Int]) -> Bool {
 /// Whether `v` is the string `s` (code unit for code unit, as `===`).
 fn is_str(v : @jsjson.JValue?, s : String) -> Bool {
   match v {
-    Some(Str(u)) => u == @jsjson.units(s)
+    Some(Str(u)) => u == s
     _ => false
   }
 }

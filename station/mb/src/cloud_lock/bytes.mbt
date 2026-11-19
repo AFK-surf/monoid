@@ -43,40 +43,7 @@ fn why_of(e : Error) -> String {
 ///|
 /// UTF-8 as Node encodes a string (Buffer.from(s), createHash's update): a lone surrogate as U+FFFD.
 pub fn utf8_of(s : String) -> Bytes {
-  let out = @buffer.new()
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let mut c = s.unsafe_charcode_at(i)
-    i += 1
-    if c >= 0xd800 && c <= 0xdbff && i < n {
-      let d = s.unsafe_charcode_at(i)
-      if d >= 0xdc00 && d <= 0xdfff {
-        c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)
-        i += 1
-      } else {
-        c = 0xfffd
-      }
-    } else if c >= 0xd800 && c <= 0xdfff {
-      c = 0xfffd
-    }
-    if c < 0x80 {
-      out.write_byte(c.to_byte())
-    } else if c < 0x800 {
-      out.write_byte((0xc0 | (c >> 6)).to_byte())
-      out.write_byte((0x80 | (c & 0x3f)).to_byte())
-    } else if c < 0x10000 {
-      out.write_byte((0xe0 | (c >> 12)).to_byte())
-      out.write_byte((0x80 | ((c >> 6) & 0x3f)).to_byte())
-      out.write_byte((0x80 | (c & 0x3f)).to_byte())
-    } else {
-      out.write_byte((0xf0 | (c >> 18)).to_byte())
-      out.write_byte((0x80 | ((c >> 12) & 0x3f)).to_byte())
-      out.write_byte((0x80 | ((c >> 6) & 0x3f)).to_byte())
-      out.write_byte((0x80 | (c & 0x3f)).to_byte())
-    }
-  }
-  out.to_bytes()
+  @jsjson.utf8(s)
 }
 
 ///|

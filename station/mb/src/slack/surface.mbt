@@ -1904,7 +1904,7 @@ pub async fn SlackSurface::history(self : SlackSurface, channel : String, thread
         u => u
       }
       let user = match by {
-        Some(Str(u)) => @jsjson.text(u)
+        Some(Str(u)) => @jsjson.sanitize_str(u)
         _ => "unknown"
       }
       let from_bot = !nullish(at(mm, "bot_id")) || user == bot
@@ -1946,7 +1946,7 @@ pub async fn SlackSurface::api(self : SlackSurface, meth : String, params : J) -
     Obj(fs) =>
       fs.filter_map(f => match f.1 {
         Null => None
-        v => Some((@jsjson.text(f.0), field(v)))
+        v => Some((@jsjson.sanitize_str(f.0), field(v)))
       })
     _ => []
   }

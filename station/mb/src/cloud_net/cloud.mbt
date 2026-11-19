@@ -182,12 +182,12 @@ fn peer_id(p : Json) -> String? {
 ///|
 /// JavaScript's white space (`String.prototype.trim`, `\s`).
 fn js_space(c : Char) -> Bool {
-  @jscase.is_space(c.to_int())
+  @jsjson.is_js_space(c.to_int())
 }
 
 ///|
 fn js_trim(s : String) -> String {
-  @jscase.trim(s)
+  @jsjson.trim_js(s)
 }
 
 ///|

@@ -104,25 +104,13 @@ fn joined(lines : Array[String]) -> String {
 ///|
 /// Whether code unit `c` is JavaScript's white space or a line's end (`\s`, what `trim` takes off).
 fn js_space(c : Int) -> Bool {
-  match c {
-    0x09 | 0x0a | 0x0b | 0x0c | 0x0d | 0x20 | 0xa0 | 0x1680 | 0x2028 | 0x2029 | 0x202f | 0x205f | 0x3000 | 0xfeff =>
-      true
-    _ => c >= 0x2000 && c <= 0x200a
-  }
+  @jsjson.is_js_space(c)
 }
 
 ///|
 /// `s.trim()`.
 fn js_trim(s : String) -> String {
-  let mut start = 0
-  let mut end = s.length()
-  while start < end && js_space(s[start].to_int()) {
-    start += 1
-  }
-  while end > start && js_space(s[end - 1].to_int()) {
-    end -= 1
-  }
-  s.unsafe_substring(start~, end~)
+  @jsjson.trim_js(s)
 }
 
 ///|

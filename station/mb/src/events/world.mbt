@@ -59,12 +59,12 @@ fn World::new(data : J) -> World {
 fn World::set(self : World, data : J) -> Unit {
   guard data is Obj(entries) else { return }
   for e in entries {
-    self.data = with_prop(self.data, @jsjson.raw_text(e.0), e.1)
+    self.data = with_prop(self.data, e.0, e.1)
   }
   if self.data.get("sessions") is Some(Obj(sessions)) {
     self.sessions = Map([])
     for s in sessions {
-      self.sessions[@jsjson.raw_text(s.0)] = s.1
+      self.sessions[s.0] = s.1
     }
   }
   self.threads = self.data.get("threads").unwrap_or(jo([]))
@@ -221,7 +221,7 @@ fn World::read(
             match args.get("threads") {
               Some(Arr(threads)) =>
                 for t in threads {
-                  ids.push(@jsjson.raw_text(@jsjson.js_string(t)))
+                  ids.push(@jsjson.js_string(t))
                 }
               _ => ()
             }

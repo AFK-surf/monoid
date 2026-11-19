@@ -40,7 +40,7 @@ priv struct Roots {
 ///|
 fn str_of(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    Some(Str(s)) => Some(s)
     _ => None
   }
 }
@@ -159,7 +159,7 @@ fn claude_said(r : @jsjson.JValue) -> Array[(Bool, String)] {
   let person = kind == "user"
   let content = jget(jget(Some(r), "message"), "content")
   let texts = match content {
-    Some(Str(s)) => [@jsjson.raw_text(s)]
+    Some(Str(s)) => [s]
     Some(Arr(parts)) => parts.filter_map(b => if is_text(jget(Some(b), "type"), "text") { str_of(jget(Some(b), "text")) } else { None })
     _ => []
   }
@@ -239,26 +239,8 @@ fn said_in(runtime : String, events : Bool, r : @jsjson.JValue) -> Array[(Bool, 
 ///|
 /// UTF-8 of a string as Buffer.from writes it (a lone surrogate as U+FFFD).
 fn utf8_of(s : String) -> Array[Int] {
-  let out = []
-  for c in points(s) {
-    let c = if c >= 0xd800 && c <= 0xdfff { 0xfffd } else { c }
-    if c < 0x80 {
-      out.push(c)
-    } else if c < 0x800 {
-      out.push(0xc0 | (c >> 6))
-      out.push(0x80 | (c & 0x3f))
-    } else if c < 0x10000 {
-      out.push(0xe0 | (c >> 12))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    } else {
-      out.push(0xf0 | (c >> 18))
-      out.push(0x80 | ((c >> 12) & 0x3f))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    }
-  }
-  out
+  let b = @jsjson.utf8(s)
+  Array::makei(b.length(), i => b[i].to_int())
 }
 
 ///|

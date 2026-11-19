@@ -9,7 +9,7 @@ using @jsjson {type JValue as J}
 
 ///|
 fn j_undef() -> J {
-  Obj([(@jsjson.units("$u"), Num(1.0))])
+  Obj([("$u", Num(1.0))])
 }
 
 ///|
@@ -75,7 +75,7 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
       chat_state.next_cb += 1
       let id = chat_state.next_cb
       chat_state.callbacks[id] = f
-      Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
+      Obj([("$fn", Num(id.to_double()))])
     },
     words: self.cwords,
     lang,
@@ -108,7 +108,7 @@ fn P52::store_subscribe(self : P52, listener : J) -> J {
     }
     Null
   }
-  Obj([(@jsjson.units("$fn"), Num(stop_id.to_double()))])
+  Obj([("$fn", Num(stop_id.to_double()))])
 }
 
 ///|
@@ -123,7 +123,7 @@ fn P52::peers_callback(self : P52) -> J {
       let id = chat_state.next_cb
       chat_state.callbacks[id] = async fn(given) {
         let station = match given.get(0) {
-          Some(Str(u)) => @jsjson.text(u)
+          Some(Str(u)) => @jsjson.sanitize_str(u)
           _ => ""
         }
         to_jv(self.storage_call("peers.call", [jstr(station), of_jv(given.get(1).unwrap_or(Null))]))
@@ -132,7 +132,7 @@ fn P52::peers_callback(self : P52) -> J {
       id
     }
   }
-  Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
+  Obj([("$fn", Num(id.to_double()))])
 }
 
 ///|
@@ -493,7 +493,7 @@ async fn P52::chats_answer(
         "openingGet" =>
           match chat_state.openings.get(a(0).stringify()) {
             Some(Obj(fs)) =>
-              Obj([..fs, (@jsjson.units("$id"), raw.get(0).unwrap_or(Null))])
+              Obj([..fs, ("$id", raw.get(0).unwrap_or(Null))])
             Some(o) => o
             None => Null
           }
@@ -502,8 +502,8 @@ async fn P52::chats_answer(
             Some(Obj(fs)) =>
               chat_state.openings[a(0).stringify()] = Obj(
                 [
-                  ..fs.filter(f => @jsjson.text(f.0) != "claimed"),
-                  (@jsjson.units("claimed"), raw.get(2).unwrap_or(Null)),
+                  ..fs.filter(f => @jsjson.sanitize_str(f.0) != "claimed"),
+                  ("claimed", raw.get(2).unwrap_or(Null)),
                 ],
               )
             _ => ()
@@ -635,7 +635,7 @@ async fn P52::chats_answer(
       }
     }
     "drivers" => J::Bool(self.drivers.contains(s(0)))
-    "dep" => self.dep(meth, raw, args)
+    "dep" => self.dep(meth, args)
     "presets" => to_jv(self.presets_answer(meth, args))
     "accounts" =>
       to_jv((self.bus.jobs_ask.val)("accounts." + meth, Json::array(args)))
@@ -680,7 +680,7 @@ async fn P52::side_open(self : P52, runtime : String, options : Json, events : J
   chat_state.next_side += 1
   let n = chat_state.next_side
   chat_state.sides[n] = { agent, told, wake, events: callback, until: wall_ms().to_double() + @session_chats.title_timeout_ms }
-  Obj([(@jsjson.units("$side"), Num(n.to_double()))])
+  Obj([("$side", Num(n.to_double()))])
 }
 
 ///|
@@ -751,11 +751,10 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
 }
 
 ///|
-/// The deps of src/sessions the conversations ask by name, as their MoonBit.
+/// The deps of src/sessions the conversations ask by name (stateful/IO/platform ops).
 async fn P52::dep(
   self : P52,
   name : String,
-  raw : Array[J],
   args : Array[Json],
 ) -> J {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
@@ -771,73 +770,6 @@ async fn P52::dep(
     }
   }
   match name {
-    "USED_WITHIN_MS" => J::Num(@session_hub.used_within_ms)
-    "accessKind" => @jsjson.JValue::of_string(@session_hub.access_kind(a(0)))
-    "agyBaseModel" => {
-      let (model, effort) = @session_hub.agy_base_model(s(0))
-      to_jv(
-        match effort {
-          Some(e) => { "model": jstr(model), "effort": jstr(e) }
-          None => { "model": jstr(model) }
-        },
-      )
-    }
-    "devinFusionBase" => {
-      let model = @session_hub.devin_fusion_base(s(0))
-      to_jv({ "model": jstr(model) })
-    }
-    "splitDevinFusion" =>
-      match @session_hub.split_devin_fusion(s(0)) {
-        Some((lead, effort, side)) =>
-          to_jv(
-            match effort {
-              Some(e) =>
-                { "lead": jstr(lead), "effort": jstr(e), "side": jstr(side) }
-              None => { "lead": jstr(lead), "side": jstr(side) }
-            },
-          )
-        None => Null
-      }
-    "askWhich" => @jsjson.JValue::of_string(@session_hub.ask_which(jitems(a(0)), s(1)))
-    "candidates" =>
-      J::Arr(
-        @session_hub.candidates(
-          jitems(a(0)),
-          as_text(a(1)),
-          leads=a(2) is True,
-        ).map(to_jv),
-      )
-    "choose" =>
-      to_jv(@session_hub.choose(jitems(a(0)), jitems(a(1)), leads=jitems(a(2))))
-    "contextAsked" =>
-      match @session_hub.context_asked(self.words, opt(a(0)), self.lang()) {
-        None => j_undef()
-        Some(None) => Null
-        Some(Some(n)) => J::Num(n)
-      }
-    "firstLine" => @jsjson.JValue::of_string(@session_hub.first_line(s(0)))
-    "fromBefore" => J::Bool(@session_storage.from_before(s(0)))
-    "iso" =>
-      @jsjson.JValue::of_string(
-        @session_hub.iso(
-          as_num(a(0)).unwrap_or(0.0),
-        ),
-      )
-    "isSlackMethod" => J::Bool(@session_hub.is_slack_method(s(0)))
-    "isSlackWrite" => J::Bool(@mcp_tools.is_slack_write(s(0)))
-    "linkedSession" =>
-      match @session_storage.linked_session(s(0)) {
-        Some((key, n)) =>
-          J::Arr([
-            @jsjson.JValue::of_string(key),
-            match n {
-              Some(x) => J::Num(x.to_double())
-              None => Null
-            },
-          ])
-        None => Null
-      }
-    "linkedStation" => @jsjson.JValue::of_opt_string(@session_storage.linked_station(s(0)))
     "named" =>
       match
         storage.named(
@@ -873,12 +805,12 @@ async fn P52::dep(
           let id = chat_state.next_cb
           chat_state.callbacks[id] = async fn(given) {
             let station = match given.get(0) {
-              Some(Str(u)) => @jsjson.text(u)
+              Some(Str(u)) => @jsjson.sanitize_str(u)
               _ => ""
             }
             to_jv(call(station, of_jv(given.get(1).unwrap_or(Null))))
           }
-          Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
+          Obj([("$fn", Num(id.to_double()))])
         }
         None => Null
       }
@@ -899,32 +831,6 @@ async fn P52::dep(
           })
         }),
       )
-    "needArg" =>
-      match a(0) {
-        Object(m) => @jsjson.JValue::of_opt_string(@session_hub.need_arg(m, a(1), s(2)))
-        _ => Null
-      }
-    "stateArg" =>
-      match @session_hub.state_arg(opt(a(0))) {
-        Some((state, said)) => J::Arr([to_jv(state), @jsjson.JValue::of_string(said)])
-        None => Null
-      }
-    "cardArg" =>
-      match @session_hub.card_arg(opt(a(0)), opt(a(1))) {
-        Some(c) => to_jv(c)
-        None => Null
-      }
-    "cardSaid" => @jsjson.JValue::of_string(@session_hub.card_said(a(0)))
-    "placeFigures" => @jsjson.JValue::of_string(@session_hub.place_figures(s(0), jitems(a(1))))
-    "slackWithFiles" => {
-      let (text, rest) = @session_hub.slack_with_files(
-        self.words,
-        s(0),
-        jitems(a(1)),
-        s(2),
-      )
-      J::Arr([@jsjson.JValue::of_string(text), @jsjson.JValue::of_string(rest)])
-    }
     "prepareLocalLinks" =>
       match
         prepare_local_links(
@@ -946,13 +852,6 @@ async fn P52::dep(
       let (key, thread) = self.the_hub().new_session(a(0), lang=self.lang())
       J::Arr([@jsjson.JValue::of_string(key), to_jv(thread)])
     }
-    // (agents/profiles.ts `profileRuntimes`: the runtimes an account runs, by its access; not a hub config's own list)
-    "profileRuntimes" => J::Arr(@agent_runtimes.profile_runtimes(raw.get(0).unwrap_or(Null)).map(@jsjson.JValue::of_string))
-    "profileEnv" => {
-      let pairs = fields_pairs(@agent_runtimes.profile_env(to_jv(a(0)), s(1)))
-      Obj(pairs.map(p => (@jsjson.units(p.0), @jsjson.JValue::of_string(p.1))))
-    }
-    "usable" => J::Bool(@session_hub.usable(a(0), None))
     // (image-size.ts `shownFactsSoon`: a film's or a GIF's size, length and frames read from its head as hubops'
     // and the world's; the picture's ThumbHash is `keep`'s, made in its one decode)
     "shownFactsSoon" => to_jv(shown_facts(self.host, s(0)))
@@ -967,79 +866,6 @@ async fn P52::dep(
       )
     "readStatePendingCard" =>
       to_jv(@readops.state_pending_card(self.bus.db, { "threads": a(1) }))
-    "localeCompare" => J::Num(@drive.collate(s(0), s(1)).to_double())
-    "policyFrom" => to_jv(@session_storage.policy_from(opt(a(0))).to_json())
-    "policyQuestion" =>
-      to_jv(
-        @session_storage.policy_question(
-          @session_storage.policy_from(Some({ "policy": a(0) })),
-        ),
-      )
-    "archiveMass" =>
-      J::Num(
-        @session_storage.archive_mass(
-          a(0),
-          @session_storage.policy_from(Some({ "policy": a(1) })),
-        ),
-      )
-    "recommends" =>
-      J::Bool(
-        @session_storage.recommends(
-          a(0),
-          @session_storage.policy_from(Some({ "policy": a(1) })),
-          as_num(a(2)).unwrap_or(0.0),
-        ),
-      )
-    "dshRoute" =>
-      match @agent_runtimes.dsh_route(to_jv(a(0))) {
-        Some(r) => r.json()
-        None => Null
-      }
-    "expandRoute" => {
-      let env = match a(0) {
-        Object(m) =>
-          m
-          .iter()
-          .map(kv => {
-            (
-              kv.0,
-              as_text(kv.1).unwrap_or(""),
-            )
-          })
-          .to_array()
-        _ => []
-      }
-      Obj(
-        @agent_drivers.expand_route(env, s(1)).map(p => {
-          (@jsjson.units(p.0), @jsjson.JValue::of_string(p.1))
-        }),
-      )
-    }
-    "apiSource" =>
-      match
-        @agent_runtimes.api_source(@agent_runtimes.profile_via(to_jv(a(0)))) {
-        Some((_, at)) => J::Arr([Null, at.json()])
-        None => j_undef()
-      }
-    "given" => @jsjson.JValue::of_opt_string(jtext(a(0), "given"))
-    "titleOf" => {
-      let t = a(0)
-      let first = as_text(a(1))
-      @jsjson.JValue::of_string(
-        match jtext(t, "title") {
-          Some(title) if title != "" => title
-          _ =>
-            match first {
-              Some(f) => @session_hub.first_line(f)
-              None =>
-                @agent_runtimes.thread_address(
-                  jtext(t, "channel").unwrap_or(""),
-                  jtext(t, "threadTs").unwrap_or(""),
-                )
-            }
-        },
-      )
-    }
     "claim" => J::Arr(storage.claim(s(0), s(1), s(2), opt(a(3))).map(to_jv))
     "sendAlong" => {
       let peers = storage.peers_of(s(2))
@@ -1063,45 +889,6 @@ async fn P52::dep(
       }
     }
     "keep" => J::Arr(@drive.keep(jitems(a(0)).map(to_jv), s(1), Some(codecs())))
-    "formatHistory" => {
-      let names = jitems(a(4)).filter_map(p => {
-        match p {
-          Array([String(k), String(v), ..]) => Some((k, v))
-          _ => None
-        }
-      })
-      let cards : Map[Double, @agent_runtimes.HistoryCard] = Map([])
-      for c in jitems(a(5)) {
-        match c {
-          Array([Number(n, ..), card, ..]) =>
-            cards[n] = {
-              card: match jfield(card, "card") {
-                Null => None
-                x => Some(to_jv(x))
-              },
-              pending: jfield(card, "pending") is True,
-              chose: match jfield(card, "chose") {
-                Object(_) as ch =>
-                  Some(
-                    (jtext(ch, "by").unwrap_or(""), to_jv(jfield(ch, "option"))),
-                  )
-                _ => None
-              },
-            }
-          _ => ()
-        }
-      }
-      @jsjson.JValue::of_string(
-        @agent_runtimes.format_history(
-          jitems(a(0)).map(to_jv),
-          s(1),
-          s(2),
-          s(3),
-          names,
-          cards~,
-        ),
-      )
-    }
     "fileURLToPath" => {
       let u = s(0)
       @jsjson.JValue::of_string(
@@ -1113,7 +900,6 @@ async fn P52::dep(
       )
     }
     "opencodeGo" => j_undef()
-    "modelKey" => @jsjson.JValue::of_string(s(0).to_lower())
     "parseUrl" => {
       let u = s(0)
       match u.find("://") {
@@ -1132,13 +918,11 @@ async fn P52::dep(
         None => Null
       }
     }
-    _ => {
-      ignore(raw)
+    _ =>
       raise @session_chats.Thrown(
         "",
         "the conversations asked for dep.\{name}, which the station does not have",
       )
-    }
   }
 }
 
@@ -1195,7 +979,6 @@ async fn P52::tools_call(
       e => raise thrown(e)
     }
   }
-  let jvx = (v : @api_routes.JV) => to_jv(@jsjson.JV::to_json(v))
   match name {
     "mcp.resolve" =>
       match self.store("sessionKeyByToken", [jstr(s(0))]) {
@@ -1229,23 +1012,19 @@ async fn P52::tools_call(
     "hub.store.handedTo" => @jsjson.JV::of_json(self.store("handedTo", [jstr(s(0))]))
     "sessions/conversations.target" =>
       run(async fn() {
-        @jsjson.JV::of_json(
-          of_jv(
-            @session_chats.target(
-              w,
-              s(1),
-              match a(2) {
-                Null => None
-                x => Some(jvx(x))
-              },
-            ),
-          ),
+        @session_chats.target(
+          w,
+          s(1),
+          match a(2) {
+            Null => None
+            x => Some(x)
+          },
         )
       })
     "sessions/conversations.mayStage" =>
       run(async fn() {
         @api_routes.jbool(
-          @session_chats.may_stage(w, jvx(a(1)), a(2) is Bool(true)),
+          @session_chats.may_stage(w, a(1), a(2) is Bool(true)),
         )
       })
     "sessions/conversations.staged" =>
@@ -1253,22 +1032,22 @@ async fn P52::tools_call(
         let (given, copies) = @session_chats.staged(
           w,
           s(1),
-          jvx(a(2)),
+          a(2),
           a(3) is Bool(true),
         )
         chat_state.next_ref += 1
         let id = "staged.done:\{chat_state.next_ref}"
         chat_state.refs[id] = J::Arr(copies.map(@jsjson.JValue::of_string))
         @api_routes.jobj([
-          ("args", @jsjson.JV::of_json(of_jv(given))),
+          ("args", given),
           ("done", @api_routes.jobj([("$ref", rjs(id))])),
         ])
       })
     "sessions/conversations.unheld" =>
       run(async fn() {
-        let held = @session_chats.unheld(w, s(1), jvx(a(2)))
+        let held = @session_chats.unheld(w, s(1), a(2))
         @api_routes.jobj([
-          ("args", @jsjson.JV::of_json(of_jv(held.args))),
+          ("args", held.args),
           (
             "id",
             match held.id {
@@ -1286,16 +1065,16 @@ async fn P52::tools_call(
             Some(Str(i)) => Some(i)
             _ => None
           },
-          args: jvx(@api_routes.jget(Some(held), "args").unwrap_or(a(2))),
+          args: @api_routes.jget(Some(held), "args").unwrap_or(a(2)),
         }
-        rjs(@session_chats.chat_post(w, s(1), jvx(a(2)), h))
+        rjs(@session_chats.chat_post(w, s(1), a(2), h))
       })
     "sessions/conversations.chatState" =>
-      run(async fn() { rjs(@session_chats.chat_state(w, s(1), jvx(a(2)))) })
+      run(async fn() { rjs(@session_chats.chat_state(w, s(1), a(2))) })
     "sessions/conversations.chatLeave" =>
-      run(async fn() { rjs(@session_chats.chat_leave(w, s(1), jvx(a(2)))) })
+      run(async fn() { rjs(@session_chats.chat_leave(w, s(1), a(2))) })
     "sessions/conversations.chatHistory" =>
-      run(async fn() { rjs(@session_chats.chat_history(w, s(1), jvx(a(2)))) })
+      run(async fn() { rjs(@session_chats.chat_history(w, s(1), a(2))) })
     "sessions/conversations.slackApi" =>
       run(async fn() {
         rjs(
@@ -1303,7 +1082,7 @@ async fn P52::tools_call(
             w,
             s(1),
             s(2),
-            jvx(a(3)),
+            a(3),
             match a(4) {
               Str(x) => Some(x)
               _ => None
@@ -1317,9 +1096,9 @@ async fn P52::tools_call(
         )
       })
     "sessions/messages.sessionSend" =>
-      run(async fn() { rjs(@session_chats.session_send(w, s(1), jvx(a(2)))) })
+      run(async fn() { rjs(@session_chats.session_send(w, s(1), a(2))) })
     "sessions/opened.chatCreate" =>
-      run(async fn() { rjs(@session_chats.chat_create(w, s(1), jvx(a(2)))) })
+      run(async fn() { rjs(@session_chats.chat_create(w, s(1), a(2))) })
     "sessions/review.suggestArchive" => {
       let key = s(1)
       ignore(

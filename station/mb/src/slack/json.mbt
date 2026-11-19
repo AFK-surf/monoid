@@ -24,7 +24,7 @@ fn values_of(v : J?) -> Array[J] {
   match v {
     Some(Obj(fs)) => fs.map(f => f.1)
     Some(Arr(xs)) => xs
-    Some(Str(u)) => u.map(c => Str([c]))
+    Some(Str(u)) => Array::makei(u.length(), i => Str(u.unsafe_substring(start=i, end=i + 1)))
     _ => []
   }
 }

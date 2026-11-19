@@ -32,13 +32,13 @@ out=${2:-$D/_build/$name-$target}
 case "$target" in
   darwin-arm64) cc=(cc -arch arm64 -mmacosx-version-min=11.0); ar=(ar); part=shell-apple; init_flags="-O0"
     libs=(-framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip) ;;
-  # zig cc turns on UBSan, which traps MoonBit's unaligned uint64_t loads (BigInt, Bytes) with SIGABRT (main 8701788d7,
-  # check-station rsaSign): -fno-sanitize=undefined on every unit and the link, as Apple's cc builds them.
-  linux-x64) cc=(zig cc -target x86_64-linux-gnu.2.28 -fno-sanitize=undefined); ar=(zig ar); part=shell-station; init_flags="-O0"
+  # zig cc turns on UBSan in every unit at -O0 while the -O2 link leaves its runtime out: -fno-sanitize=undefined on
+  # moonbit_init, and on every unit when opt is -O0 (flags, cflags below).
+  linux-x64) cc=(zig cc -target x86_64-linux-gnu.2.28); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
     libs=(-lunwind -lutil -lrt -lpthread -lm -ldl -lc -Wl,--gc-sections -s) ;;
-  linux-arm64) cc=(zig cc -target aarch64-linux-gnu.2.28 -fno-sanitize=undefined); ar=(zig ar); part=shell-station; init_flags="-O0"
+  linux-arm64) cc=(zig cc -target aarch64-linux-gnu.2.28); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
     libs=(-lunwind -lutil -lrt -lpthread -lm -ldl -lc -Wl,--gc-sections -s) ;;
-  win32-x64) cc=(zig cc -target x86_64-windows-gnu -fno-sanitize=undefined); ar=(zig ar); part=shell-station; init_flags="-O0"
+  win32-x64) cc=(zig cc -target x86_64-windows-gnu); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
     libs=(-lshell32 -liphlpapi -lbcrypt -ladvapi32 -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp -lunwind -s) ;;
   *) echo "build.sh: no target $target" >&2; exit 2 ;;
 esac
@@ -164,6 +164,10 @@ if [ ! -f "$moon_inc/moonbit.h" ]; then
 fi
 flags=(-I"$moon_inc" "$opt" -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
 cflags="-I\"$moon_inc\" $opt -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
+if [ "${cc[0]}" = zig ] && [ "$opt" = -O0 ]; then
+  flags+=(-fno-sanitize=undefined)
+  cflags="$cflags -fno-sanitize=undefined"
+fi
 
 # mbc's jobs: the machine's cores shared by the readers built side by side (STILLFAIL_NATIVE_READERS, as CI's natives
 # jobs say it; where scripts/native.ts only says it builds several, STILLFAIL_NATIVE_ONE, 3 for its three side by side

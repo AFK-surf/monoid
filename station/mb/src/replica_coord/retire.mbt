@@ -446,7 +446,7 @@ pub fn moved_note(fs : Fs, from : String, here : String, index : J, s : J, data 
   let started = outcomes.unwrap_or([]).filter(j => yes_at(j, "started"))
   if started.length() > 0 {
     let said = started.map(j => match at(j, "id") {
-      Some(Str(u)) => "\{named(j)}, \{@jsjson.text(u)}"
+      Some(Str(u)) => "\{named(j)}, \{@jsjson.sanitize_str(u)}"
       _ => named(j)
     })
     lines.push("These background jobs and services of it were started again here, as after a restart of the station, in the same directories under the new place: \{said.join("; ")}.")
@@ -1052,7 +1052,7 @@ async fn Retire::run(self : Retire) -> Unit {
     }
     match at(answer, "failed") {
       Some(Str(u)) => {
-        let f = @jsjson.text(u)
+        let f = @jsjson.sanitize_str(u)
         s.error = Some(if f != "" { f } else { "that station could not put the chats in" })
         s.reason = Some("failed")
         self.fall_back(s)
@@ -1195,7 +1195,7 @@ async fn Retire::took_there(self : Retire, s : RetireState, answer : J?) -> Unit
     let lost = match answer {
       Some(a) =>
         match at(a, "lost") {
-          Some(Str(u)) if u.length() > 0 => " But: \{@jsjson.text(u)}."
+          Some(Str(u)) if u.length() > 0 => " But: \{@jsjson.sanitize_str(u)}."
           _ => ""
         }
       None => ""

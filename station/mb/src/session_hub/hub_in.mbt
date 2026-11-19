@@ -230,21 +230,7 @@ fn[T] Hub::tw(self : Hub, f : () -> T raise) -> T raise {
 ///|
 /// A JSON value as the threads' store takes it (station/jsjson).
 pub fn jv(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(a) => Arr(a.map(jv))
-    Object(m) => {
-      let out = []
-      for k, x in m {
-        out.push((@jsjson.units(k), jv(x)))
-      }
-      Obj(out)
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|
@@ -694,29 +680,7 @@ async fn Hub::open_slack_thread(self : Hub, connect : String, surface : String, 
 ///|
 /// node:path `join` of what the hub joins (POSIX, its parts plain names).
 pub fn join_path(parts : Array[String]) -> String {
-  let joined = parts.filter(p => p != "").join("/")
-  // (no "//", no "/./": the parts given are names and absolute roots)
-  let segs = split(joined, "/")
-  let out = []
-  for i, s in segs {
-    if s == "" && i > 0 {
-      continue
-    }
-    if s == "." {
-      continue
-    }
-    if s == ".." && out.length() > 0 && out[out.length() - 1] != "" && out[out.length() - 1] != ".." {
-      ignore(out.pop())
-      continue
-    }
-    out.push(s)
-  }
-  let r = out.join("/")
-  if r == "" {
-    "."
-  } else {
-    r
-  }
+  @nodepath.join("/", parts)
 }
 
 ///|

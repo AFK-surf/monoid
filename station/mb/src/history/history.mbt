@@ -106,10 +106,10 @@ fn Histories::profiles(self : Histories) -> Array[(String, String)] {
   guard raw.get("profiles") is Some(Arr(ps)) else { return out }
   for p in ps {
     guard p.get("id") is Some(Str(id)) && p.get("home") is Some(Str(home)) else { continue }
-    let home = @jsjson.text(home)
+    let home = @jsjson.sanitize_str(home)
     let absolute = home.has_prefix("/") ||
       (self.sep == "\\" && (home.has_prefix("\\") || (home.length() >= 2 && home.unsafe_charcode_at(1) == ':')))
-    out.push((@jsjson.text(id), if absolute { home } else { @nodepath.join(self.sep, [self.data, home]) }))
+    out.push((@jsjson.sanitize_str(id), if absolute { home } else { @nodepath.join(self.sep, [self.data, home]) }))
   }
   out
 }
@@ -176,7 +176,7 @@ async fn Histories::parts(self : Histories, path : String, lines : Bool, each : 
 /// sources.ts `finder`: whether a part has a word, as written or as JSON writes it; ASCII's case aside, a word cased
 /// beyond ASCII always (its entries decide).
 fn finds(word : String) -> (String) -> Bool {
-  let escaped = @jsjson.stringify(Str(@jsjson.units(word)))
+  let escaped = @jsjson.stringify(Str(word))
   let json = escaped.view(start_offset=1, end_offset=escaped.length() - 1).to_owned()
   let forms = if json == word { [word] } else { [word, json] }
   if word.iter().all(c => c.to_int() < 0x80) {

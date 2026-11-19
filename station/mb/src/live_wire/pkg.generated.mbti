@@ -8,37 +8,35 @@ import {
 // Values
 pub const INPUT_MOST : Int32 = 262144
 
-pub fn delta(Array[Int32], String, Array[Int32]) -> @jsjson.JValue
+pub fn delta(String, String, String) -> @jsjson.JValue
 
-pub fn end_event(Array[Int32]) -> @jsjson.JValue
+pub fn end_event(String) -> @jsjson.JValue
 
-pub fn failed(String, Array[Int32]) -> @jsjson.JValue
+pub fn failed(String, String) -> @jsjson.JValue
 
 pub fn field(@jsjson.JValue?, String) -> @jsjson.JValue?
 
-pub fn has_prefix(Array[Int32], Array[Int32]) -> Bool
+pub fn has_prefix(String, String) -> Bool
 
 pub fn is_str(@jsjson.JValue?, String) -> Bool
 
-pub fn joined(Array[Array[Int32]], Array[Int32]) -> Array[Int32]
+pub fn joined(Array[String], String) -> String
 
 pub fn jstr(String) -> @jsjson.JValue
 
 pub fn live(@jsjson.JValue) -> @jsjson.JValue
 
-pub fn non_empty(@jsjson.JValue?) -> Array[Int32]?
+pub fn non_empty(@jsjson.JValue?) -> String?
 
 pub fn obj(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
 
 pub fn or_else(@jsjson.JValue?, @jsjson.JValue) -> @jsjson.JValue
 
-pub fn pretty(@jsjson.JValue?) -> Array[Int32]
+pub fn pretty(@jsjson.JValue?) -> String
 
-pub fn start(Array[Int32], String, Array[Int32]?, Array[Int32]?) -> @jsjson.JValue
+pub fn start(String, String, String?, String?) -> @jsjson.JValue
 
-pub fn str(@jsjson.JValue?) -> Array[Int32]?
-
-pub fn u(String) -> Array[Int32]
+pub fn str(@jsjson.JValue?) -> String?
 
 // Errors
 

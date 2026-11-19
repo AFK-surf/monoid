@@ -113,20 +113,7 @@ pub fn js_number(d : Double) -> String {
 ///|
 /// JValue (JSON.parse's reading) as Json: a lone surrogate as U+FFFD, as Node binds it.
 fn of_jvalue(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(d) => Json::number(d)
-    Str(units) => Json::string(@jsjson.text(units))
-    Arr(items) => Json::array(items.map(of_jvalue))
-    Obj(entries) => {
-      let m : Map[String, Json] = Map([])
-      for e in entries {
-        m[@jsjson.text(e.0)] = of_jvalue(e.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json_lossy()
 }
 
 ///|

@@ -78,12 +78,7 @@ pub fn text(o : Json) -> String? {
 /// A number that is a safe integer (`Number.isSafeInteger`).
 pub fn safe_int(j : Json) -> Int64? {
   match j {
-    Number(n, ..) =>
-      if n == n.floor() && n.abs() <= 9007199254740991.0 {
-        Some(n.to_int64())
-      } else {
-        None
-      }
+    Number(n, ..) if @jsjson.is_safe_integer(n) => Some(n.to_int64())
     _ => None
   }
 }

@@ -56,7 +56,7 @@ fn text(v : J?, key : String) -> String {
   match v {
     Some(Obj(_) | Arr(_)) =>
       match prop(v, key) {
-        Some(Str(u)) => js_trim(utext(u))
+        Some(Str(u)) => js_trim(u)
         _ => ""
       }
     _ => ""
@@ -81,7 +81,7 @@ pub fn question_of(card : J?, prompt : String) -> J? {
   }
   guard prop(card, "options") is Some(Arr(all)) else { return None }
   let options = all.filter(o => match prop(Some(o), "label") {
-    Some(Str(u)) => js_trim(utext(u)) != ""
+    Some(Str(u)) => js_trim(u) != ""
     _ => false
   })
   if options.length() < 2 || options.length() > 6 {
@@ -109,7 +109,7 @@ pub fn question_of(card : J?, prompt : String) -> J? {
               (
                 "description",
                 match prop(oo, "detail") {
-                  Some(Str(u)) if js_trim(utext(u)) != "" => Some(jstr(first_points(js_trim(utext(u)), 300)))
+                  Some(Str(u)) if js_trim(u) != "" => Some(jstr(first_points(js_trim(u), 300)))
                   _ => None
                 },
               ),
@@ -416,7 +416,7 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
           w.fail(
             fail_(
               match prop(f, "error") {
-                Some(Str(u)) => utext(u)
+                Some(Str(u)) => u
                 _ => "Comma refused it"
               },
             ),
@@ -533,7 +533,7 @@ async fn CommaSurface::ask(self : CommaSurface, method : String, params : J, ms?
 ///|
 /// What the computer says it can do: take Tasks, on these models.
 fn CommaSurface::capabilities(self : CommaSurface) -> J {
-  let models : Array[(Array[Int], J)] = []
+  let models : Array[(String, J)] = []
   for m in (self.models)() {
     let runtime = js_text(or_null(prop(Some(m), "runtime")))
     let known = match entry_at(models, runtime) {
@@ -943,7 +943,7 @@ async fn CommaSurface::put(self : CommaSurface, params : J) -> J {
     for f in arr_of(prop(mm, "files")).unwrap_or([]) {
       let ff = Some(f)
       let name = match prop(ff, "name") {
-        Some(Str(u)) if u.length() > 0 => utext(u)
+        Some(Str(u)) if u.length() > 0 => u
         _ => continue
       }
       guard count(prop(ff, "index")) is Some(index) && count(prop(ff, "size")) is Some(size) else { continue }
@@ -989,12 +989,12 @@ async fn CommaSurface::learn(self : CommaSurface, author : J?) -> String {
   let kind = prop(author, "kind")
   let person_kind = str_of(kind) == Some("person")
   let id = match prop(author, "id") {
-    Some(Str(u)) if u.length() > 0 => utext(u)
+    Some(Str(u)) if u.length() > 0 => u
     _ => "comma"
   }
   let user = if person_kind { id } else { "agent:\{id}" }
   let name = match prop(author, "name") {
-    Some(Str(u)) if u.length() > 0 => utext(u)
+    Some(Str(u)) if u.length() > 0 => u
     _ => if person_kind { self.io.tr(self.lang, "station.comma.member") } else { "Comma" }
   }
   let person = jobj([
@@ -1192,11 +1192,11 @@ pub async fn CommaSurface::download(self : CommaSurface, file_id : String, file_
     )
     let a = Some(answer)
     match prop(a, "missing") {
-      Some(Str(u)) => raise fail_(utext(u))
+      Some(Str(u)) => raise fail_(u)
       _ => ()
     }
     let data = match prop(a, "data") {
-      Some(Str(u)) => Some(unbase64(utext(u)))
+      Some(Str(u)) => Some(unbase64(u))
       _ => None
     }
     match data {

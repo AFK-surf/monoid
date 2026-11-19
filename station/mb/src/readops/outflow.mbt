@@ -213,8 +213,8 @@ fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () 
         let known = jget(jget(names, "u:\{place}:\{user}"), "person")
         let (name, email) = match jget(known, "name") {
           Some(Str(n)) => {
-            let n = @jsjson.raw_text(n)
-            let e = match jget(known, "email") { Some(Str(e)) => @jsjson.raw_text(e); _ => "" }
+            let n = n
+            let e = match jget(known, "email") { Some(Str(e)) => e; _ => "" }
             (if n != "" { n } else { user }, if e != "" { Json::string(e) } else { Json::null() })
           }
           _ => (user, Json::null())

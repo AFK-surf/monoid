@@ -153,7 +153,7 @@ pub fn safe_integer(x : Double) -> Bool {
 ///|
 /// Math.round.
 pub fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }
 
 // ── the machine's paths (platform.paths, POSIX) ────────────────────────────────────────────────────────────────

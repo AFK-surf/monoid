@@ -303,6 +303,11 @@ test("crypto conformance: P-256 ECDHE, P-256 ECDSA, RSA PKCS#1 v1.5, and X.509 l
       badRsa[0] ^= 0x01;
       assert.equal(verifySignature(hash, msg, rsa.publicKey, badRsa), false, `tampered RSA ${hash} signature must fail`);
     }
+    // A 1032-bit key: 129-byte n and d, never a multiple of 8, the misaligned u64be read of BigInt::from_octets.
+    const rsa1032 = generateKeyPairSync("rsa", { modulusLength: 1032 });
+    const jwk1032 = rsa1032.privateKey.export({ format: "jwk" });
+    const sig1032 = Buffer.from(await h.ok("rsaSign", { jwk: jwk1032, hash: "sha256", message: msg.toString("hex") }), "hex");
+    assert.equal(verifySignature("sha256", msg, rsa1032.publicKey, sig1032), true, "1032-bit RSA sha256 signature must verify in Node");
 
     // 4. X.509 CA + leaf certificate validated by Node X509Certificate
     const now = Date.UTC(2026, 10, 19, 12, 0, 0);

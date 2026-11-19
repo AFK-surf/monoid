@@ -582,9 +582,9 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           }
         _ => ()
       }
-      match @events.runtime_view(to_jv(arg(0)), Some(to_jv(arg(1))), supported) {
+      match @events.runtime_view(args.get(0).unwrap_or(Null), Some(args.get(1).unwrap_or(Null)), supported) {
         Omit => @jsjson.JV::of_json({ "$omit": true })
-        Value(Some(v)) => @jsjson.JV::of_json(of_jv(v))
+        Value(Some(v)) => v
         Value(None) => @api_routes.jundef
       }
     }

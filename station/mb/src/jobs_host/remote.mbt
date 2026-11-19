@@ -169,18 +169,7 @@ pub fn heard(got : Got?, seen : Json) -> Json {
 ///|
 /// A plain JSON value as `JSON.stringify` writes it.
 fn js_json(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(d, ..) => Num(d)
-    String(s) => Str(@jsjson.units(s))
-    Array(a) => Arr(a.map(js_json))
-    Object(m) => {
-      let keys = js_key_order(m.keys().collect())
-      Obj(keys.map(k => (@jsjson.units(k), js_json(m[k]))))
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|

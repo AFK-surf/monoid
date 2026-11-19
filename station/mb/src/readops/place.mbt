@@ -455,7 +455,7 @@ pub fn session_place(db : @sql.Db, host : @host.Host, data : String, sep : Strin
   guard path is Some(path) else { raise Refused(404, word("notFound")) }
   let raw = read_json(host, join_path(sep, data, "config.json"))
   let agent = join_path(sep, data, match jget(Some(raw), "agentHome") {
-    Some(Str(h)) => @jsjson.raw_text(h)
+    Some(Str(h)) => h
     _ => "agent"
   })
   let roots = [Some(workspace), cwd, Some(@nodepath.join(sep, [data, "repos"])), Some(agent)]

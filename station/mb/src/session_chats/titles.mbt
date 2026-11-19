@@ -120,3 +120,84 @@ async fn apply_title(w : World, thread : J, title : String) -> Unit {
   let changed = !(at(Some(w.store("autoTitle", [thread])), "title") is Some(Null))
   w.store("setAutoTitle", [thread, js(title), jb(changed)]) |> ignore
 }
+
+///|
+/// titles.ts `withoutMentions`: text without Slack's `<@U123>` mentions.
+fn without_mentions(text : String) -> String {
+  let out = StringBuilder::new()
+  let mut rest = text
+  while rest.find("<@") is Some(i) {
+    out.write_string(slice(rest, 0, b=i))
+    let after = slice(rest, i + 2)
+    match after.find(">") {
+      Some(end) if end > 0 &&
+        slice(after, 0, b=end)
+        .iter()
+        .all(c => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) =>
+        rest = slice(after, end + 1)
+      _ => {
+        out.write_string("<@")
+        rest = after
+      }
+    }
+  }
+  out.write_string(rest)
+  out.to_string()
+}
+
+///|
+fn titled_field(t : J, k : String) -> String {
+  match str_of(at(Some(t), k)) {
+    Some(s) => @jscase.trim_white(s)
+    None => ""
+  }
+}
+
+///|
+/// titles.ts `givenTitle`: the name people gave a chat, else its agent's; None where neither did.
+fn given_title(t : J) -> String? {
+  let g = titled_field(t, "title")
+  if g != "" {
+    return Some(g)
+  }
+  let auto = titled_field(t, "autoTitle")
+  if auto != "" {
+    Some(auto)
+  } else {
+    None
+  }
+}
+
+///|
+/// views.ts `titleOf` / titles.ts `chatTitle`.
+fn title_of(w : World, t : J, first_text : String?, channel_name : String?) -> String {
+  if given_title(t) is Some(g) {
+    return g
+  }
+  let untitled = w.words.tr("zh", "station.chat.untitled")
+  let surface = str_of(at(Some(t), "surface")).unwrap_or("")
+  if at(Some(t), "surface") is Some(Str(_)) &&
+    (surface == "chat" || surface == "ember" || surface == "stillfail") {
+    return untitled
+  }
+  for line in without_mentions(first_text.unwrap_or("")).split("\n") {
+    let joined = @jscase.split_by(line.to_owned(), @jscase.is_white_space)
+      .filter(s => s != "")
+      .join(" ")
+    if joined != "" {
+      return joined
+    }
+  }
+  let name = @jscase.trim_white(channel_name.unwrap_or(""))
+  if name != "" {
+    return if starts(surface, "feishu:") || starts(surface, "group:") {
+      name
+    } else {
+      "#" + name
+    }
+  }
+  if starts(titled_field(t, "channel"), "D") {
+    return w.words.tr("zh", "station.chat.directMessage")
+  }
+  untitled
+}

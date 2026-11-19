@@ -210,7 +210,7 @@ fn headers_of(v : J?) -> Map[String, String] {
   let out : Map[String, String] = Map([])
   for f in fields_of(v) {
     match f.1 {
-      Str(u) => out[@session_chats.lower(f.0)] = @jsjson.text(u)
+      Str(u) => out[@session_chats.lower(f.0)] = @jsjson.sanitize_str(u)
       _ => ()
     }
   }

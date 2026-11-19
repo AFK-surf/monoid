@@ -201,7 +201,7 @@ pub fn CommaLive::reads_for(self : CommaLive, workspace : String) -> WorkspaceRe
       arr_of(prop(Some(roster), "stations"))
       .unwrap_or([])
       .filter_map(e => match prop(Some(e), "id") {
-        Some(Str(u)) if u.length() > 0 && utext(u) != here => Some(utext(u))
+        Some(Str(u)) if u.length() > 0 && u != here => Some(u)
         _ => None
       })
     },
@@ -230,7 +230,7 @@ pub async fn CommaLive::say_handler(self : CommaLive, _peer : String, request : 
     _ => raise fail_("no such write")
   }
   let text = match prop(w, "text") {
-    Some(Str(u)) if js_trim(utext(u)) != "" => utext(u)
+    Some(Str(u)) if js_trim(u) != "" => u
     _ => raise fail_("no such write")
   }
   let field = (key : String, default : String) => js_text(or_null(nullish(prop(w, key), Some(jstr(default)))))
@@ -348,7 +348,7 @@ pub fn CommaLive::name(self : CommaLive, ws : String?) -> String {
     return self.io.hostname
   }
   let own = match prop(Some(m), "name") {
-    Some(Str([])) => self.io.hostname
+    Some(Str("")) => self.io.hostname
     Some(v) => js_text(v)
     None => "undefined"
   }

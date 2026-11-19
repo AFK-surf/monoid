@@ -785,6 +785,27 @@ fn answers_of_a_closed_endpoint() {
     });
 }
 
+/// `iroh.probeRelay` reaches iroh_ops's probe (station/mb's front and live_p5_1_mesh ask it), never "no operation".
+#[test]
+fn probe_relay_is_an_operation() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let probe = |id: u64, url: &str| inner.run("iroh.probeRelay", json!({ "id": id, "url": url }), None);
+        let endpoint = Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap();
+        let id = inner.keep(Handle::Endpoint(endpoint, Arc::default()));
+        let said = probe(id, "not a url").await.err().unwrap();
+        assert!(!said.contains("no operation"), "{said}");
+        let other = inner.keep(Handle::Unbound { id: "x".into() });
+        assert_eq!(probe(other, "https://relay.example/").await.err().unwrap(), "the endpoint is closed");
+        inner.run("iroh.close", json!({ "id": id }), None).await.unwrap();
+        assert_eq!(probe(id, "https://relay.example/").await.err().unwrap(), "the endpoint is closed");
+        let written = inner.keep(Handle::Gone { remote: String::new(), reason: json!({}), stats: json!({}) });
+        assert_eq!(probe(written, "https://relay.example/").await.err().unwrap(), "not an endpoint");
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn pipes_a_stream_into_a_socket_in_frames() {

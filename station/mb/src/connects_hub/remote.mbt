@@ -113,7 +113,7 @@ fn truthy(v : J?) -> Bool {
 /// described to another station (`Described`).
 pub fn describe(connect : J, workspace : String, surface : Surface) -> J {
   let mention = match surface.get_opt("mention", [js("\u{1}")]) {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(other) => js_text(Some(other))
     None => "<@\u{1}>"
   }
@@ -326,7 +326,7 @@ fn RemoteSurface::get(self : RemoteSurface, name : String, args : Array[J]) -> J
       match self.d("link") {
         Some(Null) => Null
         Some(Str(u)) =>
-          js(replace_first(replace_first(@jsjson.text(u), "\u{1}", s(0)), "\u{2}", s(1)))
+          js(replace_first(replace_first(@jsjson.sanitize_str(u), "\u{1}", s(0)), "\u{2}", s(1)))
         _ => undefined()
       }
     "answerFiles" =>

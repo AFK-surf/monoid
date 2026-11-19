@@ -87,7 +87,7 @@ fn Known::places(self : Known) -> Map[String, Place] raise {
   }
   let out : Map[String, Place] = Map([])
   let text = (v : @jsjson.JValue?) => match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
+    Some(Str(s)) => Some(@jsjson.sanitize_str(s))
     _ => None
   }
   let remote = read_json(self.host, join_path(self.sep, self.data, "remote-connects.json"))
@@ -166,10 +166,10 @@ fn Known::config(self : Known) -> (Array[(String, String)], Bool) raise {
             for c in cs {
               guard jget(Some(c), "id") is Some(Str(id)) else { continue }
               let bot = match jget(jget(Some(c), "slack"), "botName") {
-                Some(Str(b)) if @jsjson.text(b) != "" => Some(@jsjson.text(b))
+                Some(Str(b)) if @jsjson.sanitize_str(b) != "" => Some(@jsjson.sanitize_str(b))
                 _ => None
               }
-              connects.push((@jsjson.text(id), bot.unwrap_or(@jsjson.text(id))))
+              connects.push((@jsjson.sanitize_str(id), bot.unwrap_or(@jsjson.sanitize_str(id))))
             }
           }
         }
@@ -206,10 +206,10 @@ fn Known::person(self : Known, connect : String, user : String) -> (String, Stri
   let person = jget(jget(Some(book), "u:\{match place { Some(p) => p.id; None => "?" }}:\{user}"), "person")
   guard jget(person, "name") is Some(Str(name)) else { return None }
   let said = (v : @jsjson.JValue?) => match v {
-    Some(Str(s)) => @jsjson.text(s)
+    Some(Str(s)) => @jsjson.sanitize_str(s)
     _ => ""
   }
-  Some((@jsjson.text(name), said(jget(person, "email")), said(jget(person, "picture"))))
+  Some((@jsjson.sanitize_str(name), said(jget(person, "email")), said(jget(person, "picture"))))
 }
 
 ///|
@@ -219,7 +219,7 @@ fn Known::channel(self : Known, connect : String?, channel : Json) -> Json raise
   let place = self.place(connect)
   let book = self.book(match place { Some(p) => p.book; None => "slack" })
   match jget(jget(Some(book), "c:\{match place { Some(p) => p.id; None => "?" }}:\{js_text(channel)}"), "channel") {
-    Some(Str(name)) => Json::string(@jsjson.text(name))
+    Some(Str(name)) => Json::string(@jsjson.sanitize_str(name))
     _ => Json::null()
   }
 }

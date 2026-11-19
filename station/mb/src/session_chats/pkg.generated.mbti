@@ -5,6 +5,7 @@ import {
   "moonbitlang/core/ref",
   "station/host",
   "station/jsjson",
+  "station/session_hub",
 }
 
 // Values
@@ -514,6 +515,7 @@ pub struct Words {
 }
 pub fn Words::empty() -> Self
 pub fn Words::new(@jsjson.JValue, @jsjson.JValue, product? : String) -> Self
+pub fn Words::to_hub(Self, String) -> @session_hub.Words
 pub fn Words::tr(Self, String, String, args? : Array[(String, String)]) -> String
 
 pub(all) struct World {

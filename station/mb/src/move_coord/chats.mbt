@@ -106,15 +106,7 @@ pub(all) struct ChatsDeps {
 
 ///|
 fn uniq(xs : Array[String]) -> Array[String] {
-  let out = []
-  let seen : Set[String] = Set::new()
-  for x in xs {
-    if !seen.contains(x) {
-      seen.add(x)
-      out.push(x)
-    }
-  }
-  out
+  @jsjson.js_uniq(xs)
 }
 
 ///|

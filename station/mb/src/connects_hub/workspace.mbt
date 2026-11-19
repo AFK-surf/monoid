@@ -120,7 +120,7 @@ pub struct WorkspaceConnects {
 ///|
 fn kind_of(c : J?) -> String {
   match at(c, "kind") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     _ => "slack"
   }
 }
@@ -1198,7 +1198,7 @@ pub async fn WorkspaceConnects::move_route(
   try {
     let input = request_input(body)
     let to = match at(Some(input), "station") {
-      Some(Str(u)) if u.length() > 0 => @jsjson.text(u)
+      Some(Str(u)) if u.length() > 0 => @jsjson.sanitize_str(u)
       _ => raise @session_chats.Thrown("Refused:400", self.d.speech.tr(lang, "station.connect.moveWhere"))
     }
     let id = segment(at_)

@@ -29,34 +29,13 @@ fn normalize_segments(p : String, absolute : Bool) -> Array[String] {
 ///|
 /// path.normalize.
 pub fn path_normalize(p : String) -> String {
-  if p == "" {
-    return "."
-  }
-  let absolute = path_is_absolute(p)
-  let trailing = p.has_suffix("/")
-  let segs = normalize_segments(p, absolute)
-  let mut out = segs.join("/")
-  if out == "" && !absolute {
-    out = "."
-  }
-  if out != "" && trailing {
-    out = out + "/"
-  }
-  if absolute {
-    "/" + out
-  } else {
-    out
-  }
+  @nodepath.join("/", [p])
 }
 
 ///|
 /// path.join.
 pub fn path_join(parts : Array[String]) -> String {
-  let kept = parts.filter(p => p != "")
-  if kept.length() == 0 {
-    return "."
-  }
-  path_normalize(kept.join("/"))
+  @nodepath.join("/", parts)
 }
 
 ///|
@@ -117,14 +96,5 @@ pub fn path_dirname(p : String) -> String {
 ///|
 /// path.basename.
 pub fn path_basename(p : String) -> String {
-  let mut end = p.length()
-  while end > 1 && p.unsafe_charcode_at(end - 1) == '/' {
-    end -= 1
-  }
-  let s = slice(p, 0, to=end)
-  if s == "/" {
-    return ""
-  }
-  let at = last_index_of(s, "/")
-  slice(s, at + 1)
+  @nodepath.basename("/", p)
 }

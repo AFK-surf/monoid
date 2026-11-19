@@ -368,7 +368,7 @@ pub async fn target(w : World, key : String, to : J?) -> J {
     }
   }
   let given = match to {
-    Some(Str(u)) if trim(@jsjson.text(u)) != "" => @jsjson.text(u)
+    Some(Str(u)) if trim(@jsjson.sanitize_str(u)) != "" => @jsjson.sanitize_str(u)
     _ => raise fail_("to is required: the thread attribute of the message you are answering. This session's threads: \{known()}")
   }
   guard parse_thread_address(given) is Some((channel, ts)) else {
@@ -395,7 +395,7 @@ pub async fn may_stage(w : World, args : J, links : Bool) -> Bool {
     _ => ()
   }
   if links && at(Some(args), "text") is Some(Str(u)) {
-    for p in named_local_paths(w, @jsjson.text(u)) {
+    for p in named_local_paths(w, @jsjson.sanitize_str(u)) {
       if w.ask("places.protects", [js(p.1)]) is Bool(true) {
         return true
       }
@@ -490,7 +490,7 @@ pub async fn staged(w : World, key : String, args : J, links : Bool) -> (J, Arra
       _ => ()
     }
     if links && at(Some(args), "text") is Some(Str(u)) {
-      let mut text = @jsjson.text(u)
+      let mut text = @jsjson.sanitize_str(u)
       for p in named_local_paths(w, text) {
         let (destination, path) = p
         if !(w.ask("places.protects", [js(path)]) is Bool(true)) {
@@ -558,7 +558,7 @@ pub async fn attach(w : World, key : String, paths : Array[String], into : Strin
       raise fail_("too large (over 50 MB): \{given}")
     }
     let name = basename(path)
-    let iso = str_of(Some(w.dep("iso", [jn(w.now())]))).unwrap_or("")
+    let iso = @session_hub.iso(w.now())
     let stamp = replace_all(replace_all(slice(iso, 0, b=19), ":", "-"), ".", "-")
     let safe = StringBuilder::new()
     for c in name {

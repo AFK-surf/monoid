@@ -72,7 +72,7 @@ pub impl Show for SlackWords with output(self, logger) {
 /// A value as a form field: strings as they are, anything else as JSON (blocks, arrays), as Slack takes them.
 pub fn field(v : J) -> String {
   match v {
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     other => stringify(other)
   }
 }
@@ -146,28 +146,7 @@ fn form_part(s : String) -> String {
 ///|
 /// A string with its lone surrogates made U+FFFD (what a USVString is).
 fn well_formed(s : String) -> String {
-  let out = StringBuilder::new()
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < n {
-      let d = s.unsafe_charcode_at(i + 1)
-      if d >= 0xdc00 && d <= 0xdfff {
-        out.write_char(c.unsafe_to_char())
-        out.write_char(d.unsafe_to_char())
-        i += 2
-        continue
-      }
-    }
-    if c >= 0xd800 && c <= 0xdfff {
-      out.write_char('\u{fffd}')
-    } else {
-      out.write_char(c.unsafe_to_char())
-    }
-    i += 1
-  }
-  out.to_string()
+  @jsjson.sanitize_str(s)
 }
 
 ///|
@@ -313,7 +292,7 @@ pub async fn SlackClient::api(self : SlackClient, meth : String, params : Params
   if !is_true(at(Some(body), "ok")) {
     let code = match at(Some(body), "error") {
       None => "undefined"
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       Some(e) => stringify(e)
     }
     raise fail_("slack \{meth}: \{code}")
@@ -337,7 +316,7 @@ pub async fn SlackClient::app(
   }
   if !is_true(at(Some(data), "ok")) {
     let code = match at(Some(data), "error") {
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       None | Some(Null) => "HTTP \{status}"
       Some(e) => stringify(e)
     }

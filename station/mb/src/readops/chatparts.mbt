@@ -33,7 +33,7 @@ fn ids_json(ids : Array[Json]) -> Json {
 ///|
 /// Whether a number is an integer (Number.isInteger).
 fn is_integer(v : Json) -> Bool {
-  v is Number(n, ..) && n == n.floor() && !n.is_inf()
+  v is Number(n, ..) && @jsjson.is_integer(n)
 }
 
 // ── where a chat's latest message stands ──
@@ -813,7 +813,7 @@ fn chat_shares(db : @sql.Db, ids : Array[String]?, now : Double) -> Map[String, 
         _ => num(field(r, "at"))
       }
       if now - used < 6.0 * 3600000.0 {
-        live.push(Json::string(@jsjson.text(ws)))
+        live.push(Json::string(@jsjson.sanitize_str(ws)))
       }
     }
     if live.length() > 0 {

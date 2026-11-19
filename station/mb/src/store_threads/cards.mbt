@@ -321,7 +321,7 @@ pub fn Store::withdraw_card(self : Store, agent : Json, thread : Json, ts : Json
 pub fn Store::close_login_cards(self : Store, login : Json) -> Json raise {
   self.with_(changes => {
     let l = text_of(login).unwrap_or("")
-    let pattern = jstr("%\"login\":\{stringify(Str(@jsjson.units(l)))}%")
+    let pattern = jstr("%\"login\":\{stringify(Str(l))}%")
     let rows = if !self.legacy_login_cards {
       self.all(login_cards_sql, [pattern])
     } else {

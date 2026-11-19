@@ -128,118 +128,21 @@ pub fn encode_uri_component(s : String) -> String raise FeishuError {
 }
 
 ///|
-/// A code point's UTF-8 bytes.
-fn utf8_of_point(cp : Int) -> Array[Int] {
-  if cp < 0x80 {
-    [cp]
-  } else if cp < 0x800 {
-    [0xc0 | (cp >> 6), 0x80 | (cp & 0x3f)]
-  } else if cp < 0x10000 {
-    [0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)]
-  } else {
-    [
-      0xf0 | (cp >> 18),
-      0x80 | ((cp >> 12) & 0x3f),
-      0x80 | ((cp >> 6) & 0x3f),
-      0x80 | (cp & 0x3f),
-    ]
-  }
-}
-
-///|
 /// TextEncoder's UTF-8 (`Buffer.from(s)` too): a lone surrogate as U+FFFD.
 pub fn utf8(s : String) -> Bytes {
-  let out = []
-  let mut i = 0
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    let mut cp = c
-    if c >= 0xd800 && c <= 0xdbff {
-      if i + 1 < s.length() &&
-        s.unsafe_charcode_at(i + 1) >= 0xdc00 &&
-        s.unsafe_charcode_at(i + 1) <= 0xdfff {
-        cp = 0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i + 1) - 0xdc00)
-        i += 1
-      } else {
-        cp = 0xfffd
-      }
-    } else if c >= 0xdc00 && c <= 0xdfff {
-      cp = 0xfffd
-    }
-    i += 1
-    for b in utf8_of_point(cp) {
-      out.push(b.to_byte())
-    }
-  }
-  Bytes::from_array(out)
+  @jsjson.utf8(s)
 }
 
 ///|
 /// UTF-8 as WHATWG's decoder reads it (TextDecoder, Buffer's toString): each ill-formed sequence's maximal part one
 /// U+FFFD. `bom`: a leading byte order mark taken off (TextDecoder's default; Buffer keeps it).
 pub fn utf8_text(b : BytesView, bom? : Bool = false) -> String {
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  if bom && n >= 3 && b[0] == b'\xEF' && b[1] == b'\xBB' && b[2] == b'\xBF' {
-    i = 3
+  let view = if bom && b.length() >= 3 && b[0] == b'\xEF' && b[1] == b'\xBB' && b[2] == b'\xBF' {
+    b[3:]
+  } else {
+    b
   }
-  while i < n {
-    let c = b[i].to_int()
-    if c < 0x80 {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    let (need, init, lo, hi) = if c >= 0xc2 && c <= 0xdf {
-      (1, c & 0x1f, 0x80, 0xbf)
-    } else if c == 0xe0 {
-      (2, c & 0x0f, 0xa0, 0xbf)
-    } else if c == 0xed {
-      (2, c & 0x0f, 0x80, 0x9f)
-    } else if c >= 0xe1 && c <= 0xef {
-      (2, c & 0x0f, 0x80, 0xbf)
-    } else if c == 0xf0 {
-      (3, c & 0x07, 0x90, 0xbf)
-    } else if c == 0xf4 {
-      (3, c & 0x07, 0x80, 0x8f)
-    } else if c >= 0xf1 && c <= 0xf3 {
-      (3, c & 0x07, 0x80, 0xbf)
-    } else {
-      (0, 0, 0, 0)
-    }
-    if need == 0 {
-      out.write_char('\u{fffd}')
-      i += 1
-      continue
-    }
-    let mut cp = init
-    let mut j = i + 1
-    let mut ok = true
-    let mut first = true
-    for _ in 0..<need {
-      if j >= n {
-        ok = false
-        break
-      }
-      let d = b[j].to_int()
-      let (l, h) = if first { (lo, hi) } else { (0x80, 0xbf) }
-      if d < l || d > h {
-        ok = false
-        break
-      }
-      first = false
-      cp = (cp << 6) | (d & 0x3f)
-      j += 1
-    }
-    if ok {
-      out.write_char(cp.unsafe_to_char())
-    } else {
-      out.write_char('\u{fffd}')
-    }
-    i = j
-  }
-  out.to_string()
+  @utf8.decode_lossy(view)
 }
 
 ///|

@@ -375,16 +375,15 @@ fn jget(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
 ///|
 /// `{ ...v, [k]: x }`: `k` replaced where it is, else put last (JavaScript's spread keeps a key's first place).
 fn jset(v : @jsjson.JValue, k : String, x : @jsjson.JValue) -> @jsjson.JValue {
-  let key = @jsjson.units(k)
-  let fields : Array[(Array[Int], @jsjson.JValue)] = match v {
+  let fields : Array[(String, @jsjson.JValue)] = match v {
     Obj(fs) => fs.copy()
-    Arr(xs) => xs.mapi((i, x) => (@jsjson.units(i.to_string()), x))
-    Str(s) => s.mapi((i, c) => (@jsjson.units(i.to_string()), @jsjson.JValue::Str([c])))
+    Arr(xs) => xs.mapi((i, x) => (i.to_string(), x))
+    Str(s) => Array::makei(s.length(), i => (i.to_string(), @jsjson.JValue::Str(s.unsafe_substring(start=i, end=i + 1))))
     _ => []
   }
-  match fields.search_by(f => f.0 == key) {
-    Some(i) => fields[i] = (key, x)
-    None => fields.push((key, x))
+  match fields.search_by(f => f.0 == k) {
+    Some(i) => fields[i] = (k, x)
+    None => fields.push((k, x))
   }
   // JSON.parse of JSON.stringify puts integer-like keys first, as the object itself holds them
   @jsjson.parse(stringify(Obj(fields))) catch {

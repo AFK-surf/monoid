@@ -21,7 +21,7 @@ pub async fn release_base_in(w : World, data : String) -> String? {
   let file = pjoin([data, "mesh", "cloud.json"])
   let said = (try Some(read_json_file(w, file)) catch {
     e =>
-      if field_of(e, "code") is Some(Str(u)) && @jsjson.text(u) == "ENOENT" {
+      if field_of(e, "code") is Some(Str(u)) && @jsjson.sanitize_str(u) == "ENOENT" {
         None
       } else {
         raise e
@@ -29,14 +29,14 @@ pub async fn release_base_in(w : World, data : String) -> String? {
   })
   match get(said, "origin") {
     Some(Str(u)) if u.length() > 0 => {
-      let origin = @jsjson.text(u)
+      let origin = @jsjson.sanitize_str(u)
       // (`origin.replace(/\/+$/, "")`)
       let mut e = origin.length()
       while e > 0 && cu(origin, e - 1) == 47 {
         e -= 1
       }
       let trimmed = slice(origin, 0, end=e)
-      if get(said, "provider") is Some(Str(p)) && @jsjson.text(p) == "comma" {
+      if get(said, "provider") is Some(Str(p)) && @jsjson.sanitize_str(p) == "comma" {
         Some("\{trimmed}/stations")
       } else {
         Some(trimmed)

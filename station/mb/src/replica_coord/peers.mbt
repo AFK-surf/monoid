@@ -144,7 +144,7 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
     Some("replica.get") => {
       let gen = match at(request, "gen") {
         Some(Null) => None
-        Some(Str(u)) => Some(@jsjson.text(u))
+        Some(Str(u)) => Some(@jsjson.sanitize_str(u))
         None => Some("")
         Some(v) => Some(@jsjson.stringify(v))
       }

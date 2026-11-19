@@ -24,21 +24,13 @@ let compacted_from : Double = 50000.0
 // ── JSON as JavaScript keeps it ──
 
 ///|
-fn jkey(k : String) -> Array[Int32] {
-  @jsjson.units(k)
+fn jkey(k : String) -> String {
+  k
 }
 
 ///|
-fn same_units(a : Array[Int32], b : Array[Int32]) -> Bool {
-  if a.length() != b.length() {
-    return false
-  }
-  for i in 0..<a.length() {
-    if a[i] != b[i] {
-      return false
-    }
-  }
-  true
+fn same_units(a : String, b : String) -> Bool {
+  a == b
 }
 
 ///|
@@ -126,14 +118,8 @@ fn jis(v : @jsjson.JValue?, s : String?) -> Bool {
 
 ///|
 /// JavaScript's `<` of two strings: by their UTF-16 code units.
-fn units_less(a : Array[Int32], b : Array[Int32]) -> Bool {
-  let m = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<m {
-    if a[i] != b[i] {
-      return a[i] < b[i]
-    }
-  }
-  a.length() < b.length()
+fn units_less(a : String, b : String) -> Bool {
+  @jsjson.js_less(a, b)
 }
 
 ///|
@@ -640,7 +626,7 @@ fn saved_compact_context(db : @sql.Db, session : String) -> Json raise {
   }
   let runtime = jget(Some(saved), "runtimeSession")
   let same = match (id, runtime) {
-    (String(a), Some(Str(b))) => same_units(@jsjson.units(a), b)
+    (String(a), Some(Str(b))) => a == b
     (Null, Some(Null)) => true
     _ => false
   }

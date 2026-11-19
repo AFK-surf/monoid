@@ -7,13 +7,13 @@ import {
 }
 
 // Values
-pub fn answer_of(@jsjson.JV) -> Answer
+pub fn answer_of(@jsjson.JValue) -> Answer
 
-pub fn body_json(Request) -> @jsjson.JV?
+pub fn body_json(Request) -> @jsjson.JValue?
 
-pub fn body_or_empty(Request) -> @jsjson.JV?
+pub fn body_or_empty(Request) -> @jsjson.JValue?
 
-pub fn bytes_of(@jsjson.JV) -> Bytes?
+pub fn bytes_of(@jsjson.JValue) -> Bytes?
 
 pub fn chars(String, Int32) -> String
 
@@ -23,13 +23,13 @@ pub fn client_runtimes(Array[(String, String)]) -> Array[String]
 
 pub fn code_points(String) -> Int32
 
-pub fn comma_entry(@jsjson.JV, @jsjson.JV) -> @jsjson.JV
+pub fn comma_entry(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 
 pub fn connect_slug(String, fallback? : String) -> String
 
 pub fn decode_uri_component(String) -> String?
 
-pub fn defined(@jsjson.JV) -> @jsjson.JV?
+pub fn defined(@jsjson.JValue) -> @jsjson.JValue?
 
 pub fn dirname(String) -> String
 
@@ -37,7 +37,7 @@ pub fn encode_uri_component(String) -> String
 
 pub fn error(Int32, String) -> Answer
 
-pub fn feishu_entry(@jsjson.JV, @jsjson.JV) -> @jsjson.JV
+pub fn feishu_entry(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 
 pub fn file_name(String) -> String?
 
@@ -49,65 +49,65 @@ pub fn header_exact(Array[(String, String)], String) -> String?
 
 pub fn header_of(Array[(String, String)], String) -> String?
 
-pub fn input(Request) -> @jsjson.JV raise Refused
+pub fn input(Request) -> @jsjson.JValue raise Refused
 
 pub fn inside(String, String) -> Bool
 
-pub fn is_array(@jsjson.JV?) -> Bool
+pub fn is_array(@jsjson.JValue?) -> Bool
 
 pub fn is_integer(Double) -> Bool
 
-pub fn is_object(@jsjson.JV?) -> Bool
+pub fn is_object(@jsjson.JValue?) -> Bool
 
-pub fn is_objectish(@jsjson.JV?) -> Bool
+pub fn is_objectish(@jsjson.JValue?) -> Bool
 
 pub fn is_safe_integer(Double) -> Bool
 
-pub fn is_truthy(@jsjson.JV?) -> Bool
+pub fn is_truthy(@jsjson.JValue?) -> Bool
 
-pub fn is_undef(@jsjson.JV) -> Bool
+pub fn is_undef(@jsjson.JValue) -> Bool
 
 pub fn iso_seconds(Double) -> String
 
-pub fn jarr(Array[@jsjson.JV]) -> @jsjson.JV
+pub fn jarr(Array[@jsjson.JValue]) -> @jsjson.JValue
 
-pub fn jbool(Bool) -> @jsjson.JV
+pub fn jbool(Bool) -> @jsjson.JValue
 
-pub fn jbytes(Bytes) -> @jsjson.JV
+pub fn jbytes(Bytes) -> @jsjson.JValue
 
-pub fn jdel(@jsjson.JV, String) -> @jsjson.JV
+pub fn jdel(@jsjson.JValue, String) -> @jsjson.JValue
 
-pub fn jfields(@jsjson.JV?) -> Array[(String, @jsjson.JV)]
+pub fn jfields(@jsjson.JValue?) -> Array[(String, @jsjson.JValue)]
 
-pub fn jget(@jsjson.JV?, String) -> @jsjson.JV?
+pub fn jget(@jsjson.JValue?, String) -> @jsjson.JValue?
 
-pub fn jhas(@jsjson.JV, String) -> Bool
+pub fn jhas(@jsjson.JValue, String) -> Bool
 
-pub fn jint(Int32) -> @jsjson.JV
+pub fn jint(Int32) -> @jsjson.JValue
 
-pub fn jitems(@jsjson.JV?) -> Array[@jsjson.JV]
+pub fn jitems(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
-pub fn jnum(Double) -> @jsjson.JV
+pub fn jnum(Double) -> @jsjson.JValue
 
-pub fn jnumber(@jsjson.JV?) -> Double?
+pub fn jnumber(@jsjson.JValue?) -> Double?
 
-pub fn jobj(Array[(String, @jsjson.JV)]) -> @jsjson.JV
+pub fn jobj(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
 
 pub fn join(Array[String]) -> String
 
-pub fn jopt(String?) -> @jsjson.JV
+pub fn jopt(String?) -> @jsjson.JValue
 
-pub fn jref(String) -> @jsjson.JV
+pub fn jref(String) -> @jsjson.JValue
 
-pub fn js(String) -> @jsjson.JV
+pub fn js(String) -> @jsjson.JValue
 
 pub fn js_compare(String, String) -> Int32
 
 pub fn js_number(String) -> Double
 
-pub fn js_string(@jsjson.JV?) -> String
+pub fn js_string(@jsjson.JValue?) -> String
 
-pub fn jset(@jsjson.JV, String, @jsjson.JV) -> @jsjson.JV
+pub fn jset(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
 
 pub fn json(Int32, String) -> Answer
 
@@ -115,33 +115,33 @@ pub fn json_bytes(Int32, Bytes) -> Answer
 
 pub fn json_headers() -> Map[String, String]
 
-pub fn jspread(@jsjson.JV, @jsjson.JV) -> @jsjson.JV
+pub fn jspread(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 
-pub fn jstr(@jsjson.JV?) -> String?
+pub fn jstr(@jsjson.JValue?) -> String?
 
-pub fn jstrs(Array[String]) -> @jsjson.JV
+pub fn jstrs(Array[String]) -> @jsjson.JValue
 
-pub let jundef : @jsjson.JV
+pub let jundef : @jsjson.JValue
 
 pub fn lang_of(String) -> String
 
 pub fn lang_of_core(Array[(String, String)]) -> String
 
-pub fn manages_station(@jsjson.JV) -> Bool
+pub fn manages_station(@jsjson.JValue) -> Bool
 
 pub fn message_of(Error) -> String
 
-pub fn moved_of(Error) -> (String, @jsjson.JV)?
+pub fn moved_of(Error) -> (String, @jsjson.JValue)?
 
 pub fn normalize(String) -> String
 
-pub fn nullish(@jsjson.JV) -> Bool
+pub fn nullish(@jsjson.JValue) -> Bool
 
 pub fn num_text(Double) -> String
 
-pub fn ok(@jsjson.JV, status? : Int32) -> Answer
+pub fn ok(@jsjson.JValue, status? : Int32) -> Answer
 
-pub fn parse(String) -> @jsjson.JV raise @jsjson.SyntaxError
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub fn percent_decode(String) -> String
 
@@ -153,49 +153,49 @@ pub fn portable_name(String) -> Bool
 
 pub fn preview_target(String) -> (Int32, String)?
 
-pub fn query_json(Request) -> @jsjson.JV
+pub fn query_json(Request) -> @jsjson.JValue
 
 pub fn query_pairs(String) -> Array[(String, String)]
 
-pub fn quotes_of(@jsjson.JV?) -> Array[@jsjson.JV]
+pub fn quotes_of(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
 pub fn re(String, flags? : String) -> Re
 
-pub fn read_only(@jsjson.JV) -> Bool
+pub fn read_only(@jsjson.JValue) -> Bool
 
 pub fn read_only_may(String, String) -> Bool
 
-pub fn ref_of(@jsjson.JV) -> String?
+pub fn ref_of(@jsjson.JValue) -> String?
 
 pub fn refused_of(Error) -> (Int32, String)?
 
-pub fn request_json(Request) -> @jsjson.JV
+pub fn request_json(Request) -> @jsjson.JValue
 
 pub fn route(String, String, async (Request, Array[String?]) -> Answer) -> Route
 
 pub fn same_path(String, String) -> Bool
 
-pub fn sees(@jsjson.JV, @jsjson.JV) -> Bool
+pub fn sees(@jsjson.JValue, @jsjson.JValue) -> Bool
 
 pub fn segment(String) -> String
 
-pub fn slack_entry(@jsjson.JV, @jsjson.JV) -> @jsjson.JV
+pub fn slack_entry(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 
-pub fn status_of(@jsjson.JV) -> Int32
+pub fn status_of(@jsjson.JValue) -> Int32
 
-pub fn stringify(@jsjson.JV) -> String
+pub fn stringify(@jsjson.JValue) -> String
 
-pub fn stringify_opt(@jsjson.JV?) -> String?
+pub fn stringify_opt(@jsjson.JValue?) -> String?
 
-pub fn text_of(@jsjson.JV?) -> String
+pub fn text_of(@jsjson.JValue?) -> String
 
 pub fn thread_number(String) -> Double?
 
-pub fn thrown_as(Error, String) -> @jsjson.JV?
+pub fn thrown_as(Error, String) -> @jsjson.JValue?
 
 pub fn trim_js(String) -> String
 
-pub fn try_parse(String) -> @jsjson.JV?
+pub fn try_parse(String) -> @jsjson.JValue?
 
 pub fn utf8(String) -> Bytes
 
@@ -213,12 +213,12 @@ pub impl Show for DriveErr
 
 pub(all) suberror Refused {
   Refused(Int32, String)
-  Moved(String, @jsjson.JV)
+  Moved(String, @jsjson.JValue)
 }
 pub impl Show for Refused
 
 pub(all) suberror Thrown {
-  Thrown(String, @jsjson.JV)
+  Thrown(String, @jsjson.JValue)
 }
 pub impl Show for Thrown
 
@@ -228,34 +228,34 @@ pub struct Admin {
   setup : Setup
   // private fields
 }
-pub fn Admin::answer_from(Self, @jsjson.JV) -> Answer
-pub fn Admin::callback(Self, async (Array[@jsjson.JV]) -> Unit) -> @jsjson.JV
-pub fn Admin::callback_answering(Self, async (Array[@jsjson.JV]) -> @jsjson.JV) -> @jsjson.JV
-pub async fn Admin::called(Self, Int32, Array[@jsjson.JV]) -> @jsjson.JV
-pub async fn Admin::changed(Self, Request, String, @jsjson.JV, String) -> Answer
-pub async fn Admin::claim_say(Self, @jsjson.JV, String, String?, String) -> Claim
+pub fn Admin::answer_from(Self, @jsjson.JValue) -> Answer
+pub fn Admin::callback(Self, async (Array[@jsjson.JValue]) -> Unit) -> @jsjson.JValue
+pub fn Admin::callback_answering(Self, async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue
+pub async fn Admin::called(Self, Int32, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn Admin::changed(Self, Request, String, @jsjson.JValue, String) -> Answer
+pub async fn Admin::claim_say(Self, @jsjson.JValue, String, String?, String) -> Claim
 pub async fn Admin::drained(Self) -> Unit
 pub async fn Admin::exists(Self, String) -> Bool
-pub async fn Admin::fs(Self, String, Array[@jsjson.JV]) -> @jsjson.JV
+pub async fn Admin::fs(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn Admin::fs_stat(Self, String) -> Stat
 pub async fn Admin::handle(Self, Request) -> Answer
 pub async fn Admin::io_message(Self, Error) -> String
-pub async fn Admin::job_seen(Self, @jsjson.JV, String) -> Bool
+pub async fn Admin::job_seen(Self, @jsjson.JValue, String) -> Bool
 pub fn Admin::keep_sends(Self, Array[KeptSend]) -> Unit
 pub fn Admin::kept_sends(Self, Map[Double, Double]) -> Array[KeptSend]
 pub async fn Admin::later(Self, async () -> Unit) -> Unit
 pub async fn Admin::mkdirs(Self, String) -> Unit
 pub async fn Admin::moved_answer(Self, Double, String) -> Answer?
 pub fn Admin::new(Backend, Setup) -> Self
-pub async fn Admin::read(Self, Request, String, @jsjson.JV) -> Answer
+pub async fn Admin::read(Self, Request, String, @jsjson.JValue) -> Answer
 pub async fn Admin::read_file(Self, String) -> Bytes
 pub async fn Admin::runtime_compatible(Self, Request, Answer) -> Answer
-pub async fn Admin::said_elsewhere(Self, Double, Double, String, @jsjson.JV) -> Unit
-pub async fn Admin::session_seen(Self, @jsjson.JV, String) -> Bool
+pub async fn Admin::said_elsewhere(Self, Double, Double, String, @jsjson.JValue) -> Unit
+pub async fn Admin::session_seen(Self, @jsjson.JValue, String) -> Bool
 pub async fn Admin::start(Self) -> Unit
 pub async fn Admin::stat_or_none(Self, String) -> Stat?
-pub fn Admin::stream_of(Self, @jsjson.JV) -> async () -> Bytes?
-pub async fn Admin::thread_seen(Self, @jsjson.JV, Double) -> Bool
+pub fn Admin::stream_of(Self, @jsjson.JValue) -> async () -> Bytes?
+pub async fn Admin::thread_seen(Self, @jsjson.JValue, Double) -> Bool
 pub fn Admin::tr(Self, String, String, args? : Array[(String, String)]) -> String
 pub async fn Admin::upload_path(Self, String, String) -> (String, String)
 
@@ -269,11 +269,11 @@ pub fn Answer::text(Self) -> String
 pub fn Answer::whole(Self) -> Bytes?
 
 pub struct Backend {
-  call : async (String, Array[@jsjson.JV]) -> @jsjson.JV
+  call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
 }
-pub async fn Backend::ask(Self, String, Array[@jsjson.JV]) -> @jsjson.JV
-pub fn Backend::new(async (String, Array[@jsjson.JV]) -> @jsjson.JV) -> Self
-pub async fn Backend::tell(Self, String, Array[@jsjson.JV]) -> Unit
+pub async fn Backend::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub fn Backend::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue) -> Self
+pub async fn Backend::tell(Self, String, Array[@jsjson.JValue]) -> Unit
 
 pub(all) enum Body {
   Whole(Bytes)
@@ -288,7 +288,7 @@ pub enum Claim {
 }
 
 pub struct EntryEdit {
-  edit : async (@jsjson.JV, @jsjson.JV) -> @jsjson.JV
+  edit : async (@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 }
 
 pub struct Kept {
@@ -322,19 +322,19 @@ pub struct Request {
   search : String?
   headers : Array[(String, String)]
   body : Bytes
-  viewer : @jsjson.JV
+  viewer : @jsjson.JValue
   lang : String
   background : Bool
   signal : Signal?
 }
 pub fn Request::email(Self) -> String
-pub fn Request::new(String, String, Array[(String, String)], String?, Array[(String, String)], Bytes, @jsjson.JV, String, background? : Bool, signal? : Signal) -> Self
+pub fn Request::new(String, String, Array[(String, String)], String?, Array[(String, String)], Bytes, @jsjson.JValue, String, background? : Bool, signal? : Signal) -> Self
 pub fn Request::param(Self, String) -> String?
 pub fn Request::params(Self, String) -> Array[String]
 pub fn Request::text(Self) -> String
-pub fn Request::who(Self, String) -> @jsjson.JV?
+pub fn Request::who(Self, String) -> @jsjson.JValue?
 pub fn Request::who_str(Self, String) -> String
-pub fn Request::ws_or_null(Self) -> @jsjson.JV
+pub fn Request::ws_or_null(Self) -> @jsjson.JValue
 
 pub struct Route {
   verb : String
@@ -369,14 +369,14 @@ pub struct Stat {
 }
 
 pub struct Words {
-  zh : @jsjson.JV
-  en : @jsjson.JV
+  zh : @jsjson.JValue
+  en : @jsjson.JValue
   product : String
 }
-pub fn Words::new(@jsjson.JV, @jsjson.JV, product? : String) -> Self
+pub fn Words::new(@jsjson.JValue, @jsjson.JValue, product? : String) -> Self
 pub fn Words::tr(Self, String, String, args? : Array[(String, String)]) -> String
 
 // Type aliases
-pub using @jsjson {type JV}
+pub using @jsjson {type JValue as JV}
 
 // Traits

@@ -1,6 +1,7 @@
 import {
   "base/hash",
   "station/host",
+  "station/jsjson",
   "station/nodepath",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/hex",

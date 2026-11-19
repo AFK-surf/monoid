@@ -131,8 +131,8 @@ fn Schema::totals_complete(self : Schema, db : @sql.Db, session : String) -> Boo
 // ── JSON as JavaScript keeps it ──
 
 ///|
-fn jkey(k : String) -> Array[Int] {
-  @jsjson.units(k)
+fn jkey(k : String) -> String {
+  k
 }
 
 ///|
@@ -199,18 +199,6 @@ fn jis(v : @jsjson.JValue?, s : String?) -> Bool {
     (Some(Str(u)), Some(t)) => u == jkey(t)
     _ => false
   }
-}
-
-///|
-/// JavaScript's `<` of two strings: by their UTF-16 code units.
-fn units_less(a : Array[Int], b : Array[Int]) -> Bool {
-  let m = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<m {
-    if a[i] != b[i] {
-      return a[i] < b[i]
-    }
-  }
-  a.length() < b.length()
 }
 
 ///|
@@ -399,7 +387,7 @@ fn call_before(a : @jsjson.JValue, b : @jsjson.JValue) -> Bool {
     return x < y
   }
   match (jget(Some(a), "id"), jget(Some(b), "id")) {
-    (Some(Str(p)), Some(Str(q))) => units_less(p, q)
+    (Some(Str(p)), Some(Str(q))) => @jsjson.js_less(p, q)
     _ => false
   }
 }
@@ -471,7 +459,7 @@ fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array
             (
               call.at == pat &&
               (match jget(Some(p), "id") {
-                Some(Str(pid)) => units_less(pid, jkey(call.id))
+                Some(Str(pid)) => @jsjson.js_less(pid, jkey(call.id))
                 _ => false
               })
             )

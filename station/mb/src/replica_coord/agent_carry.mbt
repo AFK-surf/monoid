@@ -8,35 +8,13 @@ let made_empty = "# still.fail memory"
 
 ///|
 fn js_space(c : Int) -> Bool {
-  c == ' ' ||
-  c == '\t' ||
-  c == '\n' ||
-  c == '\r' ||
-  c == 0x0b ||
-  c == 0x0c ||
-  c == 0xa0 ||
-  c == 0xfeff ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000
+  @jsjson.is_js_space(c)
 }
 
 ///|
 /// `s.trim()`.
 pub fn js_trim(s : String) -> String {
-  let mut a = 0
-  let mut b = s.length()
-  while a < b && js_space(s.unsafe_charcode_at(a)) {
-    a += 1
-  }
-  while b > a && js_space(s.unsafe_charcode_at(b - 1)) {
-    b -= 1
-  }
-  s.unsafe_substring(start=a, end=b)
+  @jsjson.trim_js(s)
 }
 
 ///|

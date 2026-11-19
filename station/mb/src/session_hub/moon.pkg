@@ -4,6 +4,7 @@ import {
   "station/host",
   "station/sql",
   "station/jsjson",
+  "station/nodepath",
   "station/i18n",
   "station/jscase",
   "station/readops",

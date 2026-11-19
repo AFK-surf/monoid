@@ -209,7 +209,7 @@ pub async fn preset_input(w : World, v : J) -> J {
   let dirs : Array[J] = []
   for d in raw_dirs {
     let given = match d {
-      Str(u) => Some(@jsjson.text(u))
+      Str(u) => Some(@jsjson.sanitize_str(u))
       _ => str_of(at(Some(d), "path"))
     }
     guard given is Some(given) && trim(given) != "" else { raise fail_("a directory needs a path") }

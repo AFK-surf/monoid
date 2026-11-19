@@ -225,8 +225,8 @@ fn with_runtime(identity : @jsjson.JValue?, runtime : String) -> Json {
   match identity {
     Some(Obj(_) as o) => if to_json(o) is Object(fields) { for k, v in fields { m[k] = v } }
     Some(Arr(xs)) => for i, x in xs { m[i.to_string()] = to_json(x) }
-    Some(Str(units)) =>
-      for i, ch in @jsjson.points(@jsjson.text(units)) {
+    Some(Str(s)) =>
+      for i, ch in @jsjson.points(@jsjson.sanitize_str(s)) {
         m[i.to_string()] = Json::string(ch)
       }
     _ => ()
@@ -362,7 +362,7 @@ async fn Reading::thread(self : Reading, id : Json) -> Unit {
         Some(Arr(xs)) =>
           for a in xs {
             if a.get("name") is Some(Str(n)) {
-              let name = @jsjson.text(n)
+              let name = @jsjson.sanitize_str(n)
               if name != "" {
                 files.push(name)
               }
@@ -872,7 +872,7 @@ fn Reading::config(self : Reading) -> @jsjson.JValue {
 ///|
 fn jstr(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
+    Some(Str(s)) => Some(@jsjson.sanitize_str(s))
     _ => None
   }
 }

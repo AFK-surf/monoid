@@ -346,7 +346,7 @@ pub fn apps_of(installed : J, launchctl : String) -> Array[SimApp] {
   }
   let apps = []
   let entries : Array[(String, J)] = match installed {
-    Obj(ps) => ps.map(p => (@jsjson.text(p.0), p.1))
+    Obj(ps) => ps.map(p => (@jsjson.sanitize_str(p.0), p.1))
     Arr(xs) => xs.mapi((i, x) => (i.to_string(), x))
     _ => []
   }

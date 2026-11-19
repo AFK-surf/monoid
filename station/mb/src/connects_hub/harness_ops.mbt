@@ -4,7 +4,7 @@
 ///|
 fn sa(v : J?) -> String {
   match v {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(Null) | None => ""
     other => js_text(other)
   }
@@ -13,7 +13,7 @@ fn sa(v : J?) -> String {
 ///|
 fn so(v : J?) -> String? {
   match v {
-    Some(Str(u)) => Some(@jsjson.text(u))
+    Some(Str(u)) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -46,7 +46,7 @@ fn stale_of(v : J?) -> (J, Double) -> Bool {
       match (at(s, "olderThan"), at(s, "noPicture"), at(s, "nameNot")) {
         (Some(Num(ms)), _, _) => (_, age) => age > ms
         (_, Some(Bool(true)), _) => (known, _) => at(Some(known), "picture") is None
-        (_, _, Some(Str(u))) => (known, _) => !(str_of(at(Some(known), "name")) == Some(@jsjson.text(u)))
+        (_, _, Some(Str(u))) => (known, _) => !(str_of(at(Some(known), "name")) == Some(@jsjson.sanitize_str(u)))
         _ => (_, _) => false
       }
     _ => (_, _) => false
@@ -72,7 +72,7 @@ fn Harness::asker(self : Harness) -> Asker {
   {
     ask: async fn(station, request, body) {
       let got = self.ask("bus.ask", [js(station), request, body_j(body)])
-      { json: at(Some(got), "json").unwrap_or(Null), bytes: match at(Some(got), "bytes") { Some(Str(u)) => Some(unhex(@jsjson.text(u))); _ => None } }
+      { json: at(Some(got), "json").unwrap_or(Null), bytes: match at(Some(got), "bytes") { Some(Str(u)) => Some(unhex(@jsjson.sanitize_str(u))); _ => None } }
     },
   }
 }
@@ -227,11 +227,11 @@ async fn Harness::op(self : Harness, msg : J) -> J {
   match sa(at(m, "op")) {
     "env" => {
       match at(m, "here") {
-        Some(Str(u)) => self.here = @jsjson.text(u)
+        Some(Str(u)) => self.here = @jsjson.sanitize_str(u)
         _ => ()
       }
       match at(m, "home") {
-        Some(Str(u)) => self.home = Some(@jsjson.text(u))
+        Some(Str(u)) => self.home = Some(@jsjson.sanitize_str(u))
         Some(Null) => self.home = None
         _ => ()
       }
@@ -252,7 +252,7 @@ async fn Harness::op(self : Harness, msg : J) -> J {
         _ => ()
       }
       match at(m, "lang") {
-        Some(Str(u)) => self.lang.val = @jsjson.text(u)
+        Some(Str(u)) => self.lang.val = @jsjson.sanitize_str(u)
         _ => ()
       }
       match at(m, "words") {
@@ -368,7 +368,7 @@ async fn Harness::op(self : Harness, msg : J) -> J {
     "conn.set" => {
       guard self.conns.get(ia(at(m, "c"))) is Some(c) else { raise fail_("no conn") }
       match at(m, "botUserId") {
-        Some(Str(u)) => c.bot_user_id = @jsjson.text(u)
+        Some(Str(u)) => c.bot_user_id = @jsjson.sanitize_str(u)
         _ => ()
       }
       match at(m, "socket") {
@@ -508,7 +508,7 @@ async fn Harness::op(self : Harness, msg : J) -> J {
     "answer.call" => {
       guard self.answerers.get(h) is Some(a) else { raise fail_("no answerer") }
       let body = match at(m, "body") {
-        Some(Str(u)) => Some(unhex(@jsjson.text(u)))
+        Some(Str(u)) => Some(unhex(@jsjson.sanitize_str(u)))
         _ => None
       }
       answer_j(a.answer(at(m, "request").unwrap_or(Null), body, so(at(m, "workspace"))))
@@ -526,7 +526,7 @@ async fn Harness::op(self : Harness, msg : J) -> J {
     "bus.handle" => {
       guard self.handlers.get(sa(at(m, "method"))) is Some(f) else { raise fail_("no such method") }
       let body = match at(m, "body") {
-        Some(Str(u)) => Some(unhex(@jsjson.text(u)))
+        Some(Str(u)) => Some(unhex(@jsjson.sanitize_str(u)))
         _ => None
       }
       answer_j(f(sa(at(m, "peer")), at(m, "request").unwrap_or(Null), so(at(m, "workspace")), body))
@@ -918,7 +918,7 @@ async fn Harness::link_call(self : Harness, h : Int, name : String, args : Array
   let s = (i : Int) => sa(args.get(i))
   let body = fn(v : J?) -> Asked {
     match v {
-      Some(Obj(_)) as o if at(o, "hex") is Some(Str(u)) => BytesAsked(unhex(@jsjson.text(u)))
+      Some(Obj(_)) as o if at(o, "hex") is Some(Str(u)) => BytesAsked(unhex(@jsjson.sanitize_str(u)))
       Some(Obj(_)) as o if at(o, "json") is Some(j) => JsonAsked(j)
       _ => NoAsked
     }

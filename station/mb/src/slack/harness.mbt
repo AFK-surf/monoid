@@ -82,7 +82,7 @@ fn bytes_arg(v : J?) -> Bytes {
 ///|
 fn words_arg(v : J?) -> CardWords {
   match at(v, "markdown") {
-    Some(Str(u)) => Markdown(@jsjson.text(u))
+    Some(Str(u)) => Markdown(@jsjson.sanitize_str(u))
     _ => Blocks(arr(at(v, "blocks")))
   }
 }
@@ -714,7 +714,7 @@ pub async fn harness(host : @host.Host) -> Unit {
           Some(d) => {
             h.asks.remove(n.to_int())
             match at(Some(c), "threw") {
-              Some(Str(u)) => ignore(d.fail(fail_(@jsjson.text(u))))
+              Some(Str(u)) => ignore(d.fail(fail_(@jsjson.sanitize_str(u))))
               _ => ignore(d.succeed(opt_j(at(Some(c), "result"))))
             }
           }

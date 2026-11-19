@@ -40,13 +40,7 @@ fn opt_flag(v : Json?) -> Json {
 ///|
 /// JavaScript's truthiness.
 fn truthy(v : Json) -> Bool {
-  match v {
-    Null | False => false
-    True => true
-    Number(n, ..) => !(n == 0.0 || n.is_nan())
-    String(s) => s != ""
-    _ => true
-  }
+  @jsjson.json_truthy(Some(v))
 }
 
 ///|
@@ -144,7 +138,7 @@ fn parsed(v : Json) -> Json? {
 ///|
 /// `String(v)`.
 fn js_string(v : Json) -> String {
-  @jsjson.raw_text(@jsjson.js_string(to_js(v)))
+  @jsjson.js_string(to_js(v))
 }
 
 ///|

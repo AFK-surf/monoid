@@ -415,20 +415,7 @@ fn station_key(s : String) -> Bool {
 ///|
 /// The bytes of a string in UTF-8 (`Buffer.byteLength`).
 fn utf8_length(s : String) -> Int {
-  let mut n = 0
-  for c in s {
-    let p = c.to_int()
-    n += if p < 0x80 {
-      1
-    } else if p < 0x800 {
-      2
-    } else if p < 0x10000 {
-      3
-    } else {
-      4
-    }
-  }
-  n
+  @jsjson.js_utf8_len(s)
 }
 
 ///|

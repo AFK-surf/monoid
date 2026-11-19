@@ -73,7 +73,7 @@ pub fn share_install(db : @sql.Db) -> Unit raise {
 
 ///|
 fn safe_int(x : Double) -> Bool {
-  x == x.floor() && x.abs() <= safe
+  @jsjson.is_safe_integer(x)
 }
 
 ///|

@@ -76,55 +76,13 @@ pub fn file_name(path : String) -> String? {
 ///|
 /// node:path `join` (POSIX): the parts joined by `/`, normalized; "." for nothing.
 pub fn join(parts : Array[String]) -> String {
-  if windows.val is Some(_) {
-    return @nodepath.join("\\", parts)
-  }
-  let given = parts.filter(p => p != "")
-  if given.length() == 0 {
-    return "."
-  }
-  normalize(given.join("/"))
+  @nodepath.join(if windows.val is Some(_) { "\\" } else { "/" }, parts)
 }
 
 ///|
 /// node:path `normalize` (POSIX).
 pub fn normalize(path : String) -> String {
-  if windows.val is Some(_) {
-    return @nodepath.join("\\", [path])
-  }
-  if path == "" {
-    return "."
-  }
-  let absolute = path.has_prefix("/")
-  let trailing = path.has_suffix("/")
-  let out : Array[String] = []
-  for part in path.split("/") {
-    let part = part.to_string()
-    if part == "" || part == "." {
-      continue
-    }
-    if part == ".." {
-      if out.length() > 0 && out[out.length() - 1] != ".." {
-        ignore(out.pop())
-      } else if !absolute {
-        out.push("..")
-      }
-    } else {
-      out.push(part)
-    }
-  }
-  let mut joined = out.join("/")
-  if joined == "" && !absolute {
-    joined = "."
-  }
-  if joined != "" && trailing {
-    joined = joined + "/"
-  }
-  if absolute {
-    "/" + joined
-  } else {
-    joined
-  }
+  @nodepath.join(if windows.val is Some(_) { "\\" } else { "/" }, [path])
 }
 
 ///|

@@ -155,7 +155,7 @@ pub fn account_of(p : J?, station : String) -> J? {
     return None
   }
   let id = match get(p, "id") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(v) => js_string_of(v)
     None => "undefined"
   }
@@ -192,7 +192,7 @@ fn js_string_of(v : J) -> String {
     Null => "null"
     Bool(b) => if b { "true" } else { "false" }
     Num(d) => num_text(d)
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Arr(xs) => xs.map(x => if x is Null { "" } else { js_string_of(x) }).join(",")
     Obj(_) => "[object Object]"
   }

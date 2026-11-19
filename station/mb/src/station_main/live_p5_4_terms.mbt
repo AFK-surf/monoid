@@ -659,7 +659,7 @@ async fn p54_logins_start(
       _ => { "method": Json::string(meth) }
     }
     let answer = part.heard_peer(peer, to_jv(request), match ws {
-      Some(w) => @jsjson.JValue::Str(@jsjson.units(w))
+      Some(w) => @jsjson.JValue::Str(w)
       None => @jsjson.JValue::Null
     }) catch {
       e => raise BusError(p54_message(e))

@@ -481,7 +481,7 @@ async fn Handover::begin(self : Handover, origin : String, ws : String, id : Str
   let bindings = []
   for e in entries(at(request, "bindings")) {
     match e.1 {
-      Str(u) => bindings.push((pair_get(connects, e.0).unwrap_or(e.0), @jsjson.text(u)))
+      Str(u) => bindings.push((pair_get(connects, e.0).unwrap_or(e.0), @jsjson.sanitize_str(u)))
       _ => ()
     }
   }
@@ -1018,7 +1018,7 @@ async fn Handover::take_usage(self : Handover, peer : String, ws : String, reque
     match e.1 {
       Obj(_) as a =>
         match self.w.part("accounts.here", [a]) {
-          Str(u) => profiles.push((e.0, @jsjson.text(u)))
+          Str(u) => profiles.push((e.0, @jsjson.sanitize_str(u)))
           _ => ()
         }
       _ => ()
@@ -1044,8 +1044,8 @@ async fn Handover::take_usage(self : Handover, peer : String, ws : String, reque
     }
     ()
   } else if at(request, "sessionUsage") is Some(Str(u)) && !has && self.store("sessionUsage", [js(session)]) is Null {
-    let v = parse(@jsjson.text(u)) catch { _ => J::Null }
-    if !(v is Null) || @jsjson.text(u) == "null" {
+    let v = parse(@jsjson.sanitize_str(u)) catch { _ => J::Null }
+    if !(v is Null) || @jsjson.sanitize_str(u) == "null" {
       ignore(self.store("setSessionUsage", [js(session), v]))
     }
   }

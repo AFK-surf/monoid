@@ -24,7 +24,7 @@ fn jsome(pairs : Array[(String, J?)]) -> J {
   let out = []
   for p in pairs {
     match p.1 {
-      Some(v) => out.push((@jsjson.units(p.0), v))
+      Some(v) => out.push((p.0, v))
       None => ()
     }
   }
@@ -65,15 +65,14 @@ fn is_js_space(c : Char) -> Bool {
 ///|
 /// `s.slice(0, n)` in UTF-16 units, as JavaScript cuts a string (a pair cut in half keeps its first half).
 fn slice_units(s : String, from : Int, to : Int) -> String {
-  let u = @jsjson.units(s)
-  let n = u.length()
+  let n = s.length()
   let a = if from < 0 { 0 } else if from > n { n } else { from }
   let b = if to < a { a } else if to > n { n } else { to }
-  @jsjson.raw_text(u[a:b].to_array())
+  s.unsafe_substring(start=a, end=b)
 }
 
 ///|
 /// `s.length` in UTF-16 units.
 fn units_len(s : String) -> Int {
-  @jsjson.units(s).length()
+  s.length()
 }

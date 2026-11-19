@@ -4,6 +4,7 @@ import {
   "base/url",
   "station/host",
   "station/jsjson",
+  "station/nodepath",
   "station/api_routes",
   "station/cloud_net",
   "moonbitlang/core/encoding/base64",

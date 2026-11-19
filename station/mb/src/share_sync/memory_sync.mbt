@@ -48,7 +48,7 @@ fn is_hex64(s : String) -> Bool {
 
 ///|
 fn safe_int(d : Double) -> Bool {
-  d == d.floor() && d.abs() <= 9007199254740991.0
+  @jsjson.is_safe_integer(d)
 }
 
 ///|

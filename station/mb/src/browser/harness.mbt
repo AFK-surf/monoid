@@ -666,7 +666,7 @@ async fn Rpc::browsers_call(self : Rpc, inst : String, b : Browsers, sf : Ref[St
     }
     "used" => {
       match arg(c, 2) {
-        Some(Str(u)) => b.used(arg_s(c, 0), arg_s(c, 1), url=@jsjson.text(u))
+        Some(Str(u)) => b.used(arg_s(c, 0), arg_s(c, 1), url=@jsjson.sanitize_str(u))
         _ => b.used(arg_s(c, 0), arg_s(c, 1))
       }
       Null
@@ -1062,7 +1062,7 @@ async fn Rpc::command(self : Rpc, c : J) -> J {
         strs(at(cv, "sources")),
         async fn(url) {
           match self.ask("unpack", "fetch", [js(url)]) {
-            Str(u) => Some(@base64.decode(@jsjson.text(u)))
+            Str(u) => Some(@base64.decode(@jsjson.sanitize_str(u)))
             _ => None
           }
         },
@@ -1204,7 +1204,7 @@ fn pure_case(name : String, args : Array[J]) -> J raise {
       let env : Map[String, String] = {}
       for e in entries_of(a(1).unwrap_or(Obj([]))) {
         match e.1 {
-          Str(u) => env[e.0] = @jsjson.text(u)
+          Str(u) => env[e.0] = @jsjson.sanitize_str(u)
           _ => ()
         }
       }

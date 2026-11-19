@@ -47,7 +47,7 @@ pub fn booted_of(io : Io, listed : J) -> Array[Booted] {
   guard get(Some(listed), "devices") is Some(Obj(ps)) else { return [] }
   let out = []
   for p in ps {
-    let runtime = @jsjson.text(p.0)
+    let runtime = @jsjson.sanitize_str(p.0)
     guard p.1 is Arr(list) else { continue }
     for d in list {
       if text(get(Some(d), "state")) != Some("Booted") {

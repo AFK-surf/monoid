@@ -60,7 +60,7 @@ pub fn passkey_of(read : J?) -> Passkey? {
     return None
   }
   let user_handle = match at(read, "userHandle") {
-    Some(Str(u)) if u.length() > 0 => Some(@jsjson.text(u))
+    Some(Str(u)) if u.length() > 0 => Some(@jsjson.sanitize_str(u))
     _ => None
   }
   let count = at(read, "signCount")
@@ -164,7 +164,7 @@ fn Authenticators::heard(self : Authenticators, e : CdpEvent) -> Unit {
         self.tab(at(p, "targetInfo"))
       } else if e.method == "Target.targetDestroyed" {
         match at(p, "targetId") {
-          Some(Str(u)) => self.tabs.remove(@jsjson.text(u))
+          Some(Str(u)) => self.tabs.remove(@jsjson.sanitize_str(u))
           _ => ()
         }
       }
@@ -187,7 +187,7 @@ fn Authenticators::heard(self : Authenticators, e : CdpEvent) -> Unit {
         })
         return
       }
-      guard at(p, "authenticatorId") is Some(Str(a)) && @jsjson.text(a) == tab.id else {
+      guard at(p, "authenticatorId") is Some(Str(a)) && @jsjson.sanitize_str(a) == tab.id else {
         return
       }
       // One made in the tab (a site's "add a passkey"), or one that signed (its count): kept for the context.
@@ -226,8 +226,8 @@ fn Authenticators::tab(self : Authenticators, info : J?) -> Unit {
   guard at(info, "targetId") is Some(Str(t)) && at(info, "browserContextId") is Some(Str(c)) else {
     return
   }
-  let target_id = @jsjson.text(t)
-  let ctx = @jsjson.text(c)
+  let target_id = @jsjson.sanitize_str(t)
+  let ctx = @jsjson.sanitize_str(c)
   if self.tabs.contains(target_id) || self.making.contains(target_id) || !(self.chat)(ctx) {
     return
   }

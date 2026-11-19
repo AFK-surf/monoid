@@ -35,7 +35,7 @@ async fn P55::carry_ask(self : P55, ask : Json) -> @jsjson.JValue {
             Some(a) => a
             None =>
               match said.get("error") {
-                Some(Str(e)) => raise BusError(@jsjson.text(e))
+                Some(Str(e)) => raise BusError(@jsjson.sanitize_str(e))
                 _ => raise BusError("the gathering's program said nothing it was asked")
               }
           }
@@ -111,9 +111,9 @@ async fn moved_bytes(host : @host.Host, b : @move_coord.Bytes_?) -> Bytes? {
 async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @move_coord.HandoverPort {
   let bus = self.bus
   let data = bus.data
-  let s = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
+  let s = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
   let strs = (v : @jsjson.JValue?) => match v {
-    Some(Arr(xs)) => xs.filter_map(x => match x { Str(u) => Some(@jsjson.text(u)); _ => None })
+    Some(Arr(xs)) => xs.filter_map(x => match x { Str(u) => Some(@jsjson.sanitize_str(u)); _ => None })
     _ => []
   }
   // (what it asks of the station by name: the hub's and the store's on the bus, the move's own by its hooks)
@@ -141,7 +141,7 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
         Null
       }
       "shown" => {
-        (hooks.shown)(strs(a.get(0)), match a.get(1) { Some(Str(u)) => Some(@jsjson.text(u)); _ => None })
+        (hooks.shown)(strs(a.get(0)), match a.get(1) { Some(Str(u)) => Some(@jsjson.sanitize_str(u)); _ => None })
         Null
       }
       "went" => {
@@ -216,7 +216,7 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
     out_of: async fn(k) { h.out_of(k) },
     coming_from: async fn(k) { h.coming_from(k) },
     waits_for_turn: async fn(o) {
-      h.waits_for_turn(match o { Obj(_) => match of_jv(o) { x => jtext_or_empty(x, "id") }; Str(u) => @jsjson.text(u); _ => "" })
+      h.waits_for_turn(match o { Obj(_) => match of_jv(o) { x => jtext_or_empty(x, "id") }; Str(u) => @jsjson.sanitize_str(u); _ => "" })
     },
     start: async fn() { h.start() },
     close: async fn() { h.close() },
@@ -811,7 +811,7 @@ async fn move_asked(moves : @move_coord.Moves, asks : @mcp_tools.MoveAsks, peer 
   match jfield(request, "told") {
     String(key) if key.length() <= 300 =>
       of_jv(moves.told.run(peer, key, async fn(_progress) {
-        Some(to_jv(@jsjson.JV::to_json(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))))
+        Some(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
       }))
     _ => @jsjson.JV::to_json(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
   }

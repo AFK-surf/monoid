@@ -480,7 +480,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
   fn refused(e : Error) -> Error {
     match e {
       @accounts_pool.Thrown(kind, said) =>
-        @api_routes.Thrown(if kind == "Refusal" { "Refused" } else { kind }, @jsjson.JV::of_json(p53_json(said)))
+        @api_routes.Thrown(if kind == "Refusal" { "Refused" } else { kind }, said)
       @api_routes.Thrown(_, _) => e
       _ => @api_routes.Thrown("Error", @jsjson.JV::of_json(jobj_of([("message", jstr(p53_words(e)))])))
     }

@@ -99,7 +99,7 @@ pub let mode_pending_s : Int64
 
 pub fn off_relays(Ways, String) -> Array[String]
 
-pub fn otlp_body(String, Array[@json.Json]) -> String
+pub fn otlp_body(String, Array[@json.Json], resource? : Array[(String, String)]) -> String
 
 pub fn ours_off(Ways) -> Bool
 
@@ -111,11 +111,11 @@ pub fn pending_asks(PlaneCloud, Map[String, Bool]) -> Array[String]
 
 pub let ping_ms : Int32
 
-pub let probe_params : ProbeParams
-
 pub fn plane_teller(PlaneCloud, (@json.Json) -> Unit, () -> Bool) -> (() -> Unit, () -> Unit)
 
 pub async fn presence(PresenceParts) -> Unit
+
+pub let probe_params : ProbeParams
 
 pub fn provider_of(@json.Json?) -> Provider
 
@@ -258,7 +258,7 @@ pub struct ControlPlane {
 }
 pub fn ControlPlane::credential(Self) -> Accepted
 pub async fn ControlPlane::logs(Self, String) -> Unit
-pub fn ControlPlane::new(CloudView, () -> Provider, (String) -> String, () -> Int64, CloudTransport, Http, provider? : Provider) -> Self
+pub fn ControlPlane::new(CloudView, () -> Provider, (String) -> String, () -> Int64, CloudTransport, Http, provider? : Provider, trace_resource? : Array[(String, String)]) -> Self
 pub async fn ControlPlane::notify(Self, Array[@json.Json], workspace? : String) -> Unit
 pub fn ControlPlane::release_base(Self) -> String?
 pub fn ControlPlane::said(Self, CloudSaid) -> Unit
@@ -467,7 +467,6 @@ pub(all) enum Provider {
   Comma
 }
 pub fn Provider::name(Self) -> String
-
 
 pub(all) struct ProviderSpec {
   provider : Provider

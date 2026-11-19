@@ -155,7 +155,7 @@ fn callback_from(j : J?) -> Callback {
     method_: text(get(j, "method")).unwrap_or("GET"),
     path: text(get(j, "path")).unwrap_or("/"),
     headers: match get(j, "headers") {
-      Some(Obj(ps)) => ps.map(p => (@jsjson.raw_text(p.0), text(Some(p.1)).unwrap_or("")))
+      Some(Obj(ps)) => ps.map(p => (p.0, text(Some(p.1)).unwrap_or("")))
       _ => []
     },
     body: text(get(j, "body")),
@@ -168,7 +168,7 @@ fn env_from(j : J?) -> Env {
   match j {
     Some(Obj(ps)) =>
       for p in ps {
-        env[@jsjson.raw_text(p.0)] = text(Some(p.1)).unwrap_or("")
+        env[p.0] = text(Some(p.1)).unwrap_or("")
       }
     _ => ()
   }

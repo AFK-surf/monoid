@@ -6,7 +6,7 @@ import {
 }
 
 // Values
-pub fn classify_failure(Array[Int32], Array[Int32]) -> String
+pub fn classify_failure(String, String) -> String
 
 pub fn outcome_of(@jsjson.JValue?) -> @jsjson.JValue
 
@@ -14,8 +14,8 @@ pub fn outcome_of(@jsjson.JValue?) -> @jsjson.JValue
 
 // Types and methods
 pub(all) struct Live {
-  open : Array[(Array[Int32], String)]
-  calls : Array[(Array[Int32], Array[Int32])]
+  open : Array[(String, String)]
+  calls : Array[(String, String)]
   mut phase : String?
 }
 pub fn Live::ended(Self) -> Array[@jsjson.JValue]
@@ -26,7 +26,7 @@ pub fn Live::prompted(Self) -> Array[@jsjson.JValue]
 pub fn Live::state(Self) -> @jsjson.JValue
 
 pub(all) struct Replay {
-  mut session : Array[Int32]?
+  mut session : String?
   turn : Turn
   live : Live
 }
@@ -41,7 +41,7 @@ pub(all) struct Said {
 pub(all) struct Session {
   turn : Turn
   live : Live
-  calls : Array[Array[Int32]]
+  calls : Array[String]
 }
 pub fn Session::cut_short(Self) -> Array[@jsjson.JValue]
 pub fn Session::line(Self, @jsjson.JValue) -> Said

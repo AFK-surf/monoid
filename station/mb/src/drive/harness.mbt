@@ -63,34 +63,13 @@ fn hstrs(v : Json, name : String) -> Array[String] {
 ///|
 /// Json as a JavaScript value (its keys in their order).
 pub fn to_jv(v : Json) -> JV {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => jvs(s)
-    Array(a) => Arr(a.map(to_jv))
-    Object(o) => Obj(o.to_array().map(p => (ju(p.0), to_jv(p.1))))
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|
 /// A JavaScript value as Json.
 pub fn of_jv(v : JV) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(u) => Json::string(@jsjson.text(u))
-    Arr(a) => Json::array(a.map(of_jv))
-    Obj(f) => {
-      let o = Map::new()
-      for p in f {
-        o.set(@jsjson.text(p.0), of_jv(p.1))
-      }
-      Json::object(o)
-    }
-  }
+  v.to_json_lossy()
 }
 
 ///|

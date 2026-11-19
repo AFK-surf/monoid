@@ -399,7 +399,7 @@ pub fn agy_classify_failure(text : String) -> String {
 ///|
 /// A failure Antigravity CLI tells only in words (`noticeFailure`): the reading's (mb/src/acp `notice_failure`).
 pub fn agy_notice_failure(said : String) -> String? {
-  @acp.notice_failure(@jsjson.units(said))
+  @acp.notice_failure(said)
 }
 
 ///|

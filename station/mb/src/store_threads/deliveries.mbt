@@ -480,34 +480,8 @@ fn utf8_compare(a : Array[Int], b : Array[Int]) -> Int {
 
 ///|
 fn utf8_of(units : Array[Int]) -> Array[Int] {
-  let out = []
-  let mut i = 0
-  while i < units.length() {
-    let mut c = units[i]
-    if c >= 0xD800 && c <= 0xDBFF && i + 1 < units.length() && units[i + 1] >= 0xDC00 && units[i + 1] <= 0xDFFF {
-      c = 0x10000 + ((c - 0xD800) << 10) + (units[i + 1] - 0xDC00)
-      i += 1
-    } else if c >= 0xD800 && c <= 0xDFFF {
-      c = 0xFFFD
-    }
-    if c < 0x80 {
-      out.push(c)
-    } else if c < 0x800 {
-      out.push(0xC0 | (c >> 6))
-      out.push(0x80 | (c & 0x3F))
-    } else if c < 0x10000 {
-      out.push(0xE0 | (c >> 12))
-      out.push(0x80 | ((c >> 6) & 0x3F))
-      out.push(0x80 | (c & 0x3F))
-    } else {
-      out.push(0xF0 | (c >> 18))
-      out.push(0x80 | ((c >> 12) & 0x3F))
-      out.push(0x80 | ((c >> 6) & 0x3F))
-      out.push(0x80 | (c & 0x3F))
-    }
-    i += 1
-  }
-  out
+  let b = @jsjson.utf8(@jsjson.raw_text(units))
+  Array::makei(b.length(), i => b[i].to_int())
 }
 
 ///|

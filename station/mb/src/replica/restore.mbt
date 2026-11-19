@@ -35,12 +35,12 @@ fn as_head(v : JValue) -> JValue? {
   guard v is Obj(_) else { return None }
   guard get(v, "v") is Some(Num(ver)) && ver <= version.to_double() else { return None }
   guard get(v, "origin") is Some(Str(_)) && get(v, "workspace") is Some(Str(_)) else { return None }
-  guard get(v, "gen") is Some(Str(g)) && gen_ok(@jsjson.text(g)) else { return None }
+  guard get(v, "gen") is Some(Str(g)) && gen_ok(@jsjson.sanitize_str(g)) else { return None }
   guard get(v, "to") is Some(Num(to)) && to == @math.floor(to) && to.abs() <= 9007199254740991.0 else { return None }
-  guard get(v, "batches") is Some(Arr(bs)) && bs.iter().all(b => b is Str(u) && batch_span(@jsjson.text(u)) is Some(_)) else {
+  guard get(v, "batches") is Some(Arr(bs)) && bs.iter().all(b => b is Str(u) && batch_span(@jsjson.sanitize_str(u)) is Some(_)) else {
     return None
   }
-  guard get(v, "files") is Some(Obj(fs)) && fs.iter().all(e => hash_ok(@jsjson.text(e.0))) else { return None }
+  guard get(v, "files") is Some(Obj(fs)) && fs.iter().all(e => hash_ok(@jsjson.sanitize_str(e.0))) else { return None }
   guard get(v, "runs") is Some(Arr(_)) else { return None }
   Some(v)
 }
@@ -108,7 +108,7 @@ fn shaped(files : Files, table : String, row : JValue, from : String, to : Strin
     match (try { Some(@jsjson.parse(a)) } catch { _ => None }) {
       Some(Arr(list)) => {
         let moved_list = list.map(x => match get(x, "path") {
-          Some(Str(p)) => set(x, "path", str(moved(files, @jsjson.text(p), from, to)))
+          Some(Str(p)) => set(x, "path", str(moved(files, @jsjson.sanitize_str(p), from, to)))
           _ => x
         })
         out = set(out, "attachments", str(stringify(Arr(moved_list))))
@@ -272,7 +272,7 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
           }
           folded.close()
           files.remove(work)
-          let counted : Array[(Array[Int], JValue)] = []
+          let counted : Array[(String, JValue)] = []
           for table in restore_order {
             if has(table) {
               let n = if merging {
@@ -283,7 +283,7 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
                   _ => 0.0
                 }
               }
-              counted.push((@jsjson.units(table), Num(n)))
+              counted.push((table, Num(n)))
             }
           }
           rows = Obj(counted)
@@ -387,7 +387,7 @@ fn add_formerly(files : Files, data : String, origin : String) -> Unit raise {
     Some(Arr(items)) => items
     _ => []
   }
-  let list = if list.iter().any(x => x is Str(u) && @jsjson.text(u) == origin) { list } else { list + [str(origin)] }
+  let list = if list.iter().any(x => x is Str(u) && @jsjson.sanitize_str(u) == origin) { list } else { list + [str(origin)] }
   files.mkdir(files.dirname(file))
   write_beside(files, file, stringify(Arr(list)))
 }
@@ -406,17 +406,17 @@ pub fn take_back(host : @host.Host, sep : String, data : String, db : String, no
   let origin = text_of(get(ready, "origin")).unwrap_or("")
   let field = (k : String) => get(ready, k).unwrap_or(Null)
   let mut outcome : JValue = Obj([
-    (@jsjson.units("origin"), field("origin")),
-    (@jsjson.units("name"), field("name")),
-    (@jsjson.units("from"), field("from")),
-    (@jsjson.units("at"), Num(now)),
-    (@jsjson.units("rows"), Obj([])),
-    (@jsjson.units("files"), Num(0.0)),
-    (@jsjson.units("missing"), Num(0.0)),
-    (@jsjson.units("error"), Null),
-    (@jsjson.units("reason"), Null),
-    (@jsjson.units("pending"), Bool(false)),
-    (@jsjson.units("left"), Num(0.0)),
+    ("origin", field("origin")),
+    ("name", field("name")),
+    ("from", field("from")),
+    ("at", Num(now)),
+    ("rows", Obj([])),
+    ("files", Num(0.0)),
+    ("missing", Num(0.0)),
+    ("error", Null),
+    ("reason", Null),
+    ("pending", Bool(false)),
+    ("left", Num(0.0)),
   ])
   let gen = text_of(get(ready, "gen")).unwrap_or("")
   let attempt = () => {

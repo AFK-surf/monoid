@@ -130,8 +130,8 @@ fn Own::line(self : Own, v : @jsjson.JValue, now : () -> Double) -> (Array[@jsjs
 /// A turn's start and end said with the turn as it left it (what Node's session keeps of it).
 fn with_turn(e : @jsjson.JValue, turn : @jsjson.JValue) -> @jsjson.JValue {
   match e {
-    Obj(fields) if e.get("type") is Some(Str(t)) && (t == @jsjson.units("turnStarted") || t == @jsjson.units("turnEnded")) =>
-      Obj(fields + [(@jsjson.units("turn"), turn)])
+    Obj(fields) if e.get("type") is Some(Str(t)) && (t == "turnStarted" || t == "turnEnded") =>
+      Obj(fields + [("turn", turn)])
     _ => e
   }
 }
@@ -227,7 +227,7 @@ fn Agents::own_begin(self : Agents, h : Hosted, own : Own) -> Unit {
 fn Agents::acp_told(self : Agents, h : Hosted, op : String, m : Map[String, Json]) -> Unit {
   guard h.own is Some(Acp(s) as own) else { return }
   let text = (k : String) => match m.get(k) {
-    Some(String(v)) => @jsjson.units(v)
+    Some(String(v)) => v
     _ => []
   }
   match op {
@@ -259,7 +259,7 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
     _ => "grok"
   }
   let from_id = match m.get("resume") {
-    Some(String(r)) => @jsjson.units(r)
+    Some(String(r)) => r
     _ => []
   }
   let acp = @acp.Replay::new(flavor, kept=m.get("kept") is Some(True), from_id)
@@ -311,8 +311,8 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
     @effect.sleep(0)
   }
   let said : Map[String, Json] = { "ownReplayed": Json::number(id.to_double()) }
-  let text = (s : Array[Int]?) => match s {
-    Some(v) => Json::string(@jsjson.raw_text(v))
+  let text = (s : String?) => match s {
+    Some(v) => Json::string(v)
     None => Json::null()
   }
   match kind {
@@ -338,7 +338,7 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
     "acp" => {
       let usages = acp.finish(now)
       let s = acp.session()
-      said["session"] = Json::string(@jsjson.raw_text(s.session))
+      said["session"] = Json::string(s.session)
       said["turn"] = to_json(s.turn.json())
       said["live"] = to_json(s.state())
       said["opened"] = match acp.opened() {

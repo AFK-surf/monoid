@@ -652,7 +652,7 @@ async fn Handover::not_off(self : Handover, o : Rec) -> Array[String] {
       continue
     }
     match self.store("sessionWs", [js(k)]) {
-      Str(u) if @jsjson.text(u).has_prefix("handed:") => continue
+      Str(u) if @jsjson.sanitize_str(u).has_prefix("handed:") => continue
       _ => ()
     }
     if o.n("v") == 2.0 || !self.came_back(o, k) {

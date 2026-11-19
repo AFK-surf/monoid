@@ -55,7 +55,7 @@ pub fn as_head(v : J) -> J? {
   }
   guard at(v, "files") is Some(Obj(files)) else { return None }
   for f in files {
-    if !is_hash(@jsjson.text(f.0)) {
+    if !is_hash(@jsjson.sanitize_str(f.0)) {
       return None
     }
   }

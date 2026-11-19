@@ -24,7 +24,7 @@ pub fn present(j : J?) -> Bool {
 
 ///|
 pub fn has_key(o : J, k : String) -> Bool {
-  let u = @jsjson.units(k)
+  let u = k
   match o {
     Obj(ps) => ps.iter().any(p => p.0 == u)
     _ => false
@@ -55,28 +55,17 @@ pub fn slice_from(s : String, start : Int) -> String {
 ///|
 /// `s.slice(start, end)`, `end` past its end clamped.
 pub fn slice(s : String, start : Int, end : Int) -> String {
-  let e = if end > s.length() { s.length() } else { end }
-  if start >= e {
-    ""
-  } else {
-    s.unsafe_substring(start~, end=e)
-  }
+  @jsjson.js_slice(s, start, end~)
 }
 
 ///|
 /// `s.indexOf(sub)` (-1: none).
 pub fn index_of(s : String, sub : String) -> Int {
-  match s.find(sub) {
-    Some(i) => i
-    None => -1
-  }
+  @jsjson.js_index_of(s, sub)
 }
 
 ///|
 /// `s.lastIndexOf(sub)` (-1: none).
 pub fn last_index_of(s : String, sub : String) -> Int {
-  match s.rev_find(sub) {
-    Some(i) => i
-    None => -1
-  }
+  @jsjson.js_last_index_of(s, sub)
 }

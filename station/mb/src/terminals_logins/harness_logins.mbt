@@ -61,7 +61,7 @@ fn LoginsWorld::run_io(self : LoginsWorld) -> RunIo {
     },
     terminal: async fn(_, _, _, _) {
       match self.platform("terminal") {
-        Some(Arr([Str(f), Arr(a)])) => Some((@jsjson.raw_text(f), a.map(x => text(Some(x)).unwrap_or(""))))
+        Some(Arr([Str(f), Arr(a)])) => Some((f, a.map(x => text(Some(x)).unwrap_or(""))))
         _ => None
       }
     },
@@ -145,7 +145,7 @@ fn LoginsWorld::relay_io(self : LoginsWorld) -> RelayIo {
       {
         status: int_of(get(answer, "status")),
         headers: match get(answer, "headers") {
-          Some(Obj(ps)) => ps.map(p => (@jsjson.raw_text(p.0), text(Some(p.1)).unwrap_or("")))
+          Some(Obj(ps)) => ps.map(p => (p.0, text(Some(p.1)).unwrap_or("")))
           _ => []
         },
         body: text(get(answer, "body")).unwrap_or(""),
@@ -303,7 +303,7 @@ fn LoginsWorld::host(self : LoginsWorld) -> LoginsHost {
 fn put_ids(v : J, started : Array[String]) -> J {
   match v {
     Str(u) => {
-      let t = @jsjson.raw_text(u)
+      let t = u
       if !t.contains("IDOF") {
         return v
       }
@@ -418,7 +418,7 @@ fn logins_case(c : J) -> J raise {
   let asyncs : Map[String, J] = {}
   let follows : Map[String, (Array[J], () -> Unit)] = {}
   let id_of = (s : J?) => match get(s, "id") {
-    Some(Str(u)) => @jsjson.raw_text(u)
+    Some(Str(u)) => u
     _ =>
       match get(s, "of") {
         Some(Num(k)) if k.to_int() < started.length() => started[k.to_int()]
@@ -454,7 +454,7 @@ fn logins_case(c : J) -> J raise {
           }
           Some("say") => {
             match get(s, "opened") {
-              Some(Str(t)) => lw.files[data + "/run/logins/\{id_of(s)}.opened"] = @jsjson.raw_text(t)
+              Some(Str(t)) => lw.files[data + "/run/logins/\{id_of(s)}.opened"] = t
               _ => ()
             }
             let child = lw.children[int_of(get(s, "child"))]

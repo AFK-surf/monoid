@@ -56,7 +56,7 @@ pub fn classify(json : String, large : Bool) -> (Int, String) {
     Some(r) =>
       match prop(Some(r), "day") {
         None => (if large { LARGE_OMIT } else { OMIT }, "")
-        Some(Str(u)) => (if large { LARGE_STRING } else { STRING }, day_key(utext(u)))
+        Some(Str(u)) => (if large { LARGE_STRING } else { STRING }, day_key(u))
         Some(_) => (OTHER, "")
       }
   }

@@ -35,13 +35,13 @@ pub fn canonical(v : J) -> String {
     Arr(xs) => "[" + xs.map(canonical).join(",") + "]"
     Obj(fs) => {
       // (the last value of a key, as an object keeps it)
-      let keys : Array[Array[Int]] = []
+      let keys : Array[String] = []
       for f in fs {
         if !keys.contains(f.0) {
           keys.push(f.0)
         }
       }
-      keys.sort_by(units_compare)
+      keys.sort_by(@jsjson.js_compare)
       let parts = keys.map(k => {
         let mut value = J::Null
         for f in fs {
