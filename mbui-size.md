@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.34 | 121.18 |
 | [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.08 | 122.48 |
 | [d43cc0ce8](https://github.com/AFK-surf/monoid/commit/d43cc0ce8db625b84c8f83827a46c3ebb0e00db0) fix(mbc): compile test functions in test.<unit> at | 2.6 | 3.49 | 14.28 | 36.35 | 55.03 | 31.77 | 63.99 | 97.44 | 125.25 |
 | [fd3d1d1d3](https://github.com/AFK-surf/monoid/commit/fd3d1d1d317beced89cf5125c17fdf12bc0ca651) feat(mbui): move the chat page only for a cause sa | 2.6 | 3.49 | 14.28 | 36.35 | 55.03 | 31.77 | 63.99 | 97.44 | 125.25 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
 | [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
 | [ac7ed5f22](https://github.com/AFK-surf/monoid/commit/ac7ed5f22106d5b4bd4b24f61ab2d25cc343b096) fix(app): draw the archived row's tray words at th | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.14 | 112.34 |
-| [8ff3ce3b2](https://github.com/AFK-surf/monoid/commit/8ff3ce3b20acc851acf42a79f6cc36c870cfcfcb) perf(sync): isolate background batch reads, stream | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.16 | 125.57 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [d43cc0ce8](https://github.com/AFK-surf/monoid/commit/d43cc0ce8db625b84c8f83827a46c3ebb0e00db0) fix(mbc): compile test functions in test.<unit> at | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [fd3d1d1d3](https://github.com/AFK-surf/monoid/commit/fd3d1d1d317beced89cf5125c17fdf12bc0ca651) feat(mbui): move the chat page only for a cause sa | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.1 |
 | [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [ac7ed5f22](https://github.com/AFK-surf/monoid/commit/ac7ed5f22106d5b4bd4b24f61ab2d25cc343b096) fix(app): draw the archived row's tray words at th | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
-| [8ff3ce3b2](https://github.com/AFK-surf/monoid/commit/8ff3ce3b20acc851acf42a79f6cc36c870cfcfcb) perf(sync): isolate background batch reads, stream | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
