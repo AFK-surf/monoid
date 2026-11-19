@@ -67,7 +67,7 @@ async fn P53Remote::new(bus : LiveBus, program : P53Program, jobs : P53Jobs) -> 
   let reader = @jobs_host.WorkspaceReader::new(
     () => wall_ms().to_double(),
     async fn(path, limit) { p53_workspace_size(bus, path, limit) },
-    f => ignore(host.rt.fork_daemon("a workspace's size", on_error=e => @host.note("a workspace's size failed: \{e}"), async fn() { f() })),
+    f => fork_bg(host, "a workspace's size", async fn() { f() }),
   )
   let r : P53Remote = {
     bus,
@@ -110,17 +110,12 @@ async fn P53Remote::new(bus : LiveBus, program : P53Program, jobs : P53Jobs) -> 
 fn P53Remote::attach(self : P53Remote) -> Unit {
   let bus = self.bus
   // (the CPUs' ticks noted now and every CPU_EVERY_MS, for how busy they were over the last minute: host.ts `follow`)
-  ignore(
-    bus.host.rt.fork_daemon("the CPUs' ticks", on_error=e => @host.note("the CPUs' ticks failed: \{e}"), async fn() {
-      while !bus.stopped.is_done() {
-        match self.cpu_ticks() {
-          Some(t) => self.cpu_note(wall_ms().to_double(), t)
-          None => ()
-        }
-        @effect.sleep(p53_cpu_every_ms) // timer: a sample of this machine (its CPUs)
-      }
-    }),
-  )
+  fork_bg(bus.host, "the CPUs' ticks", async fn() {
+    while !bus.stopped.is_done() {
+      if self.cpu_ticks() is Some(t) { self.cpu_note(wall_ms().to_double(), t) }
+      @effect.sleep(p53_cpu_every_ms) // timer: a sample of this machine (its CPUs)
+    }
+  })
   bus.parts.tools(self.tools())
   bus.on_peer("describe", async fn(peer, ws, _request, _bytes) { (self.describe(peer, ws.unwrap_or("")), None) })
   // (a task started from here changed on its station: asked about)
@@ -149,16 +144,14 @@ fn P53Remote::attach(self : P53Remote) -> Unit {
   })
   // (the tasks followed, what was missed told, the sweeps going: once the station before is gone; tasks of peers no
   // longer in a workspace stopped, now and as the roster or the config changes: remote.ts `followRoster`)
-  ignore(
-    bus.host.rt.fork_daemon("remote tasks", on_error=e => @host.note("remote tasks failed: \{e}"), async fn() {
-      (bus.previous_gone)()
-      ignore(self.program.call(p53_remote_key, "attached", [])) catch { _ => () }
-      self.revoke()
-      ignore((bus.cloud_listen.val)(_ => ignore(bus.host.rt.fork_daemon("roster", on_error=e => @host.note("roster failed: \{e}"), async fn() { self.revoke() }))))
-      ignore((bus.config_listen.val)(_ => ignore(bus.host.rt.fork_daemon("roster", on_error=e => @host.note("roster failed: \{e}"), async fn() { self.revoke() }))))
-      self.tidy_back_hourly()
-    }),
-  )
+  fork_bg(bus.host, "remote tasks", async fn() {
+    (bus.previous_gone)()
+    ignore(self.program.call(p53_remote_key, "attached", [])) catch { _ => () }
+    self.revoke()
+    ignore((bus.cloud_listen.val)(_ => fork_bg(bus.host, "roster", async fn() { self.revoke() })))
+    ignore((bus.config_listen.val)(_ => fork_bg(bus.host, "roster", async fn() { self.revoke() })))
+    self.tidy_back_hourly()
+  })
 }
 
 ///|
@@ -336,10 +329,7 @@ fn P53Remote::told(self : P53Remote, f : String, args : Array[Json]) -> Unit {
       let id = p53_ai(args, 1)
       match self.writing.get(path) {
         Some(theirs) => {
-          match theirs.get(id) {
-            Some(d) => ignore(d.succeed(()))
-            None => ()
-          }
+          if theirs.get(id) is Some(d) { ignore(d.succeed(())) }
           theirs.remove(id)
           if theirs.length() == 0 {
             self.writing.remove(path)
@@ -371,7 +361,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
   let bus = self.bus
   let host = bus.host
   if f.has_prefix("store.") {
-    return p53_store_asked(bus.store, f[6:].to_owned(), args)
+    return dispatch_store(bus, f[6:].to_owned(), args)
   }
   let a = (i : Int) => p53_a(args, i)
   let s = (i : Int) => p53_as(args, i)
@@ -392,10 +382,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
       Json::null()
     }
     "node.seenAt" =>
-      match self.rooms.seen_at(s(0)) {
-        Some(t) => jn(t)
-        None => Json::null()
-      }
+      (self.rooms.seen_at(s(0))).map(jn).unwrap_or(Json::null())
     "node.forgetSeen" => {
       self.rooms.forget_seen(s(0))
       Json::null()
@@ -476,7 +463,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
     "node.listStations" => self.station_list(s(0), s(1), s(2))
     "node.stationFile" => @jobs_host.station_file(host, self.bulk, self.asker(), s(0), a(1), a(2), s(3))
     "node.directory" => {
-      if !p53_is_dir(host, s(0)) {
+      if !host_is_dir(host, s(0)) {
         raise P53Error("\{s(0)} is not a directory")
       }
       Json::null()
@@ -733,10 +720,7 @@ async fn p53_workspace_size(bus : LiveBus, path : String, limit : Double) -> @jo
   let (_, _, out, _) = proc.finished()
   let line = p53_utf8(out).split("\n").to_array()
   let said = if line.length() > 0 { attempt(() => @json.parse(line[0].to_string())).unwrap_or(Json::null()) } else { Json::null() }
-  match jtext(said, "error") {
-    Some(e) => raise P53Error(e)
-    None => ()
-  }
+  if jtext(said, "error") is Some(e) { raise P53Error(e) }
   let bytes = jnum_of(said, "size").unwrap_or(0.0)
   if jtrue(said, "enough") {
     { bytes, complete: false, truncated: false }

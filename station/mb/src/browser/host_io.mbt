@@ -5,44 +5,14 @@
 // platform finds) the station gives as it starts these parts (`MachineProcs`).
 
 ///|
-fn shell_str(v : Json?) -> String? {
-  match v {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn shell_field(v : Json, k : String) -> Json? {
-  match v {
-    Object(m) => m.get(k)
-    _ => None
-  }
-}
-
-///|
 /// The clock on `host`'s runtime: `wall` the wall's time (ms) as the station told it as the program started.
 pub fn host_clock(host : @host.Host, wall : Double) -> Clock {
   let steady = @host.now()
   {
     now: () => wall + (@host.now() - steady).to_double(),
-    after: (ms, f) => {
-      let fiber = host.rt.fork(async fn() {
-        @effect.sleep(if ms > 0.0 { ms.to_int() } else { 0 })
-        f() catch {
-          _ => ()
-        }
-      })
-      () => fiber.interrupt()
-    },
-    spawn: f => ignore(
-      host.rt.fork_daemon("browser", on_error=_ => (), async fn() {
-        f() catch {
-          _ => ()
-        }
-      }),
-    ),
-    sleep: async fn(ms) { @effect.sleep(if ms > 0.0 { ms.to_int() } else { 0 }) },
+    after: (ms, f) => @host_world.after_async(host, ms.to_int(), f, swallow_error=true),
+    spawn: f => @host_world.spawn_daemon(host, "browser", f, silent=true),
+    sleep: async fn(ms) { @host_world.sleep_ms(ms.to_int()) },
   }
 }
 
@@ -56,86 +26,69 @@ pub fn host_log() -> Log {
 }
 
 ///|
-/// A shell's failure as node:fs would say it: its code where its words say one (`ENOENT`…), as Rust's std::fs says
-/// them on Unix and on Windows (a directory not there is os error 3 there, a file 2; denied 5; there already 80 or 183).
 fn fs_error(e : Error) -> FsError {
-  let words = message_of(e)
-  let says = (xs : Array[String]) => xs.iter().any(x => words.contains(x))
-  let code = if says(["os error 2)", "os error 3)", "No such file", "cannot find the "]) {
-    "ENOENT"
-  } else if says(["os error 17)", "os error 80)", "os error 183)", "exists"]) {
-    "EEXIST"
-  } else if says(["os error 13)", "os error 5)", "denied"]) {
-    "EACCES"
-  } else {
-    "EIO"
+  let words = @host_world.shell_error_msg(e)
+  FsError(@host_world.os_code(words), words)
+}
+
+///|
+async fn[T] wrap_fs(f : async () -> T) -> T {
+  f() catch {
+    FsError(_, _) as e => raise e
+    e => raise fs_error(e)
   }
-  FsError(code, words)
 }
 
 ///|
 /// The machine's files, through the shell: each asked of it without waiting (`shell`, done on its own threads, never
 /// this program's loop), `fs.write` written beside and renamed into place, then made the station's alone.
 pub fn host_files(host : @host.Host) -> Files {
-  let ask = async fn(op : String, args : Json) -> Json {
-    let (v, _) = host.shell(op, args) catch {
-      e => raise fs_error(e)
-    }
-    v
-  }
-  let meta = async fn(path : String) -> Json? {
-    try Some(ask("fs.meta", { "path": Json::string(path) })) catch {
+  let meta = async fn(path : String) -> @host_world.MetaInfo? {
+    @host_world.fs_meta(host, path) catch {
       _ => None
     }
   }
-  let there = async fn(path : String) -> Bool { meta(path) is Some(Object(_)) }
-  // (written whole beside it and renamed in, made `mode` after)
+  let there = async fn(path : String) -> Bool { meta(path) is Some(_) }
   let put = async fn(path : String, text_ : String, mode : Int) {
-    ignore(ask("fs.write", { "path": Json::string(path), "text": Json::string(text_) }))
-    ignore(ask("fs.chmod", { "path": Json::string(path), "mode": Json::number(mode.to_double()) }))
+    wrap_fs(async fn() {
+      @host_world.fs_write(host, path, text_)
+      ignore(@host_world.shell_call(host, false, "fs.chmod", { "path": Json::string(path), "mode": Json::number(mode.to_double()) }))
+    })
   }
   // (a file whose directory is not there is not made, as node:fs's open says ENOENT)
   let put_in = async fn(path : String, text_ : String, mode : Int) {
     if !there(pdirname(path)) {
-      raise FsError("ENOENT", "ENOENT: no such file or directory, open '\{path}'")
+      raise FsError("ENOENT", @host_world.enoent_msg("open", path))
     }
     put(path, text_, mode)
   }
   {
-    read: async fn(path) {
-      shell_str(Some(ask("fs.read", { "path": Json::string(path) }))) catch {
-        _ => None
-      }
-    },
+    read: async fn(path) { @host_world.fs_read_text(host, path) catch { _ => None } },
     write_private: async fn(path, text_) { put(path, text_, 0o600) },
     write: async fn(path, text_, mode) { put_in(path, text_, mode) },
     create: async fn(path, text_) { put_in(path, text_, 0o600) },
-    rename: async fn(from, to) { ignore(ask("fs.rename", { "from": Json::string(from), "to": Json::string(to) })) },
+    rename: async fn(from, to) { wrap_fs(async fn() { @host_world.fs_rename(host, from, to) }) },
     unlink: async fn(path) {
       if !there(path) {
-        raise FsError("ENOENT", "ENOENT: no such file or directory, unlink '\{path}'")
+        raise FsError("ENOENT", @host_world.enoent_msg("unlink", path))
       }
-      ignore(ask("fs.remove", { "path": Json::string(path) }))
+      wrap_fs(async fn() { @host_world.fs_remove(host, path) })
     },
-    mkdir: async fn(path, _mode) { ignore(ask("fs.mkdir", { "path": Json::string(path) })) },
-    rm: async fn(path, recursive) {
-      ignore(ask("fs.remove", { "path": Json::string(path), "recursive": Json::boolean(recursive) }))
-    },
+    mkdir: async fn(path, _mode) { wrap_fs(async fn() { @host_world.fs_mkdir(host, path) }) },
+    rm: async fn(path, recursive) { wrap_fs(async fn() { @host_world.fs_remove(host, path, recursive~) }) },
     readdir: async fn(path) {
-      match ask("fs.readdir", { "path": Json::string(path) }) {
-        Array(xs) => xs.filter_map(x => shell_str(Some(x)))
-        _ => raise FsError("ENOENT", "ENOENT: no such file or directory, scandir '\{path}'")
-      }
+      wrap_fs(async fn() {
+        match @host_world.fs_readdir(host, path) {
+          Some(xs) => xs
+          None => raise FsError("ENOENT", @host_world.enoent_msg("scandir", path))
+        }
+      })
     },
     exists: async fn(path) { there(path) },
     mtime: async fn(path) {
       match meta(path) {
-        Some(Object(m)) =>
-          match m.get("mtime") {
-            Some(Number(n, ..)) => n
-            _ => 0.0
-          }
-        _ => raise FsError("ENOENT", "ENOENT: no such file or directory, stat '\{path}'")
+        Some(m) => m.mtime_ms
+        None => raise FsError("ENOENT", @host_world.enoent_msg("stat", path))
       }
     },
   }
@@ -145,47 +98,16 @@ pub fn host_files(host : @host.Host) -> Files {
 /// Chrome's DevTools over the shell's WebSocket, for `connect_cdp`.
 pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket {
   async fn(url, link) {
-    let (answer, _) = host.shell("ws.open", { "url": Json::string(url), "headers": Json::array([]) })
-    let id = match shell_field(answer, "id") {
-      Some(Number(n, ..)) => n
-      _ => raise fail_("the browser's DevTools did not answer at \{url}")
+    let conn = @host_world.ws_open(
+      host,
+      url,
+      "browser",
+      on_message=t => link.heard(t),
+      on_close=_ => link.ended(),
+    ) catch {
+      e => raise fail_("the browser's DevTools did not answer at \{url}: \{@host_world.shell_error_msg(e)}")
     }
-    let fiber = host.rt.fork(async fn() {
-      while true {
-        let (frame, _) = host.shell("ws.next", { "id": Json::number(id) }) catch {
-          _ => {
-            link.ended()
-            return
-          }
-        }
-        match shell_str(shell_field(frame, "text")) {
-          Some(t) => link.heard(t)
-          None => {
-            link.ended()
-            return
-          }
-        }
-      }
-    })
-    {
-      send: t => ignore(
-        host.rt.fork_quiet(name="browser ws send", async fn() {
-          ignore(host.shell("ws.send", { "id": Json::number(id), "text": Json::string(t) })) catch {
-            _ => ()
-          }
-        }),
-      ),
-      close: () => {
-        fiber.interrupt()
-        ignore(
-          host.rt.fork_quiet(name="browser ws close", async fn() {
-            ignore(host.shell("ws.close", { "id": Json::number(id) })) catch {
-              _ => ()
-            }
-          }),
-        )
-      },
-    }
+    { send: conn.send, close: conn.close }
   }
 }
 
@@ -280,9 +202,7 @@ pub fn host_machine(host : @host.Host, clock : Clock, procs : MachineProcs) -> M
 pub fn host_release_io(host : @host.Host) -> ReleaseIo {
   {
     write_bytes: async fn(path, b) {
-      ignore(host.shell("fs.put", { "path": Json::string(path), "truncate": true }, bytes=b)) catch {
-        e => raise fs_error(e)
-      }
+      wrap_fs(async fn() { @host_world.fs_put(host, path, b, truncate=true) })
     },
     untar: async fn(tgz, out) {
       let args = ["-xzf", tgz, "-C", out]
@@ -298,10 +218,9 @@ pub fn host_release_io(host : @host.Host) -> ReleaseIo {
         _ => ()
       }
     },
-    random_hex: n => match
-      (try Some(host.shell_sync("crypto.random", { "bytes": Json::number(n.to_double()) })) catch { _ => None }) {
-      Some(String(s)) => s
-      _ => "0".repeat(n * 2)
+    random_hex: n => {
+      let s = @host_world.random_hex(host, n)
+      if s.length() > 0 { s } else { "0".repeat(n * 2) }
     },
   }
 }

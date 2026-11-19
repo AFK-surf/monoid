@@ -174,7 +174,7 @@ pub fn stream_of(@jsjson.JValue) -> (String, String)
 
 pub let take_method : String
 
-pub fn text_of(BytesView) -> String
+pub fn text_of(BytesView, ignore_bom? : Bool) -> String
 
 pub fn thread_of(String, String) -> @jsjson.JValue
 

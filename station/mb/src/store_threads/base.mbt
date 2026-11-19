@@ -138,32 +138,13 @@ fn num(v : Json) -> Double {
 }
 
 ///|
-fn jnum(n : Double) -> Json {
-  Json::number(n)
+using @jsjson {
+  json_num as jnum, json_int as jint, json_str as jstr, json_bool as jbool, json_opt_str as jopt,
+  jval_of_json as of_json, stringify, jval_str_of as jtext, jval_obj as jobj,
 }
 
 ///|
-fn jint(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jbool(b : Bool) -> Json {
-  Json::boolean(b)
-}
-
-///|
-fn jopt(s : String?) -> Json {
-  match s {
-    Some(s) => Json::string(s)
-    None => Json::null()
-  }
-}
+using @readops {to_json}
 
 ///|
 fn text_of(v : Json) -> String? {
@@ -387,35 +368,8 @@ fn parsed(v : Json) -> @jsjson.JValue? {
 }
 
 ///|
-fn to_json(v : @jsjson.JValue) -> Json {
-  @readops.to_json(v)
-}
-
-///|
-/// A value as JavaScript holds it, from what SQLite or the line gave.
-fn of_json(v : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(v)
-}
-
-///|
-/// `JSON.stringify`.
-fn stringify(v : @jsjson.JValue) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
 fn jget(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
   @jsjson.jval_at(Some(v), k)
-}
-
-///|
-fn jtext(v : @jsjson.JValue?) -> String? {
-  @jsjson.jval_str_of(v)
-}
-
-///|
-fn jobj(fields : Array[(String, @jsjson.JValue)]) -> @jsjson.JValue {
-  @jsjson.JValue::of_object(fields)
 }
 
 ///|

@@ -45,7 +45,7 @@ pub fn Media::pin(Self, MediaStatus) -> Unit
 pub fn Media::play_pause(Self) -> Unit
 pub fn Media::position(Self) -> Double
 pub fn Media::retry(Self) -> Unit
-pub fn Media::scrub_done(Self) -> Unit
+pub fn Media::scrub_done(Self, at? : Double) -> Unit
 pub fn Media::scrub_resumes(Self) -> Bool
 pub fn Media::scrub_to(Self, Double) -> Unit
 pub fn Media::scrubbing(Self) -> Double?

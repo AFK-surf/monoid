@@ -109,10 +109,7 @@ fn bridged_runtime_driver(
         )
       }
       _ => {
-        let id = match o.resume {
-          Some(r) => r
-          None => @drive.random_uuid()
-        }
+        let id = o.resume.unwrap_or(@drive.random_uuid())
         (@agent_runtimes.pi_start(host, o, base, "pi", bridge, id, None), id)
       }
     }
@@ -369,7 +366,7 @@ fn acp_runtime_driver(
       if stopping.val {
         raise LiveError("Hermes driver is shutting down")
       }
-      let key = "models-\{id}-\{p53_uuid()}"
+      let key = "models-\{id}-\{@drive.random_uuid()}"
       let options : Json = {
         "key": jstr(key),
         "profile": profile,

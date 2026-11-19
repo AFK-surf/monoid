@@ -23,14 +23,8 @@ fn p54_drive_refused(e : Error) -> Error {
   match e {
     @drive.DriveError(d) => {
       let said : Map[String, Json] = { "code": Json::string(d.code), "message": Json::string(d.message) }
-      match d.have {
-        Some(h) => said["have"] = Json::number(h)
-        None => ()
-      }
-      match d.about {
-        Some(a) => said["about"] = Json::string(a)
-        None => ()
-      }
+      if d.have is Some(h) { said["have"] = Json::number(h) }
+      if d.about is Some(a) { said["about"] = Json::string(a) }
       P54Refused("DriveError", Json::object(said))
     }
     other => other
@@ -288,10 +282,7 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
           )
         "drive/posters.wanted" => Json::boolean(@drive.video_wanted(s(0)))
         "drive/posters.poster" =>
-          match @drive.poster(s(0), s(1), @drive.shell_makers(bus.host)) {
-            Some(p) => Json::string(p)
-            None => Json::null()
-          }
+          jopt(@drive.poster(s(0), s(1), @drive.shell_makers(bus.host)))
         "drive/grants.sign" => Json::string(@drive.sign(d.key, to_jv(call_arg(a, 1).unwrap_or(Json::null()))))
         "drive/transfers.shown" => of_jv(@drive.shown(to_jv(call_arg(a, 0).unwrap_or(Json::null()))))
         "transfers.now" => Json::number(wall_ms().to_double())
@@ -366,13 +357,7 @@ fn p54_folder_watches(bus : LiveBus) -> @drive.FolderWatches {
       let rt = bus.host.rt
       let clock : @drive.Clock = {
         now: () => wall_ms().to_double(),
-        after: (ms, f) => {
-          let fiber = rt.fork(name="drive watches", async fn() {
-            @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a debounce of a burst, a hold's deadline (drive/watch.ts)
-            f()
-          })
-          () => fiber.interrupt()
-        },
+        after: (ms, f) => bus_after(bus.host, if ms < 1.0 { 1.0 } else { ms }, f),
       }
       // (the shell keeps no watch of a folder: its entries looked at every P54_FOLDER_LOOK_MS while it is watched)
       let open = (dir : String, changed : () -> Unit, failed : () -> Unit) => {

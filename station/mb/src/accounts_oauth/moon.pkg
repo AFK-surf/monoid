@@ -2,6 +2,7 @@ import {
   "base/codec",
   "base/url",
   "station/host",
+  "station/host_world",
   "station/readops",
   "station/jsjson",
   "station/jscase",

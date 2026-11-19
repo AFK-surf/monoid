@@ -155,6 +155,15 @@ pub fn ScopeDirectory::ready(self : ScopeDirectory, scope : String, node : Strin
 }
 
 ///|
+/// Whether `node` is on the scope's roster here (`admits`): an exchange asks a peer for only these.
+pub fn ScopeDirectory::admits(self : ScopeDirectory, scope : String, node : String) -> Bool {
+  match self.wanted.get(scope) {
+    Some(r) => r.nodes.contains(node)
+    None => false
+  }
+}
+
+///|
 /// The scope's announcements kept, none older than its node's registration's generation (`records`).
 pub fn ScopeDirectory::records(self : ScopeDirectory, scope : String) -> Array[Json] {
   guard self.wanted.get(scope) is Some(r) else { return [] }

@@ -63,23 +63,117 @@ pub fn jput(JV, String, JV) -> Unit
 
 pub fn js(String) -> JV
 
+pub fn js_all_digits(String) -> Bool
+
 pub fn js_compare(String, String) -> Int32
+
+pub fn js_ends(String, String) -> Bool
+
+pub fn js_includes(String, String) -> Bool
 
 pub fn js_index_of(String, String, from? : Int32) -> Int32
 
 pub fn js_last_index_of(String, String) -> Int32
 
+pub fn js_less(String, String) -> Bool
+
 pub fn js_number(String) -> Double
+
+pub fn js_replace_all(String, String, String) -> String
 
 pub fn js_round(Double) -> Double
 
 pub fn js_slice(String, Int32, end? : Int32) -> String
 
+pub fn js_slice_to(String, Int32) -> String
+
 pub fn js_split(String, String) -> Array[String]
+
+pub fn js_split_lines(String) -> Array[String]
+
+pub fn js_starts(String, String) -> Bool
 
 pub fn js_string(JValue) -> Array[Int32]
 
+pub fn js_trunc(Double) -> Double
+
+pub fn js_uniq(Array[String]) -> Array[String]
+
+pub fn js_upper_ascii(String) -> String
+
+pub fn js_utf8_len(String) -> Int32
+
 pub fn jset(JV, String, JV) -> JV
+
+pub fn json_arr(Array[@json.Json]) -> @json.Json
+
+pub fn json_arr_at(@json.Json?, String) -> Array[@json.Json]?
+
+pub fn json_arr_field(@json.Json, String) -> Array[@json.Json]?
+
+pub fn json_arr_of(@json.Json?) -> Array[@json.Json]?
+
+pub fn json_at(@json.Json?, String) -> @json.Json?
+
+pub fn json_bool(Bool) -> @json.Json
+
+pub fn json_bool_at(@json.Json?, String) -> Bool?
+
+pub fn json_bool_field(@json.Json, String) -> Bool
+
+pub fn json_bool_of(@json.Json?) -> Bool?
+
+pub fn json_field(@json.Json, String) -> @json.Json?
+
+pub fn json_finite(@json.Json?) -> Double?
+
+pub fn json_int(Int32) -> @json.Json
+
+pub fn json_int64(Int64) -> @json.Json
+
+pub fn json_is_obj(@json.Json?) -> Bool
+
+pub fn json_is_objectish(@json.Json?) -> Bool
+
+pub fn json_items(@json.Json?) -> Array[@json.Json]
+
+pub fn json_js_str(@json.Json?) -> String
+
+pub fn json_nullish(@json.Json?) -> Bool
+
+pub fn json_num(Double) -> @json.Json
+
+pub fn json_num_at(@json.Json?, String) -> Double?
+
+pub fn json_num_field(@json.Json, String) -> Double?
+
+pub fn json_num_js(Double) -> @json.Json
+
+pub fn json_num_of(@json.Json?) -> Double?
+
+pub fn json_obj(Array[(String, @json.Json)]) -> @json.Json
+
+pub fn json_opt_str(String?) -> @json.Json
+
+pub fn json_same_opt(@json.Json?, @json.Json?) -> Bool
+
+pub fn json_str(String) -> @json.Json
+
+pub fn json_str_at(@json.Json?, String) -> String?
+
+pub fn json_str_field(@json.Json, String) -> String?
+
+pub fn json_str_of(@json.Json?) -> String?
+
+pub fn json_stringify(@json.Json) -> String
+
+pub fn json_stringify_pretty(@json.Json) -> String
+
+pub fn json_strings_of(@json.Json?) -> Array[String]
+
+pub fn json_strs(Array[String]) -> @json.Json
+
+pub fn json_truthy(@json.Json?) -> Bool
 
 pub fn jspread(JV, JV) -> JV
 
@@ -101,7 +195,11 @@ pub fn jv_stringify_pretty(JV) -> String
 
 pub fn jval_arr(JValue?) -> Array[JValue]
 
+pub fn jval_arr_at(JValue?, String) -> Array[JValue]?
+
 pub fn jval_arr_of(JValue?) -> Array[JValue]?
+
+pub fn jval_array(Array[JValue]) -> JValue
 
 pub fn jval_at(JValue?, String) -> JValue?
 
@@ -113,13 +211,29 @@ pub fn jval_at_path(JValue?, Array[String]) -> JValue?
 
 pub fn jval_at_path_last(JValue?, Array[String]) -> JValue?
 
+pub fn jval_bool(Bool) -> JValue
+
+pub fn jval_bool_at(JValue?, String) -> Bool?
+
 pub fn jval_bool_of(JValue?) -> Bool?
 
 pub fn jval_del(JValue, String) -> JValue
 
 pub fn jval_entries(JValue?) -> Array[(String, JValue)]
 
+pub fn jval_finite(JValue?) -> Double?
+
+pub fn jval_finite_or_zero(JValue?) -> Double
+
+pub fn jval_int(Int32) -> JValue
+
+pub fn jval_is_arr(JValue?) -> Bool
+
 pub fn jval_is_integer(JValue?) -> Bool
+
+pub fn jval_is_obj(JValue?) -> Bool
+
+pub fn jval_is_record(JValue?) -> Bool
 
 pub fn jval_is_true(JValue?) -> Bool
 
@@ -127,13 +241,37 @@ pub fn jval_js_num(JValue?) -> Double
 
 pub fn jval_js_str(JValue?) -> String
 
+pub fn jval_js_str_raw(JValue) -> String
+
+pub fn jval_keys(JValue) -> Array[Array[Int32]]
+
 pub fn jval_keys_of(JValue) -> Array[String]
+
+pub fn jval_nonempty(JValue?) -> String?
 
 pub fn jval_nullish(JValue?) -> Bool
 
+pub fn jval_num(Double) -> JValue
+
+pub fn jval_num_at(JValue?, String) -> Double?
+
 pub fn jval_num_of(JValue?) -> Double?
 
+pub fn jval_num_text_of(JValue) -> String
+
+pub fn jval_obj(Array[(String, JValue)]) -> JValue
+
+pub fn jval_of_json(@json.Json) -> JValue
+
+pub fn jval_opt_str(String?) -> JValue
+
+pub fn jval_or_null(JValue?) -> JValue
+
+pub fn jval_quote(String) -> String
+
 pub fn jval_safe_int(JValue?) -> Bool
+
+pub fn jval_same_opt(JValue?, JValue?) -> Bool
 
 pub fn jval_set(JValue, String, JValue) -> JValue
 
@@ -141,9 +279,27 @@ pub fn jval_set_or_new(JValue, String, JValue) -> JValue
 
 pub fn jval_spread(JValue, JValue) -> JValue
 
+pub fn jval_str(String) -> JValue
+
+pub fn jval_str_at(JValue?, String) -> String?
+
+pub fn jval_str_eq(JValue?, String) -> Bool
+
 pub fn jval_str_of(JValue?) -> String?
 
+pub fn jval_str_raw_of(JValue?) -> String?
+
+pub fn jval_stringify_num(Double) -> String
+
+pub fn jval_strings_of(JValue?) -> Array[String]
+
+pub fn jval_strs(Array[String]) -> JValue
+
 pub fn jval_text(JValue?) -> String
+
+pub fn jval_to_json(JValue) -> @json.Json
+
+pub fn jval_to_json_lossy(JValue) -> @json.Json
 
 pub fn jval_truthy(JValue?) -> Bool
 

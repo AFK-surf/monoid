@@ -373,6 +373,21 @@ jobs:
           sh .github/deploy.sh --dry-run web-beta
           test "$(node -p 'require("./dist/cloud-web/build.json").revision')" = "${{ needs.plan.outputs.sha }}"
           cd cloud && python3 deploy.py promote-web ../dist/cloud-web
+      # monoid's web app built from the same revision and page as monoid-static builds main's, then put on
+      # app.monoid.build: a release with fixes picked onto it (web=build) left monoid's web where it was (0.1.9870,
+      # 0.1.10157). Not a reason to hold still.fail's release back.
+      - name: Build the release's monoid web app and deploy it
+        if: needs.plan.outputs.web == 'build'
+        continue-on-error: true
+        env:
+          STILLFAIL_CLOUD: monoid
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
+        run: |
+          rm -rf dist/cloud-web
+          sh .github/deploy.sh --dry-run web-beta
+          test "$(node -p 'require("./dist/cloud-web/build.json").revision')" = "${{ needs.plan.outputs.sha }}"
+          cd cloud && python3 deploy.py promote-web ../dist/cloud-web
       - name: Promote the same revision's original beta web artifact
         if: needs.plan.outputs.web == 'artifact'
         env:

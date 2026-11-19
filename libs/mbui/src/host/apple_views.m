@@ -16,7 +16,11 @@
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
+#import <errno.h>
 #import <objc/message.h>
+#import <os/lock.h>
+#import <stdlib.h>
+#import <unistd.h>
 __asm__(".linker_option \"-framework\", \"UniformTypeIdentifiers\"");
 #if TARGET_OS_OSX
 #import <Cocoa/Cocoa.h>
@@ -48,9 +52,217 @@ static void vlog(NSString *fmt, ...) {
 
 // a read's most bytes (a part of the core's)
 static const long long kMaxRead = 4 << 20;
+// local block cache granularity for streamed media (64 KiB)
+static const long long kCacheBlock = 64 << 10;
 // How much past where it is must have come for it to play on (ms): a stretch, not the next frame alone, so playing
 // on a slow network goes on for a while each time rather than a frame at a time.
 static const double kPlayAhead = 1000;
+
+static BOOL pread_all(int fd, uint8_t *buf, size_t len, off_t off) {
+  size_t done = 0;
+  while (done < len) {
+    ssize_t r = pread(fd, buf + done, len - done, off + (off_t)done);
+    if (r < 0) {
+      if (errno == EINTR) continue;
+      return NO;
+    }
+    if (r == 0) return NO;
+    done += (size_t)r;
+  }
+  return YES;
+}
+
+static BOOL pwrite_all(int fd, const uint8_t *buf, size_t len, off_t off) {
+  size_t done = 0;
+  while (done < len) {
+    ssize_t w = pwrite(fd, buf + done, len - done, off + (off_t)done);
+    if (w < 0) {
+      if (errno == EINTR) continue;
+      return NO;
+    }
+    if (w == 0) return NO;
+    done += (size_t)w;
+  }
+  return YES;
+}
+
+// Per-view unlinked temporary file cache shared by AVPlayer (MBLoader) and WebKit (MBWebVideo):
+// bytes already fetched from the app are served locally without another round trip across main thread / core.
+@interface MBFileCache : NSObject
+- (void)setTotal:(long long)total;
+- (long long)total;
+- (BOOL)hasBlock:(long long)block;
+- (long long)nextCachedOffsetFrom:(long long)off limit:(long long)limit;
+- (NSData *)readAt:(long long)off maxLength:(long long)maxLen;
+- (BOOL)writeAt:(long long)off bytes:(const uint8_t *)bytes length:(long long)len;
+- (void)markCompleteFrom:(long long)start to:(long long)end isEOF:(BOOL)eof;
+- (void)close;
+@end
+
+@implementation MBFileCache {
+  os_unfair_lock _lock;
+  int _fd;
+  long long _total;
+  uint8_t *_bits;
+  size_t _bitCap;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (!self) return nil;
+  _lock = OS_UNFAIR_LOCK_INIT;
+  _fd = -1;
+  _total = -1;
+  NSString *tmpl = [NSTemporaryDirectory() stringByAppendingPathComponent:@"mbui-vid-XXXXXX"];
+  char *path = strdup(tmpl.fileSystemRepresentation);
+  if (path) {
+    int fd = mkstemp(path);
+    if (fd >= 0) {
+      unlink(path);
+      _fd = fd;
+    }
+    free(path);
+  }
+  return self;
+}
+
+- (BOOL)hasBlockLocked:(long long)block {
+  if (_fd < 0 || block < 0) return NO;
+  size_t idx = (size_t)(block >> 3);
+  return idx < _bitCap && (_bits[idx] & (1u << (block & 7))) != 0;
+}
+
+- (BOOL)ensureBitsLocked:(long long)block {
+  if (block < 0) return NO;
+  size_t idx = (size_t)(block >> 3);
+  if (idx < _bitCap) return YES;
+  size_t next = _bitCap ? _bitCap : 64;
+  while (next <= idx) next *= 2;
+  uint8_t *grown = realloc(_bits, next);
+  if (!grown) return NO;
+  memset(grown + _bitCap, 0, next - _bitCap);
+  _bits = grown;
+  _bitCap = next;
+  return YES;
+}
+
+- (void)setTotal:(long long)total {
+  if (total < 0) return;
+  os_unfair_lock_lock(&_lock);
+  _total = total;
+  os_unfair_lock_unlock(&_lock);
+}
+
+- (long long)total {
+  os_unfair_lock_lock(&_lock);
+  long long t = _total;
+  os_unfair_lock_unlock(&_lock);
+  return t;
+}
+
+- (BOOL)hasBlock:(long long)block {
+  os_unfair_lock_lock(&_lock);
+  BOOL ok = [self hasBlockLocked:block];
+  os_unfair_lock_unlock(&_lock);
+  return ok;
+}
+
+- (long long)nextCachedOffsetFrom:(long long)off limit:(long long)limit {
+  os_unfair_lock_lock(&_lock);
+  long long out = limit;
+  if (_fd >= 0 && off >= 0 && off < limit) {
+    long long firstB = off / kCacheBlock;
+    long long lastB = (limit - 1) / kCacheBlock;
+    for (long long b = firstB; b <= lastB; b++) {
+      if ([self hasBlockLocked:b]) {
+        long long bo = b * kCacheBlock;
+        out = bo > off ? bo : off;
+        break;
+      }
+    }
+  }
+  os_unfair_lock_unlock(&_lock);
+  return out;
+}
+
+- (NSData *)readAt:(long long)off maxLength:(long long)maxLen {
+  os_unfair_lock_lock(&_lock);
+  if (_fd < 0 || off < 0 || maxLen <= 0) {
+    os_unfair_lock_unlock(&_lock);
+    return nil;
+  }
+  long long b = off / kCacheBlock;
+  if (![self hasBlockLocked:b]) {
+    os_unfair_lock_unlock(&_lock);
+    return nil;
+  }
+  long long cap = MIN(maxLen, 512 << 10);
+  long long availEnd = off;
+  for (long long i = b; availEnd - off < cap; i++) {
+    if (![self hasBlockLocked:i]) break;
+    long long bEnd = (i + 1) * kCacheBlock;
+    if (_total >= 0 && bEnd > _total) bEnd = _total;
+    if (bEnd <= availEnd) break;
+    availEnd = bEnd;
+  }
+  long long want = MIN(availEnd - off, cap);
+  if (want <= 0) {
+    os_unfair_lock_unlock(&_lock);
+    return nil;
+  }
+  NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)want];
+  BOOL ok = pread_all(_fd, data.mutableBytes, (size_t)want, (off_t)off);
+  os_unfair_lock_unlock(&_lock);
+  return ok ? data : nil;
+}
+
+- (BOOL)writeAt:(long long)off bytes:(const uint8_t *)bytes length:(long long)len {
+  if (!bytes || off < 0 || len <= 0) return NO;
+  os_unfair_lock_lock(&_lock);
+  BOOL ok = _fd >= 0 && pwrite_all(_fd, bytes, (size_t)len, (off_t)off);
+  os_unfair_lock_unlock(&_lock);
+  return ok;
+}
+
+- (void)markCompleteFrom:(long long)start to:(long long)end isEOF:(BOOL)eof {
+  if (start < 0 || end <= start) return;
+  os_unfair_lock_lock(&_lock);
+  if (_fd >= 0) {
+    long long firstB = start / kCacheBlock;
+    long long lastB = (end - 1) / kCacheBlock;
+    for (long long b = firstB; b <= lastB; b++) {
+      long long bStart = b * kCacheBlock;
+      long long bEnd = bStart + kCacheBlock;
+      if (start > bStart) continue;
+      BOOL full = end >= bEnd;
+      BOOL tail = !full && ((_total >= 0 && end >= _total) || eof);
+      if ((full || tail) && [self ensureBitsLocked:b]) {
+        _bits[(size_t)(b >> 3)] |= (uint8_t)(1u << (b & 7));
+      }
+    }
+  }
+  os_unfair_lock_unlock(&_lock);
+}
+
+- (void)close {
+  os_unfair_lock_lock(&_lock);
+  if (_fd >= 0) {
+    close(_fd);
+    _fd = -1;
+  }
+  if (_bits) {
+    free(_bits);
+    _bits = NULL;
+    _bitCap = 0;
+  }
+  os_unfair_lock_unlock(&_lock);
+}
+
+- (void)dealloc {
+  [self close];
+}
+
+@end
 
 // ---------------------------------------------------------------------------
 // Views of the platform: flipped on macOS (the app's coordinates are from the
@@ -167,7 +379,7 @@ void mb_views_forget(int wid) {
 @property(nonatomic) BOOL cancelled;                               // lq's
 // the main thread's:
 @property(nonatomic) long long next, end;  // the next offset it wants; its end (-1: the file's)
-@property(nonatomic) BOOL hasData, wantsInfo, infoSent, gone;
+@property(nonatomic) BOOL hasData, wantsInfo, infoSent, gone, unalignedRetry;
 @end
 @implementation MBLoad
 @end
@@ -176,6 +388,7 @@ void mb_views_forget(int wid) {
 @property(nonatomic) int32_t rid;
 @property(nonatomic) long long off, len;
 @property(nonatomic) long long got;  // its bytes answered so far (it is answered as they come)
+@property(nonatomic) BOOL cacheBroken;
 @property(nonatomic, strong) MBLoad *load;
 @end
 @implementation MBRead
@@ -227,6 +440,7 @@ void mb_views_forget(int wid) {
 // a stream's (kind 4): the stream whose frames its layer shows
 @property(nonatomic) int32_t streamSid;
 @property(nonatomic, strong) MBLoader *loader;
+@property(nonatomic, strong) MBFileCache *fileCache;
 @property(nonatomic, strong) dispatch_queue_t lq;
 @property(nonatomic, copy) NSString *uti;
 @property(nonatomic) long long total;  // the file's size, -1 not known yet
@@ -236,7 +450,7 @@ void mb_views_forget(int wid) {
 @property(nonatomic) int32_t nextRid;
 @property(nonatomic) double speed;
 // a seek on its way (to seekMs), and the one asked meanwhile to go to once it is done (chaseMs), if any
-@property(nonatomic) BOOL seeking, chasing;
+@property(nonatomic) BOOL seeking, chasing, seekNear;
 @property(nonatomic) int seekGen;  // the seek on its way (one let go of for another: not this one's completion)
 @property(nonatomic) double seekMs, chaseMs;
 @property(nonatomic) BOOL chaseNear;  // the one asked meanwhile is to go about there (seekTo:near:)
@@ -325,26 +539,54 @@ static void fill_info(AVAssetResourceLoadingRequest *req, NSString *uti, long lo
 
 - (BOOL)resourceLoader:(AVAssetResourceLoader *)rl
     shouldWaitForLoadingOfRequestedResource:(AVAssetResourceLoadingRequest *)req {
-  MBLoad *l = [MBLoad new];
-  l.req = req;
-  if (!self.loads) self.loads = [NSMutableArray new];
-  [self.loads addObject:l];
+  MBNative *v = self.view;
+  if (!v || v.closed || v.avDetached) return NO;
   AVAssetResourceLoadingDataRequest *dr = req.dataRequest;
   long long off = dr ? dr.currentOffset : 0;
   long long len = dr ? (long long)dr.requestedLength - (dr.currentOffset - dr.requestedOffset) : 0;
   BOOL toEnd = dr ? dr.requestsAllDataToEndOfResource : NO;
+  long long origEnd = toEnd ? -1 : off + len;
   BOOL info = req.contentInformationRequest != nil;
   BOOL data = dr != nil;
-  __weak MBNative *wv = self.view;
+  BOOL infoSent = NO;
+  MBFileCache *cache = v.fileCache;
+  long long cachedTotal = cache ? [cache total] : -1;
+  if (cachedTotal >= 0) {
+    if (info) {
+      fill_info(req, v.uti, cachedTotal);
+      infoSent = YES;
+    }
+    if (!data) {
+      [req finishLoading];
+      return YES;
+    }
+    long long reqEnd = toEnd ? cachedTotal : MIN(origEnd, cachedTotal);
+    while (off < reqEnd) {
+      NSData *chunk = [cache readAt:off maxLength:reqEnd - off];
+      if (!chunk) break;
+      [dr respondWithData:chunk];
+      off += (long long)chunk.length;
+    }
+    if (off >= reqEnd) {
+      [req finishLoading];
+      return YES;
+    }
+  }
+  MBLoad *l = [MBLoad new];
+  l.req = req;
+  if (!self.loads) self.loads = [NSMutableArray new];
+  [self.loads addObject:l];
+  __weak MBNative *wv = v;
   dispatch_async(dispatch_get_main_queue(), ^{
-    MBNative *v = wv;
-    if (!v || v.closed || v.avDetached) return;
+    MBNative *mv = wv;
+    if (!mv || mv.closed || mv.avDetached) return;
     l.next = off;
-    l.end = toEnd ? -1 : off + len;
+    l.end = origEnd;
     l.hasData = data;
     l.wantsInfo = info;
-    [v.loads addObject:l];
-    [v advance:l];
+    l.infoSent = infoSent;
+    [mv.loads addObject:l];
+    [mv advance:l];
   });
   return YES;
 }
@@ -402,9 +644,10 @@ static int32_t player_failure(NSError *error) {
 }
 
 - (void)seekTo:(double)ms near:(BOOL)near {
-  // (one on its way to what is here, or the item not ready for one yet: this one next, once it is; one on its way to
-  // what has not come waits on the network, not on decoding, and the next goes at once in its place)
-  if ((self.seeking && [self hasAt:self.seekMs]) || self.item.status != AVPlayerItemStatusReadyToPlay) {
+  // (one on its way to what is here, or the item not ready for one yet: this one next, once it is; an exact seek
+  // preempts an in-flight approximate scrub seek at once, and one waiting on the network is replaced at once)
+  if (self.item.status != AVPlayerItemStatusReadyToPlay ||
+      (self.seeking && [self hasAt:self.seekMs] && (near || !self.seekNear))) {
     self.chasing = YES;
     self.chaseMs = ms;
     self.chaseNear = near;
@@ -414,6 +657,7 @@ static int32_t player_failure(NSError *error) {
   self.seeking = YES;
   self.chasing = NO;
   self.seekMs = ms;
+  self.seekNear = near;
   [self stood];
   int gen = ++self.seekGen;
   __weak MBNative *wv = self;
@@ -590,6 +834,7 @@ static int32_t player_failure(NSError *error) {
 }
 
 - (void)dealloc {
+  [_fileCache close];
   if (_lastFrame) CVPixelBufferRelease(_lastFrame);
 }
 
@@ -621,8 +866,36 @@ static int32_t player_failure(NSError *error) {
     [self end:l error:NO];
     return;
   }
-  long long n = end >= 0 ? MIN(end - l.next, kMaxRead) : kMaxRead;
-  [self ask:l off:l.next len:n];
+  if (self.fileCache && (!l.wantsInfo || l.infoSent)) {
+    long long limit = end >= 0 ? end : (self.total >= 0 ? self.total : l.next + kMaxRead);
+    while (l.next < limit) {
+      NSData *chunk = [self.fileCache readAt:l.next maxLength:limit - l.next];
+      if (!chunk) break;
+      l.next += (long long)chunk.length;
+      dispatch_async(self.lq, ^{
+        if (!l.cancelled) [l.req.dataRequest respondWithData:chunk];
+      });
+    }
+    if (end >= 0 && l.next >= end) {
+      [self end:l error:NO];
+      return;
+    }
+  }
+  long long reqOff = l.unalignedRetry ? l.next : (l.next / kCacheBlock) * kCacheBlock;
+  l.unalignedRetry = NO;
+  long long reqEnd = end >= 0 ? ((end + kCacheBlock - 1) / kCacheBlock) * kCacheBlock : reqOff + kMaxRead;
+  if (self.total >= 0 && reqEnd > self.total) reqEnd = self.total;
+  if (reqEnd - reqOff > kMaxRead) reqEnd = reqOff + kMaxRead;
+  if (self.fileCache) {
+    long long nextCached = [self.fileCache nextCachedOffsetFrom:l.next limit:reqEnd];
+    if (nextCached > l.next && nextCached < reqEnd) reqEnd = nextCached;
+  }
+  long long reqLen = reqEnd - reqOff;
+  if (reqLen <= 0) {
+    reqOff = l.next;
+    reqLen = end >= 0 ? MIN(end - l.next, kMaxRead) : kMaxRead;
+  }
+  [self ask:l off:reqOff len:reqLen];
 }
 
 - (void)ask:(MBLoad *)l off:(long long)off len:(long long)len {
@@ -690,7 +963,10 @@ static int32_t player_failure(NSError *error) {
     [self.pending removeAllObjects];
     return;
   }
-  if (total >= 0) self.total = (long long)total;
+  if (total >= 0) {
+    self.total = (long long)total;
+    [self.fileCache setTotal:self.total];
+  }
   long long at = r.off + r.got;  // where these bytes are in the file
   r.got += n;
   self.answered += n;
@@ -701,6 +977,18 @@ static int32_t player_failure(NSError *error) {
       vlog(@"view %d: read at %lld: %lld of %lld bytes%s (%.0f in all, of %lld)", self.vid, r.off, r.got, r.len,
            more ? "" : ", its last", self.answered, self.total);
       while (self.logNext <= self.answered) self.logNext += kMaxRead;
+    }
+  }
+  if (l.hasData && self.fileCache && !r.cacheBroken) {
+    if (n > 0) {
+      if ([self.fileCache writeAt:at bytes:bytes length:n]) {
+        BOOL eof = !more && self.total >= 0 && r.off + r.got >= self.total;
+        [self.fileCache markCompleteFrom:r.off to:r.off + r.got isEOF:eof];
+      } else {
+        r.cacheBroken = YES;
+      }
+    } else if (!more && r.got > 0 && self.total >= 0 && r.off + r.got >= self.total) {
+      [self.fileCache markCompleteFrom:r.off to:r.off + r.got isEOF:YES];
     }
   }
   if (l.gone) return;
@@ -733,12 +1021,17 @@ static int32_t player_failure(NSError *error) {
   }
   if (more) return;
   if (r.got == 0) {  // the file's end: none before it (else the load fails, not asked again forever)
-    if (self.total < 0) self.total = l.next;
+    if (self.total < 0) {
+      self.total = l.next;
+      [self.fileCache setTotal:self.total];
+    }
     if (self.total > l.next) {
       vlog(@"view %d: no bytes at %lld, before the end (%lld)", self.vid, l.next, self.total);
       [self end:l error:YES];
       return;
     }
+  } else if (r.off < l.next && r.off + r.got <= l.next) {
+    l.unalignedRetry = YES;
   }
   [self advance:l];
 }
@@ -1155,6 +1448,7 @@ static MBNative *open_video(int32_t vid, NSString *mime) {
   v.pending = [NSMutableArray new];
   v.taken = [NSMutableDictionary new];
   v.loads = [NSMutableArray new];
+  v.fileCache = [MBFileCache new];
   v.lq = dispatch_queue_create("mbui.view.loader", DISPATCH_QUEUE_SERIAL);
   v.loader = [MBLoader new];
   v.loader.view = v;
@@ -1629,6 +1923,7 @@ void mb_host_view_close(int32_t vid) {
       v.playerLayer.player = nil;
       vlog(@"view %d: closed (%.0f bytes read)", vid, v.answered);
     }
+    [v.fileCache close];
   } else if (v.kind == 4) {
     mb_stream_attach_layer(v.streamSid, nil);
     vlog(@"view %d: closed", vid);
@@ -1681,7 +1976,9 @@ void mb_host_view_control(int32_t vid, int32_t op, double value) {
       // played again from its end: from the start, as the Android host's player does
       double dur = [v durationMs];
       CMTime t = v.player.currentTime;
-      if (dur > 0 && CMTIME_IS_NUMERIC(t) && CMTimeGetSeconds(t) * 1000.0 >= dur - 50) [v.player seekToTime:kCMTimeZero];
+      double at = (v.seeking || v.chasing) ? (v.chasing ? v.chaseMs : v.seekMs)
+                                           : (CMTIME_IS_NUMERIC(t) ? CMTimeGetSeconds(t) * 1000.0 : 0);
+      if (dur > 0 && at >= dur - 50) [v seekTo:0 near:NO];
       [v.player play];
       if (v.speed != 1) v.player.rate = (float)v.speed;
       [v stood];

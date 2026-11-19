@@ -480,7 +480,7 @@ fn Ctx::stretch_insts(
     let y1 = map(a[b + 1] + a[b + 3])
     a[b + 1] = y0
     a[b + 3] = y1 - y0
-    // turned (a turning mark's spokes): where it turns about goes where the stretch puts it, as its rect does (draw.mbt's
+    // turned (a turning mark's ring): where it turns about goes where the stretch puts it, as its rect does (draw.mbt's
     // moves): left where it was, the mark turned about a point the stretch moved its rect away from, drawn off its row
     if a[b + 32] != 0.0 {
       a[b + 34] = map(a[b + 34])

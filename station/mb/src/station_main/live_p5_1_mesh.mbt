@@ -104,58 +104,41 @@ fn shell_stream(host : @host.Host, id : Json) -> @door.Stream {
 /// A connection at the shell (`conn.*`), let go there once it is closed and its end told.
 fn shell_connection(host : @host.Host, id : Json) -> @door.Connection {
   let sync = (op : String) => host.shell_sync(op, { "id": id }) catch { _ => Json::null() }
-  let remote = match sync("conn.remoteId") {
-    String(s) => s
-    _ => ""
-  }
-  let alpn = alpn_text(match sync("conn.alpn") {
-    String(s) => s
-    _ => ""
-  })
+  let remote = as_text(sync("conn.remoteId")).unwrap_or("")
+  let alpn = alpn_text(as_text(sync("conn.alpn")).unwrap_or(""))
   let closed_info : Ref[Json?] = Ref(None)
   let ended : @effect.Deferred[String] = @effect.Deferred::new()
-  ignore(
-    host.rt.fork_daemon("conn closed", on_error=e => @host.note("conn closed failed: \{e}"), async fn() {
-      let info = host.shell("conn.closed", { "id": id }).0 catch {
-        e => { "kind": "other", "reason": Json::string("\{e}") }
-      }
-      if closed_info.val is None {
-        closed_info.val = Some(info)
-      }
-      ignore(host.shell("conn.close", { "id": id, "code": 0, "reason": "", "forget": true })) catch {
-        _ => ()
-      }
-      let words = match info {
-        { "reason": String(r), .. } if r != "" => r
-        _ => "closed"
-      }
-      ignore(ended.succeed(words))
-    }),
-  )
+  fork_bg(host, "conn closed", async fn() {
+    let info = host.shell("conn.closed", { "id": id }).0 catch {
+      e => { "kind": "other", "reason": Json::string("\{e}") }
+    }
+    if closed_info.val is None {
+      closed_info.val = Some(info)
+    }
+    ignore(host.shell("conn.close", { "id": id, "code": 0, "reason": "", "forget": true })) catch {
+      _ => ()
+    }
+    let words = match info {
+      { "reason": String(r), .. } if r != "" => r
+      _ => "closed"
+    }
+    ignore(ended.succeed(words))
+  })
   {
     remote_id: () => remote,
     alpn: () => alpn,
-    via: () => match sync("conn.via") {
-      String(s) => Some(s)
-      _ => None
-    },
+    via: () => as_text(sync("conn.via")),
     paths: Some(() => match sync("conn.paths") {
       Array(ps) =>
         ps.map(p => {
           let num = (k : String) => match p {
             Object(m) =>
-              match m.get(k) {
-                Some(Number(n, ..)) => Some(n)
-                _ => None
-              }
+              opt_num(m.get(k))
             _ => None
           }
           let text = (k : String) => match p {
             Object(m) =>
-              match m.get(k) {
-                Some(String(s)) => Some(s)
-                _ => None
-              }
+              opt_str(m.get(k))
             _ => None
           }
           {
@@ -267,16 +250,14 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
       let call = Ref(0L)
       match given_up {
         Some(g) =>
-          ignore(
-            host.rt.fork_daemon("dial given up", on_error=e => @host.note("dial given up failed: \{e}"), async fn() {
-              g.wait()
-              if call.val != 0L {
-                ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.val.to_double()) })) catch {
-                  _ => ()
-                }
+          fork_bg(host, "dial given up", async fn() {
+            g.wait()
+            if call.val != 0L {
+              ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.val.to_double()) })) catch {
+                _ => ()
               }
-            }),
-          )
+            }
+          })
         None => ()
       }
       let (made, _) = host.shell("iroh.connect", { "id": eid, "addr": addr }, bytes=alpn, called=c => call.val = c)
@@ -435,10 +416,7 @@ fn KeeperParts::locked_view(self : KeeperParts, l : @cloud_lock.Locked?) -> Json
 fn who_of(w : Json) -> @cloud_lock.Who {
   let t = (k : String) => match w {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
   { sub: t("sub").unwrap_or(""), endpoint: t("endpoint").unwrap_or(""), base: t("base"), proof: t("proof") }
@@ -458,14 +436,8 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
     Object(m) => m.get(k).unwrap_or(Json::null())
     _ => Json::null()
   }
-  let text = (k : String) => match arg(k) {
-    String(s) => Some(s)
-    _ => None
-  }
-  let arr = (k : String) => match arg(k) {
-    Array(x) => x
-    _ => []
-  }
+  let text = (k : String) => as_text(arg(k))
+  let arr = (k : String) => jitems(arg(k))
   let ws = text("ws")
   let state_text = (k : String) => match cloud.state {
     Some(s) => s.text(k)
@@ -475,10 +447,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
   try {
     match name {
       "home" =>
-        match cloud.home() {
-          Some(h) => Json::string(h)
-          None => Json::null()
-        }
+        jopt(cloud.home())
       "removed" => Json::boolean(cloud.removed())
       "station" => Json::string(state_text("station"))
       "name" => Json::string(state_text("name"))
@@ -508,10 +477,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
         }
       }
       "leftOut" =>
-        match cloud.left_out(ws.unwrap_or("")) {
-          Some(w) => Json::string(w)
-          None => Json::null()
-        }
+        jopt(cloud.left_out(ws.unwrap_or("")))
       "chain" =>
         match cloud.chain(ws~) {
           Some(c) => { "state": self.view(c.state) }
@@ -527,19 +493,13 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
         {
           "taken": Json::number(t.taken.to_double()),
           "off": Json::array(t.off.map(o => o.to_json())),
-          "refusal": match t.refusal {
-            Some(r) => Json::string(r)
-            None => Json::null()
-          },
+          "refusal": jopt(t.refusal),
         }
       }
       "lockAfter" =>
         Json::array(
           cloud.lock_after(
-            match arg("seq") {
-              Number(n, ..) => n
-              _ => -1.0
-            },
+            as_num(arg("seq")).unwrap_or(-1.0),
             ws~,
           ),
         )
@@ -605,14 +565,8 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
             "id": Json::string(device.id),
             "sub": Json::string(device.sub),
             "kind": Json::string(device.kind),
-            "by": match device.by {
-              Some(b) => Json::string(b)
-              None => Json::null()
-            },
-            "sign_key": match device.sign_key {
-              Some(k) => Json::string(k)
-              None => Json::null()
-            },
+            "by": jopt(device.by),
+            "sign_key": jopt(device.sign_key),
           },
           "role": Json::string(role),
         }
@@ -631,10 +585,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
             @cloud_lock.fold(
               self.crypto,
               arr("entries"),
-              match arg("now") {
-                Number(n, ..) => Some(n)
-                _ => None
-              },
+              as_num(arg("now")),
             ),
           ),
         )
@@ -691,10 +642,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
         let was = arg("was")
         let t = (k : String) => match was {
           Object(m) =>
-            match m.get(k) {
-              Some(String(s)) => s
-              _ => ""
-            }
+            opt_str(m.get(k)).unwrap_or("")
           _ => ""
         }
         let field_of = (k : String) => match change {
@@ -818,16 +766,13 @@ fn P51::mesh_live(self : P51) -> MeshLive {
   bus.mesh_net_info.val = () => match m.endpoint {
     Some(e) => {
       "id": Json::string(e.id),
-      "home": match (e.home)() {
-        Some(h) => Json::string(h)
-        None => Json::null()
-      },
+      "home": jopt((e.home)()),
       "sockets": Json::array((e.sockets)().map(s => Json::string(s))),
     }
     None => Json::null()
   }
   self.stops.push(() => match m.endpoint {
-    Some(e) => ignore(self.host.rt.fork_daemon("mesh close", on_error=e => @host.note("mesh close failed: \{e}"), async fn() { (e.close)() }))
+    Some(e) => fork_bg(self.host, "mesh close", async fn() { (e.close)() })
     None => ()
   })
   m
@@ -1066,10 +1011,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   // The workspaces' mesh directory over the peer bus, and the relays' door (mesh.ts, scope-sync.ts, enrollment-door.ts).
   let door = self.mesh_scopes(m, endpoint, plane, call, scope_stops)
   scope_stops.push(() => {
-    match m.scopes {
-      Some(sync) => sync.close()
-      None => ()
-    }
+    if m.scopes is Some(sync) { sync.close() }
     m.scopes = None
   })
   // The agents' door's way to the other stations' web services.
@@ -1145,38 +1087,36 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     storms.watch(conn)
     let alpn = (conn.alpn)()
     if alpn == @gate.alpn {
-      ignore(host.rt.fork_daemon("superseded", on_error=e => @host.note("superseded failed: \{e}"), async fn() { superseded.arrived(conn) }))
+      fork_bg(host, "superseded", async fn() { superseded.arrived(conn) })
     } else if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn || alpn == @gate.peer_http_alpn {
       (call.arrived)(conn)
     }
-    ignore(
-      host.rt.fork_daemon("mesh connection", on_error=e => @host.note("mesh connection failed: \{e}"), async fn() {
-        let served = try {
-          if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn {
-            @gate.serve_peer(keeper, conn, m.peers)
-          } else if alpn == @gate.peer_http_alpn {
-            @gate.serve_http(keeper, conn, here)
-          } else if alpn == @mesh_runtime.tools_alpn {
-            @mesh_runtime.serve_tools(tools, conn, host.rt)
-          } else if alpn == @mesh_scopes.enrollment_alpn {
-            door.serve(conn)
-          } else {
-            match members {
-              Some(mem) => @gate.serve(mem, conn)
-              None => (conn.close)(1, "this station only runs tasks")
-            }
+    fork_bg(host, "mesh connection", async fn() {
+      let served = try {
+        if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn {
+          @gate.serve_peer(keeper, conn, m.peers)
+        } else if alpn == @gate.peer_http_alpn {
+          @gate.serve_http(keeper, conn, here)
+        } else if alpn == @mesh_runtime.tools_alpn {
+          @mesh_runtime.serve_tools(tools, conn, host.rt)
+        } else if alpn == @mesh_scopes.enrollment_alpn {
+          door.serve(conn)
+        } else {
+          match members {
+            Some(mem) => @gate.serve(mem, conn)
+            None => (conn.close)(1, "this station only runs tasks")
           }
-          Ok(())
-        } catch {
-          e => Err(e)
         }
-        match served {
-          Err(e) => p51_log("INFO", "mesh", "a connection ended", fields={ "alpn": Json::string(alpn), "error": Json::string(@gate.words_of(e)) })
-          Ok(_) => ()
-        }
-        (conn.close)(0, "")
-      }),
-    )
+        Ok(())
+      } catch {
+        e => Err(e)
+      }
+      match served {
+        Err(e) => p51_log("INFO", "mesh", "a connection ended", fields={ "alpn": Json::string(alpn), "error": Json::string(@gate.words_of(e)) })
+        Ok(_) => ()
+      }
+      (conn.close)(0, "")
+    })
   }
 }
 
@@ -1210,10 +1150,7 @@ fn P51::presence_parts(self : P51, plane : Plane) -> @cloud_net.PresenceParts {
       let text : Map[String, Json] = {
         "online": Json::boolean(online),
         "at": Json::number((wall_ms() / 1000L).to_double()),
-        "error": match error {
-          Some(e) => Json::string(e)
-          None => Json::null()
-        },
+        "error": jopt(error),
       }
       if conflict {
         text["conflict"] = Json::boolean(true)
@@ -1398,15 +1335,13 @@ fn P51::peer_door(self : P51, m : MeshLive) -> Unit {
     let pumping = Ref(false)
     let pump = () => if !pumping.val {
       pumping.val = true
-      ignore(
-        host.rt.fork_daemon("peer answer", on_error=e => @host.note("peer answer failed: \{e}"), async fn() {
-          while queue.length() > 0 {
-            let step = queue.remove(0)
-            step()
-          }
-          pumping.val = false
-        }),
-      )
+      fork_bg(host, "peer answer", async fn() {
+        while queue.length() > 0 {
+          let step = queue.remove(0)
+          step()
+        }
+        pumping.val = false
+      })
     }
     let close = async fn() { host.tcp_close(conn) }
     let answer : @gate.LocalAnswer = {

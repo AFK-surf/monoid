@@ -1,77 +1,21 @@
 // These parts' ports on a station's program (`@host.Host`, the shell's IO on the program's runtime): the clock and
-// its timers on the runtime, connections by the shell's `unix.open` and `tcp.open` (read by `tcp.read`, written by
-// `tcp.write`, let go by `tcp.close`), the files by its `fs.*`, random bytes by `crypto.random`, the log on the
-// program's stderr. What the shell does not do (a child process followed while it runs, a folder watched, the
-// platform's facts and the station's words) its caller gives: the station's Node, which runs the processes and knows
-// the machine, or what stands for it.
+// its timers on the runtime, connections by the shell's `unix.open` and `tcp.open`, the files by its `fs.*`, random
+// bytes by `crypto.random`, the log on the program's stderr.
 
 ///|
-fn shell_j(host : @host.Host, op : String, fields : Map[String, Json]) -> Json raise {
-  host.shell_sync(op, Json::object(fields))
-}
-
-///|
-/// An operation of the shell's on its own threads (a file's bytes, a folder walked): nothing waits for it here. Its
-/// failure an FsFailed with the OS's code as Node names it.
-async fn shell_j_async(host : @host.Host, op : String, fields : Map[String, Json]) -> Json {
-  let (v, _) = host.shell(op, Json::object(fields)) catch {
-    @wire.ShellError(m) => raise FsFailed(m, os_code(m))
-    e => raise FsFailed(message_of(e), "EIO")
-  }
-  v
-}
-
-///|
-fn shell_text_of(v : Json) -> String? {
-  match v {
-    String(s) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn hex_bytes(hex : String) -> Bytes {
-  let n = hex.length() / 2
-  let v = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int()
-  } else if c >= 'a'.to_int() && c <= 'f'.to_int() {
-    c - 'a'.to_int() + 10
-  } else {
-    0
-  }
-  Bytes::from_array(FixedArray::makei(n, i => (v(hex.unsafe_get(2 * i).to_int()) * 16 + v(hex.unsafe_get(2 * i + 1).to_int())).to_byte()))
-}
-
-///|
-/// An OS error's code as Node names it, from what Rust's io::Error says (`… (os error 17)`).
-fn os_code(message : String) -> String {
-  let codes : Array[(String, String)] = [
-    ("(os error 2)", "ENOENT"),
-    ("(os error 17)", "EEXIST"),
-    ("(os error 13)", "EACCES"),
-    ("(os error 21)", "EISDIR"),
-    ("(os error 20)", "ENOTDIR"),
-    ("(os error 39)", "ENOTEMPTY"),
-    ("(os error 66)", "ENOTEMPTY"),
-    ("(os error 1)", "EPERM"),
-    // Windows'
-    ("(os error 3)", "ENOENT"),
-    ("(os error 5)", "EACCES"),
-    ("(os error 80)", "EEXIST"),
-    ("(os error 183)", "EEXIST"),
-    ("(os error 145)", "ENOTEMPTY"),
-  ]
-  for c in codes {
-    if message.contains(c.0) {
-      return c.1
+async fn[T] wrap_fs(f : async () -> T) -> T {
+  f() catch {
+    FsFailed(_, _) as e => raise e
+    e => {
+      let m = @host_world.shell_error_msg(e)
+      raise FsFailed(m, @host_world.os_code(m))
     }
   }
-  "EIO"
 }
 
 ///|
 fn enoent(op : String, path : String) -> FsFailed {
-  FsFailed("ENOENT: no such file or directory, \{op} '\{path}'", "ENOENT")
+  FsFailed(@host_world.enoent_msg(op, path), "ENOENT")
 }
 
 ///|
@@ -83,10 +27,7 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
     now: wall,
     after: (ms, f) => {
       let live = Ref(true)
-      host.rt.after(js_max(0.0, ms).to_int(), () => if live.val {
-        live.val = false
-        f()
-      })
+      host.rt.after(js_max(0.0, ms).to_int(), () => if live.val { live.val = false; f() })
       () => live.val = false
     },
     micros: () => @host.now().to_double() * 1000.0,
@@ -94,39 +35,18 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
   let net : Net = {
     connect: (target, events) => {
       let conn : Ref[@host.Conn?] = Ref(None)
-      // Destroyed (by its owner) apart from closed (told): a destroy tells its close on a later turn, as Node's
-      // socket.destroy() does, so what its owner does right after (an answer taken) comes before the close.
       let destroyed = Ref(false)
       let closed = Ref(false)
       let paused = Ref(false)
       let waiting : Ref[@effect.Deferred[Unit]?] = Ref(None)
-      let close_once = () => if !closed.val {
-        closed.val = true
-        (events.close)()
-      }
+      let close_once = () => if !closed.val { closed.val = true; (events.close)() }
       ignore(
-        host.rt.fork_daemon("screens.connect", on_error=e => {
-          (events.error)(message_of(e))
-          close_once()
-        }, async fn() {
-          let opened = (match target {
-            Unix(path) => host.unix_open(path)
-            Tcp(port) => host.tcp_open(port)
-          }) catch {
-            e => {
-              (events.error)(match e {
-                @wire.ShellError(m) => m
-                e => message_of(e)
-              })
-              close_once()
-              return
-            }
+        host.rt.fork_daemon("screens.connect", on_error=e => { (events.error)(message_of(e)); close_once() }, async fn() {
+          let opened = (match target { Unix(path) => host.unix_open(path); Tcp(port) => host.tcp_open(port) }) catch {
+            e => { (events.error)(@host_world.shell_error_msg(e)); close_once(); return }
           }
           conn.val = Some(opened)
-          if destroyed.val {
-            opened.socket.destroy()
-            return
-          }
+          if destroyed.val { opened.socket.destroy(); return }
           (events.connect)()
           while !destroyed.val {
             if paused.val {
@@ -135,29 +55,15 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
               d.wait()
               continue
             }
-            let got = opened.socket.read() catch {
-              e => {
-                (events.error)(message_of(e))
-                break
-              }
-            }
-            match got {
-              Some(b) => if !destroyed.val { (events.data)(b) }
-              None => break
-            }
+            let got = opened.socket.read() catch { e => { (events.error)(message_of(e)); break } }
+            match got { Some(b) => if !destroyed.val { (events.data)(b) }; None => break }
           }
-          // The far end gone (or a read failed) with no destroy asked: the connection let go here, as Node's socket
-          // is once it ends, never left open in the shell (a destroy asked already let it go; another is nothing).
-          if !destroyed.val {
-            opened.socket.destroy()
-          }
+          if !destroyed.val { opened.socket.destroy() }
           close_once()
         }),
       )
-      // (each step on the connection a fiber of its own, in the order asked; what one fails with let go)
-      let send = (step : async (@net.Socket) -> Unit) => match conn.val {
-        Some(c) => ignore(host.rt.fork_quiet(async fn() { step(c.socket) catch { _ => () } }))
-        None => ()
+      let send = (step : async (@net.Socket) -> Unit) => if conn.val is Some(c) {
+        ignore(host.rt.fork_quiet(async fn() { step(c.socket) catch { _ => () } }))
       }
       {
         write: b => send(async fn(s) { s.write(b) }),
@@ -171,160 +77,87 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
         pause: () => paused.val = true,
         flow_again: () => {
           paused.val = false
-          match waiting.val {
-            Some(d) => {
-              waiting.val = None
-              ignore(d.succeed(()))
-            }
-            None => ()
-          }
+          if waiting.val is Some(d) { waiting.val = None; ignore(d.succeed(())) }
         },
       }
     },
   }
   let stat_of_shell = async fn(path : String, follow : Bool) -> Stat {
-    let lst = shell_j_async(host, "fs.lstat", { "path": Json::string(path) }) catch { _ => Json::null() }
-    guard lst is Object(l) else { raise enoent(if follow { "stat" } else { "lstat" }, path) }
-    let link = l.get("kind") is Some(String("link"))
+    guard (@host_world.fs_lstat(host, path) catch { _ => None }) is Some(l) else {
+      raise enoent(if follow { "stat" } else { "lstat" }, path)
+    }
+    let link = l.kind == "link"
     if follow && link {
-      let meta = shell_j_async(host, "fs.meta", { "path": Json::string(path) }) catch { _ => Json::null() }
-      guard meta is Object(m) else { raise enoent("stat", path) }
-      let kind = shell_j_async(host, "fs.stat", { "path": Json::string(path) }) catch { _ => Json::null() }
-      return {
-        dir: kind is String("dir"),
-        file: kind is String("file"),
-        link: false,
-        size: match m.get("size") {
-          Some(Number(n, ..)) => n
-          _ => 0.0
-        },
-        mtime_ms: match m.get("mtime") {
-          Some(Number(n, ..)) => n
-          _ => 0.0
-        },
-      }
+      guard (@host_world.fs_meta(host, path) catch { _ => None }) is Some(m) else { raise enoent("stat", path) }
+      let kind = @host_world.shell_call(host, false, "fs.stat", { "path": Json::string(path) }) catch { _ => Json::null() }
+      return { dir: kind is String("dir"), file: kind is String("file"), link: false, size: m.size, mtime_ms: m.mtime_ms }
     }
-    {
-      dir: l.get("kind") is Some(String("dir")),
-      file: l.get("kind") is Some(String("file")),
-      link,
-      size: match l.get("size") {
-        Some(Number(n, ..)) => n
-        _ => 0.0
-      },
-      mtime_ms: match l.get("mtimeMs") {
-        Some(Number(n, ..)) => n
-        _ => 0.0
-      },
-    }
-  }
-  let put = async fn(path : String, data : Bytes, fields : Map[String, Json]) {
-    fields["path"] = Json::string(path)
-    ignore(host.shell("fs.put", Json::object(fields), bytes=data)) catch {
-      e => {
-        let m = match e {
-          @wire.ShellError(m) => m
-          e => message_of(e)
-        }
-        raise FsFailed(m, os_code(m))
-      }
-    }
+    { dir: l.kind == "dir", file: l.kind == "file", link, size: l.size, mtime_ms: l.mtime_ms }
   }
   let random = (n : Int) => {
-    let hex = shell_j(host, "crypto.random", { "bytes": Json::number(n.to_double()) }) catch { _ => Json::string("") }
-    let b = hex_bytes(shell_text_of(hex).unwrap_or(""))
-    if b.length() == n {
-      b
-    } else {
-      Bytes::from_array(FixedArray::make(n, b'\x00'))
-    }
+    let b = @host_world.hex_bytes(@host_world.random_hex(host, n))
+    if b.length() == n { b } else { Bytes::from_array(FixedArray::make(n, b'\x00')) }
   }
   async fn copy_tree(from : String, to : String) -> Unit {
-    let kind = shell_j_async(host, "fs.stat", { "path": Json::string(from), "lstat": Json::boolean(true) })
-    match kind {
-      String("dir") => {
-        ignore(shell_j_async(host, "fs.mkdir", { "path": Json::string(to) }))
-        match shell_j_async(host, "fs.readdir", { "path": Json::string(from) }) {
-          Array(names) =>
-            for name in names {
-              match name {
-                String(n) => copy_tree(pj([from, n]), pj([to, n]))
-                _ => ()
-              }
-            }
-          _ => ()
+    wrap_fs(async fn() {
+      match @host_world.shell_call(host, false, "fs.stat", { "path": Json::string(from), "lstat": Json::boolean(true) }) {
+        String("dir") => {
+          @host_world.fs_mkdir(host, to)
+          if @host_world.fs_readdir(host, from) is Some(names) {
+            for n in names { copy_tree(pj([from, n]), pj([to, n])) }
+          }
         }
+        String("link") =>
+          match @host_world.fs_readlink(host, from) {
+            Some(target) => @host_world.fs_symlink(host, target, to)
+            None => raise enoent("cp", from)
+          }
+        String(_) => ignore(@host_world.shell_call(host, false, "fs.copy", { "from": Json::string(from), "to": Json::string(to) }))
+        _ => raise enoent("cp", from)
       }
-      String("link") => {
-        let target = shell_j_async(host, "fs.readlink", { "path": Json::string(from) })
-        ignore(shell_j_async(host, "fs.symlink", { "path": Json::string(to), "target": target }))
-      }
-      String(_) => ignore(shell_j_async(host, "fs.copy", { "from": Json::string(from), "to": Json::string(to) }))
-      _ => raise enoent("cp", from)
-    }
+    })
   }
-
   let fs : Files = {
     read: async fn(path) {
-      match shell_j_async(host, "fs.bytes", { "path": Json::string(path) }) {
-        String(hex) => hex_bytes(hex)
-        _ => raise enoent("open", path)
-      }
+      wrap_fs(async fn() {
+        match @host_world.fs_read_bytes(host, path) { Some(b) => b; None => raise enoent("open", path) }
+      })
     },
-    write: async fn(path, data, mode) {
-      let fields : Map[String, Json] = { "truncate": Json::boolean(true), "offset": Json::number(0.0) }
-      match mode {
-        Some(m) => fields["mode"] = Json::number(m.to_double())
-        None => ()
-      }
-      put(path, data, fields)
-    },
+    write: async fn(path, data, mode) { wrap_fs(async fn() { @host_world.fs_put_whole(host, path, data, mode?) }) },
     access: async fn(path, mode) {
-      let st = shell_j_async(host, "fs.lstat", { "path": Json::string(path) }) catch { _ => return false }
-      match st {
-        Object(m) =>
-          if mode == 1 {
-            match m.get("mode") {
-              Some(Number(bits, ..)) => (bits.to_int() & 0o111) != 0 && m.get("kind") is Some(String("file") | String("link"))
-              _ => false
-            }
-          } else {
-            true
-          }
-        _ => false
+      match (@host_world.fs_lstat(host, path) catch { _ => None }) {
+        Some(st) => mode != 1 || ((st.mode.to_int() & 0o111) != 0 && (st.kind == "file" || st.kind == "link"))
+        None => false
       }
     },
     readdir: async fn(path) {
-      match shell_j_async(host, "fs.readdir", { "path": Json::string(path), "types": Json::boolean(true) }) {
-        Array(xs) =>
-          xs.filter_map(x => match x {
-            Array([String(name), String(kind)]) => Some({ name, dir: kind == "dir" })
-            _ => None
-          })
-        _ => raise enoent("scandir", path)
-      }
+      wrap_fs(async fn() {
+        match @host_world.shell_call(host, false, "fs.readdir", { "path": Json::string(path), "types": Json::boolean(true) }) {
+          Array(xs) => xs.filter_map(x => match x { Array([String(name), String(kind)]) => Some({ name, dir: kind == "dir" }); _ => None })
+          _ => raise enoent("scandir", path)
+        }
+      })
     },
     mkdir: async fn(path, recursive, _) {
-      if !recursive && (shell_j_async(host, "fs.stat", { "path": Json::string(path) }) catch { _ => Json::null() }) is String(_) {
-        raise FsFailed("EEXIST: file already exists, mkdir '\{path}'", "EEXIST")
-      }
-      ignore(shell_j_async(host, "fs.mkdir", { "path": Json::string(path) }))
+      wrap_fs(async fn() {
+        if !recursive && (@host_world.fs_exists(host, path) catch { _ => false }) {
+          raise FsFailed(@host_world.eexist_msg("mkdir", path), "EEXIST")
+        }
+        @host_world.fs_mkdir(host, path)
+      })
     },
     mkdtemp: async fn(prefix) {
       let alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-      let b = random(6)
       let tail = StringBuilder()
-      for x in b {
-        tail.write_char(alphabet.unsafe_get(x.to_int() % alphabet.length()).unsafe_to_char())
-      }
+      for x in random(6) { tail.write_char(alphabet.unsafe_get(x.to_int() % alphabet.length()).unsafe_to_char()) }
       let path = prefix + tail.to_string()
-      ignore(shell_j_async(host, "fs.mkdir", { "path": Json::string(path) }))
+      wrap_fs(async fn() { @host_world.fs_mkdir(host, path) })
       path
     },
     rename: async fn(from, to) {
-      ignore(shell_j_async(host, "fs.rename", { "from": Json::string(from), "to": Json::string(to) })) catch {
+      wrap_fs(async fn() { @host_world.fs_rename(host, from, to) }) catch {
         FsFailed(m, code) =>
-          raise (if code == "EIO" && (shell_j_async(host, "fs.stat", { "path": Json::string(from), "lstat": Json::boolean(true) }) catch { _ => Json::null() }) is Null {
+          raise (if code == "EIO" && !(@host_world.fs_exists(host, from, lstat=true) catch { _ => false }) {
             FsFailed("ENOENT: no such file or directory, rename '\{from}' -> '\{to}'", "ENOENT")
           } else {
             FsFailed(m, code)
@@ -333,39 +166,38 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
       }
     },
     rm: async fn(path, recursive, force) {
-      if !force && (shell_j_async(host, "fs.stat", { "path": Json::string(path), "lstat": Json::boolean(true) }) catch { _ => Json::null() }) is Null {
-        raise enoent("rm", path)
-      }
-      ignore(shell_j_async(host, "fs.remove", { "path": Json::string(path), "recursive": Json::boolean(recursive) }))
+      wrap_fs(async fn() {
+        if !force && !(@host_world.fs_exists(host, path, lstat=true) catch { _ => false }) { raise enoent("rm", path) }
+        @host_world.fs_remove(host, path, recursive~)
+      })
     },
     unlink: async fn(path) {
-      if (shell_j_async(host, "fs.stat", { "path": Json::string(path), "lstat": Json::boolean(true) }) catch { _ => Json::null() }) is Null {
-        raise enoent("unlink", path)
-      }
-      ignore(shell_j_async(host, "fs.remove", { "path": Json::string(path) }))
+      wrap_fs(async fn() {
+        if !(@host_world.fs_exists(host, path, lstat=true) catch { _ => false }) { raise enoent("unlink", path) }
+        @host_world.fs_remove(host, path)
+      })
     },
     stat: async fn(path) { stat_of_shell(path, true) },
     lstat: async fn(path) { stat_of_shell(path, false) },
     copy_tree: async fn(from, to) { copy_tree(from, to) },
     read_at: async fn(path, offset, length) {
-      match shell_j_async(host, "fs.bytes", { "path": Json::string(path), "from": Json::number(offset), "length": Json::number(length.to_double()) }) {
-        String(hex) => hex_bytes(hex)
-        _ => raise enoent("open", path)
-      }
+      wrap_fs(async fn() {
+        match @host_world.fs_read_bytes(host, path, from=offset, length=length.to_double()) {
+          Some(b) => b
+          None => raise enoent("open", path)
+        }
+      })
     },
-    write_at: async fn(path, offset, data) { put(path, data, { "offset": Json::number(offset) }) },
-    create: async fn(path) { put(path, b"", { "exclusive": Json::boolean(true) }) },
-    append: async fn(path, data) { put(path, data, {}) },
-    exists_sync: path => (shell_j(host, "fs.stat", { "path": Json::string(path) }) catch { _ => Json::null() }) is String(_),
-    read_sync: path => shell_text_of(shell_j(host, "fs.read", { "path": Json::string(path) }) catch { _ => Json::null() }),
-    // (the shell watches no folder: a part that would follow one looks again as it is asked)
+    write_at: async fn(path, offset, data) { wrap_fs(async fn() { @host_world.fs_put(host, path, data, offset~) }) },
+    create: async fn(path) { wrap_fs(async fn() { @host_world.fs_put(host, path, b"", exclusive=true) }) },
+    append: async fn(path, data) { wrap_fs(async fn() { @host_world.fs_put(host, path, data) }) },
+    exists_sync: path => (host.shell_sync("fs.stat", { "path": Json::string(path) }) catch { _ => Json::null() }) is String(_),
+    read_sync: path => @host_world.fs_read_text_sync(host, path),
     watch: (dir, _, _) => raise FsFailed("ENOSYS: function not implemented, watch '\{dir}'", "ENOSYS"),
   }
   {
     clock,
-    spawn: f => ignore(
-      host.rt.fork_daemon("screens", f, on_error=e => @host.note("screens: background work failed: \{e}")),
-    ),
+    spawn: f => @host_world.spawn_daemon(host, "screens", f),
     procs,
     net,
     fs,
@@ -375,7 +207,7 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
     random,
     random_int: (lo, hi) => {
       let b = random(4)
-      let v = (b[0].to_int() << 24 | b[1].to_int() << 16 | b[2].to_int() << 8 | b[3].to_int()) & 0x7fffffff
+      let v = ((b[0].to_int() << 24) | (b[1].to_int() << 16) | (b[2].to_int() << 8) | b[3].to_int()) & 0x7fffffff
       lo + v % (hi - lo)
     },
   }

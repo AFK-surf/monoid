@@ -561,3 +561,54 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   h.child.stdin!.end();
   assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
 });
+
+test("a move's plan reads each page of chats in one statement (store.ts sessionPageOfWs as move/live.ts gives it): a home chat's sessions together, the accounts they ran on, those handed over and those of no workspace, the hub's wsOf given each row", { skip }, async () => {
+  const feed = await feedStandIn();
+  const { data, app, id } = station({ updateChannel: "beta" });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(cloudOf(id, feed.origin)));
+  const h = harness();
+  assert.deepEqual(await h.ok({ step: "start", data, app }), { station: id });
+  const owner = { role: "owner", workspace: "w1", email: "o@x.y" };
+  const other = "b".repeat(64);
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  const now = Date.now();
+  const add = (key: string, ws: string | null, profile = "cc") =>
+    store.insertSession({ key, connect: "ember", ...(ws === null ? {} : { ws }), runtime: "claude", profile, workspace: join(data, "sessions", key), token: `t-${key}`, createdAt: now, lastActiveAt: now } as never);
+  // a1 and a2 share a1's still.fail home chat; r1 ran on an account it runs on no more; n1 is of no workspace (the
+  // home one's, from before workspaces); h1 was handed to the other station; x1 is another workspace's
+  for (const k of ["a1", "a2", "r1", "h1"]) add(k, "w1");
+  add("n1", null);
+  add("x1", "w2");
+  const home = store.openThread("chat", "CHAT", "1790000000.000001", "a1", "o@x.y");
+  store.joinThread(home.id, "a1", "ember");
+  store.joinThread(home.id, "a2", "ember");
+  (store as any).db.prepare("UPDATE threads SET home = ? WHERE id = ?").run("a1", home.id);
+  store.ranIn("r1", "rt-old", "gone-profile");
+  store.ranIn("r1", "rt-now", "cc");
+  store.handOff(["h1"], other, "w1", {});
+  store.close();
+  await h.ok({ step: "standIn", hub: { "hub.wsOf": "w1" }, peers: { "move.open": { on: true }, "move.chats.live": { live: [], name: "other" }, "move.accounts": {} } });
+  const page = await h.ok({ step: "route", method: "GET", path: "/move", query: { to: other }, body: null, viewer: owner, lang: "en" });
+  assert.equal(page.status, 200, JSON.stringify(page));
+  const chats = page.body.modules.find((m: any) => m.id === "chats");
+  const item = (k: string) => chats.items.find((x: any) => x.id === k);
+  // a2 goes with a1 (their home chat's), x1 is another workspace's; n1 is the home one's
+  assert.deepEqual(chats.items.map((x: any) => x.id), ["a1", "h1", "n1", "r1"]);
+  for (const k of ["a1", "n1", "r1"]) assert.equal(item(k).cannot, undefined, JSON.stringify(item(k)));
+  assert.deepEqual(item("a1").needs, ["accounts machine:cc"]);
+  assert.match(item("r1").leaves, /gone-profile/);
+  // handed over: in the page, and not to be moved again from here
+  assert.ok(item("h1").cannot !== undefined, JSON.stringify(item("h1")));
+  // each chat's row, home chat and accounts read from the page, not asked of the store one by one (11-12 statements a
+  // chat: 79.7 s for 3,643 chats on the station's thread)
+  const asked = await h.ok({ step: "asked" });
+  const oneByOne = asked.filter((x: any) => ["store.getSession", "store.homeChat", "store.threadSessions", "store.chatPage"].includes(x.hub));
+  assert.deepEqual(oneByOne, []);
+  // the hub's wsOf given each session's row, as handover.ts `check` gives it
+  const wsOf = asked.filter((x: any) => x.hub === "hub.wsOf");
+  assert.ok(wsOf.length > 0);
+  for (const x of wsOf) assert.equal(typeof x.args[0]?.key, "string", JSON.stringify(x));
+  await h.ok({ step: "stop" });
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});

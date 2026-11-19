@@ -17,7 +17,7 @@
 // but what the paint read did (the clock, read by a motion going as it is drawn), the frame is painted again from the
 // last build's tree as laid out, nothing built or laid out (a page's slide: its frames were each built and laid out
 // whole for where it was drawn). Where that did not change either and the last two paints drew the same, nothing it
-// shows changes but its looks by the clock (cycle_look.mbt: a spinner turning, the spokes stepping, a breath): the
+// shows changes but its looks by the clock (cycle_look.mbt: a spinner turning, a working ring stepping, a breath): the
 // frame is the last one's instances as they were painted, each look applied at its time, nothing built, laid out or
 // painted (2026-10-27: ~16 frames a second while chats are at work, each building, laying out and painting the window
 // for 0.03% of it). A Tester draws each frame painted alone or of its looks alone whole after it as well, and the two

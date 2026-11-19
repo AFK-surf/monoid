@@ -325,10 +325,10 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       .on_drag(fn(d) { vw.finger_on(canvas, src, d) }, fingers=2)
       // (the pointer's secondary button on the picture: its menu, as a finger held still on it opens it)
       .on_menu(fn(m) { vw.menu_on(m) })
-      // (a wheel over it, at its moment, where it is on the stage then: a trackpad's two fingers taking it down, else
-      // what the wheel does to the picture)
+      // (a wheel over it, at its moment, where it is on the stage then: a trackpad's two fingers taking it down or
+      // paging sideways, else what the wheel does to the picture)
       .on_wheel(fn(w) {
-        if !vw.wheel_pull(canvas, w) {
+        if !vw.wheel_pull(canvas, w) && !vw.wheel_page(canvas, src, w) {
           vw.wheeled(vw.zoom, w.x, w.y, w.dx, w.dy, w.mods, w.at)
         }
       })
@@ -1131,6 +1131,47 @@ fn Viewer::pull_let_go(self : Viewer, c : @ui.Ctx, d : @view.Drag, vy : Double) 
 }
 
 ///|
+/// Arm (or re-arm) the stillness timer shared by trackpad pull-to-close and trackpad horizontal paging.
+fn Viewer::wheel_arm(self : Viewer, canvas : @view.View, due : Double, on_rest : () -> Unit) -> Unit {
+  (self.wheel_off)()
+  self.wheel_off = canvas.at_moment(due, fn() {
+    self.wheel_off = fn() {  }
+    on_rest()
+  })
+}
+
+///|
+/// Phase-0 (web) rebound thresholds for recognizing a new horizontal swipe while the previous swipe's momentum is
+/// still decaying in `Spent`: browser momentum decays monotonically with at most ±1–2 pt quantization jitter at low
+/// speeds, so requiring |dx| >= 6 pt, >= 1.8x the decay floor, and an absolute jump >= 4 pt rejects jitter while
+/// catching a fresh two-finger swipe immediately.
+let wheel_page_rebound_min : Double = 6.0
+
+///|
+let wheel_page_rebound_ratio : Double = 1.8
+
+///|
+let wheel_page_rebound_jump : Double = 4.0
+
+///|
+/// Whether a wheel arriving while `pv_strip.wheel` is `Spent` starts a new gesture (native momentum -> finger
+/// transition, direction reversal, or phase-0 |dx| rebound after decay).
+fn strip_wheel_starts_new(sw : StripWheel, dx : Double, is_mom : Bool) -> Bool {
+  if sw.last_momentum && !is_mom {
+    return true
+  }
+  let abs_dx = dx.abs()
+  if dx != 0.0 && (dx > 0.0) != (sw.spent_dir > 0.0) && abs_dx >= wheel_page_rebound_min {
+    return true
+  }
+  !is_mom &&
+  sw.spent_min_dx > 0.0 &&
+  abs_dx >= wheel_page_rebound_min &&
+  abs_dx >= sw.spent_min_dx * wheel_page_rebound_ratio &&
+  abs_dx - sw.spent_min_dx >= wheel_page_rebound_jump
+}
+
+///|
 /// A wheel over the canvas of viewer `vw` (node `canvas`) as a pull (a trackpad's two fingers going down a fitted
 /// picture, as a finger takes it down, the picture going with them): closed once they have it pull_shut down, back to
 /// fitted where they stop short (wheel_rest_ms with none come). Whether it was one: a mouse's wheel, one with a key held,
@@ -1141,12 +1182,26 @@ fn Viewer::wheel_pull(self : Viewer, canvas : @view.View, w : @view.Wheel) -> Bo
     // (closed by it: what of its way is left goes nowhere, not to the page under it)
     return self.wheel_pulling
   }
-  if !@sf.pointer_rests() || marking.on || z.nw <= 0.0 || w.mods != 0 || self.held {
+  if !@sf.pointer_rests() ||
+    marking.on ||
+    z.nw <= 0.0 ||
+    (w.mods & @view.wheel_momentum.lnot()) != 0 ||
+    self.held {
     return false
   }
   // (as the fingers go: a wheel's dy is the way the page goes under them, the other way)
   let (dx, dy) = (-w.dx, -w.dy)
+  let sw = pv_strip.wheel
   if !self.wheel_pulling {
+    // Mutual exclusion with an in-flight horizontal paging gesture or its spent momentum tail.
+    if sw.state != Idle {
+      let is_mom = (w.mods & @view.wheel_momentum) != 0
+      let rested = sw.last_at >= 0.0 && w.at - sw.last_at >= wheel_rest_ms
+      if !rested && (sw.state == Paging || !strip_wheel_starts_new(sw, dx, is_mom)) {
+        return false
+      }
+      sw.reset()
+    }
     if z.zoomed_at(w.at) || dy <= dx.abs() || notched(w.dx, w.dy) {
       return false
     }
@@ -1164,11 +1219,96 @@ fn Viewer::wheel_pull(self : Viewer, canvas : @view.View, w : @view.Wheel) -> Bo
   }
   z.pull(self.pull_x, self.pull_y, at=w.at)
   let due = w.at + wheel_rest_ms
-  self.wheel_off = canvas.at_moment(due, fn() {
-    self.wheel_off = fn() {  }
+  self.wheel_arm(canvas, due, fn() {
     self.wheel_pulling = false
     if !self.closing {
       z.reset(at=due)
+    }
+  })
+  true
+}
+
+///|
+/// A trackpad's two fingers sweeping horizontally over a fitted picture: follows `pv_strip.way` (1/3 resistance past
+/// the first/last image or on a single image), flips immediately upon crossing `strip_step`'s threshold without waiting
+/// for momentum to end, eats the remaining momentum tail, and snaps back to 0 after `wheel_rest_ms` if released short.
+fn Viewer::wheel_page(self : Viewer, canvas : @view.View, src : Source, w : @view.Wheel) -> Bool {
+  let z = self.zoom
+  let sw = pv_strip.wheel
+  if self.closing {
+    return sw.state != Idle
+  }
+  if !@sf.pointer_rests() ||
+    marking.on ||
+    z.nw <= 0.0 ||
+    (w.mods & @view.wheel_momentum.lnot()) != 0 ||
+    self.held ||
+    z.zoomed_at(w.at) {
+    return false
+  }
+  let (dx, dy) = (-w.dx, -w.dy)
+  let is_mom = (w.mods & @view.wheel_momentum) != 0
+  if sw.state != Idle && sw.last_at >= 0.0 && w.at - sw.last_at >= wheel_rest_ms {
+    sw.reset()
+  }
+  if sw.state == Spent {
+    if strip_wheel_starts_new(sw, dx, is_mom) {
+      sw.reset()
+      if dx.abs() <= dy.abs() {
+        return false
+      }
+    } else {
+      sw.last_at = w.at
+      sw.last_momentum = is_mom
+      let abs_dx = dx.abs()
+      if abs_dx > 0.0 {
+        sw.spent_min_dx = if sw.spent_min_dx <= 0.0 { abs_dx } else { dmin(sw.spent_min_dx, abs_dx) }
+      }
+      return true
+    }
+  }
+  if sw.state == Idle {
+    if dx.abs() <= dy.abs() || notched(w.dx, w.dy) || notched(w.dy, w.dx) || is_mom {
+      return false
+    }
+    sw.state = Paging
+    sw.strip_down = pv_strip.way.value_at(w.at)
+    sw.speed.reset()
+    sw.speed.add(w.at, 0.0, 0.0)
+    pv_strip.leaving = None
+  }
+  sw.last_at = w.at
+  sw.last_momentum = is_mom
+  let (before, after) = self.near(src)
+  let has_before = before is Some(_)
+  let has_after = after is Some(_)
+  let strip = pv_strip.way
+  let s = strip.value_at(w.at)
+  let delta_next = (s - sw.strip_down) + dx
+  let none = if delta_next > 0.0 { !has_before } else { !has_after }
+  let shown_next = if none { s + dx / 3.0 } else { s + dx }
+  strip.put(shown_next)
+  let delta = shown_next - sw.strip_down
+  sw.speed.add(w.at, delta, 0.0)
+  let (vx, _) = sw.speed.get_at(w.at)
+  let step = strip_step(delta, vx, z.bw, true)
+  let can_step = (step < 0 && has_before) || (step > 0 && has_after)
+  if can_step {
+    (self.wheel_off)()
+    self.wheel_off = fn() {  }
+    sw.state = Spent
+    sw.spent_dir = if delta > 0.0 { 1.0 } else { -1.0 }
+    sw.spent_min_dx = dx.abs()
+    self.go_tree(src, step, vx * 1000.0)
+    return true
+  }
+  let due = w.at + wheel_rest_ms
+  self.wheel_arm(canvas, due, fn() {
+    if pv_strip.wheel.state == Paging {
+      pv_strip.wheel.reset()
+      if !self.closing {
+        pv_strip.way.go(0.0, @motion.sheet_spring, at=due)
+      }
     }
   })
   true
@@ -1405,11 +1545,7 @@ fn image_steps(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     fn() { vw.bars_shown() },
     fn(node) { vw.shown_on(node) },
     fn() { stage().0 <= @sf.viewer_small_w },
-    fn(dir) {
-      if !vw.closing {
-        vw.go(@ui.current(), src, dir, 0.0)
-      }
-    },
+    fn(dir) { vw.go_tree(src, dir, 0.0) },
     tips,
   )
   |> ignore
@@ -2241,6 +2377,15 @@ fn Viewer::player_file(self : Viewer) -> @sf.ViewerFile {
     keep_place: fn(_, _) {  },
     save: fn() { v.save_tree() },
     facts: { width: v.file.width, height: v.file.height, duration: v.file.duration, frames: v.file.frames },
+  }
+}
+
+///|
+/// Viewer `vw` stepped from a node of the window's tree (its ‹ / › buttons or trackpad horizontal swipe), at that
+/// moment; closing, nothing.
+fn Viewer::go_tree(self : Viewer, src : Source, dir : Int, velocity : Double) -> Unit {
+  if !self.closing {
+    self.go(@ui.current(), src, dir, velocity)
   }
 }
 

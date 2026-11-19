@@ -98,7 +98,7 @@ pub fn pick_node(
       .shadow(By(fn() { float_shadow() }))
       .clips(Is(true))
       .alpha(By(fn() { look().alpha }))
-      .scale(By(fn() { look().sx }), about=FromBeside)
+      .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
       .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Dialog, label=title))))
       // (a press on it its own: on what of it takes none, nothing, not outside it)

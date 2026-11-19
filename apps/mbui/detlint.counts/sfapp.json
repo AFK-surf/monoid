@@ -33,11 +33,6 @@
     "build-motion": {
       "src/sfapp/chat.mbt": 1
     },
-    "old-island": {
-      "src/sfapp/app.mbt": 1,
-      "src/sfapp/narrow_shell.mbt": 1,
-      "src/sfapp/tape_shell.mbt": 4
-    },
     "submitted-read": {
       "src/sfapp/settings/vault_ask.mbt": 1
     },

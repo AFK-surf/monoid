@@ -55,10 +55,7 @@ fn p54_screen_procs(host : @host.Host) -> @screens.Procs {
           }
         },
         end_input: last => {
-          match last {
-            Some(b) => ignore(child.proc.write(b))
-            None => ()
-          }
+          if last is Some(b) { ignore(child.proc.write(b)) }
           input_open.val = false
           child.proc.end_input()
         },
@@ -219,10 +216,7 @@ async fn p54_helper_evict(host : @host.Host, dir : String) -> Unit {
   }
   let by_lsof = pids.is_empty()
   if by_lsof {
-    match p53_run(host, "lsof", ["-t", "--", lock], timeout_ms=2000) {
-      Some(t) => add(t)
-      None => ()
-    }
+    if p53_run(host, "lsof", ["-t", "--", lock], timeout_ms=2000) is Some(t) { add(t) }
   }
   for pid in pids {
     guard p53_run(host, "ps", ["-ww", "-p", pid.to_string(), "-o", "command="], timeout_ms=2000) is Some(command) else {
@@ -363,10 +357,7 @@ fn p54_screen_thrown(e : Error) -> Error {
         "args": of_jv(args),
         "message": Json::string(message),
       }
-      match access {
-        Some(a) => said["access"] = of_jv(a.to_j())
-        None => ()
-      }
+      if access is Some(a) { said["access"] = of_jv(a.to_j()) }
       P54Refused("ScreenRefused", Json::object(said))
     }
     other => other
@@ -401,10 +392,7 @@ fn p54_frame_json(f : @screens.Frame) -> Json {
     "ts": Json::number(f.ts),
     "data": p54_bytes_json(f.data),
   }
-  match f.config {
-    Some(c) => out["config"] = of_jv(c.to_j())
-    None => ()
-  }
+  if f.config is Some(c) { out["config"] = of_jv(c.to_j()) }
   Json::object(out)
 }
 
@@ -619,10 +607,7 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
             None => Json::null()
           }
         "input" => {
-          match @screens.input_of(to_jv(call_arg(a, 0).unwrap_or(Json::null()))) {
-            Some(i) => (view.input)(i)
-            None => ()
-          }
+          if @screens.input_of(to_jv(call_arg(a, 0).unwrap_or(Json::null()))) is Some(i) { (view.input)(i) }
           Json::null()
         }
         "keyframe" => {

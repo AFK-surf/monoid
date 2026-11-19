@@ -298,10 +298,7 @@ fn file_stamp(fs : @ops_platform.Fs, file : String) -> String {
 async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
   let text = (k : String) => match arg {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
   match op {
@@ -330,10 +327,7 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
       Json::null()
     }
     "releaseBase" =>
-      match self.control.release_base() {
-        Some(b) => Json::string(b)
-        None => Json::null()
-      }
+      jopt(self.control.release_base())
     "credential" => {
       let c = self.control.credential()
       {
@@ -348,10 +342,7 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     "memberships" => Json::array(self.cloud.memberships())
     "membership" => self.cloud.membership(text("workspace").unwrap_or("")).unwrap_or(Json::null())
     "home" =>
-      match self.cloud.home() {
-        Some(h) => Json::string(h)
-        None => Json::null()
-      }
+      jopt(self.cloud.home())
     "removed" => Json::boolean(self.cloud.removed())
     "reload" => {
       self.cloud.reload(tell=true)
@@ -481,23 +472,30 @@ async fn become_other(bus : LiveBus) -> Unit {
 ///|
 /// A lock's state as JSON (the vault's and the gate's reading of it): its head, its devices, members, stations and
 /// persons, where it moved.
-fn lock_state_json(st : @lock.LockState) -> Json {
+fn lock_state_json(st : @lock.LockState, member_objects? : Bool = false) -> Json {
   let devices : Map[String, Json] = {}
   for id, d in st.devices {
-    let m : Map[String, Json] = { "id": Json::string(id), "sub": Json::string(d.sub), "kind": Json::string(d.kind) }
-    match d.by {
-      Some(b) => m["by"] = Json::string(b)
-      None => ()
+    let m : Map[String, Json] = {
+      "id": Json::string(id),
+      "sub": Json::string(d.sub),
+      "kind": Json::string(d.kind),
+      "own": Json::boolean(d.own),
     }
-    match d.sign_key {
-      Some(k) => m["sign_key"] = Json::string(k)
-      None => ()
-    }
+    if d.by is Some(b) { m["by"] = Json::string(b) }
+    if d.sign_key is Some(k) { m["sign_key"] = Json::string(k) }
     devices[id] = Json::object(m)
+  }
+  let sign_keys : Map[String, Json] = {}
+  for id, ks in st.sign_keys {
+    sign_keys[id] = Json::array(ks.map(Json::string(_)))
   }
   let members : Map[String, Json] = {}
   for sub, m in st.members {
-    members[sub] = Json::string(m.role)
+    members[sub] = if member_objects {
+      { "sub": Json::string(sub), "email": Json::string(m.email), "role": Json::string(m.role) }
+    } else {
+      Json::string(m.role)
+    }
   }
   let persons : Map[String, Json] = {}
   for sub, g in st.persons {
@@ -509,13 +507,11 @@ fn lock_state_json(st : @lock.LockState) -> Json {
     "head": Json::string(st.head),
     "genesis": Json::string(st.genesis),
     "devices": Json::object(devices),
+    "signKeys": Json::object(sign_keys),
     "members": Json::object(members),
     "stations": Json::array(st.stations.keys().map(k => Json::string(k)).collect()),
     "persons": Json::object(persons),
-    "moved": match st.moved {
-      Some(m) => Json::string(m)
-      None => Json::null()
-    },
+    "moved": jopt(st.moved),
   }
   Json::object(out)
 }
@@ -527,7 +523,7 @@ fn locked_json(l : @cloud_lock.Locked?) -> Json {
     Some(x) =>
       {
         "state": match x.state {
-          Some(s) => lock_state_json(s)
+          Some(s) => lock_state_json(s, member_objects=true)
           None => Json::null()
         },
         "waiting": Json::boolean(x.waiting),

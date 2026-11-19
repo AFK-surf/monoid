@@ -1913,6 +1913,28 @@ static int sound_ready(void) {
   return 1;
 }
 
+// (under sound_lock) Samples (48 kHz frames) a voice has played that are not heard yet: what lies between a source
+// voice's buffers and the speakers (the engine's quantum, the mastering voice, the device's buffer: XAudio2's
+// CurrentLatencyInSamples, at the mastering voice's rate). SamplesPlayed counts a sample as it leaves the voice, so a
+// picture paced by it alone was that far ahead of its sound (some 35 ms here; a Bluetooth headset's, more).
+static double sound_unheard(void) {
+  if (sound_state <= 0) return 0;
+  XAUDIO2_PERFORMANCE_DATA p = {};
+  sound_engine->GetPerformanceData(&p);
+  XAUDIO2_VOICE_DETAILS d = {};
+  sound_master->GetVoiceDetails(&d);
+  if (!d.InputSampleRate) return 0;
+  return (double)p.CurrentLatencyInSamples * 48000.0 / (double)d.InputSampleRate;
+}
+
+// (under sound_lock) What a voice has played that has been heard: its SamplesPlayed less what has not come out yet.
+static double voice_heard(IXAudio2SourceVoice *v) {
+  XAUDIO2_VOICE_STATE st;
+  v->GetState(&st, 0);
+  double n = (double)st.SamplesPlayed - sound_unheard();
+  return n > 0 ? n : 0;
+}
+
 // the player's clock (win_sound.h): ms, the machine's
 static double sound_now(void) {
   static LARGE_INTEGER freq;
@@ -1952,9 +1974,7 @@ static SoundVoice voice_of(Stream *s) {
 static void sound_stop(Stream *s) {
   if (s->voice) {
     // (what it played counted on by the next: the stream's sound's clock)
-    XAUDIO2_VOICE_STATE st;
-    s->voice->GetState(&st, 0);
-    s->sound_played_before += (double)st.SamplesPlayed;
+    s->sound_played_before += voice_heard(s->voice);
     s->voice->DestroyVoice();
   }
   s->voice = NULL;
@@ -2212,19 +2232,16 @@ void mb_host_stream_audio(int32_t id, moonbit_bytes_t data) {
   sound_take(s, (const uint8_t *)data, len);
 }
 
-// Samples (48 kHz frames) of its sound played since its sound began: its voice's SamplesPlayed, and what the voices
-// before it played (an empty packet lets a voice go, the next made as sound comes again); set back only as the stream
-// closes (0 then), so an app that wants another start keeps its own base. A route's sound counts the same.
+// Samples (48 kHz frames) of its sound heard since its sound began: what its voice has played less what has not come
+// out of the speakers yet (voice_heard), and what the voices before it were heard to play (an empty packet lets a
+// voice go, the next made as sound comes again); set back only as the stream closes (0 then), so an app that wants
+// another start keeps its own base. A route's sound counts the same.
 double mb_host_stream_audio_played(int32_t id) {
   Stream *s = stream_of(id);
   if (!s) return 0;
   AcquireSRWLockShared(&sound_lock);
   double n = s->sound_gone ? 0 : s->sound_played_before;
-  if (!s->sound_gone && s->voice) {
-    XAUDIO2_VOICE_STATE st;
-    s->voice->GetState(&st, 0);
-    n += (double)st.SamplesPlayed;
-  }
+  if (!s->sound_gone && s->voice) n += voice_heard(s->voice);
   ReleaseSRWLockShared(&sound_lock);
   return n;
 }

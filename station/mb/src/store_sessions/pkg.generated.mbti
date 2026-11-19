@@ -16,6 +16,8 @@ pub let chat_tables : Array[String]
 
 pub fn chat_threads(@sql.Db, Array[String], @json.Json, Int32) -> Array[@json.Json] raise
 
+pub fn connect_here(String, @json.Json) -> String
+
 pub fn handed_stations(@sql.Db) -> Array[@json.Json] raise
 
 pub fn handed_with_usage(@sql.Db, @json.Json, @json.Json, Int32) -> Array[@json.Json] raise
@@ -68,6 +70,7 @@ pub fn Store::awake_jobs(Self) -> Array[@json.Json] raise
 pub fn Store::awake_wait(Self, Double, Double) -> @json.Json raise
 pub fn Store::begin_usage_counter_file(Self, @json.Json, @json.Json, @json.Json, Bool) -> @json.Json raise
 pub fn Store::binding(Self, @json.Json) -> @json.Json raise
+pub fn Store::call(Self, String, Array[@json.Json]) -> @json.Json raise
 pub fn Store::chat_page(Self, String, @json.Json, @json.Json, Int32, Array[String]) -> Array[@json.Json] raise
 pub fn Store::chat_share(Self, @json.Json) -> @json.Json raise
 pub fn Store::chat_share_lapsed(Self, @json.Json, @json.Json) -> Bool raise
@@ -155,9 +158,8 @@ pub fn Store::post_after(Self, String, @json.Json, @json.Json) -> @json.Json rai
 pub fn Store::posts_after(Self, String, Array[@json.Json]) -> @json.Json raise
 pub fn Store::prepared_session_bound(Self, @json.Json) -> Bool raise
 pub fn Store::process_by_group(Self, @json.Json) -> @json.Json raise
-pub fn Store::profile_hours(Self, Double) -> @json.Json raise
 pub fn Store::profile_check(Self, String) -> @json.Json? raise
-
+pub fn Store::profile_hours(Self, Double) -> @json.Json raise
 pub fn Store::profile_status(Self) -> @json.Json raise
 pub fn Store::put_device_build(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
 pub fn Store::put_model_stars(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
@@ -219,6 +221,7 @@ pub fn Store::set_session_model(Self, String, @json.Json, @json.Json) -> Unit ra
 pub fn Store::set_session_profile(Self, String, @json.Json, Bool, @json.Json?) -> Unit raise
 pub fn Store::set_session_runtime(Self, String, @json.Json, @json.Json, Bool, @json.Json, @json.Json, @json.Json?, @json.Json, @json.Json?) -> Unit raise
 pub fn Store::set_session_speed(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_session_tui(Self, String, Bool) -> Unit raise
 pub fn Store::set_session_usage(Self, String, @json.Json, Bool) -> Unit raise
 pub fn Store::set_sessions_ws(Self, @json.Json, @json.Json) -> Unit raise
 pub fn Store::set_slack_identity(Self, @json.Json, @json.Json, Bool) -> Unit raise

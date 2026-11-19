@@ -47,14 +47,8 @@ async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes?
       }
     id => {
       let asked : Map[String, Json] = { "id": id }
-      match code {
-        Some(c) => asked["code"] = c
-        None => ()
-      }
-      match token {
-        Some(t) => asked["token"] = t
-        None => ()
-      }
+      if code is Some(c) { asked["code"] = c }
+      if token is Some(t) { asked["token"] = t }
       match bytes {
         Some(b) => host.shell("istream." + call, Json::object(asked), bytes=b)
         None => host.shell("istream." + call, Json::object(asked))
@@ -146,37 +140,32 @@ fn p54_runner_socket(host : @host.Host, socket_path : String) -> @terminals_logi
     }
   }
   let write_now : Ref[(Bytes) -> Unit] = Ref(b => pending.push(b))
-  ignore(
-    host.rt.fork_daemon("runner socket", on_error=e => @host.note("runner socket failed: \{e}"), async fn() {
-      let c = p54_unix_open(host, socket_path) catch {
-        _ => {
-          close_all()
-          return
-        }
+  fork_bg(host, "runner socket", async fn() {
+    let c = p54_unix_open(host, socket_path) catch {
+      _ => {
+        close_all()
+        return
       }
-      conn.val = Some(c)
-      let w = c.writer()
-      for b in pending {
-        w(b)
+    }
+    conn.val = Some(c)
+    let w = c.writer()
+    for b in pending {
+      w(b)
+    }
+    pending.clear()
+    write_now.val = w
+    while c.read() is Some(b) {
+      for f in datas.copy() {
+        f(b)
       }
-      pending.clear()
-      write_now.val = w
-      while c.read() is Some(b) {
-        for f in datas.copy() {
-          f(b)
-        }
-      }
-      c.close()
-      close_all()
-    }),
-  )
+    }
+    c.close()
+    close_all()
+  })
   {
     write: line => (write_now.val)(@utf8.encode(line)),
     end: () => {
-      match conn.val {
-        Some(c) => c.close()
-        None => ()
-      }
+      if conn.val is Some(c) { c.close() }
       close_all()
     },
     writable: () => !ended.val,
@@ -505,42 +494,11 @@ async fn p54_logins_start(
     after: (ms, f) => p54_after(host, ms.to_double(), f),
     spawn: fork,
     home: env => env.get("HOME"),
-    prepend_path: (env, dir) => {
-      let m = env.copy()
-      let sep_ = if is_windows() { ";" } else { ":" }
-      m["PATH"] = match env.get("PATH") {
-        Some(p) if p != "" => dir + sep_ + p
-        _ => dir
-      }
-      m
-    },
+    prepend_path: env_prepend_path,
     exe: name => if is_windows() { name + ".exe" } else { name },
-    with_shell_command: async fn(program, env) {
-      let given = env.to_array()
-      let found = with_shell_command(host, program, given)
-      if found == given {
-        None
-      } else {
-        Some(Map::from_array(found))
-      }
-    },
+    with_shell_command: async fn(program, env) { env_with_shell_command(host, program, env) },
     terminal: async fn(program, args, cols, rows) {
-      if is_windows() {
-        return None
-      }
-      let run = "stty cols \{cols} rows \{rows} 2>/dev/null; exec \"$@\""
-      if mac {
-        // (macOS's script refuses a socket for its stdin: a pipe put between, `cat` feeding it, ended with the command)
-        let feed = "exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '\{run}' sh \"$@\" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }"
-        return Some(("/bin/sh", ["-c", feed, "sh", program, ..args]))
-      }
-      for script in ["/usr/bin/script", "/bin/script"] {
-        if (try { Ok(@drive.stat(script)) } catch { e => Err(e) }) is Ok(_) {
-          let inner = ["/bin/sh", "-c", run, "sh", program, ..args].map(p54_quoted)
-          return Some((script, ["-qfec", inner.join(" "), "/dev/null"]))
-        }
-      }
-      None
+      bus_pty_terminal(bus, program, args, cols, rows, allow_windows=false, script => (try { Ok(@drive.stat(script)) } catch { e => Err(e) }) is Ok(_))
     },
     runnable: async fn(program, args, _) { (program, args) },
     start_command: (program, args, cwd, env) => p54_login_child(host, program, args, cwd, env).0,
@@ -549,32 +507,7 @@ async fn p54_logins_start(
       Some(pid) => ignore(kill(pid, signal, group=true))
       None => ()
     },
-    descendants: async fn(pid) {
-      guard run_out("ps", ["-A", "-o", "pid=,ppid="]) is Some(text) else { return [] }
-      let children : Map[Int, Array[Int]] = Map([])
-      for line in text.split("\n") {
-        let f = line.trim().split(" ").filter(x => x != "").map(x => x.to_owned()).to_array()
-        if f.length() >= 2 {
-          let c = @string.parse_int(f[0]) catch { _ => continue }
-          let p = @string.parse_int(f[1]) catch { _ => continue }
-          match children.get(p) {
-            Some(a) => a.push(c)
-            None => children[p] = [c]
-          }
-        }
-      }
-      let out = []
-      let next = [pid]
-      while next.pop() is Some(p) {
-        for c in children.get(p).unwrap_or([]) {
-          if !out.contains(c) {
-            out.push(c)
-            next.push(c)
-          }
-        }
-      }
-      out
-    },
+    descendants: async fn(pid) { process_descendants(host, pid) },
     echoes: async fn(pid) {
       guard run_out("ps", ["-o", "tty=", "-p", pid.to_string()]) is Some(t) else { return None }
       let tty = t.trim().to_owned()

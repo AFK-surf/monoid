@@ -350,7 +350,7 @@ fn page_draws(t : @ui.Tester, title : String) -> Bool {
 ///|
 /// How late the core answers what a test's first chat asks (its six asks one after another): nearly at once, the chat
 /// shown in a few frames, the core then made `late` for what the test watches. (Answered `late` from the start, a 10 s
-/// view's setup ran the window through a minute of its clock: a frame at each step of the spokes shown meanwhile, each
+/// view's setup ran the window through a minute of its clock: a frame at each step of the working rings shown meanwhile, each
 /// built whole again to be checked: most of this file's 18 s on Willow, 2026-10-31.)
 let setup_answer_ms : Double = 10.0
 

@@ -8,34 +8,24 @@ using @jsjson {type JValue as J}
 
 ///|
 using @session_chats {
-  at,
-  str_of,
-  num_of,
-  bool_of,
-  arr_of,
-  js,
-  jn,
-  ji,
-  jb,
-  jo,
-  ja,
-  jsa,
-  jopt,
-  set_field,
-  without,
-  spread,
-  parse_js,
-  type Thrown,
-  thrown_message,
-  thrown_kind,
-  fail_,
+  at, str_of, num_of, bool_of, arr_of, js, jn, ji, jb, jo, ja, jsa, jopt, set_field, without, spread, parse_js,
+  type Thrown, thrown_message, thrown_kind, fail_,
 }
 
 ///|
-/// `undefined`, as the wire says it (`{"$u": 1}`).
-pub fn is_undefined(v : J) -> Bool {
-  @session_chats.is_undefined(v)
+pub using @session_chats {is_undefined}
+
+///|
+pub using @jsjson {
+  jval_nonempty as nonempty_str, jval_is_record as is_object, jval_entries as fields_of, jval_js_str as js_text,
+  utf8,
 }
+
+///|
+pub using @codec {hex_encode as hex}
+
+///|
+pub using @utf8 {decode_lossy as text_of}
 
 ///|
 /// Whether `key` is an array index as JavaScript keeps an object's keys: those come first, ascending.
@@ -101,39 +91,6 @@ pub fn entries_of(v : J?) -> Array[(String, J)] {
 }
 
 ///|
-/// `typeof v === "string" && v !== ""`.
-pub fn nonempty_str(v : J?) -> String? {
-  match str_of(v) {
-    Some(s) if s != "" => Some(s)
-    _ => None
-  }
-}
-
-///|
-/// `typeof v === "object" && v !== null && !Array.isArray(v)`.
-pub fn is_object(v : J?) -> Bool {
-  v is Some(Obj(_))
-}
-
-///|
-/// An object's fields, none where it is no object.
-pub fn fields_of(v : J?) -> Array[(String, J)] {
-  @jsjson.jval_entries(v)
-}
-
-///|
-/// What a value is as JavaScript's `String(v)` says it, for the few values these parts turn to words.
-pub fn js_text(v : J?) -> String {
-  @jsjson.jval_js_str(v)
-}
-
-///|
-/// Bytes as lowercase hex.
-pub fn hex(b : BytesView) -> String {
-  @codec.hex_encode(b)
-}
-
-///|
 /// Hex as bytes (what is not hex read as nothing more).
 pub fn unhex(s : String) -> Bytes {
   let out = Buffer()
@@ -161,18 +118,6 @@ pub fn lower_hex_of(s : String, n : Int) -> Bool {
     }
   }
   true
-}
-
-///|
-/// Text of UTF-8 bytes (`buffer.toString()`: a broken sequence U+FFFD).
-pub fn text_of(b : BytesView) -> String {
-  @utf8.decode_lossy(b)
-}
-
-///|
-/// A text's UTF-8.
-pub fn utf8(s : String) -> Bytes {
-  @jsjson.utf8(s)
 }
 
 ///|

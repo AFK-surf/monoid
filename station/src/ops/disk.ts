@@ -2,7 +2,7 @@
 // under the soft mark (`diskSoft`: DISK_SOFT_BYTES, or a tenth of the disk where that is more) every DISK_SOFT_EVERY_MS,
 // and what is made again when asked for goes first: thumbnails, half-done downloads, old copies of the config,
 // readings of transcripts gone (ops/storage.ts `Upkeep.renewables`), then the mirrors of other stations' tasks not in use
-// (jobs/remote.ts `relieve`). Under DISK_LOW_BYTES, what can go goes, in this order, until there is that much again:
+// (jobs/remote.ts `relieve`). Under the low mark (`diskLow`: DISK_LOW_BYTES, or a tenth of the disk where that is less), what can go goes, in this order, until there is that much again:
 // those mirrors, then the workspaces of archived chats before their time, the longest archived first
 // (sessions/lifecycle.ts `relieveArchived`). Only the mirrors went at first: a station, which runs no one's tasks, had
 // none, and its 89G disk was down to 2.3G free with 10G of archived workspaces waiting out their week (2026-10-25). And
@@ -10,6 +10,7 @@
 
 import { statfs } from "node:fs/promises";
 
+/// The low mark's most: under it (or a tenth of the disk, where that is less) what can go goes.
 export const DISK_LOW_BYTES = 20 * 1024 ** 3;
 /// The soft mark's least: under it (or a tenth of the disk, where that is more) the station starts making room.
 export const DISK_SOFT_BYTES = 30 * 1024 ** 3;
@@ -24,12 +25,16 @@ export async function diskFree(path: string): Promise<number> {
   return st.bavail * st.bsize;
 }
 
+/// The low mark of a disk of `total` bytes: a disk of less than 200 GiB is low under a tenth of it, not under 20 GiB,
+/// which on a small disk would be low (archived workspaces emptied early) all the time.
+export const diskLow = (total: number): number => Math.min(DISK_LOW_BYTES, total / 10);
+
 /// The soft mark of a disk of `total` bytes.
 export const diskSoft = (total: number): number => Math.max(DISK_SOFT_BYTES, total / 10);
 
 /// Where a disk with `free` of `total` bytes free stands: well, under the soft mark, or low.
 export function diskTier(free: number, total: number): "ok" | "soft" | "low" {
-  if (free < DISK_LOW_BYTES) return "low";
+  if (free < diskLow(total)) return "low";
   return free < diskSoft(total) ? "soft" : "ok";
 }
 

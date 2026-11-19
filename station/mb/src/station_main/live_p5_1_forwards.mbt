@@ -27,10 +27,7 @@ fn forward_socket_id(s : @gate.Socket) -> Json? {
 
 ///|
 fn forget_forward_socket(id : Json) -> Unit {
-  match forward_sockets.search_by(x => x.1 == id) {
-    Some(i) => ignore(forward_sockets.remove(i))
-    None => ()
-  }
+  if forward_sockets.search_by(x => x.1 == id) is Some(i) { ignore(forward_sockets.remove(i)) }
 }
 
 ///|
@@ -230,10 +227,7 @@ fn P51::forwards_live(self : P51) -> @gate.Forwards {
       Object(m) => m.get(k)
       _ => None
     }
-    let t = (k : String) => match get(k) {
-      Some(String(s)) => Some(s)
-      _ => None
-    }
+    let t = (k : String) => opt_str(get(k))
     let n = (k : String) => match get(k) {
       Some(Number(x, ..)) => Some(x.to_int())
       _ => None

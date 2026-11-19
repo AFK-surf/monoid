@@ -3,7 +3,7 @@ import {
   "base/flate",
   "base/hash",
   "station/host",
-  "station/wire",
+  "station/host_world",
   "station/jsjson",
   "station/jscase",
   "station/nodepath",

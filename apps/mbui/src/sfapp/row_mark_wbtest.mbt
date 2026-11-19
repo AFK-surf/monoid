@@ -48,9 +48,9 @@ test "a row's mark comes as the core says its chat needs handling (需要处理)
 }
 
 ///|
-/// The pieces of lines drawn and seen now (a working mark's spokes are 8).
-fn row_mark_lines_seen(t : @ui.Tester) -> Int {
-  t.drawn_lines().filter(fn(l) { (l.5 & 0xFFL) > 0L }).length()
+/// The bands of shapes drawn and seen now in `ink` (RRGGBBAA): a working mark's ring's arc, in at work's ink.
+fn row_mark_ring_seen(t : @ui.Tester, ink : Int64) -> Int {
+  t.drawn_shapes().filter(fn(s) { s.5 == ink }).length()
 }
 
 ///|
@@ -84,7 +84,7 @@ test "a row's mark come while a page covers Home (工作中 as a chat opened ove
     }
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
     t.run_for(@ui.move_most_ms)
-    assert_eq(row_mark_lines_seen(t), 0)
+    assert_eq(row_mark_ring_seen(t, day_ink), 0)
     @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.open_page(over) })
     t.run_for(kept_switch_over_ms)
     let rest_was = t.rest_why()
@@ -96,6 +96,21 @@ test "a row's mark come while a page covers Home (工作中 as a chat opened ove
     t.run_for(back_ms)
     @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_back() |> ignore })
     t.run_for(kept_switch_over_ms)
-    assert_eq(row_mark_lines_seen(t), 8, msg="the spokes drawn, over \{said}, back after \{back_ms}")
+    assert_true(row_mark_ring_seen(t, day_ink) > 0, msg="the ring drawn, over \{said}, back after \{back_ms}")
+    // (its ink as the theme is now: amber by day, #f2b01e at night, told again in place as the theme changes)
+    // (the theme the system's, its night come while the chats show: bar_moment_wbtest's bar_theme_switch_drawlist)
+    (src.call)("prefs.set", { "appearance": Json::string("system") }, @sfbase.answer_unread)
+    t.set_dark(true)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(row_mark_ring_seen(t, day_ink), 0, msg="at night, over \{said}")
+    assert_true(row_mark_ring_seen(t, night_ink) > 0, msg="the ring drawn at night, over \{said}")
   }
 }
+
+///|
+/// At work's ink by day and at night (@sf.mark_yellow's).
+let day_ink : Int64 = 0xE08A00FFL
+
+///|
+let night_ink : Int64 = 0xF2B01EFFL

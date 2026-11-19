@@ -283,3 +283,28 @@ test "密钥 with no safe mode: 开启, what is left to encrypt, this device app
     }
   }
 }
+
+///|
+test "not set up here: 密钥库未开启 only while no vault of theirs is on anywhere; one on on another device of theirs, the library with it under its name, no key here yet" {
+  let off = Json::object(Map::from_array([("available", Json::boolean(true)), ("canSign", Json::boolean(true)), ("setUp", Json::boolean(false)), ("vaults", Json::array([]))]))
+  assert_true(vault_first_keys("ws1", Some(off)) == Some(["off"]))
+  let row = Json::object(Map::from_array([("id", Json::string("v1")), ("name", Json::string("个人")), ("keyed", Json::boolean(false))]))
+  let elsewhere = Json::object(Map::from_array([("available", Json::boolean(true)), ("canSign", Json::boolean(true)), ("setUp", Json::boolean(false)), ("vaults", Json::array([row]))]))
+  assert_true(vault_first_keys("ws1", Some(elsewhere)) is None)
+  assert_true(vault_library_keys(Some(elsewhere)).contains("no-key/v1"))
+  // (on the page: the vault under its name, 申请授权 there; never 密钥库未开启, nor 开启密钥库)
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Vault, w, platform~, mode="settings-vault-elsewhere")
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    for words in ["林的库", "此设备未获此库授权", "申请授权"] {
+      assert_true(t.find(words) is Some(_), msg="\{at}: \{words}")
+    }
+    for words in ["密钥库未开启", "开启密钥库"] {
+      assert_true(t.find(words) is None, msg="\{at}: not \{words}")
+    }
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+  }
+}

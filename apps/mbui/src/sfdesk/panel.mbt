@@ -278,11 +278,6 @@ let side_both_least : Double = 721.0
 let side_over_w : Double = 460.0
 
 ///|
-/// Whether the panel being built is a panel of its own on the tape (tape_side): round by the tape's corner.
-// kept across runs: said by tape_side round the panel it builds
-let side_on_tape : Ref[Bool] = Ref(false)
-
-///|
 /// The page under the panel over it: as wide as it is.
 // kept across runs: a value (no field of it changes)
 let panel_page_whole : @ui.Style = @ui.css("w=Full h=Full")
@@ -562,7 +557,7 @@ pub fn side_beside(c : @ui.Ctx, key : String, open : Bool, whole : Double, page 
 
 ///|
 /// Chat `r`'s page (`chat`) in workspace `w`, its side panel the tree's beside it (side_panel_node; on the tape a panel
-/// of its own, tape_side): as the panel's column slides, the page on its way to the width it leaves the page, there as
+/// of its own, tape_side_node): as the panel's column slides, the page on its way to the width it leaves the page, there as
 /// the slide ends: built again in the first frame at or past its end (Ctx::shows_until), whether or not the page's room
 /// changes then. (A frame drawn just short of the end has the column as wide as it comes to be already; at 24 frames a
 /// second, in a window wide enough for the list to be held at its width on the way (sfpages' laid_w), the next kept the
@@ -637,51 +632,6 @@ pub fn side_open_for(src : Source, w : Workspace, p : Page) -> SideOf? {
     NewChat => if new_files_open(src, w.id) && new_drive_station(src, w) is Some(_) { Some(NewSide(w.id)) } else { None }
     _ => None
   }
-}
-
-///|
-/// The side panel `side` on the tape, a panel of its own beside the page's, as an old view: a new chat's Station 文件;
-/// its edge not dragged (its width the tape's: frame.mbt tape_one_beside). A chat's is the tree's (tape_side_node), its
-/// bar and what it shows, an old view of it hosted there under the bar (side_panel).
-pub fn tape_side(c : @ui.Ctx, src : Source, w : Workspace, side : SideOf) -> Unit {
-  guard side is NewSide(_) else { return }
-  side_on_tape.val = true
-  match new_drive_station(src, w) {
-    Some(address) => new_files_panel(c, src, w, address)
-    None => ()
-  }
-  side_on_tape.val = false
-}
-
-///|
-/// What the panel (sidePanel) shows under its bar (the tree's: side_bar_node) of every tab the window's tree does not
-/// show (panel_node.mbt side_node_tab: an agent's history, a file in the viewer, a Farview tab, 任务, agent 往来,
-/// 图片、文件和链接, 文件, a station's 文件 and its page are its: a station's screen is left), an old view; what in front
-/// has a bar of its own (side_bars) that bar, the panel's none over it. Its edge is the tree's (side_panel_node's).
-fn side_panel(c : @ui.Ctx, src : Source, _w : Workspace, r : ChatRef, tabs : Array[String], front : String) -> Unit {
-  c.box(style=side_panel_style, fn() {
-    let (_, screen_alone, _) = side_bars(c, tabs, front)
-    c.box(style=side_pane, fn() {
-      station_tab_pane(c, src, r, front, own_bar=if screen_alone { Some(side_bar_tape()) } else { None }) |> ignore
-      // (an agent's history, a web service, a visualization, 任务, agent 往来, 图片、文件和链接, 文件, a station's 文件
-      // and its page: the tree's, panel_node.mbt)
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// How the panel showing `tabs` (`front` in front) is headed: a panel of its own on the tape showing one tab, that tab
-/// its title, the panel's close its only ×; the station's screen alone on its side, its tools a rail with no name of
-/// their own (the panel's row names it); and whether what is in front has a bar of its own (a service's alone: its
-/// address names it; the screen's), that bar the panel's, its × at its end, no row of the panel's over it (the user,
-/// 2026-10-28: two rows there too much). The tree's bar asks the same (side_own_bar_node).
-fn side_bars(c : @ui.Ctx, tabs : Array[String], front : String) -> (Bool, Bool, Bool) {
-  let alone = side_on_tape.val && tabs.length() == 1
-  let (ww, wh) = c.window_size()
-  let screen_alone = screen_tab_alone(tabs) && !column_short.get() && ww <= wh
-  (alone, screen_alone, (alone && tab_service(front) is Some(_)) || screen_alone)
 }
 
 ///|

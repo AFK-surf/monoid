@@ -16,7 +16,7 @@
 //   node scripts/native.ts key <part> [target]         its key
 //   node scripts/native.ts fetch <part> [target]       into the cache, never building (fails when not prebuilt)
 //   node scripts/native.ts build <part> [target]       built here, into the cache, whatever is there
-//   node scripts/native.ts trim                        the cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES (unset: nothing)
+//   node scripts/native.ts trim                        the cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES (unset: 10 GiB)
 //   node scripts/native.ts run <part>… -- <command…>   the command, with each part's variable set (STILLFAIL_MESH_NATIVE, …)
 //   node scripts/native.ts iroh-pkg [dir]              the web's iroh (iroh-wasm) put in web/src/core/iroh-pkg
 //   node scripts/native.ts status                      every part and target: key, and whether cached / published
@@ -1007,6 +1007,10 @@ const cacheBudget = () => {
   const bytes = Number(process.env.STILLFAIL_NATIVE_CACHE_MAX_BYTES);
   return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : 0;
 };
+// Without a budget (a person's machine, a station whose agents build), what a new version was built or downloaded into
+// is trimmed to this after it: unbounded, a Mac whose agents built every commit held 398 reader versions, 51 GiB, its
+// disk down to 34 GiB free (2026-11-20). Only then, so a cache hit walks nothing.
+const LOCAL_BUDGET_BYTES = 10 * 1024 ** 3;
 
 /// One process at a time gets or builds a key on this machine (the others wait for it): a directory made atomically,
 /// holding the pid, taken over when that process is gone.
@@ -1388,8 +1392,10 @@ async function getKey(part: string, target: Target, k: string, mode: "any" | "fe
   const budget = cacheBudget();
   if (!budget && mode !== "build" && complete(dir, part, target)) { noteUse(dir); return dir; }
   const policy = process.env.STILLFAIL_NATIVE ?? "";
+  let made = false;
   const result = await lockedAsync(dir, async () => {
     if (mode !== "build" && complete(dir, part, target)) { noteUse(dir); return dir; }
+    made = true;
     // Room before a download or a build writes tens of MB: on a disk near full the write failed (ENOSPC) before the
     // trim after it was reached (44253499545, 2026-11-18).
     if (budget) try { trimCache(budget); } catch (e) { log(`could not trim the cache: ${(e as Error).message}`); }
@@ -1410,7 +1416,8 @@ async function getKey(part: string, target: Target, k: string, mode: "any" | "fe
     noteUse(built);
     return built;
   });
-  if (budget) try { trimCache(budget); } catch (e) { log(`could not trim the cache: ${(e as Error).message}`); }
+  const after = budget || (made ? LOCAL_BUDGET_BYTES : 0);
+  if (after) try { trimCache(after); } catch (e) { log(`could not trim the cache: ${(e as Error).message}`); }
   return result;
 }
 
@@ -1623,7 +1630,7 @@ async function main(argv: string[]) {
     }
     case "fetch": { const [p, t] = pair(args); console.log(await get(p, t, "fetch")); return; }
     // The cache within STILLFAIL_NATIVE_CACHE_MAX_BYTES, for jobs that get no part (.github/actions/setup-mac/prune-disk.sh).
-    case "trim": { const budget = cacheBudget(); if (budget) trimCache(budget); return; }
+    case "trim": { trimCache(cacheBudget() || LOCAL_BUDGET_BYTES); return; }
     case "build": { const [p, t] = pair(args); console.log(await get(p, t, "build")); return; }
     case "run": {
       const at = args.indexOf("--");

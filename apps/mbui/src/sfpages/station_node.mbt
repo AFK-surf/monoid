@@ -224,7 +224,7 @@ fn station_view_node(
     match key {
       "parts" => station_parts_node(b, chosen, press)
       "resources" =>
-        station_resources_node(b, core, here, station_narrowed(s, ["processes", "processesText"], host=true), fn() {
+        station_resources_node(b, core, src, here, station_narrowed(s, ["processes", "processesText"], host=true), fn() {
           press("processes")
         })
       k if k == "allScreens" || k.has_prefix("allScreens/") => all_screens_block(b, core, here, top, k)
@@ -740,7 +740,7 @@ fn st_mark_node(l : @view.View, icon : () -> String) -> Unit {
 ///|
 /// What is left of the machine (and what its agents take of it), this device's connection to it, what still.fail uses
 /// of it opening its 进程 (station_overview's 资源: `processes`, its choice's press).
-fn station_resources_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?, processes : () -> Unit) -> Unit {
+fn station_resources_node(b : @view.View, core : Core, src : Source, here : () -> Here, s : () -> Json?, processes : () -> Unit) -> Unit {
   st_section_node(b, fn() { @sf.t("web-pages.stations.page.resources") }, fn(sec) {
     @sf.group_node(sec, fn(g) {
       @sf.block_node(g, fn(k) {
@@ -749,7 +749,7 @@ fn station_resources_node(b : @view.View, core : Core, here : () -> Here, s : ()
           let address = @signals.untracked(fn() { text(s(), "station") })
           let net = fn() { station_part_read(core, address, station_net_ask(address)).value }
           let uses = fn() { items(station_part_read(core, address, resources_ask(here(), address)).value, "stations").get(0) }
-          station_dials_node(r, fn() { field(s(), "host") })
+          station_dials_node(r, src, fn() { field(s(), "host") })
           r.show(fn() { net() is Some(Object(_)) }, fn(x) { @sf.station_net_line_node(x, net, look=Page) })
           // (what still.fail itself uses of the machine, opening its 进程: read while shown)
           r.show(fn() { uses() is Some(_) }, fn(x) { station_uses_node(x, uses, processes) })

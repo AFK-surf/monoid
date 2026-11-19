@@ -234,4 +234,7 @@ fi
 [ -z "$warm_pid" ] || wait "$warm_pid" || true
 "${cc[@]}" "${flags[@]}" -o "$out" "${objs[@]}" ${link_extra[@]+"${link_extra[@]}"} \
   "$rt_cache" "$shell_lib" "${libs[@]}"
+# Units unused for 12 hours leave the store (mbc touches a unit's directory on each use), as CI's upkeep.sh removes
+# them: where nothing else does (a person's machine, a station whose agents build), it held 35 GiB.
+find "$MBC_STORE" -mindepth 2 -maxdepth 2 -type d -mmin +720 -exec rm -rf {} + 2>/dev/null || true
 echo "$out"

@@ -1,14 +1,14 @@
 // Signed in with a workspace in view, on the tape (laid out Medium with a sidebar to show: sfdesk's tape_holds): the
 // shell as nodes of the window's tree (mbui's view package, the way there's 4), made once, its panels
-// the tape's nodes (sfdesk's tape_view.mbt), what they hold and what floats over them old views (islands):
+// the tape's nodes (sfdesk's tape_view.mbt), what a page they hold that is not made as nodes yet an old view of its own:
 //
-//   - under all of it, what the frame does in every tier before its pages (signed_in_frame) and what the tape's frame
-//     does under its panels (sfdesk's tape_under: the sidebar as it was left, the chat landed on, back);
-//   - the tape: its row of panels, moved as its move says, what each holds an island of its own;
-//   - over it, a film played over the whole window, what of the old frame is kept over the panels (sfdesk's
-//     overlays), the presenters (signed_in_over): taking presses where they draw them alone, the panels' covers
-//     under them the tree's; and what opens over the panels (sfdesk's overlays_node: a right click's menu, the
-//     rail's, 待处理's panel), nodes of the tree's;
+//   - under all of it, the window's top dragging it (wide_top_node); what the old frame does in every tier before its
+//     pages and under the tape's panels (the sidebar as it was left, the chat landed on) is its own (view_in:
+//     signed_in_frame, sfdesk's tape_under);
+//   - the tape: its row of panels, moved as its move says;
+//   - over it, words picked let go by back first (pick_back_node) and what opens over the panels (sfdesk's
+//     overlays_node: the system's bars' mark, a right click's menu, the rail's, 待处理's panel), nodes of the tree's;
+//     the presenters told the app is under them by the old frame after its old views (view_in);
 //   - over all of it, the chat being shared as a picture, a visualization over the whole screen, a station's screen or
 //     terminal or a
 //     drive's text read, and an image opened: nodes of the tree's (sfpages' publish_layer_node, sfbase's
@@ -19,11 +19,11 @@
 fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (on the tape's ground, the sidebar's, as the old frame's tape was: what no panel covers shows it)
   v.ground(By(fn() { @sf.theme().p.sidebar })) |> ignore
-  @ui.old(v, fn(c) { taped_under(c, src) }).over(Is(true)) |> ignore
+  wide_top_node(v)
   // a page opened in the page's panel shows once the core has given what it shows, the one before staying till then
   // (page_local_ms at most), as a page pushed on a phone slides in then
   @sfdesk.tape_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
-  @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  pick_back_node(v, src)
   // what opens over the panels (sfdesk's overlays.mbt: a right click's menu, the rail's, 待处理's panel): nodes of the tree's
   @sfdesk.overlays_node(v, src)
   // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
@@ -50,10 +50,10 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
 fn paned_shell(v : @view.View, src : Source) -> Unit {
   // (on the page's ground, as the old frame's row was: what nothing covers shows it)
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  @ui.old(v, fn(c) { paned_under(c, src) }).over(Is(true)) |> ignore
+  wide_top_node(v)
   // a page opened in the pane shows once the core has given what it shows (page_local_ms at most: pane_page_wait, pane_pages)
   @sfdesk.pane_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
-  @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  pick_back_node(v, src)
   // what opens over the panels (sfdesk's overlays.mbt: a right click's menu, the rail's, 待处理's panel): nodes of the tree's
   @sfdesk.overlays_node(v, src)
   // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
@@ -174,56 +174,25 @@ fn wide_viewer(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// Under the wide frame off the tape (an island): as taped_under, the frame's own sfdesk's pane_under.
-fn paned_under(c : @ui.Ctx, src : Source) -> Unit {
-  if @ui.window_inset() {
-    let id = c.id("window-ground-band")
-    c.window_drag(id)
-    c.box(style=@ui.style(h=Fixed(window_band())), left=0.0, top=0.0, right=0.0, id~, fn() {  }) |> ignore
-  }
-  frame_bare.val = false
-  let (now, all, _, _) = workspace_in_view(src)
-  match now {
-    Some(w) => {
-      signed_in_frame(c, src, w)
-      @sfdesk.pane_under(c, src, w, all)
-    }
-    None => ()
-  }
+/// The window's top in the wide frame, under all of it in node `v` (taped_shell's, paned_shell's), where the desktop app
+/// has no title bar of the system's: a press on it that nothing over it takes drags the window, a double click does what
+/// the system's title bar does; as tall as the window's band (entry_tree's) or the row the window's buttons are in
+/// (sfdesk's closed_bar_top, title_row's), whichever is taller.
+fn wide_top_node(v : @view.View) -> Unit {
+  v.show(fn() { @ui.window_inset_now() }, fn(o) {
+    o.over(Is(true)) |> ignore
+    o.box(fn(b) {
+      b.height(By(fn() { Some(dmax(window_band_now(), @sfdesk.closed_bar_top)) })).moves_window(Is(true)) |> ignore
+    })
+    |> ignore
+  })
 }
 
 ///|
-/// Under the tape's panels (an island): the window's top dragging it where its buttons are, what the
-/// signed-in frame does before its pages (signed_in_frame), what the tape's frame does under them (sfdesk's tape_under).
-fn taped_under(c : @ui.Ctx, src : Source) -> Unit {
-  if @ui.window_inset() {
-    let id = c.id("window-ground-band")
-    c.window_drag(id)
-    c.box(style=@ui.style(h=Fixed(window_band())), left=0.0, top=0.0, right=0.0, id~, fn() {  }) |> ignore
-  }
-  frame_bare.val = false
-  let (now, all, _, _) = workspace_in_view(src)
-  match now {
-    Some(w) => {
-      signed_in_frame(c, src, w)
-      @sfdesk.tape_under(c, src, w, all)
-    }
-    None => ()
-  }
-}
-
-///|
-/// Over the tape's panels (an island, taking presses where it draws them alone): what the old frame keeps of what opens
-/// over the panels (sfdesk's overlays); words picked let go by back first; what is over the frame in every tier
-/// (signed_in_over). A station's screen over the whole window, as Android's ScreenActivity is over the app, is a node of its own
-/// (wide_page).
-fn taped_over(c : @ui.Ctx, src : Source) -> Unit {
-  match workspace_in_view(src).0 {
-    Some(_) => {
-      @sfdesk.overlays(c)
-      pick_back(c)
-      signed_in_over(c)
-    }
-    None => ()
-  }
+/// Back lets go of words picked before it goes back a page (pick.mbt's pick_back), in node `v` (a wide shell's, over its
+/// panels, under what opens over them): while words are picked, with a workspace in view.
+fn pick_back_node(v : @view.View, src : Source) -> Unit {
+  v.show(at_once=true, fn() { workspace_in_view(src).0 is Some(_) && @sfbase.picked.get().ts != "" }, fn(b) {
+    b.over(Is(true)).takes_back(fn() { pick_clear() }) |> ignore
+  })
 }

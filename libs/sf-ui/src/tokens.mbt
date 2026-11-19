@@ -2766,14 +2766,22 @@ pub let edge_tip_gap : Double = 14.0
 
 ///|
 /// An agent's and a chat's marks' colours, bright in both themes, one meaning each wherever they are (ChatMark.css.ts:
-/// #3b82f6 the viewer's turn, unread or waited on; #e5484d gone wrong; #f2b01e at work).
+/// #3b82f6 the viewer's turn, unread or waited on; #e5484d gone wrong; at work mark_yellow's).
 pub let mark_blue : @ui.Color = Exact(0x3B82F6FFL)
 
 ///|
 pub let mark_red : @ui.Color = Exact(0xE5484DFFL)
 
 ///|
-pub let mark_yellow : Int64 = 0xF2B01EFFL
+/// At work's ink, as the theme is now: #f2b01e at night; by day the amber #e08a00, as #f2b01e on the light sidebar
+/// is too faint to see (about 1.6:1).
+pub fn mark_yellow() -> Int64 {
+  if theme().dark {
+    0xF2B01EFFL
+  } else {
+    0xE08A00FFL
+  }
+}
 
 ///|
 /// The same as the sidebar's panel on the tape (laid out Medium, its left corners tape_side_corners'): the places in

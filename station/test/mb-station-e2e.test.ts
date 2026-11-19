@@ -668,7 +668,7 @@ test("children started, followed to their end, given input and signals; a lock o
 
 // ── run, under a launcher of the test's ──
 
-type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null> };
+type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; heard: (what: string, text: string) => Promise<void> };
 
 /// The program's `run` with the launcher's descriptors (ops/launcher.ts): its two listeners bound here and handed down
 /// (closed here once it has them), its control channel the fourth's pipe.
@@ -694,7 +694,22 @@ async function launch(data: string, app: string, more: string[] = []): Promise<L
     for (const w of waiters.splice(0)) w();
   });
   let err = "";
-  child.stderr!.on("data", (d) => (err += d));
+  const errWaiters: (() => void)[] = [];
+  child.stderr!.on("data", (d) => {
+    err += d;
+    for (const w of errWaiters.splice(0)) w();
+  });
+  const heard = (what: string, text: string) =>
+    new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`never heard: ${what}; stderr ${err}`)), 15_000);
+      const look = () => {
+        if (err.includes(text)) {
+          clearTimeout(timer);
+          resolve();
+        } else errWaiters.push(look);
+      };
+      look();
+    });
   const next = (what: string, ok: (m: any) => boolean) =>
     new Promise<any>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`never said: ${what}; said ${JSON.stringify(said)}; stderr ${err}`)), 15_000);
@@ -708,7 +723,7 @@ async function launch(data: string, app: string, more: string[] = []): Promise<L
       look();
     });
   const ended = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
-  return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended };
+  return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended, heard };
 }
 
 function get(port: number | { socket: string }, path: string, body?: string, token?: string): Promise<{ status: number; body: string; headers: Record<string, unknown> }> {
@@ -813,6 +828,48 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal(await b.ended, 0);
   for (const p of [a.child.pid!, b.child.pid!]) assert.throws(() => process.kill(p, 0), "no process left");
   assert.equal(existsSync(join(data, "run", "hub.json")), false);
+});
+
+test("run: a stop lets go of run/hub.json only once its sessions are let go, so a station started meanwhile waits for it", { skip: skip || (process.platform === "win32" ? "its children held by SIGSTOP" : false) }, async () => {
+  const data = fresh("held");
+  const app = fresh("app");
+  const a = await launch(data, app);
+  await a.next("ready", (m) => m.ready === true);
+  await a.next("mcp", (m) => m.serving === "mcp");
+  assert.equal(JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, a.child.pid);
+  // its winding down held: its processes (the sessions' program, the readers) stopped, so letting go of them waits
+  // (one that ended since `ps` looked, a short command of its own, is left out)
+  const rows = spawnSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().split(/\s+/)).filter((r) => r[1] === String(a.child.pid));
+  const kids = rows.map((r) => Number(r[0])).filter((k) => {
+    try {
+      process.kill(k, "SIGSTOP");
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  assert.ok(kids.length > 0, `its processes: ${JSON.stringify(rows)}`);
+  a.tell({ op: "stop" });
+  await a.heard("stopping", "stopping");
+  // still winding down: its sessions' file still names it (the next station's `held_by_hub`)
+  assert.equal(a.child.exitCode, null, "still there");
+  assert.equal(existsSync(join(data, "run", "hub.json")) && JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, a.child.pid, "its sessions' file kept while it winds down");
+  // a station started now waits for it instead of taking the sessions (and the runners) up beside it
+  const b = await launch(data, app);
+  await b.next("ready", (m) => m.ready === true);
+  await b.next("taking, while the one before winds down", (m) => m.taking === true);
+  assert.equal(b.said.some((m) => m.serving === "mcp"), false, "its door not open while the one before holds the sessions");
+  for (const k of kids) {
+    try {
+      process.kill(k, "SIGCONT");
+    } catch {}
+  }
+  assert.equal(await a.ended, 0);
+  await b.next("serving the agents' door once the one before is gone", (m) => m.serving === "mcp");
+  assert.equal(JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, b.child.pid);
+  b.tell({ op: "stop" });
+  assert.equal(await b.ended, 0);
+  assert.equal(existsSync(join(data, "run", "hub.json")), false, "let go of as it ends");
 });
 
 test("run on its own: SIGTERM stops it; a launcher gone stops it", { skip }, async () => {

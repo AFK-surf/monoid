@@ -26,6 +26,8 @@ pub fn clone_url(@json.Json?) -> String raise Thrown
 
 pub fn code_of(Error) -> String
 
+pub let configure_method : String
+
 pub let default_policy : ArchivePolicy
 
 pub fn failed(String) -> Thrown
@@ -54,11 +56,15 @@ pub fn linked_station(String) -> String?
 
 pub fn linked_workspace(String) -> String?
 
+pub let list_method : String
+
 pub let max_options : Int32
 
 pub fn mentioned(String, Array[@json.Json], (String) -> String) -> String
 
 pub fn message_of(Error) -> String
+
+pub let move_skill : String
 
 pub fn origin_in(String) -> String?
 
@@ -206,7 +212,7 @@ pub struct LStat {
   mtime_ms : Double
 }
 
-pub struct Listed {
+pub(all) struct Listed {
   path : String
   name : String
   size : Double
@@ -217,7 +223,7 @@ pub enum Named {
   Session(String, Int32?)
 }
 
-pub struct ProfileHome {
+pub(all) struct ProfileHome {
   id : String
   runtimes : Array[String]
   home : String
@@ -253,6 +259,7 @@ pub struct Storage {
 pub async fn Storage::archive_for_peer(Self, @json.Json, String?) -> @json.Json
 pub async fn Storage::archive_room(Self, String) -> String?
 pub async fn Storage::chat_archive(Self, String, @json.Json) -> String
+pub async fn Storage::chat_configure(Self, String, @json.Json) -> String
 pub async fn Storage::chat_list(Self, String, @json.Json) -> String
 pub async fn Storage::chat_read(Self, String, @json.Json, Array[@json.Json]?, String?) -> String
 pub async fn Storage::chats_touched(Self, @json.Json) -> Array[String]
@@ -265,6 +272,7 @@ pub async fn Storage::cold_expire(Self, String, Double) -> Unit
 pub async fn Storage::cold_holds_more(Self, String) -> Bool
 pub async fn Storage::cold_pack(Self, String) -> Unit
 pub async fn Storage::cold_restore(Self, String) -> Unit
+pub async fn Storage::configure_for_peer(Self, @json.Json, String?) -> @json.Json
 pub async fn Storage::current_policy(Self, String?) -> ArchivePolicy
 pub async fn Storage::elsewhere(Self, String, String) -> String?
 pub async fn Storage::fetch_attachments(Self, String, async (String, @json.Json) -> @json.Json, String, String, Array[Listed], Array[String]) -> (Array[(String, String)], Array[String])
@@ -275,6 +283,7 @@ pub async fn Storage::history_files(Self, String, Bool) -> Array[String]
 pub async fn Storage::is_cold(Self, String) -> Bool
 pub async fn Storage::link_site_skills(Self, String, String) -> Unit
 pub async fn Storage::link_transcripts(Self, String, Array[ProfileHome]) -> Unit
+pub async fn Storage::list_for_peer(Self, @json.Json, String?) -> @json.Json
 pub async fn Storage::named(Self, String, String?, write? : Bool) -> Named
 pub fn Storage::new(Station, Files) -> Self
 pub async fn Storage::peers_of(Self, String) -> (async (String, @json.Json) -> @json.Json)?
@@ -295,7 +304,7 @@ pub async fn Storage::session_history(Self, @json.Json, String?) -> String
 pub async fn Storage::session_thread_of(Self, String) -> @json.Json
 pub async fn Storage::thread_in(Self, @json.Json, String?) -> Bool
 pub async fn Storage::workspace_agent_home(Self, String, String?, String?, String, String?) -> String
-pub async fn Storage::write_builtin_skills(Self, String, Bool, String, String?) -> Unit
+pub async fn Storage::write_builtin_skills(Self, String, Bool, String, String?, move? : Bool) -> Unit
 
 // Type aliases
 

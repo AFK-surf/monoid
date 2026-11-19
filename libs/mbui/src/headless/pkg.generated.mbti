@@ -87,6 +87,14 @@ pub fn stroke_caps(@view.Stroke, apple~ : Bool) -> Array[String]
 #callsite(autofill(loc))
 pub fn table(@view.View, (@view.View, Table) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+pub fn tip_claim(TipOwner) -> Unit
+
+pub fn tip_node_owner() -> TipOwner
+
+pub fn tip_owns(TipOwner) -> Bool
+
+pub fn tip_slot_reset() -> Unit
+
 #callsite(autofill(loc))
 pub fn[T : Eq] toaster(@view.View, () -> Array[T], (T) -> String, (T) -> (String, String), (T) -> Double, (@view.View) -> Unit, (@view.View, ToastItem[T]) -> Unit, (String) -> Unit, (String) -> Unit, key? : String, label? : String, leave? : Double, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
@@ -386,6 +394,12 @@ pub fn TableRow::cell(Self, @view.View, (@view.View) -> Unit, label? : () -> Str
 #callsite(autofill(loc))
 pub fn TableRow::header(Self, @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 pub fn TableRow::node(Self) -> @view.View
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TipOwner {
+  Built(Int32)
+  Node(Int32)
+}
 
 pub struct ToastItem[T] {
   // private fields

@@ -84,59 +84,18 @@ pub fn is_refused(e : Error) -> Bool {
 // ── JSON as JavaScript has it ──
 
 ///|
-pub fn js(s : String) -> J {
-  @jsjson.JValue::of_string(s)
-}
-
-///|
-pub fn jn(n : Double) -> J {
-  @jsjson.JValue::of_double(n)
-}
-
-///|
-pub fn ji(n : Int) -> J {
-  @jsjson.JValue::of_int(n)
-}
-
-///|
-pub fn jb(b : Bool) -> J {
-  @jsjson.JValue::of_bool(b)
-}
-
-///|
-pub fn jo(fields : Array[(String, J)]) -> J {
-  @jsjson.JValue::of_object(fields)
-}
-
-///|
-pub fn ja(xs : Array[J]) -> J {
-  @jsjson.JValue::of_array(xs)
-}
-
-///|
-pub fn jopt(s : String?) -> J {
-  @jsjson.JValue::of_opt_string(s)
-}
-
-///|
-pub fn jstrs(xs : Array[String]) -> J {
-  @jsjson.JValue::of_strings(xs)
+pub using @jsjson {
+  jval_str as js, jval_num as jn, jval_int as ji, jval_bool as jb, jval_obj as jo, jval_array as ja,
+  jval_opt_str as jopt, jval_strs as jstrs, jval_str_of as str_of, jval_num_of as num_of, jval_arr as items,
+  jval_strings_of as strings_of, jval_nullish as is_nullish, jval_entries as entries, jval_set_or_new as set,
+  jval_del as unset, jval_spread as merged, stringify, parse, num_text, js_round, js_trunc, js_uniq as uniq,
+  js_slice_to as head_of, js_ends as ends_with, js_starts as starts_with, js_less,
 }
 
 ///|
 /// `v[key]` (None where it is no object or has none).
 pub fn at(v : J, key : String) -> J? {
   @jsjson.jval_at(Some(v), key)
-}
-
-///|
-pub fn str_of(v : J?) -> String? {
-  @jsjson.jval_str_of(v)
-}
-
-///|
-pub fn num_of(v : J?) -> Double? {
-  @jsjson.jval_num_of(v)
 }
 
 ///|
@@ -157,28 +116,6 @@ pub fn num_at(v : J, key : String) -> Double? {
 ///|
 pub fn yes_at(v : J, key : String) -> Bool {
   @jsjson.jval_is_true(at(v, key))
-}
-
-///|
-pub fn items(v : J?) -> Array[J] {
-  @jsjson.jval_arr(v)
-}
-
-///|
-/// The strings of an array (what is not one left out).
-pub fn strings_of(v : J?) -> Array[String] {
-  items(v).filter_map(x => str_of(Some(x)))
-}
-
-///|
-pub fn is_nullish(v : J?) -> Bool {
-  @jsjson.jval_nullish(v)
-}
-
-///|
-/// An object's entries as names and values (none: not an object).
-pub fn entries(v : J?) -> Array[(String, J)] {
-  @jsjson.jval_entries(v)
 }
 
 ///|
@@ -206,40 +143,6 @@ pub fn pair_get(xs : Array[(String, String)], key : String) -> String? {
 }
 
 ///|
-/// `o[key] = v` on an object (made anew; a key there keeps its place, a new one goes last).
-pub fn set(v : J, key : String, x : J) -> J {
-  @jsjson.jval_set_or_new(v, key, x)
-}
-
-///|
-/// `delete o[key]`.
-pub fn unset(v : J, key : String) -> J {
-  @jsjson.jval_del(v, key)
-}
-
-///|
-/// `{...a, ...b}`.
-pub fn merged(a : J, b : J) -> J {
-  @jsjson.jval_spread(a, b)
-}
-
-///|
-pub fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-pub fn parse(text : String) -> J raise {
-  @jsjson.parse(text)
-}
-
-///|
-/// The number as String(n) says it.
-pub fn num_text(n : Double) -> String {
-  @jsjson.num_text(n)
-}
-
-///|
 /// `x.toFixed(1)` of a non-negative number.
 pub fn fixed1(x : Double) -> String {
   let n = (x * 10.0 + 0.5).floor()
@@ -257,62 +160,6 @@ pub fn gb(n : Double) -> String {
 ///|
 pub fn sha256_text(s : String) -> String {
   @memory.sha256_hex(@utf8.encode(s))
-}
-
-///|
-/// `Math.round`.
-pub fn js_round(x : Double) -> Double {
-  @jsjson.js_round(x)
-}
-
-///|
-/// `Math.trunc`.
-pub fn js_trunc(x : Double) -> Double {
-  if x < 0.0 {
-    x.ceil()
-  } else {
-    x.floor()
-  }
-}
-
-///|
-/// `[...new Set(xs)]`.
-pub fn uniq(xs : Array[String]) -> Array[String] {
-  let seen : Map[String, Bool] = {}
-  let out = []
-  for x in xs {
-    if !seen.contains(x) {
-      seen[x] = true
-      out.push(x)
-    }
-  }
-  out
-}
-
-///|
-/// `s.slice(0, n)` by UTF-16 units.
-pub fn head_of(s : String, n : Int) -> String {
-  if s.length() <= n {
-    s
-  } else {
-    s.unsafe_substring(start=0, end=n)
-  }
-}
-
-///|
-pub fn ends_with(s : String, suffix : String) -> Bool {
-  s.has_suffix(suffix)
-}
-
-///|
-pub fn starts_with(s : String, prefix : String) -> Bool {
-  s.has_prefix(prefix)
-}
-
-///|
-/// `a < b` as JavaScript compares strings (by UTF-16 units).
-pub fn js_less(a : String, b : String) -> Bool {
-  @jsjson.js_compare(a, b) < 0
 }
 
 ///|

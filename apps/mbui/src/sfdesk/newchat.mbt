@@ -21,7 +21,7 @@ fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
 /// frame's, over it: chat_bar_wide_node's new_bar_node), nothing under it; a row of the 文件 tab carried over it, let go
 /// there: into its message (chat_drop_node, as a chat's page made so: new_chat_page's drop_hint, chat_drop); as it
 /// becomes its chat, the files open beside it open beside the chat (new_sent). Its 文件 beside it is the tree's
-/// (side_panel_node's new_side_node; on the tape the frame's, tape_side).
+/// (side_panel_node's new_side_node; on the tape a panel of its own, tape_view's tape_new_side_node).
 /// `ground`: as node `n` draws it (the pane's; a tape's panel's: tape_page_ground); `width`: the page's, as the frame
 /// lays it out.
 fn new_frame_node(
@@ -92,8 +92,8 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, tape~ : Bool) -> 
     })
     |> ignore
   }
-  // (on the tape, laid out Medium, its panel is a panel of its own beside the page's, as a chat's: the frame's,
-  // tape_side)
+  // (on the tape, laid out Medium, its panel is a panel of its own beside the page's, as a chat's: the tape's,
+  // tape_new_side_node)
   if tape {
     with_bar()
     return
@@ -200,7 +200,7 @@ fn new_files_set(src : Source, ws : String, on : Bool) -> Unit {
 /// workspace's stations, what is added going into the new chat's draft (DriveTab).
 fn new_files_panel(c : @ui.Ctx, src : Source, w : Workspace, address : String) -> Unit {
   c.box(style=side_panel_style, fn() {
-    c.box(style=if side_on_tape.val || @sf.in_pane() { side_bar_tape() } else { side_bar() }, fn() {
+    c.box(style=if @sf.in_pane() { side_bar_tape() } else { side_bar() }, fn() {
       c.box(style=side_tab_list, fn() {
         let close = c.id("new/files-tab-close")
         c.on_press(close, fn() {

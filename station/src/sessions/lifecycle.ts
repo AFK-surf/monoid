@@ -421,20 +421,20 @@ export async function expireArchived(hub: Hub, now: number): Promise<number | nu
 }
 
 /// The disk of the station's data is low (ops/disk.ts): archived workspaces are emptied before archivedWorkspaceMs, the
-/// longest archived first, as `expireArchived` empties them, until `free` is DISK_LOW_BYTES again. None with
+/// longest archived first, as `expireArchived` empties them, until `free` is `low` (ops/disk.ts `diskLow`) again. None with
 /// archivedWorkspaceDays 0 (kept on purpose).
-export async function relieveArchived(hub: Hub, free: () => number | Promise<number>): Promise<void> {
+export async function relieveArchived(hub: Hub, free: () => number | Promise<number>, low = DISK_LOW_BYTES): Promise<void> {
   const { cold } = hub;
   if (hub.config().archivedWorkspaceMs <= 0 || !cold.expire || !cold.holdsMore) return;
-  if ((await free()) >= DISK_LOW_BYTES) return;
+  if ((await free()) >= low) return;
   const through = hub.store.lastArchivedSession();
   if (through === null) return;
-  for await (const s of archivedWorkspaces(hub, through, async () => (await free()) < DISK_LOW_BYTES)) {
-    if ((await free()) >= DISK_LOW_BYTES) return;
+  for await (const s of archivedWorkspaces(hub, through, async () => (await free()) < low)) {
+    if ((await free()) >= low) return;
     try {
       // Shown and archived again since, it is not the one looked at: `expire` leaves it.
       if (!(await cold.holdsMore(s.key))) continue;
-      if ((await free()) >= DISK_LOW_BYTES) return;
+      if ((await free()) >= low) return;
       await cold.expire(s.key, s.archivedAt);
     } catch (error) {
       log.warn("hub", "the workspace of an archived session was not emptied", { session: s.key, error: (error as Error).message });

@@ -1794,6 +1794,11 @@ export interface PrefsView {
 	 * key for it (`night`, `poster`, …; none or one the app does not know: its first).
 	 */
 	shareLook?: string;
+	/**
+	 * How a machine's CPU dial says it on this device (its page's 资源, the dial pressed to turn it): `busy`, how much
+	 * of it is used; or (none) how much is idle.
+	 */
+	cpuDial?: string;
 	/** How files dragged into a chat go unless the chat says otherwise (`dropFiles`): file, or (none) path. */
 	dropAs?: string;
 	/**

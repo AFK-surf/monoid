@@ -943,6 +943,28 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
       await p.advance(START + 1_000_000);
       await statesAlike("rounds");
       assert.ok(mbChanged > 0, "the program told what changed");
+      // `health` reads the profiles kept made (`hub_config()`), made again once config.json is said changed: a Codex
+      // profile's account read of the home it has now.
+      const claims = Buffer.from(JSON.stringify({ sub: "user-1" })).toString("base64url");
+      for (const [home, acc] of [["cx-a", "acc-a"], ["cx-b", "acc-b"]]) {
+        mkdirSync(join(mb.data, "homes", home), { recursive: true });
+        writeFileSync(join(mb.data, "homes", home, "auth.json"), JSON.stringify({ tokens: { access_token: `h.${claims}.s`, account_id: acc, id_token: `h.${claims}.s` } }));
+      }
+      const homed = (home: string) => {
+        const r = structuredClone(mb.config.raw());
+        r.profiles = r.profiles.map((pr: Json) => (pr.id === "cx" ? { ...pr, home: `homes/${home}` } : pr));
+        return r;
+      };
+      const accountOf = async () => {
+        await p.ask("accounts.health", "cx");
+        await p.settle();
+        await settle();
+        return (await p.ask("accounts.health", "cx")).account;
+      };
+      await p.ask("accounts.configSaid", homed("cx-a"));
+      assert.equal(await accountOf(), `codex:${JSON.stringify(["acc-a", "user-1"])}`);
+      await p.ask("accounts.configSaid", homed("cx-b"));
+      assert.equal(await accountOf(), `codex:${JSON.stringify(["acc-b", "user-1"])}`, "the profile as config.json says it now");
     } finally {
       await tsAccounts.close();
       await p.ask("accounts.close");

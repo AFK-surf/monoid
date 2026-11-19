@@ -99,10 +99,7 @@ fn p54_ui_ask_chain(bus : LiveBus, asks : Array[async (String, Json) -> Json?]) 
   let before = bus.ui_ask.val
   bus.ui_ask.val = async fn(op, a) {
     for ask in asks {
-      match ask(op, a) {
-        Some(answer) => return answer
-        None => ()
-      }
+      if ask(op, a) is Some(answer) { return answer }
     }
     before(op, a)
   }

@@ -78,7 +78,7 @@ pub fn beside_panel_node(
         |> ignore
         p
         .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
+        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .says(By(fn() { Some(@view.said(Dialog, label=label())) }))
         // (a press on it its own: not outside it)
         |> ground_node

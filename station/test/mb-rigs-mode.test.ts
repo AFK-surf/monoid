@@ -244,7 +244,7 @@ test("the rig's forms, the words an agent reads and the scripts run elevated are
     }
   }
   // the disk as it fills, the door's ports
-  for (const [free, total] of [[1e9, 1e12], [25 * 1024 ** 3, 1e12], [25 * 1024 ** 3, 2e11], [200e9, 1e12], [50e9, 1e11]]) {
+  for (const [free, total] of [[1e9, 1e12], [15 * 1024 ** 3, 1e11], [9 * 1024 ** 3, 1e11], [25 * 1024 ** 3, 1e12], [25 * 1024 ** 3, 2e11], [200e9, 1e12], [50e9, 1e11]]) {
     assert.equal(await p.must("diskTier", { free, total }), diskTier(free!, total!));
     assert.equal(await p.must("diskSoft", { total }), diskSoft(total!));
   }

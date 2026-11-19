@@ -217,7 +217,7 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
       // was first drawn as well, for a source whose time of day stands still)
       let gone = (src.now)() - o.created_at
       let late = o.state != "sent" &&
-        (gone >= sending_shows_ms || @kit.after(c, "sending/" + o.id, true, sending_shows_ms))
+        (gone >= sending_shows_ms || c.held("sending/" + o.id, true, sending_shows_ms))
       if o.state != "sent" && !late {
         c.wake_in(sending_shows_ms - gone)
       }

@@ -1,5 +1,5 @@
 // An agent at work in a chat: its ring of eight arcs steps round, a step every 100 ms (Spokes.kt;
-// the steps themselves: src/sf/spokes_test.mbt).
+// the steps themselves: libs/sf-ui/src/work_ring_test.mbt).
 
 ///|
 test "activity: its ring steps round" {
@@ -21,7 +21,7 @@ test "activity: its ring steps round" {
   // the keyboard put away: the field's caret no longer blinks
   t.keyboard_gone()
   let at = t.drawlist()
-  t.run_for(@sf.spoke_step_ms)
+  t.run_for(@sf.work_step_ms)
   assert_true(t.drawlist() != at)
   fix_clock.val = None
 }

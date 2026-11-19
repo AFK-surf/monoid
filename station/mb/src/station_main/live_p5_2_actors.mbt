@@ -221,14 +221,8 @@ fn ActorsProgram::ended(self : ActorsProgram) -> Unit {
 
 ///|
 fn ActorsProgram::said(self : ActorsProgram, said : Json) -> Unit {
-  match jnum_of(said, "seen") {
-    Some(n) => self.seen = n.to_int()
-    None => ()
-  }
-  match jnum_of(said, "active") {
-    Some(n) => self.active = n.to_int()
-    None => ()
-  }
+  if jnum_of(said, "seen") is Some(n) { self.seen = n.to_int() }
+  if jnum_of(said, "active") is Some(n) { self.active = n.to_int() }
   self.hear(said)
 }
 
@@ -249,16 +243,14 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
       self.timer_seq += 1
       let seq = self.timer_seq
       self.timers[id.to_int()] = seq
-      ignore(
-        self.ctx.host.rt.fork_daemon("actor's wait", on_error=e => @host.note("actor's wait failed: \{e}"), async fn() {
-          // timer: a wait of an actor's (its wait, a refill), on the hub's clock
-          @effect.sleep(if ms < 1.0 { 0 } else { ms.ceil().to_int() })
-          if self.timers.get(id.to_int()) == Some(seq) {
-            self.timers.remove(id.to_int())
-            ignore(self.post({ "due": jn(id) }))
-          }
-        }),
-      )
+      fork_bg(self.ctx.host, "actor's wait", async fn() {
+        // timer: a wait of an actor's (its wait, a refill), on the hub's clock
+        @effect.sleep(if ms < 1.0 { 0 } else { ms.ceil().to_int() })
+        if self.timers.get(id.to_int()) == Some(seq) {
+          self.timers.remove(id.to_int())
+          ignore(self.post({ "due": jn(id) }))
+        }
+      })
       return
     }
     None => ()
@@ -311,27 +303,22 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
           self.answering += counted
           let f = jtext(said, "fn").unwrap_or("")
           let args = jitems(jfield(said, "args"))
-          ignore(
-            self.ctx.host.rt.fork_daemon("shell's rpc", on_error=e => @host.note("shell's rpc failed: \{e}"), async fn() {
-              let answer = Ok(asked(f, args)) catch { e => Err(e) }
-              self.answering -= counted
-              match answer {
-                Ok({ "$programError": err, .. }) =>
-                  ignore(self.post({ "answer": jn(id), "error": err }))
-                Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
-                Err(e) =>
-                  ignore(
-                    self.post({ "answer": jn(id), "error": error_of(e, "") }),
-                  )
-              }
-            }),
-          )
+          fork_bg(self.ctx.host, "shell's rpc", async fn() {
+            let answer = Ok(asked(f, args)) catch { e => Err(e) }
+            self.answering -= counted
+            match answer {
+              Ok({ "$programError": err, .. }) =>
+                ignore(self.post({ "answer": jn(id), "error": err }))
+              Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
+              Err(e) =>
+                ignore(
+                  self.post({ "answer": jn(id), "error": error_of(e, "") }),
+                )
+            }
+          })
         }
         None =>
-          match jtext(said, "tell") {
-            Some(t) => told(t, jitems(jfield(said, "args")))
-            None => ()
-          }
+          if jtext(said, "tell") is Some(t) { told(t, jitems(jfield(said, "args"))) }
       }
       return
     }
@@ -344,27 +331,17 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
     self.answering += 1
     let f = jtext(said, "fn").unwrap_or("")
     let args = jitems(jfield(said, "args"))
-    ignore(
-      self.ctx.host.rt.fork_daemon("actor's rpc", on_error=e => @host.note("actor's rpc failed: \{e}"), async fn() {
-        let answer = Ok(actor.asked(f, args)) catch { e => Err(e) }
-        self.answering -= 1
-        match answer {
-          Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
-          Err(e) =>
-            ignore(
-              self.post({
-                "answer": jn(id),
-                "error": error_of(e, actor.runtime),
-              }),
-            )
-        }
-      }),
-    )
+    fork_bg(self.ctx.host, "actor's rpc", async fn() {
+      let answer = Ok(actor.asked(f, args)) catch { e => Err(e) }
+      self.answering -= 1
+      match answer {
+        Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
+        Err(e) =>
+          ignore(self.post({ "answer": jn(id), "error": error_of(e, actor.runtime) }))
+      }
+    })
   } else {
-    match jtext(said, "tell") {
-      Some(t) => actor.told_(t, jitems(jfield(said, "args")))
-      None => ()
-    }
+    if jtext(said, "tell") is Some(t) { actor.told_(t, jitems(jfield(said, "args"))) }
   }
 }
 
@@ -384,10 +361,7 @@ fn error_of(e : Error, runtime : String) -> Json {
   let id = actor_errors_next.val
   actor_errors[id] = e
   if actor_errors.length() > 256 {
-    match actor_errors.keys().next() {
-      Some(k) => actor_errors.remove(k)
-      None => ()
-    }
+    if actor_errors.keys().next() is Some(k) { actor_errors.remove(k) }
   }
   let said_own = e is @agent_drivers.Said(_)
   let missing = match e {
@@ -526,10 +500,7 @@ fn MbActor::mirrored(self : MbActor, state : Json) -> Unit {
     jitems(jfield(state, "unread"))
   }
   m.identity = jfield(state, "identity")
-  match jtext(state, "runtime") {
-    Some(r) => self.runtime = r
-    None => ()
-  }
+  if jtext(state, "runtime") is Some(r) { self.runtime = r }
 }
 
 ///|
@@ -653,12 +624,10 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
     self.reads[read] = d
     let ctx = self.program.ctx
     let key = self.key
-    ignore(
-      ctx.host.rt.fork_daemon("turn's last read", on_error=e => @host.note("turn's last read failed: \{e}"), async fn() {
-        ctx.live_turn_ended(key)
-        ignore(d.succeed(()))
-      }),
-    )
+    fork_bg(ctx.host, "turn's last read", async fn() {
+      ctx.live_turn_ended(key)
+      ignore(d.succeed(()))
+    })
     self.post({ "event": event, "generation": ji(generation), "read": ji(read) })
     return
   }
@@ -708,10 +677,7 @@ fn MbActor::took(
   m["routed"] = ji(n)
   m["batch"] = ji(batch)
   m["generation"] = ji(generation)
-  match outcome {
-    Some(o) => m["outcome"] = o
-    None => ()
-  }
+  if outcome is Some(o) { m["outcome"] = o }
   self.post(Json::object(m))
   true
 }
@@ -828,10 +794,7 @@ async fn MbActor::hub_asked(
       )
       let done = () => {
         self.records.remove(token)
-        match record {
-          Some(id) => chat_state.callbacks.remove(id)
-          None => ()
-        }
+        if record is Some(id) { chat_state.callbacks.remove(id) }
       }
       let r = self.call("stateForTurn", [a(0), a(1), ji(token)]) catch {
         e => {
@@ -867,11 +830,9 @@ async fn MbActor::hub_asked(
       }
     }
     "close" => {
-      ignore(
-        self.program.ctx.host.rt.fork_daemon("actor closed", on_error=e => @host.note("actor closed failed: \{e}"), async fn() {
-          ignore(self.call("close", []))
-        }),
-      )
+      fork_bg(self.program.ctx.host, "actor closed", async fn() {
+        ignore(self.call("close", []))
+      })
       self.closing()
       Json::null()
     }
@@ -914,10 +875,7 @@ async fn MbActor::adopt(
       self.mirror.turn = jtext(jfield(snap, "turn"), "id")
       self.mirror.idle_since = self.program.now() -
         jnum_of(snap, "idleMs").unwrap_or(0.0)
-      match jtext(snap, "runtime") {
-        Some(r) => self.runtime = r
-        None => ()
-      }
+      if jtext(snap, "runtime") is Some(r) { self.runtime = r }
     }
     None => ()
   }
@@ -946,10 +904,7 @@ async fn MbActor::adopt(
     }
     None => ()
   }
-  match answer {
-    Some(d) => ignore(d.wait())
-    None => ()
-  }
+  if answer is Some(d) { ignore(d.wait()) }
 }
 
 // ── what the program asks of the station ──
@@ -1342,22 +1297,20 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       let id = as_num(a(0)).unwrap_or(0.0).to_int()
       let before = self.codex.get(id).unwrap_or(None)
       self.codex.remove(id)
-      ignore(
-        ctx.host.rt.fork_daemon("codex updated", on_error=e => @host.note("codex updated failed: \{e}"), async fn() {
-          let why = try {
-            ctx.update_codex(before)
-            None
-          } catch {
-            e => Some(said_of(e))
+      fork_bg(ctx.host, "codex updated", async fn() {
+        let why = try {
+          ctx.update_codex(before)
+          None
+        } catch {
+          e => Some(said_of(e))
+        }
+        if !self.closed {
+          match why {
+            Some(w) => self.post({ "codexUpdated": ji(id), "why": jstr(w) })
+            None => self.post({ "codexUpdated": ji(id) })
           }
-          if !self.closed {
-            match why {
-              Some(w) => self.post({ "codexUpdated": ji(id), "why": jstr(w) })
-              None => self.post({ "codexUpdated": ji(id) })
-            }
-          }
-        }),
-      )
+        }
+      })
       Json::null()
     }
     _ =>

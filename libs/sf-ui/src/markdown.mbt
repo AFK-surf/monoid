@@ -1189,7 +1189,7 @@ fn runs_of(
 let code_key_h : Double = 24.0
 
 ///|
-/// The code blocks saying they were copied, by their id (for copied_ms, on @kit.after's clock).
+/// The code blocks saying they were copied, by their id (for copied_ms, on Ctx::held's clock).
 let copied_at : LiveMap[Int, Bool] = LiveMap::new()
 
 ///|
@@ -1250,7 +1250,7 @@ pub fn code_block(
   c.on_press(id, fn() {
     c.copy_text(code)
     // pressed again while it says so: its time starts again
-    @kit.after(c, copy_key, false, copied_ms) |> ignore
+    c.held(copy_key, false, copied_ms) |> ignore
     copied_at[id] = true
   })
   let wrap_id = c.id("sf-code-wrap/" + code)
@@ -1263,7 +1263,7 @@ pub fn code_block(
   })
   let wrapped = code_wrapped.contains(id)
   let copied = copied_at.contains(id) &&
-    (if @kit.after(c, copy_key, true, copied_ms) {
+    (if c.held(copy_key, true, copied_ms) {
       copied_at.remove(id)
       false
     } else {
@@ -1334,7 +1334,7 @@ pub fn code_block(
         })
         key(if copied { "check" } else { "copy" }, "sf-code-copy-ib/" + code, false, md_copy_words(copied), fn() {
           c.copy_text(code)
-          @kit.after(c, copy_key, false, copied_ms) |> ignore
+          c.held(copy_key, false, copied_ms) |> ignore
           copied_at[id] = true
         })
       },

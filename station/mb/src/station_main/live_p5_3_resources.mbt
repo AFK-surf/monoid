@@ -313,18 +313,16 @@ async fn P53Resources::want(self : P53Resources) -> Unit {
     @effect.sleep(p53_first_ms) // timer: a sample of this machine (what was used since the first look)
   }
   self.look()
-  ignore(
-    self.bus.host.rt.fork_daemon("resources", on_error=e => @host.note("resources failed: \{e}"), async fn() {
-      while (self.followers.length() > 0 || p53_clock() - self.wanted < p53_wanted_ms) && !self.bus.stopped.is_done() {
-        @effect.sleep(p53_look_every_ms) // timer: a sample of this machine while a page asks
-        self.look()
-        for _, told in self.followers {
-          told()
-        }
+  fork_bg(self.bus.host, "resources", async fn() {
+    while (self.followers.length() > 0 || p53_clock() - self.wanted < p53_wanted_ms) && !self.bus.stopped.is_done() {
+      @effect.sleep(p53_look_every_ms) // timer: a sample of this machine while a page asks
+      self.look()
+      for _, told in self.followers {
+        told()
       }
-      self.going = false
-    }),
-  )
+    }
+    self.going = false
+  })
 }
 
 ///|
@@ -333,14 +331,12 @@ async fn P53Resources::follow(self : P53Resources, told : () -> Unit) -> () -> U
   self.next_follower += 1
   let id = self.next_follower
   self.followers[id] = told
-  ignore(
-    self.bus.host.rt.fork_daemon("resources followed", on_error=e => @host.note("resources followed failed: \{e}"), async fn() {
-      self.want()
-      if self.followers.contains(id) {
-        told()
-      }
-    }),
-  )
+  fork_bg(self.bus.host, "resources followed", async fn() {
+    self.want()
+    if self.followers.contains(id) {
+      told()
+    }
+  })
   () => self.followers.remove(id)
 }
 
@@ -501,19 +497,17 @@ async fn P53Resources::end(self : P53Resources, pid : Int, session : String) -> 
     _ => raise P53Error("not a chat's")
   }
   ignore(kill(pid, "SIGTERM"))
-  ignore(
-    self.bus.host.rt.fork_daemon("a process ended", on_error=e => @host.note("a process ended failed: \{e}"), async fn() {
-      @effect.sleep(p53_kill_after_ms) // timer: a deadline to a process
-      match self.table() {
-        Some(t) =>
-          match t.search_by(p => p.pid == pid) {
-            Some(j) if t[j].command == now.command => ignore(kill(pid, "SIGKILL"))
-            _ => ()
-          }
-        None => ()
-      }
-    }),
-  )
+  fork_bg(self.bus.host, "a process ended", async fn() {
+    @effect.sleep(p53_kill_after_ms) // timer: a deadline to a process
+    match self.table() {
+      Some(t) =>
+        match t.search_by(p => p.pid == pid) {
+          Some(j) if t[j].command == now.command => ignore(kill(pid, "SIGKILL"))
+          _ => ()
+        }
+      None => ()
+    }
+  })
   @nodepath.basename("/", now.command)
 }
 
@@ -605,10 +599,7 @@ fn p53_programs_in(table : Array[P53Proc], pids : Array[Int]) -> Double {
       continue
     }
     seen[pid] = true
-    match by_pid.get(pid) {
-      Some(p) => bytes += p.bytes
-      None => ()
-    }
+    if by_pid.get(pid) is Some(p) { bytes += p.bytes }
     for c in children.get(pid).unwrap_or([]) {
       queue.push(c)
     }
@@ -633,16 +624,14 @@ async fn P53Resources::launcher(self : P53Resources) -> Int? {
 /// The watch over the station's own memory started (self-memory.ts `start`).
 fn P53Resources::govern(self : P53Resources) -> Unit {
   let bus = self.bus
-  ignore(
-    bus.host.rt.fork_daemon("the station's memory", on_error=e => @host.note("the station's memory failed: \{e}"), async fn() {
-      while !bus.stopped.is_done() {
-        @effect.sleep(p53_sample_ms) // timer: a sample of this machine (the station's own memory)
-        ignore(self.sample()) catch {
-          e => slice_log("warn", "memory", "the station's memory not looked at", jobj_of([("error", jstr(p53_words(e)))]))
-        }
+  fork_bg(bus.host, "the station's memory", async fn() {
+    while !bus.stopped.is_done() {
+      @effect.sleep(p53_sample_ms) // timer: a sample of this machine (the station's own memory)
+      ignore(self.sample()) catch {
+        e => slice_log("warn", "memory", "the station's memory not looked at", jobj_of([("error", jstr(p53_words(e)))]))
       }
-    }),
-  )
+    }
+  })
 }
 
 ///|

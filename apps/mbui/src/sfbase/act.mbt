@@ -138,7 +138,7 @@ let failed_ms : Double = 6000.0
 pub fn failed_lately(c : @ui.Ctx, key : String) -> Bool {
   match acting.failed.get(key) {
     // (its going is not what is shown waits for: a screenshot of it failing shows the mark)
-    Some(n) if @kit.after(c, "failed/\{key}/\{n}", true, failed_ms, later=true) => {
+    Some(n) if c.held("failed/\{key}/\{n}", true, failed_ms, later=true) => {
       acting.failed.remove(key)
       false
     }

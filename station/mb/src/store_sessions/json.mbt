@@ -3,18 +3,14 @@
 // statement is given is the station's byte for byte.
 
 ///|
+using @jsjson {
+  json_str as jstr, json_bool as jbool, json_num as jnum, json_opt_str as opt_str, json_field as field,
+  jval_of_json as to_js, jval_to_json as of_js, json_strs as strings,
+}
+
+///|
 fn col(r : Map[String, Json], k : String) -> Json {
   r.get(k).unwrap_or(Json::null())
-}
-
-///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jbool(b : Bool) -> Json {
-  Json::boolean(b)
 }
 
 ///|
@@ -25,11 +21,6 @@ fn jint(n : Int64) -> Json {
   } else {
     Json::number(n.to_double())
   }
-}
-
-///|
-fn jnum(d : Double) -> Json {
-  Json::number(d)
 }
 
 ///|
@@ -100,14 +91,6 @@ fn or_else(a : Json, b : Json) -> Json {
 }
 
 ///|
-fn opt_str(s : String?) -> Json {
-  match s {
-    Some(v) => Json::string(v)
-    None => Json::null()
-  }
-}
-
-///|
 fn arr(v : Json) -> Array[Json] {
   match v {
     Array(a) => a
@@ -124,15 +107,6 @@ fn obj(v : Json) -> Map[String, Json] {
 }
 
 ///|
-/// A field of an object: undefined (None) where it has none.
-fn field(v : Json, k : String) -> Json? {
-  match v {
-    Object(o) => o.get(k)
-    _ => None
-  }
-}
-
-///|
 /// What the TypeScript gives back as `undefined` (test/mb-store-sessions.test.ts says it so).
 fn undefined() -> Json {
   { "$undefined": true }
@@ -145,16 +119,6 @@ fn row_json(r : Map[String, Json]) -> Json {
 }
 
 // ── JSON as JavaScript writes it ──
-
-///|
-fn to_js(v : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(v)
-}
-
-///|
-fn of_js(v : @jsjson.JValue) -> Json {
-  v.to_json()
-}
 
 ///|
 /// JSON.stringify.
@@ -203,12 +167,6 @@ fn js_sorted(items : Array[String]) -> Array[String] {
   let out = items.copy()
   out.sort_by(@jsjson.js_compare)
   out
-}
-
-///|
-/// A JSON array of strings.
-fn strings(items : Array[String]) -> Json {
-  Json::array(items.map(Json::string(_)))
 }
 
 ///|

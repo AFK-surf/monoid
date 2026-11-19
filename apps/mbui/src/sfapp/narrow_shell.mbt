@@ -2,9 +2,10 @@
 // the way there's 4), made once and changed as the app's state does, the pages and what floats over
 // them old views (islands) in it:
 //
-//   - under all of it, what the frame does in every tier before its pages (signed_in_frame: what is told as the frame
-//     ends, the icon's number, whether the first page waits: narrow_under; the keys are the shell node's actions:
-//     sfdesk's keys.mbt), and the back of the stack's root a node said as what it reads changes (narrow_takes_back);
+//   - under all of it, the window's top dragging it and the back of the stack's root a node said as what it reads
+//     changes (narrow_takes_back); the keys are the shell node's actions (sfdesk's keys.mbt); what the old frame does
+//     before its pages (signed_in_frame: what is told as the frame ends, the icon's number, whether the first page
+//     waits) is its own (view_in);
 //   - the pages: the stack (app.nav) a node, each page on it a node of its own made as it is put on and let go as it
 //     leaves (what it made forgotten), the page in it built while it shows (an island), where it is drawn bound to its
 //     slide, which sets out at its cause's moment, once the core has given what the page shows (mbui's nav_view.mbt);
@@ -64,7 +65,11 @@ fn shell_is(src : Source, width : Double) -> ShellIs {
 fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // (on the window's ground, as the old view whole is (app_state_tree's): what no page covers, a page sliding, shows it)
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  @ui.old(v, fn(c) { narrow_under(c, src) }).over(Is(true)) |> ignore
+  // the window's top dragging it where nothing over it takes the press, as a way in's (entry_tree)
+  v.show(fn() { @ui.window_inset_now() }, fn(o) {
+    o.over(Is(true)) |> ignore
+    o.box(fn(b) { b.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore }) |> ignore
+  })
   // back at the stack's root while the shell takes it (narrow_takes_back), a node of the window's tree's: before the
   // pages, what they and what is over them say takes back (a page's own stack, a menu, a sheet) taking it first; whose
   // it is said at the cause that changes it (a tab of the bar pressed), done as it is done (sfbase's back_step then)
@@ -215,23 +220,6 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// Under the narrow shell's pages (an island): what every frame of the app's state does (app_state_island's), what the
-/// signed-in frame does before its pages (signed_in_frame), how the lists take a mouse.
-fn narrow_under(c : @ui.Ctx, src : Source) -> Unit {
-  if @ui.window_inset() {
-    let id = c.id("window-ground-band")
-    c.window_drag(id)
-    c.box(style=@ui.style(h=Fixed(window_band())), left=0.0, top=0.0, right=0.0, id~, fn() {  }) |> ignore
-  }
-  frame_bare.val = false
-  match workspace_in_view(src).0 {
-    Some(w) => signed_in_frame(c, src, w)
-    None => ()
-  }
-  narrow_lists(c)
-}
-
-///|
 /// What a page's island in the narrow shell is built again by besides what it reads (narrow_page_key), with workspace
 /// in view.
 fn narrow_island_key(src : Source) -> String {
@@ -349,15 +337,6 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
   let root = app.nav.top()
   let waiting = root == Home && @settings.lock_waiting(settings_core(src, w), w.id)
   app.nav.depth() == 1 && place_of(root) is Some(_) && !@sfpages.search_bar_away() && !waiting
-}
-
-///|
-/// Over the tape's frame with a workspace in view (tape_shell's island): the presenters told the app is under them
-/// (what they put up is the window's tree's: presented_nodes; the loupe over all of it too, app_tree's; what the devices
-/// waiting on this one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction,
-/// panels_frame).
-fn signed_in_over(c : @ui.Ctx) -> Unit {
-  @sf.presented(c)
 }
 
 ///|

@@ -58,6 +58,15 @@ pub let local_ms : Double = 100.0
 pub let dur_ms : Double = 140.0
 
 ///|
+/// The most a popover grown from beside what opened it (pop_in about FromBeside: a menu, a panel, a pick, a hover card,
+/// what is offered) stands off where it is laid out at its farthest edge, in points (View::scale's max_shift). A tall
+/// one (600 to 750 high) gone above its anchor grows from its foot, so at 0.97 its top row would come 18 to 22.5 below
+/// where it lands on its first frame, over half a 36-high row; kept within 8, its whole way in and out narrowed alike.
+/// One whose farthest edge from where it grows (its width or its height, whichever is more) is 266 or less stays
+/// within it at 0.97, drawn as big as pop_in says; a wider one (a panel 360 wide) is kept within it as a tall one is.
+let pop_max_shift : Double = 8.0
+
+///|
 /// What says a thing was copied (a check for the copy button, 已复制) shows this long (parts.tsx CopyButton: 1.6 s).
 pub let copied_ms : Double = 1600.0
 

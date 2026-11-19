@@ -256,10 +256,7 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
         runner,
         shell_env: (command, env) => pump.later("Claude's command on the shell's PATH", async fn() {
           let found = with_shell_command(host, command, env.pairs.copy())
-          match found.iter().find_first(kv => kv.0 == "PATH") {
-            Some(kv) => env.set("PATH", kv.1)
-            None => ()
-          }
+          if found.iter().find_first(kv => kv.0 == "PATH") is Some(kv) { env.set("PATH", kv.1) }
         }),
       })
     }
@@ -398,10 +395,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     }),
     speed: Some(thread => {
       let v = ctx.store("codexSessionSpeed", [jstr(thread)]) catch { _ => Json::null() }
-      match v {
-        String(s) => Some(s)
-        _ => None
-      }
+      as_text(v)
     }),
     current_profile: Some(id => ctx.profiles().iter().find_first(p => jtext(p, "id") == Some(id)).map(to_jv)),
     lent_borrowed: Some(p => borrowed_profile(ctx, of_jv(p))),
@@ -412,16 +406,13 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
       }
     })),
     installed_version: () => pump.later("codex version", async fn() {
-      match ctx.bus.coord_updates_version("codex") {
-        String(v) => Some(v)
-        _ => None
-      }
+      as_text(ctx.bus.coord_updates_version("codex"))
     }),
     // (codex-repair.ts `findMissingCodexHost`: a code-mode host the installed Codex lacks)
     missing_host: (command, env) => pump.later("codex host", async fn() {
       @updates.find_missing_codex_host(station_updates_world(ctx.bus), command, env.pairs) is Some(_)
     }),
-    incomplete_installation: () => ignore(host.rt.fork_daemon("codex check", on_error=e => @host.note("codex check failed: \{e}"), async fn() { ctx.bus.coord_updates_check() })),
+    incomplete_installation: () => fork_bg(host, "codex check", async fn() { ctx.bus.coord_updates_check() }),
     link_auth: dir => pump.later("codex auth", async fn() {
       let fields = @agent_runtimes.Fields::new()
       for kv in env_all() {
@@ -518,10 +509,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
             "efforts": Json::object(Map::from_array(c.efforts.map(e => (e.0, Json::array(e.1.map(Json::string)))))),
             "defaults": Json::object(Map::from_array(c.defaults.map(e => (e.0, Json::string(e.1))))),
           }
-          match c.ultrafast_models {
-            Some(u) => out["ultrafastModels"] = Json::array(u.map(Json::string))
-            None => ()
-          }
+          if c.ultrafast_models is Some(u) { out["ultrafastModels"] = Json::array(u.map(Json::string)) }
           Json::object(out)
         }
         // (a limit's reset redeemed on the account: codex.ts `resetQuota`)

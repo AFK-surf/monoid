@@ -292,3 +292,103 @@ test "JV in-place put/delete, raw parse, jat, jkeys, jvalues, js_round, string h
   inspect(@jsjson.js_split("a,,b,", ","), content="[a, , b, ]")
   inspect(@jsjson.js_split("ab", ""), content="[a, b]")
 }
+
+///|
+test "jval_* and json_* top-level helpers" {
+  let o = @jsjson.jval_obj([
+    ("s", @jsjson.jval_str("hi")),
+    ("empty", @jsjson.jval_str("")),
+    ("n", @jsjson.jval_num(2.5)),
+    ("nan", @jsjson.jval_num(@double.not_a_number)),
+    ("i", @jsjson.jval_int(7)),
+    ("b", @jsjson.jval_bool(true)),
+    ("a", @jsjson.jval_array([@jsjson.jval_str("x"), @jsjson.jval_int(1)])),
+    ("ss", @jsjson.jval_strs(["a", "b"])),
+    ("opt", @jsjson.jval_opt_str(None)),
+  ])
+  inspect(@jsjson.jval_is_record(Some(o)), content="true")
+  inspect(@jsjson.jval_is_obj(Some(o)), content="true")
+  inspect(@jsjson.jval_is_arr(Some(o)), content="false")
+  inspect(@jsjson.jval_is_arr(@jsjson.jval_at(Some(o), "a")), content="true")
+  inspect(@jsjson.jval_is_obj(@jsjson.jval_at(Some(o), "a")), content="true")
+  inspect(@jsjson.jval_is_record(@jsjson.jval_at(Some(o), "a")), content="false")
+  inspect(@jsjson.jval_nonempty(@jsjson.jval_at(Some(o), "s")), content="Some(hi)")
+  inspect(@jsjson.jval_nonempty(@jsjson.jval_at(Some(o), "empty")), content="None")
+  inspect(@jsjson.jval_finite(@jsjson.jval_at(Some(o), "n")), content="Some(2.5)")
+  inspect(@jsjson.jval_finite(@jsjson.jval_at(Some(o), "nan")), content="None")
+  inspect(@jsjson.jval_finite_or_zero(@jsjson.jval_at(Some(o), "n")), content="2.5")
+  inspect(@jsjson.jval_finite_or_zero(@jsjson.jval_at(Some(o), "nan")), content="0")
+  inspect(@jsjson.jval_num_text_of(@jsjson.jval_num(1.5)), content="1.5")
+  inspect(@jsjson.jval_num_text_of(@jsjson.jval_str("x")), content="\"x\"")
+  inspect(@jsjson.jval_stringify_num(@double.not_a_number), content="null")
+  inspect(@jsjson.jval_stringify_num(42.0), content="42")
+  inspect(@jsjson.jval_str_eq(@jsjson.jval_at(Some(o), "s"), "hi"), content="true")
+  inspect(@jsjson.jval_str_eq(@jsjson.jval_at(Some(o), "s"), "no"), content="false")
+  inspect(@jsjson.jval_str_at(Some(o), "s"), content="Some(hi)")
+  inspect(@jsjson.jval_num_at(Some(o), "i"), content="Some(7)")
+  inspect(@jsjson.jval_bool_at(Some(o), "b"), content="Some(true)")
+  inspect(@jsjson.jval_arr_at(Some(o), "ss").map(a => a.length()), content="Some(2)")
+  inspect(@jsjson.jval_strings_of(@jsjson.jval_at(Some(o), "a")), content="[x]")
+  inspect(@jsjson.jval_same_opt(None, None), content="true")
+  inspect(@jsjson.jval_same_opt(Some(@jsjson.jval_int(1)), Some(@jsjson.jval_num(1.0))), content="true")
+  inspect(@jsjson.jval_quote("a\"b"), content="\"a\\\"b\"")
+  inspect(@jsjson.js_less("a", "b"), content="true")
+  inspect(@jsjson.js_less("b", "a"), content="false")
+  inspect(@jsjson.jval_keys(o).length(), content="9")
+  inspect(@jsjson.jval_to_json(@jsjson.jval_of_json(@jsjson.json_int(3))).stringify(), content="3")
+  inspect(@jsjson.jval_to_json_lossy(@jsjson.jval_str("ok")).stringify(), content="\"ok\"")
+
+  let j = @jsjson.json_obj([
+    ("s", @jsjson.json_str("hi")),
+    ("n", @jsjson.json_num(3.5)),
+    ("nan", @jsjson.json_num_js(@double.not_a_number)),
+    ("i", @jsjson.json_int(5)),
+    ("i64", @jsjson.json_int64(9L)),
+    ("b", @jsjson.json_bool(false)),
+    ("a", @jsjson.json_arr([@jsjson.json_str("p"), @jsjson.json_int(2)])),
+    ("ss", @jsjson.json_strs(["u", "v"])),
+    ("opt", @jsjson.json_opt_str(None)),
+  ])
+  inspect(@jsjson.json_is_obj(Some(j)), content="true")
+  inspect(@jsjson.json_is_objectish(Some(j)), content="true")
+  inspect(@jsjson.json_field(j, "s") == Some(@jsjson.json_str("hi")), content="true")
+  inspect(@jsjson.json_str_at(Some(j), "s"), content="Some(hi)")
+  inspect(@jsjson.json_num_at(Some(j), "n"), content="Some(3.5)")
+  inspect(@jsjson.json_bool_at(Some(j), "b"), content="Some(false)")
+  inspect(@jsjson.json_arr_at(Some(j), "ss").map(a => a.length()), content="Some(2)")
+  inspect(@jsjson.json_strings_of(@jsjson.json_at(Some(j), "a")), content="[p]")
+  inspect(@jsjson.json_finite(@jsjson.json_at(Some(j), "n")), content="Some(3.5)")
+  inspect(@jsjson.json_finite(@jsjson.json_at(Some(j), "nan")), content="None")
+  inspect(@jsjson.jval_or_null(None) is Null, content="true")
+  inspect(@jsjson.jval_str_raw_of(Some(@jsjson.jval_str("ab"))), content="Some(ab)")
+  inspect(@jsjson.jval_js_str_raw(@jsjson.jval_int(9)), content="9")
+  inspect(@jsjson.json_stringify(@jsjson.json_int(4)), content="4")
+  inspect(@jsjson.json_stringify_pretty(@jsjson.json_arr([@jsjson.json_int(1)])), content="[\n  1\n]")
+  inspect(@jsjson.json_js_str(Some(@jsjson.json_arr([@jsjson.json_int(1), Json::null(), @jsjson.json_str("a")]))), content="1,,a")
+  inspect(@jsjson.json_items(@jsjson.json_at(Some(j), "a")).length(), content="2")
+  inspect(@jsjson.json_str_field(j, "s"), content="Some(hi)")
+  inspect(@jsjson.json_num_field(j, "n"), content="Some(3.5)")
+  inspect(@jsjson.json_bool_field(j, "b"), content="false")
+  inspect(@jsjson.json_arr_field(j, "ss").map(a => a.length()), content="Some(2)")
+  inspect(@jsjson.json_truthy(Some(@jsjson.json_str("x"))), content="true")
+  inspect(@jsjson.json_truthy(Some(@jsjson.json_str(""))), content="false")
+  inspect(@jsjson.json_nullish(None), content="true")
+  inspect(@jsjson.json_same_opt(Some(@jsjson.json_int(1)), Some(@jsjson.json_num(1.0))), content="true")
+  inspect(@jsjson.js_trunc(-2.9), content="-2")
+  inspect(@jsjson.js_trunc(2.9), content="2")
+  inspect(@jsjson.js_uniq(["b", "a", "b"]), content="[b, a]")
+  inspect(@jsjson.js_all_digits("123"), content="true")
+  inspect(@jsjson.js_all_digits(""), content="false")
+  inspect(@jsjson.js_upper_ascii("aB1"), content="AB1")
+  inspect(@jsjson.js_split_lines("a\r\nb\nc"), content="[a, b, c]")
+  inspect(@jsjson.js_slice_to("abcdef", 3), content="abc")
+  inspect(@jsjson.js_slice_to("abc", -1), content="")
+  inspect(@jsjson.js_slice_to("abc", 0), content="")
+  inspect(@jsjson.js_replace_all("a-b-c", "-", "/"), content="a/b/c")
+  inspect(@jsjson.js_utf8_len("é"), content="2")
+  inspect(@jsjson.js_utf8_len("😀"), content="4")
+  inspect(@jsjson.js_utf8_len(@jsjson.raw_text([0x61, 0xd800, 0x62])), content="5")
+  inspect(@jsjson.js_starts("abc", "ab"), content="true")
+  inspect(@jsjson.js_ends("abc", "bc"), content="true")
+  inspect(@jsjson.js_includes("abc", "b"), content="true")
+}

@@ -8,8 +8,12 @@ import { RelayEnrollment, type RelayRegistration } from "./enrollment.ts";
 import { Reader, writeLine } from "./wire.ts";
 
 export const ENROLLMENT_ALPN = Buffer.from("stillfail/mesh-enrollment/1");
+// app.monoid.build answers still.fail's workspaces as its guest (cloud/deploy.py `guests`): one cloud, so one scope,
+// named by still.fail's origin as the scopes kept before it.
 export function workspaceScope(origin: string, workspace: string): string {
-  return createHash("sha256").update("mesh-workspace/v1\0").update(origin.replace(/\/+$/, "")).update("\0").update(workspace).digest("hex");
+  const trimmed = origin.replace(/\/+$/, "");
+  const cloud = trimmed === "https://app.monoid.build" ? "https://app.still.fail" : trimmed;
+  return createHash("sha256").update("mesh-workspace/v1\0").update(cloud).update("\0").update(workspace).digest("hex");
 }
 export class EnrollmentDoor {
   #active = 0;

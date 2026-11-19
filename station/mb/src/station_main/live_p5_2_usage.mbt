@@ -32,10 +32,7 @@ fn LineProgram::started(self : LineProgram) -> Proc raise {
     }
     None => ()
   }
-  match self.proc {
-    Some(p) => return p
-    None => ()
-  }
+  if self.proc is Some(p) { return p }
   let p = spawn(self.host, self.argv0, self.args, stdin_piped=true, stdout=Piped)
   self.proc = Some(p)
   ignore(
@@ -176,10 +173,7 @@ fn take_transcript_hints(found : Json) -> Unit {
   for pair in jitems(jfield(found, "elsewhere")) {
     match pair {
       Array([String(key), p]) => {
-        let path = match p {
-          String(s) => Some(s)
-          _ => None
-        }
+        let path = as_text(p)
         if h.elsewhere.get(key) != Some(path) {
           h.elsewhere[key] = path
           h.changed(id_of(key))
@@ -285,10 +279,7 @@ fn drain_usage_chat_dirty(db : @sql.Db, limit : Int) -> Json raise {
 fn try_stop_usage_indexes(db : @sql.Db) -> Bool raise {
   let timeout = match db.all("PRAGMA busy_timeout", []).get(0) {
     Some(r) =>
-      match r.get("timeout") {
-        Some(Number(n, ..)) => n.to_int()
-        _ => 5000
-      }
+      opt_num(r.get("timeout")).map(n => n.to_int()).unwrap_or(5000)
     None => 5000
   }
   db.exec("PRAGMA busy_timeout = 0")
@@ -399,15 +390,13 @@ async fn P52::start_usage(self : P52) -> Unit {
   ignore(@session_hub.hub_call(hub, "usageStart", [])) catch {
     e => slice_log("warn", "usage", "the usage counter did not start", { "error": jstr(said_of(e)) })
   }
-  ignore(
-    self.host.rt.fork_daemon("usage after the station before", on_error=e => @host.note("usage after the station before failed: \{e}"), async fn() {
-      (self.bus.previous_gone)()
-      ignore(@session_hub.hub_call(hub, "usageDrain", [])) catch {
-        e => slice_log("warn", "usage", "the chats of moved sessions are not counted again", { "error": jstr(said_of(e)) })
-      }
-      ignore(@session_hub.hub_call(hub, "retireUsage", [])) catch {
-        e => slice_log("warn", "usage", "the old usage statistics were not retired", { "error": jstr(said_of(e)) })
-      }
-    }),
-  )
+  fork_bg(self.host, "usage after the station before", async fn() {
+    (self.bus.previous_gone)()
+    ignore(@session_hub.hub_call(hub, "usageDrain", [])) catch {
+      e => slice_log("warn", "usage", "the chats of moved sessions are not counted again", { "error": jstr(said_of(e)) })
+    }
+    ignore(@session_hub.hub_call(hub, "retireUsage", [])) catch {
+      e => slice_log("warn", "usage", "the old usage statistics were not retired", { "error": jstr(said_of(e)) })
+    }
+  })
 }

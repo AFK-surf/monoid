@@ -181,32 +181,28 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
   }
   let p = @browser.pass(client, upstream, @browser.Gate::new(gate_parts))
   // (what goes to the client, in its order)
-  ignore(
-    host.rt.fork_daemon("browser door out", on_error=e => @host.note("browser door out failed: \{e}"), async fn() {
-      while true {
-        let b = writes.take()
-        if !write_on(host, conn, b) {
-          client_open.val = false
-          p.end()
-          return
-        }
+  fork_bg(host, "browser door out", async fn() {
+    while true {
+      let b = writes.take()
+      if !write_on(host, conn, b) {
+        client_open.val = false
+        p.end()
+        return
       }
-    }),
-  )
+    }
+  })
   // (what Chrome says)
-  ignore(
-    host.rt.fork_daemon("browser door in", on_error=e => @host.note("browser door in failed: \{e}"), async fn() {
-      while up_open.val {
-        let (frame, _) = host.shell("ws.next", { "id": up_id }) catch { _ => break }
-        match jtext(frame, "text") {
-          Some(t) => p.from_chrome(@utf8.encode(t), false)
-          None => break
-        }
+  fork_bg(host, "browser door in", async fn() {
+    while up_open.val {
+      let (frame, _) = host.shell("ws.next", { "id": up_id }) catch { _ => break }
+      match jtext(frame, "text") {
+        Some(t) => p.from_chrome(@utf8.encode(t), false)
+        None => break
       }
-      up_open.val = false
-      p.end()
-    }),
-  )
+    }
+    up_open.val = false
+    p.end()
+  })
   // (what the agent's client says, on the door's connection)
   let reader : P54WsReader = { carry: b"", pieces: @buffer.new(), first_op: 1 }
   while client_open.val {
@@ -445,10 +441,7 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
     session => {
       let mut title = ""
       let home = bus.store.call("sessionHomeThread", [Json::string(session)]) catch { _ => Json::null() }
-      match opt_field(Some(home), "thread") {
-        Some(t) => title = jtext(t, "title").unwrap_or("").trim().to_owned()
-        None => ()
-      }
+      if opt_field(Some(home), "thread") is Some(t) { title = jtext(t, "title").unwrap_or("").trim().to_owned() }
       if title == "" {
         let recent = bus.store.call("recentSessionThreads", [Json::string(session), Json::number(1.0)]) catch { _ => Json::null() }
         match opt_field(Some(recent), "threads") {

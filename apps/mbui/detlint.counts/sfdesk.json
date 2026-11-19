@@ -29,9 +29,6 @@
       "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/tape_view.mbt": 1
     },
-    "old-island": {
-      "src/sfdesk/tape_view.mbt": 1
-    },
     "reused-untracked-key": {
       "src/sfdesk/archive_side_node.mbt": 1
     },

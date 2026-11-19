@@ -385,7 +385,7 @@ pub let sandbox_prefix : String
 
 pub fn sandboxes_of(@jsjson.JValue?) -> Array[Sandbox]
 
-pub fn session_instructions(String, String?, String, String, String, site? : String, station? : String) -> String
+pub fn session_instructions(String, String?, String, String, String, site? : String, station? : String, move? : Bool) -> String
 
 pub let site_instructions_max : Int32
 

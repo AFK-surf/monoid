@@ -2772,6 +2772,8 @@ let en : Map[String, String] = {
   "web-pages.stations.page.openFiles": "Open files",
   "web-pages.stations.page.part.processes": "Processes",
   "web-pages.stations.page.resources": "Resources",
+  "web-pages.stations.page.cpuBusy": "CPU busy",
+  "web-pages.stations.page.cpuBusyShort": "CPU busy",
   "web-pages.stations.page.runningShort": "{n} running",
   "web-pages.stations.permissions.granted": "Allowed",
   "web-pages.stations.permissions.missing": "Not allowed",

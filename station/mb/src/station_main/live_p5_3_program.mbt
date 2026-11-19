@@ -61,18 +61,12 @@ async fn P53Program::shell(self : P53Program, key : String, shell : P53Shell) ->
   guard self.shared else { return }
   self.bus.on_peer("$program.asked:" + key, async fn(_from, _ws, params, _bytes) {
     let f = jtext_or_empty(params, "fn")
-    let args = match jfield(params, "args") {
-      Array(xs) => xs
-      _ => []
-    }
+    let args = jitems(jfield(params, "args"))
     let v = (shell.asked)(f, args) catch { e => jobj_of([("$programError", p53_error_of(e))]) }
     (v, None)
   })
   self.bus.on_peer("$program.told:" + key, async fn(_from, _ws, params, _bytes) {
-    let args = match jfield(params, "args") {
-      Array(xs) => xs
-      _ => []
-    }
+    let args = jitems(jfield(params, "args"))
     (shell.told)(jtext_or_empty(params, "fn"), args)
     (Json::null(), None)
   })
@@ -99,39 +93,37 @@ async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
     SysError(why) => raise P53Error("the sessions' program does not start: \{why}")
   }
   self.proc = Some(proc)
-  ignore(
-    bus.host.rt.fork_daemon("the sessions' program", on_error=e => @host.note("the sessions' program failed: \{e}"), async fn() {
-      let line = @buffer.Buffer()
-      let err = @buffer.Buffer()
-      while true {
-        match proc.events.take() {
-          Out(b) =>
-            for i in 0..<b.length() {
-              if b[i] == b'\n' {
-                let text = p53_utf8(line.to_bytes())
-                line.reset()
-                self.said(text)
-              } else {
-                line.write_byte(b[i])
-              }
+  fork_bg(bus.host, "the sessions' program", async fn() {
+    let line = @buffer.Buffer()
+    let err = @buffer.Buffer()
+    while true {
+      match proc.events.take() {
+        Out(b) =>
+          for i in 0..<b.length() {
+            if b[i] == b'\n' {
+              let text = p53_utf8(line.to_bytes())
+              line.reset()
+              self.said(text)
+            } else {
+              line.write_byte(b[i])
             }
-          Err(b) =>
-            for i in 0..<b.length() {
-              if b[i] == b'\n' {
-                slice_log("warn", "readers", "the sessions' program said", jobj_of([("line", jstr(p53_utf8(err.to_bytes())))]))
-                err.reset()
-              } else {
-                err.write_byte(b[i])
-              }
-            }
-          Exit(code, signal) => {
-            self.ended(code, signal)
-            break
           }
+        Err(b) =>
+          for i in 0..<b.length() {
+            if b[i] == b'\n' {
+              slice_log("warn", "readers", "the sessions' program said", jobj_of([("line", jstr(p53_utf8(err.to_bytes())))]))
+              err.reset()
+            } else {
+              err.write_byte(b[i])
+            }
+          }
+        Exit(code, signal) => {
+          self.ended(code, signal)
+          break
         }
       }
-    }),
-  )
+    }
+  })
   ignore(self.post(jobj_of([("db", jstr(@nodepath.join(sep(), [bus.data, "stillfail.db"])))])))
 }
 
@@ -177,14 +169,8 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
   if jtrue(said, "ready") {
     return
   }
-  match jnum_of(said, "seen") {
-    Some(n) => self.seen = n.to_int()
-    None => ()
-  }
-  match jnum_of(said, "active") {
-    Some(n) => self.active = n.to_int()
-    None => ()
-  }
+  if jnum_of(said, "seen") is Some(n) { self.seen = n.to_int() }
+  if jnum_of(said, "active") is Some(n) { self.active = n.to_int() }
   match jfield(said, "changes") {
     Array(changes) => {
       for c in changes {
@@ -200,25 +186,20 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
       let gone = Ref(false)
       self.timers[id] = gone
       let ms = jnum_of(said, "ms").unwrap_or(0.0)
-      ignore(
-        self.bus.host.rt.fork_daemon("the program's wait", on_error=e => @host.note("the program's wait failed: \{e}"), async fn() {
-          @effect.sleep(ms.to_int()) // timer: the sessions' program's own wait (its retries, deadlines and sweeps), kept on the station's clock
-          if !gone.val {
-            self.timers.remove(id)
-            ignore(self.post(jobj_of([("due", ji(id))])))
-          }
-        }),
-      )
+      fork_bg(self.bus.host, "the program's wait", async fn() {
+        @effect.sleep(ms.to_int()) // timer: the sessions' program's own wait (its retries, deadlines and sweeps), kept on the station's clock
+        if !gone.val {
+          self.timers.remove(id)
+          ignore(self.post(jobj_of([("due", ji(id))])))
+        }
+      })
       return
     }
     None => ()
   }
   match jnum_of(said, "cancel") {
     Some(id) => {
-      match self.timers.get(id.to_int()) {
-        Some(gone) => gone.val = true
-        None => ()
-      }
+      if self.timers.get(id.to_int()) is Some(gone) { gone.val = true }
       self.timers.remove(id.to_int())
       return
     }
@@ -241,28 +222,20 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
     None => ()
   }
   guard jtext(said, "actor") is Some(key) && self.shells.get(key) is Some(shell) else { return }
-  let args = match jfield(said, "args") {
-    Array(xs) => xs
-    _ => []
-  }
+  let args = jitems(jfield(said, "args"))
   match jnum_of(said, "rpc") {
     Some(id) => {
       let f = jtext_or_empty(said, "fn")
-      ignore(
-        self.bus.host.rt.fork_daemon("the program's ask", on_error=e => @host.note("the program's ask failed: \{e}"), async fn() {
-          let answer = match (try { Ok((shell.asked)(f, args)) } catch { e => Err(e) }) {
-            Ok(v) => jobj_of([("answer", jn(id)), ("value", v)])
-            Err(e) => jobj_of([("answer", jn(id)), ("error", p53_error_of(e))])
-          }
-          ignore(self.post(answer))
-        }),
-      )
+      fork_bg(self.bus.host, "the program's ask", async fn() {
+        let answer = match (try { Ok((shell.asked)(f, args)) } catch { e => Err(e) }) {
+          Ok(v) => jobj_of([("answer", jn(id)), ("value", v)])
+          Err(e) => jobj_of([("answer", jn(id)), ("error", p53_error_of(e))])
+        }
+        ignore(self.post(answer))
+      })
     }
     None =>
-      match jtext(said, "tell") {
-        Some(f) => (shell.told)(f, args)
-        None => ()
-      }
+      if jtext(said, "tell") is Some(f) { (shell.told)(f, args) }
   }
 }
 
@@ -318,10 +291,7 @@ fn P53Program::close(self : P53Program) -> Unit {
     return
   }
   self.closed = true
-  match self.proc {
-    Some(p) => p.end_input()
-    None => ()
-  }
+  if self.proc is Some(p) { p.end_input() }
 }
 
 ///|

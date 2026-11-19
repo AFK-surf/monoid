@@ -1,0 +1,91 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/host_world"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+}
+
+// Values
+pub fn after(@host.Host, Int32, () -> Unit) -> () -> Unit
+
+pub fn after_async(@host.Host, Int32, async () -> Unit, swallow_error? : Bool) -> () -> Unit
+
+pub fn eexist_msg(String, String) -> String
+
+pub fn enoent_msg(String, String) -> String
+
+pub fn every(@host.Host, Int32, async () -> Unit, swallow_error? : Bool) -> () -> Unit
+
+pub async fn fs_exists(@host.Host, String, lstat? : Bool, sync? : Bool) -> Bool
+
+pub async fn fs_lstat(@host.Host, String, sync? : Bool) -> LstatInfo?
+
+pub async fn fs_meta(@host.Host, String, sync? : Bool) -> MetaInfo?
+
+pub async fn fs_mkdir(@host.Host, String, sync? : Bool) -> Unit
+
+pub async fn fs_put(@host.Host, String, Bytes, offset? : Double, truncate? : Bool, exclusive? : Bool, mode? : Int32, sync_disk? : Bool) -> Unit
+
+pub async fn fs_put_whole(@host.Host, String, Bytes, mode? : Int32) -> Unit
+
+pub async fn fs_read_bytes(@host.Host, String, from? : Double, length? : Double, sync? : Bool) -> Bytes?
+
+pub async fn fs_read_text(@host.Host, String, sync? : Bool) -> String?
+
+pub fn fs_read_text_sync(@host.Host, String) -> String?
+
+pub async fn fs_readdir(@host.Host, String, sync? : Bool) -> Array[String]?
+
+pub async fn fs_readlink(@host.Host, String, sync? : Bool) -> String?
+
+pub async fn fs_realpath(@host.Host, String, sync? : Bool) -> String?
+
+pub async fn fs_remove(@host.Host, String, recursive? : Bool, sync? : Bool) -> Unit
+
+pub async fn fs_rename(@host.Host, String, String, sync? : Bool) -> Unit
+
+pub async fn fs_symlink(@host.Host, String, String, sync? : Bool) -> Unit
+
+pub async fn fs_write(@host.Host, String, String, sync? : Bool) -> Unit
+
+pub fn hex_bytes(String) -> Bytes
+
+pub fn os_code(String) -> String
+
+pub fn random_hex(@host.Host, Int32) -> String
+
+pub async fn shell_call(@host.Host, Bool, String, Map[String, @json.Json]) -> @json.Json
+
+pub fn shell_error_msg(Error) -> String
+
+pub async fn sleep_ms(Int32) -> Unit
+
+pub fn spawn_daemon(@host.Host, String, async () -> Unit, silent? : Bool) -> Unit
+
+pub async fn ws_open(@host.Host, String, String, headers? : Array[(String, String)], entry? : (String, Int32)?, on_message~ : (String) -> Unit, on_error? : (String) -> Unit, on_close~ : (Bool) -> Unit) -> WsHandle
+
+// Errors
+
+// Types and methods
+pub(all) struct LstatInfo {
+  kind : String
+  size : Double
+  ino : Double
+  mtime_ms : Double
+  mode : Double
+}
+
+pub(all) struct MetaInfo {
+  size : Double
+  mtime_ms : Double
+}
+
+pub(all) struct WsHandle {
+  send : (String) -> Unit
+  close : () -> Unit
+}
+
+// Type aliases
+
+// Traits

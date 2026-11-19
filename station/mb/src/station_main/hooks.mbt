@@ -31,10 +31,7 @@ async fn stdin_text(host : @host.Host) -> String {
 
 ///|
 fn text_of(v : Json?) -> String? {
-  match v {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
+  opt_str(v)
 }
 
 ///|
@@ -316,10 +313,7 @@ fn rules_cut(text : String, room : Int) -> Int {
 
 ///|
 fn num(v : Json?) -> Double? {
-  match v {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
+  opt_num(v)
 }
 
 ///|

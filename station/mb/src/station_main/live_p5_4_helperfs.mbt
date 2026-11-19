@@ -132,10 +132,7 @@ fn p54_helper_fs(dir : String, roots : Array[String], protect : Array[String]) -
         "roots": Json::array(roots.map(Json::string)),
         "protect": Json::array(protect.map(Json::string)),
       }
-      match w.truncate {
-        Some(t) => m["truncate"] = Json::number(t)
-        None => ()
-      }
+      if w.truncate is Some(t) { m["truncate"] = Json::number(t) }
       if w.sync {
         m["sync"] = Json::boolean(true)
       }
@@ -152,10 +149,7 @@ fn p54_helper_fs(dir : String, roots : Array[String], protect : Array[String]) -
       let (_, rest) = p54_helper_ask(dir, Json::object(m), w.data, 2)
       let text = @utf8.decode_lossy(rest).trim().to_owned()
       let done = @json.parse(text) catch { _ => raise p54_fs_error("EIO", "still.fail Helper ended before it answered") }
-      match jtext(done, "error") {
-        Some(why) => raise p54_fs_error(jtext(done, "code").unwrap_or("EIO"), why)
-        None => ()
-      }
+      if jtext(done, "error") is Some(why) { raise p54_fs_error(jtext(done, "code").unwrap_or("EIO"), why) }
       { size: opt_num(opt_field(Some(done), "size")).unwrap_or(0.0), short: false }
     },
     rename: (from, to) => ignore(ask("files.rename", [("from", Json::string(from)), ("to", Json::string(to))])),

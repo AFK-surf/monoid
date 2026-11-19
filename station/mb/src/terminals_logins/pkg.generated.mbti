@@ -105,7 +105,7 @@ pub fn num(@jsjson.JValue?) -> Double?
 
 pub fn osc_cwd(String) -> (String?, String)
 
-pub fn parse(String) -> @jsjson.JValue raise
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub fn past_screen(Out, Double) -> Bytes?
 

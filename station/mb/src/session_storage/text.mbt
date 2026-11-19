@@ -86,9 +86,13 @@ pub fn iso(ms : Double) -> String {
 }
 
 ///|
-fn hex_value(c : Int) -> Int? {
-  @codec.hex_digit(c)
-}
+using @codec {hex_digit as hex_value}
+
+///|
+using @jscase {trim as js_trim}
+
+///|
+using @jsjson {js_compare}
 
 ///|
 /// api/request.ts `percentDecode`: %XX a byte, `+` a space, the rest as it is (UTF-8, lossy).
@@ -100,12 +104,6 @@ pub fn percent_decode(s : String) -> String {
 /// What JavaScript's `\s` matches.
 fn js_space(c : Char) -> Bool {
   @jscase.is_space(c.to_int())
-}
-
-///|
-/// String.prototype.trim.
-fn js_trim(s : String) -> String {
-  @jscase.trim(s)
 }
 
 ///|
@@ -195,10 +193,4 @@ fn clamp_trunc(n : Double, low : Double, high : Double) -> Double {
   } else {
     y.floor()
   }
-}
-
-///|
-/// Strings compared as JavaScript's `<` compares them: by their UTF-16 code units.
-fn js_compare(a : String, b : String) -> Int {
-  @jsjson.js_compare(a, b)
 }

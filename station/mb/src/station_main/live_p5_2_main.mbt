@@ -67,6 +67,9 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     feedback: None,
     card_outcomes: None,
     outcomes_following: false,
+    read_lately: Map([]),
+    runner_all: None,
+    runner_unnamed: Set::new(),
   }
   p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
@@ -125,14 +128,8 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       Some(p) if !program.ended => out.push(p.pid)
       _ => ()
     }
-    match usage_counter_program.val.bind(c => c.pid()) {
-      Some(pid) => out.push(pid)
-      None => ()
-    }
-    match ctx.live_locator.bind(l => l.pid()) {
-      Some(pid) => out.push(pid)
-      None => ()
-    }
+    if usage_counter_program.val.bind(c => c.pid()) is Some(pid) { out.push(pid) }
+    if ctx.live_locator.bind(l => l.pid()) is Some(pid) { out.push(pid) }
     out
   })
   // (the hub's own reads of the threads' store, what they found not prepared asked of the builders as the store
@@ -140,14 +137,8 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   ignore(bus.subscribe_store(_ => bus.drain_thread_requests(threads)))
   bus.on_trim(() => {
     let mut n = 0
-    match ctx.live_locator {
-      Some(l) => n += l.trim_idle()
-      None => ()
-    }
-    match usage_counter_program.val {
-      Some(c) => n += c.trim_idle()
-      None => ()
-    }
+    if ctx.live_locator is Some(l) { n += l.trim_idle() }
+    if usage_counter_program.val is Some(c) { n += c.trim_idle() }
     n
   })
   // The agents' home (agenthome/module.ts).
@@ -155,18 +146,13 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   // Workspaces as the control plane says them (agents.ts `follow`).
   ignore(
     (bus.cloud_listen.val)(_ => {
-      ignore(
-        host.rt.fork_daemon("agents follow", on_error=e => @host.note("agents follow failed: \{e}"), async fn() {
-          match ctx.agents_side {
-            Some(side) => side.follow(ctx.place())
-            None => ()
-          }
-        }),
-      )
+      fork_bg(host, "agents follow", async fn() {
+        if ctx.agents_side is Some(side) { side.follow(ctx.place()) }
+      })
     }),
   )
   // The auto-archive's timer, the archived sessions' expiry and the runners' sweep (lifecycle.ts).
-  ignore(host.rt.fork_daemon("lifecycle", on_error=e => @host.note("lifecycle failed: \{e}"), async fn() { ctx.lifecycle() }))
+  fork_bg(host, "lifecycle", async fn() { ctx.lifecycle() })
 }
 
 ///|
@@ -401,20 +387,15 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
           "detach" => (d.detach)()
           "thaw" => (d.thaw)()
           "shutdown" =>
-            ignore(
-              self.host.rt.fork_daemon("driver shutdown", on_error=e => @host.note("driver shutdown failed: \{e}"), async fn() {
-                (d.shutdown)(again)
-              }),
-            )
+            fork_bg(self.host, "driver shutdown", async fn() {
+              (d.shutdown)(again)
+            })
           _ => ()
         }
       }
     }
     "actors.close" =>
-      match self.actors_program {
-        Some(p) => p.close()
-        None => ()
-      }
+      if self.actors_program is Some(p) { p.close() }
     "live.call" =>
       match self.actors_program {
         Some(p) =>
@@ -436,32 +417,20 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         },
       )
     "usage.close" =>
-      match usage_counter_program.val {
-        Some(p) => p.close()
-        None => ()
-      }
+      if usage_counter_program.val is Some(p) { p.close() }
     // (what the hub tells its live view, hub.ts's `live`: the shell of the program's `#live`)
     "live.running" =>
-      match ctx_live.val {
-        Some(l) => l.running(jtext(args, "key").unwrap_or(""), jfield(args, "running") is True)
-        None => ()
-      }
+      if ctx_live.val is Some(l) { l.running(jtext(args, "key").unwrap_or(""), jfield(args, "running") is True) }
     "live.forget" => {
       let key = match args {
         String(k) => k
         _ => jtext(args, "key").unwrap_or("")
       }
-      match ctx_live.val {
-        Some(l) => l.forget(key)
-        None => ()
-      }
+      if ctx_live.val is Some(l) { l.forget(key) }
       self.disarm(key)
     }
     "live.usageCounted" =>
-      match ctx_live.val {
-        Some(l) => l.usage_counted()
-        None => ()
-      }
+      if ctx_live.val is Some(l) { l.usage_counted() }
     "live.disarmAll" =>
       for key in transcript_watches.keys().collect() {
         self.disarm(key)
@@ -471,17 +440,11 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
     "live.listener" =>
       match jfield(args, "id") {
         Number(n, ..) =>
-          match live_listeners.get(n.to_int()) {
-            Some(send) => send(to_jv(jfield(args, "message")))
-            None => ()
-          }
+          if live_listeners.get(n.to_int()) is Some(send) { send(to_jv(jfield(args, "message"))) }
         _ => ()
       }
     "live.heldTold" =>
-      match live_events.val {
-        Some(e) => e.held_told(jtext(args, "key").unwrap_or(""), to_jv(jfield(args, "message")))
-        None => ()
-      }
+      if live_events.val is Some(e) { e.held_told(jtext(args, "key").unwrap_or(""), to_jv(jfield(args, "message"))) }
     "live.arm" => self.arm(jtext(args, "key").unwrap_or(""), jtext(args, "path").unwrap_or(""))
     "live.disarm" =>
       self.disarm(
@@ -628,10 +591,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       }
     }
     "drivers.owns" => {
-      let id = match args {
-        String(x) => x
-        _ => ""
-      }
+      let id = as_text(args).unwrap_or("")
       let kind = match id.find("-") {
         Some(i) => id[:i].to_owned()
         None => id
@@ -741,7 +701,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     "fs.mkdirs" => {
       for d in jitems(args) {
         match d {
-          String(p) => ignore(attempt(() => @drive.mkdir(p, true)))
+          String(p) => host_mkdir_quiet(self.host, p)
           _ => ()
         }
       }
@@ -749,7 +709,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     }
     "fs.write" => {
       let p = s("path")
-      ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), p), true)))
+      host_mkdir_quiet(self.host, @nodepath.dirname(sep(), p))
       ignore(write_text_mode(p, s("text"), 0))
       Json::null()
     }
@@ -923,9 +883,11 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       )
       Json::null()
     }
+    // (agents.ts `relieving`'s mark, `diskLow`, the one upkeep asks relieveArchived under; a lower one here left the hub
+    // finding the disk not low and emptying no archived workspace until 2 GiB were left)
     "disk.low" =>
       match disk_of(self.data) {
-        Some((free, _)) => jb(free < 2.0 * 1024.0 * 1024.0 * 1024.0)
+        Some((free, total)) => jb(free < @ops_platform.disk_low(total))
         None => jb(false)
       }
     "places.directory" => {
@@ -961,10 +923,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     "usage.read" | "usage.drainStep" | "usage.stopIndexes" | "usage.inMemory" | "usage.retireStep" =>
       self.usage_ask(what, args)
     "usage.close" => {
-      match usage_counter_program.val {
-        Some(p) => p.close()
-        None => ()
-      }
+      if usage_counter_program.val is Some(p) { p.close() }
       Json::null()
     }
     // (agents.ts `hub.onClose`: a session archived or deleted: its other stations' tasks closed, a deleted one's
@@ -1086,10 +1045,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
   match op {
     "settled" => {
       // (a turn ended as its opener is told: opened.ts `settled`, an agent that opened the chat woken by it)
-      let words = match jfield(arg, "words") {
-        String(w) => Some(w)
-        _ => None
-      }
+      let words = as_text(jfield(arg, "words"))
       @session_chats.settled(self.chats_world(), jtext(arg, "key").unwrap_or(""), jtext(arg, "state").unwrap_or(""), words)
       Json::null()
     }
@@ -1116,10 +1072,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           _ => ()
         }
       }
-      match self.actors_program {
-        Some(p) => p.close()
-        None => ()
-      }
+      if self.actors_program is Some(p) { p.close() }
       self.program.kill_now()
       Json::null()
     }
@@ -1134,11 +1087,9 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           bus.program_asked(key, f, args)
         },
         fn(t, args) {
-          ignore(
-            self.host.rt.fork_daemon("shell's tell", on_error=e => @host.note("shell's tell failed: \{e}"), async fn() {
-              bus.program_told(key, t, args)
-            }),
-          )
+          fork_bg(self.host, "shell's tell", async fn() {
+            bus.program_told(key, t, args)
+          })
         },
       )
       Json::boolean(true)
@@ -1168,10 +1119,8 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       Json::null()
     }
     // ── what the other slices ask by an object of its fields ──
-    "notify" => {
-      hub.act(jtext(arg, "session").unwrap_or(""), "notify", args=[jfield(arg, "text")])
-      Json::null()
-    }
+    // (hub.ts `notify`: the session's actor made where it is cold, an unknown session refused to the one telling)
+    "notify" => hub.command(jtext(arg, "session").unwrap_or(""), "notify", [jfield(arg, "text")])
     "link" => jopt(self.page_of(jtext(arg, "session").unwrap_or("")))
     "runners" => self.runners_with_sessions()
     "sweepRunners" =>
@@ -1222,19 +1171,13 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       }
     "sessions.allows" => {
       let a = jitems(arg)
-      let key = match a.get(0) {
-        Some(String(k)) => Some(k)
-        _ => None
-      }
+      let key = opt_str(a.get(0))
       Json::boolean(
         @session_hub.allowed_in(a.get(1).unwrap_or(Json::null()), hub.ws_of(key), self.workspaces().get(0)),
       )
     }
     "sessions.running" => {
-      let except = match jitems(arg).get(0) {
-        Some(String(k)) => Some(k)
-        _ => None
-      }
+      let except = opt_str(jitems(arg).get(0))
       let out = []
       for key, _ in hub.actors {
         if Some(key) == except || hub.process_state(key) == "cold" {
@@ -1253,10 +1196,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     }
     "sessions.moved" => {
       let a = jitems(arg)
-      let key = match a.get(0) {
-        Some(String(k)) => k
-        _ => ""
-      }
+      let key = opt_str(a.get(0)).unwrap_or("")
       let was = a.get(1).unwrap_or(Json::null())
       match hub.get_session(key) {
         Some(now) if !hub.handed_over(key) => {
@@ -1330,10 +1270,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     }
     // (sessions/review.ts `startReview`: how many chats are reviewed, null where none can be)
     "reviewUndecided" =>
-      match @session_chats.start_review(self.chats_world()) {
-        Some(n) => Json::number(n)
-        None => Json::null()
-      }
+      (@session_chats.start_review(self.chats_world())).map(jn).unwrap_or(Json::null())
     // (agents.ts: the accounts follow the allowances while a stream is open or a session runs)
     "following" =>
       Json::boolean(
@@ -1378,25 +1315,52 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
 async fn P52::runners_with_sessions(self : P52) -> Json {
   let infos = self.pump.wait(@agent_drivers.live_runners(self.pump.machine(), self.data))
   let whose : Map[String, String] = {}
-  let of = (rows : Json) => for s in jitems(rows) {
+  let of = (into : Map[String, String], rows : Json) => for s in jitems(rows) {
     match jtext(s, "key") {
       Some(k) =>
         for kind in @events.runtime_kinds {
           let id = @agent_drivers.runner_id(kind, k)
-          if !whose.contains(id) {
-            whose[id] = k
+          if !into.contains(id) {
+            into[id] = k
           }
         }
       None => ()
     }
   }
   if infos.length() > 0 {
-    of(self.store("liveSessions", [])) catch {
+    of(whose, self.store("liveSessions", [])) catch {
       _ => ()
     }
-    if infos.iter().any(i => !whose.contains(i.id())) {
-      of(self.store("listSessions", [])) catch {
-        _ => ()
+    // (every session asked again only for a runner neither named nor known to have none: a runner shared by no
+    // session's key, a Codex app-server's, asked it at every look, thousands of rows and their runners' ids hashed)
+    let rest = infos.filter(i => !whose.contains(i.id()))
+    let known = (id : String) => self.runner_unnamed.contains(id) ||
+      (match self.runner_all {
+        Some(all) => all.contains(id)
+        None => false
+      })
+    if rest.iter().any(i => !known(i.id())) {
+      let all : Map[String, String] = {}
+      let read = try {
+        of(all, self.store("listSessions", []))
+        true
+      } catch {
+        _ => false
+      }
+      if read {
+        self.runner_all = Some(all)
+        for i in rest {
+          if !all.contains(i.id()) {
+            self.runner_unnamed.add(i.id())
+          }
+        }
+      }
+    }
+    if self.runner_all is Some(all) {
+      for i in rest {
+        if all.get(i.id()) is Some(k) {
+          whose[i.id()] = k
+        }
       }
     }
   }
@@ -1471,10 +1435,7 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
       })
       // Never leave `self.closed = false` on handover failure: `hub_shutdown()` on stop would otherwise dispose
       // every actor and kill running agent processes. Detach drivers and close the actors' program instead.
-      match self.actors_program {
-        Some(p) => p.close()
-        None => ()
-      }
+      if self.actors_program is Some(p) { p.close() }
       for d in self.drivers.values() {
         (d.detach)()
       }

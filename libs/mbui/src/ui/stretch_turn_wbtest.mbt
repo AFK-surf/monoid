@@ -1,6 +1,6 @@
 ///|
 test "a turned mark in a list stretched past its top turns about where the stretch puts it, with its rect" {
-  // (a turning mark's spoke, as spokes_node draws it: a box at 100 down, 20 tall, turned about its middle; the list
+  // (a turning mark's ring, as a working ring's node draws it: a box at 100 down, 20 tall, turned about its middle; the list
   // stretched at its top: Android's at an end, the home list pulled down past its first row)
   let c = Ctx::new()
   c.ninst = 0

@@ -28,6 +28,8 @@ pub fn disk_every(String) -> Double
 
 pub let disk_every_ms : Double
 
+pub fn disk_low(Double) -> Double
+
 pub let disk_low_bytes : Double
 
 pub fn disk_soft(Double) -> Double

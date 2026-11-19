@@ -50,10 +50,7 @@ fn updates_grouped(program : String, args : Array[String]) -> (String, Array[Str
 ///|
 /// What the updates ask of the machine, by name; None where it is none of this file's.
 async fn updates_platform(host : @host.Host, data : String, name : String, a : Array[Json]) -> Json? {
-  let s = (i : Int) => match a.get(i) {
-    Some(String(t)) => t
-    _ => ""
-  }
+  let s = (i : Int) => opt_str(a.get(i)).unwrap_or("")
   let env_at = (i : Int) => match a.get(i) {
     Some(Object(m)) => m.to_array().filter_map(kv => if kv.1 is String(v) { Some((kv.0, v)) } else { None })
     _ => []
@@ -63,10 +60,7 @@ async fn updates_platform(host : @host.Host, data : String, name : String, a : A
     "cursor.sdkVersionSoon" => {
       let at = if s(0) == "" { data } else { s(0) }
       Some(
-        match @agent_runtimes.cursor_sdk_version(host, at) {
-          Some(v) => Json::string(v)
-          None => Json::null()
-        },
+        jopt(@agent_runtimes.cursor_sdk_version(host, at)),
       )
     }
     // (unix.ts, windows.ts `isLauncher`: the process of that pid is still.fail's launcher, as `ps` or PowerShell names it)
@@ -220,10 +214,7 @@ async fn updates_platform(host : @host.Host, data : String, name : String, a : A
 fn updates_platform_told(name : String, a : Array[Json]) -> Bool {
   match name {
     "processes.endCommand" => {
-      let program = match a.get(0) {
-        Some(String(t)) => t
-        _ => ""
-      }
+      let program = opt_str(a.get(0)).unwrap_or("")
       let signal = match a.get(1) {
         Some(String(t)) => t
         _ => "SIGTERM"
@@ -300,10 +291,7 @@ async fn command_events(
     ignore(kill(proc.pid, "SIGKILL", group=true))
     events.push(["close", Json::null()])
   }
-  match running.search_by(p => p.pid == proc.pid) {
-    Some(i) => ignore(running.remove(i))
-    None => ()
-  }
+  if running.search_by(p => p.pid == proc.pid) is Some(i) { ignore(running.remove(i)) }
   if running.is_empty() {
     commands_running.remove(program)
   }

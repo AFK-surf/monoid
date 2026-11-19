@@ -1425,6 +1425,52 @@ pub(all) struct Leaving {
 }
 
 ///|
+/// Phase of a trackpad two-finger horizontal swipe on the picture strip (Viewer::wheel_page).
+/// Kept on `pv_strip` rather than on a single `Viewer` because `Viewer::go` replaces the active `Viewer`
+/// mid-gesture while momentum wheels from the same swipe are still arriving.
+#derive(Eq)
+pub(all) enum StripWheelState {
+  Idle
+  Paging
+  Spent
+}
+
+///|
+pub(all) struct StripWheel {
+  mut state : StripWheelState
+  mut strip_down : Double
+  mut last_at : Double
+  mut last_momentum : Bool
+  mut spent_dir : Double
+  mut spent_min_dx : Double
+  speed : @ui.Velocity
+}
+
+///|
+pub fn StripWheel::new() -> StripWheel {
+  {
+    state: Idle,
+    strip_down: 0.0,
+    last_at: -1.0,
+    last_momentum: false,
+    spent_dir: 0.0,
+    spent_min_dx: 0.0,
+    speed: @ui.Velocity::new(),
+  }
+}
+
+///|
+pub fn StripWheel::reset(self : StripWheel) -> Unit {
+  self.state = Idle
+  self.strip_down = 0.0
+  self.last_at = -1.0
+  self.last_momentum = false
+  self.spent_dir = 0.0
+  self.spent_min_dx = 0.0
+  self.speed.reset()
+}
+
+///|
 pub(all) struct Strip {
   /// where the strip of pictures is (the one shown's offset across), its way said at each cause's moment
   way : @motion.Way
@@ -1433,10 +1479,18 @@ pub(all) struct Strip {
   mut pinned : Double?
   /// the viewers of the images beside the one shown (by their ids), read ahead
   near : Map[String, Viewer]
+  /// horizontal trackpad paging gesture state shared across Viewer::go transitions
+  wheel : StripWheel
 }
 
 ///|
-pub let pv_strip : Strip = { way: @motion.Way::new(0.0), leaving: None, pinned: None, near: Map([]) }
+pub let pv_strip : Strip = {
+  way: @motion.Way::new(0.0),
+  leaving: None,
+  pinned: None,
+  near: Map([]),
+  wheel: StripWheel::new(),
+}
 
 ///|
 /// The images beside one asked of the core (`imageNear`), each by its params: let go with the chat they are of
@@ -1490,6 +1544,7 @@ pub fn close_now() -> Unit {
   // (closed at once: nothing of its strip goes on)
   pv_strip.leaving = None
   pv_strip.way.put(0.0)
+  pv_strip.wheel.reset()
   match viewer.get() {
     Some(v) => v.let_go()
     None => ()
@@ -3488,6 +3543,7 @@ pub fn file_viewer_reset() -> Unit {
   pv_strip.way.put(0.0)
   pv_strip.pinned = None
   pv_strip.near.clear()
+  pv_strip.wheel.reset()
   near_asked.clear()
   rows_sent_as.clear()
   tab_viewers_reset()

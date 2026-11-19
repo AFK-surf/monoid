@@ -227,10 +227,7 @@ priv struct ConnectsLive {
 /// A connect's connection, whichever platform's it is.
 fn ConnectsLive::chat(self : ConnectsLive, id : String) -> @connects_hub.Surface? {
   for _, c in self.kinds {
-    match c.chats(id) {
-      Some(s) => return Some(s)
-      None => ()
-    }
+    if c.chats(id) is Some(s) { return Some(s) }
   }
   None
 }
@@ -254,10 +251,7 @@ async fn P55::coord_connects(self : P55, name : String, args : Array[Json]) -> J
     "connects.ownKinds" => ownc(wc.own_kinds(s(0)))
     // (agents.ts `heldBy`: the station of the workspace a connect with these tokens runs on already, by its name)
     "connects.heldBy" => {
-      let ws = match args.get(0) {
-        Some(String(w)) => Some(w)
-        _ => None
-      }
+      let ws = opt_str(args.get(0))
       let own = match args.get(2) {
         Some(o) => Some(to_jv(o))
         None => None
@@ -433,20 +427,14 @@ async fn P55::start_connects(self : P55) -> Unit {
     hub: {
       chat_of: async fn(id) {
         for _, c in kinds {
-          match c.chats(id) {
-            Some(s) => return Some(s)
-            None => ()
-          }
+          if c.chats(id) is Some(s) { return Some(s) }
         }
         None
       },
       config_connects: async fn() { core_items(jfield((bus.config_raw.val)(), "connects")).map(to_jv) },
       receive: async fn(connect, event) { ignore(self.hub("hub.receive", [Json::string(connect), of_jv(event)])) },
       moved_to: async fn(connect, channel, ts) {
-        match self.hub("hub.movedTo", [Json::string(connect), Json::string(channel), Json::string(ts)]) {
-          String(s) => Some(s)
-          _ => None
-        }
+        as_text(self.hub("hub.movedTo", [Json::string(connect), Json::string(channel), Json::string(ts)]))
       },
       quiet_in: async fn(ws) { self.hub("hub.quietIn", [Json::string(ws)]) is True },
       surface: async fn(id) {
@@ -482,10 +470,7 @@ async fn P55::start_connects(self : P55) -> Unit {
     for _, c in kinds {
       for conf in c.connects() {
         guard of_jv(conf) is Object(m) && m.get("id") is Some(String(id)) else { continue }
-        match c.chats(id) {
-          Some(s) => all[id] = p55_surface_json(s)
-          None => ()
-        }
+        if c.chats(id) is Some(s) { all[id] = p55_surface_json(s) }
       }
     }
     ignore(
@@ -892,20 +877,14 @@ fn p55_surface_json(s : @connects_hub.Surface) -> Json {
 /// A Feishu connection's identity as its surface says it (`BotIdentity::to_jv`), None where it has none yet.
 fn p55_bot_identity(j : Json) -> @feishu.BotIdentity? {
   guard j is Object(m) && m.get("botUserId") is Some(String(_)) else { return None }
-  let t = (k : String) => match m.get(k) {
-    Some(String(s)) => s
-    _ => ""
-  }
+  let t = (k : String) => opt_str(m.get(k)).unwrap_or("")
   Some({
     team: t("team"),
     team_id: t("teamId"),
     url: t("url"),
     bot_user_id: t("botUserId"),
     bot_name: t("botName"),
-    bot_image: match m.get("botImage") {
-      Some(String(s)) => Some(s)
-      _ => None
-    },
+    bot_image: opt_str(m.get("botImage")),
     bot_id: t("botId"),
   })
 }

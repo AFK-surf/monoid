@@ -9,6 +9,5 @@ import {
   "stillfail/sfpages",
   "stillfail/sf",
   "mbui/ui",
-  "mbui/kit",
   "mbui/motion",
 } for "test"

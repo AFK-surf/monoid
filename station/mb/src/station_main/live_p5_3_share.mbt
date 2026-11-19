@@ -45,10 +45,7 @@ fn p53_membership(m : Json) -> @share_sync.Membership {
   {
     workspace: jtext_or_empty(m, "workspace"),
     workspace_name: jtext_or_empty(m, "workspace_name"),
-    peers: match jfield(m, "peers") {
-      Array(xs) => xs
-      _ => []
-    },
+    peers: jitems(jfield(m, "peers")),
   }
 }
 
@@ -130,7 +127,7 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
         let queue = [(root, 0)]
         let mut seen = 0
         while queue.pop() is Some((dir, depth)) {
-          for e in p53_readdir_types(host, dir) {
+          for e in host_readdir_types(host, dir).unwrap_or([]) {
             let (name, kind) = e
             let full = @nodepath.join(sep(), [dir, name])
             seen += 1
@@ -167,15 +164,13 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
         marks.val = Some(now)
         None
       }
-      ignore(
-        host.rt.fork_daemon("a followed tree", on_error=e => @host.note("a followed tree failed: \{e}"), async fn() {
+      fork_bg(host, "a followed tree", async fn() {
+        ignore(look())
+        while !gone.val && !stopped.is_done() {
+          @effect.sleep(p53_follow_ms) // timer: a sample of this machine (its own files: the shell keeps no watch)
           ignore(look())
-          while !gone.val && !stopped.is_done() {
-            @effect.sleep(p53_follow_ms) // timer: a sample of this machine (its own files: the shell keeps no watch)
-            ignore(look())
-          }
-        }),
-      )
+        }
+      })
       { close: () => gone.val = true, scan: look }
     },
     dir: (_dir, _changed, _failed) => None,
@@ -224,16 +219,10 @@ fn P53Share::attach(self : P53Share) -> Unit {
       changed: () => (bus.overview_changed.val)(),
       recheck: Some(() => match self.accounts.accounts { Some(a) => a.recheck_borrowed(); None => () }),
       profile_changed: Some(async fn(id, login) {
-        match self.accounts.accounts {
-          Some(a) => a.shared_changed(id, login)
-          None => ()
-        }
+        if self.accounts.accounts is Some(a) { a.shared_changed(id, login) }
       }),
       quota_reset: Some(async fn(id) {
-        match self.accounts.accounts {
-          Some(a) => a.shared_quota_reset(id)
-          None => ()
-        }
+        if self.accounts.accounts is Some(a) { a.shared_quota_reset(id) }
       }),
       profile_gone: Some(async fn(id) { bus.hub_profile_gone(id) }),
       itself: Some(station => station == p53_station_id(bus)),
@@ -268,10 +257,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
   // (agents.ts `readers.onTrim`: the shares' and the memory's programs let go short of memory)
   bus.on_trim(() => {
     let mut n = sharing.trim_idle()
-    match self.memory {
-      Some(m) => n += m.trim_idle()
-      None => ()
-    }
+    if self.memory is Some(m) { n += m.trim_idle() }
     n
   })
   // (a login home again, by any route: the share a trip made for it undone; move/live.ts `sharing.onHosted`)
@@ -425,10 +411,7 @@ fn P53Share::memory_kept(self : P53Share, ws : String) -> Json {
 
 ///|
 async fn P53Share::level_now(self : P53Share) -> Unit {
-  match self.memory {
-    Some(m) => m.level_now()
-    None => ()
-  }
+  if self.memory is Some(m) { m.level_now() }
 }
 
 ///|
@@ -441,36 +424,8 @@ fn P53Share::reaches(self : P53Share, target : String, ws : String?) -> Bool {
 
 ///|
 async fn P53Share::close(self : P53Share) -> Unit {
-  match self.memory {
-    Some(m) => m.stop()
-    None => ()
-  }
-  match self.sharing {
-    Some(s) => s.close()
-    None => ()
-  }
-  match self.shares {
-    Some(s) => s.close()
-    None => ()
-  }
-  match self.index {
-    Some(i) => i.close()
-    None => ()
-  }
-}
-
-///|
-/// A directory's entries with their kinds (`fs.readdir` with types), none where it is not read.
-async fn p53_readdir_types(host : @host.Host, dir : String) -> Array[(String, String)] {
-  let listed = try { Ok(host.shell("fs.readdir", { "path": Json::string(dir), "types": Json::boolean(true) })) } catch { e => Err(e) }
-  match listed {
-    Ok((Array(entries), _)) =>
-      entries.filter_map(e => match e {
-        Array([String(n), String(k), ..]) => Some((n, k))
-        Object(_) => Some((jtext_or_empty(e, "name"), jtext_or_empty(e, "kind")))
-        String(n) => Some((n, ""))
-        _ => None
-      })
-    _ => []
-  }
+  if self.memory is Some(m) { m.stop() }
+  if self.sharing is Some(s) { s.close() }
+  if self.shares is Some(s) { s.close() }
+  if self.index is Some(i) { i.close() }
 }

@@ -28,6 +28,8 @@ pub let busy_ms : Int32
 
 pub fn byte_length(String) -> Int32
 
+pub let changed_method : String
+
 pub fn chat_of(String) -> (Double, String?)?
 
 pub fn chat_ref(Double, String?) -> String
@@ -54,6 +56,8 @@ pub fn day_key(String) -> String
 
 pub fn fail_(String) -> Thrown
 
+pub let fast_settle_ms : Int32
+
 pub fn first_points(String, Int32) -> String
 
 pub fn from_json(@json.Json) -> @jsjson.JValue
@@ -62,7 +66,7 @@ pub async fn harness(@host.Host) -> Unit
 
 pub fn held_from(@jsjson.JValue?) -> Held?
 
-pub fn hex(Bytes) -> String
+pub fn hex(BytesView) -> String
 
 pub fn host_io(@host.Host, words? : Words, lang? : () -> String, platform? : String, arch? : String, hostname? : String, version? : String, log? : (String, String, @jsjson.JValue) -> Unit) -> Io
 
@@ -182,7 +186,7 @@ pub fn test_uuid(Int32) -> String
 
 pub async fn text_of(async () -> Bytes?) -> String
 
-pub fn text_of_utf8(Bytes) -> String
+pub fn text_of_utf8(BytesView, ignore_bom? : Bool) -> String
 
 pub fn thread_ts_of(String) -> String
 
@@ -198,7 +202,7 @@ pub fn utf8_of(String) -> Bytes
 
 pub fn workspace_db_name(String) -> String
 
-pub fn workspace_index(String, String, () -> Bool, () -> Int32, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime) -> (CommaStats, CommaIndexes) raise
+pub fn workspace_index(String, String, () -> Bool, () -> Int32, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime) -> (CommaStats, CommaIndexes) raise
 
 pub fn workspace_read(WorkspaceReads) -> async (Double, Double) -> ReadRows
 
@@ -248,6 +252,7 @@ pub struct CommaLive {
   empty : CommaIndexes
   // private fields
 }
+pub fn CommaLive::changed_handler(Self, String, String?) -> @jsjson.JValue raise
 pub fn CommaLive::close(Self) -> Unit
 pub fn CommaLive::make_comma(Self, String, () -> @jsjson.JValue, ((@jsjson.JValue) -> Unit) -> () -> Unit, ((String?) -> Bool)?, SurfaceStore, (String) -> Array[@jsjson.JValue], async () -> Unit, async () -> Unit) -> CommaParts
 pub fn CommaLive::name(Self, String?) -> String
@@ -293,12 +298,13 @@ pub struct CommaStats {
   // private fields
 }
 pub fn CommaStats::apply(Self, Array[StationRows], Array[String], Double) -> (Int32, Int32) raise
-pub fn CommaStats::at(String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::at(String, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
 pub fn CommaStats::build(Self) -> Unit
 pub fn CommaStats::close(Self) -> Unit
-pub fn CommaStats::in_workspace(String, String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime) -> Self raise
+pub fn CommaStats::in_workspace(String, String, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime) -> Self raise
 pub async fn CommaStats::make_dirs(Io, String) -> Unit
-pub fn CommaStats::new(String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::new(String, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::nudge(Self) -> Unit
 pub fn CommaStats::remember(Self, String, Double) -> Unit raise
 pub fn CommaStats::said(Self, String) -> Double? raise
 pub async fn CommaStats::settled(Self) -> Unit

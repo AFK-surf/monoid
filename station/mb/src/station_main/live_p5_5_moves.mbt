@@ -91,7 +91,7 @@ async fn moved_bytes(host : @host.Host, b : @move_coord.Bytes_?) -> Bytes? {
       let (said, bytes) = host.shell("fs.bytes", { "path": Json::string(p), "from": Json::number(from.to_double()), "length": Json::number(len.to_double()) })
       match (said, bytes) {
         (_, Some(b)) => Some(b)
-        (String(h), None) => Some(hex_bytes(h))
+        (String(h), None) => Some(unhex_lenient(h))
         _ => Some(b"")
       }
     }
@@ -200,11 +200,15 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
     previous_pid: bus.previous_pid.map(p => p.to_double()),
   })
   {
-    together: async fn(k, _page) { h.together(k) },
+    together: async fn(k, page) { h.together(k, reads=self.reads_of(page)) },
     chat_of: async fn(k) { h.chat_of(k) },
-    accounts_of: async fn(keys, _page) { h.accounts_of(keys).map(p => (p.0, match p.1 { Null => None; x => Some(x) })) },
-    past_left: async fn(accounts, keys, _page) { h.past_left(accounts.map(p => (p.0, p.1.unwrap_or(Null))), keys) },
-    check: async fn(k, to, planning, _page) { h.check(k, to, planning~) },
+    accounts_of: async fn(keys, page) {
+      h.accounts_of(keys, reads=self.reads_of(page)).map(p => (p.0, match p.1 { Null => None; x => Some(x) }))
+    },
+    past_left: async fn(accounts, keys, page) {
+      h.past_left(accounts.map(p => (p.0, p.1.unwrap_or(Null))), keys, reads=self.reads_of(page))
+    },
+    check: async fn(k, to, planning, page) { h.check(k, to, planning~, reads=self.reads_of(page)) },
     coming_in: async fn(ws) { h.coming_in(ws) },
     abandon: () => h.abandon(),
     hand_over: async fn(k, to, wait, progress, stopped_for) { h.hand_over(k, to, wait~, progress~, stopped_for=stopped_for.map(x => x.to_j())) },
@@ -231,41 +235,53 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
 }
 
 ///|
-/// A page of a workspace's chats here, by key (store.ts `sessionPageOfWs`): those after `after`, at most `limit`.
-fn P55::sessions_page(self : P55, keys : Array[String]) -> @move_coord.Page {
-  let rows = (try { Ok(self.bus.store.sessions_of(keys)) } catch { e => Err(e) }).unwrap_or([])
-  let store = self.bus.store
-  {
-    keys,
-    rows: rows.map(to_jv),
+/// A page of sessions as the moves read it (move/live.ts gives store.ts's SessionPage as it is): its rows, and its
+/// reads (each session's row, its home chat's sessions, the accounts it ran on: one statement for the page) kept by
+/// the page's `handle` for the plan's checks of it (P55::reads_of), the latest 256 pages' alone.
+fn P55::wrap_session_page(self : P55, sp : @store_sessions.SessionPage) -> @move_coord.Page {
+  let reads : @replica_coord.SessionReads = {
     session: async fn(k) {
-      match (try { Ok(store.get_session(k)) } catch { e => Err(e) }) {
+      match (try { Ok(sp.session(k)) } catch { e => Err(e) }) {
         Ok(Null) | Err(_) => None
         Ok(r) => Some(to_jv(r))
       }
     },
-    handle: Null,
+    home_members: async fn(k) { (try { Ok(sp.home_members(k)) } catch { _ => Ok(None) }).unwrap_or(None) },
+    ran_on: async fn(k) { (try { Ok(sp.ran_on(k)) } catch { _ => Ok([]) }).unwrap_or([]) },
+  }
+  self.next_page += 1
+  let id = self.next_page
+  self.pages[id] = reads
+  self.pages.remove(id - 256)
+  let rows = (try { Ok(sp.rows()) } catch { _ => Ok([]) }).unwrap_or([]).map(to_jv)
+  { keys: sp.keys, rows, session: reads.session, handle: @jsjson.JValue::Num(id.to_double()) }
+}
+
+///|
+/// The reads of a page the moves made (`handle`), while it is kept: None, each session read alone.
+fn P55::reads_of(self : P55, page : @move_coord.Page?) -> @replica_coord.SessionReads? {
+  match page {
+    Some({ handle: Num(n), .. }) => self.pages.get(n.to_int())
+    _ => None
   }
 }
 
 ///|
+/// A page of sessions `keys` (store.ts `sessionPage`).
+fn P55::sessions_page(self : P55, keys : Array[String]) -> @move_coord.Page {
+  self.wrap_session_page(self.bus.store.session_page(keys, None))
+}
+
+///|
+/// A page of a workspace's chats here, by key (store.ts `sessionPageOfWs`, as move/live.ts asks it): those after
+/// `after`, at most `limit`, the home workspace's with those of no workspace, and those handed over from it.
 fn P55::sessions_in(self : P55, ws : String, after : String, limit : Int) -> @move_coord.Page {
-  let home = self.home() == Some(ws)
-  let rows = (try {
-    Ok(
-      self.bus.db.all(
-        if home {
-          "SELECT key FROM sessions WHERE (ws = ? OR ws IS NULL) AND key > ? ORDER BY key LIMIT ?"
-        } else {
-          "SELECT key FROM sessions WHERE ws = ? AND key > ? ORDER BY key LIMIT ?"
-        },
-        [Json::string(ws), Json::string(after), Json::number(limit.to_double())],
-      ),
-    )
-  } catch {
-    e => Err(e)
-  }).unwrap_or([])
-  self.sessions_page(rows.filter_map(r => match r.get("key") { Some(String(k)) => Some(k); _ => None }))
+  let home = self.home()
+  let ws_arg = if home == Some(ws) { Json::null() } else { Json::string(ws) }
+  match (try { Ok(self.bus.store.session_page_of_ws(ws_arg, jopt(home), Json::string(after), limit)) } catch { e => Err(e) }) {
+    Ok(sp) => self.wrap_session_page(sp)
+    Err(_) => { keys: [], rows: [], session: async fn(_) { None }, handle: Null }
+  }
 }
 
 ///|
@@ -408,10 +424,7 @@ async fn P55::start_moves(self : P55) -> Unit {
     share_moves: Some({
       move: async fn(id, to, made) {
         let v = self.jobs("sharing.moveProfile", [Json::string(id), Json::string(to)])
-        match jtext(v, "share") {
-          Some(share) => made(share)
-          None => ()
-        }
+        if jtext(v, "share") is Some(share) { made(share) }
         to_jv(v)
       },
       unshare: async fn(share, stations) { self.jobs("sharing.unshareMoved", [Json::string(share), Json::array(stations.map(Json::string(_)))]) is True },
@@ -759,26 +772,22 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
 fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
   let (zh, en) = catalogs_json()
   let words = @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en))
-  let s = (args : Array[@api_routes.JV], i : Int) => match args.get(i) { Some(Str(x)) => x; _ => "" }
   let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
     match op {
-      "fs.readFileSync" =>
-        match read_text(s(args, 0)) {
-          Some(t) => Str(t)
-          None => raise BusError("ENOENT: no such file, open '\{s(args, 0)}'")
-        }
-      "fs.mkdir" => {
-        @drive.mkdir(s(args, 0), true)
-        Null
-      }
-      "fs.writeFile" => {
-        self.bus.host.write_private(s(args, 0), @utf8.encode(s(args, 1)), sep=sep())
-        Null
-      }
-      "fs.rename" => {
-        @drive.rename(s(args, 0), s(args, 1))
-        Null
-      }
+      "fs.readFileSync" | "fs.mkdir" | "fs.rename" =>
+        @jsjson.JV::of_json(
+          host_fs_op(self.bus.host, op[3:].to_owned(), args.map(@jsjson.JV::to_json)) catch {
+            DispatchFsError(_, m) => raise BusError(m)
+            e => raise e
+          },
+        )
+      "fs.writeFile" =>
+        @jsjson.JV::of_json(
+          host_fs_op(self.bus.host, "writePrivate", args.map(@jsjson.JV::to_json)) catch {
+            DispatchFsError(_, m) => raise BusError(m)
+            e => raise e
+          },
+        )
       "crypto.randomBytes" =>
         @api_routes.jbytes(@drive.random_bytes(match args.get(0) { Some(Num(n)) => n.to_int(); _ => 0 }))
       _ =>
@@ -815,16 +824,4 @@ async fn move_tool_said(f : async () -> @api_routes.JV) -> @api_routes.JV {
     @mcp_tools.Refusal(m) | @mcp_tools.Failed(m) => raise BusError(m)
     e => raise e
   }
-}
-
-///|
-fn hex_bytes(h : String) -> Bytes {
-  let out = @buffer.Buffer()
-  let v = (c : Int) => if c >= 48 && c <= 57 { c - 48 } else if c >= 97 && c <= 102 { c - 87 } else if c >= 65 && c <= 70 { c - 55 } else { 0 }
-  let mut i = 0
-  while i + 1 < h.length() {
-    out.write_byte((v(h.unsafe_charcode_at(i)) * 16 + v(h.unsafe_charcode_at(i + 1))).to_byte())
-    i += 2
-  }
-  out.to_bytes()
 }

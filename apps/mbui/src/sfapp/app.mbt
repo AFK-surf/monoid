@@ -445,7 +445,29 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
     SignedIn if shell_is(src, c.window_size().0) is Lone => entry_said()
     _ => ()
   }
+  // (what the old frame does under its old views: over another app what is shared taken (over_view); signed in with a
+  // workspace in view, in every tier (signed_in_frame) and the shell's own (shell_under))
+  let over = share_over.get()
+  let shell = if !over && app_is(src) is SignedIn { Some(shell_is(src, c.window_size().0)) } else { None }
+  if over {
+    share_in_frame(c)
+  } else {
+    match shell {
+      Some(s) => shell_under(c, src, s)
+      None => ()
+    }
+  }
   @ui.old_views_here(c)
+  // (and over them: over another app its sheet (over_view); in the wide frame what an old view's field right clicked
+  // does, and the presenters told the app is under them (shell_over))
+  if over {
+    over_view(c, src)
+  } else {
+    match shell {
+      Some(s) => shell_over(c, src, s)
+      None => ()
+    }
+  }
   // the first page built with what it shows, the pictures the device holds in it decoded as it drew them (a likeness
   // in a picture's place for the frame or two its decoding takes is not shown): shown from this frame
   if first_waiting.val {
@@ -487,6 +509,36 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
       @sfbase.preview_open()
     c.layer(fn() { @sf.window_keys(c, whole~) }) |> ignore
   }
+}
+
+///|
+/// What the old frame does signed in, in shell `shell`, before its old views (view_in): with a workspace in view, what
+/// it does in every tier (signed_in_frame) and the shell's own: laid out Small how the lists take the hand
+/// (narrow_lists), on the tape and off it the wide frame's (sfdesk's tape_under, pane_under).
+fn shell_under(c : @ui.Ctx, src : Source, shell : ShellIs) -> Unit {
+  guard shell is (Stacked | Taped | Paned) else { return }
+  frame_bare.val = false
+  let (now, all, _, _) = workspace_in_view(src)
+  match now {
+    Some(w) => signed_in_frame(c, src, w)
+    None => ()
+  }
+  match (shell, now) {
+    (Stacked, _) => narrow_lists(c)
+    (Taped, Some(w)) => @sfdesk.tape_under(c, src, w, all)
+    (Paned, Some(w)) => @sfdesk.pane_under(c, src, w, all)
+    _ => ()
+  }
+}
+
+///|
+/// What the old frame does over its old views signed in, in shell `shell` (view_in): in the wide frame with a workspace
+/// in view, an old view's field right clicked and its editing done (sfdesk's context_fields), and the presenters told
+/// the app is under them (what they put up is the window's tree's: presented_nodes).
+fn shell_over(c : @ui.Ctx, src : Source, shell : ShellIs) -> Unit {
+  guard shell is (Taped | Paned) && workspace_in_view(src).0 is Some(_) else { return }
+  @sfdesk.context_fields(c)
+  @sf.presented(c)
 }
 
 ///|
@@ -566,10 +618,19 @@ fn shown_now(src : Source, width : Double) -> @sfbase.Shown {
 /// faces). So the first frame measures its words once, in what they are drawn in, never in the system's face and lines
 /// and then all of them again as the old frame says otherwise; the old frame saying the same after it does nothing.
 fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> Unit {
-  root.reacts(fn() { (src.topic("prefs", {}).get().value, @ui.system_dark()) }, fn(a) {
-    @sfbase.appearance_from_prefs(a.0, a.1) |> ignore
-    @sf.set_shortcuts(@sfdesk.tip_keys(src))
-  })
+  // (what is chosen here before the core answers read with the prefs, as 实验性功能's switches are: 外观's 深色 and its
+  // accent pressed on a page made as nodes take at once, no old frame built to read them)
+  root.reacts(
+    fn() {
+      let p = src.topic("prefs", {}).get().value
+      let sys = @ui.system_dark()
+      (p, sys, @settings.dark(p, sys), @settings.pref_from(p, "accent"))
+    },
+    fn(a) {
+      @sfbase.appearance_from_prefs(a.0, a.1) |> ignore
+      @sf.set_shortcuts(@sfdesk.tip_keys(src))
+    },
+  )
   guard words_set else { return }
   root.reacts(fn() { (src.topic("prefs", {}).get().value, root.window().0, @sf.native_able()) }, fn(a) {
     // (none before the first frame gives the window: told as anything there would be laid out by the wide frame's
@@ -711,14 +772,13 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
 
 ///|
 /// Over another app in node `o` (app_tree's, as share_over says): in a browser's window of its own, what is shared
-/// filling it (share_window), made once as nodes; the old view's frame that takes what is shared and puts up its sheet
-/// (over_view) over it.
+/// filling it (share_window), made once as nodes; what is shared taken and its sheet put up by the old frame (view_in:
+/// over_view).
 fn over_tree(o : @view.View, src : Source) -> Unit {
   o.show(at_once=true, share_inline, fn(w) {
     @sf.style_node(w, fn() { share_window })
     share_sheet_node(w, src)
   })
-  @ui.old(o, fn(c) { over_view(c, src) }).over(Is(true)) |> ignore
 }
 
 ///|
@@ -1420,11 +1480,20 @@ fn page_opens_by(
 ///|
 /// Whether the app's first page shows: once the core has answered for what it shows and the pictures the device holds
 /// in it are decoded (first_page_done), or `first_page_ms` after the workspace came into view (first_expired), from
-/// then on. What the frame finds of it as it begins (first_has), for view_in to say after its builds.
+/// then on. What the frame finds of it as it begins (first_has), for view_in to say after its builds. Under the
+/// window's tree what it shows answered is first_page_node's (first_answered, by opens_ahead_node's reads), read here
+/// alone: the old frame, built in no island, reading what the first page opens by would hold all of it itself and ask
+/// and let go of it as its own builds go (the replays' order); only without the tree is it read here.
 fn first_page_shown(c : @ui.Ctx, src : Source, w : Workspace) -> Bool {
   if !first_shown.get() {
     first_has.val = if first_expired.get() {
       2
+    } else if @ui.view_tree() is Some(_) {
+      if first_answered.get() {
+        1
+      } else {
+        0
+      }
     } else if first_page_ready_by(src, w, @sfdesk.is_wide(c), @sfbase.read_now(src)) {
       1
     } else {

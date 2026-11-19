@@ -30,7 +30,7 @@ import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
 import { ConfigFile } from "../ops/config.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskSoft, diskTier } from "../ops/disk.ts";
+import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskLow, diskSoft, diskTier } from "../ops/disk.ts";
 import { Upkeep, diskOf } from "../ops/storage.ts";
 import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
@@ -982,7 +982,8 @@ export const AgentsLive = (control: Control) =>
             await upkeep.renewables(hub.now());
             await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
-          if ((await free()) < DISK_LOW_BYTES) await relieveArchived(hub, free);
+          const low = disk === null ? DISK_LOW_BYTES : diskLow(disk.total);
+          if ((await free()) < low) await relieveArchived(hub, free, low);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }

@@ -127,7 +127,7 @@ pub async fn harness(@host.Host) -> Unit
 
 pub async fn has_codex_host_soon(World, String) -> Bool
 
-pub fn hex(Bytes) -> String
+pub fn hex(BytesView) -> String
 
 pub fn hold() -> () -> Unit
 
@@ -219,7 +219,7 @@ pub async fn own_node(World, String, String) -> OwnNode?
 
 pub fn own_node_home(String) -> String
 
-pub fn parse(String) -> @jsjson.JValue raise
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub fn parse_header(Bytes) -> Header raise
 

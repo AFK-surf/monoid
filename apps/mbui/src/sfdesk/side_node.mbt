@@ -220,6 +220,21 @@ fn lists_band_node(
       @sf.mix(if a.tape { a.ground } else { apart_ground() }, a.band, @sf.theme().p.sidebar)
     }))
     |> ignore
+    // (its top row the window's title bar where the window's buttons are in the app's top row, under what is in it: as
+    // tall as their row however short the band's own top is (no buttons at its left: a Windows window), not folded)
+    band.box(fn(o) {
+      o.over(Is(true)) |> ignore
+      o.box(fn(row) {
+        row
+        .width(By(fn() { Some(at().laid_w) }))
+        .height(Is(Some(closed_bar_top)))
+        .laid_nowhere(By(fn() { !@ui.window_inset_now() || side_folded() }))
+        .moves_window(By(fn() { @ui.window_inset_now() && !side_folded() }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
     side_top_node(band, fn() { band_at().brand })
     band.box(fn(line) {
       @sf.style_node(line, fn() {

@@ -289,7 +289,7 @@ pub fn Tester::clock_came(self : Tester, to : Double) -> Bool {
 ///|
 /// How far apart a resident cycle steps (ms): what stays up for as long as something elsewhere goes on (a station's
 /// glyph blinking while it works, a chat's waiting dots and watching beat, a service's breath while it is alive) on one
-/// clock, the spokes' (still.fail's: 「进行中」逐格走), drawn once a step, together, never on each of the display's
+/// clock, the working ring's (still.fail's: 「进行中」逐格走), drawn once a step, together, never on each of the display's
 /// frames. (Drawn as the display refreshed, one shown redrew the whole window 60 to 120 times a second for as long as
 /// it showed: minutes, hours, over Home with an agent at work.)
 pub let cycle_step_ms : Double = @view.resident_step_ms

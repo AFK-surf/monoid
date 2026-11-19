@@ -22,17 +22,44 @@ test "a player: jumped on goes there at once (to its end); the speed steps; drag
   // the speed after 1×
   m.step_speed()
   assert_eq(m.speed(), 1.25)
-  // dragged to the middle: paused, its seeks one after another, sent there as it goes; let go, as before
+  // dragged to the middle: paused, its seeks one after another, near key frames as it goes; let go, exact frame before scrub ends
   let told = fn(said : String) { t.views().iter().any(fn(s) { s.has_prefix("control") && s.contains(said) }) }
   m.scrub_to(5000.0)
   assert_eq(m.scrubbing(), Some(5000.0))
   assert_true(told(" 2 0"))
   assert_true(told(" 9 1"))
-  assert_true(told(" 3 5000"))
+  assert_true(told(" 11 5000"))
+  assert_false(told(" 3 5000"))
   m.scrub_done()
   t.draw()
   assert_true(m.scrubbing() is None)
+  assert_true(told(" 3 5000"))
   assert_true(told(" 9 0"))
+  let log = t.views()
+  let exact_idx = log.search_by(fn(s) { s.has_prefix("control") && s.contains(" 3 5000") }).unwrap()
+  let end_idx = log.search_by(fn(s) { s.has_prefix("control") && s.contains(" 9 0") }).unwrap()
+  assert_true(exact_idx < end_idx)
+}
+
+///|
+test "a player: scrub_done with at seeks directly to the exact frame without an extra near seek" {
+  let m = @player.Media::new()
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0)
+  m.open(video("a.mp4", "video/mp4"))
+  t.draw()
+  let told = fn(said : String) { t.views().iter().any(fn(s) { s.has_prefix("control") && s.contains(said) }) }
+  m.scrub_to(4000.0)
+  assert_true(told(" 11 4000"))
+  assert_false(told(" 3 4000"))
+  m.scrub_done(at=6000.0)
+  t.draw()
+  assert_true(m.scrubbing() is None)
+  assert_true(told(" 3 6000"))
+  assert_false(told(" 11 6000"))
+  let log = t.views()
+  let exact_idx = log.search_by(fn(s) { s.has_prefix("control") && s.contains(" 3 6000") }).unwrap()
+  let end_idx = log.search_by(fn(s) { s.has_prefix("control") && s.contains(" 9 0") }).unwrap()
+  assert_true(exact_idx < end_idx)
 }
 
 ///|

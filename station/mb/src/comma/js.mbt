@@ -7,6 +7,27 @@
 using @jsjson {type JValue as J}
 
 ///|
+pub using @jsjson {
+  jval_str as js, jval_num as jn, jval_int as ji, jval_obj as jobj, raw_text as utext,
+  jval_str_raw_of as str_of, jval_num_of as num_of, jval_arr_of as arr_of, jval_is_obj as is_object,
+  jval_or_null as or_null, jval_safe_int as safe_int, js_string, jval_js_str_raw as js_text,
+  js_compare as units_cmp, points, chars as first_points, parse as parse_json, stringify,
+  js_utf8_len as byte_length, jval_to_json_lossy as to_json, jval_of_json as from_json, json_num as bind_num,
+}
+
+///|
+pub using @jsjson {jval_str as jstr}
+
+///|
+pub using @jscase {trim as js_trim}
+
+///|
+pub using @utf8 {decode_lossy as text_of_utf8}
+
+///|
+pub using @codec {hex_encode as hex}
+
+///|
 /// What the TypeScript threw: its kind where a caller tells kinds apart (`instanceof MessageWriteBusy`; "" for a
 /// plain Error) and its message as it says it.
 pub(all) suberror Thrown {
@@ -48,21 +69,6 @@ pub fn kind_of(e : Error) -> String {
 }
 
 ///|
-pub fn js(s : String) -> J {
-  @jsjson.JValue::of_string(s)
-}
-
-///|
-pub fn jn(d : Double) -> J {
-  @jsjson.JValue::of_double(d)
-}
-
-///|
-pub fn ji(i : Int) -> J {
-  @jsjson.JValue::of_int(i)
-}
-
-///|
 /// An object of the fields given, those None (undefined) left out as JSON.stringify leaves them.
 pub fn jo(fields : Array[(String, J?)]) -> J {
   let out = []
@@ -73,24 +79,6 @@ pub fn jo(fields : Array[(String, J?)]) -> J {
     }
   }
   Obj(out)
-}
-
-///|
-/// An object of the fields given, every one there.
-pub fn jobj(fields : Array[(String, J)]) -> J {
-  @jsjson.JValue::of_object(fields)
-}
-
-///|
-/// The text of a string's code units, lone surrogates kept as a JavaScript string keeps them.
-pub fn utext(u : Array[Int]) -> String {
-  @jsjson.raw_text(u)
-}
-
-///|
-/// A JavaScript string as a value.
-pub fn jstr(s : String) -> J {
-  @jsjson.JValue::of_string(s)
 }
 
 ///|
@@ -146,39 +134,6 @@ fn index_key(key : String) -> Int? {
 }
 
 ///|
-/// `typeof v === "string"`: its text.
-pub fn str_of(v : J?) -> String? {
-  match v {
-    Some(Str(u)) => Some(utext(u))
-    _ => None
-  }
-}
-
-///|
-/// `typeof v === "number"`: its value.
-pub fn num_of(v : J?) -> Double? {
-  @jsjson.jval_num_of(v)
-}
-
-///|
-/// `Array.isArray(v)`: its items.
-pub fn arr_of(v : J?) -> Array[J]? {
-  @jsjson.jval_arr_of(v)
-}
-
-///|
-/// `v !== null && typeof v === "object"` (an array too).
-pub fn is_object(v : J?) -> Bool {
-  v is Some(Obj(_) | Arr(_))
-}
-
-///|
-/// `v ?? null`: undefined as null.
-pub fn or_null(v : J?) -> J {
-  v.unwrap_or(Null)
-}
-
-///|
 /// `a ?? b`: a where it is neither null nor undefined.
 pub fn nullish(a : J?, b : J?) -> J? {
   match a {
@@ -188,51 +143,9 @@ pub fn nullish(a : J?, b : J?) -> J? {
 }
 
 ///|
-/// `Number.isSafeInteger(v)`.
-pub fn safe_int(v : J?) -> Bool {
-  @jsjson.jval_safe_int(v)
-}
-
-///|
-/// `String(v)`, as code units.
-pub fn js_string(v : J) -> Array[Int] {
-  @jsjson.js_string(v)
-}
-
-///|
-/// `String(v)` as text.
-pub fn js_text(v : J) -> String {
-  utext(@jsjson.js_string(v))
-}
-
-///|
 /// A number as `String(n)` says it.
 pub fn num_text(n : Double) -> String {
   js_text(Num(n))
-}
-
-///|
-/// Two strings as JavaScript compares them, by their code units: negative, zero or positive.
-pub fn units_cmp(a : String, b : String) -> Int {
-  @jsjson.js_compare(a, b)
-}
-
-///|
-/// `s.trim()`.
-pub fn js_trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-/// The code points of a string as `[...s]` (or `Array.from(s)`) makes them: a lone surrogate one of its own.
-pub fn points(s : String) -> Array[String] {
-  @jsjson.points(s)
-}
-
-///|
-/// The first `max` code points of `s` (`[...s].slice(0, max).join("")`).
-pub fn first_points(s : String, max : Int) -> String {
-  @jsjson.chars(s, max)
 }
 
 ///|
@@ -242,51 +155,9 @@ pub fn utf8_of(s : String) -> Bytes {
 }
 
 ///|
-/// Bytes as node reads them as UTF-8 (`Buffer.toString("utf8")`).
-pub fn text_of_utf8(b : Bytes) -> String {
-  @utf8.decode_lossy(b)
-}
-
-///|
-/// What JSON.parse makes of `text`.
-pub fn parse_json(text : String) -> J raise @jsjson.SyntaxError {
-  @jsjson.parse(text)
-}
-
-///|
-/// JSON.stringify of a value.
-pub fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-/// `Buffer.byteLength(text)`.
-pub fn byte_length(text : String) -> Int {
-  utf8_of(text).length()
-}
-
-///|
-/// The value as the moonbitlang JSON SQLite binds and reads (its strings well-formed).
-pub fn to_json(v : J) -> Json {
-  v.to_json_lossy()
-}
-
-///|
-/// A moonbitlang JSON value as one of these.
-pub fn from_json(v : Json) -> J {
-  @jsjson.JValue::of_json(v)
-}
-
-///|
 /// A text parameter as node binds a string: a lone surrogate as U+FFFD.
 pub fn bind_text(s : String) -> Json {
   Json::string(@jsjson.text(@jsjson.units(s)))
-}
-
-///|
-/// A number parameter.
-pub fn bind_num(n : Double) -> Json {
-  Json::number(n)
 }
 
 ///|
@@ -350,12 +221,6 @@ pub fn col_json_text(row : Map[String, Json], name : String) -> String {
     Some(Null) | None => "null"
     _ => col_text(row, name).unwrap_or("")
   }
-}
-
-///|
-/// Hex of bytes, lowercase.
-pub fn hex(b : Bytes) -> String {
-  @codec.hex_encode(b)
 }
 
 ///|

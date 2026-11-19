@@ -7,16 +7,7 @@
 ///|
 /// How long a lend waits for its login's renewal (accounts/index.ts `lendBound`): LEND_BOUND_MS on the wall's clock.
 fn p53_lend_bound(host : @host.Host) -> @accounts_oauth.Bound {
-  {
-    ms: @accounts_oauth.lend_bound_ms,
-    after: (ms, f) => {
-      let fiber = host.rt.fork(name="a lend's bound", async fn() {
-        @effect.sleep(ms.to_int()) // timer: a deadline (how long a lend waits for its login's renewal)
-        f()
-      })
-      () => fiber.interrupt()
-    },
-  }
+  { ms: @accounts_oauth.lend_bound_ms, after: (ms, f) => bus_after(host, ms.to_double(), f) }
 }
 
 ///|
@@ -245,10 +236,7 @@ fn p53_env_pairs(j : Json) -> Array[(String, String)] {
 async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : Array[@accounts_pool.JV]) -> @accounts_pool.JV? {
   let host = self.bus.host
   let j = (i : Int) => p53_arg(args, i)
-  let opt = (i : Int) => match j(i) {
-    String(s) => Some(s)
-    _ => None
-  }
+  let opt = (i : Int) => as_text(j(i))
   match name {
     "oauth.claudeOAuthToken" => {
       // [home, rejected, endpoint, lang, margin, lent]
@@ -373,20 +361,14 @@ fn p53_source_json(s : @agent_runtimes.Source) -> Json {
     "sessionHeader": Json::boolean(s.session_header),
   }
   for kv in [("chat", s.chat), ("responses", s.responses), ("anthropic", s.anthropic), ("decision", s.decision)] {
-    match kv.1 {
-      Some(u) => m[kv.0] = Json::string(u)
-      None => ()
-    }
+    if kv.1 is Some(u) { m[kv.0] = Json::string(u) }
   }
   Json::object(m)
 }
 
 ///|
 fn p53_source_of(j : Json) -> @agent_runtimes.Source {
-  let s = (k : String) => match jfield(j, k) {
-    String(t) => Some(t)
-    _ => None
-  }
+  let s = (k : String) => as_text(jfield(j, k))
   {
     id: s("id").unwrap_or(""),
     name: s("name").unwrap_or(""),
@@ -447,14 +429,8 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     },
     parse_claude_credentials: text => @agent_runtimes.parse_claude_credentials(text).map(m => {
       let o : Map[String, Json] = {}
-      match m.subscription_type {
-        Some(s) => o["subscriptionType"] = Json::string(s)
-        None => ()
-      }
-      match m.rate_limit_tier {
-        Some(s) => o["rateLimitTier"] = Json::string(s)
-        None => ()
-      }
+      if m.subscription_type is Some(s) { o["subscriptionType"] = Json::string(s) }
+      if m.rate_limit_tier is Some(s) { o["rateLimitTier"] = Json::string(s) }
       Json::object(o)
     }),
     read_cursor: async fn(home) {
@@ -482,10 +458,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
       let noted = bus.hub_agy_note_email(home, text) catch {
         _ => Json::null()
       }
-      match noted {
-        String(e) => Some(e)
-        _ => None
-      }
+      as_text(noted)
     },
     agy_token_ready: (text, enterprise) => @agent_drivers.agy_token_ready(text, enterprise),
     agy_plan_in: text => @agent_drivers.agy_plan_in(text),
@@ -607,33 +580,9 @@ fn p53_login_manager(
   let kimi_base = @accounts_pool.kimi_auth
   let platform_ : @accounts_oauth.LoginPlatform = {
     terminal: async fn(program, args, cols, rows) {
-      // (Windows: a ConPTY the runner keeps, relayed on its pipes: windows.ts `terminalSoon`)
-      if is_windows() {
-        return runner_binary(bus.app, bus.argv0, bus.data).map(r => (r, ["--relay-pty", "--size", "\{cols}x\{rows}", program, ..args]))
-      }
-      let run = "stty cols \{cols} rows \{rows} 2>/dev/null; exec \"$@\""
-      if mac {
-        // (macOS's script refuses a socket for its stdin: a pipe put between, `cat` feeding it, ended with the command)
-        let feed = "exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '\{run}' sh \"$@\" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }"
-        return Some(("/bin/sh", ["-c", feed, "sh", program, ..args]))
-      }
-      for script in ["/usr/bin/script", "/bin/script"] {
-        if (try { Ok(@drive.stat(script)) } catch { e => Err(e) }) is Ok(_) {
-          let inner = ["/bin/sh", "-c", run, "sh", program, ..args].map(p54_quoted)
-          return Some((script, ["-qfec", inner.join(" "), "/dev/null"]))
-        }
-      }
-      None
+      bus_pty_terminal(bus, program, args, cols, rows, allow_windows=true, script => (try { Ok(@drive.stat(script)) } catch { e => Err(e) }) is Ok(_))
     },
-    prepend_path: (env, dir) => {
-      let m = env.copy()
-      let sep_ = if is_windows() { ";" } else { ":" }
-      m["PATH"] = match env.get("PATH") {
-        Some(p) if p != "" => dir + sep_ + p
-        _ => dir
-      }
-      m
-    },
+    prepend_path: env_prepend_path,
     // (a command named bare is found on the environment's PATH: sys.mbt `resolved_program`)
     runnable: async fn(program, args, env) {
       if program.contains("/") || program.contains("\\") {
@@ -649,15 +598,7 @@ fn p53_login_manager(
       }
       p
     },
-    with_shell_command: async fn(program, env, lookup) {
-      let given = env.to_array()
-      let found = with_shell_command(host, program, given, lookup=lookup.to_array())
-      if found == given {
-        None
-      } else {
-        Some(Map::from_array(found))
-      }
-    },
+    with_shell_command: async fn(program, env, lookup) { env_with_shell_command(host, program, env, lookup=lookup.to_array()) },
     // (no-keychain.ts `fileCredentialsSoon`: a profile's Claude Code keeps its login in its home, not the keychain)
     file_credentials: async fn(env) {
       if mac {
@@ -693,33 +634,7 @@ fn p53_login_manager(
         kill: () => ignore(kill(pid, "SIGTERM", group=true)),
       }
     },
-    descendants: async fn(pid) {
-      let (code, text, _) = p54_run(host, "ps", ["-A", "-o", "pid=,ppid="]) catch { _ => return [] }
-      guard code == Some(0) else { return [] }
-      let children : Map[Int, Array[Int]] = Map([])
-      for line in text.split("\n") {
-        let f = line.trim().split(" ").filter(x => x != "").map(x => x.to_owned()).to_array()
-        if f.length() >= 2 {
-          let c = @string.parse_int(f[0]) catch { _ => continue }
-          let p = @string.parse_int(f[1]) catch { _ => continue }
-          match children.get(p) {
-            Some(a) => a.push(c)
-            None => children[p] = [c]
-          }
-        }
-      }
-      let out = []
-      let next = [pid]
-      while next.pop() is Some(p) {
-        for c in children.get(p).unwrap_or([]) {
-          if !out.contains(c) {
-            out.push(c)
-            next.push(c)
-          }
-        }
-      }
-      out
-    },
+    descendants: async fn(pid) { process_descendants(host, pid) },
     kill: pid => ignore(kill(pid, "SIGTERM")),
   }
   let deps : @accounts_oauth.LoginDeps = {
@@ -775,8 +690,8 @@ fn p53_login_manager(
     },
     // (cursor.ts `cursorHandshake`: a PKCE verifier, its challenge, and the page that confirms it)
     cursor_handshake: () => {
-      let verifier = p53_base64url(@drive.random_bytes(32))
-      let challenge = p53_base64url(p53_hex_bytes(@accounts_pool.sha256_hex(verifier)))
+      let verifier = base64url_encode(@drive.random_bytes(32))
+      let challenge = base64url_encode(unhex_lenient(@accounts_pool.sha256_hex(verifier)))
       let uuid = @drive.random_uuid()
       {
         "uuid": Json::string(uuid),
@@ -829,29 +744,6 @@ fn p53_login_manager(
 }
 
 ///|
-fn p53_base64url(b : Bytes) -> String {
-  @base64.encode(b).replace_all(old="+", new="-").replace_all(old="/", new="_").replace_all(old="=", new="")
-}
-
-///|
-fn p53_hex_bytes(hex : String) -> Bytes {
-  let out = []
-  let digit = (c : Char) => match c {
-    '0'..='9' => c.to_int() - '0'.to_int()
-    'a'..='f' => c.to_int() - 'a'.to_int() + 10
-    'A'..='F' => c.to_int() - 'A'.to_int() + 10
-    _ => 0
-  }
-  let cs = hex.to_array()
-  let mut i = 0
-  while i + 1 < cs.length() {
-    out.push((digit(cs[i]) * 16 + digit(cs[i + 1])).to_byte())
-    i += 2
-  }
-  Bytes::from_array(out)
-}
-
-///|
 /// The machine's own logins (machine.ts `MachineLogins`): `claude auth status` and `codex login status` read, with
 /// what each login's allowance is (quota.ts `machineUsage`).
 fn p53_machine_logins(
@@ -886,10 +778,7 @@ fn p53_machine_logins(
 /// accounts/index.ts calls `this.logins`, console.ts and `this.machine`; None where `name` is none of it.
 async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : Array[Json]) -> Json? {
   let at = (i : Int) => if i < args.length() { args[i] } else { Json::null() }
-  let s = (i : Int) => match at(i) {
-    String(t) => t
-    _ => ""
-  }
+  let s = (i : Int) => as_text(at(i)).unwrap_or("")
   let lang = (i : Int) => match at(i) {
     String(l) => l
     _ => (self.bus.lang.val)()
@@ -972,10 +861,7 @@ async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : A
         },
       )
     "machine.refresh" => {
-      match self.machine {
-        Some(m) => m.refresh()
-        None => ()
-      }
+      if self.machine is Some(m) { m.refresh() }
       Some(Json::null())
     }
     "machine.linkCodexAuth" => {

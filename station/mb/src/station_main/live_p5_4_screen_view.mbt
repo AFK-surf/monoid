@@ -53,10 +53,7 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     next_audio: v.next_audio.map(f => async fn() { f().map(a => ({ ts: a.ts, data: a.data, codec: a.codec } : @mesh_runtime.AudioPacket)) }),
     keyframe: v.keyframe,
     input: async fn(j) {
-      match @screens.input_of(to_jv(j)) {
-        Some(i) => (v.input)(i)
-        None => ()
-      }
+      if @screens.input_of(to_jv(j)) is Some(i) { (v.input)(i) }
     },
     rate: v.rate,
     bounds: v.bounds.map(b => (w, h, r) => b(w, h, r.map(p54_region_of))),

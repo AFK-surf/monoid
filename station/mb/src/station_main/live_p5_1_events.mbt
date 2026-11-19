@@ -161,10 +161,7 @@ async fn gpus_now(host : @host.Host) -> Json {
         }
         if name is Some(_) || cores is Some(_) || busy is Some(_) {
           let g : Map[String, Json] = { "name": Json::string(name.unwrap_or("Apple GPU")) }
-          match cores {
-            Some(c) => g["cores"] = Json::number(c.to_double())
-            None => ()
-          }
+          if cores is Some(c) { g["cores"] = Json::number(c.to_double()) }
           match busy {
             Some(b) if b <= 100 => g["busy"] = Json::number(b.to_double() / 100.0)
             _ => ()
@@ -188,18 +185,9 @@ async fn gpus_now(host : @host.Host) -> Json {
             Some(v) => attempt(() => @string.parse_double(v)).to_option()
             None => None
           }
-          match num(1) {
-            Some(t) => g["memoryTotalBytes"] = Json::number(t * 1048576.0)
-            None => ()
-          }
-          match num(2) {
-            Some(u) => g["memoryUsedBytes"] = Json::number(u * 1048576.0)
-            None => ()
-          }
-          match num(3) {
-            Some(b) => g["busy"] = Json::number(b.round() / 100.0)
-            None => ()
-          }
+          if num(1) is Some(t) { g["memoryTotalBytes"] = Json::number(t * 1048576.0) }
+          if num(2) is Some(u) { g["memoryUsedBytes"] = Json::number(u * 1048576.0) }
+          if num(3) is Some(b) { g["busy"] = Json::number(b.round() / 100.0) }
           out.push(Json::object(g))
         }
       None => ()
@@ -213,20 +201,14 @@ async fn gpus_now(host : @host.Host) -> Json {
 /// `host_sample` from now on.
 fn P51::admin_host_live(self : P51) -> AdminHostLive {
   let host = self.host
-  let fork_after = (ms : Double, f : () -> Unit) => {
-    let fiber = host.rt.fork(name="host after", async fn() {
-      @effect.sleep(ms.to_int())
-      f()
-    })
-    () => fiber.interrupt()
-  }
+  let fork_after = (ms : Double, f : () -> Unit) => bus_after(host, ms, f)
   let live : Ref[AdminHostLive?] = Ref(None)
   let deps : @events.HostDeps = {
     test_host: () => env_get("STILLFAIL_TEST_HOST") == Some("1"),
     now: () => wall_ms().to_double(),
     after: fork_after,
     cpu_ticks: k => k(cpu_ticks()),
-    sample: k => ignore(host.rt.fork_daemon("host sample", on_error=e => @host.note("host sample failed: \{e}"), async fn() { k(to_jv(host_sample(host))) })),
+    sample: k => fork_bg(host, "host sample", async fn() { k(to_jv(host_sample(host))) }),
     statfs: (p, k) => match disk_of(p) {
       // (statfs's fields: blocks of one byte each, as the disk's sizes say them)
       Some((free, total)) => k(Some(to_jv({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })))
@@ -246,10 +228,7 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
     gpus_read: k => ignore(
       host.rt.fork_daemon("gpus", on_error=e => @host.note("gpus failed: \{e}"), async fn() {
         let g = gpus_now(host)
-        match live.val {
-          Some(l) => l.gpus = Some((@host.now(), g))
-          None => ()
-        }
+        if live.val is Some(l) { l.gpus = Some((@host.now(), g)) }
         k(Some(to_jv(g)))
       }),
     ),
@@ -305,28 +284,16 @@ fn P51::entry_views(self : P51, entries : Array[@jsjson.JValue]) -> Array[@jsjso
     let j = of_jv(e)
     guard j is Object(m) else { return e }
     let v = m.copy()
-    let kind = match v.get("authorKind") {
-      Some(String(k)) => k
-      _ => ""
-    }
-    let author = match v.get("author") {
-      Some(String(a)) => a
-      _ => ""
-    }
+    let kind = opt_str(v.get("authorKind")).unwrap_or("")
+    let author = opt_str(v.get("author")).unwrap_or("")
     if v.get("authorName") is None {
       match kind {
         "person" | "human" =>
-          match names.get(author) {
-            Some(n) => v["authorName"] = Json::string(n)
-            None => ()
-          }
+          if names.get(author) is Some(n) { v["authorName"] = Json::string(n) }
         "agent" =>
           match (try { Ok(self.bus.store.get_session(author)) } catch { e => Err(e) }) {
             Ok(Object(s)) => {
-              match s.get("runtime") {
-                Some(r) => v["authorRuntime"] = r
-                None => ()
-              }
+              if s.get("runtime") is Some(r) { v["authorRuntime"] = r }
               match s.get("model") {
                 Some(String(_) as md) => v["authorModel"] = md
                 _ => ()
@@ -450,30 +417,28 @@ fn P51::events_live(self : P51) -> EventsLive {
       })
       () => fiber.interrupt()
     },
-    immediate: f => ignore(host.rt.fork_daemon("events now", on_error=e => @host.note("events now failed: \{e}"), async fn() { f() })),
+    immediate: f => fork_bg(host, "events now", async fn() { f() }),
     // (fs.watch of a file, as a job's log is followed: the shell keeps no watch, so its size and time are looked at
     // every EVENTS_WATCH_MS while it is followed; none where it is not there yet)
     watch: (file, changed) => {
       guard attempt(() => @drive.stat(file)) is Ok(first) else { return None }
       let going = Ref(true)
-      ignore(
-        host.rt.fork_daemon("a file followed", on_error=e => @host.note("a file followed failed: \{e}"), async fn() {
-          let mut before = "\{first.size}:\{first.mtime_ms}"
-          while going.val && !bus.stopped.is_done() {
-            @effect.sleep(events_watch_ms) // timer: an outside system that offers no push (a file another process writes)
-            match attempt(() => @drive.stat(file)) {
-              Ok(st) => {
-                let now = "\{st.size}:\{st.mtime_ms}"
-                if now != before {
-                  before = now
-                  changed()
-                }
+      fork_bg(host, "a file followed", async fn() {
+        let mut before = "\{first.size}:\{first.mtime_ms}"
+        while going.val && !bus.stopped.is_done() {
+          @effect.sleep(events_watch_ms) // timer: an outside system that offers no push (a file another process writes)
+          match attempt(() => @drive.stat(file)) {
+            Ok(st) => {
+              let now = "\{st.size}:\{st.mtime_ms}"
+              if now != before {
+                before = now
+                changed()
               }
-              Err(_) => going.val = false
             }
+            Err(_) => going.val = false
           }
-        }),
-      )
+        }
+      })
       Some(() => going.val = false)
     },
     warn: (m, fields) => p51_log("WARN", "events", m, fields=of_jv(fields)),

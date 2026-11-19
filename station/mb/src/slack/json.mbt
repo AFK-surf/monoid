@@ -3,102 +3,20 @@
 // field of what may be anything (`v?.k`), `String(v)`, `Number(v)`, `[...s].length`.
 
 ///|
-using @jsjson {type JValue as J}
+pub using @jsjson {jval_str as js, jval_obj as jo, jval_at as at, stringify}
 
 ///|
-pub fn js(s : String) -> J {
-  @jsjson.JValue::of_string(s)
+using @jsjson {
+  type JValue as J, jval_num as jn, jval_int as ji, jval_bool as jb, jval_array as ja, jval_strs as jsa,
+  jval_opt_str as jopt, jval_at_path as at_path, jval_at_i as at_i, jval_str_of as str_of, jval_text as text,
+  jval_arr as arr, jval_is_record as is_obj, jval_nullish as nullish, jval_truthy as truthy,
+  jval_is_true as is_true, jval_js_str as js_str, jval_num_text_of as num_text, jval_js_num as js_num,
+  code_points as point_count, chars as first_points, jval_set as put, jval_del as drop,
+  jval_strings_of as strings, js_uniq as unique,
 }
 
 ///|
-fn jn(d : Double) -> J {
-  @jsjson.JValue::of_double(d)
-}
-
-///|
-fn ji(i : Int) -> J {
-  @jsjson.JValue::of_int(i)
-}
-
-///|
-fn jb(b : Bool) -> J {
-  @jsjson.JValue::of_bool(b)
-}
-
-///|
-pub fn jo(fields : Array[(String, J)]) -> J {
-  @jsjson.JValue::of_object(fields)
-}
-
-///|
-fn ja(items : Array[J]) -> J {
-  @jsjson.JValue::of_array(items)
-}
-
-///|
-fn jsa(items : Array[String]) -> J {
-  @jsjson.JValue::of_strings(items)
-}
-
-///|
-fn jopt(s : String?) -> J {
-  @jsjson.JValue::of_opt_string(s)
-}
-
-///|
-/// `v?.[name]`: undefined (None) where `v` is no object or has none.
-pub fn at(v : J?, name : String) -> J? {
-  @jsjson.jval_at(v, name)
-}
-
-///|
-/// `v?.[a]?.[b]…`.
-fn at_path(v : J?, path : Array[String]) -> J? {
-  @jsjson.jval_at_path(v, path)
-}
-
-///|
-fn at_i(v : J?, i : Int) -> J? {
-  @jsjson.jval_at_i(v, i)
-}
-
-///|
-fn str_of(v : J?) -> String? {
-  @jsjson.jval_str_of(v)
-}
-
-///|
-/// `typeof v === "string" ? v : ""`.
-fn text(v : J?) -> String {
-  @jsjson.jval_text(v)
-}
-
-///|
-fn arr(v : J?) -> Array[J] {
-  @jsjson.jval_arr(v)
-}
-
-///|
-fn is_obj(v : J?) -> Bool {
-  v is Some(Obj(_))
-}
-
-///|
-/// `v == null`.
-fn nullish(v : J?) -> Bool {
-  @jsjson.jval_nullish(v)
-}
-
-///|
-fn truthy(v : J?) -> Bool {
-  @jsjson.jval_truthy(v)
-}
-
-///|
-/// `v === true`.
-fn is_true(v : J?) -> Bool {
-  @jsjson.jval_is_true(v)
-}
+using @jscase {trim, lower}
 
 ///|
 /// `Object.values(v)` of what `v ?? {}` is (a list's items, a string's letters; none of anything else).
@@ -112,27 +30,6 @@ fn values_of(v : J?) -> Array[J] {
 }
 
 ///|
-/// `String(v)`, `undefined` as "undefined".
-fn js_str(v : J?) -> String {
-  @jsjson.jval_js_str(v)
-}
-
-///|
-/// A number as `String(n)` says it.
-fn num_text(n : J) -> String {
-  match n {
-    Num(d) => @jsjson.num_text(d)
-    _ => @jsjson.stringify(n)
-  }
-}
-
-///|
-/// `Number(v)`.
-fn js_num(v : J?) -> Double {
-  @jsjson.jval_js_num(v)
-}
-
-///|
 /// A string's code points (`[...s]`).
 fn points(s : String) -> Array[Char] {
   let out = []
@@ -140,39 +37,6 @@ fn points(s : String) -> Array[Char] {
     out.push(c)
   }
   out
-}
-
-///|
-fn point_count(s : String) -> Int {
-  @jsjson.code_points(s)
-}
-
-///|
-/// `[...s].slice(0, n).join("")`.
-fn first_points(s : String, n : Int) -> String {
-  @jsjson.chars(s, n)
-}
-
-///|
-fn trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-fn lower(s : String) -> String {
-  @jscase.lower(s)
-}
-
-///|
-/// `o[k] = v` (in its place where it is there, at its end where not); anything but an object stays as it is.
-fn put(o : J, k : String, v : J) -> J {
-  @jsjson.jval_set(o, k, v)
-}
-
-///|
-/// `delete o[k]`.
-fn drop(o : J, k : String) -> J {
-  @jsjson.jval_del(o, k)
 }
 
 ///|
@@ -188,29 +52,6 @@ fn obj_at(o : J, k : String) -> J {
 /// `o[k]` changed by `f` of the object there (made an empty one where none is: apps.ts `object`), `o` made again with it.
 fn with_obj(o : J, k : String, f : (J) -> J) -> J {
   put(o, k, f(obj_at(o, k)))
-}
-
-///|
-/// The strings of a list (apps.ts `strings`).
-fn strings(v : J?) -> Array[String] {
-  arr(v).filter_map(x => str_of(Some(x)))
-}
-
-///|
-/// `[...new Set(values)]`.
-fn unique(values : Array[String]) -> Array[String] {
-  let out = []
-  for v in values {
-    if !out.contains(v) {
-      out.push(v)
-    }
-  }
-  out
-}
-
-///|
-pub fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
 }
 
 ///|

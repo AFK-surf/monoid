@@ -2,7 +2,8 @@
 // the page made as nodes: side_panel_node's), in a pane off the tape: its one tab, Station 文件, the stations lending
 // their files (files_tab_node, as a chat's 文件 tab), what is added going into the new chat's draft; kept open or closed
 // by the core on this device as a chat's tabs are (`chatTabs` by `new:<workspace>`: new_files_open, new_files_set),
-// sliding in and out as a chat's panel does (side_slides). On the tape the panel is the frame's (tape_side).
+// sliding in and out as a chat's panel does (side_slides). On the tape it is a panel of its own beside the page's, in
+// the tape's panel (tape_view.mbt's tape_side_node: tape_new_side_node).
 
 ///|
 /// Workspace `w`'s new chat's panel in column `col` of the page's row (side_panel_node's, by `key`, its `new:<ws>`):
@@ -65,13 +66,60 @@ fn new_side_node(col : @view.View, src : Source, w : Workspace, key : String, ti
 }
 
 ///|
-/// The new chat's panel's bar in `n` (new_files_panel's, side_bar_node's look beside the page): its one tab in front,
-/// Station 文件, its mark and its name, its × closing it; the panel's switch at the bar's end closing it as well
-/// (`close`). Its tips in `tips`.
-fn new_side_bar_node(n : @view.View, close : () -> Unit, tips : @sf.TipLayer) -> Unit {
+/// Workspace `ws`'s new chat's panel on the tape, in its panel `q` (tape_side_node's, its ground and corners round it),
+/// read by `src`: its bar on the tape's line and its one tab, as beside the page (new_side_node), 添加 in the panel's
+/// foot corner, concentric with it, as a chat's 文件 on the tape (side_files_node's). Kept while it slides out as its
+/// tab was closed (tape_shown_side: side_leaving).
+fn tape_new_side_node(q : @view.View, src : Source, ws : String, tips : @sf.TipLayer) -> Unit {
+  let key = "new:" + ws
+  let close = fn() { new_files_set(src, ws, false) }
+  // (the last station it was at kept while none is said, so that sliding out it is not emptied)
+  let last : Ref[String?] = { val: None }
+  let address = fn() {
+    let now = match @sfbase.workspace_in_view(src).0 {
+      Some(w) if w.id == ws => new_drive_station(src, w)
+      _ => None
+    }
+    if now is Some(_) {
+      last.val = now
+    }
+    last.val
+  }
+  // (panel.close: the panel closed, at its key's moment)
+  q.on_action("panel.close", fn(_) {
+    close()
+    true
+  })
+  |> ignore
+  new_side_bar_node(q, close, tips, tape=true)
+  q.box(fn(b) {
+    b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
+    // (the station its tab starts at, as the page's picks say it: another, the tab made again there)
+    b.pick(address, fn(t, at) {
+      t.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      match at {
+        Some(station) =>
+          files_tab_node(t, src, ws, key, station, fn() {
+            @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
+            let st = @sf.foot_corner(@sf.button_height(), ftab_side, ftab_under)
+            @sf.pane_round.val = None
+            st
+          }, tips)
+        None => ()
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// The new chat's panel's bar in `n` (new_files_panel's, side_bar_node's look beside the page, on the tape's line where
+/// `tape`): its one tab in front, Station 文件, its mark and its name, its × closing it; the panel's switch at the bar's
+/// end closing it as well (`close`). Its tips in `tips`.
+fn new_side_bar_node(n : @view.View, close : () -> Unit, tips : @sf.TipLayer, tape? : Bool = false) -> Unit {
   let name = fn() { @sf.t("web-pages.chat.files") }
   n.box(fn(bar) {
-    @sf.style_node(bar, fn() { side_bar_look_node(false) })
+    @sf.style_node(bar, fn() { side_bar_look_node(tape) })
     // (the desktop app has no title bar: the panel's bar drags the window as the page's does, where nothing in it
     // takes the press)
     bar.shrink(Is(0.0)).moves_window(By(@ui.window_inset_now)) |> ignore
@@ -103,7 +151,8 @@ fn new_side_bar_node(n : @view.View, close : () -> Unit, tips : @sf.TipLayer) ->
         fn() { @sf.t("web-pages.chat.closePanel") },
         close,
         tips~,
-        linked=fn() { @sf.bar_keys_link() },
+        // (none on the tape: its buttons round on the tape's line, concentric with its corner, as a chat's panel's)
+        linked=fn() { if tape { None } else { @sf.bar_keys_link() } },
         shortcut="panel.close",
       )
       |> ignore

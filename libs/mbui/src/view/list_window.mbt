@@ -4273,7 +4273,7 @@ fn View::scrolls_window_ids(
         let (_, g, o, _) = n.flip_in
         let h = if o != 1.0 { n.flex.height * o } else { n.flex.height - g }
         let w = n.flex.width - n.flip_across.1
-        m[c] = { x, y, h, w, r: round_of(c, n, w, h) }
+        m[c] = { gen: n.gen, x, y, h, w, r: round_of(c, n, w, h) }
         if o == 1.0 {
           walk(c, y, x)
         }
@@ -4281,7 +4281,14 @@ fn View::scrolls_window_ids(
     }
     let root = self.tree.nodes[v.at]
     let root_h = root.flex.height - root.flip_in.1
-    m[v.at] = { x: 0.0, y: 0.0, h: root_h, w: root.flex.width, r: round_of(v.at, root, root.flex.width, root_h) }
+    m[v.at] = {
+      gen: root.gen,
+      x: 0.0,
+      y: 0.0,
+      h: root_h,
+      w: root.flex.width,
+      r: round_of(v.at, root, root.flex.width, root_h),
+    }
     walk(v.at, 0.0, 0.0)
     flip_in_before[k] = (at, m)
   }
@@ -4475,8 +4482,10 @@ fn View::scrolls_window_ids(
         let (_, ly, _, lh) = self.placed_window_now()
         before_list_y = ly
         before_list_h = lh
+        // (only one whose block showed as the change came: a slot in the slots' margin alone holds no block, as tall
+        // as it is counted, drawn nowhere, so it has no place to come from)
         for k, v in slot_views {
-          guard v.alive() && v.was_placed() && !self.tree.out_at(v.at) else { continue }
+          guard showing.contains(k) && v.alive() && v.was_placed() && !self.tree.out_at(v.at) else { continue }
           let (x, y, w, h) = v.placed_window_now()
           // (one a flight carries: drawn off as its slot is (where a change before moved it), open all the way; within a
           // pixel of the host's grid of its rest, drawn at its rest already: slot's drawn_off)
@@ -4746,8 +4755,8 @@ fn View::scrolls_window_ids(
             let m = b.1
             // (the block laid out at another width than it was as the change came)
             let laid_anew = match m.get(v.at) {
-              Some(b) => (self.tree.nodes[v.at].flex.width - b.w).abs() > 0.5
-              None => false
+              Some(b) if b.gen == self.tree.nodes[v.at].gen => (self.tree.nodes[v.at].flex.width - b.w).abs() > 0.5
+              _ => false
             }
             let ats : Array[Int] = []
             let put = fn(a : Int, amt : FlipInAmt) {
@@ -4759,10 +4768,10 @@ fn View::scrolls_window_ids(
                 amt.from_r is Some(_) else {
                 return
               }
-              flip_in_amts[a] = amt
+              let gen = self.tree.nodes[a].gen
+              flip_in_amts[a] = { ..amt, gen }
               ats.push(a)
               inner_now.push(a)
-              let gen = self.tree.nodes[a].gen
               guard flip_in_bound.get(a) != Some(gen) else { return }
               flip_in_bound[a] = gen
               let hv = self.tree.handle(a)
@@ -4770,7 +4779,8 @@ fn View::scrolls_window_ids(
                 match flip_way.get() {
                   Some(w) =>
                     match flip_in_amts.get(a) {
-                      Some(amt) => {
+                      // (only of the node it was worked out for: its place made again for another since reads none)
+                      Some(amt) if amt.gen == self.tree.nodes[a].gen => {
                         let ends = w.ends()
                         let t = hv.drawn_while(fn(t) { t < ends })
                         let left = w.left(t).0
@@ -4794,7 +4804,7 @@ fn View::scrolls_window_ids(
                           round,
                         )
                       }
-                      None => ((0.0, 0.0, 1.0, 1.0), (0.0, 0.0), None)
+                      _ => ((0.0, 0.0, 1.0, 1.0), (0.0, 0.0), None)
                     }
                   None => ((0.0, 0.0, 1.0, 1.0), (0.0, 0.0), None)
                 }
@@ -4818,14 +4828,20 @@ fn View::scrolls_window_ids(
                 let h = n.flex.height
                 // (what a pick leaving makes for what it shows now (pick_leave.mbt) is drawn coming by its place's way
                 // itself, held_scaled: not grown and faded in again here, the two at once)
-                if self.tree.is_pick_fader(c) && !m.contains(c) {
+                // (where it was as the change came only if it is the same node: a place let go of and made again for
+                // another in the change (a pick's new part in the old one's place) was nowhere then)
+                let was_c = match m.get(c) {
+                  Some(b) if b.gen == n.gen => Some(b)
+                  _ => None
+                }
+                if self.tree.is_pick_fader(c) && was_c is None {
                   continue
                 }
                 // (one leaving out of the flow (pop_leave.mbt): drawn where it stood as it fades, nothing of the way's)
                 if self.tree.handle(c).leaving_now() && n.flex.style.position == @flex.PositionType::Absolute {
                   continue
                 }
-                match m.get(c) {
+                match was_c {
                   // (in a block laid out at another width (its column on its way to another width, View::lays_anew),
                   // what comes out otherwise across was laid out anew: its words broken again, its ground round them
                   // as they are now, at once, as the window made another size has it, only its place on the list's
@@ -4892,11 +4908,11 @@ fn View::scrolls_window_ids(
             }
             let root = self.tree.nodes[v.at]
             match m.get(v.at) {
-              Some(b) => {
+              Some(b) if b.gen == root.gen => {
                 let grown = root.flex.height - b.h
                 put(v.at, flip_in_down(0.0, if grown.abs() > 0.5 { grown } else { 0.0 }, 0.0, false))
               }
-              None => ()
+              _ => ()
             }
             walk(v.at, 0.0, 0.0, 0.0, 0.0)
             flip_in_of[k] = ats
@@ -6292,8 +6308,9 @@ fn in_order_most(was : Array[Int]) -> Array[Bool] {
 ///|
 /// How each node of a block said `flips` was drawn as a change inside it came (View::scrolls_window's flip_in): across
 /// and down from the block's top left, how tall and how wide its ground, how round its corners (each held to half of
-/// that size).
+/// that size); of the node of the generation `gen` in its place.
 priv struct FlipInWas {
+  gen : Int
   x : Double
   y : Double
   h : Double
@@ -6304,8 +6321,10 @@ priv struct FlipInWas {
 ///|
 /// What a node of a block said `flips` is drawn off by as its block's way sets out, all of it gone to none at the way's
 /// end (View::scrolls_window's flip_in): down, how much shorter its ground, how tall it comes from (grown from none:
-/// `come`), across, how much narrower its ground, and the corners its ground goes from (none: as said all the way).
+/// `come`), across, how much narrower its ground, and the corners its ground goes from (none: as said all the way); of
+/// the node of the generation `gen` in its place (set as it is put).
 priv struct FlipInAmt {
+  gen : Int
   dy : Double
   g : Double
   sh : Double
@@ -6318,7 +6337,7 @@ priv struct FlipInAmt {
 ///|
 /// A FlipInAmt down alone (nothing across, its corners as said).
 fn flip_in_down(dy : Double, g : Double, sh : Double, come : Bool) -> FlipInAmt {
-  { dy, g, sh, come, dx: 0.0, lw: 0.0, from_r: None }
+  { gen: 0, dy, g, sh, come, dx: 0.0, lw: 0.0, from_r: None }
 }
 
 ///|

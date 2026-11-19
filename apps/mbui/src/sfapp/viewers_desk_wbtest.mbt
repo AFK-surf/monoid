@@ -263,3 +263,186 @@ test "desk: a drive's text read on by the wheel: its place on, the bar gone up a
   assert_true(r.place.get() != was, msg="read on from \{Repr(was)}: \{Repr(r.place.get())}")
   assert_true(r.bar_hidden.get(), msg="the bar gone up")
 }
+
+///|
+/// Open the 3-image chain (对照草图.png -> 界面草图.png -> 第二版.png) on a 1280x800 desktop window, using compact
+/// 16x16 PNGs so 3-image simultaneous decodes stay well within the file's host_image_bytes bar.
+fn desk_viewer_three() -> @ui.Tester {
+  new_run()
+  let base = fixture("chat")
+  let tiny = @sffixture.fixture_png(16, 16)
+  let src : Source = {
+    ..base,
+    read_going: fn(name, params, on_value, done) {
+      if name == "station.file" {
+        done(Ok(({ "contentType": "image/png" }, tiny)))
+      } else {
+        (base.read_going)(name, params, on_value, done)
+      }
+    },
+  }
+  let first = preview_files().iter().find_first(fn(f) { f.0.name == "对照草图.png" }).unwrap().0
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  open_preview("ws1/st1", "s-c1", first, beside=false, steps=InChat(Some(1.0), "s-c1"))
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "desk viewer: horizontal trackpad swipe flips next and previous when past threshold, snaps back when short" {
+  let t = desk_tester("chat-preview-step")
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png")
+  // Short swipe left (total 36pt slow): follows strip, does not flip, snaps back after wheel_rest_ms.
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, 6.0, 0.0, 0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="short swipe stays on first image")
+  assert_true(pv_strip.way.value_at(t.time()) < -10.0, msg="strip followed fingers left")
+  t.run_for(@sfbase.wheel_rest_ms + @ui.move_most_ms)
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="still on first image after snap-back")
+  assert_true(pv_strip.way.value_at(t.time()).abs() < 0.5, msg="strip snapped back to 0")
+  // Full swipe left past threshold -> flips to 第二版.png.
+  for _ in 0..<8 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, 18.0, 0.0, 0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "第二版.png", msg="swipe left flips to next image")
+  t.run_for(@sfbase.wheel_rest_ms + @ui.move_most_ms)
+  // Full swipe right past threshold -> flips back to 界面草图.png.
+  for _ in 0..<8 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, -18.0, 0.0, 0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="swipe right flips back to previous image")
+}
+
+///|
+test "desk viewer: one horizontal swipe with long momentum tail flips only once on a 3-image chain" {
+  let t = desk_viewer_three()
+  assert_eq(viewer.get().unwrap().file.name, "对照草图.png")
+  // Finger swipe left (phase 1) past threshold -> flips to 界面草图.png.
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_phase(640.0, 400.0, 0.0, 1, dx=22.0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="flipped once to middle image")
+  // Long decaying momentum tail (phase 3) totaling > 200pt must be eaten, not flip to 第二版.png.
+  for d in [20.0, 18.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0] {
+    t.advance(@ui.input_step_ms)
+    t.wheel_phase(640.0, 400.0, 0.0, 3, dx=d)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="momentum tail must not flip a second image")
+  t.run_for(@sfbase.wheel_rest_ms + @ui.move_most_ms)
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="settled on middle image")
+}
+
+///|
+test "desk viewer: consecutive second swipe during momentum flips again (native phase host)" {
+  let t = desk_viewer_three()
+  assert_eq(viewer.get().unwrap().file.name, "对照草图.png")
+  // First swipe (phase 1 -> flips to 界面草图.png) + partial momentum (phase 3).
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_phase(640.0, 400.0, 0.0, 1, dx=22.0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="first swipe flipped to second image")
+  for d in [16.0, 12.0, 8.0] {
+    t.advance(@ui.input_step_ms)
+    t.wheel_phase(640.0, 400.0, 0.0, 3, dx=d)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="momentum stays on second image")
+  // Immediately start second swipe (phase 1) with no wheel_rest_ms pause -> flips to 第二版.png.
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_phase(640.0, 400.0, 0.0, 1, dx=22.0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "第二版.png", msg="second swipe during momentum flips to third image")
+}
+
+///|
+test "desk viewer: consecutive second swipe during momentum flips again (phase-0 web host)" {
+  let t = desk_viewer_three()
+  assert_eq(viewer.get().unwrap().file.name, "对照草图.png")
+  // First swipe (phase 0) -> flips to 界面草图.png.
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, 22.0, 0.0, 0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="first phase-0 swipe flipped")
+  // Momentum decays down to 4pt with no pause.
+  for d in [16.0, 12.0, 8.0, 5.0, 4.0] {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, d, 0.0, 0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="decaying phase-0 tail eaten")
+  // Second swipe rebounds |dx| back to 22pt without pause -> flips to 第二版.png.
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, 22.0, 0.0, 0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "第二版.png", msg="second phase-0 swipe after rebound flips to third image")
+}
+
+///|
+test "desk viewer: boundary swipe past first/last image resists at 1/3 and snaps back without flipping" {
+  let t = desk_tester("chat-preview-step")
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png")
+  // At first image (no before): swipe right resists at 1/3 and snaps back.
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, -30.0, 0.0, 0)
+  }
+  let s = pv_strip.way.value_at(t.time())
+  assert_true(s > 0.0 && s < 70.0, msg="edge drag damped to ~1/3 (expected ~60): \{s}")
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="cannot flip before first image")
+  t.run_for(@sfbase.wheel_rest_ms + @ui.move_most_ms)
+  assert_true(pv_strip.way.value_at(t.time()).abs() < 0.5, msg="edge drag snapped back to 0")
+  // Single-image viewer (NoSteps): both directions resist at 1/3 and snap back.
+  let t1 = desk_tester("chat-preview-image")
+  for _ in 0..<6 {
+    t1.advance(@ui.input_step_ms)
+    t1.wheel_with(640.0, 400.0, 30.0, 0.0, 0)
+  }
+  let s1 = pv_strip.way.value_at(t1.time())
+  assert_true(s1 < 0.0 && s1 > -70.0, msg="single-image drag damped to ~-60: \{s1}")
+  t1.run_for(@sfbase.wheel_rest_ms + @ui.move_most_ms)
+  assert_true(pv_strip.way.value_at(t1.time()).abs() < 0.5, msg="single-image drag snapped back")
+}
+
+///|
+test "desk viewer: horizontal paging preserves zoomed pan, mouse wheel notch, modifier keys, and vertical pull-to-close" {
+  // 1. Mouse wheel notch (phase 4) and browser horizontal notch (120) do not page.
+  let t = desk_tester("chat-preview-step")
+  t.wheel_phase(640.0, 400.0, 0.0, 4, dx=120.0)
+  t.wheel_with(640.0, 400.0, 120.0, 0.0, 0)
+  t.draw()
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="mouse notch does not page")
+  assert_eq(pv_strip.way.value_at(t.time()), 0.0, msg="mouse notch does not move strip")
+  // 2. Modifier key held (Cmd/Shift) does not page.
+  t.wheel_with(640.0, 400.0, 60.0, 0.0, @ui.wheel_mod_cmd)
+  t.wheel_with(640.0, 400.0, 60.0, 0.0, @ui.wheel_mod_shift)
+  t.draw()
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="modifier wheel does not page")
+  // 3. Zoomed in past window width: horizontal wheel pans the image instead of paging.
+  t.wheel_with(640.0, 400.0, 0.0, -600.0, @ui.wheel_mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  let v = viewer.get().unwrap()
+  assert_true(v.zoom.zoomed_at(t.time()), msg="zoomed in")
+  let before_rect = v.zoom.rect_at(t.time()).unwrap()
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(640.0, 400.0, 25.0, 0.0, 0)
+  }
+  assert_eq(viewer.get().unwrap().file.name, "界面草图.png", msg="zoomed horizontal wheel does not page")
+  let after_rect = v.zoom.rect_at(t.time()).unwrap()
+  assert_true(after_rect.0 < before_rect.0, msg="zoomed horizontal wheel pans image")
+  // 4. Vertical pull-to-close still closes fitted image even when multi-image stepping is available.
+  let t2 = desk_tester("chat-preview-step")
+  t2.wheel(640.0, 400.0, -60.0)
+  t2.run_for(@ui.input_step_ms)
+  t2.wheel(640.0, 400.0, -60.0)
+  assert_true(viewer.get() is None, msg="vertical pull-to-close still works")
+}

@@ -73,6 +73,8 @@ pub let downsize_ms : Double
 
 pub let downsize_share : Double
 
+pub let drop_warn_ns : Int64
+
 pub fn dscp_taken(@json.Json?) -> Bool
 
 pub fn encode_uri_component(String) -> String
@@ -233,7 +235,7 @@ pub fn not_lan(String) -> Bool
 
 pub fn one_bytes(Bytes) -> Pieces
 
-pub fn otlp_body(String, Array[@json.Json]) -> String
+pub fn otlp_body(String, Array[@json.Json], resource? : Array[(String, String)]) -> String
 
 pub fn own_rate(Double, Double) -> Double
 
@@ -859,11 +861,15 @@ pub struct Traces {
   mut waiting : @effect.Fiber[Unit]?
   hr_now : () -> Int64
   said : (String, String, @json.Json) -> Unit
+  tail_only : Bool
+  slow_ms : Int32
+  mut retrying : Bool
+  mut dropped_at : Int64?
 }
 pub fn Traces::close(Self) -> Unit
 pub fn Traces::end(Self, Span, String, Array[(String, @json.Json)], Bool) -> Unit
 pub fn Traces::export_to(Self, async (Array[@json.Json]) -> Unit) -> Unit
-pub fn Traces::new(Bool, @effect.Runtime, () -> Int64, (String, String, @json.Json) -> Unit) -> Self
+pub fn Traces::new(Bool, @effect.Runtime, () -> Int64, (String, String, @json.Json) -> Unit, tail_only? : Bool, slow_ms? : Int32) -> Self
 pub fn Traces::start(Self, Parent?, String, Int64) -> Span?
 
 pub struct Trip {
