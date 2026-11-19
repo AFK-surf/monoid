@@ -79,7 +79,7 @@ pub fn is_revocation(@json.Json) -> Bool
 
 pub fn joined_of(@json.Json?) -> Array[@json.Json]
 
-pub async fn keep_relays(RelayEndpoint, Ways, Pinger, bound? : Array[String], log? : (String) -> Unit) -> Unit
+pub async fn keep_relays(RelayEndpoint, Ways, Pinger, bound? : Array[String], log? : (String) -> Unit, on_unhealthy? : () -> Unit, params? : ProbeParams, say? : (String, String) -> Unit) -> Unit
 
 pub fn mark_emoji(@json.Json?) -> String?
 
@@ -110,6 +110,8 @@ pub fn peer_disabled(Ways, String) -> PeerDisabled?
 pub fn pending_asks(PlaneCloud, Map[String, Bool]) -> Array[String]
 
 pub let ping_ms : Int32
+
+pub let probe_params : ProbeParams
 
 pub fn plane_teller(PlaneCloud, (@json.Json) -> Unit, () -> Bool) -> (() -> Unit, () -> Unit)
 
@@ -452,11 +454,20 @@ pub(all) struct PresenceParts {
   write_presence : (Bool, String?, Bool) -> Unit
 }
 
+pub(all) struct ProbeParams {
+  startup_grace_ms : Int64
+  every_healthy : Int32
+  failures_to_recover : Int32
+  cooldown_ms : Int64
+  cooldown_max_ms : Int64
+}
+
 pub(all) enum Provider {
   Stillfail
   Comma
 }
 pub fn Provider::name(Self) -> String
+
 
 pub(all) struct ProviderSpec {
   provider : Provider
@@ -483,6 +494,8 @@ pub(all) struct RelayEndpoint {
   keep : (Array[String]) -> Unit
   home : () -> String?
   public_relays : async (Bool) -> Unit
+  relay_status : () -> @json.Json
+  probe_relay : (async (String) -> @json.Json)?
 }
 
 pub struct Replaced {

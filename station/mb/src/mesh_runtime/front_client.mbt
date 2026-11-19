@@ -1401,6 +1401,13 @@ pub fn FrontEndpoint::relay_status(self : FrontEndpoint) -> Json {
 }
 
 ///|
+/// Whether the endpoint is reached through relay `url` now, end to end (`probeRelay`, endpoint.ts): `{"ok": true}`, or
+/// `{"ok": false, "stage": "probe_offline" | "endpoint_failed"}`. A front from before says `no operation`.
+pub async fn FrontEndpoint::probe_relay(self : FrontEndpoint, url : String) -> Json {
+  self.ask("probeRelay", args=[("args", jobj([("url", jstr(url))]))])
+}
+
+///|
 /// The relays a station is not reached through (`disabledRelays`), given again to a front linked to anew.
 pub async fn FrontEndpoint::disabled_relays(self : FrontEndpoint, id : String, relays : Array[String], no_public : Bool) -> Unit {
   let args = jobj([("peer", jstr(id)), ("relays", Json::array(relays.map(jstr))), ("public", Json::boolean(no_public))])

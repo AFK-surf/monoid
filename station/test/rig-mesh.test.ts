@@ -10,7 +10,7 @@ import { Clock, Effect, Fiber, Layer, Stream } from "effect";
 import { Net } from "../src/jobs/load.ts";
 import type { Mesh } from "../src/mesh/native.ts";
 import { RigMeshLive, RigSide } from "../src/rig/main.ts";
-import { ControlPlane, Key, MeshNative, MeshSide, Peers, Previous, StationConfig } from "../src/services.ts";
+import { ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, StationConfig } from "../src/services.ts";
 import { memoryMesh } from "./memory-mesh.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
@@ -45,6 +45,7 @@ function rigMesh(t: TestContext, failures: number, clock: Clock.Clock, ended = 0
     } as never),
     Layer.succeed(Key)({ seed: Buffer.alloc(32) } as never),
     Layer.succeed(RigSide)({ current: null }),
+    Layer.succeed(Paths)({ data: "", app: "" }),
     Layer.succeed(MeshNative)({ bind: async (options: Parameters<Mesh["bind"]>[0]) => {
       binds++;
       if (binds <= failures) throw new Error("port is held by the previous rig");

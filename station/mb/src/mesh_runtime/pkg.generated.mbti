@@ -505,6 +505,7 @@ pub fn FrontEndpoint::mesh_listen(Self, (Array[@json.Json]) -> Unit) -> () -> Un
 pub async fn FrontEndpoint::mesh_remove(Self, String) -> Unit
 pub async fn FrontEndpoint::network_change(Self) -> Unit
 pub async fn FrontEndpoint::online(Self) -> Unit
+pub async fn FrontEndpoint::probe_relay(Self, String) -> @json.Json
 pub async fn FrontEndpoint::public_relays(Self, Bool) -> Unit
 pub fn FrontEndpoint::relay_status(Self) -> @json.Json
 pub async fn FrontEndpoint::remove_relay(Self, String) -> Unit

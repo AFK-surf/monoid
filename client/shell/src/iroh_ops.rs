@@ -523,6 +523,22 @@ impl Inner {
                 endpoint.set_disabled_relays(peer, disabled).await;
                 Ok(Answer::json(json!({})))
             }
+            // Whether the endpoint is reached through relay `url` now, end to end (keep.rs `probe`): `{ok: true}`, or
+            // `{ok: false, stage}`, `probe_offline` where the relay is out of this machine's reach and `endpoint_failed`
+            // where it is not but the endpoint is. The station's relays' watch asks it (station/src/mesh/relays.ts).
+            "iroh.probeRelay" => {
+                let endpoint = match self.handle(id_of(a)?)? {
+                    Handle::Endpoint(endpoint, _) => endpoint,
+                    Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
+                    _ => return Err("not an endpoint".into()),
+                };
+                let relay = relay_url(str_of(a, "url")?)?;
+                let said = match keep::probe(&endpoint, &relay).await.stage() {
+                    None => json!({ "ok": true }),
+                    Some(stage) => json!({ "ok": false, "stage": stage }),
+                };
+                Ok(Answer::json(said))
+            }
             "iroh.online" | "iroh.insertRelay" | "iroh.removeRelay" | "iroh.publicRelays" | "iroh.keep" | "iroh.setCongestion" | "iroh.setAlpns" | "iroh.holdIncoming" => {
                 let (endpoint, kept) = match self.handle(id_of(a)?)? {
                     Handle::Endpoint(endpoint, kept) => (endpoint, kept),

@@ -27,6 +27,10 @@ priv struct Endpoint {
   /// Whether a relay holds it inactive for another endpoint of its id (native.ts `relaysConflict`: another station on
   /// this station's key; health.json's `relayConflict`).
   relay_conflict : () -> Bool
+  /// Its home relays as it has them now (endpoint.ts `relayStatus`).
+  relay_status : () -> Json
+  /// Whether it is reached through a relay now, end to end (endpoint.ts `probeRelay`).
+  probe_relay : async (String) -> Json
   close : async () -> Unit
   /// Its mesh scopes, where its endpoint keeps them (the front's: endpoint.ts `meshConfigure` and the rest).
   mesh : MeshOps?
@@ -312,6 +316,11 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
       relays.val = try { host.shell_sync("iroh.relayStatus", { "id": eid }) } catch { _ => relays.val }
       relays_conflict(relays.val)
     },
+    relay_status: () => {
+      relays.val = try { host.shell_sync("iroh.relayStatus", { "id": eid }) } catch { _ => relays.val }
+      relays.val
+    },
+    probe_relay: async fn(url) { op("probeRelay", [("url", Json::string(url))]) },
     close: async fn() {
       ignore(@effect.timeout(1000, async fn() { ignore(host.shell("iroh.close", { "id": eid, "forget": true })) })) catch {
         _ => ()
@@ -358,6 +367,8 @@ async fn front_endpoint(host : @host.Host, socket : String, bind : Map[String, J
     disabled_relays: async fn(peer, urls, no_public) { e.disabled_relays(peer, urls, no_public) },
     linked: () => e.linked(),
     relay_conflict: () => relays_conflict(e.relay_status()),
+    relay_status: () => e.relay_status(),
+    probe_relay: async fn(url) { e.probe_relay(url) },
     close: async fn() { e.close() },
     mesh: Some({
       scopes: {
@@ -976,9 +987,30 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     keep: endpoint.keep,
     home: endpoint.home,
     public_relays: endpoint.public_relays,
+    relay_status: endpoint.relay_status,
+    probe_relay: Some(endpoint.probe_relay),
+  }
+  // An endpoint found stuck by its relays' probes (relays.ts `PROBE`): the launcher's front restarted, the station handed
+  // over to the new one; where there is no front, closed, so its `accept` ends this run and `mesh_start` binds anew.
+  let on_unhealthy = match bus.restart_front {
+    Some(restart) => restart
+    None =>
+      () => ignore(
+        host.rt.fork_daemon("mesh recovered", on_error=e => @host.note("closing a stuck endpoint failed: \{e}"), async fn() {
+          (endpoint.close)()
+        }),
+      )
   }
   let relays_fiber = host.rt.fork(name="relays", async fn() {
-    @cloud_net.keep_relays(relay_ep, plane.ways, @cloud_net.host_pinger(plane.http), bound~, log=w => p51_log("INFO", "relays", w))
+    @cloud_net.keep_relays(
+      relay_ep,
+      plane.ways,
+      @cloud_net.host_pinger(plane.http),
+      bound~,
+      log=w => p51_log("INFO", "relays", w),
+      on_unhealthy~,
+      say=(level, w) => p51_log(level, "relays", w),
+    )
   })
   scope_stops.push(() => relays_fiber.interrupt())
   // Online at the control plane once a relay can reach it (15 s at most).

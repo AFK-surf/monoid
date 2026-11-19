@@ -164,12 +164,24 @@ pub(crate) async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
     {
         let mut socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
         socket.write_all(bytes).await.map_err(err)?;
-        socket.shutdown().await.map_err(err)
+        shut(socket.shutdown().await)
     }
     #[cfg(not(unix))]
     {
         let _ = (path, bytes);
         Err("Unix sockets are Unix's".into())
+    }
+}
+
+/// A connection's end (`shutdown`) as `tell_unix` takes it: the other side gone already is what it was told for (the
+/// station's Node reads the bytes it waits for and closes at once, so on macOS the shutdown that follows races it and
+/// says ENOTCONN, os error 57), not a failure.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn shut(done: std::io::Result<()>) -> Result<(), String> {
+    match done {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+        Err(e) => Err(err(e)),
     }
 }
 
@@ -466,5 +478,45 @@ impl Inner {
             }
             other => Err(format!("no operation {other}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A told connection whose other side is gone before its shutdown (ENOTCONN on macOS) told it; any other failure
+    /// of the shutdown is still said.
+    #[test]
+    fn a_shutdown_after_the_other_side_closed_is_no_failure() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(shut(Ok(())), Ok(()));
+        assert_eq!(shut(Err(Error::from(ErrorKind::NotConnected))), Ok(()));
+        #[cfg(unix)]
+        assert_eq!(shut(Err(Error::from_raw_os_error(libc::ENOTCONN))), Ok(()));
+        assert!(shut(Err(Error::from(ErrorKind::BrokenPipe))).is_err());
+    }
+
+    /// The Unix socket's other side reads what it waits for and closes at once (as the station's Node does): what was
+    /// said reached it, and `tell_unix` says no failure, however the shutdown raced the close.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn telling_a_socket_that_closes_at_once_is_no_failure() {
+        let dir = std::env::temp_dir().join(format!("tell-unix-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("s.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let reader = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = [0u8; 25];
+            socket.read_exact(&mut head).await.unwrap();
+            drop(socket);
+            head
+        });
+        let bytes = [7u8; 25];
+        assert_eq!(tell_unix(path.to_str().unwrap(), &bytes).await, Ok(()));
+        assert_eq!(reader.await.unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
