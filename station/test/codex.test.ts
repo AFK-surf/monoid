@@ -601,17 +601,25 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(starts(p.dump).length, 2, "a second app-server");
   });
 
-  test("an in-flight request lets go when its runner is taken over with the runner pid still alive", { skip: process.platform === "win32" }, async () => {
+  test("an in-flight request lets go when its runner socket closes with the runner pid still alive", async () => {
     const d = driver();
     const p = profile();
-    const unsub = gates(p.dump, "unsub");
-    const session = await d.open(options(p), () => {});
-    const host = (session as unknown as { host: { request: (m: string, x: Json) => Promise<Json>; proc: { closed_: (s?: string) => void } } }).host;
-    const pending = host.request("thread/unsubscribe", { threadId: session.id() });
-    await eventually(() => stdin(p.dump).some((m) => m.method === "thread/unsubscribe"));
-    host.proc.closed_();
-    await assert.rejects(pending, /handed over/);
-    await unsub.open("a");
+    const info: RunnerInfo = {
+      id: "codex-taken-over",
+      runner: process.pid,
+      pid: process.pid,
+      pgid: process.pid,
+      startedAt: 0,
+      program: "codex",
+      args: [],
+      socket: join(data, "no-such.sock"),
+    };
+    const host = (d as unknown as { holdLeft: (p: Profile, i: RunnerInfo, k: string) => { request: (m: string, x: Json) => Promise<Json>; stopOrphans: () => void } }).holdLeft(p, info, p.id);
+    try {
+      await assert.rejects(host.request("thread/unsubscribe", { threadId: "t" }), /handed over/);
+    } finally {
+      host.stopOrphans();
+    }
   });
 
   test("the app-server exiting fails the thread's turn as exited and closes every thread on it", async () => {

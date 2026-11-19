@@ -919,9 +919,9 @@ fn HostedProcess::closed_(self : HostedProcess, stderr : String) -> @agent_drive
   }
   if pid_alive(self.info.runner()) {
     live_log("warn", "agents::process", "another station took the runner over; letting go", { "label": jstr(self.options.label) })
+    (self.options.handed)()
     self.frozen = true
     self.gone = true
-    (self.options.handed)()
     self.done()
     self.host.forget(self)
     @agent_drivers.done(lp)

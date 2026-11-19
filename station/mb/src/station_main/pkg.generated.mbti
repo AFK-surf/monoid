@@ -188,6 +188,8 @@ pub async fn start_rig_updates(LiveBus) -> Unit
 
 pub fn start_time_of(Int32) -> Double?
 
+pub fn station_built_at(Array[String], String) -> Double?
+
 pub fn station_channel(@json.Json, String) -> String
 
 pub let station_en : String
@@ -220,7 +222,7 @@ pub fn tmpdir() -> String
 
 pub fn tr(String, String, args? : Array[(String, String)]) -> String
 
-pub fn updates_setup(String, String) -> Unit
+pub fn updates_setup(String, String, app? : String) -> Unit
 
 pub fn updates_world(@host.Host, String) -> @updates.World
 
@@ -294,6 +296,7 @@ pub(all) struct LiveBus {
   data : String
   app : String
   version : String
+  built_at : Double?
   key : @cloud_lock.StationKey
   db : @sql.Db
   store : @store_sessions.Store
@@ -322,6 +325,7 @@ pub(all) struct LiveBus {
   store_listeners : Array[(Int32, (@json.Json) -> Unit)]
   mut next_listener : Int32
   reader_ask : @ref.Ref[async (String, @json.Json, String) -> @json.Json]
+  model_catalog : @ref.Ref[() -> @json.Json]
   events_tell : @ref.Ref[(String, @json.Json, String, @json.Json) -> Unit]
   overview_changed : @ref.Ref[() -> Unit]
   host_sample : @ref.Ref[async () -> @json.Json]

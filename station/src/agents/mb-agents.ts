@@ -550,9 +550,9 @@ export class HostedProcess {
     // rest, held or let go here, is let go there with it)
     if (pidAlive(this.info.runner)) {
       log.warn("agents::process", "another station took the runner over; letting go", { label: this.#options.label });
+      this.#options.handed?.();
       this.#frozen = true;
       this.gone = true;
-      this.#options.handed?.();
       this.done();
       this.#host.forget(this);
       this.#leftNow();
