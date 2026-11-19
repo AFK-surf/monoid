@@ -301,7 +301,7 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   let disc = bar_at(holder, disc_x, disc_y, fn() { drop }, fn() { drop }, fn(d) {
     d
     .radius(Is(drop / 2.0))
-    .glass(Is(Some(@sf.glass_action().sharing())))
+    .glass(By(fn() { Some(@sf.glass_action().sharing()) }))
     .presses(By(fn() {
       match bar_told_now.get() {
         Some(t) => t.shown && t.action != ""
@@ -478,7 +478,7 @@ fn bar_glass_capsule(
   bar_at(holder, fn() { 0.0 }, top, w, h, fn(g) {
     g
     .radius(By(corner))
-    .glass(Is(Some(@sf.glass_bottom_bar())))
+    .glass(By(fn() { Some(@sf.glass_bottom_bar()) }))
     // (its top where the panel has it as each frame is drawn, its foot where it is)
     .ground_drawn(
       By(fn() {
@@ -634,7 +634,7 @@ fn bar_ball_node(holder : @view.View) -> Unit {
     },
     fn(g) {
       g
-      .glass(Is(Some(@sf.glass_bar_ball().sharing())))
+      .glass(By(fn() { Some(@sf.glass_bar_ball().sharing()) }))
       .shadow(By(fn() { (4.0, 1.0, if @sf.theme().dark { 0x00000059L } else { 0x37352D33L }) }))
       |> ignore
     },
