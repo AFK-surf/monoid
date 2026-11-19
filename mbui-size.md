@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
 | [073c68c51](https://github.com/AFK-surf/monoid/commit/073c68c51bc94a4df102f4df8fe10d57554931d7) feat(mbui): add headless dialog, popover, hover ca | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
 | [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
 | [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.34 | 121.18 |
-| [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.08 | 122.48 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.12 |
 | [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
 | [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
 | [073c68c51](https://github.com/AFK-surf/monoid/commit/073c68c51bc94a4df102f4df8fe10d57554931d7) feat(mbui): add headless dialog, popover, hover ca | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.94 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
-| [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
