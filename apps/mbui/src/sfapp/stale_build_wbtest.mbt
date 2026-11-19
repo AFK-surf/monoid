@@ -38,13 +38,12 @@ test "stale build prompt appears on Small and Large with zero new audit faults a
       )
     })
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("请升级到最新版本") is Some(_), msg=at)
-    assert_true(t.find("当前版本已超过 7 天，请尽快更新以免影响使用。") is Some(_), msg=at)
+    assert_true(t.find("当前版本已超过 7 天，点此升级到最新版本。") is Some(_), msg=at)
     assert_true(t.query(Button, label="立即更新") is Some(_), msg=at)
     let faults = added(t.audit())
     assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
 
-    // Ready state switches button to 重启更新 and applies update on press
+    // Ready state switches card title to 重启更新 and applies update on press
     t.tells_update("{\"phase\":\"ready\",\"percent\":100,\"error\":\"\",\"file\":\"stillfail-2000.zip\",\"away\":false}")
     t.run_for(@ui.move_most_ms)
     assert_true(t.query(Button, label="重启更新") is Some(_), msg=at)
@@ -52,16 +51,16 @@ test "stale build prompt appears on Small and Large with zero new audit faults a
     t.frame()
     assert_true(t.update_asked().contains("apply"), msg=at + ": " + t.update_asked().join(","))
 
-    // Allow state switches button to 允许安装更新 and suppresses duplicate update_card_node
+    // Allow state switches card title to 允许安装更新 and suppresses duplicate update_card_node
     t.tells_update("{\"phase\":\"allow\",\"percent\":-1,\"error\":\"\",\"file\":\"stillfail-2000.zip\",\"away\":true}")
     t.run_for(@ui.move_most_ms)
     assert_true(t.query(Button, label="允许安装更新") is Some(_), msg=at)
     assert_true(!@sfpages.update_card_shown(), msg=at + ": duplicate allow card must be suppressed")
 
-    // Coming state shows progress and button switches to 查看进度
+    // Coming state shows progress and card title switches to 查看更新进度
     t.tells_update("{\"phase\":\"downloading\",\"percent\":45,\"error\":\"\",\"file\":\"stillfail-2000.zip\",\"away\":false}")
     t.run_for(@ui.move_most_ms)
-    assert_true(t.query(Button, label="查看进度") is Some(_), msg=at)
+    assert_true(t.query(Button, label="查看更新进度") is Some(_), msg=at)
   }
 }
 
@@ -72,7 +71,7 @@ test "stale build prompt on iOS (no update source) opens TestFlight via itms-bet
     update_version.val = 0
   })
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("当前版本已超过 7 天，请在 TestFlight 中更新。") is Some(_))
+  assert_true(t.find("当前版本已超过 7 天，点此前往 TestFlight 更新。") is Some(_))
   assert_true(t.query(Button, label="打开 TestFlight") is Some(_))
   t.click(Button, label="打开 TestFlight")
   t.frame()
@@ -86,9 +85,9 @@ test "stale build prompt on Web reloads the page via update_apply" {
     update_version.val = 0
   })
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("当前页面版本已超过 7 天，请刷新以使用最新版本。") is Some(_))
-  assert_true(t.query(Button, label="刷新页面") is Some(_))
-  t.click(Button, label="刷新页面")
+  assert_true(t.find("当前版本已超过 7 天，点此刷新页面加载最新版本。") is Some(_))
+  assert_true(t.query(Button, label="刷新以更新") is Some(_))
+  t.click(Button, label="刷新以更新")
   t.frame()
   assert_true(t.update_asked().contains("apply"), msg=t.update_asked().join(","))
 }

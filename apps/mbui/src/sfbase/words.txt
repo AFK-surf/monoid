@@ -1315,7 +1315,6 @@ web-main.staleBuild.reloadPage
 web-main.staleBuild.sidebar
 web-main.staleBuild.sidebarIos
 web-main.staleBuild.sidebarWeb
-web-main.staleBuild.title
 web-main.staleBuild.updateNow
 web-main.staleBuild.viewProgress
 web-main.staleBuild.web
