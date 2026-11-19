@@ -585,8 +585,9 @@ async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
     }
     self.set_running(a, false)
     let resume = self.words(a, "RESUME_AFTER_RESTART")
-    self.start_turn(a, "resume", if d.text == "" { resume } else { resume + "\n\n" + d.text })
-    self.delivered(a, d)
+    self.start_turn(a, "resume", if d.text == "" { resume } else { resume + "\n\n" + d.text }, delivery=Some(d))
+    // (marked delivered by `start_turn_body` before it was written to the runtime, as `pump`'s)
+    ignore(self.store(a, "markWidgetModelsTold", [jstr(a.key), d.widgets]))
   })
   Json::null()
 }
