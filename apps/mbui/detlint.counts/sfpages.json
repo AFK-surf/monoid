@@ -1,0 +1,124 @@
+{
+  "counts": {
+    "page-look": {
+      "src/sfpages/appearance.mbt": 1,
+      "src/sfpages/connects.mbt": 8,
+      "src/sfpages/local_station.mbt": 4,
+      "src/sfpages/memory_doc.mbt": 2,
+      "src/sfpages/new_connect.mbt": 6,
+      "src/sfpages/notifications.mbt": 2,
+      "src/sfpages/permissions.mbt": 8,
+      "src/sfpages/security.mbt": 6,
+      "src/sfpages/slack_app.mbt": 3,
+      "src/sfpages/vault_dialogs.mbt": 6,
+      "src/sfpages/vault_item.mbt": 3
+    },
+    "layout-read-back": {
+      "src/sfpages/chat_ref.mbt": 1,
+      "src/sfpages/composer.mbt": 1,
+      "src/sfpages/hover.mbt": 4,
+      "src/sfpages/message.mbt": 1,
+      "src/sfpages/message_files.mbt": 1
+    },
+    "ui-current": {
+      "src/sfpages/search.mbt": 2
+    },
+    "build-motion": {
+      "src/sfpages/chat_mark.mbt": 1,
+      "src/sfpages/chat_row.mbt": 4,
+      "src/sfpages/chat_rows.mbt": 3,
+      "src/sfpages/composer.mbt": 4,
+      "src/sfpages/hover.mbt": 4,
+      "src/sfpages/message.mbt": 3,
+      "src/sfpages/message_files.mbt": 2
+    },
+    "old-list": {
+      "src/sfpages/chat_list.mbt": 1,
+      "src/sfpages/new_chat.mbt": 1
+    },
+    "list-comes-off": {
+      "src/sfpages/history_steps_node.mbt": 1
+    },
+    "submitted-read": {
+      "src/sfpages/chat_row.mbt": 1,
+      "src/sfpages/login_card.mbt": 1
+    },
+    "pick-loop": {
+      "src/sfpages/accounts.mbt": 1,
+      "src/sfpages/attach.mbt": 1,
+      "src/sfpages/automatic_decisions.mbt": 2,
+      "src/sfpages/history_steps_node.mbt": 2,
+      "src/sfpages/resources_node.mbt": 1,
+      "src/sfpages/sidebar_node.mbt": 1,
+      "src/sfpages/usage_node.mbt": 2,
+      "src/sfpages/workspace.mbt": 1
+    },
+    "each-min-height": {
+      "src/sfpages/usage_node.mbt": 1
+    },
+    "layout-drawn-while": {
+      "src/sfpages/board_node.mbt": 1
+    },
+    "reused-untracked-key": {
+      "src/sfpages/sidebar_node.mbt": 1,
+      "src/sfpages/things.mbt": 1
+    },
+    "page-at-moment": {
+      "src/sfpages/about.mbt": 1,
+      "src/sfpages/activity_steady_node.mbt": 1,
+      "src/sfpages/agent_card_node.mbt": 1,
+      "src/sfpages/automatic_decisions.mbt": 1,
+      "src/sfpages/board_node.mbt": 7,
+      "src/sfpages/chat_body_node.mbt": 5,
+      "src/sfpages/chat_jump_node.mbt": 2,
+      "src/sfpages/chat_read_node.mbt": 1,
+      "src/sfpages/chat_row_node.mbt": 5,
+      "src/sfpages/composer_node.mbt": 2,
+      "src/sfpages/drive_views_node.mbt": 1,
+      "src/sfpages/find_bar_node.mbt": 1,
+      "src/sfpages/font_setting.mbt": 1,
+      "src/sfpages/history_steps_node.mbt": 2,
+      "src/sfpages/local_station.mbt": 1,
+      "src/sfpages/message_media_node.mbt": 1,
+      "src/sfpages/message_notice_node.mbt": 1,
+      "src/sfpages/message_viz_node.mbt": 1,
+      "src/sfpages/message_working_node.mbt": 1,
+      "src/sfpages/model_triple.mbt": 2,
+      "src/sfpages/new_profile.mbt": 1,
+      "src/sfpages/outline.mbt": 3,
+      "src/sfpages/presets.mbt": 1,
+      "src/sfpages/publish.mbt": 4,
+      "src/sfpages/screen_bars_node.mbt": 1,
+      "src/sfpages/screen_debug_node.mbt": 3,
+      "src/sfpages/screen_panel.mbt": 1,
+      "src/sfpages/screen_passkey.mbt": 1,
+      "src/sfpages/screen_stage.mbt": 4,
+      "src/sfpages/screen_view.mbt": 4,
+      "src/sfpages/search.mbt": 1,
+      "src/sfpages/sidebar_node.mbt": 2,
+      "src/sfpages/station_node.mbt": 1,
+      "src/sfpages/terminal_view_node.mbt": 2,
+      "src/sfpages/vault.mbt": 1
+    },
+    "page-headless": {
+      "src/sfpages/board_node.mbt": 2,
+      "src/sfpages/composer_node.mbt": 2
+    },
+    "page-control-by-hand": {
+      "src/sfpages/board_node.mbt": 2,
+      "src/sfpages/chat_row_node.mbt": 1,
+      "src/sfpages/drive_row_node.mbt": 1,
+      "src/sfpages/history_steps_node.mbt": 1,
+      "src/sfpages/model_triple.mbt": 2,
+      "src/sfpages/new_chat.mbt": 1
+    }
+  },
+  "excused": {
+    "layout-read-back": {
+      "src/sfpages/search_marks.mbt": 1
+    },
+    "motion-length": {
+      "src/sfpages/composer.mbt": 2
+    }
+  }
+}

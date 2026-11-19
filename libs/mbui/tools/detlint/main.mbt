@@ -10,7 +10,10 @@
 // The bar (a ratchet): detlint.json keeps each rule's count of findings, file by file, and each file is held to its
 // own: one more in any file fails (a finding moved to another file too), naming it and its lines; fewer fails too,
 // until --update lowers the bar (the migration's own commit: what was moved off stays off). A rule whose bar is 0 is
-// simply forbidden. says each rule; rule_words (rules.mbt) is what a failure prints.
+// simply forbidden. says each rule; rule_words (rules.mbt) is what a failure prints. When detlint.json sets
+// `counts_dir` (e.g. `"detlint.counts"`), `rules` lists the baselined rules in detlint.json and each package's or
+// top-level directory's non-zero counts and excused entries live in `<counts_dir>/<shard>.json`, so changes in
+// different packages never edit the same bar file.
 //
 // An exception is written on the line itself or on the line above it, with its reason:
 //
@@ -294,6 +297,7 @@ fn sources(root : String, cfg : Config) -> Array[(String, String)] {
       if @sys.is_dir(path) {
         if !n.has_prefix(".") &&
           !["_build", "node_modules", "target", ".mooncakes", "out"].contains(n) &&
+          (cfg.counts_dir == "" || rel != cfg.counts_dir) &&
           !matches(rel, cfg.skip) &&
           !@sys.is_link(path) { // (os.walk lists a link to a directory but does not go in)
           dirs.push(rel)
@@ -568,6 +572,272 @@ fn bar_of(conf : @rjson.Value, sect_name : String, rule : String) -> Counts? {
 }
 
 ///|
+/// Which shard file holds a path's bar under `counts_dir`: `src/<pkg>/…` -> `<pkg>`, `<dir>/…` -> `<dir>`, else `_root`
+fn shard_of(rel : String) -> String {
+  let parts = rel.split("/").map(fn(s) { s.to_owned() }).to_array()
+  if parts.length() >= 3 &&
+    parts[0] == "src" &&
+    parts[1] != "" &&
+    parts[1] != "." &&
+    parts[1] != ".." {
+    parts[1]
+  } else if parts.length() >= 2 &&
+    parts[0] != "" &&
+    parts[0] != "." &&
+    parts[0] != ".." {
+    parts[0]
+  } else {
+    "_root"
+  }
+}
+
+///|
+/// Read and validate `counts_dir` from detlint.json: (ok, dir_rel), where "" means unsharded inline counts
+fn counts_dir_of(conf : @rjson.Value, err : Array[String]) -> (Bool, String) {
+  match conf.get("counts_dir") {
+    None | Some(Null) => (true, "")
+    Some(Str(raw)) => {
+      let mut dir = raw
+      while dir.has_suffix("/") && dir.length() > 0 {
+        dir = dir.exact_view(end=dir.length() - 1).to_owned()
+      }
+      if dir == "" || dir.has_prefix("/") {
+        err.push("detlint: detlint.json: invalid counts_dir: \{raw}")
+        return (false, "")
+      }
+      for seg in dir.split("/") {
+        let seg = seg.to_owned()
+        if seg == "" || seg == "." || seg == ".." {
+          err.push("detlint: detlint.json: invalid counts_dir: \{raw}")
+          return (false, "")
+        }
+      }
+      (true, dir)
+    }
+    Some(_) => {
+      err.push("detlint: detlint.json: counts_dir must be a string")
+      (false, "")
+    }
+  }
+}
+
+///|
+/// All rule bars loaded from detlint.json (either inline or merged from counts_dir shards); absent key means no bar yet
+priv struct Bars {
+  counts : Map[String, Counts]
+  excused : Map[String, Counts]
+}
+
+///|
+fn load_bars(
+  root : String,
+  conf : @rjson.Value,
+  counts_dir : String,
+  err : Array[String],
+) -> Bars? {
+  let counts : Map[String, Counts] = Map([])
+  let excused : Map[String, Counts] = Map([])
+  if counts_dir == "" {
+    for r in rule_names {
+      match bar_of(conf, "counts", r) {
+        Some(bf) => {
+          counts[r] = bf
+          excused[r] = bar_of(conf, "excused", r).unwrap_or(Counts::new())
+        }
+        None => ()
+      }
+    }
+    return Some({ counts, excused })
+  }
+  match conf.get("counts") {
+    None | Some(Null) => ()
+    Some(_) => {
+      err.push("detlint: detlint.json: counts_dir cannot be combined with inline counts")
+      return None
+    }
+  }
+  match conf.get("excused") {
+    None | Some(Null) => ()
+    Some(_) => {
+      err.push("detlint: detlint.json: counts_dir cannot be combined with inline excused")
+      return None
+    }
+  }
+  match conf.get("rules") {
+    None | Some(Null) => ()
+    Some(Arr(rs)) =>
+      for x in rs {
+        match x {
+          Str(r) => {
+            counts[r] = Counts::new()
+            excused[r] = Counts::new()
+          }
+          _ => {
+            err.push("detlint: detlint.json: rules must be strings")
+            return None
+          }
+        }
+      }
+    Some(_) => {
+      err.push("detlint: detlint.json: rules must be an array")
+      return None
+    }
+  }
+  let dir_path = @sys.join(root, counts_dir)
+  if @sys.exists(dir_path) && !@sys.is_dir(dir_path) {
+    err.push("detlint: \{counts_dir} is not a directory")
+    return None
+  }
+  if @sys.is_dir(dir_path) {
+    for name in sorted(@sys.list_dir(dir_path)) {
+      if !name.has_suffix(".json") {
+        continue
+      }
+      let shard = name.exact_view(end=name.length() - 5).to_owned()
+      let file_path = @sys.join(dir_path, name)
+      let rel_shard = counts_dir + "/" + name
+      let val = @rjson.parse(read(file_path)) catch {
+        @rjson.JsonError(e) => {
+          err.push("detlint: \{rel_shard}: \{e}")
+          return None
+        }
+      }
+      match val {
+        Obj(_) => ()
+        _ => {
+          err.push("detlint: \{rel_shard}: expected a JSON object")
+          return None
+        }
+      }
+      for sect_info in [("counts", counts), ("excused", excused)] {
+        let (sect_name, dest) = sect_info
+        match val.get(sect_name) {
+          None | Some(Null) => ()
+          Some(Obj(rules_kv)) =>
+            for rk in rules_kv {
+              let (rule, rval) = rk
+              match rval {
+                Obj(files_kv) =>
+                  for fk in files_kv {
+                    let (file, nval) = fk
+                    let expected = shard_of(file)
+                    if expected != shard {
+                      err.push(
+                        "detlint: \{rel_shard}: \{file} belongs in \{counts_dir}/\{expected}.json",
+                      )
+                      return None
+                    }
+                    match nval {
+                      Num(n) =>
+                        match dest.get(rule) {
+                          Some(c) => c.m[file] = parse_int(n)
+                          None => ()
+                        }
+                      _ => {
+                        err.push("detlint: \{rel_shard}: \{rule} \{file}: count must be a number")
+                        return None
+                      }
+                    }
+                  }
+                _ => {
+                  err.push("detlint: \{rel_shard}: \{sect_name}.\{rule} must be an object")
+                  return None
+                }
+              }
+            }
+          Some(_) => {
+            err.push("detlint: \{rel_shard}: \{sect_name} must be an object")
+            return None
+          }
+        }
+      }
+    }
+  }
+  Some({ counts, excused })
+}
+
+///|
+fn write_sharded_bars(
+  root : String,
+  conf_path : String,
+  conf : @rjson.Value,
+  counts_dir : String,
+  nf_by_rule : Map[String, Counts],
+  ne_by_rule : Map[String, Counts],
+) -> Unit {
+  let shard_set : Map[String, Unit] = Map([])
+  for r in rule_names {
+    for p, v in nf_by_rule[r].m {
+      if v != 0 {
+        shard_set[shard_of(p)] = ()
+      }
+    }
+    for p, v in ne_by_rule[r].m {
+      if v != 0 {
+        shard_set[shard_of(p)] = ()
+      }
+    }
+  }
+  let dir_path = @sys.join(root, counts_dir)
+  let active_shards = sorted(shard_set.keys().collect())
+  if active_shards.length() > 0 {
+    @sys.makedirs(dir_path)
+  }
+  for shard in active_shards {
+    let scounts = []
+    let sexc = []
+    for r in rule_names {
+      let cobj = []
+      for p in sorted(nf_by_rule[r].m.keys().collect()) {
+        if nf_by_rule[r].at(p) != 0 && shard_of(p) == shard {
+          cobj.push((p, @rjson.Value::Num(nf_by_rule[r].at(p).to_string())))
+        }
+      }
+      if cobj.length() > 0 {
+        scounts.push((r, @rjson.Value::Obj(cobj)))
+      }
+      let eobj = []
+      for p in sorted(ne_by_rule[r].m.keys().collect()) {
+        if ne_by_rule[r].at(p) != 0 && shard_of(p) == shard {
+          eobj.push((p, @rjson.Value::Num(ne_by_rule[r].at(p).to_string())))
+        }
+      }
+      if eobj.length() > 0 {
+        sexc.push((r, @rjson.Value::Obj(eobj)))
+      }
+    }
+    let fields : Array[(String, @rjson.Value)] = []
+    if scounts.length() > 0 {
+      fields.push(("counts", @rjson.Value::Obj(scounts)))
+    }
+    if sexc.length() > 0 {
+      fields.push(("excused", @rjson.Value::Obj(sexc)))
+    }
+    let text = @rjson.dumps(@rjson.Value::Obj(fields), ensure_ascii=false, indent=2) + "\n"
+    let file_path = @sys.join(dir_path, shard + ".json")
+    if @sys.read_text(file_path) != Some(text) {
+      let _ = @sys.write_text(file_path, text)
+    }
+  }
+  if @sys.is_dir(dir_path) {
+    for name in sorted(@sys.list_dir(dir_path)) {
+      if name.has_suffix(".json") {
+        let shard = name.exact_view(end=name.length() - 5).to_owned()
+        if !shard_set.contains(shard) {
+          let _ = @sys.remove(@sys.join(dir_path, name))
+        }
+      }
+    }
+  }
+  let rules_val = @rjson.Value::Arr(rule_names.map(fn(r) { @rjson.Value::Str(r) }))
+  let new_conf = conf.set("rules", rules_val)
+  let new_conf_text = @rjson.dumps(new_conf, ensure_ascii=false, indent=2) + "\n"
+  if @sys.read_text(conf_path) != Some(new_conf_text) {
+    let _ = @sys.write_text(conf_path, new_conf_text)
+  }
+}
+
+///|
 fn pad_right(s : String, w : Int) -> String {
   let n = s.to_array().length()
   if n >= w {
@@ -621,6 +891,10 @@ fn run(argv : Array[String], out : Array[String], err : Array[String]) -> Int {
       return 2
     }
   }
+  let (cdir_ok, counts_dir) = counts_dir_of(conf, err)
+  if !cdir_ok {
+    return 2
+  }
   let cfg = Config::new(conf)
   let findings = collect(root, cfg)
   if flags.contains("--list") {
@@ -654,6 +928,10 @@ fn run(argv : Array[String], out : Array[String], err : Array[String]) -> Int {
     }
     return 0
   }
+  let bars = match load_bars(root, conf, counts_dir, err) {
+    Some(b) => b
+    None => return 2
+  }
   let found = tally(findings, false)
   let excused = tally(findings, true)
   let update = flags.search_by(fn(a) { a.has_prefix("--update") }).map(fn(i) { flags[i] })
@@ -661,6 +939,8 @@ fn run(argv : Array[String], out : Array[String], err : Array[String]) -> Int {
     Some(update) => {
       let counts = []
       let exc = []
+      let nf_by_rule : Map[String, Counts] = Map([])
+      let ne_by_rule : Map[String, Counts] = Map([])
       let summary = []
       for r in rule_names {
         let nf = Counts::new()
@@ -671,9 +951,9 @@ fn run(argv : Array[String], out : Array[String], err : Array[String]) -> Int {
         for k, v in excused[r].m {
           ne.m[k] = v
         }
-        match bar_of(conf, "counts", r) {
+        match bars.counts.get(r) {
           Some(bf) if update != "--update=raise" => {
-            let be = bar_of(conf, "excused", r).unwrap_or(Counts::new())
+            let be = bars.excused.get(r).unwrap_or(Counts::new())
             for o in over(found[r], excused[r], bf, be, r) {
               let (p, f, b, fe, bfe) = o
               err.push(
@@ -685,6 +965,8 @@ fn run(argv : Array[String], out : Array[String], err : Array[String]) -> Int {
           }
           _ => ()
         }
+        nf_by_rule[r] = nf
+        ne_by_rule[r] = ne
         let cobj = []
         for p in sorted(nf.m.keys().collect()) {
           if nf.at(p) != 0 {
@@ -703,11 +985,15 @@ fn run(argv : Array[String], out : Array[String], err : Array[String]) -> Int {
         let et = ne.total()
         summary.push("\{r} \{ct}" + (if eobj.length() > 0 { " (+\{et} det-ok)" } else { "" }))
       }
-      let conf = conf.set("counts", Obj(counts)).set("excused", Obj(exc))
-      let _ = @sys.write_text(
-        conf_path,
-        @rjson.dumps(conf, ensure_ascii=false, indent=2) + "\n",
-      )
+      if counts_dir == "" {
+        let conf = conf.set("counts", Obj(counts)).set("excused", Obj(exc))
+        let _ = @sys.write_text(
+          conf_path,
+          @rjson.dumps(conf, ensure_ascii=false, indent=2) + "\n",
+        )
+      } else {
+        write_sharded_bars(root, conf_path, conf, counts_dir, nf_by_rule, ne_by_rule)
+      }
       out.push("detlint: bars written: " + summary.join(", "))
       return 0
     }
@@ -722,14 +1008,14 @@ fn run(argv : Array[String], out : Array[String], err : Array[String]) -> Int {
     let ce = excused[r]
     let notes = []
     let mut line = "  \{pad_right(r, 14)} \{pad_left(cf.total().to_string(), 5)} / "
-    match bar_of(conf, "counts", r) {
+    match bars.counts.get(r) {
       None => {
         bad = true
         line = line + "-"
         notes.push("    \{r}: no bar in detlint.json (scripts/detlint --update)")
       }
       Some(bf) => {
-        let be = bar_of(conf, "excused", r).unwrap_or(Counts::new())
+        let be = bars.excused.get(r).unwrap_or(Counts::new())
         line = line +
           "\{pad_right(bf.total().to_string(), 5)} \{pad_left(ce.total().to_string(), 4)} / \{pad_right(be.total().to_string(), 4)}"
         if bf.total() == 0 && be.total() == 0 {

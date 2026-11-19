@@ -1,0 +1,10 @@
+{
+  "counts": {
+    "at-rest-wait": {
+      "src/sfreplay/steps.mbt": 2
+    },
+    "motion-read": {
+      "src/sfreplay/steps.mbt": 1
+    }
+  }
+}

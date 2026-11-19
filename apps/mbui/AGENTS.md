@@ -382,8 +382,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 ## Time is declared
 
 - What the app shows is tested in the Tester (`src/sfapp`, `src/sfreplay` replaying recorded core tapes): walk to it,
-  say the moment, assert, as mbui's rules say. `detlint.json` (run with `libs/mbui/scripts/detlint`) counts the waits left
-  and only lets them fall.
+  say the moment, assert, as mbui's rules say. `detlint.json` and its per-package shards in `detlint.counts/` (run with
+  `libs/mbui/scripts/detlint`) count the waits left and only let them fall.
 - What the host gives the app as it runs (its window and scale, the system and its settings, its time zone) is kept in
   a recorded trace (`{"settings":…}`, mbui's `@ui.trace_settings`) and given back by its replay, never a default in its
   place: a trace without it is refused (`Flow::start`). A recording is made in UTC (`e2e/run.sh`). Traces kept before
