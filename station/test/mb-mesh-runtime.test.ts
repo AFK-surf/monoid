@@ -1789,6 +1789,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     for (const [bytes, name] of [[Buffer.from("hello"), "s2"], [Buffer.alloc(0), "s2"], [big, "s2"]] as const) {
       await both(`write ${bytes.length}`, () => tsStreams[2]!.write(bytes), "write", { bytes: hex(bytes) }, name);
     }
+    const live = await front("live");
     await both("finish", () => tsStreams[2]!.finish(), "finish", {}, "s2");
     await both("write after the finish", () => tsStreams[2]!.write(Buffer.from("x")), "write", { bytes: hex(Buffer.from("x")) }, "s2");
     // one this end opens; its stopping asked of the front
@@ -1811,6 +1812,10 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await there(tsFront);
     await there(mbFront);
     assert.deepEqual(framesOf(mbFront), framesOf(tsFront), "what reached the front");
+    // the finished stream's socket let go once the front ended its half too (as the front's Node socket does once it
+    // read the end), as Node lets a half-open socket go once both halves are over: the shell keeps one until it is
+    // told to close it, and 61k of them filled a station (2026-11-19)
+    await within("the finished stream's socket let go", front("live", { fewerThan: live }));
     // the connection closed at the other end
     tsFront.close(1);
     mbFront.close(1);
