@@ -407,7 +407,7 @@ pub fn composer(
     composing.had_focus[spec.draft] = true
   }
   let ours = composing.let_go.get(spec.draft).unwrap_or(false)
-  let lost_long = @kit.after(c, "composer/let-go/" + spec.draft, !active_focus && !w.field.parked() && !choosing_cache, let_go_ms)
+  let lost_long = c.held("composer/let-go/" + spec.draft, !active_focus && !w.field.parked() && !choosing_cache, let_go_ms)
   let held = ours && !active_focus && !lost_long
   // (the box it stayed a moment after the cursor left, let go of now: a change of its own, at this moment, whatever
   // words sent from it are doing meanwhile)
@@ -1119,7 +1119,7 @@ fn warm(c : @ui.Ctx, src : Source, spec : ComposerSpec) -> Unit {
     return
   }
   let n = composing.warmed.get(spec.session).unwrap_or(0)
-  if n > 0 && !@kit.after(c, "composer/warm/" + spec.session + "/\{n}", true, warm_every_ms, later=true) {
+  if n > 0 && !c.held("composer/warm/" + spec.session + "/\{n}", true, warm_every_ms, later=true) {
     return
   }
   composing.warmed[spec.session] = n + 1

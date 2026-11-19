@@ -15,10 +15,6 @@ priv struct KitState {
   /// a tooltip a finger held open on its trigger, until a moment after it is lifted or the next press: whether it has
   /// been lifted
   held_tips : Map[Int, Bool]
-  /// The last tooltip to show, shared by old views and nodes of the window's tree. It keeps the slot while leaving.
-  tip_owner : @signals.Signal[TipOwner?]
-  /// A different identity for each tooltip made as a node, even if several name the same anchor.
-  mut tip_next : Int
   /// Which ways an old view's tooltip was eligible to open, so an already displaced one does not take the slot back.
   tip_ready : Map[Int, TipReady]
   /// where what a popover, a hover card or a tooltip hangs on was drawn, by the panel's id (beside): kept while the
@@ -47,8 +43,6 @@ fn KitState::new() -> KitState {
     opens: {},
     shut: {},
     held_tips: {},
-    tip_owner: @signals.signal(None, same=fn(a, b) { a == b }),
-    tip_next: 0,
     tip_ready: {},
     anchors: {},
     toasts: {},
@@ -92,7 +86,11 @@ fn install() -> Unit {
     return
   }
   installed.val = true
-  @ui.on_reset(fn() { kit.val = KitState::new() })
+  @ui.on_reset(fn() {
+    kit.val = KitState::new()
+    // (the tooltip slot old views share with nodes: headless's, which knows no ui)
+    @headless.tip_slot_reset()
+  })
 }
 
 ///|

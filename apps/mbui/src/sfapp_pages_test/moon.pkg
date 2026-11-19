@@ -4,7 +4,6 @@ import {
   "mbui/halt",
   "mbui/headless",
   "mbui/hostapi",
-  "mbui/kit",
   "mbui/motion",
   "mbui/pixels",
   "mbui/signals",

@@ -8,6 +8,12 @@
 // set as the window's theme says as that changes.
 
 ///|
+fn init {
+  // (the window's tooltip slot, headless's, which knows no ui: forgotten as the app begins anew)
+  @ui.on_reset(@headless.tip_slot_reset)
+}
+
+///|
 /// Where a window's tips are drawn (a node over all of it, as it is given when a tip is first shown) and when the last
 /// of them went (another shown within tooltip_skip_ms of it at once: kit's tip_closed): one for the window's tree, made
 /// and let go with what holds it. `hands`: its tips handing their ground on, the next shown at once going from where
@@ -90,11 +96,11 @@ pub fn tip_node(
   // had gone), whether it is in whole yet, and the moment that says so: this showing's own, let go as it goes)
   let fade = TipFade::new()
   let anchor_id = anchor.id()
-  let owner = @kit.tip_node_owner()
+  let owner = @headless.tip_node_owner()
   // (its ground handed on among its layer's tips: seen while its slot is its own and some of it is in)
   let glide = tips.hands.part(
     fn(t) {
-      if @signals.untracked(fn() { @kit.tip_owns(owner) }) {
+      if @signals.untracked(fn() { @headless.tip_owns(owner) }) {
         fade.at(t)
       } else {
         0.0
@@ -113,7 +119,7 @@ pub fn tip_node(
     let holder = l.box(fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(anchor)
     holder_v.val = Some(holder)
     holder.on_key(fn(k) {
-      if k.code == @ui.key_escape && @signals.untracked(fn() { open.get() && @kit.tip_owns(owner) }) {
+      if k.code == @ui.key_escape && @signals.untracked(fn() { open.get() && @headless.tip_owns(owner) }) {
         (escaped.val)()
         true
       } else {
@@ -151,7 +157,7 @@ pub fn tip_node(
         made.val = make()
       }
       if made.val {
-        @kit.tip_claim(owner)
+        @headless.tip_claim(owner)
       }
       match taken {
         // (in whole at once, its ground going from where the other's was to its own place, its words with it)
@@ -218,7 +224,7 @@ pub fn tip_node(
     if made.val && open.untracked() && takes && says &&
       (held != Free || (!pressed && !shut.val)) &&
       ((over && !was_over) || (focused && !was_focused) || (held != Free && was_held == Free)) {
-      @kit.tip_claim(owner)
+      @headless.tip_claim(owner)
     }
     let at = anchor.cause_at()
     stop_rest()
@@ -422,7 +428,7 @@ fn tip_look_node(
   glide : @motion.HandPart,
   gap : Double,
   at_pointer : Bool,
-  owner : @kit.TipOwner,
+  owner : @headless.TipOwner,
   loc~ : SourceLoc,
 ) -> Unit {
   let theme = fn() { @ui.tree_theme() }
@@ -456,7 +462,7 @@ fn tip_look_node(
   // (its ground in first, its words after, as kit's tip_in and pop_out have them (ground_first): the ground the first
   // half of the way in, the words the second; going, the other way round)
   .alpha(By(fn() {
-    let a = if @kit.tip_owns(owner) { fade.shown(t) } else { 0.0 }
+    let a = if @headless.tip_owns(owner) { fade.shown(t) } else { 0.0 }
     if a * 2.0 < 1.0 {
       a * 2.0
     } else {
@@ -477,7 +483,7 @@ fn tip_look_node(
     about=@view.FromBeside,
   )
   .says(By(fn() { Some(@view.said(Tooltip, label=label())) }))
-  .hides(By(fn() { !@kit.tip_owns(owner) }))
+  .hides(By(fn() { !@headless.tip_owns(owner) }))
   |> ignore
   let words_look = fn(wrap : Bool) -> @view.WordsLook {
     let (size, line) = theme().text_size(Meta)

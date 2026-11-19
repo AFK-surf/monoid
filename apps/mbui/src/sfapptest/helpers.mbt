@@ -55,7 +55,7 @@ pub fn named(calls : Array[Made], name : String) -> Array[Made] {
 ///|
 pub fn sheet_rested(t : @ui.Tester, key : String) -> Unit {
   t.draw()
-  let e = if key == "sf-present" { @sf.presented_rest() } else { @kit.sheet_rest(key) }
+  let e = if key == "sf-present" { @sf.presented_rest() } else { -1.0 }
   if e > t.time() && e < 1.0e300 {
     t.run_for(e - t.time())
   }

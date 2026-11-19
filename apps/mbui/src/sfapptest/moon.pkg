@@ -1,6 +1,5 @@
 import {
   "mbui/hostapi",
-  "mbui/kit",
   "mbui/ui",
   "moonbitlang/core/cmp",
   "moonbitlang/core/json",

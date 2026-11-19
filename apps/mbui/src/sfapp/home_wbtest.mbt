@@ -177,7 +177,7 @@ test "hiding a running chat leaves it in the hidden list, where it can be restor
   t.frame()
   t.tap_text("关闭提醒")
   // (its notice gone: over the foot of the menu held open next, where 隐藏 is)
-  t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   let (x, y) = t.find("整理发布清单").unwrap()
   t.press_at(x, y)
   t.run_for(@ui.tap_indication_ms + @sfpages.hold_ms)
@@ -186,7 +186,7 @@ test "hiding a running chat leaves it in the hidden list, where it can be restor
   assert_true(t.find("开启提醒") is Some(_))
   t.tap_text("隐藏")
   // (its notice, with its 撤销, gone: over the foot of the menu held open next, where 取消隐藏 is)
-  t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   assert_true(t.find("整理发布清单") is None)
   tap_home_filter(t)
   t.tap_text("已隐藏")
@@ -255,7 +255,7 @@ test "small screen home: a long workspace name gives way to syncing and transfer
     },
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=320.0, h=740.0, platform=2)
-  t.run_for(@sf.later_ms + @kit.presence_in_ms)
+  t.run_for(@sf.later_ms + @motion.presence_in_ms)
   let (fx, _, fw, _) = t.query(Button, label="筛选会话：全部").unwrap().rect
   let (sync_x, _, sync_w, _) = t.query(Status, label="正在同步 · 还剩 12 个对话").unwrap().rect
   let (tx, _, tw, _) = t.query(Button, label="1 个传输 · 2%").unwrap().rect
@@ -970,7 +970,7 @@ test "a toast with 撤销 stays its longer time; one without, its 2.6 s" {
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("关闭提醒")
-  t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("隐藏")
@@ -988,7 +988,7 @@ test "a toast with 撤销 stays its longer time; one without, its 2.6 s" {
 fn rested_toast(t : @ui.Tester, words : String, action : String) -> ((Double, Double, Double, Double), (Double, Double, Double, Double)?) raise {
   @sfbase.toast_later(words, action~)
   t.frame()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let toast = match t.query(Status, label=words) {
     Some(n) => n.rect
     None => fail("no toast saying \{words}")
@@ -1003,7 +1003,7 @@ test "a toast is a capsule while its words fit a line; its 撤销 a capsule in i
     let t = if wide { wide_tester(calls) } else { wide_tester(calls, w=390.0, h=844.0, platform=2) }
     let (bare, _) = rested_toast(t, "已复制", "")
     assert_true((bare.3 - 2.0 * @sf.toast_r).abs() < 0.5, msg="\{wide} \{Repr(bare)}")
-    t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_ms + @motion.presence_out_ms)
     let ((x, y, w, h), button) = rested_toast(t, "已归档", "撤销")
     let (bx, by, bw, bh) = button.unwrap()
     // as high as one without; its button as far from its top, foot and end as its corner has a capsule that high
@@ -1063,7 +1063,7 @@ test "a toast naming a long title with its 撤销: inside the screen, its 撤销
     let (bx, by, bw, bh) = button.unwrap()
     assert_true(x >= 0.0 && x + tw <= w, msg="\{wide} \{x} \{tw}")
     assert_true(bx >= x && bx + bw <= x + tw && by >= y && by + bh <= y + th, msg="\{wide} \{Repr(button)}")
-    t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   }
 }
 
@@ -1085,7 +1085,7 @@ test "a toast clear of the system's bars over the window: over its foot's, besid
     assert_true(x >= left - 0.5 && x + tw <= w - right + 0.5, msg~)
     // (in the middle of what the bars leave)
     assert_true((x - left - (w - right - (x + tw))).abs() < 1.0, msg~)
-    t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   }
 }
 
@@ -1107,7 +1107,7 @@ test "a toast naming a long title with its 撤销, the system's bars down the wi
     assert_true(w - left - right - 32.0 < @sf.toast_max, msg~)
     assert_true(x >= left + 16.0 - 0.5 && x + tw <= w - right - 16.0 + 0.5, msg~)
     assert_true(bx >= x && bx + bw <= x + tw && by >= y && by + bh <= y + th, msg="\{msg} \{Repr(button)}")
-    t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   }
 }
 
@@ -1121,7 +1121,7 @@ test "a toast naming a title that wraps: its 撤销 whole, as wide as beside a s
     let (_, short) = rested_toast(t, "已归档", "撤销")
     let (_, _, short_w, _) = short.unwrap()
     let short_words = t.words().filter(fn(w) { w.0 == "撤销" })[0].3
-    t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+    t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
     for words in [
         "已归档「office-mac-host-2 卡顿排查」",
         "已归档「把首页对话列表改成按天分组并且在每一组的标题里写上那天的日期和星期几，再把置顶的对话单独放在最上面」",
@@ -1134,7 +1134,7 @@ test "a toast naming a title that wraps: its 撤销 whole, as wide as beside a s
       let drawn = t.words().filter(fn(w) { w.0 == "撤销" })
       assert_eq(drawn.length(), 1)
       assert_true((drawn[0].3 - short_words).abs() < 0.5, msg="\{wide} \{words} \{drawn[0].3} \{short_words}")
-      t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+      t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
     }
   }
 }
@@ -1336,11 +1336,11 @@ test "the only row of the list in view archived from its row: no line kept for i
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("关闭提醒")
-  t.run_for(@sf.toast_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_ms + @motion.presence_out_ms)
   hold_row(t, "整理发布清单")
   t.frame()
   t.tap_text("隐藏")
-  t.run_for(@sf.toast_action_ms + @kit.presence_out_ms)
+  t.run_for(@sf.toast_action_ms + @motion.presence_out_ms)
   tap_home_filter(t)
   t.tap_text("已隐藏")
   t.run_for(@ui.move_most_ms)
@@ -1403,7 +1403,7 @@ test "the workspaces' sheet: more workspaces than it holds are reached by scroll
     },
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  t.run_for(@sf.later_ms + @kit.presence_in_ms)
+  t.run_for(@sf.later_ms + @motion.presence_in_ms)
   t.tap_text("工作区 1")
   presented_rested(t)
   assert_true(@sf.presenting())

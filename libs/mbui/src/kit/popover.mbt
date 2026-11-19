@@ -222,38 +222,6 @@ fn latest(at : Array[Double]) -> Double {
 let tip_closed : Int = @ui.stable_hash("kit/tooltip closed").to_int()
 
 ///|
-/// A tooltip in an old view or at a node of the window's tree. Both share the same visible slot.
-#derive(Eq, Debug)
-pub(all) enum TipOwner {
-  Built(Int)
-  Node(Int)
-}
-
-///|
-/// A fresh identity for a tooltip made with a node. Two tips may name the same anchor.
-pub fn tip_node_owner() -> TipOwner {
-  install()
-  kit.val.tip_next = kit.val.tip_next + 1
-  Node(kit.val.tip_next)
-}
-
-///|
-/// Give the window's tooltip slot to `owner` as it is newly shown. The views and nodes that read it follow the signal.
-pub fn tip_claim(owner : TipOwner) -> Unit {
-  install()
-  if kit.val.tip_owner.untracked() != Some(owner) {
-    kit.val.tip_owner.set(Some(owner))
-  }
-}
-
-///|
-/// Whether `owner` holds the window's tooltip slot (followed by a node drawing its tooltip).
-pub fn tip_owns(owner : TipOwner) -> Bool {
-  install()
-  kit.val.tip_owner.get() == Some(owner)
-}
-
-///|
 /// An old view's last opening causes, kept while what builds the tooltip is built (forgotten as it is no longer:
 /// @ui.Ctx::on_unbuilt; come again, each of them is a new cause).
 priv struct TipReady {
@@ -345,14 +313,14 @@ pub fn tooltip(
   let (old_focus, old_rest, old_held, old_shown) = state.causes
   let (by_focus, by_rest, by_hand, by_app) = ready
   if (by_focus && !old_focus) || (by_rest && !old_rest) || (by_hand && !old_held) || (by_app && !old_shown) {
-    tip_claim(Built(id))
+    @headless.tip_claim(@headless.TipOwner::Built(id))
   }
   state.causes = ready
-  let owner = Built(id)
-  let mut open = (shown || held || (!shut && (focused || rested || (was && hovered)))) && tip_owns(owner)
+  let owner = @headless.TipOwner::Built(id)
+  let mut open = (shown || held || (!shut && (focused || rested || (was && hovered)))) && @headless.tip_owns(owner)
   if @motion.presence_by(c, "\u{2}pop/" + key, open, initial=true, enter=tip_in, exit=pop_out) is Some(shows) {
     // A previous tooltip may finish its exit only until another claims the slot: never paint two at once.
-    if tip_owns(owner) {
+    if @headless.tip_owns(owner) {
       // (the system's back goes on to what is under it: a tip only says what the pointer rests on, no place to leave)
       let o = c.overlay(key, anchor=trigger, outside=false, back=false, initial_focus=0, inert=!open, fn() {
         beside(c, key, trigger, side, along, offset, Some(shows), Tooltip, text, fn(c, s, _) { look(c, s, text) }, fn() {  }, at?=at)

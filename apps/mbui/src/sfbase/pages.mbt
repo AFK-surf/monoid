@@ -1342,7 +1342,7 @@ pub(all) struct App {
   mut menu : Bool
   /// a place switched to on the bar: from which side (1 from the right, -1 the left, 0 from no side)
   mut switch_way : Int
-  /// a row held: its id, and whether it has been held long (its time on @kit.after)
+  /// a row held: its id, and whether it has been held long (its time on Ctx::held)
   mut held : Int
   mut held_long : Bool
   /// what was said last of a write (a toast): its words, which saying it is (one said again is a new one), what it

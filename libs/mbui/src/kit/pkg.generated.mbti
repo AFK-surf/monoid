@@ -284,13 +284,7 @@ pub fn text_field(@ui.Ctx, String, placeholder? : String, shorter? : Array[Strin
 
 pub fn tinted(@ui.Ctx, Int64, Bool, Bool) -> Int64
 
-pub fn tip_claim(TipOwner) -> Unit
-
 pub let tip_in : @motion.Trans
-
-pub fn tip_node_owner() -> TipOwner
-
-pub fn tip_owns(TipOwner) -> Bool
 
 pub fn toast(String, String, description? : String, action? : String) -> Toast
 
@@ -605,12 +599,6 @@ pub(all) struct SwitchState {
   held : Double
   focus_shown : Bool
   disabled : Bool
-}
-
-#derive(Eq, @debug.Debug)
-pub(all) enum TipOwner {
-  Built(Int32)
-  Node(Int32)
 }
 
 #derive(Eq, @debug.Debug)

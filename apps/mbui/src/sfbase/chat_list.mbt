@@ -2206,7 +2206,7 @@ pub fn flash_of(c : @ui.Ctx, rd : Reading, ts : String) -> Double {
     return 1.0
   }
   if @ui.reduced_motion() {
-    return if @kit.after(c, "chat-flash/\{rd.flash_n}", true, flash_ms) { 0.0 } else { 1.0 }
+    return if c.held("chat-flash/\{rd.flash_n}", true, flash_ms) { 0.0 } else { 1.0 }
   }
   rd.flash_lit.get(c)
 }

@@ -362,7 +362,7 @@ test "its agent's cache over: the current choice opens the choices and changing 
     t.click(MenuItemRadio, label="接着聊")
     t.draw()
     assert_eq(named(calls, "session.settings").length(), 0, msg="the one taken: nothing to ask")
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     t.click(Button, label="接着聊")
     t.click(MenuItemRadio, label="换新上下文")
     t.draw()
@@ -892,7 +892,7 @@ test "a chat linked to one Slack thread: 抄送 while writing opens it to tick, 
     t.draw()
     // (made as nodes, the menu going out on its way: pop_out_ms, menu_node's)
     if both_nodes.val {
-      t.run_for(@kit.pop_out_ms)
+      t.run_for(@motion.pop_out_ms)
     }
     // one: closed once ticked
     assert_true(t.find("#still-fail") is None, msg=t.words().map(fn(x) { x.0 }).join("|"))

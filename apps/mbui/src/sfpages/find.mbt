@@ -443,7 +443,7 @@ pub fn find_bar(c : @ui.Ctx, src : Source, r : ChatRef, thread : Double, list : 
       finding.query = typed
       // looked for 120 ms after the last key; none typed, nothing found at once
       if typed != finding.asked.get() &&
-        (typed.trim(chars=" ").is_empty() || @kit.after(c, "find/typing/" + typed, true, find_typing_ms)) {
+        (typed.trim(chars=" ").is_empty() || c.held("find/typing/" + typed, true, find_typing_ms)) {
         // (asked once the frame's builds are over)
         finding.asked.set(typed)
         c.tell("find/ask/" + typed, fn() { find_ask(src, r.station, thread, key, list, typed) })

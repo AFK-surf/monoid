@@ -102,7 +102,7 @@ test "a link in a message left still on a phone, held by a finger: its menu, no 
   t.release(x + w / 2.0, y + h / 2.0)
   assert_eq(t.opened().length(), 0)
   // (its menu, the presenters': a sheet with a finger, in)
-  t.run_for(@kit.sheet_rest("sf-present") - t.time())
+  t.run_for(@sf.presented_rest() - t.time())
   let came = t.words().map(fn(w) { w.0 })
   assert_true(came.contains("打开链接") && came.contains("复制链接"), msg="\{Repr(came)}")
   assert_eq(t.haptics(), [@ui.Haptic::LongPress])

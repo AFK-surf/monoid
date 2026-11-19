@@ -195,7 +195,7 @@ pub fn chat_row(
     _ => ()
   }
   // held by a finger a while: its time shows
-  let held = finger && !found && @kit.after(c, "row-hold/" + key, pressed && row_held.val.0 == id, hold_ms)
+  let held = finger && !found && c.held("row-hold/" + key, pressed && row_held.val.0 == id, hold_ms)
   let menu_on = row_menu_open(item)
   // pressed and let go: its chat opened then, before the next frame is built (Ctx::on_press: a frame that built the
   // page it left and then the chat, all of it twice, 2026-10-30)

@@ -17,10 +17,10 @@
 pub let later_ms : Double = 400.0
 
 ///|
-/// Whether `key` has been waited on for later_ms, since the first frame that asked (@kit.after's clock: a frame comes
+/// Whether `key` has been waited on for later_ms, since the first frame that asked (Ctx::held's clock: a frame comes
 /// when it has).
 fn waited_long(c : @ui.Ctx, key : String) -> Bool {
-  @kit.after(c, "sf-wait/" + key, true, later_ms)
+  c.held("sf-wait/" + key, true, later_ms)
 }
 
 ///|

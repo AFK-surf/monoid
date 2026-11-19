@@ -252,7 +252,7 @@ test "narrow: a frequent model is applied without rearranging the sheet as it le
     t.click(Button, label="GPT-6 Astra · 中")
     assert_eq(new_fix.model, "gpt-6-astra")
     assert_eq(t.find("常用搭配"), Some(used), msg="the rows stay where they were as the sheet starts to close")
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let used_out = t.find("常用搭配").unwrap()
     let runtime_out = t.find_last("DeepSeek Harness").unwrap()
     assert_eq(used_out.1 - runtime_out.1, used.1 - runtime.1, msg="the runtime and the rows leave together")
