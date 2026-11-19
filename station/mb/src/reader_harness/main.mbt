@@ -76,6 +76,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @ops_platform.harness(host))
     (Some("harness-vault-crypto"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_crypto.harness(host))
+    (Some("harness-stdlib"), _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_stdlib(host))
     _ => {
       @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
       2
