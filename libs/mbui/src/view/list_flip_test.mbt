@@ -564,3 +564,48 @@ test "scrolls_window: non-foot scroll past new short keys still renders the new 
     msg="short replacement row 行102 must be visible in viewport [0, 400), got y=\{y102}",
   )
 }
+
+///|
+test "flips: trimming an off-screen row under a top placeholder inside transition does not accumulate foot_room" {
+  let trimmed : Array[Int] = [0]
+  for i in 2..<20 {
+    trimmed.push(i)
+  }
+  let looks = [rc_at, rc_at + @flex.move_most_ms / 2.0, rc_at + @flex.move_most_ms]
+  for rate in rc_rates {
+    let keys = @signals.signal(Array::makei(20, fn(i) { i }), same=fn(a, b) { a == b })
+    let scroll = @view.Scroll::list()
+    let tree = @view.Tree::new(fn(root) {
+      root.box(fn(o) {
+        o.transitions_only().width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+        o.scrolls_window(
+          scroll,
+          fn() { keys.get() },
+          est=40.0,
+          follows=fn() { true },
+          from_end=true,
+          flips=true,
+          fn(b, k) { b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0, now=0.0) |> ignore
+    let y0 = rc_y(tree, "行19")
+    assert_true((y0 - 160.0).abs() < 1.0, msg="at \{rate}: initial 行19 should be at ~160.0, got \{y0}")
+    let ys = rc_walk(
+      tree,
+      [(rc_at, fn() { @view.transition(fn() { keys.set(trimmed) }) })],
+      looks,
+      rate,
+      fn() { rc_y(tree, "行19") },
+    )
+    for j, y in ys {
+      assert_true(
+        (y - 160.0).abs() < 1.0,
+        msg="at \{rate}, look \{j}: 行19 drifted from foot (~160.0) to \{y}",
+      )
+    }
+  }
+}

@@ -184,9 +184,10 @@ fn chat_read_node(
       flush_tell()
     })
   }
-  on_reopened.val = fn(moved) {
-    if moved {
+  on_reopened.val = fn(clear_stale) {
+    if clear_stale {
       deferred.val = false
+      placing.val = false
     } else if deferred.val {
       flush_tell()
     }

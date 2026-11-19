@@ -1224,6 +1224,21 @@ fn chat_body_node(
     fn() {
       // (put by at rest, its list too, a glide still going stopped and what it has in sight told no more
       // (ListPlace::rest); let go, its list's let go with it)
+      let drop_sent_from = fn(k : String) {
+        @sfbase.sent_from_take(k) |> ignore
+        @sfbase.sent_words_room_take(k) |> ignore
+        @sfbase.sent_quote_ids_take(k) |> ignore
+        @sfbase.sent_delay_take(k) |> ignore
+        for p in @sfbase.sent_parts_flying(k) {
+          @sfbase.sent_part_take(k, p) |> ignore
+        }
+      }
+      for k in kept.sent_as.values() {
+        drop_sent_from(k)
+      }
+      for l in @sfbase.sending_of(here.station + "\u{1}" + here.session) {
+        drop_sent_from("o:" + l.row.id)
+      }
       if v.alive() {
         reopening.val = true
         place.rest()
@@ -1779,9 +1794,13 @@ fn chat_body_node(
           }
         }
       }
+      if moved {
+        place.wake()
+        (on_reopened.val)(true)
+      }
       @ui.after_frame(fn() {
         reopening.val = false
-        (on_reopened.val)(moved)
+        (on_reopened.val)(false)
       })
     },
   )
@@ -2197,7 +2216,7 @@ fn chat_live_causes(
     // (where what it had and has now meet: the first of the keys kept, in the order they were)
     let mut first_kept = -1
     for i, k in was {
-      if seen.contains(k) {
+      if seen.contains(k) && k != "older" {
         if first_kept < 0 {
           first_kept = i
         }

@@ -2304,10 +2304,19 @@ fn View::scrolls_window_ids(
       let sight_tree = self.tree
       let sight_at = self.at
       let listened = Ref(false)
+      let sight_force = Ref(false)
+      let tell_sight = fn() {
+        guard p.asked is None else { return }
+        if sight_force.val {
+          sight_force.val = false
+          p.sight = None
+        }
+        p.sight_tell()
+      }
       p.sight_listened = fn() {
         guard !listened.val && self.alive() else { return }
         listened.val = true
-        sight_tree.sight_tellers[sight_at] = fn() { p.sight_tell() }
+        sight_tree.sight_tellers[sight_at] = tell_sight
         sight_tree.sight_owe(sight_tree.logic_said())
       }
       // (put by at rest, as what holds it says (ListPlace::rest, a page kept as it is left): what it has in sight told
@@ -2335,7 +2344,8 @@ fn View::scrolls_window_ids(
       }
       p.wake_at = fn() {
         if listened.val && self.alive() {
-          sight_tree.sight_tellers[sight_at] = fn() { p.sight_tell() }
+          sight_force.val = true
+          sight_tree.sight_tellers[sight_at] = tell_sight
           sight_tree.sight_owe(sight_tree.logic_said())
         }
       }
@@ -4459,7 +4469,12 @@ fn View::scrolls_window_ids(
       let g_near = @signals.untracked(fn() { self.tree.rows_grid_now() })
       let near = if g_near > 0.0 { 1.0 / g_near } else { 0.0 }
       let before : Map[Int, (Double, Double, Double, Double)] = Map([])
+      let mut before_list_y = 0.0
+      let mut before_list_h = 0.0
       if !self.tree.nowhere_at(self.at) && self.was_placed() && !self.tree.out_at(self.at) {
+        let (_, ly, _, lh) = self.placed_window_now()
+        before_list_y = ly
+        before_list_h = lh
         for k, v in slot_views {
           guard v.alive() && v.was_placed() && !self.tree.out_at(v.at) else { continue }
           let (x, y, w, h) = v.placed_window_now()
@@ -4566,7 +4581,10 @@ fn View::scrolls_window_ids(
             let mut down = 0.0
             for k, b in before {
               match after.get(k) {
-                Some(a) if ks.contains(k) && was.contains(k) => down = dmax(down, a.1 - b.1)
+                Some(a) if ks.contains(k) &&
+                  was.contains(k) &&
+                  b.1 + b.3 > before_list_y &&
+                  b.1 < before_list_y + before_list_h => down = dmax(down, a.1 - b.1)
                 _ => ()
               }
             }
