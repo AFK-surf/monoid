@@ -10,90 +10,12 @@
 using @jsjson {type JValue}
 
 ///|
+using @live_wire {
+  u, jstr, obj, field, str, non_empty, is_str, has_prefix, pretty, joined, start, delta, end_event, live, failed,
+}
+
+///|
 type J = JValue
-
-///|
-fn u(s : String) -> Array[Int] {
-  @jsjson.units(s)
-}
-
-///|
-fn jstr(s : String) -> J {
-  Str(u(s))
-}
-
-///|
-fn obj(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (u(f.0), f.1)))
-}
-
-///|
-/// `v?.name`.
-fn field(v : J?, name : String) -> J? {
-  match v {
-    Some(Obj(_) as o) => o.get(name)
-    _ => None
-  }
-}
-
-///|
-/// `str(v)`: the string it is.
-fn str(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-/// `nonEmpty(v)`.
-fn non_empty(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) if s.length() > 0 => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn is_str(v : J?, s : String) -> Bool {
-  v is Some(Str(t)) && t == u(s)
-}
-
-///|
-fn has_prefix(s : Array[Int], p : Array[Int]) -> Bool {
-  s.length() >= p.length() && s[0:p.length()].to_owned() == p
-}
-
-///|
-/// `v ?? fallback`: none or null is the fallback.
-fn or_else(v : J?, fallback : J) -> J {
-  match v {
-    None | Some(Null) => fallback
-    Some(x) => x
-  }
-}
-
-///|
-/// How much of a call's input a step is started with (live.ts `INPUT_MOST`).
-const INPUT_MOST : Int = 262144
-
-///|
-/// JSON.stringify(v ?? {}, null, 2).
-fn pretty(v : J?) -> Array[Int] {
-  u(@jsjson.stringify_pretty(or_else(v, Obj([]))))
-}
-
-///|
-fn joined(parts : Array[Array[Int]], sep : Array[Int]) -> Array[Int] {
-  let out = []
-  for i, p in parts {
-    if i > 0 {
-      out.append(sep)
-    }
-    out.append(p)
-  }
-  out
-}
 
 ///|
 /// The words of a message's or a result's content: its text parts, one after another.
@@ -103,34 +25,6 @@ fn content_text(content : J?) -> Array[Int] {
     Some(Arr(items)) => joined(items.map(c => str(field(Some(c), "text")).unwrap_or([])).filter(t => t.length() > 0), [0x0a])
     _ => []
   }
-}
-
-///|
-/// A step's start: what is none left out.
-fn start(id : Array[Int], step : String, tool : Array[Int]?, input : Array[Int]?) -> J {
-  let fields : Array[(String, J)] = [("kind", jstr("start")), ("id", Str(id)), ("step", jstr(step))]
-  if tool is Some(t) {
-    fields.push(("tool", Str(t)))
-  }
-  if input is Some(i) {
-    fields.push(("input", Str(i)))
-  }
-  obj(fields)
-}
-
-///|
-fn delta(id : Array[Int], field_name : String, text : Array[Int]) -> J {
-  obj([("kind", jstr("delta")), ("id", Str(id)), ("field", jstr(field_name)), ("text", Str(text))])
-}
-
-///|
-fn end_event(id : Array[Int]) -> J {
-  obj([("kind", jstr("end")), ("id", Str(id))])
-}
-
-///|
-fn live(e : J) -> J {
-  obj([("type", jstr("live")), ("event", e)])
 }
 
 ///|
@@ -281,7 +175,7 @@ pub fn Live::feed(self : Live, message : J) -> Array[J] {
     // One not seen streaming (taken up after it streamed): started with its input whole.
     if find(self.open, id) is None {
       self.set_open(id, "tool")
-      out.push(start(id, "tool", Some(str(field(m, "toolName")).unwrap_or([])), Some(@claude.chars(pretty(field(m, "args")), INPUT_MOST))))
+      out.push(start(id, "tool", Some(str(field(m, "toolName")).unwrap_or([])), Some(@claude.chars(pretty(field(m, "args")), @live_wire.INPUT_MOST))))
     }
   } else if kind == u("tool_execution_end") {
     guard non_empty(field(m, "toolCallId")) is Some(id) && find(self.open, id) is Some(_) else { return out }
@@ -446,11 +340,6 @@ pub(all) struct Said {
 /// What failed a turn, from what Pi said of it (its provider's error as pi-ai words it: "401: {…}", "context overflow").
 pub fn classify_failure(text : Array[Int]) -> String {
   @claude.failure_of(text)
-}
-
-///|
-fn failed(reason : String, message : Array[Int]) -> J {
-  obj([("kind", jstr("failed")), ("reason", jstr(reason)), ("message", Str(message))])
 }
 
 ///|

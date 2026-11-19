@@ -9,118 +9,12 @@
 using @jsjson {type JValue}
 
 ///|
+using @live_wire {
+  u, jstr, obj, field, str, non_empty, is_str, has_prefix, or_else, pretty, joined, start, delta, end_event, live, failed,
+}
+
+///|
 type J = JValue
-
-///|
-fn u(s : String) -> Array[Int] {
-  @jsjson.units(s)
-}
-
-///|
-fn jstr(s : String) -> J {
-  Str(u(s))
-}
-
-///|
-fn obj(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (u(f.0), f.1)))
-}
-
-///|
-/// `v?.name`.
-fn field(v : J?, name : String) -> J? {
-  match v {
-    Some(Obj(_) as o) => o.get(name)
-    _ => None
-  }
-}
-
-///|
-/// `str(v)`: the string it is.
-fn str(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-/// `nonEmpty(v)`.
-fn non_empty(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) if s.length() > 0 => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn is_str(v : J?, s : String) -> Bool {
-  v is Some(Str(t)) && t == u(s)
-}
-
-///|
-fn has_prefix(s : Array[Int], p : Array[Int]) -> Bool {
-  s.length() >= p.length() && s[0:p.length()].to_owned() == p
-}
-
-///|
-/// `v ?? fallback`: none or null is the fallback.
-fn or_else(v : J?, fallback : J) -> J {
-  match v {
-    None | Some(Null) => fallback
-    Some(x) => x
-  }
-}
-
-///|
-/// live.ts `INPUT_MOST`.
-const INPUT_MOST : Int = 262144
-
-///|
-/// live.ts `pretty`: JSON.stringify(v ?? {}, null, 2).
-fn pretty(v : J?) -> Array[Int] {
-  u(@jsjson.stringify_pretty(or_else(v, Obj([]))))
-}
-
-///|
-fn joined(parts : Array[Array[Int]], sep : Array[Int]) -> Array[Int] {
-  let out = []
-  for i, p in parts {
-    if i > 0 {
-      out.append(sep)
-    }
-    out.append(p)
-  }
-  out
-}
-
-///|
-/// A step's start as live.ts `start` makes it: what is none left out.
-fn start(id : Array[Int], step : String, tool : Array[Int]?, input : Array[Int]?) -> J {
-  let fields : Array[(String, J)] = [("kind", jstr("start")), ("id", Str(id)), ("step", jstr(step))]
-  if tool is Some(t) {
-    fields.push(("tool", Str(t)))
-  }
-  if input is Some(i) {
-    fields.push(("input", Str(i)))
-  }
-  obj(fields)
-}
-
-///|
-fn delta(id : Array[Int], field_name : String, text : Array[Int]) -> J {
-  obj([("kind", jstr("delta")), ("id", Str(id)), ("field", jstr(field_name)), ("text", Str(text))])
-}
-
-///|
-fn end_event(id : Array[Int]) -> J {
-  obj([("kind", jstr("end")), ("id", Str(id))])
-}
-
-///|
-fn live(e : J) -> J {
-  obj([("type", jstr("live")), ("event", e)])
-}
 
 ///|
 /// A session's live steps (live.ts `LiveFromDsh`): the steps started and not ended with what each is, in the order a
@@ -331,7 +225,7 @@ fn Live::event(self : Live, kind : Array[Int], data : J?, out : Array[J]) -> Uni
         Some(v) => pretty(Some(v))
         None => raw
       }
-      out.push(start(id, "tool", Some(str(field(data, "name")).unwrap_or([])), Some(@claude.chars(input, INPUT_MOST))))
+      out.push(start(id, "tool", Some(str(field(data, "name")).unwrap_or([])), Some(@claude.chars(input, @live_wire.INPUT_MOST))))
     }
   } else if kind == u("tool/result") {
     let result = Some(or_else(field(data, "message"), Obj([])))
@@ -408,11 +302,6 @@ pub(all) struct Said {
 /// dsh.ts `classifyFailure`: what failed a turn, from dsh's error (its code first).
 pub fn classify_failure(code : Array[Int], text : Array[Int]) -> String {
   @claude.failure_of(code + [0x20] + text, auth_codes=["auth", "missing_credential", "invalid_credential"], limit=["insufficient balance"])
-}
-
-///|
-fn failed(reason : String, message : Array[Int]) -> J {
-  obj([("kind", jstr("failed")), ("reason", jstr(reason)), ("message", Str(message))])
 }
 
 ///|

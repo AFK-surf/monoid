@@ -8,39 +8,12 @@
 using @jsjson {type JValue}
 
 ///|
+using @live_wire {
+  u, jstr, obj, field, str, non_empty, is_str, joined, failed,
+}
+
+///|
 type J = JValue
-
-///|
-fn u(s : String) -> Array[Int] {
-  @jsjson.units(s)
-}
-
-///|
-fn jstr(s : String) -> J {
-  Str(u(s))
-}
-
-///|
-fn field(v : J?, name : String) -> J? {
-  match v {
-    Some(Obj(_) as o) => o.get(name)
-    _ => None
-  }
-}
-
-///|
-/// A string's code units (`typeof v === "string"`).
-fn text_of(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn is_str(v : J?, s : String) -> Bool {
-  text_of(v) is Some(t) && t == u(s)
-}
 
 ///|
 fn is_true(v : J?) -> Bool {
@@ -54,11 +27,6 @@ fn integer(v : J?) -> Double? {
     Some(Num(d)) if !d.is_nan() && !d.is_inf() && d == d.floor() => Some(d)
     _ => None
   }
-}
-
-///|
-fn obj(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (u(f.0), f.1)))
 }
 
 ///|
@@ -89,18 +57,6 @@ pub fn chars(text : Array[Int], n : Int) -> Array[Int] {
 fn has_prefix(s : Array[Int], p : String) -> Bool {
   let q = u(p)
   s.length() >= q.length() && s[0:q.length()].to_array() == q
-}
-
-///|
-fn join_units(parts : Array[Array[Int]], sep : Array[Int]) -> Array[Int] {
-  let out = []
-  for i, p in parts {
-    if i > 0 {
-      out.append(sep)
-    }
-    out.append(p)
-  }
-  out
 }
 
 ///|
@@ -238,8 +194,8 @@ fn frame_does(
   note : (String) -> Unit,
 ) -> Unit {
   let f = Some(frame)
-  let kind = text_of(field(f, "type")).unwrap_or([])
-  let subtype = text_of(field(f, "subtype")).unwrap_or([])
+  let kind = str(field(f, "type")).unwrap_or([])
+  let subtype = str(field(f, "subtype")).unwrap_or([])
   let system = kind == u("system")
   if kind == u("control_response") && is_str(field(field(f, "response"), "subtype"), "error") {
     note("claude refused a control request")
@@ -266,9 +222,9 @@ fn frame_does(
     }
   } else if system &&
     subtype == u("task_started") &&
-    text_of(field(f, "task_id")) is Some(id) &&
+    str(field(f, "task_id")) is Some(id) &&
     !is_true(field(f, "owned_by_subagent")) {
-    let description = text_of(field(f, "description")).unwrap_or([])
+    let description = str(field(f, "description")).unwrap_or([])
     let task = {
       id,
       kind: if is_str(field(f, "task_type"), "local_agent") { "agent" } else { "command" },
@@ -279,7 +235,7 @@ fn frame_does(
     turn.tasks = Some(put(turn.tasks.unwrap_or([]), id, task))
   } else if system &&
     (subtype == u("task_notification") || subtype == u("task_updated")) &&
-    text_of(field(f, "task_id")) is Some(id) &&
+    str(field(f, "task_id")) is Some(id) &&
     turn.tasks is Some(tasks) &&
     tasks.iter().find_first(e => e.0 == id) is Some((_, task)) {
     let notified = subtype == u("task_notification")
@@ -292,7 +248,7 @@ fn frame_does(
       turn.tasks = Some(put(rest, id, { ..task, background: true }))
     }
   } else if system && subtype == u("status") && turn.compacting == Some(true) && is_str(field(f, "compact_result"), "failed") {
-    turn.compact_error = match text_of(field(f, "compact_error")) {
+    turn.compact_error = match str(field(f, "compact_error")) {
       Some(e) if e.length() > 0 => Some(e)
       _ => Some(u("compaction failed"))
     }
@@ -307,9 +263,9 @@ fn frame_does(
         })
       _ => []
     }
-    let text = match text_of(field(f, "result")) {
+    let text = match str(field(f, "result")) {
       Some(r) if @jscase.trim(@jsjson.raw_text(r)) != "" => r
-      _ => if errors.length() > 0 { join_units(errors, [0x0a]) } else { subtype }
+      _ => if errors.length() > 0 { joined(errors, [0x0a]) } else { subtype }
     }
     let outcome = if turn.auth_failure is Some(failure) {
       auth_outcome(failure)
@@ -354,8 +310,8 @@ pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
     for c in content {
       let cc = Some(c)
       if is_str(field(cc, "type"), "tool_use") &&
-        text_of(field(cc, "id")) is Some(id) &&
-        text_of(field(cc, "name")) is Some(name) &&
+        str(field(cc, "id")) is Some(id) &&
+        str(field(cc, "name")) is Some(name) &&
         has_prefix(name, "mcp__stillfail__") &&
         !calls.contains(id) {
         calls.push(id)
@@ -367,7 +323,7 @@ pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
       if !is_str(field(cc, "type"), "tool_result") {
         continue
       }
-      let deleted = match text_of(field(cc, "tool_use_id")) {
+      let deleted = match str(field(cc, "tool_use_id")) {
         Some(id) =>
           match calls.search(id) {
             Some(at) => {
@@ -383,7 +339,7 @@ pub fn tools_lost_in(frame : J, calls : Array[Array[Int]]) -> Array[Int]? {
       }
       let text = match field(cc, "content") {
         Some(Str(s)) => s
-        Some(Arr(parts)) => join_units(parts.map(x => text_of(field(Some(x), "text")).unwrap_or([])), [0x0a])
+        Some(Arr(parts)) => joined(parts.map(x => str(field(Some(x), "text")).unwrap_or([])), [0x0a])
         _ => []
       }
       if unreachable(text) {
@@ -419,10 +375,6 @@ pub fn Live::new() -> Live {
 }
 
 ///|
-/// live.ts `INPUT_MOST`.
-const INPUT_MOST : Int = 262144
-
-///|
 fn start(id : Array[Int], step : String, tool : Array[Int]?, input : Array[Int]?, parent : Array[Int]?) -> J {
   let fields : Array[(String, J)] = [("kind", jstr("start")), ("id", Str(id)), ("step", jstr(step))]
   if tool is Some(t) {
@@ -436,14 +388,6 @@ fn start(id : Array[Int], step : String, tool : Array[Int]?, input : Array[Int]?
     fields.push(("parent", Str(p)))
   }
   obj(fields)
-}
-
-///|
-fn non_empty(v : J?) -> Array[Int]? {
-  match v {
-    Some(Str(s)) if s.length() > 0 => Some(s)
-    _ => None
-  }
 }
 
 ///|
@@ -461,7 +405,7 @@ fn Live::block(self : Live, index : Int) -> Block? {
 pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
   let out = []
   let f = Some(frame)
-  let kind = text_of(field(f, "type")).unwrap_or([])
+  let kind = str(field(f, "type")).unwrap_or([])
   let phase = (p : String) => obj([("kind", jstr("phase")), ("phase", jstr(p))])
   if kind == u("system") && is_str(field(f, "subtype"), "status") && is_str(field(f, "status"), "requesting") {
     out.push(phase("requesting"))
@@ -471,7 +415,7 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
       some => some
     }
     let parent = non_empty(field(f, "parent_tool_use_id"))
-    let event = text_of(field(e, "type")).unwrap_or([])
+    let event = str(field(e, "type")).unwrap_or([])
     if event == u("message_stop") && parent is None {
       out.push(phase("working"))
     }
@@ -480,7 +424,7 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
       None => -1
     }
     if event == u("message_start") {
-      self.message = match text_of(field(field(e, "message"), "id")) {
+      self.message = match str(field(field(e, "message"), "id")) {
         Some(id) => id
         None => number_text(now())
       }
@@ -490,17 +434,17 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
       }
     } else if event == u("content_block_start") {
       let b = field(e, "content_block")
-      let step = match text_of(field(b, "type")) {
+      let step = match str(field(b, "type")) {
         Some(t) if t == u("text") => "text"
         Some(t) if t == u("thinking") => "thinking"
         Some(t) if t == u("tool_use") => "tool"
         _ => return out
       }
-      let id = match text_of(field(b, "id")) {
+      let id = match str(field(b, "id")) {
         Some(id) if step == "tool" => id
         _ => self.message + u(":") + number_text(index.to_double())
       }
-      let tool = if step == "tool" { Some(text_of(field(b, "name")).unwrap_or(u("tool"))) } else { None }
+      let tool = if step == "tool" { Some(str(field(b, "name")).unwrap_or(u("tool"))) } else { None }
       if step == "tool" && !self.tools.contains(id) {
         self.tools.push(id)
       }
@@ -526,7 +470,7 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
         ("field", jstr(name)),
         ("text", Str(text)),
       ])
-      match text_of(field(d, "type")) {
+      match str(field(d, "type")) {
         Some(t) if t == u("text_delta") =>
           if non_empty(field(d, "text")) is Some(text) {
             out.push(delta("text", text))
@@ -539,7 +483,7 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
           }
         Some(t) if t == u("input_json_delta") =>
           if non_empty(field(d, "partial_json")) is Some(partial) {
-            if block.input is Some(input) && input.length() < INPUT_MOST {
+            if block.input is Some(input) && input.length() < @live_wire.INPUT_MOST {
               block.input = Some(input + partial)
             }
             out.push(delta("input", partial))
@@ -562,11 +506,11 @@ pub fn Live::feed(self : Live, frame : J, now : () -> Double) -> Array[J] {
     }
     for c in content {
       let cc = Some(c)
-      let id = text_of(field(cc, "tool_use_id")).unwrap_or([])
+      let id = str(field(cc, "tool_use_id")).unwrap_or([])
       guard is_str(field(cc, "type"), "tool_result") && self.tools.contains(id) else { continue }
       let text = match field(cc, "content") {
         Some(Str(s)) => s
-        Some(Arr(parts)) => join_units(parts.map(x => text_of(field(Some(x), "text")).unwrap_or([])), [0x0a])
+        Some(Arr(parts)) => joined(parts.map(x => str(field(Some(x), "text")).unwrap_or([])), [0x0a])
         _ => []
       }
       if text.length() > 0 {
@@ -612,11 +556,11 @@ pub fn Live::of_state(state : J) -> Live {
         Arr([Num(i), Obj(_) as b]) => {
           let bb = Some(b)
           Some((i.to_int(), {
-            id: text_of(field(bb, "id")).unwrap_or([]),
+            id: str(field(bb, "id")).unwrap_or([]),
             step: if is_str(field(bb, "step"), "tool") { "tool" } else if is_str(field(bb, "step"), "thinking") { "thinking" } else { "text" },
-            tool: text_of(field(bb, "tool")),
-            input: text_of(field(bb, "input")),
-            subagent: text_of(field(bb, "subagent")),
+            tool: str(field(bb, "tool")),
+            input: str(field(bb, "input")),
+            subagent: str(field(bb, "subagent")),
           }))
         }
         _ => None
@@ -624,10 +568,10 @@ pub fn Live::of_state(state : J) -> Live {
     _ => []
   }
   let tools = match field(s, "tools") {
-    Some(Arr(all)) => all.filter_map(t => text_of(Some(t)))
+    Some(Arr(all)) => all.filter_map(t => str(Some(t)))
     _ => []
   }
-  { message: text_of(field(s, "message")).unwrap_or([]), blocks, tools }
+  { message: str(field(s, "message")).unwrap_or([]), blocks, tools }
 }
 
 ///|

@@ -1,0 +1,49 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/live_wire"
+
+import {
+  "station/jsjson",
+}
+
+// Values
+pub const INPUT_MOST : Int32 = 262144
+
+pub fn delta(Array[Int32], String, Array[Int32]) -> @jsjson.JValue
+
+pub fn end_event(Array[Int32]) -> @jsjson.JValue
+
+pub fn failed(String, Array[Int32]) -> @jsjson.JValue
+
+pub fn field(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn has_prefix(Array[Int32], Array[Int32]) -> Bool
+
+pub fn is_str(@jsjson.JValue?, String) -> Bool
+
+pub fn joined(Array[Array[Int32]], Array[Int32]) -> Array[Int32]
+
+pub fn jstr(String) -> @jsjson.JValue
+
+pub fn live(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn non_empty(@jsjson.JValue?) -> Array[Int32]?
+
+pub fn obj(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn or_else(@jsjson.JValue?, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn pretty(@jsjson.JValue?) -> Array[Int32]
+
+pub fn start(Array[Int32], String, Array[Int32]?, Array[Int32]?) -> @jsjson.JValue
+
+pub fn str(@jsjson.JValue?) -> Array[Int32]?
+
+pub fn u(String) -> Array[Int32]
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

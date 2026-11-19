@@ -162,12 +162,6 @@ pub fn classify_result(text : Array[Int]) -> String {
 }
 
 ///|
-/// A failed turn's outcome as the station keeps it (runtime.ts `TurnOutcome`).
-fn failed(reason : String, message : Array[Int]) -> J {
-  obj([("kind", jstr("failed")), ("reason", jstr(reason)), ("message", Str(message))])
-}
-
-///|
 /// A turn that failed on authentication (an api_retry's 401 or 403, `auth_failure`): refused, or the account's.
 pub fn auth_outcome(failure : Array[Int]) -> J {
   failed(if refused(failure) { "refused" } else { "auth" }, failure)

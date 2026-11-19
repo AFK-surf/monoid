@@ -8,31 +8,12 @@
 using @jsjson {type JValue}
 
 ///|
+using @live_wire {
+  u, jstr, obj, field, is_str, start, pretty,
+}
+
+///|
 type J = JValue
-
-///|
-fn u(s : String) -> Array[Int] {
-  @jsjson.units(s)
-}
-
-///|
-fn jstr(s : String) -> J {
-  Str(u(s))
-}
-
-///|
-fn obj(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (u(f.0), f.1)))
-}
-
-///|
-/// `v?.name`.
-fn field(v : J?, name : String) -> J? {
-  match v {
-    Some(Obj(_) as o) => o.get(name)
-    _ => None
-  }
-}
 
 ///|
 /// `typeof v === "string" ? v : ""`.
@@ -41,11 +22,6 @@ fn text(v : J?) -> Array[Int] {
     Some(Str(s)) => s
     _ => []
   }
-}
-
-///|
-fn is_str(v : J?, s : String) -> Bool {
-  v is Some(Str(t)) && t == u(s)
 }
 
 ///|
@@ -108,28 +84,6 @@ fn Live::close(self : Live, id : Array[Int]) -> Bool {
       true
     }
     None => false
-  }
-}
-
-///|
-/// A step's start as live.ts `start` makes it: what is none left out.
-fn start(id : Array[Int], step : String, tool : Array[Int]?, input : Array[Int]?) -> J {
-  let fields : Array[(Array[Int], J)] = [(u("kind"), jstr("start")), (u("id"), Str(id)), (u("step"), jstr(step))]
-  if tool is Some(t) {
-    fields.push((u("tool"), Str(t)))
-  }
-  if input is Some(i) {
-    fields.push((u("input"), Str(i)))
-  }
-  Obj(fields)
-}
-
-///|
-/// live.ts `pretty`: JSON.stringify(v ?? {}, null, 2).
-fn pretty(v : J?) -> Array[Int] {
-  match v {
-    None | Some(Null) => u("{}")
-    Some(v) => u(@jsjson.stringify_pretty(v))
   }
 }
 
