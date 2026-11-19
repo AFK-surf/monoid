@@ -84,7 +84,8 @@ while [ -z "$stopping" ]; do
     install || { sleep 10; continue; }
   fi
   started=$(date +%s)
-  "$data/app/bin/stillfail" start >> "$log" 2>&1 &
+  # (its data named, as the installer is told it: never what bin/stillfail makes of the path it is called by)
+  STILLFAIL_DATA="$data" "$data/app/bin/stillfail" start >> "$log" 2>&1 &
   station=$!
   # (wait returns at a signal too: waited for again until the station has ended)
   while kill -0 "$station" 2>/dev/null; do wait "$station" 2>/dev/null || true; done
