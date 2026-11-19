@@ -42,6 +42,7 @@ jobs:
     # GitHub's Ubuntu)
     env:
       GO: ${{ !(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && (matrix.self != 'ci-1' || vars.CI_1 != 'off') }}
+      STILLFAIL_DIRECT_DNS: ${{ matrix.self != '' && '223.5.5.5' || '' }}
     runs-on: ${{ (!(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && (matrix.self != 'ci-1' || vars.CI_1 != 'off')) && matrix.os || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
@@ -53,9 +54,22 @@ jobs:
           base=https://cli.moonbitlang.com
           # (--retry-all-errors: --retry alone does not ask again after a connection broken off, macos-ci's
           # SSL_ERROR_SYSCALL failing the hour's run at once, 40997517041)
-          tag=$( { curl -fsSI --retry 3 --retry-all-errors --max-time 20 $base/binaries/latest/${{ matrix.bin }}
-                   curl -fsSI --retry 3 --retry-all-errors --max-time 20 $base/cores/${{ matrix.core }}; } \
-            | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" { print $2 }' | tr -d '\n')
+          fetch_etags() {
+            { curl -fsSI --retry 3 --retry-all-errors --max-time 20 "$@" "$base/binaries/latest/${{ matrix.bin }}"
+              curl -fsSI --retry 3 --retry-all-errors --max-time 20 "$@" "$base/cores/${{ matrix.core }}"; } \
+              | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" { print $2 }' | tr -d '\n'
+          }
+          tag=
+          if [ -n "${STILLFAIL_DIRECT_DNS:-}" ] && command -v dig > /dev/null 2>&1; then
+            ip=$(dig +short +time=3 +tries=2 @"$STILLFAIL_DIRECT_DNS" cli.moonbitlang.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1) || ip=
+            if [ -n "$ip" ]; then
+              echo "cli.moonbitlang.com directly, at $ip"
+              tag=$(fetch_etags --resolve "cli.moonbitlang.com:443:$ip") || tag=
+            fi
+          fi
+          if [ "$(printf '%s' "$tag" | tr -cd '"' | wc -c | tr -d ' ')" != 4 ]; then
+            tag=$(fetch_etags)
+          fi
           [ "$(printf '%s' "$tag" | tr -cd '"' | wc -c | tr -d ' ')" = 4 ] || { echo "::error::no ETags from $base: $tag"; exit 1; }
           echo "key=moonbit-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-$(printf '%s' "$tag trimmed" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - if: env.GO == 'true'
@@ -75,7 +89,24 @@ jobs:
           if [ "${{ runner.os }}" = Windows ]; then
             MOON_HOME=$(cygpath -w "$MOON_HOME") powershell -NoProfile -Command "irm https://cli.moonbitlang.com/install/powershell.ps1 | iex"
           else
-            curl -fsSL --retry 3 --retry-all-errors https://cli.moonbitlang.com/install/unix.sh | bash
+            installed=
+            if [ -n "${STILLFAIL_DIRECT_DNS:-}" ] && command -v dig > /dev/null 2>&1; then
+              ip=$(dig +short +time=3 +tries=2 @"$STILLFAIL_DIRECT_DNS" cli.moonbitlang.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1) || ip=
+              if [ -n "$ip" ]; then
+                direct_curl=$(mktemp -d "${RUNNER_TEMP:-/tmp}/moonbit-direct.XXXXXX")
+                trap 'rm -rf "$direct_curl"' EXIT
+                printf 'resolve = cli.moonbitlang.com:443:%s\nconnect-timeout = 15\nspeed-limit = 1024\nspeed-time = 20\n' "$ip" > "$direct_curl/.curlrc"
+                echo "Installing MoonBit directly from cli.moonbitlang.com at $ip"
+                if ( set -o pipefail; CURL_HOME="$direct_curl" curl -fsSL --retry 2 --retry-all-errors https://cli.moonbitlang.com/install/unix.sh | CURL_HOME="$direct_curl" bash ); then
+                  installed=1
+                else
+                  echo "::warning::direct MoonBit install at $ip failed; falling back to default route"
+                fi
+              fi
+            fi
+            if [ -z "$installed" ]; then
+              curl -fsSL --retry 3 --retry-all-errors https://cli.moonbitlang.com/install/unix.sh | bash
+            fi
           fi
           # (without what no job here runs: the docs', the editors' and the coverage's programs, ~40 MB of every job's
           # download of it, ~20 jobs a commit, when GitHub stopped the account's cache downloads: "Egress is over the

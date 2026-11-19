@@ -24,7 +24,8 @@ runs:
         echo "STILLFAIL_NATIVE_CACHE=$HOME/stillfail-ci/stillfail-native" >> "$GITHUB_ENV"
         echo "STILLFAIL_NATIVE_CACHE_MAX_BYTES=10737418240" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
-        echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
+        export STILLFAIL_DIRECT_DNS=223.5.5.5
+        echo "STILLFAIL_DIRECT_DNS=$STILLFAIL_DIRECT_DNS" >> "$GITHUB_ENV"
         # The station reader's MBC_STORE (station/mb/build.sh): an entry is <store>/<2 of its key>/<key>, said used as
         # mbc takes or keeps it (mbc.mbt's c_touch); those unused for 3 days go, the store grew without end before
         # (a write into it failed on Mini1, 44243874638, 2026-11-18).
