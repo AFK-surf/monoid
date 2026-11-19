@@ -5,15 +5,24 @@
 //     apk lock APP.json             its dependencies (APP.json's "lock": group:artifact:version[:classifier] a line) fetched once
 //                                   and their SHA-256 written beside each, so builds take those bytes and no others
 //     apk build APP.json --variant V --version-code N --version-name S --out APP.apk
-//                                   [--abi arm64-v8a] [--keystore PATH] [--dex-only]
+//                                   [--abi arm64-v8a] [--keystore PATH] [--key-alias ALIAS] [--ks-pass SPEC]
+//                                   [--key-pass SPEC] [--v3-signing] [--verify-cert SHA256] [--dex-only]
 //                                   (--dex-only: up to its dex, kept for the build after it: begun beside what
 //                                   the build packs, android.sh)
+//     apk repack IN.apk --out OUT.apk [--app-id ID] [--label NAME] [--version-code N] [--version-name S]
+//                                   [--env K=V;...] [--edge-to-edge true|false] [--ground C] [--debuggable true|false]
+//                                   [--url-scheme S] [--permission P] [--manifest PATH] [--keystore PATH]
+//                                   [--key-alias ALIAS] [--ks-pass SPEC] [--key-pass SPEC] [--v3-signing]
+//                                   [--verify-cert SHA256]
 //     apk fetch PATH SHA256         a file of the Maven repositories (its path in one), checked, kept: its local path
 //
 // APP.json (paths relative to it): "namespace" (its Java package, R's), "applicationId", "minSdk", "targetSdk",
-// "compileSdk", "manifest", "java" [dirs], "res" [dirs], "assets" [dirs], "jniLibs" [dirs], "rules" [R8 files],
-// "lock" (the dependencies' file), "merged" [group:artifact prefixes: libraries whose manifests' components the app's
-// manifest has merged by hand], "variants": {NAME: {"applicationId" (the app's own, in place of APP.json's),
+// "compileSdk", "manifest" (optional or "@mbui" for mbui's default manifest), "java" [dirs], "res" [dirs],
+// "assets" [dirs], "jniLibs" [dirs], "rules" [R8 files], "lock" (the dependencies' file), "merged" [group:artifact
+// prefixes: libraries whose manifests' components the app's manifest has merged by hand],
+// optional declarative manifest fields (at top-level and/or inside a variant): "label", "edgeToEdge" (bool),
+// "ground" (string), "env" ({K: V}), "urlSchemes" [strings], "permissions" [strings],
+// "variants": {NAME: {"applicationId" (the app's own, in place of APP.json's),
 // "applicationIdSuffix", "placeholders": {…}, "res" [dirs over the app's: its own launcher colours, its own name],
 // "minify": bool, "debuggable": bool}}, "strings": {resource name: [env var naming a JSON file, its key]} (values put
 // in as string resources: what is secret to the build, read by the app as it starts).
@@ -307,19 +316,51 @@ fn version_cmp(a : String, b : String) -> Int {
 }
 
 ///|
-/// android.jar of `compile_sdk` and the newest build-tools.
-fn sdk_tools(compile_sdk : String) -> (String, String) {
-  let jar = @sys.join(sdk(), "platforms/android-\{compile_sdk}/android.jar")
-  if !@sys.exists(jar) {
-    die("no \{jar}")
-  }
+/// The newest build-tools directory in $ANDROID_HOME.
+fn newest_build_tools() -> String {
   let num = @re.Regex::new("^\\d+\\.\\d+\\.\\d+$") catch { _ => panic() }
   let bts = @sys.list_dir(@sys.join(sdk(), "build-tools")).filter(fn(d) { num.matches(d) })
   if bts.length() == 0 {
     die("no build-tools in \{sdk()}")
   }
   bts.sort_by(version_cmp)
-  (jar, @sys.join(sdk(), "build-tools/" + bts[bts.length() - 1]))
+  @sys.join(sdk(), "build-tools/" + bts[bts.length() - 1])
+}
+
+///|
+/// The newest platforms/android-<N>/android.jar in $ANDROID_HOME.
+fn newest_android_jar() -> String {
+  let plats = @sys.join(sdk(), "platforms")
+  let rx_plat = @re.Regex::new("^android-(\\d+)$") catch { _ => panic() }
+  let found : Array[(Int, String)] = []
+  if @sys.is_dir(plats) {
+    for d in @sys.list_dir(plats) {
+      match rx_plat.search(d) {
+        Some(m) => {
+          let jar = @sys.join(plats, d + "/android.jar")
+          if @sys.exists(jar) {
+            found.push((int_of(m.get(1)), jar))
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  if found.length() == 0 {
+    die("no platforms/android-*/android.jar in \{sdk()}")
+  }
+  found.sort_by(fn(a, b) { a.0.compare(b.0) })
+  found[found.length() - 1].1
+}
+
+///|
+/// android.jar of `compile_sdk` and the newest build-tools.
+fn sdk_tools(compile_sdk : String) -> (String, String) {
+  let jar = @sys.join(sdk(), "platforms/android-\{compile_sdk}/android.jar")
+  if !@sys.exists(jar) {
+    die("no \{jar}")
+  }
+  (jar, newest_build_tools())
 }
 
 ///|
@@ -408,8 +449,309 @@ fn rx(p : String) -> @re.Regex {
 }
 
 ///|
+/// Declarative overrides applied to an AndroidManifest.xml (from apk.json / variant or `apk repack` flags).
+priv struct ManifestOverrides {
+  label : String?
+  edge_to_edge : Bool?
+  ground : String?
+  env : String?
+  url_schemes : Array[String]
+  permissions : Array[String]
+}
+
+///|
+/// Escapes text for use inside an XML attribute value.
+fn xml_escape(s : String) -> String {
+  s
+  .replace_all(old="&", new="&amp;")
+  .replace_all(old="<", new="&lt;")
+  .replace_all(old=">", new="&gt;")
+  .replace_all(old="\"", new="&quot;")
+  .replace_all(old="'", new="&apos;")
+}
+
+///|
+/// Serializes key/value pairs into deterministic `K=V;...` form (keys sorted).
+fn serialize_env_pairs(pairs : Array[(String, String)]) -> String {
+  let sorted = pairs.copy()
+  sorted.sort_by(fn(a, b) { @rjson.str_cmp(a.0, b.0) })
+  sorted.map(fn(kv) { "\{kv.0}=\{kv.1}" }).join(";")
+}
+
+///|
+/// Reads and merges `env` objects from top-level config and variant (variant overrides top-level).
+fn env_from_json(cfg : @rjson.Value, variant : @rjson.Value) -> String? {
+  let merged : Array[(String, String)] = []
+  let put = fn(v : @rjson.Value) {
+    match v.get("env") {
+      Some(Obj(kvs)) =>
+        for kv in kvs {
+          let val = match kv.1 {
+            Str(s) => s
+            Num(n) => n
+            Bool(b) => if b { "true" } else { "false" }
+            _ => continue
+          }
+          let mut replaced = false
+          for i, existing in merged {
+            if existing.0 == kv.0 {
+              merged[i] = (kv.0, val)
+              replaced = true
+              break
+            }
+          }
+          if !replaced {
+            merged.push((kv.0, val))
+          }
+        }
+      _ => ()
+    }
+  }
+  put(cfg)
+  put(variant)
+  if merged.length() == 0 {
+    None
+  } else {
+    Some(serialize_env_pairs(merged))
+  }
+}
+
+///|
+fn dedup_strings(xs : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for raw in xs {
+    let s = raw.trim(chars=" \t\r\n").to_owned()
+    if s != "" && !out.contains(s) {
+      out.push(s)
+    }
+  }
+  out
+}
+
+///|
+/// Extracts declarative manifest overrides from `apk.json` and the active variant.
+fn overrides_from_json(cfg : @rjson.Value, variant : @rjson.Value) -> ManifestOverrides {
+  let label = match variant.get("label") {
+    Some(Str(s)) if s != "" => Some(s)
+    _ =>
+      match cfg.get("label") {
+        Some(Str(s)) if s != "" => Some(s)
+        _ => None
+      }
+  }
+  let edge_to_edge = match variant.get("edgeToEdge") {
+    Some(Bool(b)) => Some(b)
+    _ =>
+      match cfg.get("edgeToEdge") {
+        Some(Bool(b)) => Some(b)
+        _ => None
+      }
+  }
+  let ground = match variant.get("ground") {
+    Some(Str(s)) if s != "" => Some(s)
+    _ =>
+      match cfg.get("ground") {
+        Some(Str(s)) if s != "" => Some(s)
+        _ => None
+      }
+  }
+  let env = env_from_json(cfg, variant)
+  let url_schemes = dedup_strings(texts_of(cfg, "urlSchemes") + texts_of(variant, "urlSchemes"))
+  let permissions = dedup_strings(texts_of(cfg, "permissions") + texts_of(variant, "permissions"))
+  { label, edge_to_edge, ground, env, url_schemes, permissions }
+}
+
+///|
+/// Resolves the manifest path: omitted or `"@mbui"` falls back to mbui's default AndroidManifest.xml.
+fn resolve_manifest_path(cfg : @rjson.Value, base : String, apk_home : String) -> String {
+  let raw = text_of(cfg, "manifest")
+  if raw == "" || raw == "@mbui" {
+    @sys.join(apk_home, "../android/app/src/main/AndroidManifest.xml")
+  } else {
+    @sys.join(base, raw)
+  }
+}
+
+///|
+/// Inserts or updates `<meta-data android:name="NAME" android:value="VALUE" />` inside `<application>`.
+fn set_meta_data(xml : String, name : String, value : String) -> String {
+  let esc_val = xml_escape(value)
+  let esc_name = xml_escape(name)
+  let tag = "<meta-data android:name=\"\{esc_name}\" android:value=\"\{esc_val}\" />"
+  let name_pat = name.replace_all(old=".", new="\\.")
+  let existing = rx("<meta-data\\b[^>]*android:name=\"" + name_pat + "\"[^>]*/>")
+  match existing.search(xml) {
+    Some(m) => sub(xml, 0, m.start()) + tag + sub(xml, m.end(), xml.length())
+    None =>
+      match xml.find("</application>") {
+        Some(at) => sub(xml, 0, at) + "        " + tag + "\n    " + sub(xml, at, xml.length())
+        None => xml
+      }
+  }
+}
+
+///|
+/// Builds a browsable VIEW `<intent-filter>` for a URL scheme.
+fn build_scheme_intent_filter(scheme : String) -> String {
+  let esc = xml_escape(scheme)
+  "            <intent-filter>\n" +
+  "                <action android:name=\"android.intent.action.VIEW\" />\n" +
+  "                <category android:name=\"android.intent.category.DEFAULT\" />\n" +
+  "                <category android:name=\"android.intent.category.BROWSABLE\" />\n" +
+  "                <data android:scheme=\"\{esc}\" />\n" +
+  "            </intent-filter>\n"
+}
+
+///|
+/// Sets or replaces `package="..."` on the `<manifest ...>` opening tag without duplicating the attribute.
+fn set_manifest_package(xml : String, app_id : String) -> String {
+  match xml.find("<manifest") {
+    None => xml
+    Some(start) => {
+      let rest = sub(xml, start, xml.length())
+      match rest.find(">") {
+        None => xml
+        Some(rel_end) => {
+          let end = start + rel_end + 1
+          let open = sub(xml, start, end)
+          let esc = xml_escape(app_id)
+          let updated = match rx("\\bpackage=\"[^\"]*\"").search(open) {
+            Some(pm) => sub(open, 0, pm.start()) + "package=\"\{esc}\"" + sub(open, pm.end(), open.length())
+            None => "<manifest package=\"\{esc}\"" + sub(open, 9, open.length())
+          }
+          sub(xml, 0, start) + updated + sub(xml, end, xml.length())
+        }
+      }
+    }
+  }
+}
+
+///|
+/// Sets, replaces, or removes an `android:<attr>="..."` attribute on the `<application ...>` opening tag.
+fn set_application_attr(xml : String, attr : String, value : String?) -> String {
+  match xml.find("<application") {
+    None => xml
+    Some(start) => {
+      let rest = sub(xml, start, xml.length())
+      match rest.find(">") {
+        None => xml
+        Some(rel_end) => {
+          let end = start + rel_end + 1
+          let open = sub(xml, start, end)
+          let pat = rx("\\s*android:" + attr + "=\"[^\"]*\"")
+          let updated = match value {
+            Some(v) => {
+              let esc = xml_escape(v)
+              match pat.search(open) {
+                Some(am) => sub(open, 0, am.start()) + " android:\{attr}=\"\{esc}\"" + sub(open, am.end(), open.length())
+                None =>
+                  if open.has_suffix("/>") {
+                    sub(open, 0, open.length() - 2) + " android:\{attr}=\"\{esc}\" />"
+                  } else {
+                    sub(open, 0, open.length() - 1) + " android:\{attr}=\"\{esc}\">"
+                  }
+              }
+            }
+            None => pat.sub(open, "")
+          }
+          sub(xml, 0, start) + updated + sub(xml, end, xml.length())
+        }
+      }
+    }
+  }
+}
+
+///|
+/// Applies declarative manifest overrides (label, edgeToEdge, ground, env, urlSchemes, permissions).
+fn apply_manifest_overrides(xml_in : String, opts : ManifestOverrides) -> String {
+  let mut text = xml_in
+  // 1. label on <application ...>
+  match opts.label {
+    Some(lbl) => text = set_application_attr(text, "label", Some(lbl))
+    None => ()
+  }
+  // 2. <meta-data> entries inside <application>
+  match opts.edge_to_edge {
+    Some(true) => text = set_meta_data(text, "dev.mbui.edge", "true")
+    Some(false) => text = set_meta_data(text, "dev.mbui.edge", "false")
+    None => ()
+  }
+  match opts.ground {
+    Some(g) => text = set_meta_data(text, "dev.mbui.ground", g)
+    None => ()
+  }
+  match opts.env {
+    Some(e) => text = set_meta_data(text, "dev.mbui.env", e)
+    None => ()
+  }
+  // 3. urlSchemes injected into the MAIN/LAUNCHER <activity> (iterative scan to avoid deep regex backtracking)
+  let schemes = dedup_strings(opts.url_schemes)
+  if schemes.length() > 0 {
+    let mut pos = 0
+    while pos < text.length() {
+      let rest = sub(text, pos, text.length())
+      match rest.find("<activity") {
+        None => break
+        Some(rel_start) => {
+          let act_start = pos + rel_start
+          let after_tag = act_start + 9
+          // ensure "<activity" is followed by whitespace or '>' (not "<activity-alias")
+          let next_ch = if after_tag < text.length() { sub(text, after_tag, after_tag + 1) } else { "" }
+          if next_ch != " " && next_ch != "\t" && next_ch != "\n" && next_ch != "\r" && next_ch != ">" {
+            pos = after_tag
+            continue
+          }
+          let from_act = sub(text, act_start, text.length())
+          match from_act.find("</activity>") {
+            None => break
+            Some(rel_end) => {
+              let block = sub(text, act_start, act_start + rel_end + 11)
+              if block.contains("android.intent.action.MAIN") && block.contains("android.intent.category.LAUNCHER") {
+                let mut add = ""
+                for s in schemes {
+                  let esc = xml_escape(s)
+                  let has_plain = block.contains("<data android:scheme=\"\{esc}\" />") ||
+                    block.contains("<data android:scheme=\"\{esc}\"/>")
+                  if !has_plain {
+                    add = add + build_scheme_intent_filter(s)
+                  }
+                }
+                if add != "" {
+                  let insert_at = act_start + rel_end
+                  text = sub(text, 0, insert_at) + add + "        " + sub(text, insert_at, text.length())
+                }
+                break
+              }
+              pos = act_start + rel_end + 11
+            }
+          }
+        }
+      }
+    }
+  }
+  // 4. permissions deduplicated before <application>
+  let perms = dedup_strings(opts.permissions)
+  if perms.length() > 0 {
+    let mut add = ""
+    for p in perms {
+      if !text.contains("android:name=\"" + p + "\"") {
+        add = add + "<uses-permission android:name=\"\{xml_escape(p)}\" />\n    "
+      }
+    }
+    if add != "" {
+      match text.find("<application") {
+        Some(at) => text = sub(text, 0, at) + add + sub(text, at, text.length())
+        None => ()
+      }
+    }
+  }
+  text
+}
+
+///|
 /// The app's manifest as it goes to aapt2: placeholders filled, its components' names whole, tools: gone, and what the
-/// libraries' manifests put on <application> (their permissions too, those the app does not ask for).
+/// libraries' manifests put on <application> (their permissions too, those the app does not ask for), plus declarative
+/// overrides from apk.json / variant.
 fn manifest_text(
   cfg : @rjson.Value,
   base : String,
@@ -417,7 +759,11 @@ fn manifest_text(
   app_id : String,
   libs : Array[(String, String)],
 ) -> String {
-  let mut text = @sys.read_text(@sys.join(base, text_of(cfg, "manifest"))).unwrap_or("")
+  let mfile = resolve_manifest_path(cfg, base, @sys.getenv("APK_HOME").unwrap_or("."))
+  let mut text = @sys.read_text(mfile).unwrap_or("")
+  if text == "" {
+    die("manifest not found or empty: \{mfile}")
+  }
   let ph : Array[(String, String)] = match variant.get("placeholders") {
     Some(Obj(kvs)) => kvs.filter_map(fn(kv) { kv.1.str().map(fn(s) { (kv.0, s) }) })
     _ => []
@@ -511,10 +857,7 @@ fn manifest_text(
   }
   text = sub(text, 0, app_open.end()) + extra + sub(text, app_open.end(), text.length())
   // its package: the application id (the namespace is R's and the components' names')
-  match rx("<manifest\\b").search(text) {
-    Some(m) => text = sub(text, 0, m.start()) + "<manifest package=\"\{app_id}\"" + sub(text, m.end(), text.length())
-    None => ()
-  }
+  text = set_manifest_package(text, app_id)
   if permissions.length() > 0 {
     let at = text.find("<application").unwrap_or(0)
     let seen = []
@@ -527,7 +870,7 @@ fn manifest_text(
     }
     text = sub(text, 0, at) + add + sub(text, at, text.length())
   }
-  text
+  apply_manifest_overrides(text, overrides_from_json(cfg, variant))
 }
 
 ///|
@@ -671,6 +1014,156 @@ fn secs(x : Double) -> String {
 }
 
 ///|
+priv struct SigningArgs {
+  keystore : String
+  key_alias : String
+  ks_pass : String
+  key_pass : String
+  v3_signing : Bool
+  verify_cert : String
+}
+
+///|
+priv struct ResolvedSigning {
+  keystore : String
+  key_alias : String
+  ks_pass : String
+  key_pass : String
+  v3_signing : Bool
+  needs_debug_gen : Bool
+}
+
+///|
+fn default_debug_keystore() -> String {
+  @sys.join(@sys.getenv("ANDROID_USER_HOME").unwrap_or(@sys.join(home(), ".android")), "debug.keystore")
+}
+
+///|
+fn valid_pass_spec(spec : String) -> Bool {
+  spec.has_prefix("pass:") || spec.has_prefix("env:") || spec.has_prefix("file:")
+}
+
+///|
+/// Validates and resolves signing arguments.
+/// When an explicit `--keystore` path is given and does not exist, returns Err (never silently generates a debug key).
+fn resolve_signing(s : SigningArgs, default_ks : String, ks_exists : Bool) -> Result[ResolvedSigning, String] {
+  let explicit = s.keystore != ""
+  let keystore = if explicit { s.keystore } else { default_ks }
+  if explicit && !ks_exists {
+    return Err("keystore not found: \{keystore}")
+  }
+  let key_alias = if s.key_alias != "" { s.key_alias } else { "androiddebugkey" }
+  let ks_pass = if s.ks_pass != "" { s.ks_pass } else { "pass:android" }
+  let key_pass = if s.key_pass != "" { s.key_pass } else { ks_pass }
+  if !valid_pass_spec(ks_pass) {
+    return Err("invalid --ks-pass spec (expected pass:, env:, or file:): \{ks_pass}")
+  }
+  if !valid_pass_spec(key_pass) {
+    return Err("invalid --key-pass spec (expected pass:, env:, or file:): \{key_pass}")
+  }
+  Ok({
+    keystore,
+    key_alias,
+    ks_pass,
+    key_pass,
+    v3_signing: s.v3_signing,
+    needs_debug_gen: !explicit && !ks_exists,
+  })
+}
+
+///|
+/// Builds the `apksigner sign` shell command.
+fn apksigner_sign_cmd(apksigner : String, r : ResolvedSigning, aligned : String, out : String) -> String {
+  let v3 = if r.v3_signing { "true" } else { "false" }
+  q(apksigner) + " sign --ks " + q(r.keystore) +
+  " --ks-pass " + q(r.ks_pass) +
+  " --ks-key-alias " + q(r.key_alias) +
+  " --key-pass " + q(r.key_pass) +
+  " --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled " + v3 +
+  " --out " + q(out) + " " + q(aligned)
+}
+
+///|
+/// Normalizes a SHA-256 fingerprint string: lowercase hex with colons and whitespace stripped.
+fn normalize_sha256(s : String) -> String {
+  let sb = StringBuilder()
+  for c in s {
+    if c == ':' || c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+      continue
+    }
+    if c >= 'A' && c <= 'F' {
+      sb.write_char(Int::unsafe_to_char(c.to_int() - 'A'.to_int() + 'a'.to_int()))
+    } else {
+      sb.write_char(c)
+    }
+  }
+  sb.to_string()
+}
+
+///|
+/// Extracts the signer certificate SHA-256 digest from `apksigner verify --print-certs` output.
+fn extract_cert_sha256(verify_out : String) -> String? {
+  let pat = rx("certificate SHA-256 digest:\\s*([0-9a-fA-F:]+)")
+  match pat.search(verify_out) {
+    Some(m) => Some(normalize_sha256(m.get(1)))
+    None => None
+  }
+}
+
+///|
+/// Checks whether `apksigner verify --print-certs` output matches the expected SHA-256 fingerprint.
+fn verify_cert_match(verify_out : String, expected : String) -> Result[String, String] {
+  let want = normalize_sha256(expected)
+  match extract_cert_sha256(verify_out) {
+    Some(got) =>
+      if got == want {
+        Ok(got)
+      } else {
+        Err("certificate SHA-256 mismatch: expected \{want}, got \{got}")
+      }
+    None => Err("could not parse certificate SHA-256 digest from apksigner verify output")
+  }
+}
+
+///|
+/// Signs `aligned` into `out` and optionally verifies the signing certificate SHA-256 fingerprint.
+fn sign_and_verify(bt : String, s : SigningArgs, aligned : String, out : String) -> Unit {
+  let default_ks = default_debug_keystore()
+  let ks_path = if s.keystore != "" { s.keystore } else { default_ks }
+  let resolved = match resolve_signing(s, default_ks, @sys.exists(ks_path)) {
+    Ok(r) => r
+    Err(msg) => {
+      die(msg)
+      panic()
+    }
+  }
+  if resolved.needs_debug_gen {
+    // (no key given, as a branch's CI has none: a debug key of its own, as Gradle made one)
+    @sys.makedirs(@sys.dirname(@sys.abspath(resolved.keystore)))
+    ignore(
+      sh(
+        "keytool -genkeypair -keystore " + q(resolved.keystore) +
+        " -storepass android -alias androiddebugkey -keypass android -keyalg RSA -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'",
+        "keytool",
+      ),
+    )
+  }
+  @sys.makedirs(@sys.dirname(@sys.abspath(out)))
+  let apksigner = @sys.join(bt, "apksigner")
+  ignore(sh(apksigner_sign_cmd(apksigner, resolved, aligned, out), "apksigner"))
+  if s.verify_cert != "" {
+    let vout = sh(q(apksigner) + " verify --print-certs " + q(out), "apksigner verify")
+    match verify_cert_match(vout, s.verify_cert) {
+      Ok(_) => ()
+      Err(msg) => {
+        ignore(@sys.remove(out))
+        die(msg)
+      }
+    }
+  }
+}
+
+///|
 priv struct BuildArgs {
   app : String
   variant : String
@@ -678,7 +1171,7 @@ priv struct BuildArgs {
   version_name : String
   out : String
   abi : String
-  keystore : String
+  signing : SigningArgs
   dex_only : Bool
 }
 
@@ -975,31 +1468,7 @@ fn cmd_build(a : BuildArgs) -> Unit {
   }
   let aligned = @sys.join(work, "aligned.apk")
   ignore(sh(q(@sys.join(bt, "zipalign")) + " -P 16 -f 4 " + q(to_align) + " " + q(aligned), "zipalign"))
-  let ks = if a.keystore != "" {
-    a.keystore
-  } else {
-    @sys.join(@sys.getenv("ANDROID_USER_HOME").unwrap_or(@sys.join(home(), ".android")), "debug.keystore")
-  }
-  if !@sys.exists(ks) {
-    // (no key given, as a branch's CI has none: a debug key of its own, as Gradle made one)
-    @sys.makedirs(@sys.dirname(@sys.abspath(ks)))
-    ignore(
-      sh(
-        "keytool -genkeypair -keystore " + q(ks) +
-        " -storepass android -alias androiddebugkey -keypass android -keyalg RSA -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'",
-        "keytool",
-      ),
-    )
-  }
-  @sys.makedirs(@sys.dirname(@sys.abspath(a.out)))
-  ignore(
-    sh(
-      q(@sys.join(bt, "apksigner")) + " sign --ks " + q(ks) +
-      " --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled false --out " +
-      q(a.out) + " " + q(aligned),
-      "apksigner",
-    ),
-  )
+  sign_and_verify(bt, a.signing, aligned, a.out)
   ignore(lap("signed", t))
   ignore(try_sh("rm -rf " + q(work)))
   prune()
@@ -1009,10 +1478,464 @@ fn cmd_build(a : BuildArgs) -> Unit {
   )
 }
 
+// ── repack ─────────────────────────────────────────────────────────────
+
+///|
+priv struct ApkMeta {
+  pkg : String
+  version_code : String
+  version_name : String
+  min_sdk : String
+  target_sdk : String
+  label : String
+  java_ns : String
+  permissions : Array[String]
+}
+
+///|
+/// Extracts `key='value'` from a single line of `aapt2 dump badging`.
+fn badging_attr(line : String, key : String) -> String {
+  let needle = key + "='"
+  match line.find(needle) {
+    None => ""
+    Some(i) => {
+      let start = i + needle.length()
+      let rest = sub(line, start, line.length())
+      match rest.find("'") {
+        Some(end) => sub(rest, 0, end)
+        None => ""
+      }
+    }
+  }
+}
+
+///|
+/// Parses `aapt2 dump badging` output into metadata used as defaults for `apk repack`.
+fn parse_badging(badging : String) -> ApkMeta {
+  let mut pkg = ""
+  let mut version_code = "1"
+  let mut version_name = "0.1.1"
+  let mut min_sdk = "30"
+  let mut target_sdk = "36"
+  let mut label = ""
+  let mut java_ns = "dev.mbui"
+  let permissions : Array[String] = []
+  for raw in badging.split("\n") {
+    let line = raw.trim(chars=" \t\r").to_owned()
+    if line.has_prefix("package:") {
+      let n = badging_attr(line, "name")
+      if n != "" {
+        pkg = n
+      }
+      let vc = badging_attr(line, "versionCode")
+      if vc != "" {
+        version_code = vc
+      }
+      let vn = badging_attr(line, "versionName")
+      if vn != "" {
+        version_name = vn
+      }
+    } else if line.has_prefix("sdkVersion:'") && line.has_suffix("'") {
+      min_sdk = sub(line, 12, line.length() - 1)
+    } else if line.has_prefix("targetSdkVersion:'") && line.has_suffix("'") {
+      target_sdk = sub(line, 18, line.length() - 1)
+    } else if line.has_prefix("application-label:'") && line.has_suffix("'") {
+      label = sub(line, 19, line.length() - 1)
+    } else if line.has_prefix("launchable-activity:") {
+      let cls = badging_attr(line, "name")
+      match cls.rev_find(".") {
+        Some(dot) => java_ns = sub(cls, 0, dot)
+        None => ()
+      }
+    } else if line.has_prefix("uses-permission:") {
+      let p = badging_attr(line, "name")
+      if p != "" && !permissions.contains(p) {
+        permissions.push(p)
+      }
+    }
+  }
+  { pkg, version_code, version_name, min_sdk, target_sdk, label, java_ns, permissions }
+}
+
+///|
+/// Whether a manifest XML references non-framework (`@<type>/...` other than `@android:...`) resources.
+fn manifest_uses_app_res(xml : String) -> Bool {
+  rx("@(?!android:)[a-zA-Z0-9_\\.]+/[a-zA-Z0-9_\\.]+").search(xml) is Some(_)
+}
+
+///|
+/// Original `<application>` attributes and `dev.mbui.*` `<meta-data>` extracted from `aapt2 dump xmltree`.
+priv struct XmltreeAppAttrs {
+  app_component_factory : String?
+  debuggable : Bool?
+  edge_to_edge : Bool?
+  ground : String?
+  env : String?
+}
+
+///|
+fn leading_spaces(s : String) -> Int {
+  let mut n = 0
+  for c in s {
+    if c == ' ' {
+      n += 1
+    } else {
+      break
+    }
+  }
+  n
+}
+
+///|
+/// Extracts the attribute value from an `aapt2 dump xmltree` `A: ...=...` line.
+fn xmltree_attr_value(line : String) -> String? {
+  let rhs = match line.find(")=") {
+    Some(i) => sub(line, i + 2, line.length())
+    None =>
+      match line.find("=") {
+        Some(i) => sub(line, i + 1, line.length())
+        None => return None
+      }
+  }
+  if rhs.has_prefix("\"") {
+    let cs = rhs.to_array()
+    let sb = StringBuilder()
+    let mut i = 1
+    while i < cs.length() {
+      let c = cs[i]
+      if c == '\\' && i + 1 < cs.length() {
+        let next = cs[i + 1]
+        match next {
+          'n' => sb.write_char('\n')
+          't' => sb.write_char('\t')
+          '\\' => sb.write_char('\\')
+          '"' => sb.write_char('"')
+          _ => sb.write_char(next)
+        }
+        i += 2
+        continue
+      }
+      if c == '"' {
+        return Some(sb.to_string())
+      }
+      sb.write_char(c)
+      i += 1
+    }
+    Some(sb.to_string())
+  } else {
+    let trimmed = rhs.trim(chars=" \t\r").to_owned()
+    if trimmed == "" {
+      None
+    } else {
+      Some(trimmed)
+    }
+  }
+}
+
+///|
+fn xmltree_bool(v : String) -> Bool? {
+  if v == "true" || v == "(type 0x12)0xffffffff" || v == "(type 0x12)0x1" {
+    Some(true)
+  } else if v == "false" || v == "(type 0x12)0x0" {
+    Some(false)
+  } else {
+    None
+  }
+}
+
+///|
+/// Parses `aapt2 dump xmltree <in.apk> --file AndroidManifest.xml` to preserve `<application>`'s
+/// `appComponentFactory`, `debuggable`, and `dev.mbui.edge` / `dev.mbui.ground` / `dev.mbui.env` meta-data.
+fn parse_xmltree_app_attrs(xmltree : String) -> XmltreeAppAttrs {
+  let mut app_indent = -1
+  let mut app_child_indent = -1
+  let mut in_app_attrs = false
+  let mut in_meta = false
+  let mut meta_indent = -1
+  let mut meta_name = ""
+  let mut meta_val = ""
+  let mut app_component_factory : String? = None
+  let mut debuggable : Bool? = None
+  let mut edge_to_edge : Bool? = None
+  let mut ground : String? = None
+  let mut env : String? = None
+  let flush_meta = fn() {
+    if in_meta && meta_name != "" && meta_val != "" {
+      if meta_name == "dev.mbui.edge" {
+        edge_to_edge = xmltree_bool(meta_val)
+      } else if meta_name == "dev.mbui.ground" {
+        ground = Some(meta_val)
+      } else if meta_name == "dev.mbui.env" {
+        env = Some(meta_val)
+      }
+    }
+    in_meta = false
+    meta_indent = -1
+    meta_name = ""
+    meta_val = ""
+  }
+  for raw in xmltree.split("\n") {
+    let s = raw.to_owned()
+    let indent = leading_spaces(s)
+    let line = s.trim(chars=" \t\r").to_owned()
+    if line == "" {
+      continue
+    }
+    if in_meta && indent <= meta_indent {
+      flush_meta()
+    }
+    if app_indent >= 0 && indent <= app_indent && line.has_prefix("E:") {
+      app_indent = -1
+      app_child_indent = -1
+      in_app_attrs = false
+    }
+    if line.has_prefix("E: application ") || line == "E: application" {
+      app_indent = indent
+      app_child_indent = -1
+      in_app_attrs = true
+      continue
+    }
+    if app_indent >= 0 {
+      if line.has_prefix("E: ") {
+        in_app_attrs = false
+        if app_child_indent < 0 && indent > app_indent {
+          app_child_indent = indent
+        }
+        if indent == app_child_indent && (line.has_prefix("E: meta-data ") || line == "E: meta-data") {
+          in_meta = true
+          meta_indent = indent
+          meta_name = ""
+          meta_val = ""
+        }
+        continue
+      }
+      if in_app_attrs && indent > app_indent && line.has_prefix("A: ") {
+        if line.contains(":appComponentFactory(") || line.contains(":appComponentFactory=") {
+          match xmltree_attr_value(line) {
+            Some(v) if v != "" => app_component_factory = Some(v)
+            _ => ()
+          }
+        } else if line.contains(":debuggable(") || line.contains(":debuggable=") {
+          match xmltree_attr_value(line) {
+            Some(v) => debuggable = xmltree_bool(v)
+            None => ()
+          }
+        }
+      } else if in_meta && indent > meta_indent && line.has_prefix("A: ") {
+        if line.contains(":name(") || line.contains(":name=") {
+          meta_name = xmltree_attr_value(line).unwrap_or("")
+        } else if line.contains(":value(") || line.contains(":value=") {
+          meta_val = xmltree_attr_value(line).unwrap_or("")
+        }
+      }
+    }
+  }
+  flush_meta()
+  { app_component_factory, debuggable, edge_to_edge, ground, env }
+}
+
+///|
+priv struct RepackArgs {
+  input : String
+  out : String
+  app_id : String
+  label : String?
+  version_code : String
+  version_name : String
+  env : String?
+  edge_to_edge : Bool?
+  ground : String?
+  debuggable : Bool?
+  url_schemes : Array[String]
+  permissions : Array[String]
+  manifest : String
+  signing : SigningArgs
+}
+
+///|
+fn cmd_repack(a : RepackArgs) -> Unit {
+  let t0 = now_s()
+  if !@sys.exists(a.input) {
+    die("input APK not found: \{a.input}")
+  }
+  let bt = newest_build_tools()
+  let aapt2 = @sys.join(bt, "aapt2")
+  let android_jar = newest_android_jar()
+  let work = sh("mktemp -d -t apk-repack-XXXXXX", "mktemp").trim(chars=" \n").to_owned()
+  let badging = sh(q(aapt2) + " dump badging " + q(a.input), "aapt2 dump badging")
+  let meta = parse_badging(badging)
+  let xmltree = try_sh(q(aapt2) + " dump xmltree " + q(a.input) + " --file AndroidManifest.xml").unwrap_or("")
+  let orig_attrs = parse_xmltree_app_attrs(xmltree)
+  let pkg_dump = try_sh(q(aapt2) + " dump packagename " + q(a.input))
+    .unwrap_or("")
+    .trim(chars=" \t\r\n")
+    .to_owned()
+  let orig_pkg = if pkg_dump != "" { pkg_dump } else { meta.pkg }
+  let app_id = if a.app_id != "" { a.app_id } else { orig_pkg }
+  if app_id == "" {
+    die("could not determine application id; pass --app-id")
+  }
+  let vc = if a.version_code != "" { a.version_code } else { meta.version_code }
+  let vn = if a.version_name != "" { a.version_name } else { meta.version_name }
+  let mfile = if a.manifest == "" || a.manifest == "@mbui" {
+    @sys.join(@sys.getenv("APK_HOME").unwrap_or("."), "../android/app/src/main/AndroidManifest.xml")
+  } else {
+    a.manifest
+  }
+  let mut text = @sys.read_text(mfile).unwrap_or("")
+  if text == "" {
+    die("manifest not found or empty: \{mfile}")
+  }
+  text = text.replace_all(old="${applicationId}", new=app_id)
+  let left = rx("\\$\\{(\\w+)\\}").findall(text)
+  if left.length() > 0 {
+    let names = left.join(", ")
+    die("manifest placeholders not given: [\{names}]")
+  }
+  let ns = meta.java_ns
+  text = rx("(<(?:application|activity|activity-alias|service|receiver|provider)\\b[^>]*?android:name=\")\\.").sub_with(
+    text,
+    fn(m) { m.get(1) + ns + "." },
+  )
+  text = rx("\\s+tools:\\w+=\"[^\"]*\"").sub(text, "")
+  text = rx("\\s+xmlns:tools=\"[^\"]*\"").sub(text, "")
+  match rx("<application\\b[^>]*").search(text) {
+    Some(m) => {
+      if !m.get(0).contains("android:extractNativeLibs=") {
+        text = sub(text, 0, m.end()) + " android:extractNativeLibs=\"true\"" + sub(text, m.end(), text.length())
+      }
+    }
+    None => die("no <application> in the manifest")
+  }
+  // Preserve appComponentFactory from original APK unless the template already specifies one.
+  match orig_attrs.app_component_factory {
+    Some(factory) =>
+      if !text.contains("android:appComponentFactory=") {
+        text = set_application_attr(text, "appComponentFactory", Some(factory))
+      }
+    None => ()
+  }
+  // Preserve debuggable from original APK unless explicitly overridden via --debuggable true|false.
+  let eff_debuggable = match a.debuggable {
+    Some(b) => Some(b)
+    None => orig_attrs.debuggable
+  }
+  match eff_debuggable {
+    Some(true) => text = set_application_attr(text, "debuggable", Some("true"))
+    Some(false) => text = set_application_attr(text, "debuggable", None)
+    None => ()
+  }
+  text = set_manifest_package(text, app_id)
+  let eff_label = match a.label {
+    Some(l) => Some(l)
+    None => if a.manifest == "" && meta.label != "" { Some(meta.label) } else { None }
+  }
+  let eff_edge = match a.edge_to_edge {
+    Some(b) => Some(b)
+    None => orig_attrs.edge_to_edge
+  }
+  let eff_ground = match a.ground {
+    Some(g) => Some(g)
+    None => orig_attrs.ground
+  }
+  let eff_env = match a.env {
+    Some(e) => Some(e)
+    None => orig_attrs.env
+  }
+  let eff_perms = dedup_strings(meta.permissions + a.permissions)
+  text = apply_manifest_overrides(text, {
+    label: eff_label,
+    edge_to_edge: eff_edge,
+    ground: eff_ground,
+    env: eff_env,
+    url_schemes: a.url_schemes,
+    permissions: eff_perms,
+  })
+  let man = @sys.join(work, "AndroidManifest.xml")
+  ignore(@sys.write_text(man, text))
+  let man_ap = @sys.join(work, "manifest.ap_")
+  let extra_inc = if manifest_uses_app_res(text) { " -I " + q(a.input) } else { "" }
+  ignore(
+    sh(
+      q(aapt2) + " link -I " + q(android_jar) + extra_inc + " --manifest " + q(man) + " -o " + q(man_ap) +
+      " --min-sdk-version " + meta.min_sdk + " --target-sdk-version " + meta.target_sdk +
+      " --version-code " + vc + " --version-name " + q(vn) + " --no-version-vectors",
+      "aapt2 link (repack)",
+    ),
+  )
+  let stage = @sys.join(work, "stage")
+  @sys.makedirs(stage)
+  ignore(sh("unzip -q -o " + q(man_ap) + " AndroidManifest.xml -d " + q(stage), "unzip manifest"))
+  let unsigned = @sys.join(work, "unsigned.apk")
+  ignore(sh("cp " + q(a.input) + " " + q(unsigned), "cp"))
+  // Strip any existing v1 signature files so apksigner signs cleanly.
+  ignore(
+    try_sh(
+      "zip -q -d " + q(unsigned) +
+      " 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.EC' 'META-INF/*.DSA' 'META-INF/MANIFEST.MF'",
+    ),
+  )
+  ignore(sh("cd " + q(stage) + " && zip -q -X " + q(unsigned) + " AndroidManifest.xml", "zip manifest"))
+  let aligned = @sys.join(work, "aligned.apk")
+  ignore(sh(q(@sys.join(bt, "zipalign")) + " -P 16 -f 4 " + q(unsigned) + " " + q(aligned), "zipalign"))
+  sign_and_verify(bt, a.signing, aligned, a.out)
+  ignore(try_sh("rm -rf " + q(work)))
+  let size = sh("wc -c < " + q(a.out), "wc").trim(chars=" \n\t")
+  say("\{a.out}: \{size} bytes repacked in \{secs(now_s() - t0)} s")
+}
+
+///|
+fn parse_opt(rest : Array[String], name : String, default : String) -> String {
+  for i, x in rest {
+    if x == name && i + 1 < rest.length() {
+      return rest[i + 1]
+    }
+  }
+  default
+}
+
+///|
+fn parse_opt_some(rest : Array[String], name : String) -> String? {
+  for i, x in rest {
+    if x == name && i + 1 < rest.length() {
+      return Some(rest[i + 1])
+    }
+  }
+  None
+}
+
+///|
+fn parse_opt_many(rest : Array[String], name : String) -> Array[String] {
+  let out : Array[String] = []
+  for i, x in rest {
+    if x == name && i + 1 < rest.length() {
+      for part in rest[i + 1].split(",") {
+        let s = part.trim(chars=" \t").to_owned()
+        if s != "" {
+          out.push(s)
+        }
+      }
+    }
+  }
+  out
+}
+
+///|
+fn parse_signing_args(rest : Array[String]) -> SigningArgs {
+  {
+    keystore: parse_opt(rest, "--keystore", ""),
+    key_alias: parse_opt(rest, "--key-alias", ""),
+    ks_pass: parse_opt(rest, "--ks-pass", ""),
+    key_pass: parse_opt(rest, "--key-pass", ""),
+    v3_signing: rest.contains("--v3-signing"),
+    verify_cert: parse_opt(rest, "--verify-cert", ""),
+  }
+}
+
 ///|
 fn usage() -> Int {
   @sys.eprintln(
-    "apk: lock APP.json | build APP.json --variant V --version-code N --version-name S --out APK [--abi A] [--keystore K] | fetch PATH SHA256",
+    "apk: lock APP.json | build APP.json --variant V --version-code N --version-name S --out APK [--abi A] [--keystore K] [--key-alias A] [--ks-pass SPEC] [--key-pass SPEC] [--v3-signing] [--verify-cert SHA256] [--dex-only] | repack IN.apk --out OUT.apk [--app-id ID] [--label NAME] [--version-code N] [--version-name S] [--env K=V;...] [--edge-to-edge true|false] [--ground C] [--debuggable true|false] [--url-scheme S] [--permission P] [--manifest PATH] [--keystore K] [--key-alias A] [--ks-pass SPEC] [--key-pass SPEC] [--v3-signing] [--verify-cert SHA256] | fetch PATH SHA256",
   )
   2
 }
@@ -1030,27 +1953,65 @@ fn main {
       0
     }
     ["build", app, .. rest] => {
-      let opt = fn(name : String, default : String) -> String {
-        for i, x in rest {
-          if x == name && i + 1 < rest.length() {
-            return rest[i + 1]
-          }
-        }
-        default
-      }
-      let out = opt("--out", "")
+      let rest_arr = rest.to_owned()
+      let out = parse_opt(rest_arr, "--out", "")
       if out == "" {
         usage()
       } else {
         cmd_build({
           app,
-          variant: opt("--variant", "debug"),
-          version_code: opt("--version-code", "1"),
-          version_name: opt("--version-name", "0.1.1"),
+          variant: parse_opt(rest_arr, "--variant", "debug"),
+          version_code: parse_opt(rest_arr, "--version-code", "1"),
+          version_name: parse_opt(rest_arr, "--version-name", "0.1.1"),
           out,
-          abi: opt("--abi", ""),
-          keystore: opt("--keystore", ""),
-          dex_only: rest.contains("--dex-only"),
+          abi: parse_opt(rest_arr, "--abi", ""),
+          signing: parse_signing_args(rest_arr),
+          dex_only: rest_arr.contains("--dex-only"),
+        })
+        0
+      }
+    }
+    ["repack", input, .. rest] => {
+      let rest_arr = rest.to_owned()
+      let out = parse_opt(rest_arr, "--out", "")
+      if out == "" {
+        usage()
+      } else {
+        let edge_to_edge = match parse_opt_some(rest_arr, "--edge-to-edge") {
+          Some("true") => Some(true)
+          Some("false") => Some(false)
+          Some(other) => {
+            die("invalid --edge-to-edge value (expected true or false): \{other}")
+            None
+          }
+          None => None
+        }
+        let debuggable = match parse_opt_some(rest_arr, "--debuggable") {
+          Some("true") => Some(true)
+          Some("false") => Some(false)
+          Some(other) => {
+            die("invalid --debuggable value (expected true or false): \{other}")
+            None
+          }
+          None => None
+        }
+        let url_schemes = parse_opt_many(rest_arr, "--url-scheme") + parse_opt_many(rest_arr, "--url-schemes")
+        let permissions = parse_opt_many(rest_arr, "--permission") + parse_opt_many(rest_arr, "--permissions")
+        cmd_repack({
+          input,
+          out,
+          app_id: parse_opt(rest_arr, "--app-id", ""),
+          label: parse_opt_some(rest_arr, "--label"),
+          version_code: parse_opt(rest_arr, "--version-code", ""),
+          version_name: parse_opt(rest_arr, "--version-name", ""),
+          env: parse_opt_some(rest_arr, "--env"),
+          edge_to_edge,
+          ground: parse_opt_some(rest_arr, "--ground"),
+          debuggable,
+          url_schemes,
+          permissions,
+          manifest: parse_opt(rest_arr, "--manifest", ""),
+          signing: parse_signing_args(rest_arr),
         })
         0
       }
