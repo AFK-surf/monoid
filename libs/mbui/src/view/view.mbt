@@ -122,6 +122,10 @@ pub(all) struct Look {
   /// height): View::scale
   mut scale : Double
   mut pivot : Pivot
+  /// how far its farthest corner may stand off where it is laid out for its scale (points; 0: as far as it goes), and
+  /// the widest it has swung from 1 under that binding: View::scale's max_shift (Node::scaled_at)
+  mut scale_shift : Double
+  mut scale_peak : Double
   /// how far what it draws itself is turned (radians; not what it holds), and whether about the middle of what it draws
   /// (else its own): View::turn
   mut turn : Double
@@ -1902,6 +1906,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.sy = 0.0
       n.look.scale = 1.0
       n.look.pivot = At(0.5, 0.5)
+      n.look.scale_shift = 0.0
+      n.look.scale_peak = 0.0
       n.look.drawn_as = ""
       n.look.clips = false
       n.look.words_center = false
@@ -2064,7 +2070,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         words_as_said,
@@ -6557,11 +6563,30 @@ pub fn Tree::turns_about_drawn(self : Tree, id : NodeId) -> Bool {
 /// projection of it and its holders (Tree::projected); laid out as before. Where what it holds cuts them, cut as far
 /// in; its words, its shapes and its corners drawn as big. An old view it holds (View::hosted) laid out as big as its
 /// node, drawn, pressed, typed into and read out as big where it is drawn, by what hosts the tree (ui's island_proj).
+/// `max_shift`, where above 0: the most its corner farthest from `about` stands off where it is laid out, in points, as
+/// it is placed (where it went beside its anchor included): one small enough to stay within it drawn as big as it says;
+/// a bigger one's whole swing narrowed in proportion (the widest it has swung under this binding, its way in from its
+/// first frame), so it eases in and out as before, never held still at the cap; one going smaller from whole with no
+/// way in held at the cap once past it.
 #callsite(autofill(loc))
-pub fn View::scale(self : View, s : Live[Double], about? : Pivot = At(0.5, 0.5), loc~ : SourceLoc) -> View {
+pub fn View::scale(
+  self : View,
+  s : Live[Double],
+  about? : Pivot = At(0.5, 0.5),
+  max_shift? : Double = 0.0,
+  loc~ : SourceLoc,
+) -> View {
+  if self.live() is Some(n) {
+    n.look.scale_peak = 0.0
+  }
   self.bind(loc~, Scale, s, Place, fn(s) {
     let n = self.tree.nodes[self.at]
     n.look.scale = s
+    n.look.scale_shift = max_shift
+    let d = (s - 1.0).abs()
+    if d > n.look.scale_peak {
+      n.look.scale_peak = d
+    }
     // (grown about another point: what it draws worked out afresh for the middle of it, where it says so)
     if n.look.pivot != about {
       n.drawn_stale = true
@@ -12556,7 +12581,6 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
   let (iy, _, fo, fa) = n.flip_in
   let y = self.rows_placed(at, n.flex.top + n.look.dy + sy + n.moved.1 + iy)
   let a = n.look.alpha * fa
-  let s = n.look.scale * fo
   let mut px = 0.0
   let mut py = 0.0
   if fo != 1.0 {
@@ -12578,6 +12602,8 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
       }
     }
   }
+  // (as big as it says, its farthest corner kept within its max_shift: View::scale)
+  let s = n.scaled_at(w, h, px, py)
   // (left out of its row: laid out nowhere; told once all of it is laid out, View::left_out)
   let out = n.flex.left_out()
   let went = !n.placed || x != n.lx || y != n.ly || a != n.la || s != n.ls || px != n.lpx || py != n.lpy || out != n.out

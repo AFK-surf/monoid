@@ -424,17 +424,21 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     // stays there, never where it is laid out)
     let stay = fn() {
       match n.beside_last {
-        Some((lx, ly, px, py)) =>
-          if lx != n.lx || ly != n.ly || px != n.lpx || py != n.lpy {
+        Some((lx, ly, px, py)) => {
+          // (as big as about the point it last went from: its max_shift kept there, View::scale)
+          let ls = n.scaled_at(n.lw, n.lh, px, py)
+          if lx != n.lx || ly != n.ly || px != n.lpx || py != n.lpy || ls != n.ls {
             n.lx = lx
             n.ly = ly
             n.lpx = px
             n.lpy = py
+            n.ls = ls
             self.work.composed = self.work.composed + 1
             self.composed.push({ at, gen: n.gen })
             self.places_rev = self.places_rev + 1
             self.hits_bump()
           }
+        }
         None => ()
       }
       state[at] = 2
@@ -536,13 +540,16 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     }
     n.went = Some(went)
     let (px, py) = self.pivot_of(at, n.lw, n.lh)
+    // (as big about the side it went on, its max_shift kept from there: Tree::place had the side it went on last)
+    let ls = n.scaled_at(n.lw, n.lh, px, py)
     let (lx, ly) = ((x - hx) / hs, (y - hy) / hs)
     n.beside_last = Some((lx, ly, px, py))
-    if lx != n.lx || ly != n.ly || px != n.lpx || py != n.lpy {
+    if lx != n.lx || ly != n.ly || px != n.lpx || py != n.lpy || ls != n.ls {
       n.lx = lx
       n.ly = ly
       n.lpx = px
       n.lpy = py
+      n.ls = ls
       self.work.composed = self.work.composed + 1
       self.composed.push({ at, gen: n.gen })
       self.places_rev = self.places_rev + 1
@@ -683,6 +690,26 @@ fn Pivot::drawn(self : Pivot) -> Bool {
     Drawn | DrawnSide(_) => true
     _ => false
   }
+}
+
+///|
+/// How big `self` is placed (`ls`), laid out `w` by `h` about `(px, py)`: where `scale_shift` caps how far its farthest
+/// corner may stand off its laid-out place, a wider swing (`scale_peak`) is narrowed in proportion so the whole way in
+/// and out keeps its ease without standing still at the cap. Its swing in (0.97 to 1 and back to 0.97) is its widest
+/// from its first frame, so all of the way in and out is narrowed alike; one going smaller from 1 with no way in has
+/// its widest grow as it goes, held at the cap from `most / far` on. Grown inside a list's block (`flip_in`): as it says.
+fn Node::scaled_at(self : Node, w : Double, h : Double, px : Double, py : Double) -> Double {
+  let (_, _, fo, _) = self.flip_in
+  let s = self.look.scale * fo
+  let most = self.look.scale_shift
+  if most > 0.0 && fo == 1.0 && s != 1.0 {
+    let far = dmax(dmax(px, w - px), dmax(py, h - py))
+    let peak = dmax(self.look.scale_peak, (s - 1.0).abs())
+    if far > 0.0 && far * peak > most {
+      return 1.0 + (s - 1.0) * (most / (far * peak))
+    }
+  }
+  s
 }
 
 ///|
