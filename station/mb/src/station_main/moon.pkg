@@ -13,6 +13,7 @@ import {
   "station/cloud_lock",
   "station/updates",
   "station/jsjson",
+  "station/i18n",
   "station/sql",
   "station/store_schema",
   "station/store_sessions",
