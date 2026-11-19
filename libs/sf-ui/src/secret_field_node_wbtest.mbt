@@ -140,7 +140,7 @@ test "points: each mark on the first line of words of several lines, the rest un
 }
 
 ///|
-test "a use: when on what used it's first line, how under it in the code face where it was a command" {
+test "a use: when on the baseline of what used it's first line, how under it in the code face where it was a command" {
   let t = u15_case(fn(b) {
     record_rows_node(b, fn(l) {
       l.box(fn(row) {
@@ -155,11 +155,15 @@ test "a use: when on what used it's first line, how under it in the code face wh
     })
   })
   let (nx, ny, nw, nh) = t.rect_of("部署对话").unwrap()
-  let (wx, wy, _, wh) = t.rect_of("3 分钟前").unwrap()
+  let (wx, _, _, _) = t.rect_of("3 分钟前").unwrap()
   let (_, hy, _, _) = t.rect_of("gh auth status").unwrap()
   assert_true(wx > nx + nw)
-  // (when across the middle of what used it's line)
-  assert_true((wy + wh / 2.0 - (ny + nh / 2.0)).abs() <= 1.0, msg="\{wy} \{wh} \{ny} \{nh}")
+  // (when on the baseline of what used it's line, whatever size its words are: Body here)
+  let base_of = fn(words : String) {
+    t.text_runs().filter(fn(r) { r.text == words })[0].base
+  }
+  let (nb, wb) = (base_of("部署对话"), base_of("3 分钟前"))
+  assert_true((nb - wb).abs() <= 0.01, msg="\{nb} \{wb}")
   assert_true(hy >= ny + nh)
   assert_eq(t.audit(), [])
 }

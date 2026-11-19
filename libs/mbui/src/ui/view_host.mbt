@@ -622,6 +622,8 @@ fn view_words_measure_set(
     style=view_words_style(),
     max_lines=look.max_lines,
   )
+  // (where their first line is, for what lines them up by it: view_baseline.mbt)
+  view_words_first_told(tl)
   // (broken onto more lines than their own where the width ran out: as wide as it, as an old view's words are, leaf_size;
   // cut after their last line, as those lines are)
   (if width >= 0.0 && look.wrap && soft_wrapped(tl.line_end, tl.shaped.cu) { width } else { tl.w }, tl.h)
@@ -842,6 +844,8 @@ fn view_runs_measure_set(
   let lay = layout_rich(r, w)
   // (on more lines than it says it is drawn on: cut after the last, as it is drawn, view_runs_laid)
   let lay = if runs_past(r, lay) { layout_rich(cut_rich(r, lay, w), w) } else { lay }
+  // (where their first line is, for what lines them up by it: view_baseline.mbt)
+  view_runs_first_told(lay)
   // (broken where the width ran out: as wide as it, as leaf_size has an old view's)
   (if width >= 0.0 && look.wrap && soft_wrapped(lay.line_end, lay.cu) { width } else { lay.w }, lay.h)
 }

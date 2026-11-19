@@ -217,6 +217,8 @@ fn item_block_node(
             let fact = fn(at : @view.View, term : String, value : (@view.View) -> Unit) {
               at.box(fn(r) {
                 @sf.style_node(r, fn() { vi_fact })
+                // (its term on the baseline of how it stands' first line: a Meta line beside a Ui one)
+                r.lines_up_baseline(Is(true)) |> ignore
                 r.box(fn(t) {
                   t.width(By(fn() { Some(term_w()) })).shrink(Is(0.0)) |> ignore
                   @sf.words_node(t, fn() { @sf.t(term) }, fn() { vi_term }) |> ignore
@@ -415,7 +417,8 @@ let vi_facts : @ui.Style = @ui.css("w=Full gap=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let vi_fact : @ui.Style = @ui.css("row w=Full gap=S3_5 align=AStart")
+// (its term and how it stands on one baseline: View::lines_up_baseline, where it is made)
+let vi_fact : @ui.Style = @ui.css("row w=Full gap=S3_5")
 
 ///|
 /// Its terms' column at least (the web's 96).

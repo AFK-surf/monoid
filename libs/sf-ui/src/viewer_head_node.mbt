@@ -68,7 +68,8 @@ pub fn viewer_head_node(
       h.box(fn(title) {
         title
         .row(Is(true))
-        .lines_up(Is(Some(Start)))
+        // (the meta on the name's baseline, not its foot)
+        .lines_up_baseline(Is(true))
         .gap(Is(@ui.Space::px(S2_5)))
         .padding(Is((0.0, 0.0, @ui.Space::px(S3), 0.0)))
         .shrink(Is(1.0))
@@ -99,8 +100,6 @@ pub fn viewer_head_node(
           .ink(By(fn() { @ui.tree_theme().color(Muted) }))
           .says(By(fn() { Some(@view.said(Text, label=meta())) }))
           |> ignore
-          // (on the name's baseline, not its foot: on_baseline)
-          on_baseline(loc~, m, Body, Meta, weight=600) |> ignore
         })
       })
       |> ignore

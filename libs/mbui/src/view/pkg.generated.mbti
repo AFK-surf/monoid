@@ -1625,6 +1625,10 @@ pub fn View::lies_along(Self, Live[Lies], loc~ : SourceLoc) -> Self
 pub fn View::lines(Self, Live[Array[@paint.Line]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::lines_up(Self, Live[Along?], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn View::lines_up_baseline(Self, Live[Bool], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn View::lines_up_first_line(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::lives_with(Self, Self) -> Self
 pub fn View::logic_at(Self) -> Double
 pub fn View::made_for(Self, SourceLoc) -> Self

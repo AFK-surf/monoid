@@ -25,6 +25,6 @@
 - Use `Tester::hold_faults` (`[SILENT_HOLD]`, `[LONG_HOLD]`), `Tester::waterfall_faults` (`[ASYNC_WATERFALL]`), and `Tester::set_fanout_limit` (`[FAN_OUT]`) to catch hidden waits, serial waterfalls, and excess wakeups.
 - `Tester::frame` retains rows like a real device (`libs/mbui/src/ui/tester_rows.mbt`) to expose untracked mutable state. `built-by-hand` forbids `Ctx::forget_parts` and `built_from_changed`.
 - Never call `abort` directly (`abort-unsaid`): call `@halt.saying(msg)` (`libs/mbui/src/halt`) so wasm-gc prints the message and location.
-- Never write `test "panic …"` (`panic-test`): panics leave wasm-gc process globals dirty for subsequent tests (`leaked_state`). Assert faults via `@view.faults_stop`/`@view.fault_told` or two-step checks (`css_read`, `Tester::idle_said`, `draw_said`, `flex.reuse_refused`).
+- Never write `test "panic …"` (`panic-test`): panics leave wasm-gc process globals dirty for subsequent tests (`leaked_state`). Assert faults via `@view.faults_stop`/`@view.fault_told` or two-step checks (`css_read`, `Tester::idle_said`, `draw_said`).
 - Finish reading one `Tester` before creating another (`Tester::own_read_said`, `libs/mbui/src/ui/tester_own.mbt`). Always start a fresh run (`new_run`, `Tester`) before reading app state (`read-before-run`).
 - App code never checks whether a Tester runs (`tester-branch`, no `fake.val`). Vary test behavior only through `FakeHost` (`libs/mbui/src/ui/fake_host.mbt`) or Tester hooks (`pass_look`, `frame_said`, `shot_watch`).
