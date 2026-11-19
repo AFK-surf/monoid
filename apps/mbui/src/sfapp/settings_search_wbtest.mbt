@@ -153,6 +153,14 @@ test "settings search shows a row's own page's settings only where the words say
     assert_true(t.find("提示归档") is None && t.find("自动归档") is None, msg=at)
     settings_search_for(t, "自动归档")
     assert_true(t.find("自动归档") is Some(_), msg=at)
+    // (the workspace's row by what it is: its name's setting only for more than that)
+    let named = @sf.t("android-settings.workspace.name")
+    for words in ["工作区", "Workspace"] {
+      settings_search_for(t, words)
+      assert_true(t.find("星火工作室") is Some(_) && t.find(named) is None, msg="\{at}: \{words}")
+    }
+    settings_search_for(t, "重命名")
+    assert_true(t.find(named) is Some(_), msg=at)
   }
 }
 

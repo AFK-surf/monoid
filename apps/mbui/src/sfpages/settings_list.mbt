@@ -451,14 +451,6 @@ pub fn settings_search_node(
         own.set(w)
       }
     })
-    if steps {
-      // (↑ ↓ from the field come as the keymap's actions, a combobox's: taken only while there is a result to go to)
-      page
-      .key_context(@headless.combobox_context)
-      .on_action(@headless.combobox_next, fn(_) { step(1) }, can=fn() { !found().is_empty() })
-      .on_action(@headless.combobox_prev, fn(_) { step(-1) }, can=fn() { !found().is_empty() })
-      |> ignore
-    }
     let submitted = match choose {
       Some(open) =>
         Some(fn(_w : String) {
@@ -479,6 +471,9 @@ pub fn settings_search_node(
         settings_search_active.set("")
       },
       submitted?,
+      // (↑ ↓ along the results, taken only while there is a result to go to)
+      step?=if steps { Some(step) } else { None },
+      step_can=fn() { !found().is_empty() },
       escape=fn() {
         if own.text() == "" {
           false
@@ -735,7 +730,13 @@ fn settings_found(
       if parent_matched {
         rows.push(row)
       }
-      let named = parent_matched && words.iter().all(fn(w) { row.title.to_lower().contains(w) })
+      // (what the row is called: the account's and the workspace's rows by their own names and by what they are)
+      let own_names = match row.key {
+        "me" => row.title + " " + @sf.t("android-settings.me.title") + " 个人资料 account profile"
+        "workspace" => row.title + " " + @sf.t("android-settings.workspace.title") + " 工作区 workspace"
+        _ => row.title
+      }
+      let named = parent_matched && words.iter().all(fn(w) { own_names.to_lower().contains(w) })
       for child in settings_search_children(row, core, here, wide) {
         if named && child.route == row.route {
           continue
