@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [016b09ab0](https://github.com/AFK-surf/monoid/commit/016b09ab078c6e7d252b8aec08c54482ca0be870) refactor(mbui): move TipOwner to mbui/headless, dr | 2.64 | 3.55 | 14.52 | 36.74 | 55.91 | 32.22 | 65.27 | 97.39 | 119.12 |
 | [8626a69df](https://github.com/AFK-surf/monoid/commit/8626a69df10482fa7d193a3eabffbabefc292c5e) fix(mbui): update profile overview share menu and  | 2.64 | 3.55 | 14.52 | 36.74 | 55.91 | 32.22 | 65.27 | 97.39 | 119.12 |
 | [b208ce089](https://github.com/AFK-surf/monoid/commit/b208ce089e603e1f6d2b8d31eb5ce6150974ac8c) fix(mbui): set a list's FLIP rest before telling i | 2.64 | 3.55 | 14.52 | 36.74 | 55.91 | 32.22 | 65.27 | 97.39 | 119.12 |
 | [3ea0dccaf](https://github.com/AFK-surf/monoid/commit/3ea0dccaf788da7a9571ad76cb8b14716abb9a04) fix(mbui): align model picker dividers flush as 0. | 2.64 | 3.55 | 14.52 | 36.73 | 55.9 | 32.22 | 65.25 | 97.5 | 126.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 | [1afe38ccc](https://github.com/AFK-surf/monoid/commit/1afe38ccc92c80ebf5e9211ef2dfbcd4e8b0755f) feat(storybook): add the 环境 workbench panel, state | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
 | [208fe11c0](https://github.com/AFK-surf/monoid/commit/208fe11c021a0bc57975027baf16cc3cc8aa4665) feat(mbui): line up rows by their first lines in t | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
-| [fc9234632](https://github.com/AFK-surf/monoid/commit/fc9234632f69d87cf7cd226880b3aed511abec2b) fix(mbui, sf-ui): make the whole app static by def | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [016b09ab0](https://github.com/AFK-surf/monoid/commit/016b09ab078c6e7d252b8aec08c54482ca0be870) refactor(mbui): move TipOwner to mbui/headless, dr | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
 | [8626a69df](https://github.com/AFK-surf/monoid/commit/8626a69df10482fa7d193a3eabffbabefc292c5e) fix(mbui): update profile overview share menu and  | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
 | [b208ce089](https://github.com/AFK-surf/monoid/commit/b208ce089e603e1f6d2b8d31eb5ce6150974ac8c) fix(mbui): set a list's FLIP rest before telling i | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.08 |
 | [3ea0dccaf](https://github.com/AFK-surf/monoid/commit/3ea0dccaf788da7a9571ad76cb8b14716abb9a04) fix(mbui): align model picker dividers flush as 0. | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.08 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.23 |
 | [1afe38ccc](https://github.com/AFK-surf/monoid/commit/1afe38ccc92c80ebf5e9211ef2dfbcd4e8b0755f) feat(storybook): add the 环境 workbench panel, state | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.23 |
 | [208fe11c0](https://github.com/AFK-surf/monoid/commit/208fe11c021a0bc57975027baf16cc3cc8aa4665) feat(mbui): line up rows by their first lines in t | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.02 |
-| [fc9234632](https://github.com/AFK-surf/monoid/commit/fc9234632f69d87cf7cd226880b3aed511abec2b) fix(mbui, sf-ui): make the whole app static by def | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 53.69 |
