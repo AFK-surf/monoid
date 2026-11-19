@@ -23,13 +23,14 @@
   image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
   unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
-  (any `ci-1` runner; a branch's Windows reader after it in `natives-win-reader`, each cold reader at -O2 a job's
+  (any `ci-1` runner; a branch's Windows reader after it in `natives-win-reader`, one concurrency group there, each cold reader at -O2 a job's
   five minutes' worth when two shared the cores), `natives-main` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
   a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch missing only
   `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
-  published (plan's `natives_runner`, `natives_win_runner`), with no `natives-main`: on GitHub's runners a reader's C
-  is compiled whole at -O0 (`MBC_SPLIT=0`; zig cc's UBSan off), which a cold runner ends in its five minutes with no
-  store of units, where the split's thousand units did not; `check` runs there only when
+  published (plan's `natives_runner`, `natives_win_runner`), side by side, with no `natives-main`: on GitHub's runners
+  a reader's C is made by moon in the background as the job sets up and compiled whole at -O0 (`MBC_SPLIT=0`, no
+  cprep; zig cc's UBSan off), which a cold runner ends in its five minutes with no store of units, where the split's
+  thousand units did not; `check` runs there only when
   the Rust it tests changed (`scripts/plan.sh`'s `check_rust`: ci-1's sccache keeps those builds short), otherwise on
   `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
   line down every one queued until cancelled, 44383403135); a branch's `check-mac`
