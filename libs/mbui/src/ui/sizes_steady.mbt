@@ -815,9 +815,11 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           ns.first_unasked[slot] = false
           continue
         }
-        if seen.length() > 0 && now - seen[seen.length() - 1].0 < 0.5 * period {
-          // (laid out again in the frame: one frame, as it stands now: rows_steady.mbt; its second laid out again for a
-          // cause, a step in it that cause's)
+        if seen.length() > 0 &&
+          (now - seen[seen.length() - 1].0 < 0.5 * period || now - seen[seen.length() - 1].1 < 0.05 * period) {
+          // (laid out again in the frame: one frame, as it stands now: rows_steady.mbt; two samples less than 5% of a
+          // period apart across the 0.5-period bucket edge are one moment too, not a sub-millisecond interval where a
+          // pixel-snapped coordinate cannot cross a pixel; its second laid out again for a cause, a step in it that cause's)
           if seen.length() == 2 && !frame_quiet.val {
             ns.first_unasked[slot] = false
           }
