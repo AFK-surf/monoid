@@ -170,6 +170,27 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
+  test("a copy of another station's profile is listed only to the workspaces that station lends it in", async () => {
+    const data = temp("routes");
+    writeFileSync(join(data, "config.json"), JSON.stringify({
+      profiles: [
+        { id: "cc", runtime: "claude", home: "homes/cc", withheld: ["W2"] },
+        { id: "cx", runtime: "codex", home: "homes/cx" },
+        { id: "sh-cue", runtime: "claude", access: { kind: "subscription" }, home: "homes/sh-cue", share: { id: "sh-cue", borrowed: true, host: "6".repeat(64), email: "cue@example.com", workspaces: ["W2"] } },
+      ],
+      connects: [],
+    }));
+    const t = await rig({ data, workspaces: ["W1", "W2", "W3"] });
+    try {
+      const at = (workspace: string) => ({ ...viewer("guest@example.com", "admin"), workspace, home: false });
+      assert.deepEqual(t.accounts.profilesView({ ...owner, workspace: "W1", home: true }).map((p) => p.id), ["cc", "cx"]);
+      // The station's own withheld one stays listed, so its admins can turn it on.
+      assert.deepEqual(t.accounts.profilesView(at("W2")).map((p) => [p.id, p.serves]), [["cc", false], ["cx", true], ["sh-cue", true]]);
+      assert.deepEqual(t.accounts.profilesView(at("W3")).map((p) => p.id), ["cc", "cx"]);
+      assert.deepEqual(t.accounts.profilesView().map((p) => p.id), ["cc", "cx", "sh-cue"]);
+    } finally { await t.close(); }
+  });
+
   test("invalid edits are refused and leave the config unchanged", async () => {
     const t = await rig();
     const before = readFileSync(t.path, "utf8");

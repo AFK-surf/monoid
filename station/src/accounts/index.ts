@@ -1813,16 +1813,21 @@ export class Accounts {
     if (changed !== null) this.deps.reviewUndecided?.();
   }
 
-  /// The overview's `profiles`: all of them, to the members of every workspace the station is in alike
-  ///; `workspaces` says which joined ones' chats run on each.
+  /// The overview's `profiles`: the station's own to the members of every workspace it is in alike (`serves` says
+  /// whether the viewer's may run on each, so a manager can still turn a withheld one on), and a copy of another
+  /// station's only to the workspaces that station lends it in: its account is not theirs to see elsewhere.
+  /// `workspaces` says which joined ones' chats run on each. With no viewer, all of them.
   profilesView(viewer?: Viewer): Json[] {
     const raw = this.deps.config.raw();
     const config = hubConfig(raw, this.deps.data, this.found);
     const joined = viewer !== undefined && viewer.home === false ? viewer.workspace : null;
     const home = this.deps.workspaces?.()[0] ?? null;
     const others = this.joined();
-    this.readHomesSoon(config.profiles);
-    const views = config.profiles.map((p) => {
+    const visible = viewer === undefined
+      ? config.profiles
+      : config.profiles.filter((p) => !borrowed(p) || allowedIn(p, joined, home ?? viewer.workspace));
+    this.readHomesSoon(visible);
+    const views = visible.map((p) => {
       const says = this.homeSays(p);
       const kind = accessKind(p);
       const a: Json = isObject(p.access) ? p.access : {};
