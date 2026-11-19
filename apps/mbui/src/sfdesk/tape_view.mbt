@@ -1302,8 +1302,8 @@ fn tape_side_at(side : @view.View) -> SideAt {
 /// the system's column its ground alone; its bar over whatever tab is in front (side_bar_node, on the tape's line, a tab
 /// alone its title), none where what is in front has its own (side_own_bar_node); under it an agent's history
 /// (side_history_node), a file in the viewer (side_view_node), a Farview tab (side_farview_node), 任务, agent 往来 and
-/// 图片、文件和链接 (side_own_node), any other tab its old view (side_panel, hosted as tape_panel_built builds). A new
-/// chat's Station 文件 its island (tape_panel_built).
+/// 图片、文件和链接 (side_own_node). A new chat's Station 文件 the same panel round its one tab (new_side_bar_node, on the
+/// tape's line, and files_tab_node, as beside the page: new_side_node.mbt).
 fn tape_side_node(pane : @view.View, src : Source) -> Unit {
   let tips = @sf.TipLayer::new(fn() { tape_goes.node })
   // (a chat's while it shows a tab: its view gone (its workspace left), the island's, as a new chat's)
@@ -1312,10 +1312,6 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
       Some(ChatSide(r)) if tape_side_shown(src, r).0.length() > 0 => Some(r)
       _ => None
     }
-  }
-  // (its one island, whichever it holds)
-  let island = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
-    @ui.old(n, build, key=tape_island_key, natural~)
   }
   // (a chat's page made as nodes whole on the stack (tape_chat_entries): its panel read by its page's source, kept with
   // it as it is put by on the stack's kept left and taken back with it; one on top waiting for what it shows none
@@ -1343,11 +1339,11 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
             } else if tape_side_shown(page_src, r).0.length() > 0 {
               ["e:" + k.to_string()]
             } else {
-              ["island"]
+              []
             }
-          None => if chat() is Some(r) { ["c:" + chat_key(r)] } else { ["island"] }
+          None => if chat() is Some(r) { ["c:" + chat_key(r)] } else { [] }
         }
-      Some(_) => ["island"]
+      Some(NewSide(ws)) => ["n:" + ws]
       None => []
     }
   }
@@ -1387,10 +1383,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     } else {
       None
     }
-    guard shown is Some((r, q_src)) else {
-      island(q, fn(c) { tape_panel_built(c, src) }, false).over(Is(true)) |> ignore
-      return
-    }
+    // (the panel's ground, line and corners as the page's panel's, whichever it holds)
     q
     .clips(Is(true))
     .ground(By(fn() { tape_ground(tape_behind_at(Panel, tape_drawn_at(q))) }))
@@ -1398,21 +1391,11 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     .padding(By(fn() { (0.0, 0.0, tape_room_now().under, 0.0) }))
     |> ignore
     @ui.tree_corners_linked(q, fn() { Some(tape_pane_corners(Panel, true)) })
-    // (what it reads its own, let go as the tab leaves the front or the panel goes)
-    let behind = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
-      island(
-        n,
-        fn(c) {
-          tape_behind(c, Panel, fn() {
-            @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
-            side_on_tape.val = true
-            build(c)
-            side_on_tape.val = false
-            @sf.pane_round.val = None
-          })
-        },
-        natural,
-      )
+    guard shown is Some((r, q_src)) else {
+      if id.has_prefix("n:") {
+        tape_new_side_node(q, src.owned_by(q), id.exact_view(start=2).to_owned(), tips)
+      }
+      return
     }
     let src = q_src
     let shown = fn() { tape_side_shown(src, r) }
@@ -1435,22 +1418,8 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
         ()
       } else if agent == "" {
-        behind(
-          s,
-          fn(c) {
-            match (@sfbase.workspace_in_view(src).0, @sfbase.chat_view_now(src, r)) {
-              (Some(w), Some(_)) => {
-                let (tabs, front) = shown()
-                side_panel(c, src, w, r, tabs, front)
-              }
-              _ => ()
-            }
-          },
-          false,
-        )
-        .grow(Is(1.0))
-        .min_height(Is(Some(0.0)))
-        |> ignore
+        // (no tab of the tree's in front: nothing, every tab the panel shows is the tree's, side_node_tab)
+        ()
       } else if @sfbase.view_tab_file(agent) is Some(_) {
         tab_held_beside(s, r, agent)
         side_view_node(s, src, r, agent, fn(n) { side_whole(src, n) }, full_of(r, agent))
@@ -1517,28 +1486,6 @@ fn tape_side_shown(src : Source, r : ChatRef) -> (Array[String], String) {
       }
     None => ([], "")
   }
-}
-
-///|
-/// A new chat's side panel on the tape (its island: tape_side), closed while in use as it was as the tape moves off it.
-fn tape_panel_built(c : @ui.Ctx, src : Source) -> Unit {
-  let (now, _, _, _) = @sfbase.workspace_in_view(src)
-  guard now is Some(w) else { return }
-  guard tape_shown_side() is Some(side) else { return }
-  let r = tape_room_now()
-  let panel_w = dmax(0.0, c.width - r.under)
-  tape_behind(c, Panel, fn() {
-    let corners = tape_pane_corners(Panel, true)
-    c.box(style=page_apart.then(@ui.style(w=Fixed(c.width), h=Fixed(c.height), radius=@sf.corners_radius(corners))), fn() {
-      @sf.pane_round.val = Some(beside_column(corners, r.under))
-      c.box(style=@ui.style(w=Fixed(panel_w), h=Full), fn() {
-        c.sized(panel_w, c.height, fn() { tape_side(c, src, w, side) })
-      })
-      |> ignore
-      @sf.pane_round.val = None
-    })
-    |> ignore
-  })
 }
 
 ///|
@@ -1698,10 +1645,10 @@ fn tape_panel_edge(n : @view.View, holder : @view.View, tips : @sf.TipLayer, on 
 }
 
 ///|
-/// The frame under the tape's panels with workspace `w` in view (an island under all of it: sfapp's taped_shell): how
-/// the lists take the hand, the sidebar of this place and workspace as it was left, the system's tabs where it has its
-/// own bars, what the page's bars and the sidebar's parts work out from (as open, apart: on the tape nothing of them
-/// moves), the chat landed on, the window's buttons' row, the web services' pages let go.
+/// What the old frame does under the tape's panels with workspace `w` in view, before the old views it holds (sfapp's
+/// view_in, on the tape): how the lists take the hand, the system's tabs where it has its own bars, what the page's bars
+/// and the sidebar's parts work out from (as open, apart: on the tape nothing of them moves). The sidebar as it was
+/// left, the chat landed on. The window's buttons' row is the tree's (sfapp's wide_top_node).
 pub fn tape_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspace]) -> Unit {
   c.mouse_drags_lists(pane_finger())
   wide.side_place = side_place()
@@ -1727,10 +1674,6 @@ pub fn tape_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
   // for the screen's corner: rail_native.mbt native_frame)
   if @sf.native_foot_set(r.panel_top + r.panel_h, keyboard=c.ime_inset()) {
     c.forget_parts()
-  }
-  // (the window's buttons' row under all of the frame, where nothing of it is: title_row)
-  if @ui.window_inset() {
-    title_row(c, "window-title-row", closed_bar_top)
   }
   // (back, the shell's one way: the tape's node's, tape_view, wide_takes_back)
 }

@@ -362,7 +362,7 @@ fn histories_ticked() -> Unit {
       nav_page[i] = ({ ..item, icon, title }, act)
     }
   }
-  // (the short column has no switch of its own: the open panel's close there in place of the panel's own (side_panel).
+  // (the short column has no switch of its own: the open panel's close there in place of the panel's own (side_bar_node).
   // Handed last, each frame: short of room the system keeps the last of them whatever its priority, and the page handing
   // its own again puts them after it: the user, 2026-11-04. Only while the panel is the tape's card in use: beside the
   // chat or the sidebar it read as theirs, the user, 2026-11-17)
@@ -384,15 +384,11 @@ fn histories_ticked() -> Unit {
 
 ///|
 /// What opens from one of the page's actions in the system's bars (its info's popover): the mark where it was chosen,
-/// beside the column down the side, under it across the top; `id`, `side` and `along` where the page has its own.
-fn bar_anchor(id : Int, side : @ui.Side, along : @ui.Along) -> (Int, @ui.Side, @ui.Along) {
-  if !@sf.native_on() || native_mark.val == 0 {
-    return (id, side, along)
-  }
-  if @sf.native_side() {
-    (native_mark.val, Left, Start)
-  } else {
-    (native_mark.val, Bottom, End)
+/// beside the column down the side, under it across the top; None (and `side`, `along`) where the page has its own.
+fn bar_anchor(side : @ui.Side, along : @ui.Along) -> (@view.View?, @ui.Side, @ui.Along) {
+  match native_mark_now() {
+    Some(m) => if @sf.native_side() { (Some(m), Left, Start) } else { (Some(m), Bottom, End) }
+    None => (None, side, along)
   }
 }
 
@@ -401,8 +397,9 @@ fn bar_anchor(id : Int, side : @ui.Side, along : @ui.Along) -> (Int, @ui.Side, @
 /// page has its own, beside its own button (`own`, a node: as it is drawn) on `side`, lined up `along` it; none where
 /// that is not made.
 fn bar_anchor_node(own : @view.View?, side : @ui.Side, along : @ui.Along) -> (@sf.Anchor, @ui.Side, @ui.Along)? {
-  if @sf.native_on() && native_mark.val != 0 {
-    return Some(if @sf.native_side() { (Of(native_mark.val), Left, Start) } else { (Of(native_mark.val), Bottom, End) })
+  match native_mark_now() {
+    Some(m) => return Some(if @sf.native_side() { (Node(m), Left, Start) } else { (Node(m), Bottom, End) })
+    None => ()
   }
   match own {
     Some(v) if v.alive() => Some((Node(v), side, along))
@@ -415,14 +412,13 @@ fn bar_anchor_node(own : @view.View?, side : @ui.Side, along : @ui.Along) -> (@s
 /// under what opened it, so beside the column down the side it opens from the point left of the item, ending there,
 /// not under the item and over the column (the user, 2026-11-04); `id` where the page has its own.
 fn bar_menu_from(c : @ui.Ctx, id : Int) -> (@sf.Beside, @ui.Along) {
-  if !@sf.native_on() || native_mark.val == 0 {
-    return (Of(id), End)
-  }
-  if @sf.native_side() {
-    let (x, y, _) = native_mark_at(c)
-    (@sf.at_point(x - @sf.panel_offset, y), End)
-  } else {
-    (Of(native_mark.val), End)
+  match native_mark_now() {
+    None => (Of(id), End)
+    Some(_) if @sf.native_side() => {
+      let (x, y, _) = native_mark_in(c.window_size())
+      (@sf.at_point(x - @sf.panel_offset, y), End)
+    }
+    Some(m) => (Node(m), End)
   }
 }
 
@@ -430,14 +426,13 @@ fn bar_menu_from(c : @ui.Ctx, id : Int) -> (@sf.Beside, @ui.Along) {
 /// bar_menu_from's for a page made as nodes, in node `v`: where it has no item of the system's bars chosen yet, beside
 /// the page's node.
 fn bar_menu_from_node(v : @view.View) -> (@sf.Beside, @ui.Along) {
-  if !@sf.native_on() || native_mark.val == 0 {
-    return (Node(v), End)
-  }
-  if @sf.native_side() {
-    let (x, y, _) = native_mark_in(v.window())
-    (@sf.at_point(x - @sf.panel_offset, y), End)
-  } else {
-    (Of(native_mark.val), End)
+  match native_mark_now() {
+    None => (Node(v), End)
+    Some(_) if @sf.native_side() => {
+      let (x, y, _) = native_mark_in(v.window())
+      (@sf.at_point(x - @sf.panel_offset, y), End)
+    }
+    Some(m) => (Node(m), End)
   }
 }
 
@@ -594,31 +589,53 @@ fn rail_more() -> Double {
 
 ///|
 /// Where what opens from the column's items is put beside (待处理's panel: attention.mbt, by the rail's ids): a mark at
-/// the window's right edge where 待处理 is, at the column's foot over 新建对话.
-fn rail_native_marks(c : @ui.Ctx) -> Unit {
-  if !@sf.native_on() {
-    return
-  }
-  c.layer(fn() {
-    // (at the bell where the system says it is; else where the column has it: moved there as the system says where
-    // an item was chosen, @sfbase.nav_tapped_place)
-    @sfbase.nav_tapped_place.get() |> ignore
-    let (tx, ty, th) = native_mark_at(c)
-    let id = c.id("rail/attention")
-    native_mark.val = id
-    c.box(style=@ui.style(w=Fixed(native_mark_w), h=Fixed(th)), tx~, ty~, id~, fn() {  }) |> ignore
+/// the window's right edge where 待处理 is, at the column's foot over 新建对话, in node `v` (a shell's, over its panels:
+/// overlays_node), while the system's bars show the rail's places.
+fn rail_native_marks_node(v : @view.View) -> Unit {
+  v.show(at_once=true, @sf.native_on, fn(layer) {
+    layer.over(Is(true)) |> ignore
+    layer.box(fn(m) {
+      // (at the bell where the system says it is; else where the column has it: moved there as the system says where
+      // an item was chosen, @sfbase.nav_tapped_place)
+      let at = fn() {
+        @sfbase.nav_tapped_place.get() |> ignore
+        native_mark_in(m.window())
+      }
+      m
+      .shrink(Is(0.0))
+      .width(Is(Some(native_mark_w)))
+      .height(By(fn() { Some(at().2) }))
+      .offset(By(fn() {
+        let (x, y, _) = at()
+        (x, y)
+      }))
+      |> ignore
+      native_mark_node.val = Some(m)
+      m.owns(fn() {
+        match native_mark_node.val {
+          Some(n) if physical_equal(n, m) => native_mark_node.val = None
+          _ => ()
+        }
+      })
+      |> ignore
+    })
+    |> ignore
   })
-  |> ignore
 }
 
 ///|
-/// Where the mark is: at the item last chosen, else where the column has the bell (its x, y and height).
-fn native_mark_at(c : @ui.Ctx) -> (Double, Double, Double) {
-  native_mark_in(c.window_size())
+/// The mark at the item of the system's bars last chosen (rail_native_marks_node), while it is made and they show the
+/// rail's places: what opens from one is put beside it (a chat's ⋯: chat_page.mbt bar_popovers; 待处理's panel).
+fn native_mark_now() -> @view.View? {
+  match native_mark_node.val {
+    Some(m) if @sf.native_on() && m.alive() => Some(m)
+    _ => None
+  }
 }
 
 ///|
-/// native_mark_at's, in a window of `size` (its width, its height).
+/// native_mark's, in a window of `size` (its width, its height): at the item last chosen, else where the column has the
+/// bell (its x, y and height).
 fn native_mark_in(size : (Double, Double)) -> (Double, Double, Double) {
   let at = @hostapi.nav_tapped_at
   if at[2] > 0.0 {
@@ -630,12 +647,12 @@ fn native_mark_in(size : (Double, Double)) -> (Double, Double, Double) {
 }
 
 ///|
-/// The mark at the item of the system's bars last chosen (rail_native_marks), for what opens from one elsewhere (a
-/// chat's ⋯: chat_page.mbt bar_popovers), its ids scoped there as they are.
-let native_mark : Ref[Int] = { val: 0 }
+/// The mark at the item of the system's bars last chosen (rail_native_marks_node), as it was last made.
+// kept across runs: let go with the node it holds, put back as a run begins (rail_native_reset)
+let native_mark_node : Ref[@view.View?] = { val: None }
 
 ///|
-/// How wide the mark at a chosen item of the system's bars is (rail_native_marks): a line, what opens from it beside it.
+/// How wide the mark at a chosen item of the system's bars is (rail_native_marks_node): a line, what opens from it beside it.
 let native_mark_w : Double = 1.0
 
 ///|
@@ -942,7 +959,7 @@ fn rail_native_reset() -> Unit {
   nav_page_before.clear()
   bar_chat_carried.clear()
   top_drawn.val = false
-  native_mark.val = 0
+  native_mark_node.val = None
   // (where the system said an item was last chosen: none yet, what opens from one by the bell till one says so)
   for k in 0..<4 {
     @hostapi.nav_tapped_at[k] = 0.0

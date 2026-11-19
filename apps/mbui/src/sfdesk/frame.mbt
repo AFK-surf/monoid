@@ -356,7 +356,9 @@ pub let side_max : Double = 480.0
 pub let closed_bar_in : Double = @sf.window_in
 
 ///|
-let closed_bar_top : Double = 44.0
+/// How tall the window's top row is in the wide frame where the window's buttons are in it (title_row's; sfapp's
+/// tape_shell.mbt wide_top_node).
+pub let closed_bar_top : Double = 44.0
 
 ///|
 /// In a window with its buttons in the app's top row (macOS's: no title bar of the system's), a row `h` high at the top
@@ -496,6 +498,21 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit) -> 
       .row(Is(true))
       |> ignore
       dock_round_node(g, at)
+      // its top row the window's title bar across all of it, under the rail's and the sidebar's own (between them too:
+      // the sidebar reaching into the rail, side_into_rail); not in the closed bar (what is pressed there its places')
+      g.box(fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(row) {
+          row
+          .width(By(fn() { Some(at().block.2) }))
+          .height(Is(Some(closed_bar_top)))
+          .laid_nowhere(By(fn() { !@ui.window_inset_now() || at().bar }))
+          .moves_window(By(fn() { @ui.window_inset_now() && !at().bar }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
       // (whether the pointer is on it, for the closed bar's peek: block_pointed)
       dock_made.val = Some(g)
       g.owns(fn() {
@@ -932,12 +949,6 @@ fn tape_words(p : TapePane) -> String {
     Panel => @sf.t("web-pages.chat.openPanel")
   }
 }
-
-///|
-/// The page's panel on the tape: the page's ground, its corners the tape's (tape_pane_corners), a line round it,
-/// what goes past its edges cut.
-// kept across runs: a value (no field of it changes)
-let page_apart : @ui.Style = @ui.css("bg=Bg border=B1 border_color=Line clip")
 
 ///|
 /// The pane: its page laid out as wide as the column leaves, what goes past the window cut.

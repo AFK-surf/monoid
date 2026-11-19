@@ -951,22 +951,22 @@ fn composer_text(
     composing.hint_shown.set(wanted)
   }
   // (told as what it is to say changes, and once more as the one it says has faded out; where it is on its way is
-  // read only as it is painted, Ctx::placeholder_by: the chat's old view is not built again at each frame of the fade)
+  // read only as it is painted, Ctx::placeholder_by: the chat's old view is not built again at each frame of the fade; set off untracked as @motion.told)
   let said_fade = @motion.tween(@sf.hint_back_ms, ease=Out)
   let shows_wanted = wanted == composing.hint_shown.get()
-  let said_in = @motion.anim(c, "composer/said/" + spec.draft, if shows_wanted { 1.0 } else { 0.0 })
+  let said_in = @signals.untracked(fn() { @motion.anim(c, "composer/said/" + spec.draft, if shows_wanted { 1.0 } else { 0.0 }) })
   if shows_wanted {
     if said_in.target() != 1.0 {
-      said_in.animate(c, 1.0, said_fade)
+      @signals.untracked(fn() { said_in.animate(c, 1.0, said_fade) })
     }
   } else {
     if said_in.target() != 0.0 {
-      said_in.animate(c, 0.0, @motion.tween(@sf.hint_back_ms, ease=Leave))
+      @signals.untracked(fn() { said_in.animate(c, 0.0, @motion.tween(@sf.hint_back_ms, ease=Leave)) })
     }
     // (faded out: the other said in its place, coming in from there)
     if said_in.over(c) {
       composing.hint_shown.set(wanted)
-      said_in.animate(c, 1.0, said_fade)
+      @signals.untracked(fn() { said_in.animate(c, 1.0, said_fade) })
     }
   }
   let said = composing.hint_shown.get()

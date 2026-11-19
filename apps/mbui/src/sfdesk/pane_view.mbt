@@ -948,10 +948,10 @@ fn pane_rail_at(src : Source, n : @view.View) -> RailAt {
 }
 
 ///|
-/// What the frame off the tape does under its page and block with workspace `w` in view (an island under all of it:
-/// sfapp's paned_shell): how the lists take the hand, the sidebar of this place and workspace as it was left, the
-/// system's tabs where it has its own bars, the folded sidebar shown a while as the pointer comes on the closed bar, the
-/// chat landed on, the window's buttons' row, the web services' pages let go.
+/// What the old frame does under the frame off the tape with workspace `w` in view, before the old views it holds
+/// (sfapp's view_in, off the tape): how the lists take the hand, the system's tabs where it has its own bars, the folded
+/// sidebar shown a while as the pointer comes on the closed bar. The sidebar of this place and workspace as it was left,
+/// the chat landed on. The window's buttons' row is the tree's (sfapp's wide_top_node).
 pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspace]) -> Unit {
   c.mouse_drags_lists(pane_finger())
   wide.side_place = side_place()
@@ -967,9 +967,6 @@ pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
   let peek_top = if @ui.window_keys_left() { closed_bar_top } else { bar_in_now() }
   side_peek(c, bar_in_now(), r.top + peek_top, peek_r, c.height - r.foot - bar_in_now())
   land(src, w)
-  if @ui.window_inset() {
-    title_row(c, "window-title-row", closed_bar_top)
-  }
   // (back, the shell's one way: the frame's node's, pane_view, wide_takes_back)
   // (the pages of closed tabs let go as each closes: service_tab.mbt's tab_let_go)
 }

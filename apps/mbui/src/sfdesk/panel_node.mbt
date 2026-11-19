@@ -6,12 +6,10 @@
 // history, its head and steps nodes (history_head_node, sfpages' history_steps_node); a file in the viewer, its tools
 // and stage (sfbase's viewer_tab_node); 任务, agent 往来 and 图片、文件和链接 what each shows (jobs_tab_node,
 // letters_tab_node, sfpages' things_node); 文件 and a station's 文件 the tab's nodes (drive_tab_node.mbt), a station's
-// page sfpages' station_node; any other tab (a station's screen) the panel's old view of what it shows (side_panel),
-// the page's island. On the tape the panel is a panel of its own (tape_view's tape_side_node).
+// page sfpages' station_node; a station's screen and terminal their nodes (side_screen_node, side_terminal_node). On the tape the panel is a panel of its own (tape_view's tape_side_node).
 
 ///|
-/// Whether `front` (one the panel shows: side_shows) is one of the chat's agents' histories: what the panel's old view
-/// (side_panel) leaves to the tree.
+/// Whether `front` (one the panel shows: side_shows) is one of the chat's agents' histories.
 fn side_history_tab(front : String) -> Bool {
   front != "" &&
   !(front is ("jobs" | "files" | "letters" | "things")) &&
@@ -329,9 +327,6 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         }
       }))
       |> ignore
-      let island = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
-        app.nav.page_island(n, serial, fn(c, _page) { build(c) }, key=tape_island_key, natural~)
-      }
       // its bar over whatever tab is in front, the tree's; none where what is in front has its own (side_own_bar_node)
       p.show(at_once=true, fn() {
         let (tabs, front) = side_shown(src, r)
@@ -343,23 +338,8 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
           ()
         } else if agent == "" {
-          // (every other tab: the panel's old view of what it shows)
-          island(
-            q,
-            fn(c) {
-              match (@sfbase.workspace_in_view(src).0, @sfbase.chat_view_now(src, r)) {
-                (Some(w), Some(_)) => {
-                  let (tabs, front) = side_shown(src, r)
-                  side_panel(c, src, w, r, tabs, front)
-                }
-                _ => ()
-              }
-            },
-            false,
-          )
-          .grow(Is(1.0))
-          .min_height(Is(Some(0.0)))
-          |> ignore
+          // (no tab of the tree's in front: nothing, every tab the panel shows is the tree's, side_node_tab)
+          ()
         } else if @sfbase.view_tab_file(agent) is Some(_) {
           tab_held_beside(q, r, agent)
           side_view_node(q, src, r, agent, fn(n) { side_whole(src, n) }, full_of(r, agent))

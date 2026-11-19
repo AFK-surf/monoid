@@ -291,11 +291,15 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// 1319 and 1256 before), and lays out less; every bar brought to what is counted now, rounded up, the most of the
 /// default rate and 60, 120, 24 and 7: before it (2621, 979), (1707, 930), (2654, 983), (2125, 943), (1319, 1184),
 /// (1368, 1150), (1256, 1110), (1306, 1097).
+/// Raised once, 2026-11-19, the 小屏 four's laid out: the old page's narrow shell no longer lays out its last old island
+/// (narrow_under: what it did is the old frame's own, sfapp's view_in), so the old one counted lays out 15 fewer (455,
+/// 467, 565 and 577 before), the new page as it was (423 and 533 laid out); the same at the five rates, rounded up (930,
+/// 884, 944 and 905 before).
 let chat_vs_bars : Map[String, (Int, Int)] = {
-  "phone card": (2768, 930),
-  "phone md": (1408, 884),
-  "plp_narrow card": (2792, 944),
-  "plp_narrow md": (1856, 905),
+  "phone card": (2768, 962),
+  "phone md": (1408, 936),
+  "plp_narrow card": (2792, 970),
+  "plp_narrow md": (1856, 949),
   "tape card": (1347, 1126),
   "tape md": (1272, 1014),
   "wide card": (1281, 1071),
@@ -333,11 +337,13 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// Again 2026-11-18 once 小屏's bottom bar is made as nodes: the old page's shell no longer hosts the bar as an old
 /// island, so the old one counted is a node fewer, the new page as it was: phone card's, plp_narrow card's and plp_narrow
 /// md's nodes up (1645, 1659 and 1384 before), the same at the five rates, rounded up.
+/// Raised once, 2026-11-19, the 小屏 four's laid out as chat_vs_bars' are (930, 884, 944 and 905 before): the old page's
+/// narrow shell no longer lays out its last old island, the new page as it was.
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
-  "phone card": (1648, 930),
-  "phone md": (1051, 884),
-  "plp_narrow card": (1662, 944),
-  "plp_narrow md": (1386, 905),
+  "phone card": (1648, 962),
+  "phone md": (1051, 936),
+  "plp_narrow card": (1662, 970),
+  "plp_narrow md": (1386, 949),
   "tape card": (1347, 1126),
   "tape md": (1272, 1014),
   "wide card": (1281, 1071),

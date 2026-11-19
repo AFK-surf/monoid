@@ -505,7 +505,7 @@ fn bar_popovers(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatV
   }
   // (its ⋯ in the system's bars: from the mark where it was chosen, rail_native.mbt; its button the bar node's, beside
   // it where it is: chat_bar_by)
-  let (info_at, info_side, info_along) = bar_anchor(c.id("chat-info"), Bottom, End)
+  let (info_at, info_side, info_along) = bar_anchor(Bottom, End)
   // (closed by what was pressed in it; dismissed by the hand, Escape or a press outside it and its button, at that
   // moment)
   c.with_dismissed(fn(_) { chat_own.info_open.set(false) }, fn() {
@@ -528,7 +528,7 @@ fn bar_popovers(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatV
 /// The chat's services' popover (JobsPanel), by its button.
 fn chat_jobs_pop(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
   // (its button in the system's bars: from the mark where it was chosen, rail_native.mbt)
-  let (at, side, along) = bar_anchor(c.id("chat-jobs"), Bottom, End)
+  let (at, side, along) = bar_anchor(Bottom, End)
   @sf.popover_from(
     c,
     "chat-jobs-pop",
@@ -553,13 +553,14 @@ fn chat_jobs_pop(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
 }
 
 ///|
-/// What a popover of the bar opens beside (`at`: bar_anchor's, the system's bars' mark where they have it, else `own`,
-/// the page's own button's id): its button in the bar's node (`node`, while it is made), where that is as it is drawn
-/// (@sf.popover_from); else what bar_anchor says.
-fn chat_bar_by(at : Int, own : Int, node : @view.View?) -> @sf.Beside {
-  match node {
-    Some(v) if at == own && v.alive() => Node(v)
-    _ => Of(at)
+/// What a popover of the bar opens beside (`at`: bar_anchor's, the system's bars' mark where they have it, else the
+/// page's own button, `own` its id): its button in the bar's node (`node`, while it is made), where that is as it is
+/// drawn (@sf.popover_from); else its id.
+fn chat_bar_by(at : @view.View?, own : Int, node : @view.View?) -> @sf.Beside {
+  match (at, node) {
+    (Some(m), _) => Node(m)
+    (None, Some(v)) if v.alive() => Node(v)
+    _ => Of(own)
   }
 }
 

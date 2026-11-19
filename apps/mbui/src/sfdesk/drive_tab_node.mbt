@@ -345,7 +345,7 @@ priv enum TabFolderShows {
 ///|
 /// Folder `at` (FolderList) of station `st` in node `v`, for chat `chat`'s message: the trail over it (its station's
 /// name the way back to the places, then the way to it from the home, the disk's top or the folder pinned) and what is
-/// done to it at the trail's end (收藏, the preview, 复制路径, 刷新); its list as the tab shows it, the folder as a whole
+/// done to it at the trail's end (收藏, the preview, 复制路径, 在此处打开终端 where this device opens the station's terminals, 刷新); its list as the tab shows it, the folder as a whole
 /// over its rows; the preview under it while it is shown. Nothing here changes the files.
 fn ftab_folder_node(
   v : @view.View,
@@ -453,6 +453,18 @@ fn ftab_folder_node(
       )
       |> ignore
       @sf.icon_button_node(a, "copy", fn() { @sf.t("web-pages.drive.copyPath") }, fn() { @sfpages.copy_path(here) }, tips~) |> ignore
+      // (a terminal opened in this folder, where this device opens a station's terminals and the station has them)
+      a.show(at_once=true, fn() { @sfpages.terminals_here() && (src.asks_terminals)() && here != "" }, fn(t) {
+        t.shrink(Is(0.0)) |> ignore
+        @sf.icon_button_node(
+          t,
+          "terminal",
+          fn() { @sf.t("web-pages.remote.openHereTerminal") },
+          fn() { @sfbase.open_terminal(at.station, "new", here, "") },
+          tips~,
+        )
+        |> ignore
+      })
       @sf.icon_button_node(a, "refresh", fn() { @sf.t("web-pages.drive.refresh") }, fn() { @sfpages.refresh_folder(src, at) }, tips~) |> ignore
     })
     |> ignore
@@ -494,6 +506,11 @@ fn ftab_folder_node(
       out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.download"), icon="download", fn() { @sfpages.save_entry(src, in_, e) })))
     }
     if e.dir {
+      if @sfpages.terminals_here() && (src.asks_terminals)() && abs != "" {
+        out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openHereTerminal"), icon="terminal", fn() {
+          @sfbase.open_terminal(in_.station, "new", abs, "")
+        })))
+      }
       let path = dv_join(in_.path, e.name)
       let saved = @sfpages.favorite_has(@sfpages.favorites_in(src, ws, [st()]), at.station, root, path)
       out.push(Some(@sf.menu_item_of(@sf.t(if saved { "web-pages.files.unfavorite" } else { "web-pages.files.favorite" }, args=[("name", e.name)]), icon="star", fn() {
