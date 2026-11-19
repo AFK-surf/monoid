@@ -40,7 +40,7 @@ export { sentFrom };
 import { archiveHintOf, badgeKindsOf, failsGoneOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
 import { stationFeature } from "../features.ts";
 import { markdown, markdownHere, mdKey, type MdStore } from "../markdown.ts";
-import { heardFiles } from "../elsewhere.ts";
+import { heardFiles, type Said } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
 import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, thingsOf, wordsOf } from "../things.ts";
 import { archive, archiveSearch } from "./archive.ts";
@@ -674,6 +674,21 @@ export function blockedUnder(messages: J[]): J[] {
   return messages.flatMap((m, i) => (gone.has(i) ? [] : blocked.has(i) ? [{ ...m, blocked: blocked.get(i) }] : [m]));
 }
 
+/// Another chat's title as a letter or a message its agent sent names it: without the mentions its first words began
+/// with (as chatTitle has it), else those mentions named.
+export function cleanLetterTitle(raw: string, bots: [string, string][], members_: J[]): string {
+  const bare = withoutMentions(raw).replace(/\s+/g, " ").trim();
+  return bare !== "" ? bare : present.mentions(raw, bots, members_).replace(/^@/, "");
+}
+
+/// Who said a Slack message an agent was given: their name, else their Slack id (a bot's mention, `<@U…>`, named as
+/// its bot without the `@`), else Slack.
+export function elsewhereSenderName(s: Said, bots: [string, string][], members_: J[]): string {
+  if (s.who) return present.mentions(s.who, bots, members_);
+  if (s.user) return /^<@[A-Z0-9]+>$/.test(s.user) ? present.mentions(s.user, bots, members_).replace(/^@/, "") : present.mentions(s.user, bots, members_);
+  return "Slack";
+}
+
 /// A message as a chat shows it: whether it is the viewer's, still.fail's own notice, who said it, mentions named.
 export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: string[], members_: J[], bots: [string, string][], creator: J): J {
   const m: J = { ...message };
@@ -691,7 +706,8 @@ export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: str
     const model = str(get(identity, "model"));
     const sent = agent === undefined ? sentFrom(str(m.text) ?? "") : null;
     if (sent !== null) {
-      const [title, link, rest] = sent;
+      const [raw, link, rest] = sent;
+      const title = cleanLetterTitle(raw, bots, members_);
       m.text = rest;
       m.by = { name: title, from: link, maker: model !== null ? present.maker(model) : null };
     } else {
@@ -728,7 +744,7 @@ export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: str
 import * as brand from "../brand.ts";
 import { noticeOf } from "../notice.ts";
 import { runChangeOf } from "../run-change.ts";
-import { isOwnSurface, isStationAuthor } from "../titles.ts";
+import { isOwnSurface, isStationAuthor, withoutMentions } from "../titles.ts";
 export { noticeOf };
 const brandName = () => brand.name();
 
@@ -4180,17 +4196,16 @@ export class Views implements Owner {
     const thread = view.thread as J;
     const keys = new Set(members(thread));
     const agents = arr(view.agents);
-    const scope = ofAddress(station);
-    const viewer = this.me(scope);
-    const members_ = arr(get(this.ok({ topic: "workspace", workspace: scope }), "members"));
+    const { viewer, members_, bots } = this.#peopleOf(station, agents);
     // Those kept as entries before letters had their own log, and those of it (`letters`), in the order written.
     const written = [...merge(arr(get(held.ok, "entries"))).filter((m) => isLetter(m, keys)), ...merge(arr(get(held.ok, "letters")))];
     const at = (m: J) => u64(m.createdAt) ?? 0;
     written.sort((a, b) => at(a) - at(b));
     const letters = written.flatMap((m) => {
       if (!isLetter(m, keys)) return [];
-      const l = letterWay(m);
-      const shown: J = { ...shownMessage({ ...m, text: letterWords(str(m.text) ?? "") }, agents, viewer, [], members_, [], thread.creator), waiting: false };
+      const way = letterWay(m);
+      const l = { ...way, title: cleanLetterTitle(way.title, bots, members_) };
+      const shown: J = { ...shownMessage({ ...m, text: letterWords(str(m.text) ?? "") }, agents, viewer, [], members_, bots, thread.creator), waiting: false };
       // Coming in: by the agent of the chat it came from, named by that chat.
       if (l.way === "in") shown.by = { name: t("core-views.letters.their", { chat: l.title }), from: l.link, maker: get(shown.by, "maker") ?? null };
       return [{ message: shown, ...l }];
@@ -4489,6 +4504,12 @@ export class Views implements Owner {
       const agent = { name: str(get(a.session, "agentText")) ?? "agent", agent: key, maker: get(a.session, "maker") ?? null, runtime: get(a.session, "runtime") ?? null };
       const pictures = slackPictures(a.session, threads, connects);
       for (const s of said) {
+        // Another chat's agent's letter kept by a core before they were left out (elsewhere.ts `readItem`): never said
+        // in Slack.
+        if (!s.out && s.who === null) {
+          const sent = sentHead(s.text);
+          if (sent !== null && !sent.opened) continue;
+        }
         // What the tool refused on its way to a thread its session is not in went nowhere (a chat_post to a mistyped
         // address, `CHT/…` for `CHAT/…`): it is not shown as sent to Slack.
         if (s.out && s.refused && !threads.some((th) => `${str(get(th, "channel"))}/${str(get(th, "threadTs"))}` === s.to)) continue;
@@ -4512,7 +4533,7 @@ export class Views implements Owner {
         }
         // (a bot is said as its mention, `<@U…>`)
         const picture = s.out || s.user === null ? undefined : pictures.get(s.user.replace(/^<@(.+)>$/, "$1"));
-        const by = s.out ? structuredClone(agent) : { name: s.who || s.user || "Slack", ...(picture !== undefined ? { picture } : {}) };
+        const by = s.out ? structuredClone(agent) : { name: elsewhereSenderName(s, people.bots, people.members), ...(picture !== undefined ? { picture } : {}) };
         // A person's files are listed after their words, as the agent was given them: drawn as files, kept in the
         // workspace that holds them (`keeper`).
         const words = s.out ? { text: s.text, files: [] } : heardFiles(s.text);

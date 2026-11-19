@@ -722,6 +722,10 @@ test("what_the_clients_show_is_put_in_here", () => {
   const members = [{ email: "a@x.com", name: "阿一", picture: "https://p/a" }];
   assert.equal(p.mentions("<@UBOT> 和 <@U9> 看下", [["UBOT", "ds-ember"]], members), "@ds-ember 和 @U9 看下");
   assert.equal(p.mentions("<@UBOT> 和 <@U9> 看下", [["UBOT", "ds-ember"], ["U9", "Mia"]], members), "@ds-ember 和 @Mia 看下");
+  // A connect named with its `@` (`@Gemini-Monoid`) is said with that one; a bot named nothing yet goes by the next name.
+  assert.equal(p.mentions("<@U1> 你好", [["U1", "@Gemini-Monoid"]], []), "@Gemini-Monoid 你好");
+  assert.equal(p.mentions("<@U1>", [["U1", ""], ["U1", "Bot"]], members), "@Bot");
+  assert.equal(p.mentions("<@U1>", [["U1", ""]], []), "@U1");
   let me: J = { id: "a@x.com", email: "a@x.com", name: "A" };
   me = p.person(me, { id: "a@x.com", email: "a@x.com" }, members);
   assert.deepEqual(me.shown, { name: "阿一", display: "你", picture: "https://p/a", mine: true });

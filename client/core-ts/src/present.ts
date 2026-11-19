@@ -615,8 +615,10 @@ export function mentions(text: string, named: [string, string][], members: J[]):
     while (len < tail.length && /[A-Z0-9]/.test(tail[len])) len++;
     if (len > 0 && tail[len] === ">") {
       const id = tail.slice(0, len);
-      const name = named.find(([b]) => b === id)?.[1] ?? memberName(members, id) ?? id;
-      out += `@${name}`;
+      // (a bot named nothing yet, as a connect not named, goes by a name heard of it, else as a member; one named with
+      // its `@` is not given another)
+      const name = named.find(([b, n]) => b === id && n !== "")?.[1] ?? memberName(members, id) ?? id;
+      out += name.startsWith("@") ? name : `@${name}`;
       rest = tail.slice(len + 1);
     } else {
       out += "<@";
