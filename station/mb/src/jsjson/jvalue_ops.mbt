@@ -744,7 +744,9 @@ pub fn js_split_lines(s : String) -> Array[String] {
 
 ///|
 pub fn js_slice_to(s : String, n : Int) -> String {
-  if s.length() <= n {
+  if n <= 0 {
+    ""
+  } else if s.length() <= n {
     s
   } else {
     s.unsafe_substring(start=0, end=n)
@@ -755,7 +757,31 @@ pub fn js_slice_to(s : String, n : Int) -> String {
 pub fn js_replace_all(s : String, old : String, new : String) -> String { js_split(s, old).join(new) }
 
 ///|
-pub fn js_utf8_len(s : String) -> Int { utf8(s).length() }
+/// `Buffer.byteLength(s, "utf8")`: a lone surrogate is 3 bytes (U+FFFD), without allocating.
+pub fn js_utf8_len(s : String) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < s.length() {
+    let c = s.unsafe_get(i).to_int()
+    if c < 0x80 {
+      n += 1
+    } else if c < 0x800 {
+      n += 2
+    } else if c >= 0xd800 && c <= 0xdbff && i + 1 < s.length() {
+      let d = s.unsafe_get(i + 1).to_int()
+      if d >= 0xdc00 && d <= 0xdfff {
+        n += 4
+        i += 1
+      } else {
+        n += 3
+      }
+    } else {
+      n += 3
+    }
+    i += 1
+  }
+  n
+}
 
 ///|
 pub fn js_starts(s : String, p : String) -> Bool { s.has_prefix(p) }
