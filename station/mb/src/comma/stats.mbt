@@ -903,7 +903,11 @@ pub fn CommaStats::build(self : CommaStats) -> Unit {
   let done : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.building = Some(done)
   ignore(
-    self.runtime.fork(async fn() {
+    self.runtime.fork_daemon("comma stats build", on_error=e => {
+        self.io.info("the statistics were not read this time", [("error", Some(jstr(message_of(e))))])
+        self.building = None
+        ignore(done.succeed(()))
+      }, async fn() {
       (async fn() {
         let got = (self.read)(from, now)
         self.apply_build(got.stations, got.unread, from, got.valid)

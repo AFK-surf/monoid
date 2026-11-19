@@ -127,7 +127,7 @@ pub async fn serve_tools(d : ToolsDeps, conn : @door.Connection, rt : @effect.Ru
   }
   while (conn.accept_bi)() is Some(stream) {
     ignore(
-      rt.fork(name="tools", () => {
+      rt.fork_daemon("tools", on_error=e => (d.said)("info", "tools stream ended", jobj([("error", jstr(message_of(e)))])), () => {
         let reader = @door.Reader::new(stream, max_line=max_tools_line)
         let reply = (async fn() -> Json {
           match @effect.timeout(tools_line_ms, () => reader.line()) {

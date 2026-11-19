@@ -278,7 +278,7 @@ pub fn follow_persons(k : Keeper, call : PeerCall, rt : @effect.Runtime) -> () -
       return
     }
     going.push(key)
-    ignore(rt.fork(name="persons level", () => {
+    ignore(rt.fork_daemon("persons level", on_error=e => @door.log("warn", "persons", "persons were not brought level", { "error": Json::string(words_of(e)) }), () => {
       let failed = try {
         person_sync_with(k, call, peer, ws)
         bodies_sync_with(k, call, peer, ws)
@@ -349,7 +349,7 @@ pub fn follow_persons(k : Keeper, call : PeerCall, rt : @effect.Runtime) -> () -
       }
     }
   }
-  look_ref.val = () => ignore(rt.fork(name="persons look", () => look() catch { _ => () }))
+  look_ref.val = () => ignore(rt.fork_daemon("persons look", on_error=_ => (), () => look() catch { _ => () }))
   (look_ref.val)()
   let off_cloud = (k.listen)(() => (look_ref.val)())
   let off_chains = (k.persons_listen)(() => (look_ref.val)())

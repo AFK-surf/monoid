@@ -108,7 +108,7 @@ pub async fn Leaves::follow(self : Leaves, conn : @door.Connection, workspace : 
   let scope = text(field(self.view(workspace), "scope")).unwrap_or("")
   let off = self.sync.listen(s => if s == scope { wake() })
   ignore(
-    self.sync.rt.fork(name="leaf stopped", async fn() {
+    self.sync.rt.fork_daemon("leaf stopped", on_error=_ => (), async fn() {
       ignore((stream.stopped)()) catch {
         _ => ()
       }

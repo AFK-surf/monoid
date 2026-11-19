@@ -1438,8 +1438,9 @@ fn Updates::retry_station(self : Updates, version : String) -> Unit {
     done
   }
   // timer: retry after a failed update, then back off if the release cannot be read or its installer started.
+  // (`run` keeps whatever the loop throws in its fiber, and the part's close interrupts it)
   ignore(
-    self.fibers.fork(async fn() {
+    self.fibers.run(async fn() {
       self.fibers.sleep(station_retry_ms)
       let mut n = 0
       while !attempt() {

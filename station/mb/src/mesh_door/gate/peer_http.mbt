@@ -230,7 +230,12 @@ async fn PeerHttp::stream(self : PeerHttp, id : String, given : String, workspac
       None => {
         let d = @effect.Deferred::new()
         self.connections[id] = d
-        ignore(self.rt.fork(name="peer http dial", () => {
+        ignore(self.rt.fork_daemon("peer http dial", on_error=e => {
+          if self.connections.get(id) is Some(x) && physical_equal(x, d) {
+            self.connections.remove(id)
+          }
+          ignore(d.fail(e))
+        }, () => {
           match (try { Ok(self.connect(id, given, workspace)) } catch { e => Err(e) }) {
             Ok(c) => ignore(d.succeed(c))
             Err(e) => {
@@ -328,11 +333,11 @@ pub async fn PeerHttp::tunnel(self : PeerHttp, given : String, to : Json, probe?
     if !probe {
       return Some((s, reader.take_carry()))
     }
-    ignore(self.rt.fork(() => (s.reset)(0) catch { _ => () }))
+    ignore(self.rt.fork_quiet(name="peer http reset", () => (s.reset)(0) catch { _ => () }))
     None
   } catch {
     e => {
-      ignore(self.rt.fork(() => (s.reset)(0) catch { _ => () }))
+      ignore(self.rt.fork_quiet(name="peer http reset", () => (s.reset)(0) catch { _ => () }))
       raise e
     }
   }
@@ -366,7 +371,7 @@ pub async fn PeerHttp::request(self : PeerHttp, ask : LocalAsk, res : LocalAnswe
   let stream : Ref[@door.Stream?] = Ref(None)
   let plain = (status : Int, text : String) => {
     (res.head)(status, ["content-type", "text/plain; charset=utf-8"])
-    ignore(self.rt.fork(() => {
+    ignore(self.rt.fork_quiet(name="peer http plain", () => {
       (res.write)(@utf8.encode(text)) catch { _ => () }
       (res.end)()
     }))
@@ -383,7 +388,7 @@ pub async fn PeerHttp::request(self : PeerHttp, ask : LocalAsk, res : LocalAnswe
       "headers": pairs_json(passed(ask.raw_headers)),
       "body": Json::boolean(ask.body is Some(_)),
     })
-    ignore(self.rt.fork(name="peer http upload", () => {
+    ignore(self.rt.fork_quiet(name="peer http upload", () => {
       if ask.body is Some(b) {
         while (b.next)() is Some(piece) {
           (s.write)(piece)
@@ -421,7 +426,7 @@ pub async fn PeerHttp::request(self : PeerHttp, ask : LocalAsk, res : LocalAnswe
   } catch {
     e => {
       if stream.val is Some(s) {
-        ignore(self.rt.fork(() => (s.reset)(0) catch { _ => () }))
+        ignore(self.rt.fork_quiet(name="peer http reset", () => (s.reset)(0) catch { _ => () }))
       }
       if (res.sent_head)() {
         (res.destroy)()
@@ -493,14 +498,14 @@ pub async fn serve_http(k : Keeper, conn : @door.Connection, here : HereLocal) -
       raise e
     }
   }
-  let unlisten = (k.listen)(() => ignore(rt.fork(() => {
+  let unlisten = (k.listen)(() => ignore(rt.fork_quiet(name="peer http member", () => {
     if (k.peers_current)() {
       peer_member(k, peer, None) |> ignore
     }
   } catch { _ => (conn.close)(3, "not in the workspace") })))
   defer unlisten()
   while (conn.accept_bi)() is Some(s) {
-    ignore(rt.fork(name="peer http answer", () => http_answer(k, peer, s, here) catch {
+    ignore(rt.fork_daemon("peer http answer", on_error=_ => (), () => http_answer(k, peer, s, here) catch {
       e => {
         @door.log("info", "mesh", "a web request of another station failed", { "error": Json::string(words_of(e)) })
         (s.reset)(0) catch {

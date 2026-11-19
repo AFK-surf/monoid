@@ -181,7 +181,12 @@ fn CommaTasks::save(self : CommaTasks) -> Unit {
   let done : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.writing = Some(done)
   ignore(
-    self.runtime.fork(async fn() {
+    self.runtime.fork_daemon("comma tasks write", on_error=e => {
+        self.waiters = 0
+        self.writing = None
+        ignore(done.succeed(()))
+        self.io.warn("comma tasks not kept", [("error", Some(jstr(message_of(e))))])
+      }, async fn() {
       let mut failed : String? = None
       while self.latest is Some(text) {
         self.latest = None

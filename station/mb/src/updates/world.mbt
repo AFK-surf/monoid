@@ -141,7 +141,7 @@ pub fn World::now(self : World, name : String, args : Array[J]) -> Unit {
 /// Runs `f` apart, what it throws let go (a promise nobody awaits: `void (async () => …)()`).
 pub fn World::go(self : World, f : async () -> Unit) -> Unit {
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("updates", on_error=_ => (), async fn() {
       f() catch {
         _ => ()
       }
@@ -244,7 +244,7 @@ async fn Fibers::guarded(self : Fibers, f : async () -> Unit) -> Unit {
 async fn Fibers::promise(self : Fibers, f : async () -> Unit) -> Unit {
   let done : @effect.Deferred[Unit] = @effect.Deferred::new()
   ignore(
-    self.w.rt.fork(async fn() {
+    self.w.rt.fork_daemon("updates promise", on_error=_ => ignore(done.succeed(())), async fn() {
       self.guarded(f)
       ignore(done.succeed(()))
     }),
@@ -254,7 +254,7 @@ async fn Fibers::promise(self : Fibers, f : async () -> Unit) -> Unit {
 
 ///|
 fn Fibers::run(self : Fibers, f : async () -> Unit) -> @effect.Fiber[Unit] {
-  let fiber = self.w.rt.fork(async fn() {
+  let fiber = self.w.rt.fork_quiet(name="updates", async fn() {
     f() catch {
       _ => ()
     }
