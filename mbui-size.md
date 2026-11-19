@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
 | [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
 | [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.34 | 121.18 |
 | [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.08 | 122.48 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [acfb3e6af](https://github.com/AFK-surf/monoid/commit/acfb3e6afb05100d30e0ba3fabae6c7176f46777) fix(sf-ui): soften floating edges and shadows, mak | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 96.85 | 121.81 |
 | [bfd2fbcf1](https://github.com/AFK-surf/monoid/commit/bfd2fbcf1177f00d55c37932495739b6ffe4b61d) fix(mbui): a video whose size was not sent covers  | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 96.85 | 121.81 |
 | [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
-| [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.22 | 116.77 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [acfb3e6af](https://github.com/AFK-surf/monoid/commit/acfb3e6afb05100d30e0ba3fabae6c7176f46777) fix(sf-ui): soften floating edges and shadows, mak | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
 | [bfd2fbcf1](https://github.com/AFK-surf/monoid/commit/bfd2fbcf1177f00d55c37932495739b6ffe4b61d) fix(mbui): a video whose size was not sent covers  | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.1 |
 | [bcf22eaf4](https://github.com/AFK-surf/monoid/commit/bcf22eaf40b6892e530519577e56eb36db3e3e12) feat(mbui): a tree alone as an entry, its window's | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.1 |
-| [a1042ddbf](https://github.com/AFK-surf/monoid/commit/a1042ddbf7c2daa76d71d7c5c25c3d91b6c93d0c) fix(mbui): keep the core's answers the switches sw | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
