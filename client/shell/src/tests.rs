@@ -952,6 +952,233 @@ fn a_routed_stream_goes_to_the_next_program_listening_or_else_to_node_never_rese
     });
 }
 
+#[cfg(unix)]
+fn bind_unlistening_unix(path: &std::path::Path) -> std::os::fd::OwnedFd {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let _ = std::fs::remove_file(path);
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    assert!(unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } >= 0);
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let bytes = path.as_os_str().as_encoded_bytes();
+    assert!(bytes.len() < addr.sun_path.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr.sun_path.as_mut_ptr().cast::<u8>(), bytes.len());
+    }
+    let len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1) as libc::socklen_t;
+    assert_eq!(
+        unsafe { libc::bind(owned.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), len) },
+        0,
+        "bind: {}",
+        std::io::Error::last_os_error()
+    );
+    owned
+}
+
+#[cfg(unix)]
+fn start_listening_unix(fd: std::os::fd::OwnedFd) -> tokio::net::UnixListener {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+    assert_eq!(unsafe { libc::listen(fd.as_raw_fd(), 16) }, 0, "listen: {}", std::io::Error::last_os_error());
+    let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd.into_raw_fd()) };
+    std_listener.set_nonblocking(true).unwrap();
+    tokio::net::UnixListener::from_std(std_listener).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn open_unix_retries_transient_connection_refused_and_fails_fast_when_missing() {
+    let dir = TempDir::new();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    rt.block_on(async move {
+        // Missing path (ENOENT) fails immediately without waiting through the retry budget.
+        let missing = dir.path().join("missing.sock");
+        let start = std::time::Instant::now();
+        assert!(crate::net::open_unix(missing.to_str().unwrap(), b"hello").await.is_err());
+        assert!(crate::net::tell_unix(missing.to_str().unwrap(), b"hello").await.is_err());
+        assert!(start.elapsed() < std::time::Duration::from_millis(500), "missing path should fail fast, took {:?}", start.elapsed());
+
+        // Bound-but-not-yet-listening socket returns ECONNREFUSED while the socket file exists;
+        // once listen() starts 30ms later, open_unix retries and delivers the head.
+        let open_path = dir.path().join("transient-open.sock");
+        let fd = bind_unlistening_unix(&open_path);
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let listener = start_listening_unix(fd);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut got = [0u8; 5];
+            socket.read_exact(&mut got).await.unwrap();
+            got
+        });
+        let (_r, _w) = crate::net::open_unix(open_path.to_str().unwrap(), b"hello").await.expect("open_unix should recover from transient ECONNREFUSED");
+        assert_eq!(&server.await.unwrap(), b"hello");
+
+        // Same transient recovery for tell_unix.
+        let tell_path = dir.path().join("transient-tell.sock");
+        let fd = bind_unlistening_unix(&tell_path);
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let listener = start_listening_unix(fd);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut got = [0u8; 4];
+            socket.read_exact(&mut got).await.unwrap();
+            got
+        });
+        crate::net::tell_unix(tell_path.to_str().unwrap(), b"skip").await.expect("tell_unix should recover from transient ECONNREFUSED");
+        assert_eq!(&server.await.unwrap(), b"skip");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn conn_hand_sends_skip_on_delivery_failure_and_closes_when_unreachable() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let dial = || {
+            let (inner, a, b, addr, alpn) = (inner.clone(), a.clone(), b.clone(), addr.clone(), alpn.clone());
+            async move {
+                let taken = tokio::spawn(async move { b.accept().await.unwrap().await.unwrap() });
+                let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+                (id, taken.await.unwrap())
+            }
+        };
+
+        // Case 1: index == 0 fails (path unreachable) -> connection is closed rather than hung.
+        {
+            let (id, theirs) = dial().await;
+            let missing = dir.path().join("case1-missing.sock");
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": missing.to_str().unwrap() });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send, _recv) = theirs.open_bi().await.unwrap();
+            send.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send.finish().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), theirs.closed())
+                .await
+                .expect("index 0 failure must close QUIC connection");
+            handing.await.unwrap().unwrap();
+        }
+
+        // Case 2: index > 0 fails and path is permanently unreachable -> connection is closed.
+        {
+            let (id, theirs) = dial().await;
+            let node = dir.path().join("case2-node.sock");
+            let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+            let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to);
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": node.to_str().unwrap() });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+            send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send0.finish().unwrap();
+            assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap().2, 0);
+
+            node_task.abort();
+            let _ = node_task.await;
+            std::fs::remove_file(&node).unwrap();
+
+            let (mut send1, _recv1) = theirs.open_bi().await.unwrap();
+            send1.write_all(b"{\"method\":\"GET\",\"path\":\"/lost\"}\n").await.unwrap();
+            send1.finish().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), theirs.closed())
+                .await
+                .expect("unreachable path on index > 0 must close QUIC connection");
+            handing.await.unwrap().unwrap();
+        }
+
+        // Case 3: routed stream succeeds at front, but tell_unix(node, skip) fails -> connection is closed.
+        {
+            let (id, theirs) = dial().await;
+            let node = dir.path().join("case3-node.sock");
+            let serve = dir.path().join("case3-serve.sock");
+            let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+            let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+            let _serve_task = taking_streams(tokio::net::UnixListener::bind(&serve).unwrap(), "served", said_to);
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": node.to_str().unwrap(), "front": [serve.to_str().unwrap()], "routes": ["GET /served"] });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+            send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send0.finish().unwrap();
+            assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap().2, 0);
+
+            node_task.abort();
+            let _ = node_task.await;
+            std::fs::remove_file(&node).unwrap();
+
+            let (mut send1, _recv1) = theirs.open_bi().await.unwrap();
+            send1.write_all(b"{\"method\":\"GET\",\"path\":\"/served\"}\n").await.unwrap();
+            send1.finish().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), theirs.closed())
+                .await
+                .expect("failed skip after routed stream must close QUIC connection");
+            handing.await.unwrap().unwrap();
+        }
+
+        // Case 4: index > 0 delivery fails transiently, path recovers for skip -> kind 3 skip frame sent and next stream delivered.
+        {
+            let (id, theirs) = dial().await;
+            let node = dir.path().join("case4-node.sock");
+            let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+            let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": node.to_str().unwrap() });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+            send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send0.finish().unwrap();
+            assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap(), ("node", 2, 0, b"{\"hello\":1}\n".to_vec()));
+
+            // Stop listening while keeping a bound (unlistening) socket so open_unix exhausts retries and resets stream 1.
+            node_task.abort();
+            let _ = node_task.await;
+            let unlistening_fd = bind_unlistening_unix(&node);
+
+            let (mut send1, mut recv1) = theirs.open_bi().await.unwrap();
+            send1.write_all(b"{\"method\":\"GET\",\"path\":\"/drop\"}\n").await.unwrap();
+            send1.finish().unwrap();
+            // Once stream 1 is reset, open_unix has failed and skip_or_close is about to tell_unix(node, skip).
+            assert!(recv1.read_to_end(1 << 16).await.is_err());
+
+            let _node_back = taking_streams(start_listening_unix(unlistening_fd), "node", said_to);
+            let skip_msg = tokio::time::timeout(std::time::Duration::from_secs(2), said.recv())
+                .await
+                .expect("skip frame must arrive")
+                .unwrap();
+            assert_eq!(skip_msg, ("node", 3, 1, vec![]));
+
+            // Subsequent stream (index 2) continues to be delivered normally on the same connection.
+            let (mut send2, mut recv2) = theirs.open_bi().await.unwrap();
+            send2.write_all(b"{\"method\":\"GET\",\"path\":\"/after\"}\n").await.unwrap();
+            send2.finish().unwrap();
+            assert_eq!(String::from_utf8(recv2.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap(), ("node", 2, 2, b"{\"method\":\"GET\",\"path\":\"/after\"}\n".to_vec()));
+
+            theirs.close(0u32.into(), b"bye");
+            handing.await.unwrap().unwrap();
+        }
+    });
+}
+
 #[test]
 fn lets_a_closed_connection_and_its_streams_go() {
     let dir = TempDir::new();
