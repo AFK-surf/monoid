@@ -78,3 +78,76 @@ test "a peer that answered again starts its backoff anew" {
   job.wait = 0
   assert_eq(peer_waits(job, 1, "connection lost"), [5_000])
 }
+
+// A workspace's scope is one across still.fail's two origins (enrollment-door.ts `workspaceScope`), and an exchange asks
+// a peer only for the nodes this station's roster has (scope-exchange.ts `exchangeSignedRecords`).
+
+///|
+fn plain_crypto() -> Crypto {
+  {
+    verify: fn(_k, _b, _s) { false },
+    sign: fn(_t) { "" },
+    sha256: b => hex_of(b[:]),
+    random: n => Bytes::make(n, b'\x00'),
+  }
+}
+
+///|
+test "app.monoid.build and app.still.fail name one workspace's scope; another origin does not" {
+  let c = plain_crypto()
+  let still = workspace_scope(c, "https://app.still.fail", "w1")
+  assert_eq(workspace_scope(c, "https://app.monoid.build", "w1"), still)
+  assert_eq(workspace_scope(c, "https://app.monoid.build/", "w1"), still)
+  assert_eq(workspace_scope(c, "https://app.still.fail//", "w1"), still)
+  assert_true(workspace_scope(c, "https://example.test", "w1") != still)
+  assert_true(workspace_scope(c, "https://app.monoid.build", "w2") != still)
+}
+
+///|
+fn signed_of(node : String, revision : Int) -> Json {
+  let body : Json = { "node": Json::string(node), "revision": Json::number(revision.to_double()) }
+  { "body": Json::string(body.stringify()) }
+}
+
+///|
+fn exchange_asking(admits : ((String) -> Bool)?) -> (Array[Array[String]], Array[Json]) raise {
+  let admitted = "aa".repeat(32)
+  let other = "cc".repeat(32)
+  let asked : Array[Array[String]] = []
+  let taken : Array[Json] = []
+  let rt = @effect.Runtime::new()
+  let send = async fn(req : Json) -> Json {
+    let versions = Json::object(Map([(admitted, Json::number(1)), (other, Json::number(1))]))
+    match field(req, "want") {
+      Array(want) => {
+        let ids = want.map(w => text(w).unwrap_or(""))
+        asked.push(ids)
+        { "versions": versions, "records": Json::array(ids.map(id => signed_of(id, 1))) }
+      }
+      _ => { "versions": versions, "records": Json::array([]) }
+    }
+  }
+  let take = async fn(records : Array[Json]) { taken.append(records) }
+  let done = rt.fork(async fn() {
+    match admits {
+      Some(a) => exchange_signed_records(() => [], take, send, "revision", admits=a)
+      None => exchange_signed_records(() => [], take, send, "revision")
+    }
+  })
+  rt.advance(1)
+  guard done.poll() is Some(@effect.Succeeded(_)) else { fail("the exchange did not end well") }
+  (asked, taken)
+}
+
+///|
+test "a node on the peer's roster and not on this station's is not asked for; the admitted one is still taken" {
+  let admitted = "aa".repeat(32)
+  let (asked, taken) = exchange_asking(Some(id => id == admitted))
+  assert_eq(asked, [[admitted]])
+  assert_eq(taken.length(), 1)
+  assert_eq(taken[0], signed_of(admitted, 1))
+  // With nothing to admit by, every newer node is asked for, as before.
+  let (all, _) = exchange_asking(None)
+  assert_eq(all.length(), 1)
+  assert_eq(all[0].length(), 2)
+}
