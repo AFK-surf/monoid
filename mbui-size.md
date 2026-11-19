@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [43adeae0d](https://github.com/AFK-surf/monoid/commit/43adeae0d1fae0d4f03da9017aa148e8318a59a4) fix(mbui): a page's list's band drawn where its bl | 2.6 | 3.5 | 14.29 | 36.36 | 55.05 | 31.87 | 64.34 | 97.06 | 127.83 |
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 119.39 |
 | [71e0f837a](https://github.com/AFK-surf/monoid/commit/71e0f837a6abfc0e974a01ca1ea41f39dd7388fd) test(mbui): count a running frame's own asks out o | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 119.39 |
 | [e7e555b89](https://github.com/AFK-surf/monoid/commit/e7e555b89929895651b7c016a3082f2c58bd8000) perf(mbui): read a chat's video first frame by the | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.4 | 127.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ae48917b5](https://github.com/AFK-surf/monoid/commit/ae48917b5d408f07959cdb33436b00bfcef41d2e) fix(mbui): set a player's volume on Windows and th | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.69 | 63.79 | 97.35 | 125.85 |
 | [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
 | [8a803008d](https://github.com/AFK-surf/monoid/commit/8a803008d1952beb11e22733c2bfcd8d64594441) refactor(mbui): close tabs in the headless tab lis | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
-| [be1efb0e2](https://github.com/AFK-surf/monoid/commit/be1efb0e29af8af10a53e47c21bfbc34d9b9bcb7) fix(mbui): walk the first-frame step test's own fr | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [43adeae0d](https://github.com/AFK-surf/monoid/commit/43adeae0d1fae0d4f03da9017aa148e8318a59a4) fix(mbui): a page's list's band drawn where its bl | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [71e0f837a](https://github.com/AFK-surf/monoid/commit/71e0f837a6abfc0e974a01ca1ea41f39dd7388fd) test(mbui): count a running frame's own asks out o | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [e7e555b89](https://github.com/AFK-surf/monoid/commit/e7e555b89929895651b7c016a3082f2c58bd8000) perf(mbui): read a chat's video first frame by the | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ae48917b5](https://github.com/AFK-surf/monoid/commit/ae48917b5d408f07959cdb33436b00bfcef41d2e) fix(mbui): set a player's volume on Windows and th | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
 | [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
 | [8a803008d](https://github.com/AFK-surf/monoid/commit/8a803008d1952beb11e22733c2bfcd8d64594441) refactor(mbui): close tabs in the headless tab lis | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.12 |
-| [be1efb0e2](https://github.com/AFK-surf/monoid/commit/be1efb0e29af8af10a53e47c21bfbc34d9b9bcb7) fix(mbui): walk the first-frame step test's own fr | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
