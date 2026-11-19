@@ -1531,24 +1531,13 @@ let sheet_win_h : Ref[Double] = Ref(0.0)
 let sheet_win_lent : @view.Lent[() -> Double] = @view.Lent::new()
 
 ///|
-/// The height of the window for what node `v` of a sheet's body made of nodes is laid out by (sheet_window_h's: the
+/// The height of the window for what node `v` of a sheet's body made of nodes is laid out by (the
 /// screen's full height while no field in the sheet has the focus, the room over the soft keyboard while one does);
 /// outside a sheet, the window's.
 pub fn sheet_window_h_node(v : @view.View) -> Double {
   match v.lent(sheet_win_lent) {
     Some(f) => f()
     None => v.window().1
-  }
-}
-
-///|
-/// The height of the window for what a sheet holds (`present_sheet`, `sheet_node`): the screen's full height while no
-/// field in the sheet has the focus, or the room over the soft keyboard while one does. Outside a sheet, `c.window_size().1`.
-pub fn sheet_window_h(c : @ui.Ctx) -> Double {
-  if sheet_win_h.val > 0.0 {
-    sheet_win_h.val
-  } else {
-    c.window_size().1
   }
 }
 

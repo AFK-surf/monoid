@@ -3121,34 +3121,6 @@ let radio_dot : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Fg")
 // PanelIconButton; parts.css.ts: inside a small panel, @sf.small_panel, its rows @sf.menu_item(panel=true))
 
 ///|
-/// A small panel's head (PanelHead): its title (13, 600) and `note` under it (12, muted), in by a row's padding, as far
-/// under the panel's top as a menu's first item's words (menu_row_over), 4 over what follows; `end` beside the title
-/// (panel's `head_end`).
-pub fn panel_head(c : @ui.Ctx, title : String, note? : String = "", end? : (@ui.Ctx) -> Unit) -> Unit {
-  match end {
-    // (what stands at its end beside its title, in the middle of their line, the rest of it: a search)
-    Some(f) => {
-      // (what stands at its end a row's capsule in the panel's top corner: out as far as makes it concentric with it,
-      // as a pick's search stands, menu_row_reach)
-      let r = menu_row_reach(theme().rows.pick)
-      c.box(style=panel_head_line.then(@ui.style(mt=room(-r), mr=room(-r))), fn() {
-        c.text(title, style=panel_title) |> ignore
-        c.box(style=panel_head_end, fn() { f(c) }) |> ignore
-      })
-      |> ignore
-    }
-    None =>
-      c.box(style=panel_head_box, fn() {
-        c.text(title, style=panel_title) |> ignore
-        if note != "" {
-          c.text(note, style=panel_note_words) |> ignore
-        }
-      })
-      |> ignore
-  }
-}
-
-///|
 /// A small panel's head with what stands at its end: its title in by a row's padding, 12 before what follows it, which
 /// takes the rest of the line, 4 over what follows.
 // kept across runs: a value (no field of it changes)
@@ -3157,37 +3129,6 @@ let panel_head_line : @ui.Style = @ui.css("row w=Full pl=S2_5 pb=S1 gap=S3 align
 ///|
 // kept across runs: a value (no field of it changes)
 let panel_head_end : @ui.Style = @ui.style(w=grow)
-
-///|
-/// A group of a small panel's rows (PanelGroup) under a small `label` (12, muted: in by a row's padding, as far under
-/// what is over it as a row's words, 2 over its rows), 2 apart.
-/// `lead`: what goes before its label (a workspace's mark: workspace_badge).
-pub fn panel_group(c : @ui.Ctx, body : () -> Unit, label? : String = "", lead? : (@ui.Ctx) -> Unit) -> Unit {
-  c.box(style=panel_group_box, fn() {
-    if label != "" {
-      c.box(style=panel_label_at, fn() {
-        match lead {
-          Some(draw) =>
-            c.box(style=panel_label_led, fn() {
-              draw(c)
-              c.text(label, style=panel_note_words) |> ignore
-            })
-            |> ignore
-          None => c.text(label, style=panel_note_words) |> ignore
-        }
-      })
-      |> ignore
-    }
-    body()
-  })
-  |> ignore
-}
-
-///|
-/// A note in a small panel (PanelNote): 12, muted, in by a row's padding.
-pub fn panel_note(c : @ui.Ctx, words : String) -> Unit {
-  c.box(style=panel_text_box, fn() { c.text(words, style=panel_note_words) |> ignore }) |> ignore
-}
 
 ///|
 /// How a small panel's button stands (PanelButton's tone): its words alone, the accent's ink (the one thing to do),
@@ -3256,7 +3197,7 @@ let panel_group_box : @ui.Style = @ui.css("w=Full")
 let panel_label_at : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1_5 pb=S0_5")
 
 ///|
-/// A label with something before it (panel_group's `lead`): in a line, 6 apart.
+/// A label with something before it (panel_group_node's `lead`): in a line, 6 apart.
 // kept across runs: a value (no field of it changes)
 let panel_label_led : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
@@ -4353,27 +4294,9 @@ let sync_out_ms : Double = 400.0
 let update_ring_at : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
 
 ///|
-/// What comes (a download), drawn as an icon in an icon's place (`size`, the box the icons beside it
-/// are drawn in, in `color`): a ring where those icons draw their circles (as check-circle's, 3.5 to 20.5 of their 24
-/// grid, a line as wide as theirs), the accent from its top as far round as it has come (`coming`, 0 to 1; None, the
-/// spinner's quarter turning: @sf.progress_spinner), a short arrow down in it. No bigger than the icons beside it: a
-/// ring drawn round the download's mark instead stood out of the row, half again as wide as its neighbours.
-pub fn coming_mark(c : @ui.Ctx, key : String, coming : Double?, size : Double, color : Int64) -> Unit {
-  let stroke = size * icon_stroke / 24.0
-  c.box(style=@ui.style(w=Fixed(size), h=Fixed(size), align=ACenter, justify=JCenter), fn() {
-    progress_spinner(c, key, coming, size=size * coming_ring / 24.0 + stroke, stroke~) |> ignore
-    c.layer(fn() {
-      c.box(style=update_ring_at, fn() { icon(c, "download-ring", size~, color~) |> ignore }) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// coming_mark as a node of the window's tree in `parent`: the download's mark `size` across in `color`, the ring round
-/// it the accent from its top as far round as `coming` says it has come (0 to 1), going to a part told anew over
-/// @kit.progress_ms, eased out (progress_spinner's).
+/// What comes (a download), drawn as an icon in an icon's place, as a node of the window's tree in `parent`: the
+/// download's mark `size` across in `color`, the ring round it the accent from its top as far round as `coming` says it
+/// has come (0 to 1), going to a part told anew over @kit.progress_ms, eased out (progress_spinner's).
 #callsite(autofill(loc))
 pub fn coming_mark_node(
   parent : @view.View,
@@ -4430,7 +4353,7 @@ pub fn coming_mark_node(
 }
 
 ///|
-/// What coming_mark draws in: `size` square, what it holds in its middle.
+/// What coming_mark_node draws in: `size` square, what it holds in its middle.
 fn coming_mark_box(size : Double) -> @ui.Style {
   @ui.style(w=Fixed(size), h=Fixed(size), align=ACenter, justify=JCenter)
 }

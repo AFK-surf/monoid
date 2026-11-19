@@ -62,7 +62,8 @@ pub fn quota_lines_node(
       style_node(r, fn() { quota_chips_parts }, in_row=true)
       r.drops(Is(-1)) |> ignore
       let parts = fn() { quota_parts(windows()) }
-      for i in [0, 1] {
+      // (the i-th of quota_parts' two: the account's, then what its models have to themselves)
+      let part_line = fn(i : Int) {
         let part = fn() {
           match parts().get(i) {
             Some((_, p)) => p
@@ -75,6 +76,8 @@ pub fn quota_lines_node(
           chips(p, part, 2)
         })
       }
+      part_line(0)
+      part_line(1)
     })
     |> ignore
   })
