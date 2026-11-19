@@ -2527,6 +2527,55 @@ pub fn first_line_node(
 }
 
 ///|
+/// How far down from the top of a row aligned at `Start` a line of `own` (`own_leading`, `own_weight`) sits to share
+/// the first-line baseline of `primary` (`leading`, `weight`) in `v`'s tree (followed across theme, words_scale and
+/// `set_web_lines` / `words_redone`).
+pub fn baseline_drop(
+  v : @view.View,
+  primary : @ui.TextSize,
+  own : @ui.TextSize,
+  leading? : @ui.Leading,
+  own_leading? : @ui.Leading,
+  weight? : Int = 400,
+  own_weight? : Int = 400,
+) -> Double {
+  v.words_redone() |> ignore
+  let th = @ui.tree_theme()
+  let (p_sz, p_ln0) = th.text_size(primary)
+  let p_ln = match leading {
+    Some(l) => th.leading(l).unwrap_or(p_ln0)
+    None => p_ln0
+  }
+  let (o_sz, o_ln0) = th.text_size(own)
+  let o_ln = match own_leading {
+    Some(l) => th.leading(l).unwrap_or(o_ln0)
+    None => o_ln0
+  }
+  let p_base = @ui.line_baseline(node_sp(v, p_ln), size=node_sp(v, p_sz), weight~)
+  let o_base = @ui.line_baseline(node_sp(v, o_ln), size=node_sp(v, o_sz), weight=own_weight)
+  dmax(0.0, p_base - o_base)
+}
+
+///|
+/// Node `v` (in a row with `lines_up(Is(Some(Start)))` / `align=AStart`) dropped by `baseline_drop` so its first line
+/// of `own` shares the baseline of `primary`'s first line, even when `primary` wraps to multiple lines.
+#callsite(autofill(loc))
+pub fn on_baseline(
+  v : @view.View,
+  primary : @ui.TextSize,
+  own : @ui.TextSize,
+  leading? : @ui.Leading,
+  own_leading? : @ui.Leading,
+  weight? : Int = 400,
+  own_weight? : Int = 400,
+  loc~ : SourceLoc,
+) -> @view.View {
+  v.margin(loc~, By(fn() {
+    (0.0, baseline_drop(v, primary, own, leading?, own_leading?, weight~, own_weight~), 0.0, 0.0)
+  }))
+}
+
+///|
 /// A list's keys `now` as read, `was` the ones read last kept anew, `other` whether they are another set in place of
 /// the one before (some of these new and some of those gone in one change: another part or tab of the page, what it
 /// shows as it is answered in place of what it showed waiting or empty, another folder): there at once, not each block

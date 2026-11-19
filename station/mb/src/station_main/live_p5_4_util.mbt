@@ -202,14 +202,12 @@ priv struct P54Conn {
 
 ///|
 async fn p54_unix_open(host : @host.Host, path : String) -> P54Conn {
-  let (opened, _) = host.shell("unix.open", { "path": Json::string(path) })
-  { host, id: p54_get(Some(opened), "id").unwrap_or(Json::null()), closed: false }
+  { host, id: host.unix_open(path).id, closed: false }
 }
 
 ///|
 async fn p54_tcp_open(host : @host.Host, port : Int) -> P54Conn {
-  let (opened, _) = host.shell("tcp.open", { "port": Json::number(port.to_double()) })
-  { host, id: p54_get(Some(opened), "id").unwrap_or(Json::null()), closed: false }
+  { host, id: host.tcp_open(port).id, closed: false }
 }
 
 ///|
@@ -218,17 +216,14 @@ async fn P54Conn::read(self : P54Conn) -> Bytes? {
   if self.closed {
     return None
   }
-  let (said, bytes) = self.host.shell("tcp.read", { "id": self.id }) catch { _ => return None }
-  match (p54_get(Some(said), "end"), bytes) {
-    (Some(True), _) => None
-    (_, Some(b)) => Some(b)
-    (_, None) => None
+  self.host.tcp_read(self.id) catch {
+    _ => None
   }
 }
 
 ///|
 async fn P54Conn::write(self : P54Conn, b : Bytes) -> Unit {
-  ignore(self.host.shell("tcp.write", { "id": self.id }, bytes=b))
+  self.host.tcp_write(self.id, b)
 }
 
 ///|
@@ -239,13 +234,7 @@ fn P54Conn::close(self : P54Conn) -> Unit {
   self.closed = true
   let host = self.host
   let id = self.id
-  ignore(
-    host.rt.fork(name="conn close", async fn() {
-      ignore(host.shell("tcp.close", { "id": id })) catch {
-        _ => ()
-      }
-    }),
-  )
+  ignore(host.rt.fork_quiet(name="conn close", async fn() { host.tcp_close(id) }))
 }
 
 ///|

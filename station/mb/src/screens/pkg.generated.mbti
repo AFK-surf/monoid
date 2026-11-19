@@ -793,6 +793,7 @@ pub(all) struct LogStream {
 pub(all) struct LoginField {
   host : String
   field : String
+  filled : Bool
 }
 
 pub(all) struct LoginFill {
@@ -981,9 +982,11 @@ pub fn ScreenHub::close(Self) -> Unit
 pub async fn ScreenHub::close_screen(Self, String) -> Unit
 pub fn ScreenHub::debug_of(Self, String) -> SimDebug raise ScreenRefused
 pub fn ScreenHub::drive(Self, String, String, Bool, String) -> (Bool, Array[String])
+pub fn ScreenHub::driving_people(Self, String) -> Array[String]
 pub fn ScreenHub::end_view(Self, String, String, String) -> Unit raise ScreenRefused
 pub fn ScreenHub::end_views(Self, String, String) -> Int32 raise ScreenRefused
 pub fn ScreenHub::get(Self, String) -> ScreenSource?
+pub fn ScreenHub::has_taken_view(Self, String) -> Bool
 pub async fn ScreenHub::history_screen(Self, String, Int32) -> Unit
 pub fn ScreenHub::join(Self, String, Watcher) -> () -> Unit
 pub fn ScreenHub::list(Self) -> Array[ScreenSource]
@@ -1004,6 +1007,7 @@ pub fn ScreenHub::take_control(Self, String, by? : String?) -> Int32 raise Scree
 pub fn ScreenHub::watch(Self, (Array[ScreenSource]) -> Unit) -> () -> Unit
 pub fn ScreenHub::watch_only(Self, String, String) -> Unit raise ScreenRefused
 pub fn ScreenHub::when_stopping(Self, () -> Unit) -> () -> Unit
+pub fn ScreenHub::yield_to_agent(Self, String, String) -> Int32
 
 pub(all) enum ScreenInput {
   Pointer(kind~ : String, x~ : Double, y~ : Double, buttons~ : Int32)
@@ -1295,8 +1299,9 @@ pub(all) struct ViewOptions {
   audio : Bool
   opus : Bool
   gamut : String?
+  passkeys : Bool?
 }
-pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?) -> Self
+pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?, passkeys? : Bool?) -> Self
 
 pub(all) struct ViewShown {
   id : String
@@ -1320,11 +1325,12 @@ pub(all) struct Watcher {
   client : String?
   app : String?
   agent : Bool
+  mut taken : Bool
   end : ((String) -> Unit)?
   watch_only : ((String?) -> Unit)?
   mut at : Double
 }
-pub fn Watcher::new(String, Bool, (@jsjson.JValue) -> Unit, device? : String?, self_? : String?, client? : String?, app? : String?, agent? : Bool, end? : ((String) -> Unit)?, watch_only? : ((String?) -> Unit)?) -> Self
+pub fn Watcher::new(String, Bool, (@jsjson.JValue) -> Unit, device? : String?, self_? : String?, client? : String?, app? : String?, agent? : Bool, taken? : Bool, end? : ((String) -> Unit)?, watch_only? : ((String?) -> Unit)?) -> Self
 
 pub struct WinInput {
   // private fields

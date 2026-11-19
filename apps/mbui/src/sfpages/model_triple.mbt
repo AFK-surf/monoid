@@ -2312,7 +2312,7 @@ fn triple_model_row_node(
             @sf.style_node(nc, fn() { triple_name_column.then(@ui.style(w=Fixed(names_w()))) }, in_row=true)
             nc.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             nc.box(fn(nl) {
-              @sf.style_node(nl, fn() { triple_name_line })
+              @sf.style_node(nl, fn() { triple_model_name_line })
               nl.min_width(Is(Some(0.0))) |> ignore
               @sf.words_node(nl, name, fn() { if picked() { triple_row_picked } else { triple_row_name } })
               .shrink(Is(1.0))
@@ -2322,7 +2322,11 @@ fn triple_model_row_node(
               nl.show(fn() { usual() != "" }, fn(u) {
                 u.box(fn(ur) {
                   @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
-                  ur.shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
+                  @sf.on_baseline(ur, Ui, Meta)
+                  .shrink(Is(1.0))
+                  .min_width(Is(Some(0.0)))
+                  .clips(Is(true))
+                  |> ignore
                   @sf.words_node(ur, usual, fn() { triple_usual }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
                 })
                 |> ignore
@@ -3180,6 +3184,12 @@ let triple_combo_room : @ui.Style = triple_usual_room.then(@ui.css("min_w=S0 cli
 /// Its room: right after the name, what the name leaves of the row.
 // kept across runs: a value (no field of it changes)
 let triple_usual_room : @ui.Style = @ui.style(row=true, w=@sf.grow)
+
+///|
+/// A model's name with its `usualText` right after it, aligned from the top so `usualText` sits on the first line's
+/// baseline.
+// kept across runs: a value (no field of it changes)
+let triple_model_name_line : @ui.Style = @ui.css("row gap=S1_5 align=AStart")
 
 ///|
 /// A model's name with how it runs right after it, on its words' line.

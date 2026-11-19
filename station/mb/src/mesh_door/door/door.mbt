@@ -125,7 +125,7 @@ pub async fn door(conn : Connection, admit : Admit) -> Unit {
       // Its close is set as it is refused, and its line not waited for.
       let off = after(rt, refused_close_ms, () => (conn.close)(r.code, r.reason))
       ignore(
-        rt.fork(name="door refusal", () => {
+        rt.fork_quiet(name="door refusal", () => {
           write_line(first, r.line)
           (first.finish)()
         } catch { _ => () }),
@@ -144,7 +144,7 @@ pub async fn door(conn : Connection, admit : Admit) -> Unit {
   // Later lines on the control stream, until one ends the connection.
   let ending : Ref[Error?] = Ref(None)
   ignore(
-    rt.fork(name="door control", () => {
+    rt.fork_daemon("door control", on_error=e => log("info", "mesh", "control stream ended", { "error": Json::string(message_of(e)) }), () => {
       while (try { control.line() } catch { _ => None }) is Some(line) {
         let reply = try {
           (in_.renew)(line)
@@ -171,17 +171,17 @@ pub async fn door(conn : Connection, admit : Admit) -> Unit {
   defer (in_.ended)()
   while (conn.accept_bi)() is Some(stream) {
     if ending.val is Some(_) {
-      ignore(rt.fork(name="door reset", () => (stream.reset)(0) catch { _ => () }))
+      ignore(rt.fork_quiet(name="door reset", () => (stream.reset)(0) catch { _ => () }))
       continue
     }
     guard (in_.stream)() is Some(answer) else { return }
     let failed = (e : Error) => {
       log("info", "mesh", "request failed", { "error": Json::string(message_of(e)) })
-      ignore(rt.fork(name="door reset", () => (stream.reset)(0) catch { _ => () }))
+      ignore(rt.fork_quiet(name="door reset", () => (stream.reset)(0) catch { _ => () }))
     }
     ignore(
-      rt.fork(name="door request", () => request(stream, asked => ignore(
-          rt.fork(name="door answer", () => answer(asked) catch { e => failed(e) }),
+      rt.fork_daemon("door request", on_error=e => failed(e), () => request(stream, asked => ignore(
+          rt.fork_daemon("door answer", on_error=e => failed(e), () => answer(asked) catch { e => failed(e) }),
         )) catch {
         e => failed(e)
       }),

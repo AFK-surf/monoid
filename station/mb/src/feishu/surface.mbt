@@ -580,7 +580,7 @@ pub fn FeishuSurface::socket_hooks(
         _ => ()
       }
       ignore(
-        self.rt.fork(async fn() {
+        self.rt.fork_daemon("feishu catch up", on_error=_ => (), async fn() {
           self.catch_up(handler) catch {
             e =>
               self.log.warn(
@@ -618,7 +618,7 @@ pub fn FeishuSurface::socket_hooks(
       let whole = self.parts.add(frame, now)
       guard whole is Some(whole) else { return }
       ignore(
-        self.rt.fork(async fn() {
+        self.rt.fork_daemon("feishu event", on_error=e => self.log.warn("feishu", "a feishu event was not answered", jobj([("connect", Some(js(self.connect))), ("error", Some(js(error_words(e))))])), async fn() {
           let answer = try {
             let envelope = parse(frame_text(whole))
             self.take(envelope, handler)

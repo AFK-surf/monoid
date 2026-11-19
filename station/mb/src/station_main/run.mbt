@@ -499,16 +499,15 @@ async fn Station::status_reply(self : Station, r : Request, conn : Json) -> Repl
 async fn listen_on(host : @host.Host, fd : Int?, tries : Array[Int]) -> (Json, Int)? {
   match fd {
     Some(f) =>
-      match (try { Ok(host.shell("tcp.listen", { "fd": Json::number(f.to_double()) })) } catch { e => Err(e) }) {
-        Ok(({ "id": id, "port": Number(p, ..), .. }, _)) => Some((id, p.to_int()))
-        _ => None
+      match (try { Ok(host.tcp_listen_fd(f)) } catch { e => Err(e) }) {
+        Ok(listening) => Some((listening.id, listening.port))
+        Err(_) => None
       }
     None => {
       for port in tries {
-        // (127.0.0.1 only: the shell binds no other address)
-        match (try { Ok(host.shell("tcp.listen", { "port": Json::number(port.to_double()) })) } catch { e => Err(e) }) {
-          Ok(({ "id": id, "port": Number(p, ..), .. }, _)) => return Some((id, p.to_int()))
-          _ => ()
+        match (try { Ok(host.tcp_listen_local(port)) } catch { e => Err(e) }) {
+          Ok(listening) => return Some((listening.id, listening.port))
+          Err(_) => ()
         }
       }
       None
@@ -659,12 +658,12 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     return 1
   }
   // The launcher's channel.
-  let pipe_conn : Ref[Json?] = Ref(None)
+  let pipe_conn : Ref[@host.Conn?] = Ref(None)
   match pipe {
     Some(p) =>
-      match (try { Ok(host.shell("unix.open", { "path": Json::string(p) })) } catch { e => Err(e) }) {
-        Ok(({ "id": id, .. }, _)) => pipe_conn.val = Some(id)
-        _ => {
+      match (try { Ok(host.unix_open(p)) } catch { e => Err(e) }) {
+        Ok(conn) => pipe_conn.val = Some(conn)
+        Err(_) => {
           err_write("the launcher's pipe \{p} does not open\n")
           return 1
         }
@@ -729,7 +728,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
         host.rt.fork(name="launcher pipe out", async fn() {
           while true {
             let line = writes.take()
-            ignore(host.shell("tcp.write", { "id": conn }, bytes=@utf8.encode(line))) catch {
+            conn.socket.write(@utf8.encode(line)) catch {
               _ => ()
             }
           }
@@ -739,11 +738,9 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
         host.rt.fork(name="launcher pipe in", async fn() {
           let carry = StringBuilder()
           while true {
-            let (said, bytes) = host.shell("tcp.read", { "id": conn }) catch { _ => break }
-            if said is { "end": True, .. } {
-              break
-            }
-            for ch in @utf8.decode_lossy(bytes.unwrap_or(b"")) {
+            let bytes = conn.socket.read() catch { _ => break }
+            guard bytes is Some(bytes) else { break }
+            for ch in @utf8.decode_lossy(bytes) {
               if ch == '\n' {
                 s.told(carry.to_string())
                 carry.reset()
@@ -752,6 +749,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
               }
             }
           }
+          conn.socket.destroy()
           s.stop("the launcher is gone")
         }),
       )
@@ -858,6 +856,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     start_live_p5_4(bus)
     start_live_p5_5(bus)
   }
+  start_live_p5_1_mesh(bus)
   s.say_health()
   s.up = true
   control.say({ "ready": Json::boolean(true), "version": Json::string(s.version) })
@@ -894,10 +893,12 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   // The local status's socket (Unix's: a path in the data directory, the station's user's alone).
   if !is_windows() {
     let sock = path([data, "run", "status.sock"])
-    match (try { Ok(host.shell("unix.listen", { "path": Json::string(sock) })) } catch { e => Err(e) }) {
-      Ok(({ "id": id, .. }, _)) =>
-        ignore(host.rt.fork(name="status", async fn() { serve_http(host, id, async fn(r, conn) { s.status_reply(r, conn) }) }))
-      _ => err_write("station: the local status's socket is not had\n")
+    match (try { Ok(host.unix_listen(sock)) } catch { e => Err(e) }) {
+      Ok(listening) =>
+        ignore(
+          host.rt.fork(name="status", async fn() { serve_http(host, listening.id, async fn(r, conn) { s.status_reply(r, conn) }) }),
+        )
+      Err(_) => err_write("station: the local status's socket is not had\n")
     }
   }
   // The agents' door, once the process before is gone (the one handing over writes its handover first).

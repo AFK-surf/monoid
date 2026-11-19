@@ -73,7 +73,7 @@ pub fn ScopeDirectory::new(
     }
     if d.authoritative &&
       scopes.iter().any(s => !d.wanted.contains(text(field(s, "scope")).unwrap_or(""))) {
-      ignore(d.rt.fork(name="mesh scopes", async fn() { d.reconcile() catch { e => (d.failed)(e) } }))
+      ignore(d.rt.fork_daemon("mesh scopes", on_error=e => (d.failed)(e), async fn() { d.reconcile() catch { e => (d.failed)(e) } }))
     }
   })
   d

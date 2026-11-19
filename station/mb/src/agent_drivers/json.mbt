@@ -8,7 +8,7 @@ using @jsjson {type JValue}
 ///|
 /// A string.
 pub fn s(text : String) -> JValue {
-  Str(@jsjson.units(text))
+  JValue::of_string(text)
 }
 
 ///|
@@ -30,7 +30,7 @@ pub fn b(v : Bool) -> JValue {
 ///|
 /// An object of these entries, in this order.
 pub fn obj(entries : Array[(String, JValue)]) -> JValue {
-  Obj(entries.map(e => (@jsjson.units(e.0), e.1)))
+  JValue::of_object(entries)
 }
 
 ///|
@@ -40,41 +40,29 @@ pub fn arr(items : Array[JValue]) -> JValue {
 
 ///|
 pub fn strs(items : Array[String]) -> JValue {
-  Arr(items.map(s))
+  JValue::of_strings(items)
 }
 
 ///|
 /// `v.name` where `v` is an object.
 pub fn get(v : JValue?, name : String) -> JValue? {
-  match v {
-    Some(o) => o.get(name)
-    None => None
-  }
+  @jsjson.jval_at(v, name)
 }
 
 ///|
 /// `v[name]` where it is a string.
 pub fn str_at(v : JValue?, name : String) -> String? {
-  match get(v, name) {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  str_of(get(v, name))
 }
 
 ///|
 pub fn str_of(v : JValue?) -> String? {
-  match v {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  @jsjson.jval_str_of(v)
 }
 
 ///|
 pub fn num_of(v : JValue?) -> Double? {
-  match v {
-    Some(Num(x)) => Some(x)
-    _ => None
-  }
+  @jsjson.jval_num_of(v)
 }
 
 ///|
@@ -84,10 +72,7 @@ pub fn num_at(v : JValue?, name : String) -> Double? {
 
 ///|
 pub fn bool_at(v : JValue?, name : String) -> Bool? {
-  match get(v, name) {
-    Some(Bool(x)) => Some(x)
-    _ => None
-  }
+  @jsjson.jval_bool_of(get(v, name))
 }
 
 ///|
@@ -98,10 +83,7 @@ pub fn is_true(v : JValue?, name : String) -> Bool {
 
 ///|
 pub fn arr_of(v : JValue?) -> Array[JValue]? {
-  match v {
-    Some(Arr(a)) => Some(a)
-    _ => None
-  }
+  @jsjson.jval_arr_of(v)
 }
 
 ///|
@@ -129,39 +111,19 @@ pub fn entries_of(v : JValue?) -> Array[(String, JValue)] {
 ///|
 /// `o[name] = v` as JavaScript sets it: in its place where the key is there, at the end where it is not.
 pub fn set(o : JValue, name : String, v : JValue) -> JValue {
-  guard o is Obj(es) else { return o }
-  let key = @jsjson.units(name)
-  let out = es.copy()
-  for i, e in out {
-    if e.0 == key {
-      out[i] = (key, v)
-      return Obj(out)
-    }
-  }
-  out.push((key, v))
-  Obj(out)
+  @jsjson.jval_set(o, name, v)
 }
 
 ///|
 /// `delete o[name]`.
 pub fn del(o : JValue, name : String) -> JValue {
-  guard o is Obj(es) else { return o }
-  let key = @jsjson.units(name)
-  Obj(es.filter(e => e.0 != key))
+  @jsjson.jval_del(o, name)
 }
 
 ///|
 /// `{ ...a, ...b }`: what is not an object adds nothing.
 pub fn spread(parts : Array[JValue]) -> JValue {
-  let mut out : JValue = Obj([])
-  for p in parts {
-    if p is Obj(es) {
-      for e in es {
-        out = set(out, @jsjson.text(e.0), e.1)
-      }
-    }
-  }
-  out
+  parts.fold(init=Obj([]), @jsjson.jval_spread)
 }
 
 ///|
@@ -196,17 +158,10 @@ pub fn string_entries(v : JValue?) -> Array[(String, String)] {
 ///|
 /// `Number.isSafeInteger`.
 pub fn safe_integer(v : JValue?) -> Bool {
-  match v {
-    Some(Num(x)) =>
-      x == x.floor() && x.abs() <= 9007199254740991.0
-    _ => false
-  }
+  v is Some(Num(x)) && @jsjson.is_safe_integer(x)
 }
 
 ///|
 pub fn opt_s(v : String?) -> JValue {
-  match v {
-    Some(t) => s(t)
-    None => Null
-  }
+  JValue::of_opt_string(v)
 }

@@ -10,9 +10,10 @@ import { CoreError } from "../error.ts";
 export const BUILD_HEADER = "stillfail-build";
 
 /// The oldest station build talked to; 0: any. 6968 said its build first (#3612), told every stream it leaves the
-/// sidebar to the device and keeps its marks (`made`), and told no `thread-view` or `chat` to one that makes them:
-/// station/sync.ts keeps no other way of making them since.
-export const OLDEST_STATION = 6968;
+/// sidebar to the device and keeps its marks (`made`), and told no `thread-view` or `chat` to one that makes them.
+/// 7143 (#3794) makes the chat list once for everyone (`GET /chats?shared=1`, `chat-shared`, `chat-shared-removed`):
+/// station/sync.ts and rows-made.ts keep no other way of making the sidebar since.
+export const OLDEST_STATION = 7143;
 
 /// A build under this is no release's count of commits, and is not held to the floor: a station run from the sources
 /// says `0.1.0` (station/src/ops/version.ts).

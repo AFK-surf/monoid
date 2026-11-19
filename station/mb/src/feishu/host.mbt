@@ -67,7 +67,7 @@ pub fn host_net(host : @host.Host, stand_in? : String? = None) -> Net {
         None => raise FeishuError("The operation was aborted due to timeout")
       }
     },
-    now: () => @host.now(),
+    now: () => @host.epoch_ms(),
     sleep: async fn(ms) { @effect.sleep(ms) },
     stand_in,
   }

@@ -3,9 +3,9 @@
 //   - a `suberror` with no `impl Show for` it in its package: one with none is shown as its constructor, with its
 //     package's path (`station/<pkg>.<Type>`), wherever it is said to a person or written to a log;
 //   - a `suberror` that derives Show: what that gives is the constructor's shell (`Refused("…")`), not its words;
-//   - a socket opened by its shell's name (`shell("tcp.…")`, `"unix.…"`, `"listen.…"`) once more in a file than
-//     RAW_SHELL_SOCKETS says: a new one goes through the host's binding (station/mb/src/host/net.mbt) and base/net
-//     (`Socket`, `Listener`, `pipe_duplex`). The table only falls: a file that opens fewer lowers its count there.
+//   - a socket opened by its shell's name (`shell("tcp.…")`, `"unix.…"`, `"listen.…"`) in any file but the host's
+//     binding of them (station/mb/src/host/net.mbt, at most HOST_NET_SOCKETS times): every other one goes through that
+//     binding and base/net (`Socket`, `Listener`, `pipe_duplex`).
 // It reads the files' text, not the program. Prints each line that is not so, and fails then.
 //   node scripts/mb-station.ts
 import { readdirSync, readFileSync } from "node:fs";
@@ -14,26 +14,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../station/mb/src", import.meta.url));
 
-/// How many sockets each file opens by its shell's name: what was there before base/net could be used instead, and the
-/// host's own binding of them (`host/net.mbt`: `Host::socket_of`, `listener_of`, `tcp_open`, …), which the rest go
-/// through. This table only falls.
-const RAW_SHELL_SOCKETS: Record<string, number> = {
-  "front/mesh.mbt": 4,
-  "host/net.mbt": 12,
-  "reader/agents.mbt": 6,
-  "reader/serve.mbt": 7,
-  "station_main/claude_tui.mbt": 12,
-  "station_main/harness.mbt": 2,
-  "station_main/live_p5_1_admin.mbt": 1,
-  "station_main/live_p5_1_mesh.mbt": 1,
-  "station_main/live_p5_2_io.mbt": 6,
-  "station_main/live_p5_3_jobs.mbt": 4,
-  "station_main/live_p5_3_sandbox.mbt": 5,
-  "station_main/live_p5_4_terms.mbt": 4,
-  "station_main/live_p5_4_util.mbt": 5,
-  "station_main/run.mbt": 6,
-  "station_main/updates_platform.mbt": 4,
-};
+/// The one file that asks the shell for its sockets by name (`Host::socket_of`, `listener_of`, `tcp_open`, …), and how
+/// many times at most: every other file goes through it.
+const HOST_NET = "host/net.mbt";
+const HOST_NET_SOCKETS = 12;
 /// What a file says that this reads it for: an error, its Show, a socket opened by its shell's name.
 const SAYS = ["suberror", "impl Show", '"tcp.', '"unix.', '"listen.'].map((word) => Buffer.from(word));
 const RAW_SOCKET = /\bshell\s*\(\s*"(tcp|unix|listen)\.[^"]+"/g;
@@ -105,13 +89,15 @@ for (const pkg of packages("")) {
     }
     // The sockets it opens by its shell's name.
     const opened = text.match(RAW_SOCKET)?.length ?? 0;
-    const most = RAW_SHELL_SOCKETS[file] ?? 0;
-    if (opened > 0 || most > 0) seen.add(file);
-    if (opened > most) wrong.push(`${file}: opens ${opened} sockets by its shell's name, and RAW_SHELL_SOCKETS (scripts/mb-station.ts) lets it ${most}: open one through base/net (Socket, Listener, pipe_duplex)`);
-    else if (opened < most) wrong.push(`${file}: opens ${opened} sockets by its shell's name, and RAW_SHELL_SOCKETS (scripts/mb-station.ts) says ${most}: lower its count there${opened === 0 ? ", or take its entry out" : ""} (the table only falls)`);
+    if (file === HOST_NET) {
+      seen.add(file);
+      if (opened > HOST_NET_SOCKETS) wrong.push(`${file}: opens ${opened} sockets by its shell's name, more than HOST_NET_SOCKETS (scripts/mb-station.ts, ${HOST_NET_SOCKETS}): say a new one through the ones there`);
+    } else if (opened > 0) {
+      wrong.push(`${file}: opens ${opened} socket${opened === 1 ? "" : "s"} by its shell's name: only ${HOST_NET} does; open one through it (Host::tcp_open, unix_open, tcp_listen_local, listener_of, …) and base/net (Socket, Listener, pipe_duplex)`);
+    }
   }
 }
-for (const file of Object.keys(RAW_SHELL_SOCKETS)) if (!seen.has(file)) wrong.push(`RAW_SHELL_SOCKETS names a file that is not there: ${file}: take its entry out`);
+if (!seen.has(HOST_NET)) wrong.push(`${HOST_NET} is not there: HOST_NET (scripts/mb-station.ts) names the host's binding of the shell's sockets`);
 
 if (wrong.length > 0) {
   console.log(wrong.join("\n"));

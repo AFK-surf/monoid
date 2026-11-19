@@ -484,7 +484,7 @@ fn live_log(level : String, area : String, message : String, fields : Json) -> U
 ///|
 /// A connection to a runner's socket (its path: a Unix socket, a Windows named pipe), its events told on the loop.
 fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvents) -> @agent_drivers.Socket {
-  let conn : Ref[Json?] = Ref(None)
+  let conn : Ref[@host.Conn?] = Ref(None)
   let gone = Ref(false)
   let ended = Ref(false)
   let writes : @effect.Queue[Bytes?] = @effect.Queue::unbounded()
@@ -492,7 +492,7 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
   let close_once = () => if !gone.val {
     gone.val = true
     match conn.val {
-      Some(id) => ignore(host.rt.fork(name="runner close", async fn() { ignore(host.shell("tcp.close", { "id": id })) }))
+      Some(c) => ignore(host.rt.fork_quiet(name="runner close", async fn() { c.socket.destroy() }))
       None => ()
     }
     (events.closed)()
@@ -500,26 +500,27 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
   }
   ignore(
     host.rt.fork(name="runner socket", async fn() {
-      match (try { Ok(host.shell("unix.open", { "path": Json::string(path) })) } catch { e => Err(e) }) {
-        Ok(({ "id": id, .. }, _)) => {
-          conn.val = Some(id)
+      match (try { Ok(host.unix_open(path)) } catch { e => Err(e) }) {
+        Ok(c) => {
+          let id = c.id
+          conn.val = Some(c)
           if gone.val {
-            ignore(host.shell("tcp.close", { "id": id })) catch { _ => () }
+            c.socket.destroy()
             return
           }
           (events.connected)()
           self.kick()
           // what is written goes in order
           ignore(
-            host.rt.fork(name="runner socket out", async fn() {
+            host.rt.fork_quiet(name="runner socket out", async fn() {
               while !gone.val {
                 match writes.take() {
                   Some(b) =>
-                    ignore(host.shell("tcp.write", { "id": id }, bytes=b)) catch {
+                    host.tcp_write(id, b) catch {
                       _ => break
                     }
                   None => {
-                    ignore(host.shell("tcp.end", { "id": id })) catch { _ => () }
+                    host.tcp_end(id) catch { _ => () }
                     break
                   }
                 }
@@ -527,7 +528,7 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
             }),
           )
           while !gone.val {
-            let (said, bytes) = host.shell("tcp.read", { "id": id }) catch {
+            let bytes = host.tcp_read(id) catch {
               e => {
                 if !gone.val {
                   (events.error)(said_of(e))
@@ -535,11 +536,9 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
                 break
               }
             }
-            if said is { "end": True, .. } {
-              break
-            }
+            guard bytes is Some(bytes) else { break }
             if !gone.val {
-              (events.data)(@utf8.decode_lossy(bytes.unwrap_or(b"")))
+              (events.data)(@utf8.decode_lossy(bytes))
               self.kick()
             }
           }

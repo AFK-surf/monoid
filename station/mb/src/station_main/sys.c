@@ -1,5 +1,5 @@
-// What the station in MoonBit asks of the system that the shell (client/shell) does not do: the wall clock, stderr and
-// a descriptor's writes, the environment, the machine (its CPUs, memory, load, disks, addresses), the three calls the
+// What the station in MoonBit asks of the system that the shell (client/shell) does not do: stderr and a descriptor's
+// writes, the environment, the machine (its CPUs, memory, load, disks, addresses), the three calls the
 // mesh addon made for Node (native/mesh: `file_lock`, `peer_process`, `process_usage`), child processes followed to
 // their end, signals, and the launcher's control lines. Each path and string is UTF-8, ended by a NUL. What comes later
 // (a child's output and end, a lock taken, a control line, a signal) is told on the program's queue as an event of its
@@ -157,14 +157,6 @@ typedef DWORD(WINAPI *thread_fn)(LPVOID);
 static void start_thread(thread_fn f, void *arg) {
   HANDLE t = CreateThread(NULL, 0, f, arg, 0, NULL);
   if (t) CloseHandle(t);
-}
-
-/// The time since 1970, in ms.
-int64_t sfs_wall_ms(void) {
-  FILETIME t;
-  GetSystemTimePreciseAsFileTime(&t);
-  uint64_t v = ((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime;
-  return (int64_t)((v - 116444736000000000ULL) / 10000ULL);
 }
 
 int32_t sfs_err(moonbit_bytes_t b) {
@@ -781,12 +773,6 @@ static void start_thread(void *(*f)(void *), void *arg) {
   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
   pthread_create(&t, &attr, f, arg);
   pthread_attr_destroy(&attr);
-}
-
-int64_t sfs_wall_ms(void) {
-  struct timespec t;
-  clock_gettime(CLOCK_REALTIME, &t);
-  return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
 static int write_all(int fd, const uint8_t *b, size_t len) {

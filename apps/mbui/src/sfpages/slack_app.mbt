@@ -71,6 +71,8 @@ fn sa_draft(settings : Json?) -> SaDraft {
 ///|
 /// The draft `d` started again from `settings`, as it was first made of them (还原; Slack's settings changed).
 fn sa_draft_reset(d : SaDraft, settings : Json?) -> Unit {
+  let prev_shown = d.shown.untracked()
+  let prev_upload = d.upload.untracked()
   @signals.start_batch()
   d.color.set(text(settings, "backgroundColor"))
   d.groups.clear()
@@ -91,6 +93,12 @@ fn sa_draft_reset(d : SaDraft, settings : Json?) -> Unit {
   d.desc_field.set(text(settings, "description"))
   d.hex_field.set(text(settings, "backgroundColor"))
   @signals.end_batch()
+  if prev_shown != "" {
+    @ui.forget_image(prev_shown)
+  }
+  if prev_upload != "" {
+    @ui.forget_image(prev_upload)
+  }
 }
 
 ///|
@@ -623,12 +631,16 @@ fn app_fields_node(
       d.asking = false
       match bytes {
         Some(b) => {
+          let prev_upload = d.upload.untracked()
           sa_icons_made.val += 1
           let own = "mem:desk-slack-icon/own/\{sa_icons_made.val}"
           @ui.add_image(own, b)
           d.upload.set(own)
           d.picked.set("")
           d.reading.set((own, @sf.app_own_px, ""))
+          if prev_upload != "" && prev_upload != own {
+            @ui.forget_image(prev_upload)
+          }
         }
         None => ()
       }
@@ -748,6 +760,7 @@ fn sa_column(w : Double) -> Double {
 ///|
 /// An icon made: shown in the look, and kept as it goes to Slack.
 fn sa_icon_made(d : SaDraft, icon : @pixels.Canvas) -> Unit {
+  let prev = d.shown.untracked()
   let (jpeg, url) = @sf.app_icon_jpeg(icon)
   sa_icons_made.val += 1
   let shown = "mem:desk-slack-icon/\{sa_icons_made.val}"
@@ -755,6 +768,9 @@ fn sa_icon_made(d : SaDraft, icon : @pixels.Canvas) -> Unit {
   d.shown.set(shown)
   d.icon.set(url)
   d.icon_error.set("")
+  if prev != "" && prev != shown {
+    @ui.forget_image(prev)
+  }
 }
 
 ///|

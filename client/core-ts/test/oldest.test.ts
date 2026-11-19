@@ -1,9 +1,12 @@
 // The oldest station a core talks to (station/oldest.ts).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { stationTooOld } from "../src/station/oldest.ts";
+import { OLDEST_STATION, stationTooOld } from "../src/station/oldest.ts";
 
 test("with no floor every station is talked to; with one, a station older than it or not saying its build fails as too old", () => {
+  assert.equal(OLDEST_STATION, 7143);
+  assert.equal(stationTooOld([["stillfail-build", "0.1.7142"]], "/sessions")?.code, "station_too_old");
+  assert.equal(stationTooOld([["stillfail-build", "0.1.7143"]], "/sessions"), null);
   assert.equal(stationTooOld([], "/sessions", 0), null);
   assert.equal(stationTooOld([["stillfail-build", "0.1.7000"]], "/sessions", 7000), null);
   // 0.<m>.<n>: by n alone, whatever m says.

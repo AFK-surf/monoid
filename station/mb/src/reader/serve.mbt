@@ -63,7 +63,7 @@ const BODY_MOST : Int = 1048576
 
 ///|
 pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) -> Unit {
-  let (said, _) = host.shell("unix.listen", { "path": Json::string(socket) }) catch {
+  let listening = host.unix_listen(socket) catch {
     @wire.ShellError(m) => {
       @host.note("serve: not listening at \{socket}: \{m}")
       @host.exit(1)
@@ -71,7 +71,6 @@ pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) ->
     }
     e => raise e
   }
-  guard said is { "id": listening, .. } else { fail("the shell gave no listening socket") }
   let s : Serving = {
     host,
     reader,
@@ -95,17 +94,18 @@ pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) ->
       @host.exit(0)
     }),
   )
-  while true {
-    let accepted = try { Ok(host.shell("tcp.accept", { "id": listening })) } catch { e => Err(e) }
-    guard accepted is Ok(({ "id": id, .. }, _)) else {
-      if accepted is Err(e) {
-        @host.note("serve: accept failed: \{e}")
-        @effect.sleep(100)
+  // (a failed accept tried again after 100 ms, one that says the listening socket is gone ending it)
+  host
+  .listener_of(listening.id)
+  .serve(
+    host.rt.root(),
+    async fn(accepted) {
+      s.stream(accepted.id) catch {
+        e => @host.note("serve: a stream failed: \{e}")
       }
-      continue
-    }
-    ignore(host.rt.fork(name="serve stream", () => s.stream(id)))
-  }
+    },
+    on_error=e => @host.note("serve: accept failed: \{e}"),
+  )
 }
 
 ///|
@@ -196,9 +196,8 @@ async fn Taken::need(self : Taken, n : Int) -> Bool {
     if self.ended {
       return false
     }
-    let read = try { Ok(self.host.shell("tcp.read", { "id": self.id })) } catch { e => Err(e) }
-    match read {
-      Ok((said, Some(bytes))) if !(said is { "end": true, .. }) => self.have = self.have + bytes
+    match (try { Ok(self.host.tcp_read(self.id)) } catch { e => Err(e) }) {
+      Ok(Some(bytes)) => self.have = self.have + bytes
       _ => self.ended = true
     }
   }
@@ -236,10 +235,13 @@ fn be32(n : Int) -> Bytes {
 ///|
 /// One stream: its request read, answered, written back.
 async fn Serving::stream(self : Serving, id : Json) -> Unit {
-  self.answer_stream(id)
-  ignore(self.host.shell("tcp.close", { "id": id })) catch {
-    _ => ()
+  self.answer_stream(id) catch {
+    e => {
+      self.host.tcp_close(id)
+      raise e
+    }
   }
+  self.host.tcp_close(id)
 }
 
 ///|
@@ -307,7 +309,7 @@ async fn Serving::answer_stream(self : Serving, id : Json) -> Unit {
     at += n
   }
   out.write_bytes(be32(PIPE_END))
-  ignore(self.host.shell("tcp.write", { "id": id }, bytes=out.to_bytes())) catch {
+  self.host.tcp_write(id, out.to_bytes()) catch {
     _ => ()
   }
 }
@@ -1093,7 +1095,7 @@ async fn Serving::relay(self : Serving, id : Json, conn : Json, asked : Json, bo
     }
   }
   if open {
-    ignore(self.host.shell("tcp.write", { "id": id }, bytes=be32(PIPE_END))) catch {
+    self.host.tcp_write(id, be32(PIPE_END)) catch {
       _ => ()
     }
   } else {
@@ -1114,7 +1116,7 @@ async fn Serving::frames(self : Serving, id : Json, bytes : Bytes) -> Bool {
     at += k
   }
   try {
-    ignore(self.host.shell("tcp.write", { "id": id }, bytes=out.to_bytes()))
+    self.host.tcp_write(id, out.to_bytes())
     true
   } catch {
     _ => false

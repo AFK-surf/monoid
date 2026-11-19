@@ -30,7 +30,7 @@ pub fn host_io(host : @host.Host) -> Io {
   let tmp_n = Ref(0)
   {
     now: () => @host.now(),
-    wall: () => @host.now(),
+    wall: () => @host.epoch_ms(),
     sleep: ms => @effect.sleep(ms),
     after: (ms, f) => {
       let fiber = rt.fork(async fn() {
@@ -49,7 +49,9 @@ pub fn host_io(host : @host.Host) -> Io {
       })
       () => fiber.interrupt()
     },
-    spawn: f => ignore(rt.fork(f)),
+    spawn: f => ignore(
+      rt.fork_daemon("accounts_oauth", f, on_error=e => @host.note("accounts_oauth: background work failed: \{e}")),
+    ),
     fetch: req => {
       let args : Map[String, Json] = {
         "url": Json::string(req.url),

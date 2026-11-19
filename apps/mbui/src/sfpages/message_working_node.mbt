@@ -146,7 +146,7 @@ fn working_said_node(
         @sf.action_box_node(area, fn() { a().who + "：" + said().words }, fn(_) {
           open_detail(src, message_node_ref(here), @signals.untracked(a).key)
         }, fn(line) {
-          @sf.style_node(line, fn() { if message_inline(here) { activity_line_narrow } else { activity_line } })
+          @sf.style_node(line, fn() { if message_inline(here) { activity_line_narrow } else { activity_line } }, in_row=true)
           // (giving way where the row has not the room, down to nothing: what it does now is cut short, as its stop
           // shows beside it, the rest whole)
           line.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore

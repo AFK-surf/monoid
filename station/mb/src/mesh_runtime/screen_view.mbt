@@ -737,7 +737,7 @@ fn ViewSession::send(self : ViewSession, kind : Int, payload : Bytes) -> @effect
   let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.writes = mine
   ignore(
-    self.rt.fork(name="screen write", () => {
+    self.rt.fork_daemon("screen write", on_error=_ => ignore(mine.succeed(())), () => {
       before.wait() catch { _ => () }
       (self.stream.write)(frame(kind, payload)) catch {
         _ => self.stop(None)
@@ -769,7 +769,7 @@ fn ViewSession::then_(self : ViewSession, f : async () -> Unit, move_? : Int? = 
     let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
     self.inputs = mine
     ignore(
-      self.rt.fork(name="screen input", () => {
+      self.rt.fork_daemon("screen input", on_error=_ => ignore(mine.succeed(())), () => {
         before.wait() catch { _ => () }
         if self.pending_move is Some(cur) && cur.id == slot.id {
           self.pending_move = None
@@ -787,7 +787,7 @@ fn ViewSession::then_(self : ViewSession, f : async () -> Unit, move_? : Int? = 
   let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.inputs = mine
   ignore(
-    self.rt.fork(name="screen input", () => {
+    self.rt.fork_daemon("screen input", on_error=_ => ignore(mine.succeed(())), () => {
       before.wait() catch { _ => () }
       f() catch {
         e => (self.said)("info", "screens", "input not posted", jobj([("screen", jstr(self.id)), ("error", jstr(message_of(e)))]))
@@ -795,6 +795,12 @@ fn ViewSession::then_(self : ViewSession, f : async () -> Unit, move_? : Int? = 
       ignore(mine.succeed(()))
     }),
   )
+}
+
+///|
+/// What a background fiber of the view let escape, said.
+fn ViewSession::failed(self : ViewSession, what : String, e : Error) -> Unit {
+  (self.said)("info", "screens", what, jobj([("screen", jstr(self.id)), ("error", jstr(message_of(e)))]))
 }
 
 ///|
@@ -822,7 +828,7 @@ fn ViewSession::stop(self : ViewSession, reason : String?) -> Unit {
   }
   let written = self.state(jobj([("ended", jstr(r))]))
   ignore(
-    self.rt.fork(name="screen end", () => {
+    self.rt.fork_daemon("screen end", on_error=_ => ignore(self.over.succeed(())), () => {
       written.wait() catch { _ => () }
       self.writes.wait() catch { _ => () }
       (self.stream.finish)() catch { _ => () }
@@ -896,7 +902,7 @@ fn ViewSession::still(self : ViewSession) -> Unit {
 ///|
 fn ViewSession::still_after(self : ViewSession, ms : Double) -> Unit {
   ignore(
-    self.rt.fork(name="screen still", () => {
+    self.rt.fork_daemon("screen still", on_error=e => self.failed("sharpening a still screen failed", e), () => {
       @effect.sleep(ms.ceil().to_int())
       if self.closed {
         return
@@ -970,7 +976,7 @@ async fn ViewSession::sleep_or_wake(self : ViewSession, ms : Int?) -> Unit {
   self.wake_ = w
   if ms is Some(ms) {
     ignore(
-      self.rt.fork(name="screen wait", () => {
+      self.rt.fork_daemon("screen wait", on_error=_ => ignore(w.succeed(())), () => {
         @effect.sleep(ms)
         ignore(w.succeed(()))
       }),
@@ -1360,7 +1366,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   if self.control && self.source.scale is Some(scale) {
     ignore(
-      self.rt.fork(name="screen scale", () => {
+      self.rt.fork_daemon("screen scale", on_error=_ => (), () => {
         let s = scale() catch { _ => return }
         if s is Some(v) && !(v is Null) && !self.closed {
           ignore(self.state(jobj([("scale", v)])))
@@ -1370,7 +1376,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   if self.control && self.source.resolution is Some(resolution) {
     ignore(
-      self.rt.fork(name="screen resolution", () => {
+      self.rt.fork_daemon("screen resolution", on_error=_ => (), () => {
         let r = resolution() catch { _ => return }
         if r is Some(v) && !(v is Null) && !self.closed {
           ignore(self.state(jobj([("resolution", v)])))
@@ -1379,18 +1385,18 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
     )
   }
   ignore(
-    self.rt.fork(name="screen stopped", () => {
+    self.rt.fork_daemon("screen stopped", on_error=_ => self.stop(None), () => {
       ignore((self.stream.stopped)()) catch { _ => () }
       self.stop(None)
     }),
   )
-  ignore(self.rt.fork(name="screen read", () => self.read()))
+  ignore(self.rt.fork_daemon("screen read", on_error=e => self.failed("reading a screen's viewer failed", e), () => self.read()))
   if self.audio && self.view.next_audio is Some(next_audio) {
-    ignore(self.rt.fork(name="screen audio", () => self.audio_loop(next_audio)))
+    ignore(self.rt.fork_daemon("screen audio", on_error=e => self.failed("a screen's audio failed", e), () => self.audio_loop(next_audio)))
   }
   // (a preview's card shows no figures)
   if self.paths is Some(paths) && !self.peek {
-    ignore(self.rt.fork(name="screen loss", () => self.watch_loss(paths)))
+    ignore(self.rt.fork_daemon("screen loss", on_error=e => self.failed("watching a screen's loss failed", e), () => self.watch_loss(paths)))
   }
   self.pump()
   self.over.wait()

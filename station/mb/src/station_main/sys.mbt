@@ -49,9 +49,6 @@ fn nul_split(b : Bytes) -> Array[String] {
 }
 
 ///|
-extern "C" fn wall_ms_ffi() -> Int64 = "sfs_wall_ms"
-
-///|
 #borrow(b)
 extern "C" fn err_ffi(b : Bytes) -> Int = "sfs_err"
 
@@ -156,25 +153,17 @@ extern "C" fn read_lines_ffi(id : Int64, fd : Int) = "sfs_read_lines"
 extern "C" fn signals_ffi(id : Int64, ignore : Int) = "sfs_signals"
 
 ///|
-/// Now, in ms since 1970 (`wall`: what is shared with other programs, file times, expiries).
+/// Now, in ms since 1970 (`wall`: what is shared with other programs, file times, expiries): `@host.wall_ms`.
 pub fn wall_ms() -> Int64 {
-  wall_ms_ffi()
+  @host.wall_ms()
 }
 
 ///|
-/// The wall's time and the host's (a monotonic clock, `@host.now`, what the runtime's timers go by) as the program
-/// started.
-let p5_wall_0 : Int64 = wall_ms_ffi()
-
-///|
-let p5_mono_0 : Int64 = @host.now()
-
-///|
-/// Now, ms since the epoch, going on as the host's monotonic clock goes from the wall's time as the program started:
-/// what the parts keep or compare as a time of the world's (a token's expiry, a record's `at`, a sample's time) never
-/// the host's clock alone, which counts from the machine's start (a date in January 1970), and never going back.
+/// Now, ms since the epoch and never going back (`@host.epoch_ms`): what the parts keep or compare as a time of the
+/// world's (a token's expiry, a record's `at`, a sample's time), never the host's clock alone, which counts from the
+/// machine's start (a date in January 1970).
 fn p5_epoch_ms() -> Int64 {
-  p5_wall_0 + (@host.now() - p5_mono_0)
+  @host.epoch_ms()
 }
 
 ///|

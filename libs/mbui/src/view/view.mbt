@@ -12513,10 +12513,19 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
   }
   let w = n.flex.width
   let h = n.flex.height
-  let x = n.flex.left + n.look.dx + n.look.sx * w + n.moved.0 + n.flip_across.0
+  let g = self.pixel_grid
+  let mut sx = n.look.sx * w
+  let mut sy = n.look.sy * h
+  if g > 0.0 && (sx != 0.0 || sy != 0.0) {
+    // (whole pixels of the host's, half-up so two edge-to-edge pages or lanes at p and p - 1 stay flush on integer
+    // pixel widths while keeping retained rows whole-pixel aligned and avoiding four-phase glyph re-phasing mid-slide)
+    sx = (sx * g + 0.5).floor() / g
+    sy = (sy * g + 0.5).floor() / g
+  }
+  let x = n.flex.left + n.look.dx + sx + n.moved.0 + n.flip_across.0
   // (a page's list's first row on the host's pixels where it sets them so: Tree::rows_placed)
   let (iy, _, fo, fa) = n.flip_in
-  let y = self.rows_placed(at, n.flex.top + n.look.dy + n.look.sy * h + n.moved.1 + iy)
+  let y = self.rows_placed(at, n.flex.top + n.look.dy + sy + n.moved.1 + iy)
   let a = n.look.alpha * fa
   let s = n.look.scale * fo
   let mut px = 0.0

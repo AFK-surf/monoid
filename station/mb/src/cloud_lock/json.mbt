@@ -3,21 +3,7 @@
 
 ///|
 fn jvalue_of(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(xs) => Arr(xs.map(jvalue_of))
-    Object(m) => {
-      let out = []
-      for k, x in m {
-        out.push((@jsjson.units(k), jvalue_of(x)))
-      }
-      Obj(out)
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|

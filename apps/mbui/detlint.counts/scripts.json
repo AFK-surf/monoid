@@ -1,0 +1,12 @@
+{
+  "counts": {
+    "device-shot": {
+      "scripts/e2e-local.sh": 1
+    }
+  },
+  "excused": {
+    "script-wait": {
+      "scripts/test.sh": 1
+    }
+  }
+}

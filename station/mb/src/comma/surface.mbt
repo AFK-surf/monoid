@@ -422,8 +422,16 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
       )
       self.hello()
       if self.stats is Some(_) && (self.in_scope)() {
-        ignore(self.runtime.fork(async fn() { self.send_index(socket, "stats.index", StatsWire) }))
-        ignore(self.runtime.fork(async fn() { self.send_index(socket, "task.index", TaskWire) }))
+        ignore(
+          self.runtime.fork_daemon("comma stats index", on_error=e => self.io.warn("the statistics index was not sent", [("connect", Some(jstr(self.id))), ("error", Some(jstr(message_of(e))))]), async fn() {
+            self.send_index(socket, "stats.index", StatsWire)
+          }),
+        )
+        ignore(
+          self.runtime.fork_daemon("comma task index", on_error=e => self.io.warn("the task index was not sent", [("connect", Some(jstr(self.id))), ("error", Some(jstr(message_of(e))))]), async fn() {
+            self.send_index(socket, "task.index", TaskWire)
+          }),
+        )
       }
     }
     Some("heartbeat") => self.send(jobj([("type", jstr("heartbeat"))]))
@@ -462,7 +470,7 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
       }
       let params = or_null(nullish(prop(f, "params"), Some(Obj([]))))
       ignore(
-        self.runtime.fork(async fn() {
+        self.runtime.fork_daemon("comma request", on_error=e => refuse(e), async fn() {
           let result = try {
             Ok(self.handle(method, params))
           } catch {
@@ -606,7 +614,7 @@ fn CommaSurface::hello(self : CommaSurface) -> Unit {
   }
   match asked {
     Err(e) => fail(e)
-    Ok(answer) => ignore(self.runtime.fork(async fn() { ignore(answer.wait()) catch { e => fail(e) } }))
+    Ok(answer) => ignore(self.runtime.fork_daemon("comma answer", on_error=e => fail(e), async fn() { ignore(answer.wait()) catch { e => fail(e) } }))
   }
 }
 
@@ -1179,7 +1187,7 @@ pub fn CommaSurface::stands_at(self : CommaSurface, channel : String, thread_ts 
     _ => self.io.tr(self.lang, if kind == "done" { "station.comma.done" } else { "station.comma.need" })
   }
   ignore(
-    self.runtime.fork(async fn() {
+    self.runtime.fork_daemon("comma turn state", on_error=_ => (), async fn() {
       ignore(
         self.say(channel, thread_ts, said, [], None, Some(if kind == "done" { "all_done" } else { "need_help" })),
       ) catch {

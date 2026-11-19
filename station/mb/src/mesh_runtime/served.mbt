@@ -336,7 +336,7 @@ pub async fn Served::start(self : Served) -> Array[String] {
   let left = Ref(self.servers.length())
   for s in self.servers {
     ignore(
-      self.rt.fork(() => {
+      self.rt.fork_quiet(name="served listening", () => {
         ignore(s.listening.wait()) catch { _ => () }
         left.val -= 1
         if left.val == 0 {
@@ -345,7 +345,7 @@ pub async fn Served::start(self : Served) -> Array[String] {
       }),
     )
   }
-  ignore(self.rt.fork(() => late.wait() catch { _ => () } noraise { _ => ignore(all.succeed(())) }))
+  ignore(self.rt.fork_quiet(name="served late", () => late.wait() catch { _ => () } noraise { _ => ignore(all.succeed(())) }))
   all.wait()
   stop()
   self.started = true
@@ -353,7 +353,7 @@ pub async fn Served::start(self : Served) -> Array[String] {
     if !s.ready && !s.ended {
       (self.w.log)("warn", "served", "a serving program did not listen in time; ending it", jobj([("path", jstr(s.path))]))
       let p = s.process
-      ignore(self.rt.fork(() => (p.terminate)() catch { _ => () }))
+      ignore(self.rt.fork_quiet(name="served terminate", () => (p.terminate)() catch { _ => () }))
     }
   }
   let live = self.live_paths()
@@ -413,12 +413,15 @@ fn Served::heard(self : Served, server : Server, said : Json) -> Unit {
       }
     }
     { "fallback": Number(_, ..), .. } =>
-      ignore(self.rt.fork(() => if field(said, "stream") is Some(True) { self.relay(server, said) } else { self.fallback(server, said) }))
+      ignore(
+        self.rt.fork_daemon("served fallback", on_error=e => self.failed(server, "a serving program's request was not answered", e), () => if field(said, "stream") is Some(True) { self.relay(server, said) } else { self.fallback(server, said) }),
+      )
     { "changes": Array(_) as changes, .. } =>
       if self.changed is Some(f) {
         f(changes, match field(said, "titled") { Some(Array(_) as t) => t; _ => Json::array([]) })
       }
-    { "claim": Number(_, ..), .. } => ignore(self.rt.fork(() => self.claim(server, said)))
+    { "claim": Number(_, ..), .. } =>
+      ignore(self.rt.fork_daemon("served claim", on_error=e => self.failed(server, "a serving program's claim was not answered", e), () => self.claim(server, said)))
     { "said": _, .. } => self.said(server, said)
     { "stop": Number(k, ..), .. } =>
       if self.streaming.get(server.n) is Some(m) && m.get(k.to_int()) is Some(stop) {
@@ -527,6 +530,12 @@ fn json_answer(status : Int, text : String) -> Handled {
 }
 
 ///|
+/// What a fiber for `server` let escape, said.
+fn Served::failed(self : Served, server : Server, what : String, e : Error) -> Unit {
+  (self.w.log)("warn", "served", what, jobj([("path", jstr(server.path)), ("error", jstr(message_of(e)))]))
+}
+
+///|
 async fn Served::fallback(self : Served, server : Server, said : Json) -> Unit {
   let n = field(said, "fallback").unwrap_or(Json::null())
   let handled = match self.viewer_of(said) {
@@ -603,7 +612,7 @@ async fn Served::relay(self : Served, server : Server, said : Json) -> Unit {
       let stopped = Ref(false)
       streams[n] = () => {
         stopped.val = true
-        ignore(self.rt.fork(() => stop_it() catch { _ => () }))
+        ignore(self.rt.fork_quiet(name="served stream stop", () => stop_it() catch { _ => () }))
       }
       // (what fails it ends it as its end does)
       (async fn() {
@@ -632,7 +641,7 @@ fn Served::piece(self : Served, server : Server, n : Int, text : String?) -> Uni
       let q = PieceQueue::new()
       self.queued[server.n] = q
       ignore(
-        self.rt.fork(() => {
+        self.rt.fork_daemon("served pieces", on_error=e => self.failed(server, "pieces were not posted to a serving program", e), () => {
           if self.queued.get(server.n) is Some(mine) && physical_equal(mine, q) {
             self.queued.remove(server.n)
           }

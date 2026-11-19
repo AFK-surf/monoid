@@ -30,7 +30,8 @@
   published (plan's `natives_runner`, `natives_win_runner`), side by side, with no `natives-main`: on GitHub's runners
   a reader's C is compiled at -O0 in a few units of 8 MB on every core (`MBC_UNIT_KB=8192`, `MBC_INIT_SPLIT=0`; zig
   cc's UBSan off), which a cold runner ends in its five minutes with no store of units, where the thousand units of
-  768 KB did not and the C whole took one core 115-180 s; `check` runs there only when
+  768 KB did not and the C whole took one core 115-180 s (main's three readers at -O2 on ci-1 in units of 3 MB, so
+  that each is some tens of units, not 1,121 parses of its 34 MB header); `check` runs there only when
   the Rust it tests changed (`scripts/plan.sh`'s `check_rust`: ci-1's sccache keeps those builds short), otherwise on
   `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
   line down every one queued until cancelled, 44383403135); a branch's `check-mac`
@@ -44,6 +45,9 @@
   a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. Runners on one
   self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and
   parallel real-time test slices on GitHub's separate VMs rather than stacking them on one host.
+- A job that needs another job's output says that job's result in its `if:` (`contains(fromJSON('["success","skipped"]'),
+  needs.natives.result)`): one cut at its `timeout-minutes` is `cancelled`, not `failure`, and the run is not
+  cancelled, so `!cancelled() && !failure()` alone ran nine jobs without the readers (main 44466921858).
 - A check that failed and passed on the same commit is never rerun green (the root AGENTS.md): a branch's `gate`, in a
   run attempted again, fails unless every job that failed or was cancelled before failed for GitHub's or the network's
   sake (`scripts/gate-rerun-check.mjs`). Do not rerun an old commit's main pipeline: it deploys that commit's beta over

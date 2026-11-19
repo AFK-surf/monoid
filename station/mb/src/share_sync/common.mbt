@@ -543,7 +543,7 @@ pub fn Tasks::new(rt : @effect.Runtime, log : Log, what : String) -> Tasks {
 pub fn Tasks::spawn(self : Tasks, f : async () -> Unit) -> Unit {
   self.busy += 1
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_quiet(name=self.what, async fn() {
       f() catch {
         e => self.log.warn(self.what, "background work failed", jobj([("error", jstr(error_words(e)))]))
       }
@@ -564,7 +564,7 @@ pub(all) struct Clock {
 /// The runtime's own clock: the machine's time, its timers the runtime's.
 pub fn Clock::live(rt : @effect.Runtime) -> Clock {
   {
-    now: () => @host.now().to_double(),
+    now: () => @host.epoch_ms().to_double(),
     after: (ms, f) => {
       let off = Ref(false)
       let wait = if ms < 0.0 { 0 } else if ms > 2147483647.0 { 2147483647 } else { ms.to_int() }

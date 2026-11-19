@@ -12,6 +12,8 @@ import {
 // Values
 pub fn args() -> Array[String]
 
+pub fn epoch_ms() -> Int64
+
 pub fn exit(Int32) -> Unit
 
 pub fn listener_gone(Error) -> Bool
@@ -25,6 +27,8 @@ pub fn now() -> Int64
 pub fn pid() -> Int32
 
 pub fn run(shell_dir? : String, async (Host) -> Unit) -> Int32
+
+pub fn wall_ms() -> Int64
 
 // Errors
 

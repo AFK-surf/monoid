@@ -189,12 +189,15 @@ pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
 }
 
 ///|
-/// An agent's history pressed (its mark in the bar), or the chat's files (its info's 文件): in front, closed; else
-/// opened in front, whole (side_tab_open).
+/// An agent's history pressed (its mark in the bar or its activity row), or the chat's files (its info's 文件):
+/// when already in front and visible, closed; on the tape with the panel off screen, brought into view; else opened
+/// in front, whole (side_tab_open).
 pub fn side_toggle(src : Source, r : ChatRef, tab : String) -> Unit {
   let (tabs, front) = side_now(src, r)
   if tabs.contains(tab) && front == tab {
-    side_change(src, r, "close", Some(tab))
+    if !tape_bring_side_if_hidden(r) {
+      side_change(src, r, "close", Some(tab))
+    }
   } else {
     side_tab_open(src, r, tab)
   }

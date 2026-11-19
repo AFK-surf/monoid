@@ -81,6 +81,7 @@ test("a_core_started_again_while_its_station_was_read_afresh_reads_it_again", as
   try {
     // Read afresh, the chats' marks not yet answered, as the stream tells on: where it is is not written down meanwhile.
     answers["GET /threads"] = [{ ...threadView(7, 3), title: "UPDATED" }];
+    answers["GET /chats?shared=1"] = (answers["GET /chats?shared=1"] as Record<string, unknown>[]).map((r) => ({ ...r, title: "UPDATED", named: { thread: { surface: "ember", title: "UPDATED" }, firstText: null, channelName: null } }));
     const release = s.host.hold("/admin/api/chats?marks=1");
     s.core.inner.stations.snapshot(ST);
     await s.host.settle();

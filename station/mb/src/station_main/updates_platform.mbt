@@ -105,15 +105,23 @@ async fn updates_platform(host : @host.Host, data : String, name : String, a : A
       }
       let op = s(1)
       if is_windows() {
-        let (opened, _) = host.shell("unix.open", { "path": Json::string("\\\\.\\pipe\\stillfail-launcher-\{pid}") })
-        let id = match opened {
-          { "id": Number(n, ..), .. } => n
+        let conn = host.unix_open("\\\\.\\pipe\\stillfail-launcher-\{pid}") catch {
           _ => raise SysError("the launcher's pipe did not open")
         }
         let line = ({ "op": Json::string(op) } : Json).stringify() + "\n"
-        ignore(host.shell("tcp.write", { "id": Json::number(id) }, bytes=@utf8.encode(line)))
-        ignore(host.shell("tcp.end", { "id": Json::number(id) }))
-        ignore(host.shell("tcp.close", { "id": Json::number(id) }))
+        conn.socket.write(@utf8.encode(line)) catch {
+          e => {
+            conn.socket.destroy()
+            raise e
+          }
+        }
+        conn.socket.end_write() catch {
+          e => {
+            conn.socket.destroy()
+            raise e
+          }
+        }
+        conn.socket.destroy()
       } else {
         guard @ops_platform.unix_launcher_signal(op) is Some(signal) else { raise SysError("no such ask of the launcher: \{op}") }
         if !kill(pid, signal) {

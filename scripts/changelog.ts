@@ -74,7 +74,7 @@ const CHANGES_NOTHING = new RegExp(
     /^client\/core-ts\/(test|bench|harness|side|scripts)\//,
     /^apps\/android\/[^/]+\/src\/(androidTest|test)\/|^apps\/android\/(carries\.sh|not-carried\.txt)$/,
     /^client\/core-ts\/src\/shapes\/schema\.ts$|^web\/src\/core\/(shapes|operations)\.ts$|^apps\/android\/.*\/data\/(Shapes|Operations)\.kt$/,
-    /^((apps|libs)\/mbui|libs\/sf-ui)\/([^/]+|(e2e|docs|screens|scripts|tools|bench|goldens|test|web)\/.*)$/,
+    /^((apps|libs)\/mbui|libs\/sf-ui)\/([^/]+|(detlint\.counts|e2e|docs|screens|scripts|tools|bench|goldens|test|web)\/.*)$/,
     /^apps\/mbui\/src\/(sffilm|sfreplay|sffix|sfkept|sfkit|sflayout|sfscreens|coredemo|books|photos|videos)\//,
     /^libs\/mbui\/src\/(\w*demo|effecttest|awly|film|textdiff)\//,
     /^((apps|libs)\/mbui|libs\/sf-ui)\/.*(_test|_wbtest|_fixture|\/fixture)\.mbt$|^apps\/mbui\/core\/(.*[_-]test\.(m|js)|smoke\.m)$/,

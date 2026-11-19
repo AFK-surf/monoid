@@ -12,7 +12,7 @@
 priv struct HistoryOwn {
   shut : @signals.Signal[Bool]
   transcripts : Map[String, @signals.Signal[String?]]
-  opening : Map[String, @sfbase.PressWait]
+  opening : Map[String, (String, @sfbase.PressWait)]
 }
 
 ///|
@@ -377,22 +377,23 @@ fn wh_evict_node(v : @view.View, src : Source, station : String, key : String, t
 }
 
 ///|
-/// Agent `key`'s history opened in chat `r`'s side panel (its mark pressed: side_toggle): where its runtime keeps the
-/// transcript asked of `src` now (wh_transcript, the one thing its first screen asks by a call, not a topic), the chat
-/// as it is meanwhile; once it is answered (at once where it is already, a path or none), `open` puts it in front,
-/// whole: its line is there from its first frame or never, nothing pushed down under the head after it opened (the
-/// coordinator of the migration, 2026-11-14: over a core 120 or 400 ms late the line came in 28 under the head ~270 ms
-/// after the panel opened). Given up (press_wait: the page left, the workspace switched, something else put up; or its
-/// mark pressed again meanwhile, which then does nothing more). Made in the press's handler; a replay of a run from
-/// before asks nothing ahead (opened at once, the line coming as it did).
+/// Agent `key`'s history opened in chat `r`'s side panel (its mark or activity row pressed: side_toggle): asks `src`
+/// for the runtime transcript path (wh_transcript) and waits at most `@sf.open_hold_ms` before calling `open`, so a
+/// fast answer avoids a post-open row shift while a slow or offline station never blocks opening. Pressing the same
+/// agent again while waiting opens it immediately instead of cancelling; pressing another agent cancels the first wait
+/// and opens the new one. A replay of an older run skips the wait.
 fn history_side_open(src : Source, r : ChatRef, key : String, open : () -> Unit) -> Unit {
   let chat = chat_key(r)
   match history_own.opening.get(chat) {
-    Some(w) => {
+    Some((was_key, w)) => {
       history_own.opening.remove(chat)
       if w.waiting() {
+        if was_key == key {
+          w.end()
+          open()
+          return
+        }
         w.give_up()
-        return
       }
     }
     None => ()
@@ -409,9 +410,10 @@ fn history_side_open(src : Source, r : ChatRef, key : String, open : () -> Unit)
       open()
     },
     let_go=fn() { history_own.opening.remove(chat) },
+    most=@sf.open_hold_ms,
   )
   if w.waiting() {
-    history_own.opening[chat] = w
+    history_own.opening[chat] = (key, w)
   }
 }
 
@@ -426,11 +428,13 @@ fn wh_transcript(src : Source, station : String, key : String) -> @signals.Signa
       let p : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
       history_own.transcripts[me] = p
       (src.call)("session.transcript", { "station": Json::string(station), "key": Json::string(key) }, fn(res) {
-        match res {
-          Ok(j) => p.set(Some(text(Some(j), "path")))
-          // not written yet, or a station from before it: nothing said
-          Err(_) => p.set(Some(""))
-        }
+        @view.answering(fn() {
+          match res {
+            Ok(j) => p.set(Some(text(Some(j), "path")))
+            // not written yet, or a station from before it: nothing said
+            Err(_) => p.set(Some(""))
+          }
+        })
       })
       p
     }

@@ -314,3 +314,111 @@ test "activity: what its agent's stream changes beside the line builds nothing i
   assert_true(changed.0 != "", msg="the line's row built for its words: \{Repr(changed)}")
   assert_true(t.find("整理下一步") is Some(_), msg="the line says what it does now")
 }
+
+///|
+test "activity: opens execution history within open_hold_ms when session.transcript stalls, and a second press opens at once" {
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  for again in [false, true] {
+    new_run()
+    let base = fixture("chat-working")
+    let held : Array[(Result[Json, Json]) -> Unit] = []
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        if name == "session.transcript" {
+          held.push(done)
+        } else {
+          (base.call)(name, params, done)
+        }
+      },
+    }
+    open_chat(r)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+    t.run_for(@ui.move_most_ms)
+    let (x, y) = activity_picture(t)
+    t.tap(x, y)
+    t.draw()
+    assert_eq(held.length(), 1, msg="again=\{again}: session.transcript asked")
+    assert_eq(side_now(r).1, "", msg="again=\{again}: held briefly while waiting for session.transcript")
+    if again {
+      // Pressing the same activity again while waiting opens immediately instead of cancelling.
+      t.tap(x, y)
+      t.run_for(@ui.move_most_ms)
+      assert_eq(side_now(r).1, "s-c1", msg="a second press while waiting opens execution history at once")
+    } else {
+      t.run_for(@sf.open_hold_ms + @ui.move_most_ms)
+      assert_eq(side_now(r).1, "s-c1", msg="opens once open_hold_ms passes even without session.transcript")
+    }
+    // When session.transcript answers later, the transcript line reveals smoothly with no layout jump.
+    @ui.came_from_outside()
+    held[0](Ok({ "path": "/Users/lin/.claude/projects/release/7c1e5b2a-4f0d-4c8e-9a61-3b2f.jsonl" }))
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("7c1e5b2a-4f0d-4c8e-9a61-3b2f.jsonl") is Some(_), msg="again=\{again}: transcript path appears once answered")
+  }
+}
+
+///|
+test "activity: pressing the row right of its words or while its words narrow still opens execution history" {
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  for nodes in [false, true] {
+    new_run()
+    @sfbase.chat_page_nodes.set(nodes)
+    let base = fixture("chat-working")
+    let live = @signals.signal(
+      ({ "activity": { "now": { "key": "call:1", "text": Json::string(@sffixture.working_step), "mono": true } } } : Json),
+      same=fn(a, b) { physical_equal(a, b) },
+    )
+    let src : Source = {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "live" && text(Some(Json::object(params)), "key") == "s-c1" {
+          { value: Some(live.get()), error: None, version: 1 }
+        } else {
+          base.topic(name, params).get().snapshot()
+        }
+      },
+    }
+    open_chat(r)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+    t.run_for(@ui.move_most_ms)
+    let lines = t.all(Button).filter(fn(s) { s.label.has_prefix("Claude：") })
+    assert_eq(lines.length(), 1, msg="nodes=\{nodes}: one activity button")
+    let (bx, by, bw, bh) = lines[0].rect
+    let (wx, _, ww, _) = t.rect_of(@sffixture.working_step).unwrap()
+    assert_true(bx + bw > wx + ww + 40.0, msg="nodes=\{nodes}: activity button spans the row past its words")
+    // Press on the right end of the long step text, shorten the step before releasing, and verify the press still lands.
+    let px = wx + ww - 8.0
+    let py = by + bh / 2.0
+    t.press_at(px, py)
+    live.set({ "activity": { "now": { "key": "call:2", "text": "短", "mono": false } } })
+    t.run_for(later_step_shown_ms)
+    assert_true(t.find("短") is Some(_), msg="nodes=\{nodes}: step narrowed before release")
+    t.release(px, py)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(side_now(r).1, "s-c1", msg="nodes=\{nodes}: shrinking words between down and up still opens history")
+  }
+}
+
+///|
+test "activity: on 中屏 tape with history already open off screen, pressing brings the side panel over instead of closing it" {
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  let t = activity_card_tester(760.0, 800.0, 0)
+  assert_true(@sfdesk.wide.tape.get(), msg="中屏 uses the tape")
+  page_over(t, 760.0)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page, msg="chat page in view on the tape")
+  let (x, y) = activity_picture(t)
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).1, "s-c1", msg="first press opens history")
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel, msg="tape moves to the side panel")
+  // Return to the chat page while leaving the history tab open in the off-screen panel.
+  @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Page))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page, msg="back on the chat page")
+  assert_eq(side_now(r).1, "s-c1", msg="history tab remains open")
+  let (x2, y2) = activity_picture(t)
+  t.tap(x2, y2)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).1, "s-c1", msg="pressing activity again keeps history open instead of closing it")
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel, msg="pressing activity brings the side panel over")
+}
