@@ -4921,8 +4921,9 @@ fn View::scrolls_window_ids(
                 } else {
                   @flex.FlipWay::new(t, list, said=w)
                 }
-                flip_way_said(at, way)
+                // (its rest set before the way is told, as set_out's is: see there)
                 rests_at(way)
+                flip_way_said(at, way)
               }
               _ => ()
             }
@@ -5017,6 +5018,11 @@ fn View::scrolls_window_ids(
           for k, _ in fresh {
             flip_new[k] = true
           }
+          // (where it rests set before the way is told: the first way set out binds what each block made at rest
+          // (flip_unbound), and that commit pairs a flight in the change's block (View::flies_in, Tree::carried) at
+          // once, flip_rebuild setting the flight's way and its rest from within flip_way_said; a rest set after it
+          // would put this way's sooner end over the flight's, all of it let go at rest part way through the flight)
+          rests_at(way)
           if way.far > 0.5 {
             flip_way_said(at, way)
           } else {
@@ -5032,7 +5038,6 @@ fn View::scrolls_window_ids(
             }
             flip_way.set(None)
           }
-          rests_at(way)
           }
           fn wait_old(settled : Bool) -> Unit {
             if !settled && self.tree.old_builds <= pending_builds.val {
