@@ -2,11 +2,23 @@
 // editing menu an old view's field opens (sfdesk's context_menu.mbt: 剪切, 复制, 粘贴, 全选 as they can be done).
 
 ///|
-test "wide: a right click on the composer made as nodes opens 剪切, 复制, 粘贴, 全选, each done to its words" {
+test "wide: a right click on the composer made as nodes opens 剪切, 复制, 粘贴, 全选, each done to its words as on the old one" {
+  composer_menu(true)
+}
+
+///|
+test "wide: a right click on the old composer: the same menu, the same edits" {
+  composer_menu(false)
+}
+
+///|
+/// The composer's right click menu walked through, its composer made as nodes (`nodes`) or the old one: the same
+/// items, each done the same.
+fn composer_menu(nodes : Bool) -> Unit raise {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat", before=fn(_) {
-    @sfbase.chat_page_nodes.set(true)
-    @sfbase.composer_nodes.set(true)
+    @sfbase.chat_page_nodes.set(nodes)
+    @sfbase.composer_nodes.set(nodes)
   })
   t.run_for(@ui.move_most_ms)
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "", station_name: "" }
@@ -41,6 +53,29 @@ test "wide: a right click on the composer made as nodes opens 剪切, 复制, �
   t.frame()
   t.frame()
   assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some("再看一眼签名"))
+  // 复制: what is picked on the clipboard, the words left as they were
+  let (fx, fy) = field_at()
+  t.right_click(fx, fy)
+  t.frame()
+  t.tap_text("全选")
+  t.frame()
+  t.right_click(fx, fy)
+  t.frame()
+  // (the menu's 复制, not a message's)
+  let (cx, cy, cw, ch) = t.get(MenuItem, label="复制").rect
+  t.tap(cx + cw / 2.0, cy + ch / 2.0)
+  t.frame()
+  assert_eq(t.clipboard(), "再看一眼签名")
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some("再看一眼签名"))
+  // a picture on the clipboard: put in as a file, as ⌘V and the old composer's 粘贴 put one
+  t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+  let (fx, fy) = field_at()
+  t.right_click(fx, fy)
+  t.frame()
+  t.tap_text("粘贴")
+  t.frame()
+  t.frame()
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.files.get().map(fn(f) { text(Some(f), "name") }) }), Some(["image.png"]))
   @sfbase.chat_page_nodes.set(false)
   @sfbase.composer_nodes.set(false)
 }
