@@ -203,10 +203,8 @@ fn GroupThreads::save(self : GroupThreads) -> Unit {
   self.dirty = true
   self.writing.run_soon(async fn() {
     self.dirty = false
-    let tmp = "\{self.path}.tmp"
     try {
-      (self.fs.write_text)(tmp, js_stringify(self.kept))
-      (self.fs.rename)(tmp, self.path)
+      write_beside(self.fs, self.path, js_stringify(self.kept))
     } catch {
       e => self.log.warn("group", "group threads not kept", jo([("error", js(thrown_message(e)))]))
     }

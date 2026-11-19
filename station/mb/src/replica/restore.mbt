@@ -370,6 +370,16 @@ fn words(e : Error) -> String {
 }
 
 ///|
+/// `text` written to `path` whole: beside it under a name no other write of this process takes (`@host.unique_tmp`, L13),
+/// renamed over it; what was written beside let go of where that fails.
+fn write_beside(files : Files, path : String, text : String) -> Unit raise {
+  let tmp = @host.unique_tmp(path)
+  errdefer (files.remove(tmp) catch { _ => () })
+  ignore(files.write(tmp, text))
+  files.rename(tmp, path)
+}
+
+///|
 /// That this station took `origin`'s place (`addFormerly`).
 fn add_formerly(files : Files, data : String, origin : String) -> Unit raise {
   let file = files.join([data, "replica", "formerly.json"])
@@ -379,8 +389,7 @@ fn add_formerly(files : Files, data : String, origin : String) -> Unit raise {
   }
   let list = if list.iter().any(x => x is Str(u) && @jsjson.text(u) == origin) { list } else { list + [str(origin)] }
   files.mkdir(files.dirname(file))
-  ignore(files.write("\{file}.tmp", stringify(Arr(list))))
-  files.rename("\{file}.tmp", file)
+  write_beside(files, file, stringify(Arr(list)))
 }
 
 ///|
@@ -443,8 +452,7 @@ pub fn take_back(host : @host.Host, sep : String, data : String, db : String, no
   }
   let out = files.join([data, "replica", "restored.json"])
   files.mkdir(files.dirname(out))
-  ignore(files.write("\{out}.tmp", stringify(outcome)))
-  files.rename("\{out}.tmp", out)
+  write_beside(files, out, stringify(outcome))
   if !(get(outcome, "pending") is Some(Bool(true))) {
     files.remove(restore, recursive=true)
   }

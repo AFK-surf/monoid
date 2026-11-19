@@ -74,12 +74,6 @@ pub fn host_net(host : @host.Host, stand_in? : String? = None) -> Net {
 }
 
 ///|
-/// A file's directory (Node's `dirname`, POSIX or Windows by `sep`).
-fn parent_of(sep : String, path : String) -> String {
-  @nodepath.dirname(sep, path)
-}
-
-///|
 /// The disk on the shell (`sep`: the file system's separator).
 pub fn host_disk(host : @host.Host, sep? : String = "/") -> Disk {
   let fs = async fn(op : String, args : Json, bytes : Bytes?) -> Json {
@@ -93,23 +87,7 @@ pub fn host_disk(host : @host.Host, sep? : String = "/") -> Disk {
     read: async fn(path) {
       shell_hex(fs("fs.bytes", { "path": Json::string(path) }, None))
     },
-    write_private: async fn(path, bytes) {
-      ignore(fs("fs.mkdir", { "path": Json::string(parent_of(sep, path)) }, None))
-      let tmp = "\{path}.\{@host.pid()}.tmp"
-      ignore(
-        fs(
-          "fs.put",
-          {
-            "path": Json::string(tmp),
-            "truncate": Json::boolean(true),
-            "sync": Json::boolean(true),
-            "mode": Json::number(384.0),
-          },
-          Some(bytes),
-        ),
-      )
-      ignore(fs("fs.rename", { "from": Json::string(tmp), "to": Json::string(path) }, None))
-    },
+    write_private: async fn(path, bytes) { host.write_private(path, bytes, sep~) },
     mkdir: async fn(path) {
       ignore(fs("fs.mkdir", { "path": Json::string(path) }, None))
     },

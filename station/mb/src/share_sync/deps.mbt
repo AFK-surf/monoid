@@ -223,25 +223,11 @@ pub async fn Files::write(self : Files, path : String, bytes : Bytes, mode : Int
 }
 
 ///|
-/// The station's private write (ops/files.ts `writePrivateSoon`): its folder made, written beside it (0o600), synced and
-/// renamed into place.
+/// The station's private write (ops/files.ts `writePrivateSoon`): its folder made, written beside it (0o600) under a
+/// name of its own, synced and renamed into place (`@host.Host::write_private`: fibers writing one file at once each
+/// rename their own, L13).
 pub async fn Files::write_private(self : Files, path : String, bytes : Bytes) -> Unit {
-  self.mkdir(self.dirname(path))
-  let tmp = "\{path}.\{@host.pid()}.tmp"
-  ignore(
-    self.op(
-      "fs.put",
-      [
-        ("path", jstr(tmp)),
-        ("offset", jnum(0.0)),
-        ("truncate", jbool(true)),
-        ("sync", jbool(true)),
-        ("mode", jnum(0o600.to_double())),
-      ],
-      bytes~,
-    ),
-  )
-  self.rename(tmp, path)
+  self.host.write_private(path, bytes, sep=self.sep)
 }
 
 ///|

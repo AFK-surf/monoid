@@ -533,3 +533,25 @@ test "the drive's errors are said as their words" {
     assert_false(s.contains("("))
   }
 }
+
+///|
+test "a private write: beside its file under a name of its own each time, nothing left beside it, even where it fails" {
+  let dir = scratch("private")
+  let given = []
+  for i in 0..<5 {
+    given.push(tmp_beside(join([dir, "state.json"])))
+    write_private(join([dir, "state.json"]), "write \{i}")
+  }
+  assert_eq(Set::from_array(given).length(), 5)
+  assert_eq(@utf8.decode_lossy(read_all(join([dir, "state.json"]))), "write 4")
+  // (written beside, then not renamed over a folder that holds something: what was written beside is let go of)
+  mkdir(join([dir, "full", "inside"]), true)
+  let failed = try { write_private(join([dir, "full"]), "x"); false } catch { _ => true }
+  assert_true(failed)
+  let failed_bytes = try { write_private_bytes(join([dir, "full"]), b"x"); false } catch { _ => true }
+  assert_true(failed_bytes)
+  let left = names(dir)
+  left.sort()
+  assert_eq(left, ["full", "state.json"])
+  rm_force(dir)
+}

@@ -139,18 +139,9 @@ pub fn host_io(
       }
     },
     write_private: async fn(path, text) {
-      // as writePrivateSoon: its folder made, `<path>.<pid>.tmp` written private and synced, renamed over it
+      // as writePrivateSoon: its folder made, written private and synced beside it under a name of its own, renamed over it
       let sep = if platform == "win32" { "\\" } else { "/" }
-      ignore(host.shell("fs.mkdir", { "path": Json::string(@nodepath.dirname(sep, path)) }))
-      let tmp = "\{path}.\{@host.pid()}.tmp"
-      ignore(
-        host.shell(
-          "fs.put",
-          { "path": Json::string(tmp), "offset": 0, "truncate": true, "sync": true, "mode": 384 },
-          bytes=@utf8.encode(text),
-        ),
-      )
-      ignore(host.shell("fs.rename", { "from": Json::string(tmp), "to": Json::string(path) }))
+      host.write_private(path, @utf8.encode(text), sep~)
     },
     mkdir: async fn(path, mode) {
       ignore(host.shell("fs.mkdir", { "path": Json::string(path) }))
