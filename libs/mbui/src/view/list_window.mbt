@@ -5201,7 +5201,7 @@ fn View::scrolls_window_ids(
       }
     }
     // (its bands, under all its blocks (drawn first): each one ground from where its first block's top is drawn to where
-    // the block under its last is drawn (its last's foot, none under it), worked out as it is drawn from where its blocks'
+    // its last's foot is, worked out as it is drawn from where its blocks'
     // slots are drawn then, as they draw themselves: placed by the layout (what the column's room over them takes, a
     // short list's at its foot: `from_end`), drawn off on their way (`flips`), each top on the host's grid as the list
     // puts a block's; drawn again as any of them is placed or drawn off (View::ground_by_placed), so it goes with them,
@@ -5272,14 +5272,12 @@ fn View::scrolls_window_ids(
                     _ => all.top(at) + off
                   }
                 }
+                // (block `at`'s foot as it is drawn now: its top and its height, on the grid as its top is: never the
+                // top of the block under it, which may be on a way of its own (one coming, drawn growing from its top))
                 let foot_of = fn(at : Int) -> Double {
-                  if at + 1 < n {
-                    top_of(at + 1)
-                  } else {
-                    match slot_views.get(all.key(at)) {
-                      Some(sv) if sv.alive() => top_of(at) + nodes[sv.at].lh
-                      _ => top_of(at) + all.h(at)
-                    }
+                  match slot_views.get(all.key(at)) {
+                    Some(sv) if sv.alive() => top_of(at) + nodes[sv.at].lh
+                    _ => top_of(at) + all.h(at)
                   }
                 }
                 let drawn = on(me.ly)

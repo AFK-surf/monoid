@@ -289,6 +289,14 @@ test "a page's list's band where its blocks lie at its foot, short of what shows
 }
 
 ///|
+/// A frame of the band tests that walk the list's way frame by frame: one at sixty a second
+let band_frame_ms : Double = 16.0
+
+///|
+/// How long they watch the list's way after a block comes: past a column's way in (`flips`) to its rest
+let band_way_watched_ms : Double = 600.0
+
+///|
 test "a page's list's band as its blocks go on their way (`flips`): where the block it lights is drawn in every frame, never ahead of it where it comes to rest" {
   // (it walks its own frames to look at each: once, at the default rate)
   if test_at_a_rate() {
@@ -305,8 +313,8 @@ test "a page's list's band as its blocks go on their way (`flips`): where the bl
   let seen = []
   let apart = []
   let from = t.time()
-  while t.time() - from < 600.0 {
-    t.run_for(16.0)
+  while t.time() - from < band_way_watched_ms {
+    t.run_for(band_frame_ms)
     let rs = t.drawn_rects()
     let band = rs.filter(fn(r) { r.4 == ink }).map(fn(r) { (r.1, r.3) })
     let block = rs.filter(fn(r) { r.4 == band_block_ground(1) }).map(fn(r) { (r.1, r.3) })
@@ -323,4 +331,38 @@ test "a page's list's band as its blocks go on their way (`flips`): where the bl
   places.dedup()
   assert_true(places.length() > 2, msg="block 1 went on a way: \{Repr(seen)}")
   assert_eq(apart, [], msg="the band where block 1 is drawn in each frame")
+}
+
+///|
+test "a page's list's band over several blocks (a long message a block a piece), short of what shows and on its way (`flips`): from its first block's top to its last's foot in every frame, one ground" {
+  // (it walks its own frames to look at each: once, at the default rate)
+  if test_at_a_rate() {
+    return
+  }
+  let t = Tester::new(fn(_c) {  })
+  t.set_rows_on_pixels(true)
+  let ink = 0x2050A01FL
+  let keys = @signals.signal([0, 1, 2, 3])
+  band_short_list(keys, [{ from: 1, upto: 3, top: 0.0, foot: 0.0 }], ink)
+  let apart = []
+  let look = fn(when : String) {
+    let rs = t.drawn_rects()
+    let band = rs.filter(fn(r) { r.4 == ink }).map(fn(r) { (r.1, r.3) })
+    let first = rs.filter(fn(r) { r.4 == band_block_ground(1) }).map(fn(r) { r.1 })
+    let last = rs.filter(fn(r) { r.4 == band_block_ground(3) }).map(fn(r) { r.1 + r.3 })
+    match (first, last) {
+      ([top], [foot]) => if band != [(top, foot - top)] { apart.push("\{when}: band \{Repr(band)} blocks \{top}..\{foot}") }
+      _ => apart.push("\{when}: blocks 1 and 3 not drawn once each")
+    }
+  }
+  t.draw()
+  look("at rest")
+  // (a block come at its foot: blocks 1 to 3 pushed up on the list's one way, together)
+  keys.set([0, 1, 2, 3, 4])
+  let from = t.time()
+  while t.time() - from < band_way_watched_ms {
+    t.run_for(band_frame_ms)
+    look("\{(t.time() - from).to_int()} ms")
+  }
+  assert_eq(apart, [], msg="one band from block 1's top to block 3's foot: \{Repr(apart)}")
 }
