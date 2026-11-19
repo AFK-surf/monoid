@@ -273,6 +273,8 @@ export const RigMeshLive = Layer.effectDiscard(
             : servePeer(conn, cloud, peers),
         closing: "rig stopping",
       });
+      // (as the station's does, mesh.ts: an endpoint that gives no more connections while the rig runs is bound again)
+      return yield* Effect.fail(new Error("rig mesh endpoint accept ended"));
     });
     yield* Effect.forkScoped(keptRunning(run, "rig mesh"));
   }),

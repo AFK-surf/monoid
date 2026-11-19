@@ -629,6 +629,10 @@ class FrontEndpoint implements Endpoint {
                   this.#meshScopes.delete(scope);
                 }
               }
+              // What the station set on the endpoint as it ran (its congestion controller rides in `#bind`), given again.
+              if (this.#kept) await told(next.ask("keep", { args: { urls: this.#kept } }));
+              if (this.#entries) await told(next.ask("setRelayEntries", { args: { entries: this.#entries } }));
+              if (this.#public !== null) await told(next.ask("publicRelays", { args: { on: this.#public } }));
               if (this.#routed) await next.ask("route", this.#routed);
               this.#relays = await next.ask("relayStatus").catch(() => []);
             } catch (error) {
@@ -748,12 +752,30 @@ class FrontEndpoint implements Endpoint {
     const options = this.#bind.options as { relayUrls: string[] };
     options.relayUrls = change(options.relayUrls);
   }
-  publicRelays(on: boolean) { return this.#ask("publicRelays", { args: { on } }).then(() => {}); }
-  keep(urls: string[]) { void this.#ask("keep", { args: { urls } }).catch((e) => log.warn("mesh", "relays not kept", { error: (e as Error).message })); }
-  setCongestion(congestion: "cubic" | "bbr") { void this.#ask("setCongestion", { args: { congestion } }).catch(() => {}); }
+  /// What `keep`, `setRelayEntries` and `publicRelays` last gave, given again to a front linked to anew (null: never
+  /// given, the front's own kept).
+  #kept: string[] | null = null;
+  #entries: { entry: string; relay: string }[] | null = null;
+  #public: boolean | null = null;
+  publicRelays(on: boolean) {
+    this.#public = on;
+    return this.#ask("publicRelays", { args: { on } }).then(() => {});
+  }
+  keep(urls: string[]) {
+    this.#kept = [...urls];
+    void this.#ask("keep", { args: { urls } }).catch((e) => log.warn("mesh", "relays not kept", { error: (e as Error).message }));
+  }
+  setCongestion(congestion: "cubic" | "bbr") {
+    // (what a link made again binds with: else it came back as first bound)
+    (this.#bind.options as { congestion?: string }).congestion = congestion;
+    void this.#ask("setCongestion", { args: { congestion } }).catch(() => {});
+  }
   holdIncoming(n: number) { void this.#ask("holdIncoming", { args: { n } }).catch(() => {}); }
   addAddr(addr: Addr) { void this.#ask("addAddr", { addr }).catch(() => {}); }
-  setRelayEntries(entries: { entry: string; relay: string }[]) { return this.#ask("setRelayEntries", { args: { entries } }).then(() => {}); }
+  setRelayEntries(entries: { entry: string; relay: string }[]) {
+    this.#entries = entries.map((e) => ({ ...e }));
+    return this.#ask("setRelayEntries", { args: { entries } }).then(() => {});
+  }
   networkChange() { return this.#ask("networkChange").then(() => {}); }
 
   async route(alpn: Buffer, to: string[], routes: string[]): Promise<boolean> {
@@ -793,5 +815,10 @@ class FrontEndpoint implements Endpoint {
 }
 
 const hex = (b: Buffer) => Buffer.from(b).toString("hex");
+/// An ask given again to a front linked to anew: one from before the operation refuses it (`no operation`), which
+/// leaves it as it was; any other failure is the link's, tried again.
+const told = (asked: Promise<unknown>) => asked.then(() => {}, (error) => {
+  if (!/no operation|not a function/.test((error as Error).message)) throw error;
+});
 /// A relay's URL as compared: no trailing slash.
 const bare = (url: string) => url.replace(/\/+$/, "");

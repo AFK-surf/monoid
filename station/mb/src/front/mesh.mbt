@@ -56,6 +56,9 @@ priv struct Mesh {
   /// a fresh front side by side (a handover's new Node and the old Node's `#watch` linking again) never both run
   /// `iroh.bind` and leave an unclosed endpoint of the same key on the relays.
   bind_lock : @effect.Semaphore
+  /// What is done once the endpoint bound now gives no more connections (`accepting`): by default the program ends, so
+  /// the launcher starts another front (front.rs) and the Nodes bind it anew.
+  on_accept_end : () -> Unit
 }
 
 ///|
@@ -78,6 +81,7 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     clients: [],
     binds: 0,
     bind_lock: @effect.Semaphore::new(1),
+    on_accept_end: () => @host.exit(1),
   }
   // `streams`: how it hands Node the streams the other end opens and what it does (front.rs `STREAMS`): 5, each with
   // its index, a route Node gave it (`route`, a segment `*` any one) to what answers it, and the mesh's scopes and
@@ -217,8 +221,28 @@ fn Mesh::seen(self : Mesh, id : Json) -> Json raise {
 }
 
 ///|
-/// The connections coming to `endpoint`, each given a Node, till it closes.
+/// The connections coming to `endpoint`, each given a Node, till it closes. Where it is still the endpoint bound when
+/// it gives no more (its driver ended), nothing comes to this station again while the Nodes go on asking of it and its
+/// relays look well: so this program ends (`on_accept_end`) for the launcher to start another. One let go after another
+/// was bound in its place ends quietly.
 async fn Mesh::accepting(self : Mesh, endpoint : Json) -> Unit {
+  self.accepted(endpoint)
+  if accept_ended_unbidden(self.endpoint, endpoint) {
+    @host.note("mesh endpoint accept ended; exiting front")
+    (self.on_accept_end)()
+  }
+}
+
+///|
+/// Whether an endpoint that gives no more connections ended unbidden: it is the one bound now, not one let go after
+/// another was bound in its place (`Mesh::bind`).
+fn accept_ended_unbidden(bound : Json?, endpoint : Json) -> Bool {
+  bound is Some(e) && e == endpoint
+}
+
+///|
+/// The connections coming to `endpoint`, each given a Node, till it gives no more.
+async fn Mesh::accepted(self : Mesh, endpoint : Json) -> Unit {
   while true {
     // (an endpoint let go after another was bound in its place is no handle any more: its end)
     let (got, _) = self.host.shell("iroh.accept", { "id": endpoint }) catch {
@@ -373,10 +397,11 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
   }
   let (bound, _) = self.host.shell("iroh.bind", options, bytes=key)
   guard bound is { "id": endpoint, .. } else { fail("the shell bound no endpoint") }
+  // (the new one bound before the old is let go: the old one's accepting, ending as it goes, finds it replaced)
+  self.endpoint = Some(endpoint)
   if old is Some(o) {
     self.let_go(o)
   }
-  self.endpoint = Some(endpoint)
   self.identity = identity
   self.bound_relays = relays_of(options)
   self.bound_congestion = congestion_of(options)

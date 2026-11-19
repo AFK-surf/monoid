@@ -1925,6 +1925,19 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     assert.equal(await front("wake"), 1000);
     await both("online, once linked again", () => ep.online(), "online");
     assert.deepEqual(mbFront.asks.slice(before.mb), tsFront.asks.slice(before.ts), "asked of the front linked to again");
+    // what was set as it ran given again, before the routes (a front linked to anew bound as first bound and told none of
+    // these left the station on the congestion controller, kept relays, entries and public relays it had changed)
+    const again = (ops: string[]) => tsFront.asks.slice(before.ts).filter((a) => ops.includes((a as { op: string }).op)).map((a) => {
+      const { id: _, streams: _s, ...rest } = a as Record<string, Json>;
+      return rest.op === "bind" ? { op: "bind", congestion: (rest.options as { congestion?: string }).congestion } : rest;
+    });
+    assert.deepEqual(again(["bind", "keep", "setRelayEntries", "publicRelays", "route"]), [
+      { op: "bind", congestion: "cubic" },
+      { op: "keep", args: { urls: ["https://r1/"] } },
+      { op: "setRelayEntries", args: { entries: [{ entry: "e", relay: "r" }] } },
+      { op: "publicRelays", args: { on: false } },
+      { op: "route", alpn: hex(Buffer.from("stillfail/admin/1")), front: ["/tmp/serve.sock"], routes: ["GET /admin/api/chats"] },
+    ]);
     await both("linked again", () => ep.linked!(), "linked");
     // (why the socket was not reached is the system's words: Node's and the shell's differ)
     const systems = (ls: Json[]) => ls.map((l) => (l.words === "the front not reached" ? { ...l, with: { ...l.with, error: "<the system's words>" } } : l));

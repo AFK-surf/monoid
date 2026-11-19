@@ -285,6 +285,10 @@ export const MeshLive = Layer.effectDiscard(
           : serve(members, conn),
         closing: STOPPING,
       });
+      // (an endpoint that gives no more connections while the station runs, its driver ended, serves nothing again:
+      // failed, so keptRunning closes what this run holds and binds again after its backoff; a station stopping
+      // interrupts `accept` before it gets here)
+      return yield* Effect.fail(new Error("mesh endpoint accept ended"));
     });
     yield* Effect.forkScoped(keptRunning(run));
   }),
