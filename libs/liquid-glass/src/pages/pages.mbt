@@ -283,8 +283,9 @@ fn overview(root : @view.View, held : Held?) -> Unit {
               .ground(Is(if lum > 0.5 { 0xF4F4F4FFL } else { 0x1C1C1EFFL }))
               |> ignore
               b.box(fn(stripes) {
-                stripes.over(Is(true)).padding(Is((0.0, 32.0, 0.0, 0.0))).gap(Is(24.0)) |> ignore
-                for _ in 0..<7 {
+                // (six lines, 32 from its top and 24 from its foot, cut to its corners: the card's shadow over it is not)
+                stripes.over(Is(true)).clips(Is(true)).radius(Is(28.0)).padding(Is((0.0, 32.0, 0.0, 0.0))).gap(Is(24.0)) |> ignore
+                for _ in 0..<6 {
                   stripes.box(fn(line) {
                     line.height(Is(Some(4.0))).ground(Is(if lum > 0.5 { 0xD0D0D8FFL } else { 0x3A3A44FFL })) |> ignore
                   })
