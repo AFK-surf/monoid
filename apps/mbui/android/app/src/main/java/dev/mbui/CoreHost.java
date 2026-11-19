@@ -682,13 +682,21 @@ final class CoreHost {
             if (any) {
                 if (!locked()) throw new SecureException("no_device_lock");
                 java.security.PrivateKey masterPriv = hasV2 ? openMasterPrivate(reason) : null;
-                for (int i = 0; i < n; i++) {
-                    if (blobs[i] == null) continue;
-                    if (blobs[i][0] == VERSION_ENVELOPE) {
-                        vals[i] = decryptUserV2(blobs[i], keys[i], masterPriv);
-                    } else {
-                        vals[i] = decryptUserV1(blobs[i], keys[i], aliases[i], reason);
-                        tryUpgradeToV2(keys[i], vals[i]);
+                try {
+                    for (int i = 0; i < n; i++) {
+                        if (blobs[i] == null) continue;
+                        if (blobs[i][0] == VERSION_ENVELOPE) {
+                            vals[i] = decryptUserV2(blobs[i], keys[i], masterPriv);
+                        } else {
+                            vals[i] = decryptUserV1(blobs[i], keys[i], aliases[i], reason);
+                            tryUpgradeToV2(keys[i], vals[i]);
+                        }
+                    }
+                } finally {
+                    if (masterPriv != null) {
+                        try {
+                            masterPriv.destroy();
+                        } catch (Throwable ignored) {}
                     }
                 }
             }
@@ -701,6 +709,7 @@ final class CoreHost {
             } else {
                 sizes.put(vals[i].length);
                 all.write(vals[i]);
+                java.util.Arrays.fill(vals[i], (byte) 0);
             }
         }
         return new Answer("{\"sizes\":" + sizes.toString() + "}", all.toByteArray());
@@ -726,7 +735,13 @@ final class CoreHost {
                 if (!locked()) throw new SecureException("no_device_lock");
                 if (blob[0] == VERSION_ENVELOPE) {
                     java.security.PrivateKey masterPriv = openMasterPrivate(reason);
-                    return new Answer("{}", decryptUserV2(blob, key, masterPriv));
+                    try {
+                        return new Answer("{}", decryptUserV2(blob, key, masterPriv));
+                    } finally {
+                        try {
+                            masterPriv.destroy();
+                        } catch (Throwable ignored) {}
+                    }
                 }
                 byte[] plain = decryptUserV1(blob, key, alias, reason);
                 tryUpgradeToV2(key, plain);
@@ -823,13 +838,18 @@ final class CoreHost {
         KeyStore ks = keystore();
         java.security.cert.Certificate cert = ks.getCertificate(PERSON);
         if (cert != null) {
-            try {
-                Cipher.getInstance("RSA/ECB/OAEPPadding").init(Cipher.DECRYPT_MODE, (java.security.PrivateKey) ks.getKey(PERSON, null), OAEP);
-                return false;
-            } catch (android.security.keystore.KeyPermanentlyInvalidatedException e) {
+            java.security.Key k = ks.getKey(PERSON, null);
+            if (!(k instanceof java.security.PrivateKey priv)) {
                 ks.deleteEntry(PERSON);
-            } catch (android.security.keystore.UserNotAuthenticatedException e) {
-                return false;
+            } else {
+                try {
+                    Cipher.getInstance("RSA/ECB/OAEPPadding").init(Cipher.DECRYPT_MODE, priv, OAEP);
+                    return false;
+                } catch (android.security.keystore.KeyPermanentlyInvalidatedException e) {
+                    ks.deleteEntry(PERSON);
+                } catch (android.security.keystore.UserNotAuthenticatedException e) {
+                    return false;
+                }
             }
         }
         personKey();

@@ -493,9 +493,7 @@ function waitingError(inner: Inner, ws: string, v: Vault): CoreError {
 /// (`waitingAs`) is taken as the lock it waits by took it, and its items checked against that lock: else any later
 /// version a station made up of it or of an item, taken by none, would be held over it.
 type Fits = { vault(v: Vault): boolean; item(i: Item): boolean; cert(c: BoxCert): boolean };
-function fits(inner: Inner, ws: string): Fits {
-  const lock = lockOf(inner, ws);
-  if (lock instanceof CoreError) return { vault: () => false, item: () => false, cert: () => false };
+function fitsWith(inner: Inner, ws: string, lock: Checked): Fits {
   return {
     vault: (v) => trusted(lock, v) || waitingAs(inner, ws, lock, v) !== null,
     item: (i) => {
@@ -505,6 +503,11 @@ function fits(inner: Inner, ws: string): Fits {
     },
     cert: (c) => rules.cert_ok_js(lock, c, false, rulesCrypto) === null,
   };
+}
+function fits(inner: Inner, ws: string): Fits {
+  const lock = lockOf(inner, ws);
+  if (lock instanceof CoreError) return { vault: () => false, item: () => false, cert: () => false };
+  return fitsWith(inner, ws, lock);
 }
 
 /// Whether what is said is held over what is: the rules take it and not what is held, or it is the later (`later`) and
@@ -888,6 +891,7 @@ function lacks(h: Pick<Held, "vaults" | "on">, items: (vault: string) => Record<
 
 /// Every station that keeps vaults brought what it lacks (each in its own lane, once at a time).
 function spreadAll(inner: Inner, ws: string): void {
+  if (!inner.scheduler) return;
   for (const station of held(inner, ws).keeps) {
     const address = `${ws}/${station}`;
     inner.scheduler.enqueue(address, `${address} vault-spread`, Priority.background, spread(inner, address));
@@ -1270,7 +1274,7 @@ export function handoverForApproved(
       const who = me(lock, signer.id);
       if (who === null) continue;
       if (certOwner(lock, cert) !== who.sub) continue;
-      const fit = fits(inner, ws);
+      const fit = fitsWith(inner, ws, lock);
       change(inner, ws, (h) => {
         if (heldOver(h.boxes[cert.device], cert, fit)) h.boxes[cert.device] = cert;
       });
@@ -1278,7 +1282,7 @@ export function handoverForApproved(
         inner.runner.fork(Effect.ignore(ask(inner, `${ws}/${s.id}`, "PUT", "/vault/boxes", cert), { log: "Unhandled", message: "vault handover box put" }));
       }
       const vaults = new Vaults(inner, ws, null);
-      const wsHanded = yield* Effect.orElseSucceed(vaults.handover(cert, opts.boxPriv, lock), () => [] as HandedVault[]);
+      const wsHanded = yield* Effect.orElseSucceed(vaults.handover(cert, opts.boxPriv, lock, signer), () => [] as HandedVault[]);
       if (wsHanded.length > 0) handed.push(...wsHanded);
       else handed.push({ ws, cert });
     }
@@ -1287,7 +1291,8 @@ export function handoverForApproved(
 }
 
 /// On the newly approved device: verifies and stores the handed-over `BoxCert` and `Vault` records immediately so the
-/// vault is ready with zero extra clicks, then enqueues `readStation` to fetch encrypted items.
+/// vault is ready with zero extra clicks, then enqueues `readStation` to fetch encrypted items and `spreadAll` to push
+/// `seq + 1` once stations catch up on the lock.
 export function takeHanded(inner: Inner, raw: unknown): void {
   const list = arr(raw);
   if (list.length === 0) return;
@@ -1304,7 +1309,9 @@ export function takeHanded(inner: Inner, raw: unknown): void {
     });
     touched.add(ws);
   }
+  if (!inner.scheduler) return;
   for (const ws of touched) {
+    spreadAll(inner, ws);
     for (const s of stationsOf(inner, ws)) {
       const address = `${ws}/${s.id}`;
       inner.scheduler.enqueue(address, `${address} vault`, Priority.shown, readStation(inner, address));
@@ -1903,28 +1910,41 @@ class Vaults {
   }
 
   /// Seals all owned vaults in this workspace to `cert` during pairing handover, using RAM-cached keys or `boxPriv`
-  /// without prompting again.
-  handover(cert: BoxCert, boxPriv: Uint8Array | null, effectiveLock?: Checked): Effect.Effect<HandedVault[], CoreError> {
+  /// without prompting again. If a station rejects `PUT /vault/vaults` (e.g. its lock cache has not yet pulled the new
+  /// device), `next` is still persisted locally on this device and queued for `spreadAll` so neither device drops `seq + 1`.
+  handover(cert: BoxCert, boxPriv: Uint8Array | null, effectiveLock?: Checked, givenSigner?: Signer): Effect.Effect<HandedVault[], CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      const ready = yield* self.#ready();
-      const lock = effectiveLock ?? ready.lock;
-      const signer = ready.signer;
-      const who = me(lock, signer.id) ?? ready.self;
+      let lock: Checked;
+      let signer: Signer;
+      let who: { device: string; sub: string };
+      if (effectiveLock !== undefined && givenSigner !== undefined) {
+        const w = me(effectiveLock, givenSigner.id);
+        if (w === null) return [];
+        lock = effectiveLock;
+        signer = givenSigner;
+        who = w;
+      } else {
+        const ready = yield* self.#ready();
+        lock = effectiveLock ?? ready.lock;
+        signer = givenSigner ?? ready.signer;
+        who = me(lock, signer.id) ?? ready.self;
+      }
+      const cleanCert = bare({ ...cert, sub: who.sub });
       const out: HandedVault[] = [];
       const privPub = boxPriv !== null && boxPriv.length === 32 ? boxPublic(boxPriv) : null;
       for (const cur of Object.values(held(inner, self.ws).vaults)) {
         if (cur.deleted || !trusted(lock, cur) || cur.owner !== who.sub || !cur.keys.some((k) => k.cert.device === who.device)) continue;
-        if (cur.keys.some((k) => k.cert.device === cert.device && k.cert.box === cert.box)) {
-          out.push({ ws: self.ws, vault: cur, cert });
+        if (cur.keys.some((k) => k.cert.device === cleanCert.device && k.cert.box === cleanCert.box)) {
+          out.push({ ws: self.ws, vault: cur, cert: cleanCert });
           continue;
         }
         const entry = yield* self.#giving(cur.id)(
           Effect.gen(function* () {
             const v = held(inner, self.ws).vaults[cur.id];
             if (!v || v.deleted || !trusted(lock, v) || v.owner !== who.sub) return null;
-            if (v.keys.some((k) => k.cert.device === cert.device && k.cert.box === cert.box)) return { ws: self.ws, vault: v, cert };
+            if (v.keys.some((k) => k.cert.device === cleanCert.device && k.cert.box === cleanCert.box)) return { ws: self.ws, vault: v, cert: cleanCert };
             const kept = mem(inner).keys.get(keyOf(v));
             let key: Uint8Array | null = kept && kept.until > inner.host.nowMs() ? kept.key : null;
             if (key === null && boxPriv !== null && privPub !== null) {
@@ -1940,14 +1960,17 @@ class Vaults {
             if (key === null) return null;
             const eph = new Uint8Array(32);
             inner.host.randomBytes(eph);
-            const wrapped = sealWith(cert.box, key, keyContext(self.ws, v.id, v.epoch), eph);
+            const wrapped = sealWith(cleanCert.box, key, keyContext(self.ws, v.id, v.epoch), eph);
             const { keys: keptKeys } = self.#freshened(lock, v);
-            const keys = [...keptKeys.filter((k) => k.cert.device !== cert.device), { cert, wrapped }];
+            const keys = [...keptKeys.filter((k) => k.cert.device !== cleanCert.device), { cert: cleanCert, wrapped }];
             const { sig: _, ...rest } = v;
             const next = sign({ ...rest, seq: v.seq + 1, keys, at: nowS(inner) }, TAG.vault, signer);
             const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id)));
-            const saved = put._tag === "Success" ? put.success : next;
-            return { ws: self.ws, vault: saved, cert };
+            if (put._tag === "Success") return { ws: self.ws, vault: put.success, cert: cleanCert };
+            const fit = fitsWith(inner, self.ws, lock);
+            change(inner, self.ws, (h) => take(h, next, fit));
+            spreadAll(inner, self.ws);
+            return { ws: self.ws, vault: next, cert: cleanCert };
           }),
         );
         if (entry !== null) out.push(entry);
