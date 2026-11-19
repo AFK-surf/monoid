@@ -15,6 +15,31 @@ impl @hostapi.Host for FakeHost with window_show(self) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with auto_launch(self) {
+  self.auto_launch
+}
+
+///|
+impl @hostapi.Host for FakeHost with set_auto_launch(self, enabled) {
+  self.auto_launch = enabled
+  true
+}
+
+///|
+impl @hostapi.Host for FakeHost with hotkey_set(self, id, accel) {
+  if id == "" || accel == "" {
+    return false
+  }
+  self.hotkeys[id] = accel
+  true
+}
+
+///|
+impl @hostapi.Host for FakeHost with hotkey_clear(self, id) {
+  self.hotkeys.remove(id)
+}
+
+///|
 /// The person's setting for motion (Tester::set_reduce_motion).
 impl @hostapi.Host for FakeHost with reduce_motion(self) {
   self.reduce_motion

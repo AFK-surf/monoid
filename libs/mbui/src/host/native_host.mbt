@@ -1334,3 +1334,23 @@ impl @hostapi.Host for Native with st_audio_wanted(_, id) { st_audio_wanted(id) 
 
 ///|
 impl @hostapi.Host for Native with st_audio_volume(_, id, v) { st_audio_volume(id, v) }
+
+///|
+impl @hostapi.Host for Native with auto_launch(_) {
+  auto_launch()
+}
+
+///|
+impl @hostapi.Host for Native with set_auto_launch(_, enabled) {
+  set_auto_launch(enabled)
+}
+
+///|
+impl @hostapi.Host for Native with hotkey_set(_, id, accel) {
+  hotkey_set(id, accel)
+}
+
+///|
+impl @hostapi.Host for Native with hotkey_clear(_, id) {
+  hotkey_clear(id)
+}

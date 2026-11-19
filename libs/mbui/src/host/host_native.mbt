@@ -1743,3 +1743,37 @@ fn post_next() -> (String, String, Bytes)? {
     Some((channel, ffi_post_json(), ffi_post_bytes()))
   }
 }
+
+///|
+extern "C" fn ffi_auto_launch() -> Int = "mb_host_auto_launch"
+
+///|
+extern "C" fn ffi_set_auto_launch(enabled : Int) -> Int = "mb_host_set_auto_launch"
+
+///|
+#borrow(id, accel)
+extern "C" fn ffi_hotkey_set(id : String, accel : String) -> Int = "mb_host_hotkey_set"
+
+///|
+#borrow(id)
+extern "C" fn ffi_hotkey_clear(id : String) -> Unit = "mb_host_hotkey_clear"
+
+///|
+fn auto_launch() -> Bool {
+  ffi_auto_launch() != 0
+}
+
+///|
+fn set_auto_launch(enabled : Bool) -> Bool {
+  ffi_set_auto_launch(if enabled { 1 } else { 0 }) != 0
+}
+
+///|
+fn hotkey_set(id : String, accel : String) -> Bool {
+  ffi_hotkey_set(id, accel) != 0
+}
+
+///|
+fn hotkey_clear(id : String) -> Unit {
+  ffi_hotkey_clear(id)
+}

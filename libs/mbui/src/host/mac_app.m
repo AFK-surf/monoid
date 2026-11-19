@@ -20,6 +20,7 @@
 #include "done_watch.h"
 #include "update_delta.h"  // (the Updates' delta)
 #include "app_calls.h"  // the app's own calls
+#include "hotkey_parse.h"
 
 // (Network's path monitor, below: the framework asked of the linker by this file, as an app of mbui's links what its
 // own moon.pkg names, which need not be Network)
@@ -1775,6 +1776,11 @@ static void bring_back(void) {
 - (void)menuChosen:(NSMenuItem *)item {
   if ([item.representedObject isKindOfClass:NSString.class]) say_system(@{@"menu" : item.representedObject});
 }
+// tray "show" item: bring main window back to front
+- (void)showWindow:(id)sender {
+  (void)sender;
+  bring_back();
+}
 @end
 static MBAppDelegate *app_delegate;
 
@@ -1865,6 +1871,7 @@ static NSMenuItem *menu_item(NSDictionary *it) {
     @"zoom" : @[ @"performZoom:", @"", @0 ],
     @"fullScreen" : @[ @"toggleFullScreen:", @"f", @(cmd | NSEventModifierFlagControl) ],
     @"front" : @[ @"arrangeInFront:", @"", @0 ],
+    @"show" : @[ @"showWindow:", @"", @0 ],
   };
   if ([role isKindOfClass:NSString.class] && [role isEqualToString:@"services"]) {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
@@ -1931,16 +1938,22 @@ static MBView *key_view(void) {
   } while (0)
 #include "mac_menu_keys.h"
 
+static NSStatusItem *tray_item;
+
 void mb_host_menu_setup(moonbit_string_t json_s) {
   [NSApplication sharedApplication];
   NSData *d = [mb_ns_from_string(json_s) dataUsingEncoding:NSUTF8StringEncoding];
   NSArray *menus = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:NULL] : nil;
   if (![menus isKindOfClass:NSArray.class]) return;
   NSMenu *bar = [NSMenu new];
+  NSDictionary *mac_tray = nil;
   for (NSDictionary *m in menus) {
     if (![m isKindOfClass:NSDictionary.class]) continue;
-    // (the notification area's icon's, Windows': the Dock has the app's own)
-    if ([m[@"role"] isEqual:@"tray"]) continue;
+    // (the notification area's icon's, Windows'/Linux': on macOS opt-in via "macos": true)
+    if ([m[@"role"] isEqual:@"tray"]) {
+      if ([m[@"macos"] isEqual:@YES]) mac_tray = m;
+      continue;
+    }
     NSString *title = [m[@"title"] isKindOfClass:NSString.class] ? m[@"title"] : @"";
     // (`"role": "actions"`: one of the app's actions only, MBShownKeysMenu; what is enabled the app says, not AppKit)
     NSMenu *menu = [m[@"role"] isEqual:@"actions"] ? [[MBShownKeysMenu alloc] initWithTitle:title]
@@ -1955,6 +1968,238 @@ void mb_host_menu_setup(moonbit_string_t json_s) {
     if ([m[@"role"] isEqual:@"window"]) NSApp.windowsMenu = menu;
   }
   NSApp.mainMenu = bar;
+
+  if (mac_tray) {
+    if (!tray_item) {
+      tray_item = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
+    }
+    NSStatusBarButton *btn = tray_item.button;
+    if (btn) {
+      btn.image = nil;
+      btn.title = @"";
+      btn.toolTip = nil;
+      NSString *symbol = [mac_tray[@"symbol"] isKindOfClass:NSString.class] ? mac_tray[@"symbol"] : nil;
+      NSString *t_title = [mac_tray[@"title"] isKindOfClass:NSString.class] ? mac_tray[@"title"] : nil;
+      NSString *tooltip = [mac_tray[@"tooltip"] isKindOfClass:NSString.class] ? mac_tray[@"tooltip"] : nil;
+      if (tooltip.length) btn.toolTip = tooltip;
+      if (symbol.length) {
+        if (@available(macOS 11.0, *)) {
+          NSImage *img = [NSImage imageWithSystemSymbolName:symbol
+                                   accessibilityDescription:tooltip ?: t_title ?: @""];
+          if (img) {
+            img.template = YES;
+            btn.image = img;
+          }
+        }
+      }
+      if (t_title.length) btn.title = t_title;
+      if (!btn.image && !btn.title.length) {
+        NSImage *icon = [NSApp.applicationIconImage copy];
+        if (icon) {
+          icon.size = NSMakeSize(18, 18);
+          icon.template = YES;
+          btn.image = icon;
+        } else {
+          NSString *name = NSRunningApplication.currentApplication.localizedName ?: @"";
+          btn.title = name.length ? [name substringToIndex:1] : @"•";
+        }
+      }
+    }
+    NSString *m_title = [mac_tray[@"title"] isKindOfClass:NSString.class] ? mac_tray[@"title"] : @"";
+    NSMenu *tmenu = [[NSMenu alloc] initWithTitle:m_title];
+    tmenu.autoenablesItems = NO;
+    if ([mac_tray[@"items"] isKindOfClass:NSArray.class]) {
+      for (NSDictionary *it in mac_tray[@"items"]) [tmenu addItem:menu_item(it)];
+    }
+    tray_item.menu = tmenu;
+  } else if (tray_item) {
+    [NSStatusBar.systemStatusBar removeStatusItem:tray_item];
+    tray_item = nil;
+  }
+}
+
+// ---- Login auto-launch (@hostapi.auto_launch / set_auto_launch) ----
+// Dynamically loads ServiceManagement.framework so apps require zero extra -framework link flags.
+static id sm_main_app_service(void) {
+  if (!in_bundle()) return nil;
+  static int tried;
+  if (!tried) {
+    tried = 1;
+    dlopen("/System/Library/Frameworks/ServiceManagement.framework/ServiceManagement", RTLD_LAZY);
+  }
+  Class cls = NSClassFromString(@"SMAppService");
+  if (!cls) return nil;
+  SEL sel = sel_registerName("mainAppService");
+  if (![cls respondsToSelector:sel]) return nil;
+  return ((id (*)(id, SEL))objc_msgSend)(cls, sel);
+}
+
+int32_t mb_host_auto_launch(void) {
+  @autoreleasepool {
+    id svc = sm_main_app_service();
+    if (!svc) return 0;
+    NSInteger st = ((NSInteger (*)(id, SEL))objc_msgSend)(svc, sel_registerName("status"));
+    return st == 1 ? 1 : 0;  // SMAppServiceStatusEnabled == 1
+  }
+}
+
+int32_t mb_host_set_auto_launch(int32_t enabled) {
+  @autoreleasepool {
+    id svc = sm_main_app_service();
+    if (!svc) return 0;
+    NSError *err = nil;
+    SEL sel = enabled ? sel_registerName("registerAndReturnError:") : sel_registerName("unregisterAndReturnError:");
+    BOOL ok = ((BOOL (*)(id, SEL, NSError *__autoreleasing *))objc_msgSend)(svc, sel, &err);
+    return ok ? 1 : 0;
+  }
+}
+
+// ---- Global hotkeys (@hostapi.hotkey_set / hotkey_clear) ----
+// Dynamically loads Carbon.framework for RegisterEventHotKey with zero extra -framework link flags.
+typedef void *mb_EventTargetRef;
+typedef void *mb_EventHandlerCallRef;
+typedef void *mb_EventRef;
+typedef void *mb_EventHandlerRef;
+typedef void *mb_EventHotKeyRef;
+typedef struct {
+  uint32_t eventClass;
+  uint32_t eventKind;
+} mb_EventTypeSpec;
+typedef struct {
+  uint32_t signature;
+  uint32_t id;
+} mb_EventHotKeyID;
+typedef int32_t (*mb_EventHandlerProcPtr)(mb_EventHandlerCallRef, mb_EventRef, void *);
+
+static mb_EventTargetRef (*carbon_GetApplicationEventTarget)(void);
+static int32_t (*carbon_InstallEventHandler)(mb_EventTargetRef, mb_EventHandlerProcPtr, uint32_t,
+                                             const mb_EventTypeSpec *, void *, mb_EventHandlerRef *);
+static int32_t (*carbon_RegisterEventHotKey)(uint32_t, uint32_t, mb_EventHotKeyID, mb_EventTargetRef, uint32_t,
+                                             mb_EventHotKeyRef *);
+static int32_t (*carbon_UnregisterEventHotKey)(mb_EventHotKeyRef);
+static int32_t (*carbon_GetEventParameter)(mb_EventRef, uint32_t, uint32_t, uint32_t *, uint32_t, uint32_t *, void *);
+
+#define MB_HOTKEY_MAX 64
+typedef struct {
+  int used;
+  uint32_t num_id;
+  char *id;
+  mb_EventHotKeyRef ref;
+} mb_mac_hotkey;
+
+static mb_mac_hotkey mac_hotkeys[MB_HOTKEY_MAX];
+static uint32_t mac_hotkey_next_id = 1;
+static mb_EventHandlerRef mac_hotkey_handler;
+static int carbon_ready;
+
+static int32_t mac_hotkey_event(mb_EventHandlerCallRef call, mb_EventRef event, void *user) {
+  (void)call;
+  (void)user;
+  mb_EventHotKeyID hkid = {0, 0};
+  // kEventParamDirectObject = '----', typeEventHotKeyID = 'hkid'
+  if (carbon_GetEventParameter(event, 0x2D2D2D2Du, 0x686B6964u, NULL, (uint32_t)sizeof(hkid), NULL, &hkid) != 0) {
+    return -9874;  // eventNotHandledErr
+  }
+  if (hkid.signature != 0x4D42484Bu) return -9874;  // 'MBHK'
+  for (int i = 0; i < MB_HOTKEY_MAX; i++) {
+    if (mac_hotkeys[i].used && mac_hotkeys[i].num_id == hkid.id && mac_hotkeys[i].id) {
+      @autoreleasepool {
+        NSString *ns_id = [NSString stringWithUTF8String:mac_hotkeys[i].id];
+        if (ns_id) {
+          NSData *d = [NSJSONSerialization dataWithJSONObject:@{@"id" : ns_id} options:0 error:NULL];
+          if (d) mb_post("mbui.hotkey", (const char *)d.bytes, d.length, NULL, 0);
+        }
+      }
+      return 0;
+    }
+  }
+  return -9874;
+}
+
+static int carbon_ensure(void) {
+  if (carbon_ready) return carbon_ready > 0;
+  void *lib = dlopen("/System/Library/Frameworks/Carbon.framework/Carbon", RTLD_LAZY);
+  if (!lib) {
+    carbon_ready = -1;
+    return 0;
+  }
+  carbon_GetApplicationEventTarget = dlsym(lib, "GetApplicationEventTarget");
+  carbon_InstallEventHandler = dlsym(lib, "InstallEventHandler");
+  carbon_RegisterEventHotKey = dlsym(lib, "RegisterEventHotKey");
+  carbon_UnregisterEventHotKey = dlsym(lib, "UnregisterEventHotKey");
+  carbon_GetEventParameter = dlsym(lib, "GetEventParameter");
+  if (!carbon_GetApplicationEventTarget || !carbon_InstallEventHandler || !carbon_RegisterEventHotKey ||
+      !carbon_UnregisterEventHotKey || !carbon_GetEventParameter) {
+    carbon_ready = -1;
+    return 0;
+  }
+  // kEventClassKeyboard = 'keyb' (0x6B657962), kEventHotKeyPressed = 5
+  mb_EventTypeSpec spec = {0x6B657962u, 5u};
+  if (carbon_InstallEventHandler(carbon_GetApplicationEventTarget(), mac_hotkey_event, 1, &spec, NULL,
+                                 &mac_hotkey_handler) != 0) {
+    carbon_ready = -1;
+    return 0;
+  }
+  carbon_ready = 1;
+  return 1;
+}
+
+int32_t mb_host_hotkey_set(moonbit_string_t id_s, moonbit_string_t accel_s) {
+  @autoreleasepool {
+    NSString *ns_id = mb_ns_from_string(id_s);
+    NSString *ns_accel = mb_ns_from_string(accel_s);
+    if (!ns_id.length || !ns_accel.length) return 0;
+    const char *id_c = ns_id.UTF8String;
+    const char *accel_c = ns_accel.UTF8String;
+    if (!id_c || !accel_c) return 0;
+    mb_hotkey_spec spec;
+    if (!mb_hotkey_parse(accel_c, 1, &spec)) return 0;
+    int vk = mb_hotkey_mac_keycode(spec.key);
+    uint32_t mods = mb_hotkey_mac_mods(spec.mods);
+    if (vk < 0 || mods == 0) return 0;
+    if (!carbon_ensure()) return 0;
+    // Replace existing registration with the same id if present.
+    int slot = -1;
+    for (int i = 0; i < MB_HOTKEY_MAX; i++) {
+      if (mac_hotkeys[i].used && mac_hotkeys[i].id && strcmp(mac_hotkeys[i].id, id_c) == 0) {
+        if (mac_hotkeys[i].ref) carbon_UnregisterEventHotKey(mac_hotkeys[i].ref);
+        free(mac_hotkeys[i].id);
+        memset(&mac_hotkeys[i], 0, sizeof mac_hotkeys[i]);
+        slot = i;
+        break;
+      }
+      if (!mac_hotkeys[i].used && slot < 0) slot = i;
+    }
+    if (slot < 0) return 0;
+    uint32_t num_id = mac_hotkey_next_id++;
+    mb_EventHotKeyID hkid = {0x4D42484Bu, num_id};  // 'MBHK'
+    mb_EventHotKeyRef ref = NULL;
+    if (carbon_RegisterEventHotKey((uint32_t)vk, mods, hkid, carbon_GetApplicationEventTarget(), 0, &ref) != 0 ||
+        !ref) {
+      return 0;
+    }
+    mac_hotkeys[slot].used = 1;
+    mac_hotkeys[slot].num_id = num_id;
+    mac_hotkeys[slot].id = strdup(id_c);
+    mac_hotkeys[slot].ref = ref;
+    return 1;
+  }
+}
+
+void mb_host_hotkey_clear(moonbit_string_t id_s) {
+  @autoreleasepool {
+    NSString *ns_id = mb_ns_from_string(id_s);
+    const char *id_c = ns_id.UTF8String;
+    if (!id_c || !*id_c) return;
+    for (int i = 0; i < MB_HOTKEY_MAX; i++) {
+      if (mac_hotkeys[i].used && mac_hotkeys[i].id && strcmp(mac_hotkeys[i].id, id_c) == 0) {
+        if (mac_hotkeys[i].ref && carbon_UnregisterEventHotKey) carbon_UnregisterEventHotKey(mac_hotkeys[i].ref);
+        free(mac_hotkeys[i].id);
+        memset(&mac_hotkeys[i], 0, sizeof mac_hotkeys[i]);
+        break;
+      }
+    }
+  }
 }
 
 void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointer,

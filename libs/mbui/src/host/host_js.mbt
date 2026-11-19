@@ -1565,3 +1565,39 @@ fn post_next() -> (String, String, Bytes)? {
 /// part of its canvas again.
 extern "js" fn rn_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit =
   #|(x, y, w, h) => { if (globalThis.__mbhost.renderDirty) globalThis.__mbhost.renderDirty(x, y, w, h) }
+
+///|
+extern "js" fn js_auto_launch() -> Bool =
+  #|() => (globalThis.__mbhost && globalThis.__mbhost.autoLaunch) ? !!globalThis.__mbhost.autoLaunch() : false
+
+///|
+extern "js" fn js_set_auto_launch(enabled : Bool) -> Bool =
+  #|(e) => (globalThis.__mbhost && globalThis.__mbhost.setAutoLaunch) ? !!globalThis.__mbhost.setAutoLaunch(e) : false
+
+///|
+extern "js" fn js_hotkey_set(id : String, accel : String) -> Bool =
+  #|(id, accel) => (globalThis.__mbhost && globalThis.__mbhost.hotkeySet) ? !!globalThis.__mbhost.hotkeySet(id, accel) : false
+
+///|
+extern "js" fn js_hotkey_clear(id : String) -> Unit =
+  #|(id) => { if (globalThis.__mbhost && globalThis.__mbhost.hotkeyClear) globalThis.__mbhost.hotkeyClear(id) }
+
+///|
+fn auto_launch() -> Bool {
+  js_auto_launch()
+}
+
+///|
+fn set_auto_launch(enabled : Bool) -> Bool {
+  js_set_auto_launch(enabled)
+}
+
+///|
+fn hotkey_set(id : String, accel : String) -> Bool {
+  js_hotkey_set(id, accel)
+}
+
+///|
+fn hotkey_clear(id : String) -> Unit {
+  js_hotkey_clear(id)
+}

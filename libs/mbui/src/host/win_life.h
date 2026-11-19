@@ -30,6 +30,7 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include "mini_json.h"  // the menu the app gives (menu_setup)
+#include "hotkey_parse.h"
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -888,6 +889,181 @@ static void network_look(void) {
   }
 }
 
+// ---- login auto-launch (@hostapi.auto_launch / set_auto_launch) ----
+static void auto_launch_value_name(WCHAR *out, size_t cap) {
+  const WCHAR *id = app_id();
+  if (id && *id) {
+    lstrcpynW(out, id, (int)cap);
+    return;
+  }
+  WCHAR exe[MAX_PATH];
+  DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) {
+    lstrcpynW(out, L"mbui", (int)cap);
+    return;
+  }
+  const WCHAR *base = wcsrchr(exe, L'\\');
+  base = base ? base + 1 : exe;
+  lstrcpynW(out, base, (int)cap);
+}
+
+int32_t mb_host_auto_launch(void) {
+  WCHAR name[256];
+  auto_launch_value_name(name, 256);
+  HKEY key = NULL;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &key) !=
+      ERROR_SUCCESS) {
+    return 0;
+  }
+  WCHAR val[MAX_PATH + 32];
+  DWORD type = 0, sz = sizeof val;
+  LSTATUS st = RegQueryValueExW(key, name, NULL, &type, (LPBYTE)val, &sz);
+  RegCloseKey(key);
+  return (st == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && sz >= sizeof(WCHAR) && val[0] != 0) ? 1
+                                                                                                                  : 0;
+}
+
+int32_t mb_host_set_auto_launch(int32_t enabled) {
+  WCHAR name[256];
+  auto_launch_value_name(name, 256);
+  HKEY key = NULL;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, NULL, 0,
+                      KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) {
+    return 0;
+  }
+  LSTATUS st;
+  if (enabled) {
+    WCHAR exe[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+      RegCloseKey(key);
+      return 0;
+    }
+    WCHAR cmd[MAX_PATH + 8];
+    _snwprintf(cmd, MAX_PATH + 8, L"\"%ls\"", exe);
+    cmd[MAX_PATH + 7] = 0;
+    st = RegSetValueExW(key, name, 0, REG_SZ, (const BYTE *)cmd, (DWORD)((wcslen(cmd) + 1) * sizeof(WCHAR)));
+  } else {
+    st = RegDeleteValueW(key, name);
+    if (st == ERROR_FILE_NOT_FOUND) st = ERROR_SUCCESS;
+  }
+  RegCloseKey(key);
+  return st == ERROR_SUCCESS ? 1 : 0;
+}
+
+// ---- global hotkeys (@hostapi.hotkey_set / hotkey_clear) ----
+#define MB_WIN_HOTKEY_MAX 64
+typedef struct {
+  int used;
+  int num_id;
+  char *id;
+} mb_win_hotkey;
+
+static mb_win_hotkey win_hotkeys[MB_WIN_HOTKEY_MAX];
+static int win_hotkey_next_id = 0x4D00;
+
+static void hotkeys_clear_all(void) {
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used) {
+      if (hwnd) UnregisterHotKey(hwnd, win_hotkeys[i].num_id);
+      free(win_hotkeys[i].id);
+      memset(&win_hotkeys[i], 0, sizeof win_hotkeys[i]);
+    }
+  }
+}
+
+static void hotkey_fired(int num_id) {
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used && win_hotkeys[i].num_id == num_id && win_hotkeys[i].id) {
+      WCHAR w[256];
+      int n = MultiByteToWideChar(CP_UTF8, 0, win_hotkeys[i].id, -1, w, 256);
+      if (n <= 1) return;
+      char b[600];
+      size_t o = (size_t)snprintf(b, sizeof b, "{\"id\":\"");
+      o = json_put(b, o, sizeof b - 3, w, n - 1);
+      o += (size_t)snprintf(b + o, sizeof b - o, "\"}");
+      mb_post("mbui.hotkey", b, o, NULL, 0);
+      return;
+    }
+  }
+}
+
+static char *mb_win_utf8_from_mbt(moonbit_string_t s) {
+  int n = Moonbit_array_length(s);
+  int u = WideCharToMultiByte(CP_UTF8, 0, (LPCWCH)s, n, NULL, 0, NULL, NULL);
+  char *out = (char *)malloc((size_t)u + 1);
+  if (!out) return NULL;
+  if (u > 0) WideCharToMultiByte(CP_UTF8, 0, (LPCWCH)s, n, out, u, NULL, NULL);
+  out[u] = 0;
+  return out;
+}
+
+int32_t mb_host_hotkey_set(moonbit_string_t id_s, moonbit_string_t accel_s) {
+  if (!hwnd) return 0;
+  char *id_c = mb_win_utf8_from_mbt(id_s);
+  char *accel_c = mb_win_utf8_from_mbt(accel_s);
+  if (!id_c || !accel_c || !*id_c || !*accel_c) {
+    free(id_c);
+    free(accel_c);
+    return 0;
+  }
+  mb_hotkey_spec spec;
+  int ok = mb_hotkey_parse(accel_c, 0, &spec);
+  free(accel_c);
+  if (!ok) {
+    free(id_c);
+    return 0;
+  }
+  int vk = mb_hotkey_win_vk(spec.key);
+  UINT mods = (UINT)mb_hotkey_win_mods(spec.mods);
+  if (vk < 0 || mods == 0) {
+    free(id_c);
+    return 0;
+  }
+  int slot = -1;
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used && win_hotkeys[i].id && strcmp(win_hotkeys[i].id, id_c) == 0) {
+      UnregisterHotKey(hwnd, win_hotkeys[i].num_id);
+      free(win_hotkeys[i].id);
+      memset(&win_hotkeys[i], 0, sizeof win_hotkeys[i]);
+      slot = i;
+      break;
+    }
+    if (!win_hotkeys[i].used && slot < 0) slot = i;
+  }
+  if (slot < 0) {
+    free(id_c);
+    return 0;
+  }
+  int num_id = win_hotkey_next_id++;
+  if (win_hotkey_next_id >= 0xBFFF) win_hotkey_next_id = 0x4D00;
+  if (!RegisterHotKey(hwnd, num_id, mods, (UINT)vk)) {
+    free(id_c);
+    return 0;
+  }
+  win_hotkeys[slot].used = 1;
+  win_hotkeys[slot].num_id = num_id;
+  win_hotkeys[slot].id = id_c;
+  return 1;
+}
+
+void mb_host_hotkey_clear(moonbit_string_t id_s) {
+  char *id_c = mb_win_utf8_from_mbt(id_s);
+  if (!id_c || !*id_c) {
+    free(id_c);
+    return;
+  }
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used && win_hotkeys[i].id && strcmp(win_hotkeys[i].id, id_c) == 0) {
+      if (hwnd) UnregisterHotKey(hwnd, win_hotkeys[i].num_id);
+      free(win_hotkeys[i].id);
+      memset(&win_hotkeys[i], 0, sizeof win_hotkeys[i]);
+      break;
+    }
+  }
+  free(id_c);
+}
+
 // ---- as the window is made, and what it is told ----
 
 // once the window is there: its icon in the notification area, the one started again told it may hand over, the
@@ -898,6 +1074,7 @@ static void life_start(const WCHAR *title) {
   taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
   tray_put();
   atexit(tray_gone);
+  atexit(hotkeys_clear_all);
   if (window_up) SetEvent(window_up);
   HANDLE watch = NULL;
   network_look();
@@ -925,6 +1102,10 @@ static int life_message(UINT msg, WPARAM wp, LPARAM lp, LRESULT *r) {
       return 1;
     case WM_MB_TRAY:
       tray_said(wp, lp);
+      *r = 0;
+      return 1;
+    case WM_HOTKEY:
+      hotkey_fired((int)wp);
       *r = 0;
       return 1;
     case WM_MB_NETWORK:

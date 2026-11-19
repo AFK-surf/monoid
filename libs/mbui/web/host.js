@@ -362,6 +362,10 @@
   };
   H.postJson = () => (postCur ? postCur[1] : '');
   H.postBytes = () => (postCur ? postCur[2] : new Uint8Array(0));
+  H.autoLaunch = () => false;
+  H.setAutoLaunch = () => false;
+  H.hotkeySet = () => false;
+  H.hotkeyClear = () => {};
 
   // ---- what the app awaits of the host (effect.mb's outside: src/ui/hostcall.mbt) ----
   // The app is told (outside(kind, id, state)) as the work it asked for is done: kind 1 an image decoded (id: the

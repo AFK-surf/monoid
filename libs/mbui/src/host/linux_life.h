@@ -27,6 +27,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <glib-unix.h>
+#include <errno.h>
 #include <signal.h>
 #include "mini_json.h"  // the menu the app gives (menu_setup)
 
@@ -924,6 +925,74 @@ void mb_host_set_badge(int32_t n) {
   }
   g_dbus_connection_emit_signal(bus, NULL, BADGE_PATH, "com.canonical.Unity.LauncherEntry", "Update", badge_state(),
                                 NULL);
+}
+
+// ---- login auto-launch (@hostapi.auto_launch / set_auto_launch) ----
+static int autostart_paths(char *dir_out, size_t dir_cap, char *file_out, size_t file_cap) {
+  const char *xdg = getenv("XDG_CONFIG_HOME");
+  const char *home = getenv("HOME");
+  if (xdg && *xdg) {
+    snprintf(dir_out, dir_cap, "%s/autostart", xdg);
+  } else if (home && *home) {
+    snprintf(dir_out, dir_cap, "%s/.config/autostart", home);
+  } else {
+    return 0;
+  }
+  const char *id = app_id();
+  char fallback[256] = "mbui";
+  if (!id || !*id) {
+    char exe[1024];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n > 0) {
+      exe[n] = 0;
+      const char *base = strrchr(exe, '/');
+      g_strlcpy(fallback, base ? base + 1 : exe, sizeof fallback);
+    }
+    id = fallback;
+  }
+  snprintf(file_out, file_cap, "%s/%s.desktop", dir_out, id);
+  return 1;
+}
+
+int32_t mb_host_auto_launch(void) {
+  char dir[1024], file[1280];
+  if (!autostart_paths(dir, sizeof dir, file, sizeof file)) return 0;
+  return access(file, F_OK) == 0 ? 1 : 0;
+}
+
+int32_t mb_host_set_auto_launch(int32_t enabled) {
+  char dir[1024], file[1280];
+  if (!autostart_paths(dir, sizeof dir, file, sizeof file)) return 0;
+  if (!enabled) {
+    return (unlink(file) == 0 || errno == ENOENT) ? 1 : 0;
+  }
+  if (g_mkdir_with_parents(dir, 0700) != 0) return 0;
+  char exe[1024];
+  ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (n <= 0) return 0;
+  exe[n] = 0;
+  FILE *f = fopen(file, "w");
+  if (!f) return 0;
+  const char *name = app_name();
+  fprintf(f,
+          "[Desktop Entry]\n"
+          "Type=Application\n"
+          "Name=%s\n"
+          "Exec=\"%s\"\n"
+          "X-GNOME-Autostart-enabled=true\n",
+          name && *name ? name : "App", exe);
+  return fclose(f) == 0 ? 1 : 0;
+}
+
+// ---- global hotkeys (@hostapi.hotkey_set / hotkey_clear): stub on Linux ----
+int32_t mb_host_hotkey_set(moonbit_string_t id, moonbit_string_t accel) {
+  (void)id;
+  (void)accel;
+  return 0;
+}
+
+void mb_host_hotkey_clear(moonbit_string_t id) {
+  (void)id;
 }
 
 // ---- as the window is made ----

@@ -178,6 +178,10 @@ struct FakeHost {
   window_ids_closed : Array[Int]
   /// the number on the app's icon as last told (@ui.set_badge)
   mut badge : Int
+  /// whether the app is registered for login auto-launch (@hostapi.auto_launch / set_auto_launch)
+  mut auto_launch : Bool
+  /// active global hotkeys registered by id (@hostapi.hotkey_set / hotkey_clear)
+  hotkeys : Map[String, String]
   /// what the app's own native calls say, by name, as its host would hand them on (Tester::set_app_said), and what
   /// the app told them, name and argument (Tester::app_told)
   app_said : Map[String, String]

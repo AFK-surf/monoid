@@ -2096,3 +2096,45 @@ fn post_next() -> (String, String, Bytes)? {
   }
 }
 
+///|
+fn ffi_auto_launch() -> Int = "mbhost" "mb_host_auto_launch"
+
+///|
+fn ffi_set_auto_launch(enabled : Int) -> Int = "mbhost" "mb_host_set_auto_launch"
+
+///|
+fn mbw_mb_host_hotkey_set(id : Int, accel : Int) -> Int = "mbhost" "mb_host_hotkey_set"
+
+///|
+fn ffi_hotkey_set(id : String, accel : String) -> Int {
+  mbw_mb_host_hotkey_set(@wasmrt.string_addr(id), @wasmrt.string_addr(accel))
+}
+
+///|
+fn mbw_mb_host_hotkey_clear(id : Int) = "mbhost" "mb_host_hotkey_clear"
+
+///|
+fn ffi_hotkey_clear(id : String) -> Unit {
+  mbw_mb_host_hotkey_clear(@wasmrt.string_addr(id))
+}
+
+///|
+fn auto_launch() -> Bool {
+  ffi_auto_launch() != 0
+}
+
+///|
+fn set_auto_launch(enabled : Bool) -> Bool {
+  ffi_set_auto_launch(if enabled { 1 } else { 0 }) != 0
+}
+
+///|
+fn hotkey_set(id : String, accel : String) -> Bool {
+  ffi_hotkey_set(id, accel) != 0
+}
+
+///|
+fn hotkey_clear(id : String) -> Unit {
+  ffi_hotkey_clear(id)
+}
+

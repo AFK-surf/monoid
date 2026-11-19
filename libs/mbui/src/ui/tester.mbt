@@ -597,6 +597,8 @@ fn tester_make(
     ime_rect: (0.0, 0.0, 0.0, 0.0),
     clipboard: "",
     badge: 0,
+    auto_launch: false,
+    hotkeys: {},
     app_said: Map([]),
     app_told: [],
     local_fonts: "",

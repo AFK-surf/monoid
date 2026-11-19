@@ -2187,6 +2187,10 @@ void mb_host_set_cursor(int32_t kind) { (void)kind; }
 void mb_host_set_badge(int32_t n) { (void)n; }
 // The menu bar (@hostapi.menu_setup): none here.
 void mb_host_menu_setup(moonbit_string_t json) { (void)json; }
+int32_t mb_host_auto_launch(void) { return 0; }
+int32_t mb_host_set_auto_launch(int32_t enabled) { (void)enabled; return 0; }
+int32_t mb_host_hotkey_set(moonbit_string_t id, moonbit_string_t accel) { (void)id; (void)accel; return 0; }
+void mb_host_hotkey_clear(moonbit_string_t id) { (void)id; }
 // (the phone's faces are the files given: no family of the machine's, no list of them)
 int32_t mb_host_face_add_family(int32_t face, moonbit_string_t family) { (void)face; (void)family; return 0; }
 moonbit_string_t mb_host_local_font_families(void) { return moonbit_make_string_raw(0); }

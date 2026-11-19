@@ -285,6 +285,10 @@ pub(open) trait Host {
   // of each program calling them, all of it, is compiled again)
   words_spaced(Self) -> Int = _
   window_set_title(Self, Int, String) -> Unit = _
+  auto_launch(Self) -> Bool = _
+  set_auto_launch(Self, Bool) -> Bool = _
+  hotkey_set(Self, String, String) -> Bool = _
+  hotkey_clear(Self, String) -> Unit = _
 }
 
 ///|
@@ -3630,3 +3634,48 @@ fn st_av1_here() -> Int { current.val.st_av1_here() }
 
 ///|
 fn st_av1(id : Int, av1c : Bytes, w : Int, h : Int) -> Unit { current.val.st_av1(id, av1c, w, h) }
+
+///|
+impl Host with auto_launch(_) {
+  false
+}
+
+///|
+impl Host with set_auto_launch(_, _) {
+  false
+}
+
+///|
+impl Host with hotkey_set(_, _, _) {
+  false
+}
+
+///|
+impl Host with hotkey_clear(_, _) {
+  ()
+}
+
+///|
+/// Whether the app is registered to start automatically at user login.
+pub fn auto_launch() -> Bool {
+  current.val.auto_launch()
+}
+
+///|
+/// Enable or disable starting the app automatically at user login. Returns true on success.
+pub fn set_auto_launch(enabled : Bool) -> Bool {
+  current.val.set_auto_launch(enabled)
+}
+
+///|
+/// Register a desktop global hotkey (`accel`, e.g. "CmdOrCtrl+Shift+Space") under `id`.
+/// Triggered hotkeys arrive as host posts on channel `"mbui.hotkey"` with `{"id":"<id>"}`.
+pub fn hotkey_set(id : String, accel : String) -> Bool {
+  current.val.hotkey_set(id, accel)
+}
+
+///|
+/// Unregister a previously registered global hotkey by `id`.
+pub fn hotkey_clear(id : String) -> Unit {
+  current.val.hotkey_clear(id)
+}

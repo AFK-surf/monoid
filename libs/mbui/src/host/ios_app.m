@@ -2951,6 +2951,10 @@ void mb_host_set_badge(int32_t n) {
 }
 // The menu bar (@hostapi.menu_setup): none here.
 void mb_host_menu_setup(moonbit_string_t json) { (void)json; }
+int32_t mb_host_auto_launch(void) { return 0; }
+int32_t mb_host_set_auto_launch(int32_t enabled) { (void)enabled; return 0; }
+int32_t mb_host_hotkey_set(moonbit_string_t id, moonbit_string_t accel) { (void)id; (void)accel; return 0; }
+void mb_host_hotkey_clear(moonbit_string_t id) { (void)id; }
 // The keys held now (@hostapi.mods_held): none read here.
 int32_t mb_host_mods_held(void) { return 0; }
 
