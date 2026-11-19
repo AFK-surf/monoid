@@ -103,7 +103,7 @@ jobs:
             base=${{ github.event.before }}
             [ -n "$branch" ] && base=$(git merge-base origin/main HEAD)
             if git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" HEAD |
-              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_electron_sealed\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|station/src/updates/)'; then v=yes; fi
+              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|station/src/updates/)'; then v=yes; fi
           fi
           echo "handoff=$v" >> "$GITHUB_OUTPUT"
           echo "handoff: $v"
@@ -1107,13 +1107,13 @@ jobs:
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'bash apps/mbui/scripts/beta.sh win > "$0/log" 2>&1; echo $? > "$0/signed"' "$Z" > /dev/null 2>&1 &
       # the installer (apps/mbui/windows/setup.c) made of the app as built, put into a folder of this run's, put again
-      # over it, taken away (e2e/win/setup.sh: ~12 s); beside it, three checks that need nothing of the app's or the e2e
+      # over it, taken away (e2e/win/setup.sh: ~12 s); beside it, four checks that need nothing of the app's or the e2e
       # flow's: the order of names the host gives the core (text.collate: src/host/win_collate.h, a C program), the
       # synchronous answers across the engine DLL, and what still.fail's desktop app kept sealed, opened by the app
-      # built in its place (src/host/win_electron_sealed.h). Each writes only its own directory (setup's in RUNNER_TEMP,
-      # out/collate, out/engine-sync, out/sealed): one after another they were 21 s of the job's 300, which main's
-      # 44497568003 ran out of 1-2 s short of saving its caches; side by side, the installer's ~12.
-      - name: The installer, installed and taken away (e2e/win/setup.sh); collate, engine-sync and sealed beside it
+      # built in its place (src/host/win_electron_sealed.h), and Windows Hello as secure.* asks it (src/host/win_hello.h).
+      # Each writes only its own directory (setup's in RUNNER_TEMP, out/collate, out/engine-sync, out/sealed, out/hello):
+      # one after another the first four were 21 s of the job's 300, which main's 44497568003 ran out of 1-2 s short of saving its caches; side by side, the installer's ~12.
+      - name: The installer, installed and taken away (e2e/win/setup.sh); collate, engine-sync, sealed and hello (win.sh hello) beside it
         run: |
           L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
           t0=$SECONDS
@@ -1121,13 +1121,14 @@ jobs:
           bash apps/mbui/scripts/win.sh collate > "$L/collate.log" 2>&1 & p_collate=$!
           bash apps/mbui/scripts/win.sh engine-sync > "$L/engine-sync.log" 2>&1 & p_engine=$!
           bash apps/mbui/scripts/win.sh sealed > "$L/sealed.log" 2>&1 & p_sealed=$!
+          bash apps/mbui/scripts/win.sh hello > "$L/hello.log" 2>&1 & p_hello=$!
           bad=0
-          for c in setup:$p_setup collate:$p_collate engine-sync:$p_engine sealed:$p_sealed; do
+          for c in setup:$p_setup collate:$p_collate engine-sync:$p_engine sealed:$p_sealed hello:$p_hello; do
             s=0; wait "${c#*:}" || s=$?
             echo "::group::${c%%:*} (exit $s)"; cat "$L/${c%%:*}.log"; echo "::endgroup::"
             [ "$s" = 0 ] || { echo "::error::${c%%:*} failed (exit $s)"; bad=1; }
           done
-          echo "the four side by side: $((SECONDS - t0)) s"
+          echo "the five side by side: $((SECONDS - t0)) s"
           exit $bad
       # out before the e2e flow ends (its tests hold nothing back): put, checked, then its feed, once its signing (begun
       # after the build) is over, beside the caches' saves and the e2e flow (the put mostly waiting on the network)

@@ -13,6 +13,7 @@
 #   scripts/win.sh collate                 the host's order of names (src/host/win_collate.h) checked
 #   scripts/win.sh engine-sync             synchronous host answers across the engine DLL checked
 #   scripts/win.sh sealed                  the desktop app's sealed values opened (src/host/win_electron_sealed.h) checked
+#   scripts/win.sh hello                   Windows Hello as secure.* asks it (src/host/win_hello.h) checked
 #   scripts/win.sh setup                   the installer (windows/setup.c) with the app built and put packed after it
 #   scripts/win.sh setup-bare              the installer's own program alone (out/setup-bare), which setup packs the app with
 # Its identity (as mac-app.sh's Info.plist has the Mac app's), in the program's resources: its icon
@@ -154,6 +155,17 @@ sealed() {
     -Fo"$(cygpath -w "$out/")" > "$out/build.log") || { cat "$out/build.log"; return 1; }
   "$out/sealed_test_win.exe"
 }
+# hello: Windows Hello as the core's secure.* asks it (src/host/win_hello.h), checked by core/hello_test_win.c (pure C at
+# -W4 -WX, as win_core.c takes it), and the program it makes needing no Visual C++ redistributable (check_crt: WinRT's
+# runtimeobject.lib is the system's own)
+hello() {
+  local out=$A/out/hello
+  mkdir -p "$out"
+  (cd "$A" && cl.exe -nologo -O2 -W4 -WX -Isrc/host core/hello_test_win.c -Fe"$(cygpath -w "$out/hello_test_win.exe")" \
+    -Fo"$(cygpath -w "$out/")" > "$out/build.log") || { cat "$out/build.log"; return 1; }
+  check_crt "$out/hello_test_win.exe" || return 1
+  "$out/hello_test_win.exe"
+}
 # setup: the installer (windows/setup.c) with the app as built and put (put: the program, its engine and shell, core.hbc)
 # packed after it, as MBUI_VARIANT has it: <MBUI_SETUP_OUT, else out/setup>/<name> (MBUI_SETUP_NAME, else
 # stillfail-setup-0.1.<n>.exe); with MBUI_SETUP_RAW (a path) its raw form (setup.c --raw's) written there as it is packed
@@ -222,6 +234,7 @@ app_cmd() {
     collate) collate ;;
     engine-sync) engine_sync ;;
     sealed) sealed ;;
+    hello) hello ;;
     setup) setup ;;
     setup-bare) setup_bare ;;
     *) echo "win.sh: no command $1" >&2; exit 1 ;;
