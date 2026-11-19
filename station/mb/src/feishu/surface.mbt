@@ -362,6 +362,9 @@ pub(all) struct FeishuSurfaceOptions {
   /// In a group, one conversation for each thread, begun by an @ and answered in it (「会话怎么分」); else one
   /// for the group.
   thread_mode : Bool
+  /// In a direct chat, one conversation for each thread, as a group's in thread mode: each message outside a thread
+  /// begins one, answered in it; else one for the chat.
+  direct_threads : Bool
   /// Keeps names across restarts and lets the admin API ask without waiting (knownPerson, knownChannel).
   book : NameBook?
   /// The client (tests: one pointed at a stand-in); None: one of the app's.
@@ -382,6 +385,7 @@ pub struct FeishuSurface {
   priv options : FeishuSurfaceOptions
   priv threads : FeishuThreads
   priv thread_mode : Bool
+  priv direct_threads : Bool
   priv words : Words
   priv log : Log
   priv book : NameBook?
@@ -432,6 +436,7 @@ pub fn FeishuSurface::new(
     options,
     threads: options.threads,
     thread_mode: options.thread_mode,
+    direct_threads: options.direct_threads,
     words: options.words,
     log: options.log,
     book: options.book,
@@ -827,7 +832,7 @@ async fn FeishuSurface::heard(
     let topic = m.topic.unwrap()
     self.threads.heard_topic(self.connect, topic, m.root.unwrap_or(m.id))
     js(topic)
-  } else if self.thread_mode && !m.p2p {
+  } else if (if m.p2p { self.direct_threads } else { self.thread_mode }) {
     let ts = m.root.unwrap_or(m.id)
     if m.topic is Some(_) || m.addressed {
       self.threads.heard_topic(self.connect, ts, ts)
@@ -1291,7 +1296,8 @@ pub async fn FeishuSurface::begin(
   chat : String,
   message : String,
 ) -> (ThreadRef, String) {
-  let topics = self.chat_info(chat).topics
+  let info = self.chat_info(chat)
+  let topics = info.topics
   let mut first : JV = Null
   let mut thread : ThreadRef? = None
   for content in text_posts(message) {
@@ -1354,7 +1360,7 @@ pub async fn FeishuSurface::begin(
       self.threads.heard_topic(self.connect, topic, id)
       thread = Some({ channel: chat, thread_ts: topic })
     } else {
-      if self.thread_mode {
+      if (if info.p2p { self.direct_threads } else { self.thread_mode }) {
         self.threads.heard_topic(self.connect, id, id)
       } else {
         self.threads.begin(self.connect, chat, id)

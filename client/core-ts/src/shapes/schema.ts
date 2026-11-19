@@ -667,6 +667,7 @@ export const SHAPES: Record<string, Shape> = {
     ["appSecret", "String", { doc: "Masked." }],
     ["domain", "String", { doc: "feishu | lark" }],
     ["threads", opt("bool"), { doc: "Thread mode: each thread of a group its own conversation, answered in it." }],
+    ["directThreads", opt("bool"), { doc: "A direct chat in threads: each message there begins one, its own conversation, answered in it." }],
     ["console", opt("String"), { doc: "The app's page in the developer console (core)." }],
   ], { doc: "A Feishu (or Lark) connect's app." }),
   GroupConnect: struct([

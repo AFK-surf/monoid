@@ -156,7 +156,7 @@ test("registration: a temporary save failure is retried with the same app while 
 });
 
 /// A surface on Feishu's stand-in, with its threads in a temporary directory.
-async function surfaceRig(o: { topics?: boolean; threadMode?: boolean; names?: boolean; before?: (threads: FeishuThreads, fake: FakeFeishu) => void } = {}) {
+async function surfaceRig(o: { topics?: boolean; threadMode?: boolean; directThreads?: boolean; names?: boolean; before?: (threads: FeishuThreads, fake: FakeFeishu) => void } = {}) {
   const fake = await FakeFeishu.start();
   if (o.topics) fake.answer("GET /open-apis/im/v1/chats/oc_t", { code: 0, data: { name: "话题群", chat_mode: "group", group_message_type: "thread" } });
   const dir = mkdtempSync(join(tmpdir(), "fs-"));
@@ -164,7 +164,7 @@ async function surfaceRig(o: { topics?: boolean; threadMode?: boolean; names?: b
   const threads = new FeishuThreads(join(dir, "threads.json"));
   o.before?.(threads, fake);
   const book = o.names ? new NameBook(join(dir, "names.json"), { clock: t.clock }) : null;
-  const surface = new FeishuSurface({ connect: "fs", appId: "cli_test", appSecret: "s", domain: "feishu", threads, threadMode: o.threadMode, book, client: new FeishuClient("cli_test", "s", "feishu", fake.base), clock: t.clock });
+  const surface = new FeishuSurface({ connect: "fs", appId: "cli_test", appSecret: "s", domain: "feishu", threads, threadMode: o.threadMode, directThreads: o.directThreads, book, client: new FeishuClient("cli_test", "s", "feishu", fake.base), clock: t.clock });
   const events: ChatEvent[] = [];
   await surface.start(async (e) => void events.push(e));
   await fake.until("connected", () => surface.socket().connected);
@@ -278,6 +278,44 @@ test("surface: thread mode: an @ begins a thread answered in it, a thread goes b
     r.fake.answer("GET /open-apis/im/v1/messages", { code: 0, data: { items: [], has_more: false } });
     assert.deepEqual(await r.surface.history({ channel: "oc_g", threadTs: "om_a" }, "om_c", 10), []);
     assert.equal(r.fake.calls("GET", "/open-apis/im/v1/messages").at(-1)!.query.container_id, "omt_1");
+  } finally {
+    await r.close();
+  }
+});
+
+test("surface: a direct chat's threads: each message outside a thread begins one, answered in it; a reply in it goes on there", async () => {
+  const r = await surfaceRig({ directThreads: true });
+  try {
+    r.fake.message({ id: "om_a", chat: "oc_dm", text: "看看", p2p: true });
+    r.fake.message({ id: "om_b", chat: "oc_dm", text: "另一件事", p2p: true });
+    r.fake.message({ id: "om_c", chat: "oc_dm", text: "接着说", p2p: true, thread: "omt_1", root: "om_a" });
+    await r.fake.until("heard", () => r.events.length === 3);
+    assert.deepEqual(r.events.map((e) => (e.type === "message" ? [e.message.threadTs, e.message.addressed] : null)), [["om_a", true], ["om_b", true], ["om_a", true]]);
+    assert.equal(r.threads.current("fs", "oc_dm"), null, "the direct chat has no conversation of its own");
+    await r.surface.post({ channel: "oc_dm", threadTs: "om_a" }, "答案", []);
+    const reply = r.fake.calls("POST", "/open-apis/im/v1/messages/om_a/reply");
+    assert.equal(reply.length, 1);
+    assert.equal(reply[0]!.body.reply_in_thread, true);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages").length, 0);
+    // A group's words stay the group's conversation: the switch is the direct chats' alone.
+    r.fake.message({ id: "om_g", text: "群里", at: true });
+    await r.fake.until("group", () => r.events.length === 4);
+    assert.equal(r.threads.current("fs", "oc_g"), "om_g");
+  } finally {
+    await r.close();
+  }
+});
+
+test("surface: without its threads a direct chat is one conversation, answered in the chat", async () => {
+  const r = await surfaceRig({ threadMode: true });
+  try {
+    r.fake.message({ id: "om_a", chat: "oc_dm", text: "看看", p2p: true });
+    r.fake.message({ id: "om_b", chat: "oc_dm", text: "接着说", p2p: true });
+    await r.fake.until("heard", () => r.events.length === 2);
+    assert.deepEqual(r.events.map((e) => (e.type === "message" ? e.message.threadTs : null)), ["om_a", "om_a"]);
+    await r.surface.post({ channel: "oc_dm", threadTs: "om_a" }, "答案", []);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages/om_a/reply").length, 0);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages").length, 1);
   } finally {
     await r.close();
   }
