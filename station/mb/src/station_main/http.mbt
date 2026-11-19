@@ -107,21 +107,40 @@ async fn read_request(host : @host.Host, id : Json) -> Request? {
       if head_end is Some(e) {
         let head = @utf8.decode_lossy(all[0:e])
         want = e + 4
+        let mut first_line = true
         for line in head.split("\r\n") {
+          if first_line {
+            first_line = false
+            continue
+          }
           let l = line.to_owned()
           match l.find(":") {
-            Some(c) if l[:c].to_owned().to_lower() == "content-length" =>
-              want = e + 4 + (@string.parse_int(l[c + 1:].to_owned().trim().to_owned()) catch { _ => 0 })
+            Some(c) if l[:c].to_owned().to_lower().trim().to_owned() == "content-length" => {
+              let raw = l[c + 1:].to_owned().trim().to_owned()
+              if raw.length() == 0 {
+                return None
+              }
+              for ch in raw {
+                if ch < '0' || ch > '9' {
+                  return None
+                }
+              }
+              let cl = @string.parse_int(raw) catch { _ => return None }
+              if cl < 0 || cl > request_most - (e + 4) {
+                return None
+              }
+              want = e + 4 + cl
+            }
             _ => ()
           }
         }
       }
     }
-    if head_end is Some(_) && got_len >= want {
-      break
-    }
     if got_len > request_most || want > request_most {
       return None
+    }
+    if head_end is Some(_) && got_len >= want {
+      break
     }
     match (host.tcp_read(id) catch { _ => return None }) {
       Some(b) => {
@@ -137,11 +156,14 @@ async fn read_request(host : @host.Host, id : Json) -> Request? {
   let lines = head.split("\r\n").map(l => l.to_owned()).to_array()
   guard lines.length() > 0 else { None }
   let first = lines[0].split(" ").map(p => p.to_owned()).to_array()
-  guard first.length() >= 2 else { None }
+  guard first.length() >= 2 && first[0] != "" && first[1] != "" else { None }
   let headers = []
   for k = 1; k < lines.length(); k = k + 1 {
     let l = lines[k]
     if l.find(":") is Some(c) { headers.push((l[:c].to_owned().to_lower().trim().to_owned(), l[c + 1:].to_owned().trim().to_owned())) }
+  }
+  if want < e + 4 || want > all.length() {
+    return None
   }
   let body = all[e + 4:want].to_owned()
   Some({ meth: first[0], target: first[1], headers, body })

@@ -276,6 +276,72 @@ pub async fn harness(host : @host.Host) -> Unit {
       "claudeLogins" => Ok(claude_logins_asked(host))
       "fsOp" => Ok(fs_op_said(host, s("name"), match v("args") { Some(Array(a)) => a; _ => [] }))
       "repoWalk" => Ok(repo_walk_probed(host, s("root"), s("file")))
+      "gcmSeal" => {
+        let key = @vault_crypto.unhex(s("key"))
+        let nonce = @vault_crypto.unhex(s("nonce"))
+        let aad = @vault_crypto.unhex(s("aad"))
+        let plain = @vault_crypto.unhex(s("plain"))
+        Ok(Json::string(@drive.hex(p54_gcm_seal(key, nonce, aad, plain))))
+      }
+      "gcmOpen" => {
+        let key = @vault_crypto.unhex(s("key"))
+        let nonce = @vault_crypto.unhex(s("nonce"))
+        let aad = @vault_crypto.unhex(s("aad"))
+        let sealed = @vault_crypto.unhex(s("sealed"))
+        Ok(match p54_gcm_open(key, nonce, aad, sealed) {
+          Some(p) => Json::string(@drive.hex(p))
+          None => Json::null()
+        })
+      }
+      "p256Keygen" =>
+        try {
+          let d = p54_p256_new_scalar()
+          let pub_ = p54_p256_public(d)
+          let pem = p54_pem("PRIVATE KEY", p54_pkcs8(host, P256(d)))
+          Ok({ "d": Json::string(@drive.hex(d)), "pub": Json::string(@drive.hex(pub_)), "pem": Json::string(pem) })
+        } catch {
+          e => Err(said_of(e))
+        }
+      "p256Shared" =>
+        try {
+          let shared = p54_p256_shared(@vault_crypto.unhex(s("d")), @vault_crypto.unhex(s("peer")))
+          Ok(Json::string(@drive.hex(shared)))
+        } catch {
+          e => Err(said_of(e))
+        }
+      "p256Sign" =>
+        try {
+          let d = @vault_crypto.unhex(s("d"))
+          let pub_ = p54_p256_public(d)
+          let msg = @vault_crypto.unhex(s("message"))
+          let raw = p54_ecdsa_raw(host, d, pub_, msg)
+          let der = p54_der_seq([p54_der_uint(p54_sub(raw, 0, 32)), p54_der_uint(p54_sub(raw, 32, 64))])
+          Ok({ "raw": Json::string(@drive.hex(raw)), "der": Json::string(@drive.hex(der)), "pub": Json::string(@drive.hex(pub_)) })
+        } catch {
+          e => Err(said_of(e))
+        }
+      "rsaSign" =>
+        try {
+          let ops = p54_key_ops(host)
+          let key = (ops.3)(v("jwk").unwrap_or(Json::null()))
+          let sig = (ops.5)(key, s("hash"), @vault_crypto.unhex(s("message")))
+          Ok(Json::string(@drive.hex(sig)))
+        } catch {
+          e => Err(said_of(e))
+        }
+      "x509Make" =>
+        try {
+          Ok(x509_make_said(host, s("caName"), s("host"), match v("now") { Some(Number(n, ..)) => n; _ => 0.0 }))
+        } catch {
+          e => Err(said_of(e))
+        }
+      "httpServe" =>
+        try {
+          Ok(http_serve_start(host))
+        } catch {
+          e => Err(said_of(e))
+        }
+      "hostFetch" => Ok(host_fetch_said(host, ask))
       other => Err("no op \{other}")
     }
     let said : Json = match answer {
@@ -520,4 +586,104 @@ async fn repo_walk_probed(host : @host.Host, root : String, file : String) -> Js
   let (repos, _) = index.repos(w)
   let paths = repos.map(r => of_jv(r)).filter_map(r => match r { { "path": String(p), .. } => Some(Json::string(p)); _ => None })
   { "repos": Json::array(paths), "lists": Json::number(lists.val.to_double()), "yielded": Json::number(yielded.val.to_double()) }
+}
+
+///|
+/// Generates a P-256 CA and leaf certificate for `host_name` using `p54_key_ops` + `@vault_service.make_ca`/`make_leaf`.
+async fn x509_make_said(host : @host.Host, ca_name : String, host_name : String, now : Double) -> Json {
+  let crypto = @vault_crypto.Crypto::of_host(host)
+  let keys = p54_key_ops(host)
+  let m : @vault_service.Machine = {
+    temp_dir: async fn(_) { "" },
+    remove: async fn(_) {  },
+    chmod: async fn(_, _) {  },
+    write_file: async fn(_, _, _) {  },
+    read_file: async fn(_) { None },
+    mkdir: async fn(_, _) {  },
+    shell_for: async fn(_) { "/bin/sh" },
+    spawn: async fn(_) { { code: None, signal: None, timed_out: false, error: None } },
+    p256_new: keys.0,
+    key_of_pem: keys.1,
+    ed25519_of_seed: keys.2,
+    rsa_of_jwk: keys.3,
+    key_pem: keys.4,
+    sign: keys.5,
+    sha1: keys.6,
+    roots: async fn() { [] },
+    tls_context: async fn(_, _) { "" },
+    proxy_listen: async fn(_, _) { 0 },
+    proxy_close: () => (),
+    unix_serve: async fn(_, _) { () => () },
+    random: n => crypto.random(n) catch { _ => @drive.random_bytes(n) },
+  }
+  let ca = @vault_service.make_ca(m, now, ca_name)
+  let leaf = @vault_service.make_leaf(m, ca, ca_name, host_name, now)
+  let ca_pem = p54_pem("CERTIFICATE", ca.0)
+  let leaf_pem = p54_pem("CERTIFICATE", leaf.0)
+  let leaf_key_pem = (keys.4)(leaf.1)
+  { "caPem": Json::string(ca_pem), "leafPem": Json::string(leaf_pem), "leafKeyPem": Json::string(leaf_key_pem) }
+}
+
+///|
+/// Starts a real `serve_http` listener on 127.0.0.1:0 for HTTP conformance testing.
+async fn http_serve_start(host : @host.Host) -> Json {
+  let listening = host.tcp_listen_local(0)
+  let port = listening.port
+  let active = Ref(0)
+  let handled = Ref(0)
+  fork_bg(host, "harness http", async fn() {
+    serve_http(host, listening.id, async fn(req, _id) {
+      active.val += 1
+      defer { active.val -= 1 }
+      handled.val += 1
+      match req.path() {
+        "/health" => Some(json_reply(200, { "ok": Json::boolean(true), "active": Json::number(active.val.to_double()), "handled": Json::number(handled.val.to_double()) }))
+        "/echo" => {
+          let hdrs = Json::array(req.headers.map(h => Json::array([Json::string(h.0), Json::string(h.1)])))
+          let sha = @drive.hex(p54_sha256(host, req.body))
+          Some(json_reply(200, {
+            "method": Json::string(req.meth),
+            "target": Json::string(req.target),
+            "headers": hdrs,
+            "bodyLen": Json::number(req.body.length().to_double()),
+            "bodySha256": Json::string(sha),
+            "bodyText": Json::string(@utf8.decode_lossy(req.body)),
+          }))
+        }
+        _ => Some(plain(404, "not found"))
+      }
+    })
+  })
+  { "port": Json::number(port.to_double()) }
+}
+
+///|
+/// Calls `host.fetch` with the given parameters, returning `{status, headers, bodyBase64}` or `{error, isTimeout}`.
+async fn host_fetch_said(host : @host.Host, ask : Json) -> Json {
+  let url = jtext_or_empty(ask, "url")
+  let method_ = match ask { { "method": String(m), .. } => m; _ => "GET" }
+  let headers : Array[(String, String)] = match ask {
+    { "headers": Array(xs), .. } =>
+      xs.filter_map(x => match x { Array([String(k), String(v), ..]) => Some((k, v)); _ => None })
+    _ => []
+  }
+  let body : Bytes? = match ask {
+    { "bodyBase64": String(b), .. } => Some(@base64.decode(b) catch { _ => b"" })
+    _ => None
+  }
+  let timeout_ms : Int? = match ask {
+    { "timeoutMs": Number(n, ..), .. } => Some(n.to_int())
+    _ => None
+  }
+  try {
+    let r = host.fetch(url, method_~, headers~, body?=body, timeout_ms?=timeout_ms)
+    {
+      "status": Json::number(r.status.to_double()),
+      "headers": Json::array(r.headers.map(h => Json::array([Json::string(h.0), Json::string(h.1)]))),
+      "bodyBase64": Json::string(@drive.base64(r.body)),
+    }
+  } catch {
+    @host.FetchTimeout => { "error": Json::string(@host.fetch_timed_out), "isTimeout": Json::boolean(true) }
+    e => { "error": Json::string(said_of(e)), "isTimeout": Json::boolean(false) }
+  }
 }

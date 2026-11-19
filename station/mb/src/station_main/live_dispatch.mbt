@@ -198,7 +198,12 @@ async fn host_append_file(host : @host.Host, p : String, data : Bytes) -> Unit {
 async fn host_read_bytes_req(host : @host.Host, p : String) -> Bytes {
   match (host.read_bytes(p) catch { e => raise dispatch_fs_drive_err(e) }) {
     Some(b) => b
-    None => raise dispatch_fs_missing("open", p)
+    None =>
+      if host_is_dir(host, p) {
+        raise DispatchFsError("EISDIR", fs_code_said("EISDIR", "read", p))
+      } else {
+        raise dispatch_fs_missing("open", p)
+      }
   }
 }
 
@@ -206,7 +211,12 @@ async fn host_read_bytes_req(host : @host.Host, p : String) -> Bytes {
 async fn host_read_text_req(host : @host.Host, p : String) -> String {
   match (host.read_text(p) catch { e => raise dispatch_fs_drive_err(e) }) {
     Some(t) => t
-    None => raise dispatch_fs_missing("open", p)
+    None =>
+      if host_is_dir(host, p) {
+        raise DispatchFsError("EISDIR", fs_code_said("EISDIR", "read", p))
+      } else {
+        raise dispatch_fs_missing("open", p)
+      }
   }
 }
 
@@ -289,23 +299,42 @@ async fn host_fs_op(
     }
     "readdir" =>
       if args.get(1) is Some(Object({ "withFileTypes": True, .. })) {
-        guard host_readdir_types(host, s(0)) is Some(entries) else { raise dispatch_fs_missing("scandir", s(0)) }
+        guard host_readdir_types(host, s(0)) is Some(entries) else {
+          match host_stat_follow(host, s(0)) {
+            Some((k, _, _)) if k != "dir" => raise DispatchFsError("ENOTDIR", fs_code_said("ENOTDIR", "scandir", s(0)))
+            _ => raise dispatch_fs_missing("scandir", s(0))
+          }
+        }
         Json::array(entries.map(e => if readdir_file_field {
           ({ "name": jstr(e.0), "file": jb(e.1 == "file"), "dir": jb(e.1 == "dir") } : Json)
         } else {
           ({ "name": jstr(e.0), "dir": jb(e.1 == "dir") } : Json)
         }))
       } else {
-        guard host_readdir_names(host, s(0)) is Some(names) else { raise dispatch_fs_missing("scandir", s(0)) }
+        guard host_readdir_names(host, s(0)) is Some(names) else {
+          match host_stat_follow(host, s(0)) {
+            Some((k, _, _)) if k != "dir" => raise DispatchFsError("ENOTDIR", fs_code_said("ENOTDIR", "scandir", s(0)))
+            _ => raise dispatch_fs_missing("scandir", s(0))
+          }
+        }
         Json::array(names.map(Json::string))
       }
     "readdirTypes" => {
-      guard host_readdir_types(host, s(0)) is Some(entries) else { raise dispatch_fs_missing("scandir", s(0)) }
+      guard host_readdir_types(host, s(0)) is Some(entries) else {
+        match host_stat_follow(host, s(0)) {
+          Some((k, _, _)) if k != "dir" => raise DispatchFsError("ENOTDIR", fs_code_said("ENOTDIR", "scandir", s(0)))
+          _ => raise dispatch_fs_missing("scandir", s(0))
+        }
+      }
       Json::array(entries.map(e => ({ "name": jstr(e.0), "isFile": jb(e.1 == "file"), "isDirectory": jb(e.1 == "dir") } : Json)))
     }
     "stat" => {
       guard host_stat_follow(host, s(0)) is Some((kind, size, mtime)) else { raise dispatch_fs_missing("stat", s(0)) }
       { "isFile": jb(kind == "file"), "isDirectory": jb(kind == "dir"), "size": jn(size), "mtimeMs": jn(mtime) }
+    }
+    "lstat" => {
+      guard host_lstat(host, s(0)) is Some((kind, size, mtime)) else { raise dispatch_fs_missing("lstat", s(0)) }
+      { "isFile": jb(kind == "file"), "isDirectory": jb(kind == "dir"), "isSymbolicLink": jb(kind == "link"), "size": jn(size), "mtimeMs": jn(mtime) }
     }
     "size" => {
       guard host_stat_follow(host, s(0)) is Some((_, size, _)) else { raise dispatch_fs_missing("stat", s(0)) }
