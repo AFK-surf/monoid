@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [68a571407](https://github.com/AFK-surf/monoid/commit/68a571407a202c9da63c0c8429838fe30f747e55) feat(mbui): support trackpad horizontal swipe pagi | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.6 | 121.49 |
 | [3560e4f21](https://github.com/AFK-surf/monoid/commit/3560e4f21eb763d39258ce8e3d79637fb1b95206) feat(mbui): make the working mark a turning ring ( | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.6 | 121.49 |
 | [60c853356](https://github.com/AFK-surf/monoid/commit/60c85335667d39e05bf996020dc28e6fc6806ba7) feat(mbui): turn a station's CPU dial between idle | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.6 | 121.49 |
 | [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc389af88](https://github.com/AFK-surf/monoid/commit/cc389af8875accd49f4960a7ec510d8b2a1894c7) fix(mbui): focus the model search when its panel o | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.54 | 124.67 |
 | [a64471c17](https://github.com/AFK-surf/monoid/commit/a64471c1771b1e9348952125ecdd8f287df095b0) feat(mbui): add desktop tray/auto-launch/hotkeys a | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.62 | 126.49 |
 | [5e58d383a](https://github.com/AFK-surf/monoid/commit/5e58d383a6bb8cd2c22d1057332c69acf86b0729) feat(screens): share a person's microphone into a  | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.62 | 126.49 |
-| [1d1db3785](https://github.com/AFK-surf/monoid/commit/1d1db37857c5183174fe5c54064fd098e052cc73) feat(mbui): complete 6-target packager, prebuilt W | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.39 | 119.55 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [68a571407](https://github.com/AFK-surf/monoid/commit/68a571407a202c9da63c0c8429838fe30f747e55) feat(mbui): support trackpad horizontal swipe pagi | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [3560e4f21](https://github.com/AFK-surf/monoid/commit/3560e4f21eb763d39258ce8e3d79637fb1b95206) feat(mbui): make the working mark a turning ring ( | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [60c853356](https://github.com/AFK-surf/monoid/commit/60c85335667d39e05bf996020dc28e6fc6806ba7) feat(mbui): turn a station's CPU dial between idle | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.05 |
 | [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc389af88](https://github.com/AFK-surf/monoid/commit/cc389af8875accd49f4960a7ec510d8b2a1894c7) fix(mbui): focus the model search when its panel o | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
 | [a64471c17](https://github.com/AFK-surf/monoid/commit/a64471c1771b1e9348952125ecdd8f287df095b0) feat(mbui): add desktop tray/auto-launch/hotkeys a | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
 | [5e58d383a](https://github.com/AFK-surf/monoid/commit/5e58d383a6bb8cd2c22d1057332c69acf86b0729) feat(screens): share a person's microphone into a  | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.07 |
-| [1d1db3785](https://github.com/AFK-surf/monoid/commit/1d1db37857c5183174fe5c54064fd098e052cc73) feat(mbui): complete 6-target packager, prebuilt W | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.07 |
