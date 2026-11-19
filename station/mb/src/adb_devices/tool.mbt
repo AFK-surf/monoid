@@ -12,14 +12,25 @@ pub fn tool_decl(name : String, description : String, schema : J) -> J {
 }
 
 ///|
+fn schema_prop(kind : String, description : String) -> J {
+  jo([("type", js(kind)), ("description", js(description))])
+}
+
+///|
+fn schema_obj(props : Array[(String, J)], required? : Array[String]) -> J {
+  let fs = [("type", js("object")), ("properties", jo(props))]
+  if required is Some(req) {
+    fs.push(("required", jsa(req)))
+  }
+  fs.push(("additionalProperties", jb(false)))
+  jo(fs)
+}
+
+///|
 pub let adb_devices_decl : J = tool_decl(
   "adb_devices",
   "The Android phones people shared with every agent of this station (an app from before chats' grants; a phone granted to a chat with phone_use is that chat's alone and not listed here), each with the adb serial it is reached at on this machine (127.0.0.1:<port>), its model, owner and whether adb is connected. To ask for a phone, use phone_use.",
-  jo([
-    ("type", js("object")),
-    ("properties", jo([])),
-    ("additionalProperties", jb(false)),
-  ]),
+  schema_obj([]),
 )
 
 ///|
@@ -39,48 +50,10 @@ pub fn listed(phones : Array[J]) -> String {
 pub let phone_use_decl : J = tool_decl(
   "phone_use",
   "Ask to debug the Android phone of the person you work for (whoever started this chat) with adb. A card in your chat says your reason; they approve it in the still.fail app for this chat, for a time, or refuse it. It does not wait: you are told in this session when it is decided, and only a grant counts, not a yes written in the chat. Called again once granted, it says how the phone is reached now (its adb server and serial, this chat's alone). Skill stillfail-jobs (Devices) says more.",
-  jo([
-    ("type", js("object")),
-    (
-      "properties",
-      jo([
-        (
-          "reason",
-          jo([
-            ("type", js("string")),
-            (
-              "description",
-              js("What you will do on the phone and why (shown on the card)."),
-            ),
-          ]),
-        ),
-        (
-          "reask",
-          jo([
-            ("type", js("boolean")),
-            (
-              "description",
-              js(
-                "The existing request is still needed but its card is no longer pending: post a new card for the same request.",
-              ),
-            ),
-          ]),
-        ),
-        (
-          "done",
-          jo([
-            ("type", js("boolean")),
-            (
-              "description",
-              js(
-                "Hand the phone back: end this chat's grant (or its request still pending). reason is not needed with it.",
-              ),
-            ),
-          ]),
-        ),
-      ]),
-    ),
-    ("additionalProperties", jb(false)),
+  schema_obj([
+    ("reason", schema_prop("string", "What you will do on the phone and why (shown on the card).")),
+    ("reask", schema_prop("boolean", "The existing request is still needed but its card is no longer pending: post a new card for the same request.")),
+    ("done", schema_prop("boolean", "Hand the phone back: end this chat's grant (or its request still pending). reason is not needed with it.")),
   ]),
 )
 
@@ -88,26 +61,10 @@ pub let phone_use_decl : J = tool_decl(
 pub let phone_send_decl : J = tool_decl(
   "phone_send",
   "Put a file of this machine on the phone granted to this chat (phone_use), much faster and surer than adb push over the phone's link: the phone fetches it the way it downloads a chat's file. Answers its path on the phone, in the app's own folder, which this chat's adb shell reads; pm cannot read there, so install an APK from a copy: adb … shell 'cp <path> /data/local/tmp/a.apk && pm install -r /data/local/tmp/a.apk'. Cut short (the link went), call it again: it goes on from what the phone has. Waits until the file is there.",
-  jo([
-    ("type", js("object")),
-    (
-      "properties",
-      jo([
-        (
-          "path",
-          jo([
-            ("type", js("string")),
-            (
-              "description",
-              js("The file: an absolute path, or one in your workspace."),
-            ),
-          ]),
-        ),
-      ]),
-    ),
-    ("required", jsa(["path"])),
-    ("additionalProperties", jb(false)),
-  ]),
+  schema_obj(
+    [("path", schema_prop("string", "The file: an absolute path, or one in your workspace."))],
+    required=["path"],
+  ),
 )
 
 ///|

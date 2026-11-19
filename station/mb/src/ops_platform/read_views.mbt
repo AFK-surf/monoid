@@ -491,9 +491,7 @@ pub fn forget_marks(fs : Fs, dir : String, paths : Array[String]) -> Unit raise 
 
 ///|
 /// SHA-1, hex.
-pub fn sha1_hex(data : Bytes) -> String {
-  @hash.sha1_hex(data)
-}
+pub using @hash {sha1_hex}
 
 // ── usage.ts ─────────────────────────────────────────────────────────────────────────────────────────────────────
 

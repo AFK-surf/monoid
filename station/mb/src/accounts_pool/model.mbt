@@ -31,7 +31,13 @@ pub using @agent_runtimes {
 }
 
 ///|
-using @jsjson {js_index_of as index_of, is_js_space as js_space}
+using @jsjson {
+  js_index_of as index_of,
+  is_js_space as js_space,
+  js_all_digits as is_digits,
+  js_split as split_on,
+  jval_nonempty as nonempty_str,
+}
 
 ///|
 pub let runtime_kinds : Array[String] = @agent_runtimes.runtime_kinds
@@ -49,31 +55,9 @@ pub let fast_runtimes : Array[String] = @agent_runtimes.fast_runtimes
 let agy_levels : Array[String] = @agent_runtimes.agy_levels
 
 ///|
-fn is_digits(s : String) -> Bool {
-  s.length() > 0 && s.iter().all(c => c >= '0' && c <= '9')
-}
-
-///|
 /// `s.slice(a, b)` with JavaScript's clamping (code units).
 fn slice(s : String, a : Int, b? : Int) -> String {
   @jsjson.js_slice(s, a, end?=b)
-}
-
-///|
-/// `s.split(sep)` (a non-empty separator).
-fn split_on(s : String, sep : String) -> Array[String] {
-  let out = []
-  let mut from = 0
-  while true {
-    let at = index_of(s, sep, from~)
-    if at < 0 {
-      out.push(slice(s, from))
-      break
-    }
-    out.push(slice(s, from, b=at))
-    from = at + sep.length()
-  }
-  out
 }
 
 ///|
@@ -91,14 +75,6 @@ fn has_space(s : String) -> Bool {
     }
   }
   false
-}
-
-///|
-fn nonempty_str(v : JV?) -> String? {
-  match v {
-    Some(Str(s)) if s != "" => Some(s)
-    _ => None
-  }
 }
 
 ///|

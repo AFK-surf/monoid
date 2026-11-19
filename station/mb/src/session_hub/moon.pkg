@@ -8,6 +8,8 @@ import {
   "station/nodepath",
   "station/i18n",
   "station/jscase",
+  "station/accounts_pool",
+  "station/ops_platform",
   "station/readops",
   "station/store_sessions",
   "station/store_threads",

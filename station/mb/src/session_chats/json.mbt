@@ -86,22 +86,13 @@ pub fn parse_js(text : String) -> J raise Thrown {
 ///|
 /// `a === b` for what JSON gives (an object or a list: the same where they hold the same, as the copies here are).
 pub fn jeq(a : J, b : J) -> Bool {
-  match (a, b) {
-    (Null, Null) => true
-    (Bool(x), Bool(y)) => x == y
-    (Num(x), Num(y)) => x == y
-    (Str(x), Str(y)) => x == y
-    (Arr(xs), Arr(ys)) => xs.length() == ys.length() && xs.iter().zip(ys.iter()).all(p => jeq(p.0, p.1))
-    (Obj(xs), Obj(ys)) =>
-      xs.length() == ys.length() && xs.iter().zip(ys.iter()).all(p => p.0.0 == p.1.0 && jeq(p.0.1, p.1.1))
-    _ => false
-  }
+  a == b
 }
 
 ///|
 /// `xs.includes(v)`.
 pub fn jincludes(xs : Array[J], v : J) -> Bool {
-  xs.iter().any(x => jeq(x, v))
+  xs.contains(v)
 }
 
 ///|

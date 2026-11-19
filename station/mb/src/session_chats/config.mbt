@@ -26,12 +26,7 @@ fn under(data_dir : String, path : String) -> String {
 }
 
 ///|
-fn non_empty(v : J?) -> String? {
-  match str_of(v) {
-    Some(s) => if s != "" { Some(s) } else { None }
-    None => None
-  }
-}
+using @jsjson {jval_nonempty as non_empty, js_trunc}
 
 ///|
 /// `String(v)` for what a config's field may be.
@@ -80,17 +75,6 @@ fn num_or(v : J?, d : Double) -> Double {
   match v {
     Some(Num(x)) => x
     _ => d
-  }
-}
-
-///|
-fn js_trunc(x : Double) -> Double {
-  if x.is_nan() || x.is_inf() {
-    x
-  } else if x < 0.0 {
-    -(-x).floor()
-  } else {
-    x.floor()
   }
 }
 

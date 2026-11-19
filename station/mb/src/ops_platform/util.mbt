@@ -5,11 +5,12 @@
 ///|
 using @jsjson {
   js_index_of as index_of, js_last_index_of as last_index_of, js_starts as starts, js_ends as ends,
-  js_includes as has, js_split as split_on, js_split_lines as split_lines, js_upper_ascii as upper_ascii,
-  js_number, is_integer, is_safe_integer, jval_stringify_num as num_text, js_round, json_field as field,
-  json_str_field as str_field, json_num_field as num_field, json_bool_field as bool_field, json_items as arr,
-  json_strings_of as strs, json_str as js, json_num_js as jn, json_int as ji, json_bool as jb,
+  js_includes as has, js_split as split_on, js_split_lines as split_lines, js_upper_ascii as upper,
+  js_all_digits as digits, js_number, is_integer, is_safe_integer, jval_stringify_num as num_text, js_round,
+  json_field as field, json_str_field as str_field, json_num_field as num_field, json_bool_field as bool_field,
+  json_items as arr, json_strings_of as strs, json_str as js, json_num_js as jn, json_int as ji, json_bool as jb,
   json_strs as jstrs, json_opt_str as opt_s, json_stringify as js_stringify, jval_of_json as to_jvalue,
+  jval_to_json as from_jvalue,
 }
 
 ///|
@@ -96,18 +97,6 @@ fn any_unit(s : String, f : (Int) -> Bool) -> Bool {
     }
   }
   false
-}
-
-///|
-/// `/^[0-9]+$/`.
-fn digits(s : String) -> Bool {
-  s != "" && all_units(s, is_digit)
-}
-
-///|
-/// JavaScript's `toUpperCase` for what these upper (ASCII words, codes): others as they are.
-fn upper(s : String) -> String {
-  upper_ascii(s)
 }
 
 ///|
@@ -249,16 +238,9 @@ fn env_set(env : Array[(String, String)], k : String, v : String) -> Unit {
 }
 
 ///|
-fn from_jvalue(v : @jsjson.JValue) -> Json {
-  v.to_json()
-}
-
-///|
 /// `JSON.parse` as JavaScript reads it; None where it does not.
 fn js_parse(text : String) -> Json? {
-  try Some(from_jvalue(@jsjson.parse(text))) catch {
-    _ => None
-  }
+  @jsjson.try_parse(text).map(from_jvalue)
 }
 
 ///|

@@ -480,7 +480,7 @@ pub fn session_usage(Array[@json.Json]) -> @json.Json
 
 pub fn sh_quoted(String) -> String
 
-pub fn sha1_hex(Bytes) -> String
+pub fn sha1_hex(BytesView) -> String
 
 pub fn shell_candidates(Array[(String, String)], Array[String], Bool) -> Array[ShellCandidate]
 
