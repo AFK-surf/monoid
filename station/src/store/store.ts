@@ -1305,6 +1305,11 @@ export class Store {
     return r ? JSON.parse(r.usage) : null;
   }
 
+  /// Keys of sessions whose kept usage summary still has calls of an unpriced model, so a catalog update can price them.
+  unpricedUsageSessions(): string[] {
+    return this.#all("SELECT session FROM session_usage WHERE json_extract(usage, '$.unpricedCalls') > 0").map((r) => r.session as string);
+  }
+
   /// Every session's key.
   sessionKeys(): string[] {
     return this.#all("SELECT key FROM sessions").map((r) => r.key as string);

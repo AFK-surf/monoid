@@ -859,6 +859,8 @@ priv struct P53Models {
   /// What the catalog says (catalog.ts's table), told on to the accounts' (`P53Accounts::pool_catalog`).
   told : @accounts_oauth.Catalog
   mut catalog : @accounts_oauth.ModelCatalog?
+  /// The last catalog version applied to the main process (`@readops.learn_catalog` and `P53Accounts::pool_catalog`).
+  mut learned_version : Double
   /// The cloud said the catalog changed before what was kept was read (Some: to that ETag, if it named one): asked for
   /// once it is.
   mut pending : String??
@@ -866,7 +868,7 @@ priv struct P53Models {
 
 ///|
 fn P53Models::new(bus : LiveBus, accounts : P53Accounts) -> P53Models {
-  { bus, accounts, told: @accounts_oauth.Catalog::new(), catalog: None, pending: None }
+  { bus, accounts, told: @accounts_oauth.Catalog::new(), catalog: None, learned_version: 0.0, pending: None }
 }
 
 ///|
@@ -882,15 +884,37 @@ fn p53_origin(bus : LiveBus) -> String? {
 }
 
 ///|
-/// What the catalog says now, given the accounts (their makers' profiles and prices read it).
+/// What the catalog says now, given the accounts (their makers' profiles and prices read it) and the main process's
+/// session-usage pricing (`@readops.model_catalog`), then repricing any session usage with unpriced calls.
 fn P53Models::learned(self : P53Models) -> Unit {
+  let snap = self.told.snapshot()
+  let version = match snap {
+    { "version": Number(v, ..), .. } => v
+    _ => 0.0
+  }
+  if version == self.learned_version {
+    return
+  }
+  self.learned_version = version
   let models : Map[String, @accounts_pool.JV] = Map::new()
-  if self.told.snapshot() is { "models": Object(m), .. } {
+  if snap is { "models": Object(m) as json, .. } {
+    @readops.learn_catalog(json)
     for k, v in m {
       models[k] = p53_jv(v)
     }
+  } else {
+    @readops.learn_catalog(Json::null())
   }
   self.accounts.pool_catalog.models = models
+  if !self.bus.as_rig() {
+    ignore(
+      self.bus.host.rt.fork(name="reprice session usage", async fn() {
+        ignore((self.bus.hub_ask.val)("usage.reprice", Json::array([]))) catch {
+          _ => ()
+        }
+      }),
+    )
+  }
 }
 
 ///|
@@ -913,6 +937,7 @@ fn P53Models::attach(self : P53Models) -> Unit {
           self.learned()
           self.accounts.new_models(keys)
         },
+        learned=() => self.learned(),
       ) catch {
         e => {
           not_read(e)

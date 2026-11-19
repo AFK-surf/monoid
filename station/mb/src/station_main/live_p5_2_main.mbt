@@ -1246,6 +1246,10 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         Some(d) => (d.ask)("models", Json::array(jitems(arg)))
         None => raise LiveError("no Hermes Agent driver here")
       }
+    "usage.reprice" => {
+      hub.reprice_usage()
+      Json::null()
+    }
     "decision.fingerprint" =>
       Json::string(@session_chats.fingerprint(self.chats_world(), jv_of(jitems(arg).get(0).unwrap_or(Json::null()))))
     "decision.resolvedModel" => {

@@ -28,6 +28,22 @@ pub fn Hub::keep_usage(self : Hub, key : String, quiet? : Bool = false) -> Unit 
 }
 
 ///|
+/// module.ts `repriceUsage`: recomputes kept usage summaries that still had unpriced calls once the model catalog loads
+/// or changes.
+pub fn Hub::reprice_usage(self : Hub) -> Unit {
+  let keys = self.store.unpriced_usage_sessions() catch { _ => return }
+  if keys.length() == 0 {
+    return
+  }
+  for key in keys {
+    self.keep_usage(key) catch {
+      _ => ()
+    }
+  }
+  (self.world.tell)("live.usageCounted", Json::null())
+}
+
+///|
 /// module.ts `keepCounted`: what the store told of usage recorded (not of the statistics alone) or a conversation gone
 /// on in another: each session's kept, and the live view told the counter counted.
 pub fn Hub::counted(self : Hub, change : Json) -> Unit {

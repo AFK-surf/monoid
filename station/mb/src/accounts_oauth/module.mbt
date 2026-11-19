@@ -16,6 +16,7 @@ pub struct ModelCatalog {
   priv origin : () -> String?
   priv get : async (Request) -> Response
   priv added : (Array[String]) -> Unit
+  priv learned : () -> Unit
   priv catalog : Catalog
   priv io : Io
 }
@@ -23,7 +24,8 @@ pub struct ModelCatalog {
 ///|
 /// `file`: where it is kept; `origin`: still.fail cloud's, none when the station is in no still.fail cloud; `get`: how
 /// it is asked (the network's fetch); `added`: told the keys of the models a catalog the cloud sent names that the one
-/// before did not (none the first time). What was kept is read first.
+/// before did not (none the first time); `learned`: called after a catalog is learned from disk or the cloud. What was
+/// kept is read first.
 pub async fn ModelCatalog::open(
   io : Io,
   catalog : Catalog,
@@ -31,6 +33,7 @@ pub async fn ModelCatalog::open(
   origin : () -> String?,
   asker? : async (Request) -> Response,
   added? : (Array[String]) -> Unit = _ => (),
+  learned? : () -> Unit = () => (),
 ) -> ModelCatalog {
   let m : ModelCatalog = {
     etag: None,
@@ -44,6 +47,7 @@ pub async fn ModelCatalog::open(
       None => io.fetch
     },
     added,
+    learned,
     catalog,
     io,
   }
@@ -51,7 +55,9 @@ pub async fn ModelCatalog::open(
   let text = (io.read)(file) catch { _ => return m }
   match parse_or_none(text) {
     Some(kept) => {
-      ignore(catalog.learn(get(Some(kept), "models")))
+      if catalog.learn(get(Some(kept), "models")) > 0 {
+        (m.learned)()
+      }
       if str_of(get(Some(kept), "etag")) is Some(e) {
         m.etag = Some(e)
       }
@@ -178,6 +184,7 @@ async fn ModelCatalog::ask(self : ModelCatalog, etag : String?) -> Unit {
     raise e
   }
   (self.io.log)("info", "models", "the model catalog was read", { "models": Json::number(named.to_double()) })
+  (self.learned)()
   if added.length() > 0 {
     (self.added)(added)
   }

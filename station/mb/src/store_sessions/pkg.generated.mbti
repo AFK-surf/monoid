@@ -243,6 +243,7 @@ pub fn Store::told(Self, Array[@json.Json]) -> Unit
 pub fn Store::told_notes(Self, @json.Json) -> @json.Json raise
 pub fn Store::touch(Self, String) -> Unit raise
 pub fn Store::transcript_in_use(Self, @json.Json, @json.Json, @json.Json) -> Bool raise
+pub fn Store::unpriced_usage_sessions(Self) -> Array[String] raise
 pub fn Store::untold_widget_models(Self, @json.Json) -> Array[@json.Json] raise
 pub fn Store::up_job_ids(Self, @json.Json, Bool) -> Array[@json.Json] raise
 pub fn Store::usage_active_sessions(Self, @json.Json) -> Array[@json.Json] raise

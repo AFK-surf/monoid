@@ -12,6 +12,7 @@ import { price, priceTable } from "./reference/usage.ts";
 import { ModelCatalog } from "../src/models/module.ts";
 import { modelMakers } from "../src/api/overview.ts";
 import { Store } from "../src/store/store.ts";
+import { keepUsage, repriceUsage } from "../src/usage/module.ts";
 
 const MODELS = {
   "claude-haiku-5-5": { name: "Claude Haiku 5.5", input: ["text", "image"], cost: { input: 0.1, output: 0.5, cacheRead: 0.005 } },
@@ -195,6 +196,54 @@ test("reader workers see the main thread's model catalog and its updates when co
   } finally {
     learn(null);
     readers?.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ModelCatalog reprices kept session_usage rows that had unpriced calls once the catalog names their model", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "usage-reprice-"));
+  const file = join(dir, "model-catalog.json");
+  const store = Store.open(join(dir, "stillfail.db"));
+  let notified = 0;
+  const live = { usageCounted: () => { notified += 1; } } as any;
+  try {
+    store.insertSession({ key: "s-gem", connect: "ember", runtime: "agy", profile: "agy", workspace: "/w", token: "s-gem", ws: "W", createdAt: 0, lastActiveAt: 0 });
+    store.insertSession({ key: "s-cc", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "s-cc", ws: "W", createdAt: 0, lastActiveAt: 0 });
+    const owner = { turn: null, thread: null, person: "p", profile: "agy" };
+    const call = (id: string, model: string) => ({
+      id, at: 60_000, model, subagent: false, fast: false,
+      input: 1_000_000, cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 0, calls: 1, context: null, window: null,
+    });
+    store.recordUsage("/s-gem", { session: "s-gem", offset: 1, model: "gemini-4-carbon" }, "agy", [[call("c1", "gemini-4-carbon"), owner]]);
+    store.recordUsage("/s-cc", { session: "s-cc", offset: 1, model: "claude-opus-5-5" }, "claude", [[call("c2", "claude-opus-5-5"), owner]]);
+    keepUsage(store, "s-gem", true);
+    keepUsage(store, "s-cc", true);
+    assert.deepEqual(store.unpricedUsageSessions(), ["s-gem"]);
+    assert.equal((store.sessionUsage("s-gem") as any).cost, 0);
+    assert.equal((store.sessionUsage("s-gem") as any).unpricedCalls, 1);
+
+    const get = async () => new Response(JSON.stringify({
+      models: { "gemini-4-carbon": { name: "Gemini 4 Carbon", cost: { input: 2, output: 10, cacheRead: 0.1 } } },
+    }), { headers: { etag: '"g-1"' } });
+    const catalog = new ModelCatalog(file, () => "https://cloud.test", () => 0, get, undefined, () => repriceUsage(store, live));
+    await catalog.refresh();
+    assert.deepEqual(store.unpricedUsageSessions(), []);
+    assert.equal((store.sessionUsage("s-gem") as any).cost, 2);
+    assert.equal((store.sessionUsage("s-gem") as any).unpricedCalls, 0);
+    assert.equal((store.sessionUsage("s-cc") as any).cost, 4);
+    assert.equal(notified, 1);
+
+    // Restart with the kept file on disk: an unpriced session written before the catalog loaded is repriced at open.
+    learn(null);
+    keepUsage(store, "s-gem", true);
+    assert.equal((store.sessionUsage("s-gem") as any).unpricedCalls, 1);
+    new ModelCatalog(file, () => "https://cloud.test", () => 0, get, undefined, () => repriceUsage(store, live));
+    assert.equal((store.sessionUsage("s-gem") as any).cost, 2);
+    assert.equal((store.sessionUsage("s-gem") as any).unpricedCalls, 0);
+    assert.equal(notified, 2);
+  } finally {
+    learn(null);
     store.close();
     rmSync(dir, { recursive: true, force: true });
   }
