@@ -367,7 +367,7 @@ fn stories_controls(_tips : @sf.TipLayer) -> Array[Story] {
       file: "bar_place_node.mbt",
       api: [("bar_place_node.mbt", "bar_place_node")],
       play: None,
-      about: "小屏底栏上的一个位置：28 的图标，未选中是弱色，选中的亮色图标按亮的程度叠在上面（两张图，不是逐帧换色），右上角可带一个点；读屏读作底栏的标签页。它自己不接受按，按、滑、长按都由底栏的玻璃处理，这里用下方按钮换选中的位置。",
+      about: "小屏底栏上的一个位置：24 的图标在上、名字在下，未选中是弱色，选中的亮色图标按亮的程度叠在上面（两张图，不是逐帧换色），名字随之由淡变实，图标右上角可带一个点；读屏读作底栏的标签页。它自己不接受按，按、滑、长按都由底栏的玻璃处理，这里用下方按钮换选中的位置。",
       cases: [
         (
           "四个位置（点下方按钮换选中）",
@@ -380,8 +380,8 @@ fn stories_controls(_tips : @sf.TipLayer) -> Array[Story] {
               for i, p in places {
                 let (icon, name, dot) = p
                 bar.box(fn(at) {
-                  at.width(Is(Some(64.0))).height(Is(Some(48.0))) |> ignore
-                  @sf.bar_place_node(at, icon, None, fn(_) { if lit.get() == i { 1.0 } else { 0.0 } }, fn() {
+                  at.width(Is(Some(64.0))).height(Is(Some(68.0))) |> ignore
+                  @sf.bar_place_node(at, icon, None, fn() { name }, fn(_) { if lit.get() == i { 1.0 } else { 0.0 } }, fn() {
                     if dot != 0L {
                       @sf.theme().p.red
                     } else {
