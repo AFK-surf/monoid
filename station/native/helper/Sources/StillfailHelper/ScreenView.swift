@@ -126,6 +126,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   lazy var clipboard = Clipboard(channel: channel, input: input)
   /// Whether an app holds the pointer, looked at while a video's view lasts (PointerLock.swift).
   let pointerLock: PointerLockWatch
+  /// The Mac's virtual microphone while the station watches it (messages 11, 12; Microphone.swift).
+  let microphone: ViewMicrophone
   /// It is of a display of the helper's own (VirtualDisplay.swift), counted among its views.
   var onDisplayOfItsOwn = false
   var stream: SCStream?
@@ -197,6 +199,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     windowID = (options["window"] as? NSNumber).map { CGWindowID($0.uint32Value) }
     input = ScreenInput(channel: channel, displayID: displayID)
     pointerLock = PointerLockWatch(channel: channel)
+    microphone = ViewMicrophone(say: { said in channel.sendJSON(4, said) })
     super.init()
     input.area = { [weak self] in self?.area() ?? CGDisplayBounds(CGMainDisplayID()) }
     input.moved = { [weak self] in self?.pointerLock.moved() }
@@ -276,6 +279,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
         if let b = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] {
           show((b["window"] as? NSNumber).map { CGWindowID($0.uint32Value) })
         }
+      case 11: microphone.watch(payload.first == 1)
+      case 12: microphone.feed(payload)
       case 7: if payload.count == 4 { rate(Int(payload.withUnsafeBytes { UInt32(bigEndian: $0.loadUnaligned(as: UInt32.self)) })) }
       default: break
       }
@@ -516,6 +521,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     }
     sound?.end()
     pointerLock.end()
+    microphone.end()
     // (the last view of a display of the helper's own takes it away)
     if onDisplayOfItsOwn {
       onDisplayOfItsOwn = false

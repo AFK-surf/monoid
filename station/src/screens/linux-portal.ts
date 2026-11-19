@@ -6,7 +6,8 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
 import { ScreenRefused } from "./hub.ts";
-import type { Frame, ScreenAccess, ScreenInput, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
+import { LinuxMicPart } from "./linux-mic.ts";
+import type { Frame, ScreenAccess, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
 import { EVDEV } from "./x11-desktop.ts";
 import { LinuxGamepads } from "./linux-gamepad.ts";
 
@@ -122,6 +123,8 @@ class PortalProcess implements ScreenView {
   readonly #keys = new Set<number>();
   /// Its controllers: virtual ones, else the desktop driven with them through the portal's pointer and keys.
   readonly #pads: LinuxGamepads;
+  /// The desktop's virtual microphone (linux-mic.ts) while its driver watches it.
+  readonly #mic = new LinuxMicPart();
   #resolveReady!: () => void;
   #rejectReady!: (error: Error) => void;
   #resolveFirst!: () => void;
@@ -291,9 +294,12 @@ class PortalProcess implements ScreenView {
     for (const waiting of this.#waiting.splice(0)) {
       if (this.#failure) waiting.reject(this.#failure); else waiting.resolve(null);
     }
+    this.#mic.stop();
     this.#gone();
   }
   why(): string | undefined { return this.#why; }
+  watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
+  feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
   close(): void {
     if (this.#ended) return;
     this.#pads.close();

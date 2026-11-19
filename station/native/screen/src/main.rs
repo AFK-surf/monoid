@@ -30,12 +30,16 @@
 //                             `region` of the display alone ({x, y, w, h}, 0..1 of it: a client zoomed in) or, without
 //                             it, of the whole
 //        9 audio     (empty)      the latest 20 ms of system output (only with audio:true)
+//       11 watch mic 1 byte       1: watch the virtual microphone (VB-Cable: mic.rs), said as message 4 {mic}; 0: stop
+//       12 mic       flags, the recording's epoch (4 bytes big-endian), 48 kHz mono PCM16: played into the cable
+//                             only while an app records it, in that epoch
 //   out  1 info      JSON     first: {width, height, encoder, codec, regions: true} (h265 where asked and the hardware has it), or
 //                             {error, code: "capture"|"display"|"encoder"}
 //        2 config    4 bytes width, 4 bytes height, then the avcC or hvcC (none for JPEG): before the first frame and whenever
 //                             it changes
 //        3 frame     1 byte flags (bit 0: key frame), 8 bytes timestamp (µs), then the frame (AVCC, or one JPEG)
-//        4 event     JSON     {pointerLock: bool} whether an app holds the pointer (pointer_lock.rs), else what the
+//        4 event     JSON     {pointerLock: bool} whether an app holds the pointer (pointer_lock.rs), {mic:
+//                             {available, active, epoch}} the virtual microphone while watched, else what the
 //                             station logs
 //        5 clipboard 1 byte type (1 text, 2 PNG), the bytes: what was copied, while watched
 //       12 clipboard 1 byte its mark (1 concealed, 2 transient), then as 5: a copy an app marked private
@@ -92,6 +96,8 @@ mod pointer_lock;
 mod privacy;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod gamepad;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod mic;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod mouse;
 #[cfg_attr(not(windows), allow(dead_code))]

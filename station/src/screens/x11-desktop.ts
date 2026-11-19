@@ -10,7 +10,8 @@ import { log } from "../ops/log.ts";
 import { LinuxGamepads } from "./linux-gamepad.ts";
 import { ScreenRefused } from "./hub.ts";
 import { executable, type LinuxScreenTools, type LinuxToolPair } from "./linux-tools.ts";
-import type { Frame, ScreenAccess, ScreenInput, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
+import { LinuxMicPart } from "./linux-mic.ts";
+import type { Frame, ScreenAccess, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
 import { X11H264 } from "./x11-h264.ts";
 
 const run = promisify(execFile);
@@ -306,6 +307,8 @@ class X11View implements ScreenView {
   #timer: () => void;
   #stderr = "";
   #why: string | undefined;
+  /// The desktop's virtual microphone (linux-mic.ts) while its driver watches it.
+  readonly #mic = new LinuxMicPart();
 
   constructor(ffmpeg: string, xdotool: string, env: NodeJS.ProcessEnv, screen: Size, options: ViewOptions, gone: () => void) {
     this.#inputs = new X11Input(xdotool, env, screen);
@@ -368,6 +371,8 @@ class X11View implements ScreenView {
   video(): ScreenVideo { return { capture: "X11", encoder: "ffmpeg MJPEG (software)" }; }
 
   input(event: ScreenInput): Promise<void> { return this.#inputs.input(event); }
+  watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
+  feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
 
   #end(error: Error, closed = false) {
     if (this.#ended) return;
@@ -378,6 +383,7 @@ class X11View implements ScreenView {
     this.#child.kill();
     this.#latest = null;
     for (const waiting of this.#waiting.splice(0)) waiting(null);
+    this.#mic.stop();
     this.#inputs.close();
     this.#gone();
   }
@@ -391,6 +397,7 @@ class X11H264View implements ScreenView {
   readonly #inputs: X11Input;
   readonly #video: X11H264;
   readonly #gone: () => void;
+  readonly #mic = new LinuxMicPart();
   #ended = false;
 
   constructor(ffmpeg: string, xdotool: string, env: NodeJS.ProcessEnv, screen: Size, options: ViewOptions, gone: () => void) {
@@ -406,12 +413,15 @@ class X11H264View implements ScreenView {
   next(): Promise<Frame | null> { return this.#video.next(); }
   input(event: ScreenInput): Promise<void> { return this.#inputs.input(event); }
   rate(bits: number): void { this.#video.rate(bits); }
+  watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
+  feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
   keyframe(): void { this.#video.keyframe(); }
   video(): ScreenVideo { return this.#video.video(); }
   why(): string | undefined { return this.#video.why(); }
   close(): void {
     if (this.#ended) return;
     this.#ended = true;
+    this.#mic.stop();
     this.#video.close();
     this.#inputs.close();
     this.#gone();

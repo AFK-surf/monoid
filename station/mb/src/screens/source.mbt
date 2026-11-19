@@ -494,6 +494,25 @@ pub(all) struct ScreenCursor {
 }
 
 ///|
+/// A source's virtual microphone (source.ts `ScreenMic`): one can be fed, an app there records it now, and which
+/// recording (u32, raised for each).
+#derive(Eq)
+pub(all) struct ScreenMic {
+  available : Bool
+  active : Bool
+  epoch : UInt
+}
+
+///|
+pub fn ScreenMic::to_j(self : ScreenMic) -> J {
+  jo([("available", jb(self.available)), ("active", jb(self.active)), ("epoch", jn(self.epoch.to_double()))])
+}
+
+///|
+/// The most bytes of one microphone packet (40 ms of 48 kHz mono s16le).
+pub const MIC_PCM_MAX : Int = 3840
+
+///|
 /// The most of a pointer's picture (its PNG), and how many pictures a view keeps.
 pub const CURSOR_PNG_MAX : Int = 65536
 
@@ -733,6 +752,9 @@ pub(all) struct ScreenView {
   watch_clipboard_marked : (((Clip, Int) -> Unit) -> (() -> Unit))?
   /// Hears whether an app on the source holds the pointer (source.ts `watchPointerLock`).
   watch_pointer_lock : (((Bool) -> Unit) -> (() -> Unit))?
+  /// Hears the source's virtual microphone (source.ts `watchMic`), and feeds it a packet of a recording (`feedMic`).
+  watch_mic : (((ScreenMic) -> Unit) -> (() -> Unit))?
+  feed_mic : ((Bytes, UInt) -> Unit)?
 }
 
 ///|
@@ -770,6 +792,8 @@ pub fn ScreenView::bare(
     set_clipboard_marked: None,
     watch_clipboard_marked: None,
     watch_pointer_lock: None,
+    watch_mic: None,
+    feed_mic: None,
   }
 }
 

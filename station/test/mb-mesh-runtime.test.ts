@@ -1249,7 +1249,8 @@ class ScreenWorld {
       ...(v.fill ? { fill: async (f: Json) => void w.calls.push(["fill", f]) } : {}),
       ...(v.passkey ? { passkey: async (a: Json) => void w.calls.push(["passkey", a]) } : {}),
       ...(v.watchChild ? { watchChild: (f: (s: string) => void) => (w.listeners.set("watchChild", (s) => f(s)), () => (w.calls.push(["un:watchChild"]), w.listeners.delete("watchChild"))) } : {}),
-      ...watch("watchPointerLock"),
+      ...watch("watchPointerLock"), ...watch("watchMic"),
+      ...(v.feedMic ? { feedMic: (pcm: Uint8Array, epoch: number) => void w.calls.push(["feedMic", hex(pcm), epoch]) } : {}),
     };
     return {
       id: s.id, kind: s.kind ?? "browser",
@@ -1502,6 +1503,34 @@ test("a screen's view whose app holds the pointer: relative moves, controllers l
     ];
     await bothScreens(conf, steps, `held pointer (privateClip ${privateClip})`);
   }
+});
+
+test("a screen's view with a virtual microphone: shared, fed only in the recording it said, let go of as it only looks", { skip }, async () => {
+  const mic = (available: boolean, active: boolean, epoch: number) => ({ op: "listener", name: "watchMic", value: { available, active, epoch } });
+  const pcm = (n: number, fill: number, epoch: number, flags = 0) => {
+    const b = Buffer.alloc(5 + n, fill);
+    b[0] = flags;
+    b.writeUInt32BE(epoch >>> 0, 1);
+    return clientFrame(23, b);
+  };
+  const conf = { head: viewHead(), viewer: member, source: browserSource(), view: fullView({ watchMic: true, feedMic: true }), drive: { control: true } };
+  const steps: Json[] = [
+    vframe(1_000, { key: true, config: { codec: "h264", width: 1920, height: 1080, description: "0142" } }),
+    // (shared before anything records: dropped; then recorded, but not shared yet: dropped)
+    clientFrame(22, Buffer.from([1])), pcm(4, 1, 0), mic(true, false, 0), pcm(4, 2, 0), clientFrame(22, Buffer.from([0])), mic(true, true, 1), pcm(4, 3, 1),
+    // shared: of the epoch said, an even length within bounds, flags clear
+    clientFrame(22, Buffer.from([1])), pcm(4, 4, 1), pcm(4, 5, 0), pcm(4, 6, 2), pcm(3, 7, 1), pcm(0, 0, 1), pcm(3840, 8, 1), pcm(3842, 9, 1), pcm(4, 10, 1, 1),
+    clientFrame(22, Buffer.from([1, 1])), clientFrame(22, Buffer.from([2])), pcm(2, 11, 1),
+    mic(true, true, 4294967295), pcm(2, 12, 4294967295), mic(false, false, 0), pcm(2, 13, 0),
+    mic(true, true, 7), pcm(2, 14, 7),
+    { op: "watchOnly", by: "Bob" }, pcm(2, 15, 7), clientFrame(22, Buffer.from([1])), pcm(2, 16, 7), { op: "advance", ms: 100 }, { op: "clientEnd" },
+  ];
+  await bothScreens(conf, steps, "virtual microphone");
+  // One that only looks is never asked of it, and what it sends is dropped.
+  const looks = { ...conf, drive: { control: false } };
+  await bothScreens(looks, [vframe(1_000, { key: true, config: { codec: "h264", width: 1920, height: 1080, description: "0142" } }), clientFrame(22, Buffer.from([1])), pcm(2, 1, 0), { op: "clientEnd" }], "virtual microphone, looking");
+  // The view ends: the watch is let go of with it.
+  await bothScreens(conf, [mic(true, true, 2), clientFrame(22, Buffer.from([1])), pcm(2, 1, 2), { op: "stopping" }], "virtual microphone, stopping");
 });
 
 test("a screen's view ending every way it ends", { skip }, async () => {

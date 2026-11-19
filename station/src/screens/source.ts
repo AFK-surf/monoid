@@ -185,7 +185,21 @@ export interface ScreenView {
   passkey?(a: PasskeyAnswer): Promise<void>;
   /// Hears a child screen (`browser:<id>`) this tab opened while driven (a link to a new window or an OAuth popup).
   watchChild?(heard: (screenId: string) => void): () => void;
+  /// Hears the source's virtual microphone (`ScreenMic`) once it is ready and on each change, until the returned
+  /// function, which stops it and what feeds it. Only a view a person drives is asked.
+  watchMic?(heard: (mic: ScreenMic) => void): () => void;
+  /// One packet of 48 kHz mono `pcm_s16le` (even, at most `MIC_PCM_MAX` bytes) for the virtual microphone, dropped
+  /// unless something records it now in the recording `epoch` said.
+  feedMic?(pcm16le: Uint8Array, epoch: number): void;
 }
+
+/// A source's virtual microphone: `available` where one can be fed (a browser tab's always; a desktop's virtual input
+/// device found and opened), `active` only while an app there records it, `epoch` (u32) raised for each recording so
+/// the tail of the one before never reaches the next.
+export type ScreenMic = { available: boolean; active: boolean; epoch: number };
+
+/// The most bytes of one microphone packet (40 ms of 48 kHz mono s16le).
+export const MIC_PCM_MAX = 3840;
 
 /// A login field in focus: the site's host (as the browser has its address, not as the page says it), which field, and
 /// whether it already holds a value.

@@ -442,6 +442,22 @@ async fn Harness::view_call(self : Harness, name : String, v : ScreenView, f : S
       }
       Null
     }
+    "watchMic" =>
+      match v.watch_mic {
+        Some(g) => {
+          let stop = g(m => self.cb_with("\{name}.mic", m.to_j()))
+          self.insts["\{name}.unwatchMic"] = IView(ScreenView::bare(async fn() { None }, () => (), async fn(_) { () }, stop))
+          Null
+        }
+        None => raise fail("no watchMic")
+      }
+    "feedMic" => {
+      match v.feed_mic {
+        Some(g) => g(b64_of(arg("pcm")), num(arg("epoch")).unwrap_or(0.0).to_uint64().to_uint())
+        None => raise fail("no feedMic")
+      }
+      Null
+    }
     "reveal" => {
       match v.reveal {
         Some(g) => g(text(arg("path")).unwrap_or(""))

@@ -106,6 +106,8 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     set_clipboard_marked: v.set_clipboard_marked.map(f => async fn(c, b, m) { f(p54_clip_of(c), b, m) }),
     watch_clipboard_marked: v.watch_clipboard_marked.map(w => (k : (@mesh_runtime.Clip, Int) -> Unit) => w((c, m) => k(p54_clip(c), m))),
     watch_pointer_lock: v.watch_pointer_lock,
+    watch_mic: v.watch_mic.map(w => (k : (Json) -> Unit) => w(m => k(p54_of_jv(m.to_j())))),
+    feed_mic: v.feed_mic,
   }
 }
 

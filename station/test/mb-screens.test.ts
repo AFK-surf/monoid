@@ -877,7 +877,7 @@ class TsSide implements Side {
       case "helperView": {
         const socket = M.net.createConnection(a.path ?? "/view.sock");
         const inputOps = a.input === "win" ? new M.winInput.WinInput() : a.input === "sim" ? new M.simInput.SimInput() : new M.mac.MacInput();
-        const view = new M.desktop.HelperView(a.codec ?? "h264", socket, this.#cb(`${name}.gone`), inputOps, a.capture ?? "ScreenCaptureKit", a.audio === true);
+        const view = new M.desktop.HelperView(a.codec ?? "h264", socket, this.#cb(`${name}.gone`), inputOps, a.capture ?? "ScreenCaptureKit", a.audio === true, a.mic === true);
         // (asked for by the scenario when it asks, not as the station's own opener does at once)
         view.ready.catch(() => {});
         return view;
@@ -950,6 +950,8 @@ class TsSide implements Side {
       case "watchWindows": need("watchWindows"); this.insts.set(`${name}.unwatchWindows`, { close: v.watchWindows((w: Json) => this.#cbWith(`${name}.windows`, w)) }); return null;
       case "window": need("window"); v.window(a.id ?? null); return null;
       case "reveal": need("reveal"); await v.reveal(a.path); return null;
+      case "watchMic": need("watchMic"); this.insts.set(`${name}.unwatchMic`, { close: v.watchMic((m: Json) => this.#cbWith(`${name}.mic`, m)) }); return null;
+      case "feedMic": need("feedMic"); v.feedMic(unb64(a.pcm), a.epoch); return null;
       case "has": return Object.fromEntries(["nextAudio", "rate", "bounds", "video", "why", "setClipboard", "watchClipboard", "watchCursor", "watchWindows", "reveal"].map((k) => [k, typeof v[k] === "function"]));
     }
     throw new Error(`a view has no ${f}`);
@@ -2020,6 +2022,27 @@ async function helperViewScenario(s: Play) {
   await s.settle();
   await s.call("x", "ready");
   await s.call("x", "next");
+  // A desktop's view with a virtual microphone: watched, said by the helper (message 4 `{mic}`), fed only while it
+  // records in the epoch it said, of an even length within bounds; watched no more, said and fed nothing.
+  s.w.servers.set("/view4.sock", () => {});
+  await s.new("helperView", { inst: "m", codec: "h264", mic: true, path: "/view4.sock" });
+  const m = () => s.w.conns[3]!;
+  await s.call("m", "feedMic", { pcm: b64(Buffer.alloc(4, 1)), epoch: 0 });
+  await s.call("m", "watchMic");
+  m().send(Buffer.concat([hm(4, j({ mic: { available: true, active: false, epoch: 0 } })), hm(4, j({ mic: { available: true, active: true, epoch: 3 } }))]));
+  await s.settle();
+  await s.call("m", "feedMic", { pcm: b64(Buffer.alloc(4, 2)), epoch: 2 });
+  await s.call("m", "feedMic", { pcm: b64(Buffer.alloc(6, 3)), epoch: 3 });
+  await s.call("m", "feedMic", { pcm: b64(Buffer.alloc(5, 4)), epoch: 3 });
+  await s.call("m", "feedMic", { pcm: b64(Buffer.alloc(3842, 5)), epoch: 3 });
+  m().send(Buffer.concat([hm(4, j({ mic: { available: false, active: true, epoch: -1 } })), hm(4, j({ mic: { available: true, active: true, epoch: 4.5 } })), hm(4, j({ mic: { available: true, active: true, epoch: 4294967295 } }))]));
+  await s.settle();
+  await s.call("m", "feedMic", { pcm: b64(Buffer.alloc(2, 6)), epoch: 4294967295 });
+  await s.call("m.unwatchMic", "close");
+  m().send(hm(4, j({ mic: { available: true, active: true, epoch: 5 } })));
+  await s.settle();
+  await s.call("m", "feedMic", { pcm: b64(Buffer.alloc(2, 7)), epoch: 5 });
+  await s.call("m", "close");
 }
 
 async function hubScenario(s: Play) {

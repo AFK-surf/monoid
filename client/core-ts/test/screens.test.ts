@@ -8,7 +8,7 @@ import { Deferred, Effect, Queue } from "effect";
 import { linkTarget } from "../src/asks.ts";
 import { parseCall } from "../src/core/calls.ts";
 import { CoreError } from "../src/error.ts";
-import { CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR, CURSOR_IMAGE, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, cursorFrame, cursorImageFrame, inputFrame, keyframeFrame, lookFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
+import { CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR, CURSOR_IMAGE, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, cursorFrame, cursorImageFrame, inputFrame, keyframeFrame, lookFrame, micFrame, micOnFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
 import { LOOK_MS, accessOf, checkInput, othersOf, personShown } from "../src/screens.ts";
 import { HostWire, type RequestHead, type ScreenAsk, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
@@ -1697,4 +1697,88 @@ test("an_auto_view_yielded_to_an_agent_resumes_control_when_the_agent_leaves_and
   assert.equal(views.length, 2);
   assert.equal(views[1]!.ask.control, true);
   core.close();
+});
+
+/// The person's microphone into the screen's virtual one: `screen.micOn` said to the station (again to each stream
+/// that drives while on), `screen.mic` sent only while driving, shared, and the state's `mic` says a recording of
+/// that epoch goes on; the state's `mic` kept only while driving.
+each("a_views_microphone_goes_only_while_shared_driven_and_recorded_in_its_epoch", async (seed) => {
+  const { host, core, ui, views, replace } = await viewing(seed);
+  const log: J[] = [];
+  call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+  await host.settle();
+  const v = views[0]!;
+  v.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(100, seed))]));
+  await host.settle();
+  const pcm = (n: number, fill: number) => new Uint8Array(n).fill(fill);
+  const mics = (w: typeof v) => w.got.filter((f) => "micOn" in f || "mic" in f);
+  call(core, ui, 2, "screen.mic", { view: "v", epoch: 3 }, pcm(4, 1));
+  call(core, ui, 3, "screen.micOn", { view: "v", on: true });
+  call(core, ui, 4, "screen.micOn", { view: "v", on: true });
+  call(core, ui, 5, "screen.mic", { view: "v", epoch: 3 }, pcm(4, 2));
+  await host.settle();
+  assert.deepEqual(mics(v), [{ micOn: true }], "said once; nothing while nothing records");
+  v.send(stateFrame({ mic: { available: true, active: true, epoch: 3 } }));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual(lastState(log, 1).mic, { available: true, active: true, epoch: 3 });
+  call(core, ui, 6, "screen.mic", { view: "v", epoch: 2 }, pcm(4, 3));
+  call(core, ui, 7, "screen.mic", { view: "v", epoch: 3 }, pcm(4, 4));
+  await host.settle();
+  assert.deepEqual(mics(v), [{ micOn: true }, { mic: { flags: 0, epoch: 3, data: pcm(4, 4) } }]);
+  // Recorded no more: nothing goes.
+  v.send(stateFrame({ mic: { available: true, active: false, epoch: 4 } }));
+  await host.settle();
+  call(core, ui, 8, "screen.mic", { view: "v", epoch: 4 }, pcm(2, 5));
+  await host.settle();
+  assert.equal(mics(v).length, 2);
+  // Another stream: told it is shared as it opens, its microphone said anew by it.
+  v.send(stateFrame({ mic: { available: true, active: true, epoch: 5 } }));
+  await host.settle();
+  replace();
+  await host.settle();
+  said(host, log);
+  assert.equal(views.length, 2);
+  assert.deepEqual(mics(views[1]!), [{ micOn: true }]);
+  assert.equal(lastState(log, 1).mic, undefined);
+  call(core, ui, 9, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 6));
+  await host.settle();
+  assert.equal(mics(views[1]!).length, 1);
+  views[1]!.send(join([stateFrame({ title: "t", control: true }), stateFrame({ mic: { available: true, active: true, epoch: 5 } })]));
+  await host.settle();
+  call(core, ui, 10, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 7));
+  await host.settle();
+  assert.deepEqual(mics(views[1]!).at(-1), { mic: { flags: 0, epoch: 5, data: pcm(2, 7) } });
+  // Made to only look: the microphone gone with control, nothing sent.
+  views[1]!.send(stateFrame({ control: false, mic: null }));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).mic, undefined);
+  call(core, ui, 11, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 8));
+  await host.settle();
+  assert.equal(mics(views[1]!).length, 2);
+  // Shared no more.
+  call(core, ui, 12, "screen.micOn", { view: "v", on: false });
+  await host.settle();
+  assert.deepEqual(mics(views[1]!).at(-1), { micOn: false });
+  core.receive(ui, { kind: "cancel", id: 1, cancel: true });
+  await host.settle();
+  // A late one after the view went: nothing to do, no error.
+  call(core, ui, 13, "screen.mic", { view: "v", epoch: 5 }, pcm(2, 9));
+  call(core, ui, 14, "screen.micOn", { view: "v", on: true });
+  await host.settle();
+  said(host, log);
+  assert.ok(!log.some((m) => (m.id === 13 || m.id === 14) && m.error), "let be");
+  core.close();
+});
+
+test("a_microphones_calls_are_checked", () => {
+  assert.deepEqual((parseCall("screen.micOn", { view: "v", on: true }) as J).call, { kind: "micOn", view: "v", on: true });
+  assert.throws(() => parseCall("screen.micOn", { view: "v" }));
+  assert.equal((parseCall("screen.mic", { view: "v", epoch: 4294967295 }, new Uint8Array(3840)) as J).call.epoch, 4294967295);
+  for (const [params, bytes] of [[{ view: "v", epoch: 1 }, new Uint8Array(3)], [{ view: "v", epoch: 1 }, new Uint8Array(0)], [{ view: "v", epoch: 1 }, new Uint8Array(3842)], [{ view: "v", epoch: -1 }, new Uint8Array(2)], [{ view: "v", epoch: 1.5 }, new Uint8Array(2)], [{ view: "v", epoch: 4294967296 }, new Uint8Array(2)], [{ view: "v", epoch: 1 }, undefined]] as const) {
+    assert.throws(() => parseCall("screen.mic", params, bytes));
+  }
+  const [frames] = readClientFrames(join([micOnFrame(true), micFrame(new Uint8Array([1, 2]), 7)]));
+  assert.deepEqual(frames, [{ micOn: true }, { mic: { flags: 0, epoch: 7, data: new Uint8Array([1, 2]) } }]);
 });

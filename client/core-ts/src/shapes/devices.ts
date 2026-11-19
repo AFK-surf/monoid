@@ -375,6 +375,11 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["allow", vec("String"), { doc: "The credentials the site takes (base64url ids); none: any of this device's for `rpId`." }],
     ["userVerification", "String", { doc: "`required`, `preferred` or `discouraged`." }],
   ], { doc: "A page's sign-in with a passkey on a screen (a tab of the station's browser), for this device to sign." }),
+  ScreenMic: struct([
+    ["available", "bool", { doc: "The screen has a virtual microphone this device's can be shared into (a browser tab's always; a desktop's\nwhere its virtual input device is there)." }],
+    ["active", "bool", { doc: "An app on the screen records that microphone now: only then does `screen.mic` send anything." }],
+    ["epoch", "u32", { doc: "Which recording: raised for each, given with `screen.mic` so nothing of one reaches the next." }],
+  ], { doc: "A screen's virtual microphone, while driving it (`ScreenViewState.mic`)." }),
   ScreenViewState: struct([
     ["phase", "String", { doc: "`connecting`, `live`, `reconnecting`, `ended` (the station ended it, or the screen went), `outdated` (the\nstation is from before screens), `gone` (no such screen), `denied` (it cannot be seen now: no permission to\ncapture, no display) or `failed`." }],
     ["message", opt("String"), { doc: "Why, in the viewer's words, for a phase that is not `connecting` or `live`." }],
@@ -411,6 +416,7 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["height", opt("u32")],
     ["cursor", opt("ScreenCursor")],
     ["pointerLock", opt("bool"), { doc: "While driving it: an app on the screen holds the pointer (a game, a 3D view, a page's Pointer Lock): the page\nsends moves with `dx`, `dy` and `relative: true` and keeps its own pointer hidden. None from a station before it." }],
+    ["mic", opt("ScreenMic"), { doc: "While driving it: the screen's virtual microphone, said by the station as it changes; none while only\nlooking, or from a station before it (or a screen without one)." }],
     ["access", opt("ScreenAccess"), { doc: "What the station lacks for it, when it says (with `denied`, or while it is seen but cannot be driven)." }],
     ["clipboard", vec("String"), { default: true, doc: "While driving it: the clipboard types it carries both ways (`text`, `png`): a paste goes with\n`screen.clipboard`, a copy made on it comes as the call's `{clipboard}` value. None while only looking." }],
     ["drop", opt("ScreenDrop"), { doc: "While driving it: where a file dropped into the view goes (none while only looking, or from a station before files)." }],

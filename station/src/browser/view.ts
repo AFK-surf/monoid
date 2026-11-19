@@ -10,8 +10,9 @@
 // Pull-driven: Chrome casts a frame only once those before it are acknowledged (it keeps at most two out), and a frame
 // is acknowledged only when the one after it is asked for (`next`), so a slow viewer slows the casting rather than
 // having frames pile up. Of two waiting, the newer is given and the older let go.
-import { type Clip, type Frame, type FrameConfig, type LoginField, type LoginFill, type PasskeyAnswer, type PasskeyAsk, type ScreenInput, type ScreenVideo, type ScreenView, type ViewOptions, CLIP_TEXT_MAX, gamepadReleased } from "../screens/source.ts";
+import { type Clip, type Frame, type FrameConfig, type LoginField, type LoginFill, type PasskeyAnswer, type PasskeyAsk, type ScreenInput, type ScreenMic, type ScreenVideo, type ScreenView, type ViewOptions, CLIP_TEXT_MAX, gamepadReleased } from "../screens/source.ts";
 import type { Cdp, CdpEvent } from "./cdp.ts";
+import { type BrowserMicController, attachBrowserMic } from "./mic.ts";
 import { randomUUID } from "node:crypto";
 import { sizeOf } from "../sessions/image-size.ts";
 
@@ -442,6 +443,8 @@ export class TabView implements ScreenView {
   #fitted = false;
   /// Whether the driving viewer's host signs arbitrary-site passkeys (`ViewOptions.passkeys !== false`).
   #devicePasskeys = true;
+  /// The tab's virtual microphone (mic.ts) while its driver watches it.
+  #mic: BrowserMicController | null = null;
 
   /// Chrome's own screencast, a JPEG a picture.
   video(): ScreenVideo {
@@ -796,9 +799,34 @@ export class TabView implements ScreenView {
     return hostOf(await this.#url(targetId));
   }
 
+  /// The tab's virtual microphone: always there to feed, recorded only while its page records it.
+  watchMic(heard: (mic: ScreenMic) => void): () => void {
+    this.#micOff();
+    if (this.#ended) return () => {};
+    const mic = attachBrowserMic(this.#p.cdp, this.#p.session, { onDemand: (d) => heard({ available: true, active: d.active, epoch: d.epoch >>> 0 }) });
+    this.#mic = mic;
+    heard({ available: true, active: false, epoch: 0 });
+    return () => {
+      if (this.#mic === mic) this.#micOff();
+    };
+  }
+
+  feedMic(pcm16le: Uint8Array, epoch: number) {
+    const mic = this.#mic;
+    if (mic !== null && mic.demand.active && mic.demand.epoch >>> 0 === epoch) mic.feedPcm16(pcm16le);
+  }
+
+  #micOff() {
+    const mic = this.#mic;
+    this.#mic = null;
+    mic?.close();
+  }
+
   close() {
     if (this.#ended) return;
     const { cdp, session } = this.#p;
+    // (its page's virtual tracks ended and its hook taken out, before its session goes)
+    this.#micOff();
     void cdp.send("Page.stopScreencast", {}, session).catch(() => {});
     // As it was laid out before (its session going takes it away too; said, for a Chrome that would keep it).
     if (this.#fitted) void cdp.send("Emulation.clearDeviceMetricsOverride", {}, session).catch(() => {});
@@ -872,6 +900,7 @@ export class TabView implements ScreenView {
   #end() {
     if (this.#ended) return;
     this.#ended = true;
+    this.#micOff();
     this.#unlisten();
     const w = this.#waiter;
     this.#waiter = null;

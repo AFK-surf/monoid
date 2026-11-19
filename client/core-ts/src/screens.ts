@@ -20,7 +20,7 @@ import { t } from "./i18n.ts";
 import { relativeTime } from "./format.ts";
 import { encode } from "./ops.ts";
 import { unavailable } from "./permissions.ts";
-import { CLIP_PNG_MAX, CLIP_TEXT_MAX, type ClipPrivacy, type ClipType, FrameReader, privacyOf, type Region, ackFrame, clipboardFrame, inputFrame, keyframeFrame, lookFrame, soundFrame } from "./screen-frames.ts";
+import { CLIP_PNG_MAX, CLIP_TEXT_MAX, type ClipPrivacy, type ClipType, FrameReader, privacyOf, type Region, ackFrame, clipboardFrame, inputFrame, keyframeFrame, lookFrame, MIC_PCM_MAX, micFrame, micOnFrame, soundFrame } from "./screen-frames.ts";
 import { StationAddr } from "./station/addr.ts";
 import { SCREEN_FPS, type ScreenAsk, type ScreenFps, type ScreenQuality, type WireSocket } from "./station/wire.ts";
 import type { ClientId, RequestId } from "./protocol.ts";
@@ -63,6 +63,11 @@ export type ScreenCall =
   | { kind: "keyframe"; view: string }
   /// The view's sound on, or off (muted here: the station sends none till it is on again).
   | { kind: "sound"; view: string; on: boolean }
+  /// The person shares their microphone into the screen's virtual one, or no more (said again to each stream while on).
+  | { kind: "micOn"; view: string; on: boolean }
+  /// One packet of it (48 kHz mono s16le, the call's bytes) for the recording `epoch` the state's `mic` said: sent only
+  /// while driving, shared, and that recording goes on; else let be.
+  | { kind: "mic"; view: string; epoch: number; data: Uint8Array }
   | { kind: "input"; view: string; input: J }
   | { kind: "control"; view: string; control: boolean }
   /// The size the view's pictures are asked to fit in from now on, and the 画质 and 帧率 asked (another chosen; none: 自动).
@@ -148,6 +153,19 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
       const on = get(params, "on");
       if (typeof on !== "boolean") throw CoreError.invalid(t("core-misc.params.missing", { field: "on" }));
       return { kind: "sound", view: text(params, "view"), on };
+    }
+    case "screen.micOn": {
+      const on = get(params, "on");
+      if (typeof on !== "boolean") throw CoreError.invalid(t("core-misc.params.missing", { field: "on" }));
+      return { kind: "micOn", view: text(params, "view"), on };
+    }
+    case "screen.mic": {
+      const view = text(params, "view");
+      const epoch = get(params, "epoch");
+      if (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 0 || epoch > 0xffffffff) throw CoreError.invalid(t("core-misc.params.missing", { field: "epoch" }));
+      const data = bytes ?? null;
+      if (data === null || data.length < 2 || data.length > MIC_PCM_MAX || data.length % 2 !== 0) throw CoreError.invalid(t("core-misc.params.missing", { field: "bytes" }));
+      return { kind: "mic", view, epoch, data };
     }
     case "screen.input":
       return { kind: "input", view: text(params, "view"), input: checkInput(get(params, "input")) };
@@ -554,6 +572,8 @@ type Open = {
   ack(ts: number): void;
   keyframe(): void;
   sound(on: boolean): void;
+  micOn(on: boolean): void;
+  mic(epoch: number, data: Uint8Array): void;
   input(input: J): void;
   control(on: boolean): void;
   bounds(maxWidth: number, maxHeight: number, quality: ScreenQuality | null, fps: ScreenFps | null): void;
@@ -614,8 +634,9 @@ export function install(): void {
     const c = (call as Extract<import("./core/calls.ts").Call, { kind: "screen" }>).call;
     if (c.kind === "view") return view(inner, c, progress, at, ctx);
     const target = openIn(inner).get(key(at[0], c.view));
-    // A frame acknowledged, a key frame asked, its sound switched or a part looked at, after the view went: nothing to do.
-    if (!target) return c.kind === "ack" || c.kind === "keyframe" || c.kind === "sound" || c.kind === "look" ? Effect.succeed(null) : Effect.fail(new CoreError("not_found", t("core-misc.screen.closed")));
+    // A frame acknowledged, a key frame asked, its sound or microphone switched, a microphone's packet or a part looked
+    // at, after the view went: nothing to do.
+    if (!target) return c.kind === "ack" || c.kind === "keyframe" || c.kind === "sound" || c.kind === "micOn" || c.kind === "mic" || c.kind === "look" ? Effect.succeed(null) : Effect.fail(new CoreError("not_found", t("core-misc.screen.closed")));
     switch (c.kind) {
       case "ack":
         target.ack(c.ts);
@@ -625,6 +646,12 @@ export function install(): void {
         break;
       case "sound":
         target.sound(c.on);
+        break;
+      case "micOn":
+        target.micOn(c.on);
+        break;
+      case "mic":
+        target.mic(c.epoch, c.data);
         break;
       case "input":
         target.input(c.input);
@@ -776,6 +803,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     let looking: Look = whole;
     // The view's sound as the page last said (`screen.sound`): off, each stream is told so as it opens.
     let soundOn = c.sound;
+    // The person shares their microphone (`screen.micOn`): each stream that drives is told so as it opens.
+    let micOn = false;
     let asked = JSON.stringify(whole);
     const looks = yield* Queue.unbounded<void>();
     const ask = () => {
@@ -808,6 +837,15 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         if (soundOn === on) return;
         soundOn = on;
         write(soundFrame(on));
+      },
+      micOn: (on) => {
+        if (micOn === on) return;
+        micOn = on;
+        write(micOnFrame(on));
+      },
+      // Only while driving, shared, and something on the screen records its virtual microphone in that recording.
+      mic: (epoch, data) => {
+        if (state.control && micOn && state.mic?.active === true && state.mic.epoch === epoch) write(micFrame(data, epoch));
       },
       // Only while driving: what the view only looks at takes no input (but which of a desktop's windows it shows).
       input: (input) => {
@@ -920,6 +958,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           asked = JSON.stringify(whole);
           ask();
           if (!soundOn) write(soundFrame(false));
+          if (micOn && control) write(micOnFrame(true));
+          // (its virtual microphone said by this stream anew)
+          delete state.mic;
           yield* Effect.addFinalizer(() => Effect.sync(() => (out = out === queue ? null : out)));
           // Its writer goes with the stream (the attempt's scope).
           yield* Effect.forkScoped(Effect.ignore(Effect.forever(Effect.flatMap(Queue.take(queue), (bytes) => socket.send.write(bytes))), { log: "Unhandled", message: "screen input sent" }));
@@ -1048,6 +1089,14 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 else if (state.control && isObject(s.login) && typeof s.login.host === "string" && s.login.host !== "" && s.login.host.length <= 253 && (s.login.field === "username" || s.login.field === "password")) {
                   state.login = { host: s.login.host, field: s.login.field, ...(s.login.filled === true ? { filled: true } : {}) };
                 }
+                // The screen's virtual microphone, while driving it: this device's microphone goes (`screen.mic`) only
+                // while it is active, in the recording it says.
+                if (s.mic === null) delete state.mic;
+                else if (state.control && isObject(s.mic)) {
+                  const e = s.mic.epoch;
+                  const available = s.mic.available === true;
+                  state.mic = { available, active: available && s.mic.active === true, epoch: typeof e === "number" && Number.isInteger(e) && e >= 0 && e <= 0xffffffff ? e : 0 };
+                }
                 // A page's passkey sign-in, while driving it: this device's passkeys may answer it (`passkey`).
                 if (s.passkey === null) delete state.passkey;
                 else if (state.control && isObject(s.passkey)) {
@@ -1096,6 +1145,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 if (!state.control) {
                   delete state.login;
                   delete state.passkey;
+                  delete state.mic;
                 }
                 if (typeof s.site === "string") {
                   if (s.site !== "" && s.site.length <= 253) state.site = s.site;

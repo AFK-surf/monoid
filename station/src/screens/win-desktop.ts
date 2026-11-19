@@ -16,7 +16,7 @@ import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type HelperPipe, HelperView } from "./desktop.ts";
 import { ScreenRefused } from "./hub.ts";
-import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor, resolutionOf } from "./source.ts";
+import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor, resolutionOf } from "./source.ts";
 export { resolutionOf } from "./source.ts";
 import { processUi } from "./ui.ts";
 import { WinInput } from "./win-input.ts";
@@ -266,7 +266,7 @@ export class WindowsDesktop implements ScreenSource {
   async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; audio?: boolean; audioCodec?: "opus" }, input: WinInput): Promise<HelperView> {
     const child = (this.#o.start ?? start)(binary, ["view"]);
     child.stdin!.write(`${JSON.stringify(ask)}\n`);
-    const view = new HelperView(ask.codec, childPipe(child), () => {}, input, "Windows.Graphics.Capture", ask.audio);
+    const view = new HelperView(ask.codec, childPipe(child), () => {}, input, "Windows.Graphics.Capture", ask.audio, true);
     try {
       await view.ready;
       return view;
@@ -311,6 +311,9 @@ export class LastingView implements ScreenView {
   /// Who hears the pointer, heard again from a process started again.
   #pointer: ((cursor: ScreenCursor) => void) | null = null;
   #unpoint: (() => void) | null = null;
+  /// Who hears the virtual microphone, heard again from a process started again (its recording's epochs its own).
+  #mic: ((mic: ScreenMic) => void) | null = null;
+  #unmic: (() => void) | null = null;
   /// The bit rate and bounds (and part of the display) asked last, asked again of a process started again.
   #rate: number | null = null;
   #bounds: [number, number, Region | null] | null = null;
@@ -360,6 +363,7 @@ export class LastingView implements ScreenView {
       this.#view = view;
       if (this.#heard !== null) this.#unwatch = view.watchClipboard(this.#heard);
       if (this.#pointer !== null) this.#unpoint = view.watchCursor(this.#pointer);
+      if (this.#mic !== null) this.#unmic = view.watchMic?.(this.#mic) ?? null;
       if (this.#rate !== null) view.rate(this.#rate);
       if (this.#bounds !== null) view.bounds(...this.#bounds);
       return true;
@@ -428,6 +432,21 @@ export class LastingView implements ScreenView {
 
   cursorImage(shape: string): Uint8Array | undefined {
     return this.#view.cursorImage(shape);
+  }
+
+  watchMic(heard: (mic: ScreenMic) => void): () => void {
+    this.#mic = heard;
+    this.#unmic = this.#view.watchMic?.(heard) ?? null;
+    return () => {
+      if (this.#mic !== heard) return;
+      this.#mic = null;
+      this.#unmic?.();
+      this.#unmic = null;
+    };
+  }
+
+  feedMic(pcm16le: Uint8Array, epoch: number) {
+    this.#view.feedMic(pcm16le, epoch);
   }
 
   close() {

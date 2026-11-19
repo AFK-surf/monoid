@@ -448,6 +448,7 @@ async fn WindowsDesktop::start_view(
     input=Some(input.input_ops()),
     capture="Windows.Graphics.Capture",
     audio~,
+    mic=true,
   )
   try {
     ignore(view.ready.wait())
@@ -516,6 +517,9 @@ pub struct LastingView {
   priv mut unwatch : (() -> Unit)?
   priv mut pointer : (Int, (ScreenCursor) -> Unit)?
   priv mut unpoint : (() -> Unit)?
+  /// Who hears the virtual microphone, heard again from a process started again.
+  priv mut mic_heard : (Int, (ScreenMic) -> Unit)?
+  priv mut unmic : (() -> Unit)?
   priv mut rate_ : Double?
   priv mut bounds_ : (Double, Double, Region?)?
   priv mut next_id : Int
@@ -535,6 +539,8 @@ pub fn LastingView::new(io : Io, view : HelperView, again : async () -> HelperVi
     unwatch: None,
     pointer: None,
     unpoint: None,
+    mic_heard: None,
+    unmic: None,
     rate_: None,
     bounds_: None,
     next_id: 0,
@@ -603,6 +609,10 @@ async fn LastingView::restart(self : LastingView) -> Bool {
     }
     match self.pointer {
       Some((_, f)) => self.unpoint = Some(view.watch_cursor(f))
+      None => ()
+    }
+    match self.mic_heard {
+      Some((_, f)) => self.unmic = Some(view.watch_mic(f))
       None => ()
     }
     match self.rate_ {
@@ -719,6 +729,25 @@ pub fn LastingView::close(self : LastingView) -> Unit {
 }
 
 ///|
+pub fn LastingView::watch_mic(self : LastingView, heard : (ScreenMic) -> Unit) -> () -> Unit {
+  self.next_id += 1
+  let id = self.next_id
+  self.mic_heard = Some((id, heard))
+  self.unmic = Some(self.view_.watch_mic(heard))
+  () => match self.mic_heard {
+    Some((i, _)) if i == id => {
+      self.mic_heard = None
+      match self.unmic {
+        Some(f) => f()
+        None => ()
+      }
+      self.unmic = None
+    }
+    _ => ()
+  }
+}
+
+///|
 pub fn LastingView::view(self : LastingView) -> ScreenView {
   {
     ..ScreenView::bare(
@@ -737,6 +766,8 @@ pub fn LastingView::view(self : LastingView) -> ScreenView {
     reveal: Some(async fn(p) { self.reveal(p) }),
     watch_cursor: Some(f => self.watch_cursor(f)),
     cursor_image: Some(s => self.cursor_image(s)),
+    watch_mic: Some(f => self.watch_mic(f)),
+    feed_mic: Some((p, e) => self.view_.feed_mic(p, e)),
   }
 }
 

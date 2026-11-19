@@ -2906,3 +2906,147 @@ test("unsent pointer moves of the same buttons coalesce to the latest while clic
   await v.stream.finish();
   await v.served;
 });
+
+/// A view with a virtual microphone (a tab's, a desktop's): it says it as the test does, and keeps what it is fed.
+class MicView extends FakeView {
+  micHeard: ((mic: { available: boolean; active: boolean; epoch: number }) => void) | null = null;
+  micWatched = 0;
+  micStopped = 0;
+  fed: [number[], number][] = [];
+  watchMic(heard: (mic: { available: boolean; active: boolean; epoch: number }) => void) {
+    this.micWatched++;
+    this.micHeard = heard;
+    return () => {
+      this.micStopped++;
+      if (this.micHeard === heard) this.micHeard = null;
+    };
+  }
+  feedMic(pcm16le: Uint8Array, epoch: number) {
+    this.fed.push([[...pcm16le], epoch]);
+  }
+}
+
+const micPacket = (epoch: number, pcm: number[], flags = 0) => {
+  const b = Buffer.alloc(5 + pcm.length);
+  b[0] = flags;
+  b.writeUInt32BE(epoch >>> 0, 1);
+  Buffer.from(pcm).copy(b, 5);
+  return frame(KIND.mic, b);
+};
+
+test("a driven view's virtual microphone is said as it changes and fed only while shared, recorded, and in its epoch", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new MicView();
+  hub.add(source);
+  const v = await open(hub, member);
+  await until(v.frames, KIND.video);
+  const view = source.views[0] as MicView;
+  assert.equal(view.micWatched, 1, "asked of a view a person drives");
+  // Shared before anything records: dropped.
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  await v.stream.write(micPacket(0, [1, 2]));
+  await settle();
+  view.micHeard!({ available: true, active: true, epoch: 3 });
+  for (;;) {
+    const got = await v.frames.next();
+    assert.ok(got, "said to the client");
+    if (got.kind !== KIND.state) continue;
+    const said = json(got.payload);
+    if (said.mic !== undefined) {
+      assert.deepEqual(said, { mic: { available: true, active: true, epoch: 3 } });
+      break;
+    }
+  }
+  // Of its epoch only, flags clear, an even length within bounds.
+  for (const p of [micPacket(3, [1, 2]), micPacket(2, [3, 4]), micPacket(3, [5]), micPacket(3, [6, 6], 1), micPacket(3, []), micPacket(3, new Array(3842).fill(7)), micPacket(3, [8, 9, 10, 11])]) await v.stream.write(p);
+  await settle();
+  assert.deepEqual(view.fed, [[[1, 2], 3], [[8, 9, 10, 11], 3]]);
+  // Not shared: dropped; a micOn of another length lets it be.
+  await v.stream.write(frame(KIND.micOn, Buffer.from([0])));
+  await v.stream.write(micPacket(3, [1, 1]));
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1, 1])));
+  await v.stream.write(micPacket(3, [2, 2]));
+  await settle();
+  assert.equal(view.fed.length, 2);
+  // Nothing records: dropped.
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  view.micHeard!({ available: true, active: false, epoch: 4 });
+  await v.stream.write(micPacket(4, [3, 3]));
+  await settle();
+  assert.equal(view.fed.length, 2);
+  view.micHeard!({ available: true, active: true, epoch: 5 });
+  await v.stream.write(micPacket(5, [4, 4]));
+  await settle();
+  assert.deepEqual(view.fed.at(-1), [[4, 4], 5]);
+  // Made to only look: the watch let go of, said gone, and what it sends dropped even shared again.
+  hub.watchOnly("fake", hub.people("fake").views[0]!.id);
+  const after: any[] = [];
+  for (;;) {
+    const got = await v.frames.next();
+    assert.ok(got);
+    if (got.kind === KIND.state) after.push(json(got.payload));
+    if (after.some((s) => s.control === false)) break;
+  }
+  assert.ok(after.some((s) => s.control === false && s.mic === null), "the microphone said gone with control");
+  assert.equal(view.micStopped, 1);
+  await v.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  await v.stream.write(micPacket(5, [5, 5]));
+  await settle();
+  assert.equal(view.fed.length, 3);
+  await v.stream.finish();
+  await v.served;
+  assert.equal(view.micStopped, 1, "let go of once");
+});
+
+test("a view that only looks is never asked of the microphone, and one that ends lets it go", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new MicView();
+  hub.add(source);
+  const looks = await open(hub, reader);
+  await until(looks.frames, KIND.video);
+  assert.equal((source.views[0] as MicView).micWatched, 0);
+  await looks.stream.write(frame(KIND.micOn, Buffer.from([1])));
+  await looks.stream.write(micPacket(0, [1, 2]));
+  await settle();
+  assert.deepEqual((source.views[0] as MicView).fed, []);
+  await looks.stream.finish();
+  await looks.served;
+  const drives = await open(hub, member);
+  await until(drives.frames, KIND.video);
+  const view = source.views[1] as MicView;
+  assert.equal(view.micWatched, 1);
+  await drives.stream.finish();
+  await drives.served;
+  assert.equal(view.micStopped, 1);
+});
+
+test("a helper's view watches the virtual microphone where it has one, and sends its packets only in the epoch it said", async () => {
+  const sent: Buffer[] = [];
+  let data: (chunk: Buffer) => void = () => {};
+  const pipe = { write: (b: Buffer) => void sent.push(b), destroy: () => {}, on: (event: string, f: (chunk: Buffer) => void) => void (event === "data" ? (data = f) : undefined) };
+  const view = new HelperView("h264", pipe as never, () => {}, new MacInput(), "ScreenCaptureKit", false, true);
+  const sim = new HelperView("h264", { write: () => {}, destroy: () => {}, on: () => {} } as never, () => {}, new MacInput(), "CoreSimulator");
+  assert.equal(sim.watchMic, undefined, "a simulator's has none");
+  const heard: unknown[] = [];
+  view.feedMic(new Uint8Array([1, 2]), 0);
+  const stop = view.watchMic!((m) => heard.push(m));
+  assert.deepEqual(sent.splice(0), [helperMessage(TO_HELPER.watchMic, Buffer.from([1]))]);
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: true, active: true, epoch: 6 } }))));
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: false, active: true, epoch: -1 } }))));
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: true, active: true, epoch: 7 } }))));
+  assert.deepEqual(heard, [{ available: true, active: true, epoch: 6 }, { available: false, active: false, epoch: 0 }, { available: true, active: true, epoch: 7 }]);
+  view.feedMic(new Uint8Array([1, 2]), 6);
+  view.feedMic(new Uint8Array([1, 2, 3]), 7);
+  view.feedMic(new Uint8Array(3842), 7);
+  view.feedMic(new Uint8Array([4, 5]), 7);
+  assert.deepEqual(sent.splice(0), [helperMessage(TO_HELPER.mic, Buffer.from([0, 0, 0, 0, 7, 4, 5]))]);
+  stop();
+  assert.deepEqual(sent.splice(0), [helperMessage(TO_HELPER.watchMic, Buffer.from([0]))]);
+  view.feedMic(new Uint8Array([4, 5]), 7);
+  data(helperMessage(4, Buffer.from(JSON.stringify({ mic: { available: true, active: true, epoch: 8 } }))));
+  assert.equal(sent.length, 0);
+  assert.equal(heard.length, 3);
+  view.close();
+});

@@ -92,6 +92,9 @@ pub(all) struct ScreenViewPort {
   watch_clipboard_marked : (((Clip, Int) -> Unit) -> () -> Unit)?
   /// Hears whether an app on the screen holds the pointer.
   watch_pointer_lock : (((Bool) -> Unit) -> () -> Unit)?
+  /// Hears the screen's virtual microphone (`{available, active, epoch}`), and feeds it a packet of a recording.
+  watch_mic : (((Json) -> Unit) -> () -> Unit)?
+  feed_mic : ((Bytes, UInt) -> Unit)?
 }
 
 ///|
@@ -592,6 +595,10 @@ priv struct ViewSession {
   mut wake_ : @effect.Deferred[Unit]
   mut timed : Bool
   mut sound_on : Bool
+  /// The person shares their microphone (`micOn`), the virtual one's state as the view said it last, and its watch.
+  mut mic_on : Bool
+  mut mic : Json?
+  mut unmic : () -> Unit
   mut leave : () -> Unit
   mut unwatch : () -> Unit
   mut unclip : () -> Unit
@@ -706,6 +713,9 @@ fn ViewSession::new(
     wake_: done_now(),
     timed: false,
     sound_on: true,
+    mic_on: false,
+    mic: None,
+    unmic: () => (),
     leave: () => (),
     unwatch: () => (),
     unclip: () => (),
@@ -852,6 +862,7 @@ fn ViewSession::stop(self : ViewSession, reason : String?) -> Unit {
   self.closed = true
   (self.unclip)()
   (self.unlock)()
+  (self.unmic)()
   (self.unlogin)()
   (self.unpasskey)()
   (self.unchild)()
@@ -886,6 +897,10 @@ fn ViewSession::watch_only(self : ViewSession, by : String?) -> Unit {
   self.control = false
   (self.unclip)()
   (self.unlock)()
+  self.mic_on = false
+  (self.unmic)()
+  self.unmic = () => ()
+  self.mic = None
   (self.unlogin)()
   (self.unpasskey)()
   (self.unchild)()
@@ -910,6 +925,9 @@ fn ViewSession::watch_only(self : ViewSession, by : String?) -> Unit {
   // (an app's hold on the pointer is a driver's: said gone, to a view that was told it)
   if self.view.watch_pointer_lock is Some(_) {
     patch.push(("pointerLock", Json::boolean(false)))
+  }
+  if self.view.watch_mic is Some(_) {
+    patch.push(("mic", Json::null()))
   }
   if by is Some(b) {
     patch.push(("takenBy", jstr(b)))
@@ -1193,6 +1211,21 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
     if payload.length() == 1 {
       self.sound_on = payload[0] != b'\x00'
     }
+  } else if kind == kind_mic_on {
+    if self.control && payload.length() == 1 {
+      self.mic_on = payload[0] == b'\x01'
+    }
+  } else if kind == kind_mic {
+    // Only a driver's, shared, while something records the virtual microphone in the epoch the packet says.
+    guard parse_mic(payload) is Some((epoch, pcm)) else { return }
+    guard self.control && self.mic_on && self.mic is Some(m) && field(m, "active") is Some(True) else { return }
+    if epoch != js_u32(num_of(field(m, "epoch")).unwrap_or(@double.not_a_number)) {
+      return
+    }
+    match self.view.feed_mic {
+      Some(f) => f(pcm, epoch)
+      None => ()
+    }
   } else if kind == kind_look {
     if parse_look(payload, self.own) is Some((region, b)) {
       self.look(region, b)
@@ -1425,6 +1458,16 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   // Whether an app on the screen holds the pointer (a game's), to a person who drives it.
   if self.control && self.view.watch_pointer_lock is Some(watch) {
     self.unlock = watch(locked => if !self.closed { ignore(self.state(jobj([("pointerLock", Json::boolean(locked))]))) })
+  }
+  // The screen's virtual microphone, to a person who drives it: whether something there records it now, and which
+  // recording, so their app sends their microphone only then (its packets dropped here otherwise).
+  if self.control && self.view.watch_mic is Some(watch) {
+    self.unmic = watch(mic => {
+      self.mic = Some(mic)
+      if !self.closed {
+        ignore(self.state(jobj([("mic", mic)])))
+      }
+    })
   }
   let told = (k : String) => (v : Json) => if !self.closed { ignore(self.state(jobj([(k, v)]))) }
   if self.control && self.view.watch_login is Some(watch) {

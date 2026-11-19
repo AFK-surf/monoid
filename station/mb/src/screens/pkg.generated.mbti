@@ -41,6 +41,8 @@ pub const LOCAL_NETWORK_SETTINGS : String = "x-apple.systempreferences:com.apple
 
 pub const LOOK_LEAST : Double = 0.02
 
+pub const MIC_PCM_MAX : Int32 = 3840
+
 pub const OPUS_MAX : Int32 = 1275
 
 pub const PEEKS_MOST : Int32 = 2
@@ -65,6 +67,8 @@ pub const TO_INPUT : Int32 = 3
 
 pub const TO_KEYFRAME : Int32 = 2
 
+pub const TO_MIC : Int32 = 12
+
 pub const TO_NEXT : Int32 = 1
 
 pub const TO_RATE : Int32 = 7
@@ -72,6 +76,8 @@ pub const TO_RATE : Int32 = 7
 pub const TO_REVEAL : Int32 = 6
 
 pub const TO_WATCH : Int32 = 5
+
+pub const TO_WATCH_MIC : Int32 = 11
 
 pub const TO_WINDOW : Int32 = 10
 
@@ -677,10 +683,11 @@ pub struct HelperView {
 pub fn HelperView::bounds(Self, Double, Double, Region?) -> Unit
 pub fn HelperView::close(Self) -> Unit
 pub fn HelperView::cursor_image(Self, String) -> Bytes?
+pub fn HelperView::feed_mic(Self, Bytes, UInt32) -> Unit
 pub fn HelperView::has_audio(Self) -> Bool
 pub fn HelperView::input(Self, ScreenInput) -> Unit
 pub fn HelperView::keyframe(Self) -> Unit
-pub fn HelperView::new(Io, Codec, HelperPipe, () -> Unit, input? : InputOps?, capture? : String, audio? : Bool) -> Self
+pub fn HelperView::new(Io, Codec, HelperPipe, () -> Unit, input? : InputOps?, capture? : String, audio? : Bool, mic? : Bool) -> Self
 pub async fn HelperView::next(Self) -> Frame?
 pub async fn HelperView::next_audio(Self) -> AudioFrame?
 pub fn HelperView::rate(Self, Double) -> Unit
@@ -692,6 +699,7 @@ pub fn HelperView::view(Self) -> ScreenView
 pub fn HelperView::watch_clipboard(Self, (Clip) -> Unit) -> () -> Unit
 pub fn HelperView::watch_clipboard_marked(Self, (Clip, Int32) -> Unit) -> () -> Unit
 pub fn HelperView::watch_cursor(Self, (ScreenCursor) -> Unit) -> () -> Unit
+pub fn HelperView::watch_mic(Self, (ScreenMic) -> Unit) -> () -> Unit
 pub fn HelperView::watch_pointer_lock(Self, (Bool) -> Unit) -> () -> Unit
 pub fn HelperView::watch_turn(Self, (Int32) -> Unit) -> () -> Unit
 pub fn HelperView::watch_windows(Self, (ScreenWindows) -> Unit) -> () -> Unit
@@ -741,6 +749,7 @@ pub fn LastingView::video(Self) -> ScreenVideo
 pub fn LastingView::view(Self) -> ScreenView
 pub fn LastingView::watch_clipboard(Self, (Clip) -> Unit) -> () -> Unit
 pub fn LastingView::watch_cursor(Self, (ScreenCursor) -> Unit) -> () -> Unit
+pub fn LastingView::watch_mic(Self, (ScreenMic) -> Unit) -> () -> Unit
 
 pub struct LinuxDesktop {
   // private fields
@@ -903,6 +912,7 @@ pub(all) struct Pixels {
 pub(all) struct PointerDelta {
   dx : Double
   dy : Double
+  moved : Bool
   relative : Bool
 }
 
@@ -1068,6 +1078,14 @@ pub(all) enum ScreenKind {
 pub fn ScreenKind::name(Self) -> String
 
 #derive(Eq)
+pub(all) struct ScreenMic {
+  available : Bool
+  active : Bool
+  epoch : UInt32
+}
+pub fn ScreenMic::to_j(Self) -> @jsjson.JValue
+
+#derive(Eq)
 pub(all) struct ScreenResolution {
   width : Double
   height : Double
@@ -1157,6 +1175,8 @@ pub(all) struct ScreenView {
   set_clipboard_marked : (async (Clip, Bool, Int32) -> Unit)?
   watch_clipboard_marked : (((Clip, Int32) -> Unit) -> (() -> Unit))?
   watch_pointer_lock : (((Bool) -> Unit) -> (() -> Unit))?
+  watch_mic : (((ScreenMic) -> Unit) -> (() -> Unit))?
+  feed_mic : ((Bytes, UInt32) -> Unit)?
 }
 pub fn ScreenView::bare(async () -> Frame?, () -> Unit, async (ScreenInput) -> Unit, () -> Unit) -> Self
 

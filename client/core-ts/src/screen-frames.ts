@@ -1,7 +1,8 @@
 // A screen view's frames on its stream (Wire): a kind byte, the payload's length (4 bytes,
 // big-endian), the payload. The station sends `config`, `video` and `state` (and `cursor`, the pointer in a few bytes,
 // to a view that asked `binaryCursor`; `cursorImage`, the picture of a pointer of an app's own, before the first that
-// names it "custom:<id>", to one that asked `customCursor`); the client `input`, `ack`, `keyframe` and
+// names it "custom:<id>", to one that asked `customCursor`); the client `input`, `ack`, `keyframe`, `sound`, `micOn`
+// and `mic` (the person's microphone into the screen's virtual one, only while its state's `mic` is active) and
 // `look` (the part of the screen it shows, zoomed in); the screen's clipboard goes both ways (`clipboard`) while the
 // view drives it, a copy an app marked private (a password manager's) as `privateClipboard`, its mark first, to a view
 // that asked `privateClip`.
@@ -24,6 +25,12 @@ export const KEYFRAME = 18;
 export const SET_CLIPBOARD = 19;
 export const LOOK = 20;
 export const SOUND = 21;
+/// The person shares their microphone into the screen's virtual one (1 on, 0 off), and a packet of it: flags (0: 48
+/// kHz mono s16le), the recording's epoch (u32 big-endian), the samples. A station from before lets both be.
+export const MIC_ON = 22;
+export const MIC = 23;
+/// The most bytes of one microphone packet (40 ms).
+export const MIC_PCM_MAX = 3840;
 /// A packet of sound: 20 ms of PCM16 (3840 bytes), or one Opus packet (at most 1275).
 const AUDIO_MAX = 3840;
 /// A `cursor` frame: x and y (16 bits each, of 65535), then the pointer's shape (UTF-8, at most this many bytes).
@@ -271,6 +278,19 @@ export function soundFrame(on: boolean): Uint8Array {
   return frame(SOUND, new Uint8Array([on ? 1 : 0]));
 }
 
+/// Sharing the person's microphone into the screen's virtual one on (1) or off (0).
+export function micOnFrame(on: boolean): Uint8Array {
+  return frame(MIC_ON, new Uint8Array([on ? 1 : 0]));
+}
+
+/// One packet of the person's microphone (48 kHz mono s16le) for the recording `epoch`.
+export function micFrame(pcm16le: Uint8Array, epoch: number): Uint8Array {
+  const payload = new Uint8Array(5 + pcm16le.length);
+  new DataView(payload.buffer).setUint32(1, epoch >>> 0);
+  payload.set(pcm16le, 5);
+  return frame(MIC, payload);
+}
+
 /// The part of the screen the client shows (null: the whole), and the bounds its pictures are to fit in (the device
 /// pixels it is shown in).
 export function lookFrame(region: Region | null, maxWidth: number, maxHeight: number): Uint8Array {
@@ -339,7 +359,7 @@ export function copiedFrame(type: ClipType, data: Uint8Array, privacy: ClipPriva
 }
 
 /// What the client sends, read (the test station's side).
-export type ClientFrame = { input: J } | { ack: number } | { keyframe: true } | { sound: boolean } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array; privacy?: ClipPrivacy } } | { other: number };
+export type ClientFrame = { input: J } | { ack: number } | { keyframe: true } | { sound: boolean } | { micOn: boolean } | { mic: { flags: number; epoch: number; data: Uint8Array } } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array; privacy?: ClipPrivacy } } | { other: number };
 
 export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
   const frames: ClientFrame[] = [];
@@ -364,6 +384,14 @@ export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
       case SOUND:
         frames.push({ sound: payload[0] !== 0 });
         break;
+      case MIC_ON:
+        frames.push({ micOn: payload[0] === 1 });
+        break;
+      case MIC: {
+        const p = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        frames.push({ mic: { flags: payload[0] ?? 0, epoch: payload.length >= 5 ? p.getUint32(1) : 0, data: payload.slice(5) } });
+        break;
+      }
       case LOOK:
         frames.push({ look: json(payload) });
         break;

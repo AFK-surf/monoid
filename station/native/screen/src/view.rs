@@ -117,6 +117,7 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
         super::gamepad::Gamepads::new(&out, move || lock.moved())
     };
     let mut clipboard = Clipboard::new(out.clone());
+    let mic = ViewMic::start(out.clone());
     // A picture on the clipboard is the largest message.
     while let Some((kind, payload)) = super::message(input, 2 + PNG_MAX) {
         match kind {
@@ -142,6 +143,8 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
                 }
             }
             5 => clipboard.watch(payload.first() == Some(&1)),
+            11 => mic.watch(payload.first() == Some(&1)),
+            12 => mic.feed(&payload),
             9 => { if let Some(a) = &audio { a.next(); } },
             6 => reveal(&String::from_utf8_lossy(&payload)),
             8 => {
@@ -156,11 +159,132 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
         }
     }
     clipboard.stop();
+    mic.end();
     pads.release();
     lock.stop();
     drop(tx);
     drop(worker);
     std::process::exit(0);
+}
+
+enum MicAsk {
+    Watch(bool),
+    Wake,
+    Feed(u32, Vec<u8>),
+    End,
+}
+
+/// The view's virtual microphone (mic.rs), on a thread of its own while the station watches it (message 11): who
+/// records the cable looked at as its sessions say they changed (and every 500 ms besides), said as message 4 `{mic}`
+/// as it changes; the cable played into only while an app records it, a packet (message 12) only of the epoch said.
+struct ViewMic {
+    asks: Sender<MicAsk>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ViewMic {
+    fn start(out: Out) -> ViewMic {
+        let (asks, rx) = channel::<MicAsk>();
+        let wake = asks.clone();
+        let thread = std::thread::Builder::new()
+            .name("view-mic".into())
+            .spawn(move || mic_loop(rx, wake, out))
+            .ok();
+        ViewMic { asks, thread }
+    }
+    fn watch(&self, on: bool) {
+        let _ = self.asks.send(MicAsk::Watch(on));
+    }
+    fn feed(&self, payload: &[u8]) {
+        if let Some((epoch, pcm)) = super::mic::packet(payload) {
+            let _ = self.asks.send(MicAsk::Feed(epoch, pcm.to_vec()));
+        }
+    }
+    fn end(mut self) {
+        let _ = self.asks.send(MicAsk::End);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn mic_loop(rx: Receiver<MicAsk>, wake: Sender<MicAsk>, out: Out) {
+    use super::mic::{WinMicFeeder, WinMicMonitor, said};
+    let mut monitor: Option<WinMicMonitor> = None;
+    let mut feeder: Option<WinMicFeeder> = None;
+    let mut feeding: Option<u32> = None;
+    let mut told: Option<(bool, bool, u32)> = None;
+    let tell = |told: &mut Option<(bool, bool, u32)>, now: (bool, bool, u32)| {
+        if *told == Some(now) {
+            return;
+        }
+        *told = Some(now);
+        out.json(4, json!({ "mic": { "available": now.0, "active": now.1, "epoch": now.2 } }));
+    };
+    loop {
+        let ask = if monitor.is_some() {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(a) => a,
+                Err(RecvTimeoutError::Timeout) => MicAsk::Wake,
+                Err(RecvTimeoutError::Disconnected) => MicAsk::End,
+            }
+        } else {
+            rx.recv().unwrap_or(MicAsk::End)
+        };
+        match ask {
+            MicAsk::Watch(true) if monitor.is_none() => {
+                let w = wake.clone();
+                match WinMicMonitor::start(None, move || drop(w.send(MicAsk::Wake))) {
+                    Ok(m) => monitor = Some(m),
+                    Err(_) => tell(&mut told, (false, false, 0)),
+                }
+                if monitor.is_none() {
+                    continue;
+                }
+            }
+            MicAsk::Watch(true) => {}
+            MicAsk::Watch(false) | MicAsk::End => {
+                let end = matches!(ask, MicAsk::End);
+                if let Some(mut f) = feeder.take() {
+                    f.stop();
+                }
+                feeding = None;
+                monitor = None;
+                told = None;
+                if end {
+                    return;
+                }
+                continue;
+            }
+            MicAsk::Feed(epoch, pcm) => {
+                if let (Some(f), Some(e)) = (&feeder, feeding) {
+                    if e == epoch {
+                        f.feed(&pcm);
+                    }
+                }
+                continue;
+            }
+            MicAsk::Wake => {}
+        }
+        let Some(m) = &monitor else { continue };
+        let (available, mut active, epoch) = said(&m.sample());
+        if active && feeder.is_none() {
+            match WinMicFeeder::start(None) {
+                Ok(f) => feeder = Some(f),
+                Err(e) => {
+                    out.json(4, json!({ "micFeed": e }));
+                    active = false;
+                }
+            }
+        }
+        if !active {
+            if let Some(mut f) = feeder.take() {
+                f.stop();
+            }
+        }
+        feeding = if active { Some(epoch) } else { None };
+        tell(&mut told, (available, active, epoch));
+    }
 }
 
 /// A file shown selected in Explorer (one dropped into the view, put on the machine).

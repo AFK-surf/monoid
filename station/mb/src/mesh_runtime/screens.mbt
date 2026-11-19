@@ -66,6 +66,17 @@ pub let kind_look : Int = 20
 pub let kind_sound : Int = 21
 
 ///|
+/// The person shares their microphone into the screen's virtual one (1 byte: 1 on, 0 off), and a packet of it.
+pub let kind_mic_on : Int = 22
+
+///|
+pub let kind_mic : Int = 23
+
+///|
+/// The most bytes of one microphone packet (source.ts `MIC_PCM_MAX`).
+pub let mic_pcm_max : Int = 3840
+
+///|
 /// A client's frame is an input event at most: one larger ends the view.
 pub let max_in : Int = 64 * 1024
 
@@ -423,6 +434,29 @@ pub fn json_of(v : @jsjson.JValue) -> Json {
       Json::object(m)
     }
   }
+}
+
+///|
+/// A client's `mic` frame (screens.ts `parseMic`): flags (bit 0 clear), the recording's epoch (u32 big-endian), then
+/// an even number of bytes of samples, none and at most `mic_pcm_max`; else None.
+pub fn parse_mic(payload : Bytes) -> (UInt, Bytes)? {
+  let n = payload.length()
+  if n < 7 || n > 5 + mic_pcm_max || (payload[0].to_int() & 1) != 0 || (n - 5) % 2 != 0 {
+    return None
+  }
+  let epoch = (payload[1].to_uint() << 24) | (payload[2].to_uint() << 16) | (payload[3].to_uint() << 8) | payload[4].to_uint()
+  Some((epoch, Bytes::from_array(payload[5:].to_array())))
+}
+
+///|
+/// A number as JavaScript's `>>> 0` makes it.
+pub fn js_u32(d : Double) -> UInt {
+  if d - d != 0.0 {
+    return 0U
+  }
+  let t = if d < 0.0 { -(-d).floor() } else { d.floor() }
+  let m = t - (t / 4294967296.0).floor() * 4294967296.0
+  m.to_uint64().to_uint()
 }
 
 ///|

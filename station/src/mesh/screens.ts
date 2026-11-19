@@ -4,7 +4,10 @@
 // `cursor` to a client that asked for it (`binaryCursor`: the pointer in a few bytes, cursorPayload, never a state's
 // JSON), `cursorImage` to one that asked `customCursor` (a pointer of an app's own, before the first `cursor` or state
 // naming it "custom:<id>": source.ts `cursorImageShape`; to one that did not, such a shape is "default"); client →
-// station: `input`, `ack`, `keyframe`, `sound` (1 byte: 0 the client muted the sound, none goes; 1 on again), `look`
+// station: `input`, `ack`, `keyframe`, `sound` (1 byte: 0 the client muted the sound, none goes; 1 on again), `micOn`
+// (1 byte: 1 the person shares their microphone into the screen's virtual one, 0 no more; a driver's alone), `mic` (a
+// packet of it: flags, the recording's epoch u32 big-endian, 48 kHz mono s16le; taken only while an app there records
+// it in that epoch, said to the client as the state's `mic`), `look`
 // (the part of the screen it shows, zoomed in: its frames are then of that part, as large as the client shows it, each
 // config saying which part); and the screen's clipboard both ways (`clipboard`), for a view that drives it
 // (the station sends it as it changes, the client to set it and paste; a copy an app marked private, a password
@@ -23,7 +26,7 @@ import { liveClock } from "../ops/fibers.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { type AccessShown, type ScreenHub, ScreenRefused, accessShown, addressShown } from "../screens/hub.ts";
-import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type LoginFill, type PasskeyAnswer, type Region, type ScreenCursor, type ScreenInput, type ScreenSource, type ScreenView, type ViewFit, CLIP_PNG_MAX, CURSOR_IMAGES_MOST, GAMEPAD_BUTTONS, GAMEPADS_MOST, PRIVACY_CODE, clipFits, gamepadReleased, privacyOf, regionOf } from "../screens/source.ts";
+import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type LoginFill, type PasskeyAnswer, type Region, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenSource, type ScreenView, type ViewFit, CLIP_PNG_MAX, CURSOR_IMAGES_MOST, GAMEPAD_BUTTONS, GAMEPADS_MOST, PRIVACY_CODE, clipFits, gamepadReleased, MIC_PCM_MAX, privacyOf, regionOf } from "../screens/source.ts";
 import { type Viewer, readOnly } from "./credential.ts";
 import type { Connection } from "./endpoint.ts";
 import type { Stream } from "./native.ts";
@@ -33,7 +36,7 @@ import { writeLine } from "./serve.ts";
 export const SCREEN_TYPE = "application/x-stillfail-screen";
 /// The header of a view's reply that says its frames go as datagrams, with the client's token.
 export const DGRAM_HEADER = "x-screen-dgram";
-export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, cursor: 7, cursorImage: 8, privateClipboard: 9, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21 } as const;
+export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, cursor: 7, cursorImage: 8, privateClipboard: 9, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21, micOn: 22, mic: 23 } as const;
 /// A client's frame is an input event at most: one larger ends the view.
 export const MAX_IN = 64 * 1024;
 /// A client's `clipboard` frame is its flags, its type and a picture at most.
@@ -141,6 +144,15 @@ export function parsePasskey(v: any): PasskeyAnswer | null {
 
 /// A client's `look` frame (JSON `{region, maxWidth, maxHeight}`): the part of the screen it shows (null: the whole) and
 /// the bounds its pictures are to fit in (the view's own when not said, or for the whole); null when it is none.
+/// A client's `mic` frame: flags (bit 0 clear: 48 kHz mono `pcm_s16le`, the only one there is), the recording's epoch
+/// (u32, big-endian), then the samples, an even number of bytes, none and at most `MIC_PCM_MAX`; else null.
+export function parseMic(payload: Buffer): { epoch: number; pcm: Uint8Array } | null {
+  if (payload.length < 7 || payload.length > 5 + MIC_PCM_MAX || (payload[0]! & 1) !== 0) return null;
+  const pcm = payload.subarray(5);
+  if (pcm.length % 2 !== 0) return null;
+  return { epoch: payload.readUInt32BE(1), pcm: new Uint8Array(pcm) };
+}
+
 export function parseLook(payload: Buffer, own: { maxWidth: number; maxHeight: number }): { region: Region | null; maxWidth: number; maxHeight: number } | null {
   let v: any;
   try {
@@ -390,6 +402,10 @@ class ViewSession {
   #unwatch: () => void = () => {};
   #unclip: () => void = () => {};
   #unlock: () => void = () => {};
+  /// The person shares their microphone (`micOn`), and the virtual one's state as the view said it last.
+  #micOn = false;
+  #mic: ScreenMic | null = null;
+  #unmic: () => void = () => {};
   /// The controllers its input drove (their slots): let go of as it is made to only look (as it ends, its source's
   /// close lets go of all its input holds).
   readonly #pads = new Set<number>();
@@ -546,6 +562,7 @@ class ViewSession {
     this.#closed = true;
     this.#unclip();
     this.#unlock();
+    this.#unmic();
     this.#unlogin();
     this.#unpasskey();
     this.#unchild();
@@ -573,6 +590,10 @@ class ViewSession {
     this.control = false;
     this.#unclip();
     this.#unlock();
+    this.#micOn = false;
+    this.#unmic();
+    this.#unmic = () => {};
+    this.#mic = null;
     this.#unlogin();
     this.#unpasskey();
     this.#unchild();
@@ -586,7 +607,7 @@ class ViewSession {
     this.#pads.clear();
     for (const e of held) this.#then(() => this.view.input(e));
     // (an app's hold on the pointer is a driver's: said gone, to a view that was told it)
-    void this.#state({ control: false, login: null, passkey: null, ...(this.view.watchPointerLock ? { pointerLock: false } : {}), ...(by !== undefined ? { takenBy: by } : {}) });
+    void this.#state({ control: false, login: null, passkey: null, ...(this.view.watchPointerLock ? { pointerLock: false } : {}), ...(this.view.watchMic ? { mic: null } : {}), ...(by !== undefined ? { takenBy: by } : {}) });
   }
 
   async run(): Promise<void> {
@@ -647,6 +668,14 @@ class ViewSession {
     if (this.control && this.view.watchPointerLock) {
       this.#unlock = this.view.watchPointerLock((pointerLock) => {
         if (!this.#closed) void this.#state({ pointerLock });
+      });
+    }
+    // The screen's virtual microphone, to a person who drives it: whether something there records it now, and which
+    // recording, so their app sends their microphone only then (its packets dropped here otherwise).
+    if (this.control && this.view.watchMic) {
+      this.#unmic = this.view.watchMic((mic) => {
+        this.#mic = mic;
+        if (!this.#closed) void this.#state({ mic });
       });
     }
     // The login field in focus, to a person who drives it (their app offers to fill it from their password manager).
@@ -895,6 +924,16 @@ class ViewSession {
           case KIND.sound:
             if (got.payload.length === 1) this.#soundOn = got.payload[0] !== 0;
             break;
+          case KIND.micOn:
+            if (this.control && got.payload.length === 1) this.#micOn = got.payload[0] === 1;
+            break;
+          case KIND.mic: {
+            // Only a driver's, shared, while something records the virtual microphone in the epoch the packet says.
+            const mic = parseMic(got.payload);
+            if (mic === null || !this.control || !this.#micOn || this.#mic?.active !== true || mic.epoch !== this.#mic.epoch >>> 0) break;
+            this.view.feedMic?.(mic.pcm, mic.epoch);
+            break;
+          }
           case KIND.look: {
             const look = parseLook(got.payload, this.#own);
             if (look !== null) this.#look(look);

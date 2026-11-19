@@ -248,7 +248,7 @@ test "a sizer asks the smaller picture once the link carries a quarter for DOWNS
 test "a still screen's picture goes again sharper, and a view's lateness is said once a second" {
   let s = @mesh_runtime.Sharpener::new()
   s.sent(0.0, Some(1_000_000.0))
-  assert_eq(s.left(100.0), 400.0)
+  assert_eq(s.left(100.0), 150.0)
   assert_false(s.due(500.0, Some(1_100_000.0)))
   assert_true(s.due(500.0, Some(1_100_001.0)))
   assert_false(s.due(500.0, None))

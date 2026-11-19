@@ -55,6 +55,7 @@ async fn Harness::make(self : Harness, kind : String, a : J) -> Inst {
           input=Some(input),
           capture=text(arg("capture")).unwrap_or("ScreenCaptureKit"),
           audio=bool_of(arg("audio")),
+          mic=bool_of(arg("mic")),
         ),
       )
     }

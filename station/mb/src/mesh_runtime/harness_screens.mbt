@@ -278,6 +278,12 @@ fn ScreenWorld::view(self : ScreenWorld) -> ScreenViewPort {
       None
     },
     watch_pointer_lock: watch_port(w, "watchPointerLock").map(watch => (k : (Bool) -> Unit) => watch(j => k(j is True))),
+    watch_mic: watch_port(w, "watchMic"),
+    feed_mic: if v("feedMic") {
+      Some((pcm, epoch) => w.call([jstr("feedMic"), jstr(@hex.encode(pcm[:])), jnum(epoch.to_double())]))
+    } else {
+      None
+    },
   }
 }
 
