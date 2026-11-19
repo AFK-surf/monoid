@@ -1,4 +1,5 @@
 import {
+  "base/codec",
   "base/hash",
   "station/host",
   "station/jsjson",

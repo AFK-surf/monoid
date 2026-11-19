@@ -5,7 +5,7 @@
 // the zip is the station's own file, written as it goes, a file's header filled in once the file is read. One that
 // deflate does not make smaller is stored as it is: kept where it was one chunk, else read again.
 //
-// The deflate here is the program's own (LZ77 over a 32 KB window of each chunk, fixed Huffman codes), not zlib's: its
+// The deflate here is base/flate's (LZ77 over a 32 KB window kept across chunks, fixed Huffman codes), not zlib's: its
 // bytes are not Node's deflateRaw's, but they inflate to the same, and the zip's structure, names, times, CRCs,
 // methods (but where the two deflates disagree on whether a file shrinks) and stored files are the same, byte for byte.
 
@@ -41,183 +41,26 @@ pub fn crc32(b : Bytes, crc : UInt) -> UInt {
 // ── deflate ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ///|
-/// Bits written least first, as deflate packs them.
-priv struct Bits {
-  out : @buffer.Buffer
-  mut acc : UInt
-  mut n : Int
-}
-
-///|
-fn Bits::put(self : Bits, value : UInt, count : Int) -> Unit {
-  self.acc = self.acc | (value << self.n)
-  self.n += count
-  while self.n >= 8 {
-    self.out.write_byte((self.acc & 0xFFU).to_byte())
-    self.acc = self.acc >> 8
-    self.n -= 8
-  }
-}
-
-///|
-/// A Huffman code, given most significant bit first, written as deflate wants it.
-fn Bits::code(self : Bits, code : Int, len : Int) -> Unit {
-  let mut r = 0
-  for i = 0; i < len; i = i + 1 {
-    r = (r << 1) | ((code >> i) & 1)
-  }
-  self.put(r.reinterpret_as_uint(), len)
-}
-
-///|
-fn Bits::lit(self : Bits, c : Int) -> Unit {
-  if c < 144 {
-    self.code(0x30 + c, 8)
-  } else if c < 256 {
-    self.code(0x190 + c - 144, 9)
-  } else if c < 280 {
-    self.code(c - 256, 7)
-  } else {
-    self.code(0xC0 + c - 280, 8)
-  }
-}
-
-///|
-let len_base : Array[Int] = [
-  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83,
-  99, 115, 131, 163, 195, 227, 258,
-]
-
-///|
-let len_extra : Array[Int] = [
-  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5,
-  0,
-]
-
-///|
-let dist_base : Array[Int] = [
-  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025,
-  1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
-]
-
-///|
-let dist_extra : Array[Int] = [
-  0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11,
-  12, 12, 13, 13,
-]
-
-///|
-fn Bits::length_dist(self : Bits, len : Int, dist : Int) -> Unit {
-  let mut i = 28
-  while len_base[i] > len {
-    i -= 1
-  }
-  self.lit(257 + i)
-  if len_extra[i] > 0 {
-    self.put((len - len_base[i]).reinterpret_as_uint(), len_extra[i])
-  }
-  let mut d = 29
-  while dist_base[d] > dist {
-    d -= 1
-  }
-  self.code(d, 5)
-  if dist_extra[d] > 0 {
-    self.put((dist - dist_base[d]).reinterpret_as_uint(), dist_extra[d])
-  }
-}
-
-///|
-/// A raw deflate stream made a chunk at a time: each chunk a block of fixed codes, the stream ended by an empty one.
+/// A raw deflate stream made a chunk at a time (base/flate's), the stream ended by an empty last block.
 pub struct Deflater {
-  priv bits : Bits
+  priv inner : @flate.Deflater
 }
 
 ///|
 pub fn Deflater::new() -> Deflater {
-  { bits: { out: @buffer.new(), acc: 0U, n: 0 } }
+  { inner: @flate.Deflater::new() }
 }
 
 ///|
-/// What was made of it so far (taken).
-fn Deflater::take(self : Deflater) -> Bytes {
-  let b = self.bits.out.to_bytes()
-  self.bits.out.reset()
-  b
-}
-
-///|
-/// `data` deflated as one block; what of the stream is made by now.
+/// `data` deflated as a block of the stream; what of the stream is made by now.
 pub fn Deflater::push(self : Deflater, data : Bytes) -> Bytes {
-  let bits = self.bits
-  bits.put(0U, 1) // not the last
-  bits.put(1U, 2) // fixed codes
-  let n = data.length()
-  let hash_size = 1 << 15
-  let head = FixedArray::make(hash_size, -1)
-  let prev = FixedArray::make(n, -1)
-  let hash = (i : Int) => ((data[i].to_int() << 10) ^
-    (data[i + 1].to_int() << 5) ^
-    data[i + 2].to_int()) &
-    (hash_size - 1)
-  let mut i = 0
-  while i < n {
-    let mut best_len = 0
-    let mut best_dist = 0
-    if i + 2 < n {
-      let h = hash(i)
-      let mut cand = head[h]
-      let mut chain = 128
-      while cand >= 0 && i - cand <= 32768 && chain > 0 {
-        let mut l = 0
-        let most = if n - i < 258 { n - i } else { 258 }
-        while l < most && data[cand + l] == data[i + l] {
-          l += 1
-        }
-        if l > best_len {
-          best_len = l
-          best_dist = i - cand
-          if l == most {
-            break
-          }
-        }
-        cand = prev[cand]
-        chain -= 1
-      }
-      prev[i] = head[h]
-      head[h] = i
-    }
-    if best_len >= 3 {
-      bits.length_dist(best_len, best_dist)
-      for k = i + 1; k < i + best_len; k = k + 1 {
-        if k + 2 < n {
-          let h = hash(k)
-          prev[k] = head[h]
-          head[h] = k
-        }
-      }
-      i += best_len
-    } else {
-      bits.lit(data[i].to_int())
-      i += 1
-    }
-  }
-  bits.lit(256)
-  self.take()
+  self.inner.push(data)
 }
 
 ///|
 /// The stream ended: an empty last block, its last byte.
 pub fn Deflater::finish(self : Deflater) -> Bytes {
-  let bits = self.bits
-  bits.put(1U, 1)
-  bits.put(1U, 2)
-  bits.lit(256)
-  if bits.n > 0 {
-    bits.out.write_byte((bits.acc & 0xFFU).to_byte())
-    bits.acc = 0U
-    bits.n = 0
-  }
-  self.take()
+  self.inner.finish()
 }
 
 // ── the zip ─────────────────────────────────────────────────────────────────────────────────────────────────────

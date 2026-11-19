@@ -88,54 +88,8 @@ fn stations_of(v : Json?) -> Array[(String, String)] raise {
 ///|
 /// `decodeURIComponent`: %XX escapes of UTF-8 read back; a malformed one fails.
 pub fn decode_uri_component(s : String) -> String raise {
-  let cs = s.to_array()
-  let out = StringBuilder::new()
-  let mut i = 0
-  let hex = (c : Char) => match c {
-    '0'..='9' => Some(c.to_int() - '0'.to_int())
-    'a'..='f' => Some(c.to_int() - 'a'.to_int() + 10)
-    'A'..='F' => Some(c.to_int() - 'A'.to_int() + 10)
-    _ => None
-  }
-  let byte_at = (k : Int) => {
-    guard k + 2 < cs.length() + 0 && cs[k] == '%' && hex(cs[k + 1]) is Some(h) && hex(cs[k + 2]) is Some(l) else {
-      None
-    }
-    Some(h * 16 + l)
-  }
-  while i < cs.length() {
-    if cs[i] != '%' {
-      out.write_char(cs[i])
-      i += 1
-      continue
-    }
-    guard byte_at(i) is Some(b0) else { raise Failed("URI malformed") }
-    if b0 < 0x80 {
-      out.write_char(b0.unsafe_to_char())
-      i += 3
-      continue
-    }
-    let n = if b0 >= 0xc2 && b0 <= 0xdf { 2 } else if b0 >= 0xe0 && b0 <= 0xef { 3 } else if b0 >= 0xf0 && b0 <= 0xf4 { 4 } else { 0 }
-    if n == 0 {
-      raise Failed("URI malformed")
-    }
-    let bytes = [b0]
-    for k in 1..<n {
-      guard byte_at(i + 3 * k) is Some(b) && b >= 0x80 && b <= 0xbf else { raise Failed("URI malformed") }
-      bytes.push(b)
-    }
-    let cp = match n {
-      2 => ((bytes[0] & 0x1f) << 6) | (bytes[1] & 0x3f)
-      3 => ((bytes[0] & 0x0f) << 12) | ((bytes[1] & 0x3f) << 6) | (bytes[2] & 0x3f)
-      _ => ((bytes[0] & 0x07) << 18) | ((bytes[1] & 0x3f) << 12) | ((bytes[2] & 0x3f) << 6) | (bytes[3] & 0x3f)
-    }
-    if (n == 3 && (cp < 0x800 || (cp >= 0xd800 && cp <= 0xdfff))) || (n == 4 && (cp < 0x10000 || cp > 0x10ffff)) {
-      raise Failed("URI malformed")
-    }
-    out.write_char(cp.unsafe_to_char())
-    i += 3 * n
-  }
-  out.to_string()
+  guard @url.decode_uri_component(s) is Some(text) else { raise Failed("URI malformed") }
+  text
 }
 
 ///|

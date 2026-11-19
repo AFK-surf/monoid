@@ -18,22 +18,6 @@ pub fn Found::to_j(self : Found) -> J {
 }
 
 ///|
-fn is_hex(c : Int) -> Bool {
-  (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
-}
-
-///|
-fn hex_value(c : Int) -> Int {
-  if c >= 48 && c <= 57 {
-    c - 48
-  } else if c >= 65 && c <= 70 {
-    c - 55
-  } else {
-    c - 87
-  }
-}
-
-///|
 /// percent_decode_str(..).decode_utf8_lossy().
 pub fn percent_decode(text : String) -> String {
   let raw = utf8(text)
@@ -41,8 +25,11 @@ pub fn percent_decode(text : String) -> String {
   let mut i = 0
   while i < raw.length() {
     let b = raw[i].to_int()
-    if b == 0x25 && i + 2 < raw.length() && is_hex(raw[i + 1].to_int()) && is_hex(raw[i + 2].to_int()) {
-      out.write_byte((hex_value(raw[i + 1].to_int()) * 16 + hex_value(raw[i + 2].to_int())).to_byte())
+    if b == 0x25 &&
+      i + 2 < raw.length() &&
+      @codec.hex_digit(raw[i + 1].to_int()) is Some(hi) &&
+      @codec.hex_digit(raw[i + 2].to_int()) is Some(lo) {
+      out.write_byte((hi * 16 + lo).to_byte())
       i += 3
     } else {
       out.write_byte(raw[i])

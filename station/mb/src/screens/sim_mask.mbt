@@ -22,46 +22,16 @@ pub fn Panel::to_j(self : Panel) -> J {
 ///|
 /// Node's zlib `inflate`: a zlib stream (its header, the deflated data, its Adler-32), what follows it let go.
 pub fn inflate(b : BytesView) -> Bytes raise Failed {
-  if b.length() < 2 {
-    raise fail("unexpected end of file")
+  match @flate.zlib_decompress(b) {
+    Some(d) => d
+    None => raise fail("invalid zlib data")
   }
-  let cmf = b[0].to_int()
-  let flg = b[1].to_int()
-  if (cmf & 0x0f) != 8 || ((cmf << 8) | flg) % 31 != 0 || (cmf >> 4) > 7 {
-    raise fail("incorrect header check")
-  }
-  if (flg & 0x20) != 0 {
-    raise fail("Missing dictionary")
-  }
-  let d = @flate.inflate_prefix(b[2:]) catch {
-    @flate.InflateError(Truncated, _) => raise fail("unexpected end of file")
-    _ => raise fail("invalid stored block lengths")
-  }
-  let at = 2 + d.consumed
-  if b.length() < at + 4 {
-    raise fail("unexpected end of file")
-  }
-  if u32be(b, at) != adler32(d.data) {
-    raise fail("incorrect data check")
-  }
-  d.data
-}
-
-///|
-fn adler32(b : BytesView) -> Int64 {
-  let mut a = 1L
-  let mut s = 0L
-  for x in b {
-    a = (a + x.to_int64()) % 65521L
-    s = (s + a) % 65521L
-  }
-  (s << 16) | a
 }
 
 ///|
 /// Node's zlib `deflate`: a zlib stream of `b`.
 pub fn deflate(b : BytesView) -> Bytes {
-  @zlib.compress(b)
+  @flate.zlib_compress(b)
 }
 
 ///|

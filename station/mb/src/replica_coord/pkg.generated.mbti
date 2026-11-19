@@ -797,7 +797,7 @@ pub fn Run::over() -> Self
 pub async fn Run::settled(Self) -> Unit
 pub async fn Run::wait(Self) -> Unit
 
-pub struct Runner {
+pub(all) struct Runner {
   places : async (@jsjson.JValue) -> Unit
   pass : async (@jsjson.JValue) -> @jsjson.JValue
   new_generations : async (Double) -> Unit

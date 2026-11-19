@@ -585,3 +585,78 @@ test "bar: a bar chosen without a place, the place shown in it elsewhere: the ba
   assert_true((sent - xs[0]).abs() < 0.5, msg="sent to \{sent}")
   assert_true((x - xs[0]).abs() < 0.5 && (to - xs[0]).abs() < 0.5, msg="ball at \{x}, going to \{to}")
 }
+
+///|
+/// First line where two drawlists differ, for diagnostics; empty when identical.
+fn drawlist_first_diff(got : String, want : String) -> String {
+  if got == want {
+    return ""
+  }
+  let a = got.split("\n").map(fn(s) { s.to_owned() }).to_array()
+  let b = want.split("\n").map(fn(s) { s.to_owned() }).to_array()
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  let diffs : Array[String] = []
+  for i in 0..<n {
+    if a[i] != b[i] {
+      diffs.push("line \{i + 1}:\n  got : \{a[i]}\n  want: \{b[i]}")
+      if diffs.length() >= 8 {
+        break
+      }
+    }
+  }
+  if a.length() != b.length() {
+    diffs.push("lengths: got=\{a.length()} want=\{b.length()}")
+  }
+  diffs.join("\n")
+}
+
+///|
+/// Render Home at rest starting in `start_dark` from frame 0, then when `switch_theme` is true switch system dark to
+/// `end_dark` while the bottom bar stays mounted; return its full drawlist.
+fn bar_theme_switch_drawlist(start_dark : Bool, end_dark : Bool, switch_theme : Bool) -> String {
+  new_run()
+  let src = fixture(if start_dark { "home-dark" } else { "home" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, dark=start_dark)
+  (src.call)("prefs.set", { "appearance": Json::string("system") }, @sfbase.answer_unread)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  if switch_theme {
+    t.set_dark(end_dark)
+  }
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t.drawlist()
+}
+
+///|
+test "bar: switching system theme light <-> dark or accent while mounted updates the bottom bar glass, ball and action to match a fresh run" {
+  for case in [(false, true), (true, false)] {
+    let (from_dark, to_dark) = case
+    let switched = bar_theme_switch_drawlist(from_dark, to_dark, true)
+    let fresh = bar_theme_switch_drawlist(to_dark, to_dark, false)
+    let diff = drawlist_first_diff(switched, fresh)
+    assert_eq(diff, "", msg="home \{from_dark}->\{to_dark}:\n\{diff}")
+  }
+  // switching accent while the bottom bar is mounted updates the bar's tinted glass and action disc too
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  @sfbase.accent_preview(Some("blue"))
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let switched_accent = t.drawlist()
+  new_run()
+  @sfbase.accent_preview(Some("blue"))
+  let src2 = fixture("home")
+  let t2 = @ui.Tester::new(fn(c) { view(c, src2) }, tree=app_tree(src2), w=390.0, h=844.0, platform=2)
+  t2.draw()
+  t2.run_for(@ui.move_most_ms)
+  t2.draw()
+  t2.run_for(@ui.move_most_ms)
+  let fresh_accent = t2.drawlist()
+  @sfbase.accent_preview(None)
+  let diff = drawlist_first_diff(switched_accent, fresh_accent)
+  assert_eq(diff, "", msg="home accent orange->blue:\n\{diff}")
+}

@@ -125,31 +125,9 @@ pub fn byte_length(s : String) -> Int {
 }
 
 ///|
-fn hex_upper(n : Int) -> Char {
-  "0123456789ABCDEF".unsafe_charcode_at(n).unsafe_to_char()
-}
-
-///|
 /// `encodeURIComponent`.
 pub fn encode_uri_component(s : String) -> String {
-  let out = StringBuilder::new()
-  for c in s {
-    let code = c.to_int()
-    let plain = (code >= 'a' && code <= 'z') ||
-      (code >= 'A' && code <= 'Z') ||
-      (code >= '0' && code <= '9') ||
-      "-_.!~*'()".contains_char(c)
-    if plain {
-      out.write_char(c)
-    } else {
-      for byte in utf8(c.to_string()) {
-        out.write_char('%')
-        out.write_char(hex_upper(byte.to_int() >> 4))
-        out.write_char(hex_upper(byte.to_int() & 15))
-      }
-    }
-  }
-  out.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|

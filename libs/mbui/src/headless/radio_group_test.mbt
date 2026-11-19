@@ -331,3 +331,94 @@ test "a tab that closes: what is chosen after it closed no tab's, the keyboard g
   t.frame()
   assert_eq((keys.get(), chosen.get(), focus_label(t)), (["一", "二"], "无", "一"))
 }
+
+///|
+/// How many nodes the window's tree holds, its root among them.
+fn rg_nodes(v : @view.View) -> Int {
+  v.kids().fold(init=1, fn(n, k) { n + rg_nodes(k) })
+}
+
+///|
+/// A radio group of three items made by View::each, each item its slot itself where `in_node`, else a node in it; what
+/// it comes to: Tab's landing, →, a click, Activate and a disabled item passed by, as read out, and how many nodes the
+/// window holds.
+fn rg_each_case(in_node : Bool) -> (Array[String], Int) raise {
+  let chosen = @signals.signal("b")
+  let off_c = @signals.signal(true)
+  let t = window(fn(root) {
+    @headless.radio_group(root, fn() { "大小" }, fn() { chosen.get() }, fn(k) { chosen.set(k) }, fn(g, rg) {
+      g.row(Is(true)) |> ignore
+      g.each(fn() { ["a", "b", "c", "d"] }, fn(k) { k }, fn(slot, k) {
+        let key = k.untracked()
+        rg.item(
+          slot,
+          fn() { key },
+          fn() { "号 \{key}" },
+          in_node~,
+          disabled=fn() { key == "c" && off_c.get() },
+          fn(v, s) {
+            v
+            .width(Is(Some(60.0)))
+            .height(Is(Some(32.0)))
+            .ground(By(fn() { if s.chosen() { c_pressed } else { c_rest } }))
+            |> ignore
+          },
+        )
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  let seen : Array[String] = []
+  let note = fn(what : String) raise {
+    let focus = t.focused().map(fn(s) { s.label }).unwrap_or("")
+    let checks = StringBuilder()
+    for k in ["a", "b", "c", "d"] {
+      let r = t.get(Radio, label="号 \{k}")
+      checks.write_string(
+        match r.check {
+          Some(On) => "on "
+          _ => if r.disabled { "off " } else { "- " }
+        },
+      )
+    }
+    seen.push("\{what}: \{chosen.get()} focus \{focus} \{checks.to_string()}")
+  }
+  t.tab()
+  note("tab")
+  t.key(@ui.key_code_right)
+  note("right")
+  t.key(@ui.key_code_left)
+  note("left")
+  t.click(Radio, label="号 a")
+  note("click")
+  t.act(Radio, Activate, label="号 c")
+  note("activate disabled")
+  off_c.set(false)
+  t.frame()
+  t.act(Radio, Activate, label="号 c")
+  note("activate")
+  let nodes = rg_nodes(@ui.view_tree().unwrap().root())
+  (seen, nodes)
+}
+
+///|
+test "a radio group's items made by View::each in their slots themselves (in_node): the same to the keys, the pointer and a screen reader as an item in a node of its own, one node less each" {
+  let (boxed, boxed_nodes) = rg_each_case(false)
+  let (slots, slot_nodes) = rg_each_case(true)
+  assert_eq(slots, boxed)
+  assert_eq(boxed_nodes - slot_nodes, 4)
+  debug_inspect(
+    slots,
+    content=(
+      #|[
+      #|  "tab: b focus 号 b - on off - ",
+      #|  "right: d focus 号 d - - off on ",
+      #|  "left: b focus 号 b - on off - ",
+      #|  "click: a focus  on - off - ",
+      #|  "activate disabled: a focus  on - off - ",
+      #|  "activate: c focus  - - on - ",
+      #|]
+    ),
+  )
+}

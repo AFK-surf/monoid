@@ -11,6 +11,8 @@ import {
 // Values
 pub fn address_or_search(String) -> String?
 
+pub let agent_hold_idle_ms : Double
+
 pub fn all_cookies(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
 pub let arrive_ms : Double
@@ -205,7 +207,7 @@ pub let passkey_binding : String
 
 pub fn passkey_binding_of(String) -> String
 
-pub fn passkey_hook(String) -> String
+pub fn passkey_hook(String, device? : Bool) -> String
 
 pub fn passkey_of(@jsjson.JValue?) -> Passkey?
 
@@ -301,6 +303,13 @@ pub(all) enum AgentAsk {
   Act(String, String, String)
 }
 
+pub(all) struct AgentHoldHub {
+  driving_people : (String) -> Array[String]
+  has_taken_view : (String) -> Bool
+  yield_to_agent : (String, String) -> Int32
+  join_agent : (String, String) -> () -> Unit
+}
+
 pub struct Authenticators {
   // private fields
 }
@@ -312,6 +321,14 @@ pub async fn Authenticators::put(Self, String, Array[Passkey]) -> Unit
 pub async fn Authenticators::read(Self, String, sites? : Array[String]) -> Array[Passkey]
 pub async fn Authenticators::start(Self) -> Unit
 pub async fn Authenticators::take_out(Self, String, Array[String]) -> Array[Passkey]
+
+pub struct BrowserAgentHold {
+  // private fields
+}
+pub fn BrowserAgentHold::act(Self, String, String, String) -> String?
+pub fn BrowserAgentHold::close(Self) -> Unit
+pub fn BrowserAgentHold::new(AgentHoldHub, (String) -> String, Clock) -> Self
+pub fn BrowserAgentHold::release_session(Self, String) -> Unit
 
 pub(all) struct BrowserOptions {
   dir : String
@@ -379,8 +396,10 @@ pub async fn Browsers::endpoint(Self, String) -> BrowserStatus
 pub fn Browsers::extend_sign_in(Self, String, String, Double) -> Unit
 pub async fn Browsers::form(Self, String, String) -> SignInForm
 pub async fn Browsers::new(BrowserOptions) -> Self
+pub fn Browsers::on_agent_act(Self, (String, String, String) -> String?) -> Unit
 pub fn Browsers::on_fresh(Self, (String) -> Unit) -> Unit
 pub fn Browsers::on_resumed(Self, (String) -> Unit) -> Unit
+pub fn Browsers::on_stopped(Self, (String) -> Unit) -> Unit
 pub fn Browsers::on_taken_out(Self, (String, String, String, String?) -> Unit) -> Unit
 pub fn Browsers::on_used(Self, (String, String) -> Unit) -> Unit
 pub async fn Browsers::open(Self, String) -> (String, GateParts)
@@ -634,6 +653,7 @@ pub(all) struct GateParts {
   context_of : (String) -> String?
   opened : ((String) -> Unit)?
   used : ((String, String?) -> Unit)?
+  act : ((String, String) -> String?)?
 }
 
 pub(all) struct HostFile {
@@ -976,6 +996,7 @@ pub(all) struct ViewOptions {
   max_height : Double
   peek : Bool
   fit : (Double, Double, Double)?
+  passkeys : Bool?
 }
 pub fn ViewOptions::of_j(@jsjson.JValue) -> Self
 

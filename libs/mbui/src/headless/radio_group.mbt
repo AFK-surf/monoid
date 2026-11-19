@@ -280,6 +280,8 @@ fn[K : Eq] RadioGroup::hand_on(self : RadioGroup[K]) -> Unit {
 /// after it leaves the group. On release, the group presses the final item and sends None to clear the preview.
 /// `on_close` (a `Tab` list's item alone): the tab closes, `closes` saying while it may; Delete or Backspace on it
 /// closes it, as `RadioItem::close` does, the keyboard handed on to the tab then chosen where it was on this one.
+/// `in_node`: the item is `parent` itself (the slot a structure made for it: a row of `View::each`), said to be what it
+/// is and no node more, as `radio_group`'s and a menu's items are. Its node.
 #callsite(autofill(loc))
 pub fn[K : Eq] RadioGroup::item(
   self : RadioGroup[K],
@@ -293,10 +295,11 @@ pub fn[K : Eq] RadioGroup::item(
   slide? : (Double, (@view.Drag?) -> K?),
   on_close? : () -> Unit,
   closes? : () -> Bool = fn() { true },
+  in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
+  let setup = fn(v : @view.View) {
     let off = fn() { (self.off)() || disabled() }
     let able = fn() { !off() }
     let on = fn() { (self.now)() == key() }
@@ -453,5 +456,11 @@ pub fn[K : Eq] RadioGroup::item(
     if self.refocus.val is Some(_) && !self.building.val {
       self.hand_on()
     }
-  })
+  }
+  if in_node {
+    setup(parent)
+    parent
+  } else {
+    parent.box(loc~, made_for=made_for.unwrap_or(loc), setup)
+  }
 }

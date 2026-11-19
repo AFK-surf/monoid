@@ -129,35 +129,7 @@ pub fn station_lang(data : String) -> String {
 ///|
 /// An instant as JavaScript's `toISOString` says it (ms since 1970, UTC).
 pub fn iso_time(ms : Double) -> String {
-  let total = ms.floor().to_int64()
-  let millis = ((total % 1000L) + 1000L) % 1000L
-  let secs = (total - millis) / 1000L
-  let mut days = secs / 86400L
-  let mut rem = secs % 86400L
-  if rem < 0L {
-    rem += 86400L
-    days -= 1L
-  }
-  // (days since 1970 to a civil date: Howard Hinnant's)
-  let z = days + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let year = if m <= 2L { y + 1L } else { y }
-  let pad = (v : Int64, n : Int) => {
-    let s = v.to_string()
-    let mut out = s
-    while out.length() < n {
-      out = "0" + out
-    }
-    out
-  }
-  "\{pad(year, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(rem / 3600L, 2)}:\{pad(rem % 3600L / 60L, 2)}:\{pad(rem % 60L, 2)}.\{pad(millis, 3)}Z"
+  @time.format_iso_ms(ms.floor().to_int64())
 }
 
 // ── id ──

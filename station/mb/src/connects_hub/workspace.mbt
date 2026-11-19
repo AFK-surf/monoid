@@ -1161,7 +1161,7 @@ pub fn request_percent_decode(s : String) -> String {
   while i < bytes.length() {
     let b = bytes[i]
     if b == b'%' && i + 2 < bytes.length() {
-      match (hex_digit(Int::unsafe_to_char(bytes[i + 1].to_int())), hex_digit(Int::unsafe_to_char(bytes[i + 2].to_int()))) {
+      match (@codec.hex_digit(bytes[i + 1].to_int()), @codec.hex_digit(bytes[i + 2].to_int())) {
         (Some(x), Some(y)) => {
           out.write_byte((x * 16 + y).to_byte())
           i += 3

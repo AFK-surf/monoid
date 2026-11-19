@@ -14,6 +14,10 @@ pub fn card_edit_page(@sql.Db, @json.Json, String, String?) -> @json.Json raise
 
 pub fn card_message_page(@sql.Db, @json.Json, String, String?) -> @json.Json raise
 
+pub fn card_of_entry(@json.Json) -> @json.Json?
+
+pub fn entry_of(@json.Json) -> @json.Json
+
 pub async fn harness(@host.Host, String) -> Unit
 
 // Errors
@@ -92,6 +96,7 @@ pub fn Store::archive_policy(Self, @json.Json) -> @json.Json raise
 pub fn Store::archive_suggested(Self, @json.Json) -> @json.Json raise
 pub fn Store::asking_message(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::begin_card_edit_scan(Self, CardOutcome) -> CardEditScan? raise
+pub fn Store::call(Self, String, Array[@jsjson.JValue]) -> @json.Json raise
 pub fn Store::card_at(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::card_choices(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::card_closed_since(Self, @json.Json, @json.Json) -> @json.Json raise
@@ -178,7 +183,7 @@ pub fn Store::restate_card(Self, @json.Json, @json.Json, @json.Json, (@jsjson.JV
 pub fn Store::restate_queued_card(Self, CardOutcome, Prepared?) -> Bool? raise
 pub fn Store::returning_sessions_in(Self, @json.Json) -> @json.Json raise
 pub fn Store::save_card_outcome(Self, CardOutcome, () -> Unit raise) -> String raise
-pub fn Store::search_chat_list(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::search_chat_list(Self, @json.Json, @json.Json, @json.Json, @json.Json, filter? : @json.Json) -> @json.Json raise
 pub fn Store::session_chat(Self, @json.Json) -> @json.Json raise
 pub fn Store::session_home_thread(Self, @json.Json) -> @json.Json raise
 pub fn Store::session_thread(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
@@ -191,6 +196,7 @@ pub fn Store::set_chat_hidden(Self, @json.Json, @json.Json, @json.Json) -> @json
 pub fn Store::set_chat_muted(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::set_connect_thread_station(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::set_moved_notes(Self, @json.Json) -> @json.Json raise
+pub fn Store::set_now(Self, Double) -> Unit
 pub fn Store::set_pin(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::set_read(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::starter(Self, @json.Json) -> @json.Json raise

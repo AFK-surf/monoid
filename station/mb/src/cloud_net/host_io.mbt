@@ -223,8 +223,8 @@ pub fn host_kept(host : @host.Host, path : String) -> Kept {
 fn hex_bytes(hex : String) -> Bytes {
   let out = FixedArray::make(hex.length() / 2, b'\x00')
   for i in 0..<(hex.length() / 2) {
-    let hi = hex_value(hex.get_char(2 * i).unwrap_or('0')).unwrap_or(0)
-    let lo = hex_value(hex.get_char(2 * i + 1).unwrap_or('0')).unwrap_or(0)
+    let hi = @codec.hex_digit(hex.get_char(2 * i).unwrap_or('0').to_int()).unwrap_or(0)
+    let lo = @codec.hex_digit(hex.get_char(2 * i + 1).unwrap_or('0').to_int()).unwrap_or(0)
     out[i] = (hi * 16 + lo).to_byte()
   }
   Bytes::from_array(out)

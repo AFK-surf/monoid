@@ -492,65 +492,7 @@ pub fn forget_marks(fs : Fs, dir : String, paths : Array[String]) -> Unit raise 
 ///|
 /// SHA-1, hex.
 pub fn sha1_hex(data : Bytes) -> String {
-  let h = [0x67452301U, 0xEFCDAB89U, 0x98BADCFEU, 0x10325476U, 0xC3D2E1F0U]
-  let n = data.length()
-  let total = (n + 9 + 63) / 64 * 64
-  let msg = FixedArray::make(total, b'\x00')
-  for i in 0..<n {
-    msg[i] = data[i]
-  }
-  msg[n] = b'\x80'
-  let bits = n.to_uint64() * 8UL
-  for i in 0..<8 {
-    msg[total - 1 - i] = (bits >> (i * 8)).to_byte()
-  }
-  let w = FixedArray::make(80, 0U)
-  let rotl = (x : UInt, k : Int) => (x << k) | (x >> (32 - k))
-  let mut off = 0
-  while off < total {
-    for t in 0..<16 {
-      w[t] = (msg[off + t * 4].to_uint() << 24) |
-        (msg[off + t * 4 + 1].to_uint() << 16) |
-        (msg[off + t * 4 + 2].to_uint() << 8) |
-        msg[off + t * 4 + 3].to_uint()
-    }
-    for t in 16..<80 {
-      w[t] = rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1)
-    }
-    let mut a = h[0]
-    let mut b = h[1]
-    let mut c = h[2]
-    let mut d = h[3]
-    let mut e = h[4]
-    for t in 0..<80 {
-      let (f, k) = if t < 20 {
-        ((b & c) | (b.lnot() & d), 0x5A827999U)
-      } else if t < 40 {
-        (b ^ c ^ d, 0x6ED9EBA1U)
-      } else if t < 60 {
-        ((b & c) | (b & d) | (c & d), 0x8F1BBCDCU)
-      } else {
-        (b ^ c ^ d, 0xCA62C1D6U)
-      }
-      let temp = rotl(a, 5) + f + e + k + w[t]
-      e = d
-      d = c
-      c = rotl(b, 30)
-      b = a
-      a = temp
-    }
-    h[0] = h[0] + a
-    h[1] = h[1] + b
-    h[2] = h[2] + c
-    h[3] = h[3] + d
-    h[4] = h[4] + e
-    off += 64
-  }
-  let sb = StringBuilder()
-  for x in h {
-    sb.write_string(x.to_string(radix=16).pad_start(8, '0'))
-  }
-  sb.to_string()
+  @hash.sha1_hex(data)
 }
 
 // ── usage.ts ─────────────────────────────────────────────────────────────────────────────────────────────────────

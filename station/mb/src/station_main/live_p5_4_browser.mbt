@@ -6,69 +6,9 @@
 // (RFC 6455), DevTools' side the shell's (`ws.open`).
 
 ///|
-/// SHA-1 (FIPS 180-4), for a WebSocket's accept key.
-fn p54_sha1(data : Bytes) -> Bytes {
-  let h = [0x67452301U, 0xEFCDAB89U, 0x98BADCFEU, 0x10325476U, 0xC3D2E1F0U]
-  let ml = data.length()
-  let total = (ml + 9 + 63) / 64 * 64
-  let m = FixedArray::make(total, b'\x00')
-  for i in 0..<ml {
-    m[i] = data[i]
-  }
-  m[ml] = b'\x80'
-  let bits = ml.to_uint64() * 8UL
-  for i in 0..<8 {
-    m[total - 1 - i] = (bits >> (8 * i)).to_byte()
-  }
-  let rotl = (x : UInt, n : Int) => (x << n) | (x >> (32 - n))
-  let w = FixedArray::make(80, 0U)
-  let mut off = 0
-  while off < total {
-    for t in 0..<16 {
-      w[t] = (m[off + 4 * t].to_uint() << 24) |
-        (m[off + 4 * t + 1].to_uint() << 16) |
-        (m[off + 4 * t + 2].to_uint() << 8) |
-        m[off + 4 * t + 3].to_uint()
-    }
-    for t in 16..<80 {
-      w[t] = rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1)
-    }
-    let mut a = h[0]
-    let mut b = h[1]
-    let mut c = h[2]
-    let mut d = h[3]
-    let mut e = h[4]
-    for t in 0..<80 {
-      let (f, k) = if t < 20 {
-        ((b & c) | (b.lnot() & d), 0x5A827999U)
-      } else if t < 40 {
-        (b ^ c ^ d, 0x6ED9EBA1U)
-      } else if t < 60 {
-        ((b & c) | (b & d) | (c & d), 0x8F1BBCDCU)
-      } else {
-        (b ^ c ^ d, 0xCA62C1D6U)
-      }
-      let temp = rotl(a, 5) + f + e + k + w[t]
-      e = d
-      d = c
-      c = rotl(b, 30)
-      b = a
-      a = temp
-    }
-    h[0] = h[0] + a
-    h[1] = h[1] + b
-    h[2] = h[2] + c
-    h[3] = h[3] + d
-    h[4] = h[4] + e
-    off += 64
-  }
-  Bytes::makei(20, i => (h[i / 4] >> (24 - 8 * (i % 4))).to_byte())
-}
-
-///|
 /// A WebSocket's accept key for the client's `key`.
 fn p54_ws_accept(key : String) -> String {
-  @drive.base64(p54_sha1(@utf8.encode(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))
+  @drive.base64(@hash.sha1(@utf8.encode(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))
 }
 
 ///|

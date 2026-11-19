@@ -594,16 +594,23 @@ test("the conversations' own parts: a title asked of a runtime session of their 
 
     // The same while another connection holds the write lock: the record is busy (StateWriteBusy, thrown back as it
     // was through the sessions' program) and tried again until the lock is let go.
-    const other = new DatabaseSync(join(data, "stillfail.db"), { timeout: 0 });
-    const busy = await tool(door, "t0", "session_send", { to: "chat:c-to", text: "ASK-CARD ASK-BUSY please" });
-    assert.equal(busy.error, false, busy.text);
-    await until("the fake about to say its state", () => existsSync(join(out, "stating")), () => a.err());
-    other.exec("BEGIN IMMEDIATE");
-    writeFileSync(join(out, "state-go"), "");
-    // (held a while as it is asked: what it says once let go is what is asserted, whenever it asked)
-    await new Promise((r) => setTimeout(r, 300));
-    other.exec("ROLLBACK");
-    other.close();
+    // (BEGIN IMMEDIATE waits out a write of the station's own in progress, as its connections do: with no busy timeout
+    // it failed "database is locked" whenever one was, main d4d8cdd53, 44500681208)
+    const other = new DatabaseSync(join(data, "stillfail.db"), { timeout: 5000 });
+    try {
+      const busy = await tool(door, "t0", "session_send", { to: "chat:c-to", text: "ASK-CARD ASK-BUSY please" });
+      assert.equal(busy.error, false, busy.text);
+      await until("the fake about to say its state", () => existsSync(join(out, "stating")), () => a.err());
+      other.exec("BEGIN IMMEDIATE");
+      writeFileSync(join(out, "state-go"), "");
+      // (held a while as it is asked: what it says once let go is what is asserted, whenever it asked)
+      await new Promise((r) => setTimeout(r, 300));
+    } finally {
+      try {
+        other.exec("ROLLBACK");
+      } catch {}
+      other.close();
+    }
     await until("its need_human recorded after the lock", () => existsSync(join(out, "ask-3.json")) && asking() === 2, () => a.err());
     assert.notEqual(JSON.parse(readFileSync(join(out, "ask-3.json"), "utf8")).result.isError, true, readFileSync(join(out, "ask-3.json"), "utf8"));
     assert.equal(aboutOf("chat:c-to").about_n, cardN(), "about the newer card");

@@ -1008,77 +1008,7 @@ pub fn percent_decode_uri(s : String) -> String {
 ///|
 /// decodeURIComponent: None where it throws (a `%` not followed by two hex digits, bytes that are not UTF-8).
 pub fn decode_uri_component(s : String) -> String? {
-  if !s.contains("%") {
-    return Some(s)
-  }
-  let out = StringBuilder::new()
-  let mut i = 0
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if c != '%' {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    // a run of %xx: its bytes, as UTF-8
-    let bytes = @buffer.new()
-    while i < s.length() && s.unsafe_charcode_at(i) == '%' {
-      if i + 2 >= s.length() {
-        return None
-      }
-      let h = hex_digit(s.unsafe_charcode_at(i + 1))
-      let l = hex_digit(s.unsafe_charcode_at(i + 2))
-      if h < 0 || l < 0 {
-        return None
-      }
-      bytes.write_byte((h * 16 + l).to_byte())
-      i += 3
-    }
-    let b = bytes.to_bytes()
-    match strict_utf8(b) {
-      Some(t) => out.write_string(t)
-      None => return None
-    }
-  }
-  Some(out.to_string())
-}
-
-///|
-/// Bytes as UTF-8, None where they are not (decodeURIComponent's URIError).
-fn strict_utf8(b : Bytes) -> String? {
-  let out = StringBuilder::new()
-  let mut i = 0
-  while i < b.length() {
-    let c = b[i].to_int()
-    let (n, min, first) = if c < 0x80 {
-      (0, 0, c)
-    } else if c >= 0xc2 && c < 0xe0 {
-      (1, 0x80, c & 0x1f)
-    } else if c >= 0xe0 && c < 0xf0 {
-      (2, 0x800, c & 0x0f)
-    } else if c >= 0xf0 && c < 0xf5 {
-      (3, 0x10000, c & 0x07)
-    } else {
-      return None
-    }
-    if i + n >= b.length() {
-      return None
-    }
-    let mut cp = first
-    for j in 1..<=n {
-      let d = b[i + j].to_int()
-      if (d & 0xc0) != 0x80 {
-        return None
-      }
-      cp = (cp << 6) | (d & 0x3f)
-    }
-    if cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) {
-      return None
-    }
-    out.write_char(cp.unsafe_to_char())
-    i += n + 1
-  }
-  Some(out.to_string())
+  @url.decode_uri_component(s)
 }
 
 ///|

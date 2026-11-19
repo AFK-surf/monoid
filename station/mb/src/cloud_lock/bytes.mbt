@@ -81,15 +81,7 @@ pub fn utf8_of(s : String) -> Bytes {
 
 ///|
 fn hex_digit(c : Int) -> Int {
-  if c >= 0x30 && c <= 0x39 {
-    c - 0x30
-  } else if c >= 0x61 && c <= 0x66 {
-    c - 0x61 + 10
-  } else if c >= 0x41 && c <= 0x46 {
-    c - 0x41 + 10
-  } else {
-    -1
-  }
+  @codec.hex_digit(c).unwrap_or(-1)
 }
 
 ///|
@@ -115,71 +107,37 @@ pub fn hex_of(b : BytesView) -> String {
 }
 
 ///|
-fn b64_value(c : Int) -> Int {
-  if c >= 0x41 && c <= 0x5a {
-    c - 0x41
-  } else if c >= 0x61 && c <= 0x7a {
-    c - 0x61 + 26
-  } else if c >= 0x30 && c <= 0x39 {
-    c - 0x30 + 52
-  } else if c == 0x2b || c == 0x2d {
-    62
-  } else if c == 0x2f || c == 0x5f {
-    63
-  } else {
-    -1
-  }
-}
-
-///|
 /// Base64 or base64url as Buffer.from(s, "base64url") reads it: either alphabet, what is neither skipped, ending at
 /// "=".
 pub fn b64_bytes(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
+  let digits = StringBuilder()
+  let mut n = 0
   for i in 0..<s.length() {
     let c = s.unsafe_charcode_at(i)
     if c == 0x3d {
       break
     }
-    let v = b64_value(c)
-    if v < 0 {
-      continue
-    }
-    acc = ((acc << 6) | v) & 0xffffff
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 0xff).to_byte())
+    if (c >= 0x41 && c <= 0x5a) ||
+      (c >= 0x61 && c <= 0x7a) ||
+      (c >= 0x30 && c <= 0x39) ||
+      c == 0x2b ||
+      c == 0x2d ||
+      c == 0x2f ||
+      c == 0x5f {
+      digits.write_char(c.unsafe_to_char())
+      n += 1
     }
   }
-  out.to_bytes()
+  let text = digits.to_string()
+  // A lone digit past a group of four is six bits: no byte, as Node leaves it.
+  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
+  @codec.base64_decode(text).unwrap_or(b"")
 }
 
 ///|
 /// Base64url with no padding (Buffer's toString("base64url")).
 pub fn b64url_of(b : BytesView) -> String {
-  let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-  let out = StringBuilder()
-  let n = b.length()
-  let mut i = 0
-  while i < n {
-    let b0 = b[i].to_int()
-    let b1 = if i + 1 < n { b[i + 1].to_int() } else { 0 }
-    let b2 = if i + 2 < n { b[i + 2].to_int() } else { 0 }
-    let w = (b0 << 16) | (b1 << 8) | b2
-    out.write_char(alphabet.unsafe_charcode_at((w >> 18) & 63).unsafe_to_char())
-    out.write_char(alphabet.unsafe_charcode_at((w >> 12) & 63).unsafe_to_char())
-    if i + 1 < n {
-      out.write_char(alphabet.unsafe_charcode_at((w >> 6) & 63).unsafe_to_char())
-    }
-    if i + 2 < n {
-      out.write_char(alphabet.unsafe_charcode_at(w & 63).unsafe_to_char())
-    }
-    i += 3
-  }
-  out.to_string()
+  @codec.base64url_encode(b)
 }
 
 ///|

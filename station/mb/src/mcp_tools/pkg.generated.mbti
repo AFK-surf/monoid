@@ -77,6 +77,8 @@ pub let groups : Int32
 
 pub async fn harness(@host.Host) -> Unit
 
+pub let hidden : Array[String]
+
 pub let idle_ms : Double
 
 pub fn index_of(String, String, from? : Int32) -> Int32
@@ -176,6 +178,8 @@ pub fn permitted(String, String) -> Bool
 pub fn plan_words(@jsjson.JV, String, Bool) -> String
 
 pub fn pretty(@jsjson.JV) -> String
+
+pub let priority : Array[String]
 
 pub async fn probe_relay(ToolsBackend, String) -> Probed
 

@@ -429,11 +429,6 @@ pub fn join(parts : Array[String]) -> String {
 // ---- forms, queries, base64url ----
 
 ///|
-fn hex_digit(n : Int) -> Char {
-  "0123456789ABCDEF".unsafe_charcode_at(n).unsafe_to_char()
-}
-
-///|
 fn utf8_of(s : String) -> Bytes {
   @utf8.encode(s)
 }
@@ -441,43 +436,17 @@ fn utf8_of(s : String) -> Bytes {
 ///|
 /// A form as `new URLSearchParams(form).toString()` writes it.
 pub fn form_encoded(form : Array[(String, String)]) -> String {
+  let keep = (c : Int) => is_ascii_alpha(c) || is_ascii_digit(c) || c == '*' || c == '-' || c == '.' || c == '_'
   let out = StringBuilder()
-  let enc = (s : String) => {
-    for b in utf8_of(s) {
-      let c = b.to_int()
-      if is_ascii_alpha(c) || is_ascii_digit(c) || c == '*' || c == '-' || c == '.' || c == '_' {
-        out.write_char(c.unsafe_to_char())
-      } else if c == ' ' {
-        out.write_char('+')
-      } else {
-        out.write_char('%')
-        out.write_char(hex_digit(c >> 4))
-        out.write_char(hex_digit(c & 15))
-      }
-    }
-  }
   for i, p in form {
     if i > 0 {
       out.write_char('&')
     }
-    enc(p.0)
+    out.write_string(@url.percent_encode(p.0, keep, space_plus=true))
     out.write_char('=')
-    enc(p.1)
+    out.write_string(@url.percent_encode(p.1, keep, space_plus=true))
   }
   out.to_string()
-}
-
-///|
-fn hex_value(c : Int) -> Int? {
-  if c >= '0' && c <= '9' {
-    Some(c - '0')
-  } else if c >= 'a' && c <= 'f' {
-    Some(c - 'a' + 10)
-  } else if c >= 'A' && c <= 'F' {
-    Some(c - 'A' + 10)
-  } else {
-    None
-  }
 }
 
 ///|
@@ -491,7 +460,7 @@ fn form_decoded(s : String) -> String {
     let c = units[i].to_int()
     if c == '+' {
       bytes.push(b' ')
-    } else if c == '%' && i + 2 < n && hex_value(units[i + 1].to_int()) is Some(h) && hex_value(units[i + 2].to_int()) is Some(l) {
+    } else if c == '%' && i + 2 < n && @codec.hex_digit(units[i + 1].to_int()) is Some(h) && @codec.hex_digit(units[i + 2].to_int()) is Some(l) {
       bytes.push((h * 16 + l).to_byte())
       i += 3
       continue
@@ -573,13 +542,7 @@ fn base64url_text(text : String) -> String {
 ///|
 /// The bytes of `s` as UTF-8, in hex (`Buffer.from(s).toString("hex")`).
 fn hex_utf8(s : String) -> String {
-  let out = StringBuilder()
-  for b in utf8_of(s) {
-    let c = b.to_int()
-    out.write_char("0123456789abcdef".unsafe_charcode_at(c >> 4).unsafe_to_char())
-    out.write_char("0123456789abcdef".unsafe_charcode_at(c & 15).unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(utf8_of(s))
 }
 
 ///|

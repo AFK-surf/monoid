@@ -132,39 +132,56 @@ fn listbox_all(s : String, c : Char) -> Bool {
 }
 
 ///|
-/// A typed character `c` at `at`: what was typed together grown by it (or begun anew, past `window_ms` since the letter
-/// before), and the focus on the next enabled option whose words begin with it, from the one with the focus (from after
-/// it, where a letter is typed alone or again), around the end. Whether one was found.
-fn[K] Listbox::typeahead(self : Listbox[K], c : Char, at : Double, window_ms : Double) -> Bool {
+/// A typed character `c` at `at` among parts the keys go to (`live`, in order; `words` the words of the `i`th): what
+/// was typed together (`typed`, with the moment of its last letter) grown by it (or begun anew, past `window_ms` since
+/// the letter before), and the focus asked onto the next whose words begin with it, from the one with the focus (from
+/// after it, where a letter is typed alone or again), around the end. Whether one was found. A list box's and a
+/// menu's typeahead.
+fn type_ahead(
+  typed : Ref[(String, Double)],
+  c : Char,
+  at : Double,
+  window_ms : Double,
+  live : Array[@view.View],
+  words : (Int) -> String,
+) -> Bool {
   let small = listbox_small(c.to_string())
-  let (was, last) = self.typed.val
-  let typed = if was != "" && at - last <= window_ms { was + small } else { small }
-  self.typed.val = (typed, at)
-  let live = self.options.live()
+  let (was, last) = typed.val
+  let now = if was != "" && at - last <= window_ms { was + small } else { small }
+  typed.val = (now, at)
   let n = live.length()
   if n == 0 {
     return false
   }
   // (the same letter again: the next that begins with it; else what was typed whole, from the one it is on)
   let first = small.get_char(0).unwrap_or(' ')
-  let (find, from_next) = if listbox_all(typed, first) { (small, true) } else { (typed, false) }
-  let at_i = rove_at(live)
-  let start = match at_i {
+  let (find, from_next) = if listbox_all(now, first) { (small, true) } else { (now, false) }
+  let start = match live.search_by(fn(v) { v.focused() }) {
     Some(i) => if from_next { i + 1 } else { i }
     None => 0
   }
   for d in 0..<n {
-    let e = live[(start + d) % n]
-    let words = match self.entries.iter().find_first(fn(x) { x.node.id() == e.node.id() }) {
-      Some(x) => listbox_small((x.text)())
-      None => ""
-    }
-    if words.has_prefix(find) {
-      e.node.ask_focus(visible=true) |> ignore
+    let i = (start + d) % n
+    if listbox_small(words(i)).has_prefix(find) {
+      live[i].ask_focus(visible=true) |> ignore
       return true
     }
   }
   false
+}
+
+///|
+/// A typed character `c` at `at`: the focus on the next enabled option whose words begin with what was typed together
+/// (type_ahead). Whether one was found.
+fn[K] Listbox::typeahead(self : Listbox[K], c : Char, at : Double, window_ms : Double) -> Bool {
+  let live = self.options.live()
+  type_ahead(self.typed, c, at, window_ms, live.map(fn(e) { e.node }), fn(i) {
+    let id = live[i].node.id()
+    match self.entries.iter().find_first(fn(x) { x.node.id() == id }) {
+      Some(x) => (x.text)()
+      None => ""
+    }
+  })
 }
 
 ///|

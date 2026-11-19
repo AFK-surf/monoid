@@ -610,30 +610,14 @@ pub fn url_pathname(url : String) -> String {
 ///|
 /// A path's segment with what the path percent-encode set holds encoded (UTF-8, upper-case hex).
 fn encode_path_segment(seg : String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  for c in seg {
-    let n = c.to_int()
-    let keep = n > 0x20 &&
-      n < 0x7F &&
-      c != '"' &&
-      c != '#' &&
-      c != '<' &&
-      c != '>' &&
-      c != '?' &&
-      c != '`' &&
-      c != '{' &&
-      c != '}'
-    if keep {
-      out.write_char(c)
-    } else {
-      for b in utf8(c.to_string()) {
-        let v = b.to_int()
-        out.write_char('%')
-        out.write_char(hex.unsafe_charcode_at(v >> 4).unsafe_to_char())
-        out.write_char(hex.unsafe_charcode_at(v & 15).unsafe_to_char())
-      }
-    }
-  }
-  out.to_string()
+  @url.percent_encode(seg, n => n > 0x20 &&
+    n < 0x7F &&
+    n != '"' &&
+    n != '#' &&
+    n != '<' &&
+    n != '>' &&
+    n != '?' &&
+    n != '`' &&
+    n != '{' &&
+    n != '}')
 }

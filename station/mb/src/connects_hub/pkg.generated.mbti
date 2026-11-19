@@ -290,6 +290,7 @@ pub fn ConnectedSurface::bot_name(Self) -> String
 pub fn ConnectedSurface::bot_user_id(Self) -> String
 pub fn ConnectedSurface::changed(Self) -> Unit
 pub fn ConnectedSurface::forget(Self, String, Double) -> Bool
+pub fn ConnectedSurface::hooked(Self, identify~ : async () -> @jsjson.JValue, address~ : async () -> String, run_socket~ : async (String, async (@jsjson.JValue) -> Unit) -> Unit, look_up~ : async (String) -> @jsjson.JValue?, look_up_email~ : async (String) -> String?) -> Unit
 pub fn ConnectedSurface::identity(Self) -> @jsjson.JValue
 pub async fn ConnectedSurface::kept(Self, String, Double, async () -> @jsjson.JValue) -> @jsjson.JValue
 pub fn ConnectedSurface::new(String, SurfaceOptions, usable? : (@jsjson.JValue) -> Unit raise) -> Self
@@ -298,6 +299,7 @@ pub async fn ConnectedSurface::profile(Self, String) -> @jsjson.JValue?
 pub async fn ConnectedSurface::refresh_identity(Self) -> Unit
 pub fn ConnectedSurface::run(Self, async () -> Unit) -> Unit
 pub fn ConnectedSurface::set_status(Self, Bool, String?) -> Unit
+pub fn ConnectedSurface::set_status_line(Self, (@jsjson.JValue) -> StatusLine) -> Unit
 pub fn ConnectedSurface::socket(Self) -> @jsjson.JValue
 pub async fn ConnectedSurface::socket_to(Self, String, SocketHooks, headers? : Array[(String, String)]) -> Unit
 pub async fn ConnectedSurface::start(Self, async (@jsjson.JValue) -> Unit) -> Unit
@@ -658,7 +660,7 @@ pub(all) struct Signer {
   verify : (String, Bytes, String) -> Bool
 }
 
-pub struct Socket {
+pub(all) struct Socket {
   events : @effect.Queue[SocketEvent]
   send : (Bytes) -> Unit
   ping : () -> Unit
@@ -675,7 +677,7 @@ pub(all) enum SocketEvent {
   Refused(Int32, String)
 }
 
-pub struct SocketHooks {
+pub(all) struct SocketHooks {
   opened : (Socket) -> Unit
   message : (Socket, Bytes, Bool, Double, (String?) -> Unit) -> Unit
   ping : (Socket) -> Unit
@@ -733,7 +735,7 @@ pub(all) struct Surface {
 pub fn Surface::bot_user_id(Self) -> String
 pub fn Surface::get_opt(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?
 
-pub struct SurfaceOptions {
+pub(all) struct SurfaceOptions {
   connect : String?
   book : NameBook?
   ping_ms : Double

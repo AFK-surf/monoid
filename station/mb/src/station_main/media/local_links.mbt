@@ -148,19 +148,7 @@ pub fn percent_decode(text : String) -> String {
 ///|
 /// utf8_percent_encode(.., NON_ALPHANUMERIC): every byte but ASCII letters and digits as %XX.
 pub fn percent_encode(text : String) -> String {
-  let out = StringBuilder()
-  let digits = "0123456789ABCDEF"
-  for b in @utf8.encode(text) {
-    let v = b.to_int()
-    if (v >= 48 && v <= 57) || (v >= 65 && v <= 90) || (v >= 97 && v <= 122) {
-      out.write_char(v.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(digits[v >> 4].unsafe_to_char())
-      out.write_char(digits[v & 15].unsafe_to_char())
-    }
-  }
-  out.to_string()
+  @url.percent_encode(text, v => (v >= 48 && v <= 57) || (v >= 65 && v <= 90) || (v >= 97 && v <= 122))
 }
 
 ///|

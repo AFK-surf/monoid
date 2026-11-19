@@ -119,80 +119,6 @@ test "a grant signed and read back; another key's, an expired one, another works
 }
 
 ///|
-/// What this package's deflate makes (fixed codes' blocks) made whole again, from `start`; None where it is not that.
-fn inflate_fixed(data : Bytes, start? : Int = 0) -> Bytes? {
-  let out = @buffer.new()
-  let made : Array[Byte] = []
-  let mut pos = start * 8
-  let bit = () => {
-    let b = (data[pos >> 3].to_int() >> (pos & 7)) & 1
-    pos += 1
-    b
-  }
-  let bits = (n : Int) => {
-    let mut v = 0
-    for i = 0; i < n; i = i + 1 {
-      v = v | (bit() << i)
-    }
-    v
-  }
-  let code = () => {
-    // fixed codes, most significant bit first
-    let mut c = 0
-    for _i = 0; _i < 7; _i = _i + 1 {
-      c = (c << 1) | bit()
-    }
-    if c <= 23 {
-      return c + 256
-    }
-    c = (c << 1) | bit()
-    if c >= 0x30 && c <= 0xBF {
-      return c - 0x30
-    }
-    if c >= 0xC0 && c <= 0xC7 {
-      return c - 0xC0 + 280
-    }
-    c = (c << 1) | bit()
-    c - 0x190 + 144
-  }
-  while true {
-    if pos >= data.length() * 8 {
-      return None
-    }
-    let last = bit()
-    if bits(2) != 1 {
-      return None
-    }
-    while true {
-      let sym = code()
-      if sym < 256 {
-        made.push(sym.to_byte())
-      } else if sym == 256 {
-        break
-      } else {
-        let i = sym - 257
-        let len = len_base[i] + bits(len_extra[i])
-        let mut d = 0
-        for _k = 0; _k < 5; _k = _k + 1 {
-          d = (d << 1) | bit()
-        }
-        let dist = dist_base[d] + bits(dist_extra[d])
-        for _k = 0; _k < len; _k = _k + 1 {
-          made.push(made[made.length() - dist])
-        }
-      }
-    }
-    if last == 1 {
-      break
-    }
-  }
-  for b in made {
-    out.write_byte(b)
-  }
-  Some(out.to_bytes())
-}
-
-///|
 test "SHA-256 as FIPS 180-4's examples have it" {
   assert_eq(
     hex(@hash.sha256(b"abc")),
@@ -224,9 +150,9 @@ test "CRC-32 rolled on, and deflate inflated again to the same" {
   out.write_bytes(d.finish())
   let packed = out.to_bytes()
   assert_eq(packed.length() < data.length() / 4, true)
-  assert_eq(inflate_fixed(packed), Some(data))
+  assert_eq(@flate.inflate(packed), Some(data))
   let empty = Deflater::new()
-  assert_eq(inflate_fixed(empty.finish()), Some(b""))
+  assert_eq(@flate.inflate(empty.finish()), Some(b""))
 }
 
 ///|
@@ -331,7 +257,7 @@ test "a folder zipped: what it holds inflated again, links and what is skipped l
     let local = u32(at + 42)
     if u16(at + 10) == 8 {
       let start = local + 30 + u16(local + 26)
-      let back = inflate_fixed(zip, start~)
+      let back = @flate.inflate_at(zip, start).map(r => r.0)
       assert_eq(back.map(b => @utf8.decode_lossy(b)), Some(text.to_string()))
     }
     at = at + 46 + n

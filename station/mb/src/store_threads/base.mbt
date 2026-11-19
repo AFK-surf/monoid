@@ -354,7 +354,6 @@ fn Store::now_json(self : Store) -> Json {
 ///|
 /// 16 random bytes in hex, as `randomBytes(16).toString("hex")`.
 fn Store::token(self : Store) -> String {
-  let hex = "0123456789abcdef"
   let out = StringBuilder()
   for _ in 0..<2 {
     // xorshift64*
@@ -364,10 +363,7 @@ fn Store::token(self : Store) -> String {
     x = x ^ (x >> 27)
     self.seed = x
     let v = x * 0x2545F4914F6CDD1DUL
-    for i in 0..<16 {
-      let d = ((v >> (60 - i * 4).to_uint64().to_int()) & 15UL).to_int()
-      out.write_char(hex[d].to_int().unsafe_to_char())
-    }
+    out.write_string(@codec.hex_encode(Bytes::makei(8, i => ((v >> (56 - i * 8)) & 255UL).to_int().to_byte())))
   }
   out.to_string()
 }

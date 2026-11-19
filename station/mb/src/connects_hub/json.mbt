@@ -158,27 +158,7 @@ pub fn js_text(v : J?) -> String {
 ///|
 /// Bytes as lowercase hex.
 pub fn hex(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder()
-  for x in b {
-    let n = x.to_int()
-    out.write_char(digits.get_char(n >> 4).unwrap())
-    out.write_char(digits.get_char(n & 15).unwrap())
-  }
-  out.to_string()
-}
-
-///|
-fn hex_digit(c : Char) -> Int? {
-  if c >= '0' && c <= '9' {
-    Some(c.to_int() - '0'.to_int())
-  } else if c >= 'a' && c <= 'f' {
-    Some(c.to_int() - 'a'.to_int() + 10)
-  } else if c >= 'A' && c <= 'F' {
-    Some(c.to_int() - 'A'.to_int() + 10)
-  } else {
-    None
-  }
+  @codec.hex_encode(b)
 }
 
 ///|
@@ -188,7 +168,7 @@ pub fn unhex(s : String) -> Bytes {
   let cs = s.to_array()
   let mut i = 0
   while i + 1 < cs.length() {
-    match (hex_digit(cs[i]), hex_digit(cs[i + 1])) {
+    match (@codec.hex_digit(cs[i].to_int()), @codec.hex_digit(cs[i + 1].to_int())) {
       (Some(a), Some(b)) => out.write_byte((a * 16 + b).to_byte())
       _ => break
     }
