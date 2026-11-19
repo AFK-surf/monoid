@@ -981,11 +981,47 @@ fn made_decisions_view(
 ///|
 /// The decisions' stamp: what makes them again when it changes.
 fn decisions_stamp(d : OverviewDeps, a : AccountsDeps) -> String {
-  let automatic : J = match (d.config)().get("automaticDecisions") {
+  decisions_stamp_of((d.decisions_version)(), (d.config)(), (a.decision_models)())
+}
+
+///|
+fn decisions_stamp_of(decisions_version : J, config : J, decision_models : J) -> String {
+  let automatic : J = match config.get("automaticDecisions") {
     None | Some(Null) => Null
     Some(v) => v
   }
-  stringify(ja([(d.decisions_version)(), automatic, (a.decision_models)()]))
+  stringify(ja([decisions_version, automatic, decision_models]))
+}
+
+///|
+/// Whose decisions a view is kept as: the viewer's role, home, workspace and email.
+fn decisions_whose(viewer : Viewer) -> String {
+  let home = match viewer.raw.get("home") {
+    None => "undefined"
+    Some(h) => @jsjson.raw_text(@jsjson.js_string(h))
+  }
+  let workspace = match viewer.raw.get("workspace") {
+    None | Some(Null) => ""
+    Some(w) => @jsjson.raw_text(@jsjson.js_string(w))
+  }
+  "\{viewer.role}\u{0}\{home}\u{0}\{workspace}\u{0}\{viewer.email}"
+}
+
+///|
+/// Whether `decisions_view` would give the view it keeps for `viewer` at `now`, given these parts of its stamp: what
+/// makes it (the accounts' automatic decisions, the archive policy's checks and view) need not be asked then.
+pub fn OverviewKept::decisions_fresh(
+  self : OverviewKept,
+  viewer : Viewer,
+  decisions_version : J,
+  config : J,
+  decision_models : J,
+  now : Double,
+) -> Bool {
+  let stamp = decisions_stamp_of(decisions_version, config, decision_models)
+  self.decisions.get(decisions_whose(viewer)) is Some((at, s, _)) &&
+  s == stamp &&
+  now - at < decisions_kept_ms
 }
 
 ///|
@@ -998,15 +1034,7 @@ fn decisions_view(
   done : (J) -> Unit,
 ) -> Unit {
   let stamp = decisions_stamp(d, a)
-  let home = match viewer.raw.get("home") {
-    None => "undefined"
-    Some(h) => @jsjson.raw_text(@jsjson.js_string(h))
-  }
-  let workspace = match viewer.raw.get("workspace") {
-    None | Some(Null) => ""
-    Some(w) => @jsjson.raw_text(@jsjson.js_string(w))
-  }
-  let whose = "\{viewer.role}\u{0}\{home}\u{0}\{workspace}\u{0}\{viewer.email}"
+  let whose = decisions_whose(viewer)
   let now = (d.store_now)()
   if kept.decisions.get(whose) is Some((at, s, view)) &&
     s == stamp &&

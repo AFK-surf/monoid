@@ -362,6 +362,7 @@ pub struct OverviewKept {
   mut memory : (Double, String, Map[String, Double])?
   decisions : Map[String, (Double, String, @jsjson.JValue)]
 }
+pub fn OverviewKept::decisions_fresh(Self, Viewer, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue, Double) -> Bool
 pub fn OverviewKept::new() -> Self
 
 pub(all) struct Screen {

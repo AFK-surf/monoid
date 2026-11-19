@@ -312,7 +312,7 @@
   "core-misc.screen.notPng": "仅支持粘贴 PNG 图片",
   "core-misc.screen.notDriving": "需在控制时才能粘贴到此屏幕",
   "core-misc.screen.noClipboard": "此屏幕不支持这类剪贴板内容",
-  "core-misc.vault.unavailable": "密钥库仅支持桌面和安卓客户端",
+  "core-misc.vault.unavailable": "网页版不保管密钥，请在 still.fail 客户端中处理",
   "core-misc.vault.needsLock": "请先开启 workspace 的安全模式",
   "core-misc.vault.notSigner": "此设备未在安全模式中确认",
   "core-misc.vault.notTrusted": "此设备还不是你的受信任设备：在你的其它受信任设备上批准它后即可使用密钥库",

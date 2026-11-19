@@ -562,3 +562,39 @@ test("--releases a URL that cuts a base off halfway, HEAD refused: that base lef
   assert.ok(s.served.some((x) => x.method === "HEAD" && x.status === 405), "HEAD refused");
   assert.ok(s.served.some((x) => x.method === "GET" && x.status === 404 && x.path.includes("station/archive/beta/101-")), "has by a GET of its first byte");
 });
+
+test("--platform, one run a platform, then --merge: the feed as one run of every platform amends it, the fragments gone", (t) => {
+  const w = world(t);
+  const whole = join(w.tmp, "whole");
+  cpSync(w.rel, whole, { recursive: true });
+  run(whole, w.pub);
+  const platforms = ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"];
+  const merged = (dir: string, only: string[]) => {
+    cpSync(w.rel, dir, { recursive: true });
+    for (const p of platforms) {
+      const into = join(w.tmp, `${p}-${only.length}`);
+      run(w.rel, w.pub, "--platform", p, "--into", into);
+      // (the apps' feeds are not this run's)
+      assert.ok(!existsSync(join(into, "mac/beta/latest.json")) && !existsSync(join(into, "station-beta.json")));
+      if (only.includes(p)) cpSync(into, dir, { recursive: true });
+    }
+    const r = spawnSync(process.execPath, [script, "--merge", dir], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".deltas.")), [], "no fragment left to be put as a feed");
+    return json(dir, "station-beta.json");
+  };
+  const all = merged(join(w.tmp, "all"), platforms);
+  assert.equal(readFileSync(join(w.tmp, "all", "station-beta.json"), "utf8"), readFileSync(join(whole, "station-beta.json"), "utf8"));
+  assert.deepEqual(Object.keys(all.deltas), ["linux-x64", "win32-x64"]);
+  for (const ds of Object.values(all.deltas) as { file: string; sha256: string }[][]) {
+    for (const d of ds) assert.equal(sha(readFileSync(join(w.tmp, "all", d.file))), d.sha256);
+  }
+  // one platform's job failed: the others' deltas and earlier all the same
+  const part = merged(join(w.tmp, "part"), ["linux-x64"]);
+  assert.deepEqual(part.earlier, all.earlier);
+  assert.deepEqual(part.deltas, { "linux-x64": all.deltas["linux-x64"] });
+  // nothing to merge: the feed as it was
+  const before = readFileSync(join(w.rel, "station-beta.json"), "utf8");
+  assert.equal(spawnSync(process.execPath, [script, "--merge", w.rel], { encoding: "utf8" }).status, 0);
+  assert.equal(readFileSync(join(w.rel, "station-beta.json"), "utf8"), before);
+});

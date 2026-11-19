@@ -5,9 +5,13 @@
 // counts once its owner's device signed it and a box key once its device did, both checked against the workspace's
 // lock, itself checked entry by entry here (vault/lock-check.ts).
 //
-// Every station of the workspace keeps a copy of each vault (its ciphertext and signatures), so that an agent on any of
-// them may ask for its secrets: a vault is written on the station it was made on (`at`, its host), and the latest
-// version held anywhere is brought to each station that lacks it (`spread`, `?copy=1`), as it is read or written here.
+// What this device signs is kept here first (its SQLite, ciphertext only) and is the person's own copy: every station of
+// the workspace keeps a backup of each vault (its ciphertext and signatures, never a key or the recovery words), so that
+// an agent on any of them may ask for its secrets. A vault is written on its host (`at`, the station it is on), and the
+// latest version held anywhere is brought to each station that lacks it (`spread`, `?copy=1`), as it is read or written
+// here. Where no station can take a write now (none in the workspace, none online, none holding vaults yet:
+// `localFallback`), it is kept here alone and brought to each as it is next read (`readStation`, `spreadAll`); a
+// station's refusal by the rules (a conflict, an invalid version) still fails the write.
 //
 // Topics:
 //   vaults {workspace}            the vaults this person is in, whether this device is set up, requests to approve
@@ -161,6 +165,12 @@ const arr = (v: unknown): J[] => (Array.isArray(v) ? v : []);
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const nowS = (inner: Inner) => Math.floor(inner.host.nowMs() / 1000);
 const fail = (code: string, message: string) => Effect.fail(new CoreError(code, message));
+
+/// A station write failure that means the station cannot back up this version now (offline, no link, 5xx, handing over,
+/// old station 404, or lock not pinned there yet), as opposed to a protocol conflict (`vault_conflict`) or rules refusal
+/// (`vault_invalid`, `vault_not_owner`, etc.): the device keeps what it signed locally and spreads it once a station can.
+const localFallback = (e: CoreError) =>
+  e.status === undefined || e.status >= 500 || e.status === 408 || e.status === 429 || e.status === 404 || e.code === "vault_needs_lock" || e.code === "vault_handover";
 
 function held(inner: Inner, ws: string): Held {
   const h = inner.data.record("vault", ws);
@@ -651,11 +661,11 @@ function readStation(inner: Inner, address: string): Effect.Effect<void, CoreErr
     // Those it lists no more: the latest versions it holds of them, as the versions held here show this person was in
     // them; one taking them out (or deleting it), checked, lets it go here.
     if (missing.length > 0) yield* askLatest(inner, address, missing);
-    if (list !== null) spreadAll(inner, ws);
     // This device's certificate brought to a station that lacks it (one added to the workspace, or away, since this
-    // device was set up): what its agents ask to keep is sealed to this device too, and the requests waiting there are
-    // sealed again (vault/secrets.ts `boxed`). 2026-11-03: a request a station made without it could be approved on no
-    // page of this device (「此申请提出时此设备尚未开启密钥库」).
+    // device was set up, or set up with no station to take it): what its agents ask to keep is sealed to this device
+    // too, and the requests waiting there are sealed again (vault/secrets.ts `boxed`). 2026-11-03: a request a station
+    // made without it could be approved on no page of this device (「此申请提出时此设备尚未开启密钥库」). Before the
+    // vaults are brought (`spreadAll`): a version keyed to this device is checked there against its certificate.
     if (list !== null) {
       const lock = lockOf(inner, ws);
       const self = lock instanceof CoreError ? null : me(lock, signerOf(inner));
@@ -664,6 +674,7 @@ function readStation(inner: Inner, address: string): Effect.Effect<void, CoreErr
         yield* Effect.ignore(ask(inner, address, "PUT", "/vault/boxes", mine), { log: "Unhandled", message: "vault box brought" });
       }
     }
+    if (list !== null) spreadAll(inner, ws);
     // (members' devices set up meanwhile: given the keys unsealed here)
     if (boxes.length > 0) giveKept(inner, ws);
     // (items left under an earlier key, a keying anew stopped half-way: written again under the vault's where the keys
@@ -832,13 +843,14 @@ function letGo(h: Held, id: string, station: string): void {
 }
 
 /// What `station` lacks of what the vaults' latest versions are: the vaults it holds none or an older version of, and
-/// the items it holds none or an older version of (of the vaults it will hold).
+/// the items it holds none or an older version of (of the vaults it will hold). A vault deleted that it never held
+/// (made and deleted here while no station took it) it lacks nothing of.
 function lacks(h: Pick<Held, "vaults" | "on">, items: (vault: string) => Record<string, Item>, station: string): { id: string; vault: Vault | null; items: Item[] }[] {
   return Object.values(h.vaults).flatMap((v) => {
     const have = h.on[v.id]?.[station];
     // (or the other one of its seq, or of an item's version: brought the one kept)
     const other = (held: string | undefined, sig: unknown) => held !== undefined && typeof sig === "string" && held !== sig;
-    const behind = have === undefined || have.seq < v.seq || (have.seq === v.seq && other(have.sig, v.sig?.sig));
+    const behind = have === undefined ? !v.deleted : have.seq < v.seq || (have.seq === v.seq && other(have.sig, v.sig?.sig));
     const missing = v.deleted ? [] : Object.values(items(v.id)).filter((i) => {
       const at = have?.items[i.id] ?? -1;
       return at < i.version || (at === i.version && other(have?.sigs?.[i.id], i.sig?.sig));
@@ -1917,15 +1929,26 @@ class Vaults {
     );
   }
 
-  /// A vault's version taken by its station, held here as it is.
+  /// A vault's version taken by its station, held here as it is; where no station can take it now (`station` none, or
+  /// `localFallback`), held here alone, no station said to hold it, so each is brought it as it can be (`spreadAll`,
+  /// another online at once). A station's refusal by the rules fails it.
   #putVault(next: Vault, station: string): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
-      const said = yield* self.#station(station, "PUT", "/vault/vaults", next);
-      const v = (get(said, "vault") as Vault | undefined) ?? next;
-      change(self.#inner, self.ws, (h) => holds(h, v, station, null, fits(self.#inner, self.ws)));
-      spreadAll(self.#inner, self.ws);
-      return v;
+      const inner = self.#inner;
+      if (station !== "") {
+        const res = yield* Effect.result(self.#station(station, "PUT", "/vault/vaults", next));
+        if (res._tag === "Success") {
+          const v = (get(res.success, "vault") as Vault | undefined) ?? next;
+          change(inner, self.ws, (h) => holds(h, v, station, null, fits(inner, self.ws)));
+          spreadAll(inner, self.ws);
+          return v;
+        }
+        if (!localFallback(res.failure)) return yield* Effect.fail(res.failure);
+      }
+      change(inner, self.ws, (h) => take(h, next, fits(inner, self.ws)));
+      spreadAll(inner, self.ws);
+      return next;
     });
   }
 
@@ -1981,18 +2004,21 @@ class Vaults {
     });
   }
 
-  /// This device's certificate published to the workspace's stations (each told: the members' devices hear of it);
-  /// the stations that took it (none: refused).
+  /// This device's certificate kept here, then published to the workspace's stations (each told: the members' devices
+  /// hear of it); the stations that took it. None did (none online, none in the workspace): it is brought to each as it
+  /// is next read (`readStation`).
   #publish(cert: BoxCert): Effect.Effect<string[], CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      change(inner, self.ws, (h) => {
+        if (heldOver(h.boxes[cert.device], cert, fits(inner, self.ws))) h.boxes[cert.device] = cert;
+      });
+      const stations = stationsOf(inner, self.ws);
+      if (stations.length === 0) return [];
       // (done once one took it: a station gone silent is not waited on, the others still told it; lock.ts answersOf)
-      const published = yield* answersOf(inner, stationsOf(inner, self.ws).map((s) => Effect.as(self.#station(s.id, "PUT", "/vault/boxes", cert), s.id)), tookOrRefused);
-      const took = published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
-      if (took.length === 0) return yield* fail("vault_no_station", t("core-misc.vault.noStation"));
-      change(inner, self.ws, (h) => void (h.boxes[cert.device] = cert));
-      return took;
+      const published = yield* answersOf(inner, stations.map((s) => Effect.as(self.#station(s.id, "PUT", "/vault/boxes", cert), s.id)), tookOrRefused);
+      return published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
     });
   }
 
@@ -2025,8 +2051,9 @@ class Vaults {
     return Effect.succeed(null);
   }
 
-  /// A vault of one's own, on `station` (the first of the workspace's that holds vaults, when not said): its key sealed
-  /// to each of one's devices set up, and to one's recovery key.
+  /// A vault of one's own, on `station` (the first of the workspace's that holds vaults, when not said; none: kept here,
+  /// brought to the stations as they can take it): its key sealed to each of one's devices set up, and to one's
+  /// recovery key.
   create(name: string, station: string | null): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -2037,8 +2064,7 @@ class Vaults {
       const here = mine.find((c) => c.device === who.device);
       if (!here) return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
       const h = held(inner, self.ws);
-      const on = station ?? stationsOf(inner, self.ws).find((s) => h.refused[s.id] === undefined)?.id;
-      if (!on) return yield* fail("vault_no_station", t("core-misc.vault.noStation"));
+      const on = station ?? stationsOf(inner, self.ws).find((s) => h.refused[s.id] === undefined)?.id ?? "";
       const id = `v_${ulid(inner.host)}`;
       const key = new Uint8Array(32);
       inner.host.randomBytes(key);
@@ -2154,22 +2180,32 @@ class Vaults {
   }
 
   /// An item's version taken by its station; one that was not the next (another device wrote meanwhile) has the vault's
-  /// items read again before it fails.
+  /// items read again before it fails. Where no station can take it now (the vault on none, or `localFallback`), held
+  /// here alone, no station said to hold it, so each is brought it as it can be (`spreadAll`).
   #putItem(next: Item, v: Vault): Effect.Effect<unknown, CoreError> {
     const self = this;
     const station = hostOf(this.#inner, this.ws, v.id);
     return Effect.gen(function* () {
-      const said = yield* Effect.tapError(self.#station(station, "PUT", "/vault/items", next), (e) =>
-        e.code === "vault_conflict" ? Effect.ignore(readItems(self.#inner, `${self.ws}/${station}`, v.id), { log: "Unhandled", message: "vault items read" }) : Effect.void,
-      );
-      const item = (get(said, "item") as Item | undefined) ?? next;
-      const fit = fits(self.#inner, self.ws);
-      changeItems(self.#inner, self.ws, v.id, (all) => { if (newer(item, all[item.id], fit)) all[item.id] = item; });
-      change(self.#inner, self.ws, (h) => {
-        const at = h.on[v.id]?.[station];
+      const inner = self.#inner;
+      let item = next;
+      let on = "";
+      if (station !== "") {
+        const res = yield* Effect.result(self.#station(station, "PUT", "/vault/items", next));
+        if (res._tag === "Success") {
+          item = (get(res.success, "item") as Item | undefined) ?? next;
+          on = station;
+        } else if (res.failure.code === "vault_conflict") {
+          yield* Effect.ignore(readItems(inner, `${self.ws}/${station}`, v.id), { log: "Unhandled", message: "vault items read" });
+          return yield* Effect.fail(res.failure);
+        } else if (!localFallback(res.failure)) return yield* Effect.fail(res.failure);
+      }
+      const fit = fits(inner, self.ws);
+      changeItems(inner, self.ws, v.id, (all) => { if (newer(item, all[item.id], fit)) all[item.id] = item; });
+      if (on !== "") change(inner, self.ws, (h) => {
+        const at = h.on[v.id]?.[on];
         if (at !== undefined) holdsItem(at, item);
       });
-      spreadAll(self.#inner, self.ws);
+      spreadAll(inner, self.ws);
       return { id: item.id, version: item.version };
     });
   }
@@ -2202,7 +2238,8 @@ class Vaults {
       // Written before its vault was keyed anew (`rekeyGone`), as held here: its station read again for the one
       // written since under the new key.
       if (item.epoch < v.epoch) {
-        yield* Effect.ignore(readItems(self.#inner, `${self.ws}/${hostOf(self.#inner, self.ws, v.id)}`, v.id), { log: "Unhandled", message: "vault items read" });
+        const host = hostOf(self.#inner, self.ws, v.id);
+        if (host !== "") yield* Effect.ignore(readItems(self.#inner, `${self.ws}/${host}`, v.id), { log: "Unhandled", message: "vault items read" });
         ({ v, item, as } = yield* self.#find(lock, who, id));
       }
       const name = item.listing?.name ?? v.name;

@@ -1530,9 +1530,7 @@ jobs:
       - name: Put its files (named by its version, nothing points at them until put writes the feed)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
-          sh scripts/release-put.sh --files "$RUNNER_TEMP/release"
+        run: sh scripts/release-put.sh --files "$RUNNER_TEMP/release"
       # (handed to put through the bucket, not a run artifact: scripts/release-put.sh --hand)
       - id: hand
         env:
@@ -1641,7 +1639,10 @@ jobs:
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
-      - run: bash scripts/git-history.sh ${{ github.ref == 'refs/heads/main' && 'main' || 'main arch/next' }}
+      # (a branch's history first: arch-base below asks for arch/next's. Main's is wanted only by mac-app.sh's build number
+      # once the app is built, so it is fetched while the app builds, which then starts 4-5 s sooner)
+      - if: github.ref != 'refs/heads/main'
+        run: bash scripts/git-history.sh main arch/next
       # (mbc's units and the core's bytecode, and moon's own build below: main's newest, saved by this job on main by what
       # they hold, as preview.yml's jobs keep theirs; stable.yml's Mac app restores them too)
       # mbc still validates the full compiler and every dependency; the prefix just keeps each launcher’s store.
@@ -1814,12 +1815,15 @@ jobs:
         with:
           path: apps/mbui/out/mac/AppIcon-*
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
-      # Reserve the measured post-build chain, including post-actions: 48 seconds (main's cut run took 33 s after it,
-      # 44304867702). The same diagnostics and process cleanup apply on main and on a branch.
+      - if: github.ref == 'refs/heads/main'
+        run: bash scripts/git-history.sh main
+      # Reserve the measured post-build chain, including post-actions: 40 seconds (main's cut run took 33 s after it,
+      # 44304867702, before held.sh keyed the store by its files' sizes and times instead of reading them, 6-8 s, and
+      # mac-app.sh wrote its Info.plist in one go). The same diagnostics and process cleanup apply on main and on a branch.
       - name: Finish the Mac app build
         id: finish
         run: |
-          reserve=48
+          reserve=40
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
@@ -2326,6 +2330,9 @@ jobs:
   # taken back from staged/), puts the deltas (and the station's archives under their own names: nothing points at them
   # until put writes the feed) and hands put the amended feeds (deltas-<part>-<sha>). Never a reason to hold a release
   # back: put goes on without what this did not make. The four run the same steps (deltas-steps), their part in PART.
+  # The station's are a job a platform (PLATFORM: release-deltas.ts --platform): its 4 archives' 40 pairs on one runner
+  # took 151 s at 4 bases, and 10 would not fit --deadline 200 (main 44524530919). Each hands put its part of the feed
+  # beside it (station-beta.deltas.<platform>.json), which put merges (--merge) before it puts the feeds.
   deltas-station:
     needs: [plan, station]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' }}
@@ -2333,8 +2340,13 @@ jobs:
     environment: production
     timeout-minutes: 5
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [darwin-arm64, linux-x64, linux-arm64, win32-x64]
     env:
-      PART: station
+      PART: station-${{ matrix.platform }}
+      PLATFORM: ${{ matrix.platform }}
       HANDED: ${{ needs.station.outputs.hand }}
     # (what it runs alone: scripts/release-deltas.ts and its delta.ts, release-put.sh through Cloudflare's API, javac
     # on Delta.java and JZlib for Android's; no packages, no pnpm)
@@ -2363,7 +2375,7 @@ jobs:
           sh scripts/release-put.sh --unstage "$RUNNER_TEMP/release"
       # (a deadline of its own, inside the job's: what is not made by then is left out, the job green)
       - name: Its deltas
-        run: node scripts/release-deltas.ts "$RUNNER_TEMP/release" --into "$RUNNER_TEMP/deltas" --deadline 200
+        run: node scripts/release-deltas.ts "$RUNNER_TEMP/release" --into "$RUNNER_TEMP/deltas" --deadline 200 ${PLATFORM:+--platform "$PLATFORM"}
       - name: Put them (nothing points at them until put writes the feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2441,6 +2453,9 @@ jobs:
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with: { pattern: "deltas-*-${{ github.sha }}", path: "${{ runner.temp }}/release", merge-multiple: true }
+      # (the station's platforms' deltas, each its job's, put in its feed; none, and the feed goes out as it was handed)
+      - name: The station's deltas in its feed
+        run: node scripts/release-deltas.ts --merge "$RUNNER_TEMP/release"
       - name: Put the releases (their files, then their feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2449,8 +2464,10 @@ jobs:
           sh scripts/release-put.sh "$RUNNER_TEMP/release"
           # shellcheck disable=SC2086 # names, one word each
           [ -z "$(echo $HANDED)" ] || sh scripts/release-put.sh --drop $HANDED
+      # (app.youdid.wtf is the same Worker as app.still.fail, cloud/wrangler.jsonc, whose devices and stations it tells:
+      # told once, by PUBLIC_ORIGIN, the only audience cloud/src/status.ts takes; youdid.wtf's token was refused every time)
       - name: Tell the clouds the releases are out (their stations and apps read their feeds then)
-        run: sh scripts/release-told.sh https://app.youdid.wtf https://app.still.fail
+        run: sh scripts/release-told.sh https://app.still.fail
       # monoid's cloud reads its own account's bucket, and answers for still.fail too once CLOUD_MOVED is on: the same
       # changelog put there (before, its /v1/changelog was empty, the apps' 更新日志 with it, 2026-11-13). Both side by
       # side, each with its own account's token.

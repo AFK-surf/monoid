@@ -399,6 +399,19 @@ fn overview_harness(ask : J) -> J {
         }
       }
       "advance" => w.now = w.now + num_prop(step, "ms").unwrap_or(0.0)
+      // (whether the next overview gives the decisions it keeps, judged as the station's overview judges it before
+      // asking their parts: OverviewKept::decisions_fresh, on this world's version, config, models and time)
+      "fresh" => {
+        let viewer = Viewer::of(step.get("viewer").unwrap_or(jo([])))
+        let fresh = kept.decisions_fresh(
+          viewer,
+          w.field("decisionsVersion").unwrap_or(jn(0)),
+          w.field("config").unwrap_or(Null),
+          accounts_field("decisionModels").unwrap_or(ja([])),
+          w.now,
+        )
+        reads.push(ja([js("fresh"), Bool(fresh)]))
+      }
       "overview" => {
         let viewer = Viewer::of(step.get("viewer").unwrap_or(jo([])))
         let got : Ref[J] = { val: Null, }

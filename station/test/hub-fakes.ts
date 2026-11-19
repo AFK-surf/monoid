@@ -228,7 +228,7 @@ export class FakeSession implements AgentSession {
 }
 
 export class FakeDriver implements AgentDriver {
-  readonly kind: "claude" | "codex";
+  readonly kind: "claude" | "codex" | "agy";
   sessions: FakeSession[] = [];
   /// Runtime session ids that resume fails for.
   unresumable = new Set<string>();
@@ -249,7 +249,7 @@ export class FakeDriver implements AgentDriver {
   /// What it ends of what it keeps idle, the machine short of memory, where a test has it (agents/runtime.ts `evictIdle`).
   evictIdle?: () => Promise<number>;
 
-  constructor(kind: "claude" | "codex") {
+  constructor(kind: "claude" | "codex" | "agy") {
     this.kind = kind;
   }
   runtime() {

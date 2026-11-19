@@ -3127,9 +3127,14 @@ fn Ctx::view_blit(
   let block = made.inst
   let n = block.length() / inst_size
   // (its shapes' pieces after the frame's: its bands told where they are now)
-  self.segs_whole()
-  let seg_base = (self.segs.length() / 4).to_double()
-  self.segs_put(made.segs, made.pack)
+  let seg_base = if made.segs.is_empty() {
+    0.0
+  } else {
+    self.segs_whole()
+    let base = (self.segs.length() / 4).to_double()
+    self.segs_put(made.segs, made.pack)
+    base
+  }
   while (self.ninst + n) * inst_size > self.inst.length() {
     self.grow()
   }

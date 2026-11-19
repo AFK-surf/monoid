@@ -1600,7 +1600,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   if a.compacting && a.turn is None {
     return self.compacted(a, outcome)
   }
-  let kind = str_of(outcome.value("kind")).unwrap_or("")
+  let mut kind = str_of(outcome.value("kind")).unwrap_or("")
   let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
   let mut lent_expired = false
@@ -1650,6 +1650,20 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   let stop_requested = a.stop_requested
   a.stop_requested = false
+  // A turn that already declared its end state (all_done, need_human, waiting) only needed the runtime's trailing LLM
+  // call to emit unread closing text. If that call fails with auth (an hourly borrowed token expiring right after
+  // chat_state returned), close the stale process so the next turn opens fresh, keep the declared state (its waiting
+  // timer too), and post no false auth error. A bad account still fails on the next turn, which declared nothing yet.
+  if kind == "failed" && reason == "auth" && !stop_requested && turn is Some({ declared: Some(_), .. }) {
+    if a.agent is Some(_) {
+      let agent = a.agent
+      self.set_agent(a, None)
+      self.end_process(a, agent)
+      self.notify_store(a)
+    }
+    self.log(a, "info", "trailing auth failure after the turn declared its state; closing the stale process and keeping the state", fields={ "runtime": jstr(a.runtime) })
+    kind = "completed"
+  }
   // How a turn that said no state ends (2026-11-16, the status refactor): one that posted a card still waiting ends
   // need_human on it; one that posted, asked once again, ends all_done (no ⚠️ after an answer given). And a turn its
   // background work woke, that only waits on, asks what the turn before it asked, while no person has spoken or decided

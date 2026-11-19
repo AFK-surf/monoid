@@ -447,7 +447,7 @@ pub struct Accounts {
 }
 pub async fn Accounts::account_email(Self, String, String) -> String?
 pub async fn Accounts::asked_quota(Self, String) -> @jsjson.JV?
-pub async fn Accounts::automatic_decisions_view(Self, @jsjson.JV, include_policy? : Bool, visible? : async (String) -> Bool, title? : async (String) -> String) -> @jsjson.JV
+pub async fn Accounts::automatic_decisions_view(Self, @jsjson.JV, include_policy? : Bool, visible? : async (String) -> Bool, title? : async (String) -> String, models? : @jsjson.JV) -> @jsjson.JV
 pub async fn Accounts::check(Self, String, String) -> @jsjson.JV
 pub async fn Accounts::claude_token(Self, @jsjson.JV, String?, Bool) -> @jsjson.JV
 pub async fn Accounts::close(Self) -> Unit

@@ -187,11 +187,11 @@ else
     mkdir -p "$SQUIRREL/Versions/A/Resources"
     clang -O2 -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" -o "$SQUIRREL/Versions/A/Squirrel" src/host/shipit.c
     ln -s ../Squirrel "$SQUIRREL/Versions/A/Resources/ShipIt"
-    plutil -create xml1 "$SQUIRREL/Versions/A/Resources/Info.plist"
-    for kv in "CFBundleIdentifier $ID.shipit" "CFBundleExecutable Squirrel" "CFBundleName Squirrel" "CFBundlePackageType FMWK" \
-      "CFBundleInfoDictionaryVersion 6.0" "CFBundleShortVersionString 0.1.$N" "CFBundleVersion $N"; do
-      plutil -insert "${kv%% *}" -string "${kv#* }" "$SQUIRREL/Versions/A/Resources/Info.plist"
-    done
+    # (written in one go, as the app's below)
+    python3 -c 'import plistlib, sys; id, n, out = sys.argv[1:]
+plistlib.dump({"CFBundleIdentifier": id + ".shipit", "CFBundleExecutable": "Squirrel", "CFBundleName": "Squirrel",
+  "CFBundlePackageType": "FMWK", "CFBundleInfoDictionaryVersion": "6.0", "CFBundleShortVersionString": "0.1." + n,
+  "CFBundleVersion": n}, open(out, "wb"), fmt=plistlib.FMT_XML)' "$ID" "$N" "$SQUIRREL/Versions/A/Resources/Info.plist"
     ln -s A "$SQUIRREL/Versions/Current"
     ln -s Versions/Current/Squirrel "$SQUIRREL/Squirrel"
     ln -s Versions/Current/Resources "$SQUIRREL/Resources"
@@ -206,74 +206,79 @@ fi
 MINOS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/ { b = 1 } b && $1 == "minos" && m == "" { m = $2 } END { print m }')
 [ "$MINOS" = "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "mac-app.sh: linked for macOS $MINOS, not $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1; }
 PLIST=$APPDIR/Contents/Info.plist
-rm -f "$PLIST"
-plutil -create xml1 "$PLIST"
-put() { plutil -insert "$1" "$2" "$3" "$PLIST"; }
-put CFBundleIdentifier -string "$ID"
-put CFBundleName -string "$NAME"
 # The updater replaces an installed bundle in place, preserving its old filename and its Dock links. Finder uses the
 # localized display name only when the unlocalized one matches that filename. Keep the old name in the plist solely
 # for that match; both newly downloaded and existing bundles display the new name in every supported localization.
 if [ "$VARIANT" = mbui ]; then
-  put CFBundleDisplayName -string "still.fail mbui"
+  DISPLAY="still.fail mbui"
   for locale in en zh-Hans zh_CN; do
     mkdir -p "$APPDIR/Contents/Resources/$locale.lproj"
     printf '"CFBundleName" = "%s";\n"CFBundleDisplayName" = "%s";\n' "$NAME" "$NAME" \
       > "$APPDIR/Contents/Resources/$locale.lproj/InfoPlist.strings"
   done
 else
-  put CFBundleDisplayName -string "$NAME"
+  DISPLAY=$NAME
 fi
-put CFBundleExecutable -string "$EXE"
-put CFBundleIconFile -string AppIcon
-put CFBundleIconName -string AppIcon
-put CFBundlePackageType -string APPL
-put CFBundleInfoDictionaryVersion -string 6.0
-put CFBundleShortVersionString -string "0.1.$N"
-put CFBundleVersion -string "$N"
-put CFBundleDevelopmentRegion -string zh_CN
-put LSMinimumSystemVersion -string "${MINOS:-13.0}"
-put LSApplicationCategoryType -string public.app-category.developer-tools
-put NSPrincipalClass -string NSApplication
-put NSHighResolutionCapable -bool YES
-put NSSupportsAutomaticGraphicsSwitching -bool YES
-# the core reaches stations on the local network directly when it can (as still.fail's desktop app says it)
-put NSLocalNetworkUsageDescription -string "$NAME connects straight to your stations on the local network when it can."
+# PostHog's project its window thread's hangs and the errors it got past go to (src/host/apple_reports.m), as iOS's
+# (ios-core.sh) and Android's: the file STILLFAIL_POSTHOG names ({host, key}: .github/release-desktop.sh writes it from
+# POSTHOG_JSON); still.fail's own app alone. Without it the app sends nothing and shows no switch for it.
+ph_host= ph_key=
+if [ -n "${STILLFAIL_POSTHOG:-}" ] && [ -n "$OWN" ]; then
+  ph_host=$(plutil -extract host raw -o - "$STILLFAIL_POSTHOG") && ph_key=$(plutil -extract key raw -o - "$STILLFAIL_POSTHOG") \
+    && [ -n "$ph_key" ] || { echo "mac-app.sh: no PostHog key in $STILLFAIL_POSTHOG" >&2; exit 1; }
+fi
+# The Info.plist written in one go: plutil's 30-odd inserts, each its own process reading and writing the file, were
+# 2-3 s of the Mac app's job.
+rm -f "$PLIST"
+ID=$ID NAME=$NAME DISPLAY=$DISPLAY EXE=$EXE N=$N MINOS=$MINOS FEED=$FEED OWN=$OWN BETA=$BETA VARIANT=$VARIANT \
+  PH_HOST=$ph_host PH_KEY=$ph_key python3 - "$PLIST" "${SCHEMES[@]}" <<'PY'
+import os, plistlib, sys
+e = os.environ
+p = {
+    "CFBundleIdentifier": e["ID"],
+    "CFBundleName": e["NAME"],
+    "CFBundleDisplayName": e["DISPLAY"],
+    "CFBundleExecutable": e["EXE"],
+    "CFBundleIconFile": "AppIcon",
+    "CFBundleIconName": "AppIcon",
+    "CFBundlePackageType": "APPL",
+    "CFBundleInfoDictionaryVersion": "6.0",
+    "CFBundleShortVersionString": "0.1." + e["N"],
+    "CFBundleVersion": e["N"],
+    "CFBundleDevelopmentRegion": "zh_CN",
+    "LSMinimumSystemVersion": e["MINOS"] or "13.0",
+    "LSApplicationCategoryType": "public.app-category.developer-tools",
+    "NSPrincipalClass": "NSApplication",
+    "NSHighResolutionCapable": True,
+    "NSSupportsAutomaticGraphicsSwitching": True,
+    # the core reaches stations on the local network directly when it can (as still.fail's desktop app says it)
+    "NSLocalNetworkUsageDescription": e["NAME"] + " connects straight to your stations on the local network when it can.",
+}
 # where its newer builds come from (src/stillfail main: MBUI_UPDATE_FEED; the host installs them: mac_app.m Updates),
 # the feed beta.sh mac publishes; built in still.fail's desktop app's place, still.fail's own (the device named as that
 # app named it: src/sfcore/signin.mbt MBUI_OWN), a core on the test channel a beta's (MBUI_BETA). The system gives these
 # to the app opened from the Finder, the Dock or `open`.
-plutil -insert LSEnvironment -dictionary "$PLIST"
-put LSEnvironment.MBUI_UPDATE_FEED -string "$FEED"
-[ -z "$OWN" ] || put LSEnvironment.MBUI_OWN -string 1
-[ -z "$BETA" ] || put LSEnvironment.MBUI_BETA -string 1
-# PostHog's project its window thread's hangs and the errors it got past go to (src/host/apple_reports.m), as iOS's
-# (ios-core.sh) and Android's: the file STILLFAIL_POSTHOG names ({host, key}: .github/release-desktop.sh writes it from
-# POSTHOG_JSON); still.fail's own app alone. Without it the app sends nothing and shows no switch for it.
-if [ -n "${STILLFAIL_POSTHOG:-}" ] && [ -n "$OWN" ]; then
-  ph_host=$(plutil -extract host raw -o - "$STILLFAIL_POSTHOG") && ph_key=$(plutil -extract key raw -o - "$STILLFAIL_POSTHOG") \
-    && [ -n "$ph_key" ] || { echo "mac-app.sh: no PostHog key in $STILLFAIL_POSTHOG" >&2; exit 1; }
-  put StillfailPosthogHost -string "$ph_host"
-  put StillfailPosthogKey -string "$ph_key"
-fi
+env = p["LSEnvironment"] = {"MBUI_UPDATE_FEED": e["FEED"]}
+if e["OWN"]:
+    env["MBUI_OWN"] = "1"
+if e["BETA"]:
+    env["MBUI_BETA"] = "1"
+if e["PH_KEY"]:
+    p["StillfailPosthogHost"] = e["PH_HOST"]
+    p["StillfailPosthogKey"] = e["PH_KEY"]
 # monoid's: its cloud, its name before the core says it, its station's own directory and service (~/.monoid,
 # build.monoid.station: cloud/src/install.ts)
-case $VARIANT in
-  monoid | monoid-beta)
-    put LSEnvironment.MBUI_CLOUD -string https://app.monoid.build
-    put LSEnvironment.MBUI_PRODUCT -string monoid
-    put LSEnvironment.MBUI_STATION_ID -string monoid
-    put LSEnvironment.MBUI_STATION_LABEL -string build.monoid.station
-    ;;
-esac
+if e["VARIANT"] in ("monoid", "monoid-beta"):
+    env["MBUI_CLOUD"] = "https://app.monoid.build"
+    env["MBUI_PRODUCT"] = "monoid"
+    env["MBUI_STATION_ID"] = "monoid"
+    env["MBUI_STATION_LABEL"] = "build.monoid.station"
 # the links that open it (stillfail://o/…, as still.fail's desktop app takes them: mac_app.m, then sfapp's links)
-if [ ${#SCHEMES[@]} -gt 0 ]; then
-  plutil -insert CFBundleURLTypes -array "$PLIST"
-  plutil -insert CFBundleURLTypes.0 -dictionary "$PLIST"
-  put CFBundleURLTypes.0.CFBundleURLName -string "$NAME"
-  plutil -insert CFBundleURLTypes.0.CFBundleURLSchemes -array "$PLIST"
-  for i in "${!SCHEMES[@]}"; do put "CFBundleURLTypes.0.CFBundleURLSchemes.$i" -string "${SCHEMES[$i]}"; done
-fi
+if sys.argv[2:]:
+    p["CFBundleURLTypes"] = [{"CFBundleURLName": e["NAME"], "CFBundleURLSchemes": sys.argv[2:]}]
+with open(sys.argv[1], "wb") as f:
+    plistlib.dump(p, f, fmt=plistlib.FMT_XML)
+PY
 plutil -lint "$PLIST" > /dev/null
 
 # A standalone build can be opened ad hoc. beta.sh immediately runs `sign` on its release bundle: do not first

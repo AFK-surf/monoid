@@ -889,6 +889,64 @@ test("the overview: each viewer's, field for field, the decisions kept and their
   assert.equal(JSON.stringify(moon.answers), JSON.stringify(ts.answers), "the same text");
 });
 
+test("the overview's decisions: kept as long as OverviewKept.decisions_fresh says, so the station asks their parts only then", { skip }, async () => {
+  const viewerOf = (email: string, workspace: string, more: Json = {}) => ({ sub: `s-${email}`, email, name: email, role: "member", workspace, device: "d", ...more });
+  const owner = viewerOf("o@x", "w1", { role: "owner", home: true });
+  const joined = viewerOf("j@x", "w2", { role: "admin", home: false });
+  const world = {
+    now: 1_000_000,
+    dataDir: "/data",
+    config: { automaticDecisions: { on: true } },
+    counts: { total: 0, byConnect: {} },
+    decisionsVersion: 3,
+    sessions: {},
+    readable: [],
+    accounts: { ready: true, profiles: [], logins: [], apiProviders: [], machineLogins: [], decisionModels: ["m1"], checks: [] },
+  };
+  const script: Json[] = [
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "advance", ms: 59_999 },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "advance", ms: 1 },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "world", set: { decisionsVersion: 4 } },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "world", set: { config: { automaticDecisions: { on: false } } } },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "world", set: { config: { automaticDecisions: { on: false }, language: "en" } } },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "world", set: { accounts: { ...world.accounts, decisionModels: ["m1", "m2"] } } },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+    { do: "fresh", viewer: joined },
+    { do: "overview", viewer: joined },
+    { do: "fresh", viewer: joined },
+    { do: "overview", viewer: joined },
+    { do: "fresh", viewer: owner },
+    { do: "overview", viewer: owner },
+  ];
+  const moon = await mb({ op: "overview", world, script });
+  assert.equal(moon.error, undefined, `the program failed: ${moon.error}`);
+  for (const [i, a] of moon.answers.entries()) assert.ok(a.value !== undefined, `overview ${i}: ${JSON.stringify(a)}`);
+  // each judgement, and whether the overview after it made the decisions again (asked the accounts' view)
+  const judged: { fresh: boolean; made: boolean }[] = [];
+  for (const r of moon.reads as Json[]) {
+    if (r[0] === "fresh") judged.push({ fresh: r[1], made: false });
+    else if (r[0] === "decisions" && judged.length > 0) judged[judged.length - 1]!.made = true;
+    else assert.notEqual(r[0], "prepareDecisions", "the accounts are ready: nothing prepared");
+  }
+  assert.deepEqual(judged.map((j) => j.fresh), [false, true, true, false, false, false, true, false, false, true, true]);
+  for (const [i, j] of judged.entries()) assert.equal(j.made, !j.fresh, `judgement ${i}: fresh ${j.fresh}, made again ${j.made}`);
+});
+
 test("the local status: what it says, how a request is routed, a watch told each change once", { skip }, async () => {
   const inputs: Json[] = [
     { version: "0.1.9", cloud: null, reached: false, running: [], processes: [], waiting: [] },

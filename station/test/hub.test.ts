@@ -1072,6 +1072,100 @@ test("claude auth does not restart stopped, held or declared work", async () => 
   }
 });
 
+/// A rig whose `cl` connect runs `runtime`: Claude Code as it is, or the Antigravity CLI on a fake driver of its own.
+const authRig = async (runtime: "claude" | "agy") => {
+  const r = new Rig();
+  if (runtime === "claude") return { r, driver: r.claude };
+  const driver = new FakeDriver("agy");
+  await r.hub.shutdown();
+  r.edit((raw) => {
+    raw.profiles.push({ id: "ag", runtime: "agy", home: "homes/ag", access: { kind: "api-provider", provider: "google", key: "gemini-key" } });
+    raw.connects.find((c: any) => c.id === "cl").bind = { runtime: "agy" };
+  });
+  r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [r.claude, r.codex, driver] });
+  return { r, driver };
+};
+const UNAUTHENTICATED = "⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials.";
+
+test("a 401 on the trailing request after the turn said it waits keeps the wait, ends the process and says nothing; the next process's own 401 is still retried, then said", async (t) => {
+  for (const runtime of ["claude", "agy"] as const) {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+    const { r, driver } = await authRig(runtime);
+    const m = message();
+    await r.accept(m);
+    await settle();
+    const first = driver.last();
+    const key = first.options.route;
+    await r.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "CI" });
+    // Its hourly borrowed token ran out just after chat_state answered: the runtime's last request is refused.
+    first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.ok(first.disposed, `${runtime}: the process with the stale sign-in ends`);
+    assert.equal(driver.count(), 1, `${runtime}: not retried, the turn's work was done`);
+    assert.ok(!r.chat.texts().some((s) => s.includes("认证失败")), `${runtime}: no auth failure said: ${r.chat.texts()}`);
+    const last = r.store.lastTurn(key)!;
+    assert.deepEqual([last.outcome, last.declared, last.waitSeconds], ["completed", "waiting", 600], runtime);
+    t.mock.timers.tick(599_000);
+    await settle();
+    assert.equal(driver.count(), 1, `${runtime}: not before its time`);
+    t.mock.timers.tick(11_000);
+    await settle();
+    const second = driver.last();
+    assert.equal(driver.count(), 2, `${runtime}: its wait brings it back in a new process`);
+    assert.equal(second.options.resume, first.sessionId);
+    assert.ok(second.prompts[0]!.includes("waiting on work you started (600 seconds)"), second.prompts[0]);
+    // A sign-in that is really bad fails the next turn too, which declared nothing: retried once, then said.
+    second.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.equal(driver.count(), 3, runtime);
+    assert.deepEqual(driver.last().prompts.map(untimed), [GO_ON_AFTER_AUTH]);
+    driver.last().end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.equal(driver.count(), 3, `${runtime}: a persistent auth failure stops`);
+    assert.ok(r.chat.lastText()!.startsWith("⚠️ 账号认证失败"), r.chat.lastText());
+    await r.close();
+    t.mock.timers.reset();
+  }
+});
+
+test("a 401 on the trailing request after all_done ends the turn done, its process ended, nothing said", async () => {
+  for (const runtime of ["claude", "agy"] as const) {
+    const { r, driver } = await authRig(runtime);
+    await r.accept(message());
+    await settle();
+    const first = driver.last();
+    const key = first.options.route;
+    await r.call(key, "chat_state", { kind: "all_done", done: "测试任务已完成，没有剩余工作" });
+    first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.ok(first.disposed, runtime);
+    assert.equal(driver.count(), 1, runtime);
+    assert.ok(!r.chat.texts().some((s) => s.includes("认证失败")), `${runtime}: ${r.chat.texts()}`);
+    const last = r.store.lastTurn(key)!;
+    assert.deepEqual([last.outcome, last.ending], ["completed", "all_done"], runtime);
+    await r.close();
+  }
+});
+
+test("a stopped turn that had said it waits stays stopped on a 401: no wait is kept", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const r = new Rig();
+  await r.accept(message());
+  await settle();
+  const first = r.claude.last();
+  const key = first.options.route;
+  await r.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "CI" });
+  await r.hub.stop(key);
+  first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+  await settle();
+  assert.notEqual(r.store.lastTurn(key)!.outcome, "completed");
+  assert.equal(r.store.lastTurn(key)!.waitSeconds, null);
+  t.mock.timers.tick(700_000);
+  await settle();
+  assert.equal(r.claude.count(), 1, "nothing brings it back");
+  await r.close();
+});
+
 test("claude auth's retry budget and whom the turn is for survive a handover", async () => {
   const r = new Rig();
   await r.accept(message());
