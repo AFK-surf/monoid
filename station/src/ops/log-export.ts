@@ -89,8 +89,9 @@ export type LogExportOptions = {
   station: () => string | null;
   version: () => string;
   home?: string;
-  /// What each batch says the station runs on and is: the system as Node names it (darwin, linux, win32), the CPU's
-  /// architecture, the engine (nodejs, moonbit) and the station's role (station, or rig: one that only runs tasks).
+  /// What each batch says the station runs on and is (main.ts gives them, each left out where not given): the system
+  /// as Node names it, the CPU's architecture, the engine (nodejs, moonbit) and the station's role (station, or rig:
+  /// one that only runs tasks).
   os?: string;
   arch?: string;
   runtime?: string;
@@ -144,10 +145,10 @@ export class LogExport {
     const records = lines.map((l) => record(l, this.home));
     if (dropped > 0) records.push(record({ ms: wall.now(), level: "WARN", at: "telemetry", message: "log lines dropped before they could be sent", fields: { dropped } }, this.home));
     const o = this.options;
+    const described = [["os.type", o?.os], ["host.arch", o?.arch], ["process.runtime.name", o?.runtime], ["stillfail.role", o?.role]] as const;
     const resource = [
       attribute("service.name", "stillfail-station"), attribute("service.version", o?.version() ?? ""), attribute("stillfail.station", station),
-      attribute("os.type", o?.os ?? process.platform), attribute("host.arch", o?.arch ?? process.arch),
-      attribute("process.runtime.name", o?.runtime ?? "nodejs"), attribute("stillfail.role", o?.role ?? "station"),
+      ...described.flatMap(([k, v]) => (v === undefined ? [] : [attribute(k, v)])),
     ];
     return JSON.stringify({ resourceLogs: [{ resource: { attributes: resource }, scopeLogs: [{ scope: { name: "stillfail-station" }, logRecords: records }] }] });
   }
