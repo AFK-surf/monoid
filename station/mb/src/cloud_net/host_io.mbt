@@ -77,19 +77,53 @@ pub fn host_http(host : @host.Host) -> Http {
 pub fn host_ws(host : @host.Host) -> WsIO {
   {
     open: (url, headers, over, events) => {
-      let conn = @host_world.ws_connect(
-        host,
-        url,
-        "cloud",
-        headers=headers.pairs,
-        entry=over.map(s => (s.host, s.port)),
-        on_open=events.open,
-        on_message=events.message,
-        on_error=events.error,
-        on_unexpected=events.unexpected,
-        on_close=events.close,
-      )
-      { send: conn.send, close: conn.close, terminate: conn.close, is_open: conn.is_open }
+      let handle : Ref[@host_world.WsHandle?] = Ref(None)
+      let ended = Ref(false)
+      let end = (code : Int, reason : String) => if !ended.val {
+        ended.val = true
+        (events.close)(code, reason)
+      }
+      let fiber = host.rt.fork(async fn() {
+        let conn = @host_world.ws_open(
+          host,
+          url,
+          "cloud",
+          headers=headers.pairs,
+          entry=over.map(s => (s.host, s.port)),
+          on_message=events.message,
+          on_error=events.error,
+          on_close=errored => end(if errored { 1006 } else { 1005 }, ""),
+        ) catch {
+          e => {
+            let words = @host_world.shell_error_msg(e)
+            if words.has_prefix("websocket refused (") {
+              let digits = words.unsafe_substring(start=19, end=words.length()).iter().take_while(c => c >= '0' && c <= '9').collect()
+              if (try Some(@string.parse_int(String::from_array(digits))) catch { _ => None }) is Some(status) {
+                (events.unexpected)(status)
+              }
+            }
+            (events.error)(words)
+            end(1006, "")
+            return
+          }
+        }
+        handle.val = Some(conn)
+        (events.open)()
+      })
+      let shut = fn() {
+        if handle.val is Some(c) {
+          handle.val = None
+          (c.close)()
+        }
+        fiber.interrupt()
+        end(1006, "")
+      }
+      {
+        send: t => if handle.val is Some(c) { (c.send)(t) },
+        close: shut,
+        terminate: shut,
+        is_open: () => handle.val is Some(_) && !ended.val,
+      }
     },
   }
 }
@@ -97,7 +131,10 @@ pub fn host_ws(host : @host.Host) -> WsIO {
 ///|
 /// A file the shell writes whole (`fs.put`, truncated, made private); read back by `fs.bytes` once, as it starts.
 pub fn host_kept(host : @host.Host, path : String) -> Kept {
-  let text = @host_world.fs_read_bytes_sync(host, path).map(b => @utf8.decode_lossy(b))
+  let text = match (try Some(host.shell_sync("fs.bytes", { "path": Json::string(path) })) catch { _ => None }) {
+    Some(String(hex)) => Some(@utf8.decode_lossy(@host_world.hex_bytes(hex)))
+    _ => None
+  }
   let writing : @effect.Queue[String] = @effect.Queue::unbounded()
   ignore(
     host.rt.fork_daemon("cloud file writes", on_error=e => @host.note("\{path} no longer written: \{error_words(e)}"), async fn() {

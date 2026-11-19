@@ -7,8 +7,9 @@
 ///|
 /// The clock on `host`'s runtime: `wall` the wall's time (ms) as the station told it as the program started.
 pub fn host_clock(host : @host.Host, wall : Double) -> Clock {
+  let steady = @host.now()
   {
-    now: @host_world.steady_wall_clock(wall),
+    now: () => wall + (@host.now() - steady).to_double(),
     after: (ms, f) => @host_world.after_async(host, ms.to_int(), f, swallow_error=true),
     spawn: f => @host_world.spawn_daemon(host, "browser", f, silent=true),
     sleep: async fn(ms) { @host_world.sleep_ms(ms.to_int()) },
@@ -51,7 +52,7 @@ pub fn host_files(host : @host.Host) -> Files {
   let put = async fn(path : String, text_ : String, mode : Int) {
     wrap_fs(async fn() {
       @host_world.fs_write(host, path, text_)
-      @host_world.fs_chmod(host, path, mode)
+      ignore(@host_world.shell_call(host, false, "fs.chmod", { "path": Json::string(path), "mode": Json::number(mode.to_double()) }))
     })
   }
   // (a file whose directory is not there is not made, as node:fs's open says ENOENT)
@@ -97,12 +98,12 @@ pub fn host_files(host : @host.Host) -> Files {
 /// Chrome's DevTools over the shell's WebSocket, for `connect_cdp`.
 pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket {
   async fn(url, link) {
-    let conn = @host_world.ws_open_sync(
+    let conn = @host_world.ws_open(
       host,
       url,
       "browser",
       on_message=t => link.heard(t),
-      on_close=() => link.ended(),
+      on_close=_ => link.ended(),
     ) catch {
       e => raise fail_("the browser's DevTools did not answer at \{url}: \{@host_world.shell_error_msg(e)}")
     }

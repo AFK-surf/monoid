@@ -11,27 +11,13 @@ pub fn after(@host.Host, Int32, () -> Unit) -> () -> Unit
 
 pub fn after_async(@host.Host, Int32, async () -> Unit, swallow_error? : Bool) -> () -> Unit
 
-pub fn after_cb(@host.Host, Int32, () -> Unit) -> () -> Unit
-
 pub fn eexist_msg(String, String) -> String
 
 pub fn enoent_msg(String, String) -> String
 
-pub fn every(@host.Host, Int32, () -> Unit) -> () -> Unit
-
-pub fn every_async(@host.Host, Int32, async () -> Unit) -> () -> Unit
-
-pub async fn fs_chmod(@host.Host, String, Int32, sync? : Bool) -> Unit
-
-pub async fn fs_copy(@host.Host, String, String, sync? : Bool) -> Unit
+pub fn every(@host.Host, Int32, async () -> Unit, swallow_error? : Bool) -> () -> Unit
 
 pub async fn fs_exists(@host.Host, String, lstat? : Bool, sync? : Bool) -> Bool
-
-pub fn fs_exists_sync(@host.Host, String) -> Bool
-
-pub async fn fs_hash(@host.Host, String, sync? : Bool) -> String?
-
-pub async fn fs_link(@host.Host, String, String, sync? : Bool) -> Bool
 
 pub async fn fs_lstat(@host.Host, String, sync? : Bool) -> LstatInfo?
 
@@ -45,15 +31,11 @@ pub async fn fs_put_whole(@host.Host, String, Bytes, mode? : Int32) -> Unit
 
 pub async fn fs_read_bytes(@host.Host, String, from? : Double, length? : Double, sync? : Bool) -> Bytes?
 
-pub fn fs_read_bytes_sync(@host.Host, String) -> Bytes?
-
 pub async fn fs_read_text(@host.Host, String, sync? : Bool) -> String?
 
 pub fn fs_read_text_sync(@host.Host, String) -> String?
 
 pub async fn fs_readdir(@host.Host, String, sync? : Bool) -> Array[String]?
-
-pub async fn fs_readdir_types(@host.Host, String, sync? : Bool) -> Array[DirEntry]?
 
 pub async fn fs_readlink(@host.Host, String, sync? : Bool) -> String?
 
@@ -63,33 +45,17 @@ pub async fn fs_remove(@host.Host, String, recursive? : Bool, sync? : Bool) -> U
 
 pub async fn fs_rename(@host.Host, String, String, sync? : Bool) -> Unit
 
-pub async fn fs_stat_kind(@host.Host, String, lstat? : Bool, sync? : Bool) -> String?
-
 pub async fn fs_symlink(@host.Host, String, String, sync? : Bool) -> Unit
 
 pub async fn fs_write(@host.Host, String, String, sync? : Bool) -> Unit
 
 pub fn hex_bytes(String) -> Bytes
 
-pub fn json_field(@json.Json, String) -> @json.Json?
-
-pub fn json_num(@json.Json, String) -> Double?
-
-pub fn json_str(@json.Json) -> String?
-
-pub fn json_str_field(@json.Json, String) -> String?
-
 pub fn os_code(String) -> String
-
-pub fn random_bytes(@host.Host, Int32) -> Bytes
 
 pub fn random_hex(@host.Host, Int32) -> String
 
-pub fn random_int(@host.Host, Int32, Int32) -> Int32
-
 pub async fn shell_call(@host.Host, Bool, String, Map[String, @json.Json]) -> @json.Json
-
-pub async fn shell_call_bytes(@host.Host, String, Map[String, @json.Json], Bytes) -> @json.Json
 
 pub fn shell_error_msg(Error) -> String
 
@@ -97,20 +63,11 @@ pub async fn sleep_ms(Int32) -> Unit
 
 pub fn spawn_daemon(@host.Host, String, async () -> Unit, silent? : Bool) -> Unit
 
-pub fn steady_wall_clock(Double) -> () -> Double
-
-pub fn ws_connect(@host.Host, String, String, headers? : Array[(String, String)], entry? : (String, Int32)?, on_open~ : () -> Unit, on_message~ : (String) -> Unit, on_error~ : (String) -> Unit, on_unexpected? : (Int32) -> Unit, on_close~ : (Int32, String) -> Unit) -> WsConn
-
-pub async fn ws_open_sync(@host.Host, String, String, headers? : Array[(String, String)], entry? : (String, Int32)?, on_message~ : (String) -> Unit, on_close~ : () -> Unit) -> WsConn
+pub async fn ws_open(@host.Host, String, String, headers? : Array[(String, String)], entry? : (String, Int32)?, on_message~ : (String) -> Unit, on_error? : (String) -> Unit, on_close~ : (Bool) -> Unit) -> WsHandle
 
 // Errors
 
 // Types and methods
-pub(all) struct DirEntry {
-  name : String
-  dir : Bool
-}
-
 pub(all) struct LstatInfo {
   kind : String
   size : Double
@@ -124,10 +81,9 @@ pub(all) struct MetaInfo {
   mtime_ms : Double
 }
 
-pub(all) struct WsConn {
+pub(all) struct WsHandle {
   send : (String) -> Unit
   close : () -> Unit
-  is_open : () -> Bool
 }
 
 // Type aliases

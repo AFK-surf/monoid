@@ -64,7 +64,7 @@ pub fn host_clock(host : @host.Host) -> Clock {
   {
     now: () => @host.epoch_ms(),
     after: (ms, f) => @host_world.after(host, ms, f),
-    every: (ms, f) => @host_world.every_async(host, ms, f),
+    every: (ms, f) => @host_world.every(host, ms, f, swallow_error=true),
     spawn: f => @host_world.spawn_daemon(host, "move_coord", f),
   }
 }

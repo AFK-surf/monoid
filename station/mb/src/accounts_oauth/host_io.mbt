@@ -26,7 +26,7 @@ pub fn host_io(host : @host.Host) -> Io {
     wall: () => @host.epoch_ms(),
     sleep: ms => @host_world.sleep_ms(ms),
     after: (ms, f) => @host_world.after(host, ms.to_int(), f),
-    every: (ms, f) => @host_world.every(host, ms.to_int(), f),
+    every: (ms, f) => @host_world.every(host, ms.to_int(), async fn() { f() }),
     spawn: f => @host_world.spawn_daemon(host, "accounts_oauth", f),
     fetch: req => {
       let r = host.fetch(
