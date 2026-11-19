@@ -566,7 +566,12 @@ for t in $targets; do
           # main f855908e (44401157133) cut app 4/4 at 318 s while contrast took 157 s, 1/4 185 s, 3/4 207 s and
           # 2/4 225 s. kept_rows 3-4 and send_steady's last two ranges moved to contrast. About 145 s of pages
           # moved from group 4 to group 1. By the table: 1103, 643, 763 and 643 s of pages (was 988, 648, 728, 788).
-          *) specs="4,4,220,1 4,4,680,1 4,4,560,1 4,4,680,1" ;;
+          # fdb3787b0 (44553344108, -O0) cut app 1/4 at 308 s: its 101 page files ran 296 s beside 447 s of other
+          # runs (chat_page_nodes 22-44, chat_drive_parity 0-4 and preview_tree's halves), while 2/4 took 176 s,
+          # 3/4 157 s and 4/4 124 s. main b7ddfb6b07 (44553113433, -O2): 205, 172, 235 and 128 s. Group 1 reckoned
+          # 500 and group 4 400 (group 2 600): about 300 s of pages moved from group 1 to groups 4 and 2. By the
+          # table: 757, 657, 697 and 856 s of pages (was 1057, 597, 717, 596).
+          *) specs="4,4,500,1 4,4,600,1 4,4,560,1 4,4,400,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
