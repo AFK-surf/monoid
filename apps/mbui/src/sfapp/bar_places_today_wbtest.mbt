@@ -25,7 +25,7 @@ let today_bar : Array[String] = ["chats", "connects", "usage", "profiles"]
 ///|
 /// The bar's places' middles in the phone's window (390 by 844), and its middle's height.
 fn today_bar_at() -> (Array[Double], Double) {
-  (bar_centres(390.0 - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), 844.0 - 22.0 - 28.0)
+  (bar_centres(390.0, 1.0, 4), bar_places_y())
 }
 
 ///|
@@ -428,7 +428,7 @@ test "bar places today: each place made as nodes left for another and come back 
     assert_eq(mark_y(), left_y, msg="\{place}: its list where it was left")
     assert_eq(what(back), what(left), msg="\{place}: what shows and what is chosen as left")
     match place {
-      "chats" => assert_eq(mark_y(), "[318]", msg="Home's list where it was left")
+      "chats" => assert_eq(mark_y(), "[304]", msg="Home's list where it was left")
       "usage" => {
         // (scrolled as left: not at its top, where 用量 opens on its activity at 340)
         assert_false(left.has_prefix("mid Some((\"Token 活跃度\", 340))"), msg="用量 scrolled before it was left: \{left}")

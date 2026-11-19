@@ -61,7 +61,7 @@ fn daily_new_chat(s : Screen, scale : Double, words : String) -> Unit raise {
   } else {
     // (小屏: the bar's 令, at its middle, as newchat_send_wbtest's new_chat_sent)
     let (_, y) = bar_places_at()
-    t.tap(s.w / 2.0, y - 28.0 - 4.0)
+    t.tap(s.w - fab_gap - drop / 2.0, y - pill_mid - fab_gap - drop / 2.0)
   }
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")

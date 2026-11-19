@@ -162,7 +162,7 @@ fn home_again_way(c : @sfrealsize.RealSizeChanging, name : String, scope : Strin
 /// bar_places_at's), and its middle's height.
 fn home_again_bar(win? : (String, Double, Double, Int, String) = home_again_window) -> (Array[Double], Double) {
   let (_, w, h, _, _) = win
-  (@sfapp.bar_centres(w - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), h - 22.0 - 28.0)
+  @sfapp.bar_places_in(w, h)
 }
 
 ///|

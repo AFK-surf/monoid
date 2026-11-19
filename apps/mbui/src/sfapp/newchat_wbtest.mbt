@@ -1,28 +1,42 @@
 // The bottom bar, the sheets and a new chat over the fixture (newchat_fixture.mbt), 390 × 844.
 
 ///|
-/// The bar's places' middles in the window with the notch open (the chats' pages), and its middle's height.
+/// The bar's places' middles in the window, 390 wide and 844 high, and the height of their icons' middles.
 fn bar_places_at() -> (Array[Double], Double) {
-  (bar_centres(390.0 - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), 844.0 - 22.0 - 28.0)
+  (bar_centres(390.0, 1.0, 4), bar_places_y())
 }
 
 ///|
-test "the bar: a finger held still on it a moment has the ball a lens of liquid glass; a tap none; let go, the ball" {
+/// The height of the bar's places' icons' middles in a window 844 high (the bar at its foot, over the system's
+/// navigation bar).
+fn bar_places_y() -> Double {
+  844.0 - nav_foot() - bar_track + pill_mid
+}
+
+///|
+/// The height of the icons' middles of the panel's row `n` (0 the top one) in a window 844 high, the panel with
+/// `rows` rows (the bars but this one).
+fn bar_row_y(n : Int, rows : Int) -> Double {
+  844.0 - nav_foot() - bar_track - rows.to_double() * bar_row - over + over + n.to_double() * bar_row + pill_mid
+}
+
+///|
+test "the bar: a finger held still on it a moment takes the pill (a little larger); a tap does not; let go, the pill again" {
   let t = tester("home")
   let (xs, y) = bar_places_at()
-  let lensed = fn() { t.drawn_glass().iter().any(fn(g) { g.4 == 6 }) }
+  let held = fn() { bar.held.at(t.time()).0 }
   t.tap(xs[0], y)
   t.run_for(bar_hold_ms)
-  assert_false(lensed())
+  assert_true(held() < 0.01)
   t.press_at(xs[0], y)
   t.run_for(bar_hold_ms)
-  // (the frame at its time takes the ball; its lens grows from there)
+  // (the frame at its time takes the pill)
   t.frame()
   to_bar_rest(t)
-  assert_true(lensed())
+  assert_true(held() > 0.99)
   t.release(xs[0], y)
   to_bar_rest(t)
-  assert_false(lensed())
+  assert_true(held() < 0.01)
   assert_true(t.find("整理发布清单") is Some(_))
 }
 
@@ -49,7 +63,7 @@ test "the bar: holding a place hides 令 or ＋, moving keeps it hidden, and let
       t.drawn_rects()
       .filter(fn(r) {
         (r.2 - drop).abs() < 0.1 && (r.3 - drop).abs() < 0.1 &&
-        (r.0 - (195.0 - drop / 2.0)).abs() < 0.1 && r.1 > 600.0 && r.4 >> 8 == ink >> 8
+        (r.0 - (390.0 - fab_gap - drop)).abs() < 0.1 && r.1 > 600.0 && r.4 >> 8 == ink >> 8
       })
       .fold(init=0L, fn(a, r) { if (r.4 & 0xFFL) > a { r.4 & 0xFFL } else { a } })
     }
@@ -68,7 +82,7 @@ test "the bar: holding a place hides 令 or ＋, moving keeps it hidden, and let
     t.run_for(held_frame_ms)
     assert_true(disc_alpha() > 0L, msg="\{action} released")
     if action == "ling" {
-      t.tap(195.0, y - 28.0 - 4.0)
+      t.tap(390.0 - fab_gap - drop / 2.0, y - pill_mid - fab_gap - drop / 2.0)
       assert_true(app.nav.risen(), msg="令 works after letting go")
     }
   }
@@ -135,7 +149,7 @@ test "文件 and 用量 at the bar's top, their gear tapped: as 设置 comes in 
 }
 
 ///|
-test "the panel drawn up by a finger: the bar and the panel drawn up clear of the finger, a finger taken where they are laid out; let go, back down" {
+test "the panel drawn up by a finger: the bar staying at the window's foot, a finger taken where the rows are laid out" {
   let t = tester("home")
   let (xs, y) = bar_places_at()
   // the bar's glass (as wide as the bar: not the ball's, nor the lens'): where its foot is drawn
@@ -150,10 +164,10 @@ test "the panel drawn up by a finger: the bar and the panel drawn up clear of th
   t.run_for(@ui.move_most_ms)
   let held = foot()
   // a finger's place is where the rows are laid out: let go over the other bar's row, that bar
-  t.release(xs[0], 844.0 - 22.0 - 132.0 + 20.0 + 28.0)
+  t.release(xs[0], bar_row_y(0, 1))
   // (the test's end: all of the bar at rest, the bar chosen landed)
   t.run_for(bar.rest() - t.time())
-  assert_eq(((rest - held).round(), (rest - foot()).round()), (59.0, 0.0))
+  assert_eq(((rest - held).round(), (rest - foot()).round()), (0.0, 0.0))
   assert_true(app.nav.top() == Place("remote"))
 }
 
@@ -168,7 +182,7 @@ test "the bar: drawn up, the panel of the other bar; let go on its first place, 
   if app.nav.top() == Home {
     assert_true(bar.mode.get())
     // the row of the other bar: its first place
-    t.tap(xs[0], 844.0 - 22.0 - 132.0 + 20.0 + 28.0)
+    t.tap(xs[0], bar_row_y(0, 1))
   }
   assert_true(app.nav.top() == Place("remote"))
   assert_true(t.find("远程") is Some(_))
@@ -242,7 +256,7 @@ test "a new chat: 令 raises it; the first message makes the chat and the page b
     let t = tester("home")
     let (_, y) = bar_places_at()
     // 令 stands over the bar's middle
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(390.0 - fab_gap - drop / 2.0, y - pill_mid - fab_gap - drop / 2.0)
     assert_eq(app.nav.depth(), 2)
     assert_true(app.nav.risen())
     t.run_for(@ui.move_most_ms)
@@ -269,7 +283,7 @@ test "a new chat with the keyboard up: the scene scrolls in what is left, the ch
   both_pages(fn() raise {
     let t = tester("home")
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(390.0 - fab_gap - drop / 2.0, y - pill_mid - fab_gap - drop / 2.0)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     // the window laid out over the keyboard, as Android's host has it (adjustResize)
@@ -345,18 +359,36 @@ test "a new chat with disabled profiles leads back to enable them" {
 }
 
 ///|
-test "the bar is glass of one capture: the bar with its notch, 令 and the ball frosting the page under them" {
+test "the bar a tab bar along the window's foot: as wide as the window, its glass down under the system's navigation bar, no notch; the pill under the place shown inside it" {
   let t = tester("home")
-  let gs = t.drawn_glass().filter(fn(g) { g.1 > 844.0 - 22.0 - 56.0 - 40.0 })
-  assert_true(gs.length() >= 3)
-  let (_, _, _, _, _, run) = gs[0]
-  assert_true(gs.iter().all(fn(g) { g.5 == run }))
-  // the notch cut into the bar's glass: 令's 28 and 6 round it, 4 over the edge
-  assert_true(t.drawn_notches().iter().any(fn(n) { n.0 == 5 && n.2 == -4.0 && n.3 == 34.0 && n.4 == 8.0 }))
+  to_bar_rest(t)
+  let bar_glass = t.drawn_glass_corners().filter(fn(g) { g.1 > 600.0 && g.2 > 300.0 })
+  assert_eq(bar_glass.length(), 1)
+  let (bx, by, bw, bh, _) = bar_glass[0]
+  assert_true(bx.abs() < 0.5 && (bw - 390.0).abs() < 0.5 && (by + bh - 844.0).abs() < 0.5, msg="bar at \{bx},\{by} \{bw}x\{bh}")
+  assert_true((bh - bar_track - nav_foot()).abs() < 0.5, msg="bar \{bh} high")
+  assert_eq(t.drawn_notches().length(), 0)
+  // the pill: round the chats' icon, in its column, inside the bar's row
+  let (xs, y) = bar_places_at()
+  let pill = t.drawn_rects().filter(fn(r) { (r.2 - pill_w).abs() < 0.5 && (r.3 - pill_h).abs() < 0.5 && r.1 > 600.0 })
+  assert_eq(pill.length(), 1, msg="\{pill.length()} pills")
+  let (px, py, _, _, _) = pill[0]
+  assert_true((px + pill_w / 2.0 - xs[0]).abs() < 0.5 && (py + pill_h / 2.0 - y).abs() < 0.5, msg="pill at \{px},\{py}")
+  assert_true(py >= by && py + pill_h <= by + bar_track, msg="pill at \{py}, bar from \{by}")
 }
 
 ///|
-test "the notch's icon swaps with a short scale and fade while it stays open; closed, at once" {
+test "the action's button floats over the bar at the window's right, clear of the places" {
+  let t = tester("home")
+  to_bar_rest(t)
+  let (x, y, w, h) = action_rect(t)
+  assert_true((w - drop).abs() < 0.5 && (h - drop).abs() < 0.5, msg="\{x},\{y} \{w}x\{h}")
+  assert_true((x + w - (390.0 - fab_gap)).abs() < 0.5, msg="\{x} \{w}")
+  assert_true((y + h - (844.0 - nav_foot() - bar_track - fab_gap)).abs() < 0.5, msg="\{y} \{h}")
+}
+
+///|
+test "the action's icon swaps with a short scale and fade while its button stays; gone, at once" {
   let plus = bar_place_with("plus")
   let none = bar_place_with("")
   let (t, _) = bar_at_rest()
@@ -389,7 +421,7 @@ test "the bar chosen in the panel slides down into the bar's place, its places l
   // let go over the rows before the panel was all the way open, it stays open: its row tapped
   if bar.swap_at(t.time()) is None {
     t.run_for(bar.o.end() - t.time())
-    t.tap_once(xs[0], 844.0 - 22.0 - 132.0 + 20.0 + 28.0)
+    t.tap_once(xs[0], bar_row_y(0, 1))
   }
   // chosen: the bar in view at once, the stack sliding down, a frame at a time to where it lands
   assert_true(app.nav.top() == Place("remote"))
@@ -426,7 +458,7 @@ fn bar_chosen_landed(t : @ui.Tester, at_landing : Bool) -> Unit {
   t.drag(xs[0], y, xs[0], y - 64.0, steps=20)
   if bar.swap_at(t.time()) is None {
     t.run_for(bar.o.end() - t.time())
-    t.tap_once(xs[0], 844.0 - 22.0 - 132.0 + 20.0 + 28.0)
+    t.tap_once(xs[0], bar_row_y(0, 1))
   }
   // (each frame said: run_for would draw one at the landing by itself, its springs saying they rest then)
   let lands = bar.o.end()
@@ -448,7 +480,7 @@ test "the bar chosen and landed, the panel drawn up again: no bar landing then; 
     let again = (bar.swap_at(t.time()) is None, bar.ball_x.ride is None, bar.mode.get())
     // the other bar's row tapped on its first place (four of them across, no notch in a row): it lands
     t.run_for(bar.o.end() - t.time())
-    t.tap_once(bar_centres(390.0 - 44.0, 0.0, 4)[0] + 22.0, 844.0 - 22.0 - 132.0 + 20.0 + 28.0)
+    t.tap_once(bar_centres(390.0, 0.0, 4)[0], bar_row_y(0, 1))
     t.run_for(bar.o.end() + 50.0 - t.time())
     let second = (place_of(app.nav.top()) == Some("chats"), bar.swap_at(t.time()) is None, bars_picked.get().map(fn(b) { b.1 }))
     (first, again, second)
@@ -458,7 +490,7 @@ test "the bar chosen and landed, the panel drawn up again: no bar landing then; 
 }
 
 ///|
-test "the bar drawn up clear of a finger as long as it has it: drawn up, further up and back down onto the bar; sliding along the bar; let go, back down" {
+test "the bar at the window's foot however a finger has it: drawn up, further up and back down onto the bar; sliding along the bar; let go" {
   let t = tester("home")
   let (xs, y) = bar_places_at()
   let foot = fn() {
@@ -496,45 +528,7 @@ test "the bar drawn up clear of a finger as long as it has it: drawn up, further
   let sliding = raised()
   t.release(xs[1], y)
   t.run_for(bar.rest() - t.time())
-  assert_eq((up, further, back, along, sliding, (rest - foot()).round()), (59.0, 59.0, 59.0, 59.0, 59.0, 0.0))
-}
-
-///|
-test "the bar held: more room above the finger in a taller window, bounded by the top of a short window" {
-  let measure = fn(h : Double, open : Bool) {
-    new_run()
-    let src = fixture("home")
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h~, platform=2)
-    // The bar is 346 wide here; the page's full-width top bar is not the panel.
-    let glass = fn() { t.drawn_glass_corners().filter(fn(g) { g.2 > 300.0 && g.2 < 360.0 }) }
-    let foot = fn() { glass().fold(init=0.0, fn(a, g) { dmax(a, g.1 + g.3) }) }
-    let rest = foot()
-    let (xs, _) = bar_places_at()
-    let y = h - 22.0 - 28.0
-    t.press_at(xs[0], y)
-    if open {
-      for i in 1..=20 {
-        t.move_to(xs[0], y - 64.0 * i.to_double() / 20.0)
-      }
-    } else {
-      t.run_for(bar_hold_ms)
-      t.frame()
-    }
-    t.run_for(@ui.move_most_ms)
-    let raised = rest - foot()
-    let top = glass().fold(init=h, fn(a, g) { dmin(a, g.1) })
-    t.release(xs[0], y)
-    (raised, top)
-  }
-  let short = measure(550.0, false).0
-  let regular = measure(844.0, false).0
-  let tall = measure(1200.0, false).0
-  // More than the former 44 points, increasing with available height but never an excessive displacement.
-  assert_true(short > 44.0 && short < regular && regular < tall && tall <= 64.1)
-  // The panel can still open in a very short window without its glass crossing the top margin.
-  let (limited, top) = measure(180.0, true)
-  assert_true(limited > 0.0 && limited < short)
-  assert_true(top >= 7.5, msg="panel top: \{top}")
+  assert_eq((up, further, back, along, sliding, (rest - foot()).round()), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 }
 
 ///|

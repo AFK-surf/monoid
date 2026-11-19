@@ -8,11 +8,11 @@ test "each place comes in the same way the first time and again" {
     t.frame()
     to_bar_rest(t)
     let tap_place = fn(index : Int) {
-      let xs = bar_centres(390.0 - 44.0, bar.k.at(t.time()).0, 2)
-      t.tap_once(xs[index] + 22.0, 844.0 - 22.0 - 28.0)
+      let xs = bar_centres(390.0, bar.k.at(t.time()).0, 2)
+      t.tap_once(xs[index], bar_places_y())
     }
     let sample = fn() {
-      t.words().filter(fn(w) { w.0 == place_label(place) })
+      t.words().filter(fn(w) { w.0 == place_label(place) && w.2 < 844.0 - nav_foot() - bar_track })
     }
     tap_place(1)
     let at = t.time()
@@ -202,12 +202,12 @@ fn usage_coming_in(rebuilt : Bool) -> Array[(Double, Double)] {
   bars_picked.set(Some(([["chats", "usage"]], 0)))
   t.frame()
   to_bar_rest(t)
-  let xs = bar_centres(390.0 - 44.0, bar.k.at(t.time()).0, 2)
-  t.tap_once(xs[1] + 22.0, 844.0 - 22.0 - 28.0)
+  let xs = bar_centres(390.0, bar.k.at(t.time()).0, 2)
+  t.tap_once(xs[1], bar_places_y())
   let at = t.time()
   let duration = @ui.move_ms(switch_slide)
   let name = fn() {
-    match t.words().filter(fn(w) { w.0 == place_label("usage") }) {
+    match t.words().filter(fn(w) { w.0 == place_label("usage") && w.2 < 844.0 - nav_foot() - bar_track }) {
       [w] => (w.1, w.5)
       _ => (-1.0, -1.0)
     }
@@ -237,17 +237,17 @@ test "a place made once, its place tapped again on the bar (no switch), then mad
   bars_picked.set(Some(([["chats", "usage"]], 0)))
   t.frame()
   to_bar_rest(t)
-  let xs = bar_centres(390.0 - 44.0, bar.k.at(t.time()).0, 2)
-  t.tap_once(xs[1] + 22.0, 844.0 - 22.0 - 28.0)
+  let xs = bar_centres(390.0, bar.k.at(t.time()).0, 2)
+  t.tap_once(xs[1], bar_places_y())
   t.run_for(@ui.move_most_ms)
   to_bar_rest(t)
-  t.tap_once(xs[1] + 22.0, 844.0 - 22.0 - 28.0)
+  t.tap_once(xs[1], bar_places_y())
   t.run_for(@ui.move_most_ms)
   t.resize(800.0, 844.0)
   t.frame()
   t.resize(390.0, 844.0)
   t.frame()
-  let name = t.words().filter(fn(w) { w.0 == place_label("usage") })
+  let name = t.words().filter(fn(w) { w.0 == place_label("usage") && w.2 < 844.0 - nav_foot() - bar_track })
   assert_true(name.length() == 1 && name[0].1 == 16.0 && name[0].5 == 1.0, msg="\{Repr(name)}")
 }
 

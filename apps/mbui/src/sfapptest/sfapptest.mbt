@@ -59,7 +59,7 @@ pub let tap_held_ms : Double = 30.0
 ///|
 /// The bar's places' middles in the phone's window (390 by 844), and its middle's height.
 pub fn today_bar_at() -> (Array[Double], Double) {
-  (@sfapp.bar_centres(390.0 - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), 844.0 - 22.0 - 28.0)
+  @sfapp.bar_places_in(390.0, 844.0)
 }
 
 ///|

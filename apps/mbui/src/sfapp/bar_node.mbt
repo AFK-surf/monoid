@@ -2,9 +2,10 @@
 // (bar_glass_node: where it is laid out, what takes a finger on it): laid out where it is told (bar_tell: BarLaid), each
 // of its numbers read where it is as each frame is drawn (View::drawn_while) while the ways it is drawn by go, where they
 // went once they are there (the clock no longer followed); told again as the bar is told anew (bar_said). What moves is
-// drawn so, nothing laid out for it (src/motion's rule): the bar going down and coming back, drawn up out from under a
-// finger, the glass's top as the panel opens, the notch opening and its places moving with it, the action growing and
-// its icon swapping, the ball, its lens, each place lighting up, a bar chosen landing.
+// drawn so, nothing laid out for it (src/motion's rule): the bar going down and coming back, the glass's top as the
+// panel opens, the action's button growing and shrinking and its icon swapping, the pill under the place shown, each
+// place lighting up, a bar chosen landing. (The action shown or not is called the notch here, as the bar's action
+// stood in one before it was a button of its own: `k`, BarPart::Notch.)
 
 ///|
 /// Said each time the bar is told what it goes by (bar_tell, bar_retell, bar_reset): its ways set out anew, what waits
@@ -18,16 +19,16 @@ let bar_said : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b 
 priv enum BarPart {
   /// the bar shown and drawn up (vis, up): its holder
   Vis
-  /// the notch, as the panel and the rise close it too (k, o, up, a bar chosen landing): the glass's notch, the action's
-  /// disc, the places' places, a bar chosen landing
+  /// the action shown, as the panel and a finger on the bar hide it too (k, o, up, a bar chosen landing): the action's
+  /// button, a bar chosen landing
   Notch
-  /// the panel alone (o, whether it is open, a bar chosen landing): the glass's top, its shadow, the panel's rows
+  /// the panel alone (o, whether it is open, a bar chosen landing): the glass's top, its line, the panel's rows
   Panel
-  /// the ball (where across and down, held, how faint and large): the ball, its lens
+  /// the pill under the place shown (where across and down, held, how faint and large)
   Ball
   /// each place lit (tints)
   Tints
-  /// the notch's icon and its swap
+  /// the action's icon and its swap
   Icon
 }
 
@@ -259,10 +260,11 @@ fn bar_node(g : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
 
 ///|
 /// The bar's panel in `holder` (its glass, the panel's rows over it as it opens), where it is told: going down out of
-/// the way and back up, drawn up out from under a finger that has it, drawn so, laid out where it rests.
+/// the way and back up, laid out where it rests; its glass down under the system's navigation bar.
 fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
   let w = fn() { bar_laid_now().w }
   let panel = fn() { bar_laid_now().panel }
+  let foot = fn() { panel() + nav_foot() }
   let row_top = fn() { bar_laid_now().row_top }
   // (the glass's top laid out where the panel goes, drawn where it is as each frame is drawn: `drift` off that)
   let clip_top = fn() {
@@ -272,39 +274,36 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   let drift = fn(t : Double) { bar_glass_top(bar_laid_now().reach, bar.o.at(t).0) - clip_top() }
   holder
   .width(By(fn() { Some(w()) }))
-  .height(By(fn() { Some(panel()) }))
+  .height(By(fn() { Some(foot()) }))
   .alpha(By(fn() { bar.vis.at(bar_moment(holder, Vis, bar.vis.end())).0 }))
   |> ignore
   bar_moved(holder, Vis, fn() { dmax(bar.vis.end(), bar.up.end()) }, fn(t) {
     let v = bar.vis.at(t).0
-    let foot = 22.0 + nav_foot()
-    let raised = bar_raise(holder.window().1, foot, panel(), status_top_now(holder.window().0)) * bar.up.at(t).0
-    (0.0, (1.0 - v) * bar_drop - raised)
+    (0.0, (1.0 - v) * (bar_drop + nav_foot()))
   })
-  bar_shadow_node(holder, w, clip_top, panel, drift)
-  // the action's own disc under the glass (the glass frosts it as it frosts the pages, its warmth round the notch,
-  // fading down from it), and the glass with the notch cut into its top
-  let disc_x = fn() { w() / 2.0 - drop / 2.0 }
-  let disc_y = fn() { row_top() - lift - drop / 2.0 }
+  bar_glass_sheet(holder, w, clip_top, foot, drift)
+  // the action's button over the bar at the screen's right: its own ground under the accent's glass, growing out of
+  // nothing as the place has an action (laid out as it is there, drawn so), shrinking as it has none or a finger has
+  // the bar; closing, it keeps the last action's icon as it shrinks. Pressed while the place has an action, taken only
+  // where it is drawn whole at its moment; what it opens opened beside it
+  let disc_x = fn() { w() - fab_gap - drop }
+  let disc_y = fn() { row_top() - fab_gap - drop }
   let under = bar_at(holder, disc_x, disc_y, fn() { drop }, fn() { drop }, fn(d) {
     d
-    .radius(Is(drop / 2.0))
+    .radius(Is(fab_radius))
     .ground(By(fn() {
       let t = @sf.theme()
       @sf.over(t.p.bg, @sf.alpha(t.p.accent, action_ink))
     }))
+    .shadow(By(fn() { (6.0, 3.0, if @sf.theme().dark { 0x00000066L } else { 0x0000002EL }) }))
+    .shadow_outside(Is(true))
     |> ignore
   })
   bar_disc_look(under)
-  bar_glass_capsule(holder, w, clip_top, panel, drift)
-  // the action in the notch, accent glass, growing out of the bar as the notch opens about its middle, which comes up to
-  // the bar's edge (laid out as it is open, drawn so); closing, it keeps the last action's icon as it shrinks. It is the
-  // notch's key: pressed while the place has an action, taken only where the notch is drawn open at its moment
-  // (closing, the panel up, what is under it the panel's); what it opens opened beside it
   let disc = bar_at(holder, disc_x, disc_y, fn() { drop }, fn() { drop }, fn(d) {
     d
-    .radius(Is(drop / 2.0))
-    .glass(By(fn() { Some(@sf.glass_action().sharing()) }))
+    .radius(Is(fab_radius))
+    .glass(By(fn() { Some(@sf.glass_action()) }))
     .presses(By(fn() {
       match bar_told_now.get() {
         Some(t) => t.shown && t.action != ""
@@ -327,7 +326,6 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   bar_ball_node(holder)
   bar_rows_node(holder, w)
   bar_places_node(holder, w, row_top)
-  bar_lens_node(holder)
   bar_swap_node(holder, w, row_top, panel)
 }
 
@@ -392,7 +390,7 @@ fn bar_disc_look(d : @view.View) -> Unit {
       // (closed: not there)
       (0.0, 1.0, 0.0)
     } else if k < 1.0 {
-      (dmin(1.0, k * 3.0) * visible, dmax(0.001, k), lift * (1.0 - k))
+      (dmin(1.0, k * 3.0) * visible, dmax(0.001, k), 0.0)
     } else {
       (visible, 1.0, 0.0)
     }
@@ -403,10 +401,10 @@ fn bar_disc_look(d : @view.View) -> Unit {
 }
 
 ///|
-/// The bar's shadow (bar_shadow's): a blurred rounded rectangle 4 lower, outside the glass's outline only (the glass
-/// frosts nothing of it), none above its top (none in the notch or over the edge the action stands on), coming in down
-/// its rounded ends from nothing at its top to whole a radius down, in bands; its top where the glass's is drawn.
-fn bar_shadow_node(
+/// The bar's glass (the page's paper frosted over what runs under it) from `top` to `bottom`, `w` wide, square, a
+/// hairline along its top; its top where the panel has it as each frame is drawn (`drift` off where it is laid out),
+/// its foot where it is.
+fn bar_glass_sheet(
   holder : @view.View,
   w : () -> Double,
   top : () -> Double,
@@ -414,122 +412,21 @@ fn bar_shadow_node(
   drift : (Double) -> Double,
 ) -> Unit {
   let h = fn() { bottom() - top() }
-  let r = fn() { dmin(rad, h() / 2.0) }
-  // (the room round it its blur reaches into)
-  let room = 40.0
-  let cast = fn(band : @view.View, from : () -> Double) {
-    bar_at(band, fn() { room }, fn() { -from() }, w, h, fn(s) {
-      s
-      .radius(By(r))
-      .shadow(By(fn() { (6.0, bar_shadow_y, @sf.alpha(0x000000FFL, if @sf.theme().dark { 0.45 } else { 0.16 })) }))
-      .shadow_outside(Is(true))
-      // (drawn with its band as the glass's top is, its foot where it is)
-      .ground_drawn(
-        By(fn() {
-          let d = drift(bar_moment(s, Panel, bar.o.end()))
-          { dx: 0.0, dy: 0.0, dw: 0.0, dh: -d, corners: None }
-        }),
-      )
-      |> ignore
-    })
-    |> ignore
-  }
-  // its rounded ends' top, in bands, each as far in as the fade is there
-  for k in 0..<bar_shadow_fade {
-    let y0 = fn() { r() * k.to_double() / bar_shadow_fade.to_double() }
-    let bh = fn() { r() / bar_shadow_fade.to_double() }
-    bar_at(holder, fn() { -room }, fn() { top() + y0() }, fn() { w() + 2.0 * room }, bh, fn(band) {
-      band
-      .clips(Is(true))
-      .alpha(Is((k.to_double() + 0.5) / bar_shadow_fade.to_double()))
-      |> ignore
-      bar_moved(band, Panel, fn() { bar.o.end() }, fn(t) { (0.0, drift(t)) })
-      cast(band, y0)
-    })
-    |> ignore
-  }
-  // below that, whole
-  bar_at(holder, fn() { -room }, fn() { top() + r() }, fn() { w() + 2.0 * room }, fn() { bottom() - top() - r() + room }, fn(
-    band
-  ) {
-    // (its top drawn with the glass's, its foot where it is: cut past it as far less)
-    band.clips(Is(true)).clips_past(By(fn() { -drift(bar_moment(band, Panel, bar.o.end())) })) |> ignore
-    bar_moved(band, Panel, fn() { bar.o.end() }, fn(t) { (0.0, drift(t)) })
-    cast(band, r)
-  })
-  |> ignore
-}
-
-///|
-/// The glass (bar_glass's) from `top` to `bottom`, `w` wide, the notch cut into its top where the notch is as each
-/// frame is drawn (its outline the glass's and its edge's, the edge seen between its lips as they part; lit white at
-/// 70%, 22% in the dark, 1 wide across the outline, under the glass's top), its top where the panel has it.
-fn bar_glass_capsule(
-  holder : @view.View,
-  w : () -> Double,
-  top : () -> Double,
-  bottom : () -> Double,
-  drift : (Double) -> Double,
-) -> Unit {
-  let h = fn() { bottom() - top() }
-  let corner = fn() { dmin(rad, h() / 2.0) }
-  // (the notch where it is drawn, and where its lips are then: none while its circle is not through the edge)
-  let notch = fn(n : @view.View) {
-    let (cy, r) = notch_at(bar.k_at(bar_moment(n, Notch, bar_k_until())))
-    (cy, r, notch_lips(w(), cy, r))
-  }
   bar_at(holder, fn() { 0.0 }, top, w, h, fn(g) {
     g
-    .radius(By(corner))
-    .glass(By(fn() { Some(@sf.glass_bottom_bar()) }))
-    // (its top where the panel has it as each frame is drawn, its foot where it is)
+    .glass(By(fn() { Some(@sf.glass_bar()) }))
     .ground_drawn(
       By(fn() {
         let d = drift(bar_moment(g, Panel, bar.o.end()))
         { dx: 0.0, dy: d, dw: 0.0, dh: -d, corners: None }
       }),
     )
-    .notch(
-      By(fn() {
-        match notch(g) {
-          (cy, r, Some(_)) => (cy, r, fillet)
-          (_, _, None) => (0.0, 0.0, 0.0)
-        }
-      }),
-    )
     |> ignore
   })
   |> ignore
-  // the notch's outline alone: the glass's outline grown by half the line, its line inside that, seen between the lips
-  // and under the glass's top; its foot below the cut (else its bottom edge was a white line under the bar's middle)
-  bar_at(holder, fn() { 0.0 }, fn() { top() + 0.5 }, w, h, fn(lips) {
-    lips
-    .clips(Is(true))
-    .cut_across(
-      By(fn() {
-        match notch(lips).2 {
-          Some((l, rr)) => Some((l, rr))
-          None => Some((0.0, 0.0))
-        }
-      }),
-    )
-    |> ignore
-    bar_moved(lips, Panel, fn() { bar.o.end() }, fn(t) { (0.0, drift(t)) })
-    bar_at(lips, fn() { -0.5 }, fn() { -1.0 }, fn() { w() + 1.0 }, fn() { h() + 4.0 }, fn(edge) {
-      edge
-      .radius(By(fn() { corner() + 0.5 }))
-      .edge(By(fn() { (1.0, @sf.alpha(0xFFFFFFFFL, if @sf.theme().dark { 0.22 } else { 0.7 })) }))
-      .notch(
-        By(fn() {
-          let (cy, r, _) = notch(edge)
-          (cy + 0.5, r - 0.5, fillet + 0.5)
-        }),
-      )
-      // (no lips, no edge: nothing of it drawn)
-      .alpha(By(fn() { if notch(edge).2 is Some(_) { 1.0 } else { 0.0 } }))
-      |> ignore
-    })
-    |> ignore
+  bar_at(holder, fn() { 0.0 }, top, w, fn() { 0.5 }, fn(line) {
+    line.ground(By(fn() { @sf.theme().p.line })) |> ignore
+    bar_moved(line, Panel, fn() { bar.o.end() }, fn(t) { (0.0, drift(t)) })
   })
   |> ignore
 }
@@ -544,7 +441,6 @@ priv struct BallAt {
   sh : Double
   alpha : Double
   scale : Double
-  held : Double
 }
 
 ///|
@@ -558,9 +454,9 @@ fn bar_ball_at(t : Double) -> BallAt {
   // as the old view's was: a spring passing it there went on stretched the frame after, a jump each frame drew)
   let v = xv / 60.0
   let (stretch, lower) = @motion.speed_stretch(v)
-  let bw = ball_size + stretch
-  let bh = ball_size - lower
-  let left = x - ball_size / 2.0 - (if v < 0.0 { stretch } else { 0.0 })
+  let bw = pill_w + stretch
+  let bh = pill_h - lower
+  let left = x - pill_w / 2.0 - (if v < 0.0 { stretch } else { 0.0 })
   {
     cx: left + bw / 2.0,
     cy: m.ball_y.at(t).0,
@@ -568,7 +464,6 @@ fn bar_ball_at(t : Double) -> BallAt {
     sh: bh * scale,
     alpha: m.ball_alpha.at(t).0,
     scale: m.ball_scale.at(t).0,
-    held,
   }
 }
 
@@ -586,12 +481,12 @@ fn bar_ball_capsule(
     o.over(Is(true)) |> ignore
     o.box(fn(b) {
       b
-      .width(Is(Some(ball_size)))
-      .height(Is(Some(ball_size)))
+      .width(Is(Some(pill_w)))
+      .height(Is(Some(pill_h)))
       // (laid out where it goes, drawn where it is)
       .offset(By(fn() {
         bar_part_said(Ball) |> ignore
-        (bar.ball_x.to - ball_size / 2.0, bar.ball_y.to - ball_size / 2.0)
+        (bar.ball_x.to - pill_w / 2.0, bar.ball_y.to - pill_h / 2.0)
       }))
       .alpha(By(fn() { alpha(b, at(b)) }))
       .scale(By(fn() { at(b).scale }))
@@ -610,10 +505,10 @@ fn bar_ball_capsule(
             let k = grow(a)
             let (sw, sh) = (a.sw * k, a.sh * k)
             let r = dmin(sw, sh) / 2.0
-            { dx: (ball_size - sw) / 2.0, dy: (ball_size - sh) / 2.0, dw: sw - ball_size, dh: sh - ball_size, corners: Some((r, r, r, r)) }
+            { dx: (pill_w - sw) / 2.0, dy: (pill_h - sh) / 2.0, dw: sw - pill_w, dh: sh - pill_h, corners: Some((r, r, r, r)) }
           }),
         )
-        .radius(Is(ball_size / 2.0))
+        .radius(Is(pill_h / 2.0))
         |> ignore
         f(s)
       })
@@ -625,54 +520,12 @@ fn bar_ball_capsule(
 }
 
 ///|
-/// The ball under the places, stretched by its speed toward where it goes; its glass frosts what the bar's does (as it
-/// fades and grows in or out, drawn so). Held, the lens over the places takes its place: it fades as the lens comes.
+/// The pill under the place shown, stretched by its speed toward where it goes (the accent's pale ground), as it fades
+/// and grows in or out, drawn so.
 fn bar_ball_node(holder : @view.View) -> Unit {
-  bar_ball_capsule(
-    holder,
-    fn(_) { 1.0 },
-    fn(n, b) {
-      let lensed = if n.glass_solid() { 0.0 } else { dmin(1.0, b.held) }
-      b.alpha * (1.0 - lensed)
-    },
-    fn(g) {
-      g
-      .glass(By(fn() { Some(@sf.glass_bar_ball().sharing()) }))
-      .shadow(By(fn() { (4.0, 1.0, if @sf.theme().dark { 0x00000059L } else { 0x37352D33L }) }))
-      |> ignore
-    },
-  )
-}
-
-///|
-/// The ball in the finger: a lens of liquid glass over the places as it is held (as it grows), what is under its rim
-/// bent; gone as it is let go. Where glass is solid there is nothing to bend: the ball alone.
-fn bar_lens_node(holder : @view.View) -> Unit {
-  holder.box(fn(b) {
-    b.over(Is(true)) |> ignore
-    b.show(at_once=true, fn() { !b.glass_solid() }, fn(on) {
-      on.over(Is(true)) |> ignore
-      let held = fn(n : @view.View) { bar.held.at(bar_moment(n, Ball, bar.held.end())).0 }
-      bar_ball_capsule(
-        on,
-        fn(a) { 1.0 + lens_grow * a.held },
-        fn(_, a) {
-          if a.held > 0.01 && a.alpha > 0.0 {
-            dmin(1.0, a.held) * a.alpha
-          } else {
-            0.0
-          }
-        },
-        fn(g) {
-          g
-          .glass(By(fn() { Some(@sf.backdrop_tab(held(g))) }))
-          .shadow(Is((@sf.tab_lens_raised.sigma, @sf.tab_lens_raised.dy, @sf.tab_lens_raised.color)))
-          |> ignore
-        },
-      )
-    })
+  bar_ball_capsule(holder, fn(_) { 1.0 }, fn(_, b) { b.alpha }, fn(g) {
+    g.ground(By(fn() { @sf.theme().p.accent_bg })) |> ignore
   })
-  |> ignore
 }
 
 ///|
@@ -763,6 +616,7 @@ fn bar_face_node(
     } else {
       None
     },
+    fn() { place_label(key) },
     fn(n) { lit_at(bar_moment(n, part, lit_until())) },
     fn() { bar_dot_of(key) },
     fn() { bar_said_of(key) },
@@ -779,22 +633,16 @@ fn bar_places_node(
   row_top : () -> Double,
 ) -> Unit {
   let items = fn() { bar_laid_now().items }
-  let slot = fn() { (w() - 2.0 * c0) / 3.0 }
-  let bar_mid = fn() { row_top() + bar_track / 2.0 }
+  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let bar_mid = fn() { row_top() + pill_mid }
   holder.box(fn(row) {
     row.over(Is(true)) |> ignore
     row.alpha(By(fn() { if bar.swap_at(bar_moment(row, Panel, bar.o.end())) is Some(_) { 0.0 } else { 1.0 } })) |> ignore
     row.each(at_once=true, items, fn(k) { k }, fn(p, key) {
       let key = key.untracked()
-      let x_at = fn(k : Double) {
-        let items = items()
-        bar_centres(w(), k, items.length())[items.search(key).unwrap_or(0)] - slot() / 2.0
-      }
-      bar_at(p, fn() {
-          bar_part_said(Notch) |> ignore
-          x_at(bar.k_end())
-        }, fn() { bar_mid() - 24.0 }, slot, fn() { 48.0 }, fn(at) {
-        bar_moved(at, Notch, bar_k_until, fn(t) { (x_at(bar.k_at(t)) - x_at(bar.k_end()), 0.0) })
+      let n = fn() { items().length() }
+      let x = fn() { bar_centres(w(), 0.0, n())[items().search(key).unwrap_or(0)] - slot(n()) / 2.0 }
+      bar_at(p, x, fn() { bar_mid() - pill_mid }, fn() { slot(n()) }, fn() { bar_track }, fn(at) {
         bar_face_node(at, key, Tints, fn(t) { bar_tint_at("bar:" + key, t) }, fn() { bar_tint_until("bar:" + key) })
       })
       |> ignore
@@ -808,7 +656,7 @@ fn bar_places_node(
 /// as faint and as low as the panel has them as each frame is drawn; none while it is closed, nor while a bar chosen
 /// lands (bar_swap_node draws them going).
 fn bar_rows_node(holder : @view.View, w : () -> Double) -> Unit {
-  let slot = fn() { (w() - 2.0 * c0) / 3.0 }
+  let slot = fn(n : Int) { bar_slot(w(), n) }
   holder.box(fn(rows) {
     rows.over(Is(true)) |> ignore
     rows.show(at_once=true,
@@ -832,9 +680,9 @@ fn bar_rows_node(holder : @view.View, w : () -> Double) -> Unit {
           let set = fn() { bar_laid_now().sets.get(i).unwrap_or([]) }
           r.each(at_once=true, set, fn(k) { k }, fn(p, key) {
             let key = key.untracked()
-            let x = fn() { bar_centres(w(), 0.0, set().length())[set().search(key).unwrap_or(0)] - slot() / 2.0 }
-            let y = fn() { over + n().to_double() * bar_row + bar_row / 2.0 - 24.0 }
-            bar_at(p, x, y, slot, fn() { 48.0 }, fn(at) {
+            let x = fn() { bar_centres(w(), 0.0, set().length())[set().search(key).unwrap_or(0)] - slot(set().length()) / 2.0 }
+            let y = fn() { over + n().to_double() * bar_row }
+            bar_at(p, x, y, fn() { slot(set().length()) }, fn() { bar_track }, fn(at) {
               bar_face_node(at, key, Tints, fn(t) { bar_tint_at("row:" + key, t) }, fn() { bar_tint_until("row:" + key) })
             })
             |> ignore
@@ -857,8 +705,8 @@ fn bar_swap_node(
   row_top : () -> Double,
   panel : () -> Double,
 ) -> Unit {
-  let slot = fn() { (w() - 2.0 * c0) / 3.0 }
-  let bar_mid = fn() { row_top() + bar_track / 2.0 }
+  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let bar_mid = fn() { row_top() + pill_mid }
   holder.box(fn(b) {
     b.over(Is(true)) |> ignore
     b.show(at_once=true,
@@ -874,7 +722,7 @@ fn bar_swap_node(
           let o = bar.o.at(t).0
           let st = s.t(o)
           let (xs, y) = swap_at(s, o, w(), bar.k_at(t), row_top())
-          (o, st, xs, y - (over + s.n.to_double() * bar_row + bar_row / 2.0), s.drop * (1.0 - st), s.alpha + (1.0 - s.alpha) * st)
+          (o, st, xs, y - (over + s.n.to_double() * bar_row + pill_mid), s.drop * (1.0 - st), s.alpha + (1.0 - s.alpha) * st)
         }
         let now = fn(n : @view.View) { now_at(bar_moment(n, Notch, until())) }
         let was = fn(id : String) { s.lit.get(id).unwrap_or(0.0) }
@@ -904,9 +752,9 @@ fn bar_swap_node(
             if i != s.i {
               let set = s.sets[i]
               for j, key in set {
-                let x = fn() { bar_centres(w(), 0.0, set.length())[j] - slot() / 2.0 }
-                let y = fn() { over + n.to_double() * bar_row + bar_row / 2.0 - 24.0 }
-                bar_at(win, x, y, slot, fn() { 48.0 }, fn(at) {
+                let x = fn() { bar_centres(w(), 0.0, set.length())[j] - slot(set.length()) / 2.0 }
+                let y = fn() { over + n.to_double() * bar_row }
+                bar_at(win, x, y, fn() { slot(set.length()) }, fn() { bar_track }, fn(at) {
                   at
                   .alpha(By(fn() { now(at).5 }))
                   |> ignore
@@ -924,10 +772,10 @@ fn bar_swap_node(
           for j, key in laid_items {
             let x = fn() {
               bar_part_said(Notch) |> ignore
-              bar_centres(w(), bar.k_end(), laid_items.length())[j] - slot() / 2.0
+              bar_centres(w(), bar.k_end(), laid_items.length())[j] - slot(laid_items.length()) / 2.0
             }
-            let y = fn() { bar_mid() - 24.0 }
-            bar_at(win, x, y, slot, fn() { 48.0 }, fn(at) {
+            let y = fn() { bar_mid() - pill_mid }
+            bar_at(win, x, y, fn() { slot(laid_items.length()) }, fn() { bar_track }, fn(at) {
               bar_moved(at, Notch, until, fn(t) {
                 let laid = bar_centres(w(), bar.k_end(), laid_items.length())[j]
                 (bar_centres(w(), bar.k_at(t), laid_items.length())[j] - laid, now_at(t).3 - top(t))
@@ -948,18 +796,26 @@ fn bar_swap_node(
           for j, key in items {
             let x = fn() {
               bar_part_said(Notch) |> ignore
-              bar_centres(w(), bar.k_end(), items.length())[j] - slot() / 2.0
+              bar_centres(w(), bar.k_end(), items.length())[j] - slot(items.length()) / 2.0
             }
-            let y = fn() { bar_mid() - 24.0 }
-            bar_at(win, x, y, slot, fn() { 48.0 }, fn(at) {
+            let y = fn() { bar_mid() - pill_mid }
+            bar_at(win, x, y, fn() { slot(items.length()) }, fn() { bar_track }, fn(at) {
+              // (landed, the bar's own places drawn there instead: none of it over them)
               at
-              .alpha(By(fn() { now(at).5 }))
+              .alpha(By(fn() {
+                let n = now(at)
+                if n.1 >= 1.0 {
+                  0.0
+                } else {
+                  n.5
+                }
+              }))
               |> ignore
               bar_moved(at, Notch, until, fn(t) {
                 let n = now_at(t)
                 let laid = bar_centres(w(), bar.k_end(), items.length())[j]
                 let dx = if j < n.2.length() { n.2[j] - laid } else { 0.0 }
-                (dx, n.3 + n.4 + over + s.n.to_double() * bar_row + bar_row / 2.0 - bar_mid() - top(t))
+                (dx, n.3 + n.4 + over + s.n.to_double() * bar_row + pill_mid - bar_mid() - top(t))
               })
               let end = if active == key { 1.0 } else { 0.0 }
               let from = was("row:" + key)

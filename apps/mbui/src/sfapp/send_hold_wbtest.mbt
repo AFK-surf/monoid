@@ -191,7 +191,7 @@ test "sent: its row is in the list in the frames of the press itself, what holds
 test "a new chat's first words: what holds its composer is said as their row is in the new chat's list, not before" {
   let t = tester("home")
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(390.0 - fab_gap - drop / 2.0, y - pill_mid - fab_gap - drop / 2.0)
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")
   t.type_text("把发布说明写一下")

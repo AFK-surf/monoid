@@ -1,66 +1,51 @@
-// The phone's bottom bar: a floating capsule
-// of the places of one bar, 22 in from the screen's sides and its foot (the system's bars are the host's: the view is
-// laid out inside them); a ball over the place shown that travels on a spring stretched by its speed and goes where a
-// finger takes it; the page's primary action in a notch cut out of the bar's top (令, a new chat, on the chats'
-// pages); with more than one bar, the glass grows upward into a panel of the other bars, one row each, open once a
-// finger on the bar is drawn 24 over it and closed once back under 16, and a bar chosen there is the bar. Every
-// motion is a number on a spring (or a timed glide) stepped a frame at a time. Shown on a place's top page with
-// nothing over it; gone down out of the way (300 ms) under a page pushed, back up (380 ms) as it comes back.
+// The phone's bottom bar: a tab bar along the screen's foot, as wide as the screen, over the system's navigation bar
+// (its glass runs down under it), a hairline along its top; each place of one bar in a column of its own, its icon
+// over its name; the place shown lit, a pill under its icon that travels on a spring stretched by its speed and goes
+// where a finger takes it; the page's primary action (令, a new chat, on the chats' pages; ＋ where the place's page
+// adds) a button floating over the bar at the screen's right; with more than one bar, the glass grows upward into a
+// panel of the other bars, one row each, open once a finger on the bar is drawn 24 over it and closed once back under
+// 16, and a bar chosen there is the bar. Every motion is a number on a spring (or a timed glide) stepped a frame at a
+// time. Shown on a place's top page with nothing over it; gone down out of the way (300 ms) under a page pushed, back
+// up (380 ms) as it comes back.
 //
-// All of it is frosted glass of one capture (the pages its one source): the bar (its notch cut out of
-// it, a box's `notch_*`), the action in the notch and the ball frost the pages under them, not each other
-// (@ui.Glass::sharing). Where glass is drawn solid, the bar is its ground (Glass.kt `floating`: --raised at 72% over
-// the paper). What moves is only drawn so (src/motion's rule): the bar going down and coming back, the action growing
-// and shrinking, its icon swapping, a bar chosen in the panel sliding down into the bar's place are looks over where
-// they are laid out, and what leaves is drawn only.
+// The bar is frosted glass over the pages; the action's button the accent's glass. What moves is only drawn so
+// (src/motion's rule): the bar going down and coming back, the action growing and shrinking, its icon swapping, a bar
+// chosen in the panel sliding down into the bar's place are looks over where they are laid out, and what leaves is
+// drawn only.
 
 // ── geometry (dp) ──────────────────────────────────────────────
 
 ///|
-let bar_track : Double = 56.0
+/// How high the bar's row of places is (and each of the panel's rows), over the system's navigation bar.
+let bar_track : Double = 68.0
 
 ///|
-let bar_inset : Double = 6.0
+/// The pill under the place shown: how wide, how high, how far down its row its middle is (round the icon's, the
+/// library's @sf.bar_place_icon_mid).
+let pill_w : Double = 56.0
 
 ///|
-let ball_rest : Double = bar_track - bar_inset * 2.0
+let pill_h : Double = 32.0
 
 ///|
-let ball_size : Double = bar_track + 12.0
+let pill_mid : Double = @sf.bar_place_icon_mid
 
 ///|
-let c0 : Double = bar_inset + ball_rest / 2.0
-
-///|
+/// The action's button: how large, how far in from the screen's right and over the bar.
 let drop : Double = 56.0
 
 ///|
-let notch_gap : Double = 6.0
+let fab_gap : Double = 16.0
 
 ///|
-let lift : Double = 4.0
+/// How round the action's button is (a floating button's, the bar's own corners none).
+let fab_radius : Double = 16.0
 
 ///|
-let fillet : Double = 8.0
+let bar_row : Double = 68.0
 
 ///|
-/// How far the bar and its panel are drawn up while a finger has them. Give a taller window a little more room above
-/// the finger, but limit the rise to the room the fully opened panel has below the system's top inset. Only drawn so:
-/// where a finger is taken stays where the bar is laid out.
-fn bar_raise(height : Double, foot : Double, panel : Double, top : Double) -> Double {
-  let desired = dclamp(height * 0.07, 48.0, 64.0)
-  let room = dmax(0.0, height - foot - panel + over - top - 8.0)
-  dmin(desired, room)
-}
-
-///|
-let bar_row : Double = 56.0
-
-///|
-let over : Double = 20.0
-
-///|
-let rad : Double = bar_track / 2.0
+let over : Double = 12.0
 
 ///|
 let slot_px : Double = 90.0
@@ -76,35 +61,40 @@ let opens : Double = 24.0
 let closes : Double = 16.0
 
 ///|
-/// How long a finger held still on the bar takes the ball (its lens over it), as one sliding does.
+/// How long a finger held still on the bar takes the pill, as one sliding does.
 let bar_hold_ms : Double = 200.0
 
 ///|
-/// What a place's top page keeps clear at its foot for the bar (Places.kt BAR_ROOM: the bar, its 22 from the foot, a
-/// little air, and the action standing 32 over it).
-let bar_room : Double = 56.0 + 22.0 + 16.0 + 32.0
+/// What a place's top page keeps clear at its foot for the bar (over the system's navigation bar: the bar's row, and
+/// the action's button standing over it with its room).
+let bar_room : Double = bar_track + fab_gap + drop
 
 ///|
-/// The chats' family of places, whose pages have 令 in the notch.
+/// The chats' family of places, whose pages have 令 for their action.
 // kept across runs: a table, never written
 let chat_family : Array[String] = ["chats", "archive"]
 
 ///|
-/// The places' middles on a bar `w` wide holding `n` with the notch `k` open.
+/// The places' middles on a bar `w` wide holding `n` (each the middle of a column of its own, the columns as wide);
+/// four always, the last repeated past `n`. `k`, the action shown or not, moves none of them (it floats apart).
 pub fn bar_centres(w : Double, k : Double, n : Int) -> Array[Double] {
-  let closed = (w - 2.0 * c0) / 3.0
-  let open = w / 2.0 - (drop / 2.0 + notch_gap) - 6.0 - ball_rest / 2.0 - c0
-  let sp = closed + (open - closed) * k
-  if n >= 4 {
-    [c0, c0 + sp, w - c0 - sp, w - c0]
-  } else if n == 3 {
-    let mid = w / 2.0 - c0 - (w / 2.0 - c0 - sp) * k
-    [c0, c0 + mid, w - c0, w - c0]
-  } else if n == 2 {
-    [c0, w - c0, w - c0, w - c0]
-  } else {
-    [c0, c0, c0, c0]
-  }
+  ignore(k)
+  let n = if n < 1 { 1 } else { n }
+  let col = w / n.to_double()
+  Array::makei(4, fn(j) { col * (imin(j, n - 1).to_double() + 0.5) })
+}
+
+///|
+/// The bar's places' middles across a window `w` wide and `h` high (the bar at its foot), and the height of their
+/// icons' middles: where a test outside the package presses one.
+pub fn bar_places_in(w : Double, h : Double) -> (Array[Double], Double) {
+  (bar_centres(w, 1.0, 4), h - nav_foot() - bar_track + pill_mid)
+}
+
+///|
+/// How wide each place's column is on a bar `w` wide holding `n`.
+fn bar_slot(w : Double, n : Int) -> Double {
+  w / (if n < 1 { 1 } else { n }).to_double()
 }
 
 ///|
@@ -140,10 +130,6 @@ let bar_drop : Double = 120.0
 ///|
 /// How long the bar takes to go (a page pushed over it): shorter than its coming, mostly gone by half of the page's push.
 let bar_hide_ms : Double = 250.0
-
-///|
-/// How much larger than the ball its lens is, held (liquid glass over the places, iOS 26's tab bar's).
-let lens_grow : Double = 0.18
 
 ///|
 /// How long the ball takes to fade in or out, and to grow back or shrink.
@@ -565,8 +551,8 @@ fn swap_at(s : Swap, o : Double, w : Double, k_now : Double, row_top : Double) -
   let into = s.sets[s.i]
   let t = s.t(o)
   let from = bar_centres(w, 0.0, into.length())
-  let row_mid = over + s.n.to_double() * bar_row + bar_row / 2.0
-  let bar_mid = row_top + bar_track / 2.0
+  let row_mid = over + s.n.to_double() * bar_row + pill_mid
+  let bar_mid = row_top + pill_mid
   if t <= 0.0 {
     return (from, row_mid)
   }
@@ -807,39 +793,8 @@ pub fn place_of(page : Page) -> String? {
 // ── drawing ────────────────────────────────────────────────────────────
 
 ///|
-/// The notch cut into the glass's top (notch): a circle of radius `r` about the top's middle, `cy`
-/// below the edge (above it as it opens), met by the edge through fillets; where it meets the edge on the left and
-/// right of a glass `w` wide; None while it is closed (the circle not through the edge).
-fn notch_lips(w : Double, cy : Double, r : Double) -> (Double, Double)? {
-  if r <= 0.5 {
-    return None
-  }
-  let dy = fillet - cy
-  let reach = (r + fillet) * (r + fillet) - dy * dy
-  if cy + r <= 0.5 || reach <= 0.0 {
-    return None
-  }
-  let xf = reach.sqrt()
-  Some((w / 2.0 - xf, w / 2.0 + xf))
-}
-
-///|
-/// The notch with it `k` open (BarModel::k_now): where its circle's middle is below the glass's top, its radius.
-fn notch_at(k : Double) -> (Double, Double) {
-  (-lift * k, (drop / 2.0 + notch_gap) * k)
-}
-
-///|
 /// 令's ground: the accent at 86% (Bar.kt: accent.copy(alpha = 0.86f) over the page).
 let action_ink : Double = 0.86
-
-///|
-/// How far below the glass its shadow falls.
-let bar_shadow_y : Double = 4.0
-
-///|
-/// The bands its fade down the rounded ends is drawn in.
-let bar_shadow_fade : Int = 8
 
 ///|
 /// How long a place takes to light up or go dim.
@@ -937,7 +892,7 @@ fn bar_told(src : Source, ws : Workspace, active : String?, shown : Bool, window
     active,
     sets,
     cur,
-    width: if window > 0.0 { window - 44.0 } else { 0.0 },
+    width: if window > 0.0 { window } else { 0.0 },
   }
 }
 
@@ -1029,9 +984,9 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
           Some((cx, cy, set, key)) => {
             // Keep the selected ball with the same place as the notch and its places move.
             let target_x = if set == told.cur { final_cs[items.search(key).unwrap_or(0)] } else { cx }
-            (target_x + (m.drag - target_x) * lean, cy + ((if m.drag_y >= 0.0 { m.drag_y } else { row_top + bar_track / 2.0 }) - cy) * lean)
+            (target_x + (m.drag - target_x) * lean, cy + ((if m.drag_y >= 0.0 { m.drag_y } else { row_top + pill_mid }) - cy) * lean)
           }
-          None => (final_cs[if ai < 0 { 0 } else { ai }], row_top + bar_track / 2.0)
+          None => (final_cs[if ai < 0 { 0 } else { ai }], row_top + pill_mid)
         }
         if !sliding && active_key != m.active_was {
           m.active_was = active_key
@@ -1134,10 +1089,10 @@ fn bar_finger(
     let set = sets[others[n]]
     let cs = bar_centres(told.width, 0.0, set.length())
     let j = nearest(cs, set.length(), drag)
-    Some((cs[j], over + n.to_double() * bar_row + bar_row / 2.0, others[n], set[j]))
+    Some((cs[j], over + n.to_double() * bar_row + pill_mid, others[n], set[j]))
   } else if items.length() > 0 {
     let j = imin(items.length() - 1, nearest(final_cs, 4, drag))
-    Some((final_cs[j], row_top + bar_track / 2.0, told.cur, items[j]))
+    Some((final_cs[j], row_top + pill_mid, told.cur, items[j]))
   } else {
     None
   }
@@ -1323,7 +1278,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
     if l.items.length() > 0 && py >= l.row_top - 4.0 {
       let now = bar_centres(l.w, m.k_at(t), l.items.length())
       let j = nearest(now, l.items.length(), px)
-      let slot = (l.w - 2.0 * c0) / 3.0
+      let slot = bar_slot(l.w, l.items.length())
       if (now[j] - px).abs() <= slot / 2.0 {
         if m.mode.get() {
           m.open_panel(false, at=t)
@@ -1415,7 +1370,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
       }
       m.drag = px
       m.drag_y = if l.multi && m.holds && m.open {
-        dclamp(py, over + bar_row / 2.0, l.row_top + bar_track / 2.0)
+        dclamp(py, over + pill_mid, l.row_top + pill_mid)
       } else {
         -1.0
       }
@@ -1433,7 +1388,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
       let final_cs = bar_centres(l.w, m.k_at(t), l.items.length())
       // (let go still moving across: the place it was going to, as it carried on (bar_flung); the ball, chasing the
       // finger, goes on there at the speed it had, never turned back short of it)
-      let to_px = bar_flung(px, d.vx(), l.w)
+      let to_px = bar_flung(px, d.vx(), l.w, l.items.length())
       ended()
       if d.kind == Off {
         // called off: the panel where the finger left it, nothing chosen
@@ -1477,7 +1432,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
             let set = l.sets[l.others[n]]
             let cs = bar_centres(l.w, 0.0, set.length())
             let j = nearest(cs, set.length(), px)
-            let slot = (l.w - 2.0 * c0) / 3.0
+            let slot = bar_slot(l.w, set.length())
             pick(l.others[n], if (cs[j] - px).abs() <= slot / 2.0 { Some(set[j]) } else { None })
           }
         }
@@ -1569,7 +1524,7 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
   v.box(fn(b) {
     b
     .over(Is(true))
-    .padding(By(fn() { (22.0, 0.0, 22.0, 22.0 + nav_foot()) }))
+    // (at the window's foot, as wide as it: its glass runs down under the system's navigation bar)
     .presses(By(fn() {
       match told() {
         Some(t) => t.shown
@@ -1582,7 +1537,7 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
       g
       .height(By(fn() {
         match told() {
-          Some(t) => Some(bar_laid(t).panel)
+          Some(t) => Some(bar_laid(t).panel + nav_foot())
           None => Some(0.0)
         }
       }))
@@ -1688,8 +1643,8 @@ let bar_fling_ms : Double = 100.0
 ///|
 /// Where a slide let go at `px` across a bar `w` wide, the finger moving at `vx` (points a ms), chooses its place by
 /// (bar_fling_ms on, within one place's room of `px`): `px` itself where it was still.
-fn bar_flung(px : Double, vx : Double, w : Double) -> Double {
-  let slot = (w - 2.0 * c0) / 3.0
+fn bar_flung(px : Double, vx : Double, w : Double, n : Int) -> Double {
+  let slot = bar_slot(w, n)
   px + dclamp(vx * bar_fling_ms, -slot, slot)
 }
 
