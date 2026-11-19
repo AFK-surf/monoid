@@ -133,3 +133,29 @@ test("a Node gone while its bind waits takes nothing from the one that stays", {
   await dialer.close();
   await stays.close();
 });
+
+// The front ends once the endpoint bound gives no more connections (mesh.mbt `accepting`), for the launcher to start
+// another; the endpoint let go as one of another key is bound in its place ends its accepting too, and must not end the
+// front: the new one is the endpoint bound before the old one is let go.
+test("an endpoint let go for one of another key bound in its place leaves the front running, taking connections", { skip, timeout: 60_000 }, async () => {
+  const here = await front("rekey");
+  const child = children.at(-1)!;
+  const there = await front("rekey-there");
+  const options = (fill: number) => ({ secretKey: Buffer.alloc(32, fill), relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0", alpns: [station] });
+  const first = await withFront({} as Mesh, here).bind(options(10));
+  const second = await withFront({} as Mesh, here).bind(options(11));
+  assert.notEqual(second.id(), first.id(), "bound anew, the first let go");
+  const dialer = await withFront({} as Mesh, there).bind({ ...options(12), alpns: [] });
+  const accepted = second.accept();
+  const made = await dialer.connect({ id: second.id(), ips: second.sockets() }, station);
+  const taken = await accepted;
+  assert.ok(taken !== null, "the endpoint bound in its place takes connections");
+  assert.equal(taken.remoteId(), dialer.id());
+  // (the first endpoint let go as the second was bound: its accepting ended with it, the second's taking connections)
+  assert.equal(child.exitCode, null, "the front still runs");
+  assert.equal(child.signalCode, null);
+  made.close(0, "");
+  await dialer.close();
+  await second.close();
+  await first.close();
+});

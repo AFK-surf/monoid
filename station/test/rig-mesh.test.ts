@@ -15,7 +15,7 @@ import { memoryMesh } from "./memory-mesh.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
 /// A rig's mesh started on `clock`, its first `failures` binds refused as a port still held would be.
-function rigMesh(t: TestContext, failures: number, clock: Clock.Clock) {
+function rigMesh(t: TestContext, failures: number, clock: Clock.Clock, ended = 0) {
   const original = process.env.STILLFAIL_MESH_BIND_ADDR;
   delete process.env.STILLFAIL_MESH_BIND_ADDR;
   const data = mkdtempSync(join(tmpdir(), "rig-mesh-"));
@@ -26,6 +26,8 @@ function rigMesh(t: TestContext, failures: number, clock: Clock.Clock) {
   const mesh = memoryMesh();
   let binds = 0;
   let accepting = false;
+  let closed = 0;
+  let bound = 0;
   // The cloud's state as the rig's mesh reads it: a workspace, no relays, no stations.
   const cloud = { state: { workspace_name: "ws" }, data, relays: () => [], memberships: () => [], peersCurrent: false, listen: () => () => {}, toolCalls: null, removed: () => false };
   const inputs = Layer.mergeAll(
@@ -50,9 +52,16 @@ function rigMesh(t: TestContext, failures: number, clock: Clock.Clock) {
       // Its relay link never up: no real sockets or timers here.
       endpoint.online = () => new Promise<void>(() => {});
       const accept = endpoint.accept.bind(endpoint);
+      // The first `ended` endpoints bound give no connection, as one whose driver ended does: `accept` answers null.
+      const ends = ++bound <= ended;
       endpoint.accept = () => {
         accepting = true;
-        return accept();
+        return ends ? Promise.resolve(null) : accept();
+      };
+      const close = endpoint.close.bind(endpoint);
+      endpoint.close = () => {
+        closed++;
+        return close();
       };
       return endpoint;
     } } as unknown as Mesh),
@@ -62,7 +71,7 @@ function rigMesh(t: TestContext, failures: number, clock: Clock.Clock) {
     yield* Effect.never;
   })).pipe(Effect.provideService(Clock.Clock, clock)));
   t.after(() => Effect.runPromise(Fiber.interrupt(running)));
-  return { running, binds: () => binds, accepting: () => accepting };
+  return { running, binds: () => binds, accepting: () => accepting, closed: () => closed };
 }
 
 test("a rig's mesh whose first bind fails is bound again after the backoff, and serves", async (t) => {
@@ -93,4 +102,24 @@ test("a rig that stops while its mesh waits to be bound again is not bound again
   await settle();
   assert.equal(r.binds(), 2, "the retry is called off with the rig");
   assert.equal(r.accepting(), false);
+});
+
+test("a rig's endpoint that gives no more connections is closed and bound again after the backoff", async (t) => {
+  const time = testClock();
+  const r = rigMesh(t, 0, time.clock, 1);
+  await settle();
+  assert.equal(r.binds(), 1);
+  assert.equal(r.closed(), 1, "the endpoint whose accept ended is let go");
+  await time.adjust(999);
+  await settle();
+  assert.equal(r.binds(), 1, "not bound again before the backoff");
+  await time.adjust(1);
+  await settle();
+  assert.equal(r.binds(), 2, "bound again a second after its accept ended");
+  assert.equal(r.closed(), 1, "the endpoint bound again is kept");
+  await Effect.runPromise(Fiber.interrupt(r.running));
+  await settle();
+  await time.adjust(30_000);
+  await settle();
+  assert.equal(r.binds(), 2, "a rig that stops is not bound again");
 });

@@ -257,3 +257,103 @@ test("the front's endpoint linked again is bound with the relays it is on now", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// What the station sets on its endpoint as it runs (mesh.ts applyNetwork's congestion controller, relays.ts keepRelays'
+// kept relays and their entries, whether still.fail's own relays are used) stays so across the front's link made
+// again: before, a front started again was bound as the endpoint first was and told none of these, so the station ran
+// on what it had turned off until it next changed them.
+test("the front's endpoint linked again is given the congestion, kept relays, entries and public relays set as it ran", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "front-settings-"));
+  const sock = join(dir, "front.sock");
+  const links: Socket[] = [];
+  const bound: unknown[] = [];
+  const told: { link: number; op: string; args?: unknown }[] = [];
+  const server = createServer((s) => {
+    const link = links.push(s);
+    let pending = "";
+    s.on("data", (chunk) => {
+      pending += chunk;
+      for (let at; (at = pending.indexOf("\n")) >= 0; pending = pending.slice(at + 1)) {
+        const asked = JSON.parse(pending.slice(0, at));
+        told.push({ link, op: asked.op, args: asked.args });
+        if (asked.op === "bind") bound.push(asked.options.congestion);
+        s.write(JSON.stringify({ id: asked.id, ok: asked.op === "bind" ? { id: "station", sockets: [] } : asked.op === "relayStatus" ? [] : null }) + "\n");
+      }
+    });
+    s.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(sock, resolve));
+  try {
+    const mesh = withFront({} as Mesh, sock);
+    const endpoint = await mesh.bind({ secretKey: Buffer.alloc(32), alpns: [], relayUrls: [], congestion: "cubic" });
+    endpoint.setCongestion!("bbr");
+    endpoint.keep(["https://a.example"]);
+    endpoint.keep(["https://b.example"]);
+    const entries = [{ entry: "https://edge.example", relay: "https://b.example" }];
+    await (endpoint as unknown as { setRelayEntries(e: typeof entries): Promise<void> }).setRelayEntries(entries);
+    await endpoint.publicRelays(true);
+    await endpoint.publicRelays(false);
+    await endpoint.route!(Buffer.from("test"), ["/tmp/test.sock"], ["GET /test"]);
+    while (told.filter((x) => x.link === 1 && (x.op === "keep" || x.op === "setCongestion")).length < 3) await new Promise((r) => setImmediate(r));
+    links[0]!.destroy();
+    while (mesh.frontLink!() === "ok") await new Promise((r) => setImmediate(r));
+    while (links.length < 2 || mesh.frontLink!() !== "ok") await new Promise((r) => setImmediate(r));
+    assert.deepEqual(bound, ["cubic", "bbr"], "bound again with the congestion controller set as it ran");
+    const again = told.filter((x) => x.link === 2);
+    assert.deepEqual(again.filter((x) => x.op === "keep").map((x) => x.args), [{ urls: ["https://b.example"] }]);
+    assert.deepEqual(again.filter((x) => x.op === "setRelayEntries").map((x) => x.args), [{ entries }]);
+    assert.deepEqual(again.filter((x) => x.op === "publicRelays").map((x) => x.args), [{ on: false }]);
+    const routed = again.findIndex((x) => x.op === "route");
+    assert.ok(again.findIndex((x) => x.op === "publicRelays") < routed, "given again before requests are routed");
+    await endpoint.close();
+  } finally {
+    for (const s of links) s.destroy();
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a front linked to anew that has no such operation is linked to all the same, and one never given them is told none", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "front-settings-old-"));
+  const sock = join(dir, "front.sock");
+  const links: Socket[] = [];
+  const told: { link: number; op: string }[] = [];
+  // The second front is from before setRelayEntries and publicRelays.
+  const server = createServer((s) => {
+    const link = links.push(s);
+    let pending = "";
+    s.on("data", (chunk) => {
+      pending += chunk;
+      for (let at; (at = pending.indexOf("\n")) >= 0; pending = pending.slice(at + 1)) {
+        const asked = JSON.parse(pending.slice(0, at));
+        told.push({ link, op: asked.op });
+        if (link >= 2 && (asked.op === "setRelayEntries" || asked.op === "publicRelays")) s.write(JSON.stringify({ id: asked.id, error: `no operation ${asked.op}` }) + "\n");
+        else s.write(JSON.stringify({ id: asked.id, ok: asked.op === "bind" ? { id: "station", sockets: [] } : asked.op === "relayStatus" ? [] : null }) + "\n");
+      }
+    });
+    s.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(sock, resolve));
+  try {
+    // Never given: nothing told again.
+    const mesh = withFront({} as Mesh, sock);
+    const endpoint = await mesh.bind({ secretKey: Buffer.alloc(32), alpns: [], relayUrls: [] });
+    links[0]!.destroy();
+    while (mesh.frontLink!() === "ok") await new Promise((r) => setImmediate(r));
+    while (links.length < 2 || mesh.frontLink!() !== "ok") await new Promise((r) => setImmediate(r));
+    assert.deepEqual(told.filter((x) => x.link === 2).map((x) => x.op), ["bind", "relayStatus"], "a front never given them is told none");
+    // Given, then the front from before: refused, linked all the same.
+    await (endpoint as unknown as { setRelayEntries(e: unknown[]): Promise<void> }).setRelayEntries([]).catch(() => {});
+    await endpoint.publicRelays(true).catch(() => {});
+    const before = links.length;
+    links[1]!.destroy();
+    while (mesh.frontLink!() === "ok") await new Promise((r) => setImmediate(r));
+    while (links.length <= before || mesh.frontLink!() !== "ok") await new Promise((r) => setImmediate(r));
+    assert.equal(links.length, before + 1, "linked on the first try, the refusals let be");
+    await endpoint.close();
+  } finally {
+    for (const s of links) s.destroy();
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
