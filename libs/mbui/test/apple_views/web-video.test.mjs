@@ -31,7 +31,8 @@ class Video {
     if (!videoFrames) this.requestVideoFrameCallback = undefined;
   }
   get currentTime() { return this.time; }
-  set currentTime(t) { this.time = t; this.seeking = true; }
+  set currentTime(t) { this.time = t; this.seeking = true; this.exactSeeks = (this.exactSeeks || 0) + 1; }
+  fastSeek(t) { this.time = t; this.seeking = true; this.fastSeeks = (this.fastSeeks || 0) + 1; }
   addEventListener(name, fn, options = {}) {
     const a = this.handlers.get(name) || [];
     a.push({ fn, once: !!options.once });
@@ -319,4 +320,38 @@ test("a paused MP4 seek whose frame never comes stops a second past the target, 
   b.video.emit("ended");
   assert.equal(b.video.muted, false);
   assert.equal(b.state().playing, false);
+});
+
+test("scrub coalesces in-flight near seeks with fastSeek and an exact seek preempts pending scrub seek", () => {
+  const { video, api, state } = player();
+  video.frame();
+  api.scrub(true);
+  // First near seek starts immediately via fastSeek.
+  api.seek(1000, true);
+  assert.equal(video.fastSeeks, 1);
+  assert.equal(video.exactSeeks || 0, 0);
+  assert.equal(video.currentTime, 1);
+  assert.equal(video.seeking, true);
+  // While seeking, intermediate near seeks coalesce to the latest target without issuing extra seeks.
+  api.seek(2000, true);
+  api.seek(3500, true);
+  assert.equal(video.fastSeeks, 1);
+  assert.equal(video.currentTime, 1);
+  assert.equal(state().position, 3500);
+  // Once the first seek finishes, the coalesced target is flushed via fastSeek.
+  video.finishSeek();
+  assert.equal(video.fastSeeks, 2);
+  assert.equal(video.currentTime, 3.5);
+  assert.equal(video.seeking, true);
+  // Another pending near seek queued while seeking, then preempted immediately by an exact seek on release.
+  api.seek(4200, true);
+  assert.equal(video.fastSeeks, 2);
+  api.seek(4500, false);
+  api.scrub(false);
+  assert.equal(video.exactSeeks, 1);
+  assert.equal(video.fastSeeks, 2);
+  assert.equal(video.currentTime, 4.5);
+  video.finishSeek();
+  assert.equal(video.currentTime, 4.5, "stale pending scrub seek was cleared by exact seek");
+  assert.equal(video.fastSeeks, 2);
 });

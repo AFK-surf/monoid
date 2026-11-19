@@ -362,23 +362,27 @@ fn ten_frames() -> (@ui.Tester, Double, Double, Double) raise {
 }
 
 ///|
-test "a video's timeline dragged: paused, the player told a finger is on it, a seek to each frame it comes to, the head with it" {
+test "a video's timeline dragged: paused, the player told a finger is on it, near seeks as it goes, exact frame on release" {
   let (t, x0, span, mid) = ten_frames()
-  let seeks = fn() { t.views().filter(fn(l) { l.has_prefix("control 1 3 ") }) }
-  // down at a quarter: paused, the player's seeks one after another from now, to the frame showing there (200 ms)
+  let near_seeks = fn() { t.views().filter(fn(l) { l.has_prefix("control 1 11 ") }) }
+  let exact_seeks = fn() { t.views().filter(fn(l) { l.has_prefix("control 1 3 ") }) }
+  // down at a quarter: paused, the player's seeks one after another from now, near seek to the frame showing there (200 ms)
   t.press_at(x0 + span * 0.25, mid)
   t.run_for(@ui.frame_period_default)
   assert_true(t.views().contains("control 1 2 0"))
   assert_true(t.views().contains("control 1 9 1"))
-  assert_eq(seeks(), ["control 1 3 200"])
+  assert_eq(near_seeks(), ["control 1 11 200"])
+  assert_eq(exact_seeks(), [])
   // on within that frame: nothing more asked
   t.move_to(x0 + span * 0.27, mid)
-  assert_eq(seeks().length(), 1)
+  assert_eq(near_seeks().length(), 1)
+  assert_eq(exact_seeks(), [])
   // to three quarters: the frame there (700 ms), the head and the frame's count there before the player says it is
   // (it says the seek it is taking up: the first, still)
   t.set_player(1, position=200.0)
   t.move_to(x0 + span * 0.75, mid)
-  assert_eq(seeks(), ["control 1 3 200", "control 1 3 700"])
+  assert_eq(near_seeks(), ["control 1 11 200", "control 1 11 700"])
+  assert_eq(exact_seeks(), [])
   assert_true(t.find("8 / 10 帧") is Some(_))
   assert_true(
     t
@@ -387,11 +391,12 @@ test "a video's timeline dragged: paused, the player told a finger is on it, a s
     .any(fn(r) { (r.2 - 12.0).abs() < 0.5 && (r.3 - 12.0).abs() < 0.5 && (r.0 + 6.0 - (x0 + span * 0.7)).abs() < 0.5 }),
   )
   assert_true(!t.views().contains("control 1 9 0"))
-  // let go further on than its last move (the two in one frame): to the frame there first (900 ms), then told so, and
-  // played on as it played when the finger came
+  // let go further on than its last move (the two in one frame): exact seek to the frame there first (900 ms) with no
+  // extra near seek, then scrub ends, and played on as it played when the finger came
   let plays = t.views().filter(fn(l) { l == "control 1 1 0" }).length()
   t.release(x0 + span * 0.95, mid)
-  assert_eq(seeks(), ["control 1 3 200", "control 1 3 700", "control 1 3 900"])
+  assert_eq(near_seeks(), ["control 1 11 200", "control 1 11 700"])
+  assert_eq(exact_seeks(), ["control 1 3 900"])
   let log = t.views()
   assert_true(log.search("control 1 3 900").unwrap() < log.search("control 1 9 0").unwrap())
   assert_eq(log.filter(fn(l) { l == "control 1 1 0" }).length(), plays + 1)

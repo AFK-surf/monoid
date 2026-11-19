@@ -1932,8 +1932,18 @@
       });
       // how it stands told as it changes: as it plays, waits, stops, jumps, has more; and each frame of its picture
       // shown as it plays (a sound's: each of the page's frames)
-      for (const e of ['play', 'playing', 'waiting', 'pause', 'stalled', 'canplay', 'ended', 'seeking', 'seeked',
+      for (const e of ['play', 'playing', 'waiting', 'pause', 'stalled', 'canplay', 'ended', 'seeking',
         'progress', 'durationchange', 'ratechange']) el.addEventListener(e, () => stood(id));
+      el.addEventListener('seeked', () => {
+        if (v.pendingSeek !== null) {
+          const p = v.pendingSeek;
+          v.pendingSeek = null;
+          const t = Math.max(0, p.ms / 1000);
+          if (p.near && typeof el.fastSeek === 'function') el.fastSeek(t);
+          else el.currentTime = t;
+        }
+        stood(id);
+      });
       let going = false;
       const frame = () => {
         stood(id);
@@ -1945,6 +1955,8 @@
       el.addEventListener('playing', () => { if (!going) { going = true; go(); } });
       v.el = el;
       v.type = arg;
+      v.scrubbing = false;
+      v.pendingSeek = null;
       // the whole file read through the app, a part at a time, then played
       // (the player waits on the app's bytes now: not the host's work until they come)
       v.ask = (offset) => {
@@ -2074,9 +2086,30 @@
       return;
     }
     if (!v || v.kind !== 1) return;
-    if (op === 1) v.el.play().catch(() => {});
-    else if (op === 2) v.el.pause();
-    else if (op === 3 || op === 11) v.el.currentTime = value / 1000;
+    const doSeek = (ms, near) => {
+      const t = Math.max(0, ms / 1000);
+      if (near && typeof v.el.fastSeek === 'function') v.el.fastSeek(t);
+      else v.el.currentTime = t;
+    };
+    if (op === 1) { v.pendingSeek = null; v.el.play().catch(() => {}); }
+    else if (op === 2) { v.pendingSeek = null; v.el.pause(); }
+    else if (op === 9) {
+      v.scrubbing = value > 0;
+      if (!v.scrubbing && v.pendingSeek !== null && !v.el.seeking) {
+        const p = v.pendingSeek;
+        v.pendingSeek = null;
+        doSeek(p.ms, p.near);
+      }
+    }
+    else if (op === 3 || op === 11) {
+      const near = op === 11;
+      if (v.scrubbing && near && v.el.seeking) {
+        v.pendingSeek = { ms: value, near: true };
+      } else {
+        v.pendingSeek = null;
+        doSeek(value, near);
+      }
+    }
     else if (op === 4) v.el.playbackRate = value;
     // how loud, 0 to 1 (NativeView::volume)
     else if (op === 10) v.el.volume = Math.max(0, Math.min(1, value));

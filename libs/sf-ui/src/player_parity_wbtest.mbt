@@ -163,7 +163,7 @@ test "both players, a phone's: a finger's shake as it taps (5 across, 5 down) no
     let before = t.views().length()
     t.drag(195.0, 300.0, 200.0, 305.0)
     t.draw()
-    t.views()[before:].iter().any(fn(l) { l.contains(" 3 ") || l.contains(" 9 ") })
+    t.views()[before:].iter().any(fn(l) { l.contains(" 3 ") || l.contains(" 9 ") || l.contains(" 11 ") })
   })
   |> ignore
 }
