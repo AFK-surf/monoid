@@ -67,6 +67,9 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     feedback: None,
     card_outcomes: None,
     outcomes_following: false,
+    read_lately: Map([]),
+    runner_all: None,
+    runner_unnamed: Set::new(),
   }
   p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
@@ -1312,25 +1315,52 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
 async fn P52::runners_with_sessions(self : P52) -> Json {
   let infos = self.pump.wait(@agent_drivers.live_runners(self.pump.machine(), self.data))
   let whose : Map[String, String] = {}
-  let of = (rows : Json) => for s in jitems(rows) {
+  let of = (into : Map[String, String], rows : Json) => for s in jitems(rows) {
     match jtext(s, "key") {
       Some(k) =>
         for kind in @events.runtime_kinds {
           let id = @agent_drivers.runner_id(kind, k)
-          if !whose.contains(id) {
-            whose[id] = k
+          if !into.contains(id) {
+            into[id] = k
           }
         }
       None => ()
     }
   }
   if infos.length() > 0 {
-    of(self.store("liveSessions", [])) catch {
+    of(whose, self.store("liveSessions", [])) catch {
       _ => ()
     }
-    if infos.iter().any(i => !whose.contains(i.id())) {
-      of(self.store("listSessions", [])) catch {
-        _ => ()
+    // (every session asked again only for a runner neither named nor known to have none: a runner shared by no
+    // session's key, a Codex app-server's, asked it at every look, thousands of rows and their runners' ids hashed)
+    let rest = infos.filter(i => !whose.contains(i.id()))
+    let known = (id : String) => self.runner_unnamed.contains(id) ||
+      (match self.runner_all {
+        Some(all) => all.contains(id)
+        None => false
+      })
+    if rest.iter().any(i => !known(i.id())) {
+      let all : Map[String, String] = {}
+      let read = try {
+        of(all, self.store("listSessions", []))
+        true
+      } catch {
+        _ => false
+      }
+      if read {
+        self.runner_all = Some(all)
+        for i in rest {
+          if !all.contains(i.id()) {
+            self.runner_unnamed.add(i.id())
+          }
+        }
+      }
+    }
+    if self.runner_all is Some(all) {
+      for i in rest {
+        if all.get(i.id()) is Some(k) {
+          whose[i.id()] = k
+        }
       }
     }
   }

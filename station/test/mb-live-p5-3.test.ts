@@ -400,6 +400,26 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
       }
     }
 
+    // ── A profile's Codex files as the decisions read them (decision.ts `readLately`): kept as last read, not read
+    // again at every ask; read again now by a check (`profileFilesRead`, which a discovery does first) ──
+    const cxHome = join(data, "homes", "cx");
+    mkdirSync(cxHome, { recursive: true });
+    const toml = (base: string) => `model_provider = "own"\n[model_providers.own]\nbase_url = "${base}"\nenv_key = "OWN_KEY"\n`;
+    const cx = { id: "cx", runtimes: ["codex"], home: cxHome, env: { OWN_KEY: "k-own" } };
+    const fp = async () => {
+      const r = await parts(door, "POST", "/hub/decision.fingerprint", [cx]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      return r.body as string;
+    };
+    writeFileSync(join(cxHome, "config.toml"), toml("http://127.0.0.1:9/a"));
+    const first = await fp();
+    writeFileSync(join(cxHome, "config.toml"), toml("http://127.0.0.1:9/b"));
+    assert.equal(await fp(), first, "the file as read a moment ago, not read again");
+    const discovered = await parts(door, "POST", "/hub/decision.discover", [cx, { state: "failed" }]);
+    assert.equal(discovered.status, 200, JSON.stringify(discovered.body));
+    assert.notEqual(discovered.body.fingerprint, first, "a check reads the profile's files again");
+    assert.equal(await fp(), discovered.body.fingerprint, "and what it read is kept");
+
     // ── Resources: the machine, and a chat's job's processes put to its chat ──
     const machine = await parts(door, "GET", "/overview/machine");
     assert.equal(machine.status, 200);

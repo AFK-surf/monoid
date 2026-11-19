@@ -46,6 +46,15 @@ priv struct P52 {
   mut card_outcomes : @store_threads.Worker?
   /// Whether what the worker writes is being followed to tell it (`outcomes_follow`).
   mut outcomes_following : Bool
+  /// A profile's files as `files.readLately` read them last, by path, with when (decision.ts `readLately`'s `files`):
+  /// the profiles' views and the decisions' models ask them of every profile and model each time, which read the disk
+  /// each time. Kept 10 s, as nothing here watches them; `files.profileFilesRead` reads a profile's again now.
+  read_lately : Map[String, (Double, String?)]
+  /// Every session's key by its runners' ids (memory.ts `runnerSessions`'s `all`), made of `listSessions` once a
+  /// runner neither a live session's nor known here turns up.
+  mut runner_all : Map[String, String]?
+  /// The runners no session has (`unnamed`): asked of `listSessions` once.
+  runner_unnamed : Set[String]
 }
 
 ///|
@@ -64,6 +73,10 @@ fn P52::the_hub(self : P52) -> @session_hub.Hub raise LiveError {
 ///|
 /// One of the store's calls by its TypeScript name (store.ts): the sessions' store's, else the threads'.
 fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
+  // (where a session's files are put away, session_storage/cold.mbt's: store.ts `archiveDir`)
+  if name == "archiveDir" {
+    return Json::string(path([self.data, "archive"]))
+  }
   dispatch_store_threads(self.bus, self.threads, name, args)
 }
 

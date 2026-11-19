@@ -7,7 +7,7 @@
 // takes it up and serves on; a drain answers idle once no turn runs; nothing of the runners or programs is left.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createSocket } from "node:dgram";
 import { type Server, createServer } from "node:net";
 import { request } from "node:http";
@@ -656,6 +656,18 @@ test("an archived session put in cold storage off the station's thread, and its 
     writeFileSync(join(workspace, "keep.txt"), "kept\n");
     mkdirSync(join(workspace, "node_modules", "x"), { recursive: true });
     writeFileSync(join(workspace, "node_modules", "x", "index.js"), "module.exports = 1;\n");
+    // Its transcript, packed in place, and the Rust station's copy of it in the store's archive (`store.archiveDir`),
+    // let go once the transcript is packed (cold.mbt `pack_history`).
+    const runtimeId = "0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8";
+    store.setRuntimeSessionId("chat:c-cold", runtimeId);
+    // (where Claude keeps it: its project named after the workspace as the system resolves it)
+    const project = join(data, "homes", "cc", "projects", realpathSync(workspace).replace(/[^a-zA-Z0-9]/g, "-"));
+    const transcript = join(project, `${runtimeId}.jsonl`);
+    mkdirSync(project, { recursive: true });
+    writeFileSync(transcript, `${JSON.stringify({ type: "user", sessionId: runtimeId, message: { role: "user", content: "hi" } })}\n`);
+    const legacy = join(data, "archive", "transcripts", "chat:c-cold.jsonl.zst");
+    mkdirSync(join(data, "archive", "transcripts"), { recursive: true });
+    writeFileSync(legacy, "the Rust station's copy");
 
     // Archived: its room marked cold, what can be made again removed, the workspace packed (cold.ts `pack`, by the
     // packing and measuring programs of their own: `--builder packed`, `--builder footprint`).
@@ -675,6 +687,8 @@ test("an archived session put in cold storage off the station's thread, and its 
     );
     assert.equal(existsSync(join(workspace, "keep.txt")), false, "the workspace is in its archive");
     assert.equal(existsSync(join(workspace, "node_modules")), false);
+    await until("its transcript packed and the old copy let go", () => existsSync(`${transcript}.zst`) && !existsSync(transcript) && !existsSync(legacy), () => a.err());
+    assert.doesNotMatch(a.err(), /no such store method/);
 
     // Unarchived: the workspace written back from its archive (cold.ts `restore`), what was rebuildable not in it.
     const back = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-cold")}/archive`, "DELETE");

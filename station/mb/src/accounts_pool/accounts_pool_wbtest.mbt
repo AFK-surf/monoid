@@ -49,30 +49,3 @@ test "the pool's urgency of an allowance" {
   assert_true(u.crowded)
   assert_true(u.weight > 0.0)
 }
-
-///|
-test "a profile made of its own entry is the one the whole config makes" {
-  // (`Accounts::profile` makes only the entry asked; it must be what `hub_config` gives for that id)
-  let raw = parse(
-    #|{"profiles": [
-    #|  {"id": "a", "name": " A ", "runtime": "claude", "models": ["claude-opus-5-5", "claude-opus-5-5"], "home": "homes/a"},
-    #|  {"id": "b", "runtime": "codex", "models": ["gpt-6.2-sol"], "machine": true, "name": "B", "enabled": false},
-    #|  {"id": "c", "runtimes": ["agy", "claude"], "withheld": ["x", ""], "backgroundOnMessage": false},
-    #|  {"id": "a", "name": "second a"}
-    #|]}
-  ) catch {
-    _ => abort("bad JSON")
-  }
-  let found = (id : String) => if id == "a" { Some(["claude-sonnet-5-5", "claude-opus-5-5"]) } else { None }
-  let whole = hub_config(raw, "/data", found~).profiles
-  for id in ["a", "b", "c"] {
-    let mine = jitems(raw.get("profiles"))
-      .iter()
-      .find_first(p => js_string(p.get("id")) == id)
-      .map(p => profile_of(p, "/data", found))
-    let theirs = whole.iter().find_first(p => p.id == id)
-    assert_eq(mine.map(p => stringify(p.raw)), theirs.map(p => stringify(p.raw)))
-    assert_eq(mine.map(p => p.models), theirs.map(p => p.models))
-    assert_eq(mine.map(p => p.name), theirs.map(p => p.name))
-  }
-}

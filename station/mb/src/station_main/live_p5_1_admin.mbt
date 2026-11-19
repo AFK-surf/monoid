@@ -775,9 +775,15 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       }
     _ => ()
   }
-  let catalog = match read_json(path([bus.data, "model-catalog.json"])) {
-    Some({ "models": Object(_) as m, .. }) => m
-    _ => Json::object({})
+  // (the catalog as P5-3 keeps it, catalog.ts `catalog()`: the file, 126 KB, was read and parsed each overview; read
+  // only where none is kept, a P5-1 alone)
+  let catalog = match (bus.model_catalog.val)() {
+    { "models": Object(m) as models, .. } if !m.is_empty() => models
+    _ =>
+      match read_json(path([bus.data, "model-catalog.json"])) {
+        Some({ "models": Object(_) as m, .. }) => m
+        _ => Json::object({})
+      }
   }
   // The automatic decisions and the archive policy, last before the overview is made: what it keeps of them a minute
   // is given again without asking (overview.ts `decisionsView`), so they are asked only where it keeps none for this

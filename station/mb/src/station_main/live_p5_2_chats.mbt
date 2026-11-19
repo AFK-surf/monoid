@@ -612,15 +612,42 @@ async fn P52::chats_answer(
       }
       @jsjson.JValue::of_string(@nodepath.join(sep(), base))
     }
-    "files" =>
+    "files" => {
+      let now = @host.now().to_double()
       if meth == "profileFilesRead" {
+        // (a check reads the profile's files first: read again now, kept for `readLately`)
+        match a(0) {
+          Object(m) =>
+            match m.get("home") {
+              Some(String(home)) if home != "" =>
+                for name in ["config.toml", "auth.json"] {
+                  let p = @nodepath.join(sep(), [home, name])
+                  self.read_lately[p] = (now, self.host.read_text(p) catch { _ => None })
+                }
+              _ => ()
+            }
+          _ => ()
+        }
         Null
       } else {
-        match (self.host.read_text(s(0)) catch { _ => None }) {
+        let p = s(0)
+        let text = match self.read_lately.get(p) {
+          Some((at, text)) if now - at < 10_000.0 => text
+          _ => {
+            let text = self.host.read_text(p) catch { _ => None }
+            if self.read_lately.length() >= 256 && !self.read_lately.contains(p) {
+              self.read_lately.clear()
+            }
+            self.read_lately[p] = (now, text)
+            text
+          }
+        }
+        match text {
           Some(t) => @jsjson.JValue::of_string(t)
           None => Null
         }
       }
+    }
     "drivers" => J::Bool(self.drivers.contains(s(0)))
     "dep" => self.dep(meth, raw, args)
     "presets" => to_jv(self.presets_answer(meth, args))

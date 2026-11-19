@@ -327,7 +327,9 @@ fn P51::config_live(self : P51) -> Unit {
     () => ignore(self.config_listeners.search_by(x => x.0 == id).map(i => self.config_listeners.remove(i)))
   }
   bus.config_check.val = chk => self.config_checks.push(chk)
-  bus.lang.val = () => match (bus.config_raw.val)() {
+  // (config.json as last read or written: asked of every ask of the conversations' world, a `lstat` through the shell each
+  // time held the loop; what another program writes is read within a second, above)
+  bus.lang.val = () => match config.value {
     { "language": String(l), .. } => @ops_platform.lang_of(Some(l))
     _ => "zh"
   }
