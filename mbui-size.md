@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a2b41a591](https://github.com/AFK-surf/monoid/commit/a2b41a59114aafd6a66796600b73a35f9364346f) ci(release): shorten the Mac app build, the statio | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.34 | 111.34 |
 | [d94e363fe](https://github.com/AFK-surf/monoid/commit/d94e363feaaf708095c3d8bd41b94e46aafa8634) feat(mbui): add generic updater library and releas | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.42 | 121.91 |
 | [1b8ce33e3](https://github.com/AFK-surf/monoid/commit/1b8ce33e3995c54755691ce3469024e47d4958df) fix(mbui): add no padding for empty shape runs, an | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.42 | 121.91 |
 | [bcd69f31b](https://github.com/AFK-surf/monoid/commit/bcd69f31bbe96be83d13876684498822c24148d1) fix(station): stop the p5-2 handover test racing t | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.44 | 127.78 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [81556eb15](https://github.com/AFK-surf/monoid/commit/81556eb15db6acfb1ec9fed55ea1a89d6cef3898) feat(mbui): polish execution history interactions, | 2.62 | 3.52 | 14.37 | 36.48 | 55.39 | 31.96 | 64.62 | 97.04 | 107.97 |
 | [4aa521887](https://github.com/AFK-surf/monoid/commit/4aa52188713df8eadf6bdb338772e50ada19c5eb) refactor(core-ts): split shapes schema into domain | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.06 | 126.32 |
 | [9e26c535e](https://github.com/AFK-surf/monoid/commit/9e26c535eb1be6ba936c29567f855b244eb60d8c) fix(mbui): apply pixel-sliver guard to the n == 3  | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
-| [7950d8399](https://github.com/AFK-surf/monoid/commit/7950d839914a95329b74e196a3e3d2aa9405e4a6) perf(station): encode H.264 at High, look at macOS | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a2b41a591](https://github.com/AFK-surf/monoid/commit/a2b41a59114aafd6a66796600b73a35f9364346f) ci(release): shorten the Mac app build, the statio | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.18 |
 | [d94e363fe](https://github.com/AFK-surf/monoid/commit/d94e363feaaf708095c3d8bd41b94e46aafa8634) feat(mbui): add generic updater library and releas | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.18 |
 | [1b8ce33e3](https://github.com/AFK-surf/monoid/commit/1b8ce33e3995c54755691ce3469024e47d4958df) fix(mbui): add no padding for empty shape runs, an | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.05 |
 | [bcd69f31b](https://github.com/AFK-surf/monoid/commit/bcd69f31bbe96be83d13876684498822c24148d1) fix(station): stop the p5-2 handover test racing t | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [81556eb15](https://github.com/AFK-surf/monoid/commit/81556eb15db6acfb1ec9fed55ea1a89d6cef3898) feat(mbui): polish execution history interactions, | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [4aa521887](https://github.com/AFK-surf/monoid/commit/4aa52188713df8eadf6bdb338772e50ada19c5eb) refactor(core-ts): split shapes schema into domain | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [9e26c535e](https://github.com/AFK-surf/monoid/commit/9e26c535eb1be6ba936c29567f855b244eb60d8c) fix(mbui): apply pixel-sliver guard to the n == 3  | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
-| [7950d8399](https://github.com/AFK-surf/monoid/commit/7950d839914a95329b74e196a3e3d2aa9405e4a6) perf(station): encode H.264 at High, look at macOS | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.31 |
