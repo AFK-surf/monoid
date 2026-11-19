@@ -341,6 +341,22 @@ fn preset_picker_row_node(
 }
 
 ///|
+/// A row in the new-chat preset picker's list (`View::each` key and payload).
+#derive(Eq)
+priv enum PresetPickRow {
+  TheirRow
+  OwnRow(String, Json)
+}
+
+///|
+fn PresetPickRow::key(self : PresetPickRow) -> String {
+  match self {
+    TheirRow => "__theirs__"
+    OwnRow(k, _) => k
+  }
+}
+
+///|
 /// The person's presets as a structured `@sf.panel_nodes` panel: compact header (with a quiet text-only "No preset"
 /// button when a preset is active on popover), optional full-width search bar (>= 5 presets, paired with "No preset"
 /// beside it on sheet), picked other-member preset (with copy button), own presets with icons, one-line summaries and
@@ -499,90 +515,100 @@ fn preset_panel(
         return
       }
       @sf.capped_node(body, fn() { if small { 360.0 } else { dmin(440.0, dmax(220.0, @sf.over_room(body).1 * 0.55)) } }, fn(list) {
-        list.pick(at_once=true, fn() { query_field.text().trim().to_owned() }, fn(box, q) {
-          let is_searching = q != ""
-          let mut row_idx = 0
-          let their_shown = !own && picked != "" && preset_matches(q, [picked_name, whose, one_summary])
-          let matched_own : Array[Json] = []
+        let rows = fn() -> Array[PresetPickRow] {
+          let q = query_field.text().trim().to_owned()
+          let out : Array[PresetPickRow] = []
+          if !own && picked != "" && preset_matches(q, [picked_name, whose, one_summary]) {
+            out.push(TheirRow)
+          }
           for p in all {
             let po = Some(p)
             if preset_matches(q, [text(po, "name"), text(po, "summary"), text(po, "stationName")]) {
-              matched_own.push(p)
+              out.push(OwnRow(text(po, "station") + "\n" + text(po, "id"), p))
             }
           }
-          if their_shown {
-            let my_idx = row_idx
-            row_idx += 1
-            preset_picker_row_node(
-              box,
-              picked_name,
-              their_sub,
-              one_dir_name,
-              one_dir_repo,
-              one_maker_id,
-              one_runtime,
-              true,
-              fn() { searching() && search_at.get() == my_idx },
-              fn() {
-                preset_pick(src, w, "", "")()
-                close()
-              },
-              action=(
-                "copy",
-                fn() { @sf.t("web-main.preset.copyItem", args=[("name", picked_name)]) },
-                fn() { preset_copy_run(src, w, address, picked, stations, close) },
-              ),
-            )
+          out
+        }
+        let lit = list.selected(fn() {
+          if !searching() {
+            None
+          } else {
+            let r = rows()
+            let idx = search_at.get()
+            if idx >= 0 && idx < r.length() { Some(r[idx].key()) } else { None }
           }
-          for p in matched_own {
-            let po = Some(p)
-            let id = text(po, "id")
-            let at = text(po, "station")
-            let display_name = preset_menu_label(all, p)
-            let sum = text(po, "summary")
-            let dir_name = text(po, "dirName")
-            let dir_repo = text(po, "dirRepo")
-            let maker_id = text(field(po, "maker"), "id")
-            let rt = text(po, "runtime")
-            let chosen = id == picked && at == picked_station
-            let my_idx = row_idx
-            row_idx += 1
-            preset_picker_row_node(
-              box,
-              display_name,
-              sum,
-              dir_name,
-              dir_repo,
-              maker_id,
-              rt,
-              chosen,
-              fn() { searching() && search_at.get() == my_idx },
-              fn() {
-                if chosen {
-                  preset_pick(src, w, "", "")()
-                } else {
-                  preset_pick(src, w, id, at)()
-                }
-                close()
-              },
-              action=(
-                "edit",
-                fn() { @sf.t("web-main.preset.editItem", args=[("name", display_name)]) },
+        })
+        list.each(rows, PresetPickRow::key, fn(row_box, item) {
+          match item.untracked() {
+            TheirRow =>
+              preset_picker_row_node(
+                row_box,
+                picked_name,
+                their_sub,
+                one_dir_name,
+                one_dir_repo,
+                one_maker_id,
+                one_runtime,
+                true,
+                fn() { lit("__theirs__") },
                 fn() {
+                  preset_pick(src, w, "", "")()
                   close()
-                  let up = stations.iter().any(fn(s) { text(Some(s), "station") == at })
-                  preset_dialog(src, w, if up { at } else { address }, id, stations, browse_station=address)
                 },
-              ),
-            )
+                action=(
+                  "copy",
+                  fn() { @sf.t("web-main.preset.copyItem", args=[("name", picked_name)]) },
+                  fn() { preset_copy_run(src, w, address, picked, stations, close) },
+                ),
+              )
+            OwnRow(my_key, p) => {
+              let po = Some(p)
+              let id = text(po, "id")
+              let at = text(po, "station")
+              let display_name = preset_menu_label(all, p)
+              let sum = text(po, "summary")
+              let dir_name = text(po, "dirName")
+              let dir_repo = text(po, "dirRepo")
+              let maker_id = text(field(po, "maker"), "id")
+              let rt = text(po, "runtime")
+              let chosen = id == picked && at == picked_station
+              preset_picker_row_node(
+                row_box,
+                display_name,
+                sum,
+                dir_name,
+                dir_repo,
+                maker_id,
+                rt,
+                chosen,
+                fn() { lit(my_key) },
+                fn() {
+                  if chosen {
+                    preset_pick(src, w, "", "")()
+                  } else {
+                    preset_pick(src, w, id, at)()
+                  }
+                  close()
+                },
+                action=(
+                  "edit",
+                  fn() { @sf.t("web-main.preset.editItem", args=[("name", display_name)]) },
+                  fn() {
+                    close()
+                    let up = stations.iter().any(fn(s) { text(Some(s), "station") == at })
+                    preset_dialog(src, w, if up { at } else { address }, id, stations, browse_station=address)
+                  },
+                ),
+              )
+            }
           }
-          if is_searching && !their_shown && matched_own.length() == 0 {
-            box.box(fn(e) {
-              @sf.style_node(e, fn() { preset_empty_box })
-              @sf.words_node(e, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
-            })
-            |> ignore
-          }
+        })
+        list.show(at_once=true, fn() { searching() && rows().is_empty() }, fn(e) {
+          e.box(fn(eb) {
+            @sf.style_node(eb, fn() { preset_empty_box })
+            @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
+          })
+          |> ignore
         })
       })
       |> ignore
@@ -724,54 +750,70 @@ fn preset_others_content(
         |> ignore
       } else {
         @sf.capped_node(b, fn() { if small { 360.0 } else { dmin(440.0, dmax(220.0, @sf.over_room(b).1 * 0.55)) } }, fn(list) {
-          list.pick(at_once=true, fn() { query_field.text().trim().to_owned() }, fn(box, q) {
-            let matched : Array[Json] = []
+          let other_key = fn(p : Json) -> String {
+            let po = Some(p)
+            text(po, "station") + "\n" + text(po, "id")
+          }
+          let matched_rows = fn() -> Array[Json] {
+            let q = query_field.text().trim().to_owned()
+            let out : Array[Json] = []
             for p in others {
               let po = Some(p)
               if preset_matches(q, [text(po, "name"), text(po, "whose"), text(po, "summary"), text(po, "stationName")]) {
-                matched.push(p)
+                out.push(p)
               }
             }
-            for i, p in matched {
-              let po = Some(p)
-              let id = text(po, "id")
-              let at = text(po, "station")
-              let name = text(po, "name")
-              let sub = preset_join_meta(text(po, "whose"), text(po, "summary"))
-              let dir_name = text(po, "dirName")
-              let dir_repo = text(po, "dirRepo")
-              let maker_id = text(field(po, "maker"), "id")
-              let rt = text(po, "runtime")
-              let my_idx = i
-              preset_picker_row_node(
-                box,
-                name,
-                sub,
-                dir_name,
-                dir_repo,
-                maker_id,
-                rt,
-                id == picked,
-                fn() { searching() && search_at.get() == my_idx },
-                fn() {
-                  let_go()
-                  preset_pick(src, w, id, at)()
-                  close()
-                },
-                action=(
-                  "copy",
-                  fn() { @sf.t("web-main.preset.copyItem", args=[("name", name)]) },
-                  fn() { preset_copy_run(src, w, address, id, stations, close) },
-                ),
-              )
+            out
+          }
+          let lit = list.selected(fn() {
+            if !searching() {
+              None
+            } else {
+              let r = matched_rows()
+              let idx = search_at.get()
+              if idx >= 0 && idx < r.length() { Some(other_key(r[idx])) } else { None }
             }
-            if q != "" && matched.length() == 0 {
-              box.box(fn(eb) {
-                @sf.style_node(eb, fn() { preset_empty_box })
-                @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
-              })
-              |> ignore
-            }
+          })
+          list.each(matched_rows, other_key, fn(row_box, item) {
+            let p = item.untracked()
+            let po = Some(p)
+            let id = text(po, "id")
+            let at = text(po, "station")
+            let my_key = at + "\n" + id
+            let name = text(po, "name")
+            let sub = preset_join_meta(text(po, "whose"), text(po, "summary"))
+            let dir_name = text(po, "dirName")
+            let dir_repo = text(po, "dirRepo")
+            let maker_id = text(field(po, "maker"), "id")
+            let rt = text(po, "runtime")
+            preset_picker_row_node(
+              row_box,
+              name,
+              sub,
+              dir_name,
+              dir_repo,
+              maker_id,
+              rt,
+              id == picked,
+              fn() { lit(my_key) },
+              fn() {
+                let_go()
+                preset_pick(src, w, id, at)()
+                close()
+              },
+              action=(
+                "copy",
+                fn() { @sf.t("web-main.preset.copyItem", args=[("name", name)]) },
+                fn() { preset_copy_run(src, w, address, id, stations, close) },
+              ),
+            )
+          })
+          list.show(at_once=true, fn() { searching() && matched_rows().is_empty() }, fn(e) {
+            e.box(fn(eb) {
+              @sf.style_node(eb, fn() { preset_empty_box })
+              @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
+            })
+            |> ignore
           })
         })
         |> ignore
