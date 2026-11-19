@@ -100,9 +100,9 @@ let accordion_chevron : Double = 16.0
 let accordion_off_alpha : Double = 0.55
 
 ///|
-/// The card its sections are in: the surface, edged in the border, a row's corner.
+/// The card its sections are in: the surface, a hairline of the line round it (control_edge), a row's corner.
 // kept across runs: a value (no field of it changes)
-let accordion_card : @ui.Style = @ui.css("w=Full bg=Surface border=B1 border_color=Border").then(
+let accordion_card : @ui.Style = @ui.css("w=Full bg=Surface border=B0_5 border_color=Line").then(
   @ui.style(radius=row_radius),
 )
 

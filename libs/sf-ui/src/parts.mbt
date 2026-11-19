@@ -2600,7 +2600,7 @@ let field_hint : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mut
 
 ///|
 /// A line to type in (controls.css.ts input, a one-line one: a pill as the buttons beside it are, 36 high at least,
-/// 16 in, a line of the strong grey, the field's hover grey pointed at or written in, on the canvas, its words 14, the
+/// 16 in, a hairline of the line, the border's pointed at or written in (control_edge), on the canvas, its words 14, the
 /// placeholder subtle): mbui's field (@kit.text_field), its editor `key`'s; `field`: what it holds, the view's own;
 /// `small`: 34 high (a small panel's, as its rows: input_box_small); `high`: as high as what is pressed beside it in
 /// its row, where that is not a field's height (a browser's round ← → ⟳ beside its address); `solid`: on a card's ground in a chat (field_solid);
@@ -2673,7 +2673,7 @@ fn field_corner() -> @ui.Style {
 ///|
 /// Lines to type in (controls.css.ts input as a textarea): a one-line field grown taller, round as its ends are
 /// (field_round, not the web's --r-field: its first line clears that round), its words as far in as its (16) and 8
-/// under its top; the strong grey's line, the field's hover grey pointed at or written in, on the canvas; its words 14
+/// under its top; a hairline of the line, the border's pointed at or written in (control_edge), on the canvas; its words 14
 /// on lines 1.6 of them, at least
 /// `rows` lines high and growing to `most`; `field`: what it holds, the view's own; `corner`, the ladder's where it
 /// stands (first in a card, on its words' inset in its corners: the small block's 10); `solid`: on a card's ground in a
@@ -2733,11 +2733,11 @@ let textarea_in : Double = 16.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let textarea_box : @ui.Style = @ui.css("w=Full px=S4 py=S2 bg=Surface border=B1 border_color=Border")
+let textarea_box : @ui.Style = @ui.css("w=Full px=S4 py=S2 bg=Surface border=B0_5 border_color=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let textarea_box_hot : @ui.Style = textarea_box.then(@ui.css("border_color=FieldHover"))
+let textarea_box_hot : @ui.Style = textarea_box.then(@ui.css("border_color=Border"))
 
 ///|
 /// What is typed in: as what is read (global.css.ts --text-input), on the line of a list's words.
@@ -2746,19 +2746,19 @@ let input_size : Double = 14.0
 ///|
 // kept across runs: a value (no field of it changes)
 let input_box : @ui.Style = @ui.css((
-  #|row w=Full px=S4 py=S1_5 radius=Full bg=Surface border=B1 border_color=Border align=ACenter
+  #|row w=Full px=S4 py=S1_5 radius=Full bg=Surface border=B0_5 border_color=Line align=ACenter
   #|disabled{opacity=O55}
 ))
 
 ///|
-/// Pointed at or written in: the field's hover grey round it.
+/// Pointed at or written in: its hairline in the border (control_edge).
 // kept across runs: a value (no field of it changes)
-let input_box_hot : @ui.Style = input_box.then(@ui.css("border_color=FieldHover"))
+let input_box_hot : @ui.Style = input_box.then(@ui.css("border_color=Border"))
 
 ///|
 /// A field on a card's ground in a chat (a key typed in for an agent's request, as a login's code is: sfpages
 /// login_card.mbt lc_paste; MachineLogins.css.ts cardPaste, controls.css.ts inputSolid): solid, the page's own ground,
-/// no line of its own; pointed at or written in, the field's hover grey round it as any field's (`_hot`).
+/// no line of its own; pointed at or written in, the border's hairline round it as any field's (`_hot`).
 // kept across runs: a value (no field of it changes)
 let field_solid : @ui.Style = @ui.css("bg=Bg border_color=Bg")
 
@@ -2775,7 +2775,7 @@ let input_box_small : @ui.Style = input_box.then(@ui.style(h=Fixed(menu_row_min)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let input_box_small_hot : @ui.Style = input_box_small.then(@ui.css("border_color=FieldHover"))
+let input_box_small_hot : @ui.Style = input_box_small.then(@ui.css("border_color=Border"))
 
 ///|
 /// A choice among a few (parts.tsx Select): closed, a pill as a one-line field is (input_box: the theme's control
@@ -2845,14 +2845,14 @@ pub fn select(
 ///|
 // kept across runs: a value (no field of it changes)
 let select_box : @ui.Style = @ui.css((
-  #|row w=Full px=S4 py=S1_5 gap=S2 radius=Full bg=Surface border=B1 border_color=Border align=ACenter
+  #|row w=Full px=S4 py=S1_5 gap=S2 radius=Full bg=Surface border=B0_5 border_color=Line align=ACenter
   #|justify=JBetween disabled{opacity=O55}
 ))
 
 ///|
-/// Pointed at, open or focused: the field's hover grey round it.
+/// Pointed at, open or focused: its hairline in the border (control_edge).
 // kept across runs: a value (no field of it changes)
-let select_box_hot : @ui.Style = select_box.then(@ui.css("border_color=FieldHover"))
+let select_box_hot : @ui.Style = select_box.then(@ui.css("border_color=Border"))
 
 ///|
 /// What is chosen in a select: its icon (where it has one) and its words, 6 apart.
@@ -3019,7 +3019,7 @@ pub fn choices(
 /// A choice: bordered, a block's corner of the ladder's (18: at a card's foot, reaching to its inset, concentric with
 /// its corners; every one alike).
 // kept across runs: a value (no field of it changes)
-let choice_card : @ui.Style = @ui.css("w=Full bg=Surface border=B1 border_color=Border disabled{opacity=O55}").then(
+let choice_card : @ui.Style = @ui.css("w=Full bg=Surface border=B0_5 border_color=Line disabled{opacity=O55}").then(
   @ui.style(radius=row_radius),
 )
 
@@ -3035,9 +3035,9 @@ fn choice_in_panel() -> @ui.Style {
 let choice_hit_in_panel : @ui.Style = @ui.style(px=room(card_pad), py=S4)
 
 ///|
-/// Pointed at: the field's hover grey round it; chosen: edged twice in the ink (its line and a ring of 1).
+/// Pointed at: its hairline in the border (control_edge); chosen: edged twice in the ink (its line and a ring of 1).
 // kept across runs: a value (no field of it changes)
-let choice_card_hot : @ui.Style = choice_card.then(@ui.css("border_color=FieldHover"))
+let choice_card_hot : @ui.Style = choice_card.then(@ui.css("border_color=Border"))
 
 ///|
 // kept across runs: a value (no field of it changes)
