@@ -11,7 +11,10 @@
 //     GitHub's or the network's, then a check's summary of a failure (SOFT_FAILED: scripts/check.sh's `… FAILED`, which
 //     it says of a step that met a 504 too).
 // Never one that ran its time out: 285 s or more (a job's 5 minutes, less what its runner takes to cut it), or a limit
-// said in its log (scripts/with-timeout.sh's, the job's own). What cannot be read (a log gone) is not let through.
+// said in its log (scripts/with-timeout.sh's, the job's own), unless its setting up took 120 s or more of it for
+// GitHub's or the network's sake (said in its log, nothing of the change's beside it) and its own steps were left well
+// short of the time (a checkout's SYN lost to github.com, 135 s on Linux's retries: #7395's check-station (1)). What
+// cannot be read (a log gone) is not let through.
 // The attempts' jobs are read from GitHub's API (GH_TOKEN, actions: read), or, for the tests, from
 // GATE_RERUN_FIXTURE_DIR: attempt-<n>.json ({ run: { conclusion }, jobs: [...] }, the API's shapes) and
 // logs/<job id>.txt.
@@ -32,6 +35,7 @@ export const INFRA_LOG = [
   /TLS handshake timeout/i,
   /\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up)\b.*\b(github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b/,
   /\b(github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b.*\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up)\b/,
+  /Failed to connect to (github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b/i,
 ];
 /** The runner shut down under the job: GitHub's, but only before the job's time (after it, the job ran out). */
 const SHUTDOWN = /The runner has received a shutdown signal/i;
@@ -49,6 +53,10 @@ export const HARD_FAILED = [
 /** A check's summary of a failure: the change's, unless GitHub's or the network's failure is said beside it. */
 export const SOFT_FAILED = [/\bFAILED\b/, /\btest\b.*\bfailed\b/i, /^✖ /m, /^not ok \d/m];
 
+/** Seconds of setting up that, with GitHub's or the network's failure in its log, leave a job that ran its time out
+ * let through, its own steps having had less than its time (RAN_OUT_S less a minute). */
+export const STARVED_S = 120;
+
 const seconds = (j) => (j.started_at && j.completed_at ? (Date.parse(j.completed_at) - Date.parse(j.started_at)) / 1000 : 0);
 const BAD = new Set(["failure", "timed_out", "cancelled"]);
 
@@ -62,8 +70,24 @@ const lines = (log) => log.replace(/^\d{4}-\d\d-\d\dT[0-9:.]+Z /gm, "");
 export async function judge(job, run, log) {
   const took = Math.round(seconds(job));
   if (!job.runner_name) return { ok: true, why: "no runner took it" };
-  if (job.conclusion === "timed_out" || took >= RAN_OUT_S) return { ok: false, why: `ran its time out (${took} s)` };
   const steps = job.steps ?? [];
+  if (job.conclusion === "timed_out" || took >= RAN_OUT_S) {
+    const sum = (list) => Math.round(list.reduce((n, s) => n + seconds(s), 0));
+    const infraTook = sum(steps.filter((s) => INFRA_STEP.test(s.name)));
+    const ownTook = sum(steps.filter((s) => !INFRA_STEP.test(s.name)));
+    if (job.conclusion !== "timed_out" && infraTook >= STARVED_S && ownTook < RAN_OUT_S - 60) {
+      const text = await log();
+      if (text != null) {
+        const said = lines(text);
+        // (GitHub's cut at the job's 5 minutes says it exceeded the maximum execution time: that alone is not the change's)
+        const hard = HARD_FAILED.filter((p) => !/exceeded the maximum execution time/.test(p.source)).find((p) => p.test(said));
+        const p = INFRA_LOG.find((q) => q.test(said));
+        const infra = p && (said.split("\n").find((l) => p.test(l))?.trim().slice(0, 160) ?? String(p));
+        if (!hard && infra) return { ok: true, why: `setting up took ${infraTook} s (${infra}), leaving ${ownTook} s` };
+      }
+    }
+    return { ok: false, why: `ran its time out (${took} s)` };
+  }
   if (steps.length === 0) return { ok: true, why: "it ran no step" };
   const failed = steps.filter((s) => BAD.has(s.conclusion));
   const own = failed.filter((s) => !INFRA_STEP.test(s.name));

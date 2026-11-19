@@ -81,6 +81,9 @@ jobs:
       check_rust: ${{ steps.plan.outputs.check_rust }}
     steps:
       - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, fetch-tags: true, filter: "blob:none" } # (the history's commits and trees: the range, the paths it changed; a blob read is fetched then)
       - uses: ./.github/actions/node
@@ -190,6 +193,9 @@ jobs:
     steps:
       # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
       - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
         uses: ./.github/actions/setup-linux
@@ -305,6 +311,9 @@ jobs:
       id-token: write # the branch job can stage its native archive in R2
     steps:
       - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-linux
@@ -666,6 +675,9 @@ jobs:
       STILLFAIL_CHECK_PART: station core
       STILLFAIL_SKIP_RUST_TESTS: ${{ needs.plan.outputs.check_rust != 'true' && '1' || '' }}
     steps:
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
@@ -797,6 +809,9 @@ jobs:
     env:
       STILLFAIL_CHECK_PART: ts
     steps:
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
@@ -842,6 +857,9 @@ jobs:
       # its files waiting on the MoonBit reader's processes and the model runners' workers, a slot held idle)
       STILLFAIL_NODE_TEST_JOBS: 4
     steps:
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
@@ -870,6 +888,9 @@ jobs:
       STILLFAIL_CHECK_PART: core-tests
       STILLFAIL_CORE_SHARD: ${{ matrix.shard }}/3
     steps:
+      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
