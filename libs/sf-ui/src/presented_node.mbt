@@ -70,8 +70,9 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // (a sheet from the window's foot, on 小屏 as it is made: sheet_node)
       let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window().0) is Small }))
       tree_as_sheet[serial] = as_sheet
-      // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are)
-      row.over(Is(true)).stacked(Is(serial)) |> ignore
+      // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are;
+      // its own transition boundary so a dialog/sheet's internal transitions stay within it)
+      row.transitions_only().over(Is(true)).stacked(Is(serial)) |> ignore
       // (what opened it, for every kind it is drawn as: the focus given back to that as it goes, where it still takes
       // it, not to what had the focus as it opened: View::opened_by)
       match p.from {

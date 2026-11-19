@@ -373,7 +373,6 @@ pub fn rows_view_node(
               }
             }
             on(fn(r) {
-              r.transitions_only() |> ignore
               match first.line {
                 Row(a, e0, depth, _) => {
                   let e = fn() {
@@ -727,7 +726,6 @@ fn column_node(
             bar=@ui.tree_scroll_bar(),
             place~,
             fn(r, name) {
-              r.transitions_only() |> ignore
               guard @signals.untracked(fn() { keyed.get(name) }) is Some(first) else { return }
               let e = fn() { keyed.get(name).unwrap_or(first) }
               drive_row_node(r, s, at, e, compact=true, column=true, along=fn() { next() == Some(name) })

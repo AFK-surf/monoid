@@ -119,7 +119,7 @@ pub fn choices_node(
       b,
       label,
       value,
-      fn(v) { if v != @signals.untracked(value) { choose(v) } },
+      fn(v) { if v != @signals.untracked(value) { @view.transition(within=b.transitions_root(), fn() { choose(v) }) } },
       axis=Vertical,
       fn(g, rg) {
         style_node(g, fn() { choices_list.then(@ui.style(gap=room(choice_gap))) })
