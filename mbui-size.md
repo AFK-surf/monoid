@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3412edbc0](https://github.com/AFK-surf/monoid/commit/3412edbc09d5120f3eec92a9e51873969de105cb) feat(mbui): cap farthest-corner shift on View::sca | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.37 | 130.24 |
 | [fc16aebfe](https://github.com/AFK-surf/monoid/commit/fc16aebfe588120daf8aee436396ca5ede254b75) fix(mbui): count tree marks and open row grounds i | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.5 | 122.31 |
 | [97ebdfd69](https://github.com/AFK-surf/monoid/commit/97ebdfd69129f3b404a2f399be8f2ab1e125542a) feat(mbui): add swipe-back hint on wide frames and | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.5 | 122.31 |
 | [1889203ca](https://github.com/AFK-surf/monoid/commit/1889203caa71d297d82a02e596aababbb8a8b2f5) refactor(station/mb): replace thin helper forwarde | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.5 | 122.31 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1b8ce33e3](https://github.com/AFK-surf/monoid/commit/1b8ce33e3995c54755691ce3469024e47d4958df) fix(mbui): add no padding for empty shape runs, an | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.42 | 121.91 |
 | [bcd69f31b](https://github.com/AFK-surf/monoid/commit/bcd69f31bbe96be83d13876684498822c24148d1) fix(station): stop the p5-2 handover test racing t | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.44 | 127.78 |
 | [2078eecd4](https://github.com/AFK-surf/monoid/commit/2078eecd4eeafb59ae887216a0f5d02097d61e85) feat(mbui): generalize Windows/Linux pack template | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.44 | 127.78 |
-| [4d3a1509c](https://github.com/AFK-surf/monoid/commit/4d3a1509c6c0c4ff5f4aafbd2adeea44474f824b) feat(mbui): add prebuilt Wasm runtime shell and bu | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.26 | 119.75 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3412edbc0](https://github.com/AFK-surf/monoid/commit/3412edbc09d5120f3eec92a9e51873969de105cb) feat(mbui): cap farthest-corner shift on View::sca | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
 | [fc16aebfe](https://github.com/AFK-surf/monoid/commit/fc16aebfe588120daf8aee436396ca5ede254b75) fix(mbui): count tree marks and open row grounds i | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
 | [97ebdfd69](https://github.com/AFK-surf/monoid/commit/97ebdfd69129f3b404a2f399be8f2ab1e125542a) feat(mbui): add swipe-back hint on wide frames and | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.02 |
 | [1889203ca](https://github.com/AFK-surf/monoid/commit/1889203caa71d297d82a02e596aababbb8a8b2f5) refactor(station/mb): replace thin helper forwarde | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1b8ce33e3](https://github.com/AFK-surf/monoid/commit/1b8ce33e3995c54755691ce3469024e47d4958df) fix(mbui): add no padding for empty shape runs, an | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.05 |
 | [bcd69f31b](https://github.com/AFK-surf/monoid/commit/bcd69f31bbe96be83d13876684498822c24148d1) fix(station): stop the p5-2 handover test racing t | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.05 |
 | [2078eecd4](https://github.com/AFK-surf/monoid/commit/2078eecd4eeafb59ae887216a0f5d02097d61e85) feat(mbui): generalize Windows/Linux pack template | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.13 |
-| [4d3a1509c](https://github.com/AFK-surf/monoid/commit/4d3a1509c6c0c4ff5f4aafbd2adeea44474f824b) feat(mbui): add prebuilt Wasm runtime shell and bu | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.13 |
