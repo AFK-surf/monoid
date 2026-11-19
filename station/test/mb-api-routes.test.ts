@@ -1736,6 +1736,7 @@ function defineCases() {
   add("slack connect not installed", { method: "POST", path: "/connects", body: { slack: { install: "st6" } } });
   add("slack connect with app", { method: "POST", path: "/connects", body: { slack: { appId: "A7" }, bind: { runtime: "claude" } } });
   add("slack app made", { method: "POST", path: "/slack/apps", body: { settings: { name: " Bot ", backgroundColor: "#abcdef" }, icon: "data:image/jpeg;base64,AAAA" } });
+  add("slack app made large icon", { method: "POST", path: "/slack/apps", body: { settings: { name: " Bot ", backgroundColor: "#abcdef" }, icon: `data:image/jpeg;base64,${"AAAA".repeat(30000)}` } });
   add("slack app made icon refused", { method: "POST", path: "/slack/apps", body: { icon: "nope" } });
   add("slack app made bad color", { method: "POST", path: "/slack/apps", body: { settings: { backgroundColor: "red" } } });
   add("slack app made other team", { method: "POST", path: "/slack/apps", body: { team: "T9" } });

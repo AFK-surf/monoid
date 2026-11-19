@@ -858,6 +858,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     start_live_p5_4(bus)
     start_live_p5_5(bus)
   }
+  start_live_p5_1_mesh(bus)
   s.say_health()
   s.up = true
   control.say({ "ready": Json::boolean(true), "version": Json::string(s.version) })

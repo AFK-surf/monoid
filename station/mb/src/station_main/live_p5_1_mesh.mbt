@@ -762,8 +762,8 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
 // ── put together ──
 
 ///|
-/// mesh/mesh.ts MeshLive (a rig's too: `rig`), kept running: started again after a backoff where it fails.
-async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
+/// mesh/mesh.ts MeshLive, wired on the bus; `mesh_start` forks its accept loop once the other slices are up.
+fn P51::mesh_live(self : P51) -> MeshLive {
   let bus = self.bus
   let peers = @gate.PeerBus::new()
   // Inbound: what the station's parts answer, by method (the bus's handlers).
@@ -815,6 +815,18 @@ async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
     }
     None => Json::null()
   }
+  self.stops.push(() => match m.endpoint {
+    Some(e) => ignore(self.host.rt.fork(name="mesh close", async fn() { (e.close)() }))
+    None => ()
+  })
+  m
+}
+
+///|
+/// Starts the mesh accept loop once the station's other parts (P5-2 to P5-5) have registered their ops and handlers.
+fn P51::mesh_start(self : P51, rig : Bool) -> Unit {
+  guard self.mesh is Some(m) else { return }
+  let bus = self.bus
   self.fork("mesh", async fn() {
     let mut backoff = 1000
     while !bus.stopped.is_done() {
@@ -848,11 +860,6 @@ async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
       backoff = if backoff * 2 > 30000 { 30000 } else { backoff * 2 }
     }
   })
-  self.stops.push(() => match m.endpoint {
-    Some(e) => ignore(self.host.rt.fork(name="mesh close", async fn() { (e.close)() }))
-    None => ()
-  })
-  m
 }
 
 ///|

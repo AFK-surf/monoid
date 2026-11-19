@@ -265,7 +265,7 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
     p.rigs_live()
     p.became_rig_live()
   }
-  p.mesh = Some(p.mesh_live(as_rig))
+  p.mesh = Some(p.mesh_live())
   // Everything P5-1 made let go as the station stops.
   ignore(
     host.rt.fork(name="p5-1 stop", async fn() {
@@ -273,6 +273,15 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
       p.close()
     }),
   )
+}
+
+///|
+/// Starts the mesh listener after all live slices have registered their ops, routes and peer handlers.
+fn start_live_p5_1_mesh(bus : LiveBus) -> Unit {
+  match p51_live.val {
+    Some(p) => p.mesh_start(bus.as_rig())
+    None => ()
+  }
 }
 
 ///|
