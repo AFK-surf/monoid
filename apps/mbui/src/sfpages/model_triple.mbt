@@ -2117,7 +2117,7 @@ fn triple_foot_node(
   // (what the pick says as it is now)
   let o = f
     o.box(fn(row) {
-      @sf.style_node(row, fn() { if flag(v(), "claudeModeAvailable") { triple_mode_room } else { triple_who_room } }, in_row=true)
+      @sf.style_node(row, fn() { if sheet || flag(v(), "claudeModeAvailable") { triple_mode_room } else { triple_who_room } }, in_row=true)
       row.wraps(Is(Some(@ui.Space::px(S2)))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       // who runs it, at the foot's start (the web's panel's foot, the phone's sheet's)
       let revert_none = fn() {
@@ -3500,7 +3500,9 @@ let triple_who_room : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter,
 
 ///|
 // kept across runs: a value (no field of it changes)
-let triple_mode_room : @ui.Style = triple_who_room
+// Keep the first and last capsules at the panel's side insets on 小屏 sheets (where 速度/上下文 stay in the foot)
+// and when the Claude mode capsule is shown, so changing 账号's width does not shift the trailing capsule.
+let triple_mode_room : @ui.Style = triple_who_room.then(@ui.css("justify=JBetween"))
 
 ///|
 /// Hairline separator between the first-level list and 「全部模型 >」.
