@@ -23,7 +23,7 @@ set -eo pipefail
 # (a command that fails with nothing said, said by where it was: main 199e1d03's desktop stopped between the build and
 # the signing with no word, 41399442984, 2026-11-02)
 trap 'echo "mac-app.sh: line $LINENO failed ($?): $BASH_COMMAND" >&2' ERR
-D="$(cd "$(dirname "$0")" && pwd)"
+D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$D/env.sh"
 cd "$A"
 now() { python3 -c 'import time;print(time.time())'; }
@@ -40,7 +40,44 @@ load_variant() {
   local meta MBUI_APP_ID MBUI_APP_NAME MBUI_EXECUTABLE MBUI_VERSION MBUI_BUILD MBUI_VARIANT \
     MBUI_RUNTIME MBUI_MODULE_DIR MBUI_ENTRY MBUI_SCHEMES MBUI_UPDATE_FEED MBUI_UPDATE_CHANNEL \
     MBUI_ENV_KV MBUI_MAC_MIN_VERSION MBUI_WIN_INSTALL_DIR MBUI_WIN_COMPANY
-  meta=$("$MBUI_DIR/scripts/mbui" meta "$A/mbui.json" --variant "$VARIANT" --format sh) || {
+  # mbui meta builds tools/pack with moon; CI's signing jobs (pipeline.yml desktop and monoid-desktop, stable.yml)
+  # only rename and sign a built app (MBUI_MAC_FROM) and have no MoonBit (main 365a364872's desktop, 44558955185):
+  # there python3 reads mbui.json as tools/pack/manifest.mbt does (the variant deep-merged over the top level, the
+  # same defaults, env sorted into k=v;k=v, schemes joined by commas), for the fields read below
+  if [ -n "${MBUI_REAL_MOON:-}" ]; then
+    meta=$("$MBUI_DIR/scripts/mbui" meta "$A/mbui.json" --variant "$VARIANT" --format sh)
+  else
+    meta=$(python3 - "$A/mbui.json" "$VARIANT" <<'PY'
+import json, shlex, sys
+root = json.load(open(sys.argv[1]))
+v = root.get("variants", {}).get(sys.argv[2])
+if not isinstance(v, dict):
+    sys.exit(1)
+def merge(b, o):
+    if isinstance(b, dict) and isinstance(o, dict):
+        out = dict(b)
+        for k, x in o.items():
+            out[k] = merge(out[k], x) if k in out else x
+        return out
+    return o
+m = merge({k: x for k, x in root.items() if k != "variants"}, v)
+def obj(k):
+    return m.get(k) or {}
+env = m.get("env") or {}
+for k, x in [
+    ("MBUI_APP_ID", m.get("appId", "")),
+    ("MBUI_APP_NAME", m.get("name", "")),
+    ("MBUI_EXECUTABLE", m.get("executable", "")),
+    ("MBUI_SCHEMES", ",".join(m.get("urlSchemes") or [])),
+    ("MBUI_UPDATE_FEED", obj("updater").get("feed", "")),
+    ("MBUI_ENV_KV", ";".join(f"{k}={env[k]}" for k in sorted(env))),
+    ("MBUI_MAC_MIN_VERSION", obj("macos").get("minVersion", "13.0")),
+    ("MBUI_WIN_INSTALL_DIR", obj("windows").get("installDir", "")),
+]:
+    print(f"{k}={shlex.quote(x)}")
+PY
+)
+  fi || {
     echo "mac-app.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $VARIANT" >&2
     exit 1
   }
@@ -61,6 +98,8 @@ load_variant() {
     IFS=, read -r -a SCHEMES <<< "$MBUI_SCHEMES"
   fi
 }
+# sourced by mbui-meta-test.sh with MBUI_IN_MAC_APP_SH=1: load_variant alone, nothing built
+if [ "${MBUI_IN_MAC_APP_SH:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 load_variant
 OUT=$A/out/mac
 APPDIR="$OUT/$NAME.app"

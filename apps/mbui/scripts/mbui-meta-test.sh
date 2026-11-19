@@ -151,4 +151,41 @@ echo "ok: bash -n mac-app.sh win.sh"
 )
 echo "ok: win.sh variant() contract"
 
+# Verify mac-app.sh load_variant() without MoonBit (CI's signing jobs have none: it reads mbui.json with python3)
+# gives what it gives through mbui meta, for every variant, and rejects an unknown one
+mac_variant() { # $1 variant, $2 "nomoon" to take MoonBit away
+  (
+    if [ "${2:-}" = nomoon ]; then
+      unset MBUI_REAL_MOON MOON_HOME
+      export MBUI_TOOLS=/nonexistent
+      local p= dir
+      IFS=: read -r -a dirs <<< "$PATH"
+      for dir in "${dirs[@]}"; do
+        [ -x "$dir/moon" ] || p=${p:+$p:}$dir
+      done
+      export PATH=$p
+    fi
+    export MBUI_IN_MAC_APP_SH=1 MBUI_VARIANT=$1
+    # shellcheck source=/dev/null
+    . "$A/scripts/mac-app.sh" > /dev/null 2>&1
+    if [ "${2:-}" = nomoon ] && [ -n "${MBUI_REAL_MOON:-}" ]; then
+      echo "MoonBit still found: $MBUI_REAL_MOON" >&2
+      exit 1
+    fi
+    load_variant
+    printf '%s\n' "ID=$ID" "NAME=$NAME" "EXE=$EXE" "FEED=$FEED" "ZIP_NAME=$ZIP_NAME" "ENV_KV=$ENV_KV" \
+      "MAC_MIN_VERSION=$MAC_MIN_VERSION" "OWN=$OWN" "SCHEMES=${SCHEMES[*]:-}"
+  )
+}
+for v in preview stable beta monoid monoid-beta; do
+  with=$(mac_variant "$v") || fail "mac-app.sh load_variant $v (with moon) failed"
+  without=$(mac_variant "$v" nomoon) || fail "mac-app.sh load_variant $v (without moon) failed"
+  assert_eq "mac.$v" "$without" "$with"
+  echo "ok: mac-app.sh load_variant $v without moon"
+done
+if mac_variant bogus nomoon > /dev/null 2>&1; then
+  fail "mac-app.sh load_variant bogus (without moon) unexpectedly succeeded"
+fi
+echo "ok: mac-app.sh load_variant without moon rejects bogus"
+
 echo "mbui-meta-test.sh: all checks passed"
