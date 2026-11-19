@@ -75,6 +75,8 @@ pub fn host_ws(@host.Host) -> WsIO
 
 pub let http_budget : Int32
 
+pub fn http_status_text(Int32) -> String
+
 pub fn is_revocation(@json.Json) -> Bool
 
 pub fn joined_of(@json.Json?) -> Array[@json.Json]

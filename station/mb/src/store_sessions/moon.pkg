@@ -4,6 +4,7 @@ import {
   "station/sql",
   "station/jsjson",
   "station/nodepath",
+  "station/readops",
   "station/usagecount",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",

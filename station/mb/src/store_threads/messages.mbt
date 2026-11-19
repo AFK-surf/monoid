@@ -114,7 +114,7 @@ pub fn Store::unread_for_archive(self : Store, viewer : Json, thread : Json) -> 
     let (known, latest) = if self.legacy_said {
       legacy_said_read_head(self.db, thread)
     } else {
-      (true, self.one(said_latest_sql, [thread]))
+      (true, self.one(@readops.said_latest_sql, [thread]))
     }
     if !known {
       return Json::null()
@@ -126,12 +126,12 @@ pub fn Store::unread_for_archive(self : Store, viewer : Json, thread : Json) -> 
     if col(latest, "author_kind") != jstr("person") || col(latest, "author") != viewer {
       return jbool(true)
     }
-    let (bknown, other) = said_boundary(self.one(said_state_sql, [thread]), latest)
+    let (bknown, other) = said_boundary(self.one(@readops.said_state_sql, [thread]), latest)
     if bknown {
       return jbool(!(other is Null) && num(other) > read)
     }
-    if self.legacy_said && self.one(legacy_said_needs_drain_sql, [thread]) is Some(_) {
-      let near = self.one(legacy_said_boundary_tail_sql, [thread, col(latest, "n"), col(latest, "author")]).unwrap()
+    if self.legacy_said && self.one(@readops.legacy_said_needs_drain_sql, [thread]) is Some(_) {
+      let near = self.one(@readops.legacy_said_boundary_tail_sql, [thread, col(latest, "n"), col(latest, "author")]).unwrap()
       let nknown = !(col(near, "n") is Null) || num(col(near, "count")) < 65.0
       return if nknown {
         jbool(!(col(near, "n") is Null) && num(col(near, "n")) > read)
@@ -139,7 +139,7 @@ pub fn Store::unread_for_archive(self : Store, viewer : Json, thread : Json) -> 
         Json::null()
       }
     }
-    let previous = self.all(if self.legacy_said { legacy_said_scan_sql } else { said_scan_sql }, [
+    let previous = self.all(if self.legacy_said { @readops.legacy_said_scan_sql } else { @readops.said_scan_sql }, [
       thread,
       col(latest, "n"),
       jint(64),

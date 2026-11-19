@@ -13,6 +13,8 @@ import {
 // Values
 pub fn archive_look(@sql.Db, @json.Json) -> @json.Json raise
 
+pub let asked_during_sql : String
+
 pub fn asks_waiting(@sql.Db, @json.Json) -> Array[@json.Json] raise
 
 pub fn card_edit_page(@sql.Db, @json.Json) -> @json.Json raise
@@ -33,9 +35,27 @@ pub fn job(@sql.Db, @host.Host, @json.Json) -> @json.Json raise
 
 pub fn job_log(@sql.Db, @host.Host, @json.Json) -> @json.Json raise
 
+pub let latest_decisions_scoped : String
+
+pub let latest_decisions_scoped_fallback : String
+
 pub fn latest_messages(@sql.Db, @json.Json) -> @json.Json raise
 
 pub fn learn_catalog(@json.Json) -> Unit
+
+pub let legacy_asked_during_sql : String
+
+pub let legacy_said_boundary_tail_sql : String
+
+pub let legacy_said_head_first_sql : String
+
+pub let legacy_said_head_tail_sql : String
+
+pub let legacy_said_latest_sql : String
+
+pub let legacy_said_needs_drain_sql : String
+
+pub let legacy_said_scan_sql : String
 
 pub fn machine_session(@sql.Db, @host.Host, String, @json.Json) -> @json.Json raise
 
@@ -77,13 +97,21 @@ pub fn recent_chat_list(@sql.Db, @json.Json) -> @json.Json raise
 
 pub fn recent_connect_people(@sql.Db, @json.Json) -> @json.Json raise
 
+pub let recent_connect_threads : String
+
 pub fn remote_ws(String) -> String?
 
 pub fn resource_chats(@sql.Db, @host.Host, String, String, @json.Json) -> @json.Json raise
 
 pub fn review_pending_card(@sql.Db, @json.Json) -> @json.Json raise
 
+pub let said_latest_sql : String
+
 pub fn said_notices(@sql.Db, @host.Host, String, String, @json.Json) -> @json.Json raise
+
+pub let said_scan_sql : String
+
+pub let said_state_sql : String
 
 pub fn search_chat_list(@sql.Db, @json.Json) -> @json.Json raise
 
@@ -130,6 +158,8 @@ pub fn transcript_file(@sql.Db, @host.Host, String, String, @locate.Finder, @jso
 pub fn transcript_state(@sql.Db, @host.Host, String, String, @locate.Finder, @json.Json) -> @json.Json raise
 
 pub fn turn_notices(@sql.Db, @host.Host, String, String, @json.Json) -> @json.Json raise
+
+pub fn usage_15m_query_all(Int64, Int64, Int64) -> (String, Array[@json.Json])?
 
 pub fn usage_calls(@sql.Db, @json.Json) -> @json.Json raise
 

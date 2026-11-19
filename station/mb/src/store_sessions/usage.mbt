@@ -211,7 +211,7 @@ fn Store::record_usage_in(
       if compact && !seeded {
         seeded = true
         if self.usage_totals_complete(session) {
-          snapshot = seed_context(self.db, session)
+          snapshot = @usagecount.seed_context(self.db, session)
         }
       }
       if was is Some(_) && compact {
@@ -268,7 +268,7 @@ fn Store::record_usage_in(
       }
     }
     if recent.length() > 0 {
-      note_contexts(self.db, session, runtime, recent, snapshot)
+      @usagecount.note_contexts(self.db, session, runtime, recent, snapshot)
     }
   }
   let counter = nullish(field(options, "counter"))
@@ -587,109 +587,6 @@ pub fn Store::usage_turns(
 }
 
 ///|
-/// usage-15m.ts I64_MAX's quarter and an exact i64 for a statement.
-fn floor_div(n : Int64, d : Int64) -> Int64 {
-  if n >= 0L {
-    n / d
-  } else {
-    -1L - (-1L - n) / d
-  }
-}
-
-///|
-/// usage-15m.ts `usage15mQuery` for every workspace (as mb/src/readops/usagegroups.mbt has it, the same statement).
-fn usage_15m_query(
-  from : Int64,
-  to : Int64,
-  offset : Int64,
-) -> (String, Array[Json])? {
-  if from >= to {
-    return None
-  }
-  let q = 900_000L
-  let top = 9223372036854775807L
-  let args : Array[Json] = []
-  let bind = (value : Json) => {
-    args.push(value)
-    "?\{args.length()}"
-  }
-  let off = bind(jint(offset))
-  let scope = "1"
-  let index = " INDEXED BY usage_15m_quarter"
-  let open = to == top
-  let first = -floor_div(-from, q)
-  let last = if open { floor_div(top, q) + 1L } else { floor_div(to, q) }
-  let raw = (pairs : String, low : String, high : String) => {
-    "SELECT strftime('%Y-%m-%d', (u.at + \{off} * 60000) / 1000.0, 'unixepoch') AS day,\n" +
-    "      u.session, COALESCE(u.thread, 0) AS thread, COALESCE(u.person, '') AS person, COALESCE(u.profile, '') AS profile, u.runtime,\n" +
-    "      COALESCE(u.model, '') AS model, CASE WHEN u.fast != 0 THEN 1 ELSE 0 END AS fast, u.calls, u.input, u.cache_read, u.cache_write,\n" +
-    "      u.cache_write_long, u.output\n" +
-    "    FROM (\{pairs}) e CROSS JOIN usage u INDEXED BY usage_session ON u.session = e.session AND u.at >= \{low} AND u.at < \{high}\n" +
-    "    WHERE u.rollup_counted = 1"
-  }
-  let parts : Array[String] = []
-  let straddles = if offset * 60_000L % q == 0L {
-    None
-  } else {
-    Some(
-      "(((c.quarter * 900000 + \{off} * 60000) % 86400000 + 86400000) % 86400000 > 85500000)",
-    )
-  }
-  if first < last {
-    let lo = bind(jint(first))
-    let hi = bind(jint(last))
-    parts.push(
-      "SELECT strftime('%Y-%m-%d', c.quarter * 900 + \{off} * 60, 'unixepoch') AS day, c.session, c.thread, c.person,\n" +
-      "      c.profile, c.runtime, c.model, c.fast, c.calls, c.input, c.cache_read, c.cache_write, c.cache_write_long, c.output\n" +
-      "      FROM usage_15m c\{index} WHERE \{scope} AND c.quarter >= \{lo} AND c.quarter < \{hi}" +
-      (match straddles {
-        None => ""
-        Some(st) => " AND NOT \{st}"
-      }),
-    )
-    if straddles is Some(st) {
-      parts.push(
-        raw(
-          "SELECT DISTINCT c.session, c.quarter FROM usage_15m c\{index}\n        WHERE \{scope} AND c.quarter >= \{lo} AND c.quarter < \{hi} AND \{st}",
-          "e.quarter * 900000",
-          "(e.quarter + 1) * 900000",
-        ),
-      )
-    }
-  }
-  let edge = (quarter : Int64, low : Int64, high : Int64) => {
-    if low >= high {
-      return
-    }
-    parts.push(
-      raw(
-        "SELECT DISTINCT c.session FROM usage_15m c\{index} WHERE \{scope} AND c.quarter = \{bind(jint(quarter))}",
-        bind(jint(low)),
-        bind(jint(high)),
-      ),
-    )
-  }
-  if first > last {
-    edge(last, from, to)
-  } else {
-    edge(first - 1L, from, first * q)
-    if !open {
-      edge(last, last * q, to)
-    }
-  }
-  if parts.length() == 0 {
-    return None
-  }
-  let sql = "WITH parts AS (\{parts.join("\n  UNION ALL\n  ")})\n" +
-    "  SELECT day, session, NULLIF(thread, 0) AS thread, NULLIF(person, '') AS person, NULLIF(profile, '') AS profile, runtime,\n" +
-    "    NULLIF(model, '') AS model, fast, SUM(calls) AS calls, SUM(input) AS input, SUM(cache_read) AS cache_read,\n" +
-    "    SUM(cache_write) AS cache_write, SUM(cache_write_long) AS cache_write_long, SUM(output) AS output\n" +
-    "  FROM parts GROUP BY day, session, thread, person, profile, runtime, model, fast\n" +
-    "  ORDER BY day, session, thread, person, profile, runtime, model, fast"
-  Some((sql, args))
-}
-
-///|
 /// store/usage.ts `usageGroupOf`.
 fn usage_group_of(r : Map[String, Json]) -> Json {
   {
@@ -729,7 +626,7 @@ pub fn Store::usage_groups(
   to : Double,
   offset : Double,
 ) -> Array[Json] raise {
-  match usage_15m_query(trunc64(from), trunc64(to), trunc64(offset)) {
+  match @readops.usage_15m_query_all(trunc64(from), trunc64(to), trunc64(offset)) {
     None => []
     Some((sql, args)) => self.all(sql, args).map(usage_group_of)
   }

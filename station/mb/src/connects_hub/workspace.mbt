@@ -1155,25 +1155,7 @@ pub fn segment(s : String) -> String {
 ///|
 /// api/request.ts `percentDecode`: `%xx` a byte, `+` a space, the rest as it is; then UTF-8, lossily.
 pub fn request_percent_decode(s : String) -> String {
-  let bytes = utf8(s)
-  let out = Buffer()
-  let mut i = 0
-  while i < bytes.length() {
-    let b = bytes[i]
-    if b == b'%' && i + 2 < bytes.length() {
-      match (@codec.hex_digit(bytes[i + 1].to_int()), @codec.hex_digit(bytes[i + 2].to_int())) {
-        (Some(x), Some(y)) => {
-          out.write_byte((x * 16 + y).to_byte())
-          i += 3
-          continue
-        }
-        _ => ()
-      }
-    }
-    out.write_byte(if b == b'+' { b' ' } else { b })
-    i += 1
-  }
-  let text = text_of(out.to_bytes())
+  let text = @url.percent_decode_lossy(s, plus_space=true)
   if text.has_prefix("\u{FEFF}") {
     @session_chats.slice(text, 1)
   } else {

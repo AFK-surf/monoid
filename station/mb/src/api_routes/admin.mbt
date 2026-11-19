@@ -645,28 +645,7 @@ pub async fn Admin::session_seen(
 /// store/rows.ts `remoteWs` (readops `remote_ws`): the workspace another station's task runs for, by its job's session key
 /// (`remote:<workspace>:<station>:<session>`, as `/^remote:([^:/]+):[^:/]+:.+$/` reads it), none for any other key.
 fn remote_ws(key : String) -> String? {
-  guard key.has_prefix("remote:") else { return None }
-  // remote, the workspace's id, the station's, then the session's key (with colons of its own)
-  let parts = key.split(":").map(v => v.to_owned()).collect()
-  guard parts.length() >= 4 else { return None }
-  let ws = parts[1]
-  let station = parts[2]
-  if ws == "" || station == "" || ws.contains("/") || station.contains("/") {
-    return None
-  }
-  let from = 7 + ws.length() + 1 + station.length() + 1
-  let n = key.length()
-  if from >= n {
-    return None
-  }
-  for i in from..<n {
-    let c = key.unsafe_get(i).to_int()
-    // (a regular expression's `.` takes no line's end)
-    if c == 0x0a || c == 0x0d || c == 0x2028 || c == 0x2029 {
-      return None
-    }
-  }
-  Some(ws)
+  @readops.remote_ws(key)
 }
 
 ///|

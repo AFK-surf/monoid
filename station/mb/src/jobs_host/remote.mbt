@@ -197,22 +197,10 @@ pub fn remote_budget(total : Double?) -> Double {
 ///|
 /// STANDARD base64 as the Rust decodes it: padded, nothing else in it.
 pub fn from_base64(data : String) -> Bytes raise {
-  let n = data.length()
-  let mut pad = 0
-  let mut ok = n % 4 == 0
-  for i in 0..<n {
-    let c = data.unsafe_charcode_at(i)
-    if c == '=' {
-      pad += 1
-    } else if pad > 0 ||
-      !(is_alpha_unit(c) || is_digit(c) || c == '+' || c == '/') {
-      ok = false
-    }
+  match @codec.base64_decode_strict(data) {
+    Some(b) => b
+    None => raise HostError("Invalid input length or symbol")
   }
-  if !ok || pad > 2 {
-    raise HostError("Invalid input length or symbol")
-  }
-  @base64.decode(data)
 }
 
 ///|

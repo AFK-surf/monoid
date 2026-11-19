@@ -77,28 +77,7 @@ pub fn hex_of(b : BytesView) -> String {
 /// Base64 or base64url as Buffer.from(s, "base64url") reads it: either alphabet, what is neither skipped, ending at
 /// "=".
 pub fn b64_bytes(s : String) -> Bytes {
-  let digits = StringBuilder()
-  let mut n = 0
-  for i in 0..<s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if c == 0x3d {
-      break
-    }
-    if (c >= 0x41 && c <= 0x5a) ||
-      (c >= 0x61 && c <= 0x7a) ||
-      (c >= 0x30 && c <= 0x39) ||
-      c == 0x2b ||
-      c == 0x2d ||
-      c == 0x2f ||
-      c == 0x5f {
-      digits.write_char(c.unsafe_to_char())
-      n += 1
-    }
-  }
-  let text = digits.to_string()
-  // A lone digit past a group of four is six bits: no byte, as Node leaves it.
-  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
-  @codec.base64_decode(text).unwrap_or(b"")
+  @codec.base64_decode_loose(s)
 }
 
 ///|

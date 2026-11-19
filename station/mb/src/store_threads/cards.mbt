@@ -235,9 +235,9 @@ pub fn Store::asking_message(self : Store, thread : Json, about : Json, during :
     let first = n_of(
       self.one(
         if self.legacy_agent {
-          legacy_asked_during_sql
+          @readops.legacy_asked_during_sql
         } else {
-          "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?"
+          @readops.asked_during_sql
         },
         [thread, from, to],
       ),

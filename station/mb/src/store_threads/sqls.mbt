@@ -57,17 +57,6 @@ let session_home_thread_sql : String =
   #|  ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1
 
 ///|
-let recent_connect_threads_sql : String =
-  #|WITH recent AS MATERIALIZED (
-  #|  SELECT t.id, t.surface, t.created_at, COALESCE(e.at, 0) AS said_at
-  #|  FROM threads t LEFT JOIN thread_state s ON s.thread = t.id
-  #|  LEFT JOIN entries e ON e.thread = t.id AND e.n = s.said_n AND e.kind = 'message'
-  #|  ORDER BY said_at DESC, t.created_at DESC, t.id DESC LIMIT ?1
-  #|) SELECT r.id, r.surface FROM recent r
-  #|  WHERE EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = r.id AND m.connect = ?2)
-  #|  ORDER BY r.said_at DESC, r.created_at DESC, r.id DESC
-
-///|
 let last_known_sql : String =
   #|SELECT MAX(n) AS n FROM (WITH RECURSIVE few(viewer, count) AS (
   #|  SELECT (SELECT viewer FROM reads ORDER BY viewer LIMIT 1), 1
@@ -97,17 +86,6 @@ let last_known_sql : String =
 ///|
 let latest_decisions_sql : String =
   #|SELECT id, session, created_at, result FROM decision_checks WHERE id IN (SELECT MAX(id) FROM decision_checks WHERE created_at >= ? GROUP BY +session) ORDER BY created_at, id
-
-///|
-let latest_decisions_scoped_fallback_sql : String =
-  #|WITH latest AS MATERIALIZED (
-  #|  SELECT MAX(id) AS id, session FROM decision_checks WHERE created_at >= ?1 GROUP BY +session
-  #|)
-  #|SELECT d.id, d.session, d.created_at, d.result FROM latest l
-  #|LEFT JOIN sessions s ON s.key = l.session
-  #|CROSS JOIN decision_checks d ON d.id = l.id
-  #|WHERE s.ws = ?2 OR (?3 AND s.ws IS NULL)
-  #|ORDER BY d.created_at, d.id
 
 ///|
 let legacy_latest_decisions_sql : String =
@@ -143,51 +121,6 @@ let recent_last_decision_sql : String =
   #|chosen AS MATERIALIZED (SELECT id FROM recent WHERE session=?1 ORDER BY id DESC LIMIT 1)
   #|SELECT (SELECT COUNT(*) FROM recent) AS n, EXISTS(SELECT 1 FROM chosen) AS found,
   #|  (SELECT d.result FROM chosen c CROSS JOIN decision_checks d ON d.id=c.id) AS result
-
-///|
-let latest_decisions_scoped_sql : String =
-  #|WITH RECURSIVE
-  #|
-  #|
-  #|recent AS MATERIALIZED (
-  #|  SELECT id FROM decision_checks INDEXED BY decision_checks_lately WHERE ?3 = 0 AND created_at >= ?1 LIMIT 65
-  #|),
-  #|
-  #|connects(connect, n) AS (
-  #|  SELECT (SELECT connect FROM sessions INDEXED BY sessions_by_connect ORDER BY connect LIMIT 1), 1
-  #|  WHERE (SELECT COUNT(*) FROM recent) = 65
-  #|  UNION ALL
-  #|  SELECT (SELECT connect FROM sessions INDEXED BY sessions_by_connect WHERE connect > c.connect ORDER BY connect LIMIT 1), n + 1
-  #|  FROM connects c WHERE c.connect IS NOT NULL AND n < 65
-  #|),
-  #|chosen AS MATERIALIZED (
-  #|  SELECT s.key FROM connects c CROSS JOIN sessions s INDEXED BY sessions_by_connect
-  #|  WHERE c.connect IS NOT NULL AND s.connect = c.connect AND s.ws = ?2 LIMIT 65
-  #|),
-  #|lookups AS MATERIALIZED (
-  #|  SELECT c.key, (SELECT id FROM (
-  #|    SELECT id, created_at FROM decision_checks INDEXED BY decision_checks_session WHERE session = c.key ORDER BY id DESC LIMIT 65
-  #|  ) WHERE created_at >= ?1 ORDER BY id DESC LIMIT 1) AS id
-  #|  FROM chosen c WHERE (SELECT COUNT(connect) FROM connects) <= 64 AND (SELECT COUNT(*) FROM chosen) <= 64
-  #|),
-  #|mode AS MATERIALIZED (
-  #|  SELECT (SELECT COUNT(*) FROM recent) < 65 OR (SELECT COUNT(connect) FROM connects) > 64
-  #|    OR (SELECT COUNT(*) FROM chosen) > 64 OR EXISTS (
-  #|      SELECT 1 FROM lookups l WHERE l.id IS NULL AND EXISTS (
-  #|        SELECT 1 FROM decision_checks INDEXED BY decision_checks_session WHERE session = l.key ORDER BY id DESC LIMIT 1 OFFSET 64
-  #|      )
-  #|    ) AS use_global
-  #|),
-  #|latest AS MATERIALIZED (
-  #|  SELECT MAX(id) AS id, session FROM mode CROSS JOIN decision_checks WHERE use_global AND created_at >= ?1 GROUP BY +session
-  #|  UNION ALL
-  #|  SELECT id, key AS session FROM lookups WHERE id IS NOT NULL AND NOT (SELECT use_global FROM mode)
-  #|)
-  #|SELECT d.id, d.session, d.created_at, d.result FROM latest l
-  #|LEFT JOIN sessions s ON s.key = l.session
-  #|CROSS JOIN decision_checks d ON d.id = l.id
-  #|WHERE s.ws = ?2 OR (?3 AND s.ws IS NULL)
-  #|ORDER BY d.created_at, d.id
 
 ///|
 let legacy_latest_decisions_scoped_sql : String =
@@ -994,81 +927,6 @@ let system_card_of_e_card_sql : String =
   #|(CASE WHEN e.card IS NULL OR NOT json_valid(e.card) THEN 0 ELSE COALESCE(json_extract(e.card, '$.type') = 'login' OR json_type(e.card, '$.vault') = 'object' OR json_type(e.card, '$.adb') = 'object' OR json_type(e.card, '$.rig') = 'object' OR json_type(e.card, '$.signin') = 'object', 0) END)
 
 ///|
-let said_latest_sql : String =
-  #|SELECT n, author_kind, author FROM entries INDEXED BY entries_said WHERE thread = ?1 AND kind = 'message' AND letter IS NULL ORDER BY n DESC LIMIT 1
-
-///|
-let said_state_sql : String =
-  #|SELECT s.said_n, s.said_other_n, s.said_other_known,
-  #|    g.author AS guard_author, g.other_n AS guard_other_n, g.ready AS guard_ready
-  #|  FROM thread_state s LEFT JOIN said_state_guard g ON g.thread = s.thread WHERE s.thread = ?1
-  #|  UNION ALL SELECT NULL, NULL, NULL, g.author, g.other_n, g.ready FROM said_state_guard g
-  #|    WHERE g.thread = ?1 AND NOT EXISTS (SELECT 1 FROM thread_state s WHERE s.thread = ?1) LIMIT 1
-
-///|
-let said_scan_sql : String =
-  #|SELECT n, author_kind, author FROM entries INDEXED BY entries_said
-  #|  WHERE thread = ?1 AND kind = 'message' AND letter IS NULL AND n < ?2 ORDER BY n DESC LIMIT ?3
-
-///|
-let legacy_said_latest_sql : String =
-  #|WITH dirty_latest AS MATERIALIZED (
-  #|    SELECT e.n,e.author_kind,e.author FROM legacy_said_meta m CROSS JOIN legacy_said_dirty d
-  #|      CROSS JOIN entries e ON e.thread=d.thread AND e.n=d.n
-  #|    WHERE m.id=1 AND m.scanned=1 AND d.thread=?1 AND e.kind='message' AND e.letter IS NULL
-  #|    ORDER BY d.n DESC LIMIT 1
-  #|  )
-  #|  SELECT n,author_kind,author FROM dirty_latest
-  #|  UNION ALL
-  #|  SELECT n,author_kind,author FROM (
-  #|    SELECT s.n,s.author_kind,s.author FROM legacy_said_meta m CROSS JOIN legacy_said_build s
-  #|    WHERE m.id=1 AND m.scanned=1 AND s.thread=?1
-  #|      AND s.n >= COALESCE((SELECT n FROM dirty_latest), -9223372036854775808)
-  #|      AND NOT EXISTS (SELECT 1 FROM legacy_said_dirty d WHERE d.thread=s.thread AND d.n=s.n)
-  #|    ORDER BY s.n DESC LIMIT 1
-  #|  )
-  #|  UNION ALL
-  #|  SELECT n,author_kind,author FROM (
-  #|    SELECT e.n,e.author_kind,e.author FROM legacy_said_meta m CROSS JOIN entries e
-  #|    WHERE m.id=1 AND m.scanned=0 AND e.thread=?1 AND e.kind='message' AND e.letter IS NULL
-  #|    ORDER BY e.n DESC LIMIT 1
-  #|  )
-  #|  ORDER BY n DESC LIMIT 1
-
-///|
-let legacy_said_scan_sql : String =
-  #|SELECT n, author_kind, author FROM legacy_said WHERE thread = ?1 AND n < ?2 ORDER BY n DESC LIMIT ?3
-
-///|
-let legacy_said_needs_drain_sql : String =
-  #|SELECT 1 FROM legacy_said_meta m WHERE m.id=1 AND m.scanned=1 AND EXISTS (
-  #|    SELECT 1 FROM legacy_said_dirty WHERE thread=?1 LIMIT 1 OFFSET 64)
-
-///|
-let legacy_said_head_first_sql : String =
-  #|SELECT CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.n END AS n,
-  #|    CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.author_kind END AS author_kind,
-  #|    CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.author END AS author
-  #|    FROM entries e WHERE e.thread=? ORDER BY e.n DESC LIMIT 1
-
-///|
-let legacy_said_head_tail_sql : String =
-  #|WITH tail AS MATERIALIZED (
-  #|      SELECT n,kind,letter,author_kind,author FROM entries WHERE thread=? ORDER BY n DESC LIMIT 65
-  #|    ), latest AS MATERIALIZED (
-  #|      SELECT n,author_kind,author FROM tail WHERE kind='message' AND letter IS NULL ORDER BY n DESC LIMIT 1
-  #|    ) SELECT (SELECT n FROM latest) AS n,(SELECT author_kind FROM latest) AS author_kind,
-  #|      (SELECT author FROM latest) AS author,(SELECT COUNT(*) FROM tail) AS count
-
-///|
-let legacy_said_boundary_tail_sql : String =
-  #|WITH tail AS MATERIALIZED (
-  #|      SELECT n,kind,letter,author_kind,author FROM entries WHERE thread=?1 AND n<?2 ORDER BY n DESC LIMIT 65
-  #|    ) SELECT (SELECT n FROM tail WHERE kind='message' AND letter IS NULL
-  #|      AND NOT (author_kind='person' AND author=?3) ORDER BY n DESC LIMIT 1) AS n,
-  #|      (SELECT COUNT(*) FROM tail) AS count
-
-///|
 let legacy_unread_sql : String =
   #|SELECT CASE WHEN (SELECT scanned FROM legacy_said_meta WHERE id=1)=0 THEN
   #|  (SELECT COUNT(*) FROM entries e WHERE e.thread=?1 AND e.n>?2 AND e.kind='message' AND e.letter IS NULL AND NOT (e.author_kind='person' AND e.author IN (SELECT value FROM json_each(?3))))
@@ -1078,22 +936,6 @@ let legacy_unread_sql : String =
   #|      WHERE d.thread=?1 AND d.n>?2 AND NOT (s.author_kind='person' AND s.author IN (SELECT value FROM json_each(?3))))
   #|  + (SELECT COUNT(*) FROM legacy_said_dirty d CROSS JOIN entries e ON e.thread=d.thread AND e.n=d.n
   #|      WHERE d.thread=?1 AND d.n>?2 AND e.kind='message' AND e.letter IS NULL AND NOT (e.author_kind='person' AND e.author IN (SELECT value FROM json_each(?3)))) END AS c
-
-///|
-let legacy_asked_during_sql : String =
-  #|SELECT MAX(n) AS n FROM (
-  #|  SELECT e.n FROM legacy_agent_meta m CROSS JOIN entries e
-  #|    WHERE m.id=1 AND m.scanned=0 AND e.thread=?1 AND e.kind='message' AND e.author_kind='agent' AND e.at>=?2 AND e.at<=?3
-  #|  UNION ALL
-  #|  SELECT s.n FROM legacy_agent_meta m CROSS JOIN legacy_agent_build s
-  #|    WHERE m.id=1 AND m.scanned=1 AND s.thread=?1 AND s.at>=?2 AND s.at<=?3
-  #|      AND NOT EXISTS (SELECT 1 FROM legacy_agent_dirty d WHERE d.thread=s.thread AND d.n=s.n)
-  #|  UNION ALL
-  #|  SELECT e.n FROM legacy_agent_meta m CROSS JOIN legacy_agent_times t
-  #|    CROSS JOIN entries e ON e.thread=t.thread AND e.n=t.n
-  #|    WHERE m.id=1 AND m.scanned=1 AND t.thread=?1 AND t.at>=?2 AND t.at<=?3
-  #|      AND e.kind='message' AND e.author_kind='agent' AND e.at=t.at
-  #|)
 
 ///|
 let legacy_login_cards_sql : String =
@@ -1473,139 +1315,6 @@ let archive_last_tail_sql : String =
   #|  ), last AS MATERIALIZED (SELECT n,at FROM tail WHERE kind='message' ORDER BY n DESC LIMIT 1)
   #|  SELECT (SELECT CAST(n AS TEXT) FROM last) AS n,(SELECT at FROM last) AS at,(SELECT COUNT(*) FROM tail) AS count
 
-
-///|
-let widget_before_gate_old_index_sql : String =
-  #|CREATE VIEW widget_source_before_gate(thread,n,kind,target,ts,entry_rowid,attachments) AS
-  #|  SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL WHERE 0;
-  #|  CREATE TRIGGER widget_source_before_gate_run INSTEAD OF INSERT ON widget_source_before_gate
-  #|    BEGIN DELETE FROM widget_source_changed WHERE thread IS NOT NULL;
-  #|  INSERT INTO widget_source_changed (thread, n, existed, attachments, at, dirty)
-  #|    SELECT k.thread, k.n, m.n IS NOT NULL, m.attachments, m.created_at, 0
-  #|    FROM (SELECT NEW.thread AS thread, NEW.n AS n WHERE NEW.kind = 'message'
-  #|  UNION SELECT NEW.thread, NEW.target WHERE NEW.target IS NOT NULL UNION SELECT e.thread, e.n FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.target IS NOT NULL
-  #|  UNION SELECT e.thread, e.n FROM entries e WHERE NEW.ts IS NOT NULL AND e.thread = NEW.thread AND e.ts = NEW.ts AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE NEW.ts IS NOT NULL AND e.thread = NEW.thread AND e.ts = NEW.ts AND e.target IS NOT NULL
-  #|  UNION SELECT e.thread, e.n FROM entries e WHERE e.rowid = NEW.entry_rowid AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE e.rowid = NEW.entry_rowid AND e.target IS NOT NULL) k
-  #|    LEFT JOIN merged m ON m.thread = k.thread AND m.n = k.n
-  #|    WHERE EXISTS (SELECT 1 FROM widget_source_scopes s WHERE s.thread=k.thread) AND ((NEW.kind = 'message' AND NEW.target IS NOT NULL)
-  #|  OR (NEW.target IS NOT NULL AND EXISTS (SELECT 1 FROM merged m
-  #|    WHERE m.thread=NEW.thread AND m.n=NEW.target AND m.attachments IS NOT NEW.attachments
-  #|      AND COALESCE((CASE WHEN (SELECT scanned FROM legacy_edit_meta WHERE id=1)=0 THEN
-  #|    (SELECT x.n FROM entries x INDEXED BY entries_target WHERE x.thread=NEW.thread AND x.target=NEW.target
-  #|      ORDER BY x.n DESC LIMIT 1)
-  #|  WHEN NOT EXISTS (SELECT 1 FROM legacy_edit_dirty LIMIT 1) THEN
-  #|    (SELECT s.n FROM legacy_edit_build s
-  #|      WHERE s.thread=NEW.thread AND s.target=NEW.target ORDER BY s.n DESC LIMIT 1)
-  #|  WHEN NOT EXISTS (SELECT 1 FROM legacy_edit_targets t WHERE t.thread=NEW.thread AND t.target=NEW.target) THEN
-  #|    (SELECT s.n FROM legacy_edit_build s
-  #|      WHERE s.thread=NEW.thread AND s.target=NEW.target
-  #|        AND NOT EXISTS (SELECT 1 FROM legacy_edit_dirty d WHERE d.thread=s.thread AND d.n=s.n)
-  #|      ORDER BY s.n DESC LIMIT 1)
-  #|  ELSE (WITH witness AS MATERIALIZED (
-  #|    SELECT x.n FROM entries x INDEXED BY entries_target WHERE x.thread=NEW.thread AND x.target=NEW.target
-  #|      ORDER BY x.rowid DESC LIMIT 1
-  #|  ), dirty_latest AS MATERIALIZED (
-  #|    SELECT x.n FROM witness w CROSS JOIN legacy_edit_meta m CROSS JOIN legacy_edit_targets t
-  #|      CROSS JOIN entries x ON x.thread=t.thread AND x.n=t.n
-  #|    WHERE m.id=1 AND m.scanned=1 AND t.thread=NEW.thread AND t.target=NEW.target AND x.target=t.target AND t.n>=w.n
-  #|    ORDER BY t.n DESC LIMIT 1
-  #|  ) SELECT n FROM (
-  #|    SELECT n FROM witness UNION ALL
-  #|    SELECT n FROM dirty_latest
-  #|    UNION ALL
-  #|    SELECT n FROM (SELECT s.n FROM witness w CROSS JOIN legacy_edit_meta m CROSS JOIN legacy_edit_build s
-  #|      WHERE m.id=1 AND m.scanned=1 AND s.thread=NEW.thread AND s.target=NEW.target
-  #|        AND s.n>=COALESCE((SELECT n FROM dirty_latest),w.n)
-  #|        AND NOT EXISTS (SELECT 1 FROM legacy_edit_dirty d WHERE d.thread=s.thread AND d.n=s.n)
-  #|      ORDER BY s.n DESC LIMIT 1)
-  #|  ) ORDER BY n DESC LIMIT 1) END)<=NEW.n,1)))
-  #|  OR EXISTS (SELECT 1 FROM entries e WHERE e.thread=NEW.thread AND e.n=NEW.n)
-  #|  OR (NEW.ts IS NOT NULL AND EXISTS (SELECT 1 FROM entries e WHERE e.thread=NEW.thread AND e.ts=NEW.ts))
-  #|  OR EXISTS (SELECT 1 FROM entries e WHERE e.rowid=NEW.entry_rowid)); END;
-
-///|
-let widget_before_gate_sql : String =
-  #|CREATE VIEW widget_source_before_gate(thread,n,kind,target,ts,entry_rowid,attachments) AS
-  #|  SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL WHERE 0;
-  #|  CREATE TRIGGER widget_source_before_gate_run INSTEAD OF INSERT ON widget_source_before_gate
-  #|    BEGIN DELETE FROM widget_source_changed WHERE thread IS NOT NULL;
-  #|  INSERT INTO widget_source_changed (thread, n, existed, attachments, at, dirty)
-  #|    SELECT k.thread, k.n, m.n IS NOT NULL, m.attachments, m.created_at, 0
-  #|    FROM (SELECT NEW.thread AS thread, NEW.n AS n WHERE NEW.kind = 'message'
-  #|  UNION SELECT NEW.thread, NEW.target WHERE NEW.target IS NOT NULL UNION SELECT e.thread, e.n FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.target IS NOT NULL
-  #|  UNION SELECT e.thread, e.n FROM entries e WHERE NEW.ts IS NOT NULL AND e.thread = NEW.thread AND e.ts = NEW.ts AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE NEW.ts IS NOT NULL AND e.thread = NEW.thread AND e.ts = NEW.ts AND e.target IS NOT NULL
-  #|  UNION SELECT e.thread, e.n FROM entries e WHERE e.rowid = NEW.entry_rowid AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE e.rowid = NEW.entry_rowid AND e.target IS NOT NULL) k
-  #|    LEFT JOIN merged m ON m.thread = k.thread AND m.n = k.n
-  #|    WHERE EXISTS (SELECT 1 FROM widget_source_scopes s WHERE s.thread=k.thread) AND ((NEW.kind = 'message' AND NEW.target IS NOT NULL)
-  #|  OR (NEW.target IS NOT NULL AND EXISTS (SELECT 1 FROM merged m
-  #|    WHERE m.thread=NEW.thread AND m.n=NEW.target AND m.attachments IS NOT NEW.attachments
-  #|      AND COALESCE((CASE WHEN (SELECT scanned FROM legacy_edit_meta WHERE id=1)=0 THEN
-  #|    (SELECT x.n FROM entries x WHERE x.thread=NEW.thread AND x.target=NEW.target
-  #|      ORDER BY x.n DESC LIMIT 1)
-  #|  WHEN NOT EXISTS (SELECT 1 FROM legacy_edit_dirty LIMIT 1) THEN
-  #|    (SELECT s.n FROM legacy_edit_build s
-  #|      WHERE s.thread=NEW.thread AND s.target=NEW.target ORDER BY s.n DESC LIMIT 1)
-  #|  WHEN NOT EXISTS (SELECT 1 FROM legacy_edit_targets t WHERE t.thread=NEW.thread AND t.target=NEW.target) THEN
-  #|    (SELECT s.n FROM legacy_edit_build s
-  #|      WHERE s.thread=NEW.thread AND s.target=NEW.target
-  #|        AND NOT EXISTS (SELECT 1 FROM legacy_edit_dirty d WHERE d.thread=s.thread AND d.n=s.n)
-  #|      ORDER BY s.n DESC LIMIT 1)
-  #|  ELSE (WITH dirty_latest AS MATERIALIZED (
-  #|    SELECT x.n FROM legacy_edit_meta m CROSS JOIN legacy_edit_targets t
-  #|      CROSS JOIN entries x ON x.thread=t.thread AND x.n=t.n
-  #|    WHERE m.id=1 AND m.scanned=1 AND t.thread=NEW.thread AND t.target=NEW.target AND x.target=t.target
-  #|    ORDER BY t.n DESC LIMIT 1
-  #|  ) SELECT n FROM (
-  #|    
-  #|    SELECT n FROM dirty_latest
-  #|    UNION ALL
-  #|    SELECT n FROM (SELECT s.n FROM legacy_edit_meta m CROSS JOIN legacy_edit_build s
-  #|      WHERE m.id=1 AND m.scanned=1 AND s.thread=NEW.thread AND s.target=NEW.target
-  #|        AND s.n>=COALESCE((SELECT n FROM dirty_latest),-9223372036854775808)
-  #|        AND NOT EXISTS (SELECT 1 FROM legacy_edit_dirty d WHERE d.thread=s.thread AND d.n=s.n)
-  #|      ORDER BY s.n DESC LIMIT 1)
-  #|  ) ORDER BY n DESC LIMIT 1) END)<=NEW.n,1)))
-  #|  OR EXISTS (SELECT 1 FROM entries e WHERE e.thread=NEW.thread AND e.n=NEW.n)
-  #|  OR (NEW.ts IS NOT NULL AND EXISTS (SELECT 1 FROM entries e WHERE e.thread=NEW.thread AND e.ts=NEW.ts))
-  #|  OR EXISTS (SELECT 1 FROM entries e WHERE e.rowid=NEW.entry_rowid)); END;
-
-///|
-let widget_before_add_legacy_sql : String =
-  #|CREATE TRIGGER widget_source_before_add BEFORE INSERT ON entries
-  #|  WHEN EXISTS (SELECT 1 FROM widget_source_scopes s WHERE s.thread=NEW.thread)
-  #|  OR EXISTS (SELECT 1 FROM entries e JOIN widget_source_scopes s ON s.thread=e.thread WHERE e.rowid=NEW.rowid)
-  #|  OR EXISTS (SELECT 1 FROM widget_source_changed) BEGIN INSERT INTO widget_source_before_gate(thread,n,kind,target,ts,entry_rowid,attachments)
-  #|        VALUES(NEW.thread,NEW.n,NEW.kind,NEW.target,NEW.ts,NEW.rowid,NEW.attachments); END;
-
-///|
-let widget_before_add_sql : String =
-  #|CREATE TRIGGER widget_source_before_add BEFORE INSERT ON entries
-  #|  WHEN EXISTS (SELECT 1 FROM widget_source_scopes s WHERE s.thread=NEW.thread)
-  #|  OR EXISTS (SELECT 1 FROM entries e JOIN widget_source_scopes s ON s.thread=e.thread WHERE e.rowid=NEW.rowid)
-  #|  OR EXISTS (SELECT 1 FROM widget_source_changed) BEGIN DELETE FROM widget_source_changed WHERE thread IS NOT NULL;
-  #|  INSERT INTO widget_source_changed (thread, n, existed, attachments, at, dirty)
-  #|    SELECT k.thread, k.n, m.n IS NOT NULL, m.attachments, m.created_at, 0
-  #|    FROM (SELECT NEW.thread AS thread, NEW.n AS n WHERE NEW.kind = 'message'
-  #|  UNION SELECT NEW.thread, NEW.target WHERE NEW.target IS NOT NULL UNION SELECT e.thread, e.n FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.target IS NOT NULL
-  #|  UNION SELECT e.thread, e.n FROM entries e WHERE NEW.ts IS NOT NULL AND e.thread = NEW.thread AND e.ts = NEW.ts AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE NEW.ts IS NOT NULL AND e.thread = NEW.thread AND e.ts = NEW.ts AND e.target IS NOT NULL
-  #|  UNION SELECT e.thread, e.n FROM entries e WHERE e.rowid = NEW.rowid AND e.kind = 'message'
-  #|  UNION SELECT e.thread, e.target FROM entries e WHERE e.rowid = NEW.rowid AND e.target IS NOT NULL) k
-  #|    LEFT JOIN merged m ON m.thread = k.thread AND m.n = k.n
-  #|    WHERE EXISTS (SELECT 1 FROM widget_source_scopes s WHERE s.thread=k.thread) AND ((NEW.kind = 'message' AND NEW.target IS NOT NULL)
-  #|  OR (NEW.target IS NOT NULL AND EXISTS (SELECT 1 FROM merged m
-  #|    WHERE m.thread=NEW.thread AND m.n=NEW.target AND m.attachments IS NOT NEW.attachments
-  #|      AND NOT EXISTS (SELECT 1 FROM entries x WHERE x.thread=NEW.thread AND x.target=NEW.target AND x.n>NEW.n)))
-  #|  OR EXISTS (SELECT 1 FROM entries e WHERE e.thread=NEW.thread AND e.n=NEW.n)
-  #|  OR (NEW.ts IS NOT NULL AND EXISTS (SELECT 1 FROM entries e WHERE e.thread=NEW.thread AND e.ts=NEW.ts))
-  #|  OR EXISTS (SELECT 1 FROM entries e WHERE e.rowid=NEW.rowid)); END;
 
 ///|
 let card_outbox_table_sql : String =

@@ -19,18 +19,7 @@ pub impl Show for DriveErr with output(self, logger) {
 
 ///|
 fn drive_status(code : String) -> Int32 {
-  match code {
-    "invalid_request" => 400
-    "not_a_root" | "not_found" => 404
-    "path_escape" | "protected" | "permission" => 403
-    "is_a_directory"
-    | "not_a_directory"
-    | "exists"
-    | "upload_lost"
-    | "no_trash" => 409
-    "too_large" => 413
-    _ => 500
-  }
+  @drive.code_status(code)
 }
 
 ///|

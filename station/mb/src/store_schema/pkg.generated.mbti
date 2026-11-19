@@ -63,6 +63,8 @@ pub fn open(@sql.Db, @host.Host, String, Int64, archive? : String) -> Unit raise
 
 pub fn repair_merged_edit_lookup(@sql.Db) -> Unit raise
 
+pub fn repair_widget_source_before_add(@sql.Db) -> Unit raise
+
 pub let schema : String
 
 pub let schema_version : Int32
