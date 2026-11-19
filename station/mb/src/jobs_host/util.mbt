@@ -84,10 +84,7 @@ fn text(v : Json, key : String) -> String {
 ///|
 /// A JavaScript number as `String(n)` writes it.
 pub fn js_number(d : Double) -> String {
-  if d == 0.0 {
-    return "0"
-  }
-  @jsjson.stringify(@jsjson.JValue::Num(d))
+  @jsjson.jval_stringify_num(d)
 }
 
 ///|

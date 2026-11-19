@@ -10,11 +10,7 @@
 ///|
 /// `Math.round(x)`.
 fn js_round(x : Double) -> Double {
-  if x.is_nan() || x.is_inf() {
-    x
-  } else {
-    (x + 0.5).floor()
-  }
+  @jsjson.js_round(x)
 }
 
 ///|

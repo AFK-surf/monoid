@@ -71,15 +71,7 @@ pub fn own_node_home(data : String) -> String {
 ///|
 /// JavaScript's sort of strings (by UTF-16 units).
 fn js_compare(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = cu(a, i)
-    let y = cu(b, i)
-    if x != y {
-      return x - y
-    }
-  }
-  a.length() - b.length()
+  @jsjson.js_compare(a, b)
 }
 
 ///|

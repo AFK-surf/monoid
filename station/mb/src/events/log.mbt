@@ -71,7 +71,7 @@ fn is_hex(s : String) -> Bool {
 ///|
 fn is_safe_integer(v : J?) -> Double? {
   match v {
-    Some(Num(d)) if d == d.floor() && d.abs() <= 9007199254740991.0 => Some(d)
+    Some(Num(d)) if @jsjson.is_safe_integer(d) => Some(d)
     _ => None
   }
 }

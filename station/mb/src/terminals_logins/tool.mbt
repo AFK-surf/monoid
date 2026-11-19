@@ -103,21 +103,7 @@ pub fn login_tool() -> J {
 ///|
 /// JavaScript's `\s`.
 fn js_space(c : Int) -> Bool {
-  c == 0x09 ||
-  c == 0x0a ||
-  c == 0x0b ||
-  c == 0x0c ||
-  c == 0x0d ||
-  c == 0x20 ||
-  c == 0xa0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000 ||
-  c == 0xfeff
+  @jsjson.is_js_space(c)
 }
 
 ///|
@@ -155,15 +141,7 @@ fn hide_links(s : String) -> String {
 ///|
 /// `text.split(sub).join(with)`.
 fn replace_all(s : String, sub : String, with_ : String) -> String {
-  if sub == "" {
-    // (split("") is every unit apart: each joined with `with`)
-    let units = []
-    for i in 0..<s.length() {
-      units.push(String::from_array([Int::unsafe_to_char(s.code_unit_at(i).to_int())]))
-    }
-    return units.join(with_)
-  }
-  s.split(sub).map(v => v.to_string()).collect().join(with_)
+  @jsjson.js_replace_all(s, sub, with_)
 }
 
 ///|

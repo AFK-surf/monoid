@@ -636,12 +636,7 @@ pub async fn World::fetch(self : World, via : String, url : String, meth? : Stri
 ///|
 /// `!!v` of a JSON value.
 pub fn truthy(j : J?) -> Bool {
-  match j {
-    None | Some(Null) | Some(Bool(false)) => false
-    Some(Num(n)) => !(n == 0.0 || n != n)
-    Some(Str(u)) => u.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(j)
 }
 
 // ── paths (node:path, this machine's) ──────────────────────────────────────────────────────────────────────────────

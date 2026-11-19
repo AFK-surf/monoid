@@ -107,19 +107,13 @@ fn either(a : J?, b : J?) -> J? {
 ///|
 /// JavaScript's truthiness.
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) => false
-    Some(Bool(b)) => b
-    Some(Num(n)) => !(n == 0.0 || n.is_nan())
-    Some(Str(s)) => s.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|
 /// Math.round.
 fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }
 
 ///|

@@ -866,22 +866,7 @@ pub fn headed_from(text : String) -> (String, String?) {
 ///|
 /// JavaScript's `\s`: its white space and line terminators.
 fn js_space(c : Char) -> Bool {
-  let u = c.to_int()
-  u == 9 ||
-  u == 10 ||
-  u == 11 ||
-  u == 12 ||
-  u == 13 ||
-  u == 32 ||
-  u == 160 ||
-  u == 5760 ||
-  (u >= 8192 && u <= 8202) ||
-  u == 8232 ||
-  u == 8233 ||
-  u == 8239 ||
-  u == 8287 ||
-  u == 12288 ||
-  u == 65279
+  @jsjson.is_js_space(c.to_int())
 }
 
 ///|

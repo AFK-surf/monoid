@@ -34,12 +34,7 @@ fn num_of(v : Json?) -> Double? {
 
 ///|
 fn truthy(v : Json) -> Bool {
-  match v {
-    Null | False => false
-    Number(n, ..) => n != 0.0
-    String(s) => s != ""
-    _ => true
-  }
+  @jsjson.json_truthy(Some(v))
 }
 
 ///|

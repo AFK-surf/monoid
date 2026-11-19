@@ -33,26 +33,12 @@ pub fn repo_item_id(url : String) -> String {
 ///|
 /// JavaScript's `String.prototype.trim`.
 pub fn js_trim(s : String) -> String {
-  s
-  .trim(
-    chars=" \t\n\r\u{0b}\u{0c}\u{a0}\u{feff}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}",
-  )
-  .to_string()
+  @jsjson.trim_js(s)
 }
 
 ///|
 fn js_space(c : Int) -> Bool {
-  c == 0x20 ||
-  (c >= 0x09 && c <= 0x0d) ||
-  c == 0xa0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000 ||
-  c == 0xfeff
+  @jsjson.is_js_space(c)
 }
 
 ///|
@@ -237,15 +223,7 @@ fn sorted(xs : Array[String]) -> Array[String] {
 ///|
 /// JavaScript's default sort order of strings (by UTF-16 code units).
 fn js_compare(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x - y
-    }
-  }
-  a.length() - b.length()
+  @jsjson.js_compare(a, b)
 }
 
 ///|

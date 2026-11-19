@@ -332,7 +332,7 @@ pub fn Store::entries_between(self : Store, thread : Json, from : Json, to : Jso
 
 ///|
 fn is_safe_integer(v : Json) -> Bool {
-  v is Number(n, ..) && n == n.floor() && n.abs() <= 9007199254740991.0
+  v is Number(n, ..) && @jsjson.is_safe_integer(n)
 }
 
 ///|

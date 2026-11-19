@@ -147,15 +147,7 @@ fn shares_of(db : @sql.Db, ids : Array[String], now : Double) -> Map[String, Jso
 ///|
 /// JavaScript's `String(v)` of a value JSON.parse made.
 fn js_string(v : Json) -> String {
-  match v {
-    Number(n, ..) => js_text(Json::number(n))
-    True => "true"
-    False => "false"
-    Array(xs) => xs.map(x => if x is Null { "" } else { js_string(x) }).join(",")
-    Object(_) => "[object Object]"
-    String(s) => s
-    Null => "null"
-  }
+  @jsjson.json_js_str(Some(v))
 }
 
 ///|

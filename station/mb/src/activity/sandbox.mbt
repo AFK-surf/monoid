@@ -14,35 +14,8 @@ pub fn sha256_hex(data : Array[Int]) -> String {
 ///|
 /// A string's UTF-8 bytes as JavaScript encodes it for a hash (a lone surrogate as U+FFFD).
 pub fn utf8(s : String) -> Array[Int] {
-  let out = []
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let mut c = s.unsafe_charcode_at(i)
-    i += 1
-    if c >= 0xd800 && c <= 0xdbff && i < n && s.unsafe_charcode_at(i) >= 0xdc00 && s.unsafe_charcode_at(i) <= 0xdfff {
-      c = 0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i) - 0xdc00)
-      i += 1
-    } else if c >= 0xd800 && c <= 0xdfff {
-      c = 0xfffd
-    }
-    if c < 0x80 {
-      out.push(c)
-    } else if c < 0x800 {
-      out.push(0xc0 | (c >> 6))
-      out.push(0x80 | (c & 0x3f))
-    } else if c < 0x10000 {
-      out.push(0xe0 | (c >> 12))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    } else {
-      out.push(0xf0 | (c >> 18))
-      out.push(0x80 | ((c >> 12) & 0x3f))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    }
-  }
-  out
+  let b = @jsjson.utf8(s)
+  Array::makei(b.length(), i => b[i].to_int())
 }
 
 ///|

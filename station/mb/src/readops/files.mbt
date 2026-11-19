@@ -98,12 +98,7 @@ fn by_bytes(a : String, b : String) -> Int {
 ///|
 /// A value as JavaScript's truthiness sees it.
 fn truthy(v : @jsjson.JValue?) -> Bool {
-  match v {
-    None | Some(Null) | Some(Bool(false)) => false
-    Some(Num(n)) => n != 0.0 && !n.is_nan()
-    Some(Str(s)) => s.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|

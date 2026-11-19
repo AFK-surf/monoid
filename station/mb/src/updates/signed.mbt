@@ -36,14 +36,7 @@ pub fn trusted_keys(env_keys : String?) -> Array[(String, String)] {
 ///|
 /// JavaScript's `String(v)` of a JSON value (what a RegExp's `test` makes of what it is given).
 pub fn js_string(j : J) -> String {
-  match j {
-    Null => "null"
-    Bool(b) => if b { "true" } else { "false" }
-    Num(n) => num_text(n)
-    Str(u) => @jsjson.sanitize_str(u)
-    Arr(xs) => xs.map(x => if x is Null { "" } else { js_string(x) }).join(",")
-    Obj(_) => "[object Object]"
-  }
+  @jsjson.jval_js_str(Some(j))
 }
 
 ///|

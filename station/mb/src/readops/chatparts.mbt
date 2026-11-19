@@ -33,7 +33,7 @@ fn ids_json(ids : Array[Json]) -> Json {
 ///|
 /// Whether a number is an integer (Number.isInteger).
 fn is_integer(v : Json) -> Bool {
-  v is Number(n, ..) && n == n.floor() && !n.is_inf()
+  v is Number(n, ..) && @jsjson.is_integer(n)
 }
 
 // ── where a chat's latest message stands ──

@@ -435,31 +435,34 @@ pub fn js_number(s : String) -> Double {
 }
 
 ///|
+/// Whether a UTF-16 code unit is JavaScript whitespace or a line terminator.
+pub fn is_js_space(c : Int) -> Bool {
+  c == 0x09 ||
+  c == 0x0a ||
+  c == 0x0b ||
+  c == 0x0c ||
+  c == 0x0d ||
+  c == 0x20 ||
+  c == 0xa0 ||
+  c == 0x1680 ||
+  (c >= 0x2000 && c <= 0x200a) ||
+  c == 0x2028 ||
+  c == 0x2029 ||
+  c == 0x202f ||
+  c == 0x205f ||
+  c == 0x3000 ||
+  c == 0xfeff
+}
+
+///|
 /// String.prototype.trim: JavaScript's white space and line terminators off both ends.
 pub fn trim_js(s : String) -> String {
-  let space = c => {
-    c == 0x09 ||
-    c == 0x0a ||
-    c == 0x0b ||
-    c == 0x0c ||
-    c == 0x0d ||
-    c == 0x20 ||
-    c == 0xa0 ||
-    c == 0x1680 ||
-    (c >= 0x2000 && c <= 0x200a) ||
-    c == 0x2028 ||
-    c == 0x2029 ||
-    c == 0x202f ||
-    c == 0x205f ||
-    c == 0x3000 ||
-    c == 0xfeff
-  }
   let mut a = 0
   let mut b = s.length()
-  while a < b && space(s.unsafe_charcode_at(a)) {
+  while a < b && is_js_space(s.unsafe_charcode_at(a)) {
     a += 1
   }
-  while b > a && space(s.unsafe_charcode_at(b - 1)) {
+  while b > a && is_js_space(s.unsafe_charcode_at(b - 1)) {
     b -= 1
   }
   s.unsafe_substring(start=a, end=b)
@@ -533,7 +536,7 @@ pub fn points(s : String) -> Array[String] {
 ///|
 /// Its UTF-8 bytes (a lone surrogate as U+FFFD, as Buffer.from does).
 pub fn utf8(s : String) -> Bytes {
-  @utf8.encode(s)
+  @utf8.encode(sanitize_str(s))
 }
 
 ///|

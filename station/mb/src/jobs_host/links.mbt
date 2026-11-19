@@ -896,12 +896,7 @@ async fn picture(io : LinkIo, href : String) -> String? {
 ///|
 /// Whether a JSON value is truthy as JavaScript has it.
 fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(Number(d, ..)) => d != 0.0
-    Some(String(s)) => s != ""
-    _ => true
-  }
+  @jsjson.json_truthy(v)
 }
 
 ///|

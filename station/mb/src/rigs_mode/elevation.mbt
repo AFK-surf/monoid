@@ -104,36 +104,7 @@ pub struct Elevation {
 ///|
 /// Paths joined and made normal, as node's posix `join` does.
 pub fn path_join(parts : Array[String]) -> String {
-  let joined = parts.filter(p => p != "").join("/")
-  if joined == "" {
-    return "."
-  }
-  let absolute = joined.has_prefix("/")
-  let out : Array[String] = []
-  for seg in joined.split("/") {
-    let s = seg.to_string()
-    if s == "" || s == "." {
-      continue
-    }
-    if s == ".." {
-      if out.length() > 0 && out[out.length() - 1] != ".." {
-        out.pop() |> ignore
-      } else if !absolute {
-        out.push("..")
-      }
-      continue
-    }
-    out.push(s)
-  }
-  let trailing = joined.has_suffix("/") && out.length() > 0
-  let body = out.join("/") + (if trailing { "/" } else { "" })
-  if absolute {
-    "/" + body
-  } else if body == "" {
-    "."
-  } else {
-    body
-  }
+  @nodepath.join("/", parts)
 }
 
 ///|

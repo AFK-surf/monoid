@@ -1336,14 +1336,7 @@ pub fn link_said(r : Req) -> String {
 ///|
 /// `String(v)` of what JSON holds.
 pub fn js_text(v : J) -> String {
-  match v {
-    Str(u) => @jsjson.sanitize_str(u)
-    Null => "null"
-    Bool(b) => if b { "true" } else { "false" }
-    Num(d) => num_text(d)
-    Arr(xs) => xs.map(x => if x is Null { "" } else { js_text(x) }).join(",")
-    Obj(_) => "[object Object]"
-  }
+  @jsjson.jval_js_str(Some(v))
 }
 
 ///|

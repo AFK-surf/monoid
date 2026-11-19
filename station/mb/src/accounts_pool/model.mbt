@@ -18,48 +18,19 @@ fn is_alpha(s : String) -> Bool {
 ///|
 /// `s.slice(a, b)` with JavaScript's clamping (code units).
 fn slice(s : String, a : Int, b? : Int) -> String {
-  let n = s.length()
-  let fix = (i : Int) => if i < 0 { if n + i < 0 { 0 } else { n + i } } else if i > n { n } else { i }
-  let from = fix(a)
-  let to = match b {
-    Some(x) => fix(x)
-    None => n
-  }
-  if to <= from {
-    ""
-  } else {
-    s.unsafe_substring(start=from, end=to)
-  }
+  @jsjson.js_slice(s, a, end?=b)
 }
 
 ///|
 /// `s.indexOf(t, from)`.
 fn index_of(s : String, t : String, from? : Int = 0) -> Int {
-  let n = s.length()
-  let m = t.length()
-  let mut i = if from < 0 { 0 } else { from }
-  while i + m <= n {
-    if s.unsafe_substring(start=i, end=i + m) == t {
-      return i
-    }
-    i += 1
-  }
-  -1
+  @jsjson.js_index_of(s, t, from~)
 }
 
 ///|
 /// `s.lastIndexOf(t)`.
 fn last_index_of(s : String, t : String) -> Int {
-  let n = s.length()
-  let m = t.length()
-  let mut i = n - m
-  while i >= 0 {
-    if s.unsafe_substring(start=i, end=i + m) == t {
-      return i
-    }
-    i -= 1
-  }
-  -1
+  @jsjson.js_last_index_of(s, t)
 }
 
 ///|
@@ -435,21 +406,7 @@ pub fn group_of(id : String) -> String {
 
 ///|
 fn js_space(c : Int) -> Bool {
-  c == 0x09 ||
-  c == 0x0a ||
-  c == 0x0b ||
-  c == 0x0c ||
-  c == 0x0d ||
-  c == 0x20 ||
-  c == 0xa0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000 ||
-  c == 0xfeff
+  @jsjson.is_js_space(c)
 }
 
 ///|

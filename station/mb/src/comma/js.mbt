@@ -231,48 +231,5 @@ pub fn sha256_hex(b : Bytes) -> String {
 ///|
 /// `Number(text)` of a decimal integer as the station writes one (meta's values); NaN for anything else.
 pub fn js_number(text : String) -> Double {
-  let t = js_trim(text)
-  if t == "" {
-    return 0.0
-  }
-  let mut neg = false
-  let mut i = 0
-  if t.unsafe_charcode_at(0) == '-' || t.unsafe_charcode_at(0) == '+' {
-    neg = t.unsafe_charcode_at(0) == '-'
-    i = 1
-  }
-  if i >= t.length() {
-    return @double.not_a_number
-  }
-  let mut v = 0.0
-  let mut frac = 0.0
-  let mut scale = 1.0
-  let mut dot = false
-  let mut digits = 0
-  while i < t.length() {
-    let c = t.unsafe_charcode_at(i)
-    if c >= '0' && c <= '9' {
-      digits += 1
-      if dot {
-        scale = scale / 10.0
-        frac = frac + (c - '0').to_double() * scale
-      } else {
-        v = v * 10.0 + (c - '0').to_double()
-      }
-    } else if c == '.' && !dot {
-      dot = true
-    } else {
-      return @double.not_a_number
-    }
-    i += 1
-  }
-  if digits == 0 {
-    return @double.not_a_number
-  }
-  let r = v + frac
-  if neg {
-    -r
-  } else {
-    r
-  }
+  @jsjson.js_number(text)
 }

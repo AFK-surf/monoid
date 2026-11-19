@@ -206,27 +206,7 @@ fn units(s : String) -> Array[Int] {
 ///|
 /// What a JavaScript value reads as in a template (`${v}`), for an error's words.
 fn js_text(v : @jsjson.JValue?) -> String {
-  match v {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(Bool(b)) => b.to_string()
-    Some(Str(s)) => @jsjson.sanitize_str(s)
-    Some(Num(_)) | Some(Arr(_)) | Some(Obj(_)) => {
-      let s = @jsjson.stringify(v.unwrap())
-      match v {
-        Some(Obj(_)) => "[object Object]"
-        Some(Arr(items)) =>
-          joined(
-            items.map(i => match i {
-              Null => ""
-              _ => js_text(Some(i))
-            }),
-            ",",
-          )
-        _ => s
-      }
-    }
-  }
+  @jsjson.jval_js_str(v)
 }
 
 ///|

@@ -54,15 +54,7 @@ let lent_renew_ms = 21600000.0
 ///|
 /// JavaScript's `a < b` of two strings: by their code units.
 pub fn js_less(a : String, b : String) -> Bool {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
+  @jsjson.js_less(a, b)
 }
 
 ///|

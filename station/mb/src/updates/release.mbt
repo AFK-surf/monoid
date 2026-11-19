@@ -398,39 +398,7 @@ async fn handed_archive(w : World) -> (String, String) {
 ///|
 /// JavaScript's `Number(text)` of what a header says.
 pub fn js_number(t : String) -> Double {
-  let s = trim(t)
-  if s == "" {
-    return 0.0
-  }
-  if is_decimal(s) {
-    return decimal(s)
-  }
-  match s {
-    "Infinity" | "+Infinity" => @double.infinity
-    "-Infinity" => @double.neg_infinity
-    _ => {
-      if s.length() > 2 && cu(s, 0) == 48 {
-        let base = match cu(s, 1) {
-          120 | 88 => 16
-          111 | 79 => 8
-          98 | 66 => 2
-          _ => 0
-        }
-        if base > 0 {
-          let mut v = 0.0
-          for i in 2..<s.length() {
-            let d = hex_value(cu(s, i))
-            if d < 0 || d >= base {
-              return @double.not_a_number
-            }
-            v = v * base.to_double() + d.to_double()
-          }
-          return v
-        }
-      }
-      @double.not_a_number
-    }
-  }
+  @jsjson.js_number(t)
 }
 
 ///|

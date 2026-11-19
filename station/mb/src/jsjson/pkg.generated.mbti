@@ -21,6 +21,8 @@ pub fn is_finite(Double) -> Bool
 
 pub fn is_integer(Double) -> Bool
 
+pub fn is_js_space(Int32) -> Bool
+
 pub fn is_object(JValue?) -> Bool
 
 pub fn is_objectish(JValue?) -> Bool

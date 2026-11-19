@@ -116,19 +116,7 @@ pub fn quote(b : StringBuilder, s : String) -> Unit {
 ///|
 /// A number as JS writes it: a whole one below 1e21 without a fraction.
 pub fn js_number(n : Double) -> String {
-  if n != n {
-    "null"
-  } else if n == n.floor() && n.abs() < 1.0e21 {
-    if n == 0.0 {
-      "0"
-    } else {
-      n.to_int64().to_string()
-    }
-  } else if n.abs() == @double.infinity {
-    "null"
-  } else {
-    n.to_string()
-  }
+  @jsjson.jval_stringify_num(n)
 }
 
 ///|

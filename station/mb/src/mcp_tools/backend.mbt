@@ -299,17 +299,7 @@ pub fn int_text(n : Int) -> String {
 ///|
 /// A JavaScript `\s`.
 pub fn is_js_space(c : Int) -> Bool {
-  c == 0x20 ||
-  (c >= 0x09 && c <= 0x0D) ||
-  c == 0xA0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200A) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202F ||
-  c == 0x205F ||
-  c == 0x3000 ||
-  c == 0xFEFF
+  @jsjson.is_js_space(c)
 }
 
 ///|
@@ -335,28 +325,7 @@ pub fn squeeze_spaces(s : String) -> String {
 ///|
 /// `s.slice(from, to)` by UTF-16 units.
 pub fn slice(s : String, from : Int, to? : Int) -> String {
-  let n = s.length()
-  let clamp = (i : Int) => if i < 0 {
-    if n + i < 0 {
-      0
-    } else {
-      n + i
-    }
-  } else if i > n {
-    n
-  } else {
-    i
-  }
-  let a = clamp(from)
-  let b = match to {
-    Some(t) => clamp(t)
-    None => n
-  }
-  if a >= b {
-    ""
-  } else {
-    s.unsafe_substring(start=a, end=b)
-  }
+  @jsjson.js_slice(s, from, end?=to)
 }
 
 ///|
@@ -368,68 +337,19 @@ pub fn starts(s : String, p : String) -> Bool {
 ///|
 /// `s.indexOf(p)` from `from` (-1: none).
 pub fn index_of(s : String, p : String, from? : Int = 0) -> Int {
-  let n = s.length()
-  let m = p.length()
-  let mut i = if from < 0 { 0 } else { from }
-  while i + m <= n {
-    let mut ok = true
-    for j in 0..<m {
-      if s.unsafe_charcode_at(i + j) != p.unsafe_charcode_at(j) {
-        ok = false
-        break
-      }
-    }
-    if ok {
-      return i
-    }
-    i += 1
-  }
-  -1
+  @jsjson.js_index_of(s, p, from~)
 }
 
 ///|
 /// `s.lastIndexOf(p)` (-1: none).
 pub fn last_index_of(s : String, p : String) -> Int {
-  let n = s.length()
-  let m = p.length()
-  let mut i = n - m
-  while i >= 0 {
-    let mut ok = true
-    for j in 0..<m {
-      if s.unsafe_charcode_at(i + j) != p.unsafe_charcode_at(j) {
-        ok = false
-        break
-      }
-    }
-    if ok {
-      return i
-    }
-    i -= 1
-  }
-  -1
+  @jsjson.js_last_index_of(s, p)
 }
 
 ///|
 /// `s.split(sep)`.
 pub fn split(s : String, sep : String) -> Array[String] {
-  let out = []
-  if sep == "" {
-    for i in 0..<s.length() {
-      out.push(s.unsafe_substring(start=i, end=i + 1))
-    }
-    return out
-  }
-  let mut at = 0
-  while true {
-    let i = index_of(s, sep, from=at)
-    if i < 0 {
-      out.push(s.unsafe_substring(start=at, end=s.length()))
-      break
-    }
-    out.push(s.unsafe_substring(start=at, end=i))
-    at = i + sep.length()
-  }
-  out
+  @jsjson.js_split(s, sep)
 }
 
 ///|
@@ -459,7 +379,7 @@ pub fn code_point_count(s : String) -> Int {
 ///|
 /// Math.round, as JavaScript rounds (halves up).
 pub fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }
 
 ///|

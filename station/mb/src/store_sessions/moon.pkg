@@ -3,6 +3,7 @@ import {
   "station/wire",
   "station/sql",
   "station/jsjson",
+  "station/nodepath",
   "station/usagecount",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",

@@ -146,28 +146,7 @@ fn form_part(s : String) -> String {
 ///|
 /// A string with its lone surrogates made U+FFFD (what a USVString is).
 fn well_formed(s : String) -> String {
-  let out = StringBuilder::new()
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < n {
-      let d = s.unsafe_charcode_at(i + 1)
-      if d >= 0xdc00 && d <= 0xdfff {
-        out.write_char(c.unsafe_to_char())
-        out.write_char(d.unsafe_to_char())
-        i += 2
-        continue
-      }
-    }
-    if c >= 0xd800 && c <= 0xdfff {
-      out.write_char('\u{fffd}')
-    } else {
-      out.write_char(c.unsafe_to_char())
-    }
-    i += 1
-  }
-  out.to_string()
+  @jsjson.sanitize_str(s)
 }
 
 ///|
