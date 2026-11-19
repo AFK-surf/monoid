@@ -242,3 +242,44 @@ test "全部密钥's 添加 as the page is given another width: the same button 
     }
   }
 }
+
+///|
+/// 密钥 with no safe mode, at Small (390×844), narrow with words at 1.3 (320×640) and Large (1280×800): not turned on
+/// (开启 its one press), turned on with secrets from before to encrypt, this device to be approved by another trusted
+/// device of the person's on the page itself (its code typed there; their devices set up again elsewhere said to be
+/// theirs), never sent off to 安全; each with nothing the audit finds, and no word for the lock of one's own.
+test "密钥 with no safe mode: 开启, what is left to encrypt, this device approved on the page itself; nothing the audit finds" {
+  let sizes : Array[(Double, Double, Int, Double)] = [(390.0, 844.0, 2, 1.0), (320.0, 640.0, 2, 1.3), (1280.0, 800.0, 0, 1.0)]
+  let cases : Array[(String, Array[String], Array[String])] = [
+    ("settings-vault-own-off", ["密钥库未开启", "开启密钥库"], ["去安全设置"]),
+    ("settings-vault-own-on", ["2 条密钥尚未加密", "加密"], ["去安全设置"]),
+    ("settings-vault-own-outside", ["此设备尚未获批", "在你的受信任设备上批准这台设备后，即可在此使用密钥库。", "发送批准请求"], ["去安全设置"]),
+    ("settings-vault-own-code", ["此设备尚未获批"], ["去安全设置", "发送批准请求"]),
+    ("settings-vault-own-replaced", ["你的受信任设备被重新设置过", "是我做的，继续"], ["去安全设置"]),
+  ]
+  for size in sizes {
+    let (w, h, platform, scale) = size
+    for c in cases {
+      let (mode, shown, not_shown) = c
+      let t = setting_tester(Vault, w, platform~, mode~, h~)
+      t.set_font_scale(scale)
+      t.frame()
+      t.run_for(@ui.move_most_ms)
+      let at = "\{mode} \{w}×\{h} @\{scale}"
+      for words in shown {
+        if words == "2 条密钥尚未加密" || words == "加密" {
+          scrolled_to(t, w, words)
+        }
+        assert_true(t.find(words) is Some(_), msg="\{at}: \{words}")
+      }
+      for words in not_shown {
+        assert_true(t.find(words) is None, msg="\{at}: not \{words}")
+      }
+      for drawn in t.words() {
+        assert_true(!drawn.0.contains("个人锁") && !drawn.0.contains("共享调试"), msg="\{at}: \{drawn.0}")
+      }
+      let faults = t.audit()
+      assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    }
+  }
+}

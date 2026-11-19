@@ -17,8 +17,9 @@ import { type Answer, type Request, json, param } from "../request.ts";
 
 export type VaultDeps = {
   vaults: VaultStore;
-  /// The lock pinned in a workspace this station is in; null when none is (or it is broken: nobody is admitted then).
-  lock(workspace: string): LockState | null;
+  /// The lock a workspace's vault goes by (Cloud `vaultLock`): its lock in force in security mode, else its members'
+  /// own; null when there is none (or it is broken: nobody is admitted then). `viewer`: who asks, known by it from then on.
+  lock(workspace: string, viewer?: Viewer): LockState | null;
   events?: Events;
   /// Wait for an older station's writes to stop; undefined means the handover is already complete.
   beforeWrite?(): false | Promise<boolean> | undefined;
@@ -57,7 +58,7 @@ const members = (vault: Vault): To => ({ workspace: vault.ws, subs: vault.member
 
 export const routes = ({ vaults, lock, events, boxed, beforeWrite }: VaultDeps): Route[] => {
   /// The lock of the viewer's workspace, or the refusal.
-  const locked = (r: Request): LockState | Answer => lock(r.viewer.workspace) ?? NEEDS_LOCK();
+  const locked = (r: Request): LockState | Answer => lock(r.viewer.workspace, r.viewer) ?? NEEDS_LOCK();
   const isAnswer = (v: LockState | Answer): v is Answer => "status" in v;
   const tell = (event: string, data: unknown, of: string, to: To) => events?.tell(event, data, of, to);
   return [

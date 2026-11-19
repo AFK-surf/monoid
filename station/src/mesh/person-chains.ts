@@ -57,6 +57,8 @@ export class PersonChains {
   #writing: Promise<void> | null = null;
   readonly #told = new Set<(genesis: string) => void>();
   readonly #changed = new Set<(genesis: string) => void>();
+  /// Moves on with every change of a chain kept (`version`).
+  #version = 0;
 
   constructor(path: string | null = null) {
     this.#path = path;
@@ -170,6 +172,11 @@ export class PersonChains {
     return [...this.#kept].filter(([genesis]) => this.#heard.get(genesis)?.has(ws) === true || needed.has(genesis));
   }
 
+  /// Moves on as any chain kept changes: what is made of them is made again only then (cloud/vault-lock.ts).
+  version(): number {
+    return this.#version;
+  }
+
   /// Every log kept, its active chain, by its genesis.
   every(): [string, Entry[]][] {
     return [...this.#kept] as [string, Entry[]][];
@@ -209,6 +216,7 @@ export class PersonChains {
     const newly = ws !== null && !heard.has(ws);
     if (!changed && !newly) return;
     if (changed) {
+      this.#version++;
       this.#kept.delete(genesis);
       this.#kept.set(genesis, kept.entries);
       if (kept.aside.length > 0) this.#aside.set(genesis, kept.aside);

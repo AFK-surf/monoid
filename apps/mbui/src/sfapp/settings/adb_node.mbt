@@ -47,7 +47,7 @@ pub fn adb_node(
 /// The person's own lock this device is off and has a step on (to be approved, or set up again elsewhere): the lock of
 /// the account whose workspace is in view (`sub`) where the core lists it, by its standing alone (another account signed
 /// in here being a member lends this one nothing); else, where it is on none as a member, the first with a step.
-fn adb_lock_step(view : Json?, sub : String) -> Json? {
+pub fn personal_lock_step(view : Json?, sub : String) -> Json? {
   let locks = items(view, "personal")
   let needs = fn(l : Json) {
     text(Some(l), "standing") == "outside" || text(Some(l), "standing") == "replaced"
@@ -92,7 +92,7 @@ fn adb_phone_step(view : Json?, phone : Json?, focus : String) -> (AdbStep, Stri
 /// lends ("switch"), its step ("phone-step"), an Android before 11 ("unsupported"), the grants from before signatures
 /// ("confirm"), the chats it is lent to now ("live-heading", "live").
 fn adb_keys(view : Json?, phone : Json?, sub : String) -> Array[String] {
-  if adb_lock_step(view, sub) is Some(_) {
+  if personal_lock_step(view, sub) is Some(_) {
     return ["lock"]
   }
   let out : Array[String] = []
@@ -125,7 +125,7 @@ fn adb_block(
   k : String,
 ) -> Unit {
   match k {
-    "lock" => adb_lock_node(b, core, fn() { adb_lock_step(view(), sub()) })
+    "lock" => personal_lock_node(b, core, fn() { personal_lock_step(view(), sub()) })
     "switch" =>
       @sf.group_node(b, fn(g) {
         // (the library's switch row, as every setting's; 2026-11-06 左子健: 共享调试的标题为啥没有加粗)
@@ -314,7 +314,13 @@ fn adb_live_node(b : @view.View, core : Core, view : () -> Json?, phone : () -> 
 /// of its own, as a device waiting for a workspace's lock has (@sf.waiting_page_node, the shield), with the one step
 /// this device takes there: be approved (发送批准请求: a code a trusted device of theirs shows, typed in here), or say
 /// whether their trusted devices set up again elsewhere are theirs.
-fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
+pub fn personal_lock_node(
+  b : @view.View,
+  core : Core,
+  p : () -> Json?,
+  outside_note? : () -> String = fn() { tr("android-misc.personal.outside.note") },
+  restart_note? : () -> String = fn() { tr("android-misc.personal.restart.note") },
+) -> Unit {
   let said = fn() { obj([("sub", str(text(p(), "sub")))]) }
   let doing = fn() { is_doing(core, ["adb.personalOpen", "adb.personalJoin", "adb.personalCode", "adb.personalForget", "adb.personalRestart"], []) }
   let primary = fn(at : @view.View, words : String, call : String) {
@@ -324,7 +330,7 @@ fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
     match standing {
       "outside" => {
         let state = fn() { text(field(p(), "pair"), "state") }
-        @sf.waiting_page_node(w, "shield-check", fn() { tr("android-misc.adb.lock.join") }, fn() { tr("android-misc.personal.outside.note") }, fn(col) {
+        @sf.waiting_page_node(w, "shield-check", fn() { tr("android-misc.adb.lock.join") }, outside_note, fn(col) {
           col.show(fn() { state() != "" && state() != "done" }, fn(j) { personal_join_node(j, core, p) })
           col.show(fn() { state() == "" || state() == "none" || state() == "failed" || state() == "done" }, fn(s) {
             primary(s, tr("web-pages.security.request"), "adb.personalJoin")
@@ -335,7 +341,7 @@ fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
               act(core, tr("android-misc.personal.restart"), "adb.personalRestart", @signals.untracked(said))
             }, tone=Ghost, disabled=doing)
             |> ignore
-            @sf.words_node(s, fn() { tr("android-misc.personal.restart.note") }, fn() { personal_note_centred })
+            @sf.words_node(s, restart_note, fn() { personal_note_centred })
             .words_centered(Is(true))
             |> ignore
           })

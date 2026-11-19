@@ -17,13 +17,12 @@ import { wall } from "../ops/fibers.ts";
 import { nowSecs } from "../ops/files.ts";
 import type { Accepted } from "../cloud/provider.ts";
 import { type Admitted, managesStation, readOnly, revoked, verifyMemberOf } from "./credential.ts";
-import { SeenDevices } from "./seen-devices.ts";
 import { foldChain, takeChain } from "./person-sync.ts";
 import { AT_ODDS } from "./person-chains.ts";
 import { MarkRefusal, stationMarksOf } from "./station-marks.ts";
 import { WaysRefusal, setRelays, setWay, waysOf as workspaceWaysOf } from "./ways.ts";
 import { join } from "node:path";
-import { FORK, NOT_GIVEN, meshDir, personChainsOf } from "../cloud/state.ts";
+import { FORK, NOT_GIVEN, meshDir, personChainsOf, seenDevicesOf } from "../cloud/state.ts";
 import { hashOf } from "../cloud/log-keep.ts";
 import { type Entry, LockRefusal, admit, admitPerson, asEntry, endpointProof, fold, lowerRole, personFold } from "../cloud/lock.ts";
 import type { Connection, Stream } from "./native.ts";
@@ -106,13 +105,9 @@ function broughtForState(hello: any, cloud: Cloud, workspace: string): boolean {
 /// moved workspace's state is made of them).
 export { personChainsOf };
 
-/// The members' devices that came to this station, by workspace (seen-devices.ts).
-const seens = new WeakMap<Cloud, SeenDevices>();
-export function seenDevicesOf(cloud: Cloud): SeenDevices {
-  let s = seens.get(cloud);
-  if (s === undefined) seens.set(cloud, (s = new SeenDevices(join(meshDir(cloud.data), "seen-devices.json"))));
-  return s;
-}
+/// The members' devices that came to this station, by workspace (seen-devices.ts; kept beside the Cloud: its vault's
+/// lock where the workspace is not in security mode names them, cloud/vault-lock.ts).
+export { seenDevicesOf };
 
 /// `ws` when it is a workspace the station joined, null for its home one (whose lock is the home's).
 const joinedOf = (cloud: Cloud, ws: string) => (ws && ws !== cloud.home() ? ws : null);

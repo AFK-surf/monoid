@@ -11,6 +11,7 @@ import { wall } from "../ops/fibers.ts";
 import { Browser } from "../browser/service.ts";
 import { Agents } from "../sessions/agents.ts";
 import { sender, senderTitleIfReady } from "../sessions/messages.ts";
+import { seenDevicesOf } from "../cloud/state.ts";
 import { ControlPlane, Events, Parts, Paths, Previous, Readers, Store } from "../services.ts";
 import { vaultTools } from "./tool.ts";
 import { SignIns } from "./signin.ts";
@@ -31,9 +32,13 @@ export const VaultLive = Layer.effectDiscard(
     const plane = yield* ControlPlane;
     const cloud = plane.state;
     const { hub, remote, cardOutcomes, pages } = yield* Agents;
-    // A workspace's lock: the home workspace's is the station's own (null), another's by its id.
-    const lock = (ws: string | null) => cloud.locked(ws === null || ws === cloud.home() ? null : ws)?.state ?? null;
     const vaults = vaultStore(store.db);
+    // The lock a workspace's vault goes by (Cloud `vaultLock`): its lock in force where it is in security mode, else its
+    // members' own locks; the home workspace's by null. A member who asks (`viewer`) is known by it from then on.
+    const lock = (ws: string | null, viewer?: { workspace: string; sub: string; email: string }) => {
+      if (viewer !== undefined) seenDevicesOf(cloud).remember(viewer.workspace, viewer.sub, viewer.email.toLowerCase());
+      return cloud.vaultLock(ws, vaults);
+    };
     // What the process before held may come until it is gone (it gives it as it begins to hand over).
     let coming = true;
     const previous = yield* Previous;
@@ -136,8 +141,8 @@ export const VaultLive = Layer.effectDiscard(
     }
     void previous.gone.then(came, came);
     parts.routes([
-      ...vaultRoutes({ vaults, lock: (ws) => lock(ws), events, beforeWrite: () => writes.wait(), boxed: (l, cert) => secrets.boxed(l, cert) }),
-      ...requestRoutes({ secrets, plain: secrets.plain, lock: (ws) => lock(ws), events }),
+      ...vaultRoutes({ vaults, lock: (ws, viewer) => lock(ws, viewer), events, beforeWrite: () => writes.wait(), boxed: (l, cert) => secrets.boxed(l, cert) }),
+      ...requestRoutes({ secrets, plain: secrets.plain, lock: (ws, viewer) => lock(ws, viewer), events }),
       ...signInRoutes(signIns),
     ]);
     parts.tools(vaultTools(secrets, (k) => store.getSession(k)?.workspace ?? null, signIns));

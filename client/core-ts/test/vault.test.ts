@@ -16,7 +16,7 @@ import { lockPartRoute, lockRoute } from "../../../station/src/mesh/serve.ts";
 import { deviceBuildsOf } from "../../../station/src/mesh/device-builds.ts";
 import { Core } from "../src/core.ts";
 import { apply as applyOps } from "../src/delta.ts";
-import { HostError } from "../src/error.ts";
+import { CoreError, HostError } from "../src/error.ts";
 import { jsonResponse } from "../src/testing.ts";
 import { t } from "../src/i18n.ts";
 import type { HttpRequest } from "../src/host.ts";
@@ -447,8 +447,6 @@ test("turning the lock off asks the person first; their no signs and sends nothi
 
 test("vault calls: set up, a vault of one's own, an item written, opened, unlocked a while", async () => {
   const r = await rig();
-  // No lock yet: refused, saying so.
-  await fails(r.ask("vault.setup", {}), "vault_needs_lock");
   r.putLock();
   const setup = await r.ask("vault.setup", {});
   assert.equal(setup.words.split(" ").length, 24);
@@ -965,8 +963,9 @@ test("a chat open before the lock it is answered by: as the lock's state comes (
     const r = await rig(web, false, cardsInChat());
     const chat = await r.watch(2, { topic: "chat", station: "ws/st", thread: 7 });
     const answers = () => chat().messages.filter((m: any) => m.card?.vaultAsk).map((m: any) => m.card.vaultAsk.answer);
-    // (no lock yet: the plain library's, approved anywhere)
-    assert.deepEqual(answers(), ["approve", "approve"], `${web ? "web" : "app"}: before`);
+    // (no lock yet: the person's own lock, begun nowhere: a secret to keep turns the vault on first; on a web page, the
+    // app's to approve, as with one)
+    assert.deepEqual(answers(), web ? ["elsewhere", "elsewhere"] : ["approve", "setUp"], `${web ? "web" : "app"}: before`);
     // The lock comes as a moved workspace's state does: made anew of what is held, the vaults told (views/lock.ts
     // `inForceOf`), nothing of the vaults written.
     r.core.inner.data.put("lock", "ws", r.lock);
@@ -2240,82 +2239,90 @@ test("a station without the lock pinned holds no vault, and says so", async () =
   r.core.close();
 });
 
-test("the plain library: no security mode, items kept on the station as they are, used by agents, moved into the vault once it is on", async () => {
-  const r = await rig();
+/// The rig with no safe mode: no workspace lock anywhere, station `S` (the station's own code, lockStation) keeping
+/// the person logs brought to it. `begun`: s1's own lock begun with this device on it (signing as this app's signer),
+/// pinned here and kept at `S`; else none of theirs anywhere, as for someone who never turned anything on.
+async function ownRig(o: { begun: boolean }) {
+  const r = await rig(false, false, {}, { stations: [{ id: S, name: "studio", online: true, last_seen: null }] });
+  const st = lockStation(r, false);
+  if (o.begun) {
+    const seed = fill(0x51);
+    const own = [signOn(seed, "person:s1", [], "genesis", { sub: "s1", device: { key: key(seed).id, id: "ab".repeat(32), label: "this", sign_key: r.me.signer!.id } })];
+    st.keepLog(own);
+    r.host.storage.set(`personal-lock-${hex(utf8("s1"))}`, utf8(JSON.stringify(own)));
+    r.host.storage.set("personal-signer-id", utf8(key(seed).id));
+    r.host.secure.set("personal-signer", { value: seed, user: true });
+  }
+  stationReplies(r.host, (req) => st.routed(req) ?? r.st.reply(req));
+  await r.restart();
+  // (this device's endpoint, as its mesh says it: what its own lock names it by as it is begun)
+  r.core.inner.mesh = () => Effect.succeed({ deviceId: () => "ab".repeat(32), sign: () => ({ publicKey: new Uint8Array(32), signature: new Uint8Array(64) }), link: () => Effect.fail(CoreError.plainly("mesh", "no station link here")) } as never);
+  await r.core.inner.runner.run(Effect.ignore(r.core.inner.adb.personal().refresh("s1")));
+  await r.host.time.pass(500, 10);
+  r.take();
+  return { ...r, station: st };
+}
+
+test("no safe mode: the vault is the person's own, encrypted; 开启 begins their own lock with this device on it, the vault in one press, and what a station kept unencrypted from before moved into it and deleted there", async () => {
+  const r = await ownRig({ begun: false });
+  // What a station kept of the plain library from before, as one keeps it.
+  r.st.plain.set("i_01JAPLAIN000000000000OLD1", { id: "i_01JAPLAIN000000000000OLD1", version: 0, kind: "token", name: "GitHub", fields: { value: "ghp_x" }, notes: "", listing: { name: "GitHub", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] }, at: 1000, owner: "a@x.com" });
   const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
   await r.host.time.pass(500);
   r.take();
-  assert.equal(vaults().plain, true);
-  assert.deepEqual(vaults().vaults.map((v: any) => [v.id, v.stationName, v.open]), [["plain", "studio", true]]);
-  const put = await r.ask("vault.putItem", { vault: "plain", plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } }, listing: { name: "GitHub", kind: "token", modes: ["proxy"], hosts: ["api.github.com"], env: "GH_TOKEN" } });
-  assert.equal(r.st.plain.get(put.id).fields.value, "ghp_x");
-  assert.equal(r.host.secureAsked.length, 0, "nothing asked of the person: nothing to unseal");
-  const shown = await r.watch(2, { topic: "vaultItems", workspace: "ws", vault: "plain" });
-  assert.deepEqual(shown().items.map((i: any) => [i.name, i.kind, i.listed, i.env]), [["GitHub", "token", true, "GH_TOKEN"]]);
-  assert.equal((await r.ask("vault.open", { item: put.id })).plain.fields.value, "ghp_x");
-  // What the pages say of it, the core's: its kind, how agents may ask for it and get it, its longest grant; opened, its
-  // fields as its page shows them; the library's at the settings' row.
-  assert.deepEqual(shown().items.map((i: any) => [i.kindText, i.agentText, i.lineText, i.howText, i.lastsText]), [
-    ["Token", "允许 agent 申请 · 代理 · api.github.com", "代理 · api.github.com · GH_TOKEN", "代理 · 限 api.github.com", "跟随默认 · 直到对话归档"],
-  ]);
-  const opened = await r.ask("vault.open", { item: put.id });
-  assert.deepEqual([opened.kindText, opened.shown], ["Token", [{ key: "value", label: "值", value: "ghp_x", secret: true, mono: true }]]);
-  assert.deepEqual(shown().items[0].shut.map((f: any) => [f.label, f.value.length]), [["值", 20]]);
-  assert.deepEqual([vaults().statusText, vaults().statusBad], ["1 条", false]);
-
-  // An agent asks: its owner approves, with nothing signed; the use shown on the item.
-  r.st.requests.push({ id: "r_p", ws: "ws", vault: "plain", item: put.id, session: "ember:s", chat: "", mode: "proxy", reason: "ci", hosts: ["api.github.com"], box: "", at: 1000, status: "pending" } as Request);
-  await r.ask("vault.approve", { request: "r_p", scope: "once" });
-  assert.deepEqual(r.st.plainGrants, [{ request: "r_p", scope: "once" }]);
-  // One it asks to keep: written by the station from what it holds, once its owner says so.
-  r.st.requests.push({ id: "r_k", ws: "ws", vault: "plain", item: "i_01JAKEEP0000000000000P1A1N", session: "ember:s", chat: "", mode: "env", reason: "slack", box: "", at: 1000, status: "pending", owner: "me@x.com", save: { kind: "token", name: "Slack", modes: ["env"], hosts: [] } } as Request);
-  await r.ask("vault.approve", { request: "r_k", scope: "once" });
-  assert.deepEqual(r.st.plainSaves, [{ request: "r_k" }]);
-  // One its owner types in: sent with what they typed, as the item's fields.
-  r.st.requests.push({ id: "r_t", ws: "ws", vault: "plain", item: "i_01JAKEEP0000000000000TYPED", session: "ember:s", chat: "", mode: "env", reason: "go", box: "", at: 1000, status: "pending", owner: "me@x.com", save: { kind: "token", name: "Go", modes: ["env"], hosts: [], typed: true } } as Request);
-  await fails(r.ask("vault.approve", { request: "r_t", scope: "once" }), "vault_typed_empty");
-  await r.ask("vault.approve", { request: "r_t", scope: "once", typed: { secret: "sk-go" } });
-  assert.deepEqual(r.st.plainSaves, [{ request: "r_k" }, { request: "r_t", fields: { value: "sk-go" } }]);
-  // The person's longest grant, told to the station keeping the library.
-  await r.ask("vault.setLasts", { vault: "plain", lasts: "hour" });
-  assert.equal(r.st.plainLasts.lasts, "hour");
-  assert.equal(vaults().vaults[0].lasts, "hour");
-  assert.deepEqual(r.st.grants, [], "no signed grant");
-  r.st.uses.push({ item: put.id, at: 1000, session: "ember:s", chatTitle: "修 CI", mode: "proxy", command: "gh pr list", hosts: ["api.github.com"], denied: false });
-  const used = await r.watch(3, { topic: "vaultUses", workspace: "ws", vault: "plain", item: put.id });
-  await r.host.time.pass(500);
-  r.take();
-  assert.deepEqual(used().uses.map((u: any) => [u.chatTitle, u.command, u.station, typeof u.at.ago]), [["修 CI", "gh pr list", "st", "string"]]);
-  assert.equal(shown().items[0].lastUse.command, "gh pr list");
-  // used: its line says when and in which chat, its use how
-  assert.equal(used().uses[0].howText, "gh pr list · 代理");
-  assert.match(shown().items[0].lineText, /^代理 · api\.github\.com · GH_TOKEN · .+在「修 CI」用过$/);
-
-  // Security mode on: the vault is the library; what was plain is counted, kept from new writes, and moved.
-  r.putLock();
-  r.st.plainLock.on = true;
-  await r.ask("vault.setup", {});
-  assert.equal(vaults().plain, undefined);
-  assert.equal(vaults().plainLeft, 1);
+  // Not safe mode, no lock of theirs: 开启 offered, the plain library shown nowhere.
+  assert.deepEqual([vaults().locked, vaults().canSign, vaults().setUp, vaults().plain, vaults().plainLeft], [false, true, false, undefined, 1]);
+  // Nothing plain is written any more.
   await fails(r.ask("vault.putItem", { vault: "plain", plain: { kind: "token", name: "x", fields: { value: "y" } } }), "vault_locked");
-  assert.deepEqual(await r.ask("vault.migrate", {}), { moved: 1, left: 0 });
-  assert.equal(r.st.plain.get(put.id).deleted, true);
-  const moved = [...r.st.items.values()];
-  assert.deepEqual(moved.map((i) => i.listing?.name), ["GitHub"]);
-  assert.equal(vaults().plainLeft, undefined);
+  const setup = await r.ask("vault.setup", {});
+  assert.equal(setup.words.split(" ").length, 24, "the recovery words, the first time");
+  // Their own lock begun, this device on it with its signer, kept at the station.
+  assert.equal(r.core.inner.adb.personal().standing("s1"), "member");
+  assert.equal(personChainsOf(r.station.c).of("s1").length, 1, "the station keeps their lock");
+  const v = r.st.vaults.get(setup.made)!;
+  assert.deepEqual([v.owner, v.members, v.keys.map((k) => k.cert.device)], ["s1", ["s1"], ["ab".repeat(32)]]);
+  // What was plain moved in, its key in hand (nobody asked again), and deleted where it was.
+  assert.equal(r.st.plain.get("i_01JAPLAIN000000000000OLD1").deleted, true);
+  assert.deepEqual([...r.st.items.values()].map((i) => [i.vault, i.listing?.name]), [[setup.made, "GitHub"]]);
+  assert.deepEqual([vaults().locked, vaults().canSign, vaults().setUp, vaults().plainLeft, vaults().vaults.length], [false, true, true, undefined, 1]);
   r.core.close();
+});
+
+test("no safe mode: one whose own lock is begun signs and reads the vault by it as in safe mode; a secret to keep turned down before any vault is on, with nothing to sign by but this app", async () => {
+  const r = await ownRig({ begun: true });
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.deepEqual([vaults().locked, vaults().canSign, vaults().setUp], [false, true, false]);
+  const { made } = await r.ask("vault.setup", {});
+  await r.ask("vault.putItem", { vault: made, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } }, listing: { name: "GitHub", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] } });
+  await r.ask("vault.lock", {});
+  // An agent asks: approved as a vault's request, sealed and signed (the box key read, the person asked).
+  const asked = r.host.secureAsked.length;
+  const [item] = [...r.st.items.values()];
+  r.st.requests.push({ id: "r_1", ws: "ws", vault: made, item: item!.id, session: "ember:s", chat: "", mode: "proxy", reason: "ci", hosts: ["api.github.com"], box: boxPublic(fill(21)), at: 1000, status: "pending" } as Request);
+  await r.ask("vault.approve", { request: "r_1", scope: "once" });
+  assert.equal(r.st.grants.length, 1, "a signed grant");
+  assert.ok(r.host.secureAsked.slice(asked).some((a) => a.key === BOX_KEY), "the box key read, the person asked");
+  assert.equal(r.st.plain.size, 0);
+  r.core.close();
+
+  // Someone with no lock of their own turning down a secret an agent asks to keep: signed by this app, no vault on.
+  const n = await ownRig({ begun: false });
+  n.st.requests.push({ id: "r_k", ws: "ws", vault: "", item: "i_01JAKEEP0000000000000P1A1N", session: "ember:s", chat: "", mode: "env", reason: "slack", box: "", at: 1000, status: "pending", owner: "a@x.com", save: { kind: "token", name: "Slack", modes: ["env"], hosts: [] } } as Request);
+  await n.ask("vault.deny", { request: "r_k" });
+  assert.equal(n.st.denials.length, 1);
+  assert.ok(signedOk(n.st.denials[0] as never, TAG.deny), "signed by this app's signer");
+  assert.equal(n.core.inner.adb.personal().standing("s1"), "none", "nothing begun for it");
+  n.core.close();
 });
 
 test("a file kept: its bytes in base64 under its name; opened, shown as its text, or as binary and its size; too big, refused; one an agent asks for, picked on its card", async () => {
   const r = await rig();
-  await r.watch(1, { topic: "vaults", workspace: "ws" });
-  await r.host.time.pass(500);
-  r.take();
+  r.putLock();
+  const { made } = await r.ask("vault.setup", {});
   const b64 = (b: Uint8Array | string) => Buffer.from(b).toString("base64");
   const yaml = "apiVersion: v1\nkind: Config\n";
-  const put = await r.ask("vault.putItem", { vault: "plain", plain: { kind: "file", name: "集群", fields: { content: b64(yaml), filename: "config" } }, listing: { name: "集群", kind: "file", modes: ["file"], hosts: [], env: "KUBECONFIG" } });
-  assert.deepEqual(r.st.plain.get(put.id).fields, { content: b64(yaml), filename: "config" });
-  const shown = await r.watch(2, { topic: "vaultItems", workspace: "ws", vault: "plain" });
+  const put = await r.ask("vault.putItem", { vault: made, plain: { kind: "file", name: "集群", fields: { content: b64(yaml), filename: "config" } }, listing: { name: "集群", kind: "file", modes: ["file"], hosts: [], env: "KUBECONFIG" } });
+  const shown = await r.watch(2, { topic: "vaultItems", workspace: "ws", vault: made });
   assert.deepEqual(shown().items.map((i: any) => [i.kindText, i.agentText, i.lineText]), [["文件", "允许 agent 申请 · 文件", "文件 · KUBECONFIG"]]);
   assert.deepEqual(shown().items[0].shut.map((f: any) => f.label), ["文件名", "内容"]);
   const opened = await r.ask("vault.open", { item: put.id });
@@ -2323,20 +2330,24 @@ test("a file kept: its bytes in base64 under its name; opened, shown as its text
     { key: "filename", label: "文件名", value: "config", secret: false, mono: false },
     { key: "content", label: "内容", value: yaml, secret: true, mono: true },
   ]]);
-  const p12 = await r.ask("vault.putItem", { vault: "plain", plain: { kind: "file", name: "证书", fields: { content: b64(new Uint8Array(3000).fill(0x80)), filename: "a.p12" } } });
+  const p12 = await r.ask("vault.putItem", { vault: made, plain: { kind: "file", name: "证书", fields: { content: b64(new Uint8Array(3000).fill(0x80)), filename: "a.p12" } } });
   assert.deepEqual((await r.ask("vault.open", { item: p12.id })).shown[1], { key: "content", label: "内容", value: "二进制 · 3 KB", secret: false, mono: false });
-  await fails(r.ask("vault.putItem", { vault: "plain", plain: { kind: "file", name: "大", fields: { content: b64(new Uint8Array(64 * 1024 + 1)) } } }), "vault_file_too_big");
-  await fails(r.ask("vault.putItem", { vault: "plain", plain: { kind: "file", name: "坏", fields: { content: "not base64" } } }), "invalid_params");
+  await fails(r.ask("vault.putItem", { vault: made, plain: { kind: "file", name: "大", fields: { content: b64(new Uint8Array(64 * 1024 + 1)) } } }), "vault_file_too_big");
+  await fails(r.ask("vault.putItem", { vault: made, plain: { kind: "file", name: "坏", fields: { content: "not base64" } } }), "invalid_params");
 
   // One an agent asks the person for: the file they picked, under the name the agent gave, else its own.
-  r.st.requests.push({ id: "r_f", ws: "ws", vault: "plain", item: "i_01JAKEEP00000000000000F11E", session: "ember:s", chat: "", mode: "file", reason: "go", box: "", at: 1000, status: "pending", owner: "me@x.com", save: { kind: "file", name: "SA", modes: ["file"], hosts: [], typed: true } } as Request);
+  const asked = { id: "r_f", ws: "ws", vault: "", item: "i_01JAKEEP00000000000000F11E", session: "ember:s", chat: "", mode: "file", reason: "go", box: boxPublic(fill(9)), at: 1000, status: "pending", owner: "a@x.com", save: { kind: "file", name: "SA", modes: ["file"], hosts: [], typed: true } } as Request;
+  r.st.requests.push(asked);
+  r.push("vault-request", asked);
+  await r.host.time.pass(500);
+  r.take();
   await fails(r.ask("vault.approve", { request: "r_f", typed: { secret: b64(new Uint8Array(64 * 1024 + 1)), filename: "sa.json" } }), "vault_file_too_big");
   await r.ask("vault.approve", { request: "r_f", typed: { secret: b64("{}"), filename: "sa.json" } });
-  assert.deepEqual(r.st.plainSaves.at(-1), { request: "r_f", fields: { content: b64("{}"), filename: "sa.json" } });
+  assert.deepEqual((await r.ask("vault.open", { item: "i_01JAKEEP00000000000000F11E" })).plain.fields, { content: b64("{}"), filename: "sa.json" });
   r.core.close();
 });
 
-test("turning the lock off: the person's own secrets opened first (asked once), then written into the plain library once it is off", async () => {
+test("turning the lock off: asked once, for the entry alone; nobody's vault opened or written out unencrypted, each still encrypted at its stations", async () => {
   const r = await rig();
   r.putLock();
   const { made } = await r.ask("vault.setup", {});
@@ -2351,19 +2362,13 @@ test("turning the lock off: the person's own secrets opened first (asked once), 
     r.lock.head = { ...r.lock.head, seq: r.lock.entries.length - 1, hash: entryHash(r.lock.entries.at(-1)!) };
     return { ok: true };
   });
-  r.st.plainLock.on = true;
   const asked = r.host.secureAsked.length;
   await r.ask("lock.disable", {});
-  // (asked once, the vault's prompt saying it turns security mode off: no second prompt after it, as there was, two in a
-  // row for one tap, till the end-to-end flow on Android found it)
-  assert.deepEqual(r.host.secureAsked.slice(asked).map((a) => [a.key, a.reason]), [[BOX_KEY, t("core-misc.lock.reason.disable")]]);
-  // The station hears the lock is off a little later: tried again until it takes it.
-  assert.equal(r.st.plain.size, 0);
-  r.st.plainLock.on = false;
+  assert.deepEqual(r.host.secureAsked.slice(asked).map((a) => [a.key, a.reason]), [["", t("core-misc.lock.reason.disable")]], "asked once, no box key read");
   r.putLock();
   await r.host.time.pass(5000, 1000);
-  const back = [...r.st.plain.values()];
-  assert.deepEqual(back.map((i) => [i.name, i.fields.value, i.listing?.hosts]), [["GitHub", "ghp_x", ["api.github.com"]]]);
+  assert.equal(r.st.plain.size, 0, "nothing in the plain library");
+  assert.deepEqual([...r.st.items.values()].map((i) => [i.vault, i.listing?.name]), [[made, "GitHub"]], "the vault's item as it was, encrypted");
   r.core.close();
 });
 
@@ -2378,12 +2383,12 @@ test("turning the lock off: the person's own secrets opened first (asked once), 
 /// log as kept there.
 let clock = () => 0;
 mock.method(wall, "now", () => clock());
-function lockStation(r: Awaited<ReturnType<typeof rig>>) {
+function lockStation(r: Awaited<ReturnType<typeof rig>>, locked = true) {
   clock = () => r.host.nowMs();
   const data = mkdtempSync(join(tmpdir(), "vault-lock-"));
   writeState(data, { origin: "https://stillfail.test", station: S, workspace: "ws", workspace_name: "W", name: "studio", relay_url: "", relay_urls: [], grant_keys: { keys: [] }, peers: [{ id: S, name: "studio" }], revocations: [] } as never);
   const c = new Cloud(data, false);
-  c.takeLock(r.lock.entries as unknown as StationEntry[]);
+  if (locked) c.takeLock(r.lock.entries as unknown as StationEntry[]);
   const viewer = { sub: "s1", email: "a@x.com", name: "s1", role: "owner", workspace: "ws", device: "ab".repeat(32) };
   const routed = (req: HttpRequest): unknown => {
     const url = new URL(req.url);
@@ -2505,16 +2510,20 @@ async function movedRig(secret: boolean, o: { signKey?: boolean; phone?: boolean
   };
 }
 
-test("a moved workspace turned off, the person with a secret of their own: it opened first, then off signed in their own log (asked twice, in that order), the secret in the plain library after", async () => {
+test("a moved workspace turned off: asked once, for `off` alone; the vault stays encrypted and goes on by the person's own lock as it was, nothing written in plain text", async () => {
   const r = await movedRig(true);
   const f = inForceOf(r.core.inner, "ws");
-  assert.equal(f.said, "on", `the moved workspace on: ${JSON.stringify({ said: f.said, root: f.root, pinned: r.core.inner.adb.personal().pinnedOf("s1").length, owner: r.core.inner.workspaces.owner("ws"), last: (r.core.inner.data.record("lock", "ws") as { entries: Entry[] }).entries.at(-1)?.kind, why: (f as { why?: unknown }).why })}`);
+  assert.equal(f.said, "on", "the moved workspace on");
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
   const asked = r.host.secureAsked.length;
   await r.ask("lock.disable", {});
-  assert.deepEqual(r.host.secureAsked.slice(asked).map((a) => [a.key, a.reason]), [[BOX_KEY, t("core-misc.lock.reason.disable")], ["personal-signer", t("core-misc.lock.reason.disable")]]);
+  assert.deepEqual(r.host.secureAsked.slice(asked).map((a) => [a.key, a.reason]), [["personal-signer", t("core-misc.lock.reason.disable")]]);
   assert.equal(inForceOf(r.core.inner, "ws").said, "off", "off");
   await r.host.time.pass(5000, 1000);
-  assert.deepEqual([...r.st.plain.values()].map((i) => [i.name, i.fields.value]), [["GitHub", "ghp_x"]], "the secret in the plain library");
+  r.take();
+  assert.equal(r.st.plain.size, 0, "nothing in the plain library");
+  // (no safe mode now: the same vault, read and signed by the person's own lock, no setting up again)
+  assert.deepEqual([vaults().locked, vaults().canSign, vaults().setUp, vaults().vaults.length], [false, true, true, 1]);
   r.core.close();
 });
 

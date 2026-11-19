@@ -9,7 +9,7 @@
 /// vault, browser, drive, terminals or logins).
 pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
   let host = bus.host
-  let cloud : P54Cloud = { locks: Map([]), memberships: [] }
+  let cloud = P54Cloud::new()
   p54_cloud_refresh(bus, cloud) catch {
     _ => ()
   }

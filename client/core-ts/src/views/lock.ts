@@ -42,7 +42,7 @@ import type { SpanContext } from "../trace.ts";
 import { equal, get, hex, isObject, sha256, utf8 } from "../util.ts";
 import { type Checked, checkLock, lockChain, signerIn } from "../vault/lock-check.ts";
 import { AGAIN_MOST, againOf, hashOf, keep, links } from "../lock-keep.ts";
-import { levelVaults, levelVaultsOf, tookOut, tookOutMoved, unsealOwn, vaultAsks, vaultCome, writePlain } from "./vault.ts";
+import { levelVaults, levelVaultsOf, tookOut, tookOutMoved, vaultAsks, vaultCome } from "./vault.ts";
 import { laterSleep } from "../runtime.ts";
 import { Marks } from "../reactive.ts";
 import { ofAddress } from "../workspace.ts";
@@ -531,6 +531,12 @@ export function safeMode(inner: Inner, ws: string): boolean {
 }
 
 const SAFE = "lockSafe";
+
+/// Whether `ws` is in safe mode by the lock held now (`safeHeld`), never by what was kept of it (`lockSafe`): what
+/// the vault goes by (views/vault.ts `lockOf`), which reads the lock held anyway. The cloud's word only where none is.
+export function safeNow(inner: Inner, ws: string): boolean {
+  return safeHeld(inner, ws) ?? get(view(inner, ws), "locked") === true;
+}
 
 /// Whether `ws` is in safe mode by the lock held (null: none held on, the view's word then).
 function safeHeld(inner: Inner, ws: string): boolean | null {
@@ -1801,7 +1807,9 @@ export function takeOffBound(inner: Inner, sub: string, id: string): Effect.Effe
       // before a move (`Lock.append`'s `tookOut`). Left for the key's next unsealing, a device of theirs approved or
       // begun anew after it was not shown the vault at all, nor given its key (2026-11-14, the locks' end to end after
       // #6102: a vault never opened again stayed hidden on every new device, and setting one up made an empty 个人).
-      if (owner === sub && movedHere(inner, ws)) {
+      // So where the workspace is in no safe mode: its vaults go by the person's own lock alone (views/vault.ts
+      // `personalLockOf`), keyed anew as it is taken off there.
+      if (owner === sub && (movedHere(inner, ws) || !safeNow(inner, ws))) {
         tookOutMoved(inner, ws, id);
         continue;
       }
@@ -3189,7 +3197,7 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
           // `takeOffBound` does: `tookOutMoved`)
           result = yield* Effect.tap(inner.adb.personal().removeCarried(d.sub, param("device"), d.label, actText({ act: "removeDevice", name })), () =>
             Effect.sync(() => {
-              for (const [ws, owner] of inner.workspaces.owned()) if (owner === d.sub && movedHere(inner, ws)) tookOutMoved(inner, ws, param("device"));
+              for (const [ws, owner] of inner.workspaces.owned()) if (owner === d.sub && (movedHere(inner, ws) || !safeNow(inner, ws))) tookOutMoved(inner, ws, param("device"));
               touch(inner, c.workspace);
             }));
           break;
@@ -3199,25 +3207,16 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
         break;
       }
       case "disable": {
-        // (where the chain moved: an `off` in the root's own log, by its person alone; their own secrets opened first, as
-        // below, then `off` signed, which asks again: two asks there, for the person's own lock asks each time it is used
-        // and one ask for both needs the host to open two sealed values under one prompt, which it does not)
+        // Off, the vaults stay as they are, encrypted and kept by each person's own devices (station/src/cloud/
+        // vault-lock.ts): nothing is opened or written out unencrypted, and on again later they go on as they were.
+        // (where the chain moved: an `off` in the root's own log, by its person alone, which asks them once)
         if (movedHere(inner, c.workspace)) {
           yield* offAllowed(inner, sub, c.workspace);
-          const secrets = yield* unsealOwn(inner, c.workspace, t("core-misc.lock.reason.disable"));
           result = yield* onOffMoved(inner, sub, c.workspace, false);
-          if (secrets.length > 0) inner.runner.fork(writePlain(inner, c.workspace, secrets));
           break;
         }
-        // The person's own secrets opened while the lock still says whose they are ( 一个库): once it is
-        // off they go into the plain library, as the dialog said. Turned down there, nothing is turned off.
-        // (the person asked once, for this: the box key's prompt says it, the vaults' keys unsealed with it; asked by
-        // itself only where none was needed. Two prompts in a row for one tap: found on Android, 2026-11-05)
-        let asked = false;
-        const secrets = yield* unsealOwn(inner, c.workspace, t("core-misc.lock.reason.disable"), () => (asked = true));
-        if (!asked) yield* askPerson(inner, t("core-misc.lock.reason.disable"));
+        yield* askPerson(inner, t("core-misc.lock.reason.disable"));
         result = yield* lock.append("disable", {});
-        if (secrets.length > 0) inner.runner.fork(writePlain(inner, c.workspace, secrets));
         break;
       }
       // The chain handed over to its people's own logs: where chains are handed over by themselves (`handsOver`; it moves
