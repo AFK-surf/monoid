@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
 | [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
 | [a1159d02f](https://github.com/AFK-surf/monoid/commit/a1159d02fe8a0d89eb6b1cea188d9181b9643eee) refactor(station): type cross-slice asks as LiveBu | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.54 | 125.05 |
 | [a0d09c1b9](https://github.com/AFK-surf/monoid/commit/a0d09c1b9c81b30482ccce2321403095672b0988) fix(mbui): let go of an old view's focus while its | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.22 | 65.25 | 97.67 | 117.03 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ec9e9f6f2](https://github.com/AFK-surf/monoid/commit/ec9e9f6f20f0209da00a86f857d72b87df303b79) ci(mbui): build mbui's Windows natives with Visual | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.4 | 117.32 |
 | [4be060501](https://github.com/AFK-surf/monoid/commit/4be0605015e0b741854fc312f55db17377595599) feat(group): relay a chat to a group space, and pu | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.26 | 126.19 |
 | [cbab7545c](https://github.com/AFK-surf/monoid/commit/cbab7545c645362f30c5efb6e5e89a6344ce9a6d) feat(screens): show apps' own pointers on remote M | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.26 | 126.19 |
-| [3b2a399ea](https://github.com/AFK-surf/monoid/commit/3b2a399ea81f1dc80ee9339c171a4721cdd6e27b) ci(mbui): key Linux unit stores by the compiler, n | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.47 | 119.09 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
 | [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
 | [a1159d02f](https://github.com/AFK-surf/monoid/commit/a1159d02fe8a0d89eb6b1cea188d9181b9643eee) refactor(station): type cross-slice asks as LiveBu | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
 | [a0d09c1b9](https://github.com/AFK-surf/monoid/commit/a0d09c1b9c81b30482ccce2321403095672b0988) fix(mbui): let go of an old view's focus while its | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ec9e9f6f2](https://github.com/AFK-surf/monoid/commit/ec9e9f6f20f0209da00a86f857d72b87df303b79) ci(mbui): build mbui's Windows natives with Visual | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
 | [4be060501](https://github.com/AFK-surf/monoid/commit/4be0605015e0b741854fc312f55db17377595599) feat(group): relay a chat to a group space, and pu | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
 | [cbab7545c](https://github.com/AFK-surf/monoid/commit/cbab7545c645362f30c5efb6e5e89a6344ce9a6d) feat(screens): show apps' own pointers on remote M | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.08 |
-| [3b2a399ea](https://github.com/AFK-surf/monoid/commit/3b2a399ea81f1dc80ee9339c171a4721cdd6e27b) ci(mbui): key Linux unit stores by the compiler, n | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.08 |
