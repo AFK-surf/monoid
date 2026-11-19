@@ -148,10 +148,13 @@ jobs:
             echo "missing_win_list=$missing_win" >> "$GITHUB_OUTPUT"
           fi
           # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
-          # mesh or shell-apple (cold builds there took 228 and 323 s before packing). A branch's reader goes on
-          # macos-26: station/mb/build.sh compiles it -O0 there (about 25 s), its units kept by mbui-reader-mac-. The
-          # lighter parts and every run while vars.MINI1 is 'off' use macos-26.
-          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple):darwin-arm64$'; }; then
+          # mesh, shell-apple or the reader (cold builds of the first two there took 228 and 323 s before packing; with
+          # station/mb at 71 thousand functions the reader's cold build on macos-26, 8 MB units at -O0, came to
+          # 248-260 s, moon 120, mbc's split 32, its C 91, cut at the job's five minutes, #7390, and a branch's units
+          # there were evicted from the Actions cache within 17 minutes; Mini1's MBC_STORE stays on its disk, main's
+          # whole build 111 s). The lighter parts use macos-26, and every run while vars.MINI1 is 'off' (a branch's
+          # reader then in 8 MB units with moonbit_init one unit, kept by mbui-reader-mac-branch-v2-).
+          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple|reader):darwin-arm64$'; }; then
             echo 'natives_mac_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_mac_runner="macos-26"' >> "$GITHUB_OUTPUT"
