@@ -20,6 +20,14 @@ pub fn split_by(String, (Int32) -> Bool) -> Array[String]
 
 pub fn trim(String) -> String
 
+pub fn trim_end(String) -> String
+
+pub fn trim_end_white(String) -> String
+
+pub fn trim_start(String) -> String
+
+pub fn trim_start_white(String) -> String
+
 pub fn trim_white(String) -> String
 
 // Errors

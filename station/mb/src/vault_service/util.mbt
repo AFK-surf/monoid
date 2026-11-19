@@ -227,11 +227,7 @@ fn without(o : Json, k : String) -> Json {
 ///|
 /// `Number.isSafeInteger(v)`.
 fn safe_int(v : Json?) -> Bool {
-  match v {
-    Some(Number(n, ..)) =>
-      n == n.floor() && n.abs() <= 9007199254740991.0 && !n.is_nan()
-    _ => false
-  }
+  v is Some(Number(n, ..)) && @jsjson.is_safe_integer(n)
 }
 
 ///|
@@ -255,31 +251,13 @@ fn js_text(v : Json?) -> String {
 ///|
 /// `s.trim()`: JS's white space at both ends taken off.
 fn trim(s : String) -> String {
-  let mut a = 0
-  let mut b = s.length()
-  while a < b && js_space(s.code_unit_at(a).to_int()) {
-    a += 1
-  }
-  while b > a && js_space(s.code_unit_at(b - 1).to_int()) {
-    b -= 1
-  }
-  s.unsafe_substring(start=a, end=b)
+  @jscase.trim(s)
 }
 
 ///|
 /// JS's white space and line terminators (`\s`).
 fn js_space(c : Int) -> Bool {
-  c == 0x20 ||
-  (c >= 0x09 && c <= 0x0d) ||
-  c == 0xa0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000 ||
-  c == 0xfeff
+  @jscase.is_space(c)
 }
 
 ///|
@@ -297,18 +275,7 @@ fn upper(s : String) -> String {
 ///|
 /// `s.slice(a, b)` by UTF-16 units, as JS slices.
 fn slice(s : String, a : Int, b? : Int) -> String {
-  let n = s.length()
-  let norm = (i : Int) => if i < 0 { (n + i).max(0) } else { i.min(n) }
-  let from = norm(a)
-  let to = match b {
-    Some(x) => norm(x)
-    None => n
-  }
-  if to <= from {
-    ""
-  } else {
-    s.unsafe_substring(start=from, end=to)
-  }
+  @jsjson.js_slice(s, a, end?=b)
 }
 
 ///|
@@ -333,35 +300,16 @@ fn ends(s : String, t : String) -> Bool {
 /// `s.split(sep).join(by)`: every `sep` in `s` replaced.
 fn replace_all(s : String, sep : String, by : String) -> String {
   if sep == "" {
-    return s
+    s
+  } else {
+    s.replace_all(old=sep, new=by)
   }
-  let b = StringBuilder()
-  let mut i = 0
-  let n = s.length()
-  let m = sep.length()
-  while i < n {
-    if i + m <= n && s.unsafe_substring(start=i, end=i + m) == sep {
-      b.write_string(by)
-      i += m
-    } else {
-      b.write_char(s.code_unit_at(i).to_int().unsafe_to_char())
-      i += 1
-    }
-  }
-  b.to_string()
 }
 
 ///|
 /// `xs.join(sep)`.
 fn join(xs : Array[String], sep : String) -> String {
-  let b = StringBuilder()
-  for i, x in xs {
-    if i > 0 {
-      b.write_string(sep)
-    }
-    b.write_string(x)
-  }
-  b.to_string()
+  xs.join(sep)
 }
 
 ///|
@@ -381,22 +329,14 @@ fn uniq(xs : Array[String]) -> Array[String] {
 ///|
 /// JS's `<` of two strings: by UTF-16 code units.
 fn str_lt(a : String, b : String) -> Bool {
-  let n = a.length().min(b.length())
-  for i in 0..<n {
-    let x = a.code_unit_at(i).to_int()
-    let y = b.code_unit_at(i).to_int()
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
+  @jsjson.js_compare(a, b) < 0
 }
 
 ///|
 /// The strings sorted as JS's default sort sorts them.
 fn sorted(xs : Array[String]) -> Array[String] {
   let c = xs.copy()
-  c.sort_by((a, b) => if str_lt(a, b) { -1 } else if a == b { 0 } else { 1 })
+  c.sort_by((a, b) => @jsjson.js_compare(a, b))
   c
 }
 

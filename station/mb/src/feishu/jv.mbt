@@ -15,112 +15,31 @@ pub using @jsjson {
   jstr,
   jnumber,
   jitems,
+  jat,
+  jput,
+  jdelete,
+  jkeys,
+  jvalues,
+  jv_parse_raw as parse,
+  try_parse_raw as try_parse,
+  jv_stringify as stringify,
+  jv_js_string as js_string,
+  is_object as is_record,
+  is_finite,
+  js_number,
+  js_round,
   points,
   num_text,
   trim_js,
 }
 
 ///|
-/// A JavaScript value as this package reads it: a lone surrogate of a string kept.
-fn of_js(v : @jsjson.JValue) -> JV {
-  match v {
-    Null => Null
-    Bool(b) => Bool(b)
-    Num(n) => Num(n)
-    Str(u) => Str(@jsjson.raw_text(u))
-    Arr(a) => Arr(a.map(of_js))
-    Obj(f) => Obj(f.map(p => (@jsjson.raw_text(p.0), of_js(p.1))))
-  }
-}
+using @jsjson {index_key}
 
 ///|
-/// JSON.parse(text).
-pub fn parse(text : String) -> JV raise @jsjson.SyntaxError {
-  of_js(@jsjson.parse(text))
-}
-
-///|
-/// JSON.parse, None where it throws.
-pub fn try_parse(text : String) -> JV? {
-  Some(parse(text)) catch {
-    _ => None
-  }
-}
-
-///|
-/// JSON.stringify(v).
-pub fn stringify(v : JV) -> String {
-  @jsjson.stringify(JV::to_js(v))
-}
-
-///|
-/// `v?.[i]` of an array.
-pub fn jat(v : JV?, i : Int) -> JV? {
-  match v {
-    Some(Arr(a)) if i >= 0 && i < a.length() => Some(a[i])
-    _ => None
-  }
-}
-
-///|
-/// A canonical array index (`0`, `12`, not `012`): what JavaScript puts first in an object, ascending.
-fn index_key(k : String) -> Double? {
-  if k.length() == 0 || k.length() > 10 {
-    return None
-  }
-  if k.length() > 1 && k.unsafe_charcode_at(0) == '0' {
-    return None
-  }
-  let mut n = 0.0
-  for i in 0..<k.length() {
-    let c = k.unsafe_charcode_at(i)
-    if c < '0' || c > '9' {
-      return None
-    }
-    n = n * 10.0 + (c - '0').to_double()
-  }
-  if n > 4294967294.0 {
-    None
-  } else {
-    Some(n)
-  }
-}
-
-///|
-/// `o[k] = v` in place (an object's own array): where it was, else where JavaScript puts a new key.
-pub fn jput(o : JV, k : String, v : JV) -> Unit {
-  guard o is Obj(fields) else { return }
-  for i in 0..<fields.length() {
-    if fields[i].0 == k {
-      fields[i] = (k, v)
-      return
-    }
-  }
-  match index_key(k) {
-    Some(n) => {
-      let mut at = 0
-      while at < fields.length() {
-        match index_key(fields[at].0) {
-          Some(m) if m < n => at += 1
-          _ => break
-        }
-      }
-      fields.insert(at, (k, v))
-    }
-    None => fields.push((k, v))
-  }
-}
-
-///|
-/// `delete o[k]` in place.
-pub fn jdelete(o : JV, k : String) -> Unit {
-  guard o is Obj(fields) else { return }
-  for i in 0..<fields.length() {
-    if fields[i].0 == k {
-      fields.remove(i) |> ignore
-      return
-    }
-  }
+pub using @jscase {
+  is_space as is_js_space,
+  trim_end as trim_end_js,
 }
 
 ///|
@@ -137,48 +56,12 @@ pub fn jobj(fields : Array[(String, JV?)]) -> JV {
 }
 
 ///|
-/// An object's keys as `Object.keys` gives them: integer-like ones first, ascending.
-pub fn jkeys(v : JV) -> Array[String] {
-  match v {
-    Obj(f) => {
-      let indexed = f.filter(e => index_key(e.0) is Some(_))
-      indexed.sort_by((a, b) => index_key(a.0).unwrap().compare(index_key(b.0).unwrap()))
-      (indexed + f.filter(e => index_key(e.0) is None)).map(e => e.0)
-    }
-    _ => []
-  }
-}
-
-///|
-/// `Object.values(v)` (of an object, an array, a string; nothing of anything else).
-pub fn jvalues(v : JV) -> Array[JV] {
-  match v {
-    Obj(_) => jkeys(v).map(k => v.get(k).unwrap())
-    Arr(a) => a
-    Str(s) => {
-      let out = []
-      for i in 0..<s.length() {
-        out.push(JV::Str(s.unsafe_substring(start=i, end=i + 1)))
-      }
-      out
-    }
-    _ => []
-  }
-}
-
-///|
 /// `text(v)`: the string it is, else "".
 pub fn text(v : JV?) -> String {
   match v {
     Some(Str(s)) => s
     _ => ""
   }
-}
-
-///|
-/// `v !== null && typeof v === "object" && !Array.isArray(v)`.
-pub fn is_record(v : JV?) -> Bool {
-  v is Some(Obj(_))
 }
 
 ///|
@@ -197,251 +80,31 @@ pub fn nullish(v : JV?, fallback : JV) -> JV {
 }
 
 ///|
-/// `String(v)` of a value (undefined: None).
-pub fn js_string(v : JV?) -> String {
-  match v {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(Bool(b)) => if b { "true" } else { "false" }
-    Some(Num(d)) => num_text(d)
-    Some(Str(s)) => s
-    Some(Arr(items)) =>
-      items
-      .map(x => match x {
-        Null => ""
-        _ => js_string(Some(x))
-      })
-      .join(",")
-    Some(Obj(_)) => "[object Object]"
-  }
-}
-
-///|
-/// JavaScript's white space and line terminators (`String.prototype.trim`, a regular expression's `\s`).
-pub fn is_js_space(c : Int) -> Bool {
-  c == 0x09 ||
-  c == 0x0a ||
-  c == 0x0b ||
-  c == 0x0c ||
-  c == 0x0d ||
-  c == 0x20 ||
-  c == 0xa0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000 ||
-  c == 0xfeff
-}
-
-///|
-/// `s.trimEnd()`.
-pub fn trim_end_js(s : String) -> String {
-  let mut b = s.length()
-  while b > 0 && is_js_space(s.unsafe_charcode_at(b - 1)) {
-    b -= 1
-  }
-  s.unsafe_substring(start=0, end=b)
-}
-
-///|
 /// `s.slice(a, b)` by code units, as JavaScript clamps it.
 pub fn slice_js(s : String, a : Int, b? : Int = s.length()) -> String {
-  let n = s.length()
-  let from = if a < 0 { @cmp.maximum(0, n + a) } else { @cmp.minimum(a, n) }
-  let to = if b < 0 { @cmp.maximum(0, n + b) } else { @cmp.minimum(b, n) }
-  if to <= from {
-    ""
-  } else {
-    s.unsafe_substring(start=from, end=to)
-  }
+  @jsjson.js_slice(s, a, end=b)
 }
 
 ///|
 /// `a.split(sep).join(by)` (sep not empty): every occurrence, left to right.
 pub fn replace_every(a : String, sep : String, by : String) -> String {
   if sep == "" {
-    return a
+    a
+  } else {
+    a.replace_all(old=sep, new=by)
   }
-  let out = StringBuilder::new()
-  let mut i = 0
-  let n = a.length()
-  let m = sep.length()
-  while i < n {
-    if i + m <= n && a.unsafe_substring(start=i, end=i + m) == sep {
-      out.write_string(by)
-      i += m
-    } else {
-      out.write_char(a.unsafe_charcode_at(i).unsafe_to_char())
-      i += 1
-    }
-  }
-  out.to_string()
 }
 
 ///|
 /// `s.startsWith(p)`.
 pub fn starts(s : String, p : String) -> Bool {
-  s.length() >= p.length() && s.unsafe_substring(start=0, end=p.length()) == p
+  s.has_prefix(p)
 }
 
 ///|
 /// `s.includes(p)`.
 pub fn has(s : String, p : String) -> Bool {
-  if p == "" {
-    return true
-  }
-  let n = s.length()
-  let m = p.length()
-  let mut i = 0
-  while i + m <= n {
-    if s.unsafe_substring(start=i, end=i + m) == p {
-      return true
-    }
-    i += 1
-  }
-  false
-}
-
-///|
-/// Number(s) as JavaScript reads a string (white space trimmed, "" is 0, hex/octal/binary, Infinity; else NaN).
-pub fn js_number(s : String) -> Double {
-  let t = trim_js(s)
-  if t == "" {
-    return 0.0
-  }
-  if t == "Infinity" || t == "+Infinity" {
-    return @double.infinity
-  }
-  if t == "-Infinity" {
-    return @double.neg_infinity
-  }
-  if t.length() > 2 && t.unsafe_charcode_at(0) == '0' {
-    let base = match t.unsafe_charcode_at(1) {
-      'x' | 'X' => 16
-      'o' | 'O' => 8
-      'b' | 'B' => 2
-      _ => 0
-    }
-    if base > 0 {
-      let mut n = 0.0
-      for i in 2..<t.length() {
-        let c = t.unsafe_charcode_at(i)
-        let d = if c >= '0' && c <= '9' {
-          c - '0'
-        } else if c >= 'a' && c <= 'z' {
-          c - 'a' + 10
-        } else if c >= 'A' && c <= 'Z' {
-          c - 'A' + 10
-        } else {
-          99
-        }
-        if d >= base {
-          return @double.not_a_number
-        }
-        n = n * base.to_double() + d.to_double()
-      }
-      return n
-    }
-  }
-  // a decimal: [+-] digits [. digits] [e [+-] digits]
-  let mut i = 0
-  if t.unsafe_charcode_at(0) == '+' || t.unsafe_charcode_at(0) == '-' {
-    i = 1
-  }
-  let mut seen = false
-  while i < t.length() &&
-        t.unsafe_charcode_at(i) >= '0' &&
-        t.unsafe_charcode_at(i) <= '9' {
-    i += 1
-    seen = true
-  }
-  if i < t.length() && t.unsafe_charcode_at(i) == '.' {
-    i += 1
-    while i < t.length() &&
-          t.unsafe_charcode_at(i) >= '0' &&
-          t.unsafe_charcode_at(i) <= '9' {
-      i += 1
-      seen = true
-    }
-  }
-  if !seen {
-    return @double.not_a_number
-  }
-  if i < t.length() &&
-    (t.unsafe_charcode_at(i) == 'e' || t.unsafe_charcode_at(i) == 'E') {
-    let mut j = i + 1
-    if j < t.length() &&
-      (t.unsafe_charcode_at(j) == '+' || t.unsafe_charcode_at(j) == '-') {
-      j += 1
-    }
-    let from = j
-    while j < t.length() &&
-          t.unsafe_charcode_at(j) >= '0' &&
-          t.unsafe_charcode_at(j) <= '9' {
-      j += 1
-    }
-    if j == from {
-      return @double.not_a_number
-    }
-    i = j
-  }
-  if i != t.length() {
-    return @double.not_a_number
-  }
-  // JSON's reader reads the same decimal text exactly (a leading + and a bare `.5` or `5.` aside)
-  let mut body = t
-  let neg = body.unsafe_charcode_at(0) == '-'
-  if body.unsafe_charcode_at(0) == '+' || neg {
-    body = body.unsafe_substring(start=1, end=body.length())
-  }
-  if body.unsafe_charcode_at(0) == '.' {
-    body = "0" + body
-  }
-  body = body.replace_all(old=".e", new=".0e").replace_all(old=".E", new=".0E")
-  if body.has_suffix(".") {
-    body = body + "0"
-  }
-  // (leading zeros JSON refuses: "007" is 7)
-  let mut z = 0
-  while z + 1 < body.length() &&
-        body.unsafe_charcode_at(z) == '0' &&
-        body.unsafe_charcode_at(z + 1) >= '0' &&
-        body.unsafe_charcode_at(z + 1) <= '9' {
-    z += 1
-  }
-  body = body.unsafe_substring(start=z, end=body.length())
-  let v = match try_parse(body) {
-    Some(Num(n)) => n
-    _ => @double.not_a_number
-  }
-  if neg {
-    -v
-  } else {
-    v
-  }
-}
-
-///|
-/// Number.isFinite.
-pub fn is_finite(d : Double) -> Bool {
-  !d.is_nan() && !d.is_inf()
-}
-
-///|
-/// Math.round: half way up, toward +∞.
-pub fn js_round(d : Double) -> Double {
-  if !is_finite(d) {
-    return d
-  }
-  let f = d.floor()
-  if d - f >= 0.5 {
-    f + 1.0
-  } else {
-    f
-  }
+  s.contains(p)
 }
 
 ///|

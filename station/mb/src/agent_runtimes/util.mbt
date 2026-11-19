@@ -21,45 +21,39 @@ fn t(s : Array[Int]) -> String {
 
 ///|
 fn js(s : String) -> J {
-  Str(u(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 fn num(n : Double) -> J {
-  Num(n)
+  @jsjson.JValue::of_double(n)
 }
 
 ///|
 fn int(n : Int) -> J {
-  Num(n.to_double())
+  @jsjson.JValue::of_int(n)
 }
 
 ///|
 fn obj(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (u(f.0), f.1)))
+  @jsjson.JValue::of_object(fields)
 }
 
 ///|
 fn arr_of(items : Array[String]) -> J {
-  Arr(items.map(js))
+  @jsjson.JValue::of_strings(items)
 }
 
 ///|
 /// `v?.name`.
 fn get(v : J?, name : String) -> J? {
-  match v {
-    Some(Obj(_) as o) => o.get(name)
-    _ => None
-  }
+  @jsjson.jval_at(v, name)
 }
 
 ///|
 /// `typeof v === "string" ? v : undefined`.
 fn str_of(v : J?) -> String? {
-  match v {
-    Some(Str(s)) => Some(t(s))
-    _ => None
-  }
+  @jsjson.jval_str_of(v)
 }
 
 ///|
@@ -78,33 +72,27 @@ fn is_s(v : J?, s : String) -> Bool {
 
 ///|
 fn is_true(v : J?) -> Bool {
-  v is Some(Bool(true))
+  @jsjson.jval_is_true(v)
 }
 
 ///|
 /// `typeof v === "number"` (NaN and the infinities too, as JSON gives none).
 fn num_of(v : J?) -> Double? {
-  match v {
-    Some(Num(n)) => Some(n)
-    _ => None
-  }
+  @jsjson.jval_num_of(v)
 }
 
 ///|
 /// `typeof v === "number" && Number.isFinite(v) ? v : 0`.
 fn finite_or_zero(v : J?) -> Double {
   match v {
-    Some(Num(n)) if !n.is_nan() && !n.is_inf() => n
+    Some(Num(n)) if @jsjson.is_finite(n) => n
     _ => 0.0
   }
 }
 
 ///|
 fn arr(v : J?) -> Array[J] {
-  match v {
-    Some(Arr(a)) => a
-    _ => []
-  }
+  @jsjson.jval_arr(v)
 }
 
 ///|
@@ -115,10 +103,7 @@ fn is_object(v : J?) -> Bool {
 
 ///|
 fn fields(v : J?) -> Array[(String, J)] {
-  match v {
-    Some(Obj(entries)) => entries.map(e => (t(e.0), e.1))
-    _ => []
-  }
+  @jsjson.jval_entries(v)
 }
 
 ///|
@@ -214,15 +199,7 @@ pub fn Fields::json(self : Fields) -> J {
 ///|
 /// `a < b` as JavaScript compares strings.
 fn js_less(a : String, b : String) -> Bool {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
+  @jsjson.js_compare(a, b) < 0
 }
 
 ///|
@@ -277,13 +254,7 @@ fn sub(s : String, from : Int, to? : Int) -> String {
 ///|
 /// `s.indexOf(needle, from)`, -1 when it is not there.
 fn index_of(s : String, needle : String, from? : Int = 0) -> Int {
-  if from > s.length() {
-    return if needle == "" { s.length() } else { -1 }
-  }
-  match s.view(start_offset=from).find(needle) {
-    Some(i) => i + from
-    None => -1
-  }
+  @jsjson.js_index_of(s, needle, from~)
 }
 
 ///|
@@ -344,20 +315,7 @@ fn sha256_hex(s : String) -> String {
 ///|
 /// `[...s]`: its code points, a lone surrogate one of its own.
 fn code_points(s : String) -> Array[String] {
-  let out = []
-  let mut i = 0
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < s.length() && s.unsafe_charcode_at(i + 1) >= 0xdc00 &&
-      s.unsafe_charcode_at(i + 1) <= 0xdfff {
-      out.push(sub(s, i, to=i + 2))
-      i += 2
-    } else {
-      out.push(sub(s, i, to=i + 1))
-      i += 1
-    }
-  }
-  out
+  @jsjson.points(s)
 }
 
 ///|
@@ -410,9 +368,7 @@ fn quote(s : String) -> String {
 ///|
 /// `JSON.parse(text)`, none when it is not JSON.
 fn parse(text : String) -> J? {
-  try Some(@jsjson.parse(text)) catch {
-    _ => None
-  }
+  @jsjson.jval_try_parse(text)
 }
 
 ///|

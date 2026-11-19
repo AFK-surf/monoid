@@ -167,9 +167,51 @@ pub fn trim(s : String) -> String {
 }
 
 ///|
+/// String.prototype.trimStart.
+pub fn trim_start(s : String) -> String {
+  let mut start = 0
+  let end = s.length()
+  while start < end && is_space(s.unsafe_charcode_at(start)) {
+    start += 1
+  }
+  s.view(start_offset=start, end_offset=end).to_owned()
+}
+
+///|
+/// String.prototype.trimEnd.
+pub fn trim_end(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && is_space(s.unsafe_charcode_at(end - 1)) {
+    end -= 1
+  }
+  s.view(start_offset=0, end_offset=end).to_owned()
+}
+
+///|
 /// core-ts whitespace.ts `trim` (Rust's: White_Space).
 pub fn trim_white(s : String) -> String {
   trim_by(s, is_white_space)
+}
+
+///|
+/// Leading White_Space trimmed off.
+pub fn trim_start_white(s : String) -> String {
+  let mut start = 0
+  let end = s.length()
+  while start < end && is_white_space(s.unsafe_charcode_at(start)) {
+    start += 1
+  }
+  s.view(start_offset=start, end_offset=end).to_owned()
+}
+
+///|
+/// Trailing White_Space trimmed off.
+pub fn trim_end_white(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && is_white_space(s.unsafe_charcode_at(end - 1)) {
+    end -= 1
+  }
+  s.view(start_offset=0, end_offset=end).to_owned()
 }
 
 ///|

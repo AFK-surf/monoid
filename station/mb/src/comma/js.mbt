@@ -49,17 +49,17 @@ pub fn kind_of(e : Error) -> String {
 
 ///|
 pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 pub fn jn(d : Double) -> J {
-  Num(d)
+  @jsjson.JValue::of_double(d)
 }
 
 ///|
 pub fn ji(i : Int) -> J {
-  Num(i.to_double())
+  @jsjson.JValue::of_int(i)
 }
 
 ///|
@@ -78,7 +78,7 @@ pub fn jo(fields : Array[(String, J?)]) -> J {
 ///|
 /// An object of the fields given, every one there.
 pub fn jobj(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (@jsjson.units(f.0), f.1)))
+  @jsjson.JValue::of_object(fields)
 }
 
 ///|
@@ -90,7 +90,7 @@ pub fn utext(u : Array[Int]) -> String {
 ///|
 /// A JavaScript string as a value.
 pub fn jstr(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
@@ -157,19 +157,13 @@ pub fn str_of(v : J?) -> String? {
 ///|
 /// `typeof v === "number"`: its value.
 pub fn num_of(v : J?) -> Double? {
-  match v {
-    Some(Num(n)) => Some(n)
-    _ => None
-  }
+  @jsjson.jval_num_of(v)
 }
 
 ///|
 /// `Array.isArray(v)`: its items.
 pub fn arr_of(v : J?) -> Array[J]? {
-  match v {
-    Some(Arr(items)) => Some(items)
-    _ => None
-  }
+  @jsjson.jval_arr_of(v)
 }
 
 ///|
@@ -196,10 +190,7 @@ pub fn nullish(a : J?, b : J?) -> J? {
 ///|
 /// `Number.isSafeInteger(v)`.
 pub fn safe_int(v : J?) -> Bool {
-  match v {
-    Some(Num(n)) => n == n.floor() && n.abs() <= 9007199254740991.0
-    _ => false
-  }
+  @jsjson.jval_safe_int(v)
 }
 
 ///|
@@ -223,15 +214,7 @@ pub fn num_text(n : Double) -> String {
 ///|
 /// Two strings as JavaScript compares them, by their code units: negative, zero or positive.
 pub fn units_cmp(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x - y
-    }
-  }
-  a.length() - b.length()
+  @jsjson.js_compare(a, b)
 }
 
 ///|
@@ -243,38 +226,13 @@ pub fn js_trim(s : String) -> String {
 ///|
 /// The code points of a string as `[...s]` (or `Array.from(s)`) makes them: a lone surrogate one of its own.
 pub fn points(s : String) -> Array[String] {
-  let out = []
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < n {
-      let d = s.unsafe_charcode_at(i + 1)
-      if d >= 0xdc00 && d <= 0xdfff {
-        out.push(s.unsafe_substring(start=i, end=i + 2))
-        i += 2
-        continue
-      }
-    }
-    out.push(s.unsafe_substring(start=i, end=i + 1))
-    i += 1
-  }
-  out
+  @jsjson.points(s)
 }
 
 ///|
 /// The first `max` code points of `s` (`[...s].slice(0, max).join("")`).
 pub fn first_points(s : String, max : Int) -> String {
-  let ps = points(s)
-  if ps.length() <= max {
-    s
-  } else {
-    let out = StringBuilder::new()
-    for i in 0..<max {
-      out.write_string(ps[i])
-    }
-    out.to_string()
-  }
+  @jsjson.chars(s, max)
 }
 
 ///|
@@ -310,34 +268,13 @@ pub fn byte_length(text : String) -> Int {
 ///|
 /// The value as the moonbitlang JSON SQLite binds and reads (its strings well-formed).
 pub fn to_json(v : J) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(u) => Json::string(@jsjson.text(u))
-    Arr(items) => Json::array(items.map(to_json))
-    Obj(entries) => {
-      let m : Map[String, Json] = {}
-      for e in entries {
-        m[@jsjson.text(e.0)] = to_json(e.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json_lossy()
 }
 
 ///|
 /// A moonbitlang JSON value as one of these.
 pub fn from_json(v : Json) -> J {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => jstr(s)
-    Array(items) => Arr(items.map(from_json))
-    Object(m) => Obj(m.to_array().map(e => (@jsjson.units(e.0), from_json(e.1))))
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|

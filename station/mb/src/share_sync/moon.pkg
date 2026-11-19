@@ -5,6 +5,7 @@ import {
   "station/host",
   "station/memory",
   "station/jsjson",
+  "station/jscase",
   "station/nodepath",
   "station/sql",
   "station/activity",

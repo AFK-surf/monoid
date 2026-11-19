@@ -85,75 +85,63 @@ pub fn is_refused(e : Error) -> Bool {
 
 ///|
 pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 pub fn jn(n : Double) -> J {
-  Num(n)
+  @jsjson.JValue::of_double(n)
 }
 
 ///|
 pub fn ji(n : Int) -> J {
-  Num(n.to_double())
+  @jsjson.JValue::of_int(n)
 }
 
 ///|
 pub fn jb(b : Bool) -> J {
-  Bool(b)
+  @jsjson.JValue::of_bool(b)
 }
 
 ///|
 pub fn jo(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (@jsjson.units(f.0), f.1)))
+  @jsjson.JValue::of_object(fields)
 }
 
 ///|
 pub fn ja(xs : Array[J]) -> J {
-  Arr(xs)
+  @jsjson.JValue::of_array(xs)
 }
 
 ///|
 pub fn jopt(s : String?) -> J {
-  match s {
-    Some(t) => js(t)
-    None => Null
-  }
+  @jsjson.JValue::of_opt_string(s)
 }
 
 ///|
 pub fn jstrs(xs : Array[String]) -> J {
-  Arr(xs.map(js))
+  @jsjson.JValue::of_strings(xs)
 }
 
 ///|
 /// `v[key]` (None where it is no object or has none).
 pub fn at(v : J, key : String) -> J? {
-  match v {
-    Obj(_) => v.get(key)
-    _ => None
-  }
+  @jsjson.jval_at(Some(v), key)
 }
 
 ///|
 pub fn str_of(v : J?) -> String? {
-  match v {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  @jsjson.jval_str_of(v)
 }
 
 ///|
 pub fn num_of(v : J?) -> Double? {
-  match v {
-    Some(Num(n)) => Some(n)
-    _ => None
-  }
+  @jsjson.jval_num_of(v)
 }
 
 ///|
 pub fn text_at(v : J, key : String) -> String {
-  str_of(at(v, key)).unwrap_or("")
+  @jsjson.jval_text(at(v, key))
 }
 
 ///|
@@ -168,15 +156,12 @@ pub fn num_at(v : J, key : String) -> Double? {
 
 ///|
 pub fn yes_at(v : J, key : String) -> Bool {
-  at(v, key) is Some(Bool(true))
+  @jsjson.jval_is_true(at(v, key))
 }
 
 ///|
 pub fn items(v : J?) -> Array[J] {
-  match v {
-    Some(Arr(xs)) => xs
-    _ => []
-  }
+  @jsjson.jval_arr(v)
 }
 
 ///|
@@ -187,16 +172,13 @@ pub fn strings_of(v : J?) -> Array[String] {
 
 ///|
 pub fn is_nullish(v : J?) -> Bool {
-  v is (None | Some(Null))
+  @jsjson.jval_nullish(v)
 }
 
 ///|
 /// An object's entries as names and values (none: not an object).
 pub fn entries(v : J?) -> Array[(String, J)] {
-  match v {
-    Some(Obj(fields)) => fields.map(f => (@jsjson.text(f.0), f.1))
-    _ => []
-  }
+  @jsjson.jval_entries(v)
 }
 
 ///|
@@ -226,51 +208,19 @@ pub fn pair_get(xs : Array[(String, String)], key : String) -> String? {
 ///|
 /// `o[key] = v` on an object (made anew; a key there keeps its place, a new one goes last).
 pub fn set(v : J, key : String, x : J) -> J {
-  match v {
-    Obj(fields) => {
-      let k = @jsjson.units(key)
-      let out = []
-      let mut found = false
-      for f in fields {
-        if f.0 == k {
-          out.push((k, x))
-          found = true
-        } else {
-          out.push(f)
-        }
-      }
-      if !found {
-        out.push((k, x))
-      }
-      Obj(out)
-    }
-    _ => jo([(key, x)])
-  }
+  @jsjson.jval_set_or_new(v, key, x)
 }
 
 ///|
 /// `delete o[key]`.
 pub fn unset(v : J, key : String) -> J {
-  match v {
-    Obj(fields) => {
-      let k = @jsjson.units(key)
-      Obj(fields.filter(f => f.0 != k))
-    }
-    _ => v
-  }
+  @jsjson.jval_del(v, key)
 }
 
 ///|
 /// `{...a, ...b}`.
 pub fn merged(a : J, b : J) -> J {
-  let mut out = match a {
-    Obj(_) => a
-    _ => Obj([])
-  }
-  for e in entries(Some(b)) {
-    out = set(out, e.0, e.1)
-  }
-  out
+  @jsjson.jval_spread(a, b)
 }
 
 ///|
@@ -286,7 +236,7 @@ pub fn parse(text : String) -> J raise {
 ///|
 /// The number as String(n) says it.
 pub fn num_text(n : Double) -> String {
-  @session_chats.num_text(n)
+  @jsjson.num_text(n)
 }
 
 ///|
@@ -312,7 +262,7 @@ pub fn sha256_text(s : String) -> String {
 ///|
 /// `Math.round`.
 pub fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }
 
 ///|
@@ -362,25 +312,18 @@ pub fn starts_with(s : String, prefix : String) -> Bool {
 ///|
 /// `a < b` as JavaScript compares strings (by UTF-16 units).
 pub fn js_less(a : String, b : String) -> Bool {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
+  @jsjson.js_compare(a, b) < 0
 }
 
 ///|
 pub fn js_cmp(a : String, b : String) -> Int {
-  if a == b {
-    0
-  } else if js_less(a, b) {
+  let c = @jsjson.js_compare(a, b)
+  if c < 0 {
     -1
-  } else {
+  } else if c > 0 {
     1
+  } else {
+    0
   }
 }
 

@@ -202,6 +202,145 @@ pub fn jval_truthy(v : JValue?) -> Bool {
 }
 
 ///|
+/// The value as MoonBit's JSON with well-formed strings (`text`: lone surrogates as U+FFFD) and entries in insertion
+/// order, numbers kept as given.
+pub fn JValue::to_json_lossy(self : JValue) -> Json {
+  match self {
+    Null => Json::null()
+    Bool(b) => Json::boolean(b)
+    Num(n) => Json::number(n)
+    Str(u) => Json::string(text(u))
+    Arr(xs) => Json::array(xs.map(JValue::to_json_lossy))
+    Obj(fs) => {
+      let m : Map[String, Json] = Map([])
+      for f in fs {
+        m[text(f.0)] = f.1.to_json_lossy()
+      }
+      Json::object(m)
+    }
+  }
+}
+
+///|
+/// `JSON.parse(text)`, None where it throws.
+pub fn jval_try_parse(text : String) -> JValue? {
+  Some(parse(text)) catch {
+    _ => None
+  }
+}
+
+///|
+/// `v[name]` where `v` is an object: a repeated key's last entry (as JSON.parse keeps it).
+pub fn jval_at_last(v : JValue?, name : String) -> JValue? {
+  match v {
+    Some(Obj(fs)) => {
+      let ku = units(name)
+      let mut found = None
+      for f in fs {
+        if f.0 == ku {
+          found = Some(f.1)
+        }
+      }
+      found
+    }
+    _ => None
+  }
+}
+
+///|
+/// `v?.[a]?.[b]…` (repeated key's first entry, via `jval_at`).
+pub fn jval_at_path(v : JValue?, path : Array[String]) -> JValue? {
+  let mut cur = v
+  for k in path {
+    cur = jval_at(cur, k)
+  }
+  cur
+}
+
+///|
+/// `v?.[a]?.[b]…` (repeated key's last entry, via `jval_at_last`).
+pub fn jval_at_path_last(v : JValue?, path : Array[String]) -> JValue? {
+  let mut cur = v
+  for k in path {
+    cur = jval_at_last(cur, k)
+  }
+  cur
+}
+
+///|
+/// `typeof v === "string" ? v : ""` (`text`: a lone surrogate as U+FFFD).
+pub fn jval_text(v : JValue?) -> String {
+  jval_str_of(v).unwrap_or("")
+}
+
+///|
+/// The array's items, or `[]` for anything else.
+pub fn jval_arr(v : JValue?) -> Array[JValue] {
+  jval_arr_of(v).unwrap_or([])
+}
+
+///|
+/// An object's entries as `(name, value)` pairs (`text` on keys); `[]` for anything else.
+pub fn jval_entries(v : JValue?) -> Array[(String, JValue)] {
+  match v {
+    Some(Obj(fs)) => fs.map(f => (text(f.0), f.1))
+    _ => []
+  }
+}
+
+///|
+/// `String(v)`, `None` (undefined) as `"undefined"`, `null` inside an array as `""`.
+pub fn jval_js_str(v : JValue?) -> String {
+  match v {
+    None => "undefined"
+    Some(Null) => "null"
+    Some(Str(u)) => text(u)
+    Some(Bool(b)) => if b { "true" } else { "false" }
+    Some(Num(d)) => num_text(d)
+    Some(Arr(xs)) =>
+      xs
+      .map(x => match x {
+        Null => ""
+        _ => jval_js_str(Some(x))
+      })
+      .join(",")
+    Some(Obj(_)) => "[object Object]"
+  }
+}
+
+///|
+/// `Number(v)` as JavaScript converts a value (`None` -> NaN, `Null` -> 0, `""` / `" "` -> 0, `[null]` -> 0).
+pub fn jval_js_num(v : JValue?) -> Double {
+  match v {
+    None => @double.not_a_number
+    Some(Null) => 0.0
+    Some(Bool(b)) => if b { 1.0 } else { 0.0 }
+    Some(Num(d)) => d
+    Some(Str(u)) => js_number(text(u))
+    Some(Arr(xs)) =>
+      match xs {
+        [] => 0.0
+        [Null] => 0.0
+        [x] => js_number(jval_js_str(Some(x)))
+        _ => @double.not_a_number
+      }
+    Some(Obj(_)) => @double.not_a_number
+  }
+}
+
+///|
+/// `Number.isInteger(v)`.
+pub fn jval_is_integer(v : JValue?) -> Bool {
+  v is Some(Num(d)) && is_integer(d)
+}
+
+///|
+/// `Number.isSafeInteger(v)`.
+pub fn jval_safe_int(v : JValue?) -> Bool {
+  v is Some(Num(d)) && is_safe_integer(d)
+}
+
+///|
 /// `v == null`, undefined (none) too.
 pub fn jval_nullish(v : JValue?) -> Bool {
   v is (None | Some(Null))

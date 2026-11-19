@@ -132,21 +132,19 @@ pub fn js_number(d : Double) -> String {
 ///|
 /// `JSON.stringify(s)` of a string.
 fn js_quoted(s : String) -> String {
-  @jsjson.stringify(@jsjson.JValue::Str(@jsjson.units(s)))
+  @jsjson.stringify(@jsjson.JValue::of_string(s))
 }
 
 ///|
 /// `Math.round`.
 pub fn js_round(x : Double) -> Double {
-  let f = (x + 0.5).floor()
-  // (Math.round(-0.4) is -0, which says "0" all the same)
-  f
+  @jsjson.js_round(x)
 }
 
 ///|
 /// `Number.isSafeInteger`.
 fn safe_integer(d : Double) -> Bool {
-  d == d.floor() && d.abs() <= 9007199254740991.0
+  @jsjson.is_safe_integer(d)
 }
 
 ///|
@@ -165,59 +163,28 @@ fn from(s : String, i : Int) -> String {
 ///|
 /// `s.indexOf(sep, at)`.
 fn index_of(s : String, sep : String, at? : Int = 0) -> Int {
-  let n = s.length()
-  let m = sep.length()
-  let mut i = if at < 0 { 0 } else { at }
-  while i + m <= n {
-    let mut j = 0
-    while j < m && s.unsafe_charcode_at(i + j) == sep.unsafe_charcode_at(j) {
-      j += 1
-    }
-    if j == m {
-      return i
-    }
-    i += 1
-  }
-  -1
+  @jsjson.js_index_of(s, sep, from=at)
 }
 
 ///|
 /// `s.split(sep)` of a non-empty separator.
 fn split(s : String, sep : String) -> Array[String] {
-  let out = []
-  let mut start = 0
-  while true {
-    let i = index_of(s, sep, at=start)
-    if i < 0 {
-      out.push(from(s, start))
-      break
-    }
-    out.push(slice(s, start, i))
-    start = i + sep.length()
-  }
-  out
+  @jsjson.js_split(s, sep)
 }
 
 ///|
 fn join(parts : Array[String], sep : String) -> String {
-  let out = StringBuilder::new()
-  for i, p in parts {
-    if i > 0 {
-      out.write_string(sep)
-    }
-    out.write_string(p)
-  }
-  out.to_string()
+  parts.join(sep)
 }
 
 ///|
 fn starts(s : String, p : String) -> Bool {
-  s.length() >= p.length() && slice(s, 0, p.length()) == p
+  s.has_prefix(p)
 }
 
 ///|
 fn ends(s : String, p : String) -> Bool {
-  s.length() >= p.length() && from(s, s.length() - p.length()) == p
+  s.has_suffix(p)
 }
 
 ///|

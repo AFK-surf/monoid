@@ -17,48 +17,18 @@ fn from(s : String, start : Int) -> String {
 ///|
 /// `s.indexOf(part, start)`: -1 where it is not.
 fn index_of(s : String, part : String, start? : Int = 0) -> Int {
-  let n = s.length()
-  let m = part.length()
-  let mut i = if start < 0 { 0 } else { start }
-  while i + m <= n {
-    let mut j = 0
-    while j < m && s.unsafe_charcode_at(i + j) == part.unsafe_charcode_at(j) {
-      j += 1
-    }
-    if j == m {
-      return i
-    }
-    i += 1
-  }
-  -1
+  @jsjson.js_index_of(s, part, from=start)
 }
 
 ///|
 fn includes(s : String, part : String) -> Bool {
-  index_of(s, part) >= 0
+  s.contains(part)
 }
 
 ///|
 /// `s.split(sep)` with a plain separator (an empty one splits each unit).
 fn split(s : String, sep : String) -> Array[String] {
-  let out = []
-  if sep == "" {
-    for i in 0..<s.length() {
-      out.push(sub(s, i, i + 1))
-    }
-    return out
-  }
-  let mut at = 0
-  while true {
-    let i = index_of(s, sep, start=at)
-    if i < 0 {
-      out.push(from(s, at))
-      break
-    }
-    out.push(sub(s, at, i))
-    at = i + sep.length()
-  }
-  out
+  @jsjson.js_split(s, sep)
 }
 
 ///|
@@ -70,23 +40,7 @@ fn split_lines(s : String) -> Array[String] {
 ///|
 /// The code points of `s` (`[...s]`), each as a string of its units.
 fn points(s : String) -> Array[String] {
-  let out = []
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c >= 0xD800 && c <= 0xDBFF && i + 1 < n {
-      let d = s.unsafe_charcode_at(i + 1)
-      if d >= 0xDC00 && d <= 0xDFFF {
-        out.push(sub(s, i, i + 2))
-        i += 2
-        continue
-      }
-    }
-    out.push(sub(s, i, i + 1))
-    i += 1
-  }
-  out
+  @jsjson.points(s)
 }
 
 ///|
@@ -111,11 +65,7 @@ fn trim(s : String) -> String {
 
 ///|
 fn trim_start(s : String) -> String {
-  let mut i = 0
-  while i < s.length() && is_space(s.unsafe_charcode_at(i)) {
-    i += 1
-  }
-  from(s, i)
+  @jscase.trim_start(s)
 }
 
 ///|
@@ -126,29 +76,7 @@ fn lower(s : String) -> String {
 ///|
 /// `s.split(/\s+/)`.
 fn split_space(s : String) -> Array[String] {
-  let out = []
-  let mut word = StringBuilder()
-  let mut i = 0
-  let mut pending = true
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if is_space(c) {
-      // a run of white space is one separator
-      out.push(word.to_string())
-      word = StringBuilder()
-      while i < s.length() && is_space(s.unsafe_charcode_at(i)) {
-        i += 1
-      }
-      pending = true
-      continue
-    }
-    word.write_char(c.unsafe_to_char())
-    pending = false
-    i += 1
-  }
-  ignore(pending)
-  out.push(word.to_string())
-  out
+  @jscase.split_by(s, @jscase.is_space)
 }
 
 ///|
@@ -217,10 +145,7 @@ fn num_of(j : Json?) -> Double? {
 ///|
 /// `Number.isInteger(v)`.
 fn is_integer(j : Json?) -> Bool {
-  match j {
-    Some(Number(n, ..)) => !n.is_nan() && !n.is_inf() && n.floor() == n
-    _ => false
-  }
+  j is Some(Number(n, ..)) && @jsjson.is_integer(n)
 }
 
 ///|
@@ -300,90 +225,21 @@ fn js_string(j : Json?) -> String {
 }
 
 ///|
-fn to_jvalue(j : Json) -> @jsjson.JValue {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(a) => Arr(a.map(to_jvalue))
-    Object(m) => {
-      // as JavaScript keeps an object's keys: those like array indices first, in their order
-      let index : Array[(Array[Int], @jsjson.JValue)] = []
-      let rest : Array[(Array[Int], @jsjson.JValue)] = []
-      for k, v in m {
-        if array_index(k) is Some(_) {
-          index.push((@jsjson.units(k), to_jvalue(v)))
-        } else {
-          rest.push((@jsjson.units(k), to_jvalue(v)))
-        }
-      }
-      index.sort_by((a, b) => array_index(@jsjson.text(a.0))
-        .unwrap_or(0L)
-        .compare(array_index(@jsjson.text(b.0)).unwrap_or(0L)))
-      Obj(index + rest)
-    }
-  }
-}
-
-///|
-fn array_index(k : String) -> Int64? {
-  if k == "" || k.length() > 10 {
-    return None
-  }
-  if k.length() > 1 && k.unsafe_charcode_at(0) == '0' {
-    return None
-  }
-  let mut n = 0L
-  for i in 0..<k.length() {
-    let c = k.unsafe_charcode_at(i)
-    if !is_ascii_digit(c) {
-      return None
-    }
-    n = n * 10L + (c - '0').to_int64()
-  }
-  if n >= 4294967295L {
-    None
-  } else {
-    Some(n)
-  }
-}
-
-///|
 /// `JSON.stringify(v)`.
 fn stringify(j : Json) -> String {
-  @jsjson.stringify(to_jvalue(j))
+  @jsjson.stringify(@jsjson.JValue::of_json(j))
 }
 
 ///|
 /// `JSON.stringify(v, null, 2)`.
 fn stringify_pretty(j : Json) -> String {
-  @jsjson.stringify_indent(to_jvalue(j), 2)
-}
-
-///|
-fn from_jvalue(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(u) => Json::string(@jsjson.text(u))
-    Arr(a) => Json::array(a.map(from_jvalue))
-    Obj(kv) => {
-      let m : Map[String, Json] = Map([])
-      for p in kv {
-        m[@jsjson.text(p.0)] = from_jvalue(p.1)
-      }
-      Json::object(m)
-    }
-  }
+  @jsjson.stringify_indent(@jsjson.JValue::of_json(j), 2)
 }
 
 ///|
 /// `JSON.parse(text)`, which fails as SyntaxError.
 fn parse_json(text : String) -> Json raise JsonError {
-  from_jvalue(@jsjson.parse(text)) catch {
+  @jsjson.parse(text).to_json_lossy() catch {
     e => raise JsonError(e.to_string())
   }
 }
@@ -549,22 +405,12 @@ fn hex_utf8(s : String) -> String {
 /// Strings sorted by their UTF-16 units (`a < b`).
 fn sort_units(list : Array[String]) -> Array[String] {
   let out = list.copy()
-  out.sort_by((a, b) => {
-    let n = if a.length() < b.length() { a.length() } else { b.length() }
-    for i in 0..<n {
-      let x = a.unsafe_charcode_at(i)
-      let y = b.unsafe_charcode_at(i)
-      if x != y {
-        return x.compare(y)
-      }
-    }
-    a.length().compare(b.length())
-  })
+  out.sort_by((a, b) => @jsjson.js_compare(a, b))
   out
 }
 
 ///|
 /// `Math.round(x)`.
 fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }

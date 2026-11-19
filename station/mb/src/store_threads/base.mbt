@@ -381,7 +381,7 @@ fn schema_version(db : @sql.Db) -> Int raise {
 /// `JSON.parse` of a column, or none where it is not text that parses (rows.ts `parsed`).
 fn parsed(v : Json) -> @jsjson.JValue? {
   match v {
-    String(s) => try Some(@jsjson.parse(s)) catch { _ => None }
+    String(s) => @jsjson.jval_try_parse(s)
     _ => None
   }
 }
@@ -394,21 +394,7 @@ fn to_json(v : @jsjson.JValue) -> Json {
 ///|
 /// A value as JavaScript holds it, from what SQLite or the line gave.
 fn of_json(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(xs) => Arr(xs.map(of_json))
-    Object(m) => {
-      let fields = []
-      for k, x in m {
-        fields.push((@jsjson.units(k), of_json(x)))
-      }
-      Obj(fields)
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|
@@ -419,23 +405,17 @@ fn stringify(v : @jsjson.JValue) -> String {
 
 ///|
 fn jget(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
-  match v {
-    Obj(_) => v.get(k)
-    _ => None
-  }
+  @jsjson.jval_at(Some(v), k)
 }
 
 ///|
 fn jtext(v : @jsjson.JValue?) -> String? {
-  match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
-    _ => None
-  }
+  @jsjson.jval_str_of(v)
 }
 
 ///|
 fn jobj(fields : Array[(String, @jsjson.JValue)]) -> @jsjson.JValue {
-  Obj(fields.map(f => (@jsjson.units(f.0), f.1)))
+  @jsjson.JValue::of_object(fields)
 }
 
 ///|

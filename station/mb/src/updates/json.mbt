@@ -115,33 +115,19 @@ fn cu(s : String, i : Int) -> Int {
 ///|
 /// `s.slice(start, end)` (by UTF-16 units), negative counted from the end, clamped.
 pub fn slice(s : String, start : Int, end? : Int) -> String {
-  let n = s.length()
-  let norm = (i : Int) => if i < 0 { if n + i < 0 { 0 } else { n + i } } else if i > n { n } else { i }
-  let a = norm(start)
-  let b = norm(end.unwrap_or(n))
-  if a >= b {
-    ""
-  } else {
-    s.unsafe_substring(start=a, end=b)
-  }
+  @jsjson.js_slice(s, start, end?)
 }
 
 ///|
 /// `s.indexOf(sub)` (-1: none).
 pub fn index_of(s : String, sub : String) -> Int {
-  match s.find(sub) {
-    Some(i) => i
-    None => -1
-  }
+  @jsjson.js_index_of(s, sub)
 }
 
 ///|
 /// `s.lastIndexOf(sub)` (-1: none).
 pub fn last_index_of(s : String, sub : String) -> Int {
-  match s.rev_find(sub) {
-    Some(i) => i
-    None => -1
-  }
+  @jsjson.js_last_index_of(s, sub)
 }
 
 ///|
@@ -151,38 +137,18 @@ pub fn includes(s : String, sub : String) -> Bool {
 
 ///|
 pub fn starts_with(s : String, p : String) -> Bool {
-  s.length() >= p.length() && slice(s, 0, end=p.length()) == p
+  s.has_prefix(p)
 }
 
 ///|
 pub fn ends_with(s : String, p : String) -> Bool {
-  s.length() >= p.length() && slice(s, s.length() - p.length()) == p
+  s.has_suffix(p)
 }
 
 ///|
 /// `s.split(sep)` by a string (JavaScript's: "" splits into nothing but "", a separator at either end gives "").
 pub fn split(s : String, sep : String) -> Array[String] {
-  let out = []
-  if sep == "" {
-    for i in 0..<s.length() {
-      out.push(slice(s, i, end=i + 1))
-    }
-    return out
-  }
-  let mut at = 0
-  while true {
-    match s.unsafe_substring(start=at, end=s.length()).find(sep) {
-      Some(i) => {
-        out.push(slice(s, at, end=at + i))
-        at = at + i + sep.length()
-      }
-      None => {
-        out.push(slice(s, at))
-        break
-      }
-    }
-  }
-  out
+  @jsjson.js_split(s, sep)
 }
 
 ///|
@@ -215,11 +181,7 @@ pub fn trim(s : String) -> String {
 ///|
 /// `s.trimEnd()`.
 pub fn trim_end(s : String) -> String {
-  let mut e = s.length()
-  while e > 0 && @jscase.is_space(cu(s, e - 1)) {
-    e -= 1
-  }
-  slice(s, 0, end=e)
+  @jscase.trim_end(s)
 }
 
 ///|
@@ -352,7 +314,7 @@ pub fn floor(d : Double) -> Double {
 ///|
 /// `Math.round` (halves up).
 pub fn js_round(d : Double) -> Double {
-  (d + 0.5).floor()
+  @jsjson.js_round(d)
 }
 
 ///|

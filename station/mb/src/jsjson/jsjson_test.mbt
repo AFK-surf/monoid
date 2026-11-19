@@ -200,3 +200,95 @@ test "JValue's changes as JavaScript makes them" {
   inspect(vs.map(@jsjson.jval_truthy), content="[false, false, false, true, false, false, false, true, false, true, true, true]")
   inspect(vs.map(@jsjson.jval_nullish), content="[true, true, false, false, false, false, false, false, false, false, false, false]")
 }
+
+///|
+test "JValue extended ops: at_last, at_path, text, arr, entries, js_str, js_num, safe_int, to_json_lossy" {
+  let k = (s : String) => @jsjson.units(s)
+  let o : @jsjson.JValue = Obj([
+    (k("a"), Num(1.0)),
+    (k("b"), Obj([(k("c"), Str(k("hi"))), (k("c"), Str(k("last")))])),
+    (k("a"), Num(2.0)),
+  ])
+  inspect(@jsjson.jval_num_of(@jsjson.jval_at(Some(o), "a")), content="Some(1)")
+  inspect(@jsjson.jval_num_of(@jsjson.jval_at_last(Some(o), "a")), content="Some(2)")
+  inspect(@jsjson.jval_str_of(@jsjson.jval_at_path(Some(o), ["b", "c"])), content="Some(hi)")
+  inspect(@jsjson.jval_str_of(@jsjson.jval_at_path_last(Some(o), ["b", "c"])), content="Some(last)")
+  inspect(@jsjson.jval_text(Some(Str(k("ok")))), content="ok")
+  inspect(@jsjson.jval_text(Some(Num(1.0))), content="")
+  inspect(@jsjson.jval_arr(Some(Arr([Num(1.0)]))).length(), content="1")
+  inspect(@jsjson.jval_arr(Some(Null)).length(), content="0")
+  inspect(@jsjson.jval_entries(Some(o)).length(), content="3")
+  inspect(@jsjson.jval_entries(Some(Null)).length(), content="0")
+  // String(v)
+  inspect(@jsjson.jval_js_str(None), content="undefined")
+  inspect(@jsjson.jval_js_str(Some(Null)), content="null")
+  inspect(@jsjson.jval_js_str(Some(Arr([Null]))), content="")
+  inspect(@jsjson.jval_js_str(Some(Arr([Num(1.0), Null, Str(k("x"))]))), content="1,,x")
+  inspect(@jsjson.jval_js_str(Some(Obj([]))), content="[object Object]")
+  // Number(v)
+  inspect(@jsjson.jval_js_num(None).is_nan(), content="true")
+  inspect(@jsjson.jval_js_num(Some(Null)), content="0")
+  inspect(@jsjson.jval_js_num(Some(Bool(true))), content="1")
+  inspect(@jsjson.jval_js_num(Some(Str(k("")))), content="0")
+  inspect(@jsjson.jval_js_num(Some(Str(k(" \t\n")))), content="0")
+  inspect(@jsjson.jval_js_num(Some(Str(k("007")))), content="7")
+  inspect(@jsjson.jval_js_num(Some(Arr([]))), content="0")
+  inspect(@jsjson.jval_js_num(Some(Arr([Null]))), content="0")
+  inspect(@jsjson.jval_js_num(Some(Arr([Str(k("42"))]))), content="42")
+  inspect(@jsjson.jval_js_num(Some(Arr([Num(1.0), Num(2.0)]))).is_nan(), content="true")
+  // is_integer / safe_int
+  inspect(@jsjson.jval_is_integer(Some(Num(42.0))), content="true")
+  inspect(@jsjson.jval_is_integer(Some(Num(42.5))), content="false")
+  inspect(@jsjson.jval_safe_int(Some(Num(9007199254740991.0))), content="true")
+  inspect(@jsjson.jval_safe_int(Some(Num(9007199254740992.0))), content="false")
+  // to_json_lossy replaces lone surrogate with U+FFFD
+  let lone : @jsjson.JValue = Str([0x61, 0xd800, 0x62])
+  inspect(lone.to_json_lossy().stringify(), content="\"a\u{fffd}b\"")
+  inspect(@jsjson.jval_try_parse("{bad}") is None, content="true")
+  inspect(@jsjson.jval_try_parse("{\"x\":1}") is Some(_), content="true")
+}
+
+///|
+test "JV in-place put/delete, raw parse, jat, jkeys, jvalues, js_round, string helpers" {
+  // raw parse keeps lone surrogates
+  let raw = @jsjson.jv_parse_raw("{\"s\":\"a\\ud800b\"}")
+  match raw.get("s") {
+    Some(Str(s)) => inspect(@jsjson.units(s), content="[97, 55296, 98]")
+    _ => fail("expected string")
+  }
+  inspect(@jsjson.try_parse_raw("{") is None, content="true")
+  // in-place put & delete preserve JS key order (integer keys ascending first)
+  let o = @jsjson.JV::Obj([])
+  o.put("b", @jsjson.jint(1))
+  o.put("10", @jsjson.jint(10))
+  o.put("2", @jsjson.jint(2))
+  o.put("b", @jsjson.jint(9))
+  inspect(@jsjson.jkeys(o), content="[2, 10, b]")
+  inspect(@jsjson.jvalues(o).length(), content="3")
+  o.delete("10")
+  inspect(@jsjson.jkeys(o), content="[2, b]")
+  // jat
+  let a = @jsjson.jarr([@jsjson.jint(10), @jsjson.jint(20)])
+  inspect(@jsjson.jnumber(@jsjson.jat(Some(a), 1)), content="Some(20)")
+  inspect(@jsjson.jat(Some(a), -1) is None, content="true")
+  inspect(@jsjson.jat(Some(a), 2) is None, content="true")
+  // js_round: JS Math.round semantics
+  inspect(@jsjson.js_round(0.5), content="1")
+  inspect(@jsjson.js_round(0.49999999999999994), content="0")
+  inspect(@jsjson.js_round(-0.5), content="0")
+  inspect(@jsjson.js_round(-0.5).reinterpret_as_uint64() == (-0.0 : Double).reinterpret_as_uint64(), content="true")
+  inspect(@jsjson.js_round(-0.6), content="-1")
+  inspect(@jsjson.js_round(4503599627370497.0), content="4503599627370497")
+  inspect(@jsjson.js_round(@double.not_a_number).is_nan(), content="true")
+  inspect(@jsjson.js_round(@double.infinity).is_inf(), content="true")
+  // js_slice / js_index_of / js_last_index_of / js_split
+  inspect(@jsjson.js_slice("abcdef", 1, end=4), content="bcd")
+  inspect(@jsjson.js_slice("abcdef", -2), content="ef")
+  inspect(@jsjson.js_slice("abcdef", 4, end=2), content="")
+  inspect(@jsjson.js_index_of("ababa", "ba"), content="1")
+  inspect(@jsjson.js_index_of("ababa", "ba", from=2), content="3")
+  inspect(@jsjson.js_index_of("abc", "", from=10), content="3")
+  inspect(@jsjson.js_last_index_of("ababa", "ba"), content="3")
+  inspect(@jsjson.js_split("a,,b,", ","), content="[a, , b, ]")
+  inspect(@jsjson.js_split("ab", ""), content="[a, b]")
+}

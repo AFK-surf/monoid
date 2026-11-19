@@ -49,29 +49,13 @@ fn jopt(s : String?) -> J {
 /// `v?.[name]`: undefined (None) where `v` is no object or has none (the last of a name given twice, as JSON.parse
 /// keeps it).
 pub fn at(v : J?, name : String) -> J? {
-  match v {
-    Some(Obj(fs)) => {
-      let ku = @jsjson.units(name)
-      let mut found = None
-      for f in fs {
-        if f.0 == ku {
-          found = Some(f.1)
-        }
-      }
-      found
-    }
-    _ => None
-  }
+  @jsjson.jval_at_last(v, name)
 }
 
 ///|
 /// `v?.[a]?.[b]…`.
 fn at_path(v : J?, path : Array[String]) -> J? {
-  let mut cur = v
-  for k in path {
-    cur = at(cur, k)
-  }
-  cur
+  @jsjson.jval_at_path_last(v, path)
 }
 
 ///|
@@ -87,7 +71,7 @@ pub fn str_of(v : J?) -> String? {
 ///|
 /// `typeof v === "string" ? v : ""`.
 fn text(v : J?) -> String {
-  str_of(v).unwrap_or("")
+  @jsjson.jval_text(v)
 }
 
 ///|
@@ -102,7 +86,7 @@ fn bool_of(v : J?) -> Bool? {
 
 ///|
 fn arr(v : J?) -> Array[J] {
-  @jsjson.jval_arr_of(v).unwrap_or([])
+  @jsjson.jval_arr(v)
 }
 
 ///|
@@ -136,21 +120,7 @@ fn is_true(v : J?) -> Bool {
 ///|
 /// `String(v)`, `undefined` as "undefined".
 pub fn js_str(v : J?) -> String {
-  match v {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(Str(u)) => @jsjson.text(u)
-    Some(Bool(b)) => if b { "true" } else { "false" }
-    Some(Num(_) as n) => num_text(n)
-    Some(Arr(xs)) =>
-      xs
-      .map(x => match x {
-        Null => ""
-        _ => js_str(Some(x))
-      })
-      .join(",")
-    Some(Obj(_)) => "[object Object]"
-  }
+  @jsjson.jval_js_str(v)
 }
 
 ///|
@@ -165,45 +135,25 @@ pub fn num_text(n : J) -> String {
 ///|
 /// A double as `String(n)` says it.
 pub fn dnum(d : Double) -> String {
-  num_text(Num(d))
+  @jsjson.num_text(d)
 }
 
 ///|
 /// `Number(v)`.
 fn js_num(v : J?) -> Double {
-  match v {
-    None => @double.not_a_number
-    Some(Null) => 0.0
-    Some(Bool(b)) => if b { 1.0 } else { 0.0 }
-    Some(Num(d)) => d
-    Some(Str(u)) => {
-      let t = @jscase.trim(@jsjson.text(u))
-      if t == "" {
-        0.0
-      } else {
-        @session_chats.js_number(js(t)).unwrap_or(@double.not_a_number)
-      }
-    }
-    Some(Arr(xs)) =>
-      match xs {
-        [] => 0.0
-        [x] => js_num(Some(Str(@jsjson.units(js_str(Some(x))))))
-        _ => @double.not_a_number
-      }
-    Some(Obj(_)) => @double.not_a_number
-  }
+  @jsjson.jval_js_num(v)
 }
 
 ///|
 /// `Number.isInteger(v)`.
 fn is_integer(v : J?) -> Bool {
-  v is Some(Num(d)) && @jsjson.is_integer(d)
+  @jsjson.jval_is_integer(v)
 }
 
 ///|
 /// `Number.isSafeInteger(v)`.
 fn is_safe_integer(v : J?) -> Bool {
-  v is Some(Num(d)) && @jsjson.is_safe_integer(d)
+  @jsjson.jval_safe_int(v)
 }
 
 ///|
@@ -376,17 +326,7 @@ fn all_digits(s : String) -> Bool {
 ///|
 /// `s.slice(a, b)` by UTF-16 code units, clamped as JavaScript clamps it.
 fn slice(s : String, a : Int, b? : Int) -> String {
-  let n = s.length()
-  let lo = if a < 0 { imax(0, n + a) } else { imin(a, n) }
-  let hi = match b {
-    None => n
-    Some(e) => if e < 0 { imax(0, n + e) } else { imin(e, n) }
-  }
-  if hi <= lo {
-    ""
-  } else {
-    s.unsafe_substring(start=lo, end=hi)
-  }
+  @jsjson.js_slice(s, a, end?=b)
 }
 
 ///|
@@ -410,45 +350,13 @@ fn imin(a : Int, b : Int) -> Int {
 ///|
 /// `s.indexOf(t, from)`: -1 where it is not there.
 fn index_of(s : String, t : String, from? : Int = 0) -> Int {
-  let n = s.length()
-  let m = t.length()
-  let mut i = if from < 0 { 0 } else { from }
-  while i + m <= n {
-    let mut ok = true
-    for j in 0..<m {
-      if s.code_unit_at(i + j) != t.code_unit_at(j) {
-        ok = false
-        break
-      }
-    }
-    if ok {
-      return i
-    }
-    i += 1
-  }
-  -1
+  @jsjson.js_index_of(s, t, from~)
 }
 
 ///|
 /// `s.lastIndexOf(t)`.
 fn last_index_of(s : String, t : String) -> Int {
-  let n = s.length()
-  let m = t.length()
-  let mut i = n - m
-  while i >= 0 {
-    let mut ok = true
-    for j in 0..<m {
-      if s.code_unit_at(i + j) != t.code_unit_at(j) {
-        ok = false
-        break
-      }
-    }
-    if ok {
-      return i
-    }
-    i -= 1
-  }
-  -1
+  @jsjson.js_last_index_of(s, t)
 }
 
 ///|
