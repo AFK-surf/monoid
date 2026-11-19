@@ -21,9 +21,9 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // 20: sub {"scope":…,"topic":"stations"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   // (the first tap on a chat's row comes before the frame that builds Home's list and sends its reads (they go
   // out as a frame is built): at 7 a second it falls on the bar under it, Station's tab (glass: Home's
-  // subscriptions at 1159 here, 1033-1050 in the strict pass; the tap at 1150))
+  // subscriptions at 1159 here, 1033-1050 in the strict pass; the tap at 1150); delete-failed out once 小屏's bar is a
+  // tab bar, its row's tap no longer on a place of the bar)
   "card-motion": [7],
-  "delete-failed": [7],
   "pick-words": [7],
   "quote": [7],
   "service-page": [7],

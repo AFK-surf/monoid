@@ -1120,6 +1120,9 @@ let pa_why_bell : String = "the bell to what waits to be decided: as nodes shown
 let pa_why_wheel : String = "a wheel's notch: the old list moves the notch's whole in that frame; as nodes the notch eases from its frame, the rows and the round buttons a frame or two apart, both at rest where the other is"
 
 ///|
+let pa_why_bar_going : String = "a chat opened from Home on 小屏: the bottom bar, a tab bar the window's width (sfapp bar_node.mbt), going down as the chat's page slides in from the right, its composer's corner under the bar's far end in the frame after the press's: the old page drawn under the bar (an old view, drawn before the window's tree), its placeholder hidden there; as nodes the page drawn over the bar, its placeholder seen"
+
+///|
 let pa_why_viewer : String = "a picture opened in the viewer and shut: as nodes View::shared's flight and what is drawn under the viewer's ground as it comes and goes; the old page's own curve"
 
 ///|
@@ -3535,12 +3538,15 @@ let pa_way_known : Array[PaWay] = [
   { drive: "viewer", what: Key("button 跳到最新 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
   { drive: "viewer", what: Key("button 对话目录 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
   { drive: "viewer", what: Key("button 跳转到待决策的消息 nodes alone"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "viewer", what: Key("nodes alone 「发消息」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bar_going },
   { drive: "viewer-open", what: Key("button 跳到最新 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
   { drive: "viewer-open", what: Key("button 对话目录 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
   { drive: "viewer-open", what: Key("button 跳转到待决策的消息 nodes alone"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "viewer-open", what: Key("nodes alone 「发消息」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bar_going },
   { drive: "picture-lift", what: Key("button 跳到最新 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
   { drive: "picture-lift", what: Key("button 对话目录 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
   { drive: "picture-lift", what: Key("button 跳转到待决策的消息 nodes alone"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "picture-lift", what: Key("nodes alone 「发消息」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bar_going },
   { drive: "desk-right-panel-toggle", what: Key("nodes alone 「详情」"), from: 1283.0, to: 1283.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
   { drive: "desk-right-panel-toggle", what: Key("alpha 「收起侧栏」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
   { drive: "desk-right-panel-toggle", what: Key("alpha 「Esc」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
@@ -3562,6 +3568,7 @@ let pa_way_known : Array[PaWay] = [
   // `container`); the old page's card flown at its own width from where the composer's stood)
   { drive: "send-quote-picture", what: Key("alpha 「添加说明（可选）」"), from: 6200.0, to: 6300.0, dx: 0.1, dy: 0.1, dw: 0.6, why: pa_why_quote_box },
   { drive: "send-quote-picture", what: Key("alpha 「Claude：compare.png」"), from: 6267.0, to: 6300.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_quote_box },
+  { drive: "send-quote-picture", what: Key("nodes alone 「发消息」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bar_going },
   { drive: "desk-panel-picture-quote", what: Key("old alone 「Claude：先登录 gh。」"), from: 4600.0, to: 4600.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_quote_box },
   { drive: "desk-panel-picture-quote", what: Key("words 「添加说明（可选）」"), from: 4667.0, to: 4767.0, dx: 71.6, dy: 14.6, dw: 0.1, why: pa_why_quote_box },
   { drive: "desk-panel-picture-quote", what: Key("ground"), from: 4667.0, to: 4767.0, dx: 71.9, dy: 14.8, dw: 71.6, why: pa_why_quote_box },

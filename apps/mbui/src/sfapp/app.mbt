@@ -1229,14 +1229,19 @@ let place_switch : @motion.Way = @motion.Way::new(1.0)
 
 ///|
 /// How far over what the system's bars leave of the window's foot the toast is, for the window's tree's (toast's,
-/// followed): the wide frame's 24; the narrow one's over the bar's room.
+/// followed): the wide frame's 24; the narrow one's over the bar, and over the action's button standing over it where
+/// the bar has one (bar_room), as the bar is when the toast comes (read untracked: a toast up stays where it came as the
+/// bar goes or comes back under it).
 fn toast_bottom_now(v : @view.View) -> Double {
   let wide = !(@sf.layout(v.window().0) is Small) || @sf.native_able()
   // (over the system's bars at the window's foot: the toaster keeps clear of them itself, View::clear)
   if wide {
     @sf.toast_bottom
   } else {
-    bar_room
+    match bar_told_now.untracked() {
+      Some(told) if told.shown && told.action != "" => bar_room
+      _ => bar_track + fab_gap
+    }
   }
 }
 
