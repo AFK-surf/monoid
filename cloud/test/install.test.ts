@@ -119,7 +119,7 @@ function machine(os: "mac" | "linux" | "wsl" = "mac", systemd = true, base = tmp
   mkdirSync(home, { recursive: true });
   mkdirSync(stub);
   mkdirSync(join(release, "bin"), { recursive: true });
-  writeFileSync(join(release, "bin", "stillfail"), '#!/bin/sh\necho "stillfail $*" >> "$HOME/said"\n', { mode: 0o755 });
+  writeFileSync(join(release, "bin", "stillfail"), '#!/bin/sh\necho "${STILLFAIL_DATA:+data=$STILLFAIL_DATA }stillfail $*" >> "$HOME/said"\n', { mode: 0o755 });
   symlinkSync("stillfail", join(release, "bin", "ember"));
   writeFileSync(join(release, "VERSION"), "new\n");
   execFileSync("tar", ["-czf", join(root, "release.tar.gz"), "-C", join(root, "release"), "stillfail"]);
@@ -275,7 +275,8 @@ test("another product's station is installed beside still.fail's: its own data, 
     const plist = readFileSync(join(both.home, "Library", "LaunchAgents", "build.monoid.station.plist"), "utf8");
     assert.match(plist, new RegExp(`<key>STILLFAIL_DATA</key><string>${join(both.home, ".monoid")}</string>`));
     assert.ok(!existsSync(join(both.home, "Library", "LaunchAgents", "fail.still.station.plist")));
-    assert.match(done.said, /stillfail station enroll https:\/\/app\.monoid\.build tok --stay/);
+    // enrolled in its own data, not still.fail's: called as `stillfail`, the command would take ~/.stillfail
+    assert.ok(done.said.includes(`data=${join(both.home, ".monoid")} stillfail station enroll https://app.monoid.build tok --stay`), done.said);
     // still.fail's service is never stopped for it
     assert.doesNotMatch(done.said, /launchctl bootout \S*fail\.still\.station|org\.3720\.ember\.station/);
   } finally {
