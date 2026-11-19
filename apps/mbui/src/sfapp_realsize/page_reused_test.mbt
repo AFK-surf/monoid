@@ -7,7 +7,8 @@
 /// Screen `mode` on the workspace of real size in a phone's window, scrolled down `turns` turns of the wheel from its
 /// top: the nodes made meanwhile, and the words drawn in the window then.
 fn page_reused_scrolled(mode : String, turns : Int) -> (Int, Array[String]) {
-  let t = screen_in(mode, ("phone", 360.0, 740.0, 2, ""), "zh", changing=Some(@sfrealsize.RealSizeChanging::new()), moves_held=false)
+  let c = @sfrealsize.RealSizeChanging::new()
+  let t = @sfapptest.screen_in(mode, ("phone", 360.0, 740.0, 2, ""), "zh", source=Some(fn(base) { c.source(base) }), moves_held=false)
   t.run_for(@ui.move_most_ms)
   t.tree_frames_from_now()
   for _ in 0..<turns {

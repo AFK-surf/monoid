@@ -46,18 +46,18 @@ test "wide, a workspace of real size: a new chat's first words sent by Enter, th
   if @ui.test_at_a_rate() {
     return
   }
-  reset()
+  @sfapp.reset()
   let c = @sfrealsize.RealSizeChanging::new()
   let held = c.source(@sffixture.fixture("home"))
-  open_fixture_over("home", held)
+  @sfapp.open_fixture_over("home", held)
   // (a device's core a few ms away: the send's answers and the chat's first row value come together, after the frame
   // that put the chat up asked for that row)
   let src = @sffixture.round_trip_again(held, new_chat_send_core_ms)
   // (what moves not judged frame to frame: the frames' work is what is counted here, as the real size's sweep counts
-  // it, real_size_wbtest.mbt)
+  // it, real_size_test.mbt)
   let t = @ui.Tester::new(
-    fn(cx) { view(cx, src) },
-    tree=app_tree(src),
+    fn(cx) { @sfapp.view(cx, src) },
+    tree=@sfapp.app_tree(src),
     w=1280.0,
     h=800.0,
     platform=0,

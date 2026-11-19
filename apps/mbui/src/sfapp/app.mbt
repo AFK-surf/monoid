@@ -42,7 +42,7 @@ fn init {
 ///|
 /// A run begun before its Tester is made (the made-up core given what it opens first, then the Tester): the run
 /// before let go of first (its window's tree follows nothing this one says), then the app as at the start (reset).
-fn new_run() -> Unit {
+pub fn new_run() -> Unit {
   @ui.run_let_go()
   @ui.host_let_go()
   reset()
@@ -55,8 +55,7 @@ fn new_run() -> Unit {
 /// as that test had left it, not as at the start (2026-11-11). detlint's `reset-by-hand` holds new_run() to a Tester
 /// after it.
 // called by tests alone; here, as detlint's `reset-by-hand` wants it
-#warnings("-unused_value")
-fn fresh_app() -> Unit {
+pub fn fresh_app() -> Unit {
   new_run()
   reset_by_hand.val = false
 }
@@ -65,7 +64,7 @@ fn fresh_app() -> Unit {
 /// As at the start: Home alone, nothing chosen here yet (tests; every Tester as it starts: init above). Each global
 /// of this package is put back here (or in what this calls) as its `let` has it, or says why it is kept across runs
 /// (scripts/check.sh checks).
-fn reset() -> Unit {
+pub fn reset() -> Unit {
   files_cornered.val = false
   image_quoted_at.val = -1
   // the stack and what the app keeps of it (src/sfbase)
@@ -315,7 +314,7 @@ fn beside_where(src : Source, wide : Bool, tab : String) -> String? {
 ///|
 /// Back to Home (the stack's root), what is over the pages put down (close_overlays: a file open over the window too,
 /// as a notification tapped opens its chat over Home).
-fn home() -> Unit {
+pub fn home() -> Unit {
   close_overlays()
   nav_home()
 }
@@ -1125,15 +1124,15 @@ fn page_view(
 /// coming in from the side the ball goes to; the same place again changes nothing. `sets`, `cur`:
 /// the bar it is chosen in (none: from no side). The page left kept and the one come to taken back where it was kept
 /// (go_place_by's `kept`).
-fn go_place(at : Double, place : String, sets : Array[Array[String]], cur : Int) -> Unit {
+pub fn go_place(at : Double, place : String, sets : Array[Array[String]], cur : Int) -> Unit {
   go_place_by(at, place, sets, cur, true)
 }
 
 ///|
 /// go_place's, the page that leaves the stack's root put on its shelf and the one come to taken back from it where it is
 /// there (`kept`: sfbase's nav_root_kept), or let go and made anew (not `kept`: what a test compares a page kept with,
-/// bar_places_kept_wbtest.mbt).
-fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur : Int, kept : Bool) -> Unit {
+/// bar_places_kept_test.mbt).
+pub fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur : Int, kept : Bool) -> Unit {
   let from = match place_of(app.nav.top()) {
     Some(p) => p
     None => ""
@@ -1370,7 +1369,7 @@ fn splash_begin(owner : @view.View, at : Double) -> Unit {
 /// first page's (first_page_ms), not LOCAL_MS: the core reads what is here in its own time, slower on a phone and
 /// busy as the app comes back (what came meanwhile read in); cut short at LOCAL_MS, a chat on the device slid in as its
 /// messages' bones, they a moment later (2026-10-31, android 0.1.6303: no request to a station as the chats opened).
-let page_local_ms : Double = splash_label_ms
+pub let page_local_ms : Double = splash_label_ms
 
 ///|
 /// How long the app's first page waits for what it shows (all of it the core's on the device, as a page opening's):
@@ -1378,7 +1377,7 @@ let page_local_ms : Double = splash_label_ms
 /// then and answers more slowly than in a running app; cut short at LOCAL_MS, the page came in pieces (2026-10-27,
 /// the sidebar by itself, then the chat's bones, then its messages), where an opening quicker than that is meant to be
 /// one picture and then the page (splash).
-let first_page_ms : Double = splash_label_ms
+pub let first_page_ms : Double = splash_label_ms
 
 ///|
 /// Whether the core has answered (a value or why not) for what page `p` of workspace `w` shows as it opens (App.kt

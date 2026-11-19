@@ -91,7 +91,7 @@ let chat_family : Array[String] = ["chats", "archive"]
 
 ///|
 /// The places' middles on a bar `w` wide holding `n` with the notch `k` open.
-fn bar_centres(w : Double, k : Double, n : Int) -> Array[Double] {
+pub fn bar_centres(w : Double, k : Double, n : Int) -> Array[Double] {
   let closed = (w - 2.0 * c0) / 3.0
   let open = w / 2.0 - (drop / 2.0 + notch_gap) - 6.0 - ball_rest / 2.0 - c0
   let sp = closed + (open - closed) * k
@@ -795,7 +795,7 @@ fn place_label(place : String) -> String {
 
 ///|
 /// The place a page is the top of (none: it is not a place's).
-fn place_of(page : Page) -> String? {
+pub fn place_of(page : Page) -> String? {
   match page {
     Home => Some("chats")
     Files => Some("files")

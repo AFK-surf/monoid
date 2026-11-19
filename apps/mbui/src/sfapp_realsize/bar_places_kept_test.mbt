@@ -13,7 +13,7 @@ let kept_bar : Array[String] = ["chats", "profiles", "connects", "usage"]
 ///|
 /// The place `place` gone to at an event now, as the bar's switch goes (go_place_by: kept or made anew).
 fn kept_go(t : @ui.Tester, place : String, kept : Bool) -> Unit {
-  @ui.view_tree().unwrap().event(t.time(), fn() { go_place_by(t.time(), place, [kept_bar], 0, kept) })
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfapp.go_place_by(t.time(), place, [kept_bar], 0, kept) })
 }
 
 ///|
@@ -40,14 +40,14 @@ fn kept_walk(
   String,
 ) {
   let (t, c, _) = home_again_open("kept \{place} \{kept}", @ui.frame_period_default)
-  bars_picked.set(Some(([kept_bar], 0)))
-  t.run_for(kept_switch_over_ms)
+  @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
   if place != "chats" {
     kept_go(t, place, kept)
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
   }
   kept_go(t, "profiles", kept)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   let mut told = ""
   if changed != "" {
     for i, way in c.ways() {
@@ -63,12 +63,12 @@ fn kept_walk(
         }
       }
     }
-    t.run_for(kept_few_frames_ms)
+    t.run_for(@sfapptest.kept_few_frames_ms)
   }
   kept_go(t, place, kept)
   t.run_for(soon)
   let early = kept_drawn(t)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   let late = kept_drawn(t)
   (early, late, told)
 }
@@ -127,10 +127,10 @@ fn kept_within(
   then : Double,
 ) -> (Array[(String, Double, Double, Double, Double, Double)], Array[(Double, Double, Double, Double, Int64)]) {
   let (t, _, _) = home_again_open("kept within \{kept}", @ui.frame_period_default)
-  bars_picked.set(Some(([kept_bar], 0)))
-  t.run_for(kept_switch_over_ms)
+  @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
   kept_go(t, "connects", kept)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   kept_go(t, "chats", kept)
   t.run_for(away)
   kept_go(t, "connects", kept)
@@ -157,7 +157,7 @@ fn kept_reachable(t : @ui.Tester, tabs : Int) -> (String, Array[String], Map[Str
   let nodes : Map[String, @view.NodeId] = Map([])
   for _ in 0..<tabs {
     t.tab()
-    t.run_for(kept_tab_gap_ms)
+    t.run_for(@sfapptest.kept_tab_gap_ms)
     match t.focused() {
       Some(s) =>
         if !focused.contains(s.label) {
@@ -175,13 +175,13 @@ fn kept_reachable(t : @ui.Tester, tabs : Int) -> (String, Array[String], Map[Str
 
 ///|
 test "bar places kept: Home at rest on the shelf is not pressed, focused or read out, and its search field takes no focus back as a layer elsewhere closes" {
-  new_run()
-  let src = fixture("home")
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  @sfapp.new_run()
+  let src = @sffixture.fixture("home")
+  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w=390.0, h=844.0, platform=2)
   t.set_a11y(true)
-  bars_picked.set(Some(([kept_bar], 0)))
-  t.run_for(kept_switch_over_ms)
-  let w = @signals.untracked(fn() { workspace_in_view(src).0.unwrap() })
+  @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let w = @signals.untracked(fn() { @sfbase.workspace_in_view(src).0.unwrap() })
   // (Home's own: its filter's label, a row's title, read out and reached by Tab)
   let (home_said, home_tabs, home_nodes) = kept_reachable(t, 12)
   let filter_label = home_tabs.iter().find_first(fn(l) { l.contains("筛选会话") })
@@ -189,19 +189,19 @@ test "bar places kept: Home at rest on the shelf is not pressed, focused or read
   assert_true(home_said.contains("给设置页加一个深色模式开关"), msg="Home's row read out")
   // (its search field come up and typed in, then the place switched with no finger: 连接)
   t.drag(195.0, 300.0, 195.0, 420.0, steps=20)
-  t.run_for(kept_glide_over_ms)
+  t.run_for(@sfapptest.kept_glide_over_ms)
   match t.words().iter().find_first(fn(x) { x.0.contains("搜索") && x.2 > 60.0 }) {
     Some(f) => {
       t.tap(f.1 + 4.0, f.2 + 4.0)
-      t.run_for(kept_switch_over_ms)
+      t.run_for(@sfapptest.kept_switch_over_ms)
       t.type_text("abcq")
-      t.run_for(kept_switch_over_ms)
+      t.run_for(@sfapptest.kept_switch_over_ms)
     }
     None => ()
   }
   assert_eq(t.focused().map(fn(s) { s.value }), Some("abcq"))
   kept_go(t, "connects", true)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   // (on 连接, Home on the shelf: none of it read out, reached by Tab or pressed where it was)
   let (said, tabs, _) = kept_reachable(t, 12)
   // (what of Home took the focus there takes none on the shelf: Tree::takes_keys, what Tab and what gives focus ask)
@@ -210,59 +210,59 @@ test "bar places kept: Home at rest on the shelf is not pressed, focused or read
   }
   assert_false(said.contains("给设置页加一个深色模式开关"), msg="Home's row not read out")
   assert_false(tabs.iter().any(fn(l) { l.contains("筛选会话") || l.contains("搜索") }), msg="nothing of Home's reached by Tab: \{Repr(tabs)}")
-  let filter = filter_of(src, w.id)
+  let filter = @sfbase.filter_of(src, w.id)
   t.tap(40.0, 120.0)
-  t.run_for(kept_switch_over_ms)
-  assert_eq(filter_of(src, w.id), filter)
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  assert_eq(@sfbase.filter_of(src, w.id), filter)
   // (a layer opened on 连接 and closed: what had the focus before it, nothing of Home's)
   @ui.view_tree()
   .unwrap()
-  .event(t.time(), fn() { @sfpages.filter_menu(@sf.Beside::At(20.0, 60.0, 34.0, 34.0), filter_of(src, w.id), fn(_) {  }) })
-  t.run_for(kept_switch_over_ms)
+  .event(t.time(), fn() { @sfpages.filter_menu(@sf.Beside::At(20.0, 60.0, 34.0, 34.0), @sfbase.filter_of(src, w.id), fn(_) {  }) })
+  t.run_for(@sfapptest.kept_switch_over_ms)
   assert_true(@sf.presenting())
   t.back()
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   assert_false(@sf.presenting())
   assert_false(t.focused().map(fn(s) { s.value }) == Some("abcq"), msg="Home's field took no focus back")
   // (back on Home: its words as they were typed, its field not focused till it is pressed, as any switch leaves it)
   kept_go(t, "chats", true)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   assert_true(t.words().iter().any(fn(x) { x.0.contains("abcq") }) || @sfpages.search_bar_away(), msg="its search as it was left")
   assert_true(t.a11y_dump().contains("给设置页加一个深色模式开关") || @sfpages.search_bar_away(), msg="read out again")
 }
 
 ///|
 test "bar places kept: on 大屏 a place switched to from the rail is put in place as before, the one left let go, nothing kept" {
-  let t = wide_tester([])
-  t.run_for(kept_switch_over_ms)
-  let first = app.nav.top_stay().0
+  let t = @sfapptest.wide_tester([])
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let first = @sfbase.app.nav.top_stay().0
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("connects") |> ignore })
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("chats") |> ignore })
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   // (Home made anew in its place: another entry, none on the shelf)
-  println("bar-kept wide: \{Repr(app.nav.pages().map(place_of))}")
-  assert_true(app.nav.pages()[0] == Home)
-  assert_true(app.nav.top_stay().0 != first)
-  assert_eq(app.nav.shelved(Home), None)
-  assert_eq(app.nav.shelved(Place("connects")), None)
+  println("bar-kept wide: \{Repr(@sfbase.app.nav.pages().map(@sfapp.place_of))}")
+  assert_true(@sfbase.app.nav.pages()[0] == Home)
+  assert_true(@sfbase.app.nav.top_stay().0 != first)
+  assert_eq(@sfbase.app.nav.shelved(Home), None)
+  assert_eq(@sfbase.app.nav.shelved(Place("connects")), None)
 }
 
 ///|
 test "bar places kept: a place switched away from while its way in goes, and not come back to: the app at rest once the bar's own ways end" {
-  new_run()
-  let src = fixture("home")
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  bars_picked.set(Some(([kept_bar], 0)))
-  t.run_for(kept_switch_over_ms)
+  @sfapp.new_run()
+  let src = @sffixture.fixture("home")
+  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w=390.0, h=844.0, platform=2)
+  @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
   kept_go(t, "connects", true)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   // (Home again, then 连接 again within Home's way in: Home put by with its way in going)
   kept_go(t, "chats", true)
-  t.run_for(kept_tab_gap_ms)
+  t.run_for(@sfapptest.kept_tab_gap_ms)
   kept_go(t, "connects", true)
-  t.run_for(kept_switch_over_ms)
-  to_bar_rest(t)
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  @sfapptest.to_bar_rest(t)
   t.assert_idle()
   assert_eq(t.idle_said(), None)
 }
@@ -273,20 +273,20 @@ test "bar places kept: a place switched away from while its way in goes, and not
 /// its top, as it was left and where those are once it is come back to, and where the top's are as it is left.
 fn kept_remember(place : String, choose : (@ui.Tester) -> Unit) -> ((String, Array[Double]), (String, Array[Double]), Array[Double], Array[Double]) {
   let (t, _, _) = home_again_open("remember \{place}", @ui.frame_period_default)
-  bars_picked.set(Some(([kept_bar], 0)))
-  t.run_for(kept_switch_over_ms)
+  @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
   kept_go(t, place, true)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   choose(t)
   let top = kept_mark(t)
   t.drag(180.0, 560.0, 180.0, 260.0, steps=20)
-  t.run_for(kept_glide_over_ms)
+  t.run_for(@sfapptest.kept_glide_over_ms)
   let left = kept_mark(t)
   let top_now = kept_mark_at(t, top.0)
   kept_go(t, "profiles", true)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   kept_go(t, place, true)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   let back = kept_mark_at(t, left.0)
   println("bar-kept remember \{place}: at its top \{Repr(top)}, left \{Repr(left)} (the top's words then at \{Repr(top_now)}), come back \{Repr(back)}")
   (top, left, top_now, back)
@@ -338,17 +338,17 @@ test "bar places kept: Home's rows changed as it rested are there at once as it 
   // row_size_ms, as were each new to the list)
   for kept in [true, false] {
     let (t, c, _) = home_again_open("kept rows \{kept}", @ui.frame_period_default)
-    bars_picked.set(Some(([kept_bar], 0)))
-    t.run_for(kept_switch_over_ms)
+    @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(@sfapptest.kept_switch_over_ms)
     kept_go(t, "connects", kept)
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     assert_true(kept_chats_changed(c, false))
-    t.run_for(kept_few_frames_ms)
+    t.run_for(@sfapptest.kept_few_frames_ms)
     kept_go(t, "chats", kept)
     t.run_for(@ui.frame_period_default)
     assert_true(@sfpages.rows_rest() <= t.time(), msg="kept \{kept}: no row coming or going as Home is switched back to")
     // (changed again while it is the page shown: its rows make their way as ever)
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     assert_true(kept_chats_changed(c, true))
     t.run_for(@ui.frame_period_default)
     assert_true(@sfpages.rows_rest() > t.time(), msg="kept \{kept}: rows moving as the list changes in view")
@@ -366,26 +366,26 @@ test "bar places kept: Home taken back over a core that answers late shows what 
   // again and shown only as the core answered: the long jobs and the rows under 今天 gone for the frames between, every
   // row then made again (2202 nodes, 50–68 ms) and coming in as were it new, drawn as slivers through that frame)
   let c = @sfrealsize.RealSizeChanging::new()
-  let src : Ref[Source?] = Ref(None)
+  let src : Ref[@sfbase.Source?] = Ref(None)
   let made = fn() {
     match src.val {
       Some(s) => s
       None => {
-        reset()
-        let s = { ..round_trip_again(c.source(@sffixture.fixture("home")), kept_core_late_ms), reads_ahead: fn() { true } }
-        open_fixture_over("home", s)
+        @sfapp.reset()
+        let s = { ..@sffixture.round_trip_again(c.source(@sffixture.fixture("home")), kept_core_late_ms), reads_ahead: fn() { true } }
+        @sfapp.open_fixture_over("home", s)
         src.val = Some(s)
         s
       }
     }
   }
   let t = @ui.Tester::new(
-    fn(x) { view(x, made()) },
-    tree=fn(root) { app_tree(made())(root) },
+    fn(x) { @sfapp.view(x, made()) },
+    tree=fn(root) { @sfapp.app_tree(made())(root) },
     w=home_again_window.1,
     h=home_again_window.2,
     platform=home_again_window.3,
-    window_corner=test_window_corner(home_again_window.3),
+    window_corner=@sfapptest.test_window_corner(home_again_window.3),
     corners_held=false,
     words_over_held=false,
     env=[("MBUI_LOCALE", "zh")],
@@ -393,13 +393,13 @@ test "bar places kept: Home taken back over a core that answers late shows what 
   // (the core's client keeping what the places open on as it lets it go, as src/stillfail's main has it)
   @core.client.keep(@sfbase.topic_kept)
   t.motion_unjudged(true)
-  t.run_for(kept_switch_over_ms * 3.0)
-  bars_picked.set(Some(([kept_bar], 0)))
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms * 3.0)
+  @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
   let rows_before = t.words().filter(fn(w) { w.2 > 120.0 && w.2 < home_again_window.2 - 120.0 && w.5 > 0.99 }).length()
   t.tree_frames_from_now()
   kept_go(t, "profiles", true)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   // (what 额度 made, a place made once as nodes since the profiles' list was: put by as it is left, kept)
   let away_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
   t.tree_frames_from_now()
@@ -408,7 +408,7 @@ test "bar places kept: Home taken back over a core that answers late shows what 
   let mut made_all = 0
   let mut let_go_all = 0
   let mut moving = false
-  while t.time() < start + kept_switch_over_ms {
+  while t.time() < start + @sfapptest.kept_switch_over_ms {
     t.frame()
     if @sfpages.rows_rest() > t.time() {
       moving = true
@@ -432,20 +432,20 @@ test "bar places kept: a place's tab tapped while the ball is on its way from it
   // (taps on a frame's moment, as a device's input is taken: the ball's speed, which its stretch and height draw, was
   // taken off in the frame after the second tap by a spring stiffer than the one that gave it, its height up 3.6 then
   // 0.2 at 60 a second: sizes_steady's, as the bar's way is judged at 60 and 120)
-  new_run()
-  let src = fixture("home")
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  bars_picked.set(Some(([kept_bar], 0)))
-  t.run_for(kept_switch_over_ms)
-  let (xs, y) = today_bar_at()
+  @sfapp.new_run()
+  let src = @sffixture.fixture("home")
+  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w=390.0, h=844.0, platform=2)
+  @sfbase.bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let (xs, y) = @sfapptest.today_bar_at()
   let connects = kept_bar.search("connects").unwrap()
   t.tap(xs[connects], y)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   t.tap(xs[0], y)
-  t.run_for(kept_tab_gap_ms)
+  t.run_for(@sfapptest.kept_tab_gap_ms)
   t.tap(xs[connects], y)
-  t.run_for(kept_switch_over_ms)
-  to_bar_rest(t)
-  assert_eq(place_of(app.nav.top()), Some("connects"))
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  @sfapptest.to_bar_rest(t)
+  assert_eq(@sfapp.place_of(@sfbase.app.nav.top()), Some("connects"))
   t.assert_idle()
 }

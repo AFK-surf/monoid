@@ -33,8 +33,8 @@ fn sd_late_other(name : String) -> Double {
 /// The workspace of real size (two workspaces, both holding it; a third, 第三个, where `three`) answered through the
 /// app's own client of its core: the chats' list `list_ms` after it is asked, what Home opens on besides at most 15 ms,
 /// the rest 10 to 40 ms by name. `again`: each topic late (60 ms) only the first time it is read, at once after it.
-fn sd_source(list_ms : Double, three? : Bool = false, again? : Bool = false) -> Source {
-  let base = @sfrealsize.RealSizeChanging::new().source(fixture("home"))
+fn sd_source(list_ms : Double, three? : Bool = false, again? : Bool = false) -> @sfbase.Source {
+  let base = @sfrealsize.RealSizeChanging::new().source(@sffixture.fixture("home"))
   let base = if three {
     {
       ..base,
@@ -58,16 +58,16 @@ fn sd_source(list_ms : Double, three? : Bool = false, again? : Bool = false) -> 
     }
   }
   if again {
-    { ..round_trip_by(base, fn() { 60.0 }), reads_ahead: fn() { true } }
+    { ..@sffixture.round_trip_by(base, fn() { 60.0 }), reads_ahead: fn() { true } }
   } else {
-    { ..round_trip_again(base, 0.0, late~), reads_ahead: fn() { true } }
+    { ..@sffixture.round_trip_again(base, 0.0, late~), reads_ahead: fn() { true } }
   }
 }
 
 ///|
 /// A run begun, the app over `src` in a window `w` by `h` on `platform`, at rest on ws1.
-fn sd_app(src : Source, w : Double, h : Double, platform : Int) -> @ui.Tester {
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+fn sd_app(src : @sfbase.Source, w : Double, h : Double, platform : Int) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w~, h~, platform~)
   t.draw()
   t.run_for(sd_opening_ms)
   t
@@ -75,8 +75,8 @@ fn sd_app(src : Source, w : Double, h : Double, platform : Int) -> @ui.Tester {
 
 ///|
 /// The workspace in view.
-fn sd_ws(src : Source) -> String {
-  @signals.untracked(fn() { workspace_in_view(src).0.map(fn(w) { w.id }).unwrap_or("") })
+fn sd_ws(src : @sfbase.Source) -> String {
+  @signals.untracked(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }).unwrap_or("") })
 }
 
 ///|
@@ -120,7 +120,7 @@ struct SdFrame {
 ///|
 /// Every frame from the press `press` (done now) to `upto` after it, each as it is drawn (`follow`: the words the
 /// presented is followed by), the press's own first; then the display's frames on.
-fn sd_frames(t : @ui.Tester, src : Source, follow : String, upto : Double, press : () -> Unit, between? : (Double, () -> Unit)) -> Array[SdFrame] {
+fn sd_frames(t : @ui.Tester, src : @sfbase.Source, follow : String, upto : Double, press : () -> Unit, between? : (Double, () -> Unit)) -> Array[SdFrame] {
   let start = t.time()
   let out : Array[SdFrame] = []
   t.tree_frames_from_now()
@@ -187,7 +187,7 @@ fn sd_faults(name : String, frames : Array[SdFrame], open : (Double, Double), to
 test "a workspace picked in the sheet on 小屏 at real size, the list answered 15, 25, 40, 100 ms late and past switch_wait_ms: the sheet open till the switch, set off closing in its frame, no node made or laid out as it goes" {
   let faults : Array[String] = []
   for list_ms in [15.0, 25.0, 40.0, 100.0, 600.0] {
-    new_run()
+    @sfapp.new_run()
     let src = sd_source(list_ms)
     let t = sd_app(src, 390.0, 844.0, 2)
     sd_open_sheet(t)
@@ -209,7 +209,7 @@ test "a workspace picked in the sheet on 小屏 at real size, the list answered 
 
 ///|
 test "a workspace picked in the sheet, all it opens on answered already: switched and the sheet set off closing in the press's frame" {
-  new_run()
+  @sfapp.new_run()
   let src = sd_source(0.0, again=true)
   let t = sd_app(src, 390.0, 844.0, 2)
   let tree = @ui.view_tree().unwrap()
@@ -236,7 +236,7 @@ test "a workspace picked in the sheet, all it opens on answered already: switche
 
 ///|
 test "the sheet closed by hand while the switch waits: the switch done still, the sheet not opened or closed again" {
-  new_run()
+  @sfapp.new_run()
   let src = sd_source(100.0)
   let t = sd_app(src, 390.0, 844.0, 2)
   sd_open_sheet(t)
@@ -267,7 +267,7 @@ test "the sheet closed by hand while the switch waits: the switch done still, th
 
 ///|
 test "another workspace picked in the sheet while the switch to the first waits: one switch, to it, the sheet open till then" {
-  new_run()
+  @sfapp.new_run()
   let src = sd_source(150.0, three=true)
   let t = sd_app(src, 390.0, 844.0, 2)
   sd_open_sheet(t)
@@ -288,7 +288,7 @@ test "another workspace picked in the sheet while the switch to the first waits:
 
 ///|
 test "a workspace picked in the popover on 大屏 at real size over the late core: the popover as it was till the switch, set off closing in its frame" {
-  new_run()
+  @sfapp.new_run()
   let src = sd_source(25.0)
   let t = sd_app(src, 1280.0, 800.0, 0)
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.open_workspaces(src, At(32.0, 16.0, 150.0, 38.0), compact=true) })
@@ -342,7 +342,7 @@ fn sd_sheet_seen(t : @ui.Tester) -> Array[(String, String, Double)]? {
 /// with the workspace in view then.
 fn sd_sheet_frames(
   t : @ui.Tester,
-  src : Source,
+  src : @sfbase.Source,
   upto : Double,
   press : () -> Unit,
 ) -> Array[(String, Array[(String, String, Double)]?)] {
@@ -395,7 +395,7 @@ fn sd_sheet_faults(
 test "a workspace picked in the sheet on 小屏 at real size: from the press till the sheet is gone it shows what it showed at the press, its rows, their order and the one in use; opened again, the new one is in use" {
   let faults : Array[String] = []
   for list_ms in [0.0, 25.0, 100.0, 600.0] {
-    new_run()
+    @sfapp.new_run()
     let src = if list_ms == 0.0 { sd_source(0.0, again=true) } else { sd_source(list_ms) }
     let t = sd_app(src, 390.0, 844.0, 2)
     if list_ms == 0.0 {
@@ -439,7 +439,7 @@ test "a workspace picked in the sheet on 小屏 at real size: from the press til
 
 ///|
 test "a workspace picked in the popover on 大屏 at real size: from the press till it is gone it shows what it showed at the press" {
-  new_run()
+  @sfapp.new_run()
   let src = sd_source(25.0)
   let t = sd_app(src, 1280.0, 800.0, 0)
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.open_workspaces(src, At(32.0, 16.0, 150.0, 38.0), compact=true) })

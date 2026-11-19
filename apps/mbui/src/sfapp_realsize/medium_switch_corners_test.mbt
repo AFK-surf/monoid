@@ -7,9 +7,9 @@
 
 ///|
 fn medium_switch_walk(w : Double) -> Unit raise {
-  new_run()
+  @sfapp.new_run()
   let src = sd_source(25.0)
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=900.0, platform=2)
+  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w~, h=900.0, platform=2)
   t.draw()
   t.run_for(sd_opening_ms)
   // (a chat of the list opened, as a hand opens it)

@@ -506,7 +506,7 @@ if part ts; then
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || [ $core_tests = 1 ]; then wasm_pkg; fi
   # The mbui app's budgets only fall (scripts/mbui-budgets.ts): a raise says why in its commit's message. A commit's own
   # is checked as its message is written (.githooks/commit-msg); a push's and CI's, here, by the range's messages.
-  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_wbtest\.mbt$|^scripts/mbui-budgets\.ts$'; then
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp(_realsize)?/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_(wb)?test\.mbt$|^scripts/mbui-budgets\.ts$'; then
     step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
   fi
   if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi

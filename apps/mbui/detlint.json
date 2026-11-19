@@ -195,6 +195,9 @@
       "new_run",
       "fresh_app",
       "reset",
+      "@sfapp.new_run",
+      "@sfapp.fresh_app",
+      "@sfapp.reset",
       "@sfbase.reset"
     ],
     "reads": [
@@ -207,7 +210,8 @@
   },
   "reset_by_hand": {
     "names": [
-      "new_run"
+      "new_run",
+      "@sfapp.new_run"
     ]
   },
   "signals": {

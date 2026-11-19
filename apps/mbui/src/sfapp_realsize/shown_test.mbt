@@ -48,7 +48,7 @@ fn shown_fault(at : String, name : String) -> String? {
   if !shown_like_a_kind(name) {
     Some("\{at}: shows \"\{name}\", no kind's name (letters, one or two words): an id or a title got in")
   } else if !shown_known.contains(name) {
-    Some("\{at}: shows \"\{name}\", not in shown_known (shown_wbtest.mbt): a kind, never which? add \"\{name}\" there")
+    Some("\{at}: shows \"\{name}\", not in shown_known (shown_test.mbt): a kind, never which? add \"\{name}\" there")
   } else {
     None
   }

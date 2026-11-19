@@ -5,6 +5,9 @@
 // not scrolling to the card's foot).
 
 ///|
+let usage_late_bar : Array[String] = ["chats", "profiles", "connects", "usage"]
+
+///|
 test "用量: a person picked in the breakdown, their view answered late, the card takes its room whole" {
   for case in [(2, 0.0), (2, 100.0), (2, 400.0), (1, 0.0), (1, 100.0)] {
     let (platform, ms) = case
@@ -14,9 +17,9 @@ test "用量: a person picked in the breakdown, their view answered late, the ca
     })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform~, scale=3.0)
     t.set_rows_on_pixels(true)
-    bars_picked.set(Some(([kept_bar], 0)))
+    bars_picked.set(Some(([usage_late_bar], 0)))
     t.run_for(kept_switch_over_ms)
-    kept_go(t, "usage", true)
+    @ui.view_tree().unwrap().event(t.time(), fn() { go_place_by(t.time(), "usage", [usage_late_bar], 0, true) })
     t.run_for(kept_switch_over_ms)
     only_late_tap(t, "人")
     t.run_for(kept_switch_over_ms)

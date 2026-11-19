@@ -76,6 +76,17 @@ test("a table not changed is not read; one taken away raises nothing", () => {
   assert.deepEqual(judge(() => ({ before: table(known, [["a", [1, 1, 1]]]), after: undefined }), [known.path]), []);
 });
 
+test("a moved table reads its former path: identical or lowered bars pass, any raise fails", () => {
+  const oldPath = known.former![0]!;
+  const prev = table(known, [["phone home", [434, 499, 92]]]);
+  const same = table(known, [["phone home", [434, 499, 92]]]);
+  const higher = table(known, [["phone home", [434, 500, 92]]]);
+  const readMoved = (afterSrc: string) => (path: string) =>
+    path === known.path ? { before: undefined, after: afterSrc } : path === oldPath ? { before: prev, after: undefined } : { before: undefined, after: undefined };
+  assert.deepEqual(judge(readMoved(same), [oldPath, known.path]), []);
+  assert.deepEqual(judge(readMoved(higher), [oldPath, known.path]).map(describe), [`${known.path}: "phone home" laid_out 499 -> 500`]);
+});
+
 test("the four tables as they are read whole, each the same as itself", () => {
   for (const b of BUDGETS) {
     const src = readFileSync(join(root, b.path), "utf8");

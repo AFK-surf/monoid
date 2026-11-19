@@ -26,9 +26,9 @@ let switch_frame_most : (Int, Int, Int) = (764, 775, 497)
 /// The nodes each of the first `n` rows of the real workspace's list is made of, alone, at rest, in a window `w` by
 /// `h` on `platform` with the list standing `at`.
 fn row_nodes_each(n : Int, w : Double, h : Double, platform : Int, at : @sf.ListAt) -> Array[Int] {
-  new_run()
+  @sfapp.new_run()
   @sf.set_words(@sfbase.fill)
-  let src = @sfrealsize.RealSizeChanging::new().source(fixture("home"))
+  let src = @sfrealsize.RealSizeChanging::new().source(@sffixture.fixture("home"))
   let items : Array[@sfbase.ChatItem] = []
   match @signals.untracked(fn() { @sfbase.chats_of(src, "ws1", "all").0 }) {
     Some(view) =>
@@ -75,7 +75,7 @@ test "a chat's row of the workspace of real size is made of no more nodes than i
 
 ///|
 test "the frame a workspace is switched in on 小屏 at real size makes, lets go and lays out no more than its bar" {
-  new_run()
+  @sfapp.new_run()
   let src = sd_source(25.0)
   let t = sd_app(src, 390.0, 844.0, 2)
   sd_open_sheet(t)

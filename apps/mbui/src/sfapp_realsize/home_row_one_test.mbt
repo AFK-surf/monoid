@@ -6,7 +6,7 @@
 ///|
 test "a chat's row changed on Home wakes its own row alone, not every row the list shows" {
   let c = @sfrealsize.RealSizeChanging::new()
-  let t = screen_in("home", home_again_window, "zh", changing=Some(c), moves_held=false)
+  let t = @sfapptest.screen_in("home", home_again_window, "zh", source=Some(fn(base) { c.source(base) }), moves_held=false)
   real_size_change_said()
   let ways = c.ways()
   guard ways.search_by(fn(w) { @sfrealsize.real_size_way(w.0, w.1) == "chats" }) is Some(at) else {

@@ -7,7 +7,7 @@
 
 ## Chat block reuse (`chat_body_shape`)
 
-- Off-screen message blocks recycle into matching shapes (`chat_body_shape`, `View::scrolls_window` `reused`). Always read `key()` reactively inside a block rather than capturing it at creation (for quote places, selections, flashes, menu bands, or long-message slices), verified by `chat_body_reuse_wbtest.mbt` and `chat_nodes_open_budget_wbtest.mbt`.
+- Off-screen message blocks recycle into matching shapes (`chat_body_shape`, `View::scrolls_window` `reused`). Always read `key()` reactively inside a block rather than capturing it at creation (for quote places, selections, flashes, menu bands, or long-message slices), verified by `chat_body_reuse_wbtest.mbt` and `apps/mbui/src/sfapp_realsize/chat_nodes_open_budget_test.mbt`.
 - Store per-block UI state (code wrap/copy flags, horizontal scroll offsets for tables, code, and formulas) in mbui's key-scoped reuse store (`View::reused_bool`, `View::on_reused`, `libs/mbui/src/view/reused_state.mbt`), never rebuilding parts per key.
 - Include creation-only structure (message paths, agent cards, chat thread) in the block make key. Detlint `reused-untracked-key` counts untracked key reads inside `make_reused` and only falls.
 

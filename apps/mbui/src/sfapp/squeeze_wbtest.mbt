@@ -29,7 +29,7 @@ fn test_window_corner(platform : Int) -> Double {
 /// `mode` in window `win` (its name, size, platform and the size class its host says, "" none) in `lang`, a moment
 /// after it opens (what it opens with over), drawn: the corner and squeeze tests' (corners_wbtest.mbt); with `said`, what
 /// people, agents and stations wrote in it at its longest (squeeze_said_wbtest.mbt); with `font_scale`, the system's
-/// size of words (words_large_wbtest.mbt); with `latin`, ASCII measured as a real face does; with `changing`, on the workspace of real size (real_size_wbtest.mbt).
+/// size of words (words_large_wbtest.mbt); with `latin`, ASCII measured as a real face does.
 /// `loc`: where it is asked, the Tester's place where its motion is not judged (`moves_held` false): its file then the
 /// caller's, so `MOTION unjudged` names that file, never this one, whose bars the screens judged here keep
 /// (motion_bars.sh skips every bar of a file a Tester not judged was made in). Judged, made here as ever.
@@ -39,7 +39,6 @@ fn screen_in(
   win : (String, Double, Double, Int, String),
   lang : String,
   said? : Bool = false,
-  changing? : @sfrealsize.RealSizeChanging? = None,
   dark? : Bool = false,
   font_scale? : Double = 1.0,
   moves_held? : Bool = true,
@@ -53,27 +52,17 @@ fn screen_in(
     match src.val {
       Some(s) => s
       None => {
-        let s = match changing {
-          // (`changing`: what the core sends each topic on a workspace of real size, as a device holds it and takes its
-          // changes: real_size_wbtest.mbt. What the mode puts up over its pages (a sheet, a panel) opened over it as
-          // well, reading what the pages read)
-          Some(c) => {
-            reset()
-            let s = c.source(@sffixture.fixture(mode))
-            open_fixture_over(mode, s)
-            s
-          }
-          None if said => {
-            // (`said`: what people, agents and stations wrote in it at its longest, and each figure the core writes at
-            // its widest: squeeze_said_wbtest.mbt. What the mode puts up over its pages (a panel, the agent's sheet)
-            // opened over that too, reading it: until 2026-11-14 they were opened over the fixture as it was, so the
-            // agent's sheet was never seen at its longest)
-            reset()
-            let s = said_longest_source(@sffixture.fixture(mode))
-            open_fixture_over(mode, s)
-            s
-          }
-          None => fixture_app(mode)
+        let s = if said {
+          // (`said`: what people, agents and stations wrote in it at its longest, and each figure the core writes at
+          // its widest: squeeze_said_wbtest.mbt. What the mode puts up over its pages (a panel, the agent's sheet)
+          // opened over that too, reading it: until 2026-11-14 they were opened over the fixture as it was, so the
+          // agent's sheet was never seen at its longest)
+          reset()
+          let s = said_longest_source(@sffixture.fixture(mode))
+          open_fixture_over(mode, s)
+          s
+        } else {
+          fixture_app(mode)
         }
         src.val = Some(s)
         s

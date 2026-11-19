@@ -53,7 +53,7 @@ fn chat_vs_cut(v : Json, card : Bool) -> Json {
 ///|
 /// `src` with each chat's value cut as `chat_vs_cut` says, the same value as long as its version is (so what reads it
 /// takes it as no change).
-fn chat_vs_source(src : Source, card : Bool) -> Source {
+fn chat_vs_source(src : @sfbase.Source, card : Bool) -> @sfbase.Source {
   if card {
     return src
   }
@@ -92,12 +92,12 @@ fn chat_vs_again(
   motion? : Bool = false,
 ) -> (Array[VsFrame], (Int, Int)) raise {
   let (_, w, h, platform) = win
-  let src : Ref[Source?] = Ref(None)
+  let src : Ref[@sfbase.Source?] = Ref(None)
   let made = fn() {
     match src.val {
       Some(s) => s
       None => {
-        reset()
+        @sfapp.reset()
         @sfbase.chat_page_nodes.set(nodes)
         // (Home as these bars were counted on it, its 看板 key on: 实验性功能's 对话列表看板视图, off by default since, takes
         // the key off Home under both pages alike)
@@ -108,24 +108,24 @@ fn chat_vs_again(
           0.0,
           delta_of=fn(name, params) { c.last_ops(name, params) },
         )
-        open_fixture_over("chat", s)
+        @sfapp.open_fixture_over("chat", s)
         src.val = Some(s)
         s
       }
     }
   }
   let t = @ui.Tester::new(
-    fn(c) { view(c, made()) },
-    tree=fn(root) { app_tree(made())(root) },
+    fn(c) { @sfapp.view(c, made()) },
+    tree=fn(root) { @sfapp.app_tree(made())(root) },
     w~,
     h~,
     platform~,
-    window_corner=test_window_corner(platform),
+    window_corner=@sfapptest.test_window_corner(platform),
     env=if motion { [("MBUI_LOCALE", "zh")] } else { [("MBUI_LOCALE", "zh"), ("MBUI_REDUCE_MOTION", "1")] },
   )
-  t.run_for(squeeze_opening)
+  t.run_for(@sfapptest.squeeze_opening)
   t.frame()
-  guard app.nav.top() is Chat(r) else { fail("not on the chat") }
+  guard @sfbase.app.nav.top() is Chat(r) else { fail("not on the chat") }
   let frames : Array[VsFrame] = []
   let last_tree = fn() {
     let j = @ui.journal()
@@ -159,8 +159,8 @@ fn chat_vs_again(
     }),
   )
   // (back to Home, the chat held by the core's client)
-  app.nav.pop() |> ignore
-  t.run_for(squeeze_opening)
+  @sfbase.app.nav.pop() |> ignore
+  t.run_for(@sfapptest.squeeze_opening)
   // (the shell's old view at rest: as the last frame at Home that built it had it)
   let mut idle = (0, 0)
   for f in frames {
@@ -169,10 +169,10 @@ fn chat_vs_again(
     }
   }
   frames.clear()
-  @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(r)) })
-  t.run_for(squeeze_opening)
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.open_page(Chat(r)) })
+  t.run_for(@sfapptest.squeeze_opening)
   t.each_frame(None)
-  assert_true(app.nav.top() is Chat(_), msg="the chat again")
+  assert_true(@sfbase.app.nav.top() is Chat(_), msg="the chat again")
   (frames, idle)
 }
 

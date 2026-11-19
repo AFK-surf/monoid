@@ -225,7 +225,7 @@ fn real_size_screen(
   // (what moves not judged frame to frame: putting a way's value back whole before the next cause is the sweep's own,
   // nothing a device does, and a list's rows go back in one frame then: a chat's row 300 went 67 px as its message 301
   // went, 2026-11-11)
-  let t = screen_in(mode, win, "zh", changing=Some(c), moves_held=false)
+  let t = @sfapptest.screen_in(mode, win, "zh", source=Some(fn(base) { c.source(base) }), moves_held=false)
   let opening = real_size_most()
   real_size_change_said()
   let rows : Array[(String, (Int, Int, Int, Int, Int, Int, Int))] = []
@@ -276,7 +276,7 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
   // These fixtures differ only in their pick topic. The real workspace replaces it with the same value.
   // The test below holds their work to newchat-model exactly, whose opening and changes have their bars here.
   // (chat-info-bare differs from chat-info only in its chat's and chatThings' values: the same screen here)
-  let distinct = corner_modes.filter(fn(m) {
+  let distinct = @sfapptest.corner_modes().filter(fn(m) {
     m != "newchat-station-models" && m != "newchat-station-empty" && m != "chat-info-bare"
   })
   let modes = distinct.filter(fn(m) { m == "home" }) + distinct.filter(fn(m) { m != "home" })

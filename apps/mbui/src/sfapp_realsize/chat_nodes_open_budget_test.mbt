@@ -184,7 +184,7 @@ fn chat_nodes_frame_most(from : Int) -> (Int, Int, Int, Int, Int) {
 /// its history far enough that the blocks of the messages read before are put by and taken for others (sfpages
 /// chat_body_shape): what is picked of each message's words is of the message that shows them, not of one its block
 /// showed before it was taken for another; what is not so, said.
-fn chat_nodes_reused_picked(t : @ui.Tester, src : Source, r : ChatRef, h : Double) -> Array[String] {
+fn chat_nodes_reused_picked(t : @ui.Tester, src : @sfbase.Source, r : @sfbase.ChatRef, h : Double) -> Array[String] {
   // (the chat's messages as the page holds them, by their keys)
   let said : Array[(String, String)] = @signals.untracked(fn() {
     match @sfbase.chat_messages(src, r) {
@@ -273,7 +273,7 @@ fn chat_nodes_scrolled(
 /// `after` told the Tester, its source and the chat once it is scrolled up, what it says is wrong said with them.
 fn chat_nodes_open_measured(
   win : (String, Double, Double, Int),
-  after? : (@ui.Tester, Source, ChatRef) -> Array[String] = fn(_, _, _) { [] },
+  after? : (@ui.Tester, @sfbase.Source, @sfbase.ChatRef) -> Array[String] = fn(_, _, _) { [] },
 ) -> (
   (Int, Int, Int, Int, Int),
   (Int, Int, Int, Int, Int),
@@ -281,12 +281,12 @@ fn chat_nodes_open_measured(
   Array[String],
 ) raise {
   let (_, w, h, platform) = win
-  let src : Ref[Source?] = Ref(None)
+  let src : Ref[@sfbase.Source?] = Ref(None)
   let made = fn() {
     match src.val {
       Some(s) => s
       None => {
-        reset()
+        @sfapp.reset()
         // (its composer made as nodes too: what the bars below were raised for)
         @sfbase.chat_page_nodes.set(true)
         let c = @sfrealsize.RealSizeChanging::new()
@@ -295,33 +295,33 @@ fn chat_nodes_open_measured(
         let s = @sffixture.round_trip_again(c.source(@sffixture.fixture("chat")), 0.0, delta_of=fn(name, params) {
           c.last_ops(name, params)
         })
-        open_fixture_over("chat", s)
+        @sfapp.open_fixture_over("chat", s)
         src.val = Some(s)
         s
       }
     }
   }
   let t = @ui.Tester::new(
-    fn(c) { view(c, made()) },
-    tree=fn(root) { app_tree(made())(root) },
+    fn(c) { @sfapp.view(c, made()) },
+    tree=fn(root) { @sfapp.app_tree(made())(root) },
     w~,
     h~,
     platform~,
-    window_corner=test_window_corner(platform),
+    window_corner=@sfapptest.test_window_corner(platform),
     env=[("MBUI_LOCALE", "zh"), ("MBUI_REDUCE_MOTION", "1")],
   )
-  t.run_for(squeeze_opening)
+  t.run_for(@sfapptest.squeeze_opening)
   t.frame()
   let cold = chat_nodes_heaviest(0)
-  guard app.nav.top() is Chat(r) else { fail("not on the chat") }
+  guard @sfbase.app.nav.top() is Chat(r) else { fail("not on the chat") }
   // (back to Home, the chat held by the core's client; then the same chat again)
-  app.nav.pop() |> ignore
-  t.run_for(squeeze_opening)
+  @sfbase.app.nav.pop() |> ignore
+  t.run_for(@sfapptest.squeeze_opening)
   let from = @ui.journal().length()
-  @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(r)) })
-  t.run_for(squeeze_opening)
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.open_page(Chat(r)) })
+  t.run_for(@sfapptest.squeeze_opening)
   t.frame()
-  assert_true(app.nav.top() is Chat(_), msg="the chat again")
+  assert_true(@sfbase.app.nav.top() is Chat(_), msg="the chat again")
   let again = chat_nodes_heaviest(from)
   let up = chat_nodes_scrolled(t, w, h)
   (cold, again, up, after(t, made(), r))
@@ -357,11 +357,19 @@ fn chat_nodes_window_words(n : Int) -> Array[String] {
   ["第\{n}条甲段：检查了构建脚本，签名和上传也过了一遍。", "第\{n}条乙段：列表只读看得见的消息。", "第\{n}条丙段：滚到时再读。"]
 }
 
+let budget_long_ref : @sfbase.ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+
+///|
+let budget_long_screens : Array[(String, Double, Double, Int)] = [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)]
+
+///|
+let budget_long_opened_ms : Double = @ui.move_most_ms * 2.0
+
 ///|
 /// The fixture's chat on a made-up core that keeps its messages by key as the app's client does (Sub::keyed), its
 /// window `n` agents' answers of three paragraphs each (chat_nodes_window_words), the chat open at its end.
-fn chat_nodes_window_source(n : Int) -> Source {
-  let base = fixture("chat")
+fn chat_nodes_window_source(n : Int) -> @sfbase.Source {
+  let base = @sffixture.fixture("chat")
   let made : Ref[Json?] = Ref(None)
   let list : Ref[@signals.KeyedList[String, Json]?] = Ref(None)
   let value = fn(v : Json) -> Json {
@@ -370,9 +378,9 @@ fn chat_nodes_window_source(n : Int) -> Source {
       None => ()
     }
     guard v is Object(chat) else { return v }
-    let template = items(Some(v), "messages")
+    let template = @sfbase.items(Some(v), "messages")
       .iter()
-      .find_first(fn(m) { !flag(Some(m), "system") && !flag(Some(m), "mine") })
+      .find_first(fn(m) { !@sfbase.flag(Some(m), "system") && !@sfbase.flag(Some(m), "mine") })
       .unwrap_or(Json::object({}))
     guard template is Object(t) else { return v }
     let messages : Array[Json] = []
@@ -418,7 +426,7 @@ fn chat_nodes_window_source(n : Int) -> Source {
           let l : @signals.KeyedList[String, Json] = @signals.keyed_list()
           let ks : Array[String] = []
           let vals : Map[String, Json] = Map([])
-          for m in items(Some(value(v)), "messages") {
+          for m in @sfbase.items(Some(value(v)), "messages") {
             let k = Json::array([field_or_null(m, "seq"), field_or_null(m, "outgoing")]).stringify()
             ks.push(k)
             vals[k] = m
@@ -445,18 +453,18 @@ fn field_or_null(m : Json, name : String) -> Json {
 /// The chat of chat_nodes_window_source(`n`) opened cold at its end on screen `s`, made as nodes: how many of its
 /// messages were read as Messages (chat_messages_read) as it opened; then scrolled up through 10 notches of the wheel,
 /// how many more, and whether a message far over its end then shows.
-fn chat_nodes_window_read(n : Int, s : (String, Double, Double, Int)) -> (Int, Int, Bool, @ui.Tester, Source) raise {
+fn chat_nodes_window_read(n : Int, s : (String, Double, Double, Int)) -> (Int, Int, Bool, @ui.Tester, @sfbase.Source) raise {
   let (_, w, h, platform) = s
-  new_run()
+  @sfapp.new_run()
   @sfbase.chat_page_nodes.set(true)
   let src = chat_nodes_window_source(n)
   let read0 = @sfbase.chat_messages_read.val
-  open_chat(long_ref)
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
+  @sfbase.open_chat(budget_long_ref)
+  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w~, h~, platform~, begun=fn() {
     @sfbase.window_tall.val = h
   })
-  t.run_for(long_opened_ms)
-  assert_true(app.nav.top() is Chat(_), msg="\{n}: on the chat")
+  t.run_for(budget_long_opened_ms)
+  assert_true(@sfbase.app.nav.top() is Chat(_), msg="\{n}: on the chat")
   assert_true(t.find(chat_nodes_window_words(n)[2]) is Some(_), msg="\{n}: its last message shown")
   let opened = @sfbase.chat_messages_read.val - read0
   let read1 = @sfbase.chat_messages_read.val
@@ -473,7 +481,7 @@ fn chat_nodes_window_read(n : Int, s : (String, Double, Double, Int)) -> (Int, I
 ///|
 test "a chat opened cold reads as Messages only the messages round what shows: the same of a window of 30 as of 120, and those scrolled to as they come" {
   let wrong : Array[String] = []
-  for s in long_screens {
+  for s in budget_long_screens {
     let (open30, up30, far30, _, _) = chat_nodes_window_read(30, s)
     let (open120, up120, far120, t, src) = chat_nodes_window_read(120, s)
     println("chat window read \{s.0}: opened 30 \{open30} 120 \{open120}, scrolled up 30 \{up30} 120 \{up120}")
@@ -488,7 +496,7 @@ test "a chat opened cold reads as Messages only the messages round what shows: t
     }
     // (大屏, a mouse's: what is picked of the messages read as they were scrolled to their own)
     if s.3 == 0 {
-      wrong.append(chat_nodes_reused_picked(t, src, long_ref, s.2).map(fn(x) { "\{s.0}: \{x}" }))
+      wrong.append(chat_nodes_reused_picked(t, src, budget_long_ref, s.2).map(fn(x) { "\{s.0}: \{x}" }))
     }
   }
   assert_true(wrong.is_empty(), msg=wrong.join(" | "))
@@ -502,8 +510,8 @@ let chat_nodes_window_read_most : Int = 10
 ///|
 /// The fixture's chat on the app's own client (an in-memory one, `client`, as page_scope_client_wbtest's): chat
 /// `s-c1`'s topic and the prefs subscribed through it, so what holds that chat is the client's to say.
-fn chat_kept_left_source(client : @core.Client, called : Array[String]) -> Source {
-  let base = fixture("chat")
+fn chat_kept_left_source(client : @core.Client, called : Array[String]) -> @sfbase.Source {
+  let base = @sffixture.fixture("chat")
   let which = fn(name : String, p : Map[String, Json]) {
     name == "prefs" || (name == "chat" && p.get("session") == Some(Json::string("s-c1")))
   }
@@ -562,7 +570,7 @@ fn chat_kept_left_source(client : @core.Client, called : Array[String]) -> Sourc
 /// The core's answer to what `client` asks of the prefs and of chat `params` (core_topic_params'), from the fixture's:
 /// each subscription that waits answered with the fixture's value, as a core answers.
 fn chat_kept_left_answer(client : @core.Client, params : Map[String, Json]) -> Unit {
-  let base = fixture("chat")
+  let base = @sffixture.fixture("chat")
   for q in [("prefs", Map([]), Map([])), ("chat", @sfbase.core_topic_params("chat", params), params)] {
     match (client.peek_topic(q.0, params=q.1), (base.topic_read)(q.0, q.2).value) {
       (Some(sub), Some(v)) if sub.value is None =>
@@ -577,45 +585,45 @@ test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, 
   let wrong : Array[String] = []
   for win in [("phone", 360.0, 740.0, 2), ("wide", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = win
-    new_run()
+    @sfapp.new_run()
     @sfbase.chat_page_nodes.set(true)
     let client = @core.Client::new(fn(_) {  })
     let called : Array[String] = []
     let src = chat_kept_left_source(client, called)
-    let a : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+    let a : @sfbase.ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
     let b = @sfbase.chat_ref("ws1/st1", "s-c2")
     let a_params = @sfbase.core_topic_params("chat", @sfbase.chat_params(a))
-    open_chat(a)
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, env=[("MBUI_LOCALE", "zh")])
+    @sfbase.open_chat(a)
+    let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w~, h~, platform~, env=[("MBUI_LOCALE", "zh")])
     t.frame()
     chat_kept_left_answer(client, @sfbase.chat_params(a))
-    t.run_for(squeeze_opening)
+    t.run_for(@sfapptest.squeeze_opening)
     t.frame()
-    if !(app.nav.top() is Chat(_)) || client.peek_topic("chat", params=a_params) is None {
+    if !(@sfbase.app.nav.top() is Chat(_)) || client.peek_topic("chat", params=a_params) is None {
       wrong.push("\{name}: the chat not open, or not held, at first")
       continue
     }
-    let (serial, _) = @signals.untracked(fn() { app.nav.top_stay() })
+    let (serial, _) = @signals.untracked(fn() { @sfbase.app.nav.top_stay() })
     // (小屏 back to Home; 大屏 another chat beside the list in its place)
     if platform == 2 {
-      app.nav.pop() |> ignore
+      @sfbase.app.nav.pop() |> ignore
     } else {
-      @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(b)) })
+      @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.open_page(Chat(b)) })
     }
-    t.run_for(squeeze_opening)
+    t.run_for(@sfapptest.squeeze_opening)
     t.frame()
-    if !app.nav.is_kept_left(serial) {
+    if !@sfbase.app.nav.is_kept_left(serial) {
       wrong.push("\{name}: the chat's page not kept as it left")
     }
     if client.peek_topic("chat", params=a_params) is Some(_) {
       wrong.push("\{name}: the chat still subscribed while its page is kept")
     }
     let from = @ui.journal().length()
-    @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(a)) })
+    @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.open_page(Chat(a)) })
     t.frame()
     // (the core answering it again, its subscription made anew)
     chat_kept_left_answer(client, @sfbase.chat_params(a))
-    t.run_for(squeeze_opening)
+    t.run_for(@sfapptest.squeeze_opening)
     t.frame()
     let again = chat_nodes_all(from)
     // (each frame's, for what was made and let go as it came back)
@@ -628,7 +636,7 @@ test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, 
       }
     }
     println("chat kept left \{name} again: made \{again.0} let_go \{again.1} laid \{again.2} measured \{again.3} bindings \{again.4}")
-    if @signals.untracked(fn() { app.nav.top_stay() }).0 != serial {
+    if @signals.untracked(fn() { @sfbase.app.nav.top_stay() }).0 != serial {
       wrong.push("\{name}: opened again not the page kept")
     }
     if again.0 > chat_kept_left_made_most {
@@ -650,23 +658,23 @@ test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, 
     @sfbase.kept_places.remove(a_key)
     let called_from = called.length()
     if platform == 2 {
-      app.nav.pop() |> ignore
+      @sfbase.app.nav.pop() |> ignore
     } else {
-      @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(b)) })
+      @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.open_page(Chat(b)) })
     }
-    t.run_for(squeeze_opening)
+    t.run_for(@sfapptest.squeeze_opening)
     t.frame()
     let told_left = called[called_from:].iter().any(fn(c) { c.has_prefix("client.focus ") && c.contains("\"left\"") })
     if !told_left || !@sfbase.kept_places.contains(a_key) {
       wrong.push("\{name}: left again from the page taken back, not told where it was left (told left \{told_left})")
     }
-    if !app.nav.is_kept_left(serial) || client.peek_topic("chat", params=a_params) is Some(_) {
+    if !@sfbase.app.nav.is_kept_left(serial) || client.peek_topic("chat", params=a_params) is Some(_) {
       wrong.push("\{name}: left again, not kept or still subscribed")
     }
-    @ui.view_tree().unwrap().event(t.time(), fn() { app.nav.shelf_empty() })
-    t.run_for(squeeze_opening)
+    @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.app.nav.shelf_empty() })
+    t.run_for(@sfapptest.squeeze_opening)
     t.frame()
-    if app.nav.is_kept_left(serial) || client.peek_topic("chat", params=a_params) is Some(_) {
+    if @sfbase.app.nav.is_kept_left(serial) || client.peek_topic("chat", params=a_params) is Some(_) {
       wrong.push("\{name}: the chat still subscribed once its page is let go for good")
     }
   }

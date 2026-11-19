@@ -37,29 +37,29 @@ fn home_again_open(
   reduced? : Bool = false,
   checks? : Bool = true,
   win? : (String, Double, Double, Int, String) = home_again_window,
-) -> (@ui.Tester, @sfrealsize.RealSizeChanging, Source) {
+) -> (@ui.Tester, @sfrealsize.RealSizeChanging, @sfbase.Source) {
   let c = @sfrealsize.RealSizeChanging::new()
   let (_, w, h, platform, _) = win
-  let src : Ref[Source?] = Ref(None)
+  let src : Ref[@sfbase.Source?] = Ref(None)
   let made = fn() {
     match src.val {
       Some(s) => s
       None => {
-        reset()
+        @sfapp.reset()
         let s = c.source(@sffixture.fixture("home"))
-        open_fixture_over("home", s)
+        @sfapp.open_fixture_over("home", s)
         src.val = Some(s)
         s
       }
     }
   }
   let t = @ui.Tester::new(
-    fn(x) { view(x, made()) },
-    tree=fn(root) { app_tree(made())(root) },
+    fn(x) { @sfapp.view(x, made()) },
+    tree=fn(root) { @sfapp.app_tree(made())(root) },
     w~,
     h~,
     platform~,
-    window_corner=test_window_corner(platform),
+    window_corner=@sfapptest.test_window_corner(platform),
     corners_held=false,
     words_over_held=false,
     env=[("MBUI_LOCALE", "zh")] + (if reduced { [("MBUI_REDUCE_MOTION", "1")] } else { [] }),
@@ -68,7 +68,7 @@ fn home_again_open(
   if !checks {
     t.check_looks(false)
   }
-  t.run_for(squeeze_opening)
+  t.run_for(@sfapptest.squeeze_opening)
   t.frame()
   let (m, l, ms) = real_size_most()
   println("home-again \{tag} opening's most frame: made \{m} laid \{l} measured \{ms}")
@@ -79,7 +79,7 @@ fn home_again_open(
     true
   })
   t.set_frame_period(period)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   (t, c, made())
 }
 
@@ -162,7 +162,7 @@ fn home_again_way(c : @sfrealsize.RealSizeChanging, name : String, scope : Strin
 /// bar_places_at's), and its middle's height.
 fn home_again_bar(win? : (String, Double, Double, Int, String) = home_again_window) -> (Array[Double], Double) {
   let (_, w, h, _, _) = win
-  (bar_centres(w - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), h - 22.0 - 28.0)
+  (@sfapp.bar_centres(w - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), h - 22.0 - 28.0)
 }
 
 ///|
@@ -180,18 +180,18 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
       for place in ["profiles", "connects"] {
         let tag = "\{rate.0} \{variant.0}"
         let (t, _, _) = home_again_open(tag, rate.1, reduced=variant.1, checks=variant.2)
-        bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
-        t.run_for(kept_switch_over_ms)
+        @sfbase.bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
+        t.run_for(@sfapptest.kept_switch_over_ms)
         let (xs, y) = home_again_bar()
         let i = if place == "profiles" { 1 } else { 2 }
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
-        println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
+        println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
         // (the place made, first visit; Home put by, not laid out again nor let go; Profile's list or 概览 one page, the
         // pick between them two nodes more, plus one refresh icon node per quota chip)
         assert_eq(home_again_peak.val, if place == "profiles" { (640, 0, 538) } else { (363, 0, 254) }, msg="\{tag} home→\{place}")
-        t.run_for(kept_switch_over_ms)
+        t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
-        println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
+        println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
         // (Home taken back: nothing made; the place put by, 额度 as 连接)
         assert_eq(home_again_peak.val, (0, 1, 6), msg="\{tag} \{place}→home")
       }
@@ -204,14 +204,14 @@ test "home again: another workspace switched to from Home at rest, and back" {
   for rate in home_again_periods {
     let tag = "\{rate.0} phone"
     let (t, _, src) = home_again_open(tag, rate.1)
-    let ws = fn() { @signals.untracked(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }) }
-    let names = @signals.untracked(fn() { workspace_in_view(src).1.map(fn(w) { w.id }) })
+    let ws = fn() { @signals.untracked(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }) }
+    let names = @signals.untracked(fn() { @sfbase.workspace_in_view(src).1.map(fn(w) { w.id }) })
     println("home-again \{tag}: workspaces \{names.join(", ")}, in view \{Repr(ws())}")
     home_again_measure(t, "\{tag} ws1→ws2", fn() {
       @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.switch_workspace(src, "ws2") })
     })
     println("home-again \{tag}: in view \{Repr(ws())}")
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     home_again_measure(t, "\{tag} ws2→ws1", fn() {
       @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.switch_workspace(src, "ws1") })
     })
@@ -224,17 +224,17 @@ test "home again: the filter switched from all to mine at rest, and back" {
   for rate in home_again_periods {
     let tag = "\{rate.0} phone"
     let (t, _, src) = home_again_open(tag, rate.1)
-    let w = @signals.untracked(fn() { workspace_in_view(src).0.unwrap() })
+    let w = @signals.untracked(fn() { @sfbase.workspace_in_view(src).0.unwrap() })
     home_again_measure(t, "\{tag} all→mine", fn() {
-      @ui.view_tree().unwrap().event(t.time(), fn() { home_filter_go(src, w, "mine") })
+      @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.set_filter(src, w, "mine") })
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     home_again_measure(t, "\{tag} mine→all", fn() {
-      @ui.view_tree().unwrap().event(t.time(), fn() { home_filter_go(src, w, "all") })
+      @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.set_filter(src, w, "all") })
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     home_again_measure(t, "\{tag} all→mine again", fn() {
-      @ui.view_tree().unwrap().event(t.time(), fn() { home_filter_go(src, w, "mine") })
+      @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.set_filter(src, w, "mine") })
     })
   }
 }
@@ -252,7 +252,7 @@ test "home again: the whole chats value arriving again at rest, the same and wit
     home_again_measure(t, "\{tag} chats whole, the same", fn() {
       home_again_post(t, c, at, Json::object({ "value": anew() }))
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     // (the pinned day's second row, in view: its title, the keys and order as they were)
     let ops = @json.parse(
       (
@@ -268,21 +268,21 @@ test "home again: the whole chats value arriving again at rest, the same and wit
     home_again_measure(t, "\{tag} chats whole, a row's words", fn() {
       home_again_post(t, c, at, Json::object({ "value": changed }))
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     home_again_measure(t, "\{tag} chats whole, the same again", fn() {
       home_again_post(t, c, at, Json::object({ "value": anew() }))
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     // (the list in its bones, as it is before the core has said it (a workspace or a filter come to before it is
     // answered), then the value whole: its rows in the bones' place)
     home_again_measure(t, "\{tag} chats none (bones)", fn() {
       home_again_post(t, c, at, Json::object({ "value": Json::null() }))
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     home_again_measure(t, "\{tag} chats whole after bones", fn() {
       home_again_post(t, c, at, Json::object({ "value": anew() }))
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     // (the gate's own: the core's rig's message in the chat, a delta on a row in place)
     for cause in c.changed(at) {
       if cause.0 == "message" {
@@ -335,12 +335,12 @@ test "home again: a chat not first taken to the top by a message, as a chats del
     home_again_measure(t, "\{tag} chats delta, today's 8th to its top (out of view)", fn() {
       home_again_post(t, c, at, home_again_moved("ws1/st3", "k-studio-1", ("ws1/st1", "k-maple-0")))
     })
-    t.run_for(kept_switch_over_ms)
+    t.run_for(@sfapptest.kept_switch_over_ms)
     // (the list dragged up till today's day is in view, then today's eighth again, another row now, to its top)
     t.drag(180.0, 600.0, 180.0, 150.0, steps=40)
-    t.run_for(kept_glide_long_ms)
+    t.run_for(@sfapptest.kept_glide_long_ms)
     t.drag(180.0, 600.0, 180.0, 300.0, steps=40)
-    t.run_for(kept_glide_long_ms)
+    t.run_for(@sfapptest.kept_glide_long_ms)
     println("home-again \{tag}: 今天 drawn at \{Repr(today())}")
     home_again_measure(t, "\{tag} chats delta, today's 8th to its top (in view)", fn() {
       home_again_post(t, c, at, home_again_moved("ws1/st2", "k-willow-1", ("ws1/st3", "k-studio-1")))
@@ -355,12 +355,12 @@ test "home again: Home come back to in a taller phone's window, and from a page 
     for place in ["profiles", "connects", "usage"] {
       let tag = "\{rate.0} tall"
       let (t, _, _) = home_again_open(tag, rate.1, win=tall)
-      bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
-      t.run_for(kept_switch_over_ms)
+      @sfbase.bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
+      t.run_for(@sfapptest.kept_switch_over_ms)
       let (xs, y) = home_again_bar(win=tall)
       let i = if place == "profiles" { 1 } else if place == "connects" { 2 } else { 3 }
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
-      println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
+      println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
       // (Profile's list or 概览 one page, the pick between them two nodes more, plus one refresh icon node per quota chip)
       let first = if place == "profiles" {
         (794, 0, 670)
@@ -372,25 +372,25 @@ test "home again: Home come back to in a taller phone's window, and from a page 
         (487, 0, 398)
       }
       assert_eq(home_again_peak.val, first, msg="\{tag} home→\{place}")
-      t.run_for(kept_switch_over_ms)
+      t.run_for(@sfapptest.kept_switch_over_ms)
       home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
-      println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
+      println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
       assert_eq(home_again_peak.val, (0, 1, 6), msg="\{tag} \{place}→home")
     }
     // (the phone's window: Home put back at the stack's root by the shell itself, no finger on the bar)
     for place in ["connects", "usage"] {
       let tag = "\{rate.0} phone"
       let (t, _, _) = home_again_open(tag, rate.1)
-      bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
-      t.run_for(kept_switch_over_ms)
+      @sfbase.bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
+      t.run_for(@sfapptest.kept_switch_over_ms)
       let (xs, y) = home_again_bar()
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[if place == "connects" { 2 } else { 3 }], y) })
-      println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
-      t.run_for(kept_switch_over_ms)
+      println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
+      t.run_for(@sfapptest.kept_switch_over_ms)
       home_again_measure(t, "\{tag} \{place}→home, no tap", fn() {
-        @ui.view_tree().unwrap().event(t.time(), fn() { go_place(t.time(), "chats", [], -1) })
+        @ui.view_tree().unwrap().event(t.time(), fn() { @sfapp.go_place(t.time(), "chats", [], -1) })
       })
-      println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
+      println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
       assert_eq(home_again_peak.val, (0, 1, 6), msg="\{tag} \{place}→home, no tap")
     }
   }
@@ -400,55 +400,55 @@ test "home again: Home come back to in a taller phone's window, and from a page 
 test "home again: the bar's place already shown tapped again (no switch), on Home and on a page of nodes" {
   let tag = "60 phone"
   let (t, _, _) = home_again_open(tag, 1000.0 / 60.0)
-  bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
-  t.run_for(kept_switch_over_ms)
+  @sfbase.bars_picked.set(Some(([["chats", "profiles", "connects", "usage"]], 0)))
+  t.run_for(@sfapptest.kept_switch_over_ms)
   let (xs, y) = home_again_bar()
   home_again_measure(t, "\{tag} home tapped on home", fn() { t.tap(xs[0], y) })
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   home_again_measure(t, "\{tag} home→connects", fn() { t.tap(xs[2], y) })
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   home_again_measure(t, "\{tag} connects tapped on connects", fn() { t.tap(xs[2], y) })
-  println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked connects)")
+  println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked connects)")
   // (no finger, but from a side as the bar's tap goes: app.switch_way -1, the page coming in sliding as well as fading)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   home_again_measure(t, "\{tag} connects→home, no tap, from a side", fn() {
     @ui.view_tree().unwrap().event(t.time(), fn() {
-      go_place(t.time(), "chats", [["chats", "profiles", "connects", "usage"]], 0)
+      @sfapp.go_place(t.time(), "chats", [["chats", "profiles", "connects", "usage"]], 0)
     })
   })
-  println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
+  println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
   // (no finger, the press's asking ahead said first as a finger down on the tab says it (bar.mbt's Pressed), then the
   // switch: which of the two lays out the page that goes)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   home_again_measure(t, "\{tag} home→connects, no tap, pressed first", fn() {
     @ui.view_tree().unwrap().event(t.time(), fn() {
       @sfbase.place_pressed("connects")
-      go_place(t.time(), "connects", [["chats", "profiles", "connects", "usage"]], 0)
+      @sfapp.go_place(t.time(), "connects", [["chats", "profiles", "connects", "usage"]], 0)
     })
   })
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   home_again_measure(t, "\{tag} connects→home, no tap, pressed first", fn() {
     @ui.view_tree().unwrap().event(t.time(), fn() {
       @sfbase.place_pressed("chats")
-      go_place(t.time(), "chats", [["chats", "profiles", "connects", "usage"]], 0)
+      @sfapp.go_place(t.time(), "chats", [["chats", "profiles", "connects", "usage"]], 0)
     })
   })
   // (a finger down on the tab, then up 30 ms later, each its own frame)
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   home_again_measure(t, "\{tag} home→connects, down then up", fn() {
     t.press_at(xs[2], y)
-    t.run_for(tap_held_ms)
+    t.run_for(@sfapptest.tap_held_ms)
     t.release(xs[2], y)
   })
   // (a finger's switch lays out what the same switch at an event does: the page leaving is put by as it was, never
   // laid out nowhere first, nav_view's `laid_nowhere`)
   assert_eq(home_again_peak.val, (1, 0, 7), msg="home→connects, down then up")
-  t.run_for(kept_switch_over_ms)
+  t.run_for(@sfapptest.kept_switch_over_ms)
   home_again_measure(t, "\{tag} connects→home, down then up", fn() {
     t.press_at(xs[0], y)
-    t.run_for(tap_held_ms)
+    t.run_for(@sfapptest.tap_held_ms)
     t.release(xs[0], y)
   })
   assert_eq(home_again_peak.val, (0, 1, 6), msg="connects→home, down then up")
-  println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
+  println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
 }
