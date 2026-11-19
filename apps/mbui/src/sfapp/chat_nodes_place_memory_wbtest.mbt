@@ -379,3 +379,50 @@ test "大屏, a chat beside the board made as nodes, read up: closed and opened 
     msg="opened over the whole page: none of \{Repr(seen)} drawn",
   )
 }
+
+///|
+test "大屏, a pooled chat made as nodes read up, left, and reopened with a shorter tail window at foot shows the newest message right above the composer with no blank screen" {
+  let s = long_screens[1]
+  let (_, w, h, _) = s
+  let l = long_chat()
+  let calls = []
+  let t = pm_open(l, s, calls)
+  guard t.rect_of("第200条：") is Some((_, y_initial, _, _)) else { fail("initial last message 第200条： not drawn") }
+  // Scroll up off the foot while keeping overlap with the tail window (~180..200).
+  t.move_to(w / 2.0, h / 2.0)
+  t.wheel(w / 2.0, h / 2.0, -500.0)
+  long_run(t, l, long_rest_ms)
+  assert_true(t.rect_of("第200条：") is None, msg="expected 第200条： scrolled off screen")
+  let k = long_ref.station + "\u{1}" + long_ref.session
+  // Leave chat (keeps_left parks it), then clear kept place and shrink window to an overlapping tail, then reopen.
+  place_left_and_opened(t, l, meanwhile=fn() {
+    @sfbase.kept_places.remove(k)
+    l.first.set(long_count - 25)
+    l.last.set(long_count)
+  })
+  let now = t.rect_of("第200条：")
+  assert_true(
+    now is Some((_, y, _, _)) && (y - y_initial).abs() <= 40.0,
+    msg="reopened at foot: expected 第200条： near initial y=\{y_initial}, got \{Repr(now)}, drawn=\{Repr(pm_drawn(t, l, h))}",
+  )
+}
+
+///|
+test "大屏, a pooled chat made as nodes left at foot and reopened after a window reset stays at foot with no blank screen" {
+  let s = long_screens[1]
+  let (_, _, h, _) = s
+  let l = long_chat()
+  let calls = []
+  let t = pm_open(l, s, calls)
+  guard t.rect_of("第200条：") is Some((_, y_initial, _, _)) else { fail("initial last message 第200条： not drawn") }
+  // Leave while at foot (keeps_left parks it), shrink window while away, then reopen.
+  place_left_and_opened(t, l, meanwhile=fn() {
+    l.first.set(long_count - 14)
+    l.last.set(long_count)
+  })
+  let now = t.rect_of("第200条：")
+  assert_true(
+    now is Some((_, y, _, _)) && (y - y_initial).abs() <= 40.0,
+    msg="reopened at foot after window reset: expected 第200条： near initial y=\{y_initial}, got \{Repr(now)}, drawn=\{Repr(pm_drawn(t, l, h))}",
+  )
+}

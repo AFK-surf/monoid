@@ -831,7 +831,7 @@ fn chat_body_node(
   place? : @view.ListPlace[String] = @view.ListPlace::new(),
   keeps? : ChatBodyKeeps = { opened: notices_open, copied: @sf.LiveMap::new(), steadies: ActivitySteadies::new(), faces: Map([]), tables: Map([]) },
   made? : (String, @view.View) -> Unit = fn(_, _) {  },
-  read? : (@view.ListPlace[String], @view.Scroll, ChatBodyList) -> Unit = fn(_, _, _) {  },
+  read? : (@view.ListPlace[String], @view.Scroll, ChatBodyList, () -> Bool, Ref[(Bool) -> Unit]) -> Unit = fn(_, _, _, _, _) {  },
   to? : ChatRef,
   shows? : () -> Bool = fn() { true },
   msgs? : () -> @sfbase.ChatMessages? = fn() { None },
@@ -849,6 +849,7 @@ fn chat_body_node(
   // (taken back from the stack's kept left (its on_rest's wake), till the chat's first answer since is placed: what
   // came meanwhile simply there, nothing of it held or made its way in, the list put where it was left)
   let reopening = Ref(false)
+  let on_reopened : Ref[(Bool) -> Unit] = Ref(fn(_) {  })
   let reopen_gen : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
   // (an agent's message come by data while its agent's line shows and the list is at its foot: how it comes out of
   // that line's picture, worked out as its key comes, by the message's key (its first piece's), read by its row as it
@@ -1224,7 +1225,10 @@ fn chat_body_node(
       // (put by at rest, its list too, a glide still going stopped and what it has in sight told no more
       // (ListPlace::rest); let go, its list's let go with it)
       if v.alive() {
+        reopening.val = true
         place.rest()
+      } else {
+        reopening.val = false
       }
       (rest_body.val)()
     },
@@ -1757,25 +1761,31 @@ fn chat_body_node(
       lined.val = @signals.untracked(fn() { list.has("line") })
       sent_then.val = @signals.untracked(fn() { @sfbase.sent_here_count(chat) })
       newest_was.val = @signals.untracked(newest).map(fn(n) { n.0 })
+      let mut moved = false
       if !@sfbase.go_tos.contains(chat) {
         match opens() {
           Some((k, slice, at)) => {
             jump.put.set(1)
             chat_stand(jump, place, k, at, @signals.untracked(cover), slice~)
+            moved = true
           }
           None => {
             chat_stand_left(jump, chat)
             late.val = @signals.untracked(here.view).at is None
             if !@signals.untracked(fn() { scroll.at_foot_now() }) {
               place.to_end(glide=false)
+              moved = true
             }
           }
         }
       }
-      @ui.after_frame(fn() { reopening.val = false })
+      @ui.after_frame(fn() {
+        reopening.val = false
+        (on_reopened.val)(moved)
+      })
     },
   )
-  read(place, scroll, list)
+  read(place, scroll, list, fn() { reopening.val }, on_reopened)
   v
 }
 

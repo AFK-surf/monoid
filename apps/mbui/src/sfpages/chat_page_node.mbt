@@ -243,8 +243,8 @@ pub fn chat_page_body_node(
         foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_lift + float_side } else { 0.0 }) },
         composer?,
         lead~,
-        read=fn(place, scroll, rows) {
-          chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }, rest=read_rest)
+        read=fn(place, scroll, rows, reopening, on_reopened) {
+          chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }, rest=read_rest, reopening~, on_reopened~)
         },
         to=r,
         shows~,

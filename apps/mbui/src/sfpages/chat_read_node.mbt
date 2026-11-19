@@ -61,6 +61,8 @@ fn chat_read_node(
   cover : () -> Double,
   top : () -> Double,
   rest? : () -> Unit = fn() {  },
+  reopening? : () -> Bool = fn() { false },
+  on_reopened? : Ref[(Bool) -> Unit] = Ref(fn(_) {  }),
 ) -> Unit {
   let k = r.station + "\u{1}" + r.session
   // (the chat's while it is open: a page made again for it, as another comes over it and goes, goes on from it)
@@ -150,27 +152,44 @@ fn chat_read_node(
   // telling it moving or not); where it is only where it was owed at rest (`placing`, settle's)
   let telling = Ref(false)
   let placing = Ref(false)
+  let deferred = Ref(false)
+  let flush_tell = fn() {
+    guard live() && a.sight is Some((s, _)) else {
+      placing.val = false
+      deferred.val = false
+      return
+    }
+    if reopening() {
+      deferred.val = true
+      return
+    }
+    deferred.val = false
+    let cv = @signals.untracked(view)
+    // (its end seen: at its foot with all there drawn whole, not a message still on its way in; @view.Sight's; only
+    // while the app is in front, what comes behind it not read)
+    if app_in_front() {
+      chat_read_focus(src, r, cv, a, !cv.newer && s.foot_whole)
+    }
+    // (where it is, the app in front or not: a glide that ends as it goes behind still leaves it there)
+    if placing.val && !@signals.untracked(fn() { scroll.in_hand() }) {
+      placing.val = false
+      chat_read_place(src, r, cv, a, exact=false)
+    }
+  }
   let tell = fn() {
     guard !telling.val else { return }
     telling.val = true
     @ui.after_frame(fn() {
       telling.val = false
-      guard live() && a.sight is Some((s, _)) else {
-        placing.val = false
-        return
-      }
-      let cv = @signals.untracked(view)
-      // (its end seen: at its foot with all there drawn whole, not a message still on its way in; @view.Sight's; only
-      // while the app is in front, what comes behind it not read)
-      if app_in_front() {
-        chat_read_focus(src, r, cv, a, !cv.newer && s.foot_whole)
-      }
-      // (where it is, the app in front or not: a glide that ends as it goes behind still leaves it there)
-      if placing.val && !@signals.untracked(fn() { scroll.in_hand() }) {
-        placing.val = false
-        chat_read_place(src, r, cv, a, exact=false)
-      }
+      flush_tell()
     })
+  }
+  on_reopened.val = fn(moved) {
+    if moved {
+      deferred.val = false
+    } else if deferred.val {
+      flush_tell()
+    }
   }
   // where it is (`chat.place`) told at rest alone, as the old page told it only while its list was not moving (ui's
   // Ctx::list_moving: held, flung, easing): never while the hand holds the list (each move of a finger is an input the
