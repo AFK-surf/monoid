@@ -273,7 +273,7 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
     Some("1") => Some(() => "test-station")
     _ => None
   }
-  let fork = (f : async () -> Unit) => ignore(host.rt.fork(name="screens", async fn() { f() catch { _ => () } }))
+  let fork = (f : async () -> Unit) => ignore(host.rt.fork_quiet(name="screens", async fn() { f() catch { _ => () } }))
   match platform() {
     "win32" => {
       let desktop = @screens.WindowsDesktop::new(io, {
@@ -748,7 +748,7 @@ async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
       } : PartTool)
     }),
   )
-  bus.parts.session_ended(session => ignore(bus.host.rt.fork(name="computer", async fn() {
+  bus.parts.session_ended(session => ignore(bus.host.rt.fork_quiet(name="computer", async fn() {
     computer.close_session(session) catch {
       _ => ()
     }

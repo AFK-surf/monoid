@@ -659,14 +659,22 @@ fn tape_settle(chat : String, open : String, known : Bool, at : Double) -> Unit 
 /// this one, the page slid back over it): on the tape, with `r` shown, the panel brought over, as tape_settle does as
 /// it first opens (it tells only the panel's being open, which this does not change: a card pressed in the chat did
 /// nothing, the panel standing under the system's bars at a Duo's side).
-fn tape_bring_side(r : ChatRef) -> Unit {
+fn tape_bring_side_if_hidden(r : ChatRef) -> Bool {
   let shown = match app.nav.top() {
     Chat(top) | History(top, _, _) => chat_key(top) == chat_key(r)
     _ => false
   }
   if shown && wide.tape.untracked() && wide.tape_at.untracked() != Panel {
     wide.tape_ask.set(Some(Panel))
+    true
+  } else {
+    false
   }
+}
+
+///|
+fn tape_bring_side(r : ChatRef) -> Unit {
+  tape_bring_side_if_hidden(r) |> ignore
 }
 
 ///|

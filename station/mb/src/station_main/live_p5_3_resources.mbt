@@ -314,7 +314,7 @@ async fn P53Resources::want(self : P53Resources) -> Unit {
   }
   self.look()
   ignore(
-    self.bus.host.rt.fork(name="resources", async fn() {
+    self.bus.host.rt.fork_daemon("resources", on_error=e => @host.note("resources failed: \{e}"), async fn() {
       while (self.followers.length() > 0 || p53_clock() - self.wanted < p53_wanted_ms) && !self.bus.stopped.is_done() {
         @effect.sleep(p53_look_every_ms) // timer: a sample of this machine while a page asks
         self.look()
@@ -334,7 +334,7 @@ async fn P53Resources::follow(self : P53Resources, told : () -> Unit) -> () -> U
   let id = self.next_follower
   self.followers[id] = told
   ignore(
-    self.bus.host.rt.fork(name="resources followed", async fn() {
+    self.bus.host.rt.fork_daemon("resources followed", on_error=e => @host.note("resources followed failed: \{e}"), async fn() {
       self.want()
       if self.followers.contains(id) {
         told()
@@ -502,7 +502,7 @@ async fn P53Resources::end(self : P53Resources, pid : Int, session : String) -> 
   }
   ignore(kill(pid, "SIGTERM"))
   ignore(
-    self.bus.host.rt.fork(name="a process ended", async fn() {
+    self.bus.host.rt.fork_daemon("a process ended", on_error=e => @host.note("a process ended failed: \{e}"), async fn() {
       @effect.sleep(p53_kill_after_ms) // timer: a deadline to a process
       match self.table() {
         Some(t) =>
@@ -634,7 +634,7 @@ async fn P53Resources::launcher(self : P53Resources) -> Int? {
 fn P53Resources::govern(self : P53Resources) -> Unit {
   let bus = self.bus
   ignore(
-    bus.host.rt.fork(name="the station's memory", async fn() {
+    bus.host.rt.fork_daemon("the station's memory", on_error=e => @host.note("the station's memory failed: \{e}"), async fn() {
       while !bus.stopped.is_done() {
         @effect.sleep(p53_sample_ms) // timer: a sample of this machine (the station's own memory)
         ignore(self.sample()) catch {

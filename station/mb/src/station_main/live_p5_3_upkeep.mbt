@@ -89,7 +89,7 @@ fn p53_disk_soft(total : Double) -> Double {
 fn P53Upkeep::attach(self : P53Upkeep) -> Unit {
   let bus = self.bus
   ignore(
-    bus.host.rt.fork(name="upkeep", async fn() {
+    bus.host.rt.fork_daemon("upkeep", on_error=e => @host.note("upkeep failed: \{e}"), async fn() {
       @effect.sleep(p53_upkeep_first_ms) // timer: a sample of this machine (its disk)
       while !bus.stopped.is_done() {
         ignore(self.pass())
@@ -98,7 +98,7 @@ fn P53Upkeep::attach(self : P53Upkeep) -> Unit {
     }),
   )
   ignore(
-    bus.host.rt.fork(name="disk", async fn() {
+    bus.host.rt.fork_daemon("disk", on_error=e => @host.note("disk failed: \{e}"), async fn() {
       @effect.sleep(p53_disk_every_ms) // timer: a sample of this machine (its disk)
       while !bus.stopped.is_done() {
         ignore(self.relieving())
@@ -400,7 +400,7 @@ fn P53Watch::working(self : P53Watch, key : String) -> Bool {
 fn P53Watch::attach(self : P53Watch) -> Unit {
   let bus = self.bus
   ignore(
-    bus.host.rt.fork(name="workspace watch", async fn() {
+    bus.host.rt.fork_daemon("workspace watch", on_error=e => @host.note("workspace watch failed: \{e}"), async fn() {
       let me : Ref[@jobs_host.WorkspaceWatch?] = Ref(None)
       let watch = @jobs_host.WorkspaceWatch::new(bus.host, bus.data, {
         now: () => wall_ms().to_double(),
@@ -444,7 +444,7 @@ fn P53Watch::attach(self : P53Watch) -> Unit {
   )
   bus.parts.tools([self.tool()])
   bus.parts.session_ended(session => match self.watch {
-    Some(w) => ignore(bus.host.rt.fork(name="a workspace no longer watched", async fn() { w.forget(session) }))
+    Some(w) => ignore(bus.host.rt.fork_daemon("a workspace no longer watched", on_error=e => @host.note("a workspace no longer watched failed: \{e}"), async fn() { w.forget(session) }))
     None => ()
   })
 }

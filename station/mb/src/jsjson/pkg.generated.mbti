@@ -75,6 +75,34 @@ pub fn jv_stringify(JV) -> String
 
 pub fn jv_stringify_pretty(JV) -> String
 
+pub fn jval_arr_of(JValue?) -> Array[JValue]?
+
+pub fn jval_at(JValue?, String) -> JValue?
+
+pub fn jval_at_i(JValue?, Int32) -> JValue?
+
+pub fn jval_bool_of(JValue?) -> Bool?
+
+pub fn jval_del(JValue, String) -> JValue
+
+pub fn jval_is_true(JValue?) -> Bool
+
+pub fn jval_keys_of(JValue) -> Array[String]
+
+pub fn jval_nullish(JValue?) -> Bool
+
+pub fn jval_num_of(JValue?) -> Double?
+
+pub fn jval_set(JValue, String, JValue) -> JValue
+
+pub fn jval_set_or_new(JValue, String, JValue) -> JValue
+
+pub fn jval_spread(JValue, JValue) -> JValue
+
+pub fn jval_str_of(JValue?) -> String?
+
+pub fn jval_truthy(JValue?) -> Bool
+
 pub fn num_text(Double) -> String
 
 pub fn parse(String) -> JValue raise SyntaxError
@@ -143,6 +171,16 @@ pub(all) enum JValue {
 }
 pub fn JValue::get(Self, String) -> Self?
 pub fn JValue::keys(Self) -> Array[Array[Int32]]
+pub fn JValue::of_array(Array[Self]) -> Self
+pub fn JValue::of_bool(Bool) -> Self
+pub fn JValue::of_double(Double) -> Self
+pub fn JValue::of_int(Int32) -> Self
+pub fn JValue::of_json(@json.Json) -> Self
+pub fn JValue::of_object(Array[(String, Self)]) -> Self
+pub fn JValue::of_opt_string(String?) -> Self
+pub fn JValue::of_string(String) -> Self
+pub fn JValue::of_strings(Array[String]) -> Self
+pub fn JValue::to_json(Self) -> @json.Json
 
 // Type aliases
 

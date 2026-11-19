@@ -8,46 +8,43 @@ pub using @jsjson {type JValue as J}
 
 ///|
 pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 pub fn jn(d : Double) -> J {
-  Num(d)
+  @jsjson.JValue::of_double(d)
 }
 
 ///|
 pub fn ji(i : Int) -> J {
-  Num(i.to_double())
+  @jsjson.JValue::of_int(i)
 }
 
 ///|
 pub fn jb(b : Bool) -> J {
-  Bool(b)
+  @jsjson.JValue::of_bool(b)
 }
 
 ///|
 pub fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
+  @jsjson.JValue::of_object(pairs)
 }
 
 ///|
 pub fn ja(items : Array[J]) -> J {
-  Arr(items)
+  @jsjson.JValue::of_array(items)
 }
 
 ///|
 pub fn jstrs(items : Array[String]) -> J {
-  Arr(items.map(js))
+  @jsjson.JValue::of_strings(items)
 }
 
 ///|
 /// `o[k]` where `o` is an object (None where it is not one, or has no `k`).
 pub fn get(o : J?, k : String) -> J? {
-  match o {
-    Some(Obj(_) as obj) => obj.get(k)
-    _ => None
-  }
+  @jsjson.jval_at(o, k)
 }
 
 ///|
@@ -60,10 +57,7 @@ pub fn text(j : J?) -> String? {
 
 ///|
 pub fn num(j : J?) -> Double? {
-  match j {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(j)
 }
 
 ///|

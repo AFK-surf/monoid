@@ -972,14 +972,15 @@ let activity_row_box : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter")
 
 ///|
 /// Its line (activityLine): its picture where the messages' pictures are, out in the margin before the words
-/// (message_avatar_out), the picture and what it does 8 apart, 6 round.
+/// (message_avatar_out), the picture and what it does 8 apart, 6 round; fills the row so shrinking words during a
+/// click never drop the press.
 // kept across runs: a value (no field of it changes)
-let activity_line : @ui.Style = @ui.style(row=true, gap=S2, radius=Md, align=ACenter, ml=@sf.message_avatar_out)
+let activity_line : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Md, align=ACenter, ml=@sf.message_avatar_out)
 
 ///|
 /// Narrow: its picture at the row's start, as the messages' are there (inlineHeads).
 // kept across runs: a value (no field of it changes)
-let activity_line_narrow : @ui.Style = @ui.css("row gap=S2 radius=Md align=ACenter")
+let activity_line_narrow : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Md, align=ACenter)
 
 ///|
 /// Its picture with the ring round it (activityAvatar): 24 across, the picture in its middle; the ring reaching 3 past

@@ -268,7 +268,7 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
   p.mesh = Some(p.mesh_live())
   // Everything P5-1 made let go as the station stops.
   ignore(
-    host.rt.fork(name="p5-1 stop", async fn() {
+    host.rt.fork_daemon("p5-1 stop", on_error=e => @host.note("p5-1 stop failed: \{e}"), async fn() {
       ignore(bus.stopped.wait())
       p.close()
     }),
@@ -401,7 +401,7 @@ fn ErrorReports::report(self : ErrorReports, log : String, error : String?) -> U
   }
   self.sending = true
   ignore(
-    self.host.rt.fork(name="error reports", async fn() {
+    self.host.rt.fork_daemon("error reports", on_error=e => @host.note("error reports failed: \{e}"), async fn() {
       defer {
         self.sending = false
       }

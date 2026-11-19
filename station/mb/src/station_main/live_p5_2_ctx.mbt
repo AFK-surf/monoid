@@ -125,7 +125,7 @@ fn P52::outcomes_start(self : P52) -> Unit {
   )
   self.card_outcomes = Some(worker)
   ignore(
-    self.host.rt.fork(name="card outcomes", async fn() {
+    self.host.rt.fork_daemon("card outcomes", on_error=e => @host.note("card outcomes failed: \{e}"), async fn() {
       match (try { Ok((self.bus.previous_gone)()) } catch { e => Err(e) }) {
         Ok(_) => {
           worker.previous_exited()
@@ -139,7 +139,7 @@ fn P52::outcomes_start(self : P52) -> Unit {
     }),
   )
   ignore(
-    self.host.rt.fork(name="card outcomes stop", async fn() {
+    self.host.rt.fork_daemon("card outcomes stop", on_error=e => @host.note("card outcomes stop failed: \{e}"), async fn() {
       ignore(self.bus.stopped.wait())
       worker.close()
     }),
@@ -1032,7 +1032,7 @@ fn P52::working(self : P52, key : String, working : Array[Json], status : Json) 
       continue
     }
     ignore(
-      self.host.rt.fork(name="working", async fn() {
+      self.host.rt.fork_daemon("working", on_error=e => @host.note("working failed: \{e}"), async fn() {
         ignore((self.bus.coord_ask.val)("chat.working", {
           "connect": jstr(connect),
           "thread": { "channel": jfield(w, "channel"), "threadTs": jfield(w, "threadTs") },
@@ -1052,7 +1052,7 @@ fn P52::stands_at(self : P52, connect : Json, channel : Json, thread_ts : Json, 
     return
   }
   ignore(
-    self.host.rt.fork(name="stands at", async fn() {
+    self.host.rt.fork_daemon("stands at", on_error=e => @host.note("stands at failed: \{e}"), async fn() {
       ignore((self.bus.coord_ask.val)("chat.standsAt", {
         "connect": connect,
         "thread": { "channel": channel, "threadTs": thread_ts },

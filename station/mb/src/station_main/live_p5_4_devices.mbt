@@ -57,7 +57,7 @@ fn p54_wire_of_conn(c : P54Conn) -> P54Wire {
   {
     read: async fn() { c.read() },
     write: async fn(b) { c.write(b) },
-    end: () => ignore(host.rt.fork(name="tcp end", async fn() {
+    end: () => ignore(host.rt.fork_quiet(name="tcp end", async fn() {
       host.tcp_end(c.id) catch {
         _ => ()
       }
@@ -538,7 +538,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       sk.kept = true
       sk.chunks.clear()
       ignore(
-        host.rt.fork(name="socket kept", async fn() {
+        host.rt.fork_daemon("socket kept", on_error=e => @host.note("socket kept failed: \{e}"), async fn() {
           while !sk.destroyed {
             self.fill(sk)
           }
@@ -624,8 +624,8 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         from.destroyed = true
         ignore(from.closed.succeed(()))
       }
-      ignore(host.rt.fork(name="join", async fn() { carry(one, two) }))
-      ignore(host.rt.fork(name="join", async fn() { carry(two, one) }))
+      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(one, two) }))
+      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(two, one) }))
       Json::null()
     }
     // a member's connection on the mesh and its streams (the shell's)
@@ -856,7 +856,7 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
       @jsjson.JValue::Obj([(@jsjson.units("$fn"), @jsjson.JValue::Num(id.to_double()))])
     },
     () => wall_ms().to_double(),
-    f => ignore(host.rt.fork(name="devices", async fn() { f() catch { _ => () } })),
+    f => ignore(host.rt.fork_quiet(name="devices", async fn() { f() catch { _ => () } })),
     @session_chats.Words::new(p54_jv(zh), p54_jv(en)),
   )
   world.set_lang((bus.lang.val)())
@@ -962,7 +962,7 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
   let port = listening.port
   let accepting : @effect.Deferred[Json] = @effect.Deferred::new()
   ignore(
-    host.rt.fork(name="device forward accept", async fn() {
+    host.rt.fork_daemon("device forward accept", on_error=e => @host.note("device forward accept failed: \{e}"), async fn() {
       let accepted = host.accept(lid) catch {
         _ => {
           ignore(accepting.succeed(Json::null()))
@@ -982,7 +982,7 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
   }
   let inner : P54Conn = { host, id: inner_id, closed: false }
   ignore(
-    host.rt.fork(name="device forward in", async fn() {
+    host.rt.fork_daemon("device forward in", on_error=e => @host.note("device forward in failed: \{e}"), async fn() {
       let read = wire.read
       while true {
         let got = read() catch { _ => None }
@@ -995,7 +995,7 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
     }),
   )
   ignore(
-    host.rt.fork(name="device forward out", async fn() {
+    host.rt.fork_daemon("device forward out", on_error=e => @host.note("device forward out failed: \{e}"), async fn() {
       let write = wire.write
       while inner.read() is Some(b) {
         write(b) catch {

@@ -64,7 +64,7 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
   }
   self.waiting.clear()
   ignore(
-    self.host.rt.fork(name="sessions' program", async fn() {
+    self.host.rt.fork_daemon("sessions' program", on_error=e => @host.note("sessions' program failed: \{e}"), async fn() {
       let carry = @buffer.Buffer()
       let mut head : Json? = None
       let mut wanted = 0
@@ -451,7 +451,7 @@ fn AgentsHost::exited(self : AgentsHost, code : Int) -> Unit {
   self.settle()
   let again = self.sessions.values().to_array()
   ignore(
-    self.pump.host.rt.fork(name="agents' program again", async fn() {
+    self.pump.host.rt.fork_daemon("agents' program again", on_error=e => @host.note("agents' program again failed: \{e}"), async fn() {
       // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
       @effect.sleep(1000)
       if self.closed {

@@ -114,7 +114,7 @@ fn p54_after(host : @host.Host, ms : Double, f : () -> Unit) -> () -> Unit {
   let off = Ref(false)
   let wait = if ms < 0.0 { 0 } else if ms > 2147483647.0 { 2147483647 } else { ms.to_int() }
   ignore(
-    host.rt.fork(name="after", async fn() {
+    host.rt.fork_daemon("after", on_error=e => @host.note("after failed: \{e}"), async fn() {
       @effect.sleep(wait) // timer: a deadline a part set (its `after`)
       if !off.val {
         f()
@@ -160,7 +160,7 @@ fn p54_spawn(
   let proc = spawn(host, program, args, env?, cwd?, stdin_piped~, stdout=Piped, stderr=Piped, group~)
   let child = { proc, ended: None, running: true }
   ignore(
-    host.rt.fork(name="child \{program}", async fn() {
+    host.rt.fork_daemon("child \{program}", on_error=e => @host.note("child \{program} failed: \{e}"), async fn() {
       while true {
         match proc.events.take() {
           Out(b) => out(b)
@@ -242,7 +242,7 @@ fn P54Conn::close(self : P54Conn) -> Unit {
 fn P54Conn::writer(self : P54Conn) -> (Bytes) -> Unit {
   let q : @effect.Queue[Bytes] = @effect.Queue::unbounded()
   ignore(
-    self.host.rt.fork(name="conn writes", async fn() {
+    self.host.rt.fork_daemon("conn writes", on_error=e => @host.note("conn writes failed: \{e}"), async fn() {
       while !self.closed {
         let b = q.take()
         self.write(b) catch {

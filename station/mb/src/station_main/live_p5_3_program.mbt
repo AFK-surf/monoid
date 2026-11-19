@@ -100,7 +100,7 @@ async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
   }
   self.proc = Some(proc)
   ignore(
-    bus.host.rt.fork(name="the sessions' program", async fn() {
+    bus.host.rt.fork_daemon("the sessions' program", on_error=e => @host.note("the sessions' program failed: \{e}"), async fn() {
       let line = @buffer.Buffer()
       let err = @buffer.Buffer()
       while true {
@@ -201,7 +201,7 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
       self.timers[id] = gone
       let ms = p53_num(said, "ms").unwrap_or(0.0)
       ignore(
-        self.bus.host.rt.fork(name="the program's wait", async fn() {
+        self.bus.host.rt.fork_daemon("the program's wait", on_error=e => @host.note("the program's wait failed: \{e}"), async fn() {
           @effect.sleep(ms.to_int()) // timer: the sessions' program's own wait (its retries, deadlines and sweeps), kept on the station's clock
           if !gone.val {
             self.timers.remove(id)
@@ -249,7 +249,7 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
     Some(id) => {
       let f = p53_text(said, "fn")
       ignore(
-        self.bus.host.rt.fork(name="the program's ask", async fn() {
+        self.bus.host.rt.fork_daemon("the program's ask", on_error=e => @host.note("the program's ask failed: \{e}"), async fn() {
           let answer = match (try { Ok((shell.asked)(f, args)) } catch { e => Err(e) }) {
             Ok(v) => p53_obj([("answer", p53_n(id)), ("value", v)])
             Err(e) => p53_obj([("answer", p53_n(id)), ("error", p53_error_of(e))])

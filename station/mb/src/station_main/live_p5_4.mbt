@@ -13,7 +13,7 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
   p54_cloud_refresh(bus, cloud) catch {
     _ => ()
   }
-  ignore((bus.cloud_listen.val)(_ => ignore(host.rt.fork(name="p5-4 cloud", async fn() {
+  ignore((bus.cloud_listen.val)(_ => ignore(host.rt.fork_quiet(name="p5-4 cloud", async fn() {
     p54_cloud_refresh(bus, cloud) catch {
       _ => ()
     }
@@ -78,7 +78,7 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
         available: () => station.available(),
         open_tab: async fn(key, _options) { station.open_user_tab(key) },
         has_tab: id => station.has_tab(id),
-        close_tab: id => ignore(bus.host.rt.fork(name="login page", async fn() { station.close_tab(id) catch { _ => () } })),
+        close_tab: id => ignore(bus.host.rt.fork_quiet(name="login page", async fn() { station.close_tab(id) catch { _ => () } })),
         tab_url: Some(id => station.tab_url(id)),
       },
       changed => ignore(screens.hub.on_change(changed)),

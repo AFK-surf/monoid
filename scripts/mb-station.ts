@@ -5,7 +5,13 @@
 //   - a `suberror` that derives Show: what that gives is the constructor's shell (`Refused("…")`), not its words;
 //   - a socket opened by its shell's name (`shell("tcp.…")`, `"unix.…"`, `"listen.…"`) in any file but the host's
 //     binding of them (station/mb/src/host/net.mbt, at most HOST_NET_SOCKETS times): every other one goes through that
-//     binding and base/net (`Socket`, `Listener`, `pipe_duplex`).
+//     binding and base/net (`Socket`, `Listener`, `pipe_duplex`);
+//   - outside harnesses (`*harness*.mbt`) too, a fiber forked and its handle let go (`ignore(….fork(…))`): its failure
+//     is the runtime's `on_defect`, which marks the whole program failed (host.mbt `run`: exit code 1 at its next
+//     handover). One a part starts and forgets is `fork_quiet` (best effort, its failure its own) or `fork_daemon`
+//     (a loop or a handler, its failure given to its `on_error`);
+//   - outside harnesses, a `wall` clock made of the monotonic one (`@host.now`, a runtime's `rt.now`), which counts from
+//     the machine's start: the world's time is `@host.epoch_ms()`, a time shared with other programs `@host.wall_ms()`.
 // It reads the files' text, not the program. Prints each line that is not so, and fails then.
 //   node scripts/mb-station.ts
 import { readdirSync, readFileSync } from "node:fs";
@@ -18,9 +24,18 @@ const ROOT = fileURLToPath(new URL("../station/mb/src", import.meta.url));
 /// many times at most: every other file goes through it.
 const HOST_NET = "host/net.mbt";
 const HOST_NET_SOCKETS = 12;
-/// What a file says that this reads it for: an error, its Show, a socket opened by its shell's name.
-const SAYS = ["suberror", "impl Show", '"tcp.', '"unix.', '"listen.'].map((word) => Buffer.from(word));
+/// What a file says that this reads it for: an error, its Show, a socket opened by its shell's name, a fork, a wall clock.
+const SAYS = ["suberror", "impl Show", '"tcp.', '"unix.', '"listen.', ".fork(", "wall"].map((word) => Buffer.from(word));
 const RAW_SOCKET = /\bshell\s*\(\s*"(tcp|unix|listen)\.[^"]+"/g;
+/// A fiber forked and its handle let go (`ignore(host.rt.fork(…))`, its `(` on the next line too).
+const BARE_FORK = /\bignore\s*\(\s*[A-Za-z0-9_.()]*\.fork\s*\(/g;
+/// A `wall` (a field, a parameter's default, a `let`) made of the monotonic clock: `wall: () => @host.now()`,
+/// `wall? : () -> Double = fn() { @host.now().to_double() }`, `let wall = wall.unwrap_or(() => rt.now())`.
+const MONOTONIC_WALL =
+  /\bwall\s*\??\s*[:=~]\s*(?:\(\s*\)\s*->\s*[A-Za-z0-9_]+\s*=\s*)?(?:[A-Za-z0-9_.]*\.unwrap_or\s*\(\s*)?(?:fn\s*\(\s*\)\s*\{\s*|\(\s*\)\s*=>\s*)?(?:@host\.now|(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+\.)*rt\.now)\b/g;
+
+/// The line `index` is on in `text`, from 1.
+const lineAt = (text: string, index: number) => text.slice(0, index).split("\n").length;
 
 const wrong: string[] = [];
 
@@ -95,12 +110,21 @@ for (const pkg of packages("")) {
     } else if (opened > 0) {
       wrong.push(`${file}: opens ${opened} socket${opened === 1 ? "" : "s"} by its shell's name: only ${HOST_NET} does; open one through it (Host::tcp_open, unix_open, tcp_listen_local, listener_of, …) and base/net (Socket, Listener, pipe_duplex)`);
     }
+    if (/harness[^/]*\.mbt$/.test(file)) continue;
+    // Its fibers, each with a failure of its own.
+    for (const found of text.matchAll(BARE_FORK)) {
+      wrong.push(`${file}:${lineAt(text, found.index)}: a fiber forked and let go, whose failure fails the whole program: use \`fork_quiet\` (best effort, one-off) or \`fork_daemon(name, on_error=…, …)\` (a loop or a handler)`);
+    }
+    // Its walls, never the monotonic clock.
+    for (const found of text.matchAll(MONOTONIC_WALL)) {
+      wrong.push(`${file}:${lineAt(text, found.index)}: \`wall\` is the monotonic clock (${found[0].replace(/\s+/g, " ")}), which counts from the machine's start: use \`@host.epoch_ms()\` (the world's time) or \`@host.wall_ms()\` (a time shared with other programs)`);
+    }
   }
 }
 if (!seen.has(HOST_NET)) wrong.push(`${HOST_NET} is not there: HOST_NET (scripts/mb-station.ts) names the host's binding of the shell's sockets`);
 
 if (wrong.length > 0) {
   console.log(wrong.join("\n"));
-  console.log(`(${relative(process.cwd(), ROOT) || "station/mb/src"}: every error is said as words, and a socket is opened through base/net)`);
+  console.log(`(${relative(process.cwd(), ROOT) || "station/mb/src"}: every error is said as words, a socket is opened through base/net, a fiber let go is quiet or a daemon, a wall is not the monotonic clock)`);
   process.exit(1);
 }

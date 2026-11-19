@@ -87,7 +87,7 @@ pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) ->
   }
   host.say(({ "listening": Json::string(socket) } : Json).stringify())
   ignore(
-    host.rt.fork(name="serve told", () => {
+    host.rt.fork_daemon("serve told", on_error=e => @host.note("serve told failed: \{e}"), () => {
       while host.line() is Some(line) {
         s.told(line)
       }

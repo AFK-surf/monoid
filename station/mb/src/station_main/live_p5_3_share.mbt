@@ -168,7 +168,7 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
         None
       }
       ignore(
-        host.rt.fork(name="a followed tree", async fn() {
+        host.rt.fork_daemon("a followed tree", on_error=e => @host.note("a followed tree failed: \{e}"), async fn() {
           ignore(look())
           while !gone.val && !stopped.is_done() {
             @effect.sleep(p53_follow_ms) // timer: a sample of this machine (its own files: the shell keeps no watch)
@@ -277,7 +277,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
   // (a login home again, by any route: the share a trip made for it undone; move/live.ts `sharing.onHosted`)
   sharing.set_on_hosted(
     Some((share, from) => ignore(
-      bus.host.rt.fork(name="share came home", async fn() {
+      bus.host.rt.fork_quiet(name="share came home", async fn() {
         ignore((bus.coord_ask.val)("move.shareCameHome", Json::array([Json::string(share), Json::string(from)]))) catch {
           _ => ()
         }
@@ -311,7 +311,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
   // ── chats shared across workspaces ──
   let sql = @share_sync.SqlChatShares::new(bus.db, () => bus.store.now().to_double())
   let gone : @effect.Deferred[Bool] = @effect.Deferred::new()
-  ignore(rt.fork(name="the station before gone", async fn() {
+  ignore(rt.fork_daemon("the station before gone", on_error=e => @host.note("the station before gone failed: \{e}"), async fn() {
     (bus.previous_gone)()
     ignore(gone.succeed(true))
   }))
@@ -349,7 +349,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
   }
   // (each loaded and set going once the station before is gone, as main.ts starts them)
   ignore(
-    rt.fork(name="shares", async fn() {
+    rt.fork_daemon("shares", on_error=e => @host.note("shares failed: \{e}"), async fn() {
       (bus.previous_gone)()
       sharing.load() catch {
         e => p53_log("warn", "share", "the shared profiles were not loaded", fields=p53_obj([("error", p53_s(p53_words(e)))]))

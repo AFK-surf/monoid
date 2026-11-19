@@ -406,7 +406,7 @@ async fn P52::chats_answer(
         "forkReview" => {
           let key = s(0)
           ignore(
-            self.host.rt.fork(name="archive review", async fn() {
+            self.host.rt.fork_quiet(name="archive review", async fn() {
               @session_chats.review(self.chats_world(), key) catch {
                 _ => ()
               }
@@ -1507,7 +1507,7 @@ async fn P52::tools_call(
     "sessions/review.suggestArchive" => {
       let key = s(1)
       ignore(
-        self.host.rt.fork(name="suggest archive", async fn() {
+        self.host.rt.fork_quiet(name="suggest archive", async fn() {
           @session_chats.review(w, key) catch {
             _ => ()
           }
@@ -1517,7 +1517,7 @@ async fn P52::tools_call(
     }
     "sessions/review.reviewUndecided" => {
       ignore(
-        self.host.rt.fork(name="review undecided", async fn() {
+        self.host.rt.fork_quiet(name="review undecided", async fn() {
           @session_chats.review_undecided_once(w) catch {
             _ => ()
           }

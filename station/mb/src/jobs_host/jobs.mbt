@@ -672,8 +672,18 @@ pub async fn JobsHost::spawn(
 pub fn JobsHost::follow(self : JobsHost, id : String, pgid : Int, began : Double) -> Unit {
   let running = { pgid, gone: @effect.Deferred::new(), settled: @effect.Deferred::new() }
   self.running[id] = running
+  // (a follower that failed lets its job go from `running` as an end would, so nothing waits on it for ever)
+  let failed = (e : Error) => {
+    @host.note("job \{id} no longer followed: \{e}")
+    ignore(running.gone.succeed(()))
+    match self.running.get(id) {
+      Some(r) if physical_equal(r, running) => self.running.remove(id)
+      _ => ()
+    }
+    ignore(running.settled.succeed(()))
+  }
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("job followed", on_error=failed, async fn() {
       let exit = self.exit_file(id)
       while true {
         if there(self.host, exit) || !(self.procs.pid_alive)(pgid) {

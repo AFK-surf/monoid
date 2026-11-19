@@ -831,3 +831,35 @@ test "a page's title with what it does at its line's end, its window narrowed an
   assert_true(seen.get(390).unwrap() != seen.get(220).unwrap())
   assert_eq(made.val, 1, msg="made once")
 }
+
+///|
+test "on_baseline aligns secondary Meta text to primary Ui first-line baseline across web_lines and font scales" {
+  let primary_style = @ui.text_style(size=Ui, color=Fg, wrap=false)
+  let secondary_style = @ui.text_style(size=Meta, color=Muted, wrap=false)
+  for web in [true, false] {
+    @ui.set_web_lines(web)
+    for scale in [1.0, 1.3] {
+      let t = @ui.Tester::tree(w=400.0, h=120.0, platform=if web { 0 } else { 2 }, theme=fn() { ui_theme() }, fn(root) {
+        root.box(fn(row) {
+          row.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
+          words_node(row, fn() { "Gemini 4 Neon" }, fn() { primary_style }) |> ignore
+          let sub = words_node(row, fn() { "AGY" }, fn() { secondary_style })
+          on_baseline(sub, Ui, Meta) |> ignore
+        })
+        |> ignore
+      })
+      if scale != 1.0 {
+        t.set_font_scale(scale)
+      }
+      t.draw()
+      let runs = t.text_runs()
+      let p = runs.filter(fn(r) { r.text == "Gemini 4 Neon" })[0]
+      let s = runs.filter(fn(r) { r.text == "AGY" })[0]
+      assert_true(
+        (p.base - s.base).abs() < 0.01,
+        msg="web=\{web} scale=\{scale}: primary base=\{p.base} secondary base=\{s.base}",
+      )
+    }
+  }
+  @ui.set_web_lines(false)
+}

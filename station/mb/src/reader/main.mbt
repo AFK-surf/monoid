@@ -824,7 +824,7 @@ async fn search_program(host : @host.Host, db_path : String, data : String, sep 
       { "type": "cancel", .. } => cancelled.add(key)
       { "type": "query", .. } =>
         ignore(
-          host.rt.fork(() => {
+          host.rt.fork_quiet(() => {
             let answer : Json = try {
               { "id": id, "groups": Json::array(@history.answer(db, host, data, sep, finder, told, () => cancelled.contains(key))) }
             } catch {
