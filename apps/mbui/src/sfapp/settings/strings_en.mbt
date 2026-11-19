@@ -1717,6 +1717,7 @@ let en : Map[String, String] = {
   "web-pages.vault.addKind.tokenDetail": "API tokens for GitHub, Cloudflare and other services",
   "web-pages.vault.addedDevice": "The new devices have the key",
   "web-pages.vault.ask": "Ask for the key",
+  "web-pages.vault.approve.noKey": "This device doesn't have a key to this vault yet: approve it on an authorized device, or get access in Vault",
   "web-pages.vault.approve.notHere": "Sent before this device had the vault on: approve it on a device that had, or wait for it to be sealed to this one too",
   "web-pages.vault.askWhat": "ask for the key",
   "web-pages.vault.asked": "Your other devices were told",

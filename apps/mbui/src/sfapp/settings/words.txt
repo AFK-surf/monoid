@@ -1673,6 +1673,7 @@ web-pages.vault.addKind.token
 web-pages.vault.addKind.tokenDetail
 web-pages.vault.addedDevice
 web-pages.vault.ask
+web-pages.vault.approve.noKey
 web-pages.vault.approve.notHere
 web-pages.vault.askWhat
 web-pages.vault.asked

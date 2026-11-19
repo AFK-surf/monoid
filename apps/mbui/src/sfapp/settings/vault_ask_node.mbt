@@ -14,6 +14,7 @@ fn vault_line_words(answer : Answer?) -> String {
   match answer {
     Some(Elsewhere) => tr("android-settings.vault.approve.inApp")
     Some(NotHere) => tr("web-pages.vault.approve.notHere")
+    Some(NoKey) => tr("web-pages.vault.approve.noKey")
     Some(Decided) => tr("android-settings.vault.approve.decided")
     Some(Theirs(w)) => w
     _ => ""

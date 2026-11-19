@@ -1684,6 +1684,7 @@ let zh : Map[String, String] = {
   "web-pages.vault.addKind.tokenDetail": "GitHub、Cloudflare 等服务的 API token",
   "web-pages.vault.addedDevice": "已授权新设备",
   "web-pages.vault.ask": "申请授权",
+  "web-pages.vault.approve.noKey": "此设备未获此库授权：请在已授权的设备上批准，或前往「密钥」获取授权",
   "web-pages.vault.approve.notHere": "这张卡片发出时这台设备还没开启密钥库：请在已开启的设备上批准，或稍等它重新封给这台",
   "web-pages.vault.askWhat": "申请授权",
   "web-pages.vault.asked": "已通知你的其他设备",

@@ -1065,9 +1065,10 @@ const able = (inner: Inner) => inner.host.appKeys === true && typeof inner.host.
 /// How an agent's request a card names (`card.vault`; `save`: one to keep a secret) is answered on this device, from the
 /// vault as this core holds it: what a chat's card shows at its foot with the message itself (views.ts),
 /// never asking for more. `elsewhere`: approved only in an app that keeps keys (the plain library's anywhere); `setUp`:
-/// a secret to keep while this device's vault is not on (开启密钥库 first); else `approve`, a use given for `lasts` at the
-/// longest (the item's, else its vault's; a request not held yet, as one with none said).
-export type AskAnswer = { answer: "approve" | "setUp" | "elsewhere" | "notHere"; lasts?: Scope };
+/// a secret to keep while this device's vault is not on (开启密钥库 first); `noKey`: this device does not hold a key to
+/// this encrypted vault yet; else `approve`, a use given for `lasts` at the longest (the item's, else its vault's; a
+/// request not held yet, as one with none said).
+export type AskAnswer = { answer: "approve" | "setUp" | "elsewhere" | "notHere" | "noKey"; lasts?: Scope };
 
 /// Whether a secret an agent asks to keep was sealed by its station to the person's devices set up then, this one not
 /// among them (set up since, or its certificate not on that station then): approved on one of those, or here once
@@ -1076,6 +1077,46 @@ export type AskAnswer = { answer: "approve" | "setUp" | "elsewhere" | "notHere";
 const notHere = (r: Request | undefined, device: string | null, box: string | null): boolean =>
   r?.save !== undefined && r.save.typed !== true && Array.isArray(r.sealed) && device !== null && !r.sealed.some((x) => x.device === device && (box === null || x.box === box));
 
+/// Whether an encrypted-vault request lacks a key on this device (cannot be approved, saved, renamed or deleted here):
+/// - plain requests never need an encrypted vault key;
+/// - save requests mirror `#keepSaved` (after `setUp` and `notHere`): when the viewer already owns an active trusted
+///   vault, neither `r.vault` nor any active member vault is keyed on this device;
+/// - use / describe / remove requests: the target vault exists, is not deleted, and is not keyed on this device
+///   (including when `self === null`);
+/// - when `r` has not synced yet: falls back to whether the viewer's active member vaults (or own vaults for `save`
+///   once `setUp`) exist here with none keyed.
+function vaultNoKey(
+  lock: Checked,
+  h: Held,
+  self: { device: string; sub: string } | null,
+  mine: BoxCert | undefined,
+  box: string | null | undefined,
+  r: Request | undefined,
+  save: boolean,
+  isSetUp: () => boolean,
+  activeMemberVaults: () => Vault[],
+): boolean {
+  const keyed = (v: Vault): boolean =>
+    self !== null && mine !== undefined && mine.box === box && v.keys.some((k) => k.cert.device === self.device && k.cert.box === mine.box);
+  if (r !== undefined) {
+    if (r.vault === PLAIN) return false;
+    if (r.save !== undefined) {
+      if (!isSetUp()) return false;
+      if (notHere(r, self?.device ?? null, box ?? null)) return false;
+      const memberVaults = activeMemberVaults();
+      if (self === null || !memberVaults.some((v) => v.owner === self.sub)) return false;
+      const target = h.vaults[r.vault];
+      if (target !== undefined && !target.deleted && trusted(lock, target) && target.members.includes(self.sub) && keyed(target)) return false;
+      return !memberVaults.some(keyed);
+    }
+    const v = h.vaults[r.vault];
+    return v !== undefined && !v.deleted && !keyed(v);
+  }
+  const memberVaults = activeMemberVaults();
+  if (!save) return memberVaults.length > 0 && !memberVaults.some(keyed);
+  return isSetUp() && self !== null && memberVaults.some((v) => v.owner === self.sub) && !memberVaults.some(keyed);
+}
+
 export function askAnswers(inner: Inner, ws: string, asks: { request: string; save: boolean }[]): AskAnswer[] {
   const lock = lockOf(inner, ws);
   const plain = plainMode(inner, ws);
@@ -1083,23 +1124,53 @@ export function askAnswers(inner: Inner, ws: string, asks: { request: string; sa
   const h = held(inner, ws);
   const self = lock instanceof CoreError ? null : me(lock, signerOf(inner));
   // (this device's box certificate the lock vouches for, its key the one kept here: as the `vaults` topic's setUp)
+  let mineLoaded = false;
+  let mineCert: BoxCert | undefined;
+  const mineOf = (): BoxCert | undefined => {
+    if (mineLoaded) return mineCert;
+    mineLoaded = true;
+    if (lock instanceof CoreError || self === null) return undefined;
+    const cert = h.boxes[self.device];
+    return (mineCert = cert !== undefined && certOwner(lock, cert) !== null ? cert : undefined);
+  };
   let setUp: boolean | undefined;
   const isSetUp = (): boolean => {
     if (setUp !== undefined) return setUp;
-    if (lock instanceof CoreError) return (setUp = false);
-    const cert = self !== null ? h.boxes[self.device] : undefined;
-    return (setUp = cert !== undefined && certOwner(lock, cert) !== null && cert.box === mem(inner).box);
+    const mine = mineOf();
+    return (setUp = mine !== undefined && mine.box === mem(inner).box);
+  };
+  let activeVaults: Vault[] | undefined;
+  const activeMemberVaults = (): Vault[] => {
+    if (activeVaults !== undefined) return activeVaults;
+    if (lock instanceof CoreError || self === null) return (activeVaults = []);
+    return (activeVaults = Object.values(h.vaults).filter((v) => !v.deleted && trusted(lock, v) && v.members.includes(self.sub)));
   };
   return asks.map(({ request, save }): AskAnswer => {
-    if (save) return { answer: !plain && !isSetUp() ? "setUp" : notHere(h.requests[request], self?.device ?? null, mem(inner).box ?? null) ? "notHere" : "approve" };
     const r = h.requests[request];
+    const noKey = (): boolean =>
+      !plain && !(lock instanceof CoreError) && vaultNoKey(lock, h, self, mineOf(), mem(inner).box, r, save, isSetUp, activeMemberVaults);
+    if (save) {
+      if (r?.describe !== undefined || r?.remove !== undefined) {
+        return { answer: noKey() ? "noKey" : !plain && !isSetUp() ? "setUp" : "approve" };
+      }
+      return {
+        answer:
+          !plain && !isSetUp()
+            ? "setUp"
+            : notHere(r, self?.device ?? null, mem(inner).box ?? null)
+              ? "notHere"
+              : noKey()
+                ? "noKey"
+                : "approve",
+      };
+    }
     const lasts =
       r === undefined
         ? "chat"
         : r.vault === PLAIN
           ? (h.plain[r.item]?.listing?.lasts ?? h.plainLasts?.lasts ?? "chat")
           : (items(inner, ws, r.vault)[r.item]?.listing?.lasts ?? h.vaults[r.vault]?.lasts ?? "chat");
-    return { answer: "approve", lasts };
+    return { answer: noKey() ? "noKey" : "approve", lasts };
   });
 }
 
@@ -1530,19 +1601,30 @@ export function vaultsView(inner: Inner, ws: string): J {
     });
   // (a secret to keep is told only to whom it is for: it may be meant for no vault yet; none of the plain library's, which
   // safe mode on has none of)
+  const setUp = mine !== undefined && mine.box === m.box;
+  const plain = plainMode(inner, ws);
+  let activeVaults: Vault[] | undefined;
+  const activeMemberVaults = (): Vault[] =>
+    (activeVaults ??= self === null ? [] : Object.values(h.vaults).filter((v) => !v.deleted && trusted(lock, v) && v.members.includes(self.sub)));
   const requests = Object.values(h.requests)
     .filter((r) => r.status === "pending" && r.vault !== PLAIN && (r.save !== undefined || (h.vaults[r.vault] !== undefined && !h.vaults[r.vault]!.deleted && sub !== null && h.vaults[r.vault]!.members.includes(sub))))
     .sort((a, b) => a.at - b.at)
     .map((r) => {
       const listing = items(inner, ws, r.vault)[r.item]?.listing;
-      return { ...requestRow(r, r.save?.name ?? r.describe?.was.name ?? r.remove?.name ?? listing?.name ?? null, h.vaults[r.vault]?.name ?? personal, listing?.lasts ?? h.vaults[r.vault]?.lasts ?? "chat"), ...(notHere(r, self?.device ?? null, m.box ?? null) ? { notHere: true } : {}) };
+      const isSave = r.save !== undefined || r.describe !== undefined || r.remove !== undefined;
+      const noKey = !plain && vaultNoKey(lock, h, self, mine, m.box, r, isSave, () => setUp, activeMemberVaults);
+      return {
+        ...requestRow(r, r.save?.name ?? r.describe?.was.name ?? r.remove?.name ?? listing?.name ?? null, h.vaults[r.vault]?.name ?? personal, listing?.lasts ?? h.vaults[r.vault]?.lasts ?? "chat"),
+        ...(notHere(r, self?.device ?? null, m.box ?? null) ? { notHere: true } : {}),
+        ...(noKey ? { noKey: true } : {}),
+      };
     });
   // What is left of the plain library from before security mode, to be moved into the person's vault.
   // (no signer here for a reason of its own: its words, and the press that ends it where one does)
   const why = self === null ? whyNot(inner, ws) : null;
   // (no safe mode, their own lock begun nowhere yet: 开启 begins it with this device on it, `Vaults.setup`)
   const begins = self === null && why === null && able(inner) && personalNone(inner, ws);
-  return { ...base, canSign: self !== null || begins, ...(why !== null ? { stateText: why.text, ...(why.confirm ? { confirmText: t("core-misc.vault.confirm") } : {}) } : {}), setUp: mine !== undefined && mine.box === m.box, vaults, requests, ...statusWords(vaults, requests), ...(plainItems.length > 0 ? { plainLeft: plainItems.length } : {}) };
+  return { ...base, canSign: self !== null || begins, ...(why !== null ? { stateText: why.text, ...(why.confirm ? { confirmText: t("core-misc.vault.confirm") } : {}) } : {}), setUp, vaults, requests, ...statusWords(vaults, requests), ...(plainItems.length > 0 ? { plainLeft: plainItems.length } : {}) };
 }
 
 const clockOf = (inner: Inner) => {

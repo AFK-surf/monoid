@@ -82,6 +82,7 @@ fn vault_cases() -> Array[(String, Json?, String, Message)] {
     ("another's", Some(vault_topic([vault_row()])), "", vault_ask_post(theirs=true)),
     ("under way", Some(vault_topic([vault_row()])), "vault.approve", vault_ask_post()),
     ("the topic not come", None, "", vault_ask_post()),
+    ("no key on this device", Some(vault_topic([vault_row(more={ "noKey": true })])), "", vault_ask_post()),
   ]
 }
 
@@ -396,6 +397,7 @@ fn vault_card_cases() -> Array[(String, Message, String)] {
       ),
       "",
     ),
+    ("no key on this device", vault_card_post(vault_use(more={ "answer": "noKey" })), ""),
   ]
 }
 
@@ -468,7 +470,7 @@ test "a vault item's request in place of its post's words, made once as nodes, i
 ///|
 test "a vault item's request in place of its post's words at 1.3, narrow, drawn as the old view drew it where it has no length to choose or one beside the buttons" {
   let cases = vault_card_cases()
-  for i in [0, 1, 2, 5, 6, 14] {
+  for i in [0, 1, 2, 5, 6, 14, 21] {
     let c = cases[i]
     let at = "\{c.0} at 1.3"
     let (was, now, t) = vault_card_both(c.1, c.2, 390.0, at, scale=1.3)

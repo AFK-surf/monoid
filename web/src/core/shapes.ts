@@ -2231,7 +2231,8 @@ export interface VaultAsk {
 	/**
 	 * How it is answered on this device, from the vault as the core holds it (views/vault.ts askAnswers): approve
 	 * (允许 / 存入), setUp (a secret to keep while this device's vault is not on: 开启密钥库 first), elsewhere (approved only in an
-	 * app that keeps keys), notHere (a secret to keep not sealed to this device: approved on another, VaultRequest `notHere`). The chat's cards; absent on a core from before.
+	 * app that keeps keys), notHere (a secret to keep not sealed to this device: approved on another, VaultRequest `notHere`), noKey
+	 * (this device does not hold a key to this encrypted vault yet: cannot approve/save/change/remove here, VaultRequest `noKey`). The chat's cards; absent on a core from before.
 	 */
 	answer?: string;
 	/** With answer approve, a use: the longest it may be given for (once | hour | chat). */

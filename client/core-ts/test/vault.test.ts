@@ -34,7 +34,7 @@ import { checkLock } from "../src/vault/lock-check.ts";
 import { OAUTH_WAIT_MS, SLACK, handedTo, stateOf as oauthState } from "../src/vault/oauth.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { checkWith, forgetVerifiedHere, keepVerified } from "../src/vault/verified.ts";
-import { BOX_KEY, BOX_PUB, UNLOCK_MS, levelVaults, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
+import { BOX_KEY, BOX_PUB, UNLOCK_MS, askAnswers, levelVaults, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
 import { handOver, inForceOf, leftIn, pairs, pendingHeld, read as readLock, roster, signerKnown } from "../src/views/lock.ts";
 import { type Duplex, dialer, personalBegin, personalProve, serveTrusted } from "../src/views/pair.ts";
 import { PERSONAL_KEY } from "../src/personal-lock.ts";
@@ -3649,4 +3649,114 @@ test("handover preserves seq + 1 locally on both d1 and d2 when station temporar
     d1.core.close();
     d2.core.close();
   }
+});
+
+test("askAnswers and vaultsView report noKey on a !keyed device for encrypted use/describe/remove/typed-save requests, keep plain approve, and flip back to approve once keyed", async () => {
+  const d1 = await rig();
+  d1.putLock();
+  const setup = await d1.ask("vault.setup", {});
+  const put = await d1.ask("vault.putItem", {
+    vault: setup.made,
+    plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } },
+    listing: { name: "GitHub", kind: "token", modes: ["proxy"], hosts: ["api.github.com"], lasts: "hour" },
+  });
+  await d1.ask("vault.lock", {});
+  const d2 = await secondDevice(d1);
+  const v1 = await d1.watch(1, { topic: "vaults", workspace: "ws" });
+  const v2 = await d2.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.equal(v1().vaults[0].keyed, true);
+  assert.equal(v2().vaults[0].keyed, false);
+
+  const reqBox = boxPublic(fill(9));
+  const rUse: Request = { id: "r_use", ws: "ws", vault: setup.made, item: put.id, session: "k1", chat: "7", mode: "proxy", hosts: ["api.github.com"], reason: "use it", box: reqBox, at: 1, status: "pending", owner: "a@x.com" };
+  const rDesc: Request = { id: "r_desc", ws: "ws", vault: setup.made, item: put.id, session: "k1", chat: "7", mode: "proxy", hosts: [], reason: "rename it", box: reqBox, at: 2, status: "pending", owner: "a@x.com", describe: { name: "GitHub 2", about: "updated", was: { name: "GitHub", about: "" } } };
+  const rRem: Request = { id: "r_rem", ws: "ws", vault: setup.made, item: put.id, session: "k1", chat: "7", mode: "proxy", hosts: [], reason: "delete it", box: reqBox, at: 3, status: "pending", owner: "a@x.com", remove: { name: "GitHub" } };
+  const rTyped: Request = { id: "r_typed", ws: "ws", vault: "", item: "i_01JATYPED00000000000000001", session: "k1", chat: "7", mode: "env", hosts: [], reason: "type it", box: reqBox, at: 4, status: "pending", owner: "a@x.com", save: { kind: "token", name: "Typed", modes: ["env"], hosts: [], typed: true } };
+  const rPlain: Request = { id: "r_plain", ws: "ws", vault: "plain", item: "i_plain", session: "k1", chat: "7", mode: "proxy", hosts: [], reason: "plain use", box: reqBox, at: 5, status: "pending", owner: "a@x.com" };
+  for (const req of [rUse, rDesc, rRem, rTyped, rPlain]) {
+    d1.st.requests.push(req);
+    d1.push("vault-request", req);
+    d2.push("vault-request", req);
+  }
+  await d1.host.time.pass(500);
+  await d2.host.time.pass(500);
+  d1.take();
+  d2.take();
+
+  const queries = [
+    { request: "r_use", save: false },
+    { request: "r_desc", save: true },
+    { request: "r_rem", save: true },
+    { request: "r_typed", save: true },
+    { request: "r_plain", save: false },
+    { request: "r_unsynced_use", save: false },
+    { request: "r_unsynced_save", save: true },
+  ];
+
+  // Keyed device: all approve
+  assert.deepEqual(askAnswers(d1.core.inner, "ws", queries), [
+    { answer: "approve", lasts: "hour" },
+    { answer: "approve" },
+    { answer: "approve" },
+    { answer: "approve" },
+    { answer: "approve", lasts: "chat" },
+    { answer: "approve", lasts: "chat" },
+    { answer: "approve" },
+  ]);
+  assert.deepEqual(
+    (vaultsView(d1.core.inner, "ws") as any).requests.map((x: any) => [x.id, x.noKey]),
+    [["r_use", undefined], ["r_desc", undefined], ["r_rem", undefined], ["r_typed", undefined]],
+  );
+
+  // !keyed device: encrypted requests report noKey, plain stays approve
+  assert.deepEqual(askAnswers(d2.core.inner, "ws", queries), [
+    { answer: "noKey", lasts: "hour" },
+    { answer: "noKey" },
+    { answer: "noKey" },
+    { answer: "noKey" },
+    { answer: "approve", lasts: "chat" },
+    { answer: "noKey", lasts: "chat" },
+    { answer: "noKey" },
+  ]);
+  assert.deepEqual(
+    (vaultsView(d2.core.inner, "ws") as any).requests.map((x: any) => [x.id, x.noKey]),
+    [["r_use", true], ["r_desc", true], ["r_rem", true], ["r_typed", true]],
+  );
+
+  // Once d1 gives d2 the vault key and d2 receives the updated vault, askAnswers & vaultsView flip back to approve
+  let changed = 0;
+  const origChanged = d2.core.inner.views?.vaultChanged?.bind(d2.core.inner.views);
+  if (d2.core.inner.views) {
+    d2.core.inner.views.vaultChanged = (ws: string | null) => {
+      if (ws === "ws" || ws === null) changed++;
+      origChanged?.(ws);
+    };
+  }
+  const cert = d2.st.boxes.get(d1.phone.hex)!;
+  d1.push("vault-box", cert);
+  await d1.host.time.pass(500);
+  d1.take();
+  await d1.ask("vault.addDevice", { vault: setup.made, device: d1.phone.hex });
+  const updated = d1.st.vaults.get(setup.made)!;
+  assert.ok(updated.keys.some((k) => k.cert.device === d1.phone.hex), "d1 keyed d2");
+  d2.push("vault", updated);
+  await d2.host.time.pass(500);
+  d2.take();
+  assert.ok(changed > 0, "vaultChanged fired on d2");
+  assert.equal(v2().vaults[0].keyed, true);
+  assert.deepEqual(askAnswers(d2.core.inner, "ws", queries), [
+    { answer: "approve", lasts: "hour" },
+    { answer: "approve" },
+    { answer: "approve" },
+    { answer: "approve" },
+    { answer: "approve", lasts: "chat" },
+    { answer: "approve", lasts: "chat" },
+    { answer: "approve" },
+  ]);
+  assert.deepEqual(
+    (vaultsView(d2.core.inner, "ws") as any).requests.map((x: any) => [x.id, x.noKey]),
+    [["r_use", undefined], ["r_desc", undefined], ["r_rem", undefined], ["r_typed", undefined]],
+  );
+  d1.core.close();
+  d2.core.close();
 });

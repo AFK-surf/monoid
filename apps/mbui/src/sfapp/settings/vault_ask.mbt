@@ -239,6 +239,8 @@ pub(all) enum Answer {
   /// a secret to keep its station sealed to the person's devices set up then, this one not among them: approved on
   /// one of those (or here once the station has this device's certificate and seals it again)
   NotHere
+  /// this device does not hold a key to this encrypted vault yet: approve on an authorized device or get access in Vault
+  NoKey
   /// decided already, its card not saying so yet
   Decided
   /// another's to answer: whose (the card's 由…决定)
@@ -259,6 +261,7 @@ pub fn card_answer(answer : String, lasts : String, mine : Bool, who? : String? 
     "setUp" => SetUp
     "elsewhere" => Elsewhere
     "notHere" => NotHere
+    "noKey" => NoKey
     _ => Approve(lasts)
   }
 }
@@ -292,10 +295,15 @@ fn topic_answer(core : Core, ws : String, request : String, mine : Bool, who : S
   // (one to rename the item is answered as one to keep: written into the vault, by a device set up)
   let save = field(row, "save") is Some(_) || field(row, "describe") is Some(_) || flag(row, "remove")
   let typed = typed_of(field(row, "save"))
-  if save && !flag(view, "plain") && !flag(view, "setUp") {
+  let is_save = field(row, "save") is Some(_)
+  if !is_save && flag(row, "noKey") {
+    Some((NoKey, save, typed))
+  } else if save && !flag(view, "plain") && !flag(view, "setUp") {
     Some((SetUp, save, typed))
   } else if save && flag(row, "notHere") {
     Some((NotHere, save, typed))
+  } else if flag(row, "noKey") {
+    Some((NoKey, save, typed))
   } else {
     Some((Approve(text(row, "lasts")), save, typed))
   }
@@ -599,6 +607,10 @@ pub fn vault_foot(
     }
     NotHere => {
       note(tr("web-pages.vault.approve.notHere"))
+      return
+    }
+    NoKey => {
+      note(tr("web-pages.vault.approve.noKey"))
       return
     }
     Decided => {
