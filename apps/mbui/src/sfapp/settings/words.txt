@@ -1752,6 +1752,8 @@ web-pages.vault.migrate.title
 web-pages.vault.migrate.what
 web-pages.vault.missing
 web-pages.vault.needsLock
+web-pages.vault.outsideNote
+web-pages.vault.restartNote
 web-pages.vault.needsLockWhy
 web-pages.vault.noMatch
 web-pages.vault.none

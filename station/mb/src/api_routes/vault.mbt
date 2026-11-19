@@ -23,9 +23,10 @@ fn needs_lock() -> Answer {
 }
 
 ///|
-/// The lock pinned in the asker's workspace (None: none is).
+/// The lock the asker's workspace's vault goes by (None: none): its lock in force in security mode, else its members'
+/// own (vault/module.ts `lock`, given who asks: known by it from then on).
 async fn Admin::vault_lock(self : Admin, r : Request) -> JV? {
-  let l = self.backend.ask("vault.lock", [r.who("workspace").unwrap_or(jundef)])
+  let l = self.backend.ask("vault.lock", [r.who("workspace").unwrap_or(jundef), r.viewer])
   if nullish(l) {
     None
   } else {
@@ -616,7 +617,11 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
   let locked_decision = (call : String) => {
     async fn(r : Request, _m : Array[String?]) -> Answer {
       guard self.vault_lock(r) is Some(l) else { return needs_lock() }
-      decide(r, async fn(o) { s(call, [l, r.who("sub").unwrap_or(jundef), o]) })
+      decide(r, async fn(o) {
+        // (a refusal: who turns it down, by their credential's email, where no own lock of theirs is heard yet)
+        let more = if call == "deny" { [r.who("email").unwrap_or(jundef)] } else { [] }
+        s(call, [l, r.who("sub").unwrap_or(jundef), o] + more)
+      })
     }
   }
   let plain_told = async fn(kept : JV) -> JV {
@@ -663,6 +668,10 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
           return refuse(
             409, "lock_changed", "the workspace's security mode changed while the requests were prepared; try again",
           )
+        }
+        // (its members' own locks, no security mode: nothing of this device's to admit again)
+        if current.get("genesis") is Some(Str("")) {
+          continue
         }
         let now = (self.wall_now() / 1000.0).floor()
         let admitted = try {

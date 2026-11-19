@@ -989,6 +989,7 @@ fn outline_rail(
   latest : Double,
   top : Double,
   room : Double,
+  room_anim? : (@motion.Anim, Double)? = None,
 ) -> Bool {
   let days = items(value, "days").map(fn(d) { items(Some(d), "seqs").length() })
   let said = outline_seqs(value)
@@ -1048,6 +1049,10 @@ fn outline_rail(
         }
       })
       c.semantics(b, Button, id~, label=@sf.t("web-main.outline.title"))
+      match room_anim {
+        Some((a, target)) => c.look_by(b, fn() { @ui.look(dy=(target - a.get(c)) / 2.0) })
+        None => ()
+      }
     })
     |> ignore
   })
@@ -1113,6 +1118,7 @@ fn outline_float(
   shown : Bool,
   right : Double,
   lift : Double,
+  room_anim? : (@motion.Anim, Double)? = None,
 ) -> Unit {
   let p = @sf.theme().p
   let look = match chat_float_look(c, r, "chat-outline", shown) {
@@ -1132,7 +1138,10 @@ fn outline_float(
         @sf.icon(c, "list", size=float_icon, color=p.text) |> ignore
       })
       c.semantics(b, Button, id~, label=@sf.t("web-main.outline.title"))
-      c.look(b, look)
+      match room_anim {
+        Some((a, target)) => c.look_by(b, fn() { { ..look, dy: look.dy + target - a.get(c) } })
+        None => c.look(b, look)
+      }
       @motion.leaving(c, b, shown)
       b
     })
@@ -1156,6 +1165,7 @@ fn outline_entries_of(
   jump : Bool,
   top : Double,
   room : Double,
+  room_anim? : (@motion.Anim, Double)? = None,
 ) -> Bool {
   let k = chat_key(r)
   // (offered where the outline may be asked for: not in a replay of a run from before, whose app had none)
@@ -1182,7 +1192,7 @@ fn outline_entries_of(
     Some(th) if wide && offered => {
       let value = src.topic("chatOutline", outline_params(r, th)).get().value
       let latest = v.messages.fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
-      outline_rail(c, src, r, th, value, top_seq, at_end, latest, top, room)
+      outline_rail(c, src, r, th, value, top_seq, at_end, latest, top, room, room_anim~)
     }
     _ => false
   }
@@ -1203,6 +1213,7 @@ fn outline_entries_of(
     floated,
     float_right(c),
     room + float_lift + float_above,
+    room_anim~,
   )
   // (a screen's fixture: opened from what shows, once the frame's builds are over)
   match outline_presets.get(k) {

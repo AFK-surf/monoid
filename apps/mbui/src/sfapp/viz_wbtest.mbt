@@ -214,6 +214,36 @@ test "a page that grows a little with each height it is given (100vh) is held wh
 }
 
 ///|
+test "an inline page whose height oscillates back and forth within 64 px is held at its high bound until a larger resize" {
+  let t = chat_tester("chat-viz")
+  t.frame()
+  let (page, _) = viz_views(t)
+  t.view_says(page, "{\"vizMessage\":true,\"type\":\"height\",\"height\":300}")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_rect(t, page).unwrap().3, 300.0)
+  // Duplicate equal reports do not perturb the height.
+  t.view_says(page, "{\"vizMessage\":true,\"type\":\"height\",\"height\":300}")
+  t.frame()
+  assert_eq(view_rect(t, page).unwrap().3, 300.0)
+  // Small back-and-forth oscillation (300 <-> 312) locks at the upper bound (312).
+  for _ in 0..<10 {
+    t.view_says(page, "{\"vizMessage\":true,\"type\":\"height\",\"height\":312}")
+    t.view_says(page, "{\"vizMessage\":true,\"type\":\"height\",\"height\":300}")
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_rect(t, page).unwrap().3, 312.0)
+  // Subsequent small perturbations within 64 px of the held height are ignored.
+  t.view_says(page, "{\"vizMessage\":true,\"type\":\"height\",\"height\":300}")
+  t.view_says(page, "{\"vizMessage\":true,\"type\":\"height\",\"height\":324}")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_rect(t, page).unwrap().3, 312.0)
+  // A genuine larger resize (> 64 px) clears the hold and follows.
+  t.view_says(page, "{\"vizMessage\":true,\"type\":\"height\",\"height\":500}")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_rect(t, page).unwrap().3, 500.0)
+}
+
+///|
 test "what a visualization's widget keeps is kept, given back as it is shown again; over 16 KiB let go" {
   let t = chat_tester("chat-viz")
   t.frame()

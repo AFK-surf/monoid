@@ -578,6 +578,19 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
     // (lock.ts `admit` of the lock in force where `state` says, `vault.lock`'s: the device and role it admits)
     "cloud/lock.admit" => {
       guard self.plane is Some(plane) else { raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no control plane" })) }
+      // (a vault's lock made of its members' own locks, no security mode: cloud/vault-lock.ts, lock.ts `admit`)
+      let personal = arg(0)
+      if personal is { "genesis": String(""), .. } {
+        let (id, role, sign_key) = @cloud_lock.admit_personal(plane.crypto, personal, who_of(arg(1))) catch {
+          e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
+        }
+        let d : Map[String, Json] = { "id": Json::string(id), "sub": Json::string(who_of(arg(1)).sub), "kind": Json::string("app") }
+        match sign_key {
+          Some(k) => d["sign_key"] = Json::string(k)
+          None => ()
+        }
+        return @jsjson.JV::of_json({ "device": Json::object(d), "role": Json::string(role) })
+      }
       let ws = match arg(0) {
         { "ws": String(w), .. } if Some(w) != plane.cloud.home() => Some(w)
         _ => None

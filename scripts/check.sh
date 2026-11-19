@@ -494,10 +494,11 @@ if part ts; then
   # `ignore(….fork(…))`); makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`); writes no file beside
   # under a name another write of it takes too (`<path>.<pid>.tmp`, `<path>.tmp`: L13); waits on the disk on the
   # program's thread in a whole station's slice (`station_main/live_*.mbt`) no more than MAIN_THREAD_SYNC_FS lets it,
-  # which only falls; makes no JavaScript value JSON by writing it out and reading it again; and hashes no SHA-256 of
-  # its own (base/hash's `@hash`).
+  # which only falls; makes no JavaScript value JSON by writing it out and reading it again; asks its shell for a fetch
+  # by name only in host/http.mbt (`@host.Host::fetch`); and makes no SHA-256 or SHA-1 (base/hash), CRC-32 or base64
+  # (base/codec), civil calendar (base/time) or deflate/Adler-32 (base/flate) of its own.
   if touches '^station/mb/|^scripts/mb-station\.ts$'; then
-    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON, no SHA-256 of its own" node scripts/mb-station.ts
+    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON, no raw shell fetch, no SHA-256, SHA-1, CRC-32, base64, civil calendar or flate/adler of its own" node scripts/mb-station.ts
   fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
   # their JS dependencies and the real wasm package even when no TS file changed.
@@ -603,7 +604,7 @@ if [ $full = 1 ]; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below),
     # in one moon test (a call a package checked their shared dependencies again each time).
-    remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/accounts_oauth src/events src/api_routes src/vault_crypto src/jobs_host'
+    remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/accounts_oauth src/events src/api_routes src/vault_crypto src/jobs_host src/i18n'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
     # Cursor and sandbox bridges run in processes of their own.

@@ -39,18 +39,28 @@ async function lawful(w: World, where: string): Promise<J> {
   // Law B
   waysOut(page, why);
   // Law C
-  agrees(page, vaultsView(w.inner, "ws") as J, why);
+  const sub = w.inner.workspaces.owner("ws");
+  agrees(page, vaultsView(w.inner, "ws") as J, why, sub === null ? "none" : w.inner.adb.personal().standing(sub));
   return page;
 }
 
 /// Law C: the vaults' page (`vaults`) as the security page (`page`) says this device stands.
-function agrees(page: J, vaults: J, why: string) {
+function agrees(page: J, vaults: J, why: string, standing = "none") {
   const at = `${why}; vaults ${JSON.stringify({ locked: vaults.locked, canSign: vaults.canSign, stateText: vaults.stateText, confirmText: vaults.confirmText, plain: vaults.plain })}`;
   assert.equal(vaults.locked, page.locked, `safe mode ${page.locked ? "on" : "off"} on the security page, ${vaults.locked ? "on" : "off"} on the vaults'; ${at}`);
   if (page.locked === true && vaults.available === true) {
     assert.equal(vaults.canSign, page.signs, `the vaults' page ${vaults.canSign ? "signs" : "does not sign"}, the security page ${page.signs ? "signs" : "does not"}; ${at}`);
     assert.equal(Boolean(vaults.confirmText), Boolean(page.me.confirmText), `验证 offered on ${vaults.confirmText ? "the vaults' page alone" : "the security page alone"}; ${at}`);
     if (page.me.confirmed !== true) assert.equal(vaults.stateText, undefined, `not confirmed, held on the vaults' page by words with nothing to press; ${at}`);
+  }
+  // (safe mode off: the vault is the person's own all the same, never a plain library; not signing here, the page
+  // offers what makes it so: 验证, being approved by another trusted device of theirs, or taking a lock begun
+  // elsewhere as theirs, the person's own lock's standing saying which)
+  if (page.locked === false) {
+    assert.equal(vaults.plain, undefined, `safe mode off, the vaults' page a plain library; ${at}`);
+    if (vaults.available === true && vaults.canSign !== true) {
+      assert.ok(Boolean(vaults.confirmText) || standing === "outside" || standing === "replaced", `safe mode off, not signing, nothing to press (standing ${standing}); ${at}`);
+    }
   }
   for (const s of stringsOf(vaults)) assert.doesNotMatch(s, /个人锁|共享调试/, `the vaults' page says ${s}; ${at}`);
   assert.equal(cleanText(vaults), null, `${cleanText(vaults)}; ${at}`);

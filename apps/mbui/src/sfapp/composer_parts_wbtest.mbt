@@ -1051,3 +1051,134 @@ test "a message's picture quoted in the composer made as nodes shows as its stat
   assert_true(t.locate("img:mem:test/quoted").length() > 0, msg="the quoted picture did not come to its tile")
   @sfbase.chat_page_nodes.set(false)
 }
+
+///|
+test "cacheCold notice arriving and leaving while idle eases the message list smoothly on both chat pages" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let cold = @signals.signal(false)
+    let rev = @signals.signal(0)
+    let t = fake_core(calls, platform=0, over=fn(name, tp) {
+      if name != "chat" {
+        return tp
+      }
+      let on = cold.get()
+      let r = rev.get()
+      match tp.value {
+        Some(v) => {
+          let value = if on { @sffixture.with_cache_cold(v) } else { v }
+          { ..tp, value: Some(value), version: tp.version + r }
+        }
+        None => tp
+      }
+    })
+    t.resize(1280.0, 900.0)
+    t.run_for(@ui.move_most_ms * 3.0)
+    t.assert_idle()
+    let y_of = fn() raise {
+      match t.rect_of("推送截图前要先登录 gh。") {
+        Some((_, y, _, _)) => y
+        None => fail("message not found")
+      }
+    }
+    let y0 = y_of()
+    // Notice arrives asynchronously while the chat sits idle: messages lift smoothly across frames, never snapping.
+    cold.set(true)
+    rev.set(1)
+    let mut prev = y0
+    let mut enter_max_step = 0.0
+    for _ in 0..<45 {
+      t.run_for(@ui.frame_period_default)
+      let y = y_of()
+      let step = (y - prev).abs()
+      if step > enter_max_step {
+        enter_max_step = step
+      }
+      prev = y
+    }
+    t.run_for(@ui.move_most_ms * 2.0)
+    t.assert_idle()
+    let y1 = y_of()
+    let lift = y0 - y1
+    assert_true(lift > 8.0, msg="notice should lift messages: y0=\{y0}, y1=\{y1}")
+    assert_true(
+      enter_max_step < lift * 0.6,
+      msg="notice enter should ease smoothly, not snap in one frame: lift=\{lift}, max_step=\{enter_max_step}",
+    )
+    // Notice disappears asynchronously while idle: messages settle back smoothly without snapping.
+    cold.set(false)
+    rev.set(2)
+    let mut prev_exit = y1
+    let mut exit_max_step = 0.0
+    for _ in 0..<60 {
+      t.run_for(@ui.frame_period_default)
+      let y = y_of()
+      let step = (y - prev_exit).abs()
+      if step > exit_max_step {
+        exit_max_step = step
+      }
+      prev_exit = y
+    }
+    t.run_for(@ui.move_most_ms * 2.0)
+    t.assert_idle()
+    let y2 = y_of()
+    assert_true((y2 - y0).abs() <= 1.0, msg="messages should settle back to y0=\{y0}, got y2=\{y2}")
+    assert_true(
+      exit_max_step < lift * 0.6,
+      msg="notice exit should ease smoothly, not snap in one frame: lift=\{lift}, max_step=\{exit_max_step}",
+    )
+  })
+}
+
+///|
+test "idle chat refresh updating message relative times moves no messages on both chat pages" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let tick = @signals.signal(0)
+    let t = fake_core(calls, over=fn(name, tp) {
+      if name != "chat" {
+        return tp
+      }
+      let k = tick.get()
+      if k == 0 {
+        return tp
+      }
+      match tp.value {
+        Some(Object(o)) => {
+          let o2 = o.copy()
+          match o2.get("messages") {
+            Some(Array(ms)) => {
+              let ms2 = ms.map(fn(m) {
+                match m {
+                  Object(mo) => {
+                    let mo2 = mo.copy()
+                    mo2["time"] = @sffixture.ago("\{k + 1} 分钟前", "10/19 09:12:00")
+                    Json::object(mo2)
+                  }
+                  _ => m
+                }
+              })
+              o2["messages"] = Json::array(ms2)
+            }
+            _ => ()
+          }
+          { ..tp, value: Some(Json::object(o2)), version: tp.version + k }
+        }
+        _ => tp
+      }
+    })
+    t.run_for(@ui.move_most_ms)
+    t.assert_idle()
+    let (_, y0, _, _) = t.rect_of("推送截图前要先登录 gh。").unwrap()
+    for step in 1..=3 {
+      tick.set(step)
+      t.draw()
+      let (_, y_now, _, _) = t.rect_of("推送截图前要先登录 gh。").unwrap()
+      assert_true((y_now - y0).abs() <= 0.01, msg="step \{step}: message shifted from \{y0} to \{y_now}")
+      t.run_for(@ui.move_most_ms)
+      let (_, y_after, _, _) = t.rect_of("推送截图前要先登录 gh。").unwrap()
+      assert_true((y_after - y0).abs() <= 0.01, msg="step \{step} after settle: message shifted from \{y0} to \{y_after}")
+      t.assert_idle()
+    }
+  })
+}

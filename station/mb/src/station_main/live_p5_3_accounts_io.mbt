@@ -607,8 +607,9 @@ fn p53_login_manager(
   let kimi_base = @accounts_pool.kimi_auth
   let platform_ : @accounts_oauth.LoginPlatform = {
     terminal: async fn(program, args, cols, rows) {
+      // (Windows: a ConPTY the runner keeps, relayed on its pipes: windows.ts `terminalSoon`)
       if is_windows() {
-        return None
+        return runner_binary(bus.app, bus.argv0, bus.data).map(r => (r, ["--relay-pty", "--size", "\{cols}x\{rows}", program, ..args]))
       }
       let run = "stty cols \{cols} rows \{rows} 2>/dev/null; exec \"$@\""
       if mac {

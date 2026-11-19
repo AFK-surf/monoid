@@ -686,7 +686,7 @@ async function partRoutes(): Promise<(tools: any) => any[]> {
     overview: (viewer: unknown, lang: unknown) => callWorld("agents.overview", [viewer, lang]),
     place: () => callWorld("agents.place", []), heldBy: P("agents.heldBy"),
   });
-  const lock = (ws: string) => callWorld("vault.lock", [ws]);
+  const lock = (ws: string, viewer?: unknown) => callWorld("vault.lock", viewer === undefined ? [ws] : [ws, viewer]);
   return (tools) => (MADE_PARTS ??= [
     ...usage.usageRoutes(tools, () => callWorld("usage.readingAll", [])),
     ...usage.resourceRoutes(tools, P("resources.watch")),

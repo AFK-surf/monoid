@@ -774,9 +774,10 @@ export const windows: Platform = {
   hasUnixSockets: false,
   desktopScreen: "screen",
 
-  // No `script`: a login's command runs on pipes (most say their link and code then). No process tree is read: only
+  // No `script`: a command that reads only from a terminal (Devin's and the Antigravity CLI's sign-ins) runs on a ConPTY
+  // the runner keeps, its input and output relayed on the runner's pipes (`--relay-pty`). No process tree is read: only
   // the command itself is taken to listen.
-  terminalSoon: async () => null,
+  terminalSoon: async (program, args, cols, rows) => [runnerBinary(), ["--relay-pty", "--size", `${cols}x${rows}`, program, ...args]],
   descendants: async () => [],
   // What is left of the memory says its pressure; the processes are not read (the watch over them is macOS's and Linux's).
   memoryPressure: async () => pressureOfAvailable(freemem(), totalmem()),

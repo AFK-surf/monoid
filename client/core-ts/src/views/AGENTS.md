@@ -12,7 +12,7 @@
 
 - Compute effective state via `rules` (`state4_moved` in `client/core-ts/src/lock-moved.ts`, read through `client/core-ts/src/views/lock.ts` `stateOf`) from the moved chain, personal logs (`lockLogs`), and statement bodies (`lockBodies`, synced by head hashes via `GET /lock/heads` and `POST /lock/given`). Never sign on the moved chain (`Lock.append` returns `lock_moved`). Determine safe mode via `client/core-ts/src/views/lock.ts` `safeMode` (`lockSafe`), falling back to cloud `locked` only when no lock is held.
 - Express post-move workspace changes as statements in the actor's personal log (`client/core-ts/src/lock-statements.ts` `sayMoved`), prompting the person each time so an unlocked stolen phone cannot alter rosters or undo its removal. Simulate effects via `rules` first: re-state any collateral removals (removing one person must not remove others) and refuse no-op statements. Send bodies only to stations named in that workspace's list, never to cloud or another workspace's station.
-- Only the root person disables or re-enables safe mode on their bound log (`lock_root_only`, naming them and `stillfail lock reset`). Turning a moved workspace off prompts twice (open personal secrets first, then sign `off`).
+- Only the root person disables or re-enables safe mode on their bound log (`lock_root_only`, naming them and `stillfail lock reset`). Turning a workspace off prompts once, for `off` (or `disable`) alone: no vault is opened or written out in plain text.
 - Web sessions in a moved workspace require at least one app device on that person's log (`web` approved face to face, else return `lock_needs_app` / `needsAppIn`). Web-only members do not block a move and keep their session until `exp`.
 - When admitting a newcomer (`member {sub, email, lock, role}`), use `notedRole` (defaulting to `member`) capped by the cloud view's role, never trusting cloud alone.
 - Before removing a device or member, level vaults from reachable stations (`levelVaults`, `takeBefore`) verifying against the pre-removal state. Removal reads no box key. Rekeying vaults for removed members waits until the owner next unseals the key.
@@ -29,6 +29,12 @@
 - Once all named stations advertise `rootout` (`rootOutServed`), the `root` person is an ordinary member (`rules/AGENTS.md` `~root`). Their new app starts its lock anew and re-pushes pinned chains only when the reason changed (`#bringPinned`).
 - Known non-goals: pre-8799 stations of another workspace keep a stale log copy after a statement. Partial build 9040-9054 handover statements contradicted by the chain stay silently ignored. Moved workspaces growing past `LOGS_BEFORE` logs with an old station misread on old cores.
 - Tests: `client/core-ts/test/lock-moved-state.test.ts`, `lock-statements-made.test.ts`, `lock-handover.test.ts`, `lock-handover-model.test.ts`, `lock-left-out.test.ts`, `lock-pair-modes-faults.test.ts`, `lock-state-invariants.test.ts`.
+
+## The vault
+
+- A vault is always encrypted and kept by its person's own devices, with safe mode on or off. In safe mode it follows the workspace's lock in force (`client/core-ts/src/views/vault.ts` `lockOf`). Without safe mode it follows the person's own pinned lock (`personalLockOf`, genesis `""`), as each station builds it from members' own logs (`station/src/cloud/vault-lock.ts`). Turning safe mode on or off changes nothing in the vaults.
+- 开启 (`vault.setup`) begins the person's own lock where none exists, with this device on it, then makes the vault and moves old plain items in (`migrate`). Nothing is written to the plain library again (`plainMode` is always false). Its items are only read to move them and delete them.
+- Shared vaults are not supported without safe mode: a vault another person owns is readable only through a lock naming their devices.
 
 ## A person's presets and starred models
 

@@ -596,7 +596,17 @@ for t in $targets; do
   # (indices 0-1, 1-2, 2-end) beside the package's other test files.
   if [[ " $pkgs " = *" -p stillfail/sfapp_realsize "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
     rest=()
-    for r in "${runs[@]}"; do rest+=("$(echo " $r " | sed 's| -p stillfail/sfapp_realsize | |')"); done
+    # (a run named by @ (@pkgs, @pages …) kept as it is: one padded with blanks matched none of its names below and ran
+    # as the app's; a run that was the real-size package alone left out)
+    for r in "${runs[@]}"; do
+      case "$r" in
+        @*) rest+=("$r") ;;
+        *)
+          s=$(echo " $r " | sed 's| -p stillfail/sfapp_realsize | |')
+          [ -z "${s// /}" ] || rest+=("$s")
+          ;;
+      esac
+    done
     runs=("${rest[@]}")
     rx=${REALSIZE_EXE:-_build/native/release/test/stillfail/sfapp_realsize/sfapp_realsize.blackbox_test.exe}
     [ $t = wasm-gc ] && rx=$(wasm_exe sfapp_realsize blackbox)

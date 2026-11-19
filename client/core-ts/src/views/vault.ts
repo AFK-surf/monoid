@@ -52,7 +52,7 @@
 //   oauthComplete {query}         what the browser came back with: their token written into `vault` (`{name}`)
 //   lock                          the unlocked keys forgotten now
 //   state                         the `vaults` topic's value, as a call
-import { Effect, Schedule, Semaphore } from "effect";
+import { Effect, Semaphore } from "effect";
 import type { Inner } from "../core.ts";
 import { ulid } from "../accounts.ts";
 import { handlers } from "../core/execute.ts";
@@ -60,8 +60,9 @@ import type { Call } from "../core/calls.ts";
 import type { Owner } from "../core/routing.ts";
 import { CoreError, asCoreError } from "../error.ts";
 import { t } from "../i18n.ts";
-import { type Entry, Signer } from "../lock.ts";
-import { OTHERS_MS, answersOf, askPerson, tookOrRefused, deviceText, held as lockHeld, inForceOf, leftIn, lockSeen, movedHere, onBoundPerson, nameOf as workspaceName, signerOf, stateOf } from "./lock.ts";
+import { type Entry, Signer, entryHash } from "../lock.ts";
+import { OTHERS_MS, answersOf, askPerson, tookOrRefused, deviceText, held as lockHeld, inForceOf, leftIn, lockSeen, movedHere, onBoundPerson, view as workspaceView, nameOf as workspaceName, signerKnown, signerOf, stateOf } from "./lock.ts";
+import { crypto as personCrypto } from "../personal-lock.ts";
 import { workspaceIds } from "./marks.ts";
 import type { Topic } from "../protocol.ts";
 import { StationAddr } from "../station/addr.ts";
@@ -74,7 +75,7 @@ import {
 } from "../vault/crypto.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../../rules/js/rules.js";
-import { type Checked, checkLock } from "../vault/lock-check.ts";
+import { type Checked, type Device as LockDevice, checkLock } from "../vault/lock-check.ts";
 import * as oauth from "../vault/oauth.ts";
 import { ofAddress } from "../workspace.ts";
 import { stamp } from "../present.ts";
@@ -201,6 +202,8 @@ const stationsOf = (inner: Inner, ws: string): { id: string; name: string }[] =>
 /// stands), as a station's vaults go by it (station/src/cloud/state.ts `Cloud.locked`): while it waits for the root's
 /// log or its `open`, a state that names nobody (no vault shown, no key given, nobody asked), as a station's then.
 function lockOf(inner: Inner, ws: string): Checked | CoreError {
+  // (no safe mode: the person's own lock, which the vault is kept by all the same: `personalLockOf`)
+  if (!safeMode(inner, ws)) return personalLockOf(inner, ws);
   const h = inner.data.record("lock", ws);
   const entries = isObject(h) && Array.isArray(h.entries) ? (h.entries as Entry[]) : [];
   const head = isObject(h) ? str(get(h.head, "hash")) : null;
@@ -210,6 +213,25 @@ function lockOf(inner: Inner, ws: string): Checked | CoreError {
   if (force.said === "off") return new CoreError("vault_needs_lock", t("core-misc.vault.needsLock"));
   // (moved: the state in force or, made of nothing the rules give, none that checks out; never the chain at the move)
   if (force.said !== "chain") return force.checked ?? new CoreError("vault_lock_invalid", "the workspace's lock does not check out: no state in force");
+  return chainChecked(inner, ws, entries, head);
+}
+
+/// Whether `ws`'s vault goes by its workspace's lock (safe mode), by the lock held here and checked entry by entry
+/// (never by a `disable` no owner signed, which a fold alone would take): a chain not turned off, or, moved, its state
+/// in force not off; one that does not check out counts as on (nothing is let in by it). With none held, the workspace's
+/// view's word (the cloud's), as `lockSafe` has it.
+function safeMode(inner: Inner, ws: string): boolean {
+  const h = inner.data.record("lock", ws);
+  const entries = isObject(h) && Array.isArray(h.entries) ? (h.entries as Entry[]) : [];
+  const head = isObject(h) ? str(get(h.head, "hash")) : null;
+  if (entries.length === 0 || head === null) return get(workspaceView(inner, ws), "locked") === true;
+  if (movedHere(inner, ws)) return inForceOf(inner, ws).said !== "off";
+  const c = chainChecked(inner, ws, entries, head);
+  return c instanceof CoreError || !c.disabled;
+}
+
+/// `ws`'s chain held, checked (the same while its head does not move); an error says why it does not check out.
+function chainChecked(inner: Inner, ws: string, entries: Entry[], head: string): Checked | CoreError {
   const m = mem(inner);
   const at = `${head}/${entries.length}`;
   const had = m.checked.get(ws);
@@ -217,7 +239,6 @@ function lockOf(inner: Inner, ws: string): Checked | CoreError {
   let lock: Checked | CoreError;
   try {
     lock = timed("vault.lock", () => checkLock(entries, nowS(inner)));
-    if (lock.disabled) lock = new CoreError("vault_needs_lock", t("core-misc.vault.needsLock"));
   } catch (e) {
     lock = asCoreError(e);
   }
@@ -225,12 +246,59 @@ function lockOf(inner: Inner, ws: string): Checked | CoreError {
   return lock;
 }
 
-/// Whether `ws` keeps the plain library: no security mode there (no lock, or one turned off). A lock that does not check
-/// out is never taken for none: nothing is read from the plain library or written to it then.
-const plainMode = (inner: Inner, ws: string): boolean => {
-  const l = lockOf(inner, ws);
-  return l instanceof CoreError && l.code === "vault_needs_lock";
-};
+/// Whether `ws` keeps the plain library: never now. A vault is encrypted and kept by its person's own devices whether the
+/// workspace is in safe mode or not (「一律走个人加密密钥库」): what a station still keeps of a plain library from before
+/// is only read to be moved into one's vault and deleted there (`migrate`: `openPlain`, `deletePlain`), never written,
+/// approved from or shown as a vault of its own.
+const plainMode = (_inner: Inner, _ws: string): boolean => false;
+
+/// The lock a workspace's vault goes by where it is not in safe mode, as its stations make it (station/src/cloud/
+/// vault-lock.ts): the person's own lock, as pinned here, its app devices with the signers its entries said, under a
+/// genesis of none (`""`, no chain of the workspace's). The same object while the lock pinned does not move. Their lock
+/// begun nowhere yet (`none`): one naming none of their devices, so a secret to keep is shown and 开启 begins it
+/// (`Vaults.setup`); this device outside it or replaced: an error, the page offering to be approved there.
+const personalLocks = new WeakMap<Inner, Map<string, { at: string; lock: Checked | CoreError }>>();
+function personalLockOf(inner: Inner, ws: string): Checked | CoreError {
+  const sub = inner.workspaces.owner(ws);
+  if (sub === null) return new CoreError("vault_no_account", t("core-misc.vault.notTrusted"));
+  const personal = inner.adb.personal();
+  const standing = personal.standing(sub);
+  if (standing === "outside" || standing === "replaced") return new CoreError("vault_personal_outside", t("core-misc.vault.notTrusted"));
+  const entries = personal.pinnedOf(sub);
+  const last = entries[entries.length - 1];
+  const at = `${standing}/${sub}/${entries.length}/${last === undefined ? "" : entryHash(last)}`;
+  let of = personalLocks.get(inner);
+  if (of === undefined) personalLocks.set(inner, (of = new Map()));
+  const had = of.get(ws);
+  if (had?.at === at) return had.lock;
+  const lock = personalChecked(ws, sub, entries);
+  of.set(ws, { at, lock });
+  return lock;
+}
+
+/// `sub`'s own lock of `entries` (none: one naming no device) as a vault's lock of workspace `ws` (`personalLockOf`).
+function personalChecked(ws: string, sub: string, entries: readonly Entry[]): Checked | CoreError {
+  const bare = (head: string, devices: Map<string, LockDevice>, signKeys: Map<string, string[]>): Checked => ({
+    ws, head, genesis: "", members: new Map([[sub, "owner"]]), devices, passkeys: new Map(), signed: new Set([sub]), signKeys, origins: [], rp_id: "", disabled: false, cloudKeys: null,
+  });
+  if (entries.length === 0) return bare("", new Map(), new Map());
+  const out = timed("vault.personal", () => rules.person_fold_js(entries, sub, personCrypto)) as J;
+  if ("error" in out) return new CoreError("vault_lock_invalid", `the person's own lock does not check out: ${out.error}`);
+  const ds = out.devices as { id: string; sign_key?: string; sign_keys?: string[] }[];
+  return bare(
+    String(out.head),
+    new Map(ds.map((d) => [d.id, { id: d.id, sub, kind: "app" as const, ...(typeof d.sign_key === "string" ? { sign_key: d.sign_key } : {}), own: true }])),
+    new Map(ds.map((d) => [d.id, Array.isArray(d.sign_keys) ? d.sign_keys : []])),
+  );
+}
+
+/// Whether `ws`'s vault goes by its person's own lock that this device's person has not begun anywhere yet: 开启 begins
+/// it (`Vaults.setup`), and a secret to keep is turned down with no lock of theirs (`Vaults.deny`).
+function personalNone(inner: Inner, ws: string): boolean {
+  if (safeMode(inner, ws)) return false;
+  const sub = inner.workspaces.owner(ws);
+  return sub !== null && inner.adb.personal().standing(sub) === "none";
+}
 
 /// Whether a certificate is of an app device in the lock that is its person's own (lock-check.ts Device `own`: one an
 /// admin put in under their name is given no key, by itself or asked), signed by its own key; whose device it is.
@@ -264,9 +332,12 @@ export const waitingChecks = { count: 0 };
 function tookAs(inner: Inner, ws: string, v: Vault): Checked | null {
   const lock = lockOf(inner, ws);
   if (!(lock instanceof CoreError) && trusted(lock, v)) return lock;
-  // (a moved workspace has no line of prefixes: what this device kept of the state that took it)
-  if (movedHere(inner, ws)) return keptFor(inner, ws, v);
-  const entries: readonly Entry[] = lockHeld(inner, ws)?.entries ?? [];
+  // (no safe mode: the prefixes of the person's own lock, as a chain's are; else, moved, what this device kept of the
+  // state that took it: a moved workspace has no line of prefixes)
+  const sub = inner.workspaces.owner(ws);
+  const own = !safeMode(inner, ws) && sub !== null;
+  if (!own && movedHere(inner, ws)) return keptFor(inner, ws, v);
+  const entries: readonly Entry[] = own ? inner.adb.personal().pinnedOf(sub) : (lockHeld(inner, ws)?.entries ?? []);
   let of = took.get(entries);
   if (!of) took.set(entries, (of = new Map()));
   const at = `${v.id}/${v.seq}/${v.sig?.sig}`;
@@ -275,8 +346,8 @@ function tookAs(inner: Inner, ws: string, v: Vault): Checked | null {
   for (let n = entries.length - 1; n > 0 && was === null; n--) {
     waitingChecks.count++;
     try {
-      const prefix = checkLock(entries.slice(0, n) as Entry[], nowS(inner));
-      if (!prefix.disabled && trusted(prefix, v)) was = prefix;
+      const prefix = own ? personalChecked(ws, sub, entries.slice(0, n)) : checkLock(entries.slice(0, n) as Entry[], nowS(inner));
+      if (!(prefix instanceof CoreError) && !prefix.disabled && trusted(prefix, v)) was = prefix;
     } catch {
       // (a prefix that does not check out: an earlier one may)
     }
@@ -437,6 +508,8 @@ function whyNot(inner: Inner, ws: string): { code: string; text: string; confirm
   // (only where its person's own lock lets it in here, as the `lock` topic's `confirmSigner`: a device replaced, or on a
   // lock this workspace is not bound to, has nothing to confirm)
   if (force.said === "on" && onBoundPerson(inner, ws) && sub !== null && inner.adb.personal().signerUnsaid(sub)) return { code: "vault_signer_unsaid", text: t("core-misc.vault.signerUnsaid"), confirm: true };
+  // (no safe mode: the vault goes by the person's own lock, which names this device by the signer it says there)
+  if (!safeMode(inner, ws) && sub !== null && inner.adb.personal().standing(sub) === "member" && inner.adb.personal().signerUnsaid(sub)) return { code: "vault_signer_unsaid", text: t("core-misc.vault.signerUnsaid"), confirm: true };
   return null;
 }
 
@@ -459,6 +532,12 @@ function certs(inner: Inner, ws: string, lock: Checked): Vouched[] {
   });
 }
 const bare = ({ sub: _s, ...c }: Vouched): BoxCert => c;
+
+/// The box key's public half this app keeps (BOX_PUB), as `install` reads it at the app's start: given so by a core put
+/// together without that start (test/real-size-asked.ts).
+export function boxKeyKnown(inner: Inner, pub: string | null): void {
+  mem(inner).box = pub;
+}
 
 export function install(inner: Inner): void {
   handlers.vault = (core, call, _progress, _at, ctx) => run(core, call as Of, ctx);
@@ -1037,7 +1116,7 @@ export function levelVaults(inner: Inner, ws: string, out?: string): Effect.Effe
     const reads = Effect.all([...at].map((s) => Effect.ignore(readStation(inner, `${ws}/${s}`), { log: "Unhandled", message: "vault station read" })), { concurrency: "unbounded" });
     const read = at.size === 0 ? Effect.void : Effect.asVoid(Effect.timeoutOption(reads, LEVEL_MS)); // timer: a deadline on what a call waits for
     return Effect.andThen(read, Effect.sync(() => {
-      if (out !== undefined && movedHere(inner, ws)) keepBefore(inner, ws, out);
+      if (out !== undefined && (movedHere(inner, ws) || !safeMode(inner, ws))) keepBefore(inner, ws, out);
     }));
   });
 }
@@ -1153,7 +1232,12 @@ export function vaultsView(inner: Inner, ws: string): J {
   const people = new Map<string, J>(arr(get(view(inner, ws), "members")).map((p) => [p.sub, p]));
   const nameOf = (s: string) => str(get(people.get(s), "name")) || str(get(people.get(s), "email")) || s;
   const stationName = new Map(stationsOf(inner, ws).map((s) => [s.id, s.name]));
-  const base = { available: able(inner), locked: !(lock instanceof CoreError), canSign: false, setUp: false, vaults: [] as J[], requests: [] as J[], refused: Object.entries(h.refused).map(([id, code]) => ({ station: id, name: stationName.get(id) ?? "", code })) };
+  const safe = safeMode(inner, ws);
+  // (no safe mode, a station that keeps no vault for want of it is one from before: every station now keeps a vault by
+  // its members' own locks, station/src/cloud/vault-lock.ts; said as old, never as safe mode wanting)
+  const refusedRows = Object.entries(h.refused).map(([id, code]) => ({ station: id, name: stationName.get(id) ?? "", code: !safe && code === "vault_needs_lock" ? "station_old" : code }));
+  // (`locked`: whether the workspace is in safe mode, as the `lock` topic says it; the vault is encrypted either way)
+  const base = { available: able(inner), locked: safe && !(lock instanceof CoreError), canSign: false, setUp: false, vaults: [] as J[], requests: [] as J[], refused: refusedRows };
   const plainItems = Object.values(h.plain).filter((i) => !i.deleted);
   const requestRow = (r: Request, itemName: string | null, vaultName: string, lasts: Scope) => ({
     id: r.id, vault: r.vault, vaultName, item: r.item, itemName, lasts,
@@ -1170,22 +1254,10 @@ export function vaultsView(inner: Inner, ws: string): J {
   // Security mode on and its lock not checking out here: no plain library and nothing signed (a lock that does not
   // check out is never taken for one turned off). No words of its own: the page's not-signer card, whose press leads
   // to 安全 where the lock's state is said (its message is the core's own English, never a person's words).
-  if (lock instanceof CoreError && !plainMode(inner, ws)) return { ...base, locked: true, ...statusWords([], []) };
-  // No security mode: the plain library, one vault on the station keeping most of its items (or the first keeping one).
-  if (lock instanceof CoreError) {
-    const count = new Map<string, number>();
-    for (const i of plainItems) count.set(i.station, (count.get(i.station) ?? 0) + 1);
-    const on = [...h.plainOn].sort((a, b) => (count.get(b) ?? 0) - (count.get(a) ?? 0))[0];
-    const row = on === undefined || sub === null ? [] : [{
-      id: PLAIN, name: personal, owner: sub, ownerName: nameOf(sub), mine: true, members: [{ sub, name: nameOf(sub) }],
-      station: on, stationName: stationName.get(on) ?? "", items: plainItems.length, devices: 0, open: true, keyed: true, missing: 0, recoverable: false, lasts: h.plainLasts?.lasts ?? "chat",
-    }];
-    const requests = Object.values(h.requests)
-      .filter((r) => r.status === "pending" && r.vault === PLAIN)
-      .sort((a, b) => a.at - b.at)
-      .map((r) => requestRow(r, r.save?.name ?? r.describe?.was.name ?? r.remove?.name ?? h.plain[r.item]?.name ?? null, personal, h.plain[r.item]?.listing?.lasts ?? h.plainLasts?.lasts ?? "chat"));
-    return { ...base, plain: true, vaults: row, requests, ...statusWords(row, requests) };
-  }
+  if (lock instanceof CoreError && safe) return { ...base, locked: true, ...statusWords([], []) };
+  // No safe mode and this device not on its person's own lock (another device of theirs approves it) or that lock
+  // replaced: nothing signed here; the page offers being approved (or going on as the one that replaced it).
+  if (lock instanceof CoreError) return { ...base, ...statusWords([], []) };
   const self = me(lock, signerOf(inner));
   const vouched = certs(inner, ws, lock);
   const mine = self ? vouched.find((c) => c.device === self.device) : undefined;
@@ -1222,7 +1294,9 @@ export function vaultsView(inner: Inner, ws: string): J {
   // What is left of the plain library from before security mode, to be moved into the person's vault.
   // (no signer here for a reason of its own: its words, and the press that ends it where one does)
   const why = self === null ? whyNot(inner, ws) : null;
-  return { ...base, canSign: self !== null, ...(why !== null ? { stateText: why.text, ...(why.confirm ? { confirmText: t("core-misc.vault.confirm") } : {}) } : {}), setUp: mine !== undefined && mine.box === m.box, vaults, requests, ...statusWords(vaults, requests), ...(plainItems.length > 0 ? { plainLeft: plainItems.length } : {}) };
+  // (no safe mode, their own lock begun nowhere yet: 开启 begins it with this device on it, `Vaults.setup`)
+  const begins = self === null && why === null && able(inner) && personalNone(inner, ws);
+  return { ...base, canSign: self !== null || begins, ...(why !== null ? { stateText: why.text, ...(why.confirm ? { confirmText: t("core-misc.vault.confirm") } : {}) } : {}), setUp: mine !== undefined && mine.box === m.box, vaults, requests, ...statusWords(vaults, requests), ...(plainItems.length > 0 ? { plainLeft: plainItems.length } : {}) };
 }
 
 const clockOf = (inner: Inner) => {
@@ -1304,24 +1378,6 @@ export function itemsView(inner: Inner, ws: string, id: string): J {
     .map((r) => ({ ...r, ...itemWords(r, v.lasts) }))
     .sort((a, b) => ((a.name ?? "") < (b.name ?? "") ? -1 : (a.name ?? "") > (b.name ?? "") ? 1 : a.id < b.id ? -1 : 1));
   return { vault: id, name: v.name, open: key !== null, items: list };
-}
-
-// ── security mode turned off ( 一个库) ──
-
-/// What the person's own vaults hold, opened on this device while the lock is still on (the person asked, saying
-/// `reason`, unless the vaults are unlocked; `asked` told when they were): none where this device keeps no vault keys
-/// or holds none of theirs.
-export function unsealOwn(inner: Inner, ws: string, reason?: string, asked?: () => void): Effect.Effect<{ plain: Plain; listing: Listing | null }[], CoreError> {
-  return new Vaults(inner, ws, null).unsealOwn(reason, asked);
-}
-
-/// Those secrets written into the plain library once the lock is off: tried again a while, as the station may not have
-/// heard yet that it is off (`vault_locked`). One that fails stays in the vault, seen again if security mode comes back.
-export function writePlain(inner: Inner, ws: string, secrets: { plain: Plain; listing: Listing | null }[]): Effect.Effect<void> {
-  const v = new Vaults(inner, ws, null);
-  return Effect.forEach(secrets, (s) =>
-    Effect.ignore(Effect.retry(v.putPlain(null, s.plain, s.listing), { times: 30, schedule: Schedule.spaced("2 seconds"), while: (e) => e.code === "vault_locked" || e.code === "vault_no_station" }), { log: "Unhandled", message: "vault item put" }),
-  { discard: true });
 }
 
 // ── what a person does ──
@@ -1882,6 +1938,16 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      // No safe mode and their own lock begun nowhere (`personalNone`): begun here first, this device on it with its
+      // signer (made now where it has none, `begin`), the person asked once. Where reading it found it begun on another
+      // device after all, nothing is begun: the page then offers to be approved there.
+      if (able(inner) && personalNone(inner, self.ws)) {
+        const sub = inner.workspaces.owner(self.ws)!;
+        const signer = yield* Signer.make(inner.host);
+        signerKnown(inner, signer.id);
+        yield* inner.adb.personal().open(sub, t("core-misc.vault.reason.turnOn"));
+        if (inner.adb.personal().standing(sub) !== "member") return yield* fail("vault_personal_outside", t("core-misc.vault.notTrusted"));
+      }
       const { lock, signer, self: who } = yield* self.#ready();
       // The box key made once (its public half kept beside, read without asking the person).
       const had = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
@@ -1908,6 +1974,9 @@ class Vaults {
       // (not made, it is offered on the page as when there is none; one waiting to be keyed anew is one)
       const own = Object.values(held(inner, self.ws).vaults).some((v) => !v.deleted && (trusted(lock, v) || waitingAs(inner, self.ws, lock, v) !== null) && v.owner === who.sub);
       const made = own ? null : yield* Effect.orElseSucceed(Effect.map(self.create(t("core-misc.vault.personal"), null), (m) => (m as { id: string }).id), () => null);
+      // What a station still keeps unencrypted from before moved into the vault just made, its key in hand (nobody
+      // asked again); what is left, or comes later, the page offers to move (`plainLeft`, `migrate`).
+      if (made !== null && Object.values(held(inner, self.ws).plain).some((r) => !r.deleted)) yield* Effect.ignore(self.migrate(), { log: "Unhandled", message: "plain secrets moved into the vault" });
       return { words, device: who.device, stations, made };
     });
   }
@@ -2473,7 +2542,9 @@ class Vaults {
         self.#settled(r.id, { status: "denied" });
         return { request: r.id };
       }
-      const { signer } = yield* self.#ready();
+      // (a secret to keep, no safe mode, their own lock begun nowhere yet: turned down with this app's signer, which the
+      // station takes from whoever it is kept for, station/src/vault/secrets.ts `deny`; no vault turned on for it)
+      const signer = asked.r.save !== undefined && able(self.#inner) && personalNone(self.#inner, self.ws) ? yield* Signer.make(self.#inner.host) : (yield* self.#ready()).signer;
       const { r, station } = yield* self.#request(id);
       const deny: Deny = sign({ v: 1 as const, ws: self.ws, request: r.id, at: nowS(self.#inner) }, TAG.deny, signer);
       yield* self.#station(station, "POST", "/vault/denials", deny);

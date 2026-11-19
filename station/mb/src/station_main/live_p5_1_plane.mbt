@@ -224,6 +224,15 @@ fn P51::plane_live(self : P51) -> Plane {
       }
     }),
   )
+  // (a person's log taken changes the lock a workspace's vault goes by out of security mode, made of them: told as
+  // cloud.json's changes are, so the vault's lock and its waiting requests are read again: state.ts `vaultLock`)
+  ignore(
+    cloud.person_chains().listen(_ => {
+      if !writing.val {
+        p.tell()
+      }
+    }),
+  )
   // cloud.json written by another process (an enroll, a lock reset): read again as it changes.
   let stamp = Ref(file_stamp(self.fs, path([bus.data, "mesh", "cloud.json"])))
   self.every("cloud.json", 1000, async fn() { // timer: an outside system that offers no push (a file another process writes)
@@ -418,6 +427,10 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     // A lock as kept here (`Cloud.locked` and `Cloud.chain`), its state whole; `workspace` null: the home one's.
     "locked" => locked_json(self.cloud.locked(ws=text("workspace")))
     "chain" => locked_json(self.cloud.chain(ws=text("workspace")))
+    // The person logs kept here, each `[genesis, chain]` (state.ts `personChainsOf(cloud).every()`): what a vault's
+    // lock is made of where its workspace is not in security mode (live_p5_4_vault.mbt `p54_personal_lock`).
+    "personChains" =>
+      Json::array(self.cloud.person_chains().every().map(p => Json::array([Json::string(p.0), Json::array(p.1)])))
     "told" => Json::null()
     _ => raise BusError("no such control plane call: \{op}")
   }

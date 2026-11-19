@@ -62,6 +62,15 @@ pub fn chat_list(
     Some((at, ms)) => c.moment() < at + ms
     None => false
   }
+  // (notices over the composer: included in the Foot row's version so arriving/leaving notices ease the list's foot
+  // smoothly instead of snapping the messages in one frame)
+  let next_foot_sign = composer_notices_sign(c, src, r, v, draft)
+  match notice_signs.get(key) {
+    Some(was) if was != next_foot_sign && reading.was_shown => notice_at[key] = c.moment()
+    _ => ()
+  }
+  notice_signs[key] = next_foot_sign
+  reading.foot_sign = next_foot_sign
   let lf = list_frame(
     c,
     r,
@@ -329,15 +338,51 @@ pub fn chat_list(
       Some(i) => i.first >= 0
       None => false
     })
+    // (when a composer notice arrives or leaves while the chat is open, `room` jumps in one frame once the notice box
+    // enters or finishes fading out: ease what floats over it — jump button, outline rail, ask bell — on the same
+    // Move at paint time via `look_by` so they glide with the list's Foot row without rebuilding every frame; touch no
+    // motion state at all unless a notice actually changed in this chat)
+    let prev_room = notice_rooms.get(key).unwrap_or(room)
+    notice_rooms[key] = room
+    let room_anim : (@motion.Anim, Double)? = match notice_at.get(key) {
+      None => None
+      Some(at) => {
+        let a = @motion.anim(c, "chat-float-room/" + key, prev_room)
+        if !reading.was_shown || on_foot_way || held {
+          a.snap(c, room)
+          notice_at.remove(key)
+          None
+        } else if (room - a.target).abs() > 0.5 {
+          if c.moment() - at <= 100.0 || !a.over(c) {
+            a.follow(c, room, @motion.moved(over=@ui.row_size_ms))
+          } else {
+            a.snap(c, room)
+          }
+          if a.over(c) {
+            notice_at.remove(key)
+            None
+          } else {
+            Some((a, room))
+          }
+        } else if a.over(c) {
+          if c.moment() - at > 100.0 {
+            notice_at.remove(key)
+          }
+          None
+        } else {
+          Some((a, room))
+        }
+      }
+    }
     // the way to the newest: away from its end, or short of the chat's end
     let jump = la.away || v.newer
     rd.jump = jump
-    to_latest(c, src, r, v, jump, room)
+    to_latest(c, src, r, v, jump, room, room_anim~)
     // the ways into its outline (outline.mbt): its rail at its right where the page leaves it room, else a round button
     // over the way to the newest, with it; its keys
-    let floated = outline_entries_of(c, src, r, v, key, list, lay_w, jump, bar, room)
+    let floated = outline_entries_of(c, src, r, v, key, list, lay_w, jump, bar, room, room_anim~)
     // what waits to be decided and does not show: a bell over the way to the end (and the outline's, over that)
-    rd.ask = to_ask(c, r, v, la.ask_rows, la.info, if !jump { 0 } else if floated { 2 } else { 1 }, room)
+    rd.ask = to_ask(c, r, v, la.ask_rows, la.info, if !jump { 0 } else if floated { 2 } else { 1 }, room, room_anim~)
     // the picture flying out of an activity to its message and back, over the list
     emit_flyer(c, rk, em, v, src, r)
     })
@@ -502,7 +547,15 @@ fn chat_float_look(c : @ui.Ctx, r : ChatRef, name : String, shown : Bool) -> @ui
 /// turning while it comes, not pressed again meanwhile. Where a go-to in the chat kept where the reader was
 /// (@sfbase.go_back_to), pressed it goes back there first, not flashing, named so (回到刚才的位置); pressed again, to
 /// the end.
-fn to_latest(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, shown : Bool, room : Double) -> Unit {
+fn to_latest(
+  c : @ui.Ctx,
+  src : Source,
+  r : ChatRef,
+  v : ChatView,
+  shown : Bool,
+  room : Double,
+  room_anim? : (@motion.Anim, Double)? = None,
+) -> Unit {
   let p = @sf.theme().p
   // (its motion its chat's own, standing as it is found while the chat opens: chat_float_look)
   let look = match chat_float_look(c, r, "chat-jump", shown) {
@@ -548,7 +601,10 @@ fn to_latest(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, shown : Bool,
         }
       })
       c.semantics(b, Button, id~, label=name)
-      c.look(b, look)
+      match room_anim {
+        Some((a, target)) => c.look_by(b, fn() { { ..look, dy: look.dy + target - a.get(c) } })
+        None => c.look(b, look)
+      }
       @motion.leaving(c, b, shown)
       b
     })
@@ -568,6 +624,7 @@ fn to_ask(
   info : @ui.ListInfo?,
   under : Int,
   room : Double,
+  room_anim? : (@motion.Anim, Double)? = None,
 ) -> Bool {
   let p = @sf.theme().p
   let asks = asks_of(v)
@@ -610,7 +667,13 @@ fn to_ask(
         @sf.icon(c, "bell", size=float_icon, color=p.text) |> ignore
       })
       c.semantics(b, Button, id~, label=@sf.t("web-main.chat.asks.go"))
-      c.look_by(b, fn() { { ..look, dy: look.dy + lift - lifting() } })
+      c.look_by(b, fn() {
+        let extra = match room_anim {
+          Some((a, target)) => target - a.get(c)
+          None => 0.0
+        }
+        { ..look, dy: look.dy + lift - lifting() + extra }
+      })
       @motion.leaving(c, b, shown)
       b
     })
@@ -717,8 +780,21 @@ pub fn find_forget() -> Unit {
 }
 
 ///|
+/// Notices over each chat's composer as last seen on the legacy list, and when that set last changed (`float_room`).
+let notice_signs : Map[String, String] = Map([])
+
+///|
+let notice_at : Map[String, Double] = Map([])
+
+///|
+let notice_rooms : Map[String, Double] = Map([])
+
+///|
 /// What the list keeps of its own, let go (the package's reset).
 fn list_reset() -> Unit {
+  notice_signs.clear()
+  notice_at.clear()
+  notice_rooms.clear()
   lists_set_off.clear()
   lists_held_w.clear()
   flashing_now.val = ("", 0.0)

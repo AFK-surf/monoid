@@ -2388,7 +2388,36 @@ fn composer_notices_node(
   let reports_held = @sfbase.topic_value_held(src, "chatFeedback", @sfbase.chat_params(r))
   let reports = fn() { items(reports_held.get(), "reports") }
   let report = fn() { reports().iter().find_first(fn(f) { !report_dismissed(f) }) }
-  let kinds = fn() { composer_notice_kinds(src, r, reports~) }
+  // (a notice arriving or leaving while the chat is already open and visible — cache expired, station offline/back,
+  // archived, team reply — is a live cause of its own under the chat page's transitions_only: its column and the list's
+  // foot ease smoothly instead of snapping the messages; opening or waking from rest stays at once)
+  let judged : Ref[Array[String]?] = Ref(None)
+  let had_head = Ref(@signals.untracked(head) is Some(_))
+  let woke_at = Ref(-1.0)
+  foot.on_rest(fn() {  }, wake=fn() {
+    woke_at.val = foot.cause_at()
+    judged.val = None
+  })
+  |> ignore
+  let kinds = fn() {
+    let ks = composer_notice_kinds(src, r, reports~)
+    let has_head = @signals.untracked(head) is Some(_)
+    let was_head = had_head.val
+    had_head.val = has_head
+    match judged.val {
+      Some(was) if was != ks &&
+        was_head &&
+        has_head &&
+        foot.was_placed() &&
+        !@view.answering_now() &&
+        @signals.untracked(@ui.app_visible) &&
+        foot.cause_at() != woke_at.val =>
+        @view.transition(within=foot.transitions_root(), fn() {  })
+      _ => ()
+    }
+    judged.val = Some(ks)
+    ks
+  }
   // (the ＋'s middle as the composer draws it, from its start: its round control's, a point wider for the capsule's edge
   // line, its capsule_pad_alone in; where each notice's mark stands)
   let plus_mid = fn() { capsule_pad_alone + node_capsule_extra((stand.scale)()) + (@sf.theme().round.side + 1.0) / 2.0 }

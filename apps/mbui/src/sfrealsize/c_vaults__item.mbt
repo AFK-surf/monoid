@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"vaults","workspace":"ws-friends"}
   let messages =
-    #|[[{"path":["vaults"],"key":["id"],"patch":"plain","ops":[{"path":["items"],"set":37}]}]]
+    #|[[{"path":["vaults"],"key":["id"],"patch":"v_01JAAAAAAAAAAAAAAAAAAAAAAA","ops":[{"path":["items"],"set":37}]}]]
   put_changes(asked, "item", messages)
 }

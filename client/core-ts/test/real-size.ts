@@ -13,6 +13,10 @@
 // fields is filled as a station fills it, none made larger than a station makes it. Made of the test's clock and
 // indexes alone: the same every run.
 import { workerData } from "node:worker_threads";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { type Entry, entryHash, signedBytes as lockBytes } from "../src/lock.ts";
+import { hex, utf8 } from "../src/util.ts";
+import { TAG, boxPublic, encryptWith, itemContext, keyContext, sealWith, sign } from "../src/vault/crypto.ts";
 import { activity } from "../src/history.ts";
 import { PENDING_MOST, type Pending } from "../src/lock-pending.ts";
 import type { Topic } from "../src/protocol.ts";
@@ -1171,21 +1175,18 @@ export function lockApproved(base: number, at: number): J {
   };
 }
 
-/// The workspace's plain library as held once Maple told its uses again at `at`: the most used item used once more,
-/// the oldest of the 500 it keeps gone.
+/// The workspace's vault as held once Maple told its uses again at `at`: the most used item used once more, the oldest of
+/// the 500 it keeps gone.
 export function vaultUsed(base: number, at: number): J {
   const v = vaultOf(base);
-  const key = `${STATIONS[0].id}/plain`;
+  const key = `${STATIONS[0].id}/${PERSONAL_VAULT}`;
   const use = { item: VAULT_ITEM, at: Math.floor(at / 1000), session: `ember:${CHAT.keys[0]}`, chatTitle: pick(TITLES, 0), mode: "proxy", command: "gh pr merge 5244 --squash", hosts: ["api.github.com", "github.com", "uploads.github.com"], denied: false };
   return { ...v, uses: { ...v.uses, [key]: [use, ...v.uses[key].slice(0, -1)] } };
 }
 
-/// The workspace's plain library with an item added at `at`.
+/// The vault's items with one added at `at`, as a station tells it (its version signed by the owner's device).
 export function vaultAdded(base: number, at: number): J {
-  const v = vaultOf(base);
-  const id = `item-${VAULT_ITEMS}`;
-  const name = "Linear API key";
-  return { ...v, plain: { ...v.plain, [id]: { id, owner: "s1", version: 1, kind: "token", name, notes: "", listing: { name, kind: "token", modes: ["proxy"], hosts: ["api.linear.app"], env: null, lasts: "chat" }, at, station: STATIONS[0].id } } };
+  return { ...vaultItemsOf(base), [itemId(VAULT_ITEMS)]: itemOf(base, VAULT_ITEMS, at) };
 }
 
 /// The workspace as the cloud lists it once a member more joined.
@@ -1299,8 +1300,9 @@ const OTHER_STATIONS = [{ id: "lab-1", name: "Lab GPU", version: "0.1.7018" }, {
 /// The relays still.fail cloud offers (`/v1/me` relay_urls), and the workspace's own one (cloud/src/relays.ts).
 const RELAYS = ["https://relay.still.fail", "https://relay-bj.still.fail", "https://relay-sg.still.fail"];
 const OWN_RELAY = "https://relay.acme.dev";
-/// The workspace without safe mode whose plain library of secrets the vault's pages read: a friend's, of the owner's
-/// too (safe mode on, the vault is no plain library: views/vault.ts `plainMode`).
+/// The workspace without safe mode whose vault the vault's pages read: a friend's, the owner a member, their vault kept
+/// by their own lock all the same (views/vault.ts `personalLockOf`), with what a station still keeps unencrypted of the
+/// plain library from before (`plainLeft`).
 export const PLAIN_WORKSPACE = "ws-friends";
 /// The workspaces the account is in, as its `/v1/me` lists them: this one, another of the owner's, a friend's.
 const ACCOUNT_WORKSPACES = [
@@ -1332,6 +1334,7 @@ export function records(now: number): [string, string, unknown][] {
     ["lock", "ws", lockOf(now)],
     ["lockPending", "ws", pendingOf(now)],
     ["vault", PLAIN_WORKSPACE, vaultOf(now)],
+    ["vaultItems", `${PLAIN_WORKSPACE}/${PERSONAL_VAULT}`, vaultItemsOf(now)],
   ];
 }
 
@@ -1412,39 +1415,96 @@ function lockOf(now: number): J {
   };
 }
 
-/// The workspace's plain library (views/vault.ts `Held`): some dozens of secrets on Maple, the agents' requests waiting,
-/// and the uses of each as the stations said them (station/src/vault/secrets.ts `uses`, 500 at most a vault a station).
+/// The owner's own lock as this device pins it (personal-lock.ts): begun by this device, saying the signer it signs the
+/// workspace's things with, and their phone put on it; each entry signed, as the rules check it.
+const fixed = (b: number) => new Uint8Array(32).fill(b);
+const keyOf32 = (seed: Uint8Array) => ({ id: `ed25519:${hex(ed25519.getPublicKey(seed))}`, hex: hex(ed25519.getPublicKey(seed)), signBytes: (b: Uint8Array) => hex(ed25519.sign(b, seed)) });
+const LOG = keyOf32(fixed(0x71)), PHONE_LOG = keyOf32(fixed(0x72));
+/// This device's signer (the app's `lock-signer`), its endpoint's base key and its box key; the phone's.
+export const VAULT_SIGNER = keyOf32(fixed(0x73));
+const PHONE_SIGNER = keyOf32(fixed(0x74));
+export const VAULT_DEVICE = keyOf32(fixed(0x75)).hex;
+const PHONE_DEVICE = keyOf32(fixed(0x76)).hex;
+export const VAULT_BOX = boxPublic(fixed(0x77));
+const PHONE_BOX = boxPublic(fixed(0x78));
+function signedEntry(chain: Entry[], kind: string, body: unknown, by: ReturnType<typeof keyOf32>): Entry {
+  const last = chain.at(-1);
+  const e = { v: 1 as const, ws: "person:s1", seq: chain.length, prev: last ? entryHash(last) : null, at: 1_790_000_000 + chain.length, kind, body };
+  return { ...e, sig: { key: by.id, alg: "Ed25519" as const, sig: by.signBytes(lockBytes(entryHash(e))) } } as Entry;
+}
+export const OWN_LOCK: Entry[] = (() => {
+  const g = signedEntry([], "genesis", { sub: "s1", device: { key: LOG.id, id: VAULT_DEVICE, label: "macos still.fail · 左子健的 MacBook Pro", sign_key: VAULT_SIGNER.id } }, LOG);
+  return [g, signedEntry([g], "device", { key: PHONE_LOG.id, id: PHONE_DEVICE, label: "android still.fail · 左子健的 Pixel 9 Pro XL", sign_key: PHONE_SIGNER.id }, LOG)];
+})();
+
+/// The owner's vault in the workspace with no safe mode: `个人`, keyed for both their devices, on Maple.
+export const PERSONAL_VAULT = `v_01J${"A".repeat(23)}`;
+const itemId = (i: number) => `i_01J${"A".repeat(21)}${String(i).padStart(2, "0")}`;
+const VAULT_KEY = fixed(0x79);
+/// Their secrets: some dozens, each with how agents may ask for it (its listing, in the clear), what it holds sealed
+/// under the vault's key; the agents' requests waiting; the uses of each as the stations said them
+/// (station/src/vault/secrets.ts `uses`, 500 at most a vault a station); two secrets still in the plain library from
+/// before, to be moved in.
 const SECRETS = ["GitHub token", "npm publish token", "Sentry auth token", "AWS staging", "AWS production (只读)", "Cloudflare API", "Slack bot token", "OpenAI key", "Apple App Store Connect", "Google Play 服务账号", "PostgreSQL staging", "PostgreSQL production", "Redis", "Stripe test key", "Feishu app secret", "Docker Hub", "1Password Connect", "Vercel", "Fastly purge", "Twilio"];
 export const VAULT_ITEMS = 36;
-export const VAULT_ITEM = "item-0";
+export const VAULT_ITEM = itemId(0);
+const hostsOf = (i: number) => [["api.github.com", "github.com", "uploads.github.com"], ["registry.npmjs.org"], ["sentry.io"], ["*.amazonaws.com"], ["api.cloudflare.com"], ["slack.com"]][i % 6]!;
+function certOf(device: string, box: string, signer: ReturnType<typeof keyOf32>, at: number) {
+  return sign({ v: 1 as const, ws: PLAIN_WORKSPACE, device, box, at }, TAG.box, signer);
+}
+function vaultRecord(now: number): J {
+  const secs = Math.floor(now / 1000);
+  const certs = [certOf(VAULT_DEVICE, VAULT_BOX, VAULT_SIGNER, secs - 30 * 86400), certOf(PHONE_DEVICE, PHONE_BOX, PHONE_SIGNER, secs - 29 * 86400)];
+  const context = keyContext(PLAIN_WORKSPACE, PERSONAL_VAULT, 0);
+  const keys = certs.map((c, i) => ({ cert: c, wrapped: sealWith(c.box, VAULT_KEY, context, fixed(0x80 + i)) }));
+  const vault = sign({ v: 1 as const, ws: PLAIN_WORKSPACE, id: PERSONAL_VAULT, seq: 3, owner: "s1", name: "个人", members: ["s1"], epoch: 0, keys, at: secs - 20 * 86400 }, TAG.vault, VAULT_SIGNER);
+  return { certs, vault };
+}
+function itemOf(now: number, i: number, at: number): J {
+  // (the one added later, `vaultAdded`: a name of its own, among the others by its letter as a person's would be)
+  const name = i === VAULT_ITEMS ? "Linear API key" : i < SECRETS.length ? SECRETS[i]! : `${pick(SECRETS, i)} · ${pick(["备用", "CI", "个人"], i)}`;
+  const kind = i === VAULT_ITEMS ? "token" : i % 7 === 3 ? "file" : i % 5 === 1 ? "login" : "token";
+  const id = itemId(i);
+  const plain = { kind, name, fields: kind === "login" ? { username: "deploy", password: `pw-${i}` } : kind === "file" ? { content: "e30=", filename: "sa.json" } : { value: `tok-${i}` }, domains: [], notes: i % 3 === 0 ? "轮换周期 90 天，过期前在 #infra 提醒" : "" };
+  const nonce = new Uint8Array(12).fill(i);
+  const ct = encryptWith(VAULT_KEY, utf8(JSON.stringify(plain)), itemContext(PLAIN_WORKSPACE, PERSONAL_VAULT, id, 1 + (i % 4), 0), nonce);
+  return sign({
+    v: 1 as const, ws: PLAIN_WORKSPACE, vault: PERSONAL_VAULT, id, version: 1 + (i % 4), epoch: 0, ct,
+    listing: { name, kind, modes: i % 4 === 0 ? ["proxy", "env"] : ["proxy"], hosts: i === VAULT_ITEMS ? ["api.linear.app"] : hostsOf(i), ...(i % 4 === 0 ? { env: `${name.toUpperCase().replace(/[^A-Z]+/g, "_")}TOKEN` } : {}), lasts: pick(["once", "hour", "chat"], i) },
+    at: Math.floor(at / 1000),
+  }, TAG.item, VAULT_SIGNER);
+}
+/// The vault's items as the device holds them (views/vault.ts `items`: by id).
+export function vaultItemsOf(now: number, count = VAULT_ITEMS): J {
+  return Object.fromEntries(Array.from({ length: count }, (_, i) => [itemId(i), itemOf(now, i, now - (i + 1) * 2 * DAY)]));
+}
 function vaultOf(now: number): J {
   const secs = Math.floor(now / 1000);
-  const hostsOf = (i: number) => [["api.github.com", "github.com", "uploads.github.com"], ["registry.npmjs.org"], ["sentry.io"], ["*.amazonaws.com"], ["api.cloudflare.com"], ["slack.com"]][i % 6]!;
-  const plain = Object.fromEntries(Array.from({ length: VAULT_ITEMS }, (_, i) => {
-    const name = i < SECRETS.length ? SECRETS[i]! : `${pick(SECRETS, i)} · ${pick(["备用", "CI", "个人"], i)}`;
-    return [`item-${i}`, {
-      id: `item-${i}`, owner: "s1", version: 1 + (i % 4), kind: i % 7 === 3 ? "file" : i % 5 === 1 ? "login" : "token", name, notes: i % 3 === 0 ? "轮换周期 90 天，过期前在 #infra 提醒" : "",
-      listing: { name, kind: "token", modes: i % 4 === 0 ? ["proxy", "env"] : ["proxy"], hosts: hostsOf(i), env: i % 4 === 0 ? `${name.toUpperCase().replace(/[^A-Z]+/g, "_")}TOKEN` : null, lasts: pick(["once", "hour", "chat"], i) },
-      at: now - (i + 1) * 2 * DAY, station: "maple",
-    }];
+  const { certs, vault } = vaultRecord(now);
+  // (two left of the plain library from before, on Maple, to be moved in: `plainLeft`)
+  const plain = Object.fromEntries([0, 1].map((i) => {
+    const name = pick(["Linear API key", "Notion integration"], i);
+    return [`plain-${i}`, { id: `plain-${i}`, owner: "me@x.com", version: 1, kind: "token", name, notes: "", listing: { name, kind: "token", modes: ["proxy"], hosts: [pick(["api.linear.app", "api.notion.com"], i)], lasts: "chat" }, at: now - (i + 40) * DAY, station: "maple" }];
   }));
   // (each of its most used items used by the agents many times, most of the rest now and then: 500 a station at most)
   const uses = (st: number): J[] => Array.from({ length: st === 0 ? 500 : 120 }, (_, u) => {
     const item = u % 3 === 0 ? 0 : u % 7;
     return {
-      item: `item-${item}`, at: secs - u * 1800 - st * 600, session: `ember:${keyOf(st, u % ROWS_UP)}`, chatTitle: pick(TITLES, u + st),
+      item: itemId(item), at: secs - u * 1800 - st * 600, session: `ember:${keyOf(st, u % ROWS_UP)}`, chatTitle: pick(TITLES, u + st),
       mode: item % 4 === 0 && u % 5 === 0 ? "env" : "proxy", command: u % 4 === 0 ? pick(["gh pr create --fill", "gh run watch", "npm publish", "aws s3 ls"], u) : null,
       hosts: u % 4 === 0 ? [] : hostsOf(item), denied: u % 41 === 7,
     };
   });
   const request = (i: number): J => ({
-    id: `vr-${i}`, vault: "plain", item: `item-${i}`, session: keyOf(i % 4, i * 5 + 3), chat: pick(TITLES, i * 5 + 3), mode: "proxy", reason: "推送 PR 并打开 review", command: "gh pr create --fill",
-    hosts: ["api.github.com", "github.com"], at: now - (i + 1) * 9 * MIN, status: "pending", timeout: { kind: "idle", seconds: 3600 },
+    id: `vr-${i}`, ws: PLAIN_WORKSPACE, vault: PERSONAL_VAULT, item: itemId(i), session: keyOf(i % 4, i * 5 + 3), chat: pick(TITLES, i * 5 + 3), mode: "proxy", reason: "推送 PR 并打开 review", command: "gh pr create --fill",
+    hosts: ["api.github.com", "github.com"], box: VAULT_BOX, at: Math.floor((now - (i + 1) * 9 * MIN) / 1000), status: "pending", timeout: { kind: "idle", seconds: 3600 },
   });
   return {
-    vaults: {}, at: {}, boxes: {}, requests: Object.fromEntries([0, 1, 2].map((i) => [`vr-${i}`, request(i)])), asked: { "vr-0": "maple", "vr-1": "willow", "vr-2": "studio" }, refused: {},
-    on: {}, keeps: [], hidden: {}, plain, plainOn: ["maple"], plainLasts: { lasts: "chat", at: now - 5 * DAY },
-    uses: Object.fromEntries(UP.map((_, st) => [`${STATIONS[st]!.id}/plain`, uses(st)])),
+    vaults: { [PERSONAL_VAULT]: vault }, at: { [PERSONAL_VAULT]: "maple" }, boxes: Object.fromEntries(certs.map((c: J) => [c.device, c])),
+    requests: Object.fromEntries([0, 1, 2].map((i) => [`vr-${i}`, request(i)])), asked: { "vr-0": "maple", "vr-1": "willow", "vr-2": "studio" }, refused: {},
+    on: { [PERSONAL_VAULT]: Object.fromEntries(UP.map((_, st) => [STATIONS[st]!.id, { seq: 3, items: {} }])) }, keeps: UP.map((_, st) => STATIONS[st]!.id), hidden: {},
+    plain, plainOn: ["maple"], plainLasts: { lasts: "chat", at: now - 5 * DAY },
+    uses: Object.fromEntries(UP.map((_, st) => [`${STATIONS[st]!.id}/${PERSONAL_VAULT}`, uses(st)])),
   };
 }
 

@@ -1633,7 +1633,9 @@
     "one": "{n} 条密钥尚未加密",
     "other": "{n} 条密钥尚未加密"
   },
-  "web-pages.vault.migrate.body": "开启安全模式前保存的密钥仍以明文保存在 station 上",
+  "web-pages.vault.migrate.body": "此前未加密的密钥仍以明文保存在 station 上",
+  "web-pages.vault.outsideNote": "在你的受信任设备上批准这台设备后，即可在此使用密钥库。",
+  "web-pages.vault.restartNote": "继续后，这台设备成为你唯一的受信任设备：你的其它设备需重新获批，已有密钥库需用恢复码恢复。",
   "web-pages.vault.migrate.go": "加密",
   "web-pages.vault.migrate.what": "加密密钥",
   "web-pages.vault.addKind.title": "添加",

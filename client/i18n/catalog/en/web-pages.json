@@ -1684,7 +1684,9 @@
     "one": "{n} secret is not encrypted",
     "other": "{n} secrets are not encrypted"
   },
-  "web-pages.vault.migrate.body": "Secrets saved before security mode was turned on are still stored in plain text on the station",
+  "web-pages.vault.migrate.body": "Earlier unencrypted secrets are still stored in plain text on the station",
+  "web-pages.vault.outsideNote": "Approve this device on one of your trusted devices to use the vault here.",
+  "web-pages.vault.restartNote": "Continuing makes this your only trusted device: your other devices will need approval again, and existing vaults will need your recovery words.",
   "web-pages.vault.migrate.go": "Encrypt",
   "web-pages.vault.migrate.what": "encrypt secrets",
   "web-pages.vault.addKind.title": "Add",
