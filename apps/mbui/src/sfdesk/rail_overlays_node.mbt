@@ -66,25 +66,23 @@ fn rail_menus_reset() -> Unit {
 /// own, made as it is opened; what it holds kept as it was as it closes, while it goes; one whose choice puts the adder
 /// in its place gone at once.
 fn rail_menu_node(v : @view.View, src : Source) -> Unit {
-  v.box(fn(rm) {
-    rm.transitions_only().over(Is(true)) |> ignore
-    rm.reacts(fn() { wide.rail_menu.get() }, fn(m) {
-      @view.transition(within=rm, fn() {
-        match m {
-          Some((place, from)) => {
-            rail_menu_count.val += 1
-            let n = rail_menu_count.val
-            // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
-            let left = rail_menus.untracked().filter(fn(x) { !rail_menus_gone.contains(x.n) })
-            rail_menus_gone.clear()
-            rail_menus.set(left + [{ n, place, from }])
-            rail_menu_now.set(n)
-          }
-          None => rail_menu_now.set(0)
+  v.reacts(fn() { wide.rail_menu.get() }, fn(m) {
+    @view.transition(within=v, fn() {
+      match m {
+        Some((place, from)) => {
+          rail_menu_count.val += 1
+          let n = rail_menu_count.val
+          // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
+          let left = rail_menus.untracked().filter(fn(x) { !rail_menus_gone.contains(x.n) })
+          rail_menus_gone.clear()
+          rail_menus.set(left + [{ n, place, from }])
+          rail_menu_now.set(n)
         }
-      })
+        None => rail_menu_now.set(0)
+      }
     })
-    rm.each(fn() { rail_menus.get() }, fn(o) { o.n }, fn(cell, o) {
+  })
+  v.each(fn() { rail_menus.get() }, fn(o) { o.n }, fn(cell, o) {
     // (over the window, as what it holds is)
     cell.over(Is(true)) |> ignore
     let { n, place, from } = o.untracked()
@@ -156,8 +154,6 @@ fn rail_menu_node(v : @view.View, src : Source) -> Unit {
       )
     })
   })
-  })
-  |> ignore
 }
 
 ///|
