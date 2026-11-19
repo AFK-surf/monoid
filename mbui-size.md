@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bcd69f31b](https://github.com/AFK-surf/monoid/commit/bcd69f31bbe96be83d13876684498822c24148d1) fix(station): stop the p5-2 handover test racing t | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.44 | 127.78 |
 | [2078eecd4](https://github.com/AFK-surf/monoid/commit/2078eecd4eeafb59ae887216a0f5d02097d61e85) feat(mbui): generalize Windows/Linux pack template | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.44 | 127.78 |
 | [4d3a1509c](https://github.com/AFK-surf/monoid/commit/4d3a1509c6c0c4ff5f4aafbd2adeea44474f824b) feat(mbui): add prebuilt Wasm runtime shell and bu | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.26 | 119.75 |
 | [631072c58](https://github.com/AFK-surf/monoid/commit/631072c58f4f3a3890e13da79f32b85dbad160b4) feat(screens): carry clipboard privacy marks, dete | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.26 | 119.75 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7950d8399](https://github.com/AFK-surf/monoid/commit/7950d839914a95329b74e196a3e3d2aa9405e4a6) perf(station): encode H.264 at High, look at macOS | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
 | [d5f7b63a0](https://github.com/AFK-surf/monoid/commit/d5f7b63a06b9c6cfa31901152178ac7d67f469d3) feat(station): add chat_configure tool, enhance ch | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
 | [30c4f02b3](https://github.com/AFK-surf/monoid/commit/30c4f02b3bf37ec29a04868738609c735b6baff3) perf(station, core-ts): start screen views at the  | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 122.25 |
-| [a032f3f2e](https://github.com/AFK-surf/monoid/commit/a032f3f2e6ba5d7b16157d3d61a72cd01eaf3c5b) fix(mbui): keep glyph phase across whole-pixel shi | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bcd69f31b](https://github.com/AFK-surf/monoid/commit/bcd69f31bbe96be83d13876684498822c24148d1) fix(station): stop the p5-2 handover test racing t | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.05 |
 | [2078eecd4](https://github.com/AFK-surf/monoid/commit/2078eecd4eeafb59ae887216a0f5d02097d61e85) feat(mbui): generalize Windows/Linux pack template | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.13 |
 | [4d3a1509c](https://github.com/AFK-surf/monoid/commit/4d3a1509c6c0c4ff5f4aafbd2adeea44474f824b) feat(mbui): add prebuilt Wasm runtime shell and bu | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.13 |
 | [631072c58](https://github.com/AFK-surf/monoid/commit/631072c58f4f3a3890e13da79f32b85dbad160b4) feat(screens): carry clipboard privacy marks, dete | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.17 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7950d8399](https://github.com/AFK-surf/monoid/commit/7950d839914a95329b74e196a3e3d2aa9405e4a6) perf(station): encode H.264 at High, look at macOS | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.31 |
 | [d5f7b63a0](https://github.com/AFK-surf/monoid/commit/d5f7b63a06b9c6cfa31901152178ac7d67f469d3) feat(station): add chat_configure tool, enhance ch | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.41 |
 | [30c4f02b3](https://github.com/AFK-surf/monoid/commit/30c4f02b3bf37ec29a04868738609c735b6baff3) perf(station, core-ts): start screen views at the  | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.41 |
-| [a032f3f2e](https://github.com/AFK-surf/monoid/commit/a032f3f2e6ba5d7b16157d3d61a72cd01eaf3c5b) fix(mbui): keep glyph phase across whole-pixel shi | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.41 |
