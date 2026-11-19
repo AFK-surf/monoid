@@ -413,8 +413,10 @@ fn cd_run_node(b : @view.View, src : Source, core : Core, here : () -> Here, sta
           text(cv(), "modeLabel")
         }, note=fn() { text(cv(), "modeSentence") })
       })
-      // a Feishu connect's direct chats in threads or not, switched where it stands (its groups' way is the mode's)
-      g.show(fn() { text(cv(), "kind") == "feishu" }, fn(d) {
+      // a Feishu connect's direct chats in threads or not, switched where it stands (its groups' way is the mode's): only
+      // where its station says the switch (`feishu.directThreads`, false too), as one from before would take it and do
+      // nothing
+      g.show(fn() { field(field(cv(), "feishu"), "directThreads") is Some(True | False) }, fn(d) {
         @sf.switch_row_node(
           d,
           fn() { @sf.t("web-pages.connect.feishu.directThreads") },

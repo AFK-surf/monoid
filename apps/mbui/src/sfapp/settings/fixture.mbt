@@ -1938,6 +1938,7 @@ fn fx_connect_as(kind : String) -> Json {
           ("appId", str("cli_a7f3e9b2c41d500e")),
           ("appSecret", str("…9c2b")),
           ("domain", str("feishu")),
+          ("directThreads", Json::boolean(false)),
           ("console", str("https://open.feishu.cn/app/cli_a7f3e9b2c41d500e")),
         ])
         o["modeWords"] = fx_mode_words(true)
