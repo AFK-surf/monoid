@@ -59,8 +59,10 @@ fn workspaces_of(deps : LiveDeps) -> String {
 ///|
 pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime) -> CommaLive {
   CommaStats::make_dirs(io, deps.data)
-  let usage = (changed : () -> Unit) => (deps.subscribe)(kind => if kind is ("usage" | "session" | "thread" | "read") {
-    changed()
+  let usage = (changed : (Bool) -> Unit) => (deps.subscribe)(kind => if kind == "usage" {
+    changed(false)
+  } else if kind is ("session" | "thread" | "read") {
+    changed(true)
   })
   let legacy = CommaStats::at(
     deps.data,
@@ -102,6 +104,49 @@ pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime)
       }
     }),
   )
+  let notify_peers : Ref[(() -> Unit)?] = Ref(None)
+  let stop_store = (deps.subscribe)(kind => {
+    if !(kind is ("session" | "thread" | "read")) || notify_peers.val is Some(_) {
+      return
+    }
+    notify_peers.val = Some(
+      (io.after)(fast_settle_ms, () => { // timer: burst debouncing
+        notify_peers.val = None
+        let seen : Set[String] = Set::new()
+        let members = (deps.memberships)().copy()
+        members.sort_by(units_cmp)
+        let list = match (deps.home)() {
+          Some(h) => [h] + members
+          None => members
+        }
+        for ws in list {
+          if ws == "" || seen.contains(ws) || !live.within(ws) {
+            continue
+          }
+          seen.add(ws)
+          let target = ws
+          ignore(
+            runtime.fork_daemon("comma peer notify", on_error=_ => (), async fn() {
+              let peers = (live.reads_for(target).others)() catch { _ => return }
+              for peer in peers {
+                ignore((deps.ask)(peer, jobj([("method", jstr(changed_method)), ("workspace", jstr(target))]))) catch {
+                  _ => ()
+                }
+              }
+            }),
+          )
+        }
+      }),
+    )
+  })
+  live.stops.push(stop_store)
+  live.stops.push(() => match notify_peers.val {
+    Some(stop) => {
+      stop()
+      notify_peers.val = None
+    }
+    None => ()
+  })
   live
 }
 
@@ -200,6 +245,18 @@ pub async fn CommaLive::say_handler(self : CommaLive, _peer : String, request : 
 }
 
 ///|
+/// Another station telling that one of its chats moved, so any Comma connect here rebuilds its Task index within a second.
+pub fn CommaLive::changed_handler(self : CommaLive, peer : String, workspace : String?) -> J raise {
+  guard workspace is Some(ws) && self.within(ws) else { raise fail_("not this workspace") }
+  (self.deps.member)(peer, ws)
+  match self.scopes.get(ws) {
+    Some((stats, _, _)) => stats.nudge()
+    None => ()
+  }
+  jobj([("ok", Bool(true))])
+}
+
+///|
 /// The index and Router of a workspace the station is in.
 pub fn CommaLive::scope(self : CommaLive, workspace : String) -> (CommaIndexes, CommaChats) raise {
   match self.scopes.get(workspace) {
@@ -213,7 +270,11 @@ pub fn CommaLive::scope(self : CommaLive, workspace : String) -> (CommaIndexes, 
     () => self.within(workspace),
     () => self.scope_version_,
     workspace_read(reads),
-    changed => (self.deps.subscribe)(kind => if kind is ("usage" | "session" | "thread" | "read") { changed() }),
+    changed => (self.deps.subscribe)(kind => if kind == "usage" {
+      changed(false)
+    } else if kind is ("session" | "thread" | "read") {
+      changed(true)
+    }),
     self.io,
     self.runtime,
   )

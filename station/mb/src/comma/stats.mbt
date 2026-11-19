@@ -23,6 +23,9 @@ let day_ms : Double = 86400000.0
 let settle_ms : Int = 60000
 
 ///|
+pub let fast_settle_ms : Int = 1000
+
+///|
 /// How long a statement on the statistics' database waits for another process's write (a handover's) before SQLite
 /// refuses it.
 pub let busy_ms : Int = 5000
@@ -296,8 +299,11 @@ pub fn stats_rows_of(given : StationRows, from_day : String) -> Map[String, (Str
 }
 
 ///|
-/// What a Task asks of someone, as Comma takes it: Comma's bounds on whom (`waits_for`), its sentence and its link.
+/// What a Task asks of someone, as Comma takes it: Comma's bounds on whom (`waits_for`), its sentence, its card kind and its link.
 let attention_kinds : Array[String] = ["need", "done", "failed"]
+
+///|
+let card_kinds : Array[String] = ["options", "text", "login", "secret", "device", "rig", "signin"]
 
 ///|
 let max_waits : Int = 8
@@ -354,10 +360,15 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
     Some(Str(u)) => cut(Some(jstr(js_trim(utext(u)))), max_note)
     _ => None
   }
+  let card = match prop(a, "card") {
+    Some(Str(u)) if kind == "need" && card_kinds.contains(utext(u)) => Some(jstr(utext(u)))
+    _ => None
+  }
   [
     ("attention", Some(jstr(kind))),
     ("waits_for", if waits.length() > 0 { Some(Arr(waits.map(jstr))) } else { None }),
     ("note", note.map(jstr)),
+    ("card", card),
   ]
 }
 
@@ -681,10 +692,11 @@ pub struct CommaStats {
   priv mut building : @effect.Deferred[Unit]?
   priv mut again : Bool
   priv mut stops : Array[() -> Unit]?
+  priv mut nudge_ : (() -> Unit)?
   priv mut closed : Bool
   priv mut stop_retry : (() -> Unit)?
   priv read : async (Double, Double) -> ReadRows
-  priv changes : (() -> Unit) -> () -> Unit
+  priv changes : ((Bool) -> Unit) -> () -> Unit
 }
 
 ///|
@@ -693,7 +705,7 @@ pub struct CommaStats {
 pub fn CommaStats::new(
   path : String,
   read : async (Double, Double) -> ReadRows,
-  changes : (() -> Unit) -> () -> Unit,
+  changes : ((Bool) -> Unit) -> () -> Unit,
   io : Io,
   runtime : @effect.Runtime,
   ready? : async () -> Unit = async fn() { () },
@@ -715,6 +727,7 @@ pub fn CommaStats::new(
     building: None,
     again: false,
     stops: None,
+    nudge_: None,
     closed: false,
     stop_retry: None,
     read,
@@ -778,7 +791,7 @@ pub async fn CommaStats::make_dirs(io : Io, data : String) -> Unit {
 pub fn CommaStats::at(
   data : String,
   read : async (Double, Double) -> ReadRows,
-  changes : (() -> Unit) -> () -> Unit,
+  changes : ((Bool) -> Unit) -> () -> Unit,
   io : Io,
   runtime : @effect.Runtime,
   ready? : async () -> Unit = async fn() { () },
@@ -800,7 +813,7 @@ pub fn CommaStats::in_workspace(
   data : String,
   workspace : String,
   read : async (Double, Double) -> ReadRows,
-  changes : (() -> Unit) -> () -> Unit,
+  changes : ((Bool) -> Unit) -> () -> Unit,
   io : Io,
   runtime : @effect.Runtime,
 ) -> CommaStats raise {
@@ -809,30 +822,43 @@ pub fn CommaStats::in_workspace(
 }
 
 ///|
-/// Once Comma is connected first: builds now, a minute after a change, and every hour, until close.
+/// Once Comma is connected first: builds now, a second after a chat moves (a minute after spending alone), and every
+/// hour, until close.
 pub fn CommaStats::start(self : CommaStats) -> Unit {
   if self.closed || self.stops is Some(_) {
     return
   }
   let settle : Ref[(() -> Unit)?] = Ref(None)
-  let stop_changes = (self.changes)(() => {
-    if settle.val is Some(_) {
+  let settle_fast = Ref(false)
+  let schedule = (fast : Bool) => {
+    if settle.val is Some(_) && (settle_fast.val || !fast) {
       return
     }
-    settle.val = Some(
-      (self.io.after)(settle_ms, () => {
+    match settle.val {
+      Some(stop) => {
+        stop()
         settle.val = None
+      }
+      None => ()
+    }
+    settle_fast.val = fast
+    settle.val = Some(
+      (self.io.after)(if fast { fast_settle_ms } else { settle_ms }, () => { // timer: burst debouncing
+        settle.val = None
+        settle_fast.val = false
         self.build()
       }),
     )
-  })
+  }
+  let stop_changes = (self.changes)(schedule)
+  self.nudge_ = Some(() => schedule(true))
   let hourly : Ref[() -> Unit] = Ref(() => ())
   fn tick() {
     self.build()
-    hourly.val = (self.io.after)(every_ms, tick)
+    hourly.val = (self.io.after)(every_ms, tick) // timer: fallback periodic sync
   }
 
-  hourly.val = (self.io.after)(every_ms, tick)
+  hourly.val = (self.io.after)(every_ms, tick) // timer: fallback periodic sync
   self.stops = Some([
     stop_changes,
     () => match settle.val {
@@ -845,11 +871,21 @@ pub fn CommaStats::start(self : CommaStats) -> Unit {
 }
 
 ///|
+/// Schedules a fast build once started (for peer chat-change pushes).
+pub fn CommaStats::nudge(self : CommaStats) -> Unit {
+  match self.nudge_ {
+    Some(f) => f()
+    None => ()
+  }
+}
+
+///|
 pub fn CommaStats::close(self : CommaStats) -> Unit {
   if self.closed {
     return
   }
   self.closed = true
+  self.nudge_ = None
   match self.stop_retry {
     Some(f) => f()
     None => ()
@@ -1191,6 +1227,10 @@ pub fn task_wire(row : IndexRow) -> J? {
   }
   let tt = Some(t)
   let attention = prop(tt, "attention") is Some(Str(_))
+  let labels : Array[J] = match (prop(tt, "attention"), prop(tt, "card")) {
+    (Some(Str(att)), Some(Str(c))) if utext(att) == "need" && card_kinds.contains(utext(c)) => [jstr("card:\{utext(c)}")]
+    _ => []
+  }
   Some(
     jo([
       ("thread", Some(jstr(row.key))),
@@ -1203,7 +1243,7 @@ pub fn task_wire(row : IndexRow) -> J? {
       ("last_activity_at", prop(tt, "last_activity_at")),
       ("runtime", prop(tt, "runtime")),
       ("model", prop(tt, "model")),
-      ("labels", Some(Arr([]))),
+      ("labels", Some(Arr(labels))),
       ("attention", if attention { prop(tt, "attention") } else { None }),
       (
         "waits_for",

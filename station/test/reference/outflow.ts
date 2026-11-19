@@ -9,7 +9,8 @@
 // it joined asks).
 import type { Json, Store } from "./store.ts";
 import * as store from "./store.ts";
-import { ending, sees } from "../../src/store/rows.ts";
+import { SYSTEM_CARD_WAITING } from "../../src/store/card-kinds.ts";
+import { cardOf, cardOfEntry, ending, sees, takeChars } from "../../src/store/rows.ts";
 import { outflowChatIndexReady, outflowChatScopes } from "./backfill/outflow-index.ts";
 import { titleNeedsFirstText, titleOf } from "./views.ts";
 import { slackCreator } from "./slack-known.ts";
@@ -60,16 +61,44 @@ function state(turn: Json | null): string | null {
   return said === "need_help" ? "need_human" : said;
 }
 
-/// A card's assignee, the email of who decides it, as the card on message `n` of `thread` names one: by its key.
-function assigneeAt(s: Store, thread: number, n: number): string | null {
-  const r = s.db.prepare("SELECT card FROM entries WHERE thread = ? AND n = ? AND kind = 'message'").get(thread, n) as { card: string | null } | undefined;
-  if (typeof r?.card !== "string") return null;
-  try {
-    const assignee = JSON.parse(r.card)?.assignee;
-    return typeof assignee === "string" && assignee.trim() !== "" ? assignee.trim().toLowerCase() : null;
-  } catch {
-    return null;
+const isObj = (v: unknown): v is Record<string, Json> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/// A message's card as Comma and the Router read it: its kind and conversational choices or hint, never internal ids or
+/// credentials.
+export function outflowCard(card: Json): Json | null {
+  if (!isObj(card)) return null;
+  if (card.type === "login") return { type: "login" };
+  if (isObj(card.vault)) return { type: "secret" };
+  if (isObj(card.adb)) return { type: "device" };
+  if (isObj(card.rig)) return { type: "rig" };
+  if (isObj(card.signin)) return { type: "signin" };
+  if (card.type === "options") {
+    const raw = Array.isArray(card.options) ? card.options : [];
+    const options = raw
+      .filter((o): o is Record<string, Json> => isObj(o) && typeof o.label === "string" && o.label.trim() !== "")
+      .slice(0, 6)
+      .map((o) => ({
+        label: takeChars(o.label.trim(), 100),
+        ...(typeof o.detail === "string" && o.detail.trim() !== "" ? { detail: takeChars(o.detail.trim(), 300) } : {}),
+        ...(o.recommended === true ? { recommended: true } : {}),
+      }));
+    return { type: "options", options };
   }
+  if (card.type === "text") {
+    const placeholder = typeof card.placeholder === "string" && card.placeholder.trim() !== "" ? takeChars(card.placeholder.trim(), 200) : null;
+    return { type: "text", ...(placeholder === null ? {} : { placeholder }) };
+  }
+  return null;
+}
+
+/// The assignee and kind of the card on message `n` of `thread`, as it names them: by its key.
+function cardInfoAt(s: Store, thread: unknown, n: unknown): { assignee: string | null; card: string | null } {
+  const r = s.db.prepare("SELECT card, options FROM entries WHERE thread = ? AND n = ? AND kind = 'message'").get(thread as number, n as number) as { card: string | null; options: string | null } | undefined;
+  if (r === undefined) return { assignee: null, card: null };
+  const raw = cardOf(r.card, r.options);
+  const assignee = isObj(raw) && typeof raw.assignee === "string" && raw.assignee.trim() !== "" ? raw.assignee.trim().toLowerCase() : null;
+  const card = outflowCard(raw)?.type ?? null;
+  return { assignee, card };
 }
 
 /// Whether a chat's latest message (that is not a letter) is one its creator has not read: past where they read it
@@ -85,7 +114,7 @@ function unreadBy(s: Store, thread: number, ref: string, email: string): boolean
 
 /// What a chat asks of someone now, by its agents' latest turn; null when nothing (and for an archived chat):
 /// - `need`: it ended needing a person (need_human). For whoever decides the card the need is about (its assignee),
-///   else whoever started the chat; its words the need.
+///   else whoever started the chat; its words the need, and `card` when a card waits.
 /// - `done`: it ended all done and whoever started it has not read its latest message in the app (a still.fail chat:
 ///   a Slack or Feishu thread is read there, which the station does not know). Its words what was done.
 /// - `failed`: it failed without saying how it ended, for whoever started it; its words the failure's first line.
@@ -97,8 +126,20 @@ function attentionOf(s: Store, thread: store.ThreadRow, latest: Json | null, cre
   const words = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
   if (said === "need_human") {
     const about = latest.about;
-    const assignee = about !== undefined && about !== null ? assigneeAt(s, about.thread, about.seq) : null;
-    return { kind: "need", waitsFor: assignee !== null ? [assignee] : mine, note: words(latest.need) };
+    let info = isObj(about) ? cardInfoAt(s, about.thread ?? null, about.seq ?? null) : { assignee: null, card: null };
+    if (info.card === null) {
+      const sys = s.db.prepare(SYSTEM_CARD_WAITING).get(thread.id) as { n: number } | undefined;
+      if (sys !== undefined) {
+        const waiting = cardInfoAt(s, thread.id, Number(sys.n));
+        info = { assignee: info.assignee ?? waiting.assignee, card: waiting.card };
+      }
+    }
+    return {
+      kind: "need",
+      waitsFor: info.assignee !== null ? [info.assignee] : mine,
+      note: words(latest.need),
+      ...(info.card !== null ? { card: info.card } : {}),
+    };
   }
   if (said === "all_done") {
     if (email === null || creator === null || thread.surface !== store.STILLFAIL_SURFACE) return null;
@@ -213,10 +254,14 @@ export function outflowMessages(s: Store, thread: number, after: number, limit: 
   const named = (ref: string) => (people.has(ref) ? people.get(ref) : people.set(ref, person(s, ref)).get(ref));
   return {
     thread,
-    messages: page.map((e) => ({
-      n: e.n, kind: e.kind, target: e.target, authorKind: e.authorKind, author: e.author, text: e.text, at: e.at,
-      ...(e.authorKind === "person" && typeof e.author === "string" ? { person: named(e.author) } : {}),
-    })),
+    messages: page.map((e) => {
+      const card = e.kind === "message" ? outflowCard(cardOfEntry(e)) : null;
+      return {
+        n: e.n, kind: e.kind, target: e.target, authorKind: e.authorKind, author: e.author, text: e.text, at: e.at,
+        ...(e.authorKind === "person" && typeof e.author === "string" ? { person: named(e.author) } : {}),
+        ...(card !== null ? { card } : {}),
+      };
+    }),
     last: store.lastEntry(s, thread),
     more: entries.length > page.length,
     ...(messagesOnly ? { messagesOnly: true } : {}),

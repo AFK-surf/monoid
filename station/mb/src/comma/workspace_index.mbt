@@ -10,7 +10,7 @@ pub fn workspace_index(
   within : () -> Bool,
   version : () -> Int,
   read : async (Double, Double) -> ReadRows,
-  changes : (() -> Unit) -> () -> Unit,
+  changes : ((Bool) -> Unit) -> () -> Unit,
   io : Io,
   runtime : @effect.Runtime,
 ) -> (CommaStats, CommaIndexes) raise {
@@ -37,7 +37,7 @@ pub fn workspace_index(
     data,
     workspace,
     guarded,
-    changed => changes(() => if within() { changed() }),
+    changed => changes(fast => if within() { changed(fast) }),
     io,
     runtime,
   )

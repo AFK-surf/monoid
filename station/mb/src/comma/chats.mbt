@@ -124,12 +124,17 @@ pub async fn router_reads(
           taken.map(m => {
             let mm = Some(m)
             let person = prop(mm, "person")
+            let card = match prop(mm, "card") {
+              Some(Obj(_) as c) => Some(c)
+              _ => None
+            }
             jo([
               ("seq", prop(mm, "n")),
               ("author_kind", prop(mm, "authorKind")),
               ("author", nullish(prop(person, "name"), nullish(prop(person, "email"), prop(mm, "author")))),
               ("text", prop(mm, "text")),
               ("at", prop(mm, "at")),
+              ("card", card),
             ])
           }),
         ),

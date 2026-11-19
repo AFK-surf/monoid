@@ -716,9 +716,16 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
   self.closing(async fn() { live.close() })
   // Another station's read of this one's statistics and its write in one of its chats (comma/peer.ts).
   let peer_read = live.peer_read()
+  bus.on_peer_prefix("outflow.", async fn(from, ws, _meth, params, _bytes) {
+    let a = peer_read(from, of_core(params), ws)
+    (a.check)()
+    (to_core(a.head), Some(a.bytes))
+  })
   bus.on_peer_prefix("comma.", async fn(from, ws, meth, params, _bytes) {
     if meth == "comma.say" {
       (to_core(live.say_handler(from, of_core(params), ws)), None)
+    } else if meth == "comma.changed" {
+      (to_core(live.changed_handler(from, ws)), None)
     } else {
       let a = peer_read(from, of_core(params), ws)
       (a.check)()

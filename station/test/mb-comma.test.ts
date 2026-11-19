@@ -436,10 +436,10 @@ function stationRows(): StationRows[] {
   });
   const chats = (extra: Json[] = []) => [
     { thread: 1, surface: "app", title: "First", state: "running", creator: { email: "Ann@X", name: "Ann", ref: "u1" }, createdAt: 1, lastActiveAt: 2, agents: [{ runtime: "claude", model: "opus" }], url: "https://app/x", router: true,
-      attention: { kind: "need", waitsFor: [" Ann@X ", "ann@x", "bad", "b@c d", "c@d", 5, "e@f", "g@h", "i@j", "k@l", "m@n", "o@p"], note: "  please look  " } },
-    { thread: 2, title: "😀".repeat(130), state: "need_human", creator: { name: "Bo" }, archived: true, attention: { kind: "need" } },
+      attention: { kind: "need", card: "options", waitsFor: [" Ann@X ", "ann@x", "bad", "b@c d", "c@d", 5, "e@f", "g@h", "i@j", "k@l", "m@n", "o@p"], note: "  please look  " } },
+    { thread: 2, title: "😀".repeat(130), state: "need_human", creator: { name: "Bo" }, archived: true, attention: { kind: "need", card: "login" } },
     { thread: 3, state: "all_done", creator: null, agents: [], url: "http://not-https", attention: { kind: "other" } },
-    { thread: 4, state: "ended", creator: { ref: "r4" }, createdAt: 9, attention: { kind: "done", note: "n".repeat(400) }, url: `https://${"u".repeat(500)}` },
+    { thread: 4, state: "ended", creator: { ref: "r4" }, createdAt: 9, attention: { kind: "done", card: "options", note: "n".repeat(400) }, url: `https://${"u".repeat(500)}` },
     { thread: 5, creator: "plain", title: 5, agents: [{ runtime: "r".repeat(50), model: null }], router: "yes" },
     { thread: "6" }, null, { thread: 7.5, archived: "true", lastActiveAt: null, createdAt: 3 },
     ...extra,
@@ -462,9 +462,9 @@ test("pure: a station's rows as the Stats index and the Task index keep them, an
     { key: "stillfail\u0000usage\u00002025-10-01\u0000s1", source: "stillfail", kind: "usage", rev: 3, removed: false, json: '{"day":"2025-10-01","n":1}' },
     { key: "k\ud800", source: "stillfail", kind: "usage", rev: 4, removed: true, json: "" },
     { key: "bad", source: "stillfail", kind: "usage", rev: 5, removed: false, json: "{not json" },
-    { key: "12", source: "stillfail", kind: "task", rev: 6, removed: false, json: JSON.stringify({ task: "12", title: "t", status: "done", created_by: null, created_at: 1, last_activity_at: 2, runtime: null, model: null, attention: "need", waits_for: ["a@b"], note: "x", url: "https://u", router: true }) },
-    { key: "13", source: "stillfail", kind: "task", rev: 7, removed: false, json: JSON.stringify({ task: "13", waits_for: ["a@b"], note: "x", router: "yes", url: 5 }) },
-    { key: "14", source: "stillfail", kind: "task", rev: 8, removed: false, json: JSON.stringify({ task: "14", attention: "done", waits_for: [] }) },
+    { key: "12", source: "stillfail", kind: "task", rev: 6, removed: false, json: JSON.stringify({ task: "12", title: "t", status: "done", created_by: null, created_at: 1, last_activity_at: 2, runtime: null, model: null, attention: "need", card: "secret", waits_for: ["a@b"], note: "x", url: "https://u", router: true }) },
+    { key: "13", source: "stillfail", kind: "task", rev: 7, removed: false, json: JSON.stringify({ task: "13", waits_for: ["a@b"], note: "x", card: "secret", router: "yes", url: 5 }) },
+    { key: "14", source: "stillfail", kind: "task", rev: 8, removed: false, json: JSON.stringify({ task: "14", attention: "done", card: "options", waits_for: [] }) },
     { key: "15", source: "stillfail", kind: "task", rev: 9, removed: false, json: "null" },
     { key: "16", source: "stillfail", kind: "task", rev: 10, removed: false, json: "5" },
   ];
@@ -748,7 +748,7 @@ test("stats: builds started, settled after a change, hourly, and tried again pas
   const rows = stationRows();
   let given: Json = { stations: rows, unread: [] };
   const tsReads: Json[] = [], mbReads: Json[] = [];
-  const tsListeners = new Set<() => void>();
+  const tsListeners = new Set<(fast?: boolean) => void>();
   const mbListeners: ((...a: Json[]) => Json)[] = [];
   const a = new CommaStats(t.ts, async (from, to) => {
     tsReads.push([from, to]);
@@ -789,6 +789,24 @@ test("stats: builds started, settled after a change, hourly, and tried again pas
   assert.deepEqual(p.ask("clock.advance", 60_000), fired);
   await settleBoth();
   assert.deepEqual(mbReads, tsReads, "the build after a change");
+  // a slow usage change followed by a fast chat change settles in 1 s (overriding the 60 s wait), and nudge does the same
+  for (const l of tsListeners) l(false);
+  for (const l of mbListeners) l(false);
+  assert.deepEqual(mbTimers(), timers(), "the slow timer before fast override");
+  for (const l of tsListeners) l(true);
+  for (const l of mbListeners) l(true);
+  assert.deepEqual(mbTimers(), timers(), "the fast timer replacing the slow one");
+  const fastFired = await advanceTs(1_000);
+  assert.deepEqual(p.ask("clock.advance", 1_000), fastFired);
+  await settleBoth();
+  assert.deepEqual(mbReads, tsReads, "the build after a fast change");
+  a.nudge();
+  p.ask("stats.nudge", h);
+  assert.deepEqual(mbTimers(), timers(), "the nudge's timer");
+  const nudgeFired = await advanceTs(1_000);
+  assert.deepEqual(p.ask("clock.advance", 1_000), nudgeFired);
+  await settleBoth();
+  assert.deepEqual(mbReads, tsReads, "the build after a nudge");
   // another station holds the database: the build is tried again, backing off, until it is let go
   const blockers = [new DatabaseSync(t.ts), new DatabaseSync(t.mb)];
   for (const b of blockers) b.exec("BEGIN IMMEDIATE");
@@ -960,7 +978,7 @@ test("router: a chat's messages read for the Router, from here and another stati
   // what a station answers, by the position read after: messages only, or raw entries an older station gives (edits
   // between), and answers that do not hold up
   const answersBy: Record<string, (after: number, limit: number) => Json> = {
-    plain: (after, limit) => ({ messages: [m(after + 1), m(after + 2)].slice(0, limit), last: after + 2, more: false, messagesOnly: true }),
+    plain: (after, limit) => ({ messages: [m(after + 1, "message", { card: { type: "options", options: [{ label: "Ship", recommended: true }] } }), m(after + 2, "message", { card: null })].slice(0, limit), last: after + 2, more: false, messagesOnly: true }),
     legacy: (after) => after < 30 ? { messages: [m(after + 1, "edit"), m(after + 2, "edit"), ...(after >= 20 ? [m(after + 3)] : [])], last: after + 3, more: true } : { messages: [m(after + 1)], last: after + 1, more: false },
     edits: (after) => ({ messages: [m(after + 1, "edit")], last: after + 1, more: true }),
     stuck: (after) => ({ messages: [m(after, "edit")], last: after, more: true }),
@@ -1622,6 +1640,18 @@ test("live: the station's workspaces, a peer's read and write, a scope's Router,
       ["read", "outflowMessages", { thread: thread.id, after: 0, limit: 5, messagesOnly: true, ws: { workspace: "w-home", home: true }, lang: "zh" }, "zh", true],
       ["ask", "st-2", { method: "comma.say", workspace: "w-home", say: { thread: 3, text: "router there", key: "", requester: "Router", connect: "cm" } }],
     ]);
+    // peer chat-change push: local chat moves notify peers after 1 s, and incoming peerChanged checks membership
+    asked.length = 0;
+    assert.deepEqual(mbSettled("live.peerChanged", h, "peer", "w-j"), { error: "peer is not a station of w-j", kind: "" });
+    p.ask("live.set", h, { refused: [] });
+    assert.deepEqual(mbSettled("live.peerChanged", h, "peer", "w-j"), { ok: { ok: true } });
+    assert.deepEqual(mbSettled("live.peerChanged", h, "peer", "w-x"), { error: "not this workspace", kind: "" });
+    p.ask("live.changed", h, "session");
+    p.ask("live.changed", h, "thread");
+    p.ask("clock.advance", 1_000);
+    p.settle();
+    assert.ok(asked.some((x: Json) => x[0] === "ask" && x[1] === "a" && x[2]?.method === "comma.changed" && x[2]?.workspace === "w-j"));
+    assert.ok(asked.some((x: Json) => x[0] === "ask" && x[1] === "b" && x[2]?.method === "comma.changed" && x[2]?.workspace === "w-j"));
     assert.ok(existsSync(join(dir, "comma-indexes", `${createHash("sha256").update("w-home", "utf16le").digest("hex")}.db`)), "the scope's index, in its folder");
     p.ask("live.close", h);
   } finally {

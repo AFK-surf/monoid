@@ -14,6 +14,10 @@ let ops : Array[String] = ["outflowUsage", "outflowChats", "outflowMessages"]
 pub let say_method : String = "comma.say"
 
 ///|
+/// Another station of the workspace telling that one of its chats moved, so a Comma connect rebuilds its Task index soon.
+pub let changed_method : String = "comma.changed"
+
+///|
 /// An answer of another station's read, at most.
 let answer_max : Int = 67108864
 

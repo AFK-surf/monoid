@@ -312,18 +312,19 @@ export function agyLentFile(lent: { token: Json; email?: string | null; auth_met
 /// shared: each becomes `mcp_stillfail_<name>`, its description given "This is a tool from the stillfail MCP server.\n"
 /// (46 B) and its parameters a required `toolSummary` (275 B), so about AGY_TOOL_WRAP more a tool; and one pool holds
 /// them with the workspace's skills, workflows and subagents (`.agent/skills`, which #6685 fills with the workspace's
-/// skills: 37 of them, some 16-18 KB), and with 1.5.8/1.5.9's tools of their own (`swarm`, `run_workflow`). Measured
-/// 2026-11-16 on 1.5.8: the 45,000 this was (40 tools listed, 43,877 B) came to about 56.7 KB as `agy` declared them,
-/// and with the skills #6685 put beside them it dropped chat_post (4,704 B, the largest) again, every session answered
-/// `unknown tool: "mcp_stillfail_chat_post"`. So the list is fitted to this, and what it comes to in `agy` (each tool's
-/// AGY_TOOL_WRAP added) is held under AGY_TOOL_CEILING (test/agy.test.ts): with some 20 KB of skills beside it, within
-/// 54 KB. side/agy-real.test.ts holds it on the real CLI with 37 skills of that size.
-export const AGY_TOOL_BUDGET = 26_000;
+/// skills: 37 of them, some 16-18 KB), and with 1.5.8/1.5.9's tools of their own (`swarm`, `run_workflow`, `schedule`,
+/// `manage_task`, `send_message`). Measured on 1.5.8/1.5.9: 45,000 (40 tools listed, 43,877 B, ~56.7 KB wrapped) and
+/// 26,000 on Windows (longer `.agent/skills` paths plus 1.5.9's extra built-ins) pushed the combined pool past ~58 KB
+/// and dropped `chat_post` (4,704 B, the largest), every session answered `unknown tool: "mcp_stillfail_chat_post"`.
+/// So the list is fitted to this, and what it comes to in `agy` (each tool's AGY_TOOL_WRAP added) is held under
+/// AGY_TOOL_CEILING (test/agy.test.ts): with some 20 KB of skills beside it, well within the pool.
+/// side/agy-real.test.ts holds it on the real CLI with 37 skills of that size.
+export const AGY_TOOL_BUDGET = 22_000;
 /// What `agy` adds to each tool it is declared, rounded up (46 B of description and 275 B of `toolSummary`, 2026-11-16).
 export const AGY_TOOL_WRAP = 350;
 /// The most the station's list may come to as `agy` declares it, its AGY_TOOL_WRAP a tool counted: what leaves room in
 /// `agy`'s pool for the workspace's skills (some 20 KB) and its own tools.
-export const AGY_TOOL_CEILING = 36_000;
+export const AGY_TOOL_CEILING = 31_000;
 
 /// Where the station keeps its sessions' transcripts.
 export const SESSIONS = "sessions";

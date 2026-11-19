@@ -1709,7 +1709,9 @@ test("Antigravity CLI is declared the station's tools within what it keeps, chat
   assert.equal(names.at(-1), INDIRECT);
   const indirect: string[] = list.at(-1).inputSchema.properties.name.enum;
   assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.filter((t) => !HIDDEN.includes(t.name)).map((t) => t.name).sort());
-  // The 45,000 of before is what `agy` 1.5.8 dropped chat_post under (2026-11-16): over the ceiling, as this counts it.
-  const before = await listed(45_000);
-  assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);
+  // Earlier budgets (45,000 on 1.5.8; 26,000 on 1.5.9 with Windows skill paths) pushed agy's pool past its ceiling and dropped chat_post.
+  for (const oldBudget of [45_000, 26_000]) {
+    const before = await listed(oldBudget);
+    assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);
+  }
 });

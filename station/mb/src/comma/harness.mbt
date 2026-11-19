@@ -299,10 +299,10 @@ fn H::read_for(self : H, handle : Int) -> async (Double, Double) -> ReadRows {
 
 ///|
 /// What tells a build that something changed: the test's listeners for that handle.
-fn H::changes_for(self : H, handle : Int) -> (() -> Unit) -> () -> Unit {
+fn H::changes_for(self : H, handle : Int) -> ((Bool) -> Unit) -> () -> Unit {
   changed => {
-    let cb = self.callback(async fn(_) {
-      changed()
+    let cb = self.callback(async fn(a) {
+      changed(arg(a, 0) is Bool(true))
       Null
     })
     ignore(self.host.rt.fork(async fn() { ignore(self.call("changes.listen", [ji(handle), cb])) }))
@@ -673,6 +673,10 @@ async fn H::case(self : H, op : String, args : Array[J]) -> J {
       self.stats_of(args).build()
       Null
     }
+    "stats.nudge" => {
+      self.stats_of(args).nudge()
+      Null
+    }
     "stats.settled" => {
       self.stats_of(args).settled()
       Null
@@ -981,6 +985,7 @@ async fn H::case(self : H, op : String, args : Array[J]) -> J {
     "live.within" => Bool(self.live_of(args).0.within(sarg(args, 1)))
     "live.name" => jstr(self.live_of(args).0.name(str_of(Some(arg(args, 1)))))
     "live.say" => self.live_of(args).0.say_handler(sarg(args, 1), arg(args, 2), str_of(Some(arg(args, 3))))
+    "live.peerChanged" => self.live_of(args).0.changed_handler(sarg(args, 1), str_of(Some(arg(args, 2))))
     "live.peerRead" => {
       let answer = (self.live_of(args).0.peer_read())(sarg(args, 1), arg(args, 2), str_of(Some(arg(args, 3))))
       jobj([("head", answer.head), ("text", jstr(text_of_utf8(answer.bytes)))])

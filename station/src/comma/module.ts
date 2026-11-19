@@ -8,14 +8,15 @@ import { DatabaseSync } from "node:sqlite";
 import { commaEntry, commaRoutes } from "../api/routes/comma.ts";
 import { connectsPart } from "../connects/part.ts";
 import { member } from "../mesh/peer.ts";
+import { wall } from "../ops/fibers.ts";
 import { stationLang } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { makeComma } from "./index.ts";
 import type { CommaChats } from "./surface.ts";
-import { READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
+import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
-import { CommaStats, RevIndex, chatOf } from "./stats.ts";
+import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf } from "./stats.ts";
 import { workspaceIndex } from "./workspace-index.ts";
 
 type Json = any;
@@ -60,10 +61,14 @@ export const CommaLive = Layer.effectDiscard(
       },
       there: async (station, op, args) => answerText(await bus.ask(station, { method: READ, workspace, op, args, whole: true })),
     });
-    // What moves the statistics or the Task index: the agents' spending, a chat's messages (the Router's too: its
-    // first in a chat makes the row `router`) and its turns, and where
-    // someone read a chat to (a done chat its creator has not read is one the Task index says waits for them).
-    const usage = (changed: () => void) => store.subscribe((change) => void (["usage", "session", "thread", "read"].includes(change.type) && changed()));
+    // What moves the statistics or the Task index: the agents' spending (debounced 60s), a chat's messages (the
+    // Router's too: its first in a chat makes the row `router`) and its turns, and where someone read a chat to (a done
+    // chat its creator has not read is one the Task index says waits for them).
+    const usage = (changed: (fast?: boolean) => void) =>
+      store.subscribe((change) => {
+        if (change.type === "usage") changed(false);
+        else if (change.type === "session" || change.type === "thread" || change.type === "read") changed(true);
+      });
     yield* Effect.promise(() => CommaStats.makeDirs(data));
     // Keep the old database for Router deduplication across a downgrade. Its unscoped indexes are not sent.
     const legacy = yield* Effect.acquireRelease(
@@ -92,6 +97,41 @@ export const CommaLive = Layer.effectDiscard(
     const scopes = yield* Effect.acquireRelease(
       Effect.sync(() => new Map<string, { indexes: ReturnType<typeof workspaceIndex>["indexes"]; stats: CommaStats; chats: CommaChats }>()),
       (all) => Effect.sync(() => { for (const scope of all.values()) scope.stats.close(); }),
+    );
+    // Another station telling that one of its chats moved, so any Comma connect here rebuilds its Task index within a second.
+    bus.on(CHANGED, async (peer: string, _request: Json, workspace?: string) => {
+      if (typeof workspace !== "string" || !within(workspace)) throw new Error("not this workspace");
+      member(cloud, peer, workspace);
+      scopes.get(workspace)?.stats.nudge();
+      return { ok: true };
+    });
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        let notifyPeers: (() => void) | null = null;
+        const stopStore = store.subscribe((change) => {
+          if (change.type !== "session" && change.type !== "thread" && change.type !== "read") return;
+          if (notifyPeers !== null) return;
+          notifyPeers = wall.after(FAST_SETTLE_MS, () => { // timer: burst debouncing
+            notifyPeers = null;
+            const seen = new Set<string>();
+            for (const ws of [cloud.home(), ...cloud.memberships().map((m) => m.workspace).sort()]) {
+              if (typeof ws !== "string" || ws === "" || seen.has(ws) || !within(ws)) continue;
+              seen.add(ws);
+              void readsFor(ws).others()
+                .then((peers) => {
+                  for (const peer of peers) void bus.ask(peer, { method: CHANGED, workspace: ws }).catch(() => {});
+                })
+                .catch(() => {});
+            }
+          });
+        });
+        return () => {
+          stopStore();
+          notifyPeers?.();
+          notifyPeers = null;
+        };
+      }),
+      (stop) => Effect.sync(stop),
     );
     const scope = (workspace: string) => {
       const had = scopes.get(workspace);

@@ -1441,7 +1441,7 @@ async fn P52::tools_call(
         _ => Json::null()
       }
       match @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")) {
-        Some("agy") => @api_routes.jobj([("budget", @api_routes.jnum(26000.0))])
+        Some("agy") => @api_routes.jobj([("budget", @api_routes.jnum(22000.0))])
         Some("claude") =>
           @api_routes.jobj([
             (

@@ -315,6 +315,10 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
       }
       m["person"] = p
     }
+    if field(e, "kind") != Json::string("edit") &&
+      outflow_card(card_of(field(e, "card"), field(e, "options"))) is Some(card) {
+      m["card"] = card
+    }
     messages.push(Json::object(m))
   }
   let last = match one(db, "SELECT MAX(n) AS n FROM entries WHERE thread = ?", [thread]) {
