@@ -554,18 +554,25 @@ fn own_data(data : String) -> Bool {
 }
 
 ///|
-/// Stops the process: what it says of itself no longer said, its sessions' file let go of where it is its own.
+/// Stops the process: what it says of itself no longer said. Its sessions' file stays until `run` has let go of the
+/// sessions (`release_hub`): a station started meanwhile waits for it there.
 fn Station::stop(self : Station, why : String) -> Unit {
   if self.stopped.is_done() {
     return
   }
   self.health_said = false
   p51_log("INFO", "station", "stopping", fields={ "why": Json::string(why) })
-  match read_json(path([self.data, "run", "hub.json"])) {
-    Some({ "pid": Number(p, ..), .. }) if p.to_int() == @drive.pid() => @drive.rm_force(path([self.data, "run", "hub.json"]))
+  ignore(self.stopped.succeed(why))
+}
+
+///|
+/// Its sessions' file let go of where it is this process's own, once the sessions and their processes are let go of
+/// (agents.ts's stop: hub.json removed after `hub.handOver()` / `hub.shutdown()`): the next station takes up only then.
+fn release_hub(data : String) -> Unit {
+  match read_json(path([data, "run", "hub.json"])) {
+    Some({ "pid": Number(p, ..), .. }) if p.to_int() == @drive.pid() => @drive.rm_force(path([data, "run", "hub.json"]))
     _ => ()
   }
-  ignore(self.stopped.succeed(why))
 }
 
 ///|
@@ -1056,6 +1063,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   }
   // (the P5-5 parts closed on their own as it stopped: their processes ended before this one, not after)
   wait_live_p5_5_closed()
+  // (only now the next station may take the sessions up)
+  release_hub(data)
   0
 }
 
