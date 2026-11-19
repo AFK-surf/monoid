@@ -1092,15 +1092,34 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
       ignore(self.agent_do(a, agent, "backgroundTools", []))
     }
     let (handed, told) = self.with_choices(a, d.text)
-    if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
+    // (unread before it is written: the model can read it and ask again, `requesting`, before the steer answers)
+    let before = a.unread.length()
+    let mut added = 0
+    for m in d.pending {
+      if !(m.value("apart") is Some(True)) {
+        a.unread.push(m)
+        added += 1
+      }
+    }
+    let unsteer = () => if a.unread.length() >= before + added {
+      for _ in 0..<added {
+        ignore(a.unread.pop())
+      }
+    }
+    let steered = truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) catch {
+      e => {
+        unsteer()
+        raise e
+      }
+    }
+    if !steered {
+      unsteer()
+    } else {
       self.told(a, told)
       self.work_for(a, d.pending)
       self.delivered(a, d)
       for m in d.pending {
         a.steered.push(m.value("handed").unwrap_or(Json::null()))
-        if !(m.value("apart") is Some(True)) {
-          a.unread.push(m)
-        }
       }
       let from = (w : Working) => d.pending.iter().any(m => str_of(m.value("connect")) == Some(w.connect) &&
         str_of(m.value("channel")) == Some(w.channel) &&

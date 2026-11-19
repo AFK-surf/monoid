@@ -572,9 +572,8 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
   if jfield(event, "routed") is True {
     if kind == "live" {
       let e = jfield(event, "event")
-      if jtext(e, "kind") == Some("phase") &&
-        jtext(e, "phase") == Some("requesting") &&
-        self.mirror.unread.length() > 0 {
+      // (cleared whether or not the program's mirror saying it unread has come yet: one coming later is from before)
+      if jtext(e, "kind") == Some("phase") && jtext(e, "phase") == Some("requesting") {
         self.mirror.unread = []
         self.routing_cleared = true
       }
@@ -595,9 +594,7 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
     if ek == "start" && jtext(e, "step") == Some("thinking") {
       return
     }
-    if ek == "phase" &&
-      jtext(e, "phase") == Some("requesting") &&
-      self.mirror.unread.length() > 0 {
+    if ek == "phase" && jtext(e, "phase") == Some("requesting") {
       self.mirror.unread = []
       self.read_at = self.sent + 1
     }

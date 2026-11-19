@@ -571,7 +571,8 @@ export class MbActor {
       // (the program gives it the actor and the live view once the batch is said taken: here what the station's own parts
       // take of it, its unread cleared and a turn's outcome)
       if (event.type === "live") {
-        if (event.event.kind === "phase" && event.event.phase === "requesting" && this.#mirror.unread.length > 0) {
+        // (cleared whether or not the program's mirror saying it unread has come yet: one coming later is from before)
+        if (event.event.kind === "phase" && event.event.phase === "requesting") {
           this.#mirror = { ...this.#mirror, unread: [] };
           this.#routing.cleared = true;
         }
@@ -584,7 +585,7 @@ export class MbActor {
       const e = event.event;
       if (e.kind === "tasks" || e.kind === "plan" || (e.kind === "delta" && e.field !== "text")) return;
       if (e.kind === "start" && e.step === "thinking") return;
-      if (e.kind === "phase" && e.phase === "requesting" && this.#mirror.unread.length > 0) {
+      if (e.kind === "phase" && e.phase === "requesting") {
         this.#mirror = { ...this.#mirror, unread: [] };
         this.#readAt = this.#sent + 1;
       }
