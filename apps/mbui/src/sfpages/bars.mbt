@@ -190,9 +190,7 @@ fn bar_card_node(
   }
   let held : @signals.Signal[BarHeld?] = @signals.signal(None)
   let held_key = fn() { held.get().map(fn(h) { h.key }) }
-  let wide = @sf.look_node(g) is Wide
-  g.box(fn(r) {
-    @sf.style_node(r, fn() { if wide { bar_rows_wide } else { bar_rows_narrow } })
+  @sf.list_rows_node(g, fn(r) {
     r.each(set, fn(k) { k }, fn(slot, key) {
       let key = key.untracked()
       let at = fn() { @signals.untracked(set).search(key).unwrap_or(0) }
@@ -200,54 +198,56 @@ fn bar_card_node(
       slot.radius(Is(bar_slot_corner)) |> ignore
       // (held: drawn over the card where the finger has it, the row's place kept)
       slot.alpha(By(fn() { if held_key() == Some(key) { 0.0 } else { 1.0 } })) |> ignore
-      slot.box(fn(face) {
-        @sf.style_node(face, fn() { if wide { bar_face_wide } else { bar_face_narrow } }, in_row=true)
-        face.says(Is(Some(@view.said(Group, label=bar_place_name(key), actions=[Decrement, Increment])))) |> ignore
-        // a screen reader's (右移): one row along
-        face.on_step(fn(by) {
-          let j = at()
-          let n = @signals.untracked(set).length()
-          if j + by >= 0 && j + by < n {
-            put_at(j, j + by)
-          }
-        })
-        |> ignore
-        // the finger's: lifted once it goes past the slop, following it up or down; let go, put by how many rows it
-        // went (a row's height)
-        let from = Ref(0.0)
-        face.gesture(@ui.touch_slop(), drag=fn(d) {
-          match d.kind {
-            Down => {
-              let gone = d.y - d.oy
-              from.val = d.wy - gone
-              let (_, fy, _, fh) = slot.placed_window_now()
-              let (_, ry, rw, _) = r.placed_window_now()
-              held.set(Some({ key, y: fy - ry, dy: gone, w: rw, h: if fh > 0.0 { fh } else { d.h } }))
+      @sf.list_row_face_node(
+        slot,
+        fn(m) { bar_place_mark_node(m, key) },
+        fn() { bar_place_name(key) },
+        make=fn(face) {
+          face.says(Is(Some(@view.said(Group, label=bar_place_name(key), actions=[Decrement, Increment])))) |> ignore
+          // a screen reader's (右移): one row along
+          face.on_step(fn(by) {
+            let j = at()
+            let n = @signals.untracked(set).length()
+            if j + by >= 0 && j + by < n {
+              put_at(j, j + by)
             }
-            Moved =>
-              match held.get() {
-                Some(h) => held.set(Some({ ..h, dy: d.wy - from.val }))
-                None => ()
+          })
+          |> ignore
+          // the finger's: lifted once it goes past the slop, following it up or down; let go, put by how many rows it
+          // went (a row's height)
+          let from = Ref(0.0)
+          face.gesture(@ui.touch_slop(), drag=fn(d) {
+            match d.kind {
+              Down => {
+                let gone = d.y - d.oy
+                from.val = d.wy - gone
+                let (_, fy, _, fh) = slot.placed_window_now()
+                let (_, ry, rw, _) = r.placed_window_now()
+                held.set(Some({ key, y: fy - ry, dy: gone, w: rw, h: if fh > 0.0 { fh } else { d.h } }))
               }
-            Up => {
-              match held.get() {
-                Some(h) if h.h > 0.0 => {
-                  let j = at()
-                  let n = @signals.untracked(set).length()
-                  let to = j + ((d.wy - from.val) / h.h).round().to_int()
-                  held.set(None)
-                  put_at(j, if to < 0 { 0 } else if to >= n { n - 1 } else { to })
+              Moved =>
+                match held.get() {
+                  Some(h) => held.set(Some({ ..h, dy: d.wy - from.val }))
+                  None => ()
                 }
-                _ => held.set(None)
+              Up => {
+                match held.get() {
+                  Some(h) if h.h > 0.0 => {
+                    let j = at()
+                    let n = @signals.untracked(set).length()
+                    let to = j + ((d.wy - from.val) / h.h).round().to_int()
+                    held.set(None)
+                    put_at(j, if to < 0 { 0 } else if to >= n { n - 1 } else { to })
+                  }
+                  _ => held.set(None)
+                }
               }
+              Off => held.set(None)
             }
-            Off => held.set(None)
-          }
-        })
-        |> ignore
-        bar_face_words_node(face, key, wide)
-      })
-      |> ignore
+          })
+          |> ignore
+        },
+      )
       // its "−" beside (not inside) what the finger holds: a press on the "−" is its own
       slot.show(fn() { !only() }, fn(k) {
         bar_remove_node(k, key, fn() {
@@ -279,33 +279,13 @@ fn bar_card_node(
           .width(By(fn() { held.get().map(fn(h) { Some(h.w) }).unwrap_or(None) }))
           .offset(By(fn() { held.get().map(fn(h) { (0.0, h.y + h.dy) }).unwrap_or((0.0, 0.0)) }))
           |> ignore
-          slot.box(fn(face) {
-            @sf.style_node(face, fn() { if wide { bar_face_wide } else { bar_face_narrow } }, in_row=true)
-            bar_face_words_node(face, key, wide)
-          })
-          |> ignore
+          @sf.list_row_face_node(slot, fn(m) { bar_place_mark_node(m, key) }, fn() { bar_place_name(key) })
           slot.show(fn() { !only() }, fn(k) { bar_remove_look_node(k) })
         })
         |> ignore
       })
     })
   })
-  |> ignore
-}
-
-///|
-/// A row's mark before its name (place `key`'s), in `face`.
-fn bar_face_words_node(face : @view.View, key : String, wide : Bool) -> Unit {
-  face.box(fn(m) {
-    @sf.style_node(m, fn() { bar_mark_room })
-    bar_place_mark_node(m, key)
-  })
-  |> ignore
-  face.box(fn(w) {
-    w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    @sf.words_node(w, fn() { bar_place_name(key) }, fn() { if wide { @sf.desk_list_title } else { @sf.pg_row_title } }) |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -348,15 +328,6 @@ fn bar_remove_look_node(m : @view.View) -> Unit {
 // ── styles ─────────────────────────────────────────────
 
 ///|
-/// The rows of a bar's card, top to bottom (2 apart on a wide list card, as wide_group_node's).
-// kept across runs: a value (no field of it changes)
-let bar_rows_narrow : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let bar_rows_wide : @ui.Style = @ui.css("w=Full gap=S0_5")
-
-///|
 /// A place's row on its bar's list card: its "−" at its end kept out of the card's corner (18: `card_control_end`).
 // kept across runs: a value (no field of it changes)
 let bar_row : @ui.Style = @ui.css("row w=Full pr=S4_5 align=ACenter")
@@ -370,24 +341,6 @@ let bar_slot_corner : Double = @ui.concentric(@sf.group_corner, @sf.list_pad)
 /// wide as its row (bar_card_node's).
 // kept across runs: a value (no field of it changes)
 let bar_row_held : @ui.Style = bar_row.then(@ui.css("bg=Card"))
-
-///|
-/// What a row shows (its mark and its name), as far in from the card's start and with the vertical room of the card's
-/// other rows (`link_row_node` narrow, `wide_link_row_node` wide).
-// kept across runs: a value (no field of it changes)
-let bar_face_narrow : @ui.Style = @ui.style(row=true, w=@sf.grow, pl=S4, pr=S3, py=S4, gap=S3, align=ACenter)
-
-///|
-// kept across runs: a value (no field of it changes)
-let bar_face_wide : @ui.Style = @ui.style(row=true, w=@sf.grow, pl=S4, pr=S3, py=S2_5, gap=S3, align=ACenter)
-
-///|
-/// The mark's room, 20 wide by 24 high (so a wide row with 10 over and under is 44 high).
-// kept across runs: a value (no field of it changes)
-let bar_mark_room : @ui.Style = @ui.style(w=Fixed(bar_mark), h=Fixed(bar_mark_tall), align=ACenter, justify=JCenter)
-
-///|
-let bar_mark_tall : Double = 24.0
 
 ///|
 /// The "−" that takes a place out: 20 round, on the neutral wash.
