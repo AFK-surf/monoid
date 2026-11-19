@@ -208,14 +208,14 @@ type Launched = {
   err: () => string;
 };
 
-const listener = () => new Promise<Server>((resolve, reject) => {
+const listener = (port = 0) => new Promise<Server>((resolve, reject) => {
   const s = createServer();
   s.once("error", reject);
-  s.listen(0, "127.0.0.1", () => resolve(s));
+  s.listen(port, "127.0.0.1", () => resolve(s));
 });
 
-async function launch(data: string, app: string, bin: string, out: string, extraEnv: Record<string, string> = {}): Promise<Launched> {
-  const [mcpSock, loopSock] = [await listener(), await listener()];
+async function launch(data: string, app: string, bin: string, out: string, extraEnv: Record<string, string> = {}, sockets?: [Server, Server]): Promise<Launched> {
+  const [mcpSock, loopSock] = sockets ?? [await listener(), await listener()];
   const fd = (s: Server) => (s as any)._handle.fd as number;
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
     stdio: ["ignore", "pipe", "pipe", fd(mcpSock), fd(loopSock), "pipe"],
@@ -694,5 +694,79 @@ test("4. manually archived session refuses messages and does not wake up", { ski
     assert.equal(existsSync(join(s.out, "launches.jsonl")), false, "fake claude must never be spawned for archived session");
   } finally {
     await s.stop();
+  }
+});
+
+test("5. handover cold wakeup: all_done session with watch job wakes up in new station process on stillfail-job notify", { skip, timeout: 120_000 }, async () => {
+  const s = await startStation("s5");
+  let b: Launched | null = null;
+  let jobPgid = 0;
+  try {
+    const { thread: tWatch, workspace } = seedSession(s.store, s.data, {
+      key: "chat:c-watch",
+      token: "t-watch",
+      ts: "1795000001.000001",
+      title: "Watch Handover Chat",
+    });
+
+    // Turn 1: complete a normal all_done turn, then evict so the session is completely cold.
+    const m1 = await httpJson(s.door, `/admin-api/threads/${tWatch.id}/messages`, "POST", { text: "initial work" });
+    assert.equal(m1.status, 200, m1.raw);
+    await until("turn 1 ended all_done", () => s.store.listTurns("chat:c-watch").length === 1 && s.store.lastTurn("chat:c-watch")?.ending === "all_done" && s.store.lastTurn("chat:c-watch")?.endedAt != null, () => s.proc.err());
+    const evicted = await httpJson(s.door, `/admin-api/sessions/${encodeURIComponent("chat:c-watch")}/evict`, "POST", {});
+    assert.equal(evicted.status, 200, evicted.raw);
+
+    // Start a watch: true background job that waits for `trigger`, then notifies the station.
+    const watchJob = JSON.parse((await tool(s.door, "t-watch", "job_start", {
+      name: "release-watch",
+      watch: true,
+      command: "while [ ! -f trigger ]; do sleep 0.05; done; stillfail-job notify HANDOVER-COLD-WAKE; sleep 600",
+    })).text);
+    jobPgid = await until("watch job pgid recorded", () => s.store.getJob(watchJob.id)?.pgid ?? null, () => s.proc.err());
+    assert.ok(alive(jobPgid, true), "watch job group alive before handover");
+
+    // Hand over station `a` to a brand-new `stillfail-reader run` process `b` on the same MCP door port.
+    s.proc.tell({ op: "handover" });
+    const carry = await s.proc.next("carry", (m) => m.carry !== undefined);
+    assert.equal(await s.proc.ended, 0, s.proc.err());
+    assert.ok(alive(jobPgid, true), "watch job survives handover");
+
+    b = await launch(s.data, s.app, s.bin, s.out, {}, [await listener(s.door), await listener()]);
+    await b.next("b ready", (m) => m.ready === true);
+    b.tell({ op: "carried", carried: carry.carry });
+    const bDoor = (await b.next("b door", (m) => m.serving === "mcp")).port as number;
+    assert.equal(bDoor, s.door, "new station keeps the agents' door port");
+    await until("new station adopted prior jobs", () => b!.err().includes("jobs: the jobs of before taken up"), () => b!.err());
+
+    // Trigger `stillfail-job notify HANDOVER-COLD-WAKE` inside the new station process.
+    writeFileSync(join(workspace, "trigger"), "go\n");
+    await until("notify recorded in store", () => s.store.jobNotices(watchJob.id, 5).some((n) => n.text.includes("HANDOVER-COLD-WAKE")), () => b!.err());
+    await until(
+      "cold all_done session woken and finished turn 2 in new process",
+      () => s.store.listTurns("chat:c-watch").length >= 2 && s.store.lastTurn("chat:c-watch")?.endedAt != null,
+      () => b!.err(),
+    );
+    assert.equal(s.store.lastTurn("chat:c-watch")!.ending, "all_done");
+    const allPrompts = readFileSync(join(s.out, "all-prompts.jsonl"), "utf8");
+    assert.ok(allPrompts.includes("HANDOVER-COLD-WAKE"), `expected HANDOVER-COLD-WAKE in woken prompt: ${allPrompts}`);
+
+    // Clean up watch job cleanly through the new station.
+    const stopped = await tool(bDoor, "t-watch", "job_stop", { id: watchJob.id });
+    assert.equal(stopped.error, false, stopped.text);
+    await until("watch job group ended", () => !alive(jobPgid, true), () => b!.err());
+    jobPgid = 0;
+
+    b.tell({ op: "stop" });
+    assert.equal(await b.ended, 0, b.err());
+    b = null;
+  } finally {
+    if (jobPgid > 0 && alive(jobPgid, true)) {
+      try { process.kill(-jobPgid, "SIGKILL"); } catch {}
+    }
+    if (b !== null && b.child.exitCode === null) {
+      b.tell({ op: "stop" });
+      await Promise.race([b.ended, new Promise((r) => setTimeout(r, 5_000).unref())]);
+    }
+    s.store.close();
   }
 });
