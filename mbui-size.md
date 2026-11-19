@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bb4ddd828](https://github.com/AFK-surf/monoid/commit/bb4ddd82868bb17bc032c0e8e6f2469d66a5833a) refactor(mb): replace 36 pure session_chats dep RP | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.49 | 115.86 |
 | [4fe809bec](https://github.com/AFK-surf/monoid/commit/4fe809becbfa9f08777a883457e330f500d5b0be) fix(shell): route iroh.probeRelay to the endpoint' | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.26 | 106.42 |
 | [ded934c14](https://github.com/AFK-surf/monoid/commit/ded934c14444d889f4c4dac39cdb478c1bb39930) fix(ci): key core.hbc by the build's day, asked as | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.54 | 122.24 |
 | [8e58d60cd](https://github.com/AFK-surf/monoid/commit/8e58d60cdc346e1f5a61323f906775c892c629cb) feat(website): draw the working mark as the app's  | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.62 | 125.66 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [365a36487](https://github.com/AFK-surf/monoid/commit/365a364872e9e2246418c5c926c27415f1c41853) fix(mbui): write the mac entitlements plist with p | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.45 | 125.81 |
 | [863e54da5](https://github.com/AFK-surf/monoid/commit/863e54da529268a1061330c142532434835c2073) ci(mbui): rebalance app 1/4..4/4 pages at the defa | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
 | [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
-| [231e1925f](https://github.com/AFK-surf/monoid/commit/231e1925fe0c7450207dc3a2a21552b6c168164a) feat(screens): share the microphone, controllers a | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bb4ddd828](https://github.com/AFK-surf/monoid/commit/bb4ddd82868bb17bc032c0e8e6f2469d66a5833a) refactor(mb): replace 36 pure session_chats dep RP | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [4fe809bec](https://github.com/AFK-surf/monoid/commit/4fe809becbfa9f08777a883457e330f500d5b0be) fix(shell): route iroh.probeRelay to the endpoint' | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [ded934c14](https://github.com/AFK-surf/monoid/commit/ded934c14444d889f4c4dac39cdb478c1bb39930) fix(ci): key core.hbc by the build's day, asked as | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [8e58d60cd](https://github.com/AFK-surf/monoid/commit/8e58d60cdc346e1f5a61323f906775c892c629cb) feat(website): draw the working mark as the app's  | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [365a36487](https://github.com/AFK-surf/monoid/commit/365a364872e9e2246418c5c926c27415f1c41853) fix(mbui): write the mac entitlements plist with p | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
 | [863e54da5](https://github.com/AFK-surf/monoid/commit/863e54da529268a1061330c142532434835c2073) ci(mbui): rebalance app 1/4..4/4 pages at the defa | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
 | [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
-| [231e1925f](https://github.com/AFK-surf/monoid/commit/231e1925fe0c7450207dc3a2a21552b6c168164a) feat(screens): share the microphone, controllers a | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
