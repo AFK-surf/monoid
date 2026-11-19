@@ -320,6 +320,7 @@ test "activity: opens execution history within open_hold_ms when session.transcr
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   for again in [false, true] {
     new_run()
+    @sfdesk.set_history_shut(false)
     let base = fixture("chat-working")
     let held : Array[(Result[Json, Json]) -> Unit] = []
     let src : Source = {

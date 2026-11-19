@@ -36,9 +36,6 @@
       "src/sfpages/chat_list.mbt": 1,
       "src/sfpages/new_chat.mbt": 1
     },
-    "list-comes-off": {
-      "src/sfpages/history_steps_node.mbt": 1
-    },
     "submitted-read": {
       "src/sfpages/chat_row.mbt": 1,
       "src/sfpages/login_card.mbt": 1

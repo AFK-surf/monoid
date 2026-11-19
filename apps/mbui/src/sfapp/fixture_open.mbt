@@ -134,6 +134,7 @@ pub fn open_fixture(mode : String) -> Unit {
       app.nav.push(History(r, "s-c1", None))
       if mode == "history-details" {
         history_tab.set(1)
+        @sfdesk.set_history_shut(false)
       } else {
         @sfpages.history_open(r.station, r.session, ["h2/group", "h2/group/e3", "h4/group", "h4/group/e7"])
       }
