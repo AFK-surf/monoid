@@ -879,9 +879,9 @@ export type ViewsEnv = {
   resume?: (topic: Topic) => void;
   /// How much of a chat is on the device (station/topics.ts `held`); none where not given.
   held?: (station: string, thread: number) => { held: number; of: number; whole: boolean };
-  /// The program a login of a station's is to (gh, gcloud), as its station last told it (station/machine-logins.ts);
-  /// null where it has not been told. What 待处理 names a login's card by.
-  loginName?: (station: string, id: string) => string | null;
+  /// A login of a station's as its station last told it (station/machine-logins.ts): the program it is to (gh, gcloud)
+  /// and, under way, when it runs out of time; null where it has not been told. What 待处理 says of a login's card.
+  loginOf?: (station: string, id: string) => { name: string; ends: number | null } | null;
   /// How agents' requests about vault items are answered on this device, from the vault as the core holds it
   /// (views/vault.ts askAnswers): each `{answer, lasts?}`, in the order asked.
   vaultAnswers?: (workspace: string, asks: VaultAskOf[]) => J[];
@@ -914,9 +914,11 @@ export function envOf(core: Inner): ViewsEnv {
     data: core.data,
     waits: (topic) => core.stationTopics.waits(topic),
     held: (station, thread) => core.stationTopics.held(station, thread),
-    loginName: (station, id) => {
-      const name = logins.held(core.stations.link(station)).logins.find((l) => l.id === id)?.name;
-      return typeof name === "string" && name !== "" ? name : null;
+    loginOf: (station, id) => {
+      const l = logins.held(core.stations.link(station)).logins.find((x) => x.id === id);
+      if (!l || typeof l.name !== "string" || l.name === "") return null;
+      const active = l.endedAt === undefined || l.endedAt === null;
+      return { name: l.name, ends: active && typeof l.expiresAt === "number" && l.expiresAt > 0 ? l.expiresAt : null };
     },
     emailOf: (workspace) => {
       const sub = owner(workspace);
@@ -1578,9 +1580,9 @@ export class Views implements Owner {
   /// offline to connecting made both workspaces' marks again, 4-7 ms in Hermes on a Mac Studio at a workspace of real
   /// size (2026-11-11).
   readonly #stationsNamed = new Map<string, Derived<{ address: string; name: string }[]>>();
-  /// The program a login of a station's is to, as its station last told it (null: not told).
-  loginName(station: string, id: string): string | null {
-    return this.#core.loginName?.(station, id) ?? null;
+  /// A login of a station's, as its station last told it (null: not told): its program, when it runs out of time.
+  loginOf(station: string, id: string): { name: string; ends: number | null } | null {
+    return this.#core.loginOf?.(station, id) ?? null;
   }
 
   stationsNamed(scope: string): { address: string; name: string }[] {

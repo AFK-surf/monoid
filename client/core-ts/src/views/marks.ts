@@ -276,7 +276,8 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
     // sidebar still counted it); its unread the badge counts, so every number on it can be found there.
     if ((tone === "alert" && kinds.failed) || (tone === "wait" && kinds.wait) || (!seen && tone === "done" && (byPerson ? kinds.message : kinds.done))) {
       // (a login's card: what it asks in its own words, 需要你登录 gh, the program as its station told it)
-      const loginAsk = waits && unsent === undefined && made.login !== null ? loginWords(views.loginName(address, made.login)) : null;
+      const login = waits && unsent === undefined && made.login !== null ? views.loginOf(address, made.login) : null;
+      const loginAsk = waits && unsent === undefined && made.login !== null ? loginWords(login?.name ?? null) : null;
       const [text, what] = unsent !== undefined ? unsentText(unsent) : loginAsk !== null ? [loginAsk, loginAsk] : made.text;
       const item: J = {
         kind: tone,
@@ -292,6 +293,8 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
       };
       if (waits && typeof made.seq === "number") item.seq = made.seq;
       if (waits && made.login !== null) item.login = made.login;
+      // (when it runs out of time: the app says how long is left as it goes, 剩 12 分钟)
+      if (waits && typeof login?.ends === "number") item.loginEnds = login.ends;
       else if (tone === "done" && typeof get(get(row, "last"), "seq") === "number") item.seq = get(row, "last").seq;
       if (tone === "alert" && failure !== null) item.failure = failure;
       items.push(item);

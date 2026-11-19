@@ -441,6 +441,22 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
 /// its note its tip. Pressed, `go`.
 fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -> Unit) -> Unit {
   let v = fn() { Some(i()) }
+  // the time, said again as each minute of a login's time left goes (attention_left's: counted to when it runs out)
+  let now = @signals.signal((src.now)())
+  fn next_minute() -> Unit {
+    let ends = number(@signals.untracked(v), "loginEnds")
+    guard ends > 0.0 else { return }
+    let at = (src.now)()
+    let left = ends - at
+    guard left > 0.0 else { return }
+    let wait = left - (left / 60000.0).floor() * 60000.0
+    row.at_moment(row.logic_at() + (if wait <= 0.0 { 60000.0 } else { wait }), fn() {
+      now.set((src.now)())
+      next_minute()
+    }, later=true)
+    |> ignore
+  }
+  next_minute()
   let title = fn() {
     match text(v(), "title") {
       "" => @sf.t("web-main.attention.untitled")
@@ -507,14 +523,14 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
       )
     })
     |> ignore
-    r.show(at_once=true, fn() { attention_line(v()) != "" }, fn(l) {
+    r.show(at_once=true, fn() { attention_line(v(), now.get()) != "" }, fn(l) {
       l.box(fn(u) {
         @sf.style_node(u, fn() { att_under })
         // (the dot's column, empty: the line starts where the title does)
         u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
         u.box(fn(words) {
           @sf.style_node(words, fn() { att_text }, in_row=true)
-          @sf.words_node(words, fn() { attention_line(v()) }, fn() { att_line }) |> ignore
+          @sf.words_node(words, fn() { attention_line(v(), now.get()) }, fn() { att_line }) |> ignore
         })
         |> ignore
       })
@@ -660,10 +676,31 @@ let att_link_on : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4
 ///|
 /// A wanting chat's line without its lead (the core's `what`: 要你帮忙：, 出问题：, 待处理 · taken off; the dot before it
 /// says that), else its station's name.
-fn attention_line(v : Json?) -> String {
-  match text(v, "what") {
+/// A login's (`loginEnds`: when it runs out of time) with how long is left as of `now`: 需要你登录 gh · 剩 12 分钟.
+fn attention_line(v : Json?, now : Double) -> String {
+  let line = match text(v, "what") {
     "" => text(v, "stationName")
     s => s
+  }
+  match attention_left(v, now) {
+    "" => line
+    left => line + " · " + left
+  }
+}
+
+///|
+/// How long is left of a login waiting for the viewer (`loginEnds`), in whole minutes rounded up, as of `now`: 剩 12
+/// 分钟, 不到 1 分钟; "" where it is not known or has gone by.
+fn attention_left(v : Json?, now : Double) -> String {
+  let ends = number(v, "loginEnds")
+  guard ends > 0.0 else { return "" }
+  let minutes = ((ends - now + 59999.0) / 60000.0).floor().to_int()
+  if minutes <= 0 {
+    ""
+  } else if minutes <= 1 {
+    @sf.t("web-main.attention.loginLast")
+  } else {
+    @sf.t("web-main.attention.loginLeft", args=[("minutes", minutes.to_string())])
   }
 }
 

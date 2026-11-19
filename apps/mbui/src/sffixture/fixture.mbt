@@ -1555,6 +1555,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
                 "title": "部署到测试环境",
                 "what": "要你登录 gh",
                 "login": "login-9",
+                "loginEnds": 750000,
                 "at": 0,
               },
             ],

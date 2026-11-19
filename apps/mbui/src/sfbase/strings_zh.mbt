@@ -821,6 +821,8 @@ let zh : Map[String, String] = {
   "web-main.attention.empty": "暂无待处理",
   "web-main.attention.entry": "待处理",
   "web-main.attention.label": "{n} 个待处理，点击查看",
+  "web-main.attention.loginLast": "不到 1 分钟",
+  "web-main.attention.loginLeft": "剩 {minutes} 分钟",
   "web-main.attention.readAll": "全部已读",
   "web-main.attention.settings": "通知设置",
   "web-main.attention.untitled": "新对话",

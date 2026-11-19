@@ -23,6 +23,8 @@ priv struct LoginAsk {
   session : String
   title : String
   login : String
+  /// when it runs out of time (0: not known)
+  ends : Double
 }
 
 ///|
@@ -32,19 +34,28 @@ fn login_asks_of(marks : Json?, ws : String) -> Array[LoginAsk] {
     let item = Some(i)
     match (text(item, "kind"), text(item, "login"), text(item, "session")) {
       ("wait", login, session) if login != "" && session != "" =>
-        Some({ station: text(item, "station"), session, title: text(item, "title"), login })
+        Some({ station: text(item, "station"), session, title: text(item, "title"), login, ends: number(item, "loginEnds") })
       _ => None
     }
   })
 }
 
 ///|
-/// What a login ask says in the toast: the chat by its title (one with none, a chat).
-fn login_ask_words(a : LoginAsk) -> String {
-  if a.title == "" {
+/// What a login ask says in the toast as of `now`: the chat by its title (one with none, a chat), and how long is left of
+/// it where that is known (· 剩 12 分钟).
+fn login_ask_words(a : LoginAsk, now : Double) -> String {
+  let asks = if a.title == "" {
     @sf.t("web-main.logins.asksUntitled")
   } else {
     @sf.t("web-main.logins.asks", args=[("chat", a.title)])
+  }
+  let minutes = ((a.ends - now + 59999.0) / 60000.0).floor().to_int()
+  if a.ends <= 0.0 || minutes <= 0 {
+    asks
+  } else if minutes <= 1 {
+    asks + " · " + @sf.t("web-main.attention.loginLast")
+  } else {
+    asks + " · " + @sf.t("web-main.attention.loginLeft", args=[("minutes", minutes.to_string())])
   }
 }
 
@@ -72,7 +83,7 @@ pub fn login_asks_node(v : @view.View, src : Source) -> Unit {
           Chat(r) if r.station == a.station && r.session == a.session => continue
           _ => ()
         }
-        toast_later(login_ask_words(a), action=@sf.t("web-main.logins.go"), run=fn() {
+        toast_later(login_ask_words(a, (src.now)()), action=@sf.t("web-main.logins.go"), run=fn() {
           open_chat({ station: a.station, session: a.session, title: a.title, station_name: "" })
         })
       }

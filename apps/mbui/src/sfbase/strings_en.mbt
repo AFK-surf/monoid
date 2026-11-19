@@ -832,6 +832,8 @@ let en : Map[String, String] = {
   "web-main.attention.entry": "To do",
   "web-main.attention.label": "{n} items to do, click to view",
   "web-main.attention.label.one": "1 item to do, click to view",
+  "web-main.attention.loginLast": "under a minute left",
+  "web-main.attention.loginLeft": "{minutes} min left",
   "web-main.attention.readAll": "Mark all read",
   "web-main.attention.settings": "Notification settings",
   "web-main.attention.untitled": "New chat",

@@ -813,6 +813,8 @@ web-main.attention.dismissNote
 web-main.attention.empty
 web-main.attention.entry
 web-main.attention.label
+web-main.attention.loginLast
+web-main.attention.loginLeft
 web-main.attention.readAll
 web-main.attention.settings
 web-main.attention.untitled

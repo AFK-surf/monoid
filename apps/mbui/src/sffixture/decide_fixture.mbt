@@ -862,6 +862,8 @@ pub fn fix_attention_marks(login? : Bool = false) -> Json {
           ask["session"] = Json::string("s-c2")
           ask["seq"] = Json::number(4.0)
           ask["login"] = Json::string("login-9")
+          // (the fixture's now is 0: 12 and a half minutes left of its 15)
+          ask["loginEnds"] = Json::number(750000.0)
           [Json::object(ask), Json::object(wait), Json::object(failed), Json::object(unread)]
         } else {
           [Json::object(wait), Json::object(failed), Json::object(unread)]
