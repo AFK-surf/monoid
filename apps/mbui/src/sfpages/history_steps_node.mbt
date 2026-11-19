@@ -137,11 +137,22 @@ fn steps_list_node(
   let place : @view.ListPlace[String] = @view.ListPlace::new()
   let away : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
   let gliding : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+  // (the floating jump-to-bottom button fades in/out on its own leave=float_ms way when the reader scrolls away from
+  // or back to the foot, scoped strictly within its overlay container)
+  let float_box : Ref[@view.View?] = Ref(None)
+  let set_float = fn(f : () -> Unit) {
+    match float_box.val {
+      Some(fl) => @view.transition(within=fl, f)
+      None => f()
+    }
+  }
   place.on_sight(fn(s) {
     let at_foot = s.at_foot || s.from_foot <= 0.5
     if at_foot {
-      away.set(false)
-      gliding.set(false)
+      set_float(fn() {
+        away.set(false)
+        gliding.set(false)
+      })
       steps_own.kept_place.remove(lkey)
       // Once the reader scrolls back to the bottom after jumping to an entry, resume auto-following new steps.
       if !place.asking() && @signals.untracked(fn() { steps_own.focus.get(fk) }) is None && @signals.untracked(fn() { steps_own.went.contains(lkey) }) {
@@ -151,10 +162,12 @@ fn steps_list_node(
       if !place.asking() && s.from_foot > 24.0 {
         steps_own.kept_place[lkey] = (s.first, s.into)
       }
-      if gliding.untracked() && !place.asking() && scroll.glides_till() is None {
-        gliding.set(false)
-      }
-      away.set(!gliding.untracked() && s.from_foot > dmax(160.0, s.shows * 0.45))
+      set_float(fn() {
+        if gliding.untracked() && !place.asking() && scroll.glides_till() is None {
+          gliding.set(false)
+        }
+        away.set(!gliding.untracked() && s.from_foot > dmax(160.0, s.shows * 0.45))
+      })
     }
   })
   // Preserve where the reader was scrolled when switching side tabs or remounting the history list.
@@ -318,6 +331,7 @@ fn steps_list_node(
     |> ignore
     // Floating jump-to-bottom button when scrolled up away from the latest step.
     b.box(fn(fl) {
+      float_box.val = Some(fl)
       fl
       .over(Is(true))
       .points(Is(false))
@@ -337,8 +351,10 @@ fn steps_list_node(
           fn() {
             steps_own.went.remove(lkey)
             steps_own.kept_place.remove(lkey)
-            gliding.set(true)
-            away.set(false)
+            set_float(fn() {
+              gliding.set(true)
+              away.set(false)
+            })
             place.to_end()
           },
           tips~,
