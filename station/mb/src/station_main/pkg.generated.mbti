@@ -235,10 +235,12 @@ pub impl Show for BusError
 pub(all) suberror CommandMissing {
   CommandMissing(String)
 }
+pub impl Show for CommandMissing
 
 pub(all) suberror JoinRefused {
   JoinRefused(String, String)
 }
+pub impl Show for JoinRefused
 
 pub(all) suberror LiveError {
   LiveError(String)
@@ -253,6 +255,7 @@ pub impl Show for P54Refused
 pub(all) suberror PartTwice {
   PartTwice(String)
 }
+pub impl Show for PartTwice
 
 pub(all) suberror ReadFailed {
   ReadFailed(Int32, String)
@@ -262,6 +265,7 @@ pub impl Show for ReadFailed
 pub(all) suberror SysError {
   SysError(String)
 }
+pub impl Show for SysError
 
 // Types and methods
 pub(all) struct CardChoice {

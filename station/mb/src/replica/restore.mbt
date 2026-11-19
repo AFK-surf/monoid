@@ -6,6 +6,14 @@
 priv suberror NotEmpty
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for NotEmpty with output(self, logger) {
+  match self {
+    NotEmpty => logger.write_string(not_empty_words)
+  }
+}
+
+///|
 priv suberror FilesPending {
   FilesPending(Int, String)
 }

@@ -208,6 +208,7 @@ pub fn ws_j((String, Bool)) -> @jsjson.JValue
 pub suberror AlreadySaid {
   AlreadySaid(RouterWrite)
 }
+pub impl Show for AlreadySaid
 
 pub(all) suberror Thrown {
   Thrown(String, String)

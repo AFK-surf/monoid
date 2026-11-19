@@ -201,10 +201,12 @@ pub impl Show for Thrown
 pub(all) suberror Unanswered {
   Unanswered(String)
 }
+pub impl Show for Unanswered
 
 pub(all) suberror WsRefused {
   WsRefused(Int32, String)
 }
+pub impl Show for WsRefused
 
 // Types and methods
 pub(all) struct BotIdentity {

@@ -11,6 +11,14 @@ pub(all) suberror BusRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for BusRefused with output(self, logger) {
+  match self {
+    BusRefused(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// What the logins' part asks of the station's other parts.
 pub(all) struct LoginsHost {
   /// The store: a session's workspace, its row (who made it, its workspace), the login cards it closes (their

@@ -316,6 +316,7 @@ pub impl Show for Refusal
 pub(all) suberror ToolError {
   ToolError(String, String)
 }
+pub impl Show for ToolError
 
 // Types and methods
 type AgentView

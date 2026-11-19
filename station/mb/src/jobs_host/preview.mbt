@@ -557,6 +557,14 @@ pub(all) suberror SocketRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for SocketRefused with output(self, logger) {
+  match self {
+    SocketRefused(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 /// A service's socket, open (preview.ts `ServiceSocket`): what it says read from the moment it opened.
 pub struct ServiceSocket {
   priv conn : Conn

@@ -371,6 +371,14 @@ pub(all) suberror SysError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for SysError with output(self, logger) {
+  match self {
+    SysError(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// archive.rs `file_lock`: the lock file made (0600, never truncated) and an exclusive lock taken on it, waited for on a
 /// thread of sys.c's; the program goes on meanwhile.
 pub async fn file_lock(host : @host.Host, path : String) -> FileLock {

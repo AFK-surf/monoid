@@ -18,6 +18,14 @@ let scans : Int = 4
 priv suberror Aborted
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for Aborted with output(self, logger) {
+  match self {
+    Aborted => logger.write_string("the worker was closed while a scan read")
+  }
+}
+
+///|
 pub struct Worker {
   store : Store
   rt : @effect.Runtime

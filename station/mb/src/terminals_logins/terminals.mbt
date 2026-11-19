@@ -127,6 +127,14 @@ pub suberror TerminalRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for TerminalRefused with output(self, logger) {
+  match self {
+    TerminalRefused(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 /// What the station gives the terminals: how one is started (its runner, its link), the folder one opens in when none
 /// is asked, what is told as they change.
 pub(all) struct TerminalDeps {

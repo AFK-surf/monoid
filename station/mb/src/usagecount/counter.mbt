@@ -446,6 +446,14 @@ async fn Counter::read_file(
 priv suberror ReadEnough
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for ReadEnough with output(self, logger) {
+  match self {
+    ReadEnough => logger.write_string("the read reached where it was read to before")
+  }
+}
+
+///|
 /// reference `timedAgain`: a transcript read again up to `upto`, where it was read to before its calls were timed:
 /// each of its calls made from `time_from` on given the time it took (only longer, never a call more), and where its
 /// reading of that stands kept with its position, in one write. Where its reading stands at `upto`.

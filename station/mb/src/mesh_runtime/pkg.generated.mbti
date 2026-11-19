@@ -339,10 +339,12 @@ pub async fn write_bytes(async (Bytes, Int64) -> Unit, Pieces, Int64, Int64) -> 
 pub(all) suberror AdminRefused {
   AdminRefused(String, String)
 }
+pub impl Show for AdminRefused
 
 pub(all) suberror ScreenRefused {
   ScreenRefused(Int32, String, @json.Json, @json.Json?)
 }
+pub impl Show for ScreenRefused
 
 // Types and methods
 pub(all) struct AudioPacket {

@@ -342,6 +342,7 @@ pub(all) suberror DriverError {
   Said(String)
   RenewRefused(String)
 }
+pub impl Show for DriverError
 
 // Types and methods
 pub struct AcpHooks {

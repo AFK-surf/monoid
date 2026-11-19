@@ -13,6 +13,16 @@ pub(all) suberror DriverError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for DriverError with output(self, logger) {
+  match self {
+    Failed(m) => logger.write_string(m)
+    Said(key) => logger.write_string(key)
+    RenewRefused(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// An error's words: a `Said`'s key.
 pub fn words_of(e : Error) -> String {
   match e {

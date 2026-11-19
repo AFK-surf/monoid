@@ -42,6 +42,7 @@ pub fn thread_refs(@sql.Db, @json.Json, Array[@json.Json]) -> Array[@json.Json] 
 pub(all) suberror StoreError {
   StoreError(String, @json.Json)
 }
+pub impl Show for StoreError
 
 // Types and methods
 pub struct SessionPage {

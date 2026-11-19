@@ -69,14 +69,17 @@ pub let zstd : String
 pub(all) suberror DoorError {
   DoorError(String)
 }
+pub impl Show for DoorError
 
 pub(all) suberror Ending {
   Ending(String, Int32, String, @json.Json)
 }
+pub impl Show for Ending
 
 pub(all) suberror WireError {
   WireError(String)
 }
+pub impl Show for WireError
 
 // Types and methods
 pub(all) struct Answer {

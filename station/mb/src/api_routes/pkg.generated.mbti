@@ -209,11 +209,13 @@ pub fn within(String, String) -> Bool
 pub(all) suberror DriveErr {
   DriveErr(String, String)
 }
+pub impl Show for DriveErr
 
 pub(all) suberror Refused {
   Refused(Int32, String)
   Moved(String, JV)
 }
+pub impl Show for Refused
 
 pub(all) suberror Thrown {
   Thrown(String, JV)

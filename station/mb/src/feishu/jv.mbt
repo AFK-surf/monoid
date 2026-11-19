@@ -779,6 +779,14 @@ pub(all) suberror FeishuError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for FeishuError with output(self, logger) {
+  match self {
+    FeishuError(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// An error's words (`(error as Error).message`).
 pub fn error_words(e : Error) -> String {
   match e {

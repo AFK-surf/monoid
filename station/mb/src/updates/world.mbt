@@ -12,6 +12,14 @@ pub(all) suberror Thrown {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Thrown with output(self, logger) {
+  match self {
+    Thrown(kind, f) => logger.write_string(text(get(Some(f), "message")).unwrap_or(kind))
+  }
+}
+
+///|
 pub fn thrown(kind : String, message : String, more? : Array[(String, J)] = []) -> Error {
   Thrown(kind, jo([("message", js(message))] + more))
 }

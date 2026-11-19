@@ -12,12 +12,36 @@
 pub(all) suberror MessageWriteBusy
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for MessageWriteBusy with output(self, logger) {
+  match self {
+    MessageWriteBusy => logger.write_string("another connection writes: the message was not written, and is tried again")
+  }
+}
+
+///|
 /// An older store's session lookup of the decision checks is still being prepared (legacy-decision-session.ts).
 pub(all) suberror DecisionSessionsUnavailable
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for DecisionSessionsUnavailable with output(self, logger) {
+  match self {
+    DecisionSessionsUnavailable => logger.write_string("decision session lookup is not ready")
+  }
+}
+
+///|
 /// An old session's chat order is still being prepared (session-chat-index.ts).
 pub(all) suberror SessionChatUnavailable
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for SessionChatUnavailable with output(self, logger) {
+  match self {
+    SessionChatUnavailable => logger.write_string("session chat is still being prepared")
+  }
+}
 
 ///|
 /// The copy destinations of these sessions are still being prepared (cc-thread-index.ts).
@@ -26,9 +50,25 @@ pub(all) suberror CcSessionsUnavailable {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for CcSessionsUnavailable with output(self, logger) {
+  match self {
+    CcSessionsUnavailable(_) => logger.write_string("copy destinations are still being prepared")
+  }
+}
+
+///|
 /// What the store throws as a plain Error, its words as the TypeScript's.
 pub(all) suberror StoreError {
   StoreError(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for StoreError with output(self, logger) {
+  match self {
+    StoreError(m) => logger.write_string(m)
+  }
 }
 
 ///|

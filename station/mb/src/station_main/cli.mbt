@@ -900,6 +900,14 @@ pub(all) suberror JoinRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for JoinRefused with output(self, logger) {
+  match self {
+    JoinRefused(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 /// cli.ts `joinWorkspace` asked over the mesh (POST /workspaces/join): one more workspace joined with its one-time
 /// token, staying in those the station is in, kept in cloud.json's `joined` at once. A locked home joins only a
 /// workspace whose lock is named (`lock`); a lock kept here for that workspace that does not hold it stays, and the join

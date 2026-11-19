@@ -10,9 +10,25 @@ pub(all) suberror ScreenRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ScreenRefused with output(self, logger) {
+  match self {
+    ScreenRefused(message~, ..) => logger.write_string(message)
+  }
+}
+
+///|
 /// An Error and what it carries besides its message (null: nothing).
 pub(all) suberror Failed {
   Failed(String, J)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Failed with output(self, logger) {
+  match self {
+    Failed(m, _) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -75,5 +91,13 @@ pub fn error_j(e : Error) -> J {
         ("message", Some(js(message_of(e)))),
         ("code", text(field_of(e, "code")).map(js)),
       ])
+  }
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for GrantRefused with output(self, logger) {
+  match self {
+    GrantRefused(key) => logger.write_string(key)
   }
 }

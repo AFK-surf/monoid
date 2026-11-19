@@ -196,6 +196,14 @@ pub suberror AlreadySaid {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for AlreadySaid with output(self, logger) {
+  match self {
+    AlreadySaid(w) => logger.write_string("the router's write \{w.id} was said already")
+  }
+}
+
+///|
 /// The write an AlreadySaid names, as JSON (what crosses to a hook's caller and back).
 pub fn already_said_j(e : Error) -> J? {
   match e {

@@ -28,6 +28,7 @@ pub let small_len : Double
 pub(all) suberror LinkRefused {
   LinkRefused(String)
 }
+pub impl Show for LinkRefused
 
 // Types and methods
 #derive(Eq, @debug.Debug)

@@ -26,6 +26,14 @@ pub(all) suberror Ending {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Ending with output(self, logger) {
+  match self {
+    Ending(m, _, _, _) => logger.write_string(m)
+  }
+}
+
+///|
 pub fn ending(message : String, code : Int, reason : String, line? : Json) -> Error {
   Ending(message, code, reason, line.unwrap_or({ "error": Json::string(message) }))
 }
@@ -63,6 +71,14 @@ pub type Admit = async (Json, Connection) -> Said
 ///|
 pub(all) suberror DoorError {
   DoorError(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for DoorError with output(self, logger) {
+  match self {
+    DoorError(m) => logger.write_string(m)
+  }
 }
 
 ///|

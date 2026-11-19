@@ -37,6 +37,7 @@ pub fn said_step(@sql.Db) -> Bool raise
 
 // Errors
 pub(all) suberror Fallback
+pub impl Show for Fallback
 
 pub(all) suberror Unprepared {
   Unprepared(String)

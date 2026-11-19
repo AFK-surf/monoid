@@ -230,10 +230,12 @@ pub fn wrap64(Double) -> Int64
 pub(all) suberror ApiError {
   ApiError(String, Double)
 }
+pub impl Show for ApiError
 
 pub(all) suberror FeishuError {
   FeishuError(String)
 }
+pub impl Show for FeishuError
 
 // Types and methods
 pub(all) enum Answered {

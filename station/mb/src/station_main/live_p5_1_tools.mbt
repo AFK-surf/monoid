@@ -31,6 +31,14 @@ priv suberror ToolFailed {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for ToolFailed with output(self, logger) {
+  match self {
+    ToolFailed(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 priv struct KeptProcess {
   id : String
   command : String

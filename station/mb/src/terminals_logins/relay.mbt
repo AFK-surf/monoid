@@ -11,6 +11,14 @@ pub suberror Refused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Refused with output(self, logger) {
+  match self {
+    Refused(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 /// The browser's callback as a client hands it (`body` in base64).
 pub(all) struct Callback {
   method_ : String
@@ -51,6 +59,14 @@ pub(all) struct RelayIo {
 /// How a request to the command failed (`code`: Node's, as ECONNREFUSED).
 pub(all) suberror SendFailed {
   SendFailed(String, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for SendFailed with output(self, logger) {
+  match self {
+    SendFailed(code, m) => logger.write_string(if m == "" { code } else { m })
+  }
 }
 
 ///|

@@ -273,10 +273,12 @@ pub async fn[X] within(Clock, Double, async () -> X, String) -> X
 pub(all) suberror FsError {
   FsError(String, String)
 }
+pub impl Show for FsError
 
 pub(all) suberror ScreenRefused {
   ScreenRefused(Int32, String)
 }
+pub impl Show for ScreenRefused
 
 pub(all) suberror Thrown {
   Thrown(String, String)

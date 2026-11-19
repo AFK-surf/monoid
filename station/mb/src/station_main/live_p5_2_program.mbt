@@ -221,6 +221,14 @@ pub(all) suberror CommandMissing {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for CommandMissing with output(self, logger) {
+  match self {
+    CommandMissing(command) => logger.write_string("the runner did not start: \{command} is not on PATH")
+  }
+}
+
+///|
 /// The runner binary (platform/processes.ts `runnerBinary`): STILLFAIL_RUNNER, else beside the station's program in a
 /// release (`<app>/bin`, where the program is `<app>/station/stillfail-reader` or `<app>/bin/…`), else where its cargo
 /// builds it in a checkout (`station/native/runner/target/release`); on Windows run from a copy kept in `<data>/run/bin`

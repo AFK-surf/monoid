@@ -44,9 +44,25 @@ pub(all) suberror WsRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for WsRefused with output(self, logger) {
+  match self {
+    WsRefused(status, m) => logger.write_string(trim("slack refused the connection: HTTP \{status} \{m}"))
+  }
+}
+
+///|
 /// No answer at all (no way there, or none in time): what is asked again (ops/unanswered.ts).
 pub(all) suberror Unanswered {
   Unanswered(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Unanswered with output(self, logger) {
+  match self {
+    Unanswered(m) => logger.write_string(m)
+  }
 }
 
 ///|

@@ -340,6 +340,7 @@ pub fn words_answer(Words, String, Array[@json.Json]) -> @json.Json raise Refuse
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 pub fn Refused::message(Self) -> String
 
 // Types and methods

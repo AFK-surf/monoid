@@ -10,6 +10,14 @@ pub(all) suberror DriveErr {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for DriveErr with output(self, logger) {
+  match self {
+    DriveErr(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 fn drive_status(code : String) -> Int32 {
   match code {
     "invalid_request" => 400

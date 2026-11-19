@@ -127,6 +127,7 @@ pub suberror Refused {
 pub impl Show for Refused
 
 pub suberror WriteBusy
+pub impl Show for WriteBusy
 
 // Types and methods
 type Away

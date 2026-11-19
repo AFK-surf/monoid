@@ -20,16 +20,21 @@ pub async fn harness(@host.Host, String) -> Unit
 pub(all) suberror CcSessionsUnavailable {
   CcSessionsUnavailable(Array[String])
 }
+pub impl Show for CcSessionsUnavailable
 
 pub(all) suberror DecisionSessionsUnavailable
+pub impl Show for DecisionSessionsUnavailable
 
 pub(all) suberror MessageWriteBusy
+pub impl Show for MessageWriteBusy
 
 pub(all) suberror SessionChatUnavailable
+pub impl Show for SessionChatUnavailable
 
 pub(all) suberror StoreError {
   StoreError(String)
 }
+pub impl Show for StoreError
 
 // Types and methods
 pub(all) struct CardEditScan {

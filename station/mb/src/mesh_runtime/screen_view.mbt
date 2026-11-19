@@ -24,6 +24,14 @@ pub(all) suberror ScreenRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ScreenRefused with output(self, logger) {
+  match self {
+    ScreenRefused(_, key, _, _) => logger.write_string(key)
+  }
+}
+
+///|
 /// One encoded frame (source.ts `Frame`): its config before it where it changed, whether it is a key frame, its time
 /// (µs) and its bytes.
 pub(all) struct ScreenFrame {

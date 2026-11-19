@@ -264,22 +264,27 @@ pub fn windows_of(@jsjson.JValue?) -> Array[ScreenWindow]
 pub(all) suberror ExecFailed {
   ExecFailed(message~ : String, code~ : @jsjson.JValue, signal~ : String?, stdout~ : String, stderr~ : String)
 }
+pub impl Show for ExecFailed
 
 pub(all) suberror Failed {
   Failed(String, @jsjson.JValue)
 }
+pub impl Show for Failed
 
 pub(all) suberror FsFailed {
   FsFailed(String, String)
 }
+pub impl Show for FsFailed
 
 pub(all) suberror GrantRefused {
   GrantRefused(String)
 }
+pub impl Show for GrantRefused
 
 pub(all) suberror ScreenRefused {
   ScreenRefused(status~ : Int32, key~ : String, args~ : @jsjson.JValue, access~ : ScreenAccess?, message~ : String)
 }
+pub impl Show for ScreenRefused
 
 // Types and methods
 pub struct AbortSignal {

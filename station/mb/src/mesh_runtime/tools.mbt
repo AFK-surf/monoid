@@ -183,6 +183,14 @@ pub(all) suberror AdminRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for AdminRefused with output(self, logger) {
+  match self {
+    AdminRefused(m, _) => logger.write_string(m)
+  }
+}
+
+///|
 /// A request of the admin API's, as the person `requester` (method, path, body): its value.
 pub type Ask = async (String, String, String, Json) -> Json
 
