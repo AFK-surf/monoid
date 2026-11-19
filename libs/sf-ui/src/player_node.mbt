@@ -1828,7 +1828,7 @@ fn desk_player_node(
       foot.over(Is(true)) |> ignore
       foot.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       foot.box(fn(f) {
-        f.height(By(fn() { Some(room().1) })) |> ignore
+        f.height(By(fn() { Some(desk_controls_foot(stage().0, embedded)) })) |> ignore
         f.reacts(fn() { f.pointer_within() && pointer_rests() }, fn(near) { pn.near_foot.set(near) })
       })
       |> ignore
@@ -2124,8 +2124,15 @@ fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips 
       volume
     }
   }
+  // (a finger's: only the key, the sound's own buttons beside it)
+  let slider = !(native_input() is Finger)
   parent.box(made_for=loc, fn(r) {
-    r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(keys_apart(size=media_key_d))).padding(Is((0.0, 0.0, @ui.Space::S1_5.px(), 0.0))) |> ignore
+    r
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .gap(Is(keys_apart(size=media_key_d)))
+    .padding(Is((0.0, 0.0, if slider { @ui.Space::S1_5.px() } else { 0.0 }, 0.0)))
+    |> ignore
     media_key_node(
       r,
       fn() { if silent() { "volume-x" } else { "volume" } },
@@ -2140,49 +2147,51 @@ fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips 
       tips~,
     )
     |> ignore
-    @headless.slider(
-      r,
-      fn() { t("web-pages.drive.player.volume") },
-      shown,
-      min=0.0,
-      max=1.0,
-      step=1.0 / desk_volume_steps,
-      fn(to) {
-        pn.act(fn() { pn.p.set_volume(to) })
-        pn.wake()
-      },
-      disabled=fn() { !pn.on() },
-      fn(v, _) {
-        v.width(Is(Some(desk_volume_w))).height(Is(Some(media_timeline_h()))).lines_up(Is(None)) |> ignore
-        v.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-        v.box(fn(track) {
-          track
-          .height(Is(Some(@ui.Space::S1.px())))
-          .radius(Is(@ui.Space::S1.px() / 2.0))
-          .clips(Is(true))
-          .ground(By(fn() { alpha(ink().text, media_track_share) }))
+    if slider {
+      @headless.slider(
+        r,
+        fn() { t("web-pages.drive.player.volume") },
+        shown,
+        min=0.0,
+        max=1.0,
+        step=1.0 / desk_volume_steps,
+        fn(to) {
+          pn.act(fn() { pn.p.set_volume(to) })
+          pn.wake()
+        },
+        disabled=fn() { !pn.on() },
+        fn(v, _) {
+          v.width(Is(Some(desk_volume_w))).height(Is(Some(media_timeline_h()))).lines_up(Is(None)) |> ignore
+          v.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+          v.box(fn(track) {
+            track
+            .height(Is(Some(@ui.Space::S1.px())))
+            .radius(Is(@ui.Space::S1.px() / 2.0))
+            .clips(Is(true))
+            .ground(By(fn() { alpha(ink().text, media_track_share) }))
+            |> ignore
+            track.box(fn(c) { c.over(Is(true)).width_share(By(shown)).ground(By(fn() { ink().text })) |> ignore }) |> ignore
+          })
           |> ignore
-          track.box(fn(c) { c.over(Is(true)).width_share(By(shown)).ground(By(fn() { ink().text })) |> ignore }) |> ignore
-        })
-        |> ignore
-        v.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-        v.box(fn(hd) {
-          let d = 2.0 * media_small_head_r
-          hd
-          .over(Is(true))
-          .width(Is(Some(d)))
-          .height(Is(Some(d)))
-          .radius(Is(media_small_head_r))
-          .shadow(By(fn() { (media_head_blur, media_head_fall, @ui.tree_theme().color(ShadowC)) }))
-          .ground(By(fn() { ink().text }))
-          .offset(By(fn() { (shown() * desk_volume_w - media_small_head_r, media_timeline_h() / 2.0 - media_small_head_r) }))
-          .presses(Is(false))
+          v.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+          v.box(fn(hd) {
+            let d = 2.0 * media_small_head_r
+            hd
+            .over(Is(true))
+            .width(Is(Some(d)))
+            .height(Is(Some(d)))
+            .radius(Is(media_small_head_r))
+            .shadow(By(fn() { (media_head_blur, media_head_fall, @ui.tree_theme().color(ShadowC)) }))
+            .ground(By(fn() { ink().text }))
+            .offset(By(fn() { (shown() * desk_volume_w - media_small_head_r, media_timeline_h() / 2.0 - media_small_head_r) }))
+            .presses(Is(false))
+            |> ignore
+          })
           |> ignore
-        })
-        |> ignore
-      },
-    )
-    |> ignore
+        },
+      )
+      |> ignore
+    }
   })
   |> ignore
 }

@@ -338,18 +338,20 @@ test "a desktop's: the bar says the film's size, length and rate as its message 
 
 ///|
 test "a desktop's on a narrow stage: short of room for its keys, 保存此帧 leaves them for their ⋯" {
-  // short of a little room (选集 docked beside a stage 850 wide): 保存此帧 leaves first, the speed still on the row
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(850.0, 900.0, 2), subtitled=true)
+  // short of a little room (选集 docked beside a stage 760 wide; a finger's, no volume line beside the sound's key):
+  // 保存此帧 leaves first, the speed still on the row
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(760.0, 900.0, 2), subtitled=true)
   t.draw()
+  assert_true(t.query(Slider, label="web-pages.drive.player.volume") is None)
   t.click(Button, label="web-pages.drive.player.list")
   assert_true(t.query(Button, label="android-chat.video.saveFrame") is None)
   // (the speed the last to go)
   assert_true(t.find("1×") is Some(_))
   t.click(Button, label="web-main.menu.more")
   assert_true(t.find("android-chat.video.saveFrame") is Some(_))
-  // shorter still (beside a stage 780 wide), the speed gone to the ⋯ too, its speeds under their name there (the old
+  // shorter still (beside a stage 690 wide), the speed gone to the ⋯ too, its speeds under their name there (the old
   // view left its 1× in its draw list at no size)
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(780.0, 900.0, 2), subtitled=true)
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(690.0, 900.0, 2), subtitled=true)
   t.draw()
   t.click(Button, label="web-pages.drive.player.list")
   assert_true(t.query(Button, label="android-chat.video.saveFrame") is None)
