@@ -62,6 +62,10 @@ priv struct Actor {
   mut agent : Agent?
   mut stale : Bool
   mut restart : Bool
+  /// the changes it was told of (`changed`), counted, and the last of them that needs a new process: one told while its
+  /// process was opened or took one in place is taken after it (actor_run.mbt `ensure_agent`, `catch_up`)
+  mut change_seq : Int
+  mut restart_seq : Int
   mut profile : Json
   mut running_identity : Json
   mut read_back : Bool
@@ -264,6 +268,8 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         agent: None,
         stale: false,
         restart: false,
+        change_seq: 0,
+        restart_seq: 0,
         profile: Json::null(),
         running_identity: Json::null(),
         read_back: false,

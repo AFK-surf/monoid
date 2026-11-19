@@ -215,6 +215,11 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       })
     "changed" => {
       let restart = truthy(arg(0))
+      // (counted with no process too: one being opened, or taking an earlier change in place, takes it after)
+      a.change_seq += 1
+      if restart {
+        a.restart_seq = a.change_seq
+      }
       if a.agent is Some(_) {
         a.stale = true
         if restart {
@@ -994,6 +999,10 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
   // (let go of meanwhile: its turn's end gives them)
   guard still(a, was) else { return }
   if busy && was is Some(agent) {
+    // (never into a turn on how it ran before a change: they wait for its end, which gives them a turn as changed)
+    if a.stale {
+      return
+    }
     guard self.take_notices(a) is Some(text) else { return }
     let (handed, told) = self.with_choices(a, text)
     if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
@@ -1074,6 +1083,11 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
   // (let go of meanwhile: its turn's end pumps again)
   guard still(a, was) else { return }
   if busy && was is Some(agent) {
+    // (never into a turn on how it ran before a change, which would answer as it: what was said waits for its end,
+    // which pumps it into a turn as changed)
+    if a.stale {
+      return
+    }
     if truthy(self.deps(a, "backgroundOnMessage", [jstr(a.key)])) {
       ignore(self.agent_do(a, agent, "backgroundTools", []))
     }
@@ -1285,6 +1299,10 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
       ]),
     ),
   ).unwrap_or(handed)
+  // (changed while it was asked its prompt: taken before the turn begins, never run on how it was before)
+  if a.stale && !self.busy_of(a, Some(agent)) {
+    agent = self.ensure_agent(a)
+  }
   if self.busy_of(a, Some(agent)) && truthy(self.agent_do(a, agent, "steer", [jstr(prompt)])) {
     return self.told(a, told_choices)
   }
@@ -1368,28 +1386,43 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json) 
 ///|
 /// actor.ts `catchUp`.
 async fn Actors::catch_up(self : Actors, a : Actor, end : Bool) -> Unit raise {
-  guard a.agent is Some(agent) else { return }
-  if !a.stale || self.busy(a) {
-    return
-  }
-  // (taken in place where it can be: Node's, its profile asked of the pool, `retune`)
-  let identity = self.rpc(a.key, "node.retune", [jnum(agent.handle.to_double()), a.profile, jbool(a.restart), jbool(self.holding(a))])
-  if identity is Object(_) {
+  while a.stale && !self.busy(a) {
+    guard a.agent is Some(agent) else { return }
+    let seq = a.change_seq
+    let restart = a.restart
+    // (taken in place where it can be: Node's, its profile asked of the pool, `retune`)
+    let identity = self.rpc(a.key, "node.retune", [jnum(agent.handle.to_double()), a.profile, jbool(restart), jbool(self.holding(a))])
+    if !still(a, Some(agent)) {
+      return
+    }
+    if identity is Object(_) {
+      a.running_identity = identity
+      self.mirror(a)
+      self.log(a, "info", "session process takes the change in place", fields={ "model": identity.value("model").unwrap_or(jstr("")), "effort": identity.value("effort").unwrap_or(jstr("")) })
+      if a.change_seq == seq {
+        a.stale = false
+        a.restart = false
+        return
+      }
+      // (changed again while it took this one: taken as it is now)
+      a.stale = true
+      a.restart = a.restart_seq > seq
+      continue
+    }
+    // (begun a turn of its own meanwhile: never ended under it, taken at that turn's end)
+    if !end || self.busy(a) {
+      return
+    }
+    // (its process ends: the next is opened as the session is then)
     a.stale = false
-    a.running_identity = identity
-    self.log(a, "info", "session process takes the change in place", fields={ "model": identity.value("model").unwrap_or(jstr("")), "effort": identity.value("effort").unwrap_or(jstr("")) })
+    a.restart = false
+    let background = self.agent_do(a, agent, "background", [])
+    self.set_agent(a, None)
+    self.log(a, "info", "ending the process from before the session was changed", fields={ "background": jnum(match background { Array(b) => b.length().to_double(); _ => 0.0 }) })
+    self.end_process(a, Some(agent))
+    self.notify_store(a)
     return
   }
-  if !end {
-    return
-  }
-  a.stale = false
-  a.restart = false
-  let background = self.agent_do(a, agent, "background", [])
-  self.set_agent(a, None)
-  self.log(a, "info", "ending the process from before the session was changed", fields={ "background": jnum(match background { Array(b) => b.length().to_double(); _ => 0.0 }) })
-  self.end_process(a, Some(agent))
-  self.notify_store(a)
 }
 
 ///|
@@ -1406,49 +1439,61 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
-  if a.agent is Some(g) && !a.stale && !self.busy(a) {
-    let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
-    if !(on is Null) && on != a.profile {
-      a.stale = true
-    }
-    // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
-    // `outlived`; its retune refuses, so it is opened again)
-    if !a.stale {
-      let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
-      if outlived is True {
+  while true {
+    if a.agent is Some(g) && !a.stale && !self.busy(a) {
+      let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
+      if !(on is Null) && on != a.profile {
         a.stale = true
       }
+      // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
+      // `outlived`; its retune refuses, so it is opened again)
+      if !a.stale {
+        let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+        if outlived is True {
+          a.stale = true
+        }
+      }
     }
+    self.catch_up(a, true)
+    if a.agent is Some(g) {
+      return g
+    }
+    // (what it is changed in while it opens is taken once it is open: `changed` counts it with no process to mark)
+    let seq = a.change_seq
+    let opened = self.rpc(a.key, "node.open", [Json::array(a.stopped), jbool(a.read_back), a.profile])
+    let handle = num_of(opened.value("handle")).unwrap_or(0.0).to_int()
+    let generation = num_of(opened.value("generation")).unwrap_or(0.0).to_int()
+    a.runtime = str_of(opened.value("runtime")).unwrap_or(a.runtime)
+    match str_of(opened.value("afresh")) {
+      Some(s) => a.afresh = Some(s)
+      None => ()
+    }
+    if opened.value("resumeLost") is Some(True) {
+      a.resume_lost = true
+    }
+    if opened.value("readBackTold") is Some(True) {
+      a.read_back = false
+    }
+    a.stopped.clear()
+    if str_of(opened.value("stoppedNote")) is Some(note) {
+      a.stopped_note = Some(note)
+    }
+    let g = { generation, handle }
+    self.set_agent(a, Some(g))
+    a.running_identity = opened.value("identity").unwrap_or(Json::null())
+    a.profile = opened.value("profile").unwrap_or(Json::null())
+    if a.change_seq == seq {
+      a.stale = false
+      a.restart = false
+      self.mirror(a)
+      return g
+    }
+    // (opened as it was before a change told meanwhile: taken in place, or ended and opened again, before it is used)
+    a.stale = true
+    a.restart = a.restart_seq > seq
+    self.mirror(a)
   }
-  self.catch_up(a, true)
-  if a.agent is Some(g) {
-    return g
-  }
-  let opened = self.rpc(a.key, "node.open", [Json::array(a.stopped), jbool(a.read_back), a.profile])
-  let handle = num_of(opened.value("handle")).unwrap_or(0.0).to_int()
-  let generation = num_of(opened.value("generation")).unwrap_or(0.0).to_int()
-  a.runtime = str_of(opened.value("runtime")).unwrap_or(a.runtime)
-  match str_of(opened.value("afresh")) {
-    Some(s) => a.afresh = Some(s)
-    None => ()
-  }
-  if opened.value("resumeLost") is Some(True) {
-    a.resume_lost = true
-  }
-  if opened.value("readBackTold") is Some(True) {
-    a.read_back = false
-  }
-  a.stopped.clear()
-  if str_of(opened.value("stoppedNote")) is Some(note) {
-    a.stopped_note = Some(note)
-  }
-  let g = { generation, handle }
-  self.set_agent(a, Some(g))
-  a.running_identity = opened.value("identity").unwrap_or(Json::null())
-  a.stale = false
-  a.restart = false
-  a.profile = opened.value("profile").unwrap_or(Json::null())
-  g
+  abort("unreachable")
 }
 
 ///|
@@ -1978,6 +2023,11 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     }
     self.wait_ms(a, num_of(ends.unwrap().value("seconds")).unwrap_or(0.0), num_of(ends.unwrap().value("seconds")).unwrap_or(0.0) * 1000.0)
     ignore(self.deps(a, "idle", [jstr(a.key)]))
+    // (changed while its turn ran: its process takes it now, in place alone while it waits, before a turn of its
+    // own posts as it ran before)
+    if a.stale {
+      self.catch_up(a, a.waiting is None)
+    }
     return
   }
   ignore(self.deps(a, "idle", [jstr(a.key)]))
@@ -1991,6 +2041,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       a.asked_to_name.push(u)
       self.log(a, "info", "its chat has no title; asking it to name it", fields={ "chat": jstr(u) })
       return self.start_turn(a, "title", self.words(a, "nameUntitled", args=[jstr(u)]))
+    }
+    if a.stale {
+      self.catch_up(a, a.waiting is None)
     }
     return
   }
@@ -2007,6 +2060,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     }
     a.tools_restarts = 0
     self.cool(a, warm)
+    if a.stale {
+      self.catch_up(a, a.waiting is None)
+    }
     return self.give_up(a, recorded)
   }
   let most = num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
@@ -2018,6 +2074,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   a.nudges = 0
   self.cool(a, warm)
+  if a.stale {
+    self.catch_up(a, a.waiting is None)
+  }
   self.give_up(a, recorded)
 }
 

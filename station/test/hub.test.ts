@@ -15,7 +15,7 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
 import { AUTO, MANUAL } from "../src/store/store.ts";
-import { FakeDriver, Rig, matches, message, reply, say, settle, testClock } from "./hub-fakes.ts";
+import { FakeDriver, Rig, given, matches, message, reply, say, settle, testClock } from "./hub-fakes.ts";
 
 const chat = (runtime: "claude" | "codex" = "claude") => ({ runtime, createdBy: "local" });
 const untimed = (text: string) => text.replace(/^\[Delivered at [^\n]+\]\n/, "");
@@ -3574,6 +3574,185 @@ test("changing runtime lets the running turn finish and the next reads back the 
   assert.ok(matches(history, ["earlier work", "continued work"]), history);
   await r.close();
 });
+
+/// The identity its message `text` in `m`'s thread was posted as (the runtime, model and effort shown beside it).
+const postedAs = (r: Rig, m: { threadTs: string }, text: string) => r.said(r.thread("C1", m.threadTs).id).find((x) => x.text === text)?.agentIdentity;
+/// Changes `key` as `change` from within what the session's actor waits on (its process opening, its retune): `told`
+/// once its actor is told (the station's answer to what it waits on goes after), `made` once the change is done, which
+/// waits on that actor's queue. (A test's `settle` would wait on the actor waiting on the station for good.)
+function changeMeanwhile(r: Rig, key: string, change: Parameters<typeof configure>[2]) {
+  const told = Promise.withResolvers<void>();
+  const changed = r.hub.changed;
+  r.hub.changed = (k, restart) => {
+    r.hub.changed = changed;
+    const done = changed.call(r.hub, k, restart);
+    told.resolve();
+    return done;
+  };
+  const made = configure(r.hub, key, change);
+  return { made, told: Promise.race([told.promise, made.then(() => {})]) };
+}
+const withModels = (...models: string[]) => (raw: any) => raw.profiles.filter((p: any) => p.id === "cc").forEach((p: any) => (p.models = [...(p.models ?? []), ...models]));
+
+test("a message given while a turn runs on the model from before a change is not steered into it: it starts the next turn, on the new model", async () => {
+  const r = new Rig();
+  r.edit(withModels("sonnet"));
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const old = r.claude.last();
+  await configure(r.hub, key, { model: "sonnet", effort: "low" });
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+  await r.accept(reply(m, "9999.1", "<@UBOT> and the tests", { addressed: true }));
+  await settle();
+  assert.deepEqual(old.steers, [], "not steered into the turn on the model from before");
+  assert.deepEqual(postedAs(r, m, "built"), { runtime: "claude", model: "opus", effort: "high" }, "the running turn's own post is the model it runs on");
+  old.complete();
+  await settle();
+  assert.equal(r.claude.last(), old, "the same process, taken in place");
+  assert.deepEqual(old.retuned, [["sonnet", "low"]]);
+  assert.ok(old.prompts.at(-1)!.includes("and the tests"), old.prompts.at(-1));
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "tested", kind: "final" });
+  assert.deepEqual(postedAs(r, m, "tested"), { runtime: "claude", model: "sonnet", effort: "low" });
+  old.complete();
+  await settle();
+  await r.close();
+});
+
+test("a message given while a turn runs on the runtime from before a change is not steered into it: the next turn runs on the new runtime", async () => {
+  const r = new Rig();
+  r.edit((raw) => { raw.profiles[1].models = ["gpt-5"]; });
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const old = r.claude.last();
+  await configure(r.hub, key, { runtime: "codex", model: "gpt-5" });
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+  await r.accept(reply(m, "9999.1", "<@UBOT> and the tests", { addressed: true }));
+  await settle();
+  assert.deepEqual(old.steers, [], "not steered into the Claude Code turn");
+  assert.deepEqual(postedAs(r, m, "built"), { runtime: "claude", model: "opus", effort: "high" });
+  old.complete();
+  await settle();
+  assert.ok(old.disposed);
+  assert.equal(r.codex.count(), 1);
+  const next = r.codex.last();
+  assert.ok(next.prompts.at(-1)!.includes("and the tests"), next.prompts.at(-1));
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "tested", kind: "final" });
+  assert.deepEqual(postedAs(r, m, "tested"), { runtime: "codex", model: "gpt-5", effort: r.session(key).effort ?? null });
+  next.complete();
+  await settle();
+  await r.close();
+});
+
+for (const runtime of ["claude", "codex"] as const) {
+  test(`a change while its process opens is taken before its turn runs (${runtime === "claude" ? "in place" : "another runtime"})`, async () => {
+    const r = new Rig();
+    r.edit(withModels("sonnet"));
+    r.edit((raw) => { raw.profiles[1].models = ["gpt-5"]; });
+    const m = say("<@UBOT> fix the build");
+    const key = sessionKey("cl", "C1", m.threadTs);
+    let made: Promise<unknown> | undefined;
+    const open = r.claude.open.bind(r.claude);
+    r.claude.open = async (options, events) => {
+      r.claude.open = open;
+      const meanwhile = changeMeanwhile(r, key, runtime === "claude" ? { model: "sonnet", effort: "low" } : { runtime: "codex", model: "gpt-5" });
+      made = meanwhile.made;
+      await meanwhile.told;
+      return open(options, events);
+    };
+    await r.accept(m);
+    await settle();
+    await given(made!, "the change made once it opened");
+    await settle();
+    const opened = r.claude.last();
+    if (runtime === "claude") {
+      assert.deepEqual(opened.retuned, [["sonnet", "low"]]);
+      assert.equal(opened.prompts.length, 1);
+    } else {
+      assert.ok(opened.disposed, "the Claude Code process opened on the runtime from before ends");
+      assert.deepEqual(opened.prompts, []);
+      assert.equal(r.codex.last().prompts.length, 1);
+    }
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+    assert.deepEqual(postedAs(r, m, "built"), runtime === "claude" ? { runtime: "claude", model: "sonnet", effort: "low" } : { runtime: "codex", model: "gpt-5", effort: r.session(key).effort ?? null });
+    (runtime === "claude" ? opened : r.codex.last()).complete();
+    await settle();
+    await r.close();
+  });
+}
+
+test("a second change while its process takes the first in place is taken too", async () => {
+  const r = new Rig();
+  r.edit(withModels("sonnet", "haiku"));
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const same = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+  same.complete();
+  await settle();
+  // Its skills linked anew as it is taken in place (an await of its retune): changed again meanwhile.
+  let second: Promise<unknown> | undefined;
+  r.hub.skillsLinker = async () => {
+    r.hub.skillsLinker = async () => "";
+    const meanwhile = changeMeanwhile(r, key, { model: "haiku", effort: "low" });
+    second = meanwhile.made;
+    await meanwhile.told;
+    return "";
+  };
+  await configure(r.hub, key, { model: "sonnet", effort: "low" });
+  await settle();
+  await given(second!, "the second change made");
+  await settle();
+  assert.deepEqual(same.retuned.at(-1), ["haiku", "low"], "taken in place as changed last");
+  assert.ok(!same.disposed);
+  await r.accept(reply(m, "9999.1", "<@UBOT> and the tests", { addressed: true }));
+  await settle();
+  assert.equal(r.claude.last(), same);
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "tested", kind: "final" });
+  assert.deepEqual(postedAs(r, m, "tested"), { runtime: "claude", model: "haiku", effort: "low" });
+  same.complete();
+  await settle();
+  await r.close();
+});
+
+for (const retunable of [true, false]) {
+  test(`a change while a turn runs is taken as the turn ends, before a turn its process starts on its own (${retunable ? "in place" : "ended"})`, async () => {
+    const r = new Rig();
+    r.edit(withModels("sonnet"));
+    const m = say("<@UBOT> fix the build");
+    await r.accept(m);
+    await settle();
+    const key = sessionKey("cl", "C1", m.threadTs);
+    const old = r.claude.last();
+    old.retunable = retunable;
+    await configure(r.hub, key, { model: "sonnet", effort: "low" });
+    assert.deepEqual(old.retuned, [], "not while its turn runs");
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+    old.complete();
+    await settle();
+    if (!retunable) {
+      assert.ok(old.disposed, "its process from before ends once its turn is over");
+      await r.close();
+      return;
+    }
+    assert.deepEqual(old.retuned, [["sonnet", "low"]], "taken in place once its turn is over");
+    assert.ok(!old.disposed);
+    // Its runtime begins a turn of its own (a background task of its ended): it posts as the model it runs on now.
+    old.busyNow = true;
+    old.events({ type: "turnStarted" });
+    await settle();
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "the task ended", kind: "final" });
+    assert.deepEqual(postedAs(r, m, "the task ended"), { runtime: "claude", model: "sonnet", effort: "low" });
+    old.complete();
+    await settle();
+    await r.close();
+  });
+}
 
 test("on another account a conversation goes on in a new runtime session, its history read on; on its own it is taken up", async () => {
   const r = new Rig();
