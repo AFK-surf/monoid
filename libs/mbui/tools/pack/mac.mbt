@@ -149,48 +149,16 @@ pub fn render_info_plist(m : Manifest, has_icon : Bool) -> String {
 ///|
 /// Resolve the native binary path produced by `moon build` in `manifest_dir` (mirrors `env.sh`'s `pkg_build`).
 fn find_native_exe(manifest_dir : String, pkg : String, mode : String) -> String {
-  let work_path = @sys.join(manifest_dir, "moon.work")
-  let mod_path = @sys.join(manifest_dir, "moon.mod")
-  let mut mod_prefix = ""
-  match @sys.read_text(work_path) {
-    Some(work_txt) => {
-      let mut members = 0
-      for raw in work_txt.split("\n") {
-        let trimmed = raw.trim(chars=" \t\r").to_owned()
-        if trimmed.has_prefix("\"") {
-          members += 1
-        }
-      }
-      if members > 1 {
-        match @sys.read_text(mod_path) {
-          Some(mod_txt) =>
-            for raw in mod_txt.split("\n") {
-              let line = raw.trim(chars=" \t\r").to_owned()
-              if line.has_prefix("name") {
-                match line.find("\"") {
-                  Some(i1) =>
-                    match line.rev_find("\"") {
-                      Some(i2) if i2 > i1 => {
-                        mod_prefix = line.exact_view(start=i1 + 1, end=i2).to_owned() + "/"
-                        break
-                      }
-                      _ => ()
-                    }
-                  None => ()
-                }
-              }
-            }
-          None => ()
-        }
-      }
-    }
-    None => ()
-  }
-  let candidate = @sys.join(manifest_dir, "_build/native/\{mode}/build/\{mod_prefix}\{pkg}/\{pkg}.exe")
+  let mod_prefix = resolve_mod_prefix(manifest_dir)
+  let base_pkg = @sys.basename(pkg)
+  let candidate = @sys.join(
+    manifest_dir,
+    "_build/native/\{mode}/build/\{mod_prefix}\{pkg}/\{base_pkg}.exe",
+  )
   if @sys.is_file(candidate) {
     return candidate
   }
-  let fallback = @sys.join(manifest_dir, "_build/native/\{mode}/build/\{pkg}/\{pkg}.exe")
+  let fallback = @sys.join(manifest_dir, "_build/native/\{mode}/build/\{pkg}/\{base_pkg}.exe")
   if @sys.is_file(fallback) {
     return fallback
   }
@@ -199,15 +167,33 @@ fn find_native_exe(manifest_dir : String, pkg : String, mode : String) -> String
 }
 
 ///|
+fn mac_host_triple() -> String {
+  let arch = try_sh("uname -m").unwrap_or("arm64").trim(chars=" \t\r\n").to_owned()
+  if arch == "x86_64" {
+    "x86_64-apple-darwin"
+  } else {
+    "aarch64-apple-darwin"
+  }
+}
+
+///|
+fn sign_mac_item(target_path : String, sign_identity : String, ent_arg : String) -> Unit {
+  let cmd = if sign_identity != "" && sign_identity != "-" {
+    "codesign --force --options runtime --timestamp" + ent_arg +
+    " --sign " + q(sign_identity) + " " + q(target_path)
+  } else {
+    "codesign --force --sign - --timestamp=none" + ent_arg + " " + q(target_path)
+  }
+  ignore(sh(cmd, "codesign " + @sys.basename(target_path)))
+}
+
+///|
 pub fn pack_mac(
   m : Manifest,
   manifest_dir : String,
   mbui_dir : String,
   out_dir : String,
-  formats_override : Array[String],
-  sign_identity : String,
-  notarize_profile : String,
-  quick : Bool,
+  opts : PackOptions,
 ) -> Unit {
   let mac_out = @sys.join(out_dir, "mac")
   let build_out = @sys.join(out_dir, ".build")
@@ -215,20 +201,10 @@ pub fn pack_mac(
   @sys.makedirs(build_out)
 
   let pkg = m.entry_pkg()
-  let mode = if quick { "debug" } else { "release" }
-  let mac_sh = @sys.join(mbui_dir, "scripts/mac.sh")
-  let build_cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
-    " MBUI_OUT=" + q(build_out) +
-    " APP=" + q(pkg) +
-    " MODE=" + q(mode) +
-    " MACOSX_DEPLOYMENT_TARGET=" + q(m.macos.min_version) +
-    " bash " + q(mac_sh) + " build"
-  say("building macOS binary (\{pkg}, \{mode})...")
-  ignore(sh(build_cmd, "mac.sh build"))
-
-  let exe_src = find_native_exe(manifest_dir, pkg, mode)
+  let mode = if opts.quick { "debug" } else { "release" }
   let app_dir = @sys.join(mac_out, m.name + ".app")
   let macos_dir = @sys.join(app_dir, "Contents/MacOS")
+  let frameworks_dir = @sys.join(app_dir, "Contents/Frameworks")
   let res_dir = @sys.join(app_dir, "Contents/Resources")
 
   ignore(sh("rm -rf " + q(app_dir), "clean app bundle"))
@@ -236,8 +212,56 @@ pub fn pack_mac(
   @sys.makedirs(res_dir)
 
   let exe_dst = @sys.join(macos_dir, m.executable)
-  ignore(sh("cp " + q(exe_src) + " " + q(exe_dst) + " && chmod +x " + q(exe_dst), "copy binary"))
-  ignore(sh("strip -S -x " + q(exe_dst), "strip binary"))
+  let nested_to_sign : Array[String] = []
+
+  if m.runtime == "wasm" {
+    let triple = mac_host_triple()
+    let (payload_path, ext) = prepare_wasm_payload(
+      m,
+      manifest_dir,
+      mbui_dir,
+      build_out,
+      opts.wasm_aot,
+      opts.quick,
+      triple,
+      "signals",
+    )
+    let rt_dir = resolve_runtime_dir(mbui_dir, build_out, opts.runtime_dir, "mac")
+    let rt_bin = @sys.join(rt_dir, "mbui-runtime")
+    let rt_dylib = @sys.join(rt_dir, "libwasmtime.dylib")
+    if !@sys.is_file(rt_bin) {
+      die("macOS Wasm runtime binary not found: \{rt_bin}")
+    }
+    if !@sys.is_file(rt_dylib) {
+      die("macOS Wasm runtime library not found: \{rt_dylib}")
+    }
+    @sys.makedirs(frameworks_dir)
+    ignore(
+      sh(
+        "cp -p " + q(rt_bin) + " " + q(exe_dst) + " && chmod +x " + q(exe_dst),
+        "copy macOS wasm runtime",
+      ),
+    )
+    let dylib_dst = @sys.join(frameworks_dir, "libwasmtime.dylib")
+    ignore(sh("cp -p " + q(rt_dylib) + " " + q(dylib_dst), "copy libwasmtime.dylib"))
+    nested_to_sign.push(dylib_dst)
+    let payload_dst = @sys.join(res_dir, "app." + ext)
+    ignore(sh("cp -p " + q(payload_path) + " " + q(payload_dst), "copy app." + ext))
+  } else {
+    let mac_sh = @sys.join(mbui_dir, "scripts/mac.sh")
+    let build_cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
+      " MBUI_OUT=" + q(build_out) +
+      " APP=" + q(pkg) +
+      " MODE=" + q(mode) +
+      " MACOSX_DEPLOYMENT_TARGET=" + q(m.macos.min_version) +
+      " bash " + q(mac_sh) + " build"
+    say("building macOS binary (\{pkg}, \{mode})...")
+    ignore(sh(build_cmd, "mac.sh build"))
+
+    let exe_src = find_native_exe(manifest_dir, pkg, mode)
+    ignore(sh("cp " + q(exe_src) + " " + q(exe_dst) + " && chmod +x " + q(exe_dst), "copy binary"))
+    ignore(sh("strip -S -x " + q(exe_dst), "strip binary"))
+  }
 
   // Icon
   let mut has_icon = false
@@ -273,7 +297,7 @@ pub fn pack_mac(
   }
   ignore(sh("plutil -lint " + q(plist_path), "plutil -lint"))
 
-  // Codesign
+  // Codesign (strict Apple nested order: inside-out, Frameworks dylibs first, then .app bundle)
   let ent_arg = if m.macos.entitlements != "" {
     let ep = @sys.join(manifest_dir, m.macos.entitlements)
     if !@sys.is_file(ep) {
@@ -283,19 +307,16 @@ pub fn pack_mac(
   } else {
     ""
   }
-  let sign_cmd = if sign_identity != "" && sign_identity != "-" {
-    "codesign --force --deep --options runtime --timestamp" + ent_arg +
-    " --sign " + q(sign_identity) + " " + q(app_dir)
-  } else {
-    "codesign --force --sign - --timestamp=none" + ent_arg + " " + q(app_dir)
-  }
   say("signing \{m.name}.app...")
-  ignore(sh(sign_cmd, "codesign"))
+  for nested in nested_to_sign {
+    sign_mac_item(nested, opts.sign_identity, "")
+  }
+  sign_mac_item(app_dir, opts.sign_identity, ent_arg)
   ignore(sh("codesign --verify --deep --strict " + q(app_dir), "codesign --verify"))
 
   // Optional notarization
-  if notarize_profile != "" {
-    if sign_identity == "" || sign_identity == "-" {
+  if opts.notarize_profile != "" {
+    if opts.sign_identity == "" || opts.sign_identity == "-" {
       die("--notarize-profile requires a valid --sign-identity")
     }
     let notarize_zip = @sys.join(mac_out, m.name + "-notarize.zip")
@@ -306,11 +327,11 @@ pub fn pack_mac(
         "ditto for notarize",
       ),
     )
-    say("submitting for notarization (profile \{notarize_profile})...")
+    say("submitting for notarization (profile \{opts.notarize_profile})...")
     ignore(
       sh(
         "xcrun notarytool submit " + q(notarize_zip) +
-        " --keychain-profile " + q(notarize_profile) + " --wait",
+        " --keychain-profile " + q(opts.notarize_profile) + " --wait",
         "notarytool submit",
       ),
     )
@@ -318,7 +339,7 @@ pub fn pack_mac(
     ignore(@sys.remove(notarize_zip))
   }
 
-  let formats = if formats_override.length() > 0 { formats_override } else { m.macos.formats }
+  let formats = if opts.formats.length() > 0 { opts.formats } else { m.macos.formats }
   for fmt in formats {
     match fmt {
       "app" => say("macOS app bundle: \{app_dir}")

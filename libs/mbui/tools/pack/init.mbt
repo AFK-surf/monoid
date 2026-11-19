@@ -142,12 +142,15 @@ pub fn cmd_init(
     #|  "mbui/host",
     #|  "mbui/ui",
     #|  "mbui/view",
+    #|  "mbui/wasmrt",
     #|}
     #|
     #|options(
     #|  "is-main": true,
+    #|  targets: { "wasm_shell.mbt": [ "wasm" ] },
     #|  link: {
     #|    "js": { "format": "iife" },
+    #|    "wasm": { "exports": ["mbw_string", "mbw_bytes"], "export-memory-name": "memory" },
     #|    "native": {
     #|      "cc-link-flags": "-framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit",
     #|    },
@@ -155,6 +158,23 @@ pub fn cmd_init(
     #|)
     #|
   match write_file_text(@sys.join(target, "src/app/moon.pkg"), app_pkg) {
+    Ok(_) => ()
+    Err(e) => die(e)
+  }
+
+  // src/app/wasm_shell.mbt (exported helpers for mbui's prebuilt Wasm runtime shell)
+  let wasm_shell_src =
+    #|///|
+    #|pub fn mbw_string(n : Int) -> String {
+    #|  @wasmrt.new_string(n)
+    #|}
+    #|
+    #|///|
+    #|pub fn mbw_bytes(n : Int) -> Bytes {
+    #|  @wasmrt.new_bytes(n)
+    #|}
+    #|
+  match write_file_text(@sys.join(target, "src/app/wasm_shell.mbt"), wasm_shell_src) {
     Ok(_) => ()
     Err(e) => die(e)
   }

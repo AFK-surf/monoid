@@ -100,7 +100,7 @@ test "manifest rejects invalid inputs" {
   assert_true(
     parse_manifest(
       sample_manifest,
-      { variant: Some("nonexistent"), version: None, build: None, app_id: None },
+      { variant: Some("nonexistent"), version: None, build: None, app_id: None, runtime: None },
     )
     is Err(_),
   )
@@ -113,6 +113,7 @@ test "variant deep-merge preserves base env and platform fields, CLI overrides w
     version: Some("2.0.0-rc1"),
     build: Some(99),
     app_id: Some("dev.override.id"),
+    runtime: Some("wasm"),
   }
   let m = match parse_manifest(sample_manifest, overrides) {
     Ok(m) => m
@@ -122,6 +123,7 @@ test "variant deep-merge preserves base env and platform fields, CLI overrides w
   assert_eq(m.app_id, "dev.override.id")
   assert_eq(m.version, "2.0.0-rc1")
   assert_eq(m.build, 99)
+  assert_eq(m.runtime, "wasm")
   // Variant overrides top-level name
   assert_eq(m.name, "Demo Client Beta")
   // env is merged (API_URL kept from base, LOG_LEVEL overridden, BETA added)
@@ -200,4 +202,285 @@ test "placeholder icon generates valid 256x256 PNG" {
   assert_eq(center.3, 255)
   let png_bytes = @png.encode_png(pic)
   assert_true(@png.decode_png(png_bytes) is Ok(_))
+}
+
+///|
+let full_6target_manifest : String =
+  #|{
+  #|  "appId": "dev.example.omni",
+  #|  "name": "Omni App",
+  #|  "executable": "omni-app",
+  #|  "version": "2.4.7-rc.1",
+  #|  "build": 128,
+  #|  "entry": "src/app",
+  #|  "icon": "assets/icon.png",
+  #|  "urlSchemes": ["omni", "omni-open"],
+  #|  "env": {
+  #|    "Z_KEY": "last",
+  #|    "A_KEY": "first value"
+  #|  },
+  #|  "updater": {
+  #|    "feed": "https://updates.example.com/linux-{arch}/latest.json"
+  #|  },
+  #|  "windows": {
+  #|    "company": "Example Corp",
+  #|    "installDir": "OmniApp",
+  #|    "formats": ["portable", "setup"],
+  #|    "rawForDelta": true
+  #|  },
+  #|  "linux": {
+  #|    "categories": ["Development", "Utility"],
+  #|    "formats": ["tar.gz", "deb"]
+  #|  },
+  #|  "android": {
+  #|    "minSdk": 26,
+  #|    "targetSdk": 35,
+  #|    "compileSdk": 35,
+  #|    "abis": ["arm64-v8a", "x86_64"],
+  #|    "edgeToEdge": true,
+  #|    "ground": "#FFFFFF,#111111",
+  #|    "permissions": ["android.permission.CAMERA", "android.permission.RECORD_AUDIO"]
+  #|  },
+  #|  "ios": {
+  #|    "minVersion": "17.0",
+  #|    "edgeToEdge": true,
+  #|    "ground": "#FFFFFF,#111111",
+  #|    "shareExtension": true,
+  #|    "usageDescriptions": {
+  #|      "NSCameraUsageDescription": "Take photos",
+  #|      "NSMicrophoneUsageDescription": "Record audio"
+  #|    }
+  #|  }
+  #|}
+
+///|
+test "parse_targets supports comma-separated targets, dedups, and rejects invalid" {
+  assert_eq(parse_targets("web,mac,win,linux,android,ios"), Ok(["web", "mac", "win", "linux", "android", "ios"]))
+  assert_eq(parse_targets(" linux , win , linux "), Ok(["linux", "win"]))
+  assert_true(parse_targets("") is Err(_))
+  assert_true(parse_targets("mac,bsd") is Err(_))
+}
+
+///|
+test "windows version quad, env, rc, and setup.env rendering" {
+  assert_eq(parse_win_version_quad("2.4.7-rc.1", 128), (2, 4, 7, 128))
+  assert_eq(parse_win_version_quad("1.0", 5), (1, 0, 0, 5))
+  assert_eq(parse_win_version_quad("3.2.1+build", 70000), (3, 2, 1, 65535))
+
+  let m = match parse_manifest(full_6target_manifest, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  let wenv = render_win_env(m)
+  assert_true(wenv.contains("MBUI_APP_ID=dev.example.omni\n"))
+  assert_true(wenv.contains("MBUI_APP_NAME=Omni App\n"))
+  assert_true(wenv.contains("MBUI_SCHEMES=omni,omni-open\n"))
+  assert_true(wenv.contains("MBUI_UPDATE_FEED=https://updates.example.com/linux-{arch}/latest.json\n"))
+  // Deterministic sorted order: A_KEY before Z_KEY
+  let idx_a = wenv.find("A_KEY=first value").unwrap_or(-1)
+  let idx_z = wenv.find("Z_KEY=last").unwrap_or(-1)
+  assert_true(idx_a > 0 && idx_z > idx_a)
+
+  let rc = render_win_rc(m, true)
+  assert_true(rc.contains("1 ICON \"app.ico\""))
+  assert_true(rc.contains("MBUI_ENV RCDATA \"app.env\""))
+  assert_true(rc.contains("FILEVERSION 2,4,7,128"))
+  assert_true(rc.contains("VALUE \"CompanyName\", \"Example Corp\\0\""))
+  assert_true(rc.contains("VALUE \"OriginalFilename\", \"omni-app.exe\\0\""))
+
+  let senv = render_setup_env(m)
+  assert_true(senv.contains("APP_NAME=Omni App\n"))
+  assert_true(senv.contains("APP_ID=dev.example.omni\n"))
+  assert_true(senv.contains("EXE=omni-app.exe\n"))
+  assert_true(senv.contains("DIR=OmniApp\n"))
+  assert_true(senv.contains("VERSION=2.4.7-rc.1\n"))
+  assert_true(senv.contains("PUBLISHER=Example Corp\n"))
+  assert_true(senv.contains("SCHEMES=omni,omni-open\n"))
+}
+
+///|
+test "linux install.sh, desktop, and deb control rendering" {
+  let m = match parse_manifest(full_6target_manifest, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  let tmpl_install =
+    #|id='@APP_ID@'
+    #|app_name='@APP_NAME@'
+    #|exe='@EXE@'
+    #|categories='@CATEGORIES@'
+    #|schemes='@SCHEMES@'
+    #|update_feed_x64='@UPDATE_FEED_X64@'
+    #|update_feed_arm64='@UPDATE_FEED_ARM64@'
+    #|extra_env='@EXTRA_ENV@'
+    #|
+  let rendered = match render_linux_install_sh(tmpl_install, m) {
+    Ok(s) => s
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  assert_true(rendered.contains("id='dev.example.omni'"))
+  assert_true(rendered.contains("app_name='Omni App'"))
+  assert_true(rendered.contains("exe='omni-app'"))
+  assert_true(rendered.contains("categories='Development;Utility;'"))
+  assert_true(rendered.contains("schemes='omni,omni-open'"))
+  assert_true(rendered.contains("update_feed_x64='https://updates.example.com/linux-x64/latest.json'"))
+  assert_true(rendered.contains("update_feed_arm64='https://updates.example.com/linux-arm64/latest.json'"))
+  assert_true(rendered.contains("\"A_KEY=first value\" Z_KEY=last"))
+  assert_true(find_unreplaced_placeholder(rendered) is None)
+
+  // Unreplaced unknown placeholder must error
+  assert_true(render_linux_install_sh("x='@UNKNOWN_TOKEN@'", m) is Err(_))
+
+  let tmpl_desktop =
+    #|[Desktop Entry]
+    #|Name=@APP_NAME@
+    #|Exec=env MBUI_APP_ID=@APP_ID@ @EXTRA_ENV@ "@EXE@" %u
+    #|Categories=@CATEGORIES@
+    #|MimeType=@MIME_TYPES@
+    #|
+  let desktop = match render_linux_desktop(tmpl_desktop, m) {
+    Ok(s) => s
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  assert_true(desktop.contains("Name=Omni App"))
+  assert_true(desktop.contains("/opt/dev.example.omni/omni-app"))
+  assert_true(desktop.contains("MimeType=x-scheme-handler/omni;x-scheme-handler/omni-open;"))
+  assert_true(find_unreplaced_placeholder(desktop) is None)
+
+  let ctrl = render_deb_control(m, "x64", 4096)
+  assert_true(ctrl.contains("Package: dev.example.omni\n"))
+  assert_true(ctrl.contains("Version: 2.4.7-rc.1-128\n"))
+  assert_true(ctrl.contains("Architecture: amd64\n"))
+  assert_true(ctrl.contains("Installed-Size: 4096\n"))
+}
+
+///|
+test "android apk.json and repack CLI arg rendering" {
+  let m = match parse_manifest(full_6target_manifest, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  let json_txt = render_apk_json(m, "/app", "/tmp/res", "/tmp/jni", "/tmp/assets")
+  let parsed = try @rjson.parse(json_txt) catch {
+    @rjson.JsonError(e) => fail("invalid apk.json: \{e}")
+  }
+  assert_true(parsed.get("applicationId") == Some(Str("dev.example.omni")))
+  assert_true(parsed.get("manifest") == Some(Str("@mbui")))
+  assert_true(parsed.get("label") == Some(Str("Omni App")))
+  assert_true(parsed.get("edgeToEdge") == Some(Bool(true)))
+  assert_true(parsed.get("ground") == Some(Str("#FFFFFF,#111111")))
+  assert_true(parsed.get("urlSchemes") is Some(Arr(_)))
+  assert_true(parsed.get("permissions") is Some(Arr(_)))
+
+  let opts : PackOptions = {
+    ..PackOptions::default(),
+    keystore: "/keys/rel.jks",
+    key_alias: "rel",
+    ks_pass: "env:KS_PASS",
+    key_pass: "env:KEY_PASS",
+    v3_signing: true,
+    verify_cert: "deadbeef",
+  }
+  let args = build_repack_args(m, "/in.apk", "/out.apk", opts)
+  assert_eq(args[0], "repack")
+  assert_eq(args[1], "/in.apk")
+  assert_true(args.contains("--app-id"))
+  assert_true(args.contains("dev.example.omni"))
+  assert_true(args.contains("--version-code"))
+  assert_true(args.contains("128"))
+  assert_true(args.contains("--url-scheme"))
+  assert_true(args.contains("omni-open"))
+  assert_true(args.contains("--permission"))
+  assert_true(args.contains("android.permission.CAMERA"))
+  assert_true(args.contains("--v3-signing"))
+  assert_true(args.contains("--verify-cert"))
+  assert_true(args.contains("deadbeef"))
+}
+
+///|
+test "ios Info.plist and AppIcon Contents.json rendering" {
+  let m = match parse_manifest(full_6target_manifest, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  let sim_plist = render_ios_info_plist(m, "iphonesimulator")
+  assert_true(sim_plist.contains("<key>CFBundleIdentifier</key>\n\t<string>dev.example.omni</string>"))
+  assert_true(sim_plist.contains("<key>CFBundleDisplayName</key>\n\t<string>Omni App</string>"))
+  assert_true(sim_plist.contains("<key>MinimumOSVersion</key>\n\t<string>17.0</string>"))
+  assert_true(sim_plist.contains("<string>iPhoneSimulator</string>"))
+  assert_true(sim_plist.contains("<key>CFBundleIconName</key>\n\t<string>AppIcon</string>"))
+  assert_true(sim_plist.contains("<key>UIRequiresFullScreen</key>\n\t<false/>"))
+  assert_true(sim_plist.contains("<key>MBUIEdgeToEdge</key>\n\t<true/>"))
+  assert_true(sim_plist.contains("<key>MBUIGround</key>\n\t<string>#FFFFFF,#111111</string>"))
+  assert_true(sim_plist.contains("<key>NSCameraUsageDescription</key>\n\t<string>Take photos</string>"))
+  assert_true(sim_plist.contains("<string>omni-open</string>"))
+
+  let dev_plist = render_ios_info_plist(m, "iphoneos")
+  assert_true(dev_plist.contains("<string>iPhoneOS</string>"))
+
+  let icon_json = render_ios_appicon_contents_json(has_dark=true)
+  let parsed = try @rjson.parse(icon_json) catch {
+    @rjson.JsonError(e) => fail("invalid AppIcon Contents.json: \{e}")
+  }
+  assert_true(parsed.get("images") is Some(Arr(_)))
+}
+
+///|
+test "build_repack_args handles optional --debuggable flag" {
+  let m = match parse_manifest(full_6target_manifest, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  let args_none = build_repack_args(m, "/in.apk", "/out.apk", PackOptions::default())
+  assert_true(!args_none.contains("--debuggable"))
+
+  let args_false = build_repack_args(
+    m,
+    "/in.apk",
+    "/out.apk",
+    { ..PackOptions::default(), debuggable: Some(false) },
+  )
+  assert_true(args_false.contains("--debuggable"))
+  assert_true(args_false.contains("false"))
+
+  let args_true = build_repack_args(
+    m,
+    "/in.apk",
+    "/out.apk",
+    { ..PackOptions::default(), debuggable: Some(true) },
+  )
+  assert_true(args_true.contains("--debuggable"))
+  assert_true(args_true.contains("true"))
+}
+
+///|
+test "build_publish_args enforces scripts/release subcommand and flag contract" {
+  let m = match parse_manifest(full_6target_manifest, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  // Default subcommand is "publish" with no injected --version/--build/--kind/--app-id
+  let def_args = build_publish_args(m, ["--dir", "/dist", "--bucket", "r2://rel"])
+  assert_eq(def_args, ["publish", "--dir", "/dist", "--bucket", "r2://rel"])
+
+  // Explicit non-feed/sign subcommands preserve order and never inject --version/--build/--kind/--app-id
+  assert_eq(build_publish_args(m, ["keygen", "--out", "/k"]), ["keygen", "--out", "/k"])
+  assert_eq(build_publish_args(m, ["verify", "a.zip", "a.sig"]), ["verify", "a.zip", "a.sig"])
+  assert_eq(build_publish_args(m, ["delta", "old.bin", "new.bin"]), ["delta", "old.bin", "new.bin"])
+  assert_eq(build_publish_args(m, ["publish", "--dry-run"]), ["publish", "--dry-run"])
+
+  // "feed" and "sign" auto-fill missing --version, --build, --kind <appId> (never --app-id)
+  let feed_args = build_publish_args(m, ["feed", "--out", "/dist/latest.json"])
+  assert_eq(feed_args[0], "feed")
+  assert_true(feed_args.contains("--version"))
+  assert_true(feed_args.contains("2.4.7-rc.1"))
+  assert_true(feed_args.contains("--build"))
+  assert_true(feed_args.contains("128"))
+  assert_true(feed_args.contains("--kind"))
+  assert_true(feed_args.contains("dev.example.omni"))
+  assert_true(!feed_args.contains("--app-id"))
+
+  // Explicit --version/--kind on "sign" are not duplicated
+  let sign_args = build_publish_args(m, ["sign", "--version", "9.9.9", "--kind", "custom.id", "a.zip"])
+  assert_eq(sign_args, ["sign", "--build", "128", "--version", "9.9.9", "--kind", "custom.id", "a.zip"])
 }

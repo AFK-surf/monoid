@@ -97,11 +97,12 @@ pub struct CliOverrides {
   version : String?
   build : Int?
   app_id : String?
+  runtime : String?
 }
 
 ///|
 pub fn CliOverrides::empty() -> CliOverrides {
-  { variant: None, version: None, build: None, app_id: None }
+  { variant: None, version: None, build: None, app_id: None, runtime: None }
 }
 
 ///|
@@ -428,9 +429,13 @@ pub fn parse_manifest(text : String, overrides : CliOverrides) -> Result[Manifes
     Ok(a) => a
     Err(e) => return Err(e)
   }
-  let runtime = match opt_str(effective, "runtime", "native") {
+  let raw_runtime = match opt_str(effective, "runtime", "native") {
     Ok(s) => s
     Err(e) => return Err(e)
+  }
+  let runtime = match overrides.runtime {
+    Some(r) => r
+    None => raw_runtime
   }
   if runtime != "native" && runtime != "wasm" {
     return Err("field 'runtime' must be \"native\" or \"wasm\" (got \"\{runtime}\")")
