@@ -2412,7 +2412,7 @@ let preset_panel_head_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6
 
 ///|
 // kept across runs: a value (no field of it changes)
-let preset_panel_clear_btn : @ui.Style = @ui.css("row align=ACenter px=S2 radius=Full").then(@ui.style(min_h=Fixed(28.0)))
+let preset_panel_clear_btn : @ui.Style = @ui.css("row min_h=S7 align=ACenter px=S2 radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
