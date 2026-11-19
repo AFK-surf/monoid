@@ -8,6 +8,7 @@
 //   stdout, stderr}), what it is given written on its stdin; "kill" {pid, signal, group};
 // - "fileLock" {path}: the lock taken ({handle}), "fileUnlock" {handle};
 // - "words": the catalogs the program carries; "iso" {ms}: an instant as toISOString says it;
+// - "launcherEventLine" {line}, "launcherEvents" {data}: what the launcher kept, as launcher_events.mbt says it;
 // - "loopback" {path, query, ready, place, lang}: what the loopback port says;
 // - "p5_5" {step, …}: P5-5's live parts on a data directory of the test's (live_p5_5_harness.mbt);
 // - "saidOf" {key, lang}, "log" {level, at, message}, "noted" {text}, "treeBytes" {program, path}, "helperEvict"
@@ -193,6 +194,19 @@ pub async fn harness(host : @host.Host) -> Unit {
         Ok({ "zh": zh, "en": en })
       }
       "iso" => Ok(Json::string(iso_time(match v("ms") { Some(Number(m, ..)) => m; _ => 0.0 })))
+      // (what the launcher kept, as the station that comes up says it: launcher_events.mbt)
+      "launcherEventLine" =>
+        Ok(
+          match parse_launcher_event_line(s("line")) {
+            Some((level, kind, fields)) => { "level": Json::string(level), "kind": Json::string(kind), "fields": fields }
+            None => Json::null()
+          },
+        )
+      "launcherEvents" => {
+        let said : Array[Json] = []
+        let n = report_launcher_events(s("data"), emit=(level, message, fields) => said.push({ "level": Json::string(level), "message": Json::string(message), "fields": fields }))
+        Ok({ "n": Json::number(n.to_double()), "said": Json::array(said) })
+      }
       // (what a driver's error says in the station's language: live_p5_2_io.mbt `said_of`)
       "saidOf" => {
         let lang = s("lang")

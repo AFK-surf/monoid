@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer, type Server } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import os, { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ import enStation from "../../client/i18n/catalog/en/station.json" with { type: "
 import { enroll as tsEnroll, id as tsId, joinWorkspace, lockCommand, status as tsStatus } from "../src/cli.ts";
 import { loadKey } from "../src/cloud/key.ts";
 import { loadMesh } from "../src/mesh/native.ts";
+import { launcherEventOf, reportLauncherEvents } from "../src/ops/launcher-events.ts";
 import { answer as loopbackAnswer } from "../src/ops/loopback.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { mbHarnessBinary } from "./mb-harness.ts";
@@ -501,6 +502,36 @@ function png(w: number, h: number, clear = false): Buffer {
   // (stored, level 0: far over 24 KiB, as a screenshot of a large screen is)
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw, { level: 0 })), chunk("IEND", Buffer.alloc(0))]);
 }
+
+test("what the launcher kept of its recoveries, said as launcher-events.ts says it: once, its own fields, at its level", { skip }, async () => {
+  const lines = [
+    JSON.stringify({ at: 1795091426000, kind: "node_hung_killed", level: "error", pid: 4242, version: "0.1.1000", uptimeMs: 3600000, heartbeatTimeoutMs: 90000, healthAgeMs: 92000, rssBytes: 734003200, openFds: 812, heldMaxMs: 1200, front: "ok", presenceOnline: true, relayConflict: false }),
+    JSON.stringify({ at: 2, kind: "node_crashed", pid: 7, how: "was ended by signal 9", taken: true, failures: 0, home: "/Users/someone", nested: { a: 1 } }),
+    JSON.stringify({ at: 3, kind: "front_gone", level: "error", retries: 2 }),
+    JSON.stringify({ at: 4, kind: "retiring_killed", level: "info", pid: 9, version: "0.1.9", exitTimeoutMs: 30000 }),
+    JSON.stringify({ at: 5, kind: "handoff_failed", reason: "the new station exited with 1 before it was ready" }),
+    "{\"at\":1,\"kind\":\"node_cra",
+    "",
+    "[1,2]",
+    "null",
+    "{\"at\":6}",
+    "{\"at\":7,\"kind\":\"\"}",
+  ];
+  for (const line of lines) assert.deepEqual(await ok("launcherEventLine", { line }), launcherEventOf(line), line);
+  const mb = fresh("data");
+  const ts = fresh("data");
+  for (const data of [mb, ts]) {
+    mkdirSync(join(data, "run"));
+    writeFileSync(join(data, "run", "launcher-events.jsonl"), lines.join("\n") + "\n");
+  }
+  const said: { level: string; message: string; fields: Record<string, unknown> }[] = [];
+  const n = await reportLauncherEvents(ts, (level, message, fields) => void said.push({ level, message, fields }));
+  assert.equal(n, 5);
+  assert.deepEqual(await ok("launcherEvents", { data: mb }), { n, said });
+  assert.deepEqual(readdirSync(join(mb, "run")), [], "the file taken and removed");
+  assert.deepEqual(await ok("launcherEvents", { data: mb }), { n: 0, said: [] }, "said once");
+  assert.deepEqual(await ok("launcherEvents", { data: join(mb, "none") }), { n: 0, said: [] }, "no run/ at all");
+});
 
 test("the images' thumbnails and ThumbHashes, as the mesh addon (thumbs.rs) makes them: the same choices and sizes", { skip }, async () => {
   const dir = fresh("thumbs");

@@ -25,6 +25,7 @@ import { setStationLang, stationLang, tr } from "./ops/i18n.ts";
 import { type Control, launcher } from "./ops/launcher.ts";
 import { HELD, heldBy } from "./ops/held.ts";
 import { hearErrors, hearLines, log } from "./ops/log.ts";
+import { reportLauncherEvents } from "./ops/launcher-events.ts";
 import { stationLog } from "./ops/log-export.ts";
 import { Forewarn, lookAt } from "./ops/forewarn.ts";
 import { ConfigFile } from "./ops/config.ts";
@@ -297,6 +298,8 @@ function run() {
     });
     control.ready(version());
     log.info("station", asRig ? "rig up" : "station up", { version: version(), data });
+    // What the launcher did to recover while none was up (lifecycle.rs `record`): said in this log, once.
+    void reportLauncherEvents(data).catch(() => {});
     // Where the memory goes, in MB: the main thread's (and resident), and each reader's heap. Every ten minutes, or
     // every ten seconds with STILLFAIL_MEMLOG (for measuring).
     const readers = yield* Readers;
