@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ded934c14](https://github.com/AFK-surf/monoid/commit/ded934c14444d889f4c4dac39cdb478c1bb39930) fix(ci): key core.hbc by the build's day, asked as | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.54 | 122.24 |
 | [8e58d60cd](https://github.com/AFK-surf/monoid/commit/8e58d60cdc346e1f5a61323f906775c892c629cb) feat(website): draw the working mark as the app's  | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.62 | 125.66 |
 | [abbd2198f](https://github.com/AFK-surf/monoid/commit/abbd2198fe3b526fb59c68ba015c7dd3188dce23) test(station): add MoonBit live sessions parity su | 2.65 | 3.56 | 14.53 | 36.77 | 55.96 | 32.25 | 65.32 | 97.44 | 110.92 |
 | [8701788d7](https://github.com/AFK-surf/monoid/commit/8701788d7797ee74d9adf3ce9ef9335daa98cd2b) feat(mbui): float the reader's scroll-to-bottom ke | 2.65 | 3.56 | 14.53 | 36.75 | 55.96 | 32.25 | 65.32 | 97.44 | 119.22 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
 | [231e1925f](https://github.com/AFK-surf/monoid/commit/231e1925fe0c7450207dc3a2a21552b6c168164a) feat(screens): share the microphone, controllers a | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
 | [b7ddfb6b0](https://github.com/AFK-surf/monoid/commit/b7ddfb6b0705b80613db82a7bad380eb507a100b) feat(mbui): compound list slices, sticky parts, pa | 2.64 | 3.55 | 14.51 | 36.72 | 55.87 | 32.18 | 65.12 | 97.73 | 119.57 |
-| [32e315b6d](https://github.com/AFK-surf/monoid/commit/32e315b6d31fba6f2a41cb97cdc8b554b542292e) fix(station): keep the MoonBit station's file call | 2.64 | 3.54 | 14.47 | 36.69 | 55.74 | 32.18 | 65.12 | 97.73 | 117.66 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ded934c14](https://github.com/AFK-surf/monoid/commit/ded934c14444d889f4c4dac39cdb478c1bb39930) fix(ci): key core.hbc by the build's day, asked as | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [8e58d60cd](https://github.com/AFK-surf/monoid/commit/8e58d60cdc346e1f5a61323f906775c892c629cb) feat(website): draw the working mark as the app's  | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [abbd2198f](https://github.com/AFK-surf/monoid/commit/abbd2198fe3b526fb59c68ba015c7dd3188dce23) test(station): add MoonBit live sessions parity su | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [8701788d7](https://github.com/AFK-surf/monoid/commit/8701788d7797ee74d9adf3ce9ef9335daa98cd2b) feat(mbui): float the reader's scroll-to-bottom ke | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
 | [231e1925f](https://github.com/AFK-surf/monoid/commit/231e1925fe0c7450207dc3a2a21552b6c168164a) feat(screens): share the microphone, controllers a | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
 | [b7ddfb6b0](https://github.com/AFK-surf/monoid/commit/b7ddfb6b0705b80613db82a7bad380eb507a100b) feat(mbui): compound list slices, sticky parts, pa | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
-| [32e315b6d](https://github.com/AFK-surf/monoid/commit/32e315b6d31fba6f2a41cb97cdc8b554b542292e) fix(station): keep the MoonBit station's file call | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54 |
