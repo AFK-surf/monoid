@@ -1,416 +1,75 @@
 # Working in mbui (for agents)
 
-These are the owner's rules. They are not reviewed PR by PR: you are expected to follow them yourself, and what can be
-checked is checked by CI (`scripts/detlint`; the Tester's own checks). Where a rule has no check
-yet and you can add one, add it.
+Follow these owner rules yourself without waiting for PR review. CI enforces what can be checked (`libs/mbui/scripts/detlint` and Tester checks). Add a check whenever you can.
+
+Subsystem rules live in narrower `AGENTS.md` files loaded when touching those directories:
+
+- `libs/mbui/src/view/AGENTS.md`: window tree, `View::comes` motion, parking and block reuse, `scrolls_window` invariants, hover, `View::fits`, signals, one-way layout, focus, detlint guards, callsite tracing, generic shells
+- `libs/mbui/src/ui/AGENTS.md`: tree-only and multi-window runtime, native views/streams, a11y, FPS invariance, motion smoothness bars, idle skipping, Tester diagnostics and isolation
+- `libs/mbui/src/headless/AGENTS.md`: 3-layer component model, `headless.mbt` contract, `kit` deprecation
+- `libs/mbui/src/host/AGENTS.md`: adding host calls, between-frame delivery, Android mimalloc allocator
 
 ## Its parts
 
-- `src/view`: the window's tree, made once (below). `src/ui`: the old immediate-mode view (`Ctx`, built again each
-  frame) and what both still share: the window's runtime, styles (`style.mbt`, `@ui.css`), the theme, text fields,
-  the Tester and its fake host. `src/signals`: alien-signals, ported line for line. `src/motion`: motion as data.
-  `src/headless`: the headless components, on the window's tree, their looks their callers' (Components, below).
-  `src/kit`: the components before them (Radix's set, drawn by mbui: behaviour and a default look together, on the
-  old view but for its toasts). `src/flex` (Yoga's layout), `src/text` (shaping,
-  segmentation), `src/shape`, `src/paint`, `src/skia`, `src/svg`, `src/pixels`: drawing. `src/hostapi` and
-  `src/host`: what is asked of a platform and each platform's answer. `src/effect`: Effect-TS's model on the frames'
-  clock.
-- `tools/`: the build's and checks' programs (`detlint`, `mbc` the C step, `wasmhost`, `chk`, `wasmgas` what a Wasm
-  program runs counted), in MoonBit.
+- `libs/mbui/src/view`: retained window tree, made once. `libs/mbui/src/ui`: legacy immediate-mode `Ctx` plus shared runtime, styles (`style.mbt`, `@ui.css`), theme, text fields, Tester, and `FakeHost`.
+- `libs/mbui/src/signals`: alien-signals port. `libs/mbui/src/motion`: motion as data. `libs/mbui/src/headless`: headless tree controls. `libs/mbui/src/kit`: legacy Radix-like controls on `Ctx` (frozen except toasts).
+- `libs/mbui/src/flex`, `text`, `shape`, `paint`, `skia`, `svg`, `pixels`: layout and drawing. `src/hostapi` and `src/host`: host interface and platform backends. `src/effect`: Effect-TS model on the frame clock.
+- `libs/mbui/tools`: MoonBit build and check tools (`detlint`, `mbc`, `wasmhost`, `chk`, `wasmgas`).
 
 ## It knows no app
 
-- mbui is a library that still.fail's app (`apps/mbui`) is built on, in one repository with it; nothing in mbui names
-  an app or reaches outside this directory (detlint's `app-word`: the words `detlint.json` lists in `app_words`; the
-  user, 2026-11-13). What an app does natively of its own (still.fail's station on this machine) is the app's own
-  native call, which mbui passes on (`@hostapi.app_said`, `app_tell`: `src/host/app_calls.h`); a name it serves its
-  views under it says (`@hostapi.set_site_name`); its identity is its build's (`MBUI_APP_ID`, its Info.plist's keys,
-  its APK's resources linked over mbui's). mbui builds and its tests run with no app beside it.
+- mbui builds and tests independently of any app. Nothing in `libs/mbui/` may name an app or reach outside this directory (detlint `app-word`, configured in `detlint.json`).
+- App-specific native calls pass through `@hostapi.app_said` / `app_tell` (`libs/mbui/src/host/app_calls.h`), site names via `@hostapi.set_site_name`, and app identity via build settings (`MBUI_APP_ID`, Info.plist, APK resources).
 
 ## Two views: the old one and the one made once
 
-> A view is made once (2026-10-30): each node is made when it first shows and stays until it goes; what changes is
-> bound to what it is worked out of, and that alone is done again.
-
-- What is new is made in `src/view` (`Tree`, `View`): a node's property is `Live` (`Is(v)` once, `By(fn)` bound); what
-  comes and goes is a structure (`View::show`, `pick`, `each`), which owns and lets go what it made; acting is a
-  handler (`on_press`, `on_key`, `on_drag`), run outside tracking, writing state; a shortcut is an action
-  (`on_action`), its keys the tree's keymap's (`View::keymap`: `src/view/keymap.mbt`), never a key read as a build
-  runs (detlint `key-read`); time is read where it is drawn (`moved_by`, a look's closure), never as a frame is built.
-  A binding reads a way only through the framework's entries, following the clock while it goes and reading its end once
-  it is there (`Way::shown_on`, `View::drawn_while`, `View::goes_now`); a Tester fails the rest
-  (`src/view/clock_read.mbt`). `src/view/view.mbt`'s head says the model whole.
-- A window that is a tree alone runs by `@ui.run_tree` (a test, `Tester::tree`), no old frame built round it, its theme
-  said as it is made (`theme`, before its first node), never by an old view's `Ctx::set_theme`. A frame nothing asks for
-  draws what the screen shows: `Tester::unasked_faults` (first in `Tester::audit`), each such frame a Tester draws, and
-  `sizes_steady`'s step in a measure's first frame hold it (`src/ui/tester_unasked.mbt`).
-- Migrating an old view or fixing UI in `src/view` starts from reading the code logic (how the old or current view works,
-  its state, data flow, and git history for why a rule exists) and expressing it through the new architecture's own
-  unified mechanisms (`src/view`, `src/motion`, `src/headless`). Never guess from rendered pictures, compare
-  `drawn_rects()` or frame-by-frame coordinates against the old view, or add per-scene switches to the framework to
-  pixel-fit an old page (the user, 2026-11-15).
-- What a structure makes or lets go down a column makes its way in or closes it on a Move, what is under it going with
-  it (`View::comes`, flex's `come_*`): the framework's unified mechanism, not each page's (the user, 2026-11-09: 方案 A;
-  detlint's `list-comes-off`). What shrinks or grows is not seen at half its size or less (the user, 2026-10-31 and
-  2026-11-08). What an answer tells at first (`@view.answering`, `src/view/answering.mbt`; the core's first value through
-  `@signals.first_told`, a reused block, a part woken from rest) and pages in a stack (`at_once`) settle at once without
-  starting a motion. What comes and goes down one column at one moment, with what is still on its way there then, goes
-  one way (flex's `ComeGroup`), setting out and coming to rest together (the user, 2026-10-30, 2026-11-03 and
-  2026-11-09). A way turned back slows at one rate to rest and from there sets back out still and gaining as it slowed,
-  its place, speed and gain going on where the two meet (flex's `come_turned`, `come_back_path`). Along a row it is the
-  same way on its width (flex's `come_across`, `src/view/along_row.mbt`). What makes its way, down a column or along a
-  row, is cut to itself as it goes, along its way alone, never across where nothing goes (`Content::clips_self`,
-  `clips_way`). What is laid out is where things rest; how they get there is drawn: no structure holds a size while it
-  changes (a pick's place is laid out at once as the change has it, what it showed drawn where it stood as it fades:
-  `src/view/pick_leave.mbt`; the user, 2026-11-17, after 刚刚 came in from the start of a place held as wide as what it
-  took the place of and jumped to its end). Only what comes or goes is drawn as big as it is open: what stays and
-  comes to another size on a way (its words broken anew at another width, more words streamed into it) is drawn at its
-  size from the frame of its cause, its place alone on the way, cut as tall as the way has it, opened from its top
-  (`Tree::grown_cut_of`), never drawn smaller and grown back (the user, 2026-11-17: 「这种动效不是从原则上禁止存在吗」, after a page's
-  list did so to a chat's words as a side panel slid: `src/view/list_flip_test.mbt`).
-- A structure can keep what it switches off, at rest: `View::each`'s `keeps` puts a row whose key left by
-  (`View::park`: held by no node, so not laid out, drawn, pressed, focused or read out; what it binds `@signals.rest`ed)
-  and takes the same nodes in again as the key comes back, at once, no way in (`src/view/each_kept.mbt`); a stack's
-  root does so through `Nav::replace_kept` and `nav_view`'s `keeps_made`. At rest is not stopped: a watch that holds
-  what it reads lets go of it and reads it anew as it wakes, but a `View::at_moment` still comes due and a way read by
-  the clock is where the clock has it on waking (`src/view/at_rest_today_wbtest.mbt`), and a bare `@signals.effect`
-  rests not at all: what a kept part holds is held by watches (`View::reacts`, a binding), never by an effect.
-- A block of a page's list taken for another key (`View::scrolls_window`'s `reused`) is a new block to everything but
-  the allocator, what its parts keep of their own too (the coordinator of the migration, 2026-11-17: 「复杂性由框架扛，
-  应用层只写外观」): how far a row or column in it is scrolled (`View::scrolls`, but one scrolled beside others as one,
-  `Scroll::beside`), a switch it keeps (`View::reused_bool`) and what it calls off as the block is taken
-  (`View::on_reused`) are its key's, kept by the list as the block leaves that key and given back as one shows it again
-  (`src/view/reused_state.mbt`), a part passing no key down for it. Never by a closure looked up as a frame reads where
-  it is (`Scroll::where_at` is each row's own as ever), never by making the part again for the key. Which make a block
-  of several is, the one thing of it that never changes, is lent to all of it (`View::reused_kind`), never found by
-  reading its key untracked.
-- A page's list holds its head (`View::scrolls_window`'s `head`: over its keys, in what scrolls, never the anchor, where
-  its keys start) and its foot (`foot`: pinned over the foot of what shows, as tall as it is laid out the room under
-  the last block, nothing to the hand but what it holds that takes it). A page puts no row of room among its keys and
-  hands no number for either. A height change a handler declares (`View::resizes`) makes its way as what comes does, in
-  its column's one way; one not declared is at once; what draws a ground by how tall something shows is given that
-  (`View::shown_by`).
-- A page's list holds what is read where it is on the screen, in every frame (the owner's: what the reader has
-  before their eyes does not move): a block marks where what is read in it starts (`View::read_from`, a message's
-  words under its head line), and the list holds the first key whose marked start is at or under what covers its top
-  and over its pinned foot, by that start, kept while it shows till the hand moves the list or it is asked elsewhere;
-  what is over that start gives and takes its room upward, its own growth goes down (`src/view/list_read_from.mbt`).
-  A list that marks none is held by the block the top of what shows lies in, by its top.
-- What a page asks of its list (`ListPlace`: a block brought to its top or its middle, back to its foot) is done only
-  in a pass that can do it as asked: one that cannot make the rows that show there, or that a way still going under
-  it would leave short, keeps the ask for the next pass. Asked back to its foot, the list ends at its foot as the foot
-  is when it gets there (`src/view/list_to_end_lands_test.mbt`).
-- What lights a thing a page's list holds in several blocks (a long message a block a piece, gone to or its menu
-  open) is one ground the list draws under them (`View::scrolls_window`'s `bands`), never a piece of it each block's:
-  blocks are set on the host's pixels by their tops, not their heights, so pieces drawn by each part a pixel apart
-  (the user, 2026-11-17: 「一个消息的高亮能分几段」).
-- A page's list (`View::scrolls_window`) is not made in a row of another: its rows are put on the host's grid by the
-  list the tree's walk last came to, so the outer's after it would not be; it is a fault, said as the inner is made
-  (`Tree::rows_list_nested_said`).
-- A page's list's rows on the host's pixels rest at their heights put up (`src/flex/rows_grid_way_test.mbt`,
-  `src/flex/rows_grid_held_way_test.mbt`).
-- What is pressed in a column that scrolls (a page's list or a plain one) stays where it was pressed, all the way, as
-  what the press opens or shuts round it comes or goes, over it or under it, at the column's foot too (the user,
-  2026-11-12: 「所有点击展开的控件，展开和收起前后点击的元素位置不能变化」): the framework's, from the press
-  (`src/view/press_stays.mbt`), not each control's: a control that opens or shuts says so (`View::says`, `expanded`),
-  which is all it takes; nothing it does may undo it. One that says it opens in sight (`View::opens_in_sight`: a
-  notice) is followed instead, opening at a page's list's foot, so what it opens to is never left under what
-  covers that foot.
-- A page's list has a node (a slot) only for the keys round what shows, a screen over and under it (`slots_margin`),
-  a spacer over them and one under as tall as the rest are counted, so what a frame of it does is the same at 30 keys
-  as at 15,000. A change of its keys costs the slots of the keys that came or went among them alone, brought up to the
-  keys in the pass that takes the change; they are found anew only as what shows nears their ends or goes far past
-  them (`src/view/list_slots_wbtest.mbt`).
-- What makes a view do more than it must is refused where it is written, counted where it is left, those counts only
-  falling (detlint; the user, 2026-11-15: 「尽量想办法使得性能差的代码难以被写出来」): a scoped computed or a bare
-  effect outside the parts said to keep one (`scoped-computed`, `raw-effect`: detlint.json's `signals`): the one
-  lets go of all it read as what made it is parked and works it out whole as it wakes, the other never rests; a loop making nodes in what a pick or a show makes (`pick-loop`), all made again as it
-  picks anew and none of them a list's row; a list's row with its least height and no height (`each-min-height`),
-  its words measured whenever it is laid out; a list's row looking its item up in a whole list (`each-lookup`:
-  `find_first`, `search_by`), every row woken and walking all of it at every change of any item, where the list kept by
-  key once (`View::keyed_by`) is read by each row by its key and a choice of one (the one picked, the one in the hand)
-  by member (`View::selected`), so a change tells the rows it is about alone (`src/view/keyed_by.mbt`); a size or a
-  room of the layout worked out of a way as it is drawn (`layout-drawn-while`: `drawn_while`, `shown_on` in `width`,
-  `padding`…), laid out again and its words broken again every frame it goes, where what is drawn moves instead; a pick
-  or a show switched by the width its room is given (`width-structure`), where a binding follows the width; a reused
-  block reading its key untracked as it is made (`reused-untracked-key`), keeping the key it was first made for; a
-  part faded out by hand, its own `EdgeWay`, `at_moment` and `show` (`manual-fade-way`, an app's pages and library),
-  where a structure leaves over its time (`View::show`'s `leave`). What truly is so says why on its line (`det-ok`).
-- State that what is made reads is a signal: a mutable value read by a binding that is not one is never seen to
-  change. No check finds such a read: detlint's `built-by-hand` only refuses the two ways of covering one by hand
-  (`Ctx::forget_parts`, `built_from_changed`). What shows one is the Tester keeping rows and parts as a device does
-  (`Tester::frame`; a pass that kept rows compared with one built whole, `src/ui/tester_rows.mbt`): a test that changes
-  the value and looks sees what a device would, the old (sfdesk's `wide.tape`, a plain field read by the rail's
-  corners till 2026-11-11).
-- A writable derivation is `@signals.derived_signal`: an override lasts until its inputs change. A pending edit
-  over an authoritative answer is `@signals.optimistic`: remove the edit with the authority update in one batch.
-- A transition waits through `@view.HoldGate`, with a finite `most` on the tree's timeline. Collect independent local
-  reads together. A remote wait opens into `View::bones` at once. A pending binding or optimistic change gives the
-  person feedback while a local hold is pending.
-- A bare `.get()` as a box is made is `[STRICT_READ_UNTRACKED]` on a tree that keeps sources. Bind what changes or say
-  a one-time snapshot with `.untracked()`. The app's legacy places are counted by file and only fall.
-- `Tester::hold_faults` says `[SILENT_HOLD]` and `[LONG_HOLD]`. `Tester::waterfall_faults` says
-  `[ASYNC_WATERFALL]` where reads started one after another. `Tester::set_fanout_limit` enables `[FAN_OUT]` to find
-  a write that wakes too many readers.
-- `[EFFECT_IN_WATCH]` and `[EFFECT_IN_COMPUTED]` name effects made inside a frame's watch or a computed getter.
-  Put the action in a handler or a reaction with a lifetime of its own.
-- A signal or a computed tells what follows it only as its value changes (the user, 2026-11-15: 性能差的代码难以被写出来):
-  `signal` and `computed` (and what an app keeps over them) ask `T : Eq` and take a value made anew but equal as no change
-  (`@signals.same_value`). What has no value to compare (a handle, functions, a record mutated in place, a read made
-  again from what it made last) says so where it is made, `signal_ref`/`computed_ref` (the object) or `*_by` (its own
-  `same`), with why on the line above; a value type derives `Eq` instead. A computed's getter only works out its
-  value: an effect made in it is a fault (`@signals.effect_in_computed`) but for what a computed holds while it is
-  read, said so (`@signals.held_while_read`).
-- Layout goes one way (the user, 2026-11-05): what is laid out is never told back as a change to make things by. What
-  is made by the width a node is given, or by how tall something in it comes to, is made in `View::by_room`
-  (`src/view/room.mbt`) as that layout comes to it; what it would change outside its room is a fault. Nothing outside
-  the tree reads back what the layout came to (detlint `layout-told`, none left): how big a node was laid out is the
-  tree's own (`View::moved_by`, `Scroll::tucks`); an old view's build is given its node's room and side by its host
-  (`@ui.old_given`, `@ui.old_went`); which piece of a node the pointer is over is worked out by the tree as it places
-  things (`View::pointer_piece`).
-- A native view (a page, a player) in the window's tree is a node of its own (ui's `native`, `src/ui/tree_native.mbt`),
-  never an old view hosted for it: the host is told where it stands and what clips it from where the tree draws the
-  node, each frame that moves it; hidden, not closed, while the node is not drawn; closed as the node is let go, unless
-  the app keeps the view past it (`kept`). So is a stream the host decodes (ui's `stream`, `src/ui/tree_stream.mbt`):
-  its picture drawn where the tree draws the node, each frame the one shown then, closed as the node is let go unless
-  what holds it closes it (`closes`).
-- A run has one window or several (the desktops' windows of one run: `@hostapi.windows_in_process`, `src/ui/window_slots.mbt`):
-  one program, one core, each window its own tree, frames and input. What the window's runtime keeps of a window lives
-  in globals put in place for the window the host hands a frame or input from, the first (0) put back after, so a new
-  global that is a window's own (of its context, its tree, its drawing, its hand) is said in `src/ui/window_kept.mbt`,
-  and one of a package over it (an app's layers, its toasts) by `@ui.window_kept`; what is the run's (the host's
-  pictures, streams and native views by id, text caches, messages, fibers) is not. A signal set as frames are drawn
-  is kept as its object (`Ref[Signal]`), never its value, or each window's frame wakes the other's.
-- What a still pointer is over (the hand: `View::pointed`, a tip, a hover card) is worked out at an input, in a change
-  at its moment, and at the end of a way that may move something under it (`Tree::hand_at_end`: a Move, a way in or
-  out, a glide; one that changes only how a thing looks, a fade, a bar's hiding, is none: `Prop::moves_hits`), never on
-  a frame as something goes (no highlight jumping along the rows passing under it). A drag is inputs, each found once; a
-  wheel's every notch is one; the glide after a fling is let go is a way: found at its end. A system's batch of a
-  finger's samples (a frame's 2-4) is each taken at its moment but laid out once, at its last (`src/ui/touches.mbt`).
-  What the clock, a frame's laying out or the hand itself tells is no change of it (`Tree::hits_bump`).
-  What reads a node as pointed at (`View::pointed`: a tip, a hover's look) makes it pointed at, whatever it takes of the
-  hand: one that takes no press is pointed at alone, as `View::points` says (`Node::points_alone`; said `points`
-  false, as `pointer-events: none`, it is not), what is pressed there as it was (its ground hides what is under it from presses as ever, `Node::covers`). Hover is the reader's to declare, never tied to taking a press (the user, 2026-11-17: a tip on a
-  status mark showed never, as Android's `setTooltipText` and the web's `:hover` have it).
-- A row that leaves out what has not the room (`View::fits`) leaves before it cuts: what may leave goes first, then
-  words cut short come down to their least, four of their size (flex's `cut_kept_ems`: a node's `View::cuts`; a box
-  sized by what it holds keeps what its words keep), and only then does what is beside it give way. Such a row said
-  `View::keeps_held` is never narrower than that (flex's `fit_least_held`), not than all it holds. Only what the row
-  holds itself leaves: what may leave in a box it holds stays, unless that box says `fits` too. Where it and what is
-  beside it are both at their least and still have not the room, it comes down further as a last resort, its words cut
-  short under four of their size by what is missing (flex's `fit_soft_held`: `src/ui/fits_row_least_wbtest.mbt`).
-- `Ctx` is going: no new code is built on it. What is left is counted by detlint (`old-island`, `old-list`,
-  `click-read`, `key-read`, `submitted-read`, `build-motion`, `layout-read-back`, `ui-current`, `build-clock`) and
-  those counts only fall; an API goes from mbui once its count is none.
-- What a screen reader is told is what changed (the user, 2026-11-09: AccessKit's way; `src/ui/a11y.mbt`'s head), found
-  where it changed (`Tree::said_marked`, `Tree::said_pass`), never the whole tree compared each frame. A change to
-  what a node is, where it is or whether it is read out marks it; a Tester whose host reads (`set_a11y`) holds what the
-  host was told to the whole tree after every frame that told it.
-- What can be done (pressed, stepped, written in) is named, for a screen reader to say what it is: a node of the
-  window's tree that is not fails its test (`Tester::hold_named`; an old view's widget is not held to it, the user,
-  2026-11-09). A test finds what it acts on as a screen reader would, by role and name (`Tester::get` and `Find`).
-- The keyboard's focus is only on what takes input now. Whether a node may have it is one asking, `Tree::takes_keys`
-  (no modal layer over it, taking presses, in use), read by Tab's order, by what gives the focus and by what gives it
-  back; what the hand reaches is another (`Tree::pressless_at`), and neither is folded into the other. A part behind
-  the one in use says so once, on the node that holds it (`View::in_use`, `src/view/in_use.mbt`), never widget by
-  widget. A test whose key moves the focus along (Tab, Shift+Tab, an arrow) onto what is wholly outside the window
-  stops, judged where its ways end (`src/ui/tester_focus_off.mbt`).
+- Make each node once in `libs/mbui/src/view` when it first shows and keep it until it leaves. Bind changing properties to signals so only changed work reruns.
+- Write no new code on `Ctx`. Legacy detlint counts (`old-island`, `old-list`, `click-read`, `key-read`, `submitted-read`, `build-motion`, `layout-read-back`, `ui-current`, `build-clock`) only fall, and APIs are removed at zero.
+- When migrating an old view or fixing UI in `src/view`, read the existing code logic, state, data flow, and git history first, then express it with `src/view`, `src/motion`, and `src/headless`. Never guess from rendered pictures, diff `drawn_rects()` or frame coordinates against the old view, or add per-scene framework hacks to pixel-fit an old page.
+- Core tree invariants (details in `libs/mbui/src/view/AGENTS.md` and `libs/mbui/src/ui/AGENTS.md`):
+  - Layout flows strictly one way (`View::by_room`, no `layout-told`).
+  - Dynamic column/row changes animate through `View::comes`, not per-page code. Initial answers settle immediately.
+  - `View::scrolls_window` owns virtualization, reading anchors, unified `bands`, and `press_stays` stability.
+  - State read by bindings must be a signal (`T : Eq`), and detlint performance counts only fall.
+  - Interactive tree nodes must be named for screen readers (`Tester::hold_named`), and focus (`Tree::takes_keys`) stays independent of hover (`View::pointed`).
 
 ## Components: headless, their looks apart
 
-> 感觉 mbui 应该做一套无头组件库 … 再在它之上做 ui 组件库 … 至少虚拟列表不应该每个组件库自己搞
-
-- Three layers (the user, 2026-11-14): the framework (`src/view`: what any node has, done by no component library
-  again), headless components (`src/headless`: what one kind of control is to the hand, the keyboard and a screen
-  reader, drawing and laying out nothing, knowing no theme), and libraries with a look (an app's, as still.fail's; or
-  a default one), which write looks over them and nothing else. The button is the sample the next ones follow (the
-  user, 2026-11-14: 「在这里先做按钮当样板」). `src/headless/headless.mbt`'s head is the rule: whose a thing is, who
-  keeps state, what a look may say of a component's node, and what the sample leaves undecided (a control of several
-  parts). Read it before writing a component or a look; a change to the rule is made there.
-- A new component, and one moved off `Ctx`, goes in `src/headless`, its look given by its caller: never in `src/kit`,
-  whose components stay as they are and go as their callers do (the toasts of the tree are `src/headless/toaster.mbt`,
-  where they are and how they move their looks'; kit's `toast_due` and `toast_rest` answer for them as for kit's own
-  toaster of the old view).
+- Keep behavior in `libs/mbui/src/headless`, visual styling in look libraries (`libs/sf-ui`, `libs/comma-ui`), and shared tree/list mechanics in `libs/mbui/src/view`. Read `libs/mbui/src/headless/AGENTS.md` and `libs/mbui/src/headless/headless.mbt` before adding controls.
 
 ## Time in a test is declared, never waited for
 
-> 一个测试里动画是多少帧，跑多久现实时间，对测试不会有任何影响。如果测试断言了动画第 3 秒应该是什么样，测试就能正确得到
-> 第三秒的视图，而前两秒到底是一秒一帧还是直接跳过，都不影响测试的正确性。
-
-- A test walks to what it tests step by step (taps, types, data), then says the moment it looks at (`run_for` a
-  declared duration, by name) and asserts. The frames in between must not matter: a picture or a state at a moment is
-  a function of the inputs and that moment, at 60 Hz, at 120 Hz, or in one jump.
-- Every Tester test runs again with intermediate frames drawn along `run_for` at 60, 120, 24, and 7 fps (`MBUI_TEST_FPS`,
-  `scripts/fps_check.sh`; on `main` after merge, and on PR branches for changed app test files at 120/60/24 via
-  `rates-changed`), and must produce identical results. Screen sweeps at rest (`screens`, `squeeze_said`, `words_large`,
-  `corners`, `contrast`) run at the default rate only.
-- Frame-to-frame motion smoothness (`sizes_steady`, down and across: `sizes_across`; `rows_steady`, `words_over`,
-  `gaps_steady`) is checked on the
-  default run and via `MBUI_TEST_MOTION` at 60/120 fps (`src/ui/tester_fps.mbt`, `scripts/motion_bars.sh`). The
-  `*_known` bars and `@ui.motion_counted` list may only shrink as faults are fixed; never add a file to
-  `motion_counted` or raise a bar. Immediate data answers (`@view.answering`, `src/view/answer_marked.mbt`) are treated
-  as answer changes, while nodes mid-transition (`Tree::on_way_at`) are still checked for mid-motion jumps.
-- Why the runs are split so (the user): the rates run on main after a merge, red there mended forward (2026-11-11:
-  「直接合，帧率在 main 上合并后跑」), and on a branch only for the app's test files it changed (2026-11-14); the sweeps
-  at the default rate alone because a rate found nothing in them the default run did not (2026-11-11); smoothness on the default run's frames (2026-11-09: 平滑度另开一条线), and a step half way
-  through a motion is a jump (「动画执行到一半突变也算突变」). Only `run_for`'s way gets the extra frames: a test that
-  walks its own frames to judge motion returns at once at a rate (`@ui.test_at_a_rate()`). A bar's key is the file
-  its Testers are made in; `scripts/motion_bars.sh` fails main where a bar should fall or a counted file shows none,
-  naming the line to change, so the change that mended a fault lowers its bar or takes its file off the list itself.
-- Time nothing happens in is skipped, never walked (the user, 2026-11-14: 「无意义的时间直接跳过是这个项目第一天就开始强调的」).
-  A test that looks at every frame after a cause (`Tester::each_frame`) runs the clock on with the frames a host
-  draws (`Tester::run_shown`: the display's while the app asks for frames, none while it is at rest, one at what is
-  due and at its end), never the display's frames walked one by one through a rest: a frame nobody draws shows
-  nothing, and drawing them was most of what such a test cost a CI job.
-  A frame nothing asks for (no motion, no wake or timer due, nothing come from outside, no input, no step said, no
-  hook on each frame: `Tester::frame_unasked`) is not drawn on a host's run's way either (`set_frame_period`'s
-  run_for; a tape's `set_frame_times` draws each it had), nor by `Tester::frame_as_host`, which walks the display's
-  frames one at a time as an idle host has them, the clock only passing what is not drawn. `Tester::frame` draws each,
-  asked or not: a test walking a span by it (detlint's `frame-walk`) is counted, and that count only falls.
-- Motion is data: said once with where from, where to, curve and start; its
-  value at any time computed from that. Nothing in an animation, a timer or a fiber may step frame by frame
-  (`@effect.next_frame` loops), or start at "the next frame" instead of the moment of what caused it. A motion is set
-  off by its cause, never found by comparing frames (a laid-out box or a measured size that differs from last frame's),
-  and never by a time window. Nor does a cause's moment go back: a moment asked for (`View::at_moment`) that is gone
-  by as it is asked (a way's end that never set out, 0) is done at the moment it is asked, the cause of what is
-  committed with it that one; one between two frames at its own (`src/view/at_moment_past_test.mbt`).
-- What is built never asks which frame or build it is (`Ctx::frame_number`, `Ctx::build_number`, a counter of its
-  own): "this frame", "the frame before" or "this build" is no cause. Say it by its cause, recorded where the cause is
-  taken, or by the moment (`Ctx::moment`). detlint's `frame-number` counts what is left and only lets it fall; the two
-  go from mbui's API once none is.
-- What is built gets its Ctx passed (a node of the window's tree, what its View gives: `words_scale`, `pixel_scale`,
-  `cause_at`...; a handler, its event), never reaches a global one (`@ui.current()`); detlint's `ui-current` counts what
-  is left and only lets it fall.
-- Never wait for things to settle or for a motion to end, under any name: `rest`, `at_rest` used as a wait,
-  `settle`, "until it stops moving", "until the animation landed", a fixed `wait`/`sleep`, a retry, a longer
-  timeout. `assert_idle` / `at_rest` are assertions only. An end-to-end step waits only for its own named event that
-  comes from outside the app (`answered`, `decoded`, `shown`, an outside wait done) or a fact of state (a row by its id
-  appears).
+- Tests execute inputs step by step, declare the exact moment (`run_for`), and assert. Output at a moment must be identical at 60, 120, 24, 7 fps, or in one jump (`libs/mbui/src/ui/AGENTS.md`).
+- Skip idle time (`Tester::run_shown`), represent motion as data (no `@effect.next_frame` loops or frame counters), and enforce non-increasing smoothness bars (`MBUI_TEST_MOTION`).
+- Never wait for things to settle or animations to end (`rest`, `settle`, sleeps, retries, longer timeouts). `assert_idle` and `at_rest` are assertions only. End-to-end steps wait only for external named events or state facts.
 
 ## What is seen, traced to its line
 
-- Under a Tester only, a node of the window's tree keeps where it was made and each property said (`src/view/source.mbt`;
-  a device's host keeps none, its calls only passing their places on): `Tester::audit()` checks every layout rule at once,
-  each fault naming where what it names was made, and `Tester::sources_at(x, y)` or `sources_of(words)` trace a built
-  node's callsite chain out to the root (`mbui/…` is this directory, `stillfail/…` the app's `apps/mbui`). Use them to
-  locate an audit fault or a callsite after reading the code — never render a screen to guess from coordinates or
-  compare `drawn_rects()` instead of reading the view's code logic first.
-- A part made in the node it is given (its first parameter a `View` it makes a box in) takes its caller's place,
-  `#callsite(autofill(loc))` and `loc~ : SourceLoc`, and makes its outside `box(made_for=loc, …)` or hands `loc~` to
-  the part it is made of, so what is found in it is traced to the line that asked for it (detlint's `part-place`, in
-  the app's library). A setter of a property takes `loc~` the same way, a function setting them for its caller
-  (`@sf.style_node`) hands it on.
+- Under a Tester, tree nodes record callsites (`libs/mbui/src/view/source.mbt`, while device hosts record none). Use `Tester::audit()` for layout rules and `Tester::sources_at(x, y)` / `Tester::sources_of(words)` to trace faults to callers (`mbui/…` vs `stillfail/…`) after reading the code.
+- Parts and property setters forward `#callsite(autofill(loc))` / `loc~ : SourceLoc` via `made_for=loc` (detlint `part-place`).
 
 ## Pictures come from the Tester's draw list
 
-- A screen is compared as the Tester's draw list at a declared moment; its pixels as each host's offscreen render of
-  that list (`scripts/render_*.sh`) against that host's references. No check runs an app on a device, an emulator, a
-  simulator or a desktop window and compares its picture with a kept one. A device runs the host's contracts (a tape
-  replayed frame by frame, the text, the marks) and a few end-to-end smoke flows that wait for named events; their
-  pictures are for people. detlint's `device-shot` counts each picture taken off a device: a new one fails.
+- Compare screens via Tester draw lists at declared moments, and verify pixels via per-host offscreen renders (`libs/mbui/scripts/render_*.sh`) against host references.
+- Never run screenshot diffs on devices, emulators, simulators, or desktop windows. Devices run only host contracts, render contracts, and event-driven smoke flows whose pictures are for human review (detlint `device-shot` blocks new device shots).
 
 ## A test links no host
 
-- Everything mbui and an app ask of their host goes through `src/hostapi` (`@hostapi.…`, its `Host` trait). Only an
-  app's main imports `src/host` (`@host`), which sets the platform's host as the program starts; a Tester sets its fake
-  (`src/ui/fake_host.mbt`). So a test's program links no host's code (Objective-C, C++, JNI) and builds and runs on
-  native on any system: CI runs the native tests on Linux. detlint's `host-import` holds it.
-- A new host call: a method of `Host` in `src/hostapi/host.mbt` (its default is what a host with nothing for it
-  answers) and its wrapper there, the platform's in `src/host/native_host.mbt` over the function each target has, and
-  the fake's in `src/ui/fake_host.mbt` where a test needs another answer than the default. Its `extern "C"`
-  declaration's Wasm side (`x_wasm.mbt` beside `x_native.mbt`, for an app run in Wasm by the native shell,
-  `src/host/wasm_shell.c`) is written by `tools/wasmhost`: still.fail's `scripts/wasm-app.sh build` writes it,
-  `check` says where it is not what the declarations make.
-- What a host is posted from outside the frames (a core's message, mb_post) it tells the app between frames
-  (`MB_OUTSIDE_POSTED`: ui's `messages_between`, which takes what changes only signals then), never left for a frame to
-  take as it begins: there the frame has brought the window's tree and read what it does again before what came is
-  taken, and a change only the tree reads went undrawn till something else built the frame whole (the web's and
-  Linux's hosts, till 2026-11-11). The Tester's fake host tells it at the moment it is posted on its clock, between
-  frames, in the order posted, never as the next frame begins: what comes at a moment comes at it at every rate of
-  frames (`tester_host_wbtest`'s "told at its moment": a replay had every
-  message wait for a frame a device's would not, and counted that against the app). What each host's
-  check holds: the Tester's every replay; Linux's `host_contract.sh linux posted` (told between frames); the web's
-  `test/web/posted.test.mjs` (told between frames, and before an input that came after it). So is what the system's
-  picker gave (`MB_OUTSIDE_PICK`, taken then into what reads it: hostcall.mbt's `outside_take`; Windows' and Linux's
-  told it as a frame began till 2026-11-11): Linux's `host_contract.sh linux picked`. What the window's tree
-  was told in a frame is drawn by that frame whenever in it it was told (ui's `view_owes`: its changes waiting count,
-  not only whether it is due). A made-up core that answers at once (an app's fixture, a replay's kept answers)
-  answers through ui's `answered_from_outside`: what a computed's getter asked it is given once that getter is over
-  (`@signals.after_computing`), never in it, where what it told ran what reads that computed and read it again half
-  made (`src/ui/answered_in_read_wbtest.mbt`). A core in the same process on a runtime of its own (its fibers turned
-  by its own loop, so it goes on while no frame is drawn) hands what it came to over to the frames through
-  `@ui.on_frame_take`, said by `@ui.wake_frame`: one frame asked for however often it is said, taken once as that
-  frame begins (`src/ui/frame_take_wbtest.mbt`), never through the host's post or a timer of its own.
-- What runs in the app never asks whether a Tester runs it: no `fake.val`, no switch only a Tester sets. What differs
-  under a Tester is its fake host's answer (`impl Host for FakeHost`, a capability such as `rows_on_pixels`,
-  `answers_by_frame`, answered as a device would unless the test says otherwise) or what the Tester does itself after a
-  frame it draws (its own files: `tester*.mbt`, `fake_host.mbt`; what watches a frame, `pass_look`, `frame_said`,
-  `shot_watch`). So what a test or a bench measures is the path a device runs. detlint's `tester-branch` holds it.
+- All host calls go through `libs/mbui/src/hostapi` (`Host` trait). Only app mains import `libs/mbui/src/host` (detlint `host-import`), while Tester installs `FakeHost` (`libs/mbui/src/ui/fake_host.mbt`), keeping native tests runnable on Linux CI.
+- Deliver external posts and picker results between frames, never deferring to frame start (`libs/mbui/src/host/AGENTS.md`). Never branch app code on whether a Tester is running (detlint `tester-branch`).
 
 ## There are no flaky failures
 
-> 不稳定测试是整个系统最严重的故障。我们的系统就不应该存在偶发失败。存在偶发失败说明整个系统就是烂的，而不是某个测试有问题。
-
-- A check that fails and then passes on the same commit means something uncontrolled got into the system (real time,
-  a host callback's order, a core answer's order, the network, an emulator's state, another job's files). Do not
-  rerun it green and move on, do not call it "偶发", do not add retries or waits. Find what came in uncontrolled and
-  route it through what is recorded and given again, or take it out of the run.
-- A failure says why. Nothing in mbui or an app calls `abort` itself: on wasm-gc, where the tests run off CI, it prints
-  none of its words. Stop with `@halt.saying(msg)` (`src/halt`), which prints them and the line that said them first;
-  detlint's `abort-unsaid` holds it, in the app as in mbui.
-- A test's result does not depend on what ran before it in its process. No test passes by stopping its program
-  (moon's `test "panic …"`): stopped in the middle of a change it leaves the process there, and on wasm-gc the tests
-  after it run on from it (view's `shared_test` left the signals' batch open: 185 of view's 435 failed after it). What
-  must fail is asked as an app's run on a host asks it, its fault told (`@view.faults_stop`, `@view.fault_told`) and
-  its words asserted; a check that stops is two steps, one saying what is wrong (`css_read`, `Tester::idle_said`,
-  `draw_said`, `flex.reuse_refused`…) and one stopping on it, and the test asserts the first. detlint's `panic-test`
-  holds it (none left); a Tester starting on a signals' graph left mid-change or mid-read stops, naming it
-  (`leaked_state`).
-- A Tester reads the frame of the Tester made last, never one of its own: read one after making another and it reads
-  the other's (an old card read as the new: a message's file cards). Each reading call stops on that, saying so
-  (`Tester::own_read_said`, `src/ui/tester_own.mbt`): read all of one before making the next.
-- A test starts its own run of the app (an app's `new_run`, a Tester) before it reads anything of the app: before
-  that, what it reads is the app as the test before it in the process left it (a landing's titles read in the English
-  of gate_wbtest's last run, found in none of the Chinese it drew: only where CI's grouping put the two files in one
-  process, #5433). There is no moment between two tests to put the app back in; the reading side holds it. detlint's
-  `read-before-run` (the app's detlint.json `run_first`: what starts a run, what reads its words).
+- A check that fails and passes on the same commit means uncontrolled nondeterminism entered the system. Never rerun it green, label it flaky, or add retries/waits: find and isolate or remove the nondeterminism.
+- Never call `abort` directly: use `@halt.saying(msg)` (`abort-unsaid`). Never write `test "panic …"` (`panic-test`). Keep every test isolated (`Tester::own_read_said`, `read-before-run`, `leaked_state`, see `libs/mbui/src/ui/AGENTS.md`).
 
 ## Tools are MoonBit, not Python
 
-> 删掉所有你妈的 py，怎么这么喜欢 py
-
-- A build, CI or check tool is a MoonBit program (in `tools/`, run through a script that builds it when it is not
-  built: `scripts/chk`), or shell when it only runs other programs. In development it is built for wasm-gc and run by
-  `scripts/wasmrun.mjs` in Node, no C compiled (the user, 2026-11-03); in CI natively (`scripts/tooltarget.sh`). What
-  it asks of the system goes through `tools/sys` (sys.c on native, wasmrun's "tsys" on Wasm). No new Python; a Python
-  script that needs a change is rewritten instead (those left are going one by one).
-
-## The Android app's allocator
-
-- MoonBit's runtime in the Android app allocates with mimalloc 2.1.7, compiled from its source into libmbui.so
-  (`scripts/android.sh`: `MOONBIT_ALLOCATOR_MIMALLOC`, `mimalloc_obj`), the one moon's native builds (the Mac's and
-  Windows' apps) link prebuilt; it overrides no `malloc`, so the rest of the process keeps scudo. It is compiled by way
-  of `src/host/mimalloc_android.c`, which takes away the `SYS_*` names its raw `syscall(…)`s are made by, so it calls
-  libc's: Android's seccomp filter for apps kills a raw `access` (it killed kitdemo on x86_64 at once). Decided 2026-11-11
-  (the owner: 「你自己决定」): the same 349 KB `chat` message `@json.parse`d and let go, the same C, median ms to
-  decode / to let go: a phone (Snapdragon SM8850, Android 17) 7.3-15 / 2.4-4.9 with scudo, 2.6-5.3 / 0.7-0.85 with
-  mimalloc; an arm64 emulator 7.3 / 2.5 against 2.7 / 0.5; the Mac (mimalloc) 2.6 / 0.5. Scudo had been there only
-  because moon ships mimalloc as a macOS object alone (zzj3720/mbui 191a3ed321). Given up, known and taken: scudo's
-  hardening (and memory tagging where a phone has it), about 145 KB of the app (157 KB of still.fail's libmbui.so,
-  56 KB of its APK), and memory mimalloc keeps once freed.
-  Do not change it back without measuring again. Every compile of the Android app's C says the same allocator
-  (`scripts/android.sh`'s `CFLAGS`, its Wasm shell's too; mbui-ci's `mbc check`): a MoonBit object freed by the
-  other one is memory corrupted. iOS stays on the system's until CI runs the iOS app built so.
+- Write build, CI, and check tools in MoonBit under `libs/mbui/tools` (built on demand by wrapper scripts like `libs/mbui/scripts/chk`) or in shell when only orchestrating commands.
+- In development, run tools on wasm-gc via `libs/mbui/scripts/wasmrun.mjs` without compiling C. In CI, build natively (`libs/mbui/scripts/tooltarget.sh`). Route OS calls through `libs/mbui/tools/sys`. Write no new Python. Rewrite existing Python scripts when they need changes.
 
 ## Before a PR
 
-- MoonBit's C compiles a generic function once for every type it is called with, its closures too: a structure or a
-  list of the framework that pages call with their own key types (`View::pick`, `Tree::structured`, `View::scrolls_window`)
-  is a thin generic shell over one body that knows no type (`Picked`, `Tree::structured_by`; a page's list's keys by
-  their numbers, `ListKeys`, `View::scrolls_window_ids`). Before, their copies were 48 MB and the list's 11 some 26 MB of
-  the 751 MB of C of sfapp's whitebox test program, all built again at every change of mbui's view (2026-11-17).
-- A compiler warning is an error or off, never left a warning: `moon.mod`'s `warnings` is the app's line
-  (`apps/mbui/AGENTS.md`, Warnings).
-
-- One PR per piece of work. Squash with `git reset --soft $(git merge-base HEAD origin/main)`, never onto
-  `origin/main`; check `git diff origin/main --stat` lists only your files.
+- Keep generic tree/list functions as thin shells over non-generic bodies to prevent C monomorphization bloat (`libs/mbui/src/view/AGENTS.md`).
+- Every compiler warning is an error or explicitly disabled (`libs/mbui/moon.mod`, matching `apps/mbui/AGENTS.md` Warnings).
+- Open one PR per task, squash with `git reset --soft $(git merge-base HEAD origin/main)` (never directly onto `origin/main`), and verify `git diff origin/main --stat` contains only your files.
