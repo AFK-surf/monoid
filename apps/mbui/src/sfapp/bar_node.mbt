@@ -235,18 +235,21 @@ let bar_laid_told : @signals.Signal[BarLaid] = @signals.signal(bar_laid_none(), 
 /// taking nothing as it goes (View::show's `leave`). `ws`: the workspace in view.
 fn bar_node(g : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
   g.box(fn(b) {
-    b.over(Is(true)) |> ignore
+    b.transitions_only().over(Is(true)) |> ignore
     bar_place_marks_node(b, src, ws)
     // (what waits on what moves told as the bar is told anew: when all of it is at rest, BarModel::rest)
     b.reacts(fn() { bar_said.get() }, fn(_) { b.said_moving("bar", "the bar's springs", fn(_) { bar.rest() }) })
-    // (none before its width is known: it is first laid out where it goes, at once, bar_tell)
+    // (none before its width is known: it is first laid out where it goes, at once, bar_tell; its leave scoped to `b`)
+    let bar_open = fn() {
+      match bar_told_now.get() {
+        Some(t) => t.shown && t.width > 0.0
+        None => false
+      }
+    }
+    let bar_shown = @signals.signal(@signals.untracked(bar_open), same=fn(a, b) { a == b })
+    b.reacts(bar_open, fn(on) { @view.transition(within=b, fn() { bar_shown.set(on) }) }, at_start=false)
     b.show(at_once=true,
-      fn() {
-        match bar_told_now.get() {
-          Some(t) => t.shown && t.width > 0.0
-          None => false
-        }
-      },
+      fn() { bar_shown.get() },
       fn(holder) { bar_holder_node(holder, src, ws) },
       leave=bar_hide_ms,
     )

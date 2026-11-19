@@ -273,7 +273,7 @@ fn reader_toggle_panel(r : Reading, panel : ReaderPanel) -> Unit {
 ///|
 /// A phone's bars shown or taken away: a tap on the text (a press, never a drag), at its moment.
 fn reader_tapped(r : Reading) -> Unit {
-  r.chrome.set(!r.chrome.untracked())
+  @view.transition(fn() { r.chrome.set(!r.chrome.untracked()) })
 }
 
 ///|

@@ -656,7 +656,7 @@ pub fn kind_row_node(
   ways : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  @headless.disclosure(made_for=loc, parent, title, open, fn(_) { toggle() }, fn(head, _) {
+  @headless.disclosure(made_for=loc, parent, title, open, fn(_) { @view.transition(toggle) }, fn(head, _) {
     head
     .padding(Is((0.0, notify_kind_y, 0.0, notify_kind_y)))
     .gap(Is(notify_kind_lines))

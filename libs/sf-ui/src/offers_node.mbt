@@ -261,7 +261,10 @@ pub fn offers_node(
   layer.box(made_for=loc, fn(o) {
     // (let go as what holds the field is, out of sight as that leaves)
     o.lives_with(around).over(Is(true)) |> ignore
-    o.show(open, leave=@kit.pop_out_ms, fn(shown) {
+    // (open/close fades out within this overlay node alone, @view.transition)
+    let shown_open = @signals.signal(@signals.untracked(open), same=fn(a, b) { a == b })
+    o.reacts(open, fn(on) { @view.transition(within=o, fn() { shown_open.set(on) }) }, at_start=false)
+    o.show(fn() { shown_open.get() }, leave=@kit.pop_out_ms, fn(shown) {
       shown.over(Is(true)) |> ignore
       live.val = true
       shown.owns(fn() { live.val = false }) |> ignore

@@ -253,10 +253,17 @@ fn chats_pane_node(
         at.3,
         at.4,
       )
-      ordered.set(shown)
-      rows.reset(names, by_name)
-      day_lines.set(lines)
-      revision.set(revision.untracked() + 1)
+      let apply = fn() {
+        ordered.set(shown)
+        rows.reset(names, by_name)
+        day_lines.set(lines)
+        revision.set(revision.untracked() + 1)
+      }
+      if motion.watched {
+        @view.transition(within=v, apply)
+      } else {
+        apply()
+      }
     },
   )
   let days = fn() { ordered.get() }
@@ -791,7 +798,7 @@ fn RowsMotion::said(
     }
   }
   if back {
-    self.told.set(self.told.untracked() + 1)
+    @view.transition(within=v, fn() { self.told.set(self.told.untracked() + 1) })
   }
   // (archived from its row in the list in view, its line not kept (the list's last row gone with it, or its page not
   // on top as the core said it gone): said in a toast with its 撤销 as from anywhere else, never left unsaid)
@@ -882,7 +889,7 @@ fn RowsMotion::undo_over(self : RowsMotion, v : @view.View, here : ArchivedHere?
   if end > rows_rest_at.val {
     rows_rest_at.val = end
   }
-  self.told.set(self.told.untracked() + 1)
+  @view.transition(within=v, fn() { self.told.set(self.told.untracked() + 1) })
 }
 
 ///|

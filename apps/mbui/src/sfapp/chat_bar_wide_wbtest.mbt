@@ -893,7 +893,7 @@ fn wide_bar_way(t : @ui.Tester, label : String, change : () -> Unit, ms : Double
 }
 
 ///|
-test "大屏, 中屏: a button of the bar coming or going as its chat changes (its services' and jobs') moves those beside it along the row, never 8 in a frame; told as an answer, at once" {
+test "大屏, 中屏: a button of the bar coming or going settles at once outside a transition (and as an answer), and moves those beside it along the row inside a transition" {
   for win in wide_bar_windows {
     let calls : Array[Made] = []
     let jobs_on = @signals.signal(false)
@@ -914,14 +914,21 @@ test "大屏, 中屏: a button of the bar coming or going as its chat changes (i
       Some(r) => r.0
       None => fail("\{win.0}: no 归档")
     }
-    // some come: its button comes in after 归档's, which moves aside for it
-    let (came, came_steps) = wide_bar_way(t, archive, fn() { jobs_on.set(true) }, @ui.move_most_ms)
-    let x1 = came[came.length() - 1]
+    // background chatJobs change (outside a transition): settles at once, never sliding unprompted
+    let (plain_in, _) = wide_bar_way(t, archive, fn() { jobs_on.set(true) }, @ui.move_most_ms)
+    let x1 = plain_in[plain_in.length() - 1]
     assert_true(x0 - x1 >= 20.0, msg="\{win.0}: 归档 made room for the services' button: \{x0} → \{x1}")
+    assert_true(plain_in.length() >= 2, msg=win.0)
+    assert_eq(plain_in[1], x1, msg="\{win.0}: outside a transition, button settles at once: \{Repr(plain_in)}")
+    let (plain_out, _) = wide_bar_way(t, archive, fn() { jobs_on.set(false) }, @ui.move_most_ms)
+    assert_true(plain_out.length() >= 2, msg=win.0)
+    assert_eq(plain_out[1], x0, msg="\{win.0}: outside a transition, leaving button settles at once: \{Repr(plain_out)}")
+    // inside an explicit transition: moves those beside it along the row, never 8 in a frame
+    let (came, came_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { jobs_on.set(true) }) }, @ui.move_most_ms)
+    assert_eq(came[came.length() - 1], x1, msg=win.0)
     assert_true(came.length() > 3, msg="\{win.0}: drawn on its way: \{Repr(came)}")
     assert_eq(came_steps, [], msg="\{win.0}: its way in: \{Repr(came)}")
-    // none left: back the same way
-    let (went, went_steps) = wide_bar_way(t, archive, fn() { jobs_on.set(false) }, @ui.move_most_ms)
+    let (went, went_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { jobs_on.set(false) }) }, @ui.move_most_ms)
     assert_eq(went[went.length() - 1], x0, msg=win.0)
     assert_eq(went_steps, [], msg="\{win.0}: its way out: \{Repr(went)}")
     // told as an answer (the topic's first value): at once, no way

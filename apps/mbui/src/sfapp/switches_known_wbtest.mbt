@@ -39,7 +39,6 @@ let switches_known : Map[String, Int] = Map([
     ("中屏 player-video: toggle 「下一个」", 2),
     ("大屏 chat-phone-lacks: opener 「1 小时内」 › 「闲置 1 小时后失效」", 2),
     ("大屏 chat-phone-lacks: opener 「闲置 1 小时后失效」 › 「1 小时内」", 2),
-    ("大屏 chat-preview-apk: toggle 「全屏」", 2),
     ("大屏 chat-preview-image: toggle 「复制」", 2),
     ("大屏 chat-preview-step: toggle 「复制」", 2),
     ("大屏 chat-preview-swipe: toggle 「复制」", 2),

@@ -105,11 +105,13 @@ pub fn tip_node(
   // (made in its layer as it is first shown where there is one then (none yet: shown the next time it is, as there is
   // one), held there for its control, let go with it)
   let made = Ref(false)
+  let holder_v : Ref[@view.View?] = Ref(None)
   // (Escape while it shows: its, before what is under it (a viewer it is over) is asked; gone, shut as a press shuts it)
   let escaped : Ref[() -> Unit] = Ref(fn() {  })
   let make = fn() -> Bool {
     guard (tips.layer)() is Some(l) else { return false }
-    let holder = l.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(anchor)
+    let holder = l.box(fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(anchor)
+    holder_v.val = Some(holder)
     holder.on_key(fn(k) {
       if k.code == @ui.key_escape && @signals.untracked(fn() { open.get() && @kit.tip_owns(owner) }) {
         (escaped.val)()
@@ -163,7 +165,10 @@ pub fn tip_node(
       tips.went_at = at
       glide.left(at)
     }
-    open.set(on)
+    match holder_v.val {
+      Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
+      _ => open.set(on)
+    }
   }
   // (opened on its control (TipHand::open): the window's taps then, shut by the one after it)
   let opened_at = Ref(0)

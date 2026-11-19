@@ -2375,7 +2375,7 @@ pub fn round_key_node(
   }
   match opener {
     Some(o) =>
-      @headless.disclosure(made_for=loc, parent, label, fn() { o.open() }, fn(_) { press() }, fn(k, d) {
+      @headless.disclosure(made_for=loc, parent, label, fn() { o.open() }, fn(_) { @view.transition(press) }, fn(k, d) {
         look(k, fn() { d.press() })
       })
       |> ignore

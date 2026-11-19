@@ -262,3 +262,109 @@ test "大屏, the old chat's page: a chat the device kept nothing of, drawn empt
     assert_eq(s.2, first.2, msg="its list's foot moved at \{s.0}\n\{report}")
   }
 }
+
+///|
+test "大屏: chat_bar_wide_node settles at once when station, people, agents and chatJobs arrive late outside a transition" {
+  let stage = @signals.signal(0)
+  let jobs = wide_bar_jobs("")
+  let t = ms_open(true, over=fn(name, params, tp) {
+    if name == "chatJobs" {
+      if stage.get() > 0 {
+        return jobs(name, tp)
+      }
+      return tp
+    }
+    guard name == "chat" && params.get("session") is Some(String("s-c1")) && tp.value is Some(Object(o)) else {
+      return tp
+    }
+    let e = o.copy()
+    if stage.get() == 0 {
+      e["agents"] = Json::array([])
+      e["people"] = Json::array([])
+      e["archivable"] = Json::boolean(false)
+    } else {
+      e["archivable"] = Json::boolean(true)
+    }
+    { ..tp, value: Some(Json::object(e)) }
+  })
+  let archive = @sf.t("web-pages.chat.archive")
+  assert_true(wide_bar_button(t, archive) is None, msg="archive absent before late chat arrives")
+  t.ways_set_out() |> ignore
+  stage.set(1)
+  t.run_for(@ui.move_most_ms)
+  let ways = t.ways_set_out().map(fn(w) { "\{w.kind} \{w.made} \{w.part}" })
+  assert_eq(ways, [], msg="late chat + chatJobs arrival must set out zero ways")
+  assert_true(wide_bar_button(t, archive) is Some(_), msg="archive button rendered after late arrival")
+}
+
+///|
+test "大屏: sidebar chat_row_node background status, tone and unread updates settle at once with zero ways" {
+  let stage = @signals.signal(0)
+  let t = ms_open(true, over=fn(name, _, tp) {
+    guard name == "chats" && tp.value is Some(Object(o)) && o.get("days") is Some(Array(days)) && days.length() > 0 else {
+      return tp
+    }
+    guard days[0] is Object(d0) && d0.get("items") is Some(Array(rows)) && rows.length() > 0 else { return tp }
+    guard rows[0] is Object(r0) else { return tp }
+    let r = r0.copy()
+    if stage.get() == 0 {
+      r["unread"] = Json::boolean(false)
+      r["tone"] = Json::string("")
+      r["state"] = Json::string("")
+      r.remove("stateText")
+    } else {
+      r["unread"] = Json::boolean(true)
+      r["tone"] = Json::string("attention")
+      r["state"] = Json::string("need")
+      r["stateText"] = Json::string("等待回复")
+    }
+    let next_rows = rows.copy()
+    next_rows[0] = Json::object(r)
+    let d = d0.copy()
+    d["items"] = Json::array(next_rows)
+    let ds = days.copy()
+    ds[0] = Json::object(d)
+    let out = o.copy()
+    out["days"] = Json::array(ds)
+    { ..tp, value: Some(Json::object(out)) }
+  })
+  t.ways_set_out() |> ignore
+  stage.set(1)
+  t.run_for(@ui.move_most_ms)
+  let ways = t.ways_set_out().map(fn(w) { "\{w.kind} \{w.made} \{w.part}" })
+  assert_eq(ways, [], msg="sidebar chat_row_node background state update must set out zero ways")
+}
+
+///|
+test "大屏, 新对话页: unread line disappearing from chat_body_node sets out zero ways (structural placeholder is not a live cause)" {
+  let stage = @signals.signal(0)
+  let t = ms_open(true, over=fn(name, params, tp) {
+    guard name == "chat" && params.get("session") is Some(String("s-c1")) && tp.value is Some(Object(o)) else {
+      return tp
+    }
+    guard o.get("messages") is Some(Array(msgs)) && msgs.length() > 0 else { return tp }
+    let last_seq = match msgs[msgs.length() - 1] {
+      Object(m) => m.get("seq")
+      _ => None
+    }
+    let e = o.copy()
+    if stage.get() == 0 {
+      match last_seq {
+        Some(seq) => e["unreadLine"] = seq
+        None => ()
+      }
+    } else {
+      e.remove("unreadLine")
+    }
+    { ..tp, value: Some(Json::object(e)) }
+  })
+  let label = @sf.t("web-main.chat.unreadLine")
+  let has_line = fn() { t.words().iter().any(fn(w) { w.0 == label && w.5 > 0.5 }) }
+  assert_true(has_line(), msg="unread line visible initially")
+  t.ways_set_out() |> ignore
+  stage.set(1)
+  t.run_for(@ui.move_most_ms)
+  let ways = t.ways_set_out().map(fn(w) { "\{w.kind} \{w.made} \{w.part}" })
+  assert_eq(ways, [], msg="removing unread line must set out zero ways")
+  assert_true(!has_line(), msg="unread line gone")
+}

@@ -3467,29 +3467,31 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
       return
     }
     self.work.bindings_run += 1
-    let reading_was = self.binding_reading
-    self.binding_reading = at
-    let v = w.read(read)
-    self.binding_reading = reading_was
-    let was = self.cause_at
-    self.cause_at = b.told_at
-    b.told_at = -1.0
-    let by_clock_was = self.bound_by_clock
-    self.bound_by_clock = b.by_clock
-    let answered_was = self.binding_answered
-    self.binding_answered = b.answered
-    b.answered = false
-    self.binding_running = self.binding_running + 1
-    // (untracked: what it sets read by nothing that reads now)
-    let was_sub = @signals.set_active_sub(None)
     let scopes = b.moved
     b.moved = []
-    transition_again(scopes, fn() { then(v) })
-    @signals.set_active_sub(was_sub) |> ignore
-    self.bound_by_clock = by_clock_was
-    self.binding_answered = answered_was
-    self.binding_running = self.binding_running - 1
-    self.cause_at = was
+    transition_again(scopes, fn() {
+      let reading_was = self.binding_reading
+      self.binding_reading = at
+      let v = w.read(read)
+      self.binding_reading = reading_was
+      let was = self.cause_at
+      self.cause_at = b.told_at
+      b.told_at = -1.0
+      let by_clock_was = self.bound_by_clock
+      self.bound_by_clock = b.by_clock
+      let answered_was = self.binding_answered
+      self.binding_answered = b.answered
+      b.answered = false
+      self.binding_running = self.binding_running + 1
+      // (untracked: what it sets read by nothing that reads now)
+      let was_sub = @signals.set_active_sub(None)
+      then(v)
+      @signals.set_active_sub(was_sub) |> ignore
+      self.bound_by_clock = by_clock_was
+      self.binding_answered = answered_was
+      self.binding_running = self.binding_running - 1
+      self.cause_at = was
+    })
     self.change_ended()
   }
   (b.run)()

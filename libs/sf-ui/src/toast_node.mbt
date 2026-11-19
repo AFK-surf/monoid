@@ -67,9 +67,11 @@ pub fn toaster_node(
       }
     }
     // (over all else of the window, the old frame's sheets and dialogs and the tree's modal layers too: View::over_all)
-    v.over(Is(true)).over_all(Is(true)) |> ignore
+    v.transitions_only().over(Is(true)).over_all(Is(true)) |> ignore
+    let shown_toasts = @signals.signal(@signals.untracked(toasts), same=fn(a, b) { a == b })
+    v.reacts(toasts, fn(next) { @view.transition(within=v, fn() { shown_toasts.set(next) }) }, at_start=false)
     // (while one is given, and as the last given goes out: none, nothing of it)
-    v.show(fn() { !toasts().is_empty() }, fn(room) {
+    v.show(fn() { !shown_toasts.get().is_empty() }, fn(room) {
       // (clear of the system's bars: `bottom` over what they leave of the window's foot, in the middle of what they
       // leave of its width)
       room
@@ -85,7 +87,7 @@ pub fn toaster_node(
       room.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       @headless.toaster(
         room,
-        toasts,
+        fn() { shown_toasts.get() },
         fn(to) { to.id },
         fn(to) { (to.title, to.description) },
         duration,

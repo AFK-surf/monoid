@@ -347,7 +347,9 @@ let presented_drawn_said : Ref[@signals.Keyed[Int]] = Ref(@signals.keyed())
 ///|
 fn presented_told() -> Unit {
   // (one closed, whether the tree draws it still going out: what the host lets go of as it is gone)
-  presented_said.val.set(presented_now.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
+  @view.transition(fn() {
+    presented_said.val.set(presented_now.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
+  })
 }
 
 ///|
@@ -382,7 +384,7 @@ pub fn presenters_reset() -> Unit {
   presented_popovers.clear()
   presented_drawn_said.val.set([])
   presented_items_said.clear()
-  presented_told()
+  presented_said.val.set([])
   presented_count.val = 0
   presented_alone.val = false
   presented_how.clear()
@@ -1059,14 +1061,14 @@ fn panel_page(p : Presented, x : PanelOf, from : Anchor, gone : () -> Unit) -> U
     None => ()
   }
   // (a dialog in steps to its new step's height, from as it is now)
-  match steps_reshaping.get(p.serial) {
-    Some(f) => f()
-    None => ()
-  }
-  @signals.start_batch()
-  p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone }])
-  presented_told()
-  @signals.end_batch()
+  @view.transition(fn() {
+    match steps_reshaping.get(p.serial) {
+      Some(f) => f()
+      None => ()
+    }
+    p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone }])
+    presented_told()
+  })
 }
 
 ///|
@@ -1104,11 +1106,13 @@ fn panel_pop(p : Presented) -> Bool {
     Some(f) => p.stands = f()
     None => ()
   }
-  match steps_reshaping.get(p.serial) {
-    Some(f) => f()
-    None => ()
-  }
-  p.more.set(more[:more.length() - 1].to_owned())
+  @view.transition(fn() {
+    match steps_reshaping.get(p.serial) {
+      Some(f) => f()
+      None => ()
+    }
+    p.more.set(more[:more.length() - 1].to_owned())
+  })
   (last.gone)()
   true
 }

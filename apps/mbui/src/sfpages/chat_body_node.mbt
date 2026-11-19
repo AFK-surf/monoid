@@ -2171,10 +2171,11 @@ fn chat_live_causes(
       }
     }
     // (gone from between those it kept or from its end: taken out, an agent's work done, what was sent taken over;
-    // gone from before the first it kept, the window moved)
+    // gone from before the first it kept, the window moved; structural rows like the unread line or paging/empty
+    // placeholders leaving are never a live cause)
     if was_settled && !view.newer {
       for i, k in was {
-        if !seen.contains(k) && first_kept >= 0 && i > first_kept {
+        if !seen.contains(k) && first_kept >= 0 && i > first_kept && chat_live_removable(k) {
           live = true
         }
       }
@@ -2187,6 +2188,13 @@ fn chat_live_causes(
     guard !reopening.val && was_settled && live && !caught_up && @signals.untracked(shows) && @signals.untracked(@ui.app_visible) else { return }
     @view.transition(within=v, fn() {  })
   }
+}
+
+///|
+/// Whether key `k` leaving the list after its first kept key represents a live removal (a message, outbox, agent
+/// working line, or state row), rather than a structural placeholder (`line`, `older`, `newer`, `empty`, `wait`).
+fn chat_live_removable(k : String) -> Bool {
+  k != "line" && k != "older" && k != "newer" && k != "empty" && k != "wait"
 }
 
 ///|

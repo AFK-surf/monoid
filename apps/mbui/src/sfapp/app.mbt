@@ -672,6 +672,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @ui.set_tree_theme(@sf.ui_theme_now)
     // (the window's sides beside the system's bars kept, all of it between: sides.mbt)
     root.sides(By(fn() { sides_room() })) |> ignore
+    // (static by default across the whole app: structures, lists and reshapes settle at Δt 0 unless told inside
+    // @view.transition for an explicit cause, libs/mbui/src/view/transition.mbt)
+    root.transitions_only() |> ignore
     // over another app (a share sheet over the app it came from: share.mbt): nothing but the sheet, an old view of its
     // own; the app's state's nodes let go meanwhile, made again as it opens
     root.pick(fn() { share_over.get() }, fn(o, over) {
@@ -941,6 +944,7 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     |> ignore
     @ui.set_tree_theme(@sf.ui_theme_now)
     root.sides(By(fn() { sides_room() })) |> ignore
+    root.transitions_only() |> ignore
     // ⌘W (a Mac's, the web's there) or Ctrl+W closes it, nothing presented over its page: what its own close button
     // does, the tab or the screen it shows let go of as it closes (sfbase's window_here_gone); a Mac's menu bar's ⌘W
     // the same, Windows', Linux's and a browser's window having none of it to

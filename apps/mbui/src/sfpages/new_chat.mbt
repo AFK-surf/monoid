@@ -1047,18 +1047,20 @@ fn new_send_go(
   let fresh = @sfbase.fresh
   let draft = station + ":" + key
   let sig = @sfbase.picked_sig(v)
-  fresh.starting.set(true)
-  fresh.sending.set(true)
-  fresh.sent.set(true)
-  fresh.made.set(key)
-  fresh.made_sig.set(sig)
-  carries()
-  // the page becomes the chat, in place, now: the scene leaving over it from here (new_chat_left), with the words
-  // (all of what the chat's page reads as it mounts — its scene, its composer's room and place, its foot, its fly_after —
-  // said before `became` mounts it)
-  fresh.scene.set(v)
-  leaves()
-  fresh.became.set(Some(r))
+  @view.transition(fn() {
+    fresh.starting.set(true)
+    fresh.sending.set(true)
+    fresh.sent.set(true)
+    fresh.made.set(key)
+    fresh.made_sig.set(sig)
+    carries()
+    // the page becomes the chat, in place, now: the scene leaving over it from here (new_chat_left), with the words
+    // (all of what the chat's page reads as it mounts — its scene, its composer's room and place, its foot, its fly_after —
+    // said before `became` mounts it)
+    fresh.scene.set(v)
+    leaves()
+    fresh.became.set(Some(r))
+  })
   @sfbase.writing_starting(src, d, true)
   // what the core does, in order: the words taken, the chat made, what is written meanwhile on into its draft; then
   // the message sent into it, once both are
@@ -1173,9 +1175,11 @@ fn new_send_go(
   }
   // what is written meanwhile goes on in the chat's draft
   @sfbase.writing_carry(src, d.key, draft)
-  new_chat_reset()
-  sent(r)
-  app.nav.become(Chat(r))
+  @view.transition(fn() {
+    new_chat_reset()
+    sent(r)
+    app.nav.become(Chat(r))
+  })
 }
 
 

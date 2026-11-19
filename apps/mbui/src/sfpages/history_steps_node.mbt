@@ -348,11 +348,13 @@ fn steps_press_box(
 /// One of what the reader opens (a fold, a line, a group, a call), by its key, opened or shut (what was pressed
 /// staying where it was: mbui's press_stays.mbt).
 fn steps_flip(key : String) -> Unit {
-  if steps_own.opened.contains(key) {
-    steps_own.opened.remove(key)
-  } else {
-    steps_own.opened[key] = true
-  }
+  @view.transition(fn() {
+    if steps_own.opened.contains(key) {
+      steps_own.opened.remove(key)
+    } else {
+      steps_own.opened[key] = true
+    }
+  })
 }
 
 ///|
