@@ -1135,7 +1135,7 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     Some(i) => ({ "person": d.pending[i].value("person").unwrap_or(Json::null()), "thread": d.pending[i].value("thread").unwrap_or(Json::null()), "profile": Json::null() } : Json)
     None => turn_for_nobody()
   }
-  self.start_turn(a, "input", d.text, by~) catch {
+  self.start_turn(a, "input", d.text, by~, delivery=Some(d)) catch {
     e => {
       a.start_failures += 1
       a.failed_handed = hkey
@@ -1143,7 +1143,8 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     }
   }
   a.failed_handed = ""
-  self.delivered(a, d)
+  // (marked delivered by `start_turn_body` before it was written to the runtime)
+  ignore(self.store(a, "markWidgetModelsTold", [jstr(a.key), d.widgets]))
 }
 
 ///|
@@ -1233,7 +1234,14 @@ async fn Actors::pending_and_format(self : Actors, a : Actor, allow_empty : Bool
 
 ///|
 /// actor.ts `startTurn`.
-async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : String, by? : Json = turn_for_nobody()) -> Unit raise {
+async fn Actors::start_turn(
+  self : Actors,
+  a : Actor,
+  kind : String,
+  text : String,
+  by? : Json = turn_for_nobody(),
+  delivery? : Delivery? = None,
+) -> Unit raise {
   let retry_about = if text == self.words(a, "GO_ON_AFTER_OVERLOADED") {
     self.last_turn(a).value("about").unwrap_or(Json::null())
   } else {
@@ -1243,7 +1251,7 @@ async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : Stri
     self.log(a, "info", "archived: no turn of its own", fields={ "kind": jstr(kind) })
     return
   }
-  self.start_turn_body(a, kind, text, by, retry_about) catch {
+  self.start_turn_body(a, kind, text, by, retry_about, delivery) catch {
     e => {
       let turn = a.turn
       a.turn = None
@@ -1285,7 +1293,15 @@ async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : Stri
 }
 
 ///|
-async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text : String, by : Json, retry_about : Json) -> Unit raise {
+async fn Actors::start_turn_body(
+  self : Actors,
+  a : Actor,
+  kind : String,
+  text : String,
+  by : Json,
+  retry_about : Json,
+  delivery : Delivery?,
+) -> Unit raise {
   self.live_event(a.key, { "kind": "phase", "phase": "starting" })
   if (kind == "input" || kind == "job") && !self.holding(a) && !self.busy(a) &&
     self.deps(a, "coldAfresh", [jstr(a.key), jnum(self.now)]) is True {
@@ -1322,7 +1338,16 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
   if a.stale && !self.busy_of(a, Some(agent)) {
     agent = self.ensure_agent(a)
   }
+  // (what it is handed, marked delivered before it is written: the runtime can answer with `chat_post` before the
+  // prompt's answer comes back, and a message still undelivered then is taken as one it has not read, holding the post)
+  let delivered = match delivery {
+    Some(d) => d.pending.map(m => m.value("handed").unwrap_or(Json::null()))
+    None => []
+  }
   if self.busy_of(a, Some(agent)) && truthy(self.agent_do(a, agent, "steer", [jstr(prompt)])) {
+    if delivered.length() > 0 {
+      ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(delivered)]))
+    }
     return self.told(a, told_choices)
   }
   a.steered = []
@@ -1331,6 +1356,10 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
   self.begin_turn(a, kind, by)
   if !(retry_about is Null) && a.turn is Some(t) {
     ignore(self.store(a, "setAbout", [jstr(t.id), [retry_about.value("thread").unwrap_or(Json::null()), retry_about.value("seq").unwrap_or(Json::null()), retry_about.value("ts").unwrap_or(Json::null())]]))
+  }
+  let marked = delivered.length() > 0
+  if marked {
+    ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(delivered)]))
   }
   ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)])) catch {
     // (its runtime began a turn of its own while this one was begun (the awaits of `begin_turn`, after `busy_of` said
@@ -1341,10 +1370,20 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
       return self.told(a, told_choices)
     e => {
       self.log(a, "warn", "prompt failed, reopening the runtime", fields={ "error": jstr(e.to_string()) })
-      self.set_agent(a, None)
-      ignore(self.agent_do(a, agent, "dispose", []))
-      agent = self.ensure_agent(a)
-      ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)]))
+      try {
+        self.set_agent(a, None)
+        ignore(self.agent_do(a, agent, "dispose", []))
+        agent = self.ensure_agent(a)
+        ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)]))
+      } catch {
+        e2 => {
+          // (never begun: waiting again, to be handed again)
+          if marked {
+            ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(delivered)]))
+          }
+          raise e2
+        }
+      }
     }
   }
   self.told(a, told_choices)

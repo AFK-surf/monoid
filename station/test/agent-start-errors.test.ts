@@ -140,6 +140,43 @@ test("a turn its runtime began of its own as a prompt was given: the prompt stee
   }
 });
 
+test("what a turn is prompted with is delivered before the prompt is written: a post the runtime makes at once is not held", async () => {
+  // check-station on 2026-11-19: an agent posted `all_done` on reading its first message before the prompt's answer
+  // came back, the message still undelivered then, and the post was held as one written before it was read.
+  const r = new Rig();
+  const m = message();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const waiting: string[][] = [];
+  r.claude.beforePrompt = () => void waiting.push(r.store.pendingMessages(key).map((p) => p.message.text));
+  await r.accept(m);
+  await settle();
+  assert.equal(r.claude.last().prompts.length, 1);
+  assert.deepEqual(waiting, [[]], "nothing waits as it is prompted");
+  await r.close();
+});
+
+test("a prompt that fails as its runtime is opened again leaves what it was handed waiting, to be handed again", async () => {
+  const r = new Rig();
+  const m = message();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  await r.accept(m);
+  await settle();
+  const first = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  first.complete();
+  await settle();
+  const refused = () => {
+    throw new Error("refused");
+  };
+  first.beforePrompt = refused;
+  r.claude.beforePrompt = refused;
+  await r.accept(reply(m, "9999.4", "again"));
+  await settle();
+  assert.equal(r.claude.count(), 2, "its runtime opened again");
+  assert.deepEqual(r.store.pendingMessages(key).map((p) => p.message.text), ["again"]);
+  await r.close();
+});
+
 /// A turn running as the station stopped with no runner keeping its process (a crash, the machine restarted).
 async function cutOff(declare?: (r: Rig, key: string) => Promise<unknown>) {
   const r = new Rig();
