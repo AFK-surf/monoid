@@ -246,7 +246,7 @@ pub fn decode_uri_component(s : String) -> String raise FeishuError {
     if k + 2 >= n || s.unsafe_charcode_at(k) != '%' {
       None
     } else {
-      match (hex_digit(s.unsafe_charcode_at(k + 1)), hex_digit(s.unsafe_charcode_at(k + 2))) {
+      match (@codec.hex_digit(s.unsafe_charcode_at(k + 1)), @codec.hex_digit(s.unsafe_charcode_at(k + 2))) {
         (Some(h), Some(l)) => Some(h * 16 + l)
         _ => None
       }
@@ -445,35 +445,7 @@ fn reactions_path(path : String) -> Bool {
 ///|
 /// read/transcript.ts `iso`: an ISO timestamp of milliseconds since the epoch, as toISOString writes it.
 pub fn iso(ms : Int64) -> String {
-  let div_floor = (a : Int64, b : Int64) => {
-    let q = a / b
-    if a % b != 0L && (a < 0L) != (b < 0L) {
-      q - 1L
-    } else {
-      q
-    }
-  }
-  let pad = (n : Int64, w : Int) => if n < 0L {
-    "-" + (-n).to_string().pad_start(w - 1, '0')
-  } else {
-    n.to_string().pad_start(w, '0')
-  }
-  let days = div_floor(ms, 86_400_000L)
-  let rest = ms - days * 86_400_000L
-  let z = days + 719_468L
-  let era = div_floor(z, 146_097L)
-  let doe = z - era * 146_097L
-  let yoe = (doe - doe / 1460L + doe / 36_524L - doe / 146_096L) / 365L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let y = yoe + era * 400L + (if m <= 2L { 1L } else { 0L })
-  let h = rest / 3_600_000L
-  let mi = rest / 60_000L % 60L
-  let s = rest / 1000L % 60L
-  let milli = rest % 1000L
-  "\{pad(y, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(h, 2)}:\{pad(mi, 2)}:\{pad(s, 2)}.\{pad(milli, 3)}Z"
+  @time.format_iso_ms(ms)
 }
 
 ///|

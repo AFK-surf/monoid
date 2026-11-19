@@ -150,19 +150,6 @@ pub fn deflate(data : BytesView) -> Bytes {
 }
 
 ///|
-/// CRC-32 (IEEE 802.3, reflected, as gzip's trailer has it).
-fn crc32(data : BytesView) -> UInt {
-  let mut crc = 0xFFFFFFFFU
-  for b in data {
-    crc = crc ^ b.to_uint()
-    for _ in 0..<8 {
-      crc = if (crc & 1U) != 0U { (crc >> 1) ^ 0xEDB88320U } else { crc >> 1 }
-    }
-  }
-  crc ^ 0xFFFFFFFFU
-}
-
-///|
 /// `data` gzipped: no name, no time, made on Unix.
 pub fn gzip(data : BytesView) -> Bytes {
   let out : Array[Byte] = [
@@ -172,7 +159,7 @@ pub fn gzip(data : BytesView) -> Bytes {
   for x in deflate(data) {
     out.push(x)
   }
-  let crc = crc32(data)
+  let crc = @codec.crc32(data)
   let size = data.length().reinterpret_as_uint()
   for v in [crc, size] {
     for s in [0, 8, 16, 24] {
@@ -185,45 +172,11 @@ pub fn gzip(data : BytesView) -> Bytes {
 ///|
 /// Base64url without padding (`Buffer.toString("base64url")`).
 pub fn base64url(b : BytesView) -> String {
-  let abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i < n {
-    let x0 = b[i].to_int()
-    let x1 = if i + 1 < n { b[i + 1].to_int() } else { 0 }
-    let x2 = if i + 2 < n { b[i + 2].to_int() } else { 0 }
-    let v = (x0 << 16) | (x1 << 8) | x2
-    let chars = if i + 2 < n { 4 } else if i + 1 < n { 3 } else { 2 }
-    for k in 0..<chars {
-      out.write_char(abc.unsafe_charcode_at((v >> (18 - 6 * k)) & 63).unsafe_to_char())
-    }
-    i += 3
-  }
-  out.to_string()
+  @codec.base64url_encode(b)
 }
 
 ///|
 /// Base64 with padding (`Buffer.toString("base64")`).
 pub fn base64(b : BytesView) -> String {
-  let abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i < n {
-    let x0 = b[i].to_int()
-    let x1 = if i + 1 < n { b[i + 1].to_int() } else { 0 }
-    let x2 = if i + 2 < n { b[i + 2].to_int() } else { 0 }
-    let v = (x0 << 16) | (x1 << 8) | x2
-    let chars = if i + 2 < n { 4 } else if i + 1 < n { 3 } else { 2 }
-    for k in 0..<4 {
-      if k < chars {
-        out.write_char(abc.unsafe_charcode_at((v >> (18 - 6 * k)) & 63).unsafe_to_char())
-      } else {
-        out.write_char('=')
-      }
-    }
-    i += 3
-  }
-  out.to_string()
+  @codec.base64_encode(b)
 }

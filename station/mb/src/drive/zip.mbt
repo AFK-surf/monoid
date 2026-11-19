@@ -33,26 +33,9 @@ pub let max_entries : Int = 65535
 // ── CRC-32 ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ///|
-let crc_table : FixedArray[UInt] = {
-  let t = FixedArray::make(256, 0U)
-  for n = 0; n < 256; n = n + 1 {
-    let mut c = n.reinterpret_as_uint()
-    for _k = 0; _k < 8; _k = _k + 1 {
-      c = if (c & 1U) != 0U { 0xEDB88320U ^ (c >> 1) } else { c >> 1 }
-    }
-    t[n] = c
-  }
-  t
-}
-
-///|
 /// zlib's crc32(chunk, crc): `crc` rolled on over `b`.
 pub fn crc32(b : Bytes, crc : UInt) -> UInt {
-  let mut c = crc ^ 0xFFFFFFFFU
-  for i = 0; i < b.length(); i = i + 1 {
-    c = crc_table[((c ^ b[i].to_uint()) & 0xFFU).reinterpret_as_int()] ^ (c >> 8)
-  }
-  c ^ 0xFFFFFFFFU
+  @codec.crc32_update(crc, b[:])
 }
 
 // ── deflate ─────────────────────────────────────────────────────────────────────────────────────────────────────

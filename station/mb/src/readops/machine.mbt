@@ -313,12 +313,7 @@ fn parse_iso(at : String) -> Double? {
       digits += 1
     }
   }
-  let (yy, mm) = if mo <= 2L { (y - 1L, mo + 9L) } else { (y, mo - 3L) }
-  let era = if yy >= 0L { yy / 400L } else { -((-yy + 399L) / 400L) }
-  let yoe = yy - era * 400L
-  let doy = (153L * mm + 2L) / 5L + d - 1L
-  let doe = yoe * 365L + yoe / 4L - yoe / 100L + doy
-  let days = era * 146097L + doe - 719468L
+  let days = @time.days_from_civil(y.to_int(), mo.to_int(), d.to_int())
   Some(((days * 86400L + h * 3600L + mi * 60L + s) * 1000L + ms).to_double())
 }
 

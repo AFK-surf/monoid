@@ -47,29 +47,7 @@ let record_most : Int = 256
 ///|
 /// `bytes` as base64url with no padding (Buffer's `base64url`).
 pub fn base64url(bytes : Bytes) -> String {
-  let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-  let out = StringBuilder()
-  let n = bytes.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (bytes[i].to_int() << 16) | (bytes[i + 1].to_int() << 8) | bytes[i + 2].to_int()
-    for s in [18, 12, 6, 0] {
-      out.write_char(alphabet.get_char((v >> s) & 63).unwrap())
-    }
-    i += 3
-  }
-  if n - i == 1 {
-    let v = bytes[i].to_int() << 16
-    for s in [18, 12] {
-      out.write_char(alphabet.get_char((v >> s) & 63).unwrap())
-    }
-  } else if n - i == 2 {
-    let v = (bytes[i].to_int() << 16) | (bytes[i + 1].to_int() << 8)
-    for s in [18, 12, 6] {
-      out.write_char(alphabet.get_char((v >> s) & 63).unwrap())
-    }
-  }
-  out.to_string()
+  @codec.base64url_encode(bytes[:])
 }
 
 ///|
