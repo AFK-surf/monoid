@@ -119,7 +119,7 @@ fn chat_read_node(
       Some(top) => a.top = Some(top)
       None => ()
     }
-    // the last message seen whole: the message the last key wholly in sight is, or the last before it; a piece of a
+    // the last message seen whole: the message the last key wholly in sight is, or the last before it; a slice of a
     // long message seen whole is not the message seen whole but where it is its last
     match s.whole {
       Some(w) if !cv.newer => {
@@ -129,7 +129,7 @@ fn chat_read_node(
         }
         while i >= 0 {
           match rs.get(rs.keys[i]) {
-            Some({ entry: Said(m), piece, .. }) if piece.map(fn(pc) { pc.last }).unwrap_or(true) => {
+            Some({ entry: Said(m), .. }) if rs.keys[i] != w || s.whole_slice >= rs.slices(w) - 1 => {
               // (a notice folding several is read to its last: notice_last_seq)
               if m.notice_last_seq > a.whole {
                 a.whole = m.notice_last_seq
@@ -331,7 +331,7 @@ fn chat_nodes_find_list(r : ChatRef) -> FindList {
       let out : Map[Double, Int] = Map([])
       for key in rs.keys {
         match rs.get(key) {
-          Some({ entry: Said(m), .. }) if chat_piece_of(key) == key && seqs.contains(m.seq) =>
+          Some({ entry: Said(m), .. }) if seqs.contains(m.seq) =>
             out[m.seq] = find_times_drawn(m, words)
           _ => ()
         }

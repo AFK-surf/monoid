@@ -9,8 +9,11 @@
 /// `remove` its ✕ at its end, each concentric with the end where it is the last, named as `retry_label` and
 /// `remove_label` say, their tips in `tips`; pressed, `on_press` with what was pressed (the card itself: Open), the
 /// hover ground under the pointer; right clicked or held by a finger, `menu` where (its menu: file_menu's). Read out as
-/// a group named by its name; its name whole in a tip by it while what it says shows cut short (file_card's). The
-/// node.
+/// a group named by its name; its name whole in a tip by it while what it says shows cut short (file_card's).
+/// `pending`: still going up (not `failed`; none said: a card that never goes up, its mark alone, nothing more made for
+/// it), its mark a ring in its place: how far it has come where `progress` says
+/// (0 … 1, the accent's arc), turning where it does not or every byte is gone (确认中). `open`: whether it opens at
+/// all: not, no hover ground and nothing pressed (a file not sent yet has nothing to open). The node.
 #callsite(autofill(loc))
 pub fn file_card_node(
   parent : @view.View,
@@ -24,6 +27,9 @@ pub fn file_card_node(
   remove_label : () -> String,
   on_press : (FileCardPress) -> Unit,
   menu? : (Double, Double) -> Unit,
+  pending? : () -> Bool,
+  progress? : () -> Double? = fn() { None },
+  open? : () -> Bool = fn() { true },
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(card) {
@@ -34,23 +40,48 @@ pub fn file_card_node(
         card_box.then(card_box_round)
       }
     })
-    hover_ground_node(card)
+    hover_ground_node(card, on=open)
     card.says(By(fn() { Some(@view.said(Group, label=name())) })) |> ignore
     // (its name whole by it while what it says shows cut short: file_card's tip)
     tip_node(tips, card, name, repeats=true) |> ignore
     match menu {
       // (right clicked, its menu where the pointer is; held by a finger, there, felt, the press the menu's: lifting it
       // opens nothing. A mouse's button held is a press as long as any: file_menu's, menu_asked's)
-      Some(open) => menu_presses_node(card, fn() { on_press(Open) }, fn(x, y, _) { open(x, y) })
-      None => presses_node(card, fn() { on_press(Open) })
+      Some(menu_at) =>
+        menu_presses_node(card, fn() { if open() { on_press(Open) } }, fn(x, y, _) { if open() { menu_at(x, y) } })
+      None => presses_node(card, fn() { on_press(Open) }, on=open)
     }
-    // (its mark, 24, concentric with its round start)
+    // (its mark, 24, concentric with its round start; going up, the ring in its place: how far, or turning while that
+    // is not known or every byte is gone and its station is still to say so)
     card.box(fn(m) {
       style_node(m, fn() { card_mark }, in_row=true)
-      icon_node(m, "file", card_mark_size, By(fn() { if failed() { theme().p.red } else { theme().p.muted } }), name_now=fn() {
-        file_mark(name())
-      })
-      |> ignore
+      let mark = fn(mark : @view.View) {
+        icon_node(mark, "file", card_mark_size, By(fn() { if failed() { theme().p.red } else { theme().p.muted } }), name_now=fn() {
+          file_mark(name())
+        })
+        |> ignore
+      }
+      match pending {
+        None => mark(m)
+        Some(going_up) =>
+          m.pick(fn() { going_up() && !failed() }, at_once=true, fn(d, going) {
+            if going {
+              progress_spinner_node(
+                d,
+                fn() {
+                  match progress() {
+                    Some(p) if p < 1.0 => Some(if p < 0.0 { 0.0 } else { p })
+                    _ => None
+                  }
+                },
+                size=tile_going_spinner,
+              )
+              |> ignore
+            } else {
+              mark(d)
+            }
+          })
+      }
     })
     |> ignore
     // (as wide as what it says, cut short where the card is at its widest)

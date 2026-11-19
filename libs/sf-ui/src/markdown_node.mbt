@@ -57,7 +57,6 @@ pub fn markdown_node(
   code? : (String) -> ((@view.View, () -> String) -> Unit)? = fn(_) { None },
   files? : (String) -> PlacedNode?,
   screens? : ScreensNode,
-  glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
   piece? : MdPiece? = None,
   piece_by? : () -> MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
@@ -113,7 +112,6 @@ pub fn markdown_node(
       files: files.unwrap_or(fn(_) { None }),
       places: files is Some(_),
       screens,
-      glyphs,
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
       rows_by: match (piece.bind(fn(p) { p.rows }), piece_by) {
@@ -342,9 +340,6 @@ priv struct MdNode {
   /// is images, so nothing is made to choose between them (md_cell_images)
   places : Bool
   screens : ScreensNode?
-  /// how each glyph of its words is drawn, by a state as it is now (markdown_node's `glyphs`: words coming a glyph at a
-  /// time; View::glyphs_by), none: as laid
-  glyphs : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)?
   /// which of the blocks it is drawn for (md_blocks_node's: none, -1)
   block_at : Int
   /// the rows of its table or the items of its list it draws where it is a piece of one (markdown_node's `piece`):
@@ -1025,11 +1020,6 @@ fn md_words_node(
     |> ignore
     // (what a go-to brings before the eyes in them, where they have it: sought_part)
     w.sought(fn() { sought_part(runs(), found(), (md.lit)().0).map(fn(r) { @ui.runs_piece(w, r.0, r.1) }) }) |> ignore
-    // (each glyph as it comes, where it is told so: markdown_node's `glyphs`)
-    match md.glyphs {
-      Some((state, f)) => w.glyphs_by(By(fn() { state(w) }), f) |> ignore
-      None => ()
-    }
     // (on one line as wide as they are, cut short with an ellipsis where the column is narrower: one_line's)
     match one_line {
       Some(f) =>

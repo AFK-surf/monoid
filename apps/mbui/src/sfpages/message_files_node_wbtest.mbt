@@ -346,11 +346,15 @@ test "a file's card whose name shows cut short says it whole by it as the pointe
 /// What `t.audit()` says, but a card's mark centred on its two lines (a file's card, its name over its size; a link to a
 /// screen, its title over its line): the first line's rule (mbui's Tester::first_line_faults), counted on every screen
 /// in corners_first_line_known (a chat's files and references) till the cards put their mark on their first line; said
-/// here once audit() held that rule too (2026-11-15).
+/// here once audit() held that rule too (2026-11-15). The ring of a file going up is in its mark's place, as centred (16).
 fn audit_but_card_marks(t : @ui.Tester) -> Array[String] {
   t
   .audit()
   .filter(fn(f) {
-    !(f.has_prefix("first line: a box in 「") && f.contains(" 24×24,") && f.contains(" off the first of the 2 lines"))
+    !(
+      f.has_prefix("first line: a box in 「") &&
+      (f.contains(" 24×24,") || f.contains(" 16×16,")) &&
+      f.contains(" off the first of the 2 lines")
+    )
   })
 }

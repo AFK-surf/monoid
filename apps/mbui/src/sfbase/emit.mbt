@@ -825,4 +825,4 @@ pub let emit_out_ms_most : Double = emit_screen_ms + emit_line_ms + emit_glyph_j
 
 ///|
 /// How far a message's head slides out of the avatar (points).
-let emit_out_slide : Double = 10.0
+pub let emit_out_slide : Double = 10.0

@@ -27,6 +27,33 @@ pub fn style_node(v : @view.View, look : () -> @ui.Style, in_row? : Bool = false
 }
 
 ///|
+/// style_node's, with what `also` says set by `set_also` in the same one binding (a property of the node's own the style
+/// says nothing of: a message's picture held at a top as it is laid out in the margin, none inline): what every row of
+/// a list sets so binds nothing more for it.
+#callsite(autofill(loc))
+pub fn[T : Eq] style_node_and(
+  v : @view.View,
+  look : () -> @ui.Style,
+  also : () -> T,
+  set_also : (T) -> Unit,
+  in_row? : Bool = false,
+  loc~ : SourceLoc,
+) -> Unit {
+  let was : Ref[StyleSet?] = Ref(None)
+  v
+  .sets_together(fn() { (style_of(look().base, in_row, loc), also()) }, fn(p) {
+    let (s, a) = p
+    style_set(v, was.val, s, loc)
+    was.val = Some(match was.val {
+      Some(w) => { ..s, says: w.says.joined(s.says) }
+      None => s
+    })
+    set_also(a)
+  })
+  |> ignore
+}
+
+///|
 /// style_node's, with an outer ring (`ring`, as View::ring takes it) worked out in the same one binding: a tab's
 /// capsule whose ring follows the keyboard's focus on what it holds (tab_bar_node).
 #callsite(autofill(loc))

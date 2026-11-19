@@ -1,9 +1,8 @@
 // Someone else's message as nodes of the window's tree, made once (message.mbt's others_message, sent_elsewhere, their
 // styles the same): its picture out in the margin before its words (inline: over its head's start), its head (name,
 // where it went, time; where a mouse is what it is used with and it offers itself, its ⋯ at the head's end; right
-// clicked, the same: message_menu_node), what it says under it. Not here yet: its picture held under the
-// pane's top as a long one scrolls past (the old one's c.stick: the list's, to come), coming out of its agent's picture
-// (emit).
+// clicked, the same: message_menu_node), what it says under it; its picture held under the pane's top as a long one
+// scrolls past (the old one's c.stick: View::sticky, where its list says so).
 
 ///|
 /// What a message offers of itself (share_turn_tool's, others_message's `share`): its key (its list's Entry::id, as a
@@ -24,8 +23,10 @@ pub(all) struct MessageShare {
 /// finger has these on the bar over what it holds picked), its ⋯ at the head's end, shown while the pointer is on the
 /// row or its menu is open (its words, its link, its turn shared: @sfbase.message_items, beside the ⋯'s room), and a
 /// right click on the row offers the same to the window's menu (@sfbase.share_offer, at the click's moment); the ⋯
-/// shown as well while `pointed_also` says (the pointer on another piece of the same message). The row's node, and
-/// whether its ⋯'s menu is open (as that changes: presented_from).
+/// shown as well while the pointer is on another slice of the same message (View::list_item_pointed). `stick_top`: its
+/// picture held so far under the top of what scrolls it as a long one scrolls past (View::sticky, the old view's
+/// c.stick), out in the margin only; none, never. The row's node, and whether its ⋯'s menu is open (as that changes:
+/// presented_from).
 fn message_others_node(
   v : @view.View,
   here : MessageNodeHere,
@@ -35,7 +36,7 @@ fn message_others_node(
   route : ((@view.View) -> Unit)?,
   body : (@view.View) -> Unit,
   share? : MessageShare? = None,
-  pointed_also? : () -> Bool = fn() { false },
+  stick_top? : () -> Double,
 ) -> (@view.View, () -> Bool) {
   // (its ⋯ where a mouse is the native input: laid out by it, the head as it is whichever hand is on it now; a right
   // click whichever: message_menu_node)
@@ -78,7 +79,7 @@ fn message_others_node(
               menu_on.val = open
               // (at once, as the old row's hand_shown: shown by where the hand is, no coming or going of its own, so
               // the ⋯ of a row the pointer left is gone as it leaves, not still there beside the next's)
-              room.show(fn() { @sf.hovered_in_node(row) || pointed_also() || open() }, at_once=true, fn(m) {
+              room.show(fn() { @sf.hovered_item_node(row) || open() }, at_once=true, fn(m) {
                 @sf.icon_button_node(m, "more", fn() { @sf.t("web-main.menu.more") }, fn() {
                   // (the message lit while it shows, by its key: every piece of a long one, as its right click's)
                   let k = @signals.untracked(s.key)
@@ -114,10 +115,22 @@ fn message_others_node(
     })
     |> ignore
     // (over the row, at its start: out in the margin, or over the head's start where inline)
-    // (one node over the row, its room its own: no box of the layer's round it)
+    // (one node over the row, its room its own: no box of the layer's round it; as tall as the picture it holds, not
+    // the row, so that held at a top (View::sticky) it goes no further than the row's foot leaves it)
     row.box(fn(av) {
-      av.over(Is(true)) |> ignore
-      @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
+      av.over(Is(true), from_top=true) |> ignore
+      match stick_top {
+        // (out in the margin, held under the pane's top as a long one scrolls past, pushed up by its foot: c.stick's;
+        // set with its look, in the one binding)
+        Some(at) =>
+          @sf.style_node_and(
+            av,
+            fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } },
+            fn() { if message_inline(here) { None } else { Some(at()) } },
+            fn(held) { av.sticky(Is(held)) |> ignore },
+          )
+        None => @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
+      }
       // (out in the margin as much as it is drawn so: message_inline_way)
       message_inline_way(av, here, @sf.message_avatar_reach)
       avatar(av)

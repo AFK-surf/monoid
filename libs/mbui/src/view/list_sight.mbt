@@ -27,13 +27,20 @@
 /// `foot_whole` whether it is at its foot with none from the first in sight on still on its way in (its end seen);
 /// `tall` how tall `first`'s block is as it is counted (how far down it `into` is, as a share: a reader's place in a
 /// block of its text).
+///
+/// `slice`: which of `first`'s slices it is (View::scrolls_window's `slices`; 0 where it is drawn in one), `into` and
+/// `tall` that slice's; `last_slice` which of `last`'s; `whole_slice` which of `whole`'s (a key seen whole only where
+/// that is its last).
 #derive(Eq, Debug)
 pub(all) struct Sight[K] {
   first : K
+  slice : Int
   into : Double
   tall : Double
   last : K
+  last_slice : Int
   whole : K?
+  whole_slice : Int
   from_foot : Double
   shows : Double
   at_foot : Bool
@@ -46,7 +53,8 @@ pub(all) struct Sight[K] {
 /// same in a row. For a handler's accounts, never for what is made.
 pub fn[K] ListPlace::on_sight(self : ListPlace[K], f : (Sight[K]) -> Unit) -> Unit {
   let ids = self.ids
-  self.at.sight_fns.push(fn(s) { f(s.keyed(ids)) })
+  let sl = self.slices
+  self.at.sight_fns.push(fn(s) { f(s.keyed(ids, sl)) })
   // (its list told it from now: none listening, nothing of it is worked out or owed)
   (self.at.sight_listened)()
 }
@@ -78,7 +86,7 @@ pub fn[K] ListPlace::wake(self : ListPlace[K]) -> Unit {
 /// it, what it has in sight as it is counted now; none before its first layout.
 pub fn[K] ListPlace::sight_now(self : ListPlace[K]) -> Sight[K]? {
   let now = if self.at.sight_fns.is_empty() { (self.at.sight_of)() } else { self.at.sight }
-  now.map(fn(s) { s.keyed(self.ids) })
+  now.map(fn(s) { s.keyed(self.ids, self.slices) })
 }
 
 ///|
@@ -86,36 +94,42 @@ pub fn[K] ListPlace::sight_now(self : ListPlace[K]) -> Sight[K]? {
 /// (`on_sight` and `sight_now` tell where that leaves it, at its end): for what records where the reader left the list
 /// as they leave it mid-glide, never for what is made or bound. None before its first layout or once it is let go.
 pub fn[K] ListPlace::sight_live(self : ListPlace[K]) -> Sight[K]? {
-  (self.at.sight_of)().map(fn(s) { s.keyed(self.ids) })
+  (self.at.sight_of)().map(fn(s) { s.keyed(self.ids, self.slices) })
 }
 
 ///|
 /// How far block `to`'s top lies under block `from`'s as the list counts its blocks now (measured, or `est` where not
 /// yet): read off what is counted, nothing laid out or measured. None where either is not among its keys, or the list is
 /// not made; `measured`: none as well where a block from `from` down to `to` is not measured yet (how far is then not
-/// known, only guessed).
+/// known, only guessed). `from_slice`, `to_slice`: which slice of each key (View::scrolls_window's `slices`), its first
+/// where it says none.
 pub fn[K : Hash + Eq] ListPlace::span_between(
   self : ListPlace[K],
   from : K,
   to : K,
+  from_slice? : Int = 0,
+  to_slice? : Int = 0,
   measured? : Bool = false,
 ) -> Double? {
   // (looked up, not numbered: a key never among them gets no number for it)
   match (self.ids.ids.get(from), self.ids.ids.get(to)) {
-    (Some(a), Some(b)) => (self.at.span_of)(a, b, measured)
+    (Some(a), Some(b)) => (self.at.span_of)(self.slices.sid(a, from_slice), self.slices.sid(b, to_slice), measured)
     _ => None
   }
 }
 
 ///|
-/// What is in sight of the keys by their numbers, as of the keys (ListKeys).
-fn[K] Sight::keyed(self : Sight[Int], ids : ListKeys[K]) -> Sight[K] {
+/// What is in sight of the blocks by their numbers, as of the keys (ListKeys; their slices by SliceIds).
+fn[K] Sight::keyed(self : Sight[Int], ids : ListKeys[K], sl : SliceIds) -> Sight[K] {
   {
-    first: ids.key(self.first),
+    first: ids.key(sl.kid_of(self.first)),
+    slice: sl.slice_of(self.first),
     into: self.into,
     tall: self.tall,
-    last: ids.key(self.last),
-    whole: self.whole.map(fn(i) { ids.key(i) }),
+    last: ids.key(sl.kid_of(self.last)),
+    last_slice: sl.slice_of(self.last),
+    whole: self.whole.map(fn(i) { ids.key(sl.kid_of(i)) }),
+    whole_slice: self.whole.map_or(0, fn(i) { sl.slice_of(i) }),
     from_foot: self.from_foot,
     shows: self.shows,
     at_foot: self.at_foot,
@@ -182,10 +196,13 @@ fn[K] sight_counted(
   let whole = if k >= 0 && k >= i && all.top(k) >= under - 1.0e-6 { Some(all.key(k)) } else { None }
   Some({
     first: all.key(i),
+    slice: 0,
     into: under - all.top(i),
     tall: all.h(i),
     last: all.key(j),
+    last_slice: 0,
     whole,
+    whole_slice: 0,
     from_foot: most - x,
     shows: vh,
     at_foot: most - x <= 1.0e-6,

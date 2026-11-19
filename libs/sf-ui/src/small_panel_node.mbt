@@ -70,3 +70,10 @@ pub fn panel_button_node(
 pub fn hovered_in_node(v : @view.View) -> Bool {
   @ui.pointing() is Mouse && v.pointed_in()
 }
+
+///|
+/// Whether a mouse is over any block of the list's item `v` is a block of (@view.View::list_item_pointed: every slice of
+/// a long message as one), never a finger.
+pub fn hovered_item_node(v : @view.View) -> Bool {
+  @ui.pointing() is Mouse && v.list_item_pointed()
+}

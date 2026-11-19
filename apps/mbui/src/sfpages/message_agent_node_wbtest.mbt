@@ -299,22 +299,22 @@ test "an agent's message with a card in its words' place draws none of its words
 /// A plan of a message held out of a chat's list (chat_body_node's held keys), its moments said; what it flies from and
 /// its pictures none.
 fn ag_held_plan() -> AgentOutPlan {
-  { came: 0.0, folds: true, float_at: 170.0, float_ms: 440.0, spit_end: 990.0, from: fn() { (0.0, 0.0, 0.0, 0.0) }, face_at: Ref(None), av: Ref(None), glyphs: Ref(None) }
+  { came: 0.0, folds: true, float_at: 170.0, float_ms: 440.0, spit_end: 990.0, from: fn() { (0.0, 0.0, 0.0, 0.0) }, face_at: Ref(None), av: Ref(None), has_face: true }
 }
 
 ///|
-test "a chat's list's held keys: an answer held out with its pieces, the line it ends kept under the row it stood under, or at the end where that is gone; nothing held, the keys as given" {
-  let ks = ["m:1", "m:2", "m:3", "m:3#1", "act:a"]
+test "a chat's list's held keys: an answer held out (its slices with it), the line it ends kept under the row it stood under, or at the end where that is gone; nothing held, the keys as given" {
+  let ks = ["m:1", "m:2", "m:3", "act:a"]
   let held : Map[String, AgentOutPlan] = Map([])
   let lingering : Map[String, (ChatBodyRow, String?)] = Map([])
   assert_true(physical_equal(chat_keys_held(ks, held, lingering), ks), msg="nothing held: the keys as given")
   held["m:3"] = ag_held_plan()
   assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
   // (its turn said over: the line gone from the core's rows, kept under the row it stood under)
-  let row : ChatBodyRow = { entry: Entry::Newer, gap: NoGap, piece: None }
-  lingering["act:a"] = (row, chat_key_before(ks, "act:a", fn(k) { held.contains(chat_piece_of(k)) }))
+  let row : ChatBodyRow = { entry: Entry::Newer, gap: NoGap, slices: 1 }
+  lingering["act:a"] = (row, chat_key_before(ks, "act:a", fn(k) { held.contains(k) }))
   assert_eq(lingering.get("act:a").map(fn(l) { l.1 }), Some(Some("m:2")))
-  assert_eq(chat_keys_held(["m:1", "m:2", "m:3", "m:3#1", "o:x"], held, lingering), ["m:1", "m:2", "act:a", "o:x"])
+  assert_eq(chat_keys_held(["m:1", "m:2", "m:3", "o:x"], held, lingering), ["m:1", "m:2", "act:a", "o:x"])
   assert_eq(chat_keys_held(["m:1", "m:3"], held, { "act:a": (row, Some("gone")) }), ["m:1", "act:a"])
   // (still in the core's rows: as they have it)
   assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
@@ -378,4 +378,28 @@ test "a picture an agent places in its words: told another size, its box follows
   assert_true(after.length() > 0, msg="\{Repr(after)}")
   let (bw, bh, _) = image_box(attachment_of({ "name": "shot.png", "path": "/w/uploads/shot.png", "width": 600.0, "height": 800.0 }), image_least, min_side=image_min_side)
   assert_true((after[0][3] - after[0][2] * bh / bw).abs() < 0.5, msg="\{Repr(after)}")
+}
+
+///|
+test "a chat's agents' messages coming out one at a time: another agent's after the last is out, folding its line as that one is; the same agent's as it plans it; none before it, at once" {
+  let q : AgentOutQueue = { tail_end: @double.neg_infinity, last_agent: "" }
+  // (none out: from now)
+  assert_eq(q.after("a", 100.0, @sfbase.Pose::Fold.ms()), 100.0)
+  q.told("a", { ..ag_held_plan(), spit_end: 990.0 })
+  // (another agent's come at 200 while a's is out till 990: its line folds from 990 less a fold, out at 990)
+  let lead = @sfbase.Pose::Fold.ms()
+  assert_eq(q.after("b", 200.0, lead), 990.0 - lead)
+  // (a's own: as its own plan has it, dropping on from its last)
+  assert_eq(q.after("a", 200.0, lead), 200.0)
+  // (after it is out: from then)
+  assert_eq(q.after("b", 1200.0, lead), 1200.0)
+}
+
+///|
+test "an agent's message with no line of its at work before it: its picture there as it comes, its head sliding out and its words revealed from then, nothing folding or flying" {
+  let p = agent_out_plan_faceless(500.0)
+  assert_eq((p.folds, p.has_face, p.float_at, p.float_ms), (false, false, 500.0, 0.0))
+  assert_eq(p.spit_end, 500.0 + @sfbase.Pose::Spit.ms())
+  // (its words revealed from that moment, varied by its seq)
+  assert_eq(agent_out_reveal(p, { ..ag_msg("links"), seq: 42.0 }), (500.0, 42))
 }

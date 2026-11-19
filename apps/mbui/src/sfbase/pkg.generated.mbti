@@ -488,6 +488,8 @@ pub fn emit_out(@ui.Ctx, Int32, Int32, Emits, Double) -> Unit
 
 pub let emit_out_ms : Double
 
+pub let emit_out_slide : Double
+
 pub fn emit_release(Emits) -> Unit
 
 pub fn emit_step(@ui.Ctx, Emits, Turns, () -> Double) -> Unit

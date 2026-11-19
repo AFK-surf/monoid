@@ -105,7 +105,7 @@ test "a key coming by data at the foot of a list at its end: at the change the k
     assert_eq(told[0].0, rc_at, msg="at \{rate} a second: told at the change")
     assert_eq(
       told[0].1,
-      { first: 26, into: 0.0, tall: sg_tall, last: 30, whole: Some(29), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: false },
+      { first: 26, slice: 0, into: 0.0, tall: sg_tall, last: 30, last_slice: 0, whole: Some(29), whole_slice: 0, from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: false },
       msg="at \{rate} a second",
     )
     assert_eq(told[1].0, ends, msg="at \{rate} a second: told at its way's end")
@@ -169,7 +169,7 @@ test "a key come at once (what an answer tells, an at_once list, motion reduced)
       assert_eq(told[0].0, rc_at, msg="\{how}, at \{rate} a second")
       assert_eq(
         told[0].1,
-        { first: 26, into: 0.0, tall: sg_tall, last: 30, whole: Some(30), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true },
+        { first: 26, slice: 0, into: 0.0, tall: sg_tall, last: 30, last_slice: 0, whole: Some(30), whole_slice: 0, from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true },
         msg="\{how}, at \{rate} a second",
       )
     }

@@ -512,6 +512,7 @@ fn person_said_node(
   found_at? : () -> Int? = fn() { None },
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   share? : MessageShare? = None,
+  stick_top? : () -> Double,
 ) -> MessageRowNode {
   let menu_on : Ref[() -> Bool] = Ref(fn() { false })
   let row = message_row_frame_node(v, key, side, top, fn(r) {
@@ -556,6 +557,7 @@ fn person_said_node(
         )
       },
       share~,
+      stick_top?,
     )
     menu_on.val = on
   })

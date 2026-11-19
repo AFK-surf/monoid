@@ -641,7 +641,7 @@ pub fn file_card(@ui.Ctx, String, String, Double, path? : String, dir? : Bool, n
 
 pub fn file_card_across(@ui.Ctx, String, Double, meta? : String, ends? : Int32) -> Double
 
-pub fn file_card_node(@view.View, TipLayer, () -> String, () -> String, () -> Bool, () -> Bool, () -> Bool, () -> String, () -> String, (FileCardPress) -> Unit, menu? : (Double, Double) -> Unit) -> @view.View
+pub fn file_card_node(@view.View, TipLayer, () -> String, () -> String, () -> Bool, () -> Bool, () -> Bool, () -> String, () -> String, (FileCardPress) -> Unit, menu? : (Double, Double) -> Unit, pending? : () -> Bool, progress? : () -> Double?, open? : () -> Bool) -> @view.View
 
 pub let file_card_w : Double
 
@@ -859,6 +859,8 @@ pub let hover_tile_least : @ui.Len
 pub let hover_tile_most : @ui.Len
 
 pub fn hovered_in_node(@view.View) -> Bool
+
+pub fn hovered_item_node(@view.View) -> Bool
 
 pub fn hovered_node(@view.View) -> Bool
 
@@ -2277,6 +2279,7 @@ pub fn strokes_ms(Int32) -> Double
 pub let strong : @ui.TextStyle
 
 pub fn style_node(@view.View, () -> @ui.Style, in_row? : Bool) -> Unit
+pub fn[T : Eq] style_node_and(@view.View, () -> @ui.Style, () -> T, (T) -> Unit, in_row? : Bool) -> Unit
 
 pub fn styled_words(@view.View, () -> String, () -> @ui.TextStyle) -> @view.View
 

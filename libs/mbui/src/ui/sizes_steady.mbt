@@ -525,6 +525,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // (and whether it shakes across now, itself or what holds it (View::shakes_while, motion's ShakeWay::shakes): where
     // its left edge is drawn is that way's while it goes, turning back on purpose; its top and its sizes judged as ever)
     let shaken = Array::make(k, false)
+    // (and whether it is held at a top as what scrolls it moves, itself or what holds it in its row (View::sticky):
+    // where it is down its row is the hold's, stopping as it is caught and going on as it is let go on purpose; its
+    // sizes, where it is across and where it is down out of a row judged as ever)
+    let stuck = Array::make(k, false)
     let puts_now : Map[Int, (Double, Double)] = Map([])
     let laids_now : Map[Int, Double] = Map([])
     // (what holds each before it: a node of the window's tree put among the frame's may come after what it holds)
@@ -594,6 +598,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       if p >= 0 && p < k && put_now[p] {
         put_now[i] = true
       }
+      match (tree, tree_frame_ids.get(i)) {
+        (Some(tr), Some(id)) if tr.sticks_any() && tr.is_sticky(id) => stuck[i] = true
+        _ => ()
+      }
       shaken[i] = (p >= 0 && p < k && shaken[p]) ||
         (match (tree, tree_frame_ids.get(i)) {
           (Some(tr), Some(id)) => tr.shakes_at(id.at, now)
@@ -645,6 +653,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           col_at[i] = col_at[p]
           in_row[i] = in_row[p]
           set_out[i] = set_out[p]
+          stuck[i] = stuck[i] || stuck[p]
         }
         // (on a flight's way: drawn in the window's terms, in no row of what it is drawn among (shared.mbt), what it
         // holds measured from it as ever)
@@ -841,6 +850,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // (its left edge while it shakes across: the shake's, there and back on purpose; seen anew from its first frame
         // at rest, as one never seen)
         if shaken[i] && m.0 == MEASURE_LEFT {
+          seen.clear()
+          ns.turned[slot] = -1.0e9
+          ns.first_unasked[slot] = false
+          continue
+        }
+        // (where it is down its row while it is held at a top (View::sticky): the hold's, caught and let go on purpose;
+        // seen anew from its first frame at rest)
+        if stuck[i] && in_row && m.0 == MEASURE_TOP {
           seen.clear()
           ns.turned[slot] = -1.0e9
           ns.first_unasked[slot] = false

@@ -1496,6 +1496,16 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   // (the nodes what they hold is drawn stretched in, as Android's list at an end, the innermost last: its stretch, where
   // its top is drawn, how tall, and the clip it cuts what it holds to: View::stretches)
   let stretching : Array[(@view.NodeId, Double, Double, Double, Double, Double)] = []
+  // (the nodes what they hold is revealed in, on their way, the innermost last: @view.View::spatial_reveal, RevealAt)
+  let unveiling : Array[RevealAt] = []
+  // (none said anywhere: nothing of it looked at, node by node)
+  let reveals = tree.reveals_any()
+  let sticks = tree.sticks_any()
+  // (what draws differently frame by frame as it is: revealed on its way, or holding what is held at a top as what
+  // scrolls it moves; never kept and moved whole)
+  let unsteady = fn(id : @view.NodeId) {
+    (sticks && tree.has_sticky_in(id)) || (reveals && tree.reveal_in(id, self.clock))
+  }
   // what the old frame puts over all of it at its root (its layers: the overlays its views open, menus, sheets,
   // dialogs, raised to the root's end; what is built around the old views over them, a splash), over the tree, in their
   // order, the one old view the whole window or not (the way there: an old view's overlay not yet placed, cut and
@@ -1607,8 +1617,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       grouping.val is None &&
       fading.length() == 0 &&
       stretching.length() == 0 &&
+      unveiling.length() == 0 &&
       raising.val is None &&
       !raise_holds(c.id) &&
+      !unsteady(c.id) &&
       dr.mode == 0 &&
       !shooting.val &&
       groups_on() &&
@@ -1683,6 +1695,9 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     while stretching.length() > 0 && !tree.holds_in_order(stretching[stretching.length() - 1].0, c.id) {
       stretching.pop() |> ignore
     }
+    while unveiling.length() > 0 && !tree.holds_in_order(unveiling[unveiling.length() - 1].id, c.id) {
+      unveiling.pop() |> ignore
+    }
     // (the root, the window, is drawn by nothing of its own)
     if c.id.at == 0 {
       return false
@@ -1724,7 +1739,11 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // all it holds passed over; else drawn, and kept as it ends where it can be drawn so again. So too what else holds
     // others, gone through again and again with nothing of it changed (ride_holder), in a row or in none, not in a list
     // drawn whole as one but in its rows; one found holding a row or an old view let be, never begun again)
-    if fading.length() == 0 && stretching.length() == 0 && !raise_holds(c.id) {
+    if fading.length() == 0 &&
+      stretching.length() == 0 &&
+      unveiling.length() == 0 &&
+      !raise_holds(c.id) &&
+      !unsteady(c.id) {
       let row = ridings_rows.val == 0 &&
         ((ride_may(c, x, y) && tree.rides_scroll(c.id)) || island_rides(c))
       if row {
@@ -1760,6 +1779,14 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       }
     }
     ride_node(c, x, y, s, false)
+    // (what reveals what it holds, its reveal not yet begun: none of it seen (@view.Tree::each_drawn_in_order), a frame
+    // asked for till its way is over, so that it is drawn as it begins)
+    if reveals && a <= 0.002 {
+      match tree.spatial_reveal_of(c.id, self.clock) {
+        Some(r) if self.clock <= r.start_at => self.now_before(r.end_at) |> ignore
+        _ => ()
+      }
+    }
     if a <= 0.002 {
       self.ride_spot(c, x, y, s, a, false)
       return false
@@ -1953,6 +1980,21 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         inst_fade(self.inst, k * inst_size, y0, top, y1, foot)
         inst_fade_across(self.inst, k * inst_size, x0, start, x1, end)
       }
+    }
+    // (what it draws, and what it holds after it, revealed as each that reveals it says, the outermost first: its own
+    // with it where it reveals itself; @view.View::spatial_reveal)
+    if reveals {
+      match tree.spatial_reveal_of(c.id, self.clock) {
+        Some(r) =>
+          match self.reveal_begin(c, r, x, y, s, k0) {
+            Some(at) => unveiling.push(at)
+            None => ()
+          }
+        None => ()
+      }
+    }
+    for at in unveiling {
+      self.reveal_insts(at, k0, self.ninst)
     }
     let (start, top, end, foot) = match tree.cut_soft_of(c.id) {
       // (what it holds past its top and foot faded towards them, as far as it reaches past, no further than half of

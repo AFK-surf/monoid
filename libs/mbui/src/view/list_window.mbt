@@ -516,6 +516,17 @@ pub(all) struct ListBand[K] {
 /// blocks, each from one block's top to another's foot as they are placed (ListBand), and what makes each one's look
 /// in the node drawing it (its ground, the ways it is lit by, by its band as it is now): what is lit across several
 /// blocks drawn once.
+///
+/// `slices`: how many blocks a key is drawn in (1 at least: a long message a block a piece of it), each a block of the
+/// list of its own (made as it comes to show, measured, held where it is read, taken for another key's of its make as
+/// one key's block is), the key alone said to the page: made by `make_slice` with its key and which slice of it, taken
+/// for another by `make_reused_slice` of the kinds `reused_slice` gives each (else `make`, `reused` and `make_reused`
+/// as ever, its slice not said); a band from one key to another from the first slice of the one to the last of the
+/// other; brought (ListPlace::bring's `slice`) or followed from (its first) by its key; what is in sight told by key
+/// and slice (Sight's `slice`). Each of its blocks lends what its key's are as one (View::list_item_pointed: the pointer
+/// on any of them; View::list_item_span: the stretch down the window they take together). `keep_first_slice`: a key
+/// whose first slice is kept while any of its later ones has a slot, laid where it rests taking no room, what it holds
+/// held at a top (View::sticky) pushed up by the foot of the key's last slice, not its own.
 pub fn[K : Hash + Eq] View::scrolls_window(
   self : View,
   s : Scroll,
@@ -546,23 +557,44 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   foot? : (View) -> Unit,
   foot_clear? : () -> Double = fn() { 0.0 },
   bands? : (() -> Array[ListBand[K]], (View, () -> ListBand[K]) -> Unit),
+  slices? : (K) -> Int,
+  make_slice? : (View, K, Int) -> Unit,
+  reused_slice? : (K, Int) -> Int?,
+  make_reused_slice? : (View, () -> K, () -> Int) -> Unit,
+  keep_first_slice? : (K) -> Bool,
 ) -> View {
   guard self.live() is Some(_) else { return self }
   // (what asks it to show a block or its foot: the page's, else its own, which End asks its foot of at once,
   // scroll_keys.mbt; its keys' numbers its own, so a key asked of it before it is among the keys is the same one)
   let place = place.unwrap_or(ListPlace::new())
   let ids = place.ids
-  let k = fn(i : Int) { ids.key(i) }
+  // (its blocks by their numbers: a key's slices each a number of its own where it says them, else its key's own:
+  // SliceIds, compiled once whatever its keys)
+  let sl = place.slices
+  let count = slices.map(fn(f) { fn(kid : Int) { f(ids.key(kid)) } })
+  let sliced = count is Some(_)
+  if sliced {
+    sl.on = true
+  }
+  let k = fn(i : Int) { ids.key(sl.kid_of(i)) }
   let band_ids = fn(b : ListBand[K]) -> ListBand[Int] {
-    { from: ids.id(b.from), upto: ids.id(b.upto), top: b.top, foot: b.foot }
+    let (f, u) = (ids.id(b.from), ids.id(b.upto))
+    { from: sl.sid(f, 0), upto: sl.sid(u, sl.count_of(u) - 1), top: b.top, foot: b.foot }
   }
   let band_keys = fn(b : ListBand[Int]) -> ListBand[K] {
     { from: k(b.from), upto: k(b.upto), top: b.top, foot: b.foot }
   }
   self.scrolls_window_ids(
     s,
-    fn() { ids.all(keys()) },
-    fn(v, i) { make(v, k(i)) },
+    match count {
+      Some(c) => fn() { sl.all(ids.all(keys()), c) }
+      None => fn() { ids.all(keys()) }
+    },
+    match (sliced, make_slice) {
+      (true, Some(ms)) => fn(v, i) { ms(sl.lent_to(v, place.at, fn() { i }), k(i), sl.slice_of(i)) }
+      (true, None) => fn(v, i) { make(sl.lent_to(v, place.at, fn() { i }), k(i)) }
+      _ => fn(v, i) { make(v, k(i)) }
+    },
     est~,
     slop?=slop,
     bar?=bar,
@@ -582,8 +614,16 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     place=place.at,
     near_foot?=near_foot,
     near_top?=near_top,
-    reused?=reused.map(fn(f) { fn(i) { f(k(i)) } }),
-    make_reused?=make_reused.map(fn(f) { fn(v, i : () -> Int) { f(v, fn() { k(i()) }) } }),
+    reused?=match (sliced, reused_slice) {
+      (true, Some(rs)) => Some(fn(i) { rs(k(i), sl.slice_of(i)) })
+      _ => reused.map(fn(f) { fn(i) { f(k(i)) } })
+    },
+    make_reused?=match (sliced, make_reused_slice, make_reused) {
+      (true, Some(mr), _) =>
+        Some(fn(v, i : () -> Int) { mr(sl.lent_to(v, place.at, i, taken=true), fn() { k(i()) }, fn() { sl.slice_of(i()) }) })
+      (true, None, Some(f)) => Some(fn(v, i : () -> Int) { f(sl.lent_to(v, place.at, i, taken=true), fn() { k(i()) }) })
+      _ => make_reused.map(fn(f) { fn(v, i : () -> Int) { f(v, fn() { k(i()) }) } })
+    },
     head?=head,
     foot?=foot,
     foot_clear~,
@@ -591,6 +631,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       let (all, look) = b
       (fn() { all().map(band_ids) }, fn(v, band : () -> ListBand[Int]) { look(v, fn() { band_keys(band()) }) })
     }),
+    keep_first?=match (sliced, keep_first_slice) {
+      (true, Some(f)) => Some(fn(i : Int) { f(k(i)) })
+      _ => None
+    },
+    slice_ends?=if sliced { Some(fn(i : Int) { sl.ends_of(i) }) } else { None },
   )
 }
 
@@ -737,6 +782,8 @@ fn View::scrolls_window_ids(
   foot? : (View) -> Unit,
   foot_clear~ : () -> Double,
   bands? : (() -> Array[ListBand[Int]], (View, () -> ListBand[Int]) -> Unit),
+  keep_first? : (Int) -> Bool,
+  slice_ends? : (Int) -> (Int, Int),
 ) -> View {
   guard self.live() is Some(_) else { return self }
   // (its head and its foot, once made, and how tall the foot is as its fill last measured it: the room kept under its
@@ -2128,6 +2175,32 @@ fn View::scrolls_window_ids(
       }
     })
     |> ignore
+    // (the first slice of a key whose first is kept (`keep_first`): what it holds held at a top (View::sticky) pushed up
+    // by the foot of the key's last slice, so far past its own. Followed only by a block made for the first slice of a
+    // key said kept as it is made: one taken for another is of the same kind as it was made for (`reused`), the many
+    // others binding nothing more)
+    let in_slices = match (keep_first, slice_ends) {
+      (Some(kf), Some(ends)) => {
+        let (s0, last) = ends(k)
+        s0 == k && s0 != last && @signals.untracked(fn() { kf(k) })
+      }
+      _ => false
+    }
+    match (keep_first, slice_ends) {
+      (Some(kf), Some(ends)) if in_slices =>
+        v.reacts(fn() {
+          let i = key()
+          let (s0, last) = ends(i)
+          guard i == s0 && last != s0 && kf(i) else { return 0.0 }
+          let all = counted(laid.get())
+          match (laid_at.get(s0), laid_at.get(last)) {
+            (Some(a), Some(b)) if a < all.length() && b < all.length() =>
+              dmax(0.0, all.top(b) + all.h(b) - (all.top(a) + all.h(a)))
+            _ => 0.0
+          }
+        }, fn(e) { v.sticky_foot_extra(e) })
+      _ => ()
+    }
     made(v)
   }
   // (how tall what it holds comes to with its blocks where `all` has them, and its foot's room, untracked)
@@ -2344,6 +2417,14 @@ fn View::scrolls_window_ids(
           _ => None
         }
       }
+      // (how tall a block is counted now: read off them, as span_of)
+      p.tall_of = fn(a) {
+        let all = counted(laid.untracked())
+        match laid_at.get(a) {
+          Some(i) if i < all.length() => Some(all.h(i))
+          _ => None
+        }
+      }
       // (span_of kept past the list as sight_of is: what reads where the reader left it as the page is let go reads both
       // as they were last counted)
       self.owns(fn() {
@@ -2478,6 +2559,17 @@ fn View::scrolls_window_ids(
   // them (a wheel going back and forth over where they end makes and lets go nothing), and as the keys change among
   // them; the rest have no node, the column holding a spacer over them and one under, as tall as they are counted)
   let slot_keys : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { physical_equal(a, b) })
+  // (a key in slices whose first slice is kept while a later one of its shows (`keep_first`): that first slice, where
+  // the first that shows is a later one of such a key, and it is counted, as the slots are found (slots_cover); slotted
+  // over where it rests, taking no room, so the slots stay one run and what lies between them and it has none. Only of
+  // a key that shows: one in the slots' margin alone keeps nothing more)
+  let pinned_key : @signals.Signal[Int?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let with_pinned = fn(ks : Array[Int]) -> Array[Int] {
+    match pinned_key.get() {
+      Some(p) if !ks.contains(p) => [p] + ks
+      _ => ks
+    }
+  }
   // (where the slots' first key was found, in which column and at how many of its fillings: while it is filled no
   // more, the slots are where they were found and what covers what shows is told by places alone, no key looked up)
   let slots_found : Ref[(Column[Int], Int, Int)?] = Ref(None)
@@ -2498,8 +2590,44 @@ fn View::scrolls_window_ids(
       }
     }
   }
-  let slots_cover = fn(all : Places[Int], need : Array[Int], top : Double, vh : Double) {
+  // (`pin`: the first slice kept worked out anew, only where what shows is settled: as the list scrolls, and as a fill
+  // ends; not as the slots are brought up to keys changed, nor at each pass of a fill still measuring its way up, where
+  // a first slice kept would be made and measured among what is still counted, and move where the fill comes to rest)
+  let slots_cover = fn(all : Places[Int], need : Array[Int], top : Double, vh : Double, pin : Bool) {
     let n = all.length()
+    // (the first slice kept, of the first key that shows: pinned_key's)
+    // (that shows: met where it shows, not one of the margin round it, which would keep a first slice wholly out of
+    // sight for a later one that is too)
+    let pinned = match (keep_first, slice_ends) {
+      (Some(kf), Some(ends)) if pin => {
+        let mut first : Int? = None
+        let mut lo = n
+        for k in need {
+          match laid_at.get(k) {
+            Some(i) if i < lo && shown_now.contains(k) && all.top(i) + all.h(i) > top && all.top(i) < top + vh => {
+              lo = i
+              first = Some(k)
+            }
+            _ => ()
+          }
+        }
+        match first {
+          Some(f) => {
+            let (s0, _) = ends(f)
+            if s0 != f && laid_at.contains(s0) && @signals.untracked(fn() { kf(f) }) {
+              Some(s0)
+            } else {
+              None
+            }
+          }
+          None => None
+        }
+      }
+      _ => None
+    }
+    if pin && pinned_key.untracked() != pinned {
+      pinned_key.set(pinned)
+    }
     if n == 0 {
       slots_found.val = None
       if slot_keys.untracked().length() > 0 {
@@ -2626,7 +2754,7 @@ fn View::scrolls_window_ids(
     for i in a..=b {
       ks.push(all.key(i))
     }
-    keep_leaving(ks)
+    keep_leaving(with_pinned(ks))
     slots_found.val = if a <= b { Some((all.col, all.col.refills, a)) } else { None }
     slot_keys.set(ks)
   }
@@ -2844,7 +2972,7 @@ fn View::scrolls_window_ids(
       let changed = if stale {
         let top = foot_top(all, vh)
         let visible = window(all, top, vh, all.length(), -1, true)
-        slots_cover(all, visible, top, vh)
+        slots_cover(all, visible, top, vh, false)
         visible != shown_now
       } else {
         false
@@ -2867,7 +2995,7 @@ fn View::scrolls_window_ids(
           keep.push(k)
         }
       }
-      slots_cover(all, keep, x, vh)
+      slots_cover(all, keep, x, vh, false)
       laid_again()
       return
     }
@@ -2885,7 +3013,7 @@ fn View::scrolls_window_ids(
     let visible = window(all, x, vh, lo, hi, true)
     let now = with_end(all, visible, top_now(counted(all.col), @signals.untracked(at)), vh)
     show_only(now)
-    slots_cover(all, now, x, vh)
+    slots_cover(all, now, x, vh, true)
     made_now(all, visible)
     // A window cut short at an unmeasured row needs a fill even if its slot was already there.
     if past_made.untracked() is Some(_) {
@@ -3474,7 +3602,7 @@ fn View::scrolls_window_ids(
         // (what the pass found shows: those drawn on a way kept with it, never let go by its end for where they go)
         found = kept
       }
-      slots_cover(all, now, top, vh)
+      slots_cover(all, now, top, vh, false)
       self.tree.room_bindings_run()
       // (each that shows measured, once in this fill, its height counted where it came out otherwise. One never measured
       // that comes out as tall as it was counted, on the host's pixels, moves nothing: every block is where this pass put
@@ -3740,7 +3868,13 @@ fn View::scrolls_window_ids(
     // (what the last pass found, alone: what showed before and shows no more let go now, in this layout)
     show_only(found)
     self.tree.room_bindings_run()
-    slots_cover(places(laid.untracked()), found, top, vh)
+    // (the first slice kept worked out where the fill comes to rest: one kept anew made in this frame, held at the top
+    // as it shows, not a frame later)
+    let pinned_was = pinned_key.untracked()
+    slots_cover(places(laid.untracked()), found, top, vh, true)
+    if pinned_key.untracked() != pinned_was {
+      self.tree.room_bindings_run()
+    }
     let live = blocks.filter(fn(b) { b.0.alive() })
     blocks.clear()
     blocks.append(live)
@@ -4515,6 +4649,16 @@ fn View::scrolls_window_ids(
           for k, _ in fresh {
             if carried_in(k) && after.get(k) is Some(a) {
               items[k] = { off: (0.0, 0.0, 0.0, a.3), v: (0.0, 0.0, 0.0, 0.0) }
+            }
+          }
+          // (one come that reveals what it holds as it comes (View::spatial_reveal): going with the one before it, under
+          // its foot all the way, but at its own size, none grown in over its reveal)
+          for k, _ in fresh {
+            guard !carried_in(k) && slot_views.get(k) is Some(sv) && sv.alive() else { continue }
+            guard self.tree.reveal_in(sv.id(), self.tree.clock.untracked()) else { continue }
+            match items.get(k) {
+              Some(it) => items[k] = { ..it, off: (it.off.0, it.off.1, it.off.2, 0.0) }
+              None => ()
             }
           }
           // (one never drawn before, come into sight by the change: going with the one before it, else after it)
@@ -5360,12 +5504,41 @@ fn View::scrolls_window_ids(
       row_numbers[k] = row_numbered.val
       true
     }
-    held.each_by(fn() { slot_keys.get() }, fn(k) { k }, way_of~, from_of~, splits~, fn(slot, item) {
+    held.each_by(fn() { with_pinned(slot_keys.get()) }, fn(k) { k }, way_of~, from_of~, splits~, fn(slot, item) {
       let k = item.untracked()
       let cell = @signals.signal(shown_now.contains(k), same=fn(a, b) { a == b })
       shown[k] = cell
       slot.owns(fn() { if shown.get(k) is Some(c) && physical_equal(c, cell) { shown.remove(k) } }) |> ignore
-      let shows = fn() { cell.get() }
+      // (the first slice of a key kept as a later one of its has a slot (`keep_first`): shown all the while, laid over
+      // where it rests, from the top of what holds the slots, taking no room)
+      // (only the first slice of a key in slices said kept as it is made: no other slot binds anything for it)
+      let may_pin = match (keep_first, slice_ends) {
+        (Some(kf), Some(ends)) => {
+          let (s0, last) = ends(k)
+          s0 == k && last != k && @signals.untracked(fn() { kf(k) })
+        }
+        _ => false
+      }
+      let shows = match keep_first {
+        Some(_) if may_pin => {
+          let pinned_now = fn() { pinned_key.get() == Some(k) && !slot_keys.get().contains(k) }
+          slot
+          .over(By(pinned_now), from_top=true)
+          .offset(
+            By(fn() {
+              guard pinned_now() else { return (0.0, 0.0) }
+              let all = counted(laid.get())
+              match laid_at.get(k) {
+                Some(i) if i < all.length() => (0.0, all.top(i))
+                _ => (0.0, 0.0)
+              }
+            }),
+          )
+          |> ignore
+          fn() { cell.get() || pinned_key.get() == Some(k) }
+        }
+        _ => fn() { cell.get() }
+      }
       // (its slot by its key, while it is: how tall it is now, as its room is taken, slot_tall)
       slot_views[k] = slot
       if flips {
@@ -5790,6 +5963,7 @@ priv enum ListAsk[K] {
 pub struct ListPlace[K] {
   priv at : PlaceAt
   priv ids : ListKeys[K]
+  priv slices : SliceIds
 }
 
 ///|
@@ -5816,6 +5990,8 @@ priv struct PlaceAt {
   /// how far one block's top lies under another's, by their numbers, as its list counts its blocks now
   /// (ListPlace::span_between; none before it is made; as last counted once it is let go, as `sight_of`)
   mut span_of : (Int, Int, Bool) -> Double?
+  /// how tall a block is counted now, by its number (none before it is made, or where it is not among its keys)
+  mut tall_of : (Int) -> Double?
   /// what its list worked out that nothing follows let go of (ListPlace::rest_unwatched)
   mut rest_unwatched : () -> Unit
   /// its list put by at rest and woken again, as what holds it says (ListPlace::rest, ListPlace::wake)
@@ -5895,11 +6071,13 @@ pub fn[K : Hash + Eq] ListPlace::new() -> ListPlace[K] {
       sight_of: fn() { None },
       sight_listened: fn() {  },
       span_of: fn(_, _, _) { None },
+      tall_of: fn(_) { None },
       rest_unwatched: fn() {  },
       rest_at: fn() {  },
       wake_at: fn() {  },
     },
     ids: ListKeys::new(),
+    slices: SliceIds::new(),
   }
 }
 ///|
@@ -5910,14 +6088,17 @@ pub fn[K : Hash + Eq] ListPlace::new() -> ListPlace[K] {
 /// go-to brings (View::sought) before the eyes, in the same fill: where it would lie low (its middle past 80% of the
 /// room between what covers the list's top and its pinned foot's top), its middle at the middle of that room instead
 /// (list_sought.mbt), as far as the list goes; gliding there too where `glide` and it is near, as it is laid out then.
+///
+/// `slice`: which of the key's slices (View::scrolls_window's `slices`), its first where it says none.
 pub fn[K : Hash + Eq] ListPlace::bring(
   self : ListPlace[K],
   key : K,
+  slice? : Int = 0,
   offset? : Double = 0.0,
   glide? : Bool = false,
   sought? : Bool = false,
 ) -> Unit {
-  self.at.bring(self.ids.id(key), offset~, glide~, sought~)
+  self.at.bring(self.slices.sid(self.ids.id(key), slice), offset~, glide~, sought~)
 }
 
 ///|
@@ -5938,10 +6119,10 @@ fn PlaceAt::bring(self : PlaceAt, key : Int, offset? : Double = 0.0, glide? : Bo
 /// find goes) stands `under` under what covers the list's top (Scroll::top_covered), its top that far down the room,
 /// wherever in the block it lies, as far as the list goes; where the block marks none, its top there. In one fill, the
 /// block measured as it is laid out (a reader's column opened where it was left: an old view's list scrolled there a
-/// frame after its height was laid out). Not gliding.
-pub fn[K : Hash + Eq] ListPlace::bring_sought(self : ListPlace[K], key : K, under? : Double = 0.0) -> Unit {
+/// frame after its height was laid out). Not gliding. `slice`: which of the key's slices, as ListPlace::bring's.
+pub fn[K : Hash + Eq] ListPlace::bring_sought(self : ListPlace[K], key : K, slice? : Int = 0, under? : Double = 0.0) -> Unit {
   self.at.from = None
-  self.at.asked = Some(BringSought(self.ids.id(key), under))
+  self.at.asked = Some(BringSought(self.slices.sid(self.ids.id(key), slice), under))
   (self.at.laid_again)()
 }
 
@@ -5958,7 +6139,7 @@ pub fn[K] ListPlace::asking(self : ListPlace[K]) -> Bool {
 pub fn[K : Hash + Eq] ListPlace::centre(self : ListPlace[K], key : K) -> Unit {
   self.at.from = None
   self.at.jumped_to_end = false
-  self.at.asked = Some(Centre(self.ids.id(key)))
+  self.at.asked = Some(Centre(self.slices.sid(self.ids.id(key), 0)))
   (self.at.laid_again)()
 }
 
@@ -6000,7 +6181,7 @@ fn PlaceAt::to_end(self : PlaceAt, glide? : Bool = true) -> Unit {
 /// it. None: followed all the way again. (Counted from the list's own top till 2026-11-14, when only its own test said
 /// it, under no cover.)
 pub fn[K : Hash + Eq] ListPlace::follow_from(self : ListPlace[K], key : K?, margin? : Double = 0.0) -> Unit {
-  self.at.from = key.map(fn(k) { (self.ids.id(k), margin) })
+  self.at.from = key.map(fn(k) { (self.slices.sid(self.ids.id(k), 0), margin) })
   self.at.from_met = false
   self.at.from_new = true
   (self.at.laid_again)()

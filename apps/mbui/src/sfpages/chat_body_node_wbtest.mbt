@@ -287,8 +287,8 @@ fn body_src(mode : String) -> Source {
 /// The nodes' key of each of chat view `v`'s entries `read` (chat_body_rows'; its Foot "foot", the list's room under
 /// its rows and no row of the nodes').
 fn body_keys(v : ChatView, read : Array[Entry]) -> Array[String] {
-  // (a long message's pieces one row, as the old list draws it: its first piece's key)
-  let keys = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, read, []).keys.filter(fn(k) { chat_piece_of(k) == k })
+  // (a long message's slices one row, as the old list draws it: its key)
+  let keys = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, read, []).keys
   let out : Array[String] = []
   let mut j = 0
   for e in read {
@@ -338,6 +338,16 @@ fn body_view_holds(views : Map[String, @view.View], k : String, p : @view.View) 
 }
 
 ///|
+/// The key of the row a block told as made (chat_body_node's `made`) is of: a slice after a long message's first told as
+/// `k#b`, its message's `k`.
+fn body_slice_of(k : String) -> String {
+  match k.rev_find("#") {
+    Some(i) if k.has_prefix("m:") => k.unsafe_substring(start=0, end=i)
+    _ => k
+  }
+}
+
+///|
 /// The nodes' rows, each the node its row was made in (`views`, chat_body_node's `made`) while it is: its key, its top,
 /// its height on whole pixels `g` a point (row_slot's, as the list lays its blocks on the pixels).
 fn body_new_rows(views : Map[String, @view.View], g : Double, h : Double) -> Array[(String, Double, Double)] {
@@ -350,7 +360,7 @@ fn body_new_rows(views : Map[String, @view.View], g : Double, h : Double) -> Arr
     // (one put by out of sight for the next of its make (chat_body_shape) is no row that shows)
     let r = kv.1.placed_window_now()
     if kv.1.alive() && !kv.1.shown_nowhere() && r.1 < h && r.1 + r.3 > 0.0 {
-      let k = chat_piece_of(kv.0)
+      let k = body_slice_of(kv.0)
       body_piece_counts[k] = body_piece_counts.get(k).unwrap_or(0) + 1
       let foot = r.1 + (r.3 * g - 0.000001).ceil() / g
       match spans.get(k) {
@@ -899,7 +909,9 @@ fn body_held(which : BodyHeld) -> String {
     // rows taller, four more of the places swept have a row's picture across the list's top; no other kind came)
     // (45 till a login's card said how long is left of it: chat-login's card a line taller, one more place swept has a
     // row's picture across the list's top; no other kind came)
-    "its picture held under the list's top (c.stick): 46",
+    // (46 till the nodes' list held a message's picture under its top too, View::sticky: those left where a long
+    // message's first slice is out of what is kept)
+    "its picture held under the list's top (c.stick): 17",
     // (chat-screens' m:ts12 drawn a block a piece since 2026-11-15, 2 of those held pictures among them)
     "a long message a block a piece, each on the list's whole pixels (meant): 6",
   ]
@@ -911,7 +923,8 @@ fn body_held(which : BodyHeld) -> String {
   ]
     // (its turn over no more compared with the old list, which came down there (the changes' sweep, turned on
     // purpose): one of the 7 counted before was of that step)
-    HeldChanges => ["its picture held under the list's top (c.stick): 6"]
+    // (6 till the nodes' list held a message's picture under its top too, View::sticky)
+    HeldChanges => []
   }
   lines.sort()
   lines.join("\n")

@@ -1352,6 +1352,13 @@ pub struct Tree {
   /// how many device pixels a point what hosts it draws at (0: none said): what is drawn off where it is laid out drawn
   /// off by whole pixels (View::drawn_off), as an old view's look is
   mut pixel_grid : Double
+  /// the nodes held at a top while what scrolls them moves (View::sticky), by index: their making and how far under
+  /// the top of what scrolls them (only those said Some: none, nothing looked at); and how far past its own foot what
+  /// holds one may push it to (a page's list's first slice of a key held for its later ones: sticky_foot_extra)
+  stickies : Map[Int, (Int, Double)]
+  sticky_extra : Map[Int, (Int, Double)]
+  /// the nodes what they hold is revealed by in the paint (View::spatial_reveal), by index: their making and how it is
+  reveals : Map[Int, (Int, SpatialReveal)]
   /// how many device pixels a point a page's list's rows are set on (0: anywhere): its host's, where it sets them so, as
   /// it does an old view's (Tree::set_rows_grid)
   mut rows_grid : Double
@@ -1723,6 +1730,9 @@ pub fn Tree::new(
     room_marks: 0,
     room_spill: [],
     pixel_grid: 0.0,
+    stickies: Map([]),
+    sticky_extra: Map([]),
+    reveals: Map([]),
     rows_grid: 0.0,
     rows_lists: [],
     thumbs: {},
@@ -3870,6 +3880,8 @@ priv enum Prop {
   ShadowOut
   CutAcross
   Magnifies
+  Sticky
+  Reveals
 }
 
 ///|
@@ -3982,6 +3994,8 @@ impl Show for Prop with output(self, logger) {
       ShadowOut => "ShadowOut"
       CutAcross => "CutAcross"
       Magnifies => "Magnifies"
+      Sticky => "Sticky"
+      Reveals => "Reveals"
     },
   )
 }
@@ -4001,7 +4015,7 @@ fn Prop::moves_hits(self : Prop, phase : Phase) -> Bool {
     Layout | Both => true
     _ =>
       match self {
-        Offset | Shift | MovedBy | FlipIn | Scale | DrawnOff | BoundsInput | Presses | Modal | OverAll | Stacked | MovesWindow | BesideOf =>
+        Offset | Shift | MovedBy | FlipIn | Scale | DrawnOff | BoundsInput | Presses | Modal | OverAll | Stacked | MovesWindow | BesideOf | Sticky =>
           true
         _ => false
       }
@@ -4118,6 +4132,8 @@ fn Prop::ord(self : Prop) -> Int {
     ShadowOut => 99
     CutAcross => 100
     Magnifies => 101
+    Sticky => 102
+    Reveals => 103
   }
 }
 
@@ -13329,6 +13345,22 @@ fn Tree::each_drawn_in_order(
       }
       None => if n.share_stays && self.stays_hidden(n) { a = 0.0 }
     }
+    // (held at a top as what scrolls it moves: View::sticky; none said, nothing looked at)
+    if !self.stickies.is_empty() {
+      match self.stickies.get(self.order.unsafe_get(i)) {
+        Some((made, off)) if made == n.gen => {
+          let dy = self.sticky_dy(i, n, off, y, s, fn(k) { wy.unsafe_get(k) }, fn(k) { ws.unsafe_get(k) })
+          y = y + dy
+          ly = ly + dy
+        }
+        _ => ()
+      }
+    }
+    // (what reveals what it holds, its reveal not yet begun (a face still on its way to it): none of it seen, it
+    // and all it holds, as the paint draws none of it: View::spatial_reveal)
+    if !self.reveals.is_empty() && self.reveal_waits(self.order.unsafe_get(i), n.gen) {
+      a = 0.0
+    }
     wx.unsafe_set(i, x)
     wy.unsafe_set(i, y)
     wa.unsafe_set(i, a)
@@ -13464,6 +13496,29 @@ pub fn Tree::drawn_one(
         uy = fy
       }
       None => if n.share_stays && self.stays_hidden(n) { a = 0.0 }
+    }
+    // (held at a top, as the walk has it: View::sticky)
+    if !self.stickies.is_empty() {
+      match self.stickies.get(self.order[path[k]]) {
+        Some((made, off)) if made == n.gen => {
+          let dy = self.sticky_dy(
+            path[k],
+            n,
+            off,
+            y,
+            s,
+            fn(o) { path_drawn.get(o).map_or(0.0, fn(p) { p.1 }) },
+            fn(o) { path_drawn.get(o).map_or(1.0, fn(p) { p.2 }) },
+          )
+          y = y + dy
+          uy = uy + dy
+        }
+        _ => ()
+      }
+    }
+    // (what reveals what it holds not yet begun: none of it seen, as the walk has it: View::spatial_reveal)
+    if !self.reveals.is_empty() && self.reveal_waits(self.order[path[k]], n.gen) {
+      a = 0.0
     }
     path_drawn[path[k]] = (x, y, s)
   }
@@ -13831,8 +13886,32 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
   let mut y = 0.0
   let mut a = 1.0
   let mut s = 1.0
+  // (held at a top as what scrolls it moves, as the walk of the drawn has it (View::sticky, Tree::sticky_dy): the top
+  // of the room the nearest column that scrolls shows in, how big that is, what holds each and how far past its foot
+  // what holds one lets it go; none said, none of it looked at)
+  let sticks = !self.stickies.is_empty()
+  let mut room_y = 0.0
+  let mut room_s = 1.0
+  let mut held_y = 0.0
+  let mut held_s = 1.0
+  let mut held_lh = 0.0
+  let mut extra = 0.0
   for k = chain.length() - 1; k >= 0; k = k - 1 {
     let m = self.nodes[chain[k]]
+    if sticks {
+      if m.scroll_off is Some(_) {
+        room_y = y
+        room_s = s
+        extra = 0.0
+      }
+      match self.sticky_extra.get(chain[k]) {
+        Some((g, e)) if g == m.gen => extra = e
+        _ => ()
+      }
+      held_y = y
+      held_s = s
+      held_lh = if k < chain.length() - 1 { self.nodes[chain[k + 1]].lh } else { 0.0 }
+    }
     // (and as far as a column scrolls it now: Node's scroll_off)
     let (sx, sy) = self.scroll_off_now(m)
     // (and, asked `drawn`, as far as it is drawn off where it is laid out: View::drawn_off, as the paint has it; what
@@ -13853,6 +13932,20 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
         s = fs
       }
       None => if m.share_stays && self.stays_hidden(m) { a = 0.0 }
+    }
+    if sticks && k < chain.length() - 1 {
+      match self.stickies.get(chain[k]) {
+        Some((g, off)) if g == m.gen => {
+          let most = dmax(0.0, held_y + (held_lh + extra) * held_s - m.lh * s - y)
+          let mut dy = dclamp(room_y + off * room_s - y, 0.0, most)
+          let grid = self.pixel_grid
+          if grid > 0.0 {
+            dy = (dy * grid).round() / grid
+          }
+          y = y + dy
+        }
+        _ => ()
+      }
     }
   }
   (x, y, a, s)
