@@ -1,0 +1,21 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "base/url"
+
+// Values
+pub fn decode_uri_component(String) -> String?
+
+pub fn encode_uri(String) -> String
+
+pub fn encode_uri_component(String) -> String
+
+pub fn encode_uri_component_strict(String) -> String?
+
+pub fn percent_encode(String, (Int32) -> Bool, space_plus? : Bool) -> String
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

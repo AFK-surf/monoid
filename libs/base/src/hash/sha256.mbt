@@ -171,26 +171,33 @@ pub fn sha256_hex(data : BytesView) -> String {
 /// U+FFFD (EF BF BD).
 pub fn sha256_utf8_hex(text : String) -> String {
   let s = Sha256::new()
+  utf8_each(text, b => s.byte(b))
+  s.hex()
+}
+
+///|
+/// Each byte of `text`'s UTF-8 in turn, a lone surrogate taken for U+FFFD (EF BF BD) as node:crypto takes it, where
+/// `@utf8.encode` would abort.
+fn utf8_each(text : String, put : (Byte) -> Unit) -> Unit {
   for c in text {
     let n = c.to_int()
     let n = if n >= 0xD800 && n <= 0xDFFF { 0xFFFD } else { n }
     if n < 0x80 {
-      s.byte(n.to_byte())
+      put(n.to_byte())
     } else if n < 0x800 {
-      s.byte((0xC0 | (n >> 6)).to_byte())
-      s.byte((0x80 | (n & 0x3F)).to_byte())
+      put((0xC0 | (n >> 6)).to_byte())
+      put((0x80 | (n & 0x3F)).to_byte())
     } else if n < 0x10000 {
-      s.byte((0xE0 | (n >> 12)).to_byte())
-      s.byte((0x80 | ((n >> 6) & 0x3F)).to_byte())
-      s.byte((0x80 | (n & 0x3F)).to_byte())
+      put((0xE0 | (n >> 12)).to_byte())
+      put((0x80 | ((n >> 6) & 0x3F)).to_byte())
+      put((0x80 | (n & 0x3F)).to_byte())
     } else {
-      s.byte((0xF0 | (n >> 18)).to_byte())
-      s.byte((0x80 | ((n >> 12) & 0x3F)).to_byte())
-      s.byte((0x80 | ((n >> 6) & 0x3F)).to_byte())
-      s.byte((0x80 | (n & 0x3F)).to_byte())
+      put((0xF0 | (n >> 18)).to_byte())
+      put((0x80 | ((n >> 12) & 0x3F)).to_byte())
+      put((0x80 | ((n >> 6) & 0x3F)).to_byte())
+      put((0x80 | (n & 0x3F)).to_byte())
     }
   }
-  s.hex()
 }
 
 ///|

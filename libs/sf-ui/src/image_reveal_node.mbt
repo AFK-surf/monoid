@@ -168,12 +168,14 @@ pub fn image_reveal_node(
             1.0 - dmin(1.0, dmax(0.0, (p() * reveal_ms - reveal_wait_after_ms) / reveal_wait_out_ms))
           }
           let top = fn() { -band() + (h() + band()) * e() }
-          for k in 0..<reveal_steps {
+          // (its reveal_steps strips, made once with the layer: none comes or goes after)
+          o.each(fn() { Array::makei(reveal_steps, fn(k) { k }) }, fn(k) { k }, at_once=true, fn(s, k) {
+            let k = k.untracked()
             let y0 = fn() { top() + k.to_double() * step() }
-            reveal_wait_node(o, likeness, w, h, y0, fn() { y0() + step() }, fn() {
+            reveal_wait_strip(s, likeness, w, h, y0, fn() { y0() + step() }, fn() {
               (k.to_double() + 0.5) / reveal_steps.to_double() * waited()
             })
-          }
+          })
           reveal_wait_node(o, likeness, w, h, fn() { top() + band() }, h, waited)
         }
         There => ()
@@ -218,31 +220,44 @@ fn reveal_wait_node(
   alpha : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.box(made_for=loc, fn(s) {
-    let px_of = fn(y : Double) { (y * s.pixel_scale()).round() / s.pixel_scale() }
-    let top = fn() { px_of(dmax(0.0, y0())) }
-    let foot = fn() { px_of(dmin(h(), y1())) }
-    s
-    .over(Is(true))
+  parent.box(made_for=loc, fn(s) { reveal_wait_strip(s, likeness, w, h, y0, y1, alpha, loc~) }) |> ignore
+}
+
+///|
+/// reveal_wait_node's strip in node `s` itself (one of an each's rows, or the box reveal_wait_node makes).
+#callsite(autofill(loc))
+fn reveal_wait_strip(
+  s : @view.View,
+  likeness : () -> String,
+  w : () -> Double,
+  h : () -> Double,
+  y0 : () -> Double,
+  y1 : () -> Double,
+  alpha : () -> Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  let px_of = fn(y : Double) { (y * s.pixel_scale()).round() / s.pixel_scale() }
+  let top = fn() { px_of(dmax(0.0, y0())) }
+  let foot = fn() { px_of(dmin(h(), y1())) }
+  s
+  .over(Is(true))
+  .width(By(fn() { Some(w()) }))
+  .height(By(fn() { Some(dmax(0.0, foot() - top())) }))
+  .offset(By(fn() { (0.0, top()) }))
+  .clips(Is(true))
+  .alpha(By(fn() { if foot() <= top() { 0.0 } else { alpha() } }))
+  |> ignore
+  // (its likeness laid from the picture's top: moved up as far as the strip is down)
+  s.box(made_for=loc, fn(l) {
+    l
     .width(By(fn() { Some(w()) }))
-    .height(By(fn() { Some(dmax(0.0, foot() - top())) }))
-    .offset(By(fn() { (0.0, top()) }))
-    .clips(Is(true))
-    .alpha(By(fn() { if foot() <= top() { 0.0 } else { alpha() } }))
+    .height(By(fn() { Some(h()) }))
+    .offset(By(fn() { (0.0, -top()) }))
+    // (each strip of it the one decode, not one for each size they are drawn at: reveal_likeness_px)
+    .image(By(fn() { if likeness() == "" { None } else { Some((likeness(), "", reveal_likeness_px)) } }))
+    .image_fades(Is(false))
     |> ignore
-    // (its likeness laid from the picture's top: moved up as far as the strip is down)
-    s.box(fn(l) {
-      l
-      .width(By(fn() { Some(w()) }))
-      .height(By(fn() { Some(h()) }))
-      .offset(By(fn() { (0.0, -top()) }))
-      // (each strip of it the one decode, not one for each size they are drawn at: reveal_likeness_px)
-      .image(By(fn() { if likeness() == "" { None } else { Some((likeness(), "", reveal_likeness_px)) } }))
-      .image_fades(Is(false))
-      |> ignore
-      style_node(l, fn() { if likeness() == "" { reveal_ground } else { reveal_clear } })
-    })
-    |> ignore
+    style_node(l, fn() { if likeness() == "" { reveal_ground } else { reveal_clear } })
   })
   |> ignore
 }

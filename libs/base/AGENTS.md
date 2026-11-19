@@ -34,9 +34,17 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   background is asked; the background waits for an idle step to end. A task runs in the fiber that asks
   (`Scheduler::run`); interrupted waiting or running, a `defer` lets its place or slot go.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
-- `src/hash`: SHA-256 (`Sha256` a piece at a time, `sha256`, `sha256_hex`, `sha256_utf8_hex`: a lone surrogate as
-  U+FFFD, as node:crypto hashes a string), HMAC-SHA-256 and hex both ways, of no dependency: what a program on the
-  base hashes with, never a copy of its own.
+- `src/hash`: SHA-256 and SHA-1 (`Sha256`, `Sha1` a piece at a time, `sha256`, `sha1`, their `_hex` and `_utf8_hex`:
+  a lone surrogate as U+FFFD, as node:crypto hashes a string, where `@utf8.encode` aborts natively), HMAC-SHA-256 and
+  hex both ways, of no dependency: what a program on the base hashes with, never a copy of its own. SHA-1 only where a
+  format names it (WebSocket's accept key, Git's object names), never for a new check of trust.
+- `src/url`: percent-encoding as ECMA-262's `encodeURIComponent`, `encodeURI` and `decodeURIComponent` (a lone
+  surrogate U+FFFD, or `None` in `encode_uri_component_strict` and the decoder where they throw), and `percent_encode`
+  keeping what its caller says (a form's `+` for a space).
+- `src/flate`: raw deflate both ways (`inflate`, `inflate_at` saying where it ended; `deflate`, `Deflater` a piece at
+  a time over a 32 KiB window kept across pieces, fixed Huffman codes or stored), zlib's and gzip's wrappings with
+  their checks (`zlib_compress`/`zlib_decompress`, `gzip`/`gunzip`, Adler-32 here, CRC-32 `src/codec`'s). Its deflate
+  is not zlib's byte for byte (no dynamic codes, so larger): only what inflates from it is the same.
 - `src/net`: a connection's halves and a listener's loop over a transport its program gives (`Socket`, `Listener`,
   `pipe_duplex`; net.mbt's head says what each holds): a handle closed exactly once however it ends, a failure to
   accept that passes tried again, nothing a defect.

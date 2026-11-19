@@ -574,6 +574,21 @@ jobs:
         run: if bash apps/mbui/scripts/core.sh hermes-kept apple; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
       - uses: ./.github/actions/setup
         with: { pnpm: "${{ steps.core.outputs.kept != 'true' }}" }
+      # core.hbc not kept: made at once, in the background (pnpm's packages, esbuild, hermesc: ~57 s), beside the restores
+      # below and moonc's C, which it shares nothing with (it writes client/core-ts's packages, out/core's core-hermes.js
+      # and core.hbc, .ci/hbc). Made in the build step after the restores, it ended 22 s after moonc's C and pushed mbc's
+      # split and compile into the cut (main 31f2ead0ac and 873e7ac281, jobs 135458429309 and 135478118156: exit 124
+      # at 288-289 s). Its processes carry the build's mark, stopped with the rest when the build is cut.
+      - name: Start the core's bytecode (core.sh hermes apple, beside the restores)
+        if: steps.core.outputs.kept != 'true'
+        run: |
+          H=$RUNNER_TEMP/ios-hermes
+          mkdir -p "$H"
+          MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree") SF_SRC=$PWD nohup bash -c '
+            bash apps/mbui/scripts/core.sh hermes apple > "$0/log" 2>&1
+            echo $? > "$0/status.tmp" && mv "$0/status.tmp" "$0/status"
+          ' "$H" > /dev/null 2>&1 < /dev/null &
+          echo "$!" > "$H/pid"
       # (its icon, drawn by scripts/mac-icon.swift run with swift and compiled by actool, made once for that script, as
       # the build does, not again on each fresh runner)
       - uses: actions/cache@v4
@@ -617,11 +632,13 @@ jobs:
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
       # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
-      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 30 s before the job is, moon's
+      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 24 s before the job is, moon's
       # build saved after the store too: the upload, the key and both saves after a whole build took 14 s
       # (43981912517), ~21 s on a slower runner, and the post steps ~6 s; after a cut the stop, the key, both saves and
-      # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused). The core for a device first (its
-      # engine, the shell's and libghostty-vt's headers, core.hbc), beside moonc where that still runs, so that
+      # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused), 14 s in main's jobs 135458429309 and
+      # 135478118156 (16 s of the 30 left unused). The core for a device first (its
+      # engine, the shell's and libghostty-vt's headers; core.hbc, from the step that began it beside the restores or
+      # HBC_CACHE's), beside moonc where that still runs, so that
       # ios.sh's own (app_libs, beside its mbc compile) only finds it and no unit reads ghostty/vt.h as it is copied;
       # then moonc's end awaited, ios.sh's mbc gen finding its C made. The .ipa: the app moved into Payload/ and back,
       # not copied, and zipped fast (-1: upload-artifact zips it again))
@@ -629,8 +646,19 @@ jobs:
         id: build
         run: |
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 30)) bash -ec '
-            bash apps/mbui/scripts/core.sh apple aarch64-apple-ios
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 24)) bash -ec '
+            bash apps/mbui/scripts/core.sh apple-native aarch64-apple-ios
+            H=$RUNNER_TEMP/ios-hermes
+            if [ -f "$H/pid" ]; then
+              while [ ! -s "$H/status" ]; do
+                kill -0 "$(cat "$H/pid")" 2>/dev/null || { [ -s "$H/status" ] && break; cat "$H/log" 2>/dev/null || true; exit 1; }
+                sleep 1
+              done
+              cat "$H/log"
+              [ "$(cat "$H/status")" = 0 ] || exit 1
+            else
+              bash apps/mbui/scripts/core.sh hermes apple
+            fi
             B=$RUNNER_TEMP/ios-gen
             while [ ! -s "$B/status" ]; do
               kill -0 "$(cat "$B/pid")" 2>/dev/null || { [ -s "$B/status" ] && break; cat "$B/log" apps/mbui/out/ios-device/moon.log 2>/dev/null || true; exit 1; }
@@ -1079,19 +1107,28 @@ jobs:
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'bash apps/mbui/scripts/beta.sh win > "$0/log" 2>&1; echo $? > "$0/signed"' "$Z" > /dev/null 2>&1 &
       # the installer (apps/mbui/windows/setup.c) made of the app as built, put into a folder of this run's, put again
-      # over it, taken away (e2e/win/setup.sh: ~5 s)
-      - name: The installer, installed and taken away (e2e/win/setup.sh)
+      # over it, taken away (e2e/win/setup.sh: ~12 s); beside it, three checks that need nothing of the app's or the e2e
+      # flow's: the order of names the host gives the core (text.collate: src/host/win_collate.h, a C program), the
+      # synchronous answers across the engine DLL, and what still.fail's desktop app kept sealed, opened by the app
+      # built in its place (src/host/win_electron_sealed.h). Each writes only its own directory (setup's in RUNNER_TEMP,
+      # out/collate, out/engine-sync, out/sealed): one after another they were 21 s of the job's 300, which main's
+      # 44497568003 ran out of 1-2 s short of saving its caches; side by side, the installer's ~12.
+      - name: The installer, installed and taken away (e2e/win/setup.sh); collate, engine-sync and sealed beside it
         run: |
-          bash apps/mbui/e2e/win/setup.sh "$(ls apps/mbui/out/setup/stillfail-setup-*.exe)"
-      # (these two checks need nothing of the app's or the e2e flow's: done while the e2e flow runs, not before it)
-      # the order of names the host gives the core (text.collate: src/host/win_collate.h), checked (a C program, ~2 s)
-      - name: The order of names (win.sh collate)
-        run: bash apps/mbui/scripts/win.sh collate
-      - name: Synchronous answers across the engine DLL
-        run: bash apps/mbui/scripts/win.sh engine-sync
-      # what still.fail's desktop app kept sealed, opened by the app built in its place (src/host/win_electron_sealed.h)
-      - name: The desktop app's sealed values (win.sh sealed)
-        run: bash apps/mbui/scripts/win.sh sealed
+          L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
+          t0=$SECONDS
+          bash apps/mbui/e2e/win/setup.sh "$(ls apps/mbui/out/setup/stillfail-setup-*.exe)" > "$L/setup.log" 2>&1 & p_setup=$!
+          bash apps/mbui/scripts/win.sh collate > "$L/collate.log" 2>&1 & p_collate=$!
+          bash apps/mbui/scripts/win.sh engine-sync > "$L/engine-sync.log" 2>&1 & p_engine=$!
+          bash apps/mbui/scripts/win.sh sealed > "$L/sealed.log" 2>&1 & p_sealed=$!
+          bad=0
+          for c in setup:$p_setup collate:$p_collate engine-sync:$p_engine sealed:$p_sealed; do
+            s=0; wait "${c#*:}" || s=$?
+            echo "::group::${c%%:*} (exit $s)"; cat "$L/${c%%:*}.log"; echo "::endgroup::"
+            [ "$s" = 0 ] || { echo "::error::${c%%:*} failed (exit $s)"; bad=1; }
+          done
+          echo "the four side by side: $((SECONDS - t0)) s"
+          exit $bad
       # out before the e2e flow ends (its tests hold nothing back): put, checked, then its feed, once its signing (begun
       # after the build) is over, beside the caches' saves and the e2e flow (the put mostly waiting on the network)
       - name: The Windows app's installer put, checked, then its feed, started

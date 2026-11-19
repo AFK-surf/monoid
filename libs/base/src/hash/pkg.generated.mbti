@@ -8,6 +8,12 @@ pub fn hex_encode(BytesView) -> String
 
 pub fn hmac_sha256(BytesView, BytesView) -> Bytes
 
+pub fn sha1(BytesView) -> Bytes
+
+pub fn sha1_hex(BytesView) -> String
+
+pub fn sha1_utf8_hex(String) -> String
+
 pub fn sha256(BytesView) -> Bytes
 
 pub fn sha256_hex(BytesView) -> String
@@ -17,6 +23,14 @@ pub fn sha256_utf8_hex(String) -> String
 // Errors
 
 // Types and methods
+pub struct Sha1 {
+  // private fields
+}
+pub fn Sha1::digest(Self) -> Bytes
+pub fn Sha1::hex(Self) -> String
+pub fn Sha1::new() -> Self
+pub fn Sha1::update(Self, BytesView) -> Unit
+
 pub struct Sha256 {
   // private fields
 }
