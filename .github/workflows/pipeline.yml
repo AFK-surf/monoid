@@ -223,7 +223,15 @@ jobs:
           # (GitHub's: the reader's C split into a few units of 8 MB (MBC_UNIT_KB), moonbit_init one (MBC_INIT_SPLIT=0), in
           # a store of the job's own: with no store of units there, a cold build's thousand units of 768 KB did not end in
           # a job's five minutes, and the C whole was one compiler on one core, 115-180 s)
-          [ "$GITHUB_RUNNER" = self-hosted ] || { limit=(bash scripts/with-timeout.sh @$((JOB_END - 15))); export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 MBC_STORE="$RUNNER_TEMP/reader-store"; }
+          # (ci-1's, main's three readers at -O2 side by side: units of 3 MB, moonbit_init one. In mbc's 768 KB units each
+          # reader was 1,121 units, 3,363 parses of its 34 MB decls.h, and main's natives was cut at its five minutes,
+          # 135367557520, 2026-11-19; 8 MB at -O2 a unit's long tail)
+          if [ "$GITHUB_RUNNER" = self-hosted ]; then
+            export MBC_UNIT_KB=3072 MBC_INIT_SPLIT=0
+          else
+            limit=(bash scripts/with-timeout.sh @$((JOB_END - 15)))
+            export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 MBC_STORE="$RUNNER_TEMP/reader-store"
+          fi
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             export STILLFAIL_NATIVE_READERS=3
           else
@@ -519,7 +527,7 @@ jobs:
   # whose runner has a signed-in person's session as a station's machine does. For a change to the station.
   ui-windows:
     needs: [plan, natives, natives-win-reader]
-    if: ${{ !cancelled() && !failure() && needs.plan.outputs.station == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && needs.plan.outputs.station == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 5
     defaults:
@@ -667,7 +675,7 @@ jobs:
   # vars.MINI1 == 'off' puts main's there too.
   check-mac:
     needs: [plan, natives-mac]
-    if: ${{ !cancelled() && !failure() && vars.CI_1 != 'off' && needs.plan.result == 'success' && needs.plan.outputs.check_mac == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && vars.CI_1 != 'off' && needs.plan.result == 'success' && needs.plan.outputs.check_mac == 'true' }}
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.MINI1 != 'off' && '["self-hosted", "macos-ci"]' || '"macos-26"') }}
     timeout-minutes: 5
     steps:
@@ -727,7 +735,7 @@ jobs:
   # engine); what passed before at the same inputs is kept in the Actions cache (scripts/check.sh, `remembered`).
   check-linux:
     needs: [plan, natives]
-    if: ${{ !cancelled() && !failure() }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -764,7 +772,7 @@ jobs:
   # STILLFAIL_STATION_SHARD), not a longer job.
   check-station:
     needs: [plan, natives]
-    if: ${{ !cancelled() && !failure() && needs.plan.outputs.station_tests == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.station_tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -795,7 +803,7 @@ jobs:
   # 6045382883, 43272321433, 2026-11-12). More files: more slices (here, in `shard` and STILLFAIL_CORE_SHARD).
   check-core:
     needs: [plan, natives]
-    if: ${{ !cancelled() && !failure() && needs.plan.outputs.core_tests == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.core_tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -882,7 +890,7 @@ jobs:
   # nothing sent, no secrets.
   bundle:
     needs: [plan, natives]
-    if: ${{ !cancelled() && !failure() && github.ref != 'refs/heads/main' && (needs.plan.outputs.api == 'true' || needs.plan.outputs.static == 'true') }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && github.ref != 'refs/heads/main' && (needs.plan.outputs.api == 'true' || needs.plan.outputs.static == 'true') }}
     # On GitHub's runners, not macos-ci: a dry run of half a minute that queued there behind the builds (2026-10-16).
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -909,7 +917,7 @@ jobs:
   # signed builds stay there, with its keychain). (The apps are mbui's: their builds are this workflow's desktop job's, preview.yml's and mbui-host-mac's.)
   mac-build:
     needs: [plan, natives, natives-mac]
-    if: ${{ !cancelled() && !failure() && github.ref != 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && github.ref != 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
     runs-on: macos-15
     timeout-minutes: 5
     steps:
@@ -1157,7 +1165,7 @@ jobs:
   # The station's (darwin-arm64, linux-x64, linux-arm64, win32-x64): what a station on the test channel updates to.
   station:
     needs: [plan, natives, natives-mac]
-    if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
     # (GitHub's Mac, as desktop's signing: on Mini1 its four packages, ~150 MB, went up to the bucket over the home
     # line in what was left of its five minutes after 31 s of building, cut there, and took that line from android's
     # upload beside it, cut too: main 44147606865, 2026-11-17)
@@ -1204,7 +1212,7 @@ jobs:
   # The Android app (fail.still.android.beta: mbui's, apps/mbui, in the place of the Kotlin one), on android/beta/latest.json.
   android:
     needs: [plan, natives]
-    if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && needs.plan.outputs.android_beta == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && github.ref == 'refs/heads/main' && needs.plan.outputs.android_beta == 'true' }}
     runs-on: [self-hosted, macos-ci]
     outputs:
       hand: ${{ steps.hand.outputs.key }}
@@ -1324,7 +1332,7 @@ jobs:
 
   desktop-build:
     needs: [plan, natives, natives-mac]
-    if: ${{ !cancelled() && !failure() && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
     runs-on: macos-26
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
     # (a run by hand compiles what main's store has none of whole: once the units' commands named mbui at libs/mbui,
@@ -1628,7 +1636,7 @@ jobs:
   # The expensive build is already handed over; keep signing, notarization and release checks in their own budget.
   desktop:
     needs: [plan, natives, natives-mac, desktop-build]
-    if: ${{ !cancelled() && !failure() && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && needs.desktop-build.result == 'success' && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
     runs-on: macos-26
     outputs:
       hand: ${{ steps.hand.outputs.key }}
@@ -1785,7 +1793,9 @@ jobs:
         uses: actions/setup-node@v5
         with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
+      # (mbc and chk alone, as desktop-build's: the other tools' keys and caches were 12-15 s of the job)
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
       - name: The Windows natives' keys
         id: native-keys
         run: |
@@ -1812,15 +1822,10 @@ jobs:
             libs/mbui/out
           key: mbui-win-build-mono-${{ github.sha }}
           restore-keys: mbui-win-build-mono-
-      - uses: actions/cache/restore@v4
-        id: store
-        with:
-          path: .ci/mbc-store
-          key: mbui-win-store-m-${{ github.sha }}
-          restore-keys: mbui-win-store-m-
       # The beta app built in the background from here on (MBUI_WIN_CORE=0: its core put beside it below), as the
       # release builds it (MBUI_VARIANT, MBUI_BUILD: release.sh takes it as built, MBUI_WIN_BUILT); "Build, pack and sign"
-      # waits for it
+      # waits for it. Its units' store is restored beside moonc (MBC_STORE_WAIT: mbc waits until it is handed over whole,
+      # below), not before the build, one after the other.
       # (each file of the app, mbui, the library and Farview's client given its content's mtime, so moon builds over the
       # build restored only what changed, as desktop-build's: apps/mbui/scripts/moon-mtimes.sh)
       - run: bash apps/mbui/scripts/moon-mtimes.sh
@@ -1832,9 +1837,30 @@ jobs:
           build=$(git rev-list --count HEAD)
           B=$RUNNER_TEMP/build; mkdir -p "$B"
           printf '%s' "$build" > "$B/build"
+          T=$(cygpath -u "$RUNNER_TEMP")
+          rm -rf "$T/win-live" "$T/win-store-pending.failed"
+          mkdir -p "$T/win-live"
+          : > "$T/win-store-pending"
+          export MBC_STORE="$(cygpath -m "$T/win-live")/mbc-store" MBC_STORE_WAIT="$(cygpath -m "$T/win-store-pending")"
           nohup bash -c 'MBUI_WIN_CORE=0 MBUI_VARIANT=beta MBUI_BUILD="$1" bash apps/mbui/scripts/win.sh build > "$0/log" 2>&1; echo $? > "$0/status"' "$B" "$build" > /dev/null 2>&1 &
           # (its Windows process, for taskkill to stop all it runs (moon, mbc, clang-cl) where it is cut: below)
           cat "/proc/$!/winpid" > "$B/winpid" 2>/dev/null || true
+      - uses: actions/cache/restore@v4
+        id: store
+        with:
+          path: .ci/mbc-store
+          key: mbui-win-store-m-${{ github.sha }}
+          restore-keys: mbui-win-store-m-
+      # (moved where the build reads it, its wait taken away; taken back to .ci/mbc-store once the build ended, where
+      # the cache's version, which is of its path, finds it)
+      - name: The units, handed to the build
+        if: always() && steps.started.outcome == 'success'
+        run: |
+          T=$(cygpath -u "$RUNNER_TEMP")
+          mkdir -p .ci/mbc-store
+          echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d | wc -l)"
+          if [ -d "$T/win-live/mbc-store" ]; then cp -a -n .ci/mbc-store/. "$T/win-live/mbc-store/" && rm -rf .ci/mbc-store; else mv .ci/mbc-store "$T/win-live/mbc-store"; fi
+          rm -f "$T/win-store-pending"
       # core.hbc by its inputs (HBC_CACHE), PostHog's project in its key: this job's own, saved below, apart from
       # preview.yml's (mbui-win-hbc-, none of PostHog's), which it falls back to (monoid's beta, below, has none either)
       - uses: actions/cache/restore@v4
@@ -1876,8 +1902,10 @@ jobs:
           [ ! -d .ci/hbc ] || echo "HBC_CACHE: $(ls .ci/hbc | wc -l) files, $(du -sm .ci/hbc | cut -f1) MB"
           bash apps/mbui/scripts/win.sh setup-bare
       # (the build waited for till what follows it still fits before the job's end (JOB_END): the core put beside it,
-      # the installer packed, signed and its raw form zstd'd, its files put, 45 s; release.sh stopped by its own limit,
-      # 35 s before the job's end, so the caches are saved after it)
+      # the installer packed, signed and its raw form zstd'd, its files put, 35 s; release.sh stopped by its own limit,
+      # 25 s before the job's end, so the caches are saved after it: its files' put, the artifact and the caches ~18 s.
+      # With 45 and 35 the app linked at 05:47:56, release.sh was cut at 05:48:15 some 10 s short of its installer, and
+      # the job was idle from 05:48:30, 16 s before its end, main 9d591d003a, 135367557405, 2026-11-19)
       - name: Build, pack and sign the beta Windows app
         id: build
         env:
@@ -1886,7 +1914,7 @@ jobs:
           RELEASE_DIR: ${{ runner.temp }}/release
         run: |
           B=$RUNNER_TEMP/build
-          wait=$(( JOB_END - $(date +%s) - 45 )); [ "$wait" -ge 20 ] || wait=20
+          wait=$(( JOB_END - $(date +%s) - 35 )); [ "$wait" -ge 20 ] || wait=20
           t0=$SECONDS
           while [ ! -s "$B/status" ]; do
             [ $((SECONDS - t0)) -lt $wait ] || { echo "::error::the build not done after $wait s"; tail -60 "$B/log"; exit 1; }
@@ -1894,13 +1922,18 @@ jobs:
           done
           echo "(waited $((SECONDS - t0)) s for it)"
           cat "$B/log"
+          # (the units back in .ci/mbc-store, the build done with them)
+          T=$(cygpath -u "$RUNNER_TEMP")
+          if [ -d "$T/win-live/mbc-store" ]; then
+            if [ -d .ci/mbc-store ]; then cp -a -n "$T/win-live/mbc-store/." .ci/mbc-store/ && rm -rf "$T/win-live/mbc-store"; else mkdir -p .ci && mv "$T/win-live/mbc-store" .ci/mbc-store; fi
+          fi
           [ "$(cat "$B/status")" = 0 ] || exit 1
           bash apps/mbui/scripts/win.sh put
           # the build cache's key: the app's C by its content (one as the restored one was is not saved again)
           d=$(sh apps/mbui/scripts/mbui.sh)
           echo "BUILD_KEY=mbui-win-build-mono-$(sha256sum "$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c" | cut -c1-16)" >> "$GITHUB_ENV"
           export STILLFAIL_POSTHOG=${POSTHOG_FILE:-}
-          MBUI_WIN_BUILT="beta:$(cat "$B/build")" bash scripts/with-timeout.sh @$((JOB_END - 35)) sh scripts/release.sh --beta desktop-win
+          MBUI_WIN_BUILT="beta:$(cat "$B/build")" bash scripts/with-timeout.sh @$((JOB_END - 25)) sh scripts/release.sh --beta desktop-win
       - name: Put its files (named by its version, nothing points at them until put writes the feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1945,6 +1978,11 @@ jobs:
             [ ! -s "$B/winpid" ] || taskkill //F //T //PID "$(cat "$B/winpid")" > /dev/null 2>&1 || true
             taskkill //F //IM moon.exe //IM moonc.exe //IM mbc.exe //IM clang-cl.exe //IM cl.exe //IM link.exe > /dev/null 2>&1 || true
             sleep 1
+            T=$(cygpath -u "$RUNNER_TEMP")
+            [ ! -f "$T/win-store-pending" ] || touch "$T/win-store-pending.failed"
+            if [ -d "$T/win-live/mbc-store" ]; then
+              if [ -d .ci/mbc-store ]; then cp -a -n "$T/win-live/mbc-store/." .ci/mbc-store/ && rm -rf "$T/win-live/mbc-store"; else mkdir -p .ci && mv "$T/win-live/mbc-store" .ci/mbc-store; fi
+            fi
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
             d=$(sh apps/mbui/scripts/mbui.sh)
             c=$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c
