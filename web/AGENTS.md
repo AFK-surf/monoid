@@ -9,6 +9,7 @@
   from the core's `ops.ts`, not edited) and draws the topics the core keeps current.
 - `ui/` (`@stillfail/ui`) is the design system and stands alone: nothing of `src/` (its core, station, cloud,
   preferences); the app gives it what it needs through its setters. `ui/src/palette.ts` is the one place still.fail's
-  colours are written (the app's palette is made from it by `scripts/palette.ts`).
+  colours are written, `ui/src/tokens.ts` its type scale, lines and corners (the app's palette and tokens are made
+  from them by `scripts/palette.ts` and `scripts/tokens.ts`, which holds every ink on its grounds to a contrast floor).
 - `scripts/check.sh` holds the styles' rules (type sizes, weights, corners, hovers, margins, motion reduced read from
   the root, colours mixed in sRGB, no hand-written prefixes); its message says the way to write it.

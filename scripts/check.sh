@@ -309,9 +309,11 @@ if part ts; then
     step "clients' types" after core node client/core-ts/scripts/shapes.ts --check
     step "operation bindings" after core node client/core-ts/scripts/operations.ts --check
   fi
-  # still.fail's colours are web/ui/src/palette.ts's (the app's palette made from it); the web's curves are the app's.
-  if touches '^web/ui/src/(palette|curves-data)\.ts$|^scripts/(palette|curves)\.ts$|^libs/sf-ui/src/(palette_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
-    step "palette and curves" sh -c 'node scripts/palette.ts --check && node scripts/curves.ts --check'
+  # still.fail's colours are web/ui/src/palette.ts's (the app's palette made from it) and its type scale, lines and
+  # corners web/ui/src/tokens.ts's (the app's tokens made from it), every ink on its grounds held to its contrast
+  # floor (scripts/tokens.ts); the web's curves are the app's.
+  if touches '^web/ui/src/(palette|tokens|curves-data)\.ts$|^scripts/(palette|tokens|curves)\.ts$|^libs/sf-ui/src/(palette_data|tokens_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
+    step "palette, tokens and curves" sh -c 'node scripts/palette.ts --check && node scripts/tokens.ts --check && node scripts/curves.ts --check'
   fi
   # The app's UI fault categories are the core's (client/core-ts/src/ui-faults.ts).
   if touches '^client/core-ts/(src/ui-faults\.ts|scripts/ui-faults\.ts)$|^apps/mbui/src/stillfail/ui_faults\.mbt$'; then

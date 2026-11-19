@@ -4,6 +4,12 @@ import { passageFlashHeldKeyframes, passageFlashKeyframes, searchStrokeKeyframes
 import { STILL, stillAtOnce, stillFlash } from "@stillfail/ui/styles/still.ts";
 import { LEAVE_EASE_CSS, MOVE_EASE_CSS, OUT_EASE_CSS } from "@stillfail/ui/curves.ts";
 import { PALETTE, TONE, type Tone } from "@stillfail/ui/palette.ts";
+import { MOTION_MS, RADII, TEXT_INPUT, TYPE_SCALE } from "@stillfail/ui/tokens.ts";
+
+/** A length of the tokens (@stillfail/ui/tokens.ts) as CSS; a corner's, times the corners' scale. */
+const px = (n: number) => `${n}px`;
+const corner = (n: number) => `calc(${n}px * ${vars.cornerScale})`;
+const T = TYPE_SCALE.wide;
 
 /** A colour of the palette (@stillfail/ui/palette.ts) as CSS: a tone's ground is its ink at the theme's opacity. */
 const color = (c: string | Tone, theme: "light" | "dark") =>
@@ -93,30 +99,30 @@ globalStyle(":root", {
     "--field-hover": color(PALETTE.light.field_hover, "light"),
     "--field-focus": color(PALETTE.light.field_focus, "light"),
     "--online": color(PALETTE.light.online, "light"),
-    "--r-field": `calc(12px * ${vars.cornerScale})`,
-    "--r-card": `calc(20px * ${vars.cornerScale})`,
-    "--r-dialog": `calc(32px * ${vars.cornerScale})`,
-    "--r-nav": `calc(12px * ${vars.cornerScale})`,
-    "--r-menu": `calc(20px * ${vars.cornerScale})`,
-    "--r-option": `calc(12px * ${vars.cornerScale})`,
+    "--r-field": corner(RADII.web.field),
+    "--r-card": corner(RADII.web.card),
+    "--r-dialog": corner(RADII.web.dialog),
+    "--r-nav": corner(RADII.web.nav),
+    "--r-menu": corner(RADII.web.menu),
+    "--r-option": corner(RADII.web.option),
     // Six roles, each a size with its line (leading-*): times and tags; a row's second line and notes; lists, menus,
-    // buttons and settings; what is read; a section's or dialog's title; a page's. The phone's are a size up
-    // (mobile/styles/root.css.ts). Weights are three: 400, 500 to stand out, 600 for titles.
-    "--text-caption": "11px", "--leading-caption": "16px",
-    "--text-meta": "12px", "--leading-meta": "18px",
-    "--text-ui": "13px", "--leading-ui": "20px",
-    "--text-body": "14px", "--leading-body": "22px",
+    // buttons and settings; what is read; a section's or dialog's title; a page's (@stillfail/ui/tokens.ts). The
+    // phone's are a size up (mobile/styles/root.css.ts). Weights are three: 400, 500 to stand out, 600 for titles.
+    "--text-caption": px(T.caption.size), "--leading-caption": px(T.caption.line),
+    "--text-meta": px(T.meta.size), "--leading-meta": px(T.meta.line),
+    "--text-ui": px(T.ui.size), "--leading-ui": px(T.ui.line),
+    "--text-body": px(T.body.size), "--leading-body": px(T.body.line),
     // What is typed in: as what is read (the phone's 16, iOS zooms into less).
-    "--text-input": "14px",
-    "--text-title": "16px", "--leading-title": "24px",
-    "--text-heading": "22px", "--leading-heading": "30px",
+    "--text-input": px(TEXT_INPUT),
+    "--text-title": px(T.title.size), "--leading-title": px(T.title.line),
+    "--text-heading": px(T.heading.size), "--leading-heading": px(T.heading.line),
     // Big numbers (usage).
-    "--text-display": "28px",
+    "--text-display": px(T.display.size),
     // one curve for each thing a motion can be (@stillfail/ui/curves.ts): what comes, what goes, a move
     "--ease-out": OUT_EASE_CSS,
     "--ease-leave": LEAVE_EASE_CSS,
     "--ease-move": MOVE_EASE_CSS,
-    "--dur": "140ms",
+    "--dur": `${MOTION_MS.dur}ms`,
   },
 });
 globalStyle(":root:not([data-theme=\"light\"])", {
