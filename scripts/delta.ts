@@ -21,10 +21,14 @@
 // Making: the old files found whole in the made bytes (wholeFiles: an old tree's files, an apk's entries), and the old
 // bytes found as they were between them (sameBlocks: what a build left of a big binary, shifted), are matched where they
 // were found, and only the rest of the old blob is sorted for bsdiff to search (sparseSuffixArray), each search starting
-// in the bucket of its first 3 bytes.
+// in the bucket of its first 3 bytes. From PREFIXED_FROM old bytes the search, the records and their deflating are
+// scripts/delta-fast.c's, the same steps in C (ensureNativeDelta), where a C compiler with zlib is at hand.
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync, gunzipSync, inflateRawSync } from "node:zlib";
 import { CHUNK, type Header, MAGIC, type Range, apply, applyFile, parseHeader, patch, readOld } from "../station/src/updates/delta.ts";
 
@@ -398,10 +402,9 @@ function chunker() {
   let fill = 0;
   const flush = () => {
     if (fill === 0) return;
-    // (any deflate is the format's, the appliers inflating what comes. Level 8: on bsdiff's records, mostly zeros,
-    // level 9 walked its chains 3 times as long for 1.5-2.3% less, about a quarter of a far base's time; measured on the
-    // published deltas of 0.1.9570, 2026-11-16)
-    const packed = deflateRawSync(buf.subarray(0, fill), { level: 8 }), head = Buffer.alloc(8);
+    // (any deflate is the format's, the appliers inflating what comes. Level 6, as delta-fast.c's: on 120 MB of a far
+    // base's records level 8 took 6 times as long for about 5% less (2026-11-19); level 9 3 times level 8 again)
+    const packed = deflateRawSync(buf.subarray(0, fill), { level: 6 }), head = Buffer.alloc(8);
     head.writeUInt32LE(fill, 0);
     head.writeUInt32LE(packed.length, 4);
     parts.push(head, packed);
@@ -496,14 +499,83 @@ const END = Buffer.alloc(8);
 /** Below this share of the old blob found whole, the whole of it is sorted, as without `oldFiles`. */
 const WHOLE_ENOUGH = 1 / 8;
 
-/** A delta's bytes; `oldFiles`, the ranges of the old blob's files, lets those found whole in `made` go unsorted. */
-export function makeDelta(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[]): Buffer {
+/**
+ * A delta's bytes; `oldFiles`, the ranges of the old blob's files, lets those found whole in `made` go unsorted.
+ * `madeFile`: where `made` is on disk already, for delta-fast.c to read rather than a copy.
+ */
+export function makeDelta(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[], madeFile?: string): Buffer {
   const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: sha256(old), deflate, madeSize: made.length });
   const runs = sameBlocks(old, made, oldFiles ? wholeFiles(old, oldFiles, made) : []);
+  const native = old.length >= PREFIXED_FROM || process.env.STILLFAIL_DELTA_FAST_FORCE === "1" ? nativeChunks(old, made, runs, madeFile) : null;
+  lastMaker = native ? "native" : "js";
+  if (native) return Buffer.concat([head, native, END]);
   const covered = old.length - outside(old.length, runs).m;
   const body = covered > 0 && covered >= old.length * WHOLE_ENOUGH ? bsdiff(old, made, sparseSuffixArray(old, runs), runs) : bsdiff(old, made);
   return Buffer.concat([head, ...body, END]);
 }
+
+/** Which made the last delta's chunks: delta-fast.c or this file's bsdiff (the tests see the native one was used). */
+export let lastMaker: "native" | "js" | null = null;
+
+const fastSource = fileURLToPath(new URL("./delta-fast.c", import.meta.url));
+const nativeBins = new Map<string, string | null>();
+
+/**
+ * delta-fast.c compiled, once for its source (`cacheDir`/stillfail-delta-fast-<its sha256's first 16>; the system's temp
+ * by default), or null: STILLFAIL_DELTA_JS=1, Windows, or no C compiler or zlib here, where this file's bsdiff makes
+ * the chunks. STILLFAIL_DELTA_FAST_BIN names one compiled already (release-deltas.ts hands it its makers).
+ */
+export function ensureNativeDelta(cacheDir?: string): string | null {
+  if (process.env.STILLFAIL_DELTA_JS === "1") return null;
+  const given = process.env.STILLFAIL_DELTA_FAST_BIN;
+  if (given) {
+    try { accessSync(given, fsConstants.X_OK); return given; } catch { /* not there: compiled here */ }
+  }
+  if (process.platform === "win32" || !existsSync(fastSource)) return null;
+  const dir = cacheDir ?? tmpdir();
+  if (nativeBins.has(dir)) return nativeBins.get(dir)!;
+  const bin = join(dir, `stillfail-delta-fast-${sha256(readFileSync(fastSource)).slice(0, 16)}`);
+  let found: string | null = bin;
+  if (!existsSync(bin)) {
+    // (into a name of its own, then renamed: makers compiling at once each leave a whole binary)
+    const tmp = `${bin}.tmp.${process.pid}`;
+    const r = spawnSync("cc", ["-O3", "-std=c11", "-o", tmp, fastSource, "-lz"], { encoding: "utf8" });
+    if (r.status === 0) renameSync(tmp, bin);
+    else {
+      rmSync(tmp, { force: true });
+      console.error(`delta: delta-fast.c not compiled (${r.error?.message ?? r.stderr.trim().split("\n").at(-1)}): the deltas are made in JavaScript`);
+      found = null;
+    }
+  }
+  nativeBins.set(dir, found);
+  return found;
+}
+
+/** The chunks delta-fast.c makes of `old` to `made` with `runs`, or null (no binary, or it failed: said once). */
+function nativeChunks(old: Buffer, made: Buffer, runs: Run[], madeFile?: string): Buffer | null {
+  const bin = ensureNativeDelta();
+  if (!bin) return null;
+  const dir = mkdtempSync(join(tmpdir(), "delta-fast-"));
+  try {
+    const runsBin = Buffer.alloc(runs.length * 12);
+    runs.forEach((r, i) => { runsBin.writeUInt32LE(r.made, i * 12); runsBin.writeUInt32LE(r.old, i * 12 + 4); runsBin.writeUInt32LE(r.len, i * 12 + 8); });
+    const oldPath = join(dir, "old"), runsPath = join(dir, "runs"), outPath = join(dir, "out");
+    let madePath = madeFile;
+    writeFileSync(oldPath, old);
+    writeFileSync(runsPath, runsBin);
+    if (!madePath) writeFileSync((madePath = join(dir, "made")), made);
+    execFileSync(bin, [oldPath, madePath, runsPath, outPath], { stdio: ["ignore", "ignore", "pipe"] });
+    return readFileSync(outPath);
+  } catch (e) {
+    const err = e as { stderr?: Buffer; message: string };
+    if (!nativeFailed) console.error(`delta: delta-fast failed (${err.stderr?.toString().trim() || err.message}): the deltas are made in JavaScript`);
+    nativeFailed = true;
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+let nativeFailed = false;
 
 /** A delta from the folder `oldDir` to the file `newFile`, written to `out` once applying it gives that file. */
 export function makeTree(oldDir: string, newFile: string, out: string): void {
@@ -511,7 +583,7 @@ export function makeTree(oldDir: string, newFile: string, out: string): void {
   const neu = readFileSync(newFile);
   const data = files.map((f) => readFileSync(join(oldDir, f))), ranges: Range[] = [];
   for (let at = 0, i = 0; i < data.length; at += data[i]!.length, i++) ranges.push({ at, len: data[i]!.length });
-  writeFileSync(out, makeDelta(Buffer.concat(data), neu, files, [], [], ranges));
+  writeFileSync(out, makeDelta(Buffer.concat(data), neu, files, [], [], ranges, newFile));
   verified(out, () => {
     const d = readFileSync(out), h = parseHeader(d), want = expecting(neu);
     apply(h, readOld(h, { dir: oldDir }), d, want.sink);

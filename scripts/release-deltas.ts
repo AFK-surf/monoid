@@ -44,7 +44,7 @@ import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, inflateRawSync, zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { makeApk, makeTree, rawOf, storedZip } from "./delta.ts";
+import { ensureNativeDelta, makeApk, makeTree, rawOf, storedZip } from "./delta.ts";
 
 /** What apps/mbui/linux/install.sh copies into the app's folder (`stillfail`, `lib*.so*`, `core.hbc`, `VERSION`): the
  * files an installed Linux app has, which its deltas are made from. The two change together. */
@@ -648,6 +648,9 @@ class Run {
     });
     let next = 0;
     const children = this.children;
+    // (delta-fast.c compiled once for the whole run, its makers handed the binary; none: they make them in JavaScript)
+    const fast = todo.length ? ensureNativeDelta(this.work) : null;
+    const env = fast ? { ...process.env, STILLFAIL_DELTA_FAST_BIN: fast } : process.env;
     const one = async ({ t, b }: { t: Target; b: Base }) => {
       if (this.abort.signal.aborted) return void t.outcome.set(b, "out of time");
       await this.fetchBase(t, b);
@@ -659,7 +662,7 @@ class Run {
       const job = this.tmp("pair.json");
       writeFileSync(job, JSON.stringify({ kind: t.kind, base: b.path!, made: t.made, out, classes } satisfies Pair));
       const said = await new Promise<string | null>((resolve) => {
-        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--pair", job], { stdio: ["ignore", "ignore", "pipe"] });
+        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--pair", job], { stdio: ["ignore", "ignore", "pipe"], env });
         children.add(child);
         let err = "";
         child.stderr!.on("data", (d: Buffer) => (err = (err + d.toString("utf8")).slice(-2000)));
