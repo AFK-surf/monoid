@@ -255,3 +255,19 @@ test("a session's runtime is given its workspace's memory and skills, never anot
   assert.ok(ofOne.options.instructions.includes("# one's lessons") && !ofOne.options.instructions.includes("# two's lessons"));
   assert.deepEqual(readdirSync(join(ofOne.row.workspace, ".claude", "skills")), ["one-project"]);
 }));
+
+test("with only a copy another station lends, and that station not in the workspace, the refusal says so, not to allow one here", () => withTwo(async (t) => {
+  const { rig, one, two } = t;
+  rig.edit((raw) => {
+    for (const p of raw.profiles) {
+      p.name = "lent@x";
+      p.share = { id: `sh-${p.id}`, borrowed: true, host: "H", workspaces: [W1] };
+    }
+  });
+  const said = tr("en", "station.session.noProfileLent", { runtime: "Claude Code", profiles: "lent@x" });
+  await assert.rejects(async () => await newSession(rig.hub, { runtime: "claude", createdBy: "b@x", ws: W2 }, "en"), (e: Error) => e.message === said);
+  assert.throws(() => rig.hub.accounts.runOn(two), (e: Error) => e.message === tr(stationLang(), "station.session.noProfileLent", { runtime: "Claude Code", profiles: "lent@x" }));
+  assert.throws(() => rig.hub.accounts.repick(two), /lent by another station|借来的/);
+  // Where it is lent, it serves.
+  assert.equal(rig.hub.accounts.runOn(one).id, rig.session(one).profile);
+}));

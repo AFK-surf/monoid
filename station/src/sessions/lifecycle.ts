@@ -25,7 +25,7 @@ import type { SessionChange } from "./accounts.ts";
 import { runChanged, runShown } from "./run-change.ts";
 import { unlockWorktrees, withLock } from "./archive.ts";
 import { roomOfSoon } from "./footprint.ts";
-import { type Profile, type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
+import { noProfileHere, type Profile, type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
 import { FAST_RUNTIMES } from "../agents/profiles.ts";
 import { CLIENT_KEY_KEPT_MS, type Hub, connectOf, newChatKey, newSingleSessionKey, newToken } from "./hub.ts";
 import { INTERNAL_CHANNEL, INTERNAL_CONNECT, chatKey, chatWorkspace } from "./internal.ts";
@@ -197,7 +197,7 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
   }
   const here = new Set(hub.profilesIn(options.ws ?? null).map((p) => p.id));
   const profiles = all.filter((p) => here.has(p.id));
-  if (profiles.length === 0) throw new Error(tr(lang, "station.session.noProfileHere", { runtime: runtimeTitle(runtime) }));
+  if (profiles.length === 0) throw new Error(noProfileHere(lang, runtime, all));
   const model = trimmed(options.model);
   // (what its preset binds it to, held here too: an app from before or another way in changes none of it)
   const preset = trimmed(options.preset);

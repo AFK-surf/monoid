@@ -9,6 +9,7 @@ import { devinFusionBase, splitDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel, type Profile as RuntimeProfile } from "../agents/runtime.ts";
 import { profileRuntimes, type Runtime } from "../agents/profiles.ts";
 import { modelKey } from "../read/usage.ts";
+import { tr, type Lang } from "../ops/i18n.ts";
 
 export type { Runtime };
 
@@ -214,6 +215,17 @@ export const allowedIn = (profile: Profile, ws: string | null, home: string | nu
   if (only !== null && at !== null && !only.includes(at)) return false;
   return ws === null || home === null || ws === home || !(profile.withheld ?? []).includes(ws);
 };
+
+/// Why no profile of `runtime` among `all` (those of the station that run it) serves a workspace's chats, said for
+/// what to do: each one on (`enabled`) a copy another station lends (share/index.ts), which serves only the workspaces
+/// its host is in, so no admin here can allow it; else one withheld from the workspace, for an admin to allow.
+export function noProfileHere(lang: Lang, runtime: Runtime, all: Profile[]): string {
+  const on = all.filter((p) => p.enabled !== false);
+  const lent = on.length > 0 && on.every((p) => (p.share as { borrowed?: unknown } | undefined)?.borrowed === true);
+  return lent
+    ? tr(lang, "station.session.noProfileLent", { runtime: runtimeLabel(runtime), profiles: on.map((p) => p.name).join(", ") })
+    : tr(lang, "station.session.noProfileHere", { runtime: runtimeLabel(runtime) });
+}
 
 /// The profiles a connect's sessions can run on: every profile of its runtime allowed in its workspace.
 export const profilesFor = (config: HubConfig, connect: Connect, home: string | null = null): Profile[] =>

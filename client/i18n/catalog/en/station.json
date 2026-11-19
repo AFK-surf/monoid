@@ -444,6 +444,7 @@
   "station.session.modelOff": "“{profile}” can't run {model}: pick another model",
   "station.session.noProfile": "No Profile can run {runtime}",
   "station.session.noProfileHere": "No Profile can run {runtime} for this workspace's chats; an admin of the station's home workspace can enable one",
+  "station.session.noProfileLent": "No Profile can run {runtime} for this workspace's chats: {profiles} is lent by another station, which is not in this workspace, so it cannot serve chats here. Add that station to this workspace and share it again, or add the account as a Profile on a station of this workspace",
   "station.session.noProfileForModel": "No {runtime} Profile can run {model}: turn it on in a Profile first",
   "station.slack.answerUnconfirmed": "Could not confirm your answer. Please check and try again.",
   "station.slack.chooseFirst": "Choose an option first",

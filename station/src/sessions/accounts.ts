@@ -9,7 +9,7 @@ import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { CONTEXT_RUNTIMES, checkContext } from "./context-cap.ts";
 import type { Store } from "../store/store.ts";
 import type { SessionRow } from "../store/rows.ts";
-import { type HubConfig, type Profile, runs, runtimeNamed, runtimeTitle, sameModel, spelling } from "./config.ts";
+import { type HubConfig, noProfileHere, type Profile, runs, runtimeNamed, runtimeTitle, sameModel, spelling } from "./config.ts";
 import { modelKey } from "../read/usage.ts";
 import { availableEfforts, cheapToLeave, commonEfforts, type ProfileHealth, pickProfile, reportedEfforts, serves, signsIn, urgency, usable, windowsOf } from "./pool.ts";
 import { agyScopeForModel } from "../accounts/agy-quota.ts";
@@ -316,7 +316,7 @@ export class Accounts {
       if (moved) return moved;
     }
     // Profiles there are, none of them for its workspace: said so, for people to allow one.
-    if (workspaceCandidates.length === 0 && all.length > 0) throw new Error(tr(stationLang(), "station.session.noProfileHere", { runtime: runtimeTitle(runtime) }));
+    if (workspaceCandidates.length === 0 && all.length > 0) throw new Error(noProfileHere(stationLang(), runtime, all));
     const [candidates, keptProfiles] = this.poolFor(row, workspaceCandidates);
     if (row.speed === "ultrafast" && (candidates.length === 0 || (row.profilePinned && !candidates.some((p) => p.id === row.profile)))) {
       throw new Error(tr(stationLang(), "station.speed.ultrafast_unavailable"));
@@ -381,8 +381,9 @@ export class Accounts {
     if (!row) throw new Error(`unknown session ${key}`);
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
-    const workspaceCandidates = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime) && this.allows(key, p));
-    if (workspaceCandidates.length === 0) throw new Error(tr(stationLang(), "station.session.noProfileHere", { runtime: runtimeTitle(runtime) }));
+    const all = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
+    const workspaceCandidates = all.filter((p) => this.allows(key, p));
+    if (workspaceCandidates.length === 0) throw new Error(noProfileHere(stationLang(), runtime, all));
     const [candidates, keptProfiles] = this.poolFor(row.profilePinned ? { ...row, profiles: null } : row, workspaceCandidates);
     if (row.speed === "ultrafast" && candidates.length === 0) throw new Error(tr(stationLang(), "station.speed.ultrafast_unavailable"));
     const next = this.pick(candidates, row.model, false, key);
@@ -574,8 +575,9 @@ export class Accounts {
       const target = runtimeNamed(change.runtime);
       if (!target) throw new Error(`unknown runtime ${change.runtime}`);
       const model = newModel ?? null;
-      const candidates = config.profiles.filter((p) => p.runtimes.includes(target) && this.allows(key, p));
-      if (candidates.length === 0) throw new Error(t("station.session.noProfileHere", { runtime: runtimeTitle(target) }));
+      const all = config.profiles.filter((p) => p.runtimes.includes(target));
+      const candidates = all.filter((p) => this.allows(key, p));
+      if (candidates.length === 0) throw new Error(noProfileHere(lang, target, all));
       if (model !== null && !candidates.some((p) => runs(p, model))) throw new Error(t("station.session.noProfileForModel", { model, runtime: runtimeTitle(target) }));
       const pick = (pool: Profile[]) => {
         if (target !== "codex" || change.speed !== "ultrafast") return this.pick(pool, model, true, key);
