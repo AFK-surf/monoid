@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a64471c17](https://github.com/AFK-surf/monoid/commit/a64471c1771b1e9348952125ecdd8f287df095b0) feat(mbui): add desktop tray/auto-launch/hotkeys a | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.62 | 126.49 |
 | [5e58d383a](https://github.com/AFK-surf/monoid/commit/5e58d383a6bb8cd2c22d1057332c69acf86b0729) feat(screens): share a person's microphone into a  | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.62 | 126.49 |
 | [1d1db3785](https://github.com/AFK-surf/monoid/commit/1d1db37857c5183174fe5c54064fd098e052cc73) feat(mbui): complete 6-target packager, prebuilt W | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.39 | 119.55 |
 | [cd3fb3af9](https://github.com/AFK-surf/monoid/commit/cd3fb3af93521eeecb223603e91325eaa3709dc7) fix(station): wait for job groups to be gone in jo | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.34 | 111.34 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
 | [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 97.47 | 122.6 |
 | [bfcbe28c6](https://github.com/AFK-surf/monoid/commit/bfcbe28c6d49fe9e4486591f92ab8a5bfba9f0aa) refactor(mbui): extract sfapptest and sfapp_realsi | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 97.47 | 122.6 |
-| [53983853e](https://github.com/AFK-surf/monoid/commit/53983853e85aa393aeae20b4a33363c3567f2a53) feat(mbui): quiet station pointer, trackpad curve, | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 96.99 | 118.37 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a64471c17](https://github.com/AFK-surf/monoid/commit/a64471c1771b1e9348952125ecdd8f287df095b0) feat(mbui): add desktop tray/auto-launch/hotkeys a | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
 | [5e58d383a](https://github.com/AFK-surf/monoid/commit/5e58d383a6bb8cd2c22d1057332c69acf86b0729) feat(screens): share a person's microphone into a  | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.07 |
 | [1d1db3785](https://github.com/AFK-surf/monoid/commit/1d1db37857c5183174fe5c54064fd098e052cc73) feat(mbui): complete 6-target packager, prebuilt W | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.07 |
 | [cd3fb3af9](https://github.com/AFK-surf/monoid/commit/cd3fb3af93521eeecb223603e91325eaa3709dc7) fix(station): wait for job groups to be gone in jo | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
 | [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
 | [bfcbe28c6](https://github.com/AFK-surf/monoid/commit/bfcbe28c6d49fe9e4486591f92ab8a5bfba9f0aa) refactor(mbui): extract sfapptest and sfapp_realsi | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
-| [53983853e](https://github.com/AFK-surf/monoid/commit/53983853e85aa393aeae20b4a33363c3567f2a53) feat(mbui): quiet station pointer, trackpad curve, | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
