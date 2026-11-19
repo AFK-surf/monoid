@@ -540,7 +540,8 @@ fn Tree::incoming_leads(
 /// -1 where none holds it so (over the rest of its layer).
 /// And the one of what it holds it is drawn just after (-1: after all it holds): for one said to set out and land within
 /// that list (`in_list`, View::flies_in's), the node that list scrolls, so drawn over all the list's rows, under its foot
-/// and what flies from that foot.
+/// and what flies from that foot: the nearest such list it is in, wherever it sets out now (a row a moment off its
+/// edge).
 fn Tree::incoming_host(
   self : Tree,
   at : Int,
@@ -561,11 +562,12 @@ fn Tree::incoming_host(
         })
       )
     if holds {
+      // (one said to set out within that list is its, wherever it sets out now: from a row a moment off its edge too)
+      if in_list && self.scrolls_at.get(i) is Some(sc) && !sc.across && n.scroll_held >= 0 {
+        return (i, n.scroll_held)
+      }
       let (x, y, w, h) = self.placed_window(i)
       if cx >= x && cx <= x + w && cy >= y && cy <= y + h {
-        if in_list && self.scrolls_at.get(i) is Some(sc) && !sc.across && n.scroll_held >= 0 {
-          return (i, n.scroll_held)
-        }
         return (i, -1)
       }
     }

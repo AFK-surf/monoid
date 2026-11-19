@@ -272,6 +272,7 @@ test "what flies in from within a page's list to its rows (in_list): drawn after
   let sent = @signals.signal(false, same=fn(a, b) { a == b })
   let row0 : Ref[View?] = Ref(None)
   let inner : Ref[View?] = Ref(None)
+  let below : Ref[View?] = Ref(None)
   let outer : Ref[View?] = Ref(None)
   let foot_box : Ref[View?] = Ref(None)
   let list : Ref[View?] = Ref(None)
@@ -301,6 +302,15 @@ test "what flies in from within a page's list to its rows (in_list): drawn after
                   inner.val = Some(n)
                   n.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(lca_red)).flies_in(lca_straight, fn(to) {
                     Some((to.0, to.1 - 200.0, to.2, to.3))
+                  }, in_list=true)
+                  |> ignore
+                })
+                |> ignore
+                // (from under the list's edge, a row a moment off it: still its own)
+                r.box(fn(n) {
+                  below.val = Some(n)
+                  n.width(Is(Some(30.0))).height(Is(Some(30.0))).ground(Is(lca_green)).flies_in(lca_straight, fn(to) {
+                    Some((to.0, 900.0, to.2, to.3))
                   }, in_list=true)
                   |> ignore
                 })
@@ -341,6 +351,15 @@ test "what flies in from within a page's list to its rows (in_list): drawn after
   }
   let (r0, ai, fi, bi) = (lca_index(tree, row0.val.unwrap()), lca_index(tree, a), lca_index(tree, foot_box.val.unwrap()), lca_index(tree, b))
   assert_true(r0 >= 0 && r0 < ai && ai < fi && fi < bi, msg="\{r0} \{ai} \{fi} \{bi}")
+  // (one setting out from under the list's edge, said within it: drawn as the other, never over its foot)
+  let c = below.val.unwrap()
+  assert_true(c.flies(), msg="flown from under the list's edge")
+  match self_flying(tree, c) {
+    Some(f) => assert_eq((f.host, f.after), (list.val.unwrap().at, held))
+    None => fail("no flight from under the edge")
+  }
+  let ci = lca_index(tree, c)
+  assert_true(r0 < ci && ci < fi, msg="\{r0} \{ci} \{fi}")
 }
 
 ///|
