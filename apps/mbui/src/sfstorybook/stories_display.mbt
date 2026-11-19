@@ -32,7 +32,7 @@ fn stories_display(tips : @sf.TipLayer) -> Array[Story] {
             })
             |> ignore
             side_by_side(card, fn(r) {
-              @sf.button_node(r, fn() { ["用量正常", "快用完", "已用完"][at.get()] + " · 换一个" }, fn() { at.set((at.get() + 1) % 3) }, tone=Ghost)
+              @sf.button_node(r, fn() { ["用量正常", "快用完", "已用完"][at.get()] + " · 换一个" }, fn() { at.set((at.get() + 1) % 3) })
               |> ignore
             })
           },
