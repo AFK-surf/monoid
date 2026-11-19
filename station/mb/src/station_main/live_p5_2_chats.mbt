@@ -396,14 +396,7 @@ async fn P52::chats_answer(
         "link" => @jsjson.JValue::of_opt_string((self.the_hub().world.link)(s(0)))
         "workspaces" => J::Arr(self.the_hub().workspaces().map(@jsjson.JValue::of_string))
         "station" => @jsjson.JValue::of_opt_string((self.the_hub().world.station)())
-        "wsOf" =>
-          @jsjson.JValue::of_opt_string(
-            self
-            .the_hub()
-            .ws_of(
-              as_text(a(0)),
-            ),
-          )
+        "wsOf" => @jsjson.JValue::of_opt_string(self.the_hub().ws_of_arg(a(0)))
         "surface" => @jsjson.JValue::of_string(self.the_hub().surface(s(0)))
         "nextTs" => @jsjson.JValue::of_string(self.the_hub().next_ts())
         "now" => J::Num(wall_ms().to_double())

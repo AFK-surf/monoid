@@ -18,11 +18,15 @@ priv struct P55 {
   prefix_ops : Array[(String, async (String, Json) -> Json)]
   mut updates : @updates.Updates?
   closers : Array[async () -> Unit]
+  /// The reads of the moves' latest pages of sessions, by their page's `handle` (P55::wrap_session_page): what the
+  /// plan's checks read a page's sessions through, one statement for the page (move/live.ts gives the SessionPage).
+  pages : Map[Int, @replica_coord.SessionReads]
+  mut next_page : Int
 }
 
 ///|
 pub async fn start_live_p5_5(bus : LiveBus) -> Unit {
-  let p : P55 = { bus, ops: Map([]), prefix_ops: [], updates: None, closers: [] }
+  let p : P55 = { bus, ops: Map([]), prefix_ops: [], updates: None, closers: [], pages: Map([]), next_page: 0 }
   bus.coord_ask.val = async fn(op, arg) { p.ask(op, arg) }
   // (each part on its own: one that fails to be made is said, the others made all the same)
   let parts : Array[(String, async () -> Unit)] = [

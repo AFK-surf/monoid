@@ -187,7 +187,7 @@ pub(all) struct ToldSteps {
 
 ///|
 /// What reads the sessions of a plan (handover.ts `SessionReads`).
-pub struct SessionReads {
+pub(all) struct SessionReads {
   session : async (String) -> J?
   home_members : async (String) -> Array[String]?
   ran_on : async (String) -> Array[String]

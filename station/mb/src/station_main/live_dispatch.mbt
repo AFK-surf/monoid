@@ -344,6 +344,8 @@ async fn host_fs_op(
 fn dispatch_store(bus : LiveBus, name : String, args : Array[Json]) -> Json raise {
   match name {
     "now" => jn(bus.store.now().to_double())
+    // (session_storage cold.mbt `pack_history`, `finish_legacy_copies`: `store.archiveDir` through P52::storage_call)
+    "archiveDir" => jstr(path([bus.data, "archive"]))
     "told" => {
       match arg_at(args, 0) { Array(changes) => bus.store.told(changes); c => bus.store.told([c]) }
       Json::null()

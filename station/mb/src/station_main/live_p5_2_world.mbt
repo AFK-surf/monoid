@@ -263,7 +263,7 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     }
     "hub.threadList" => reader("threadList", Json::object({}), "zh")
     "hub.workspaces" => Json::array(self.workspaces().map(Json::string))
-    "hub.wsOf" => jopt(hub.ws_of(opt(0)))
+    "hub.wsOf" => jopt(hub.ws_of_arg(a(0)))
     "hub.surface" => Json::string(hub.surface(s(0)))
     "hub.processState" => Json::string(hub.process_state(s(0)))
     "hub.inWorkspace" => @session_hub.hub_call(hub, "inWorkspace", args)

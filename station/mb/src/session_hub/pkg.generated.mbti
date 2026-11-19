@@ -503,6 +503,7 @@ pub fn Hub::usage_now(Self, String) -> @json.Json? raise
 pub fn Hub::wake_chat(Self, String) -> Unit raise Refused
 pub fn Hub::workspaces(Self) -> Array[String]
 pub fn Hub::ws_of(Self, String?) -> String?
+pub fn Hub::ws_of_arg(Self, @json.Json) -> String?
 
 pub struct HubHarness {
   host : @host.Host

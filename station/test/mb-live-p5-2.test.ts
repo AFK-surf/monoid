@@ -13,7 +13,7 @@ import { type Server, createServer } from "node:net";
 import { request } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
@@ -704,6 +704,79 @@ test("an archived session put in cold storage off the station's thread, and its 
   } finally {
     store.close();
   }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
+test("an archived session's transcripts packed in cold storage and the Rust station's copy of them let go (store.archiveDir answered)", { skip }, async () => {
+  const data = fresh("c");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  const a = await launch(data, app, bin, out, undefined, { STILLFAIL_LOCAL_ADMIN: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    session(store, data, "chat:c-old", "claude", "t0", "1790000000.000002");
+    const workspace = join(data, "sessions", "chat", "c-old", "workspace");
+    // its runtime session's transcript where the station keeps Claude's (transcript.ts `placedIn`), and the copy the
+    // Rust station's archiving left (`archive/transcripts/<key>.jsonl.zst`)
+    store.ranIn("chat:c-old", "rt-1", "cc");
+    const transcript = join(data, "transcripts", "claude", workspace.replace(/[^A-Za-z0-9]/g, "-"), "rt-1.jsonl");
+    mkdirSync(dirname(transcript), { recursive: true });
+    writeFileSync(transcript, '{"type":"user"}\n'.repeat(50));
+    const legacy = join(data, "archive", "transcripts", "chat:c-old.jsonl.zst");
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, "legacy copy");
+
+    const archived = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-old")}/archive`, "POST", {});
+    assert.equal(archived.status, 200, `${JSON.stringify(archived.json)}\n${a.err()}`);
+    await until("the transcript packed and the old copy let go", () => !existsSync(legacy) && !existsSync(transcript) && existsSync(`${transcript}.zst`), () => a.err());
+    assert.doesNotMatch(a.err(), /no such store method/);
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
+test("hub.wsOf as the parts ask it (hub.ts `wsOf(row | key | null)`): a session's row by its own workspace, a key by its row's, else the home one", { skip }, async () => {
+  const data = fresh("w");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [], maxNudges: 1 }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out, undefined, { STILLFAIL_PARTS_DOOR: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  let row: any;
+  try {
+    session(store, data, "chat:c-w2", "claude", "t0", "1790000000.000003", "w2");
+    row = store.getSession("chat:c-w2");
+  } finally {
+    store.close();
+  }
+  const wsOf = async (arg: unknown) => {
+    const r = await ask(door, "/parts/hub/hub.wsOf", "POST", [arg]);
+    assert.equal(r.status, 200, `${JSON.stringify(r.json)}\n${a.err()}`);
+    return r.json;
+  };
+  // (handover.ts `check` gives the row it read from its page: another workspace's, not the home one)
+  assert.equal(await wsOf(row), "w2");
+  assert.equal(await wsOf("chat:c-w2"), "w2");
+  assert.equal(await wsOf({ ...row, ws: null }), "w1");
+  assert.equal(await wsOf(null), "w1");
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0, a.err());
 });

@@ -204,6 +204,21 @@ pub fn Hub::ws_of(self : Hub, key : String?) -> String? {
 }
 
 ///|
+/// hub.ts `wsOf(row: SessionRow | string | null)`: a session's row read for its own workspace as it is given (not read
+/// again: handover.mbt `check` gives the row of its plan's page), a key's row read here, else the home one.
+pub fn Hub::ws_of_arg(self : Hub, arg : Json) -> String? {
+  match arg {
+    Object(_) =>
+      match row_ws(arg) {
+        Some(w) if w != "" => Some(w)
+        _ => self.home()
+      }
+    String(k) => self.ws_of(Some(k))
+    _ => self.home()
+  }
+}
+
+///|
 /// The threads' store's write, its changes told on.
 fn[T] Hub::tw(self : Hub, f : () -> T raise) -> T raise {
   errdefer self.flush_threads()

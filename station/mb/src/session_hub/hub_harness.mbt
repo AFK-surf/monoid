@@ -473,7 +473,7 @@ pub async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
       unit
     }
     "surface" => Json::string(hub.surface(a_str(x, 0)))
-    "wsOf" => opt_str(hub.ws_of(opt_arg_str(x, 0)))
+    "wsOf" => opt_str(hub.ws_of_arg(arg(x, 0).unwrap_or(Json::null())))
     "profilesIn" => Json::array(hub.profiles_in(opt_arg_str(x, 0)))
     "inWorkspace" => {
       let key = a_str(x, 0)

@@ -428,7 +428,7 @@ async fn version_tool(u : @updates.Updates, args : Json) -> Json {
 /// one is out, updated by itself while nothing runs, its channel asked by SIGHUP), with none of P5-5's other parts.
 /// What the other slices ask on `coord_ask` that it does not answer is answered none, as before it was made.
 pub async fn start_rig_updates(bus : LiveBus) -> Unit {
-  let p : P55 = { bus, ops: Map([]), prefix_ops: [], updates: None, closers: [] }
+  let p : P55 = { bus, ops: Map([]), prefix_ops: [], updates: None, closers: [], pages: Map([]), next_page: 0 }
   bus.coord_ask.val = async fn(op, arg) {
     if p.ops.contains(op) {
       p.ask(op, arg)

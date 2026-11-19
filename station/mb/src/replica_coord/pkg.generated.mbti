@@ -834,7 +834,7 @@ pub struct Serving {
   hello : (String, String, Array[String]) -> Array[String]
 }
 
-pub struct SessionReads {
+pub(all) struct SessionReads {
   session : async (String) -> @jsjson.JValue?
   home_members : async (String) -> Array[String]?
   ran_on : async (String) -> Array[String]
