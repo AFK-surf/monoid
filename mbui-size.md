@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9d591d003](https://github.com/AFK-surf/monoid/commit/9d591d003a8ea8c8ad92538b70889a14c7a2e43e) mbui app: a new chat made as nodes with its compos | 2.61 | 3.51 | 14.33 | 36.42 | 55.25 | 31.9 | 64.5 | 97.21 | 115.97 |
 | [0191af001](https://github.com/AFK-surf/monoid/commit/0191af001dad79da0356ee6ff33119ce01f8cc4b) perf(core): walk the archive on a covering index,  | 2.6 | 3.5 | 14.29 | 36.36 | 55.05 | 31.87 | 64.34 | 97.22 | 122.31 |
 | [43adeae0d](https://github.com/AFK-surf/monoid/commit/43adeae0d1fae0d4f03da9017aa148e8318a59a4) fix(mbui): a page's list's band drawn where its bl | 2.6 | 3.5 | 14.29 | 36.36 | 55.05 | 31.87 | 64.34 | 97.06 | 127.83 |
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 119.39 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 2.58 | 3.46 | 14.12 | 36.16 | 54.38 | 31.69 | 63.81 | 97.14 | 121.14 |
 | [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 2.57 | 3.46 | 14.12 | 36.15 | 54.37 | 31.69 | 63.79 | 97.35 | 121.99 |
 | [ae48917b5](https://github.com/AFK-surf/monoid/commit/ae48917b5d408f07959cdb33436b00bfcef41d2e) fix(mbui): set a player's volume on Windows and th | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.69 | 63.79 | 97.35 | 125.85 |
-| [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9d591d003](https://github.com/AFK-surf/monoid/commit/9d591d003a8ea8c8ad92538b70889a14c7a2e43e) mbui app: a new chat made as nodes with its compos | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.94 |
 | [0191af001](https://github.com/AFK-surf/monoid/commit/0191af001dad79da0356ee6ff33119ce01f8cc4b) perf(core): walk the archive on a covering index,  | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [43adeae0d](https://github.com/AFK-surf/monoid/commit/43adeae0d1fae0d4f03da9017aa148e8318a59a4) fix(mbui): a page's list's band drawn where its bl | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.95 |
 | [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
 | [ae48917b5](https://github.com/AFK-surf/monoid/commit/ae48917b5d408f07959cdb33436b00bfcef41d2e) fix(mbui): set a player's volume on Windows and th | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
-| [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
