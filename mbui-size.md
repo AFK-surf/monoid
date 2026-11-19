@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1889203ca](https://github.com/AFK-surf/monoid/commit/1889203caa71d297d82a02e596aababbb8a8b2f5) refactor(station/mb): replace thin helper forwarde | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.5 | 122.31 |
 | [9c3780fa9](https://github.com/AFK-surf/monoid/commit/9c3780fa9d6a9aed1e2010e9c870df569c4f3917) fix(mbui): a stream's sound clock counts what is h | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.58 | 125.13 |
 | [22affa29a](https://github.com/AFK-surf/monoid/commit/22affa29a3a9d45b90a6fec33bdaa862f8dccaa1) fix(vault): set up a second trusted device by itse | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.58 | 125.13 |
 | [ef2877a44](https://github.com/AFK-surf/monoid/commit/ef2877a44d016e6e7147731708fa1cbb5f325769) feat(mbui): widen reader column to 48em in chat si | 2.64 | 3.55 | 14.52 | 36.74 | 55.92 | 32.22 | 65.28 | 97.47 | 125.53 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4d3a1509c](https://github.com/AFK-surf/monoid/commit/4d3a1509c6c0c4ff5f4aafbd2adeea44474f824b) feat(mbui): add prebuilt Wasm runtime shell and bu | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.26 | 119.75 |
 | [631072c58](https://github.com/AFK-surf/monoid/commit/631072c58f4f3a3890e13da79f32b85dbad160b4) feat(screens): carry clipboard privacy marks, dete | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.26 | 119.75 |
 | [26ecdf479](https://github.com/AFK-surf/monoid/commit/26ecdf4790767a39cad0835b052895bbaea3caef) fix(test): take the timing out of two flaky checks | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
-| [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1889203ca](https://github.com/AFK-surf/monoid/commit/1889203caa71d297d82a02e596aababbb8a8b2f5) refactor(station/mb): replace thin helper forwarde | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [9c3780fa9](https://github.com/AFK-surf/monoid/commit/9c3780fa9d6a9aed1e2010e9c870df569c4f3917) fix(mbui): a stream's sound clock counts what is h | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [22affa29a](https://github.com/AFK-surf/monoid/commit/22affa29a3a9d45b90a6fec33bdaa862f8dccaa1) fix(vault): set up a second trusted device by itse | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
 | [ef2877a44](https://github.com/AFK-surf/monoid/commit/ef2877a44d016e6e7147731708fa1cbb5f325769) feat(mbui): widen reader column to 48em in chat si | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4d3a1509c](https://github.com/AFK-surf/monoid/commit/4d3a1509c6c0c4ff5f4aafbd2adeea44474f824b) feat(mbui): add prebuilt Wasm runtime shell and bu | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.13 |
 | [631072c58](https://github.com/AFK-surf/monoid/commit/631072c58f4f3a3890e13da79f32b85dbad160b4) feat(screens): carry clipboard privacy marks, dete | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.17 |
 | [26ecdf479](https://github.com/AFK-surf/monoid/commit/26ecdf4790767a39cad0835b052895bbaea3caef) fix(test): take the timing out of two flaky checks | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.17 |
-| [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 53.95 |
