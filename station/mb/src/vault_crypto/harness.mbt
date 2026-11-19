@@ -439,10 +439,7 @@ fn World::ask(self : World, ask : Json) -> Json raise {
     "plain.itemsAfter" => Json::array(self.plain().items_after(text(ask, "ws"), text(ask, "owner"), text(ask, "item")))
     "plain.item" => self.plain().item(text(ask, "ws"), text(ask, "item")).unwrap_or(Json::null())
     "plain.itemSnapshot" =>
-      match self.plain().item_snapshot(text(ask, "ws"), text(ask, "item")) {
-        Some((value, body)) => Json::object({ "value": value, "body": Json::string(body) })
-        None => Json::null()
-      }
+      snapshot_json(self.plain().item_snapshot(text(ask, "ws"), text(ask, "item")))
     "plain.lasts" =>
       match self.plain().lasts(text(ask, "ws"), text(ask, "owner")) {
         Some((lasts, at_)) => Json::object({ "lasts": lasts, "at": at_ })

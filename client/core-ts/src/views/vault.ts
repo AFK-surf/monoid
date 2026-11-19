@@ -617,8 +617,7 @@ function readStation(inner: Inner, address: string): Effect.Effect<void, CoreErr
     for (const v of list ?? []) mem(inner).refused.delete(v.id);
     change(inner, ws, (h) => {
       if (list !== null) {
-        delete h.refused[station];
-        if (!h.keeps.includes(station)) h.keeps.push(station);
+        keeps(h, station);
         const ids = new Set(list.map((v) => v.id));
         // Those it held and holds no more (one held from before copies were kept: where it was): held still here, as
         // its not listing one says nothing of why (a station that lies hides none so); asked for below. Only those it
@@ -697,8 +696,26 @@ function holdsItem(at: Holding, i: Item): void {
   if (typeof i.sig?.sig === "string") (at.sigs ??= {})[i.id] = i.sig.sig;
 }
 
+/// `station` keeps vaults: one it refused before (no lock pinned, a station from before) has since been updated or
+/// caught up, so it is refused no more and brought what it lacks (`spreadAll`). Whether it was not kept before.
+function keeps(h: Held, station: string): boolean {
+  delete h.refused[station];
+  if (h.keeps.includes(station)) return false;
+  h.keeps.push(station);
+  return true;
+}
+
+/// `station` known to keep vaults (it took a write, or told of one): one not kept before brought what it lacks.
+function kept(inner: Inner, ws: string, station: string): void {
+  let anew = false;
+  change(inner, ws, (h) => void (anew = keeps(h, station)));
+  if (anew) spreadAll(inner, ws);
+}
+
 /// `station` holds vault `v` (and these items, when said): the version kept of those held anywhere is the one shown.
+/// (Holding one, it keeps vaults: `keeps`.)
 function holds(h: Held, v: Vault, station: string, items: Item[] | null, fit: Fits): void {
+  keeps(h, station);
   const on = (h.on[v.id] ??= {});
   const was = on[station];
   on[station] = { seq: v.seq, items: was?.items ?? {}, sig: v.sig?.sig, ...(was?.sigs ? { sigs: was.sigs } : {}) };
@@ -926,6 +943,7 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
         const fit = fits(inner, ws);
         changeItems(inner, ws, d.vault, (all) => { if (newer(d as Item, all[d.id], fit)) all[d.id] = d; });
         change(inner, ws, (h) => {
+          keeps(h, station);
           const at = h.on[d.vault]?.[station];
           if (at !== undefined) holdsItem(at, d as Item);
         });
@@ -937,6 +955,7 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
         change(inner, ws, (h) => {
           if (heldOver(h.boxes[d.device], d as BoxCert, fits(inner, ws))) h.boxes[d.device] = d;
         });
+        kept(inner, ws, station);
         // A member's device set up (or asking again): given the keys unsealed here, no one asked.
         giveKept(inner, ws);
       }
@@ -1247,7 +1266,8 @@ export function vaultsView(inner: Inner, ws: string): J {
   const safe = safeMode(inner, ws);
   // (no safe mode, a station that keeps no vault for want of it is one from before: every station now keeps a vault by
   // its members' own locks, station/src/cloud/vault-lock.ts; said as old, never as safe mode wanting)
-  const refusedRows = Object.entries(h.refused).map(([id, code]) => ({ station: id, name: stationName.get(id) ?? "", code: !safe && code === "vault_needs_lock" ? "station_old" : code }));
+  // (only of stations the workspace has now: one taken out stays in `refused`, nothing reading it again to say otherwise)
+  const refusedRows = Object.entries(h.refused).filter(([id]) => stationName.has(id)).map(([id, code]) => ({ station: id, name: stationName.get(id) ?? "", code: !safe && code === "vault_needs_lock" ? "station_old" : code }));
   // (`locked`: whether the workspace is in safe mode, as the `lock` topic says it; the vault is encrypted either way)
   const base = { available: able(inner), locked: safe && !(lock instanceof CoreError), canSign: false, setUp: false, vaults: [] as J[], requests: [] as J[], refused: refusedRows };
   const plainItems = Object.values(h.plain).filter((i) => !i.deleted);
@@ -2016,8 +2036,12 @@ class Vaults {
       });
       const stations = stationsOf(inner, self.ws);
       if (stations.length === 0) return [];
-      // (done once one took it: a station gone silent is not waited on, the others still told it; lock.ts answersOf)
-      const published = yield* answersOf(inner, stations.map((s) => Effect.as(self.#station(s.id, "PUT", "/vault/boxes", cert), s.id)), tookOrRefused);
+      // (done once one took it: a station gone silent is not waited on, the others still told it; lock.ts answersOf. Each
+      // that takes it keeps vaults, a later one than the first too: one refused before, since updated, is no more.)
+      const published = yield* answersOf(inner, stations.map((s) => self.#station(s.id, "PUT", "/vault/boxes", cert).pipe(
+        Effect.tap(() => Effect.sync(() => kept(inner, self.ws, s.id))),
+        Effect.as(s.id),
+      )), tookOrRefused);
       return published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
     });
   }

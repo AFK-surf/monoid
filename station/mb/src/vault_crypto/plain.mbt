@@ -413,3 +413,13 @@ pub fn PlainStore::put(self : PlainStore, i : Json) -> Unit raise DbError {
     ),
   )
 }
+
+///|
+/// A snapshot as the vault's stores give it to the routes (vault/store.ts `{value, body}`: api_routes vault.mbt reads
+/// `value` and `body`), or null where nothing is held.
+pub fn snapshot_json(s : (Json, String)?) -> Json {
+  match s {
+    Some((value, body)) => { "value": value, "body": Json::string(body) }
+    None => Json::null()
+  }
+}

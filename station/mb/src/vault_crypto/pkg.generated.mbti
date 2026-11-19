@@ -100,6 +100,8 @@ pub fn signed_ok(Crypto, @json.Json, String) -> Bool
 
 pub fn signer_of(@vault.LockView, String) -> (String, String)?
 
+pub fn snapshot_json((@json.Json, String)?) -> @json.Json
+
 pub fn stringify(@json.Json) -> String
 
 pub let tag_box : String

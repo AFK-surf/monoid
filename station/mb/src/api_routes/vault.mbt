@@ -94,11 +94,16 @@ fn int_of(v : JV?) -> Double? {
 }
 
 ///|
-/// The lock's devices (a Map, `{"$map": [[id, device]...]}`), by id.
+/// The lock's devices by id: a Map as the TypeScript's lock gives it (`{"$map": [[id, device]...]}`), or the plain
+/// object `{id: device}` of the MoonBit station's (cloud_lock vault_lock.mbt `personal_vault_lock`).
 fn lock_devices(l : JV) -> Array[JV] {
   match l.get("devices") {
-    Some(Obj(_) as m) =>
-      jitems(m.get("$map")).map(p => jitems(Some(p)).get(0).unwrap_or(jundef))
+    Some(Obj(entries) as m) =>
+      match m.get("$map") {
+        Some(Arr(_)) =>
+          jitems(m.get("$map")).map(p => jitems(Some(p)).get(0).unwrap_or(jundef))
+        _ => entries.map(p => js(p.0))
+      }
     _ => []
   }
 }

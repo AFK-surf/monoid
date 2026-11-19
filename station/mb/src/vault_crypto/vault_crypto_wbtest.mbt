@@ -152,3 +152,10 @@ test "a plain library's grant: held, used once, run out, handed over" {
   k.end("s1")
   inspect(k.holds("s1"), content="false")
 }
+
+///|
+test "a snapshot as the routes read it: its value and its body by name, null where none is held" {
+  let v : Json = { "id": "v1", "seq": 0 }
+  inspect(stringify(snapshot_json(Some((v, "b1")))), content="{\"value\":{\"id\":\"v1\",\"seq\":0},\"body\":\"b1\"}")
+  inspect(stringify(snapshot_json(None)), content="null")
+}

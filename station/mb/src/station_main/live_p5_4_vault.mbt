@@ -636,14 +636,6 @@ fn p54_arr(xs : Array[Json]) -> Json {
 }
 
 ///|
-fn p54_snapshot(s : (Json, String)?) -> Json {
-  match s {
-    Some((v, body)) => [v, Json::string(body)]
-    None => Json::null()
-  }
-}
-
-///|
 fn p54_opt_json(v : Json?) -> Json {
   v.unwrap_or(Json::null())
 }
@@ -714,13 +706,13 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     "vault/plain.shown" => @vault_crypto.shown(j(0))
     // the vaults, items and boxes kept here (store.ts)
     "vaults.vault" => p54_opt_json(vaults.vault(s(0), s(1)))
-    "vaults.vaultSnapshot" => p54_snapshot(vaults.vault_snapshot(s(0), s(1)))
+    "vaults.vaultSnapshot" => @vault_crypto.snapshot_json(vaults.vault_snapshot(s(0), s(1)))
     "vaults.memberVaults" => p54_arr(vaults.member_vaults(s(0), s(1)))
     "vaults.items" => p54_arr(vaults.items(s(0), s(1)))
-    "vaults.itemSnapshot" => p54_snapshot(vaults.item_snapshot(s(0), s(1), s(2)))
+    "vaults.itemSnapshot" => @vault_crypto.snapshot_json(vaults.item_snapshot(s(0), s(1), s(2)))
     "vaults.boxes" => p54_arr(vaults.boxes(s(0)))
     "vaults.boxesFor" => p54_arr(vaults.boxes_for(s(0), opt_strs(Some(j(1)))))
-    "vaults.boxSnapshot" => p54_snapshot(vaults.box_snapshot(s(0), s(1)))
+    "vaults.boxSnapshot" => @vault_crypto.snapshot_json(vaults.box_snapshot(s(0), s(1)))
     "vaults.putVaultIf" => Json::boolean(vaults.put_vault_if(j(0), opt_str(some(j(1)))))
     "vaults.putItemIf" => Json::boolean(vaults.put_item_if(j(0), s(1), opt_str(some(j(2)))))
     "vaults.putBoxIf" => Json::boolean(vaults.put_box_if(j(0), opt_str(some(j(1)))))

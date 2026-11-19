@@ -2294,6 +2294,49 @@ test("a station without the lock pinned holds no vault, and says so; the vault i
   r.core.close();
 });
 
+test("a station taken out of the workspace is not shown as refusing the vault, though what it refused is still held here", async () => {
+  const r = await rig();
+  r.putLock();
+  r.st.locked.on = false;
+  // (held from before it was taken out: nothing reads it again to say otherwise)
+  r.core.inner.data.put("vault", "ws", { refused: { ["ab".repeat(32)]: "vault_needs_lock" }, keeps: [] });
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  await r.host.time.pass(500);
+  assert.deepEqual(vaults().refused, [{ station: "st", name: "studio", code: "vault_needs_lock" }]);
+  r.core.close();
+});
+
+test("a station that refused the vault (no lock pinned) and is since updated: once it takes this device's certificate, after another took it first, it is refused no more and brought the vault and its items", async () => {
+  const r = await rig(false, true);
+  r.putLock();
+  r.st2.locked.on = false;
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  await r.host.time.pass(500);
+  assert.deepEqual(vaults().refused, [{ station: "st2", name: "mini", code: "vault_needs_lock" }]);
+  const setup = await r.ask("vault.setup", {});
+  assert.deepEqual(setup.stations, ["st"]);
+  const put = await r.ask("vault.putItem", { vault: setup.made, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } } });
+  assert.deepEqual([r.st2.vaults.size, r.st2.items.size], [0, 0]);
+  // Updated: it pins the lock now, and answers the certificate after the first station did.
+  r.st2.locked.on = true;
+  const gate: { letGo: (() => void) | null } = { letGo: null };
+  stationLater(r.host, (req) => {
+    if (gate.letGo !== null || req.method !== "PUT" || !req.url.includes("/vault/boxes") || !req.headers.some(([k, v]) => k === "x-test-station" && v === "st2")) return undefined;
+    return new Promise((resolve) => (gate.letGo = () => resolve(jsonResponse(200, r.st2.reply(req)))));
+  });
+  assert.deepEqual(await r.ask("vault.ask", {}), { asked: 1 }, "answered once the first took it");
+  assert.deepEqual(vaults().refused, [{ station: "st2", name: "mini", code: "vault_needs_lock" }], "refused still, till it takes it");
+  gate.letGo!();
+  stationLater(r.host, () => undefined);
+  await r.host.time.pass(1000);
+  r.take();
+  assert.deepEqual(vaults().refused, []);
+  assert.ok(r.st2.boxes.get(setup.device));
+  assert.equal(r.st2.vaults.get(setup.made)?.seq, 0);
+  assert.equal(r.st2.items.get(put.id)?.version, 0);
+  r.core.close();
+});
+
 test("a workspace with no station at all: the vault turned on, written, opened and deleted from on this device alone, kept as the app starts anew", async () => {
   const r = await rig(false, false, {}, { stations: [] });
   r.putLock();
