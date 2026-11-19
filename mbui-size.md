@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d888ba627](https://github.com/AFK-surf/monoid/commit/d888ba62744cb3c5ed3cac369616c6e5c229ed56) fix(station): price session usage from model catal | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.4 | 127.7 |
 | [5ade5b9e6](https://github.com/AFK-surf/monoid/commit/5ade5b9e61bd10131bcc341a0e7c80e9f2432a4d) feat(effect): add quiet and daemon fiber forks (#7 | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.4 | 127.7 |
 | [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
 | [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4f71795db](https://github.com/AFK-surf/monoid/commit/4f71795dbee93a597424ce40fb6209eef9309a98) refactor(mbui): share jobs' and history's parts, m | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
 | [9cb921256](https://github.com/AFK-surf/monoid/commit/9cb9212563ed7ed6289a5ce30607960e7c87d5c9) feat(mbui): fade overflowing panel lists and show  | 2.57 | 3.46 | 14.12 | 36.15 | 54.36 | 31.68 | 63.77 | 96.85 | 113.71 |
 | [acfb3e6af](https://github.com/AFK-surf/monoid/commit/acfb3e6afb05100d30e0ba3fabae6c7176f46777) fix(sf-ui): soften floating edges and shadows, mak | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 96.85 | 121.81 |
-| [bfd2fbcf1](https://github.com/AFK-surf/monoid/commit/bfd2fbcf1177f00d55c37932495739b6ffe4b61d) fix(mbui): a video whose size was not sent covers  | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 96.85 | 121.81 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d888ba627](https://github.com/AFK-surf/monoid/commit/d888ba62744cb3c5ed3cac369616c6e5c229ed56) fix(station): price session usage from model catal | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [5ade5b9e6](https://github.com/AFK-surf/monoid/commit/5ade5b9e61bd10131bcc341a0e7c80e9f2432a4d) feat(effect): add quiet and daemon fiber forks (#7 | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4f71795db](https://github.com/AFK-surf/monoid/commit/4f71795dbee93a597424ce40fb6209eef9309a98) refactor(mbui): share jobs' and history's parts, m | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
 | [9cb921256](https://github.com/AFK-surf/monoid/commit/9cb9212563ed7ed6289a5ce30607960e7c87d5c9) feat(mbui): fade overflowing panel lists and show  | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
 | [acfb3e6af](https://github.com/AFK-surf/monoid/commit/acfb3e6afb05100d30e0ba3fabae6c7176f46777) fix(sf-ui): soften floating edges and shadows, mak | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
-| [bfd2fbcf1](https://github.com/AFK-surf/monoid/commit/bfd2fbcf1177f00d55c37932495739b6ffe4b61d) fix(mbui): a video whose size was not sent covers  | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.1 |
