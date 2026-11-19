@@ -127,7 +127,9 @@ try {
   /// `x` approved into the workspace's lock from its waiting page, the code shown on `approver` (as locks.ts's `approvedBy`),
   /// let in by `at` (both stations by default).
   const approvedInThree = async (x: Device, page = false, approver: Device = vDev, at: () => string[] = both) => {
-    await x.lock(three, (l) => l.me?.waiting && !l.me?.ownLock, 90_000);
+    // (also wait for !reboundText, as locks.ts `approvedBy` does: after round 24's remove + re-add, Z may still hold
+    // pre-removal leftApps until its post-revocation retry gets a fresh credential and hears left.apps = false)
+    await x.lock(three, (l) => l.me?.waiting && !l.me?.ownLock && !l.me?.reboundText, 90_000);
     const shown = approver.until({ topic: "lockPrompts" }, (v) => v?.pairing?.[0], 90_000);
     await x.call("lock.pair", { workspace: three });
     const p = await shown;

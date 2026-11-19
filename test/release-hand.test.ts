@@ -176,3 +176,94 @@ fi
   result = run("android/stillfail-beta", "--files", dir);
   assert.notEqual(result.status, 0, "the APK's failure is the put's");
 });
+
+// Cloudflare's API as a fake curl for the tests below: each call said in $FAKE_LOG (its --resolve address or "dns",
+// then the URL); a call at an address in $FAKE_DOWN, or to /accounts before its $FAKE_ACCOUNTS_AT'th call, fails as an
+// unanswered connection; /accounts answers the account, an upload is put in $FAKE_BUCKET by its key.
+const fakeApi = (bin: string) => {
+  writeFileSync(join(bin, "curl"), `#!/bin/sh
+out= upload= method=GET url= at=dns
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) shift; out=$1 ;; -T) shift; upload=$1 ;; -X) shift; method=$1 ;; --resolve) shift; at=\${1##*:} ;; https://*) url=$1 ;; esac
+  shift
+done
+echo "$at $url" >> "$FAKE_LOG"
+case " $FAKE_DOWN " in *" $at "*) exit 28 ;; esac
+case "$url" in */client/v4/accounts)
+  n=$(($(cat "$FAKE_LOG.accounts" 2>/dev/null || echo 0) + 1)); echo "$n" > "$FAKE_LOG.accounts"
+  [ "$n" -ge "\${FAKE_ACCOUNTS_AT:-1}" ] || exit 28
+  echo '{"result":[{"id":"0123456789abcdef0123456789abcdef"}]}'; exit 0 ;;
+esac
+case "$url" in */accounts/0123456789abcdef0123456789abcdef/*) ;; *) exit 22 ;; esac
+object="$FAKE_BUCKET/$(printf %s "\${url#*/objects/}" | tr / _)"
+if [ -n "$upload" ]; then cp "$upload" "$object"
+elif [ "$method" = DELETE ]; then rm "$object"
+elif [ -n "$out" ]; then [ -f "$object" ] || exit 22; cp "$object" "$out"
+fi
+`);
+  writeFileSync(join(bin, "dig"), "#!/bin/sh\nprintf '104.19.192.176\\n104.19.193.176\\n104.19.194.176\\n'\n");
+  writeFileSync(join(bin, "pnpm"), "#!/bin/sh\nexit 1\n");
+  writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n");
+  for (const name of ["curl", "dig", "pnpm", "sleep"]) chmodSync(join(bin, name), 0o755);
+};
+
+// The CI Mac's direct DNS gives Cloudflare's API's addresses: the first two are tried in turn, then the machine's own
+// DNS, for the account as for the upload, with no wrangler to fall back on (a release job has no cloud/node_modules:
+// main a1159d02f's android, its one address unanswered).
+test("a put goes to the second direct address, then through the machine's DNS, when the first does not answer", (t) => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const tmp = mkdtempSync(join(tmpdir(), "release-direct-test-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const bin = join(tmp, "bin");
+  mkdirSync(bin);
+  fakeApi(bin);
+  for (const [down, ats] of [
+    ["104.19.192.176", ["104.19.192.176", "104.19.193.176"]],
+    ["104.19.192.176 104.19.193.176", ["104.19.192.176", "104.19.193.176", "dns"]],
+  ] as const) {
+    const case_ = join(tmp, down.replaceAll(" ", "_")), bucket = join(case_, "bucket"), log = join(case_, "log");
+    mkdirSync(join(case_, "made/android"), { recursive: true });
+    mkdirSync(bucket);
+    writeFileSync(join(case_, "made/android/stillfail-beta-8300.apk"), "apk");
+    const result = spawnSync("sh", [join(root, "scripts/release-put.sh"), "--files", join(case_, "made")], {
+      cwd: root, encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_API_TOKEN: "fake", CLOUDFLARE_ACCOUNT_ID: "",
+        STILLFAIL_DIRECT_DNS: "223.5.5.5", FAKE_BUCKET: bucket, FAKE_LOG: log, FAKE_DOWN: down },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Cloudflare's API directly, at 104\.19\.192\.176\n/);
+    assert.match(result.stdout, /uploaded android\/stillfail-beta-8300\.apk \(.*, api\)/);
+    assert.equal(readFileSync(join(bucket, "android_stillfail-beta-8300.apk"), "utf8"), "apk");
+    const calls = readFileSync(log, "utf8").trim().split("\n").map((line) => line.split(" "));
+    const accounts = calls.filter(([, url]) => url!.endsWith("/client/v4/accounts")).map(([at]) => at);
+    const uploads = calls.filter(([, url]) => url!.includes("/objects/")).map(([at]) => at);
+    assert.deepEqual(accounts, ats, "the account asked at each address in turn");
+    assert.deepEqual(uploads, ats, "the upload made at each address in turn");
+  }
+});
+
+// The account is asked again by each try while it was not found: one start without Cloudflare's API no longer leaves
+// every try to wrangler.
+test("a put whose start could not ask the account asks it again on its next tries", (t) => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const tmp = mkdtempSync(join(tmpdir(), "release-account-test-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const bin = join(tmp, "bin"), bucket = join(tmp, "bucket"), log = join(tmp, "log");
+  mkdirSync(bin);
+  mkdirSync(bucket);
+  mkdirSync(join(tmp, "made/android"), { recursive: true });
+  writeFileSync(join(tmp, "made/android/stillfail-beta-8300.apk"), "apk");
+  fakeApi(bin);
+  // (the start's call and the first try's fail, the second try's answers)
+  const result = spawnSync("sh", [join(root, "scripts/release-put.sh"), "--files", join(tmp, "made")], {
+    cwd: root, encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_API_TOKEN: "fake", CLOUDFLARE_ACCOUNT_ID: "",
+      STILLFAIL_DIRECT_DNS: "", FAKE_BUCKET: bucket, FAKE_LOG: log, FAKE_ACCOUNTS_AT: "3" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /putting android\/stillfail-beta-8300\.apk failed \(try 1\), trying again/);
+  assert.doesNotMatch(result.stderr, /try 2/);
+  assert.match(result.stdout, /uploaded android\/stillfail-beta-8300\.apk \(.*, api\)/);
+  assert.equal(readFileSync(join(bucket, "android_stillfail-beta-8300.apk"), "utf8"), "apk");
+  assert.equal(readFileSync(`${log}.accounts`, "utf8").trim(), "3");
+});
