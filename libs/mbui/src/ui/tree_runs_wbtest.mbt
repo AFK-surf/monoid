@@ -527,6 +527,54 @@ test "a row of the tree's that moves the window, as the old view's top row does:
 }
 
 ///|
+/// A window 400 by 300 (a mouse's), its top row 44 high moving the window while `drags` (View::moves_window, bound),
+/// under it a button with the keyboard's focus (Tab): the primary button pressed and let go on the row's blank. How many
+/// times the window was moved, how many taps on nothing the tree was told of (View::window_taps), whether the focus
+/// stayed, how many times the button was pressed.
+fn top_row_tapped(drags : Bool) -> (Int, Int, Bool, Int) {
+  let pressed = Ref(0)
+  let moves = @signals.signal(drags)
+  let root_of : Ref[@view.View?] = Ref(None)
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  set_view_app(fn(root) {
+    root_of.val = Some(root)
+    root.box(fn(top) { top.height(Is(Some(44.0))).row(Is(true)).moves_window(By(fn() { moves.get() })) |> ignore })
+    |> ignore
+    root.box(fn(k) {
+      k
+      .width(Is(Some(80.0)))
+      .height(Is(Some(40.0)))
+      .presses(Is(true))
+      .focusable(Is(true))
+      .says(Is(Some(@view.said(Button, label="下面的按钮"))))
+      .on_press(fn() { pressed.val += 1 })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.tab()
+  t.draw()
+  let taps = fn() {
+    match root_of.val {
+      Some(r) => @signals.untracked(fn() { r.window_taps() })
+      None => -1
+    }
+  }
+  let before = taps()
+  on_pointer(0, 200.0, 20.0, 0)
+  on_pointer(2, 200.0, 20.0, 0)
+  t.draw()
+  let kept = t.focused().map(fn(s) { s.label }) == Some("下面的按钮")
+  (t.window_drags(), taps() - before, kept, pressed.val)
+}
+
+///|
+test "a top row of the tree's that moves no window now: the primary button let go on its blank a tap on nothing (View::window_taps), the window not moved, the focus kept, nothing under it pressed; one that moves it: moved, no tap" {
+  assert_eq((top_row_tapped(false), top_row_tapped(true)), ((0, 1, true, 0), (1, 0, true, 0)))
+}
+
+///|
 test "a node's words in a line shorter than their font, measured again as lines come to be set as a browser sets them and back (set_web_lines), the same node, no frame between: as tall as such words are laid out then, as an old view's are" {
   let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
   t.check_looks(false)

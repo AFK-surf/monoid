@@ -1260,6 +1260,7 @@ pub fn Tree::focus_back_takes(Self, NodeId) -> Bool
 pub fn Tree::focus_in_scroll(Self) -> Bool
 pub fn Tree::focus_keys_of(Self, NodeId) -> Int32
 pub fn Tree::focus_order(Self) -> Array[FocusAt]
+pub fn Tree::focus_park(Self, NodeId, Bool) -> Unit
 pub fn Tree::focus_parked_drop(Self) -> Unit
 pub fn Tree::focus_to(Self, NodeId?, visible? : Bool) -> Bool
 pub fn Tree::focused_now(Self) -> (NodeId?, Bool)
@@ -1310,6 +1311,7 @@ pub fn Tree::key_at(Self, Int32, Int32, Double, above? : Int32, within? : NodeId
 pub fn Tree::key_point_is(Self, Double, Double) -> Unit
 pub fn Tree::keys_ended(Self) -> KeysEnd
 pub fn Tree::keys_for(Self, String, from? : NodeId?, facts? : Array[String]) -> Array[Array[Stroke]]
+pub fn Tree::keys_own(Self, NodeId) -> Bool
 pub fn Tree::keys_pending(Self) -> Array[Stroke]
 pub fn Tree::keys_said(Self, NodeId, anew? : Bool, context? : String, action? : (String, (ActionAt) -> Bool)) -> Unit
 pub fn Tree::laid_as_now(Self) -> Unit
@@ -1318,6 +1320,7 @@ pub fn Tree::laid_held(Self) -> Array[(Drawn, Int32, Bool)]
 pub fn Tree::laid_held_hosted(Self) -> Array[(Drawn, Int32, Bool)]
 pub fn Tree::laid_held_toward(Self, (Content) -> Bool) -> Array[(Drawn, Int32, Bool)]
 pub fn Tree::laid_origin(Self, NodeId) -> (Double, Double)?
+pub fn Tree::laid_out_nowhere(Self, NodeId) -> Bool
 pub fn Tree::laid_said_of(Self, Int32) -> Double?
 pub fn Tree::leaving(Self, NodeId) -> Bool
 pub fn Tree::lift_cut(Self, NodeId) -> (Double, Double, Double, Double)?
@@ -1357,6 +1360,7 @@ pub fn Tree::on_modals(Self, () -> Unit) -> Unit
 pub fn Tree::on_moves(Self, (String, String, (Double) -> Double) -> Unit) -> Unit
 pub fn Tree::on_offset(Self, (NodeId) -> Unit) -> Unit
 pub fn Tree::on_old_scroll(Self, () -> Bool, there? : (NodeId, Double, Double) -> Bool) -> Unit
+pub fn Tree::on_outs(Self, () -> Unit) -> Unit
 pub fn Tree::on_target(Self, (Target, Array[Target], Double, Double) -> Target) -> Unit
 pub fn Tree::on_through(Self, (Target, Double, Double, Double, Handed) -> Unit) -> Unit
 pub fn Tree::on_way_at(Self, Int32, Double, within? : Int32) -> Bool

@@ -413,6 +413,9 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
   })
   // (the focus on one of its nodes let go of at a cause: none's from then, on either side)
   t.on_focus_lost(view_focus_lost)
+  // (what its rows leave out or lay out again told: the focus on an old view's field in it let go of then, and given
+  // back as it is laid out again, as the tree's own is: view_outs_told)
+  t.on_outs(fn() { view_outs_told(t) })
   // (a column of it moving what it scrolls by its offset alone: moved by its header as the next frame comes, nothing
   // painted for it (frame_watch.mbt's list_looks); painted anew where the last paint drew it in the window's terms)
   t.on_offset(view_offset_moved)
@@ -537,6 +540,7 @@ fn view_forget() -> Unit {
   view_down.val = None
   tree_finger_off()
   old_focus_shown.val = 0
+  old_focus_parked.val = None
   old_show_due.val = None
   view_handed.val = None
   view_point.val = None
@@ -3395,22 +3399,57 @@ fn Ctx::focus_allowed(self : Ctx) -> Int {
   if self.focus == 0 {
     return 0
   }
-  let island = match self.dev.catchers.get(self.focus) {
-    // (a node's own: kept from input as a node of the tree is, by the modal layers over it)
-    Some({ node: Some(n), .. }) => Some(n)
-    Some(st) => st.island
-    None => self.island_of_id(self.focus)
-  }
+  guard view_app.val is Some(tree) else { return self.focus }
   // (the old frame's own modal layers keep its focus where it says, a field's under a menu it opened (Ctx::overlay's
-  // initial_focus 0): what keeps an old view's focus from it is the tree's modal layers alone)
-  let keeps = match (island, view_app.val) {
-    (Some(id), Some(tree)) => tree.allows_as_its_own(id)
-    _ => true
+  // initial_focus 0): what keeps an old view's focus from it is the tree's modal layers, and what its node is now)
+  let keeps = match self.dev.catchers.get(self.focus) {
+    // (a node's own: kept from input as a node of the tree is, by the modal layers over it)
+    Some({ node: Some(n), .. }) => tree.allows_as_its_own(n) && tree.keys_own(n)
+    _ =>
+      match tree_said_ids.get(self.focus) {
+        // (a node of the tree's: the modal layers over it the tree's to keep it from (Tree::takes_focus_under))
+        Some(n) => tree.keys_own(n)
+        None =>
+          match self.old_focus_island(self.focus) {
+            // (not in an old view laid out nowhere, leaving, in its bones, not in use or put by: what it was built in
+            // not built, nothing typed into it)
+            Some(id) => tree.allows_as_its_own(id) && tree.keys_own(id)
+            None => true
+          }
+      }
   }
   if keeps {
     self.focus
   } else {
     0
+  }
+}
+
+///|
+/// The old view (its node of the window's tree) what Ctx's focus names `id` is in, an old view's stop's (a field's, a
+/// key catcher's, a widget's that takes the focus), whether that old view was built in the last frames or not (laid
+/// out nowhere, put by: the one it was last built in, Ctx's focus_island); none for a node of the tree's own, what
+/// is in a layer of the old frame's own, or none's.
+fn Ctx::old_focus_island(self : Ctx, id : Int) -> @view.NodeId? {
+  if id == 0 || tree_said_ids.contains(id) || self.id_old_layer(id) != 0 {
+    return None
+  }
+  match self.dev.catchers.get(id) {
+    Some({ node: Some(n), .. }) => return Some(n)
+    Some({ island: Some(i), .. }) => return Some(i)
+    _ => ()
+  }
+  match self.focusables.iter().find_first(fn(f) { f.id == id }) {
+    Some({ island: Some(i), .. }) => return Some(i)
+    _ => ()
+  }
+  match self.last_focusables.iter().find_first(fn(f) { f.id == id }) {
+    Some({ island: Some(i), .. }) => return Some(i)
+    _ => ()
+  }
+  match self.island_of_id(id) {
+    Some(i) => Some(i)
+    None => self.focus_island.get(id)
   }
 }
 
@@ -3424,7 +3463,22 @@ fn Ctx::typing_allowed(self : Ctx) -> Int {
     return focus
   }
   match view_app.val {
-    Some(tree) if @signals.untracked(fn() { tree.typing_left_under() }) => self.focus
+    // (kept from input by that layer alone: not by what its own old view is now, laid out nowhere, leaving, not in use)
+    Some(tree) if @signals.untracked(fn() { tree.typing_left_under() }) => {
+      let own = match tree_said_ids.get(self.focus) {
+        Some(n) => tree.keys_own(n)
+        None =>
+          match self.old_focus_island(self.focus) {
+            Some(n) => tree.keys_own(n)
+            None => true
+          }
+      }
+      if own {
+        self.focus
+      } else {
+        0
+      }
+    }
     _ => 0
   }
 }
@@ -3747,10 +3801,18 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
         // (the app's own top row: its own, nothing under it taking it; where it moves the window, the window the
         // host's to move from here by the primary button, the rest of the press nobody's; the focus where it is, as the
         // old frame's top row leaves it (old_pointer_now: before it is moved); the secondary button moves nothing)
+        // (one that moves no window now (a host with no inset title bar, a window full screen): a tap on nothing there, as
+        // a press on nothing is, View::window_taps)
         TopRow(id) => {
           view_held.val = Some(Nowhere)
-          if button != 2 && tree.moves_window(id) {
-            h_window_drag()
+          if button != 2 {
+            if tree.moves_window(id) {
+              h_window_drag()
+            } else {
+              view_nothing_down.val = Some((x, y))
+            }
+          } else {
+            view_nothing_down.val = None
           }
           true
         }
@@ -4304,7 +4366,7 @@ fn typed_part() -> Int {
   let c = g()
   let focus = c.typing_allowed()
   guard focus != 0 && c.editors.contains(focus) && !old_whole.val else { return -1 }
-  match c.island_of_id(focus) {
+  match c.old_focus_island(focus) {
     Some(id) => old_part_of(id)
     None => -1
   }
@@ -6115,7 +6177,55 @@ fn focus_told_tree(c : Ctx) -> Unit {
       }
     }
   }
+  // (come to anything: what of an old view's waited for it to be laid out again for the focus waits no more,
+  // view_outs_told)
+  if c.focus != 0 {
+    old_focus_parked.val = None
+  }
   old_focus_shown.val = c.focus
+}
+
+///|
+/// What of an old view's had the focus as the old view's node was laid out nowhere (view_outs_told): its id, that node,
+/// and whether the focus showed; given it back as that is laid out again, where nothing took the focus meanwhile, as a
+/// node of the tree's is (Tree::outs_told's focus_parked).
+// kept across runs: put back as a run begins (view_forget); let go of as the focus comes to anything (focus_told_tree)
+let old_focus_parked : Ref[(Int, @view.NodeId, Bool)?] = Ref(None)
+
+///|
+/// What the rows of tree `t` leave out, or lay out again, told (Tree::on_outs), in that change: the focus on a stop of
+/// an old view whose node is laid out nowhere let go of (none of it built: the soft keyboard put away, nothing typed
+/// into it), kept for it (old_focus_parked); and the one kept so given it back, its node laid out again and nothing
+/// having taken the focus meanwhile, where it may have it then (no modal layer over it, taking presses, in use).
+fn view_outs_told(t : @view.Tree) -> Unit {
+  let c = g()
+  if c.focus != 0 {
+    match c.old_focus_island(c.focus) {
+      Some(isl) if t.laid_out_nowhere(isl) => {
+        let kept = if old_islands.iter().any(fn(o) { o.id == isl }) {
+          Some((c.focus, isl, c.focus_visible))
+        } else {
+          None
+        }
+        c.focus_moved(0)
+        old_focus_parked.val = kept
+      }
+      _ => ()
+    }
+  }
+  match old_focus_parked.val {
+    Some((id, isl, visible)) if c.focus == 0 && t.focused_now().0 is None =>
+      if !old_islands.iter().any(fn(o) { o.id == isl }) || !t.holds(isl, isl) {
+        // (its old view gone meanwhile: nothing to give it back to)
+        old_focus_parked.val = None
+      } else if !t.laid_out_nowhere(isl) {
+        old_focus_parked.val = None
+        if t.allows_as_its_own(isl) && t.keys_own(isl) {
+          c.focus_moved(id, visible~, returned=true)
+        }
+      }
+    _ => ()
+  }
 }
 
 ///|
@@ -6291,7 +6401,7 @@ fn back_takes_input(t : @view.Tree, id : Int) -> Bool {
 fn focus_node_of(id : Int) -> @view.NodeId? {
   match tree_said_ids.get(id) {
     Some(n) => Some(n)
-    None => g().last_focusables.iter().find_first(fn(f) { f.id == id }).bind(fn(f) { f.island })
+    None => g().old_focus_island(id)
   }
 }
 
@@ -6317,19 +6427,7 @@ pub fn holds_ime_leaving(layer : @view.View, active? : () -> Bool = fn() { true 
 fn editor_node_of(c : Ctx, id : Int) -> @view.NodeId? {
   match tree_said_ids.get(id) {
     Some(n) => Some(n)
-    None =>
-      match c.dev.catchers.get(id) {
-        Some(st) => st.island
-        None =>
-          match c.focusables.iter().find_first(fn(f) { f.id == id }) {
-            Some(f) => f.island
-            None =>
-              match c.last_focusables.iter().find_first(fn(f) { f.id == id }) {
-                Some(f) => f.island
-                None => c.island_of_id(id)
-              }
-          }
-      }
+    None => c.old_focus_island(id)
   }
 }
 
@@ -6652,7 +6750,37 @@ fn view_layers_focus(t : @view.Tree, gone : Array[@view.NodeId], opened : Array[
   // follow off the window; the focus to none then, for what is in front now to take, as an old frame's layer gives
   // nothing back to what took it meanwhile: Ctx::layers_focus. A node of the tree's is held so as it is given it:
   // focus_told_tree)
-  let back = back.filter(fn(b) { back_takes_input(t, b) })
+  // (one still laid out nowhere as it is given it, laid out again in the same change (a layer in its place going as
+  // it comes back): given it as it is laid out next, where nothing takes the focus meanwhile, the focus none till then:
+  // Tree::outs_told, view_outs_told)
+  let waits = match back {
+    Some(b) if b != 0 =>
+      match tree_said_ids.get(b) {
+        Some(n) if t.holds(n, n) && t.laid_out_nowhere(n) => {
+          if c.focus != 0 {
+            c.focus_moved(0)
+          }
+          t.focus_park(n, c.focus_visible)
+          true
+        }
+        Some(_) => false
+        None =>
+          match c.old_focus_island(b) {
+            Some(isl) if old_islands.iter().any(fn(o) { o.id == isl }) &&
+              t.laid_out_nowhere(isl) &&
+              t.in_use(isl) => {
+              if c.focus != 0 {
+                c.focus_moved(0)
+              }
+              old_focus_parked.val = Some((b, isl, c.focus_visible))
+              true
+            }
+            _ => false
+          }
+      }
+    _ => false
+  }
+  let back = if waits { None } else { back.filter(fn(b) { back_takes_input(t, b) }) }
   let left = layer_focus_open.filter(fn(l) { !gone.contains(l.layer) })
   layer_focus_open.clear()
   layer_focus_open.append(left)

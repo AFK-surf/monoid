@@ -701,6 +701,10 @@ pub struct Ctx {
   dismissals : Map[Int, Dismiss]
   layer_return : Map[Int, Int]
   editor_layer : Map[Int, Int]
+  /// the old view (its node of the window's tree) each stop built in one, in no layer of its own, was last built in
+  /// (Ctx::focusable): what the focus on it is kept by while that old view is not built (laid out nowhere, put by), as
+  /// what the frames before built is let go of (Ctx::old_focus_island)
+  focus_island : Map[Int, @view.NodeId]
   mut focus_returned : Bool
   mut press_down : (Double, Double)?
   // (the window's tree took that press: none of the old frame's targets did, whatever its targets lie under it)
@@ -947,6 +951,7 @@ fn Ctx::new() -> Ctx {
     dismissals: Map([]),
     layer_return: Map([]),
     editor_layer: Map([]),
+    focus_island: Map([]),
     focus_returned: false,
     press_down: None,
     press_down_tree: false,
@@ -1117,6 +1122,7 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.dismissals.clear()
   self.layer_return.clear()
   self.editor_layer.clear()
+  self.focus_island.clear()
   self.focus_returned = false
   self.segs_cut(0)
   self.segs.shrink_to_fit()

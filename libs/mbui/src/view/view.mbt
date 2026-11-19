@@ -1177,6 +1177,9 @@ pub struct Tree {
   /// where nothing has taken it meanwhile (Tree::outs_told), as an old view's focus waits for its node
   mut focus_parked : (NodeId, Bool)?
   mut on_focus_lost : (NodeId) -> Unit
+  /// what hosts it told as what its rows left out is told (Tree::outs_told), within that change: what of its own it
+  /// keeps the focus in (an old view's field) let go of and given back as the tree's own is (Tree::on_outs)
+  mut on_outs : () -> Unit
   /// what hosts it gives a node of its asking for the focus (Tree::on_focus_asked: its own focus moved there, told
   /// back), none where nothing hosts it (View::ask_focus: the tree's alone)
   mut on_focus_asked : ((NodeId, Bool) -> Unit)?
@@ -1652,6 +1655,7 @@ pub fn Tree::new(
     focus_parked: None,
     focus_visible: false,
     on_focus_lost: fn(_) {  },
+    on_outs: fn() {  },
     on_focus_asked: None,
     focus_opened: [],
     focus_gone: [],
@@ -12324,6 +12328,9 @@ fn Tree::outs_told(self : Tree) -> Unit {
     }
     _ => ()
   }
+  // (what hosts it told in the same change: the focus it keeps in what was left out let go of, and given back as that
+  // is laid out again, as the tree's own is: Tree::on_outs)
+  (self.on_outs)()
   // (what takes input told anew in what was left out or came back alone, not all of it: whether each takes input reads
   // what holds it, and only these changed of that)
   for at in gone {

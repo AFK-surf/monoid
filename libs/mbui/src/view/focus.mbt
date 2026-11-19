@@ -711,3 +711,35 @@ pub fn Tree::focus_blind(self : Tree) -> Array[NodeId] {
   }
   out
 }
+
+///|
+/// What hosts the tree told as what its rows leave out, or lay out again, is told (Tree::outs_told), in that change,
+/// after the tree's own focus in it is let go of or given back: the focus it keeps itself in what is left out (an old
+/// view's field, hosted in a node of it) let go of then and given back as that is laid out again (Tree::focus_parked's).
+pub fn Tree::on_outs(self : Tree, f : () -> Unit) -> Unit {
+  self.on_outs = f
+}
+
+///|
+/// Whether node `id` (living) or what holds it is laid out nowhere as it was last laid out (View::laid_nowhere,
+/// View::drops): what hosts it lets go of the focus it keeps in it then (Tree::on_outs).
+pub fn Tree::laid_out_nowhere(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.out_at(id.at)
+}
+
+///|
+/// Whether node `id` may have the keyboard's focus as far as it and what holds it say, whatever a modal layer over it
+/// says (Tree::takes_keys less Tree::allows): it lives, is held from the root, and neither it nor what holds it is
+/// leaving, laid out nowhere, said to take no press, in its bones or not in use. What an old view's field keeps the focus
+/// by (that old view's node asked), the modal layers over it asked apart (Tree::allows_as_its_own).
+pub fn Tree::keys_own(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.held_from_root(id.at) && !self.pressless_own_at(id.at) && self.in_use_at(id.at)
+}
+
+///|
+/// Node `id` to have the focus back, `visible` or not, as what it is in is laid out again (Tree::outs_told), where
+/// nothing takes the focus meanwhile: what gives it back to it as it is still laid out nowhere (a layer in its place
+/// gone in the same change, before the tree is laid out again) has it wait for that, as what had it as it went does.
+pub fn Tree::focus_park(self : Tree, id : NodeId, visible : Bool) -> Unit {
+  self.focus_parked = Some((id, visible))
+}
