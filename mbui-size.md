@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b208ce089](https://github.com/AFK-surf/monoid/commit/b208ce089e603e1f6d2b8d31eb5ce6150974ac8c) fix(mbui): set a list's FLIP rest before telling i | 2.64 | 3.55 | 14.52 | 36.74 | 55.91 | 32.22 | 65.27 | 97.39 | 119.12 |
 | [3ea0dccaf](https://github.com/AFK-surf/monoid/commit/3ea0dccaf788da7a9571ad76cb8b14716abb9a04) fix(mbui): align model picker dividers flush as 0. | 2.64 | 3.55 | 14.52 | 36.73 | 55.9 | 32.22 | 65.25 | 97.5 | 126.33 |
 | [69aa1eb7c](https://github.com/AFK-surf/monoid/commit/69aa1eb7ca3ce8077bdd74b42e3d99784c0381d3) fix(ci): retry Cloudflare's account per put try, a | 2.64 | 3.55 | 14.52 | 36.73 | 55.9 | 32.22 | 65.25 | 97.5 | 126.33 |
 | [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.63 | 117.42 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [208fe11c0](https://github.com/AFK-surf/monoid/commit/208fe11c021a0bc57975027baf16cc3cc8aa4665) feat(mbui): line up rows by their first lines in t | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
 | [fc9234632](https://github.com/AFK-surf/monoid/commit/fc9234632f69d87cf7cd226880b3aed511abec2b) fix(mbui, sf-ui): make the whole app static by def | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
 | [c7eb169c3](https://github.com/AFK-surf/monoid/commit/c7eb169c3084f0c615f18af8bfb1ee7bf8552d9a) feat(mbui): ask with Windows Hello for the core's  | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.97 | 97.76 | 123.48 |
-| [fed4d673b](https://github.com/AFK-surf/monoid/commit/fed4d673b90d8ecaaf37f821dae0901fc923050b) fix(core): keep session_send letters out of Slack  | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.97 | 97.76 | 123.48 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b208ce089](https://github.com/AFK-surf/monoid/commit/b208ce089e603e1f6d2b8d31eb5ce6150974ac8c) fix(mbui): set a list's FLIP rest before telling i | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.08 |
 | [3ea0dccaf](https://github.com/AFK-surf/monoid/commit/3ea0dccaf788da7a9571ad76cb8b14716abb9a04) fix(mbui): align model picker dividers flush as 0. | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.08 |
 | [69aa1eb7c](https://github.com/AFK-surf/monoid/commit/69aa1eb7ca3ce8077bdd74b42e3d99784c0381d3) fix(ci): retry Cloudflare's account per put try, a | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [208fe11c0](https://github.com/AFK-surf/monoid/commit/208fe11c021a0bc57975027baf16cc3cc8aa4665) feat(mbui): line up rows by their first lines in t | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.02 |
 | [fc9234632](https://github.com/AFK-surf/monoid/commit/fc9234632f69d87cf7cd226880b3aed511abec2b) fix(mbui, sf-ui): make the whole app static by def | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 53.69 |
 | [c7eb169c3](https://github.com/AFK-surf/monoid/commit/c7eb169c3084f0c615f18af8bfb1ee7bf8552d9a) feat(mbui): ask with Windows Hello for the core's  | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 53.69 |
-| [fed4d673b](https://github.com/AFK-surf/monoid/commit/fed4d673b90d8ecaaf37f821dae0901fc923050b) fix(core): keep session_send letters out of Slack  | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
