@@ -117,6 +117,9 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     // (a place of the bottom bar switched away from kept, its nodes put by at rest, taken back as it is switched to:
     // go_place's, sfbase's nav_root_kept)
     keeps_made=true,
+    // (a chat's page made as nodes left (gone back from, put in place of) kept, its nodes put by at rest, taken back as
+    // it is opened again: chat_page_left_key)
+    keeps_left=@sfbase.chat_page_left_key,
   )
   |> ignore
   // (none kept of another workspace: those put by left for good as the workspace in view changes)

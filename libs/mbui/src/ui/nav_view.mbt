@@ -45,7 +45,7 @@ fn[P] Nav::p_at(self : Nav[P], now : Double) -> Double {
 }
 
 ///|
-/// The page `serial` (on the stack, leaving it, or on its shelf: Nav::replace_kept).
+/// The page `serial` (on the stack, leaving it, on its shelf: Nav::replace_kept, or on its kept left: Nav::try_park_left).
 fn[P] Nav::entry(self : Nav[P], serial : Int) -> NavPage[P]? {
   match self.leaving {
     Some(e) if e.serial == serial => return Some(e)
@@ -53,7 +53,11 @@ fn[P] Nav::entry(self : Nav[P], serial : Int) -> NavPage[P]? {
   }
   match self.pages.iter().find_first(fn(e) { e.serial == serial }) {
     Some(e) => Some(e)
-    None => self.shelf.iter().find_first(fn(e) { e.serial == serial })
+    None =>
+      match self.shelf.iter().find_first(fn(e) { e.serial == serial }) {
+        Some(e) => Some(e)
+        None => self.kept_left.iter().find_first(fn(x) { x.2.serial == serial }).map(fn(x) { x.2 })
+      }
   }
 }
 
@@ -97,7 +101,8 @@ fn[P] Nav::takes(self : Nav[P], serial : Int) -> Bool {
   let n = self.pages.length()
   let leaving = self.leaving is Some(l) && l.serial == serial
   let top = !leaving && self.pages[n - 1].serial == serial
-  let shelved = self.shelf.iter().any(fn(e) { e.serial == serial })
+  let shelved = self.shelf.iter().any(fn(e) { e.serial == serial }) ||
+    self.kept_left.iter().any(fn(x) { x.2.serial == serial })
   !(leaving || shelved || (self.mode == 1 && !top))
 }
 
@@ -182,7 +187,10 @@ fn nav_views_framed(c : Ctx) -> Unit {
 /// there again: Ctx::page_stint's) and its entry's number (what the frame keeps of the page by, as long as the entry
 /// is: nav_flat_view's `head`, `gone`); none, its old view. `keeps_made`: a root page made as nodes that another takes
 /// the place of (Nav::replace_kept) put on the shelf, its nodes put by at rest (View::each's `keeps`) and taken in again
-/// as it is put back; the shelf emptied, each on it left for good, as this node is let go.
+/// as it is put back; the shelf emptied, each on it left for good, as this node is let go. `keeps_left`: a page over the
+/// root made as nodes that leaves the stack (popped, put in place of) kept by the key and kind it says (none: let go as
+/// ever), its nodes put by at rest, and taken in again as a page of that key and kind is put on (Nav::take_kept_left),
+/// nav_kept_left_most at most; each let go for good as this node is.
 pub fn[P] nav_view(
   v : @view.View,
   nav : Nav[P],
@@ -195,10 +203,20 @@ pub fn[P] nav_view(
   page_for? : (@view.View, Int) -> (@view.View) -> (Ctx, P) -> Unit,
   made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int, Int) -> Unit)? = fn(_) { None },
   keeps_made? : Bool = false,
+  keeps_left? : (P) -> (String, String)?,
 ) -> @view.View {
   v.box(fn(s) {
     s.grow(Is(1.0)) |> ignore
     nav.floor = 0
+    if keeps_left is Some(_) {
+      nav.keeps_left = keeps_left
+      // (its kept left this node's: let go with it, what it put by let go by the each below, each left for good)
+      s.owns(fn() {
+        nav.keeps_left = None
+        nav.kept_left.clear()
+      })
+      |> ignore
+    }
     if keeps_made {
       nav.shelves = Some(fn(p) { made(p) is Some(_) })
       // (its shelf this node's: let go with it, what it put by let go by the each below, each left for good)
@@ -291,15 +309,21 @@ pub fn[P] nav_view(
                   fn() {
                     if nav.shows(k) {
                       shown.val = true
+                      e.shown_once = true
                     }
                     shown.val
                   },
                   fn(m) {
-                    // (laid out nowhere while it does not show, but on the shelf: there it is held by no node, put
-                    // by as it was laid out, and taken back so, laid out again nowhere and then whole for nothing)
+                    // (laid out nowhere while it does not show, but on the shelf or the kept left: there it is held by
+                    // no node, put by as it was laid out, and taken back so, laid out again nowhere and then whole for
+                    // nothing)
                     m
                     .grow(Is(1.0))
-                    .laid_nowhere(By(fn() { !nav.shows(k) && !nav.shelf.iter().any(fn(e) { e.serial == k }) }))
+                    .laid_nowhere(
+                      By(fn() {
+                        !nav.shows(k) && !nav.shelf.iter().any(fn(e) { e.serial == k }) && !nav.is_kept_left(k)
+                      }),
+                    )
                     |> ignore
                     nav.made(m, k, e, f, bg, edge)
                   },
@@ -326,11 +350,16 @@ pub fn[P] nav_view(
           },
         )
       },
-      // (those on the shelf kept, put by at rest: Nav::replace_kept)
-      keeps?=if keeps_made {
+      // (those on the shelf kept, put by at rest: Nav::replace_kept; and those on the kept left: Nav::try_park_left)
+      keeps?=if keeps_made || keeps_left is Some(_) {
         Some(fn() {
           nav.said.get() |> ignore
-          nav.shelf.map(fn(e) { e.serial })
+          nav.shown.get() |> ignore
+          let kept = if keeps_made { nav.shelf.map(fn(e) { e.serial }) } else { [] }
+          for x in nav.kept_left {
+            kept.push(x.2.serial)
+          }
+          kept
         })
       } else {
         None
@@ -570,7 +599,8 @@ pub fn[P] Nav::page_island(
       nav.said.get() |> ignore
       nav.shown.get() |> ignore
       match nav.flat_entry(serial) {
-        Some(e) => {
+        // (none built of one put by on the kept left: at rest, it reads nothing)
+        Some(e) if !nav.is_kept_left(serial) => {
           let (owner, stint) = (c.owner, c.stint)
           c.owner = e.serial
           c.stint = e.stint
@@ -578,7 +608,7 @@ pub fn[P] Nav::page_island(
           c.owner = owner
           c.stint = stint
         }
-        None => ()
+        _ => ()
       }
     },
     // (as the page is built: what it asks of where it stands, Nav::under, its own)

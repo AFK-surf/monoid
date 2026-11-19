@@ -29,7 +29,8 @@ pub fn secret_mask(value : String) -> String {
 /// A secret's field in `row` (the node it is made in, a column: its name over its line, 4 apart): its `label`, then on
 /// its line its `value` (masked till `shown()`, in the code face where `mono()`; on as many lines as it takes, or on
 /// one, `one_line`, as a value masked by who keeps it is) growing from its start, and what `ends` makes at its end (its
-/// keys: secret_key_node, secret_copy_node), the line reaching into the card's end corner (card_end_out).
+/// keys: secret_key_node, secret_copy_node) by its first line, the line reaching into the card's end corner
+/// (card_end_out).
 #callsite(autofill(loc))
 pub fn secret_value_row_node(
   row : @view.View,
@@ -45,8 +46,22 @@ pub fn secret_value_row_node(
   words_node(row, label, fn() { secret_label }, loc~) |> ignore
   row.box(made_for=loc, fn(l) {
     style_node(l, fn() { secret_line }, loc~)
+    // (its value's first line and its keys across one middle, never the keys across the middle of a value of several
+    // lines: the shorter of the two put down by half of what it lacks of the other, from the line's top)
+    let line = fn() {
+      let th = @ui.tree_theme()
+      node_sp(l, th.leading(L6).unwrap_or(th.text_size(Ui).1))
+    }
     l.box(fn(w) {
-      w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+      w
+      .grow(Is(1.0))
+      .basis(Is(Some(0.0)))
+      .min_width(Is(Some(0.0)))
+      .padding(By(fn() {
+        let d = dmax(0.0, (secret_key_side - line()) / 2.0)
+        (0.0, d, 0.0, d)
+      }))
+      |> ignore
       if one_line {
         // (on one line: its words in a box of their own, as wide as they are)
         w.box(fn(o) {
@@ -61,18 +76,35 @@ pub fn secret_value_row_node(
       } else {
         // (its look as the theme's is now: followed, the system's size of words changed)
         let look = fn() { @ui.style_words(secret_value_lines) }
-        w
-        .words_runs(By(fn() {
-          let words = if shown() { value() } else { secret_mask(value()) }
-          [@ui.span(words, mono=mono())]
-        }), look=@signals.untracked(look))
-        .words_look(By(look))
-        .ink(By(fn() { @ui.style_ink(secret_value) }))
+        w.box(fn(v) {
+          v
+          .words_runs(By(fn() {
+            let words = if shown() { value() } else { secret_mask(value()) }
+            [@ui.span(words, mono=mono())]
+          }), look=@signals.untracked(look))
+          .words_look(By(look))
+          .ink(By(fn() { @ui.style_ink(secret_value) }))
+          |> ignore
+        })
         |> ignore
       }
     })
     |> ignore
-    ends(l)
+    l.box(fn(e) {
+      // (its keys: 4 apart, as wide as they are, across their middle)
+      e
+      .row(Is(true))
+      .gap(Is(@ui.Space::S1.px()))
+      .lines_up(Is(Some(Middle)))
+      .shrink(Is(0.0))
+      .padding(By(fn() {
+        let d = dmax(0.0, (line() - secret_key_side) / 2.0)
+        (0.0, d, 0.0, d)
+      }))
+      |> ignore
+      ends(e)
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -301,7 +333,7 @@ let secret_label : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=
 
 ///|
 // kept across runs: a value (no field of it changes)
-let secret_line : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter").then(card_end_out)
+let secret_line : @ui.Style = @ui.css("row w=Full gap=S1 align=AStart").then(card_end_out)
 
 ///|
 // kept across runs: a value (no field of it changes)

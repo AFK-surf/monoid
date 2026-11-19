@@ -188,7 +188,7 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
         // (the place made, first visit; Home put by, not laid out again nor let go; Profile's list or 概览 one page, the
         // pick between them two nodes more, plus one refresh icon node per quota chip)
-        assert_eq(home_again_peak.val, if place == "profiles" { (655, 0, 538) } else { (363, 0, 254) }, msg="\{tag} home→\{place}")
+        assert_eq(home_again_peak.val, if place == "profiles" { (640, 0, 538) } else { (363, 0, 254) }, msg="\{tag} home→\{place}")
         t.run_for(kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
@@ -363,7 +363,7 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
       // (Profile's list or 概览 one page, the pick between them two nodes more, plus one refresh icon node per quota chip)
       let first = if place == "profiles" {
-        (813, 0, 670)
+        (794, 0, 670)
       } else if place == "connects" {
         (439, 0, 306)
       } else {

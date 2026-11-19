@@ -50,6 +50,19 @@ pub(all) enum Page {
 /// Other pages keep only the readers of their visible views.
 pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page) -> Unit {
   let held : Ref[(String, TopicLease)?] = Ref(None)
+  // (let go of as its entry is put by on the stack's kept left, page_entry_parked: no chat held while it is not on the
+  // stack; asked again as it is read again, put on once more)
+  let let_go = fn() {
+    let previous = held.val
+    held.val = None
+    match previous { Some((_, reader)) => reader.release(); None => () }
+  }
+  entry.owns(fn() {
+    if active_chat_readers.get(serial) is Some(f) && physical_equal(f, let_go) {
+      active_chat_readers.remove(serial)
+    }
+  })
+  |> ignore
   fn(page) {
     match page {
       Chat(r) => {
@@ -62,6 +75,7 @@ pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page
         next.bind_to(entry)
         let previous = held.val
         held.val = Some((key, next))
+        active_chat_readers[serial] = let_go
         match previous { Some((_, reader)) => reader.release(); None => () }
         if next.alive() { page_chat_ready(serial, src, key) }
       }
@@ -73,6 +87,71 @@ pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page
     }
   }
 }
+
+///|
+/// What puts by at rest the sources each entry's page reads by (Source::owned_by_parkable: page_entry_source's, a chat
+/// page's own), by its serial: put by once the entry kept left has told what it left (page_entry_parked), taken back as
+/// it is read again (page_entry_read).
+let entry_parks : Map[Int, Array[(Bool) -> Unit]] = Map([])
+
+///|
+/// The entries put by on the stack's kept left (page_entry_parked), by serial, till taken back (page_entry_read) or let
+/// go for good (page_entry_gone): whether their sources are put by yet (entries_kept_park_due).
+let entries_kept : Map[Int, Bool] = Map([])
+
+///|
+/// The sources of the entries put by on the stack's kept left and not yet so put by at rest (entry_parked): once what
+/// they left is told (the frame's pages left, chat_left, reading through them), in that frame's build, so that what
+/// they held is let go of as that frame ends; else as the frame ends where no build tells it.
+pub fn entries_kept_park_due() -> Unit {
+  let due : Array[Int] = []
+  for serial, done in entries_kept {
+    if !done {
+      due.push(serial)
+    }
+  }
+  for serial in due {
+    entries_kept[serial] = true
+    entry_parked(serial, true)
+  }
+}
+
+///|
+/// `park` (Source::owned_by_parkable's, of a source owned by `view`) entry `serial`'s, till `view` goes.
+fn entry_park_said(serial : Int, view : @view.View, park : (Bool) -> Unit) -> Unit {
+  match entry_parks.get(serial) {
+    Some(all) => all.push(park)
+    None => entry_parks[serial] = [park]
+  }
+  view.owns(fn() {
+    match entry_parks.get(serial) {
+      Some(all) => {
+        let rest = all.filter(fn(p) { !physical_equal(p, park) })
+        if rest.is_empty() {
+          entry_parks.remove(serial)
+        } else {
+          entry_parks[serial] = rest
+        }
+      }
+      None => ()
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Entry `serial`'s sources put by (true) or taken back (false): entry_parks'.
+fn entry_parked(serial : Int, on : Bool) -> Unit {
+  match entry_parks.get(serial) {
+    Some(all) => for p in all.copy() { p(on) }
+    None => ()
+  }
+}
+
+///|
+/// The chat each entry's page holds (page_chat_reader), by its serial: what lets it go as the entry is put by on the
+/// stack's kept left (page_entry_parked).
+let active_chat_readers : Map[Int, () -> Unit] = Map([])
 
 ///|
 /// Whether a chat's page is made with its inside nodes (chat_page_made's `body` and `foot`): a bridge while the page
@@ -90,6 +169,24 @@ pub let composer_nodes : @signals.Signal[Bool] = @signals.signal(false, same=fn(
 /// What chat_page_nodes is as a run begins.
 // kept across runs: a value
 let chat_page_nodes_at_start : Bool = false
+
+///|
+/// What a stack keeps of a page that left it (nav_view's and nav_flat_view's `keeps_left`): a chat's page made as nodes
+/// whole, its composer too (one an old view draws, the old composer's island, is never kept: built each frame it
+/// would read its chat at rest), by its station and session and the kind it is made as (chat_page_kind); none other.
+pub fn chat_page_left_key(p : Page) -> (String, String)? {
+  match p {
+    Chat(r) if chat_page_nodes.untracked() && composer_nodes.untracked() =>
+      Some((r.station + "\u{1}" + r.session, chat_page_kind_now()))
+    _ => None
+  }
+}
+
+///|
+/// chat_page_kind, read untracked (at a cause of the stack's, outside what is made).
+fn chat_page_kind_now() -> String {
+  @signals.untracked(chat_page_kind)
+}
 
 ///|
 /// The kind a chat's page is made as by a shell's `made` (nav_view's: a kind changed, the page made again in its
@@ -254,14 +351,18 @@ pub fn chat_page_made(
   foot? : (@ui.Ctx, Source, ChatRef) -> Unit,
   foot_node? : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit,
   leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
-  narrower? : (@view.View) -> ColumnLaid,
+  narrower? : (Source, @view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
   held? : (@view.View) -> ColumnLaid,
   held_from? : () -> Bool = fn() { true },
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
+  // (what the shell says of its column read by the page's own source, what it holds the page's, let go with it: never
+  // the window's)
+  let narrower = narrower.map(fn(f) { fn(n : @view.View) { f(retained, n) } })
   let page_read = page_chat_reader(retained, v, serial)
-  let shown = src.owned_by(v)
+  let (shown, shown_park) = src.owned_by_parkable(v)
+  entry_park_said(serial, v, shown_park)
   let aside_of = fn(n : @view.View) {
     match aside {
       Some(f) => f(n)
@@ -333,6 +434,20 @@ pub fn chat_page_made(
                     col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
                   }
               }
+              // (what the page reads as its entry, read as its old view's build read it: its source's page, its chat's
+              // subscription held by the entry; read again as the page it is changes, and as it is put on again from
+              // the stack's kept left (its time on top anew), where its chat was let go of, page_entry_parked)
+              col.reacts(fn() { (app.nav.page_of(serial).map(fn(e) { e.0 }), app.nav.stint_of(serial), app.nav.is_kept_left(serial)) }, fn(
+                now,
+              ) {
+                match now {
+                  (Some(page), _, false) => {
+                    page_entry_read(serial, retained, page)
+                    page_read(page)
+                  }
+                  _ => ()
+                }
+              })
               // (coming to need the viewer while open, felt, as its old view felt it)
               feel_needed_node(col, retained, r)
               b(col, retained, r, fn(n) {
@@ -346,17 +461,6 @@ pub fn chat_page_made(
                   // (over a picture flying out from under it (the viewer's route, FlightLevel's UnderFoot), the round
                   // buttons the foot holds made before it under that picture, as over the list they stand on)
                   Some(make) if composed => {
-                    // (what the page reads as its entry, read as its old view's build read it: its source's page, its
-                    // chat's subscription held by the entry; read again as the page it is changes)
-                    n.reacts(fn() { app.nav.page_of(serial).map(fn(e) { e.0 }) }, fn(page) {
-                      match page {
-                        Some(page) => {
-                          page_entry_read(serial, retained, page)
-                          page_read(page)
-                        }
-                        None => ()
-                      }
-                    })
                     n
                     .box(fn(at) {
                       at.flights_under() |> ignore
@@ -565,8 +669,9 @@ pub fn chat_page_made(
   v.box(fn(slot) { viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
   match over {
     Some(f) =>
-      // (while the page shows, as its old view is built: what it reads let go of while another covers it)
-      v.show(fn() { drawn(serial) }, fn(o) {
+      // (while the page shows, as its old view is built: what it reads let go of while another covers it; kept, at rest,
+      // as its entry is put by on the stack's kept left, Nav::try_park_left)
+      v.show(fn() { drawn(serial) || app.nav.is_kept_left(serial) }, fn(o) {
         o.over(Is(true)) |> ignore
         f(o, retained, fn() { app.nav.page_of(serial).map(fn(e) { e.0 }) }, stint)
       })
@@ -912,7 +1017,8 @@ pub fn page_entry_source(src : Source, entry : @view.View, serial : Int) -> Sour
     Some(readers) => for reader in readers { reader.bind_to(entry) }
     None => ()
   }
-  let source = src.owned_by(entry)
+  let (source, park) = src.owned_by_parkable(entry)
+  entry_park_said(serial, entry, park)
   let current : PageSource = { source, page: None, seen: 0, chat_ready: "", chat_view: None, active: true }
   let sources = match page_sources.get(serial) {
     Some(sources) => sources
@@ -979,6 +1085,17 @@ fn entry_last_source(serial : Int, page : Page) -> PageSource? {
 
 ///|
 pub fn page_entry_read(serial : Int, source : Source, page : Page) -> Unit {
+  // (taken back from the stack's kept left: its sources read again)
+  match entries_kept.get(serial) {
+    Some(done) => {
+      entries_kept.remove(serial)
+      // (put by already: taken back; else taken back before it was, nothing to take back)
+      if done {
+        entry_parked(serial, false)
+      }
+    }
+    None => ()
+  }
   // (what the page before handed over, open_handing: let go once this build has read what it reads, at its frame's
   // end; what it read is its own reader's by then)
   match handed_readers.get(serial) {
@@ -1004,7 +1121,12 @@ pub fn page_entry_read(serial : Int, source : Source, page : Page) -> Unit {
 pub fn page_source_for_chat(fallback : Source, r : ChatRef) -> Source {
   let mut latest = -1
   let mut result = fallback
-  for _, sources in page_sources {
+  for serial, sources in page_sources {
+    // (an entry put by on the stack's kept left reads nothing while it rests: none of its sources the chat's, so that
+    // what reads a chat through its page's source (linger_tick, each frame) holds none of it meanwhile)
+    if entries_kept.contains(serial) {
+      continue
+    }
     for current in sources {
       match current.page {
         Some(Chat(chat)) if current.active && chat.station == r.station && chat.session == r.session && current.seen > latest &&
@@ -1026,11 +1148,29 @@ fn page_chat_view_read(source : Source, chat : ChatRef, value : ChatView?) -> Un
   if !@signals.untracked(fn() { (source.topic_alive)() }) { return }
   for _, sources in page_sources {
     for current in sources {
-      if physical_equal(current.source, source) && page_source_read_page(current, Chat(chat)) {
+      // (none read where it had one: kept, a page taken back from the stack's kept left reading it again before the
+      // core's first answer to it, page_chat_view_kept)
+      if physical_equal(current.source, source) && page_source_read_page(current, Chat(chat)) &&
+        (value is Some(_) || current.chat_view is None) {
         current.chat_view = value
       }
     }
   }
+}
+
+///|
+/// The view of chat `chat` that page source `source` last read, where it is a page's (page_entry_source) and still
+/// live: what a page taken back from the stack's kept left shows while its chat, asked again, waits for the core's
+/// first answer (chat_view_now). None for a page that never read it (one opened cold).
+fn page_chat_view_kept(source : Source, chat : ChatRef) -> ChatView? {
+  for _, sources in page_sources {
+    for current in sources {
+      if current.active && physical_equal(current.source, source) && page_source_read_page(current, Chat(chat)) {
+        return current.chat_view
+      }
+    }
+  }
+  None
 }
 
 ///|
@@ -1306,45 +1446,99 @@ pub let left_said : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a 
 
 ///|
 fn page_entry_left(serial : Int, p : Page) -> Unit {
-    let entry = entry_last_source(serial, p)
-    let chat : LeftPageChat? = match (p, entry) {
-      (Chat(r), Some(current)) => {
-        let view = match chat_kept_from(current.source, r) {
-          Some(view) => Some(view)
-          None => current.chat_view
-        }
-        Some({ source: current.source, view })
+  page_entry_tells_left(serial, p, false)
+}
+
+///|
+/// Entry `serial` of page `p` put by on the stack's kept left (Nav::try_park_left), its nodes at rest: told as left
+/// (where it was left, the core told so, what was handed to it let go: page_entry_left's) but for its sources, kept for it
+/// as it is put on again, and its chat let go of, none held while it is put by (page_chat_reader's).
+fn page_entry_parked(serial : Int, p : Page) -> Unit {
+  page_entry_tells_left(serial, p, true)
+}
+
+///|
+/// Entry `serial` let go for good (Nav's on_entry_gone): what was kept for it as it was put by let go (none, where it
+/// left without being put by: page_entry_left let go of all of it then).
+fn page_entry_gone(serial : Int, _p : Page) -> Unit {
+  entries_kept.remove(serial)
+  page_sources.remove(serial)
+  active_chat_readers.remove(serial)
+  release_pending_chat(serial)
+  match handed_readers.get(serial) {
+    Some(readers) => {
+      handed_readers.remove(serial)
+      for reader in readers {
+        reader.release()
       }
-      _ => None
     }
-    page_sources.remove(serial)
-    release_pending_chat(serial)
-    // (what was handed to it and never taken, its view made in the open that handed it, before the handing (a page
-    // made once as nodes, put up in a frame: an account's page's station, account and memberships its press asked):
-    // held while it showed, let go as it leaves, not by the tree's root for good)
-    match handed_readers.get(serial) {
-      Some(readers) => {
-        handed_readers.remove(serial)
-        for reader in readers {
-          reader.release()
-        }
+    None => ()
+  }
+}
+
+///|
+/// Entry `serial` of page `p` told as left (page_entry_left), or as put by (`parked`: page_entry_parked).
+fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
+  let entry = entry_last_source(serial, p)
+  let chat : LeftPageChat? = match (p, entry) {
+    (Chat(r), Some(current)) => {
+      let view = match chat_kept_from(current.source, r) {
+        Some(view) => Some(view)
+        None => current.chat_view
+      }
+      Some({ source: current.source, view })
+    }
+    _ => None
+  }
+  if parked {
+    // (its sources kept for it as it is put on again: what they had read of its chat read anew then)
+    match page_sources.get(serial) {
+      Some(sources) => for current in sources { current.chat_ready = "" }
+      None => ()
+    }
+    match active_chat_readers.get(serial) {
+      Some(let_go) => {
+        active_chat_readers.remove(serial)
+        let_go()
       }
       None => ()
     }
-    match p {
-      Chat(_) => left_page_sources[left_pages.length()] = chat
-      _ => ()
+    // (its sources put by once what it left is told (the frame's pages left, chat_left, reading through them), at the
+    // end of the frame that tells it, where it is still kept then)
+    if !entries_kept.contains(serial) {
+      entries_kept[serial] = false
     }
-    left_pages.push(p)
-    left_said.set(serial)
-    match p {
-      Setting(r) => @settings.left(r)
-      Archived => @settings.left(@settings.Route::Archive)
-      Settings => @settings.left(@settings.Route::Home)
-      // a place of the bar's whose page is the settings' (bar.mbt place_page)
-      Place(name) => @settings.place_left(name)
-      _ => ()
+    @ui.after_frame(entries_kept_park_due)
+  } else {
+    page_sources.remove(serial)
+  }
+  release_pending_chat(serial)
+  // (what was handed to it and never taken, its view made in the open that handed it, before the handing (a page
+  // made once as nodes, put up in a frame: an account's page's station, account and memberships its press asked):
+  // held while it showed, let go as it leaves, not by the tree's root for good)
+  match handed_readers.get(serial) {
+    Some(readers) => {
+      handed_readers.remove(serial)
+      for reader in readers {
+        reader.release()
+      }
     }
+    None => ()
+  }
+  match p {
+    Chat(_) => left_page_sources[left_pages.length()] = chat
+    _ => ()
+  }
+  left_pages.push(p)
+  left_said.set(serial)
+  match p {
+    Setting(r) => @settings.left(r)
+    Archived => @settings.left(@settings.Route::Archive)
+    Settings => @settings.left(@settings.Route::Home)
+    // a place of the bar's whose page is the settings' (bar.mbt place_page)
+    Place(name) => @settings.place_left(name)
+    _ => ()
+  }
 }
 
 ///|
@@ -1361,7 +1555,7 @@ pub fn nav_root_kept(page : Page) -> Unit {
 pub fn new_nav() -> @ui.Nav[Page] {
   // what its own back comes to, back's in the history (app_history.mbt went_back); settings' gear is at the right of
   // every top bar, so it comes in from the right like any page
-  @ui.Nav::new(Home, went_back~, on_entry_leave=page_entry_left)
+  @ui.Nav::new(Home, went_back~, on_entry_leave=page_entry_left, on_entry_park=page_entry_parked, on_entry_gone=page_entry_gone)
 }
 
 ///|
@@ -1519,6 +1713,9 @@ pub fn reset() -> Unit {
   // (none said; which saying was last kept: the next a new one, as ever)
   app.toast.set({ ..toast_none, n: @signals.untracked(fn() { app.toast.get().n }) })
   left_pages.clear()
+  active_chat_readers.clear()
+  entry_parks.clear()
+  entries_kept.clear()
   let pending = pending_chat_readers.values().collect()
   pending_chat_readers.clear()
   for reader in pending { stop_pending_chat(reader) }

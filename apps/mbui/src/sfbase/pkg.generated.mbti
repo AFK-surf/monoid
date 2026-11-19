@@ -162,6 +162,16 @@ pub fn chat_opens(ChatRef, (String, Map[String, @json.Json]) -> TopicState) -> B
 
 pub fn chat_page_is(Page) -> Bool
 
+pub fn chat_reads_forget_from(Source, ChatRef) -> Unit
+
+pub fn chat_page_left_key(Page) -> (String, String)?
+
+pub fn entries_kept_park_due() -> Unit
+
+pub fn topic_value_held(Source, String, Map[String, @json.Json]) -> @signals.Computed[@json.Json?]
+
+pub fn station_mark_held(Source, String) -> @signals.Computed[Station?]
+
 pub fn chat_page_made(@view.View, Source, Int32, (@ui.Ctx, Source, Page) -> Unit, key? : () -> String, over? : (@view.View, Source, () -> Page?, () -> Int32) -> Unit, stint? : () -> Int32, drawn? : (Int32) -> Bool, body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit, foot? : (@ui.Ctx, Source, ChatRef) -> Unit) -> Source
 
 pub let chat_page_nodes : @signals.Signal[Bool]
@@ -2368,6 +2378,7 @@ pub struct Derived[T] {
   // private fields
 }
 pub fn[T] Derived::kept(Self[T], Map[String, @json.Json]) -> T?
+pub fn[T] Derived::forget_from(Self[T], Source, Map[String, @json.Json]) -> Unit
 pub fn[T] Derived::kept_from(Self[T], Source, Map[String, @json.Json]) -> T?
 pub fn[T] Derived::new(String, (@json.Json, T?) -> T) -> Self[T]
 pub fn[T] Derived::read(Self[T], Source, Map[String, @json.Json]) -> (T?, Topic)
@@ -3463,6 +3474,7 @@ pub(all) struct Source {
 pub fn Source::draft_picture_told(Self, String, String) -> String
 pub fn Source::lease_topic(Self, String, Map[String, @json.Json]) -> TopicLease
 pub fn Source::owned_by(Self, @view.View) -> Self
+pub fn Source::owned_by_parkable(Self, @view.View) -> (Self, (Bool) -> Unit)
 pub fn Source::prefetch(Self, String, Map[String, @json.Json]) -> Topic
 pub fn Source::topic(Self, String, Map[String, @json.Json]) -> @signals.Computed[TopicState]
 

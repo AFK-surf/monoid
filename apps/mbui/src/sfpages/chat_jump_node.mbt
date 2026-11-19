@@ -961,9 +961,21 @@ fn chat_rail_node(
   bar? : () -> Double = top,
 ) -> Unit {
   let said = @signals.computed(
-    fn(_) {
+    fn(was) {
       match view().thread {
-        Some(th) => chat_rail_said(src, src.topic("chatOutline", outline_params(r, th)), view, width)
+        Some(th) => {
+          let outline = src.topic("chatOutline", outline_params(r, th))
+          let t = outline.get()
+          // (asked again, as a page taken back from the stack's kept left reads it: what it last said till the core's
+          // first answer, never the rail let go of and made again; sfbase's asked_again.mbt)
+          if t.value is None && t.error is None && (src.asks_outline)() && rail_fits(width()) {
+            match was {
+              Some(Some(prev)) => return Some(prev)
+              _ => ()
+            }
+          }
+          chat_rail_said(src, outline, view, width)
+        }
         None => None
       }
     },

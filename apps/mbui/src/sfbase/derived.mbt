@@ -70,6 +70,7 @@ pub fn[T] Kept::peek(self : Kept[T], key : String) -> T? {
 priv struct KeptList {
   sweep : () -> Unit
   clear : () -> Unit
+  forget_source : (Source, Bool) -> Unit
 }
 
 ///|
@@ -141,7 +142,11 @@ fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, gett
       kept_count.made += 1
       if !self.listed {
         self.listed = true
-        kept_lists.push({ sweep: fn() { self.sweep() }, clear: fn() { self.clear() } })
+        kept_lists.push({
+          sweep: fn() { self.sweep() },
+          clear: fn() { self.clear() },
+          forget_source: fn(src, kept) { self.forget_source(src, kept~) },
+        })
       }
       made
     }
@@ -186,6 +191,80 @@ fn[T] SourceKept::forget_from(self : SourceKept[T], source : Source, key : Strin
           entries.remove(i) |> ignore
           kept_count.made -= 1
           if entries.length() == 0 { self.kept.remove(key) |> ignore }
+        }
+        None => ()
+      }
+    None => ()
+  }
+}
+
+///|
+/// What source `source` read that nothing follows let go of, whatever its key (a page's source put by at rest:
+/// kept_forget_source): one read untracked holds what it read (a topic's subscription) till it is let go. `kept`: what
+/// it read let go of alone, each kept with its value (a page put by at rest, taken back: worked out anew from what it
+/// was, as a getter given its last value keeps it till what it reads answers again).
+fn[T] SourceKept::forget_source(self : SourceKept[T], source : Source, kept? : Bool = false) -> Unit {
+  if kept {
+    for _, entries in self.kept {
+      for e in entries {
+        if physical_equal(e.source, source) && !e.value.watched() {
+          e.value.dispose()
+        }
+      }
+    }
+    return
+  }
+  let keys : Array[String] = []
+  for key, entries in self.kept {
+    if entries.iter().any(fn(e) { physical_equal(e.source, source) && !e.value.watched() }) {
+      keys.push(key)
+    }
+  }
+  for key in keys {
+    match self.kept.get(key) {
+      Some(entries) => {
+        let rest = entries.filter(fn(e) {
+          if physical_equal(e.source, source) && !e.value.watched() {
+            e.value.dispose()
+            kept_count.made -= 1
+            false
+          } else {
+            true
+          }
+        })
+        if rest.is_empty() {
+          self.kept.remove(key) |> ignore
+        } else {
+          self.kept[key] = rest
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+///|
+/// What every Kept holds of source `src` that nothing follows let go of (SourceKept::forget_source): a page's source as
+/// its page is put by at rest (Source::owned_by_parkable).
+fn kept_forget_source(src : Source, kept? : Bool = false) -> Unit {
+  for l in kept_lists {
+    (l.forget_source)(src, kept)
+  }
+}
+
+///|
+/// Source `source`'s value for `key` let go of where nothing follows it (one still followed kept as it is).
+fn[T] SourceKept::forget_unwatched_from(self : SourceKept[T], source : Source, key : String) -> Unit {
+  match self.kept.get(key) {
+    Some(entries) =>
+      match entries.search_by(fn(entry) { physical_equal(entry.source, source) && !entry.value.watched() }) {
+        Some(i) => {
+          entries[i].value.dispose()
+          entries.remove(i) |> ignore
+          kept_count.made -= 1
+          if entries.length() == 0 {
+            self.kept.remove(key) |> ignore
+          }
         }
         None => ()
       }
@@ -355,6 +434,13 @@ pub fn[T] Derived::kept_from(self : Derived[T], src : Source, params : Map[Strin
 }
 
 ///|
+/// What was made for these parameters from `src` let go of where nothing follows it (SourceKept::forget_from): one read
+/// untracked holds what it read (the topic's subscription) till it is.
+pub fn[T] Derived::forget_from(self : Derived[T], src : Source, params : Map[String, Json]) -> Unit {
+  self.kept.forget_unwatched_from(src, topic_key(self.name, params))
+}
+
+///|
 /// `jsons` made (`make`) each, from what was made of them last (`was`: each with the JSON it was made of): one that is
 /// the same JSON as before (the core's deltas keep what they do not touch: src/core delta.mbt) taken as it was made;
 /// only what changed is made anew. Looked for where the last one found was and on from there (what was between them
@@ -418,3 +504,4 @@ pub fn[T] made_again(
     }
   })
 }
+

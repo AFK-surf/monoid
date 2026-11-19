@@ -133,7 +133,8 @@ pub fn workspace_card_node(parent : @view.View, body : (@view.View) -> Unit, loc
 ///|
 /// An invitation waiting in `parent` (the workspaces' list's, under 邀请): who invited the viewer where (`words`), the
 /// account it is for under it (`account`), then 加入 (`join`, the primary; waiting while `joining`) and 忽略 (`decline`;
-/// waiting while `ignoring`), each as it is now. 20 in, 8 over and under, 8 apart.
+/// waiting while `ignoring`), each as it is now. 20 in, 8 over and under, 8 apart; its buttons by its words' first line,
+/// or under its words where the two have not the room side by side (its words 160 at the least).
 #callsite(autofill(loc))
 pub fn invitation_line_node(
   parent : @view.View,
@@ -147,14 +148,44 @@ pub fn invitation_line_node(
 ) -> Unit {
   parent.box(made_for=loc, fn(line) {
     style_node(line, fn() { invite_line })
+    // (where its words and its buttons have not the room side by side, the buttons go on under its words, never
+    // pressing them into a narrow column: only where its words at their least and the buttons whole have not the room)
+    line.wraps(Is(Some(invite_lines))).wraps_at_least(Is(true)) |> ignore
+    // (its words' first line and its buttons across one middle, never the buttons across the middle of its words'
+    // lines: the shorter of the two put down by half of what it lacks of the other, from the line's top)
+    let first = fn() {
+      let th = @ui.tree_theme()
+      node_sp(line, th.text_size(Body).1)
+    }
     line.box(fn(w) {
-      style_node(w, fn() { full_width }, in_row=true)
+      w
+      .grow(Is(1.0))
+      .basis(Is(Some(0.0)))
+      .min_width(Is(Some(invite_words_least)), within=true)
+      .padding(By(fn() {
+        let d = dmax(0.0, (button_height() - first()) / 2.0)
+        (0.0, d, 0.0, 0.0)
+      }))
+      |> ignore
       words_node(w, words, fn() { invite_line_words }) |> ignore
       words_node(w, account, fn() { invite_line_email }) |> ignore
     })
     |> ignore
-    button_node(line, fn() { t("android-misc.invite.join") }, join, tone=Primary, busy=joining) |> ignore
-    button_node(line, fn() { t("android-misc.invite.ignore") }, decline, busy=ignoring) |> ignore
+    line.box(fn(b) {
+      b
+      .row(Is(true))
+      .gap(Is(@ui.Space::S2.px()))
+      .lines_up(Is(Some(Middle)))
+      .shrink(Is(0.0))
+      .padding(By(fn() {
+        let d = dmax(0.0, (first() - button_height()) / 2.0)
+        (0.0, d, 0.0, 0.0)
+      }))
+      |> ignore
+      button_node(b, fn() { t("android-misc.invite.join") }, join, tone=Primary, busy=joining) |> ignore
+      button_node(b, fn() { t("android-misc.invite.ignore") }, decline, busy=ignoring) |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -265,7 +296,15 @@ let ws_row_sub : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=fal
 ///|
 /// An invitation: 20 in, 8 over and under, 8 apart; its words the body's, the account under them small and muted.
 // kept across runs: a value (no field of it changes)
-let invite_line : @ui.Style = @ui.css("row w=Full px=S5 py=S2 gap=S2 align=ACenter")
+let invite_line : @ui.Style = @ui.css("row w=Full px=S5 py=S2 gap=S2 align=AStart")
+
+///|
+/// Its buttons gone on under its words: 8 under them.
+let invite_lines : Double = 8.0
+
+///|
+/// Its words' column at the least beside its buttons (narrower, the buttons go on under them).
+let invite_words_least : Double = 160.0
 
 ///|
 // kept across runs: a value (no field of it changes)

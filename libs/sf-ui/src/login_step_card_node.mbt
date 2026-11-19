@@ -350,12 +350,13 @@ pub fn step_card_node(
   v.box(made_for=loc, fn(room) {
     style_node(room, fn() { login_room })
     let goes = fn() { go() is Some(_) }
-    action_box_while_node(room, goes, title, fn(_) {
+    // (the button across the room, lined up at its start: its card as wide as the plain one, by the room's width)
+    button_while_node(loc~, room, goes, title, fn(_) {
       match @signals.untracked(go) {
         Some(f) => f()
         None => ()
       }
-    }, fn(card) {
+    }, across=Start, fn(card, _) {
       style_node(card, fn() { if goes() && lit_node(card) { lc_card_step_lit } else { login_card } })
       card.box(fn(h) {
         style_node(h, fn() { login_head })

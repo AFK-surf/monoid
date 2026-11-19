@@ -236,9 +236,11 @@ fn side_mark_node(n : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
       Dot(job) =>
         m.box(fn(d) {
           @sf.style_node(d, fn() { side_tab_mark })
-          jobs_pop_dot(d, fn() {
-            text(src.topic("job", { "station": Json::string(r.station), "id": Json::string(job) }).get().value, "tone")
+          let job_held = @sfbase.topic_value_held(src, "job", {
+            "station": Json::string(r.station),
+            "id": Json::string(job),
           })
+          jobs_pop_dot(d, fn() { text(job_held.get(), "tone") })
         })
         |> ignore
     }
@@ -260,7 +262,20 @@ fn side_tabs_node(
   front : () -> String,
   tips : @sf.TipLayer,
 ) -> Unit {
-  let names = fn(tab : String) { side_tab_names(src, r, view(), tab) }
+  // each service tab's job, held as it was while a new ask of it has no answer yet (the panel taken back kept left)
+  let jobs_held : Map[String, @signals.Computed[Json?]] = Map([])
+  let job_of = fn(job : String) -> Json? {
+    let held = match jobs_held.get(job) {
+      Some(c) => c
+      None => {
+        let c = @sfbase.topic_value_held(src, "job", { "station": Json::string(r.station), "id": Json::string(job) })
+        jobs_held[job] = c
+        c
+      }
+    }
+    held.get()
+  }
+  let names = fn(tab : String) { side_tab_names(src, r, view(), tab, job_of~) }
   @sf.tab_bar_node(
     p,
     fn() { @sf.t("web-pages.screen.tabs") },

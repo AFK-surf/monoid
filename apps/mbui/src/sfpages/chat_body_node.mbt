@@ -873,6 +873,10 @@ fn chat_body_node(
   // (when each key came into the list by data, by the list's `comes`, asked at its cause: what its row reads as it is
   // made; none for one there as the chat opened, simply there, or come by an answer at once)
   let came_at : Map[String, Double] = Map([])
+  // (taken back from the stack's kept left (its on_rest's wake), till the chat's first answer since is placed: what
+  // came meanwhile simply there, nothing of it held or made its way in, the list put where it was left)
+  let reopening = Ref(false)
+  let reopen_gen : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
   // (an agent's message come by data while its agent's line shows and the list is at its foot: how it comes out of
   // that line's picture, worked out as its key comes, by the message's key (its first piece's), read by its row as it
   // is made; taken by that row, so a row made again later is simply there; what its pieces after the first read, their
@@ -961,9 +965,16 @@ fn chat_body_node(
       }
     }
   }
-  let whole = ChatBodyList::of_made(fn() { rows.get() })
+  let whole = ChatBodyList::of_made(fn() { rows.get() }, rest=fn() { if !rows.watched() { rows.dispose() } })
   // (the list as the core's rows and what is on its way make it, before what is held out of it: below)
   let listed : ChatBodyList = {
+    rest_unwatched: fn() {
+      match by_key_made.val {
+        Some(l) => (l.rest_unwatched)()
+        None => ()
+      }
+      (whole.rest_unwatched)()
+    },
     taken: fn() {
       match by_key() {
         Some(l) => (l.taken)()
@@ -1072,7 +1083,7 @@ fn chat_body_node(
   // agent's message come while its line shows, held. Not as the list first has keys, nor by an answer told at once: what
   // was there simply there)
   let held_came = fn(ks : Array[String], was : Array[String]) {
-    guard was.length() > 0 && !@view.answering_now() else { return }
+    guard was.length() > 0 && !@view.answering_now() && !reopening.val else { return }
     // (what comes by data comes among the last rows, over the agents' lines and what is on its way: the last few of
     // them looked through, those not among the last of the keys before)
     let seen : Map[String, Bool] = Map([])
@@ -1099,7 +1110,13 @@ fn chat_body_node(
       }
     }
   }
+  // (what the list worked out that nothing follows let go of: below, once all of it is made)
+  let rest_body : Ref[() -> Unit] = Ref(fn() {  })
   let list : ChatBodyList = {
+    rest_unwatched: fn() {
+      place.rest_unwatched()
+      (rest_body.val)()
+    },
     taken: listed.taken,
     keys: fn() {
       held_told.get() |> ignore
@@ -1118,7 +1135,18 @@ fn chat_body_node(
       }
     },
   }
-  let keys = @signals.computed(fn(_) { (list.keys)() }, same=fn(a, b) { physical_equal(a, b) || a == b })
+  // (the same keys the same object as before: worked out anew as its page is woken from rest, what lays them out finds
+  // them as it left them)
+  let keys = @signals.computed(
+    fn(was) {
+      let ks = (list.keys)()
+      match was {
+        Some(prev) if physical_equal(prev, ks) || prev == ks => prev
+        _ => ks
+      }
+    },
+    same=fn(a, b) { physical_equal(a, b) || a == b },
+  )
   // (the keys the core's rows that took over what was sent from here go on by, given the chat's viewer, which names an
   // occurrence of a picture by its row's key here and asks the core by the core's: told again as a row is taken over,
   // which only adds one)
@@ -1127,6 +1155,33 @@ fn chat_body_node(
     (list.taken)() |> ignore
     kept.sent_as.length()
   }, same=fn(a, b) { a == b })
+  // (as its page is put by at rest, and once as it is let go: what nothing follows of what the list worked out, read
+  // untracked as it was laid out and told what is in sight, let go of what it read; View::on_rest)
+  rest_body.val = fn() {
+    if !keys.watched() {
+      keys.dispose()
+    }
+    if !taken_over.watched() {
+      taken_over.dispose()
+    }
+    (listed.rest_unwatched)()
+  }
+  v.on_rest(
+    fn() {
+      // (put by at rest, its list too, a glide still going stopped and what it has in sight told no more
+      // (ListPlace::rest); let go, its list's let go with it)
+      if v.alive() {
+        place.rest()
+      }
+      (rest_body.val)()
+    },
+    wake=fn() {
+      place.wake()
+      reopening.val = true
+      reopen_gen.set(reopen_gen.untracked() + 1)
+    },
+  )
+  |> ignore
   let sent_as = fn() {
     taken_over.get() |> ignore
     kept.sent_as
@@ -1354,6 +1409,10 @@ fn chat_body_node(
       // entry, an agent at work; the rest, caught up on, read in or there as the chat opened, simply there: what was
       // said before it was shown moves not, sf/motion.mbt's head)
       comes=fn(k) {
+        if reopening.val {
+          came_at.remove(k)
+          return false
+        }
         let comes = match (list.row)(k) {
           Some(r) => chat_body_comes(r.entry)
           None => false
@@ -1434,14 +1493,14 @@ fn chat_body_node(
   // (where the core says the chat was left come only after the list was made at its end, nothing done there since (the
   // hand, a go-to, words sent): put there then, once)
   let late = Ref(opened is None && @signals.untracked(here.view).at is None)
-  let sent_then = @signals.untracked(fn() { @sfbase.sent_here_count(chat) })
+  let sent_then = Ref(@signals.untracked(fn() { @sfbase.sent_here_count(chat) }))
   v.reacts(fn() { (here.view)().at }, at_start=false, fn(at) {
     guard late.val && at is Some(_) else { return }
     late.val = false
     guard !scroll.in_hand() &&
       scroll.at_foot_now() &&
       !@sfbase.go_tos.contains(chat) &&
-      @sfbase.sent_here_count(chat) == sent_then else {
+      @sfbase.sent_here_count(chat) == sent_then.val else {
       return
     }
     match opens() {
@@ -1588,7 +1647,7 @@ fn chat_body_node(
       let (now, at_foot) = now_at
       let was = newest_was.val
       newest_was.val = now.map(fn(n) { n.0 })
-      guard now is Some((k, own, true)) && was is Some(w) && w != k && at_foot else { return }
+      guard !reopening.val && now is Some((k, own, true)) && was is Some(w) && w != k && at_foot else { return }
       if own {
         place.follow_from(None)
       } else {
@@ -1596,6 +1655,50 @@ fn chat_body_node(
       }
     },
     at_start=false,
+  )
+  // (taken back from the stack's kept left: once the chat's first answer since is there, put where it opens as it was
+  // first made (chat_open_place: where it was left, its unread line), or at its end; what came meanwhile is simply
+  // there, the list as it was left where nothing did)
+  v.reacts(
+    fn() {
+      let g = reopen_gen.get()
+      let answered = match to {
+        Some(r) => {
+          let t = src.topic("chat", @sfbase.chat_params(r)).get()
+          t.value is Some(_) || t.error is Some(_)
+        }
+        None => true
+      }
+      if g > 0 && answered {
+        keys.get() |> ignore
+        (g, true)
+      } else {
+        (g, false)
+      }
+    },
+    at_start=false,
+    fn(st) {
+      guard st.1 && reopening.val else { return }
+      lined.val = @signals.untracked(fn() { list.has("line") })
+      sent_then.val = @signals.untracked(fn() { @sfbase.sent_here_count(chat) })
+      newest_was.val = @signals.untracked(newest).map(fn(n) { n.0 })
+      if !@sfbase.go_tos.contains(chat) {
+        match opens() {
+          Some((k, at)) => {
+            jump.put.set(1)
+            chat_stand(jump, place, k, at, @signals.untracked(cover))
+          }
+          None => {
+            chat_stand_left(jump, chat)
+            late.val = @signals.untracked(here.view).at is None
+            if !@signals.untracked(fn() { scroll.at_foot_now() }) {
+              place.to_end(glide=false)
+            }
+          }
+        }
+      }
+      @ui.after_frame(fn() { reopening.val = false })
+    },
   )
   read(place, scroll, list)
   v

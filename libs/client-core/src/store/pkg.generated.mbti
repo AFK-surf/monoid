@@ -1,0 +1,86 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "client_core/store"
+
+import {
+  "base/shell",
+  "base/sql",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn entry_min_rows(Entry) -> Int32
+
+pub let first_shown_fewest : Int32
+
+pub fn first_shown_window(Array[Entry], Int32, at? : Int32, page? : Int32) -> (Int32, Int32)
+
+pub let md_drawable_from : Int32
+
+pub let md_kept_most : Int32
+
+pub fn md_key(String) -> String
+
+pub let md_reading : Int32
+
+pub let md_shown_every : Int64
+
+pub fn older_md_keys(String, from? : Int32) -> Array[String]
+
+pub fn open_chat(MdStore, Int32, rows? : Int32, at? : Int32, now~ : Int64) -> ChatOpenView raise @shell.ShellError
+
+pub fn window_read_most(Int32) -> Int32
+
+// Errors
+
+// Types and methods
+#derive(@debug.Debug)
+pub(all) struct ChatOpenView {
+  station : String
+  thread : Int32
+  entries : Array[Entry]
+  trees : Map[String, String]
+  unread : Array[String]
+  last_opened : Int64?
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Entry {
+  n : Int32
+  kind : String
+  author_kind : String
+  author : String
+  text : String
+  notice : String?
+  files : Int32
+  letter : Bool
+}
+pub fn Entry::md_words(Self) -> String?
+pub fn Entry::of_json(Int32, @json.Json) -> Self
+pub fn Entry::shown(Self) -> Bool
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Kept {
+  used : Int64
+  json : String
+}
+
+pub struct MdStore {
+  db : @sql.Sql
+  station : String
+  // private fields
+}
+pub fn MdStore::flush_turn(Self, burst? : @sql.Burst) -> Bool raise
+pub fn MdStore::get(Self, String, Int64) -> String?
+pub fn MdStore::has(Self, String) -> Bool
+pub fn MdStore::last_opened(Self, String, String) -> Int64? raise @shell.ShellError
+pub fn MdStore::new(@sql.Sql, String, later? : () -> Unit) -> Self
+pub fn MdStore::note_opened(Self, String, String, Int64) -> Unit
+pub fn MdStore::older_kept(Self, String) -> String?
+pub fn MdStore::pending(Self) -> Bool
+pub fn MdStore::preload(Self, Array[String], older? : Bool) -> Unit
+pub fn MdStore::put_prepared(Self, String, String, of_~ : String, at~ : Int64, replaces? : String) -> Unit
+
+// Type aliases
+
+// Traits

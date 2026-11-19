@@ -131,6 +131,57 @@ test "a step left: the whole card pressed where it goes somewhere, a card alone 
 }
 
 ///|
+/// How wide the card holding `title` is drawn: the least of its ground's rects round the title's words.
+fn u16_card_w(t : @ui.Tester, title : String) -> Double {
+  let (tx, ty, tw, th) = t.rect_of(title).unwrap()
+  let ground = @ui.tree_theme().color(A(Fg, O5))
+  let mut w = -1.0
+  for r in t.drawn_rects() {
+    if r.4 == ground && r.0 <= tx && r.1 <= ty && r.0 + r.2 >= tx + tw && r.1 + r.3 >= ty + th && (w < 0.0 || r.2 < w) {
+      w = r.2
+    }
+  }
+  w
+}
+
+///|
+test "a step left: as wide pressed as not, all of a column narrower than 360, 360 in a wide one, never past its column" {
+  for col in [260.0, 640.0] {
+    let goes = @signals.signal(true)
+    let t = u16_case(w=700.0, fn(root) {
+      root.lines_up(Is(Some(Start))) |> ignore
+      root.box(fn(c) {
+        c.width(Is(Some(col))) |> ignore
+        step_card_node(c, fn() { "在手机上配对" }, fn() { "打开无线调试" }, fn() {
+          if goes.get() {
+            Some(fn() {  })
+          } else {
+            None
+          }
+        })
+        step_card_node(c, fn() { "不能共享调试" }, fn() { "" }, fn() { None })
+      })
+      |> ignore
+    })
+    t.run_for(@ui.move_most_ms)
+    let want = if col < 360.0 { col } else { 360.0 }
+    let at = "a column of \{col}"
+    assert_true(t.query(Button, label="在手机上配对") is Some(_), msg="\{at}: pressed")
+    let seen = [u16_card_w(t, "在手机上配对"), u16_card_w(t, "不能共享调试")]
+    goes.set(false)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.query(Button, label="在手机上配对") is None, msg="\{at}: going nowhere, no button")
+    seen.push(u16_card_w(t, "在手机上配对"))
+    goes.set(true)
+    t.run_for(@ui.move_most_ms)
+    seen.push(u16_card_w(t, "在手机上配对"))
+    assert_eq(seen, [want, want, want, want], msg="\{at}")
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg="\{at}: \{faults.join("\n")}")
+  }
+}
+
+///|
 test "answered in place: the answer gives way to how it went where it stood, the card no taller; the line opens it again" {
   let ended : @signals.Signal[(Bool, String)?] = @signals.signal(None)
   let opened = @signals.signal(0)

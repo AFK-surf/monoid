@@ -310,6 +310,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     @Override
     public void onSurfaceChanged(GL10 gl, int w, int h) {
+        // a surface again, its context kept from before it went (setPreserveEGLContextOnPause: onSurfaceCreated is not
+        // told again as the app comes back from the background), so the GL thread draws again from here
+        glAlive = true;
         Native.resize(w, h);
         // (a new surface, told after it is made, or the same at another size: whatever was said of the rate, nothing said)
         if (ONE) {

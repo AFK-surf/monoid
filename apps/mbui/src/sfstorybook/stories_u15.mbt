@@ -17,7 +17,7 @@ fn stories_u15(_tips : @sf.TipLayer) -> Array[Story] {
         ("secret_field_node.mbt", "secret_mask"),
       ],
       play: None,
-      about: "密钥的一个字段：名字在上，值在下一行；密的值打码到按眼睛显示（8 到 20 个点，不泄露长度），复制时 30 秒后从剪贴板清掉；行尾的键和卡片角同心。未打开的条目由保存方打码，单行显示。",
+      about: "密钥的一个字段：名字在上，值在下一行；密的值打码到按眼睛显示（8 到 20 个点，不泄露长度），复制时 30 秒后从剪贴板清掉；行尾的键和卡片角同心。未打开的条目由保存方打码，单行显示。值折成多行时，行尾的键对齐第一行，不跨多行居中。",
       cases: [
         (
           "可显示、可复制",
@@ -34,6 +34,27 @@ fn stories_u15(_tips : @sf.TipLayer) -> Array[Story] {
                 })
                 |> ignore
                 @sf.secret_copy_node(l, fn() { "ghp_8sQ2vK0mZ4xT7bN1" }, fn() { true }) |> ignore
+              })
+            })
+            |> ignore
+          },
+        ),
+        (
+          "多行（显示的私钥，键在首行）",
+          fn(card) {
+            let key = "-----BEGIN OPENSSH PRIVATE KEY----- b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW QyNTUxOQAAACBz9Lq2c3RpbGxmYWlsLXN0b3J5Ym9vay1zYW1wbGU= -----END OPENSSH PRIVATE KEY-----"
+            let shown = kept(true)
+            card.box(fn(row) {
+              @sf.secret_value_row_node(row, fn() { "SSH 私钥" }, fn() { key }, shown=fn() { shown.get() }, mono=fn() { true }, fn(l) {
+                @sf.secret_key_node(l, "eye", fn() { if shown.get() { "隐藏" } else { "显示" } }, fn() { shown.set(!shown.get()) }, icon_now=fn() {
+                  if shown.get() {
+                    "eye-off"
+                  } else {
+                    "eye"
+                  }
+                })
+                |> ignore
+                @sf.secret_copy_node(l, fn() { key }, fn() { true }) |> ignore
               })
             })
             |> ignore

@@ -37,6 +37,9 @@
 // to the nodes that show it, `pick` by the look chosen alone): a change of the `fleet` view makes and lets go none of its
 // 140 to 1,034 nodes, lays out and measures only the words it changed; what comes and goes with the figures alone is
 // made (芦花's tally a 正 more, a day's CG unlocked, a model less of 小春's capsules).
+// Brought down 2026-11-19: 已归档's days and chats kept by key and their blocks taken again as they leave what shows
+// (sfpages archive_node.mbt, the library's page_node `reused`): a chat archived or a station gone down tells the rows
+// it changes alone, and what comes takes the blocks put by.
 ///|
 let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone board stations/host": (0, 0, 0, 0, 0, 0),
@@ -117,8 +120,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone chat-working chat compact/message": (0, 0, 0, 0, 20, 50),
   "phone chat-working chatJobs compact summary/job": (3, 0, 23, 0, 20, 17),
   "phone chat-working live/step": (0, 0, 0, 0, 20, 17),
-  "phone archived archive/down": (68, 64, 55, 13, 0, 0),
-  "phone archived archive/archived": (64, 56, 58, 12, 0, 0),
+  "phone archived archive/down": (34, 32, 50, 10, 0, 0),
+  "phone archived archive/archived": (6, 0, 35, 7, 0, 0),
   "phone place-stations stationNet/sample": (0, 0, 19, 3, 0, 0),
   "phone place-profiles profiles/quota": (0, 0, 0, 0, 0, 0),
   "phone place-profiles profiles/down": (23, 103, 59, 7, 0, 0),
@@ -1201,8 +1204,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone settings-archive connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-archive vaults/item": (0, 0, 0, 0, 0, 0),
   "phone settings-archive profiles/quota": (0, 0, 0, 0, 0, 0),
-  "phone settings-archive archive/down": (68, 64, 55, 13, 0, 0),
-  "phone settings-archive archive/archived": (64, 56, 58, 12, 0, 0),
+  "phone settings-archive archive/down": (34, 32, 50, 10, 0, 0),
+  "phone settings-archive archive/archived": (6, 0, 35, 7, 0, 0),
   "phone settings-archive profiles/down": (0, 0, 7, 0, 0, 0),
   "phone settings-kept connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-kept vaults/item": (0, 0, 0, 0, 0, 0),
@@ -2913,8 +2916,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   // lays out and measures its total and each row's rate again, nothing made or let go.
   "wide settings-usage agentRates/rates": (0, 0, 72, 21, 0, 0),
   "wide settings-prices usage/usage": (0, 0, 0, 0, 0, 0),
-  "wide settings-archive archive/down": (101, 97, 85, 15, 0, 0),
-  "wide settings-archive archive/archived": (69, 87, 71, 12, 0, 0),
+  "wide settings-archive archive/down": (67, 65, 82, 14, 0, 0),
+  "wide settings-archive archive/archived": (9, 0, 45, 6, 0, 0),
   "wide settings-archive connects/session": (0, 0, 0, 0, 0, 0),
   "wide settings-archive vaults/item": (0, 0, 0, 0, 0, 0),
   "wide settings-archive profiles/quota": (0, 0, 0, 0, 0, 0),

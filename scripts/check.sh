@@ -12,7 +12,7 @@
 #
 # STILLFAIL_CHECK_PART="<part> …" (ts, core-tests, station, station-tests, core) runs only those parts of it: ts the
 # icons, the clients' types and bindings, TypeScript, release notes, the tests run by node (web, scripts, cloud) and
-# the base in MoonBit (libs/base);
+# the base and the client core in MoonBit (libs/base, libs/client-core);
 # core-tests the core's own tests (client/core-ts/test), all of them or, with STILLFAIL_CORE_SHARD="<i>/<n>", the i-th
 # slice of n; station the station (station/: its typecheck, its programs in MoonBit) and its native parts' own
 # tests (station/native); station-tests the station's tests (station/test), all of them or, with
@@ -553,6 +553,15 @@ if [ $full = 1 ]; then
       # shellcheck disable=SC2016 # the command's own variable, expanded by its shell
       step "the base in MoonBit: every package checked for native and js, its tests on both" sh -c 'cd libs/base && pkgs=$(find src -name moon.pkg -exec dirname {} \; | sort) && [ -n "$pkgs" ] && moon check --no-mbti --target native $pkgs && moon check --no-mbti --target js $pkgs && moon test --target native $pkgs && moon test --target js $pkgs'
     else later "the base in MoonBit"; fi
+  fi
+  # The client core in MoonBit (libs/client-core): every package checked for native and js, its tests on both (on a
+  # database stood in, no SQLite linked), for a change to it, to the base it stands on, or to what that is built with
+  # of mbui. By package, writing no interface, as the base's.
+  if part ts && touches '^libs/client-core/|^libs/base/|^libs/mbui/src/(effect|halt|signals)/|^libs/mbui/moon\.(mod|work)$'; then
+    if has moon; then
+      # shellcheck disable=SC2016 # the command's own variable, expanded by its shell
+      step "the client core in MoonBit: every package checked for native and js, its tests on both" sh -c 'cd libs/client-core && pkgs=$(find src -name moon.pkg -exec dirname {} \; | sort) && [ -n "$pkgs" ] && moon check --no-mbti --target native $pkgs && moon check --no-mbti --target js $pkgs && moon test --target native $pkgs && moon test --target js $pkgs'
+    else later "the client core in MoonBit"; fi
   fi
   # The TypeScript core's own tests; its mesh tests on a simulated network, a few over the station's addon, prebuilt (its
   # package.json). Its side run's (real relays, networks made up at random) are scripts/side.sh's.

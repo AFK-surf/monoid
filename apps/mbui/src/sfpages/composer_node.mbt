@@ -449,8 +449,12 @@ fn composer_box_node(
   // drawn from the shape it had (`morph`). Nothing where its least (node_open_room) holds it as tall both ways; where
   // something over it (what is said over it, what went wrong) has it taller than that least, the room it grows or
   // shrinks by goes its way, the messages over it going with it as one, never at once)
+  // (its page put by at rest (a chat's page kept as it is left): no shape's way then, nor the chat read for one: its
+  // moment of letting go to a capsule comes due meanwhile, the cursor gone with the page)
+  let foot_at_rest = Ref(false)
+  foot.on_rest(fn() { foot_at_rest.val = true }, wake=fn() { foot_at_rest.val = false }) |> ignore
   let shape_way = fn() {
-    guard foot.was_placed() && !composing_node.quiet else { return }
+    guard foot.was_placed() && !composing_node.quiet && !foot_at_rest.val else { return }
     guard foot.cause_at() != reshaped_at.val else { return }
     // (taller than its least, opened or not, only with something over it (what is said over it) or under it (what went
     // wrong): its shape moves it then)
@@ -495,7 +499,23 @@ fn composer_box_node(
     made.val = Some(box)
     // (a chat's alone: what flies from it and what is set beside it find it)
     if spec.chat {
-      composer_nodes[draft] = (box, foot, sent_over, foot_shift)
+      let entry = (box, foot, sent_over, foot_shift)
+      composer_nodes[draft] = entry
+      // (none found while its page is put by at rest (a chat's page kept as it is left: drawn nowhere, where it is not
+      // the window's), nor once it is let go; found again as it wakes)
+      box.on_rest(
+        fn() {
+          if composer_nodes.get(draft) is Some(now) && now.0.id() == box.id() {
+            composer_nodes.remove(draft)
+          }
+        },
+        wake=fn() {
+          if box.alive() {
+            composer_nodes[draft] = entry
+          }
+        },
+      )
+      |> ignore
     }
     // (from where the new chat's composer stood, on the flight of what is sent from it, its foot kept to its foot; its
     // hint back once it has landed, as at rest without the cursor)
@@ -987,7 +1007,11 @@ fn composer_box_node(
 ///|
 /// What is said over chat `r`'s composer made as nodes, a notice each, in their order (composer_notices_node's): it
 /// archived, its agent's prompt cache over, its station down, a report of the person's answered.
-fn composer_notice_kinds(src : Source, r : ChatRef) -> Array[String] {
+fn composer_notice_kinds(src : Source, r : ChatRef, reports? : () -> Array[Json]) -> Array[String] {
+  let reports = match reports {
+    Some(f) => f
+    None => fn() { feedback_reports(src, r) }
+  }
   let h = @sfbase.chat_view_now(src, r)
   let ks : Array[String] = []
   if h.map(fn(h) { h.archived }).unwrap_or(false) {
@@ -999,7 +1023,7 @@ fn composer_notice_kinds(src : Source, r : ChatRef) -> Array[String] {
   if h.map(fn(h) { h.offline }).unwrap_or(false) {
     ks.push("unplug")
   }
-  if feedback_reports(src, r).iter().any(fn(f) { !report_dismissed(f) }) {
+  if reports().iter().any(fn(f) { !report_dismissed(f) }) {
     ks.push("said")
   }
   ks
@@ -1915,8 +1939,11 @@ fn composer_notices_node(
   let head = fn() { @sfbase.chat_view_now(src, r) }
   let width = fn() { stand.at(fn() { composer_width((stand.wide)()) }) }
   // (each a notice of its own, in their order: one comes in and goes down the column as what comes does)
-  let report = fn() { feedback_reports(src, r).iter().find_first(fn(f) { !report_dismissed(f) }) }
-  let kinds = fn() { composer_notice_kinds(src, r) }
+  // (the team's replies as the core says them, what they last were while asked again: sfbase's asked_again.mbt)
+  let reports_held = @sfbase.topic_value_held(src, "chatFeedback", @sfbase.chat_params(r))
+  let reports = fn() { items(reports_held.get(), "reports") }
+  let report = fn() { reports().iter().find_first(fn(f) { !report_dismissed(f) }) }
+  let kinds = fn() { composer_notice_kinds(src, r, reports~) }
   // (the ＋'s middle as the composer draws it, from its start: its round control's, a point wider for the capsule's edge
   // line, its capsule_pad_alone in; where each notice's mark stands)
   let plus_mid = fn() { capsule_pad_alone + node_capsule_extra((stand.scale)()) + (@sf.theme().round.side + 1.0) / 2.0 }

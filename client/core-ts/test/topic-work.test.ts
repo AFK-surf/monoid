@@ -90,8 +90,8 @@ const OVER_READ: Record<string, number> = {
   newChat: 40,
   pick: 144,
   settings: 40,
-  "chatJobs compact": 48,
-  "chatJobs summary": 48,
+  "chatJobs compact": 40,
+  "chatJobs summary": 40,
   agentCard: 48,
   usage: 304,
   fleet: 320,
@@ -100,10 +100,11 @@ const OVER_READ: Record<string, number> = {
   workspaceMarks: 344,
   search: 176,
   chatSearch: 128,
-  chatOutline: 672,
+  // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18)
+  chatOutline: 224,
   "driveBrowse phone": 40,
   "driveBrowse columns": 40,
-  vaults: 192,
+  vaults: 184,
   vaultItems: 184,
   chatThings: 48,
   "chatThings q": 48,
@@ -112,8 +113,8 @@ const OVER_READ: Record<string, number> = {
   "start 大屏/waited": 472,
   "start 大屏/idle": 472,
   "switch 大屏 to 新对话/waited": 128,
-  "place vault/waited": 192,
-  "place vault/idle": 192,
+  "place vault/waited": 184,
+  "place vault/idle": 184,
   "place usage/waited": 304,
   "place usage/idle": 304,
 };
@@ -159,10 +160,10 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   chatRow: { people: 16 },
   archive: { people: 24 },
   "railCard usage": { stations: 696 },
-  vaults: { stations: 384 },
+  vaults: { stations: 376 },
   vaultItems: { stations: 376 },
-  "place vault/waited": { stations: 384 },
-  "place vault/idle": { stations: 384 },
+  "place vault/waited": { stations: 376 },
+  "place vault/idle": { stations: 376 },
 };
 
 /// The changes reading more than `READ_PER_SENT` × what they write and send and `READ_FREE_KB` now, by `<cause> alone`
@@ -191,12 +192,9 @@ const GROWS_WRITE: Record<string, Partial<Record<Knob, number>>> = {
   "machine alone": { profiles: 48 },
   "login alone": { profiles: 48 },
   "login held": { profiles: 48 },
-  "message held": { stations: 64 },
   // (as it reads 15.9 → 21.1 KB with the chats three times, as before; what it writes and sends with them fell from
   // 22.2 → 34.4 KB (× 1.55) to × 0.93 as 待处理's items went by key, workspaceMarks a keyed list, 2026-11-16)
-  "card held": { stations: 32, chats: 24 },
-  "screen held": { stations: 16 },
-  "member held": { stations: 48 },
+  "card held": { stations: 24, chats: 24 },
 };
 
 // ── measuring ──

@@ -748,18 +748,23 @@ fn lint_width_structure(f : MbtFile, given : Map[Int, (Call, String?)], out : Ar
 /// `make_reused=fn(v, key) { … }`), the key read untracked (`@signals.untracked(key)`, `untracked(fn() { … key() … })`,
 /// `key.untracked()`) as the block is made: what it reads stays the key it was made for, when the block shows another
 /// one now. A block reads its key through `key()` where it is bound (By, a pick's which); what runs later than it is
-/// made (a press, a handler) reads the key as it is then.
+/// made (a press, a handler) reads the key as it is then. So too a page's (the library's `page_node`), whose
+/// `make_reused=fn(v, kind, key) { … }` is given the block's kind besides (View::reused_kind), its key the last.
 fn lint_reused_untracked_key(f : MbtFile, given : Map[Int, (Call, String?)], out : Array[Finding]) -> Unit {
   let toks = f.toks
   let seen : Map[Int, Bool] = Map([])
   for c in f.calls {
-    if !(c.kind == "method" && c.name == "scrolls_window") || c.is_def || f.in_test(c.at) {
+    let listed = c.kind == "method" && c.name == "scrolls_window"
+    let paged = c.name == "page_node" && (c.kind == "pkg" || c.kind == "bare")
+    if !(listed || paged) || c.is_def || f.in_test(c.at) {
       continue
     }
     let (key, open, close) = match c.args.search_by(fn(a) { a.0 == Some("make_reused") }) {
       Some(i) if c.args[i].1.length() > 0 =>
         match f.lambda_at(c.args[i].1[0]) {
-          Some((ps, b)) if ps.length() >= 2 && ps[1] != "_" => (ps[1], b, toks[b].end)
+          // (the key its last: a list's `fn(v, key)`, a page's `fn(v, kind, key)`)
+          Some((ps, b)) if ps.length() >= 2 && ps[ps.length() - 1] != "_" =>
+            (ps[ps.length() - 1], b, toks[b].end)
           _ => continue
         }
       _ => continue

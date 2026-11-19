@@ -122,6 +122,14 @@ fn stories_u16(tips : @sf.TipLayer) -> Array[Story] {
               Some(fn() { went.set(went.get() + 1) })
             })
             @sf.step_card_node(card, fn() { "这台手机不能共享调试" }, fn() { "" }, fn() { None })
+            // (in a column narrower than a card's least, 260, as far apart as the cards above: both all of it, the one that goes
+            // somewhere no wider)
+            card.box(fn(narrow) {
+              narrow.width(Is(Some(260.0))).gap(Is(12.0)) |> ignore
+              @sf.step_card_node(narrow, fn() { "在手机上配对" }, fn() { "打开开发者选项里的无线调试" }, fn() { Some(fn() {  }) })
+              @sf.step_card_node(narrow, fn() { "这台手机不能共享调试" }, fn() { "" }, fn() { None })
+            })
+            |> ignore
           },
         ),
       ],

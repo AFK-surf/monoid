@@ -36,9 +36,11 @@ let history_top_box : @ui.Style = @ui.css("w=Full bg=Bg")
 /// agent now: how it runs in one control and what needs seeing to beside it, 只看收发 and 详情 at its end; unfolded, its
 /// details under it, a line under them. What is said over what is pointed at, in `tips`.
 fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, tips : @sf.TipLayer) -> Unit {
-  let src = src.owned_by(v)
+  let (src, v_park) = src.owned_by_parkable(v)
+  v.on_rest(fn() { v_park(true) }, wake=fn() { v_park(false) }) |> ignore
   let station = r.station
-  let a = fn() { agent_json(src.topic("chat", chat_params(r)).get().value, key) }
+  let chat_held = @sfbase.topic_value_held(src, "chat", chat_params(r))
+  let a = fn() { agent_json(chat_held.get(), key) }
   v.box(fn(top) {
     @sf.style_node(top, fn() { history_top_box })
     top.shrink(Is(0.0)) |> ignore
@@ -183,14 +185,15 @@ fn wh_details_node(
   let (card_topic, card_params) = @sfpages.agent_card_ask(station, key)
   // (what 详情 pressed asked, handed to them till they have read it: sfbase's shown_read)
   let at = @sfpages.history_details_at(station, key)
+  let card_held = @sfbase.topic_value_held(src, card_topic, card_params)
   let card = fn() {
-    let c = src.topic(card_topic, card_params).get().value
+    let c = card_held.get()
     @sfbase.shown_read(at)
     c
   }
   let (host_topic, host_params) = @sfpages.history_host_ask(station)
-  let host_held = @sfbase.hold(src, @sfbase.history_scope(station, key), host_topic, host_params)
-  let host = fn() { host_held.get().value }
+  let host_held = @sfbase.topic_value_held(src, host_topic, host_params)
+  let host = fn() { host_held.get() }
   let compacts = fn() { flag(s(), "canCompact") }
   let clears = fn() { flag(s(), "canClear") }
   // (what is under way and what failed a moment ago, as the core's `doing` says: useContextActions)
@@ -277,7 +280,8 @@ fn wh_details_node(
       )
     })
     // the station it runs on, what runs low on it at its end
-    let look = fn() { @sfpages.history_station(src, station) }
+    let look_held = @sfbase.station_mark_held(src, station)
+  let look = fn() { look_held.get() }
     wh_line_node(
       d,
       fn(m) {

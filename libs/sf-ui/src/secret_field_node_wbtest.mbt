@@ -57,6 +57,42 @@ test "a secret's field: masked till its eye shows it, its name over its line, co
 }
 
 ///|
+/// A secret's field shown in a column `w` wide, its `value` on as many lines as it takes, its eye and 复制 at its end:
+/// the Tester, then the value's rectangle and the eye's.
+fn u15_shown(value : String, w : Double) -> (@ui.Tester, (Double, Double, Double, Double), (Double, Double, Double, Double)) raise {
+  let t = u15_case(w~, fn(b) {
+    b.box(fn(row) {
+      secret_value_row_node(row, fn() { "私钥" }, fn() { value }, mono=fn() { true }, fn(l) {
+        secret_key_node(l, "eye-off", fn() { "隐藏" }, fn() {  }) |> ignore
+        secret_copy_node(l, fn() { value }, fn() { true }) |> ignore
+      })
+    })
+    |> ignore
+  })
+  (t, t.rect_of(value).unwrap(), t.get(Button, label="隐藏").rect)
+}
+
+///|
+test "a secret's keys by its value's first line: across the middle of one line, at the top of several" {
+  // (one line: the keys across its middle, as they were)
+  let (t1, (_, vy1, _, vh1), (_, ey1, _, eh1)) = u15_shown("ghp_abcdefghij", 320.0)
+  let one = ey1 + eh1 / 2.0 - vy1
+  assert_true((ey1 + eh1 / 2.0 - (vy1 + vh1 / 2.0)).abs() <= 1.0, msg="\{ey1} \{eh1} \{vy1} \{vh1}")
+  assert_eq(t1.audit(), [])
+  // (four lines and more: the keys where they are by one, by its first line, not across the middle of all of them)
+  let long = "MIIEvQIBADAN BgkqhkiG9w0B AQEFAASCBKcw ggSjAgEAAoIB AQC7VJTUt9Us 8cKjMzEfYyjiW A4R4/M2bS1GB"
+  let copy = t("common.copy")
+  let (tl, (vx, vy, vw, vh), (ex, ey, _, eh)) = u15_shown(long, 200.0)
+  assert_true(vh >= 4.0 * vh1 - 1.0, msg="\{vh} \{vh1}")
+  assert_true(ex >= vx + vw, msg="\{ex} \{vx} \{vw}")
+  assert_true((ey + eh / 2.0 - vy - one).abs() <= 1.0, msg="\{ey} \{eh} \{vy} \{one}")
+  assert_true(ey + eh <= vy + vh / 2.0, msg="\{ey} \{eh} \{vy} \{vh}")
+  let (_, cy, _, ch) = tl.get(Button, label=copy).rect
+  assert_true((cy + ch / 2.0 - (ey + eh / 2.0)).abs() <= 0.5, msg="\{cy} \{ey}")
+  assert_eq(tl.audit(), [])
+}
+
+///|
 test "a secret masked: 8 dots at least, 20 at most" {
   assert_eq(secret_mask("ab"), "•".repeat(8))
   assert_eq(secret_mask("a".repeat(40)), "•".repeat(20))

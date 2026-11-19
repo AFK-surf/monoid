@@ -52,6 +52,28 @@ pub fn[K] ListPlace::on_sight(self : ListPlace[K], f : (Sight[K]) -> Unit) -> Un
 }
 
 ///|
+/// What its list worked out that nothing follows (its blocks' places, its keys, read untracked as it was laid out and
+/// told what is in sight) let go of what that read: for what reads the list one last time as its page is left, so it
+/// holds nothing of it after (as its page is put by at rest, View::on_rest does it).
+pub fn[K] ListPlace::rest_unwatched(self : ListPlace[K]) -> Unit {
+  (self.at.rest_unwatched)()
+}
+
+///|
+/// Its list put by at rest, as what holds it is (a page kept as it is left, its View::on_rest): what it has in sight
+/// told once more where that is owed, what still goes stopped where it is, then told nothing while it rests and what it
+/// worked out let go of (ListPlace::rest_unwatched). A list nothing puts so is as it ever was.
+pub fn[K] ListPlace::rest(self : ListPlace[K]) -> Unit {
+  (self.at.rest_at)()
+}
+
+///|
+/// Its list woken from rest (ListPlace::rest): told what it has in sight again.
+pub fn[K] ListPlace::wake(self : ListPlace[K]) -> Unit {
+  (self.at.wake_at)()
+}
+
+///|
 /// What was last told of what the list has in sight (ListPlace::on_sight), for a handler to read; where none is told
 /// it, what it has in sight as it is counted now; none before its first layout.
 pub fn[K] ListPlace::sight_now(self : ListPlace[K]) -> Sight[K]? {

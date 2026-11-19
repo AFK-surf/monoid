@@ -778,5 +778,7 @@ pub fn keyed_of(
   field : String,
   keys : Array[String],
 ) -> @signals.KeyedList[String, Json]? {
-  client.peek_topic(topic, params~).map(fn(s) { s.keyed(field, keys) })
+  // (none till its subscription has a value: a subscription made anew, its first answer on its way, gives no empty list
+  // in the place of the one a reader was given before)
+  client.peek_topic(topic, params~).bind(fn(s) { if s.value is Some(_) { Some(s.keyed(field, keys)) } else { None } })
 }

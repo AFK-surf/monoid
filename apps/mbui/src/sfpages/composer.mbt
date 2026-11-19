@@ -37,12 +37,15 @@ pub(all) struct ComposerSpec {
 /// roomy, or a chat's: another, it has moved between the pages), which chat it was for (another: switched to, the
 /// cursor put in it), the archived chats being restored and why restoring one failed (by their drafts).
 priv struct Composing {
-  let_go : @signals.Signal[Bool]
-  /// whether the cursor was in it since let_go was last set: a box held for a cursor asked that has not come (kept for
-  /// a modal layer over it, or on its way) hides nothing of it that a box it had the cursor in hides
-  mut had_focus : Bool
-  /// the moment the box it stayed after the cursor left was last let go of (let_go's end): a change of its own then
-  mut let_go_at : Double
+  /// by draft: whether it stays a box a moment after its cursor left (each chat's own: another chat's composer built
+  /// beside it, or switched to, holds nothing of it)
+  let_go : @sf.LiveMap[String, Bool]
+  /// by draft: whether the cursor was in it since let_go was last set: a box held for a cursor asked that has not come
+  /// (kept for a modal layer over it, or on its way) hides nothing of it that a box it had the cursor in hides
+  had_focus : Map[String, Bool]
+  /// by draft: the moment the box it stayed after the cursor left was last let go of (let_go's end): a change of its
+  /// own then
+  let_go_at : Map[String, Double]
   warmed : Map[String, Int]
   /// words typed into its field since it was last built (told the core as they were typed: composer_text's
   /// `on_change`), for its build to warm the agent's runtime
@@ -135,8 +138,8 @@ pub fn composer_page_left() -> Unit {
   composing.roomy = None
   composing.roomy_was = (-1.0, None, None, None)
   composing.hint_shape = ""
-  composing.let_go.set(false)
-  composing.had_focus = false
+  composing.let_go.clear()
+  composing.had_focus.clear()
 }
 
 ///|
@@ -189,9 +192,9 @@ pub fn outbox_edit(src : Source, key : String, now : Outgoing, discard : () -> U
 
 ///|
 let composing : Composing = {
-  let_go: @signals.signal(false, same=fn(a, b) { a == b }),
-  had_focus: false,
-  let_go_at: @double.neg_infinity,
+  let_go: @sf.LiveMap::new(),
+  had_focus: {},
+  let_go_at: {},
   warmed: {},
   typed: false,
   comments: {},
@@ -235,9 +238,9 @@ let composing : Composing = {
 fn composing_reset() -> Unit {
   composer_foot_way.val = None
   composer_width_last.val = ("", "", 0.0, 0.0)
-  composing.let_go.set(false)
-  composing.had_focus = false
-  composing.let_go_at = @double.neg_infinity
+  composing.let_go.clear()
+  composing.had_focus.clear()
+  composing.let_go_at.clear()
   composing.warmed.clear()
   composing.typed = false
   composing.comments.clear()
@@ -347,6 +350,8 @@ pub fn composer(
   // (the keyboard as it was before this build's moment changed how roomy it is)
   let keys_up_before = if roomy_at == c.moment() { keys_up_was } else { composing.keys_up }
   composing.same_draft = whose == composing.draft_before
+  // (switched to in this stay of its page on top: below, what it kept of a stay before is let go of)
+  let mut whose_came = false
   if whose != composing.draft {
     composing.draft = whose
     // (once a time its page is on top: built again in the stint it was switched to in, as another chat's is built
@@ -354,6 +359,7 @@ pub fn composer(
     let stint = c.page_stint()
     let come = stint == 0 || composing.took.get(whose) != Some(stint)
     composing.took[whose] = stint
+    whose_came = come
     // (where the keyboard is at hand, typed into at once; not raising the screen's keyboard over the chat; not taken from
     // a field written in, but asked under a modal layer over it all the same: kept for that layer to give back)
     if come && !@sf.soft_keyboard() && !c.field_focused_here() {
@@ -385,25 +391,39 @@ pub fn composer(
   // The cache choice takes focus into its menu. Keep an already open composer in place while that menu is open, so
   // the notice and its menu do not move under the pointer. A composer that was a capsule stays one.
   let choosing_cache = composing.cold_open.get() == notice_choice_key(spec.draft, "wait")
+  // (each its own draft's, never another's: a chat switched to holds no box the chat left kept a moment after its
+  // cursor left, and two composers built in one frame (a chat beside the one it goes to) take nothing from each other;
+  // each is written only as it changes, so what reads them comes to rest)
+  let kept_box = fn() { @signals.untracked(fn() { composing.let_go.get(spec.draft) }) == Some(true) }
+  // (come to again without the cursor: a box it kept in a stay before, a moment after its cursor left, let go of)
+  if whose_came && !active_focus && kept_box() {
+    composing.let_go.set(spec.draft, false)
+    composing.had_focus.remove(spec.draft)
+  }
   // a box while it has the cursor; lost, a capsule a moment later (LET_GO_MS). Held so only once the cursor has come:
   // one asked that never came (something put up over it as it was asked, a picture opened from the chat) holds no box
   // to let go of later, folding then
   if focused {
-    composing.let_go.set(true)
-    composing.had_focus = true
+    if !kept_box() {
+      composing.let_go.set(spec.draft, true)
+    }
+    composing.had_focus[spec.draft] = true
   }
-  let lost_long = @kit.after(c, "composer/let-go", !active_focus && !w.field.parked() && !choosing_cache, let_go_ms)
-  let held = composing.let_go.get() && !active_focus && !lost_long
+  let ours = composing.let_go.get(spec.draft).unwrap_or(false)
+  let lost_long = @kit.after(c, "composer/let-go/" + spec.draft, !active_focus && !w.field.parked() && !choosing_cache, let_go_ms)
+  let held = ours && !active_focus && !lost_long
   // (the box it stayed a moment after the cursor left, let go of now: a change of its own, at this moment, whatever
   // words sent from it are doing meanwhile)
-  if lost_long && composing.let_go.get() {
-    composing.let_go_at = c.moment()
+  if lost_long && ours {
+    composing.let_go_at[spec.draft] = c.moment()
   }
   // (as each build at this moment has it: frame_body may build it twice)
-  let let_go_now = lost_long && composing.let_go_at == c.moment()
+  let let_go_now = lost_long && composing.let_go_at.get(spec.draft) == Some(c.moment())
   if lost_long {
-    composing.let_go.set(false)
-    composing.had_focus = false
+    if kept_box() {
+      composing.let_go.set(spec.draft, false)
+    }
+    composing.had_focus.remove(spec.draft)
   }
   // words just sent from it still in it: laid out as for them, as many lines as they took (composer_held_lines), so it
   // goes on to the shape it was on its way to and nothing in it moves until it comes down; its shape for the field's
@@ -535,7 +555,7 @@ pub fn composer(
     spec,
     w,
     // (its hint hidden while it has the cursor or holds the box it had it in: not for a cursor only asked)
-    active_focus || (held && composing.had_focus),
+    active_focus || (held && composing.had_focus.get(spec.draft).unwrap_or(false)),
     moved,
     laid_anew,
     "\{spec.roomy}|\{multiline}|\{w.files.get().length()}|\{w.quotes.get().length()}|\{w.error.get() != ""}",

@@ -284,7 +284,14 @@ fn Tree::laid_window_at(self : Tree, at : Int, seen : Array[Int]) -> (Double, Do
 fn Tree::laid_width_of(self : Tree, at : Int) -> Double {
   let n = self.nodes[at]
   match n.beside {
-    Some(b) if b.width == Anchor && self.alive_id(b.anchor) && !self.leaving_at(at) && !self.out_at(b.anchor.at) && !self.leaving_at(b.anchor.at) =>
+    // (none of a part put by at rest, held by no node: View::park)
+    Some(b) if b.width == Anchor &&
+      self.alive_id(b.anchor) &&
+      self.held_from_root(at) &&
+      self.held_from_root(b.anchor.at) &&
+      !self.leaving_at(at) &&
+      !self.out_at(b.anchor.at) &&
+      !self.leaving_at(b.anchor.at) =>
       self.nodes[b.anchor.at].flex.width
     _ => n.flex.width
   }
@@ -312,7 +319,12 @@ fn Tree::beside_laid(self : Tree, at : Int, seen : Array[Int]) -> (Double, Doubl
     }
   }
   guard self.alive_id(b.anchor) else { return stay() }
-  if self.leaving_at(at) || self.out_at(b.anchor.at) || self.leaving_at(b.anchor.at) {
+  // (put by at rest, or its anchor so (View::park): in no scene, nothing of it worked out)
+  if !self.held_from_root(at) ||
+    !self.held_from_root(b.anchor.at) ||
+    self.leaving_at(at) ||
+    self.out_at(b.anchor.at) ||
+    self.leaving_at(b.anchor.at) {
     return stay()
   }
   // (beside itself or what it holds: where it is laid out)
@@ -438,7 +450,12 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     }
     // (leaving, or its anchor drawn nowhere (left out of its row, leaving): where it last was beside it, following
     // nothing on its way out)
-    if self.leaving_at(at) || self.out_at(b.anchor.at) || self.leaving_at(b.anchor.at) {
+    // (put by at rest, or its anchor so (View::park): in no scene, nothing of it worked out or placed)
+    if !self.held_from_root(at) ||
+      !self.held_from_root(b.anchor.at) ||
+      self.leaving_at(at) ||
+      self.out_at(b.anchor.at) ||
+      self.leaving_at(b.anchor.at) {
       return stay()
     }
     // (beside itself or what it holds: refused)

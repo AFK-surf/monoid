@@ -89,12 +89,19 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2 made and 1 laid more on a phone, 2026-11-18: the chat bar's pick between its title and keys and ⌘F's bar, open
   // from the chat's sheet's 在对话中查找 (chat_bar_node); before it (1028, 31, 660, 80, 968) and (339, 19, 226, 28, 346))
   "phone cold": (1030, 31, 661, 80, 968),
-  "phone again": (341, 19, 227, 28, 346),
+  // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
+  // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
+  // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
+  // (5 bindings more on a phone, 2026-11-19: what the chat's list's place watches as it is taken back, waiting for the
+  // chat's first answer to set it where it was left (sfpages chat_body_node's reopen_gen); the same at 60, 120, 24 and 7)
+  "phone again": (4, 3, 62, 0, 144),
   "wide cold": (2473, 503, 1914, 217, 2470),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))
-  "wide again": (897, 132, 853, 121, 1062),
+  // (2026-11-19: 大屏's side panel taken back with the chat's page kept left (sfdesk tape_side_node's each kept by
+  // entry), what it reads held while asked again; the same at 60, 120, 24 and 7: before it (94, 116, 245, 29, 290))
+  "wide again": (22, 44, 70, 4, 172),
   "phone up": (551, 358, 593, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
@@ -477,3 +484,182 @@ test "a chat opened cold reads as Messages only the messages round what shows: t
 /// The most of a chat's messages its cold opening reads as Messages (chat_nodes_window_read): those round what shows
 /// (a page's list's slots, a screen over and under it), whatever its window holds.
 let chat_nodes_window_read_most : Int = 10
+
+///|
+/// The fixture's chat on the app's own client (an in-memory one, `client`, as page_scope_client_wbtest's): chat
+/// `s-c1`'s topic and the prefs subscribed through it, so what holds that chat is the client's to say.
+fn chat_kept_left_source(client : @core.Client, called : Array[String]) -> Source {
+  let base = fixture("chat")
+  let which = fn(name : String, p : Map[String, Json]) {
+    name == "prefs" || (name == "chat" && p.get("session") == Some(Json::string("s-c1")))
+  }
+  {
+    ..base,
+    // (what the core is called with, kept to be read: where a chat is left told it)
+    call: fn(name, args, done) {
+      called.push(name + " " + args.stringify())
+      (base.call)(name, args, done)
+    },
+    topic_read: fn(name, p) {
+      if !which(name, p) {
+        return (base.topic_read)(name, p)
+      }
+      let sub = client.follow_topic(name, params=@sfbase.core_topic_params(name, p))
+      { value: sub.value, error: sub.error, version: sub.version }
+    },
+    waits: fn(name, p) {
+      if which(name, p) {
+        client.follow_topic(name, params=@sfbase.core_topic_params(name, p)).waiting
+      } else {
+        (base.waits)(name, p)
+      }
+    },
+    leave: fn(name, p, reason) {
+      if reason is @sfbase.TopicLeave::Owned(stop) {
+        stop()
+        return
+      }
+      if which(name, p) {
+        client.leave_topic(name, params=@sfbase.core_topic_params(name, p))
+      } else {
+        (base.leave)(name, p, reason)
+      }
+    },
+    release: fn(name, p) {
+      if which(name, p) {
+        client.release_topic(name, params=@sfbase.core_topic_params(name, p))
+      } else {
+        (base.release)(name, p)
+      }
+    },
+    // (its messages by key as the client keeps them, once its subscription has a value: @core.keyed_of's)
+    topic_keyed: fn(name, p, field, keys) {
+      if !which(name, p) {
+        return (base.topic_keyed)(name, p, field, keys)
+      }
+      client
+      .peek_topic(name, params=@sfbase.core_topic_params(name, p))
+      .bind(fn(sub) { if sub.value is Some(_) { Some(sub.keyed(field, keys)) } else { None } })
+    },
+  }
+}
+
+///|
+/// The core's answer to what `client` asks of the prefs and of chat `params` (core_topic_params'), from the fixture's:
+/// each subscription that waits answered with the fixture's value, as a core answers.
+fn chat_kept_left_answer(client : @core.Client, params : Map[String, Json]) -> Unit {
+  let base = fixture("chat")
+  for q in [("prefs", Map([]), Map([])), ("chat", @sfbase.core_topic_params("chat", params), params)] {
+    match (client.peek_topic(q.0, params=q.1), (base.topic_read)(q.0, q.2).value) {
+      (Some(sub), Some(v)) if sub.value is None =>
+        client.receive_json({ "id": Json::number(sub.id.to_double()), "value": v })
+      _ => ()
+    }
+  }
+}
+
+///|
+test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, and taken back as it is opened again: 小屏 back to Home and the same chat, 大屏 another chat beside the list and back" {
+  let wrong : Array[String] = []
+  for win in [("phone", 360.0, 740.0, 2), ("wide", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = win
+    new_run()
+    @sfbase.chat_page_nodes.set(true)
+    @sfbase.composer_nodes.set(true)
+    let client = @core.Client::new(fn(_) {  })
+    let called : Array[String] = []
+    let src = chat_kept_left_source(client, called)
+    let a : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+    let b = @sfbase.chat_ref("ws1/st1", "s-c2")
+    let a_params = @sfbase.core_topic_params("chat", @sfbase.chat_params(a))
+    open_chat(a)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, env=[("MBUI_LOCALE", "zh")])
+    t.frame()
+    chat_kept_left_answer(client, @sfbase.chat_params(a))
+    t.run_for(squeeze_opening)
+    t.frame()
+    if !(app.nav.top() is Chat(_)) || client.peek_topic("chat", params=a_params) is None {
+      wrong.push("\{name}: the chat not open, or not held, at first")
+      continue
+    }
+    let (serial, _) = @signals.untracked(fn() { app.nav.top_stay() })
+    // (小屏 back to Home; 大屏 another chat beside the list in its place)
+    if platform == 2 {
+      app.nav.pop() |> ignore
+    } else {
+      @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(b)) })
+    }
+    t.run_for(squeeze_opening)
+    t.frame()
+    if !app.nav.is_kept_left(serial) {
+      wrong.push("\{name}: the chat's page not kept as it left")
+    }
+    if client.peek_topic("chat", params=a_params) is Some(_) {
+      wrong.push("\{name}: the chat still subscribed while its page is kept")
+    }
+    let from = @ui.journal().length()
+    @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(a)) })
+    t.frame()
+    // (the core answering it again, its subscription made anew)
+    chat_kept_left_answer(client, @sfbase.chat_params(a))
+    t.run_for(squeeze_opening)
+    t.frame()
+    let again = chat_nodes_all(from)
+    // (each frame's, for what was made and let go as it came back)
+    for i, e in @ui.journal() {
+      guard i >= from else { continue }
+      match e {
+        Work({ what: Frame(f), .. }) if f.made > 0 || f.let_go > 0 =>
+          println("chat kept left \{name} frame: made \{f.made} let_go \{f.let_go} laid \{f.laid}")
+        _ => ()
+      }
+    }
+    println("chat kept left \{name} again: made \{again.0} let_go \{again.1} laid \{again.2} measured \{again.3} bindings \{again.4}")
+    if @signals.untracked(fn() { app.nav.top_stay() }).0 != serial {
+      wrong.push("\{name}: opened again not the page kept")
+    }
+    if again.0 > chat_kept_left_made_most {
+      wrong.push("\{name}: opened again made \{again.0}, over \{chat_kept_left_made_most}")
+    }
+    // (大屏's taken back laid out where it was left: its list and what is beside it, nothing of the page anew)
+    if platform == 0 && again.2 > 15 {
+      wrong.push("\{name}: opened again laid \{again.2}, over 15")
+    }
+    if client.peek_topic("chat", params=a_params) is None {
+      wrong.push("\{name}: the chat not subscribed again as its page is opened again")
+    }
+    if t.find("整理发布清单") is None {
+      wrong.push("\{name}: the chat's title not shown again")
+    }
+    // (left again and then let go for good, as the workspace in view changes: holding the chat no more either; left
+    // again from the page taken back, told so and where it was left as the first time, kept again holding nothing)
+    let a_key = a.station + "\u{1}" + a.session
+    @sfbase.kept_places.remove(a_key)
+    let called_from = called.length()
+    if platform == 2 {
+      app.nav.pop() |> ignore
+    } else {
+      @ui.view_tree().unwrap().event(t.time(), fn() { open_page(Chat(b)) })
+    }
+    t.run_for(squeeze_opening)
+    t.frame()
+    let told_left = called[called_from:].iter().any(fn(c) { c.has_prefix("client.focus ") && c.contains("\"left\"") })
+    if !told_left || !@sfbase.kept_places.contains(a_key) {
+      wrong.push("\{name}: left again from the page taken back, not told where it was left (told left \{told_left})")
+    }
+    if !app.nav.is_kept_left(serial) || client.peek_topic("chat", params=a_params) is Some(_) {
+      wrong.push("\{name}: left again, not kept or still subscribed")
+    }
+    @ui.view_tree().unwrap().event(t.time(), fn() { app.nav.shelf_empty() })
+    t.run_for(squeeze_opening)
+    t.frame()
+    if app.nav.is_kept_left(serial) || client.peek_topic("chat", params=a_params) is Some(_) {
+      wrong.push("\{name}: the chat still subscribed once its page is let go for good")
+    }
+  }
+  assert_true(wrong.is_empty(), msg=wrong.join(" | "))
+}
+
+///|
+/// The most a chat's page kept (chat_page_left_key) makes as it is opened again, all its frames together.
+let chat_kept_left_made_most : Int = 5

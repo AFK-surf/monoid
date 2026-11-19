@@ -333,6 +333,10 @@ fn pages_left(src : Source) -> Unit {
         match page_src {
           Some(source) => {
             chat_left(source, r, saved=chat_view)
+            // (what the window's source read of it too, nothing following it, let go of; nothing still read)
+            if !physical_equal(source, src) {
+              @sfbase.chat_reads_forget_from(src, r)
+            }
             viz_chat_left(r.station, r.session)
           }
           None => ()
@@ -366,6 +370,9 @@ fn pages_left(src : Source) -> Unit {
     }
   }
   left_pages.clear()
+  // (the pages put by on the stack's kept left told what they left: their sources put by at rest now, what they held
+  // let go of as this frame ends)
+  @sfbase.entries_kept_park_due()
 }
 
 ///|

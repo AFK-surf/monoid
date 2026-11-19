@@ -246,6 +246,9 @@ export class Collection {
 
 /// How many items of a log a read takes from SQLite one by one, beside those parsed already; more, it reads the range.
 const LOG_READ_ALONE = 16;
+/// How many entries a statement reads by their numbers at once (`peopleEntries`): a few hundred parameters, well within
+/// what any SQLite of the hosts binds.
+const PEOPLE_READ_AT_ONCE = 400;
 /// How many changes of a log are kept said (`logPutSince`), and of how many logs.
 const LOG_PUTS_KEPT = 64;
 const LOG_PUTS_LOGS = 512;
@@ -2391,6 +2394,47 @@ export class AccountDb {
       out.set(n, this.#logItem(table, station, id, n, r[1]));
     }
     return out;
+  }
+
+  /// What people said in a chat up to entry `upTo`, as its outline reads it (views.ts #peopleSaid): its people's messages
+  /// (`entry_person`) and the edits of those (`entry_edit`) held, by number, and every edit's number by the message it
+  /// edits (`edits`, in order). Found by those indexes alone, the JSON read only of those not parsed already: not the
+  /// chat's every entry, its agents' replies most of its bytes (672 KB read for an outline of a few, 2026-11-18).
+  peopleEntries(station: string, thread: number, upTo: number): { held: Map<number, J>; edits: Map<number, number[]> } {
+    const id = String(thread);
+    const people = this.sql.all(
+      "SELECT n FROM entry INDEXED BY entry_person WHERE station = ? AND thread = ? AND n BETWEEN 1 AND ? AND json_extract(json, '$.kind') = 'message' AND json_extract(json, '$.authorKind') = 'person' ORDER BY n",
+      [station, thread, upTo],
+    ).map((r) => r[0] as number);
+    const editRows = this.sql.all(
+      "SELECT n, json_extract(json, '$.target') FROM entry INDEXED BY entry_edit WHERE station = ? AND thread = ? AND json_extract(json, '$.kind') = 'edit' AND n BETWEEN 1 AND ? ORDER BY n",
+      [station, thread, upTo],
+    );
+    work.logNumbers += people.length + editRows.length;
+    const edits = new Map<number, number[]>();
+    const said = new Set(people);
+    const wanted = [...people];
+    for (const [n, target] of editRows) {
+      if (typeof target !== "number") continue;
+      const of = edits.get(target);
+      if (of === undefined) edits.set(target, [n as number]);
+      else of.push(n as number);
+      if (said.has(target)) wanted.push(n as number);
+    }
+    const held = new Map<number, J>();
+    const missing: number[] = [];
+    for (const n of wanted) {
+      const item = this.#logCache.get(K("entry", station, id, n));
+      if (item === undefined) missing.push(n);
+      else held.set(n, item);
+    }
+    for (let i = 0; i < missing.length; i += PEOPLE_READ_AT_ONCE) {
+      const some = missing.slice(i, i + PEOPLE_READ_AT_ONCE);
+      const rows = this.sql.all(`SELECT n, json FROM entry WHERE station = ? AND thread = ? AND n IN (${some.map(() => "?").join(", ")})`, [station, thread, ...some]);
+      work.logRows += rows.length;
+      for (const r of rows) held.set(r[0] as number, this.#logItem("entry", station, id, r[0] as number, r[1]));
+    }
+    return { held, edits };
   }
 
   #logItem(table: string, station: string, id: string, n: number, json: SqlValue): J {

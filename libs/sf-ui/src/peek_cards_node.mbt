@@ -36,11 +36,12 @@ pub fn peek_page_tile_node(
   copy : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  let tile = fn(holder : @view.View) {
+  // (its thumb in the card's corner, or, under its picture, beside its title's first line: pictured)
+  let tile = fn(holder : @view.View, pictured : Bool) {
     holder.box(made_for=loc, fn(t) {
       style_node(t, fn() { peek_tile })
       t.box(fn(th) {
-        style_node(th, fn() { peek_thumb }, in_row=true)
+        style_node(th, fn() { if pictured { peek_thumb_under } else { peek_thumb } }, in_row=true)
         th.pick(fn() { (icon(), github()) }, fn(m, k) {
           match k {
             ("", true) => peek_github_mark_node(m, peek_thumb_mark, fn() { theme().p.muted })
@@ -73,11 +74,12 @@ pub fn peek_page_tile_node(
   }
   parent.pick(fn() { picture() != "" }, fn(b, pictured) {
     if pictured {
-      // (its picture over it, as wide as the card, 16:9)
+      // (its picture over it, 16:9, in the card's top corners as the thumb is in its corner without one)
       style_node(b, fn() { peek_with_picture })
       b.box(fn(i) {
+        style_node(i, fn() { peek_picture })
         i
-        .height(Is(Some(peek_picture_h)))
+        .aspect(Is(peek_picture_aspect))
         .radius(Is(peek_picture_r))
         .ground(By(fn() { theme().p.hover }))
         .image(By(fn() { Some((picture(), "", peek_image_most)) }))
@@ -86,7 +88,7 @@ pub fn peek_page_tile_node(
       })
       |> ignore
     }
-    tile(b)
+    tile(b, pictured)
   })
   // (its copy in its foot's end corner, as a file's card's is: file_foot)
   parent.box(made_for=loc, fn(f) {
@@ -193,7 +195,10 @@ fn peek_fact_node(cell : @view.View, f : PeekFact, loc~ : SourceLoc) -> Unit {
     }
     Size(add, del) => {
       style_node(cell, fn() { peek_chip }, in_row=true)
-      words_node(cell, fn() { "+" + add.to_string() }, fn() { peek_add }) |> ignore
+      // (in the green states' ink: Positive is a badge's fill, too light to read on the hover's ground)
+      words_node(cell, fn() { "+" + add.to_string() }, fn() { peek_add })
+      .ink(By(fn() { theme().p.green_ink }))
+      |> ignore
       words_node(cell, fn() { "\u{2212}" + del.to_string() }, fn() { peek_del }) |> ignore
     }
     Chip(words) => {
@@ -207,7 +212,8 @@ fn peek_fact_node(cell : @view.View, f : PeekFact, loc~ : SourceLoc) -> Unit {
 ///|
 /// A state in a tinted pill in `parent`, or (`own`) drawn in `parent` itself: its glyph (GitHub's, 12, a 16 by 16
 /// path) where `glyph` says one and its name (`words`), 500, in the state's colours (peek_state_colours), each as it
-/// changes; `style` its pill's look (a pill 20 high, its glyph 6 in).
+/// changes; `style` its pill's look (a pill 20 high, its glyph 6 in and its words 8 from its end; with no glyph, its words
+/// 8 in from both ends: peek_state_words_only).
 #callsite(autofill(loc))
 pub fn peek_state_pill_node(
   parent : @view.View,
@@ -219,7 +225,12 @@ pub fn peek_state_pill_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let pill = fn(p : @view.View) {
-    style_node(p, fn() { style }, in_row=true)
+    // (the glyph's 6 in is for a glyph alone: words alone stand as far in from both ends)
+    style_node(
+      p,
+      fn() { if physical_equal(style, peek_state) && glyph() is None { peek_state_words_only } else { style } },
+      in_row=true,
+    )
     p.ground(By(fn() { peek_state_colours(state()).1 })) |> ignore
     p.show(fn() { glyph() is Some(_) }, fn(g) {
       g
@@ -771,8 +782,13 @@ let peek_tile : @ui.Style = @ui.css("row w=Full gap=S2_5 align=AStart")
 /// Its thumb: 36 square on the hover's ground, what it shows in its middle (20); in the card's corner as far in as makes
 /// the small block's corner concentric with the card's there, out past the card's words to there.
 // kept across runs: a value (no field of it changes)
-let peek_thumb : @ui.Style = @ui.css("w=S9 h=S9 bg=Hover align=ACenter justify=JCenter clip=true").then(
-  @ui.style(radius=small_radius, ml=room_of(peek_thumb_out), mt=room_of(peek_thumb_out)),
+let peek_thumb : @ui.Style = peek_thumb_under.then(@ui.style(mt=room_of(peek_thumb_out)))
+
+///|
+/// Its thumb under a picture (no corner of the card's there): its top at its title's, out to where the picture's start is.
+// kept across runs: a value (no field of it changes)
+let peek_thumb_under : @ui.Style = @ui.css("w=S9 h=S9 bg=Hover align=ACenter justify=JCenter clip=true").then(
+  @ui.style(radius=small_radius, ml=room_of(peek_thumb_out)),
 )
 
 ///|
@@ -799,15 +815,20 @@ pub let peek_tile_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium,
 let peek_tile_url : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut)
 
 ///|
-/// A page's picture over its tile: as wide as the card, 16:9; 10 over the tile.
+/// A page's picture over its tile: 10 over the tile, across what the card's words are.
 // kept across runs: a value (no field of it changes)
-let peek_with_picture : @ui.Style = @ui.style(w=Fixed(peek_picture_w), gap=S2_5)
+let peek_with_picture : @ui.Style = @ui.css("w=Full gap=S2_5")
 
 ///|
-let peek_picture_w : Double = 296.0
+/// The picture: across the card, out past its words on both sides and over them as far as the thumb is in its corner
+/// (peek_thumb_out), so it stands as far in from the card's top as from its sides, its corners concentric with the
+/// card's however wide the card is.
+// kept across runs: a value (no field of it changes)
+let peek_picture : @ui.Style = @ui.style(w=Full, mx=room_of(peek_thumb_out), mt=room_of(peek_thumb_out))
 
 ///|
-let peek_picture_h : Double = peek_picture_w * 9.0 / 16.0
+/// Its width for its height: 16:9.
+let peek_picture_aspect : Double = 16.0 / 9.0
 
 ///|
 /// Its corner: in the card's top corners, concentric with the card's there, as the tile's thumb.
@@ -889,13 +910,14 @@ let peek_avatar_d : Double = peek_capsule_h
 let peek_person_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
 
 ///|
-/// A fact's pill: a capsule 6 in, on the hover's ground; a size's two figures 6 apart, green and red.
+/// A fact's pill: a capsule 6 in, on the hover's ground; a size's two figures 6 apart, green (the green states' ink, to
+/// read on that ground) and red.
 // kept across runs: a value (no field of it changes)
 let peek_chip : @ui.Style = @ui.css("row h=S5 gap=S1_5 px=S1_5 radius=Full bg=Hover align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let peek_add : @ui.TextStyle = @ui.text_style(size=Meta, color=Positive, wrap=false)
+let peek_add : @ui.TextStyle = @ui.text_style(size=Meta, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -905,6 +927,11 @@ let peek_del : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=fals
 /// A state's pill: 20 high, full corners to stand concentric in its card's corner, its glyph 6 in.
 // kept across runs: a value (no field of it changes)
 pub let peek_state : @ui.Style = @ui.css("row h=S5 gap=S1 pl=S1_5 pr=S2 radius=Full align=ACenter")
+
+///|
+/// A state's pill with no glyph (how its checks stand): its words 8 in from both ends.
+// kept across runs: a value (no field of it changes)
+let peek_state_words_only : @ui.Style = @ui.css("row h=S5 gap=S1 px=S2 radius=Full align=ACenter")
 
 ///|
 let peek_glyph : Double = 12.0

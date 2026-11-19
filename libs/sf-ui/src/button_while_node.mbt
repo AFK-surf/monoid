@@ -9,7 +9,10 @@
 /// changes (the one before let go). `look` draws it, given its node and whether it is the button then; the keyboard's
 /// focus shown on the button by the theme's ring. `in_row`: it gives way in a row as what it holds does (cut short to
 /// its least); `fills`: all of what holds it; `over`: laid over what else `parent` holds (what is pressed laid over a
-/// part's words); `plain` false: nothing drawn while it is no button (the pick's own box alone, no look). No box of
+/// part's words); `plain` false: nothing drawn while it is no button (the pick's own box alone, no look); `across`:
+/// while it is the button, the pick's box across all of `parent`, the button lined up in it by `across`, so a width
+/// the look says within what holds it (`Within`) is worked out of `parent`'s as the plain box's is, not taken whole
+/// for want of one (a step's card in a column narrower than its least drawn past it as it led somewhere). No box of
 /// its own round the pick's: what it holds is laid out in `parent` (a quote's source made one node more than before
 /// for it, two with one, the chat's page counted).
 #callsite(autofill(loc))
@@ -24,6 +27,7 @@ fn button_while_node(
   fills? : Bool = false,
   over? : Bool = false,
   plain? : Bool = true,
+  across? : @view.Along,
   loc~ : SourceLoc,
 ) -> Unit {
   // (what holds it given way to as it gives way itself)
@@ -46,6 +50,9 @@ fn button_while_node(
         look(p, false)
       }
       return
+    }
+    if across is Some(along) {
+      p.fills_across(Is(true)).lines_up(Is(Some(along))) |> ignore
     }
     let drawn = fn(v : @view.View) {
       laid(v)

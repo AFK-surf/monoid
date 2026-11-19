@@ -23,6 +23,16 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   a browser at a time asks for a tab's claim (`claim_tab`, `tab.mbt`): on a page a Web Lock of its name, taken over
   on a BroadcastChannel of the same (`TabClaim::take_over`: the tab holding it is told `Yielded` before it lets go);
   natively, and on a page without either, `Held` at once. What a tab does as it yields is its program's.
+- `src/sql`: a database in the shell (SQLite), asked synchronously (`sql.*`, `Shell::ask`): `Sql` (open, attach, exec,
+  run, all, close), `Burst` (one writer's transaction, `BEGIN IMMEDIATE` at its first write and committed once; none
+  run where nothing was written; `in_tx` rolls back what raised), `query_in_chunks` (many keys in one statement per
+  `chunk_most`, each asked once, none for none) and the column readers (`col_*`). The schema is its program's.
+- `src/scheduler`: one lane of requests to a peer, the most urgent first (the device base in TypeScript's
+  `client/core-ts/src/sync/scheduler.ts`, one `Scheduler` a lane): the urgent in `width` and `urgent_room` more, the
+  shown in `width`, the background one at a time behind them and any request in sight (`foreground_begin`), the idle
+  alone and told to give way (`Preempt`, while it is idle as raised) as a request in sight or anything above the
+  background is asked; the background waits for an idle step to end. A task runs in the fiber that asks
+  (`Scheduler::run`); interrupted waiting or running, a `defer` lets its place or slot go.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links,
   hello/pings/renewal, requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the

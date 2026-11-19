@@ -23,6 +23,10 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
       cases: [
         ("网页 Page", fn(card) { story_peek_room(card, fn(b) { story_page_tile(b) }) }),
         (
+          "网页带预览图 Page with picture",
+          fn(card) { story_peek_room(card, fn(b) { story_page_tile(b, picture="mem:story-peek-picture") }) },
+        ),
+        (
           "拉取请求 PR（点下方按钮切换状态）",
           fn(card) {
             let state = kept(0)
@@ -175,8 +179,9 @@ fn story_peek_room(card : @view.View, make : (@view.View) -> Unit) -> Unit {
 }
 
 ///|
-/// A page's tile with its address to copy.
-fn story_page_tile(b : @view.View) -> Unit {
+/// A page's tile with its address to copy, its picture over it where `picture` names one (an image's key: one never
+/// given, its ground alone, as a card shows it while its picture comes).
+fn story_page_tile(b : @view.View, picture? : String = "") -> Unit {
   b.box(fn(p) {
     @sf.style_node(p, fn() { @sf.peek_card_part })
     @sf.peek_page_tile_node(
@@ -185,7 +190,7 @@ fn story_page_tile(b : @view.View) -> Unit {
       fn() { "moonbitlang.com" },
       fn() { "" },
       fn() { false },
-      fn() { "" },
+      fn() { picture },
       fn(f) { @sf.peek_copy_node(f, fn() { "https://www.moonbitlang.com/" }, "common.link.copy", story_copied) },
     )
   })

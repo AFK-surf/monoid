@@ -684,7 +684,13 @@ fn side_bars(c : @ui.Ctx, tabs : Array[String], front : String) -> (Bool, Bool, 
 ///|
 /// What a tab is called and how its close is said: an agent's by its label, a web service's by its name, a
 /// visualization's by its file's name, 任务's, 文件's, agent 往来's by theirs.
-fn side_tab_names(src : Source, r : ChatRef, v : ChatView?, tab : String) -> (String, String) {
+fn side_tab_names(
+  src : Source,
+  r : ChatRef,
+  v : ChatView?,
+  tab : String,
+  job_of? : (String) -> Json?,
+) -> (String, String) {
   match station_tab_name(src, tab) {
     Some(label) => return (label, @sf.t("web-pages.chat.close", args=[("name", label)]))
     None => ()
@@ -703,7 +709,15 @@ fn side_tab_names(src : Source, r : ChatRef, v : ChatView?, tab : String) -> (St
   }
   let agent = v.bind(fn(v) { v.agents.iter().find_first(fn(a) { a.key == tab }) })
   let service = match tab_service(tab) {
-    Some(job) => Some(job_now(src, r.station, job).0)
+    Some(job) =>
+      match job_of {
+        Some(f) =>
+          match f(job) {
+            None | Some(Null) => Some(jobs_handed.get(service_key(r.station, job)))
+            j => Some(j)
+          }
+        None => Some(job_now(src, r.station, job).0)
+      }
     None => None
   }
   let file = tab_file(tab)

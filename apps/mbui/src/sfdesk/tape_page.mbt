@@ -69,6 +69,8 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       // (back its while the page is in use: the side panel's, the sidebar's first)
       takes_back=fn() { wide.tape_at.get() == Page },
       page_key=fn(_) { tape_island_key() },
+      // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
+      keeps_left=@sfbase.chat_page_left_key,
     )
     |> ignore
   })
@@ -685,7 +687,7 @@ fn tape_made(
           fn(v, _page, _under, stint, k) {
             // (its bar the tree's, over the page's old view: chat_bar_wide_node, keeping clear of the panel's corners as a
             // page's bar on the tape does; the tape's head over it none, tape_bar_head)
-            @sfbase.chat_page_made(
+            let page_src = @sfbase.chat_page_made(
               v,
               src,
               k,
@@ -722,9 +724,24 @@ fn tape_made(
                 }
               },
               // (its column on the page's way as the tape takes its panel to another width: laid out as at its narrower end)
-              narrower=tape_page_narrower,
+              narrower=fn(_s, n) { tape_page_narrower(n) },
             )
-            |> ignore
+            // (its chat's side panel its own as the page is a chat's made as nodes whole: kept with it on the stack's kept
+            // left, at rest with it, taken back with it (tape_side_node's each); the old page's as ever)
+            if @sfbase.chat_page_nodes.untracked() && @sfbase.composer_nodes.untracked() {
+              v.reacts(fn() { app.nav.page_of(k).map(fn(e) { e.0 }) }, fn(po) {
+                match po {
+                  Some(Chat(r)) => tape_chat_entries[k] = (r, page_src)
+                  _ => tape_chat_entries.remove(k)
+                }
+                tape_chat_entries_rev.set(tape_chat_entries_rev.untracked() + 1)
+              })
+              v.owns(fn() {
+                tape_chat_entries.remove(k)
+                tape_chat_entries_rev.set(tape_chat_entries_rev.untracked() + 1)
+              })
+              |> ignore
+            }
           },
         ),
       )

@@ -2640,6 +2640,9 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   if self.nodes.length() > 0 && self.nodes[0].live {
     self.root().let_go()
   }
+  if node_rests.length() > 0 {
+    node_rests.retain(fn(e) { !physical_equal(e.1.tree, self) })
+  }
   self.drawn_marks.clear()
   self.looks_due.clear()
   self.places_due.clear()
@@ -6124,11 +6127,26 @@ fn Tree::rows_placed(self : Tree, at : Int, y : Double) -> Double {
 /// Each change told the tree from now on (a signal set outside or a batch of them, an event, a moment come on the
 /// timeline) laid out and placed once it is told whole (a frame drawn after or none): where things stand as the next
 /// comes is where that one left them (View::placed_window_now), for what moves from there for its cause. As long as
-/// this node lives.
+/// this node lives, and is not put by at rest (View::on_rest): none while it rests, again as it wakes.
 pub fn View::laid_before_causes(self : View) -> Unit {
   guard self.alive() else { return }
   self.tree.before_causes = self.tree.before_causes + 1
-  self.owns(fn() { self.tree.before_causes = self.tree.before_causes - 1 }) |> ignore
+  let held = Ref(true)
+  self.on_rest(
+    fn() {
+      if held.val {
+        held.val = false
+        self.tree.before_causes = self.tree.before_causes - 1
+      }
+    },
+    wake=fn() {
+      if !held.val {
+        held.val = true
+        self.tree.before_causes = self.tree.before_causes + 1
+      }
+    },
+  )
+  |> ignore
 }
 
 ///|
@@ -8458,6 +8476,37 @@ pub fn View::owns(self : View, f : () -> Unit) -> View {
 }
 
 ///|
+// what each node said to do at rest (View::on_rest), kept beside the tree by registration and View (its tree, index
+// and making, as Lent's), never in Node: only the few nodes a kept part rests on say one, so Node's C layout stays
+// what every unit inlining View::live was built against
+let node_rest_next : Ref[Int] = Ref(0)
+
+///|
+let node_rests : Array[(Int, View, () -> Unit, () -> Unit)] = []
+
+///|
+/// `f` run as it is put by at rest (View::park, View::rests: after what it holds is, so what binds in it has let go of
+/// what it read by then) and once as it is let go (View::owns): what it worked out that nothing follows (a computed read
+/// untracked as it laid out) let go of what that read, or it holds what that read while nothing shows it. `wake`: what
+/// it does as it is woken again (taken in: View::park's waking), not as it is let go.
+pub fn View::on_rest(self : View, f : () -> Unit, wake? : () -> Unit = fn() {  }) -> View {
+  guard self.alive() else { return self }
+  if node_rests.length() >= 64 {
+    node_rests.retain(fn(e) { e.1.alive() })
+  }
+  let id = node_rest_next.val
+  node_rest_next.val = id + 1
+  node_rests.push((id, self, f, wake))
+  self.owns(fn() {
+    match node_rests.search_by(fn(e) { e.0 == id }) {
+      Some(i) => node_rests.remove(i) |> ignore
+      None => ()
+    }
+    f()
+  })
+}
+
+///|
 /// `stop` kept as one it lets go of as it goes (View::owns), and what lets go of that keeping again: for what ends
 /// before it does (a moment's work done or called off), nothing of it kept by it after.
 pub fn View::owns_while(self : View, stop : () -> Unit) -> () -> Unit {
@@ -9041,12 +9090,28 @@ fn View::rests(self : View) -> () -> Unit {
 /// What node `at` and what it holds bind, at rest (View::park), each's waking added to `wakes`.
 fn Tree::rest_in(self : Tree, at : Int, wakes : Array[() -> Unit]) -> Unit {
   let n = self.nodes[at]
+  // (it before what it holds, as ever: what it makes rests before what that holds, so a part's watch resting tells no
+  // structure of it still awake to make anew; then what it said to do at rest (View::on_rest), once all it holds rests
+  // and what binds in all of it has let go of what it read)
   match n.owner {
     Some(o) => wakes.push(@signals.rest(o))
     None => ()
   }
   for k in n.kids {
     self.rest_in(k, wakes)
+  }
+  if node_rests.length() > 0 {
+    let v = self.handle(at)
+    let pairs : Array[(() -> Unit, () -> Unit)] = []
+    for e in node_rests {
+      if e.1.same(v) {
+        pairs.push((e.2, e.3))
+      }
+    }
+    for pair in pairs {
+      (pair.0)()
+      wakes.push(pair.1)
+    }
   }
 }
 

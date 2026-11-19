@@ -179,13 +179,9 @@ fn wide_bar_title_row(
     row.keeps_held(Is(true)).fits(Is(true)) |> ignore
     wide_bar_title(row, src, r, view, across, tips)
     // (the station the chat runs on, as the workspace's marks have it)
-    let station = fn() {
-      let w = match @sfbase.workspace_in_view(src).0 {
-        Some(w) => w.id
-        None => ""
-      }
-      @sfbase.station_marks(src, w).iter().find_first(fn(x) { x.address == r.station })
-    }
+    // (what it last was while the marks are asked again: sfbase's asked_again.mbt)
+    let station_held = @sfbase.station_mark_held(src, r.station)
+    let station = fn() { station_held.get() }
     let station_key = fn() {
       match station() {
         Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}"
@@ -206,7 +202,7 @@ fn wide_bar_title_row(
       }
     }
     // (who is in it by its title, beside the system's bars too: the user, 2026-10-28)
-    row.show(fn() { view() is Some(_) && agents().length() == 0 && station() is Some(_) }, fn(x) {
+    row.show(fn() { view() is Some(_) && agents().length() == 0 && station() is Some(_) }, along_row=true, fn(x) {
       x.pick(station_key, fn(y, _) {
         match @signals.untracked(station) {
           Some(s) => wide_station_tag(y, r.station, s, via, tips, stint)
@@ -220,7 +216,7 @@ fn wide_bar_title_row(
         None => []
       }
     }
-    row.show(fn() { people().length() > 0 }, fn(p) {
+    row.show(fn() { people().length() > 0 }, along_row=true, fn(p) {
       p.drops(Is(chat_bar_drop_people)) |> ignore
       p.pick(fn() { people().map(fn(p) { "\{p.id}\u{1}\{p.display}\u{1}\{p.picture}" }).join("\u{2}") }, fn(q, _) {
         wide_people(q, src, @signals.untracked(people), 5, tips, stint)
@@ -254,7 +250,7 @@ fn wide_bar_title_row(
       let s = if i == 0 { @signals.untracked(station) } else { None }
       wide_agent_tile(k, src, r, a, badge, marked, s, via, tips, stint)
     }
-    row.show(fn() { agents().length() > 0 }, fn(f) {
+    row.show(fn() { agents().length() > 0 }, along_row=true, fn(f) {
       f.pick(fn() { agent_key(0, agents()[0]) }, fn(k, _) { tile(k, 0) })
     })
     row.each(
@@ -267,6 +263,7 @@ fn wide_bar_title_row(
         k.drops(Is(chat_bar_drop_agents)) |> ignore
         tile(k, @signals.untracked(fn() { it.get() }).0)
       },
+      along_row=true,
     )
   })
   |> ignore
@@ -332,7 +329,7 @@ fn wide_bar_title(
     t.says(By(fn() { Some(@view.said(Text, label=title())) })) |> ignore
   })
   |> ignore
-  row.show(fn() { renaming() != "" || failed() is Some(_) }, fn(d) {
+  row.show(fn() { renaming() != "" || failed() is Some(_) }, along_row=true, fn(d) {
     @sfpages.doing_mark_node(d, fn() { renaming() != "" }, failed, size=wide_doing_mark)
     @sf.tip_node(
       tips,
@@ -712,7 +709,9 @@ fn wide_bar_keys(
       },
     )
     // its services and jobs, while it has any
-    let jobs = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
+    // (what they last were while asked again: sfbase's asked_again.mbt)
+    let jobs_held = @sfbase.topic_value_held(src, "chatJobs", chat_jobs_summary_params(r))
+    let jobs = fn() { jobs_held.get() }
     let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
     k.show(fn() { own() && has_jobs() }, along_row=true, fn(b) {
       let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, linked=ends.linked, shortcut="chat.jobs")
@@ -726,7 +725,7 @@ fn wide_bar_keys(
     // (a dot on the row's first button, as the old bar's layer stood, drawn after its services' button: red while a
     // job died lately, amber while a service restarts)
     let alarm = fn() { if own() && has_jobs() { text(jobs(), "alarm") } else { "" } }
-    k.show(fn() { alarm() != "" }, fn(o) {
+    k.show(fn() { alarm() != "" }, at_once=true, fn(o) {
       o.over(Is(true)) |> ignore
       @sf.style_node(o, fn() { jobs_alarm_room })
       o.box(fn(d) { @sf.style_node(d, fn() { if alarm() == "fail" { jobs_alarm_fail } else { jobs_alarm_restart } }) })
@@ -759,7 +758,7 @@ fn wide_bar_keys(
               None => false
             }
           }
-          sb.show(driven, fn(o) {
+          sb.show(driven, at_once=true, fn(o) {
             // (over the button, not after it: the old view's layer)
             o.over(Is(true)) |> ignore
             @sf.style_node(o, fn() { screen_driven_room })
@@ -771,7 +770,7 @@ fn wide_bar_keys(
     )
     // what it is (its info's popover beside it: the nodes' (chat_pops_node), or the old view's, opened or closed as it is
     // let go), what is done with it ("…": the menu a row of the sidebar has)
-    k.show(own, fn(b) {
+    k.show(own, at_once=true, fn(b) {
       let button = @sf.icon_button_node(b, "info", fn() { @sf.t("web-pages.chat.info") }, fn() {
         chat_own.info_open.set(!chat_own.info_open.untracked())
       }, tips~, linked=ends.linked)
@@ -780,7 +779,7 @@ fn wide_bar_keys(
         chat_info_pop_node(b, src, r, view, stint, Some(button))
       }
     })
-    k.show(own, fn(b) {
+    k.show(own, at_once=true, fn(b) {
       let me : Ref[@view.View?] = Ref(None)
       me.val = Some(
         @sf.icon_button_node(b, "more", fn() { @sf.t("common.more") }, fn() {
@@ -792,16 +791,37 @@ fn wide_bar_keys(
         }, tips~, linked=ends.linked),
       )
     })
-    // the side panel's switch while it is closed: the first agent's history in it
+    // the side panel's switch while it is closed: the first agent's history in it; made as the panel slides closed
+    // (side_leaving), the row is drawn eased right of where it is laid out by the room the switch takes that the panel
+    // has not given yet (side_closed_part), so nothing in it steps that room in the closing's first frame, and the switch
+    // comes with the row from under the panel, fading in (nothing bound where the chat opens with its panel closed)
+    let panel_closed_with_switch = fn() {
+      own() &&
+      (match view() {
+        Some(v) => side_of(v).0.length() == 0 && v.agents.length() > 0
+        None => false
+      })
+    }
     k.show(
-      fn() {
-        own() &&
-        (match view() {
-          Some(v) => side_of(v).0.length() == 0 && v.agents.length() > 0
-          None => false
-        })
-      },
+      panel_closed_with_switch,
       fn(b) {
+        if @signals.untracked(fn() { side_leaving(chat_key(r)) is Some(_) }) {
+          let part = fn() {
+            if panel_closed_with_switch() {
+              side_closed_part(src, b, r, false)
+            } else {
+              1.0
+            }
+          }
+          k.offset(By(fn() { ((1.0 - part()) * (@sf.bar_key_side + @sf.keys_apart()), 0.0) })) |> ignore
+          b.alpha(By(part)) |> ignore
+          b.owns(fn() {
+            if k.alive() {
+              k.offset(Is((0.0, 0.0))) |> ignore
+            }
+          })
+          |> ignore
+        }
         @sf.icon_button_node(b, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
           match @signals.untracked(view) {
             Some(v) if v.agents.length() > 0 => side_change(src, r, "open", Some(v.agents[0].key))
