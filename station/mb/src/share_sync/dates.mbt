@@ -1,56 +1,9 @@
 // Dates as JavaScript writes and reads them: `new Date(ms).toISOString()` and `Date.parse` of an ISO 8601 date and time.
 
 ///|
-fn days_from_civil(y : Int64, m : Int64, d : Int64) -> Int64 {
-  let y = if m <= 2L { y - 1L } else { y }
-  let era = (if y >= 0L { y } else { y - 399L }) / 400L
-  let yoe = y - era * 400L
-  let mp = (m + 9L) % 12L
-  let doy = (153L * mp + 2L) / 5L + d - 1L
-  let doe = yoe * 365L + yoe / 4L - yoe / 100L + doy
-  era * 146097L + doe - 719468L
-}
-
-///|
-fn civil_from_days(z : Int64) -> (Int64, Int64, Int64) {
-  let z = z + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  (if m <= 2L { y + 1L } else { y }, m, d)
-}
-
-///|
-fn pad(n : Int64, width : Int) -> String {
-  let s = n.abs().to_string()
-  let p = if s.length() < width { "0".repeat(width - s.length()) + s } else { s }
-  if n < 0L {
-    "-" + p
-  } else {
-    p
-  }
-}
-
-///|
 /// `new Date(ms).toISOString()`.
 pub fn iso_string(ms : Double) -> String {
-  let t = ms.to_int64()
-  let days = (if t >= 0L { t } else { t - 86399999L }) / 86400000L
-  let rest = t - days * 86400000L
-  let (y, m, d) = civil_from_days(days)
-  let year = if y >= 0L && y <= 9999L {
-    pad(y, 4)
-  } else if y < 0L {
-    "-" + pad(-y, 6)
-  } else {
-    "+" + pad(y, 6)
-  }
-  "\{year}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(rest / 3600000L, 2)}:\{pad(rest / 60000L % 60L, 2)}:\{pad(rest / 1000L % 60L, 2)}.\{pad(rest % 1000L, 3)}Z"
+  @time.format_iso_ms(ms.to_int64())
 }
 
 ///|
@@ -167,9 +120,9 @@ pub fn date_parse(s : String) -> Double {
   if hour == 24L && (minute != 0L || second != 0L || ms != 0L) {
     return nan
   }
-  let days = days_from_civil(year, month, day)
-  let (_, m2, _) = civil_from_days(days)
-  if m2 != month {
+  let days = @time.days_from_civil(year.to_int(), month.to_int(), day.to_int())
+  let (_, m2, _) = @time.civil_from_days(days)
+  if m2.to_int64() != month {
     // (the 31st of a month of 30: JavaScript's ISO parse refuses it)
     return nan
   }

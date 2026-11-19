@@ -6,24 +6,12 @@
 // (each request's address, headers and bytes): the test reads both sides' the same way.
 
 ///|
-fn hex_of(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for x in b {
-    let v = x.to_int()
-    out.write_char(digits.unsafe_charcode_at(v >> 4).unsafe_to_char())
-    out.write_char(digits.unsafe_charcode_at(v & 15).unsafe_to_char())
-  }
-  out.to_string()
-}
-
-///|
 fn bytes_of_hex(hex : String) -> Bytes {
   let n = hex.length() / 2
   let out = FixedArray::make(n, b'\x00')
   for i in 0..<n {
-    let hi = hex_digit(hex.unsafe_charcode_at(2 * i)).unwrap_or(0)
-    let lo = hex_digit(hex.unsafe_charcode_at(2 * i + 1)).unwrap_or(0)
+    let hi = @codec.hex_digit(hex.unsafe_charcode_at(2 * i)).unwrap_or(0)
+    let lo = @codec.hex_digit(hex.unsafe_charcode_at(2 * i + 1)).unwrap_or(0)
     out[i] = (hi * 16 + lo).to_byte()
   }
   Bytes::from_array(out)
@@ -104,7 +92,7 @@ fn frame_to_jv(f : Frame) -> JV {
     ("headers", Some(Arr(f.headers.map(h => Arr([js(h.0), js(h.1)]))))),
     ("payloadEncoding", f.payload_encoding.map(js)),
     ("payloadType", f.payload_type.map(js)),
-    ("payload", f.payload.map(p => js(hex_of(p)))),
+    ("payload", f.payload.map(p => js(@codec.hex_encode(p)))),
     ("logIdNew", f.log_id_new.map(js)),
   ])
 }
@@ -174,7 +162,7 @@ fn pure_case(c : JV) -> JV raise {
   let s0 = text(a0)
   match text(jget(Some(c), "fn")) {
     // frame.ts
-    "encode" => js(hex_of(encode(frame_of_jv(or_null(a0)))))
+    "encode" => js(@codec.hex_encode(encode(frame_of_jv(or_null(a0)))))
     "decode" => frame_to_jv(decode(bytes_of_hex(s0)))
     // parse.ts
     "messageOf" =>
@@ -259,7 +247,7 @@ fn pure_case(c : JV) -> JV raise {
     "encodeAddons" => js(encode_addons(addons()))
     "shownRegistration" => shown_registration(or_null(a0))
     "toolDeclaration" => feishu_api_tool()
-    "gzip" => js(hex_of(gzip(utf8(s0))))
+    "gzip" => js(@codec.hex_encode(gzip(utf8(s0))))
     f => raise FeishuError("no such function: \{f}")
   }
 }
@@ -275,7 +263,7 @@ fn parts_case(c : JV) -> JV {
         out.push(
           outcome(() => match
             parts.add(frame_of_jv(f), num_of(jget(Some(step), "now")).to_int64()) {
-            Some(b) => js(hex_of(b))
+            Some(b) => js(@codec.hex_encode(b))
             None => Null
           }),
         )
@@ -339,7 +327,7 @@ fn World::answer(self : World, req : HttpRequest) -> HttpResponse raise FeishuEr
       ("method", Some(js(req.verb))),
       ("url", Some(js(req.url))),
       ("headers", Some(Arr(req.headers.map(h => Arr([js(h.0), js(h.1)]))))),
-      ("body", Some(match req.body { Some(b) => js(hex_of(b)); None => Null })),
+      ("body", Some(match req.body { Some(b) => js(@codec.hex_encode(b)); None => Null })),
     ]),
   )
   let route = "\{req.verb} \{path_of(req.url)}"
@@ -475,7 +463,7 @@ fn answered_jv(a : Answered) -> JV {
           "file",
           Some(
             jobj([
-              ("hex", Some(js(hex_of(bytes)))),
+              ("hex", Some(js(@codec.hex_encode(bytes)))),
               ("contentType", Some(js(ct))),
               ("disposition", Some(js(disposition))),
             ]),
@@ -543,7 +531,7 @@ fn client_case(c : JV) -> JV {
       "resource" =>
         step_outcome(rt, async fn() {
           js(
-            hex_of(
+            @codec.hex_encode(
               client.resource(
                 text(jget(s, "message")),
                 text(jget(s, "key")),
@@ -801,7 +789,7 @@ async fn surface_case(c : JV) -> JV {
         step_outcome(rt, async fn() {
           let f = jget(s, "file")
           js(
-            hex_of(
+            @codec.hex_encode(
               surface.download({
                 id: text(jget(f, "id")),
                 name: text(jget(f, "name")),
@@ -889,7 +877,7 @@ async fn surface_case(c : JV) -> JV {
         step_outcome(rt, async fn() {
           let open = Ref(true)
           let socket : Socket = {
-            send: b => sent.push(js(hex_of(b))),
+            send: b => sent.push(js(@codec.hex_encode(b))),
             is_open: () => open.val,
           }
           let hooks = surface.socket_hooks(text(jget(s, "url")), handler)
@@ -1269,7 +1257,7 @@ async fn tool_case(c : JV) -> JV {
   }
   let written = JV::Obj([])
   for p, b in world.files {
-    jput(written, p, js(hex_of(b)))
+    jput(written, p, js(@codec.hex_encode(b)))
   }
   jobj([
     ("results", Some(Arr(results))),

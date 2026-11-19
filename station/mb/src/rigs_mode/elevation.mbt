@@ -289,6 +289,18 @@ pub fn Elevation::view(self : Elevation, manage : Bool) -> Json {
 }
 
 ///|
+/// windows.ts `defaultWindowsTask` (ops_platform's `default_windows_task`): the station's own task where windows.json
+/// names none, its data directory's product's (`.monoid`: monoid's; any other: still.fail's).
+fn default_windows_task(data : String) -> String {
+  let leaf = data.replace_all(old="\\", new="/").split("/").to_array().rev_iter().find_first(p => p != "")
+  if js_lower(leaf.map(p => p.to_owned()).unwrap_or("")) == ".monoid" {
+    "monoid station"
+  } else {
+    "still.fail station"
+  }
+}
+
+///|
 /// Switched to `on`: asked of Windows, applied elevated, the station restarted as its task then runs it (see above).
 /// Answered as soon as it is asked; the overview says how it goes.
 pub fn Elevation::change(self : Elevation, on : Bool) -> Unit raise {
@@ -311,7 +323,7 @@ pub fn Elevation::change(self : Elevation, on : Bool) -> Unit raise {
     let kept = Some(windows_json_in((self.d.files.read)(path_join([self.d.data, "windows.json"]))))
     let task = match get(kept, "task") {
       Some(String(t)) if t != "" => t
-      _ => "still.fail station"
+      _ => default_windows_task(self.d.data)
     }
     // Copied out of <app>: what runs from there is stopped as the station is.
     let runner = path_join([run, "stillfail-elevation-w.exe"])

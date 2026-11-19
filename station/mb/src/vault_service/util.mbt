@@ -434,42 +434,7 @@ fn iso(seconds : Double) -> String {
 ///|
 /// `new Date(ms).toISOString()`.
 fn iso_ms(ms : Double) -> String {
-  let t = ms.floor()
-  let day_ms = 86400000.0
-  let days = (t / day_ms).floor()
-  let rest = (t - days * day_ms).to_int64()
-  // (civil from days: Howard Hinnant's)
-  let z = days.to_int64() + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let year = if m <= 2L { y + 1L } else { y }
-  let pad = (v : Int64, w : Int) => {
-    let s = v.to_string()
-    let b = StringBuilder()
-    for _ in s.length()..<w {
-      b.write_char('0')
-    }
-    b.write_string(s)
-    b.to_string()
-  }
-  let h = rest / 3600000L
-  let mi = rest % 3600000L / 60000L
-  let se = rest % 60000L / 1000L
-  let mss = rest % 1000L
-  let ys = if year >= 0L && year <= 9999L {
-    pad(year, 4)
-  } else if year < 0L {
-    "-" + pad(-year, 6)
-  } else {
-    "+" + pad(year, 6)
-  }
-  "\{ys}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(h, 2)}:\{pad(mi, 2)}:\{pad(se, 2)}.\{pad(mss, 3)}Z"
+  @time.format_iso_ms(ms.floor().to_int64())
 }
 
 ///|

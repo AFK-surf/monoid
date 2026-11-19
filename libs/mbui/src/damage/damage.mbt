@@ -981,6 +981,13 @@ fn is_glass(kind : Int) -> Bool {
 }
 
 ///|
+/// Liquid glass's 23 at `o`: how far round its shape its group merges, or a Backdrop lens's InnerShadow radius; below 0
+/// a lens's spot packed with it (ui's glass.mbt backdrop_rim), which reaches nothing round it.
+fn glass_rim(a : FixedArray[Double], o : Int) -> Double {
+  dmax(a[o + 23], 0.0)
+}
+
+///|
 /// How far round its rect what a capture of the glass instance `k` copies reaches (apple_render.m grab_of's margin,
 /// every renderer's), and a pixel more.
 fn glass_margin(a : FixedArray[Double], k : Int) -> Double {
@@ -991,7 +998,7 @@ fn glass_margin(a : FixedArray[Double], k : Int) -> Double {
     return 2.0 + reach_pad
   }
   3.0 * a[o + 7] +
-  (if liquid { a[o + 21] * (1.0 + a[o + 22]) + a[o + 23] } else { 0.0 }) +
+  (if liquid { a[o + 21] * (1.0 + a[o + 22]) + glass_rim(a, o) } else { 0.0 }) +
   2.0 +
   reach_pad
 }
@@ -1002,7 +1009,7 @@ fn glass_margin(a : FixedArray[Double], k : Int) -> Double {
 fn glass_box(a : FixedArray[Double], k : Int, into : Rect) -> Unit {
   let o = k * inst_size
   if kind_at(a, k) == 6 {
-    let e = a[o + 23]
+    let e = glass_rim(a, o)
     into.add(a[o] - e, a[o + 1] - e, a[o] + a[o + 2] + e, a[o + 1] + a[o + 3] + e)
   } else {
     into.add(

@@ -428,46 +428,9 @@ fn dirname(path : String) -> String {
 }
 
 ///|
-/// The days since 1970-01-01 as a civil date (Howard Hinnant's `civil_from_days`).
-fn civil(days : Int64) -> (Int64, Int, Int) {
-  let z = days + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = (doy - (153L * mp + 2L) / 5L + 1L).to_int()
-  let m = (if mp < 10L { mp + 3L } else { mp - 9L }).to_int()
-  ((if m <= 2 { y + 1L } else { y }), m, d)
-}
-
-///|
-fn pad(n : Int64, width : Int) -> String {
-  let s = n.to_string()
-  if s.length() >= width {
-    s
-  } else {
-    "0".repeat(width - s.length()) + s
-  }
-}
-
-///|
 /// `new Date(ms).toISOString()` (ms within ±8.64e15; its fraction cut as the Date's time value is).
 fn iso_date(at : Double) -> String {
-  let ms = at.to_int64()
-  let day = 86400000L
-  let days = if ms >= 0L { ms / day } else { (ms - day + 1L) / day }
-  let rest = ms - days * day
-  let (y, m, d) = civil(days)
-  let year = if y >= 0L && y <= 9999L {
-    pad(y, 4)
-  } else if y < 0L {
-    "-" + pad(-y, 6)
-  } else {
-    "+" + pad(y, 6)
-  }
-  "\{year}-\{pad(m.to_int64(), 2)}-\{pad(d.to_int64(), 2)}T\{pad(rest / 3600000L, 2)}:\{pad(rest / 60000L % 60L, 2)}:\{pad(rest / 1000L % 60L, 2)}.\{pad(rest % 1000L, 3)}Z"
+  @time.format_iso_ms(at.to_int64())
 }
 
 ///|

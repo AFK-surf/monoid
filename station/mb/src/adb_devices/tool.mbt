@@ -113,29 +113,7 @@ pub let phone_send_decl : J = tool_decl(
 ///|
 /// `new Date(ms).toISOString()`.
 pub fn iso_time(ms : Double) -> String {
-  let t = ms.floor().to_int64()
-  let days = if t >= 0L { t / 86400000L } else { (t - 86399999L) / 86400000L }
-  let in_day = t - days * 86400000L
-  // (days since 1970-01-01 to a civil date: Howard Hinnant's)
-  let z = days + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let y = if m <= 2L { y + 1L } else { y }
-  let pad = (n : Int64, w : Int) => {
-    let s = n.to_string()
-    "0".repeat(@cmp.maximum(0, w - s.length())) + s
-  }
-  let h = in_day / 3600000L
-  let mi = in_day / 60000L % 60L
-  let s = in_day / 1000L % 60L
-  let msr = in_day % 1000L
-  "\{pad(y, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(h, 2)}:\{pad(mi, 2)}:\{pad(s, 2)}.\{pad(msr, 3)}Z"
+  @time.format_iso_ms(ms.floor().to_int64())
 }
 
 ///|

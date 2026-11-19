@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
 import type { Env, Found, Host, Platform } from "./index.ts";
 import { pressureOfAvailable, trim } from "./text.ts";
+import { PRODUCTS, STILLFAIL } from "../../../client/i18n/brand.ts";
 
 const run = promisify(execFile);
 
@@ -457,6 +458,13 @@ export function windowsUpdateScript(runDir: string, env: Record<string, string>,
   ].join("\r\n")}\r\n`;
 }
 
+/// The station's own scheduled task where windows.json names none: install.ps1 writes none for `<product> station`, its
+/// product's that of the data directory `data` (`.monoid`: monoid's, as bin/stillfail.ps1 tells them; any other: still.fail's).
+export function defaultWindowsTask(data: string): string {
+  const leaf = data.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1)!.toLowerCase();
+  return `${(PRODUCTS.map((p) => p.product).find((p) => leaf === `.${p.id}`) ?? STILLFAIL).name} station`;
+}
+
 /// By a scheduled task of its own ("<the station's task> update"): nobody's child here, with no window
 /// (`stillfail-station-w --run`, copied into run/ so the installer stopping what runs from <app> leaves it be). (Not
 /// WMI's Win32_Process.Create: PowerShell started so is what malware does, and security software refuses it.) The task
@@ -465,7 +473,7 @@ async function startInstaller(script: string, runDir: string, env: Record<string
   const ps1 = join(runDir, "update.ps1");
   const hidden = join(runDir, "stillfail-update-w.exe");
   // The station's task as install.ps1 named it (windows.json: a station apart's), and " update".
-  let task = "still.fail station";
+  let task = defaultWindowsTask(dirname(runDir));
   // The station runs elevated (install.ps1 -Admin): its update task runs so too, so the installer it starts can
   // register the logon task at RunLevel Highest again without a prompt (install-windows.ts keeps admin in windows.json).
   let admin = false;

@@ -14,10 +14,19 @@
 //            its radius, its fillets'; scene.mbt)
 //   liquid:  12 the rim's light · 13 the bezel's width · 14 where the pointer
 //            lights it (Glass::spot, from its rect's top left: glass_spot's
-//            packing; 0 none; -1 and -2 are Backdrop’s default and ambient rim)
+//            packing; 0 none; below 0 a Backdrop lens, backdrop_mode's)
 //            15 opacity · 21 how far the bezel bends what is under it
 //            (px) · 22 the colours' split (0-1) · 23 the smooth-min radius
 //            two shapes of one group merge within
+//   a Backdrop lens (Glass::backdrop_lens, liquid with 14 below 0): 6 its
+//            saturation, or below 0 its saturation and contrast packed
+//            (backdrop_saturation) · 14 minus its mode (backdrop_mode: the
+//            highlight's style, depth, hue, the shadow's offset, the
+//            highlight's angle and falloff, brightness) · 23 its
+//            InnerShadow's radius, or below 0 its spot packed with it
+//            (backdrop_rim) · 36-39 its corners, each its own. Each packed
+//            one a whole number under 2^23, exact in a float; -1 and -2 a
+//            lens of Default and Ambient highlight and nothing else, as before
 //   20 the capture it shares: -1, -2, … (negative, so a run of glass is a run
 //      of its own for the renderers' image runs): glass one after another
 //      with nothing drawn between, the same blur and kind, not over each
@@ -138,8 +147,9 @@ fn rects_meet(a : Int, b : Int, inst : FixedArray[Double]) -> Bool {
 /// The glass instance of node `n` (its frame), at `alpha`.
 fn Ctx::emit_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
   self.glass_inst(n.x, n.y, n.fw, n.fh, n.radius, gl, alpha)
-  // (frosted: its corners each its own; liquid merges shapes of one corner each, the renderers' groups: its roundest)
-  if !gl.liquid {
+  // (frosted: its corners each its own; liquid merges shapes of one corner each, the renderers' groups: its roundest;
+  // a Backdrop lens, never merged, its corners each its own: Shaders.kt's radiusAt)
+  if !gl.liquid || gl.backdrop_highlight > 0 {
     self.corners_last(n)
   }
   self.glass_capture(self.ninst - 1, gl.liquid, gl.shares_capture)
@@ -159,6 +169,7 @@ fn Ctx::glass_inst(
   alpha : Double,
 ) -> Unit {
   let kind = if gl.liquid { 6.0 } else { 5.0 }
+  let lens = gl.backdrop_highlight > 0
   self.push_inst(
     x,
     y,
@@ -166,20 +177,89 @@ fn Ctx::glass_inst(
     h,
     radius,
     kind,
-    gl.saturation,
+    if lens { backdrop_saturation(gl) } else { gl.saturation },
     if gl.contained && !gl.liquid { -gl.blur } else { gl.blur },
     gl.tint,
     1.0,
     if gl.liquid { gl.rim } else { gl.rim_edge },
     if gl.liquid { gl.bezel } else { gl.rim_lit },
-    if gl.backdrop_highlight > 0 { -gl.backdrop_highlight.to_double() } else if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
+    if lens { backdrop_mode(gl) } else if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
     alpha,
   )
   let b = (self.ninst - 1) * inst_size
   let a = self.inst
   a[b + 21] = gl.refraction
   a[b + 22] = gl.chroma
-  a[b + 23] = gl.merge
+  a[b + 23] = if lens { backdrop_rim(gl, w, h) } else { gl.merge }
+}
+
+///|
+/// `v` rounded to a whole number from `lo` to `hi`.
+fn whole_in(v : Double, lo : Int, hi : Int) -> Int {
+  let r = v.round()
+  if r < lo.to_double() {
+    lo
+  } else if r > hi.to_double() {
+    hi
+  } else {
+    r.to_int()
+  }
+}
+
+///|
+/// A Backdrop lens's 14: minus its mode, the renderers' to take apart (kind 6, c2.z below 0). Bits 0-1 its
+/// highlight's style (1 Default, 2 Ambient, 3 Plain); 2 depthEffect; 3 its tint laid on by hue first; 4 its
+/// InnerShadow a whole radius lower, not a sixth; 5-11 its highlight's angle (0 45°, else 1 + a 126th of a turn
+/// each); 12-15 its falloff (0 one, else halves); 16-22 its brightness (0 none, else 64 + 63rds, -1 to 1). A lens of
+/// Default or Ambient highlight and nothing else is -1 or -2, as it ever was.
+fn backdrop_mode(gl : Glass) -> Double {
+  let bit = fn(b : Bool, at : Int) { if b { 1 << at } else { 0 } }
+  let angle = if gl.highlight_angle == 45.0 {
+    0
+  } else {
+    let t = gl.highlight_angle - (gl.highlight_angle / 360.0).floor() * 360.0
+    whole_in(t * 126.0 / 360.0, 0, 126) % 126 + 1
+  }
+  let falloff = if gl.highlight_falloff == 1.0 { 0 } else { whole_in(gl.highlight_falloff * 2.0, 1, 15) }
+  let bright = if gl.brightness == 0.0 { 0 } else { whole_in(gl.brightness * 63.0, -63, 63) + 64 }
+  let mode = (gl.backdrop_highlight & 3) |
+    bit(gl.depth_effect, 2) |
+    bit(gl.tint_hue, 3) |
+    bit(gl.inner_shadow_full, 4) |
+    (angle << 5) |
+    (falloff << 12) |
+    (bright << 16)
+  -mode.to_double()
+}
+
+///|
+/// A Backdrop lens's 6: its saturation where its contrast is one (as ever), else minus its saturation (thousandths,
+/// bits 0-11, to 4.095) and contrast (thousandths, bits 12-22, to 2.047), never 0.
+fn backdrop_saturation(gl : Glass) -> Double {
+  if gl.contrast == 1.0 {
+    return if gl.saturation < 0.0 { 0.0 } else { gl.saturation }
+  }
+  let s = whole_in(gl.saturation * 1000.0, 0, 4095)
+  let c = whole_in(gl.contrast * 1000.0, 0, 2047)
+  let pk = s | (c << 12)
+  // (none of either: a contrast of a thousandth, so it is still said below 0)
+  -(if pk == 0 { 1 << 12 } else { pk }).to_double()
+}
+
+///|
+/// A Backdrop lens `w` by `h`'s 23: its InnerShadow's radius (as ever), else, where its spot lights it, minus where
+/// (127ths of its width, bits 0-6, and of its height, 7-13), how much (63rds, 14-19) and the shadow's radius (fours,
+/// 20-22, to 28). What a capture keeps round it takes none of it (grab_of's margin, damage.mbt's glass_margin).
+fn backdrop_rim(gl : Glass, w : Double, h : Double) -> Double {
+  let lit = whole_in(gl.spot_alpha * 63.0, 0, 63)
+  match gl.spot {
+    Some((x, y)) if lit > 0 => {
+      let across = fn(v : Double, size : Double) { if size > 0.0 { whole_in(v / size * 127.0, 0, 127) } else { 0 } }
+      let shadow = whole_in(gl.merge / 4.0, 0, 7)
+      -(across(x, w) | (across(y, h) << 7) | (lit << 14) | (shadow << 20)).to_double()
+    }
+    _ => gl.merge
+  }
 }
 
 ///|

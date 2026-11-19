@@ -137,6 +137,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   var wanted = 0
   var encoding = false
   var forceKey = true
+  /// Its display's mode changes are followed (`followDisplay`), until it stops.
+  var following = false
   /// The key frame asked is of the picture last encoded (the screen at rest, sent again sharper: docs/remote-screens.md
   /// "Still"), and whether the session encodes finer now: its QP at most `stillQP`, at twice the bit rate, where that is
   /// `stillFrom` or more (a narrow link's would take seconds to go). The next moving picture as before.
@@ -443,6 +445,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
           if !self.jpeg { self.followCursor() }
           self.followWindows()
         }
+        followDisplay()
       } catch {
         channel.sendJSON(1, ["error": error.localizedDescription, "code": "capture", "capture": CGPreflightScreenCaptureAccess()])
       }
@@ -476,6 +479,11 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   }
 
   func stop() {
+    // (before `queue`: a callback under way waits for nothing of it)
+    if following {
+      CGDisplayRemoveReconfigurationCallback(displayChanged, Unmanaged.passUnretained(self).toOpaque())
+      following = false
+    }
     sound?.end()
     queue.sync {
       ended = true
@@ -949,6 +957,27 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     }
   }
 
+  /// Its display's mode changes followed (a resolution set while it is viewed): `reconfigured` at each.
+  func followDisplay() {
+    following = CGDisplayRegisterReconfigurationCallback(displayChanged, Unmanaged.passUnretained(self).toOpaque()) == .success
+  }
+
+  /// Its display's mode changed: the capture asked for the size that takes now (its pictures from then on that size,
+  /// the encoder made anew for them by `pump`, from a key frame with its config), the view going on as it was.
+  func reconfigured() {
+    queue.async {
+      guard !self.ended, let stream = self.stream, let configuration = self.configuration else { return }
+      let (w, h) = self.captureSize()
+      if configuration.width == w && configuration.height == h { return }
+      configuration.width = w
+      configuration.height = h
+      self.forceKey = true
+      stream.updateConfiguration(configuration) { error in
+        if let error { self.channel.sendJSON(4, ["display": error.localizedDescription]) }
+      }
+    }
+  }
+
   /// From the next frame on, about this many bits a second.
   func rate(_ bits: Int) {
     queue.async {
@@ -981,6 +1010,14 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       self.pump()
     }
   }
+}
+
+/// A display's configuration changed (Core Graphics' callback, `ScreenView.followDisplay`): a mode set on the view's
+/// display, once it is done, is the view's to follow.
+private func displayChanged(_ display: CGDirectDisplayID, _ flags: CGDisplayChangeSummaryFlags, _ info: UnsafeMutableRawPointer?) {
+  guard let info, flags.contains(.setModeFlag), !flags.contains(.beginConfigurationFlag) else { return }
+  let view = Unmanaged<ScreenView>.fromOpaque(info).takeUnretainedValue()
+  if display == view.displayID { view.reconfigured() }
 }
 
 /// A window as Core Graphics lists it, by what is said of it (`ScreenView.said`): no frame, as where it is is not said.

@@ -70,6 +70,21 @@ test "what a runner is given to write, as base64 of it and its tail" {
 }
 
 ///|
+test "a runner's base64 past one piece of it is the same as written whole" {
+  for n in [49151, 49152, 49153, 49154, 147457] {
+    let bytes = Bytes::makei(n, i => (i * 7).to_byte())
+    for tail in [b"", b"\n"] {
+      let out = Buffer()
+      @pieces.base64_into(out, bytes, tail)
+      let whole = Buffer()
+      whole.write_bytes(bytes)
+      whole.write_bytes(tail)
+      assert_eq(@utf8.decode(out.to_bytes()), @base64.encode(whole.to_bytes()[:]))
+    }
+  }
+}
+
+///|
 test "what a stream ended without its newline is taken whole, once" {
   let p = Pieces::new()
   assert_eq(p.rest(), None)

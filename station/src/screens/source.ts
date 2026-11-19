@@ -211,9 +211,17 @@ export function windowsOf(v: unknown): ScreenWindow[] {
 /// steps it takes, in percent.
 export type ScreenScale = { percent: number; recommended: number; steps: number[] };
 
-/// A display's resolution as its system has it (Windows' Settings › Display › Display resolution): now, and the modes
-/// it takes (landscape, the largest first), in pixels.
+/// A display's resolution as its system has it (Windows' Settings › Display › Display resolution, in pixels; macOS's
+/// Displays, in points): now, and the modes it takes (landscape, the largest first).
 export type ScreenResolution = { width: number; height: number; modes: { width: number; height: number }[] };
+
+/// A resolution as a helper says it (stillfail-screen, still.fail Helper), checked: null when it is not one.
+export function resolutionOf(told: any): ScreenResolution | null {
+  const n = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= 16384;
+  const size = (v: any) => v !== null && typeof v === "object" && n(v.width) && n(v.height);
+  if (!size(told) || !Array.isArray(told.modes) || !told.modes.every(size)) return null;
+  return { width: told.width, height: told.height, modes: told.modes.map((m: any) => ({ width: m.width, height: m.height })) };
+}
 
 /// Whether a source can be seen and driven now, for one that may not be (the desktop: macOS's grants, a machine it is
 /// not supported on). `app` and `path`: what a person turns on in System Settings for it; `asking`: a window on the

@@ -55,7 +55,7 @@ pub fn scale_of(told : J?) -> ScreenScale? {
 }
 
 ///|
-/// A resolution as stillfail-screen says it, checked: none when it is not one.
+/// A resolution as a helper says it (stillfail-screen, still.fail Helper), checked: none when it is not one.
 pub fn resolution_of(told : J?) -> ScreenResolution? {
   let n = (v : J?) => match v {
     Some(Num(d)) => is_integer(d) && d > 0.0 && d <= 16384.0

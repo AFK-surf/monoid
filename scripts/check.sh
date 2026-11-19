@@ -494,9 +494,10 @@ if part ts; then
   # `ignore(….fork(…))`); makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`); writes no file beside
   # under a name another write of it takes too (`<path>.<pid>.tmp`, `<path>.tmp`: L13); waits on the disk on the
   # program's thread in a whole station's slice (`station_main/live_*.mbt`) no more than MAIN_THREAD_SYNC_FS lets it,
-  # which only falls; and makes no JavaScript value JSON by writing it out and reading it again.
+  # which only falls; makes no JavaScript value JSON by writing it out and reading it again; and hashes no SHA-256 of
+  # its own (base/hash's `@hash`).
   if touches '^station/mb/|^scripts/mb-station\.ts$'; then
-    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON" node scripts/mb-station.ts
+    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON, no SHA-256 of its own" node scripts/mb-station.ts
   fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
   # their JS dependencies and the real wasm package even when no TS file changed.

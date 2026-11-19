@@ -1823,6 +1823,10 @@ async function main() {
     await both("desktop", desktopScenario);
   });
 
+  test("the Mac's display's resolution: none from a helper from before it, set while viewed, put back by its mode's id once the last view ends and before the helper quits", async () => {
+    await both("macResolution", macResolutionScenario);
+  });
+
   test("the drive's protected folders through the helper: grants learnt, refusals, streams read and written", async () => {
     await both("files", filesScenario);
   });
@@ -2352,6 +2356,57 @@ async function desktopScenario(s: Play) {
   await s.call("d3", "open", { options: { maxWidth: 1, maxHeight: 1, codecs: ["jpeg"] } });
   await s.call("d3", "refresh", { force: true });
   await s.call("d3", "close");
+}
+
+async function macResolutionScenario(s: Play) {
+  const helper = helperWorld(s.w);
+  const modes = [{ width: 1800, height: 1169 }, { width: 1512, height: 982 }, { width: 1352, height: 878 }];
+  let now = { width: 1512, height: 982, modeID: 7 };
+  // A helper from before it first: no such op.
+  let knows = false;
+  helper.ops = (op, conn) => {
+    if (op.op !== "resolution" || !knows) return false;
+    if (op.width !== undefined) {
+      if (!modes.some((m) => m.width === op.width && m.height === op.height)) { helper.line(conn, { error: `${op.width}×${op.height} is not a mode of this display` }); return true; }
+      now = { width: op.width, height: op.height, modeID: op.modeID ?? 100 + op.width };
+      helper.status = { ...helper.status, display: { ...helper.status.display, width: op.width * 2, height: op.height * 2 } };
+    }
+    helper.line(conn, { ...now, modes });
+    return true;
+  };
+  await s.new("helper", { inst: "h", app: APP, dir: "/data/helper" });
+  await s.new("grants", { inst: "g", helper: "h" });
+  await s.new("desktop", { inst: "d", supported: true, helper: "h", grants: "g" });
+  await s.call("d", "resolution");
+  await s.call("d", "setResolution", { width: 1280, height: 800 });
+  knows = true;
+  for (const as of ["v1", "v2"]) {
+    await s.call("d", "open", { options: { maxWidth: 1280, maxHeight: 720, codecs: ["h264"] }, as });
+    await s.advance(200);
+    helper.views.at(-1)!.send(hm(1, j({ codec: "h264", width: 3024, height: 1964, encoder: "fake" })));
+    await s.settle();
+  }
+  await s.call("d", "resolution");
+  await s.call("d", "setResolution", { width: 1800.4, height: 1169 });
+  await s.call("d", "size");
+  await s.call("d", "setResolution", { width: 1352, height: 878 });
+  await s.call("d", "setResolution", { width: 1024, height: 768 });
+  // One still viewing: kept; the last one gone: put back.
+  await s.call("v1", "close");
+  await s.settle();
+  await s.call("d", "resolution");
+  helper.views[1]!.close();
+  await s.settle();
+  await s.call("d", "resolution");
+  await s.call("d", "size");
+  // Changed, and the station stops while it is viewed: put back before the helper quits.
+  await s.call("d", "open", { options: { maxWidth: 1280, maxHeight: 720, codecs: ["h264"] }, as: "v3" });
+  await s.advance(200);
+  helper.views.at(-1)!.send(hm(1, j({ codec: "h264", width: 3024, height: 1964, encoder: "fake" })));
+  await s.settle();
+  await s.call("d", "setResolution", { width: 1800, height: 1169 });
+  await s.call("d", "close");
+  await s.settle();
 }
 
 async function filesScenario(s: Play) {

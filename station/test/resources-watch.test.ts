@@ -366,3 +366,17 @@ test("which processes are the desktop app's is read off the station's thread, ea
   assert.equal(isApp(app), true);
   assert.equal(isApp("/usr/bin/node"), false);
 });
+
+test("monoid's desktop app (build.monoid.desktop) is the desktop app's too", async () => {
+  const plists: Record<string, string> = {
+    "/Applications/monoid.app/Contents/Info.plist": "<string>build.monoid.desktop</string>",
+    "/Applications/monoid beta.app/Contents/Info.plist": "<string>build.monoid.desktop.beta</string>",
+    "/Applications/still.fail.app/Contents/Info.plist": "<string>fail.still.desktop</string>",
+    "/Applications/Other.app/Contents/Info.plist": "<string>build.monoid.other</string>",
+  };
+  const isApp = appBundles(async (path) => Buffer.from(plists[path]!));
+  const apps = Object.keys(plists).map((p) => p.replace("/Info.plist", "/MacOS/x"));
+  for (const a of apps) isApp(a);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(apps.map(isApp), [true, true, true, false]);
+});

@@ -1,6 +1,7 @@
 import {
   "station/host",
   "station/jsjson",
+  "station/i18n",
   "station/memory",
   "station/jscase",
   "moonbitlang/core/buffer",

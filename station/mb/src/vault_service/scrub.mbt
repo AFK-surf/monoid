@@ -26,47 +26,14 @@ fn ascii(s : String) -> Bytes {
 }
 
 ///|
-let b64_alphabet : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-///|
-let b64url_alphabet : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-
-///|
 /// `buf.toString("base64")` (padded) or `"base64url"` (unpadded).
 fn b64_text(b : Bytes, url : Bool) -> String {
-  let a = if url { b64url_alphabet } else { b64_alphabet }
-  let out = StringBuilder()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(a.code_unit_at((v >> 18) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 12) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 6) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at(v & 63).to_int().unsafe_to_char())
-    i += 3
+  if url {
+    @codec.base64url_encode(b[:])
+  } else {
+    @codec.base64_encode(b[:])
   }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(a.code_unit_at((v >> 18) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 12) & 63).to_int().unsafe_to_char())
-    if !url {
-      out.write_string("==")
-    }
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(a.code_unit_at((v >> 18) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 12) & 63).to_int().unsafe_to_char())
-    out.write_char(a.code_unit_at((v >> 6) & 63).to_int().unsafe_to_char())
-    if !url {
-      out.write_char('=')
-    }
-  }
-  out.to_string()
 }
-
-///|
-let uri_unreserved : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
 
 ///|
 /// `encodeURIComponent(s)`; None where `s` holds a lone surrogate (where JS throws).
@@ -77,7 +44,7 @@ fn encode_uri_component(s : String) -> String? {
   let mut i = 0
   while i < n {
     let c = s.code_unit_at(i).to_int()
-    if c < 128 && uri_unreserved.find(c.unsafe_to_char().to_string()) is Some(_) {
+    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (c < 128 && "-_.!~*'()".contains_char(c.unsafe_to_char())) {
       out.write_char(c.unsafe_to_char())
       i += 1
       continue
