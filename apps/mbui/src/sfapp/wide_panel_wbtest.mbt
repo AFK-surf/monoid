@@ -37,7 +37,31 @@ test "wide: the chat's \"…\" opens under its button; agent 往来 from it open
 ///|
 test "wide: an agent's history's head as the web's: its control, 只看收发 leaving its steps out, 详情 folding" {
   new_run()
-  let src = fixture("chat")
+  let base = fixture("chat-detail")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = base.topic(name, params).get().snapshot()
+      match (name, got.value) {
+        ("history", Some(Object(h)) as v) => {
+          let marked = items(v, "items").map(fn(it) {
+            match it {
+              Object(o) if text(field(Some(it), "body"), "kind") == "group" => {
+                let o = o.copy()
+                o["work"] = Json::boolean(true)
+                Json::object(o)
+              }
+              other => other
+            }
+          })
+          let h = h.copy()
+          h["items"] = Json::array(marked)
+          { ..got, value: Some(Json::object(h)) }
+        }
+        _ => got
+      }
+    },
+  }
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   open_chat(r)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
