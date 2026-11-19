@@ -38,24 +38,30 @@ else
   tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do tree "$c"; done; echo "$1"; }
 fi
 
-# (the limit's watcher says on a pipe that its TERM is now its trap's, and the command that ended first stops it only
-# then: a TERM come before the trap was set may go unseen by its shell, the watcher left to stop the command at its
-# limit, or end it with the shell's own word of a job killed)
+# (the limit's watcher says that its TERM is now its trap's, and the command that ended first stops it only then: a
+# TERM come before the trap was set may go unseen by its shell, the watcher left to stop the command at its limit, or
+# end it with the shell's own word of a job killed. It says so on a pipe; where there is none (Git for Windows' bash,
+# whose mkfifo is not implemented), by a file, looked for every 0.05 s. Either is waited for 5 s at most, or until
+# the watcher is gone, so that one ended unready holds nothing up.)
 dir=$(mktemp -d "${TMPDIR:-/tmp}/with-timeout.XXXXXX")
 trap 'rm -rf "$dir"' EXIT
-mkfifo "$dir/ready"
-exec 4<>"$dir/ready"
+# (exec's own redirections are this shell's from then on: its error is put aside in a group, not with a 2>/dev/null of
+# the exec, which would make that this shell's stderr, and the command's)
+if mkfifo "$dir/ready" 2>/dev/null && { exec 4<>"$dir/ready"; } 2>/dev/null; then fifo=1; else fifo=0; fi
 rm -f "$dir/ready"
-"$@" 4<&- &
+ready() {
+  if [ $fifo = 1 ]; then echo >&4; exec 4<&-; else : > "$dir/ready"; fi
+}
+if [ $fifo = 1 ]; then "$@" 4<&- & else "$@" & fi
 pid=$!
 (
   # (its sleep stopped with it, and waited for, when the command ends first: nothing of this left running past the
-  # step; nothing said of it either, the shell's word of a job killed included)
-  trap 'exec 2>/dev/null; kill $s; wait $s; exit 0' TERM
-  sleep "$left" < /dev/null > /dev/null 2>&1 4<&- &
+  # step; nothing said of it either, the shell's word of a job killed included. KILL, as a TERM come between the
+  # sleep's fork and its exec is lost with the shell's trap there, the sleep left to run out)
+  trap 'exec 2>/dev/null; kill -KILL $s; wait $s; exit 0' TERM
+  sleep "$left" < /dev/null > /dev/null 2>&1 &
   s=$!
-  echo >&4
-  exec 4<&-
+  ready
   wait $s
   : > "$dir/out"
   echo "with-timeout.sh: $1 still running after ${left} s: stopped" >&2
@@ -77,7 +83,12 @@ if [ -e "$dir/out" ]; then
   wait $watch 2>/dev/null
   exit 124
 fi
-read -r _ <&4
+if [ $fifo = 1 ]; then
+  read -r -t 5 _ <&4 2>/dev/null || true
+else
+  t_end=$((SECONDS + 5))
+  while [ ! -e "$dir/ready" ] && [ $SECONDS -lt $t_end ] && kill -0 $watch 2>/dev/null; do sleep 0.05; done
+fi
 kill -TERM $watch 2>/dev/null
 wait $watch 2>/dev/null
 exit $code
