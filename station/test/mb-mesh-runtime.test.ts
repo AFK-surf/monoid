@@ -1659,6 +1659,10 @@ class FakeFront {
     b.writeUInt32BE(0xffff_fffe);
     this.streams.get(stream)!.socket.write(b);
   }
+  /// The stream's socket ended from the front's side, as the shell ends it once the stream's receiving half is over.
+  endSocket(stream: number) {
+    this.streams.get(stream)!.socket.end();
+  }
   fail(stream: number, words: string) {
     const b = Buffer.alloc(8);
     b.writeUInt32BE(0xffff_fffd);
@@ -1784,6 +1788,9 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     // (an empty frame gives nothing: what is read next is the end)
     await both("read past an empty frame, its end", () => tsStreams[0]!.read(), "read", {}, "s0");
     await both("read what failed it", () => tsStreams[1]!.read(), "read", {}, "s1");
+    // (the front's half of the first ended after its end, as the shell's is: this end's half still open, never finished)
+    tsFront.endSocket(ts0);
+    mbFront.endSocket(mb0);
     // written: in frames, a large one in pieces, then finished
     const big = Buffer.alloc((1 << 20) + 5, 3);
     for (const [bytes, name] of [[Buffer.from("hello"), "s2"], [Buffer.alloc(0), "s2"], [big, "s2"]] as const) {
@@ -1817,9 +1824,13 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     // told to close it, and 61k of them filled a station (2026-11-19)
     await within("the finished stream's socket let go", front("live", { fewerThan: live }));
     // the connection closed at the other end
+    const open = await front("live");
     tsFront.close(1);
     mbFront.close(1);
     await both("closed", () => conn.closed(), "closed", {}, "c1");
+    // (its streams' sockets let go with it, the first's too, whose read side ended before: 61k of those filled a
+    // station, 2026-11-19)
+    await within("the closed connection's sockets let go", front("live", { fewerThan: open - 1 }));
     await both("its reason", () => conn.closeReason!(), "closeReason", {}, "c1");
     await both("a stream of it after", () => conn.acceptBi(), "acceptBi", { as: "after" }, "c1");
 
