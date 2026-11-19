@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 | [1afe38ccc](https://github.com/AFK-surf/monoid/commit/1afe38ccc92c80ebf5e9211ef2dfbcd4e8b0755f) feat(storybook): add the 环境 workbench panel, state | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
 | [208fe11c0](https://github.com/AFK-surf/monoid/commit/208fe11c021a0bc57975027baf16cc3cc8aa4665) feat(mbui): line up rows by their first lines in t | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4bca0dd4c](https://github.com/AFK-surf/monoid/commit/4bca0dd4cbc38acc60fa1f8b66e437cd57468e18) fix(station/mb): add async host fs helpers and giv | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
 | [ce9309e5e](https://github.com/AFK-surf/monoid/commit/ce9309e5e70b2f36bf09404c6e43f36fb8d98f26) refactor(station/mb): eliminate remaining bare ign | 2.61 | 3.51 | 14.35 | 36.44 | 55.29 | 31.92 | 64.53 | 97.14 | 121.21 |
 | [65266f033](https://github.com/AFK-surf/monoid/commit/65266f0330d44f08f1215ae08cbb3f6893bb1853) refactor(core-ts): retire pre-7143 sidebar compat  | 2.61 | 3.51 | 14.35 | 36.43 | 55.28 | 31.92 | 64.52 | 97.19 | 115.88 |
-| [1dee65d49](https://github.com/AFK-surf/monoid/commit/1dee65d4902de50f3f044b30f395fb40b298e890) refactor(station): route all remaining MoonBit soc | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.13 | 125.05 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 53.95 |
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.23 |
 | [1afe38ccc](https://github.com/AFK-surf/monoid/commit/1afe38ccc92c80ebf5e9211ef2dfbcd4e8b0755f) feat(storybook): add the 环境 workbench panel, state | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.23 |
 | [208fe11c0](https://github.com/AFK-surf/monoid/commit/208fe11c021a0bc57975027baf16cc3cc8aa4665) feat(mbui): line up rows by their first lines in t | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.02 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4bca0dd4c](https://github.com/AFK-surf/monoid/commit/4bca0dd4cbc38acc60fa1f8b66e437cd57468e18) fix(station/mb): add async host fs helpers and giv | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
 | [ce9309e5e](https://github.com/AFK-surf/monoid/commit/ce9309e5e70b2f36bf09404c6e43f36fb8d98f26) refactor(station/mb): eliminate remaining bare ign | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
 | [65266f033](https://github.com/AFK-surf/monoid/commit/65266f0330d44f08f1215ae08cbb3f6893bb1853) refactor(core-ts): retire pre-7143 sidebar compat  | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
-| [1dee65d49](https://github.com/AFK-surf/monoid/commit/1dee65d4902de50f3f044b30f395fb40b298e890) refactor(station): route all remaining MoonBit soc | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
