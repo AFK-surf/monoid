@@ -119,6 +119,20 @@ test("delta-fast.c with the old files found whole (sparse) and with too few foun
   }
 });
 
+test("delta-fast.c takes runs that overlap, as sameBlocks makes them where a block followed back reaches a run before it", { skip }, () => {
+  const rand = prng(10321);
+  const r1 = random(rand, 2048), z = random(rand, 2048);
+  // (made's Z is found at old's 2560 and followed back over R1's last 512 bytes, which old has before it too)
+  const old = Buffer.concat([r1, r1.subarray(1536), z]), made = Buffer.concat([r1, z, random(rand, 300)]);
+  const runs = sameBlocks(old, made, []);
+  assert.ok(runs.some((r, i) => i > 0 && runs[i - 1]!.made + runs[i - 1]!.len > r.made), `overlapping runs: ${JSON.stringify(runs)}`);
+  const parts = blobOf([r1, r1.subarray(1536), z]);
+  const c = inC(() => makeDelta(old, made, [], [], [], parts.ranges));
+  const js = inJs(() => makeDelta(old, made, [], [], [], parts.ranges));
+  gives(c, old, made);
+  assert.ok(records(c).equals(records(js)), "the same records");
+});
+
 test("a folder's and an apk's delta made by delta-fast.c give the package back", { skip }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "delta-fast-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

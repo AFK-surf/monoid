@@ -3,7 +3,8 @@
 // delta.ts compiles it once (ensureNativeDelta) and hands it the old and made bytes and the runs it found, falling
 // back to its own search where there is no C compiler or zlib.
 //   delta-fast OLD MADE RUNS OUT
-// RUNS: the runs found (wholeFiles, sameBlocks), sorted by made, not overlapping, 12 bytes each, little-endian
+// RUNS: the runs found (wholeFiles, sameBlocks), in delta.ts's order (by made, but for a block sameBlocks followed back
+// over a run found before it, which the search takes as delta.ts's does), 12 bytes each, little-endian
 // { u32 made; u32 old; u32 len }; empty: none (the whole old blob sorted). OUT: the delta's chunks
 // { u32 raw_len; u32 packed_len; raw deflate }, without the header or the end chunk.
 #define _POSIX_C_SOURCE 200809L
@@ -247,8 +248,20 @@ static int64_t matchlen(const Search *S, int64_t o, int64_t s) {
   return i;
 }
 
+static uint64_t be64(const uint8_t *p) {
+  uint64_t v = 0;
+  for (int i = 0; i < 8; i++) v = v << 8 | p[i];
+  return v;
+}
+
+// (the first 8 bytes compared here: most searches end in them, and a call to memcmp for each step was half of the
+// whole search's time)
 static int below(const Search *S, int64_t o, int64_t s) {
   int64_t n = S->oldsize - o < S->newsize - s ? S->oldsize - o : S->newsize - s;
+  if (n >= 8) {
+    uint64_t x = be64(S->old + o), y = be64(S->made + s);
+    if (x != y) return x < y;
+  }
   return n > 0 && memcmp(S->old + o, S->made + s, (size_t)n) < 0;
 }
 
@@ -268,6 +281,11 @@ static int64_t search(Search *S, int64_t scan, int64_t *pos) {
   }
   while (en - st >= 2) {
     int64_t x = st + ((en - st) >> 1);
+#if defined(__GNUC__)
+    // (either half's middle asked for while this one is compared: each step is a miss of the cache)
+    __builtin_prefetch(&S->I[st + ((x - st) >> 1)]);
+    __builtin_prefetch(&S->I[x + ((en - x) >> 1)]);
+#endif
     if (below(S, S->I[x], scan)) st = x; else en = x;
   }
   int64_t x = matchlen(S, S->I[st], scan), y = matchlen(S, S->I[en], scan);
@@ -343,7 +361,6 @@ int main(int argc, char **argv) {
     for (int j = 0; j < 3; j++) v[j] = (uint32_t)b[j * 4] | (uint32_t)b[j * 4 + 1] << 8 | (uint32_t)b[j * 4 + 2] << 16 | (uint32_t)b[j * 4 + 3] << 24;
     runs[i] = (Run){ v[0], v[1], v[2] };
     if (runs[i].old + runs[i].len > (int64_t)old.n || runs[i].made + runs[i].len > (int64_t)made.n ||
-        (i > 0 && runs[i - 1].made + runs[i - 1].len > runs[i].made) ||
         memcmp(old.p + runs[i].old, made.p + runs[i].made, (size_t)runs[i].len) != 0) {
       errno = 0;
       die("a run is out of place or not the old bytes it says");
