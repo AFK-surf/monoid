@@ -84,7 +84,8 @@ test "a new chat made as nodes: its preset's control opens the presets to pick" 
   let t = nodes_new_chat("newchat")
   press(t, "预设")
   t.run_for(@ui.move_most_ms)
-  assert_true(shows(t, "不用预设") && shows(t, "新预设"), msg=runs(t))
+  assert_false(shows(t, "不用预设"), msg=runs(t))
+  assert_true(shows(t, "still.fail 开发") && shows(t, "新预设"), msg=runs(t))
 }
 
 ///|

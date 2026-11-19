@@ -3688,8 +3688,8 @@ pub fn Tester::leave(self : Tester) -> Unit {
 ///|
 /// A wheel at (x, y) as the host sends it: `phase` 0 a trackpad's (or a host that does not say), 4 a mouse wheel's
 /// notch (eased in over the next frames). One frame drawn, not settled.
-pub fn Tester::wheel_phase(self : Tester, x : Double, y : Double, dy : Double, phase : Int) -> Unit {
-  finger_wheel(x, y, 0.0, dy, phase)
+pub fn Tester::wheel_phase(self : Tester, x : Double, y : Double, dy : Double, phase : Int, dx? : Double = 0.0) -> Unit {
+  finger_wheel(x, y, dx, dy, phase)
   self.drawn_now()
 }
 

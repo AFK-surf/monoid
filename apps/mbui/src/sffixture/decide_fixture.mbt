@@ -32,7 +32,7 @@
 pub fn decide_mode(mode : String) -> Bool {
   [
     "history", "history-reading", "history-failed", "history-older", "history-older-failed", "history-details",
-    "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
+    "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-agent-context", "chat-agent-compacted", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
     "chat-letters-info", "chat-letters", "chat-letters-many", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-jobs-pop",
     "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls", "chat-info-bare",
     "chat-jobs-side", "chat-history-side", "chat-history-side-working", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
@@ -365,7 +365,7 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
       }
       let base = fixture_chat_topic(f, name, params)
       let base = if f.mode.has_prefix("chat-letters") { base.map(fix_with_letters) } else { base }
-      if session == "s-c1" && f.mode == "chat-agent-unsaid" {
+      if session == "s-c1" && (f.mode == "chat-agent-unsaid" || f.mode.has_prefix("chat-agent-c")) {
         Some(base.map(fn(b) { fix_context_actions(fix_detailed_chat(b)) }))
       } else if session == "s-c1" && (f.mode == "chat-station-tag" || f.mode == "chat-actions") {
         // no agent in it yet: its station's tag in its bar (pressed by the film's step: its card beside it)
@@ -420,6 +420,23 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
         j => Some(Some(j))
       }
     "history" => Some(Some(fix_history()))
+    // (its context's tile opening what can be done to it, 31% full; compacted 3 times by its runtime session, or never)
+    "agentCard" if f.mode == "chat-agent-context" || f.mode == "chat-agent-compacted" => {
+      let context : Map[String, Json] = { "percent": 31, "text": "62K / 200K", "level": "ok" }
+      if f.mode == "chat-agent-compacted" {
+        context["compacted"] = Json::string("当前会话已压缩 3 次")
+      }
+      Some(
+        Some({
+          "work": "共工作 1 小时 12 分",
+          "cost": "$4.20",
+          "cache": { "percent": 91, "text": "91%", "level": "ok" },
+          "context": Json::object(context),
+          "latest": [{ "key": "k1", "text": "读了 src/ui/list.mbt" }, { "key": "k2", "text": "跑了列表的测试" }],
+          "attention": [],
+        }),
+      )
+    }
     "agentCard" if f.mode == "chat-agent-unsaid" =>
       Some(
         Some({

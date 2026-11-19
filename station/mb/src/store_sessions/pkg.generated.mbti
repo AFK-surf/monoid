@@ -144,6 +144,7 @@ pub fn Store::model_stars(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::models_used_by(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
 pub fn Store::next_archived_at(Self, @json.Json) -> @json.Json raise
 pub fn Store::not_gone(Self, Array[String], @json.Json) -> Array[String] raise
+pub fn Store::note_compacted(Self, String) -> Unit raise
 pub fn Store::note_remote_run(Self, @json.Json, @json.Json, Double) -> Unit raise
 pub fn Store::notify(Self, String) -> Unit
 pub fn Store::now(Self) -> Int64

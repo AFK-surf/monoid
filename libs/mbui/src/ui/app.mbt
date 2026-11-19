@@ -2050,10 +2050,12 @@ fn wheel_routed(x : Double, y : Double, dx : Double, dy : Double, phase : Int, f
     old_wheel(x, y, dx, dy, phase, for_back~, island=Some(island))
     true
   }
-  // (a wheel's notch said so to the tree's: a page's list of it eases it in, as an old view's list does)
+  // (a wheel's notch said so to the tree's: a page's list of it eases it in, as an old view's list does; momentum
+  // coasting after fingers lift said so as well)
   let notch = if phase % 16 == 4 { @view.wheel_notch } else { 0 }
+  let momentum = if phase % 16 == 3 { @view.wheel_momentum } else { 0 }
   wheel_old_target.val = 0
-  if view_wheel(x, y, dx, dy, mods | notch, old~) {
+  if view_wheel(x, y, dx, dy, mods | notch | momentum, old~) {
     if !old_took.val {
       wheel_went.val = 1
       input_taped("wheel", h_event_time(), [x, y, dx, dy, phase.to_double()])

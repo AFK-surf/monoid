@@ -2194,6 +2194,11 @@ pub fn fixture(mode : String) -> Source {
   board_prefs_seed(mode)
   paged_rows.clear()
   fixture_preview(mode)
+  if mode == "newchat-preset-many" {
+    new_fix.presets.clear()
+    new_fix.presets.push_iter(fix_preset_many().iter())
+    new_fix.preset = "p-arch"
+  }
   let f = made_fixture(mode)
   if f.mode == "drive-motion" {
     // the folder changing on its own: a note made at 2 s, 发布清单.md taken out at 3.6 s (rows_view's rows coming and

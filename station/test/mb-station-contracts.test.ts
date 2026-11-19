@@ -551,3 +551,24 @@ test("every name a slice asks of another on the bus is one that slice answers", 
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
+
+/// Bare `hub.act(...)` calls in `station_main` bypass `Hub::command` / `Hub::notify` cold-session wakeup.
+/// Zero bare `hub.act(` calls are permitted anywhere in `station_main`.
+test("station_main has no bare hub.act() calls bypassing cold-session wakeup", () => {
+  const unexpected: string[] = [];
+  for (const f of programFiles()) {
+    const rel = relative(station, f);
+    const text = read(f);
+    for (const m of text.matchAll(/\.act\(/g)) {
+      const lineStart = text.lastIndexOf("\n", m.index!) + 1;
+      const lineEnd = text.indexOf("\n", m.index!);
+      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      if (/^\s*\/\//.test(line) || /\bhold\.act\(/.test(line)) continue;
+      const args = argsAt(text, m.index! + m[0].length);
+      const method = /^\s*"([^"]+)"\s*$/.exec(args[1] ?? "")?.[1] ?? "<dynamic>";
+      const lineNo = text.slice(0, m.index!).split("\n").length;
+      unexpected.push(`${rel}:${lineNo} calls .act(..., "${method}") directly`);
+    }
+  }
+  assert.deepEqual(unexpected, [], unexpected.join("\n"));
+});

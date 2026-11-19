@@ -105,6 +105,78 @@ function shownOverview(raw: J, profiles: J): J {
   return overview;
 }
 
+/// A preset's concise summary, model mark, and first folder metadata for the preset picker rows.
+export function presetMeta(
+  p: J,
+  stationNames: ReadonlyMap<string, string>,
+): { summary?: string; maker?: J; runtime?: string; dirName?: string; dirRepo?: string } {
+  const parts: string[] = [];
+  const pm = get(p, "model");
+  const modelId = isObject(pm) ? text(get(pm, "model")) : null;
+  if (modelId !== null) {
+    const mParts = [model.name(modelId)];
+    const effort = text(get(pm, "effort"));
+    if (effort !== null) mParts.push(format.effortLabel(effort));
+    const speed = modelSpeed(get(pm, "speed"));
+    if (speed === "ultrafast") mParts.push("Ultrafast");
+    else if (speed === "fast" || get(pm, "fast") === true) mParts.push("Fast");
+    parts.push(mParts.join(" "));
+  }
+  const dirBasename = (path: string): string => path.split("/").filter((x) => x !== "").pop() ?? path;
+  const dirs = arr(get(p, "dirs"));
+  if (dirs.length > 0) {
+    const firstTwo = dirs.slice(0, 2).map((d) => dirBasename(text(get(d, "path")) ?? "")).filter((x) => x !== "");
+    if (firstTwo.length > 0) {
+      parts.push(dirs.length > 2 ? `${firstTwo.join(", ")} +${dirs.length - 2}` : firstTwo.join(", "));
+    }
+  }
+  const singleStation = text(get(p, "station"));
+  const subStations = arr(get(p, "stations")).filter((x): x is string => typeof x === "string" && x !== "");
+  const nameOfStation = (s: string): string => {
+    const sid = stationId(s);
+    const found = stationNames.get(s) || stationNames.get(sid);
+    return found !== undefined && found !== "" ? found : sid;
+  };
+  if (get(p, "autoStation") === true) {
+    parts.push(t("web-main.preset.autoStation"));
+  } else if (singleStation !== null) {
+    parts.push(nameOfStation(singleStation));
+  } else if (subStations.length === 1) {
+    parts.push(nameOfStation(subStations[0]!));
+  } else if (subStations.length > 1) {
+    parts.push(t("web-main.preset.stationsCount", { n: subStations.length }));
+  }
+  const instr = get(p, "instructions");
+  if (typeof instr === "string" && instr.trim() !== "") {
+    parts.push(t("web-main.preset.hasInstructions"));
+  }
+  const summary = parts.join(" · ");
+  const maker = modelId !== null ? present.maker(modelId) : undefined;
+  const runtime = modelId !== null ? (text(get(pm, "runtime")) ?? undefined) : undefined;
+  const firstDir = dirs[0];
+  const dirName = firstDir !== undefined ? (dirBasename(text(get(firstDir, "path")) ?? "") || undefined) : undefined;
+  const dirRepo = firstDir !== undefined ? (text(get(firstDir, "repo")) ?? undefined) : undefined;
+  return {
+    ...(summary !== "" ? { summary } : {}),
+    ...(maker != null ? { maker } : {}),
+    ...(runtime !== undefined ? { runtime } : {}),
+    ...(dirName !== undefined ? { dirName } : {}),
+    ...(dirRepo !== undefined ? { dirRepo } : {}),
+  };
+}
+
+/// Local preset usage history (`ws:<scope>:presetUsage`), bounded to 50 entries ordered by recency.
+export function recordPresetUsage(history: J[], id: string, weight: number, now: number): { id: string; count: number; last: number }[] {
+  const found = history.find((v) => get(v, "id") === id);
+  const count = (typeof get(found, "count") === "number" ? found.count : 0) + weight;
+  const out = history
+    .filter((v) => typeof get(v, "id") === "string" && v.id !== "" && v.id !== id)
+    .map((v) => ({ id: v.id as string, count: typeof v.count === "number" ? v.count : 0, last: typeof v.last === "number" ? v.last : 0 }));
+  out.push({ id, count, last: now });
+  out.sort((a, b) => b.last - a.last);
+  return out.slice(0, 50);
+}
+
 /// What preset `p` binds a new chat to (the user, 2026-11-13: what a preset names, its chats run with, and the page does
 /// not change it; to run otherwise is to edit the preset or open the chat with none): the model's configuration it
 /// names (null: any), and the ids of the stations its chats may start on (null: any up, `autoStation` too).
@@ -656,7 +728,25 @@ export class Choose implements Owner {
     // station it was made on): as the device holds them (views/presets.ts), whatever station is up, and those a station
     // from before up now lists that they made; others' only at a press (`otherPresets`). The one picked, theirs or
     // someone else's, whichever station it is of.
-    view.presets = this.#ownPresets(scope, online).map(({ p, station: at, stationName }) => ({ id: text(get(p, "id")) ?? "", name: text(get(p, "name")) ?? "", station: at, stationName }));
+    const stationNames = new Map<string, string>();
+    for (const s of this.#listed(scope)) {
+      const sName = typeof s.name === "string" ? s.name : "";
+      if (typeof s.station === "string" && s.station !== "") stationNames.set(s.station, sName);
+      if (typeof s.id === "string" && s.id !== "") stationNames.set(s.id, sName);
+    }
+    const usage = this.#presetUsage(scope);
+    view.presets = this.#ownPresets(scope, online, usage).map(({ p, station: at, stationName }) => {
+      const pid = text(get(p, "id")) ?? "";
+      const used = (usage.get(pid)?.count ?? 0) > 0;
+      return {
+        id: pid,
+        name: text(get(p, "name")) ?? "",
+        station: at,
+        stationName,
+        ...presetMeta(p, stationNames),
+        ...(used ? { used: true } : {}),
+      };
+    });
     const picked = this.#pickedOne(scope);
     view.preset = picked === undefined ? "" : (text(get(picked.p, "id")) ?? "");
     view.presetStation = picked?.station ?? "";
@@ -790,14 +880,42 @@ export class Choose implements Owner {
     return arr(get(this.#env.store.get({ topic: "presets", station: address }), "presets"));
   }
 
-  /// The person's own presets in `scope` as the new chat's page lists them: the device's live records by when each was
-  /// made, then those a station from before up now (`online`) lists that they made (their email) and the device holds
-  /// nothing of; each with the station it was made on (its address and name).
-  #ownPresets(scope: string, online: J[]): { p: J; station: string; stationName: string }[] {
+  /// Local usage records for presets in `scope`, keyed by preset id.
+  #presetUsage(scope: string): Map<string, { count: number; last: number }> {
+    const map = new Map<string, { count: number; last: number }>();
+    for (const entry of arr(this.#record(`ws:${scope}:presetUsage`))) {
+      const id = text(get(entry, "id"));
+      const count = typeof get(entry, "count") === "number" ? entry.count : 0;
+      const last = typeof get(entry, "last") === "number" ? entry.last : 0;
+      if (id !== null && count > 0) map.set(id, { count, last });
+    }
+    return map;
+  }
+
+  /// Record usage of preset `id` in `scope` with `weight`.
+  #recordPresetUsage(scope: string, id: string, weight: number): void {
+    const key = `ws:${scope}:presetUsage`;
+    this.#env.data.put(TABLE, key, recordPresetUsage(arr(this.#record(key)), id, weight, this.#env.now()), false);
+  }
+
+  /// The person's own presets in `scope` as the new chat's page lists them: the device's live records (frequently/recently
+  /// used first, otherwise by when each was made), then those a station from before up now (`online`) lists that they made
+  /// (their email) and the device holds nothing of; each with the station it was made on (its address and name).
+  #ownPresets(scope: string, online: J[], usage: Map<string, { count: number; last: number }> = this.#presetUsage(scope)): { p: J; station: string; stationName: string }[] {
     const held = heldOf(this.#env.data, scope);
     const names = new Map(this.#listed(scope).map((s) => [typeof s.station === "string" ? s.station : "", typeof s.name === "string" ? s.name : ""]));
     const live = Object.values(held.records).filter((r): r is PresetRecord => !isGone(r));
-    live.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
+    live.sort((a, b) => {
+      const ua = usage.get(a.id);
+      const ub = usage.get(b.id);
+      if (ua !== undefined && ub === undefined) return -1;
+      if (ua === undefined && ub !== undefined) return 1;
+      if (ua !== undefined && ub !== undefined) {
+        if (ub.count !== ua.count) return ub.count - ua.count;
+        if (ub.last !== ua.last) return ub.last - ua.last;
+      }
+      return a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
+    });
     const out = live.map((r) => ({ p: r as J, station: `${scope}/${r.home}`, stationName: names.get(`${scope}/${r.home}`) ?? "" }));
     const email = (this.#env.who?.(scope)?.email ?? "").toLowerCase();
     if (email === "" || held.before.length === 0) return out;
@@ -882,11 +1000,15 @@ export class Choose implements Owner {
     // the preset, whichever station it is of (`presetStation`, its address; "" for none)
     const preset = get(params, "preset");
     if (typeof preset === "string") {
+      const prevPreset = text(get(this.#record(`ws:${scope}:preset`), "id")) ?? "";
       const presetStation = text(get(params, "presetStation")) ?? "";
       // (someone else's: kept with its content as read now, so that the page and what it binds hold with its station
       // away; read again, it is kept as read then: views/presets.ts)
       const other = preset !== "" && heldOf(this.#env.data, scope).records[preset] === undefined ? this.#env.othersFound?.(scope, preset) : undefined;
       this.#env.data.put(TABLE, `ws:${scope}:preset`, { id: preset, station: presetStation, ...(other !== undefined ? { record: other } : {}) }, false);
+      if (preset !== "" && preset !== prevPreset) {
+        this.#recordPresetUsage(scope, preset, 1);
+      }
       if (preset !== "" && station === null && !FIELDS.some((f) => get(params, f) !== undefined)) {
         const found = this.#online(scope);
         const online = Array.isArray(found) ? found[0] : [];
@@ -1088,6 +1210,8 @@ export class Choose implements Owner {
     if (acceptedKey !== undefined && (acceptedKey === "" || this.#next.get(scope)?.key === acceptedKey)) this.#next.delete(scope);
     const key = `ws:${scope}:frequent`;
     this.#env.data.put(TABLE, key, recordCombo(arr(this.#record(key)), choice, this.#env.now()), false);
+    const activePreset = text(get(this.#pickedOne(scope)?.p, "id"));
+    if (activePreset !== null) this.#recordPresetUsage(scope, activePreset, 2);
     this.#keepUsual(ofAddress(station), choice);
     this.#changed();
   }

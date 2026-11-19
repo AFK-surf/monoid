@@ -1187,6 +1187,11 @@ export class Store {
     this.#updateSession(key, "UPDATE sessions SET context_before = ?1 WHERE key = ?2", before, key);
   }
 
+  /// Its runtime session compacted its context once more (on its own or by hand).
+  noteCompacted(key: string): void {
+    this.#updateSession(key, "UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1", key);
+  }
+
   /// Whether it goes on afresh once its prompt cache is over (null: as the station is set).
   setSessionAfresh(key: string, afresh: boolean | null): void {
     this.#updateSession(key, "UPDATE sessions SET afresh = ?1 WHERE key = ?2", optFlag(afresh), key);
@@ -1215,10 +1220,10 @@ export class Store {
   }
 
   /// null: none now (its context cleared by hand); those it ran in stay in `runtime_sessions`. Where its context stands
-  /// changes with it (read/usage.ts `usageNow`).
+  /// changes with it (read/usage.ts `usageNow`), and how often it compacted counts afresh with another.
   setRuntimeSessionId(key: string, id: string | null): void {
     this.#with((changes) => {
-      this.#run("UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", id, key);
+      this.#run("UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2", id, key);
       changes.push({ type: "session", key }, { type: "conversation", key });
     });
   }

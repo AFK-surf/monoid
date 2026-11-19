@@ -130,6 +130,7 @@ export const HISTORY_SHAPES: Record<string, Shape> = {
     ["text", "String"],
     ["level", "Level"],
     ["unknown", opt("bool"), { doc: "Its whole is not known (a context whose window the runtime does not tell): `text` alone." }],
+    ["compacted", opt("String"), { doc: "A context's: how often its runtime session compacted it (当前会话已压缩 3 次), said in the panel its tile opens; absent where never yet." }],
   ]),
   AgentCardNote: struct([
     ["text", "String", { said: true }],

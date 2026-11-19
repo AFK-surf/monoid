@@ -25,6 +25,9 @@ pub async fn Accounts::decision_models(self : Accounts) -> JV {
       None | Some(Null) => continue
       Some(c) => c
     }
+    if capability.get("state") != Some(Str("ready")) {
+      continue
+    }
     let candidates = jitems(capability.get("models")).copy()
     match capability.get("model") {
       Some(m) if is_truthy(Some(m)) => candidates.push(m)

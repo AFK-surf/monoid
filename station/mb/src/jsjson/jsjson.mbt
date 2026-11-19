@@ -191,7 +191,13 @@ fn Parser::number(self : Parser) -> Double raise SyntaxError {
 }
 
 ///|
-fn Parser::value(self : Parser) -> JValue raise SyntaxError {
+let max_parse_depth : Int = 1024
+
+///|
+fn Parser::value(self : Parser, depth : Int) -> JValue raise SyntaxError {
+  if depth > max_parse_depth {
+    raise SyntaxError("maximum nesting depth exceeded at \{self.at}")
+  }
   self.skip()
   match self.peek() {
     0x7b => {
@@ -207,7 +213,7 @@ fn Parser::value(self : Parser) -> JValue raise SyntaxError {
         let key = self.string()
         self.skip()
         self.expect(":")
-        let v = self.value()
+        let v = self.value(depth + 1)
         match entries.search_by(e => e.0 == key) {
           Some(i) => entries[i] = (key, v)
           None => entries.push((key, v))
@@ -231,7 +237,7 @@ fn Parser::value(self : Parser) -> JValue raise SyntaxError {
         return Arr(items)
       }
       while true {
-        items.push(self.value())
+        items.push(self.value(depth + 1))
         self.skip()
         if self.peek() == 0x2c {
           self.at += 1
@@ -263,7 +269,7 @@ fn Parser::value(self : Parser) -> JValue raise SyntaxError {
 /// `text` as JSON.parse reads it.
 pub fn parse(text : String) -> JValue raise SyntaxError {
   let p = { text, at: 0 }
-  let v = p.value()
+  let v = p.value(0)
   p.skip()
   if p.at != text.length() {
     raise p.fail()

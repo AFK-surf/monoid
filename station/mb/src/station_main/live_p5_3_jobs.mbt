@@ -848,9 +848,41 @@ fn P53Jobs::watch_ready(self : P53Jobs, id : String, pgid : Int, port : Int) -> 
 }
 
 ///|
+let p53_pressure_ttl_ms : Int64 = 2_000L
+
+///|
+let p53_pressure_cache : Ref[(Int64, String?)?] = Ref(None)
+
+///|
+let p53_pressure_inflight : Ref[@effect.Deferred[String?]?] = Ref(None)
+
+///|
 /// The memory's pressure as the system says it (platform `memoryPressure`): macOS's level, Linux's /proc/meminfo
-/// (pressureOfAvailable).
+/// (pressureOfAvailable). Cached for 2 s with single-flight coalescing so concurrent overview viewers share one sysctl.
 async fn p53_pressure(host : @host.Host) -> String? {
+  let now = @host.now()
+  match p53_pressure_cache.val {
+    Some((at, value)) if now - at < p53_pressure_ttl_ms => return value
+    _ => ()
+  }
+  match p53_pressure_inflight.val {
+    Some(d) => return d.wait()
+    None => ()
+  }
+  let d : @effect.Deferred[String?] = @effect.Deferred::new()
+  p53_pressure_inflight.val = Some(d)
+  let mut result : String? = None
+  defer {
+    p53_pressure_inflight.val = None
+    ignore(d.succeed(result))
+  }
+  result = p53_pressure_read(host)
+  p53_pressure_cache.val = Some((@host.now(), result))
+  result
+}
+
+///|
+async fn p53_pressure_read(host : @host.Host) -> String? {
   let of_available = (available : Double, total : Double) => {
     if !(total > 0.0) || available < 0.0 || available > total {
       return None

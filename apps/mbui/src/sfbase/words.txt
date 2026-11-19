@@ -2866,6 +2866,15 @@ web-main.preset.others
 web-main.preset.othersNone
 web-main.preset.copyNamed
 web-main.preset.copyFailed
+web-main.preset.searchPresets
+web-main.preset.noMatch
+web-main.preset.empty
+web-main.preset.emptyHint
+web-main.preset.autoStation
+web-main.preset.stationsCount
+web-main.preset.hasInstructions
+web-main.preset.editItem
+web-main.preset.copyItem
 web-pages.screen.debug.app
 web-pages.screen.device.back
 web-pages.screen.debug.paneHide

@@ -681,8 +681,7 @@ fn Accounts::codex_account(self : Accounts, profile : Profile) -> String? {
 }
 
 ///|
-/// `codexAccountRead`: `again`: its login just changed, so a read after any under way, kept last. A read under way of
-/// another home (the profile's home changed) is not this one's: a read after it too.
+/// `codexAccountRead`: `again`: its login just changed, so a read after any under way, kept last.
 async fn Accounts::codex_account_read(
   self : Accounts,
   profile : Profile,
@@ -690,7 +689,7 @@ async fn Accounts::codex_account_read(
 ) -> Unit {
   let under = self.codex_account_reads.get(profile.id)
   match under {
-    Some((home, u)) if home == profile.home && !again => {
+    Some((u_home, u)) if !again && u_home == profile.home => {
       u.wait()
       return
     }

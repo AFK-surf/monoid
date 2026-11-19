@@ -350,7 +350,7 @@ test("others' presets are read at a press; someone else's picked survives its st
   assert.deepEqual(others().presets, [], "nothing read before the press");
   d.views.start({ topic: "otherPresets", scope: WS });
   await d.settle();
-  assert.deepEqual(others(), { reading: false, presets: [{ id: theirs.id, name: "Bo's review", whose: "Bo", station: a.address, stationName: "A" }] });
+  assert.deepEqual(others(), { reading: false, presets: [{ id: theirs.id, name: "Bo's review", whose: "Bo", station: a.address, stationName: "A", summary: "app · 含指令", dirName: "app" }] });
 
   // Picked for the new chat's page: kept with its content, so that it and what opens a chat hold with a away.
   const choose = new Choose({ store: d.inner.store, data: d.inner.data, now: () => clock.now, agent: () => null, who: (s) => whoIn(d.inner, s), othersFound: (s, id) => d.views.othersFound(s, id) });

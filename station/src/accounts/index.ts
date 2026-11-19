@@ -445,10 +445,9 @@ export class Accounts {
   }
 
   /// `again`: its login just changed, so one read under way may have read the file before: a read after it, kept last.
-  /// A read under way of another home (the profile's home changed) is not this one's: a read after it, kept last.
   private codexAccountRead(profile: Profile, again = false): Promise<void> {
     const under = this.codexAccountReads.get(profile.id);
-    if (under && under.home === profile.home && !again) return under.read;
+    if (under && !again && under.home === profile.home) return under.read;
     const read: Promise<void> = (under?.read ?? Promise.resolve())
       .catch(() => {})
       .then(() => codexAccountIdentity(profile.home))

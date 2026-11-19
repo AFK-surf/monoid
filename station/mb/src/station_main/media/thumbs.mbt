@@ -163,12 +163,123 @@ fn oriented(img : Image, o : Int) -> Image {
 }
 
 ///|
+/// Maximum decoded pixel count (64M pixels = 256 MiB RGBA) to prevent OOM and 32-bit Int overflow.
+let max_decode_pixels : Int64 = 67108864L
+
+///|
+/// Structural and CRC validation of a PNG stream before handing it to `@pixels.decode_png`.
+fn valid_png(b : Bytes) -> Bool {
+  if b.length() < 33 || b[0] != b'\x89' || b[1] != b'P' || b[2] != b'N' || b[3] != b'G' || b[4] != b'\x0D' || b[5] != b'\x0A' || b[6] != b'\x1A' || b[7] != b'\x0A' {
+    return false
+  }
+  let mut i = 8
+  let mut seen_ihdr = false
+  let mut seen_iend = false
+  while i + 12 <= b.length() {
+    let len = be32(b, i)
+    if len < 0 || len > b.length() - i - 12 {
+      return false
+    }
+    let data = i + 8
+    let crc_expected = be32(b, data + len)
+    let crc_actual = @zip.crc32(b[i + 4:data + len].to_owned()).reinterpret_as_int()
+    if crc_actual != crc_expected {
+      return false
+    }
+    if starts(b, i + 4, "IHDR") {
+      if len != 13 {
+        return false
+      }
+      let w = be32(b, data)
+      let h = be32(b, data + 4)
+      let depth = b[data + 8].to_int()
+      let ctype = b[data + 9].to_int()
+      let comp = b[data + 10].to_int()
+      let filt = b[data + 11].to_int()
+      let interlace = b[data + 12].to_int()
+      if w <= 0 || h <= 0 || w > 16384 || h > 16384 || w.to_int64() * h.to_int64() > max_decode_pixels {
+        return false
+      }
+      let depth_ok = match ctype {
+        0 => depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16
+        2 | 4 | 6 => depth == 8 || depth == 16
+        3 => depth == 1 || depth == 2 || depth == 4 || depth == 8
+        _ => false
+      }
+      if !depth_ok || comp != 0 || filt != 0 || (interlace != 0 && interlace != 1) {
+        return false
+      }
+      seen_ihdr = true
+    } else if starts(b, i + 4, "IEND") {
+      if len != 0 {
+        return false
+      }
+      seen_iend = true
+      break
+    }
+    i = data + len + 4
+  }
+  seen_ihdr && seen_iend
+}
+
+///|
+/// Structural and dimension validation of a JPEG stream before handing it to `@pixels.decode_jpeg`.
+fn valid_jpeg(b : Bytes) -> Bool {
+  if b.length() < 4 || b[0] != b'\xFF' || b[1] != b'\xD8' {
+    return false
+  }
+  let mut i = 2
+  let mut seen_sof = false
+  while i + 2 <= b.length() {
+    if b[i] != b'\xFF' {
+      return false
+    }
+    while i < b.length() && b[i] == b'\xFF' {
+      i += 1
+    }
+    if i >= b.length() {
+      return false
+    }
+    let m = b[i].to_int()
+    i += 1
+    if m == 0xD9 {
+      break
+    }
+    if m == 0xD8 || (m >= 0xD0 && m <= 0xD7) || m == 0x01 {
+      continue
+    }
+    if i + 2 > b.length() {
+      return false
+    }
+    let len = be16(b, i)
+    if len < 2 || i + len > b.length() {
+      return false
+    }
+    if m == 0xC0 || m == 0xC1 || m == 0xC2 {
+      if len < 8 {
+        return false
+      }
+      let h = be16(b, i + 3)
+      let w = be16(b, i + 5)
+      if w <= 0 || h <= 0 || w > 16384 || h > 16384 || w.to_int64() * h.to_int64() > max_decode_pixels {
+        return false
+      }
+      seen_sof = true
+    } else if m == 0xDA {
+      break
+    }
+    i += len
+  }
+  seen_sof
+}
+
+///|
 /// The image as it is seen (turned as its camera says), None where it is not one of PNG, JPEG or WebP this reads.
 pub fn decode_image(b : Bytes) -> Image? {
   let decoded = if starts(b, 0, "\u{89}PNG") {
-    @pixels.decode_png(b)
+    if valid_png(b) { @pixels.decode_png(b) } else { None }
   } else if b.length() > 2 && b[0] == b'\xFF' && b[1] == b'\xD8' {
-    @pixels.decode_jpeg(b)
+    if valid_jpeg(b) { @pixels.decode_jpeg(b) } else { None }
   } else if starts(b, 0, "RIFF") && starts(b, 8, "WEBP") {
     @pixels.decode_webp(b)
   } else {

@@ -100,6 +100,8 @@ export type SessionStore = {
   setRunning(key: string, running: boolean): void;
   setSessionContextBefore(key: string, before: number | null): void;
   setRuntimeSessionId(key: string, id: string | null): void;
+  /// Its runtime session compacted its context once more (optional: a store from before counts none).
+  noteCompacted?(key: string): void;
   /// The runtime sessions it ran in, the first first (optional: none known without it).
   runtimeSessions?(key: string): string[];
   runtimeSessionSources?(key: string): { id: string; runtime: string; profile: string | null }[];

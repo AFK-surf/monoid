@@ -80,6 +80,7 @@ pub let schema : String =
   $|  afresh INTEGER,
   $|  context INTEGER,
   $|  context_before INTEGER,
+  $|  compactions INTEGER,
   $|  runtime_session_id TEXT,
   $|  workspace TEXT NOT NULL,
   $|  token TEXT NOT NULL UNIQUE,
@@ -644,6 +645,7 @@ fn add_archive_columns(db : @sql.Db) -> Unit raise {
     ("context", "INTEGER"),
     ("context_before", "INTEGER"),
     ("profiles", "TEXT"),
+    ("compactions", "INTEGER"),
   ] {
     let (name, kind) = column
     if !has(db, "sessions", name) {
