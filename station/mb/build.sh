@@ -38,7 +38,23 @@ shell_lib=${SHELL_LIB:-$(node "$ROOT/scripts/native.ts" path $part $target)/libs
 work="$D/_build/link-$target-$$"
 rm -rf "$work"
 mkdir -p "$work/runtime" "$work/obj" "$D/_build" "$(dirname "$out")"
-trap 'rm -rf "$work"' EXIT
+# On GitHub's hosted macOS runner (3 cores, cold store), a branch's reader compiles at -O0 (~30 s) within the
+# job's 5 minutes; main and self-hosted runners stay -O2. STATION_READER_OPT says it otherwise.
+opt=-O2
+if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "${GITHUB_REF:-}" != refs/heads/main ]; then
+  opt=-O0
+fi
+opt=${STATION_READER_OPT:-$opt}
+# A first link for Windows makes zig build MinGW's CRT, its import libraries, libunwind and compiler_rt from source
+# (~85 s on a hosted runner with ~/.cache/zig cold, the final link's 4 s otherwise): an empty program linked so in the
+# background puts them in zig's cache while moon, cprep and mbc's split run here, mostly on one core; the final link
+# waits for it.
+warm_pid=
+trap '[ -z "${warm_pid:-}" ] || kill "$warm_pid" 2>/dev/null || true; rm -rf "$work"' EXIT
+if [ "$target" = win32-x64 ]; then
+  printf 'int main(void){return 0;}\n' | "${cc[@]}" "$opt" -x c - -o "$work/warm.exe" "${libs[@]}" >/dev/null 2>&1 &
+  warm_pid=$!
+fi
 
 # Serialize moon's C generation (and any first-time build of mbc) across concurrent target builds, copying reader.c into
 # this build's own directory before releasing the lock so another target's `moon build` never rewrites reader.c under cc.
@@ -115,13 +131,6 @@ if [ ! -f "$moon_inc/moonbit.h" ]; then
   cp "$moon_home"/include/*.h "$tmp_inc/"
   mv "$tmp_inc" "$moon_inc" 2>/dev/null || rm -rf "$tmp_inc"
 fi
-# On GitHub's hosted macOS runner (3 cores, cold store), a branch's reader compiles at -O0 (~30 s) within the
-# job's 5 minutes; main and self-hosted runners stay -O2. STATION_READER_OPT says it otherwise.
-opt=-O2
-if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "${GITHUB_REF:-}" != refs/heads/main ]; then
-  opt=-O0
-fi
-opt=${STATION_READER_OPT:-$opt}
 flags=(-I"$moon_inc" "$opt" -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
 cflags="-I\"$moon_inc\" $opt -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
 
@@ -189,6 +198,7 @@ if [ ! -s "$rt_cache" ]; then
   "${ar[@]}" rcs "$work/libruntime.a" "$work"/runtime/*.o
   cp "$work/libruntime.a" "$rt_cache.$$" && mv "$rt_cache.$$" "$rt_cache"
 fi
+[ -z "$warm_pid" ] || wait "$warm_pid" || true
 "${cc[@]}" "${flags[@]}" -o "$out" "${objs[@]}" ${link_extra[@]+"${link_extra[@]}"} \
   "$rt_cache" "$shell_lib" "${libs[@]}"
 echo "$out"
