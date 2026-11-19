@@ -569,9 +569,8 @@ fn wide_agent_tile(
     Some(s) if @sf.tile_whole() =>
       // (with touch the tile itself the button, as it is drawn: tapped its history's; held, its card and its
       // station's as one: the user, 2026-10-27: 它们是一体的)
-      parent.box(fn(t) {
+      @sf.action_box_node(parent, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(t) {
         @sf.style_node(t, fn() { if marked() { agent_station_on } else { agent_station } }, in_row=true)
-        t.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
         hand.val = Some(
           @sf.hover_card_node(
             tips,
@@ -587,7 +586,7 @@ fn wide_agent_tile(
             tile=true,
             padded=false,
             held=fn() { (held.val)() },
-            press=toggle,
+            pointed=fn() { t.pointed_in() },
           ),
         )
         let hot = fn() { @sf.lit_node(t) }
@@ -609,11 +608,10 @@ fn wide_agent_tile(
     Some(s) =>
       parent.box(fn(t) {
         @sf.style_node(t, fn() { if marked() { agent_station_on } else { agent_station } }, in_row=true)
-        let agent = t.box(fn(g) {
+        let agent = @sf.action_box_node(t, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(g) {
           let hot = fn() { @sf.lit_node(g) }
           @sf.style_node(g, fn() { if hot() { agent_station_agent_hot } else { agent_station_agent } }, in_row=true)
           wide_tile_seam(g, true)
-          g.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
           hand.val = Some(
             @sf.hover_card_node(
               tips,
@@ -621,7 +619,7 @@ fn wide_agent_tile(
               fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
               tile=true,
               held=fn() { (held.val)() },
-              press=toggle,
+              pointed=fn() { g.pointed_in() },
             ),
           )
           wide_agent_mark(g, a, badge, badge_said, joined=true)
@@ -644,9 +642,8 @@ fn wide_agent_tile(
       })
       |> ignore
     None =>
-      parent.box(fn(t) {
+      @sf.action_box_node(parent, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(t) {
         @sf.style_node(t, fn() { if marked() { agent_mark_btn_on } else { agent_mark_btn } }, in_row=true)
-        t.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
         hand.val = Some(
           @sf.hover_card_node(
             tips,
@@ -654,7 +651,7 @@ fn wide_agent_tile(
             fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
             tile=true,
             held=fn() { (held.val)() },
-            press=toggle,
+            pointed=fn() { t.pointed_in() },
           ),
         )
         wide_agent_mark(t, a, badge, badge_said, joined=false)

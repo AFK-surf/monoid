@@ -42,7 +42,6 @@
       "src/sfdesk/tape_view.mbt": 1
     },
     "page-control-by-hand": {
-      "src/sfdesk/chat_bar_wide_node.mbt": 3,
       "src/sfdesk/page_pane.mbt": 1,
       "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/side_node.mbt": 2,

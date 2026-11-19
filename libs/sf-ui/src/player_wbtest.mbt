@@ -229,6 +229,40 @@ test "at its end the next one plays a moment after, its seconds counted down, un
 }
 
 ///|
+test "at its end 选集 opened: the card goes at once and the next one is let go, played neither while it is open nor once it closes" {
+  for narrow in [true, false] {
+    let gone = []
+    let t = player_tester(narrow, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [], pin=pinned(10000.0, ended=true))
+    t.draw()
+    assert_true(t.find("播放结束") is Some(_))
+    t.click(Button, label="web-pages.drive.player.list")
+    assert_true(t.find("播放结束") is None)
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    // closed (as the system's bars close it too): the card not back, nothing played
+    player_list_toggle("k")
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    assert_true(t.find("播放结束") is None)
+  }
+}
+
+///|
+test "a desktop's with 选集 open beside it as it ends: the card comes and the next one plays a moment after, as with it shut" {
+  let gone = []
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [])
+  t.draw()
+  t.set_player(1, position=5000.0, duration=10000.0, playing=true)
+  t.draw()
+  t.click(Button, label="web-pages.drive.player.list")
+  t.set_player(1, position=10000.0, duration=10000.0, playing=false, ended=true)
+  t.draw()
+  assert_true(t.find("播放结束") is Some(_))
+  t.run_for(player_next_ms)
+  assert_eq(gone, ["E2.mp4"])
+}
+
+///|
 test "a phone's: a finger down the film takes it away with it, past 120 back" {
   let backs = []
   let t = player_tester(true, "a.mp4", [], [], backs)
