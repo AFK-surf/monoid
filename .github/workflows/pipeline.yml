@@ -179,30 +179,6 @@ jobs:
       # (the station's reader is MoonBit: scripts/native.ts `reader`, which needs only mbc of mbui's tools)
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
-      # (GitHub's: the reader's C made by moon in the background while the job sets up the rest, as station/mb/build.sh
-      # takes a prepared C (prepped-reader.c by its key, the same as build.sh works it out): compiled whole there, it
-      # needs none of cprep's rewriting, which is for the split's units (36 s of macos-26's three cores))
-      - name: The reader's C, in the background
-        if: runner.environment != 'self-hosted'
-        run: |
-          { (
-            set -euo pipefail
-            D="$(cd station/mb && pwd)"; ROOT="$(cd "$D/../.." && pwd)"
-            mkdir -p "$D/_build"
-            "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
-            (cd "$D" && MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
-              moon build --target native --release src/reader)
-            cp "$D/_build/native/release/build/station/reader/reader.c" "$D/_build/prepped-reader.c"
-            (cd "$D" && {
-              moon version --all
-              "$ROOT/libs/mbui/scripts/mbc" key
-              find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
-                "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$D/src" "$ROOT/rules/src" "$ROOT/libs/mbui/src/effect" \
-                "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
-                | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
-            } | shasum | awk '{print $1}') > "$D/_build/prepped-reader.key"
-          ) > "$RUNNER_TEMP/reader-pregen.log" 2>&1 < /dev/null; echo $? > "$RUNNER_TEMP/reader-pregen.status"; } > /dev/null 2>&1 &
-          echo "started (pid $!)"
       # (GitHub's: the pinned Node, and the zig scripts/native.ts builds Linux and Windows with, kept in the Actions
       # cache by its version, with what it compiled of its own (glibc's and MinGW's stubs, compiler-rt) in ~/.cache/zig)
       - if: runner.environment != 'self-hosted'
@@ -244,16 +220,10 @@ jobs:
           GITHUB_RUNNER: ${{ runner.environment }}
         run: |
           limit=()
-          # (GitHub's: the reader's C compiled whole, one unit, not split into a thousand and more (MBC_SPLIT=0): with no
-          # store of units there, the split's thousand compilers of a cold build did not end in a job's five minutes)
-          [ "$GITHUB_RUNNER" = self-hosted ] || { limit=(bash scripts/with-timeout.sh @$((JOB_END - 15))); export MBC_SPLIT=0; }
-          # (the reader's C made in the background: waited for, its log shown where it failed)
-          if [ "$GITHUB_RUNNER" != self-hosted ]; then
-            t0=$(date +%s)
-            while [ ! -f "$RUNNER_TEMP/reader-pregen.status" ]; do sleep 1; done
-            echo "the reader's C: waited $(( $(date +%s) - t0 )) s for it"
-            [ "$(cat "$RUNNER_TEMP/reader-pregen.status")" = 0 ] || { cat "$RUNNER_TEMP/reader-pregen.log" >&2; exit 1; }
-          fi
+          # (GitHub's: the reader's C split into a few units of 8 MB (MBC_UNIT_KB), moonbit_init one (MBC_INIT_SPLIT=0), in
+          # a store of the job's own: with no store of units there, a cold build's thousand units of 768 KB did not end in
+          # a job's five minutes, and the C whole was one compiler on one core, 115-180 s)
+          [ "$GITHUB_RUNNER" = self-hosted ] || { limit=(bash scripts/with-timeout.sh @$((JOB_END - 15))); export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 MBC_STORE="$RUNNER_TEMP/reader-store"; }
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             export STILLFAIL_NATIVE_READERS=3
           else
@@ -307,30 +277,6 @@ jobs:
         uses: ./.github/actions/setup-linux
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
-      # (GitHub's: the reader's C made by moon in the background while the job sets up the rest, as station/mb/build.sh
-      # takes a prepared C (prepped-reader.c by its key, the same as build.sh works it out): compiled whole there, it
-      # needs none of cprep's rewriting, which is for the split's units (36 s of macos-26's three cores))
-      - name: The reader's C, in the background
-        if: runner.environment != 'self-hosted'
-        run: |
-          { (
-            set -euo pipefail
-            D="$(cd station/mb && pwd)"; ROOT="$(cd "$D/../.." && pwd)"
-            mkdir -p "$D/_build"
-            "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
-            (cd "$D" && MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
-              moon build --target native --release src/reader)
-            cp "$D/_build/native/release/build/station/reader/reader.c" "$D/_build/prepped-reader.c"
-            (cd "$D" && {
-              moon version --all
-              "$ROOT/libs/mbui/scripts/mbc" key
-              find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
-                "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$D/src" "$ROOT/rules/src" "$ROOT/libs/mbui/src/effect" \
-                "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
-                | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
-            } | shasum | awk '{print $1}') > "$D/_build/prepped-reader.key"
-          ) > "$RUNNER_TEMP/reader-pregen.log" 2>&1 < /dev/null; echo $? > "$RUNNER_TEMP/reader-pregen.status"; } > /dev/null 2>&1 &
-          echo "started (pid $!)"
       # (GitHub's: the pinned Node, and the zig scripts/native.ts builds Linux and Windows with, kept in the Actions
       # cache by its version, with what it compiled of its own (glibc's and MinGW's stubs, compiler-rt) in ~/.cache/zig)
       - if: runner.environment != 'self-hosted'
@@ -374,16 +320,10 @@ jobs:
           GITHUB_RUNNER: ${{ runner.environment }}
         run: |
           limit=()
-          # (GitHub's: the reader's C compiled whole, one unit, not split into a thousand and more (MBC_SPLIT=0): with no
-          # store of units there, the split's thousand compilers of a cold build did not end in a job's five minutes)
-          [ "$GITHUB_RUNNER" = self-hosted ] || { limit=(bash scripts/with-timeout.sh @$((JOB_END - 15))); export MBC_SPLIT=0; }
-          # (the reader's C made in the background: waited for, its log shown where it failed)
-          if [ "$GITHUB_RUNNER" != self-hosted ]; then
-            t0=$(date +%s)
-            while [ ! -f "$RUNNER_TEMP/reader-pregen.status" ]; do sleep 1; done
-            echo "the reader's C: waited $(( $(date +%s) - t0 )) s for it"
-            [ "$(cat "$RUNNER_TEMP/reader-pregen.status")" = 0 ] || { cat "$RUNNER_TEMP/reader-pregen.log" >&2; exit 1; }
-          fi
+          # (GitHub's: the reader's C split into a few units of 8 MB (MBC_UNIT_KB), moonbit_init one (MBC_INIT_SPLIT=0), in
+          # a store of the job's own: with no store of units there, a cold build's thousand units of 768 KB did not end in
+          # a job's five minutes, and the C whole was one compiler on one core, 115-180 s)
+          [ "$GITHUB_RUNNER" = self-hosted ] || { limit=(bash scripts/with-timeout.sh @$((JOB_END - 15))); export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 MBC_STORE="$RUNNER_TEMP/reader-store"; }
           ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_WIN_READER
       - name: Stage its archive in R2
         run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-win-reader.r2.json"
@@ -442,30 +382,6 @@ jobs:
         uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
-      # (GitHub's: the reader's C made by moon in the background while the job sets up the rest, as station/mb/build.sh
-      # takes a prepared C (prepped-reader.c by its key, the same as build.sh works it out): compiled whole there, it
-      # needs none of cprep's rewriting, which is for the split's units (36 s of macos-26's three cores))
-      - name: The reader's C, in the background
-        if: runner.environment != 'self-hosted'
-        run: |
-          { (
-            set -euo pipefail
-            D="$(cd station/mb && pwd)"; ROOT="$(cd "$D/../.." && pwd)"
-            mkdir -p "$D/_build"
-            "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
-            (cd "$D" && MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
-              moon build --target native --release src/reader)
-            cp "$D/_build/native/release/build/station/reader/reader.c" "$D/_build/prepped-reader.c"
-            (cd "$D" && {
-              moon version --all
-              "$ROOT/libs/mbui/scripts/mbc" key
-              find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
-                "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$D/src" "$ROOT/rules/src" "$ROOT/libs/mbui/src/effect" \
-                "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
-                | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
-            } | shasum | awk '{print $1}') > "$D/_build/prepped-reader.key"
-          ) > "$RUNNER_TEMP/reader-pregen.log" 2>&1 < /dev/null; echo $? > "$RUNNER_TEMP/reader-pregen.status"; } > /dev/null 2>&1 &
-          echo "started (pid $!)"
       # (GitHub's: the pinned Node, and rustup's Rust the image has, in a target of the job's own; no sccache there)
       - if: runner.environment != 'self-hosted'
         uses: ./.github/actions/setup
@@ -478,7 +394,7 @@ jobs:
       # (the reader's compiled MoonBit packages by their content, station/mb/build.sh's MBC_STORE: tens of MB, which
       # take its build from 72 s to about 20. Restored here and saved at the end whatever came of the build, a cut one
       # too: as one step, actions/cache saved nothing of a build cut at the job's five minutes, 134032580996. A branch's,
-      # compiled whole, keeps none)
+      # in a few big units of a store of the job's own, keeps none)
       - if: runner.environment != 'self-hosted' && github.ref == 'refs/heads/main'
         id: reader-store
         uses: actions/cache/restore@v4
@@ -495,16 +411,10 @@ jobs:
           GITHUB_RUNNER: ${{ runner.environment }}
         run: |
           limit=()
-          # (GitHub's: the reader's C compiled whole, one unit, not split into a thousand and more (MBC_SPLIT=0): with no
-          # store of units there, the split's thousand compilers of a cold build did not end in a job's five minutes)
-          [ "$GITHUB_RUNNER" = self-hosted ] || { limit=(bash scripts/with-timeout.sh @$((JOB_END - 15))); export MBC_SPLIT=0; }
-          # (the reader's C made in the background: waited for, its log shown where it failed)
-          if [ "$GITHUB_RUNNER" != self-hosted ]; then
-            t0=$(date +%s)
-            while [ ! -f "$RUNNER_TEMP/reader-pregen.status" ]; do sleep 1; done
-            echo "the reader's C: waited $(( $(date +%s) - t0 )) s for it"
-            [ "$(cat "$RUNNER_TEMP/reader-pregen.status")" = 0 ] || { cat "$RUNNER_TEMP/reader-pregen.log" >&2; exit 1; }
-          fi
+          # (GitHub's: the reader's C split into a few units of 8 MB (MBC_UNIT_KB), moonbit_init one (MBC_INIT_SPLIT=0), in
+          # a store of the job's own: with no store of units there, a cold build's thousand units of 768 KB did not end in
+          # a job's five minutes, and the C whole was one compiler on one core, 115-180 s)
+          [ "$GITHUB_RUNNER" = self-hosted ] || { limit=(bash scripts/with-timeout.sh @$((JOB_END - 15))); export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 MBC_STORE="$RUNNER_TEMP/reader-store"; }
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --mac --publish
           else
