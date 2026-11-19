@@ -278,7 +278,7 @@ test "left open, a newer build asked for again each hour: a window never shown a
   let t = updates_tester(Json::null(), asked)
   t.frame()
   assert_eq(asked, ["1 false"])
-  // (each hour in one jump, a frame at its end: run_for drew Home's spokes at every 100 ms step on the way, 90 000
+  // (each hour in one jump, a frame at its end: run_for drew Home's working rings at every 100 ms step on the way, 90 000
   // frames and 100-146 s of CI for two and a half hours (2026-11-09); the ask is a function of the moment)
   t.frame(ms=@sfbase.update_again_ms / 2.0)
   assert_eq(asked, ["1 false"])

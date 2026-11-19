@@ -1,13 +1,13 @@
 // A chat's state as a mark in a line:
 // before a row's title in the chats' lists (sidebar.mbt, a finger's and a mouse's alike), on the rail's lists and
-// workspaces. One meaning to a mark wherever it is (an agent's corner, agent_mark.mbt, says the same): yellow spokes
+// workspaces. One meaning to a mark wherever it is (an agent's corner, agent_mark.mbt, says the same): a yellow ring
 // stepping round at work, a blue dot when it is the viewer's turn (a card or an agent waiting on them, or something
 // unread), a red one when something went wrong; nothing when nothing is for them. What kind of turn it is the row's
 // second line says (its bell, card label, check), not a shape of its own here.
 
 ///|
 /// A chat's mark `tone` (the core's: busy, done, alert, wait; anything else none), the row's ground behind it: a dot 8
-/// across, blue (done and unread, or waiting on the viewer) or red (alert), at work yellow spokes stepping round in 10.
+/// across, blue (done and unread, or waiting on the viewer) or red (alert), at work a yellow ring stepping round in 10.
 /// Its node (0 for none).
 pub fn chat_mark(c : @ui.Ctx, tone : String) -> Int {
   let label = match tone {
@@ -17,12 +17,12 @@ pub fn chat_mark(c : @ui.Ctx, tone : String) -> Int {
   match tone {
     "done" | "wait" => c.box(style=mark_done, label~, fn() {  })
     "alert" => c.box(style=mark_alert, label~, fn() {  })
-    _ => c.box(style=mark_busy, label~, fn() { @sf.spokes(c, mark_busy_side, @sf.mark_yellow) |> ignore })
+    _ => c.box(style=mark_busy, label~, fn() { @sf.work_ring(c, mark_busy_side, @sf.mark_yellow()) |> ignore })
   }
 }
 
 ///|
-/// The spokes' box.
+/// At work's ring's box.
 let mark_busy_side : Double = 10.0
 
 ///|

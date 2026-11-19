@@ -95,7 +95,7 @@ fn emit_sent(t : @ui.Tester, words : String, focused : Bool) -> String {
   // (its avatar home: no flying copy, its activity's own shown again)
   let done = em.current is None && em.queue.length() == 0 && em.copied == ""
   // (let go, nothing goes on: no display frame asked for once it is over; at most the next step of a working mark
-  // still drawn (resident cycle_look, a wake each cycle_step_ms: the list's spoke, src/sf/icons.mbt spoke_turn, and
+  // still drawn (resident cycle_look, a wake each cycle_step_ms: the list's ring, libs/sf-ui/src/icons.mbt work_ring_step, and
   // its rows' marks, src/sfpages/chat_mark.mbt lead_look); focused, the caret's blink asks for its own)
   let idle = focused || t.wanted_after() != 0.0
   if shown && done && idle {

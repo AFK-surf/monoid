@@ -34,7 +34,7 @@ struct PaFrame {
   grounds : Array[(Double, Double, Double, Double, Double, Double)]
   /// the dark ground over most of the window (a viewer's, a picture held up's: x, y, w, h, how opaque), the last drawn
   scrim : (Double, Double, Double, Double, Double)?
-  /// each ring or spinner of lines drawn (Ctx::lines, View::lines: the agent's ring at work, the spokes; x, y, w, h,
+  /// each ring or spinner of lines drawn (Ctx::lines, View::lines: the agent's ring at work; x, y, w, h,
   /// how many pieces, how opaque the most opaque of them)
   rings : Array[(Double, Double, Double, Double, Double, Double)]
 }
@@ -731,7 +731,7 @@ fn pa_diff(o : PaFrame, n : PaFrame, tol : Double, rings? : Bool = true) -> Arra
       }
     (None, None) => ()
   }
-  // (the rings of lines (the agent's at work, the spokes): matched the same way, held by their middles and how big (a
+  // (the rings of lines (the agent's at work): matched the same way, held by their middles and how big (a
   // ring turning is drawn as its pieces lie, its box a little more or less round as it turns: pa_ring_slack) and how
   // opaque; one side's alone said with where it is. Not between two frames of a side: a ring turns as it stands)
   if rings {

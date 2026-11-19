@@ -26,8 +26,8 @@ pub fn agent_work_line(c : @ui.Ctx, card : Json?, id : Int, inset? : Bool = fals
 /// are cut (Ctx::text `keep` on them): 后台 4 · 2/6 (the core's `workMark`), then its counts alone (`workMarkShort`:
 /// 4 · 2/6), then a mark with how many (`workMarkCount`: 4, or the checklist's 2/6), then nothing. Its words said a
 /// shorter way (Ctx::text `shorter`), and each form a part its row leaves out (Ctx::box `drop`), the one with the mark
-/// drawn only while the words are left out (while something runs in the background, at work's spokes before what it
-/// says: work_spokes); `smallest`, that one alone, where its row is laid out without asking what it
+/// drawn only while the words are left out (while something runs in the background, at work's ring before what it
+/// says: work_ring_mark); `smallest`, that one alone, where its row is laid out without asking what it
 /// left out (a phone's details, a list's row: Ctx::left_out reads nothing there). Pressed, whichever is shown, all of
 /// it in a panel under it (from the foot on Small: the presenters'). Nothing when it has neither.
 pub fn work_mark(
@@ -76,7 +76,7 @@ pub fn work_mark(
     if count != "" && (smallest || c.left_out(whole)) {
       form(least, fn() {
         if running {
-          work_spokes(c)
+          work_ring_mark(c)
         } else {
           @sf.icon(c, "wait", size=12.0, color=if c.lit(least) { @sf.theme().p.accent } else { @sf.theme().p.muted }) |> ignore
         }
@@ -88,7 +88,7 @@ pub fn work_mark(
     }
     form(whole, fn() {
       if running {
-        work_spokes(c)
+        work_ring_mark(c)
       }
       c.text(mark, style=if c.lit(whole) { hot } else { words }, shorter=if counts != "" && counts != mark {
         [counts]
@@ -102,11 +102,11 @@ pub fn work_mark(
 }
 
 ///|
-/// What runs in the background, at work: the spokes every mark of work at work has (@sf.spokes: the chats' marks, an
+/// What runs in the background, at work: the ring every mark of work at work has (@sf.work_ring: the chats' marks, an
 /// agent's badge), 10 in a 12 room, on a line of 12. They step on the resident clock, a frame a step (10 a second,
 /// each of the looks alone: nothing built, laid out or painted for them), and stand still while motion is reduced.
-fn work_spokes(c : @ui.Ctx) -> Unit {
-  @sf.spokes(c, 10.0, @sf.mark_yellow, box=12.0) |> ignore
+fn work_ring_mark(c : @ui.Ctx) -> Unit {
+  @sf.work_ring(c, 10.0, @sf.mark_yellow(), box=12.0) |> ignore
 }
 
 ///|
@@ -347,8 +347,8 @@ pub fn work_mark_node(
       line => line
     }
   }
-  let spokes = fn(x : @view.View) {
-    x.show(running, fn(s) { @sf.spokes_node(s, 10.0, fn() { @sf.mark_yellow }, box=12.0) |> ignore })
+  let ring = fn(x : @view.View) {
+    x.show(running, fn(s) { @sf.work_ring_node(s, 10.0, @sf.mark_yellow, box=12.0) |> ignore })
   }
   // (each form its separator and what is pressed, left out of the row whole: the separator goes with it)
   let form = fn(r : @view.View, drop : Int, shown : () -> Bool, body : (@view.View) -> Unit) {
@@ -374,22 +374,22 @@ pub fn work_mark_node(
       form(o, 0, fn() { count() != "" }, fn(p) {
         p.pick(running, fn(i, at_work) {
           if at_work {
-            spokes(i)
+            ring(i)
           } else {
             @sf.icon_node(i, "wait", 12.0, By(fn() { if @sf.lit_node(p) { @sf.theme().p.accent } else if link is Some(_) { @sf.theme().p.blue } else { @sf.theme().p.muted } })) |> ignore
           }
         })
         @sf.words_node(p, count, fn() { if @sf.lit_node(p) { hot } else { rest } }) |> ignore
       })
-      o.show(fn() { count() == "" }, fn(w) { work_mark_whole(w, form, spokes, mark, card, words, hot, link) })
+      o.show(fn() { count() == "" }, fn(w) { work_mark_whole(w, form, ring, mark, card, words, hot, link) })
       return
     }
     let rest = link.unwrap_or(words)
-    work_mark_whole(o, form, spokes, mark, card, words, hot, link)
+    work_mark_whole(o, form, ring, mark, card, words, hot, link)
     form(o, -1, fn() { count() != "" }, fn(p) {
       p.pick(running, fn(i, at_work) {
         if at_work {
-          spokes(i)
+          ring(i)
         } else {
           @sf.icon_node(i, "wait", 12.0, By(fn() { if @sf.lit_node(p) { @sf.theme().p.accent } else if link is Some(_) { @sf.theme().p.blue } else { @sf.theme().p.muted } })) |> ignore
         }
@@ -408,7 +408,7 @@ let work_mark_gives : Double = 100.0
 fn work_mark_whole(
   o : @view.View,
   form : (@view.View, Int, () -> Bool, (@view.View) -> Unit) -> Unit,
-  spokes : (@view.View) -> Unit,
+  ring : (@view.View) -> Unit,
   mark : () -> String,
   card : () -> Json?,
   words : @ui.TextStyle,
@@ -417,7 +417,7 @@ fn work_mark_whole(
 ) -> Unit {
   let rest = link.unwrap_or(words)
   form(o, work_mark_drop, fn() { true }, fn(p) {
-    spokes(p)
+    ring(p)
     @sf.words_node(p, mark, fn() { if @sf.lit_node(p) { hot } else { rest } })
     .shorter(By(fn() {
       let counts = text(card(), "workMarkShort")
