@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { type Clock, Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
-import { signalGroup } from "../src/ops/group.ts";
+import { killGroups } from "./kill-groups.ts";
 import { Jobs, type Machine } from "../src/jobs/jobs.ts";
 import { GIVE_UP_MS, IDLE_MS, type PeerCall, Refused, Remote, answerPeer, filePath, hash, readJson, written } from "../src/jobs/remote.ts";
 import { writeJson } from "./remote-records.ts";
@@ -87,8 +87,8 @@ function station(options: { clock?: Clock.Clock; jobsClock?: Clock.Clock; machin
   cleanup.push(async () => {
     await remote.close();
     if (!options.jobs) {
-      for (const job of store.listJobs(null)) if (job.pgid !== null) signalGroup(job.pgid, "SIGKILL");
       await jobs.shutdown();
+      await killGroups(store.listJobs(null).map((job) => job.pgid));
     }
     if (!options.store) store.close();
   });

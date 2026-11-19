@@ -13,6 +13,7 @@ import { after, describe, test } from "node:test";
 import { type Clock, type Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { endGroup, groupAlive, signalGroup } from "../src/ops/group.ts";
+import { killGroups } from "./kill-groups.ts";
 import { Jobs, notifyEndpoint, screenEndpoint, shown, tail } from "../src/jobs/jobs.ts";
 import { readExit, watching } from "./reference/jobs.ts";
 import { openAgentsDoor } from "../src/tools/http.ts";
@@ -29,9 +30,9 @@ const stores: Store[] = [];
 const scopes: Scope.Closeable[] = [];
 after(async () => {
   for (const j of all) {
-    // What a test left running goes, then the instance.
-    for (const job of j.store.listJobs(null)) if (job.pgid !== null) signalGroup(job.pgid, "SIGKILL");
+    // The instance goes, then what a test left running.
     await j.shutdown().catch(() => undefined);
+    await killGroups(j.store.listJobs(null).map((job) => job.pgid));
   }
   for (const scope of scopes) await Effect.runPromise(Scope.close(scope, Exit.void)).catch(() => undefined);
   for (const s of stores) {

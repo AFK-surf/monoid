@@ -10,7 +10,7 @@ import { after } from "node:test";
 import { type Clock, type Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { Cloud } from "../src/cloud/state.ts";
-import { signalGroup } from "../src/ops/group.ts";
+import { killGroups } from "./kill-groups.ts";
 import { Jobs, type Machine } from "../src/jobs/jobs.ts";
 import { type PeerCall, Refused, Remote } from "../src/jobs/remote.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../src/mesh/peer.ts";
@@ -102,8 +102,8 @@ export async function pair(options: { queue?: boolean; before?: boolean } = {}) 
     const remote = new Remote({ data: dir, store, jobs, clock: options.clock, diskFree: options.diskFree, notify: (session, text) => void told.push([session, text]) });
     cleanup.push(async () => {
       await remote.close();
-      for (const job of store.listJobs(null)) if (job.pgid !== null) signalGroup(job.pgid, "SIGKILL");
       await jobs.shutdown();
+      await killGroups(store.listJobs(null).map((job) => job.pgid));
       store.close();
     });
     return { dir, store, jobs, remote, told };
