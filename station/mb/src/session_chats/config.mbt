@@ -5,32 +5,11 @@
 // `dep.splitDevinFusion`, `dep.devinFusionBase`), which the station gives.
 
 ///|
-pub let runtime_kinds : Array[String] = ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"]
+pub let runtime_kinds : Array[String] = @agent_runtimes.runtime_kinds
 
 ///|
-/// agents/runtime.ts `runtimeKind`.
-pub fn runtime_kind(v : J?) -> String? {
-  match str_of(v) {
-    Some(s) => if runtime_kinds.contains(s) { Some(s) } else { None }
-    None => None
-  }
-}
-
-///|
-/// agents/runtime.ts `runtimeLabel`: how people call a runtime.
-pub fn runtime_title(r : String) -> String {
-  match r {
-    "claude" => "Claude Code"
-    "codex" => "Codex"
-    "dsh" => "DeepSeek Harness"
-    "grok" => "Grok Build"
-    "cursor" => "Cursor"
-    "hermes" => "Hermes Agent"
-    "agy" => "Antigravity CLI"
-    "pi" => "Pi"
-    _ => "Devin"
-  }
-}
+/// agents/runtime.ts `runtimeKind` and `runtimeLabel`.
+pub using @agent_runtimes {runtime_kind, runtime_label as runtime_title}
 
 ///|
 fn is_absolute(p : String) -> Bool {
@@ -296,65 +275,13 @@ fn strings(v : J?) -> Array[String] {
 ///|
 /// shapes model.rs `same`: two spellings are one model.
 pub async fn same_model(_w : World, a : String, b : String) -> Bool {
-  a == b || @readops.model_key(a) == @readops.model_key(b)
-}
-
-///|
-fn find_model(models : Array[String], ok : (String) -> Bool) -> String? {
-  for m in models {
-    if ok(m) {
-      return Some(m)
-    }
-  }
-  None
-}
-
-///|
-fn same_model_sync(a : String, b : String) -> Bool {
-  a == b || @readops.model_key(a) == @readops.model_key(b)
+  @session_hub.same_model(a, b)
 }
 
 ///|
 /// Its own spelling of a model it runs, however the model is spelled.
 pub async fn spelling(_w : World, profile : J, model : String) -> String? {
-  let models = strings(at(Some(profile), "models"))
-  let runtimes = strings(at(Some(profile), "runtimes"))
-  match find_model(models, m => m == model) {
-    Some(d) => return Some(d)
-    None => ()
-  }
-  match find_model(models, m => same_model_sync(m, model)) {
-    Some(d) => return Some(d)
-    None => ()
-  }
-  if runtimes.contains("agy") {
-    let (base, _) = @session_hub.agy_base_model(model)
-    return find_model(models, m => {
-      m == base ||
-      same_model_sync(m, base) ||
-      @session_hub.agy_base_model(m).0 == base
-    })
-  }
-  if runtimes.contains("devin") {
-    match @session_hub.split_devin_fusion(model) {
-      Some((lead, _, side)) => {
-        let base = "fusion-\{lead}-sidekick-\{side}"
-        let matched = find_model(models, m => {
-          m == base ||
-          same_model_sync(m, base) ||
-          @session_hub.devin_fusion_base(m) == base
-        })
-        if matched is Some(_) {
-          return Some(base)
-        }
-        if find_model(models, m => m == lead || same_model_sync(m, lead)) is Some(_) {
-          return Some(base)
-        }
-      }
-      None => ()
-    }
-  }
-  None
+  @session_hub.spelling(profile.to_json(), model)
 }
 
 ///|
@@ -366,24 +293,7 @@ pub async fn runs(w : World, profile : J, model : String) -> Bool {
 ///|
 /// Whether sessions of workspace `ws` (None: the home one's) may run on a profile.
 pub fn allowed_in(profile : J, ws : String?, home : String?) -> Bool {
-  let share = at(Some(profile), "share")
-  let only = if at(share, "borrowed") is Some(Bool(true)) {
-    arr_of(at(share, "workspaces"))
-  } else {
-    None
-  }
-  let at_ = match ws {
-    Some(w) => Some(w)
-    None => home
-  }
-  match (only, at_) {
-    (Some(list), Some(a)) => if !list.iter().any(x => x is Str(u) && @jsjson.sanitize_str(u) == a) { return false }
-    _ => ()
-  }
-  match (ws, home) {
-    (None, _) | (_, None) => true
-    (Some(w), Some(h)) => w == h || !strings(at(Some(profile), "withheld")).contains(w)
-  }
+  @session_hub.allowed_in(profile.to_json(), ws, home)
 }
 
 ///|

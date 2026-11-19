@@ -13,7 +13,7 @@ let agy_scrubbed : Array[String] = [
 
 ///|
 /// The thinking levels Antigravity's models append to a family's name (`AGY_LEVELS`).
-let agy_levels : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+let agy_levels : Array[String] = @agent_runtimes.agy_levels
 
 ///|
 /// The waits before a process that offered no models is opened again (`AGY_CATALOG_RETRY_MS`).
@@ -298,15 +298,7 @@ pub fn agy_notice_failure(said : String) -> String? {
 
 ///|
 /// A raw ACP `modelId` split into its base model and thinking level (`agyBaseModel`).
-pub fn agy_base_model(id : String) -> (String, String?) {
-  let trimmed = @jscase.trim(id)
-  for l in agy_levels {
-    if trimmed.has_suffix("-\{l}") && trimmed.length() > l.length() + 1 {
-      return (trimmed.substring(end=trimmed.length() - l.length() - 1), Some(l))
-    }
-  }
-  (trimmed, None)
-}
+pub using @agent_runtimes {agy_base_model}
 
 ///|
 /// The tier session/new or session/load said the account is on (`agyTierIn`).

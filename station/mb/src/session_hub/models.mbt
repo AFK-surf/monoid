@@ -4,9 +4,7 @@
 
 ///|
 /// agents/runtime.ts `RUNTIME_KINDS`.
-pub let runtime_kinds : Array[String] = [
-  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi",
-]
+pub let runtime_kinds : Array[String] = @agent_runtimes.runtime_kinds
 
 ///|
 /// `runtimeKind` (config.ts `runtimeNamed`): a runtime as stored or sent, none for anything else.
@@ -19,20 +17,8 @@ pub fn runtime_named(name : String) -> String? {
 }
 
 ///|
-/// `runtimeLabel`: how a runtime is named to people.
-pub fn runtime_label(r : String) -> String {
-  match r {
-    "claude" => "Claude Code"
-    "codex" => "Codex"
-    "dsh" => "DeepSeek Harness"
-    "grok" => "Grok Build"
-    "cursor" => "Cursor"
-    "hermes" => "Hermes Agent"
-    "agy" => "Antigravity CLI"
-    "pi" => "Pi"
-    _ => "Devin"
-  }
-}
+/// `runtimeLabel` and `agyBaseModel`, delegated to `@agent_runtimes`.
+pub using @agent_runtimes {runtime_label, agy_base_model}
 
 ///|
 /// shapes model.rs `same`: two spellings are one model.
@@ -41,53 +27,15 @@ pub fn same_model(a : String, b : String) -> Bool {
 }
 
 ///|
-let levels : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-
-///|
-/// The level a name ends with (`-<level>`, more than it alone).
-fn level_end(s : String) -> String? {
-  levels.iter().find_first(l => s.has_suffix("-" + l) && s.length() > l.length() + 1)
-}
-
-///|
-/// agy.ts `agyBaseModel`: a model without the level it ends with, and that level.
-pub fn agy_base_model(id : String) -> (String, String?) {
-  let trimmed = trim(id)
-  match level_end(trimmed) {
-    Some(l) => (slice(trimmed, 0, to=trimmed.length() - l.length() - 1), Some(l))
-    None => (trimmed, None)
-  }
-}
-
-///|
 /// devin.ts `splitDevinFusion`: a Fusion pair's lead, its level and its sidekick.
 pub fn split_devin_fusion(id : String) -> (String, String?, String)? {
-  let s = @jscase.lower(trim(id))
-  if !s.has_prefix("fusion-") {
-    return None
-  }
-  let at = index_of(s, "-sidekick-", from=7)
-  if at < 0 {
-    return None
-  }
-  let raw_lead = slice(s, 7, to=at)
-  let side = slice(s, at + 10)
-  if raw_lead == "" || side == "" {
-    return None
-  }
-  match level_end(raw_lead) {
-    Some(l) => Some((slice(raw_lead, 0, to=raw_lead.length() - l.length() - 1), Some(l), side))
-    None => Some((raw_lead, None, side))
-  }
+  @agent_runtimes.split_devin_fusion(id).map(f => (f.lead, f.effort, f.side))
 }
 
 ///|
 /// devin.ts `devinFusionBase`: a Fusion pair without its lead's level.
 pub fn devin_fusion_base(id : String) -> String {
-  match split_devin_fusion(id) {
-    Some((lead, _, side)) => "fusion-\{lead}-sidekick-\{side}"
-    None => id
-  }
+  @agent_runtimes.devin_fusion_base(id).0
 }
 
 ///|
@@ -195,34 +143,19 @@ pub fn enabled(profile : Json) -> Bool {
 ///|
 /// profiles.ts `accessKind`.
 pub fn access_kind(p : Json) -> String {
-  match field(p, "access") {
-    Some(Object(_) as a) =>
-      match field(a, "kind") {
-        Some(String(k)) => k
-        Some(Null) | None => "env"
-        Some(other) => js_string(other)
-      }
-    _ => "env"
-  }
+  @agent_runtimes.access_kind(@jsjson.JValue::of_json(p))
 }
 
 ///|
 /// profiles.ts `billedPerUse`: an Anthropic key, a provider's key (but Kimi Code's membership), or a runtime's own
 /// variables.
 pub fn billed_per_use(p : Json) -> Bool {
-  let kind = access_kind(p)
-  let provider = match field(p, "access") {
-    Some(Object(_) as a) => field(a, "provider")
-    _ => None
-  }
-  kind == "anthropic-api" ||
-  kind == "env" ||
-  (kind == "api-provider" && !(provider is Some(String("kimi-code"))))
+  @agent_runtimes.billed_per_use(@jsjson.JValue::of_json(p))
 }
 
 ///|
 /// profiles.ts `FAST_RUNTIMES`.
-pub let fast_runtimes : Array[String] = ["codex", "claude"]
+pub let fast_runtimes : Array[String] = @agent_runtimes.fast_runtimes
 
 ///|
 /// model-speed.ts `modelSpeed`.
@@ -397,16 +330,8 @@ fn named_model(base : String) -> String? {
       let lead_raw = slice(base, 7, to=split_at)
       let side_raw = slice(base, split_at + 10)
       if side_raw != "" {
-        let lead_effort = level_end(lead_raw)
-        let lead_base = match lead_effort {
-          Some(l) => slice(lead_raw, 0, to=lead_raw.length() - l.length() - 1)
-          None => lead_raw
-        }
-        let side_effort = level_end(side_raw)
-        let side_base = match side_effort {
-          Some(l) => slice(side_raw, 0, to=side_raw.length() - l.length() - 1)
-          None => side_raw
-        }
+        let (lead_base, _) = agy_base_model(lead_raw)
+        let (side_base, side_effort) = agy_base_model(side_raw)
         let lead = named_model(lead_base).unwrap_or(lead_base)
         let side = named_model(side_base).unwrap_or(side_base)
         return match side_effort {

@@ -3,42 +3,8 @@
 // `failure_of`), and so is what says the tools are out of reach (`unreachable`): taken from there, one text for both.
 
 ///|
-/// The runtimes a station runs, in the order they are offered.
-let runtime_kinds : Array[String] = [
-  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi",
-]
-
-///|
-/// A runtime as stored or sent, none for anything else (`runtimeKind`).
-pub fn runtime_kind(v : JValue?) -> String? {
-  match v {
-    Some(Str(u)) => {
-      let t = @jsjson.sanitize_str(u)
-      if runtime_kinds.contains(t) {
-        Some(t)
-      } else {
-        None
-      }
-    }
-    _ => None
-  }
-}
-
-///|
-/// How a runtime is named to people (`runtimeLabel`).
-pub fn runtime_label(r : String) -> String {
-  match r {
-    "claude" => "Claude Code"
-    "codex" => "Codex"
-    "dsh" => "DeepSeek Harness"
-    "grok" => "Grok Build"
-    "cursor" => "Cursor"
-    "hermes" => "Hermes Agent"
-    "agy" => "Antigravity CLI"
-    "pi" => "Pi"
-    _ => "Devin"
-  }
-}
+/// A runtime as stored or sent (`runtimeKind`) and how it is named to people (`runtimeLabel`).
+pub using @agent_runtimes {runtime_kind, runtime_label}
 
 ///|
 /// The station's tools by their server's name.

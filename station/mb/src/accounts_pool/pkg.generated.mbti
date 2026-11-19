@@ -4,6 +4,7 @@ package "station/accounts_pool"
 import {
   "mbui/effect",
   "moonbitlang/core/ref",
+  "station/agent_runtimes",
   "station/host",
   "station/jsjson",
 }
@@ -29,7 +30,7 @@ pub fn allowed_in(Profile, String?, String?) -> Bool
 
 pub fn api_providers() -> @jsjson.JValue
 
-pub fn api_source(Via) -> (Source, Endpoints)?
+pub fn api_source(@agent_runtimes.Via) -> (@agent_runtimes.Source, @agent_runtimes.Endpoints)?
 
 pub fn arg(@jsjson.JValue?) -> @jsjson.JValue
 
@@ -121,7 +122,7 @@ pub fn devin_fusion_split(String) -> (String, String?, String)?
 
 pub fn email_ok(String) -> Bool
 
-pub fn endpoints(Source, String?, String?) -> Endpoints?
+pub fn endpoints(@agent_runtimes.Source, String?, String?) -> @agent_runtimes.Endpoints?
 
 pub fn env_name_ok(String) -> Bool
 
@@ -135,7 +136,7 @@ pub fn fast_needs_credits(@jsjson.JValue) -> Bool
 
 pub let fast_runtimes : Array[String]
 
-pub fn find_source(String) -> Source?
+pub fn find_source(String) -> @agent_runtimes.Source?
 
 pub fn form_encode(String) -> String
 
@@ -303,7 +304,7 @@ pub fn profile_of(@jsjson.JValue, String, (String) -> Array[String]?) -> Profile
 
 pub fn profile_runtimes(@jsjson.JValue) -> Array[String]
 
-pub fn profile_via(@jsjson.JValue) -> Via
+pub fn profile_via(@jsjson.JValue) -> @agent_runtimes.Via
 
 pub fn quota(String, Array[@jsjson.JValue], String?) -> @jsjson.JValue
 
@@ -331,7 +332,7 @@ pub fn runtime_label(String) -> String
 
 pub fn runtimes_for(@jsjson.JValue?, @jsjson.JValue?) -> Array[String]
 
-pub fn runtimes_of_endpoints(Endpoints) -> Array[String]
+pub fn runtimes_of_endpoints(@agent_runtimes.Endpoints) -> Array[String]
 
 pub fn runtimes_of_kind(String, String?) -> Array[String]
 
@@ -347,7 +348,7 @@ pub fn signs_in(Health) -> Bool
 
 pub fn slug(String, Int32) -> String
 
-pub let sources : Array[Source]
+pub let sources : Array[@agent_runtimes.Source]
 
 pub fn spelling(Profile, String) -> String?
 
@@ -583,13 +584,6 @@ pub(all) struct CursorUrls {
 }
 pub fn CursorUrls::of_jv(@jsjson.JValue?) -> Self
 
-pub(all) struct Endpoints {
-  chat : String?
-  responses : String?
-  anthropic : String?
-  decision : String?
-}
-
 pub(all) struct Given {
   data : String
   hub : Bool
@@ -798,20 +792,6 @@ pub fn SessionAccounts::set_quota_again(Self, async (String) -> Unit) -> Unit
 pub fn SessionAccounts::set_recheck(Self, async (String) -> Unit) -> Unit
 pub async fn SessionAccounts::spend(Self, String, String?, model? : String) -> (String, String)?
 
-pub(all) struct Source {
-  id : String
-  name : String
-  chat : String?
-  responses : String?
-  anthropic : String?
-  decision : String?
-  endpoint_required : Bool
-  protocols : Array[String]
-  key_optional : Bool
-  auth : String
-  session_header : Bool
-}
-
 pub(all) struct SpendHour {
   hour : Double
   profile : String
@@ -834,12 +814,6 @@ pub(all) struct Urgency {
   weight : Double
 }
 
-pub(all) struct Via {
-  provider : String?
-  endpoint : String?
-  protocol : String?
-}
-
 pub struct Words {
   zh : @jsjson.JValue
   en : @jsjson.JValue
@@ -849,6 +823,12 @@ pub fn Words::new(@jsjson.JValue, @jsjson.JValue, product? : String) -> Self
 pub fn Words::tr(Self, String, String, args? : Array[(String, String)]) -> String
 
 // Type aliases
+pub using @agent_runtimes {type Endpoints}
+
 pub using @jsjson {type JValue as JV}
+
+pub using @agent_runtimes {type Source}
+
+pub using @agent_runtimes {type Via}
 
 // Traits
