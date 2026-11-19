@@ -168,6 +168,8 @@ fn cursor_of_shape(shape : String) -> @ui.Cursor {
     "text" | "vertical-text" => IBeam
     "ew-resize" | "col-resize" | "e-resize" | "w-resize" => ResizeX
     "ns-resize" | "row-resize" | "n-resize" | "s-resize" => ResizeY
+    "nwse-resize" | "nw-resize" | "se-resize" => ResizeNWSE
+    "nesw-resize" | "ne-resize" | "sw-resize" => ResizeNESW
     "grab" | "move" | "all-scroll" => Grab
     "grabbing" => Grabbing
     "crosshair" => Crosshair
