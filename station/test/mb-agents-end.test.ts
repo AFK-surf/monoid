@@ -89,8 +89,9 @@ test("a runner gone with no end said: what was held of a step's words is told fi
       at += Buffer.byteLength(line);
     }
     conn.write(out("err", 0, "Killed: 9"));
-    // (killed: its socket gone, no exit said)
-    conn.destroy();
+    // (killed: its socket gone, no exit said; end() sends the frames written before it closes, where destroy()
+    // could drop them unsent and the reader would see only the end)
+    conn.end();
   });
   try {
     const order: string[] = [];
