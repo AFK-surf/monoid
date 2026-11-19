@@ -966,7 +966,11 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
         await p.ask("accounts.health", "cx");
         await p.settle();
         await settle();
-        return (await p.ask("accounts.health", "cx")).account;
+        // (the read this ask starts let end too: none left under way into the next step)
+        const { account } = await p.ask("accounts.health", "cx");
+        await p.settle();
+        await settle();
+        return account;
       };
       await p.ask("accounts.configSaid", homed("cx-a"));
       assert.equal(await accountOf(), `codex:${JSON.stringify(["acc-a", "user-1"])}`);
@@ -989,7 +993,10 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
       go();
       await p.settle();
       await settle();
-      assert.equal((await p.ask("accounts.health", "cx")).account, acc("acc-b"), "the new home read after the old one's read");
+      const { account: mbAfter } = await p.ask("accounts.health", "cx");
+      await p.settle();
+      await settle();
+      assert.equal(mbAfter, acc("acc-b"), "the new home read after the old one's read");
       for (const [home, a] of [["cx-a", "acc-a"], ["cx-b", "acc-b"]]) {
         mkdirSync(join(ts.data, "homes", home), { recursive: true });
         writeFileSync(join(ts.data, "homes", home, "auth.json"), JSON.stringify({ tokens: { access_token: `h.${claims}.s`, account_id: a, id_token: `h.${claims}.s` } }));
@@ -1010,7 +1017,9 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
       tsHomed("cx-b");
       tsAccounts.health("cx");
       await tsReadsDone();
-      assert.equal(tsAccounts.health("cx").account, acc("acc-b"), "the new home read after the old one's read");
+      const tsAfter = tsAccounts.health("cx").account;
+      await tsReadsDone();
+      assert.equal(tsAfter, acc("acc-b"), "the new home read after the old one's read");
     } finally {
       await tsAccounts.close();
       await p.ask("accounts.close");
