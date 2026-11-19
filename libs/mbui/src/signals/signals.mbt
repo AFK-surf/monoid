@@ -558,7 +558,11 @@ fn effect_of(f : () -> (() -> Unit)?, loc : SourceLoc) -> () -> Unit {
   run.run_depth -= 1
   run.active_sub = prev_sub
   run.owner = prev_owner
-  e.flags = e.flags & RECURSED_CHECK.lnot()
+  if (e.flags & WATCHING) != 0 {
+    e.flags = e.flags & (RECURSED_CHECK | RECURSED | DIRTY | PENDING).lnot()
+  } else {
+    e.flags = e.flags & RECURSED_CHECK.lnot()
+  }
   fn() { effect_oper(e) }
 }
 
@@ -730,7 +734,11 @@ fn run_effect(e : ReactiveNode) -> Unit {
     run.run_depth -= 1
     run.active_sub = prev_sub
     run.owner = prev_owner
-    e.flags = e.flags & RECURSED_CHECK.lnot()
+    if (e.flags & WATCHING) != 0 {
+      e.flags = e.flags & (RECURSED_CHECK | RECURSED | DIRTY | PENDING).lnot()
+    } else {
+      e.flags = e.flags & RECURSED_CHECK.lnot()
+    }
     purge_deps(e)
   } else if e.deps is Some(_) {
     e.flags = WATCHING | (flags & HAS_CHILD_EFFECT)
