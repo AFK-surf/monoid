@@ -3,6 +3,23 @@
 // station/nodepath), a form's encoding (URLSearchParams), a query's parameters, base64url as Buffer reads it.
 
 ///|
+using @jsjson {
+  js_includes as includes, js_split as split, js_split_lines as split_lines, points, json_at as get,
+  json_str_of as str_of, json_num_of as num_of, json_nullish as nullish, json_opt_str as opt,
+  json_int64 as jnum, json_strs as jstrings, json_strings_of as strings_of, jval_stringify_num as js_number,
+  json_js_str as js_string, json_stringify as stringify, json_stringify_pretty as stringify_pretty,
+  json_same_opt as same_json, js_round,
+}
+
+///|
+using @jscase {is_space, trim, trim_start, lower}
+
+///|
+fn utf8_of(s : String) -> Bytes {
+  @utf8.encode(s)
+}
+
+///|
 fn sub(s : String, start : Int, end : Int) -> String {
   let a = if start < 0 { 0 } else if start > s.length() { s.length() } else { start }
   let b = if end < a { a } else if end > s.length() { s.length() } else { end }
@@ -21,29 +38,6 @@ fn index_of(s : String, part : String, start? : Int = 0) -> Int {
 }
 
 ///|
-fn includes(s : String, part : String) -> Bool {
-  s.contains(part)
-}
-
-///|
-/// `s.split(sep)` with a plain separator (an empty one splits each unit).
-fn split(s : String, sep : String) -> Array[String] {
-  @jsjson.js_split(s, sep)
-}
-
-///|
-/// `s.split(/\r?\n/)`.
-fn split_lines(s : String) -> Array[String] {
-  split(s, "\n").map(l => if l.has_suffix("\r") { sub(l, 0, l.length() - 1) } else { l })
-}
-
-///|
-/// The code points of `s` (`[...s]`), each as a string of its units.
-fn points(s : String) -> Array[String] {
-  @jsjson.points(s)
-}
-
-///|
 /// The last `most` code points of `s`.
 fn last_points(s : String, most : Int) -> String {
   let p = points(s)
@@ -51,26 +45,6 @@ fn last_points(s : String, most : Int) -> String {
     return s
   }
   p[p.length() - most:].to_owned().join("")
-}
-
-///|
-fn is_space(c : Int) -> Bool {
-  @jscase.is_space(c)
-}
-
-///|
-fn trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-fn trim_start(s : String) -> String {
-  @jscase.trim_start(s)
-}
-
-///|
-fn lower(s : String) -> String {
-  @jscase.lower(s)
 }
 
 ///|
@@ -109,35 +83,10 @@ fn upper_first(s : String) -> String {
 // ---- JSON as JavaScript reads it ----
 
 ///|
-/// `j?.[k]`.
-fn get(j : Json?, k : String) -> Json? {
-  match j {
-    Some(Object(m)) => m.get(k)
-    _ => None
-  }
-}
-
-///|
-fn str_of(j : Json?) -> String? {
-  match j {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
 /// A string that is not empty (`typeof v === "string" && v !== ""`).
 fn text_of(j : Json?) -> String? {
   match j {
     Some(String(s)) if s != "" => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn num_of(j : Json?) -> Double? {
-  match j {
-    Some(Number(n, ..)) => Some(n)
     _ => None
   }
 }
@@ -149,15 +98,6 @@ fn is_integer(j : Json?) -> Bool {
 }
 
 ///|
-/// `v === null || v === undefined`.
-fn nullish(j : Json?) -> Bool {
-  match j {
-    None | Some(Null) => true
-    _ => false
-  }
-}
-
-///|
 /// `a ?? b`.
 fn either(a : Json?, b : Json?) -> Json? {
   if nullish(a) {
@@ -165,75 +105,6 @@ fn either(a : Json?, b : Json?) -> Json? {
   } else {
     a
   }
-}
-
-///|
-fn opt(s : String?) -> Json {
-  match s {
-    Some(t) => Json::string(t)
-    None => Json::null()
-  }
-}
-
-///|
-fn jnum(n : Int64) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jstrings(a : Array[String]) -> Json {
-  Json::array(a.map(Json::string))
-}
-
-///|
-fn strings_of(j : Json?) -> Array[String] {
-  match j {
-    Some(Array(a)) =>
-      a.filter_map(v => match v {
-        String(s) => Some(s)
-        _ => None
-      })
-    _ => []
-  }
-}
-
-///|
-/// A number as `String(n)` says it.
-fn js_number(n : Double) -> String {
-  @jsjson.stringify(@jsjson.JValue::Num(n))
-}
-
-///|
-/// `String(v)` (`None`: undefined).
-fn js_string(j : Json?) -> String {
-  match j {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(True) => "true"
-    Some(False) => "false"
-    Some(Number(n, ..)) => js_number(n)
-    Some(String(s)) => s
-    Some(Array(a)) =>
-      a
-      .map(v => match v {
-        Null => ""
-        v => js_string(Some(v))
-      })
-      .join(",")
-    Some(Object(_)) => "[object Object]"
-  }
-}
-
-///|
-/// `JSON.stringify(v)`.
-fn stringify(j : Json) -> String {
-  @jsjson.stringify(@jsjson.JValue::of_json(j))
-}
-
-///|
-/// `JSON.stringify(v, null, 2)`.
-fn stringify_pretty(j : Json) -> String {
-  @jsjson.stringify_indent(@jsjson.JValue::of_json(j), 2)
 }
 
 ///|
@@ -264,16 +135,6 @@ fn parse_or_none(text : String) -> Json? {
   }
 }
 
-///|
-/// `JSON.stringify(a) === JSON.stringify(b)` (undefined: `None`).
-fn same_json(a : Json?, b : Json?) -> Bool {
-  match (a, b) {
-    (None, None) => true
-    (Some(x), Some(y)) => stringify(x) == stringify(y)
-    _ => false
-  }
-}
-
 // ---- paths ----
 
 ///|
@@ -283,11 +144,6 @@ pub fn join(parts : Array[String]) -> String {
 }
 
 // ---- forms, queries, base64url ----
-
-///|
-fn utf8_of(s : String) -> Bytes {
-  @utf8.encode(s)
-}
 
 ///|
 /// A form as `new URLSearchParams(form).toString()` writes it.
@@ -348,34 +204,7 @@ fn param(query : String?, name : String) -> String? {
 ///|
 /// `Buffer.from(text, "base64url").toString("utf8")`: what is not of base64's alphabets let go, read up to its first `=`.
 fn base64url_text(text : String) -> String {
-  let bytes = Array::new()
-  let mut acc = 0
-  let mut bits = 0
-  for i in 0..<text.length() {
-    let c = text.unsafe_charcode_at(i)
-    let v = if c >= 'A' && c <= 'Z' {
-      c - 'A'
-    } else if c >= 'a' && c <= 'z' {
-      c - 'a' + 26
-    } else if c >= '0' && c <= '9' {
-      c - '0' + 52
-    } else if c == '-' || c == '+' {
-      62
-    } else if c == '_' || c == '/' {
-      63
-    } else if c == '=' {
-      break
-    } else {
-      continue
-    }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      bytes.push(((acc >> bits) & 255).to_byte())
-    }
-  }
-  @utf8.decode_lossy(Bytes::from_array(bytes))
+  @utf8.decode_lossy(@codec.base64_decode_loose(text))
 }
 
 ///|
@@ -390,10 +219,4 @@ fn sort_units(list : Array[String]) -> Array[String] {
   let out = list.copy()
   out.sort_by((a, b) => @jsjson.js_compare(a, b))
   out
-}
-
-///|
-/// `Math.round(x)`.
-fn js_round(x : Double) -> Double {
-  @jsjson.js_round(x)
 }

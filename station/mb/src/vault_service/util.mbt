@@ -29,10 +29,21 @@ pub fn message_of(e : Error) -> String {
 }
 
 ///|
-/// `JSON.stringify(v)`.
-pub fn stringify(v : Json) -> String {
-  @vault_crypto.stringify(v)
+pub using @vault_crypto {stringify}
+
+///|
+using @vault_crypto {parse_js as parse, js_number as num_text, js_string as js_text}
+
+///|
+using @jsjson {
+  json_str as js, json_num as jn, json_int as ji, json_bool as jb, json_arr as jarr, json_strs as jstrs,
+  json_obj as obj, json_at as get, json_str_at as gs, json_num_at as gn, json_arr_at as ga,
+  json_strings_of as strings_of, json_truthy as truthy, js_includes as contains, js_starts as starts,
+  js_ends as ends, js_uniq as uniq, js_less as str_lt,
 }
+
+///|
+using @jscase {trim, is_space as js_space}
 
 ///|
 /// `JSON.parse(text)`, a text that is not JSON given as null.
@@ -43,119 +54,9 @@ fn parse_or_null(text : String) -> Json {
 }
 
 ///|
-/// `JSON.parse(text)`.
-fn parse(text : String) -> Json raise {
-  @vault_crypto.parse_js(text)
-}
-
-///|
-fn js(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jn(n : Double) -> Json {
-  Json::number(n)
-}
-
-///|
-fn ji(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jb(b : Bool) -> Json {
-  Json::boolean(b)
-}
-
-///|
-fn jarr(xs : Array[Json]) -> Json {
-  Json::array(xs)
-}
-
-///|
-fn jstrs(xs : Array[String]) -> Json {
-  Json::array(xs.map(x => Json::string(x)))
-}
-
-///|
-/// An object of these fields, in this order (a field given twice: its last value, in its first place).
-fn obj(fields : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for f in fields {
-    m[f.0] = f.1
-  }
-  Json::object(m)
-}
-
-///|
-/// `o[k]`.
-fn get(o : Json?, k : String) -> Json? {
-  match o {
-    Some(Object(m)) => m.get(k)
-    _ => None
-  }
-}
-
-///|
-/// `o[k]` where it is a string.
-fn gs(o : Json?, k : String) -> String? {
-  match get(o, k) {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
 /// `o[k]` as a string, "" where it is none.
 fn gtext(o : Json?, k : String) -> String {
   gs(o, k).unwrap_or("")
-}
-
-///|
-/// `o[k]` where it is a number.
-fn gn(o : Json?, k : String) -> Double? {
-  match get(o, k) {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-/// `o[k]` where it is an array.
-fn ga(o : Json?, k : String) -> Array[Json]? {
-  match get(o, k) {
-    Some(Array(a)) => Some(a)
-    _ => None
-  }
-}
-
-///|
-/// The strings of an array read off a record.
-fn strings_of(v : Json?) -> Array[String] {
-  match v {
-    Some(Array(a)) => {
-      let out = []
-      for x in a {
-        if x is String(s) {
-          out.push(s)
-        }
-      }
-      out
-    }
-    _ => []
-  }
-}
-
-///|
-/// Whether a value read off a record is truthy, as JS has it.
-fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(Number(n, ..)) => !(n == 0.0 || n.is_nan())
-    Some(String(s)) => s != ""
-    _ => true
-  }
 }
 
 ///|
@@ -231,33 +132,9 @@ fn safe_int(v : Json?) -> Bool {
 }
 
 ///|
-/// A number as a template says it (`${n}`).
-fn num_text(n : Double) -> String {
-  @vault_crypto.js_number(n)
-}
-
-///|
 /// `JSON.stringify(s)`: a string quoted as JS quotes it.
 fn quoted(s : String) -> String {
   stringify(Json::string(s))
-}
-
-///|
-/// JS's `String(v)` of what a record holds.
-fn js_text(v : Json?) -> String {
-  @vault_crypto.js_string(v)
-}
-
-///|
-/// `s.trim()`: JS's white space at both ends taken off.
-fn trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-/// JS's white space and line terminators (`\s`).
-fn js_space(c : Int) -> Bool {
-  @jscase.is_space(c)
 }
 
 ///|
@@ -279,24 +156,6 @@ fn slice(s : String, a : Int, b? : Int) -> String {
 }
 
 ///|
-/// `s.includes(t)`.
-fn contains(s : String, t : String) -> Bool {
-  s.find(t) is Some(_)
-}
-
-///|
-/// `s.startsWith(t)`.
-fn starts(s : String, t : String) -> Bool {
-  s.has_prefix(t)
-}
-
-///|
-/// `s.endsWith(t)`.
-fn ends(s : String, t : String) -> Bool {
-  s.has_suffix(t)
-}
-
-///|
 /// `s.split(sep).join(by)`: every `sep` in `s` replaced.
 fn replace_all(s : String, sep : String, by : String) -> String {
   if sep == "" {
@@ -310,26 +169,6 @@ fn replace_all(s : String, sep : String, by : String) -> String {
 /// `xs.join(sep)`.
 fn join(xs : Array[String], sep : String) -> String {
   xs.join(sep)
-}
-
-///|
-/// `[...new Set(xs)]`.
-fn uniq(xs : Array[String]) -> Array[String] {
-  let seen : Map[String, Unit] = Map([])
-  let out = []
-  for x in xs {
-    if !seen.contains(x) {
-      seen[x] = ()
-      out.push(x)
-    }
-  }
-  out
-}
-
-///|
-/// JS's `<` of two strings: by UTF-16 code units.
-fn str_lt(a : String, b : String) -> Bool {
-  @jsjson.js_compare(a, b) < 0
 }
 
 ///|

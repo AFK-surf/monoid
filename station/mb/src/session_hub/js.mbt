@@ -2,6 +2,19 @@
 // that is undefined (absent) or null, JavaScript's `trim`, its counting of characters (code points) and its JSON text.
 
 ///|
+pub using @jsjson {
+  num_text as js_number_text, json_field as field, json_str_field as str_of, json_num_field as num_of,
+  json_bool_field as is_true, json_items as items, code_points as chars, chars as take, js_index_of as index_of,
+  js_split as split, js_replace_all as replace_all, json_opt_str as opt_str, json_num as num, json_int as int,
+}
+
+///|
+pub using @jsjson {json_str_field as text_or_null}
+
+///|
+pub using @jscase {trim}
+
+///|
 /// `String(value)` as args.ts `jsString` has it: a string as it is, null as "null", anything else its JSON.
 pub fn js_string(value : Json) -> String {
   match value {
@@ -29,126 +42,15 @@ pub fn js_json(value : Json) -> String {
 }
 
 ///|
-/// A number as JavaScript writes it (`String(n)`): integers without a point, NaN and the infinities by name.
-pub fn js_number_text(n : Double) -> String {
-  @jsjson.num_text(n)
-}
-
-///|
-/// A field of an object, None where it is not there (undefined).
-pub fn field(o : Json, name : String) -> Json? {
-  match o {
-    Object(map) => map.get(name)
-    _ => None
-  }
-}
-
-///|
-/// A string field, None where it is not a string.
-pub fn str_of(o : Json, name : String) -> String? {
-  match field(o, name) {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-/// A number field, None where it is not a number.
-pub fn num_of(o : Json, name : String) -> Double? {
-  match field(o, name) {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-/// A field that is a string or null (`string | null`, undefined as null).
-pub fn text_or_null(o : Json, name : String) -> String? {
-  str_of(o, name)
-}
-
-///|
-/// Whether a field is `true`.
-pub fn is_true(o : Json, name : String) -> Bool {
-  field(o, name) is Some(True)
-}
-
-///|
 /// Whether a value is a JSON object (not an array, not null).
 pub fn is_object(v : Json) -> Bool {
   v is Object(_)
 }
 
 ///|
-/// The items of an array, none for anything else.
-pub fn items(v : Json?) -> Array[Json] {
-  match v {
-    Some(Array(a)) => a
-    _ => []
-  }
-}
-
-///|
-/// JavaScript's `trim`.
-pub fn trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-/// How many characters (code points) a string has, as `Array.from(s).length`.
-pub fn chars(s : String) -> Int {
-  @jsjson.code_points(s)
-}
-
-///|
-/// Its first `n` characters (code points), as `Array.from(s).slice(0, n).join("")`.
-pub fn take(s : String, n : Int) -> String {
-  @jsjson.chars(s, n)
-}
-
-///|
 /// `s.slice(from, to)` by UTF-16 units.
 pub fn slice(s : String, from : Int, to? : Int = s.length()) -> String {
   @jsjson.js_slice(s, from, end=to)
-}
-
-///|
-/// `s.indexOf(what, from)` by UTF-16 units (-1: none).
-pub fn index_of(s : String, what : String, from? : Int = 0) -> Int {
-  @jsjson.js_index_of(s, what, from~)
-}
-
-///|
-/// `s.split(sep)` (a non-empty separator).
-pub fn split(s : String, sep : String) -> Array[String] {
-  @jsjson.js_split(s, sep)
-}
-
-///|
-/// `s.replaceAll(what, with)` (a non-empty `what`).
-pub fn replace_all(s : String, what : String, with_ : String) -> String {
-  split(s, what).join(with_)
-}
-
-///|
-/// A string or null as JSON.
-pub fn opt_str(s : String?) -> Json {
-  match s {
-    Some(t) => Json::string(t)
-    None => Json::null()
-  }
-}
-
-///|
-/// A number as JSON.
-pub fn num(n : Double) -> Json {
-  Json::number(n)
-}
-
-///|
-/// An Int as JSON.
-pub fn int(n : Int) -> Json {
-  Json::number(n.to_double())
 }
 
 ///|

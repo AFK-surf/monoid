@@ -3,6 +3,22 @@
 // `Number(...)` reads them and `String(n)` writes them, and the JSON a case is given and answered in.
 
 ///|
+using @jsjson {
+  js_index_of as index_of, js_last_index_of as last_index_of, js_starts as starts, js_ends as ends,
+  js_includes as has, js_split as split_on, js_split_lines as split_lines, js_upper_ascii as upper_ascii,
+  js_number, is_integer, is_safe_integer, jval_stringify_num as num_text, js_round, json_field as field,
+  json_str_field as str_field, json_num_field as num_field, json_bool_field as bool_field, json_items as arr,
+  json_strings_of as strs, json_str as js, json_num_js as jn, json_int as ji, json_bool as jb,
+  json_strs as jstrs, json_opt_str as opt_s, json_stringify as js_stringify, jval_of_json as to_jvalue,
+}
+
+///|
+using @jscase {
+  split_by as split_runs, is_white_space as js_space, trim as js_trim, trim_start_white as js_trim_start,
+  trim_end_white as js_trim_end, lower,
+}
+
+///|
 /// `s.slice(from, to)` in code units, clamped as JavaScript clamps it.
 fn sub(s : String, from : Int, to : Int) -> String {
   let n = s.length()
@@ -11,43 +27,9 @@ fn sub(s : String, from : Int, to : Int) -> String {
   s.unsafe_substring(start=a, end=b)
 }
 
-
 ///|
 fn cu(s : String, i : Int) -> Int {
   s.unsafe_get(i).to_int()
-}
-
-///|
-/// `s.indexOf(needle, from)`, -1 where it is not.
-fn index_of(s : String, needle : String, from? : Int = 0) -> Int {
-  @jsjson.js_index_of(s, needle, from~)
-}
-
-///|
-/// `s.lastIndexOf(needle)`.
-fn last_index_of(s : String, needle : String) -> Int {
-  @jsjson.js_last_index_of(s, needle)
-}
-
-///|
-fn starts(s : String, p : String) -> Bool {
-  s.has_prefix(p)
-}
-
-///|
-fn ends(s : String, p : String) -> Bool {
-  s.has_suffix(p)
-}
-
-///|
-fn has(s : String, p : String) -> Bool {
-  s.contains(p)
-}
-
-///|
-/// `s.split(sep)` with a string separator: every part, empty ones too.
-fn split_on(s : String, sep : String) -> Array[String] {
-  @jsjson.js_split(s, sep)
 }
 
 ///|
@@ -63,47 +45,6 @@ fn split_by(s : String, f : (Int) -> Bool) -> Array[String] {
   }
   out.push(sub(s, at, s.length()))
   out
-}
-
-///|
-/// `s.split(/f+/)`: runs of what `f` says separate.
-fn split_runs(s : String, f : (Int) -> Bool) -> Array[String] {
-  @jscase.split_by(s, f)
-}
-
-///|
-/// `s.split(/\r?\n/)`.
-fn split_lines(s : String) -> Array[String] {
-  let parts = split_on(s, "\n")
-  for i in 0..<(parts.length() - 1) {
-    let p = parts[i]
-    if ends(p, "\r") {
-      parts[i] = sub(p, 0, p.length() - 1)
-    }
-  }
-  parts
-}
-
-///|
-/// JavaScript's `\s` (White_Space and the line terminators, U+FEFF).
-fn js_space(c : Int) -> Bool {
-  @jscase.is_white_space(c)
-}
-
-///|
-/// `s.trim()`.
-fn js_trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-fn js_trim_start(s : String) -> String {
-  @jscase.trim_start_white(s)
-}
-
-///|
-fn js_trim_end(s : String) -> String {
-  @jscase.trim_end_white(s)
 }
 
 ///|
@@ -164,22 +105,6 @@ fn digits(s : String) -> Bool {
 }
 
 ///|
-/// ASCII lower case, as `toLowerCase` makes what these compare (names, keys).
-fn lower(s : String) -> String {
-  @jscase.lower(s)
-}
-
-///|
-fn upper_ascii(s : String) -> String {
-  let b = StringBuilder()
-  for i in 0..<s.length() {
-    let c = cu(s, i)
-    b.write_char(Int::unsafe_to_char(if is_lower(c) { c - 32 } else { c }))
-  }
-  b.to_string()
-}
-
-///|
 /// JavaScript's `toUpperCase` for what these upper (ASCII words, codes): others as they are.
 fn upper(s : String) -> String {
   upper_ascii(s)
@@ -188,12 +113,6 @@ fn upper(s : String) -> String {
 ///|
 fn ch(c : Int) -> String {
   Int::unsafe_to_char(c).to_string()
-}
-
-///|
-/// `Number(s)` for the strings these read (decimal, with white space around it; "" is 0). NaN where it is not one.
-fn js_number(s : String) -> Double {
-  @jsjson.js_number(s)
 }
 
 ///|
@@ -237,45 +156,7 @@ fn decimal_literal(t : String) -> Bool {
   i == n
 }
 
-///|
-fn is_integer(d : Double) -> Bool {
-  @jsjson.is_integer(d)
-}
-
-///|
-fn is_safe_integer(d : Double) -> Bool {
-  @jsjson.is_safe_integer(d)
-}
-
-///|
-/// `String(n)` as JavaScript writes a number.
-fn num_text(d : Double) -> String {
-  @jsjson.stringify(@jsjson.JValue::Num(d))
-}
-
-///|
-/// `Math.round`.
-fn js_round(d : Double) -> Double {
-  @jsjson.js_round(d)
-}
-
 // ── JSON ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-///|
-fn field(j : Json, name : String) -> Json? {
-  match j {
-    Object(m) => m.get(name)
-    _ => None
-  }
-}
-
-///|
-fn str_field(j : Json, name : String) -> String? {
-  match field(j, name) {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
 
 ///|
 fn str_or(j : Json, name : String, d : String) -> String {
@@ -283,38 +164,10 @@ fn str_or(j : Json, name : String, d : String) -> String {
 }
 
 ///|
-fn num_field(j : Json, name : String) -> Double? {
-  match field(j, name) {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
-}
-
-///|
 fn int_field(j : Json, name : String, d : Int) -> Int {
   match num_field(j, name) {
     Some(n) => n.to_int()
     None => d
-  }
-}
-
-///|
-fn bool_field(j : Json, name : String) -> Bool {
-  match field(j, name) {
-    Some(True) => true
-    _ => false
-  }
-}
-
-///|
-fn strs(j : Json?) -> Array[String] {
-  match j {
-    Some(Array(a)) =>
-      a.filter_map(v => match v {
-        String(s) => Some(s)
-        _ => None
-      })
-    _ => []
   }
 }
 
@@ -327,52 +180,6 @@ fn nums(j : Json?) -> Array[Double] {
         _ => None
       })
     _ => []
-  }
-}
-
-///|
-fn js(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jn(n : Double) -> Json {
-  // (as JSON.stringify writes NaN and the infinities)
-  if n.is_nan() || n.is_inf() {
-    Json::null()
-  } else {
-    Json::number(n)
-  }
-}
-
-///|
-fn ji(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn arr(j : Json?) -> Array[Json] {
-  match j {
-    Some(Array(a)) => a
-    _ => []
-  }
-}
-
-///|
-fn jb(b : Bool) -> Json {
-  Json::boolean(b)
-}
-
-///|
-fn jstrs(a : Array[String]) -> Json {
-  Json::array(a.map(Json::string))
-}
-
-///|
-fn opt_s(s : String?) -> Json {
-  match s {
-    Some(t) => Json::string(t)
-    None => Json::null()
   }
 }
 
@@ -439,17 +246,6 @@ fn env_set(env : Array[(String, String)], k : String, v : String) -> Unit {
     }
   }
   env.push((k, v))
-}
-
-///|
-/// JSON as JavaScript writes it (`JSON.stringify`), from the JSON a case holds.
-fn js_stringify(j : Json) -> String {
-  @jsjson.stringify(to_jvalue(j))
-}
-
-///|
-fn to_jvalue(j : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(j)
 }
 
 ///|

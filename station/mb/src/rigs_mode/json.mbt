@@ -4,87 +4,25 @@
 // it is written (JSON.stringify) or walked (Object.values, Object.entries).
 
 ///|
-pub fn jstr(s : String) -> Json {
-  Json::string(s)
+pub using @jsjson {
+  json_str as jstr, json_num as jnum, json_bool as jbool, json_obj as jobj, json_arr as jarr, json_at as get,
+  is_safe_integer as safe_int, json_js_str as js_string_of,
 }
 
 ///|
-pub fn jnum(n : Double) -> Json {
-  Json::number(n)
+using @jsjson {
+  json_str_at as str_at, json_num_at as num_at, json_bool_at as bool_at, json_arr_at as arr_at,
+  json_is_objectish as is_objectish, index_key as key_index,
 }
 
 ///|
-pub fn jbool(b : Bool) -> Json {
-  Json::boolean(b)
-}
+pub using @cloud_lock {parse}
 
 ///|
-pub fn jobj(pairs : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for p in pairs {
-    m[p.0] = p.1
-  }
-  Json::object(m)
-}
+pub using @jscase {trim as js_trim}
 
 ///|
-pub fn jarr(xs : Array[Json]) -> Json {
-  Json::array(xs)
-}
-
-///|
-/// `v[k]`: undefined (None) for anything but an object, or where it has no such key.
-pub fn get(v : Json?, k : String) -> Json? {
-  match v {
-    Some(Object(m)) => m.get(k)
-    _ => None
-  }
-}
-
-///|
-fn str_at(v : Json?, k : String) -> String? {
-  match get(v, k) {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn num_at(v : Json?, k : String) -> Double? {
-  match get(v, k) {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-fn bool_at(v : Json?, k : String) -> Bool? {
-  match get(v, k) {
-    Some(True) => Some(true)
-    Some(False) => Some(false)
-    _ => None
-  }
-}
-
-///|
-fn arr_at(v : Json?, k : String) -> Array[Json]? {
-  match get(v, k) {
-    Some(Array(xs)) => Some(xs)
-    _ => None
-  }
-}
-
-///|
-/// `typeof v === "object" && v !== null` (an array too).
-fn is_objectish(v : Json?) -> Bool {
-  v is Some(Object(_) | Array(_))
-}
-
-///|
-/// Number.isSafeInteger.
-pub fn safe_int(n : Double) -> Bool {
-  @jsjson.is_safe_integer(n)
-}
+using @jscase {is_space as js_space}
 
 ///|
 fn safe_int_at(v : Json?) -> Bool {
@@ -98,33 +36,6 @@ fn safe_int_at(v : Json?) -> Bool {
 /// A number as `String(n)` writes it.
 pub fn num_text(n : Double) -> String {
   @cloud_lock.stringify(Json::number(n))
-}
-
-///|
-/// `String(v)` of a value read from JSON (undefined as "undefined").
-pub fn js_string_of(v : Json?) -> String {
-  match v {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(True) => "true"
-    Some(False) => "false"
-    Some(Number(n, ..)) => num_text(n)
-    Some(String(s)) => s
-    Some(Array(xs)) => {
-      let parts = xs.map(x => match x {
-        Null => ""
-        _ => js_string_of(Some(x))
-      })
-      parts.join(",")
-    }
-    Some(Object(_)) => "[object Object]"
-  }
-}
-
-///|
-/// The index an object's key is in JavaScript's order of its keys, where it is one (an array index's form).
-fn key_index(k : String) -> Double? {
-  @jsjson.index_key(k)
 }
 
 ///|
@@ -164,12 +75,6 @@ pub fn stringify(v : Json) -> String {
 }
 
 ///|
-/// JSON.parse(text): None where it is none.
-pub fn parse(text : String) -> Json? {
-  @cloud_lock.parse(text)
-}
-
-///|
 /// `{ ...a, ...b }`: b's fields over a's, a's order kept and b's new ones after.
 fn spread(a : Json?, b : Json?) -> Json {
   let out : Map[String, Json] = Map([])
@@ -184,18 +89,6 @@ fn spread(a : Json?, b : Json?) -> Json {
     }
   }
   Json::object(out)
-}
-
-///|
-/// Whether a character is in JavaScript's `\s`.
-fn js_space(c : Int) -> Bool {
-  @jscase.is_space(c)
-}
-
-///|
-/// String.prototype.trim.
-pub fn js_trim(s : String) -> String {
-  @jscase.trim(s)
 }
 
 ///|

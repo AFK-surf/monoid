@@ -120,6 +120,8 @@ pub let held_after_ms : Double
 
 pub let holds_known : Array[String]
 
+pub async fn hub_call(Hub, String, Array[@json.Json]) -> @json.Json
+
 pub fn index_of(String, String, from? : Int32) -> Int32
 
 pub fn int(Int32) -> @json.Json
@@ -308,6 +310,8 @@ pub fn thread_command(String) -> String?
 
 pub fn timed(String, Double) -> String
 
+pub let timed_back_ms : Double
+
 pub fn told_afresh(String, Array[String]) -> String
 
 pub fn told_cleared_words(String, Array[String]) -> String
@@ -340,8 +344,8 @@ pub fn words_answer(Words, String, Array[@json.Json]) -> @json.Json raise Refuse
 pub(all) suberror Refused {
   Refused(String)
 }
-pub impl Show for Refused
 pub fn Refused::message(Self) -> String
+pub impl Show for Refused
 
 // Types and methods
 pub struct AgentsSide {
@@ -469,8 +473,8 @@ pub async fn Hub::receive(Self, String, @json.Json) -> Unit
 pub fn Hub::recover(Self) -> Unit raise
 pub fn Hub::release(Self, String) -> Unit raise Refused
 pub fn Hub::release_chat(Self, String) -> Bool raise Refused
-pub fn Hub::reprice_usage(Self) -> Unit
 pub async fn Hub::relieve_archived(Self) -> Unit
+pub fn Hub::reprice_usage(Self) -> Unit
 pub async fn Hub::retire_after_previous(Self) -> Bool
 pub async fn Hub::retire_usage(Self) -> Unit
 pub fn Hub::run_due(Self, Double) -> Unit
@@ -551,7 +555,7 @@ pub async fn LiveShell::turn_ended(Self, String) -> Unit
 pub fn LiveShell::unsubscribe(Self, String, Int32) -> Unit
 pub fn LiveShell::usage_counted(Self) -> Unit
 
-pub struct Place {
+pub(all) struct Place {
   bound : Bool
   joined : Array[String]
   home : String?
@@ -618,7 +622,7 @@ pub struct UsageCounter {
   mut timer : Int32?
 }
 pub fn UsageCounter::new(Hub, settle? : Double, safety? : Double) -> Self
-pub async fn UsageCounter::read(Self, Array[String]?) -> Double
+pub async fn UsageCounter::read(Self, Array[String]?, time_from? : Double) -> Double
 pub fn UsageCounter::reading_all(Self) -> Bool
 pub fn UsageCounter::soon(Self, String) -> Unit
 pub async fn UsageCounter::start(Self) -> Unit
@@ -646,7 +650,7 @@ pub struct Words {
 pub fn Words::new(zh? : Map[String, @json.Json], en? : Map[String, @json.Json], lang? : String) -> Self
 pub fn Words::tr(Self, String, args? : Array[(String, @json.Json)], lang? : String) -> String
 
-pub struct World {
+pub(all) struct World {
   tell : (String, @json.Json) -> Unit
   ask : async (String, @json.Json) -> @json.Json
   now : () -> Double

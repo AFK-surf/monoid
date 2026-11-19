@@ -40,6 +40,8 @@ pub fn backgrounded_on(Background, String, Array[String]) -> (String, Array[Stri
 
 pub fn branded(String, Product) -> String
 
+pub fn built_at_of(Array[String], String?, String?) -> Double?
+
 pub fn built_key(String?) -> @json.Json
 
 pub fn bundle_of(String) -> String?
@@ -514,6 +516,8 @@ pub fn start_env(Array[(String, String)], @json.Json, Array[String]) -> Array[(S
 
 pub fn start_time_of_etime(String, Double) -> Double?
 
+pub fn station_built_at(String?) -> Double?
+
 pub let station_log_cap : Double
 
 pub fn station_version(String?) -> String?
@@ -675,6 +679,8 @@ pub fn win_command_candidates(String, Array[(String, String)], String, (Array[St
 pub fn win_command_cmd(String, String?, Bool) -> String
 
 pub fn win_drives((String) -> Bool) -> Array[(String, String)]
+
+pub fn win_find_command(String, Array[(String, String)], String, (Array[String]) -> String, (String) -> Bool) -> String?
 
 pub fn win_group_memory(String, Array[Double]) -> Array[(Double, Double)]
 

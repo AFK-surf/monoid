@@ -229,6 +229,7 @@ pub(all) struct Listed {
 pub struct Lock {
   json : @json.Json
   ws : String
+  genesis : String
   view : @vault.LockView
   members : Array[(String, String)]
   devices : Array[(String, String)]
@@ -239,6 +240,7 @@ pub fn Lock::email_of(Self, String) -> String?
 pub fn Lock::member_with_email(Self, String) -> String?
 pub fn Lock::members_with_email(Self, String) -> Array[String]
 pub fn Lock::of_json(@json.Json) -> Self
+pub fn Lock::open_roster(Self) -> Bool
 
 type LostSaves
 
@@ -411,7 +413,7 @@ pub fn Secrets::cancel(Self, String, String) -> String raise
 pub fn Secrets::carried(Self) -> @json.Json
 pub fn Secrets::carry(Self, @json.Json) -> Unit
 pub fn Secrets::close(Self) -> Unit
-pub fn Secrets::deny(Self, Lock, String, @json.Json) -> String? raise
+pub fn Secrets::deny(Self, Lock, String, @json.Json, email? : String) -> String? raise
 pub fn Secrets::deny_plain(Self, String, String, @json.Json) -> String? raise
 pub async fn Secrets::describe(Self, String, String, name? : String, about? : String, String, person? : String) -> String
 pub fn Secrets::described(Self, Lock, String, @json.Json) -> String? raise

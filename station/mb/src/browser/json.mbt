@@ -3,176 +3,28 @@
 // field of what may be anything (`v?.k`), `String(v)`, `Number(v)`, `{ ...a, ...b }`.
 
 ///|
-using @jsjson {type JValue as J}
-
-///|
-pub fn js(s : String) -> J {
-  @jsjson.JValue::of_string(s)
+pub using @jsjson {
+  jval_str as js, jval_num as jn, jval_int as ji, jval_bool as jb, jval_obj as jo, jval_array as ja,
+  jval_at_last as at, jval_str_of as str_of, jval_js_str as js_str, jval_num_text_of as num_text,
+  num_text as dnum, stringify, jval_quote as quote, utf8, utf8_text as from_utf8,
 }
 
 ///|
-pub fn jn(d : Double) -> J {
-  @jsjson.JValue::of_double(d)
+pub using @codec {base64_decode_loose as from_base64url}
+
+///|
+using @jsjson {
+  type JValue as J, jval_strs as jsa, jval_opt_str as jopt, jval_at_path_last as at_path, jval_at_i as at_i,
+  jval_text as text, jval_num_of as num_of, jval_bool_of as bool_of, jval_arr as arr, jval_is_arr as is_arr,
+  jval_is_obj as is_object, jval_nullish as nullish, jval_truthy as truthy, jval_is_true as is_true,
+  jval_js_num as js_num, jval_is_integer as is_integer, jval_safe_int as is_safe_integer, jval_set as put,
+  jval_spread as spread, jval_del as drop_key, stringify_pretty, js_upper_ascii as upper_ascii,
+  js_all_digits as all_digits, js_index_of as index_of, js_last_index_of as last_index_of, jval_num as jms,
+  jval_str_eq as is_str,
 }
 
 ///|
-pub fn ji(i : Int) -> J {
-  @jsjson.JValue::of_int(i)
-}
-
-///|
-pub fn jb(b : Bool) -> J {
-  @jsjson.JValue::of_bool(b)
-}
-
-///|
-pub fn jo(fields : Array[(String, J)]) -> J {
-  @jsjson.JValue::of_object(fields)
-}
-
-///|
-pub fn ja(items : Array[J]) -> J {
-  @jsjson.JValue::of_array(items)
-}
-
-///|
-fn jsa(items : Array[String]) -> J {
-  @jsjson.JValue::of_strings(items)
-}
-
-///|
-fn jopt(s : String?) -> J {
-  @jsjson.JValue::of_opt_string(s)
-}
-
-///|
-/// `v?.[name]`: undefined (None) where `v` is no object or has none (the last of a name given twice, as JSON.parse
-/// keeps it).
-pub fn at(v : J?, name : String) -> J? {
-  @jsjson.jval_at_last(v, name)
-}
-
-///|
-/// `v?.[a]?.[b]…`.
-fn at_path(v : J?, path : Array[String]) -> J? {
-  @jsjson.jval_at_path_last(v, path)
-}
-
-///|
-fn at_i(v : J?, i : Int) -> J? {
-  @jsjson.jval_at_i(v, i)
-}
-
-///|
-pub fn str_of(v : J?) -> String? {
-  @jsjson.jval_str_of(v)
-}
-
-///|
-/// `typeof v === "string" ? v : ""`.
-fn text(v : J?) -> String {
-  @jsjson.jval_text(v)
-}
-
-///|
-fn num_of(v : J?) -> Double? {
-  @jsjson.jval_num_of(v)
-}
-
-///|
-fn bool_of(v : J?) -> Bool? {
-  @jsjson.jval_bool_of(v)
-}
-
-///|
-fn arr(v : J?) -> Array[J] {
-  @jsjson.jval_arr(v)
-}
-
-///|
-fn is_arr(v : J?) -> Bool {
-  v is Some(Arr(_))
-}
-
-///|
-/// `v !== null && typeof v === "object"` (an array too).
-fn is_object(v : J?) -> Bool {
-  v is Some(Obj(_) | Arr(_))
-}
-
-///|
-/// `v == null`.
-fn nullish(v : J?) -> Bool {
-  @jsjson.jval_nullish(v)
-}
-
-///|
-fn truthy(v : J?) -> Bool {
-  @jsjson.jval_truthy(v)
-}
-
-///|
-/// `v === true`.
-fn is_true(v : J?) -> Bool {
-  @jsjson.jval_is_true(v)
-}
-
-///|
-/// `String(v)`, `undefined` as "undefined".
-pub fn js_str(v : J?) -> String {
-  @jsjson.jval_js_str(v)
-}
-
-///|
-/// A number as `String(n)` says it.
-pub fn num_text(n : J) -> String {
-  match n {
-    Num(d) => @jsjson.num_text(d)
-    _ => @jsjson.stringify(n)
-  }
-}
-
-///|
-/// A double as `String(n)` says it.
-pub fn dnum(d : Double) -> String {
-  @jsjson.num_text(d)
-}
-
-///|
-/// `Number(v)`.
-fn js_num(v : J?) -> Double {
-  @jsjson.jval_js_num(v)
-}
-
-///|
-/// `Number.isInteger(v)`.
-fn is_integer(v : J?) -> Bool {
-  @jsjson.jval_is_integer(v)
-}
-
-///|
-/// `Number.isSafeInteger(v)`.
-fn is_safe_integer(v : J?) -> Bool {
-  @jsjson.jval_safe_int(v)
-}
-
-///|
-/// `o[k] = v` (in its place where it is there, at its end where not); anything but an object stays as it is.
-fn put(o : J, k : String, v : J) -> J {
-  @jsjson.jval_set(o, k, v)
-}
-
-///|
-/// `{ ...a, ...b }` of two objects (what is not one spreads nothing).
-fn spread(a : J, b : J) -> J {
-  @jsjson.jval_spread(a, b)
-}
-
-///|
-/// `delete o[k]`.
-fn drop_key(o : J, k : String) -> J {
-  @jsjson.jval_del(o, k)
-}
+using @jscase {lower, trim}
 
 ///|
 /// An object's own keys, in order (each once: JSON.parse keeps a name given twice where it came first).
@@ -195,23 +47,6 @@ fn keys_of(o : J) -> Array[String] {
 /// `Object.entries(o)` of a parsed object: its keys in order, each with its last value.
 fn entries_of(o : J) -> Array[(String, J)] {
   keys_of(o).map(k => (k, at(Some(o), k).unwrap()))
-}
-
-///|
-pub fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-/// `JSON.stringify(v, null, 2)`.
-fn stringify_pretty(v : J) -> String {
-  @jsjson.stringify_indent(v, 2)
-}
-
-///|
-/// `JSON.stringify(s)` of a string.
-pub fn quote(s : String) -> String {
-  stringify(js(s))
 }
 
 ///|
@@ -276,30 +111,6 @@ pub fn kind_of(e : Error) -> String {
 }
 
 ///|
-fn lower(s : String) -> String {
-  @jscase.lower(s)
-}
-
-///|
-fn trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-/// `s.toUpperCase()` of ASCII letters (what the key names here hold).
-fn upper_ascii(s : String) -> String {
-  let sb = StringBuilder::new()
-  for c in s {
-    if c >= 'a' && c <= 'z' {
-      sb.write_char(Int::unsafe_to_char(c.to_int() - 32))
-    } else {
-      sb.write_char(c)
-    }
-  }
-  sb.to_string()
-}
-
-///|
 fn is_ascii_digit(c : Char) -> Bool {
   c >= '0' && c <= '9'
 }
@@ -307,20 +118,6 @@ fn is_ascii_digit(c : Char) -> Bool {
 ///|
 fn is_ascii_alpha(c : Char) -> Bool {
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-///|
-/// Whether every one of `s`'s letters is a digit (and there is one).
-fn all_digits(s : String) -> Bool {
-  if s.length() == 0 {
-    return false
-  }
-  for c in s {
-    if !is_ascii_digit(c) {
-      return false
-    }
-  }
-  true
 }
 
 ///|
@@ -348,94 +145,10 @@ fn imin(a : Int, b : Int) -> Int {
 }
 
 ///|
-/// `s.indexOf(t, from)`: -1 where it is not there.
-fn index_of(s : String, t : String, from? : Int = 0) -> Int {
-  @jsjson.js_index_of(s, t, from~)
-}
-
-///|
-/// `s.lastIndexOf(t)`.
-fn last_index_of(s : String, t : String) -> Int {
-  @jsjson.js_last_index_of(s, t)
-}
-
-///|
 /// The base64url of `b` (no padding: Buffer's `base64url`).
 pub fn base64url(b : Bytes) -> String {
   let t = @base64.encode(b, padding=false)
   t.replace_all(old="+", new="-").replace_all(old="/", new="_")
-}
-
-///|
-/// `Buffer.from(s, "base64url")` (either alphabet, padding or not; what is no letter of it skipped, as Node does).
-pub fn from_base64url(s : String) -> Bytes {
-  let vals = []
-  for c in s {
-    let v = if c >= 'A' && c <= 'Z' {
-      c.to_int() - 'A'.to_int()
-    } else if c >= 'a' && c <= 'z' {
-      c.to_int() - 'a'.to_int() + 26
-    } else if c >= '0' && c <= '9' {
-      c.to_int() - '0'.to_int() + 52
-    } else if c == '-' || c == '+' {
-      62
-    } else if c == '_' || c == '/' {
-      63
-    } else if c == '=' {
-      break
-    } else {
-      -1
-    }
-    if v >= 0 {
-      vals.push(v)
-    }
-  }
-  let out = @buffer.new()
-  let mut i = 0
-  while i + 4 <= vals.length() {
-    let n = (vals[i] << 18) | (vals[i + 1] << 12) | (vals[i + 2] << 6) | vals[i + 3]
-    out.write_byte((n >> 16).to_byte())
-    out.write_byte(((n >> 8) & 0xff).to_byte())
-    out.write_byte((n & 0xff).to_byte())
-    i += 4
-  }
-  let left = vals.length() - i
-  if left == 2 {
-    let n = (vals[i] << 18) | (vals[i + 1] << 12)
-    out.write_byte((n >> 16).to_byte())
-  } else if left == 3 {
-    let n = (vals[i] << 18) | (vals[i + 1] << 12) | (vals[i + 2] << 6)
-    out.write_byte((n >> 16).to_byte())
-    out.write_byte(((n >> 8) & 0xff).to_byte())
-  }
-  out.to_bytes()
-}
-
-///|
-/// UTF-8 bytes of `s` (a lone surrogate as U+FFFD, as Buffer.from does).
-pub fn utf8(s : String) -> Bytes {
-  @jsjson.utf8(s)
-}
-
-///|
-/// `Buffer.toString("utf8")`.
-pub fn from_utf8(b : Bytes) -> String {
-  @jsjson.utf8_text(b)
-}
-
-///|
-/// A number of milliseconds as a JSON number.
-fn jms(d : Double) -> J {
-  @jsjson.JValue::of_double(d)
-}
-
-///|
-/// `v === s` of a string.
-fn is_str(v : J?, s : String) -> Bool {
-  match v {
-    Some(Str(u)) => @jsjson.text(u) == s
-    _ => false
-  }
 }
 
 ///|

@@ -4,106 +4,24 @@
 // number as `String(n)` says it, `toFixed`, `toISOString`, `Buffer.byteLength`, and the SHA-256 of a string's UTF-8.
 
 ///|
-using @jsjson {type JValue}
+using @jsjson {
+  type JValue, units as u, text as t, jval_str as js, jval_num as num, jval_int as int, jval_obj as obj,
+  jval_strs as arr_of, jval_at as get, jval_str_of as str_of, jval_nonempty as nonempty,
+  jval_is_true as is_true, jval_num_of as num_of, jval_finite_or_zero as finite_or_zero, jval_arr as arr,
+  jval_is_obj as is_object, jval_entries as fields, js_less, js_index_of as index_of,
+  jval_stringify_num as num_text, points as code_points, stringify, jval_quote as quote,
+  jval_try_parse as parse, js_utf8_len as utf8_length,
+}
+
+///|
+using @jscase {trim, is_space, lower}
 
 ///|
 pub type J = JValue
 
 ///|
-fn u(s : String) -> Array[Int] {
-  @jsjson.units(s)
-}
-
-///|
-fn t(s : Array[Int]) -> String {
-  @jsjson.text(s)
-}
-
-///|
-fn js(s : String) -> J {
-  @jsjson.JValue::of_string(s)
-}
-
-///|
-fn num(n : Double) -> J {
-  @jsjson.JValue::of_double(n)
-}
-
-///|
-fn int(n : Int) -> J {
-  @jsjson.JValue::of_int(n)
-}
-
-///|
-fn obj(fields : Array[(String, J)]) -> J {
-  @jsjson.JValue::of_object(fields)
-}
-
-///|
-fn arr_of(items : Array[String]) -> J {
-  @jsjson.JValue::of_strings(items)
-}
-
-///|
-/// `v?.name`.
-fn get(v : J?, name : String) -> J? {
-  @jsjson.jval_at(v, name)
-}
-
-///|
-/// `typeof v === "string" ? v : undefined`.
-fn str_of(v : J?) -> String? {
-  @jsjson.jval_str_of(v)
-}
-
-///|
-/// `typeof v === "string" && v !== "" ? v : undefined` (profiles.ts `str`).
-fn nonempty(v : J?) -> String? {
-  match v {
-    Some(Str(s)) if s.length() > 0 => Some(t(s))
-    _ => None
-  }
-}
-
-///|
 fn is_s(v : J?, s : String) -> Bool {
   v is Some(Str(x)) && x == u(s)
-}
-
-///|
-fn is_true(v : J?) -> Bool {
-  @jsjson.jval_is_true(v)
-}
-
-///|
-/// `typeof v === "number"` (NaN and the infinities too, as JSON gives none).
-fn num_of(v : J?) -> Double? {
-  @jsjson.jval_num_of(v)
-}
-
-///|
-/// `typeof v === "number" && Number.isFinite(v) ? v : 0`.
-fn finite_or_zero(v : J?) -> Double {
-  match v {
-    Some(Num(n)) if @jsjson.is_finite(n) => n
-    _ => 0.0
-  }
-}
-
-///|
-fn arr(v : J?) -> Array[J] {
-  @jsjson.jval_arr(v)
-}
-
-///|
-/// `v !== null && typeof v === "object"` (an array too).
-fn is_object(v : J?) -> Bool {
-  v is Some(Obj(_)) || v is Some(Arr(_))
-}
-
-///|
-fn fields(v : J?) -> Array[(String, J)] {
-  @jsjson.jval_entries(v)
 }
 
 ///|
@@ -197,12 +115,6 @@ pub fn Fields::json(self : Fields) -> J {
 }
 
 ///|
-/// `a < b` as JavaScript compares strings.
-fn js_less(a : String, b : String) -> Bool {
-  @jsjson.js_compare(a, b) < 0
-}
-
-///|
 /// Sorted as `.sort(([a], [b]) => (a < b ? -1 : 1))` sorts (stable, by JavaScript's `<`).
 fn[T] sort_js(items : Array[T], key : (T) -> String) -> Array[T] {
   let out = items.copy()
@@ -217,18 +129,6 @@ fn[T] sort_js(items : Array[T], key : (T) -> String) -> Array[T] {
     out[j] = x
   }
   out
-}
-
-///|
-/// `s.trim()`.
-fn trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-/// `/\s/.test(c)`.
-fn is_space(c : Int) -> Bool {
-  @jscase.is_space(c)
 }
 
 ///|
@@ -252,12 +152,6 @@ fn sub(s : String, from : Int, to? : Int) -> String {
 }
 
 ///|
-/// `s.indexOf(needle, from)`, -1 when it is not there.
-fn index_of(s : String, needle : String, from? : Int = 0) -> Int {
-  @jsjson.js_index_of(s, needle, from~)
-}
-
-///|
 fn replace_all(s : String, old : String, new : String) -> String {
   s.replace_all(old~, new~)
 }
@@ -272,50 +166,9 @@ fn replace_first(s : String, old : String, new : String) -> String {
 }
 
 ///|
-/// `s.toLowerCase()`.
-fn lower(s : String) -> String {
-  @jscase.lower(s)
-}
-
-///|
-/// A number as `String(n)` and a template say it.
-fn num_text(n : Double) -> String {
-  @jsjson.stringify(Num(n))
-}
-
-///|
-/// `Buffer.byteLength(s, "utf8")`: a lone surrogate is three bytes, as its replacement is.
-fn utf8_length(s : String) -> Int {
-  let mut n = 0
-  let mut i = 0
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if c < 0x80 {
-      n += 1
-    } else if c < 0x800 {
-      n += 2
-    } else if c >= 0xd800 && c <= 0xdbff && i + 1 < s.length() && s.unsafe_charcode_at(i + 1) >= 0xdc00 &&
-      s.unsafe_charcode_at(i + 1) <= 0xdfff {
-      n += 4
-      i += 1
-    } else {
-      n += 3
-    }
-    i += 1
-  }
-  n
-}
-
-///|
 /// `createHash("sha256").update(s).digest("hex")`.
 fn sha256_hex(s : String) -> String {
   @activity.sha256_hex(@activity.utf8(s))
-}
-
-///|
-/// `[...s]`: its code points, a lone surrogate one of its own.
-fn code_points(s : String) -> Array[String] {
-  @jsjson.points(s)
 }
 
 ///|
@@ -351,24 +204,6 @@ fn all_units(s : String, f : (Int) -> Bool) -> Bool {
 ///|
 fn is_hex_lower(c : Int) -> Bool {
   is_digit(c) || (c >= 'a'.to_int() && c <= 'f'.to_int())
-}
-
-///|
-/// `JSON.stringify(v)`.
-fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-/// `JSON.stringify(s)`.
-fn quote(s : String) -> String {
-  stringify(js(s))
-}
-
-///|
-/// `JSON.parse(text)`, none when it is not JSON.
-fn parse(text : String) -> J? {
-  @jsjson.jval_try_parse(text)
 }
 
 ///|

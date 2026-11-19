@@ -54,47 +54,17 @@ fn unescape(s : String) -> String {
 }
 
 ///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
+pub using @jsjson {js_round}
+
+///|
+using @jsjson {
+  json_str as jstr, json_num as jnum, json_int as jint, json_bool as jbool, json_obj as obj,
+  json_field as field, json_num_of as num, jval_quote as js_quoted, is_safe_integer as safe_integer,
+  js_split as split, js_starts as starts, js_ends as ends, js_all_digits as all_digits,
 }
 
 ///|
-fn jnum(d : Double) -> Json {
-  Json::number(d)
-}
-
-///|
-fn jint(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jbool(b : Bool) -> Json {
-  if b {
-    Json::boolean(true)
-  } else {
-    Json::boolean(false)
-  }
-}
-
-///|
-/// An object of these pairs, in their order (later keys replacing earlier as a spread does).
-fn obj(pairs : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for p in pairs {
-    m[p.0] = p.1
-  }
-  Json::object(m)
-}
-
-///|
-/// `v[key]` where `v` is an object (not an array) that has it.
-fn field(v : Json, key : String) -> Json? {
-  match v {
-    Object(m) => m.get(key)
-    _ => None
-  }
-}
+using @jscase {trim}
 
 ///|
 /// `v[key]`, null where there is none.
@@ -112,39 +82,12 @@ fn text(v : Json, key : String) -> String {
 }
 
 ///|
-/// A finite number (load.ts `num`).
-fn num(v : Json?) -> Double? {
-  match v {
-    Some(Number(d, ..)) => Some(d)
-    _ => None
-  }
-}
-
-///|
 /// A JavaScript number as `String(n)` writes it.
 pub fn js_number(d : Double) -> String {
   if d == 0.0 {
     return "0"
   }
   @jsjson.stringify(@jsjson.JValue::Num(d))
-}
-
-///|
-/// `JSON.stringify(s)` of a string.
-fn js_quoted(s : String) -> String {
-  @jsjson.stringify(@jsjson.JValue::of_string(s))
-}
-
-///|
-/// `Math.round`.
-pub fn js_round(x : Double) -> Double {
-  @jsjson.js_round(x)
-}
-
-///|
-/// `Number.isSafeInteger`.
-fn safe_integer(d : Double) -> Bool {
-  @jsjson.is_safe_integer(d)
 }
 
 ///|
@@ -167,42 +110,13 @@ fn index_of(s : String, sep : String, at? : Int = 0) -> Int {
 }
 
 ///|
-/// `s.split(sep)` of a non-empty separator.
-fn split(s : String, sep : String) -> Array[String] {
-  @jsjson.js_split(s, sep)
-}
-
-///|
 fn join(parts : Array[String], sep : String) -> String {
   parts.join(sep)
 }
 
 ///|
-fn starts(s : String, p : String) -> Bool {
-  s.has_prefix(p)
-}
-
-///|
-fn ends(s : String, p : String) -> Bool {
-  s.has_suffix(p)
-}
-
-///|
 fn is_digit(c : Int) -> Bool {
   c >= '0' && c <= '9'
-}
-
-///|
-fn all_digits(s : String) -> Bool {
-  if s.length() == 0 {
-    return false
-  }
-  for i in 0..<s.length() {
-    if !is_digit(s.unsafe_charcode_at(i)) {
-      return false
-    }
-  }
-  true
 }
 
 ///|
@@ -230,11 +144,6 @@ fn lower_ascii(s : String) -> String {
     out.write_char(Int::unsafe_to_char(if c >= 'A' && c <= 'Z' { c + 32 } else { c }))
   }
   out.to_string()
-}
-
-///|
-fn trim(s : String) -> String {
-  @jscase.trim(s)
 }
 
 ///|

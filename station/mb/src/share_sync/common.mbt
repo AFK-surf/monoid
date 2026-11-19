@@ -46,57 +46,24 @@ pub fn who_said(e : Error) -> String {
 // ── JSON as JavaScript reads it ──
 
 ///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
+pub using @jsjson {json_stringify as js_stringify, json_stringify_pretty as js_stringify2}
+
+///|
+using @jsjson {
+  json_str as jstr, json_num as jnum, json_bool as jbool, json_arr as jarr, json_strs as jstrs,
+  json_obj as jobj, json_is_obj as is_obj, json_at as get, json_str_of as str_of, json_arr_at as arr_at,
+  num_text as js_number, json_num_js as jnum_js, json_js_str as js_string, js_slice_to as js_slice,
 }
 
 ///|
-fn jnum(d : Double) -> Json {
-  Json::number(d)
-}
+using @jscase {trim as js_trim}
 
 ///|
-fn jbool(b : Bool) -> Json {
-  Json::boolean(b)
-}
+using @codec {base64_decode_loose as base64_loose, base64_encode as base64_of}
 
 ///|
 fn jnull() -> Json {
   Json::null()
-}
-
-///|
-fn jarr(a : Array[Json]) -> Json {
-  Json::array(a)
-}
-
-///|
-fn jstrs(a : Array[String]) -> Json {
-  Json::array(a.map(jstr))
-}
-
-///|
-fn jobj(pairs : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for p in pairs {
-    m[p.0] = p.1
-  }
-  Json::object(m)
-}
-
-///|
-/// `v !== null && typeof v === "object" && !Array.isArray(v)`.
-fn is_obj(v : Json?) -> Bool {
-  v is Some(Object(_))
-}
-
-///|
-/// `v?.[k]` (undefined: None).
-fn get(v : Json?, k : String) -> Json? {
-  match v {
-    Some(Object(m)) => m.get(k)
-    _ => None
-  }
 }
 
 ///|
@@ -106,23 +73,6 @@ fn gets(v : Json?, ks : Array[String]) -> Json? {
     at = get(at, k)
   }
   at
-}
-
-///|
-fn str_of(v : Json?) -> String? {
-  match v {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-/// `Array.isArray(v[k]) ? v[k] : None`.
-fn arr_at(v : Json?, k : String) -> Array[Json]? {
-  match get(v, k) {
-    Some(Array(a)) => Some(a)
-    _ => None
-  }
 }
 
 ///|
@@ -167,18 +117,6 @@ fn js_keys(m : Map[String, Json]) -> Array[String] {
 }
 
 ///|
-/// `JSON.stringify(v)`.
-pub fn js_stringify(v : Json) -> String {
-  @jsjson.stringify(@jsjson.JValue::of_json(v))
-}
-
-///|
-/// `JSON.stringify(v, null, 2)`.
-pub fn js_stringify2(v : Json) -> String {
-  @jsjson.stringify_indent(@jsjson.JValue::of_json(v), 2)
-}
-
-///|
 /// `JSON.parse(text)` as a plain value (its numbers doubles).
 fn js_parse(text : String) -> Json raise {
   @jsjson.parse(text).to_json_lossy()
@@ -197,27 +135,6 @@ fn hash_of(v : Json) -> String {
     String(s) => sha_text(s)
     other => sha_text(js_stringify(other))
   }
-}
-
-///|
-/// `String(v)` of a JSON value (undefined: "undefined").
-fn js_string(v : Json?) -> String {
-  match v {
-    None => "undefined"
-    Some(String(s)) => s
-    Some(Null) => "null"
-    Some(True) => "true"
-    Some(False) => "false"
-    Some(Number(d, ..)) => js_number(d)
-    Some(Array(a)) => a.map(x => if x is Null { "" } else { js_string(Some(x)) }).join(",")
-    Some(Object(_)) => "[object Object]"
-  }
-}
-
-///|
-/// A number as JavaScript writes it (`String(n)`).
-fn js_number(d : Double) -> String {
-  @jsjson.num_text(d)
 }
 
 ///|
@@ -250,33 +167,8 @@ fn num_or0(v : Json?) -> Double {
 }
 
 ///|
-/// A JSON number of a double that may be NaN (`JSON.stringify` writes it null).
-fn jnum_js(d : Double) -> Json {
-  if d != d || d == @double.infinity || d == @double.neg_infinity {
-    Json::null()
-  } else {
-    Json::number(d)
-  }
-}
-
-///|
 fn js_space(c : Char) -> Bool {
   @jscase.is_space(c.to_int())
-}
-
-///|
-fn js_trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-/// The first `n` UTF-16 units of `s` (`s.slice(0, n)`).
-fn js_slice(s : String, n : Int) -> String {
-  if s.length() <= n {
-    s
-  } else {
-    s.view(end_offset=n).to_string()
-  }
 }
 
 ///|
@@ -286,19 +178,6 @@ fn text_most(v : Json?, max : Int) -> String {
     Some(String(s)) => @jsjson.chars(@jscase.trim(s), max)
     _ => ""
   }
-}
-
-///|
-/// Base64 as `Buffer.from(s, "base64")` reads it: what is not of its alphabet passed over, `-` and `_` as `+` and `/`,
-/// padding or none.
-fn base64_loose(s : String) -> Bytes {
-  @codec.base64_decode_loose(s)
-}
-
-///|
-/// `Buffer.toString("base64")`.
-fn base64_of(b : BytesView) -> String {
-  @codec.base64_encode(b)
 }
 
 ///|

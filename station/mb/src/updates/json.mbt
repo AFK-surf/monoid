@@ -6,94 +6,23 @@
 pub type J = @jsjson.JValue
 
 ///|
-pub fn js(s : String) -> J {
-  @jsjson.JValue::of_string(s)
+pub using @jsjson {
+  jval_str as js, jval_num as jn, jval_int as ji, jval_bool as jb, jval_obj as jo, jval_array as ja,
+  jval_strs as jstrs, jval_at as get, jval_str_of as text, jval_num_of as num, jval_keys_of as keys_of,
+  jval_set_or_new as set, jval_del as del, jval_spread as spread, stringify, parse,
+  jval_stringify_num as num_text, js_slice as slice, js_last_index_of as last_index_of, js_includes as includes,
+  js_starts as starts_with, js_ends as ends_with, js_split as split, js_replace_all as replace_all,
+  js_all_digits as all_digits, jval_safe_int as is_safe_integer, utf8_text, js_round,
 }
 
 ///|
-pub fn jn(d : Double) -> J {
-  @jsjson.JValue::of_double(d)
-}
+using @jsjson {jval_opt_str as jopt}
 
 ///|
-pub fn ji(i : Int) -> J {
-  @jsjson.JValue::of_int(i)
-}
+pub using @jscase {trim, trim_end}
 
 ///|
-pub fn jb(b : Bool) -> J {
-  @jsjson.JValue::of_bool(b)
-}
-
-///|
-pub fn jo(pairs : Array[(String, J)]) -> J {
-  @jsjson.JValue::of_object(pairs)
-}
-
-///|
-pub fn ja(items : Array[J]) -> J {
-  @jsjson.JValue::of_array(items)
-}
-
-///|
-pub fn jstrs(items : Array[String]) -> J {
-  @jsjson.JValue::of_strings(items)
-}
-
-///|
-/// A string or none as JSON (null where none).
-fn jopt(s : String?) -> J {
-  @jsjson.JValue::of_opt_string(s)
-}
-
-///|
-/// `o[k]` where `o` is an object.
-pub fn get(o : J?, k : String) -> J? {
-  @jsjson.jval_at(o, k)
-}
-
-///|
-pub fn text(j : J?) -> String? {
-  @jsjson.jval_str_of(j)
-}
-
-///|
-pub fn num(j : J?) -> Double? {
-  @jsjson.jval_num_of(j)
-}
-
-///|
-pub fn keys_of(o : J) -> Array[String] {
-  @jsjson.jval_keys_of(o)
-}
-
-///|
-/// `o[k] = v` on a copy: in its place where `o` has it, else last.
-pub fn set(o : J, k : String, v : J) -> J {
-  @jsjson.jval_set_or_new(o, k, v)
-}
-
-///|
-/// `delete o[k]` on a copy.
-pub fn del(o : J, k : String) -> J {
-  @jsjson.jval_del(o, k)
-}
-
-///|
-/// `{ ...a, ...b }`.
-pub fn spread(a : J, b : J) -> J {
-  @jsjson.jval_spread(a, b)
-}
-
-///|
-pub fn stringify(j : J) -> String {
-  @jsjson.stringify(j)
-}
-
-///|
-pub fn parse(s : String) -> J raise {
-  @jsjson.parse(s)
-}
+pub using @codec {hex_encode as hex, base64_decode_loose as base64_bytes}
 
 ///|
 /// `JSON.stringify(a) === JSON.stringify(b)`.
@@ -102,53 +31,14 @@ pub fn same(a : J, b : J) -> Bool {
 }
 
 ///|
-/// A number as JavaScript's `String(n)` says it.
-pub fn num_text(d : Double) -> String {
-  stringify(Num(d))
-}
-
-///|
 fn cu(s : String, i : Int) -> Int {
   s.code_unit_at(i).to_int()
-}
-
-///|
-/// `s.slice(start, end)` (by UTF-16 units), negative counted from the end, clamped.
-pub fn slice(s : String, start : Int, end? : Int) -> String {
-  @jsjson.js_slice(s, start, end?)
 }
 
 ///|
 /// `s.indexOf(sub)` (-1: none).
 pub fn index_of(s : String, sub : String) -> Int {
   @jsjson.js_index_of(s, sub)
-}
-
-///|
-/// `s.lastIndexOf(sub)` (-1: none).
-pub fn last_index_of(s : String, sub : String) -> Int {
-  @jsjson.js_last_index_of(s, sub)
-}
-
-///|
-pub fn includes(s : String, sub : String) -> Bool {
-  s.find(sub) is Some(_)
-}
-
-///|
-pub fn starts_with(s : String, p : String) -> Bool {
-  s.has_prefix(p)
-}
-
-///|
-pub fn ends_with(s : String, p : String) -> Bool {
-  s.has_suffix(p)
-}
-
-///|
-/// `s.split(sep)` by a string (JavaScript's: "" splits into nothing but "", a separator at either end gives "").
-pub fn split(s : String, sep : String) -> Array[String] {
-  @jsjson.js_split(s, sep)
 }
 
 ///|
@@ -167,40 +57,8 @@ pub fn split_units(s : String, is_sep : (Int) -> Bool) -> Array[String] {
 }
 
 ///|
-/// `s.split(a).join(b)`.
-pub fn replace_all(s : String, a : String, b : String) -> String {
-  split(s, a).join(b)
-}
-
-///|
-/// `s.trim()`.
-pub fn trim(s : String) -> String {
-  @jscase.trim(s)
-}
-
-///|
-/// `s.trimEnd()`.
-pub fn trim_end(s : String) -> String {
-  @jscase.trim_end(s)
-}
-
-///|
 fn is_digit(c : Int) -> Bool {
   c >= 48 && c <= 57
-}
-
-///|
-/// `/^[0-9]+$/`.
-pub fn all_digits(s : String) -> Bool {
-  if s == "" {
-    return false
-  }
-  for i in 0..<s.length() {
-    if !is_digit(cu(s, i)) {
-      return false
-    }
-  }
-  true
 }
 
 ///|
@@ -216,18 +74,6 @@ pub fn is_sha(s : String) -> Bool {
     }
   }
   true
-}
-
-///|
-/// JavaScript's `Number.isSafeInteger`.
-pub fn is_safe_integer(j : J?) -> Bool {
-  j is Some(Num(d)) && @jsjson.is_safe_integer(d)
-}
-
-///|
-/// Lowercase hex of bytes.
-pub fn hex(b : Bytes) -> String {
-  @codec.hex_encode(b)
 }
 
 ///|
@@ -250,28 +96,6 @@ pub fn unhex(s : String) -> Bytes {
     i += 2
   }
   out.to_bytes()
-}
-
-///|
-/// Bytes of base64 as Node's `Buffer.from(s, "base64")` takes them: what is not of its alphabet (either one's, the URL's
-/// too) skipped, stopping at `=`.
-pub fn base64_bytes(s : String) -> Bytes {
-  let digits = StringBuilder()
-  let mut n = 0
-  for i in 0..<s.length() {
-    let c = cu(s, i)
-    if c == 61 {
-      break
-    }
-    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c is (43 | 45 | 47 | 95) {
-      digits.write_char(c.unsafe_to_char())
-      n += 1
-    }
-  }
-  let text = digits.to_string()
-  // A lone digit past a group of four is six bits: no byte, as Node leaves it.
-  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
-  @codec.base64_decode(text).unwrap_or(b"")
 }
 
 ///|
@@ -300,21 +124,9 @@ pub fn bytes_of(j : J?) -> Bytes {
 }
 
 ///|
-/// UTF-8 decoded as Node's `toString("utf8")` does (what is not UTF-8 replaced).
-pub fn utf8_text(b : Bytes) -> String {
-  @jsjson.utf8_text(b)
-}
-
-///|
 /// `Math.floor`.
 pub fn floor(d : Double) -> Double {
   d.floor()
-}
-
-///|
-/// `Math.round` (halves up).
-pub fn js_round(d : Double) -> Double {
-  @jsjson.js_round(d)
 }
 
 ///|

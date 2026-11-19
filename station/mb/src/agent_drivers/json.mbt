@@ -6,73 +6,12 @@
 using @jsjson {type JValue}
 
 ///|
-/// A string.
-pub fn s(text : String) -> JValue {
-  JValue::of_string(text)
-}
-
-///|
-/// A number.
-pub fn n(v : Int) -> JValue {
-  Num(v.to_double())
-}
-
-///|
-pub fn d(v : Double) -> JValue {
-  Num(v)
-}
-
-///|
-pub fn b(v : Bool) -> JValue {
-  Bool(v)
-}
-
-///|
-/// An object of these entries, in this order.
-pub fn obj(entries : Array[(String, JValue)]) -> JValue {
-  JValue::of_object(entries)
-}
-
-///|
-pub fn arr(items : Array[JValue]) -> JValue {
-  Arr(items)
-}
-
-///|
-pub fn strs(items : Array[String]) -> JValue {
-  JValue::of_strings(items)
-}
-
-///|
-/// `v.name` where `v` is an object.
-pub fn get(v : JValue?, name : String) -> JValue? {
-  @jsjson.jval_at(v, name)
-}
-
-///|
-/// `v[name]` where it is a string.
-pub fn str_at(v : JValue?, name : String) -> String? {
-  str_of(get(v, name))
-}
-
-///|
-pub fn str_of(v : JValue?) -> String? {
-  @jsjson.jval_str_of(v)
-}
-
-///|
-pub fn num_of(v : JValue?) -> Double? {
-  @jsjson.jval_num_of(v)
-}
-
-///|
-pub fn num_at(v : JValue?, name : String) -> Double? {
-  num_of(get(v, name))
-}
-
-///|
-pub fn bool_at(v : JValue?, name : String) -> Bool? {
-  @jsjson.jval_bool_of(get(v, name))
+pub using @jsjson {
+  jval_str as s, jval_int as n, jval_num as d, jval_bool as b, jval_obj as obj, jval_array as arr,
+  jval_strs as strs, jval_at as get, jval_str_at as str_at, jval_str_of as str_of, jval_num_of as num_of,
+  jval_num_at as num_at, jval_bool_at as bool_at, jval_arr_of as arr_of, jval_arr_at as arr_at,
+  jval_strings_of as strings_in, jval_entries as entries_of, jval_set as set, jval_del as del,
+  stringify as json_text, jval_try_parse as parse_json, jval_safe_int as safe_integer, jval_opt_str as opt_s,
 }
 
 ///|
@@ -82,57 +21,9 @@ pub fn is_true(v : JValue?, name : String) -> Bool {
 }
 
 ///|
-pub fn arr_of(v : JValue?) -> Array[JValue]? {
-  @jsjson.jval_arr_of(v)
-}
-
-///|
-pub fn arr_at(v : JValue?, name : String) -> Array[JValue]? {
-  arr_of(get(v, name))
-}
-
-///|
-/// The strings of an array (what is not one left out).
-pub fn strings_in(v : JValue?) -> Array[String] {
-  match v {
-    Some(Arr(a)) => a.filter_map(x => str_of(Some(x)))
-    _ => []
-  }
-}
-
-///|
-pub fn entries_of(v : JValue?) -> Array[(String, JValue)] {
-  @jsjson.jval_entries(v)
-}
-
-///|
-/// `o[name] = v` as JavaScript sets it: in its place where the key is there, at the end where it is not.
-pub fn set(o : JValue, name : String, v : JValue) -> JValue {
-  @jsjson.jval_set(o, name, v)
-}
-
-///|
-/// `delete o[name]`.
-pub fn del(o : JValue, name : String) -> JValue {
-  @jsjson.jval_del(o, name)
-}
-
-///|
 /// `{ ...a, ...b }`: what is not an object adds nothing.
 pub fn spread(parts : Array[JValue]) -> JValue {
   parts.fold(init=Obj([]), @jsjson.jval_spread)
-}
-
-///|
-/// `JSON.stringify`.
-pub fn json_text(v : JValue) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-/// `JSON.parse`, none for what is not JSON.
-pub fn parse_json(text : String) -> JValue? {
-  @jsjson.jval_try_parse(text)
 }
 
 ///|
@@ -148,15 +39,4 @@ pub fn string_entries(v : JValue?) -> Array[(String, String)] {
     Str(u) => Some((e.0, @jsjson.text(u)))
     _ => None
   })
-}
-
-///|
-/// `Number.isSafeInteger`.
-pub fn safe_integer(v : JValue?) -> Bool {
-  @jsjson.jval_safe_int(v)
-}
-
-///|
-pub fn opt_s(v : String?) -> JValue {
-  JValue::of_opt_string(v)
 }

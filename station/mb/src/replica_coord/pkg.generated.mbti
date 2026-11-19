@@ -227,7 +227,7 @@ pub fn pair_get(Array[(String, String)], String) -> String?
 
 pub fn pairs_json(Array[(String, String)]) -> @jsjson.JValue
 
-pub fn parse(String) -> @jsjson.JValue raise
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub let peer_most : Double
 
