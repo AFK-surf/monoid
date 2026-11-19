@@ -664,8 +664,9 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
         }
         said
       })
-    // (not under `bind_lock`: `online` waits up to 15 s for a relay, which a bind must not wait behind)
-    "online" | "publicRelays" | "keep" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" | "meshConfigure" | "meshRemove" | "meshAttachLeaf" | "meshDetachLeaf" => {
+    // (not under `bind_lock`: `online` waits up to 15 s for a relay, and `probeRelay` up to 20 s for its probe, which a
+    // bind must not wait behind)
+    "online" | "publicRelays" | "keep" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" | "probeRelay" | "meshConfigure" | "meshRemove" | "meshAttachLeaf" | "meshDetachLeaf" => {
       let args = match asked_args(arg) {
         Object(m) => {
           m["id"] = self.bound()

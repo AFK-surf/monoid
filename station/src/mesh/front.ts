@@ -757,6 +757,9 @@ class FrontEndpoint implements Endpoint {
   #kept: string[] | null = null;
   #entries: { entry: string; relay: string }[] | null = null;
   #public: boolean | null = null;
+  probeRelay(url: string): Promise<{ ok: boolean; stage?: "probe_offline" | "endpoint_failed" }> {
+    return this.#ask("probeRelay", { args: { url } });
+  }
   publicRelays(on: boolean) {
     this.#public = on;
     return this.#ask("publicRelays", { args: { on } }).then(() => {});

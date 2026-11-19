@@ -486,6 +486,15 @@ impl Endpoint {
         self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string(), conflict: s.same_endpoint_id_connected() }).collect()
     }
 
+    /// Whether it is reached through relay `url` now, end to end (keep.rs `probe`): `ok`, or what failed (`stage`:
+    /// `probe_offline` where the relay is out of this machine's reach, `endpoint_failed` where it is not but this
+    /// endpoint is). An addon from before has none.
+    #[napi]
+    pub async fn probe_relay(&self, url: String) -> napi::Result<ProbeRelayResult> {
+        let relay = relay_url(&url)?;
+        Ok(ProbeRelayResult::of(keep::probe(&self.inner, &relay).await))
+    }
+
     /// Whether its streams take a view's frames as datagrams (`Stream.receiveMediaDatagrams`): an addon from before has
     /// no such call.
     #[napi]
@@ -556,6 +565,21 @@ async fn handshake<C, E: std::fmt::Display>(
             crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: given up, not done in {} s", started.elapsed().as_millis(), limit.as_secs()));
             None
         }
+    }
+}
+
+/// What `probe_relay` found.
+#[napi(object)]
+#[derive(Debug, PartialEq)]
+pub struct ProbeRelayResult {
+    pub ok: bool,
+    /// What failed (`probe_offline`, `endpoint_failed`); none where nothing did.
+    pub stage: Option<String>,
+}
+
+impl ProbeRelayResult {
+    fn of(found: keep::ProbeResult) -> Self {
+        ProbeRelayResult { ok: found == keep::ProbeResult::Ok, stage: found.stage().map(str::to_string) }
     }
 }
 
@@ -995,6 +1019,14 @@ impl Stream {
 mod tests {
     use super::*;
     use n0_future::StreamExt;
+
+    /// A probe's finding as the station's Node reads it (relays.ts): `ok`, or what failed.
+    #[test]
+    fn a_probe_says_what_failed() {
+        assert_eq!(ProbeRelayResult::of(keep::ProbeResult::Ok), ProbeRelayResult { ok: true, stage: None });
+        assert_eq!(ProbeRelayResult::of(keep::ProbeResult::ProbeOffline), ProbeRelayResult { ok: false, stage: Some("probe_offline".into()) });
+        assert_eq!(ProbeRelayResult::of(keep::ProbeResult::EndpointFailed), ProbeRelayResult { ok: false, stage: Some("endpoint_failed".into()) });
+    }
 
     /// A way of finding stations that cannot be made, as mDNS is with UDP 5353 unavailable.
     #[derive(Debug)]

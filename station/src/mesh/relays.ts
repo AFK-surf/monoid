@@ -7,7 +7,7 @@
 // are told of (jobs/load.ts). The workspaces' own relays (mesh/ways.ts, kept by their stations) are kept the same way,
 // after still.fail's, as they are added or taken away; and a relay every workspace of the station's turns off (`off`:
 // one's URL, `ours` for still.fail's) is not kept, nor dialed to another station (`stationAddr`).
-import { Effect, Schedule, Stream } from "effect";
+import { Clock, Effect, Option, Schedule, Stream } from "effect";
 import type { Net } from "../jobs/load.ts";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -58,9 +58,35 @@ export function oursOff(state: Cloud, ways: Ways = waysOf(state)): boolean {
   return ms.length > 0 && ms.every((m) => ways.view(m.workspace).off.includes("ours") && offRelays(ways, m.workspace).length > 0);
 }
 
+/// The watch of the endpoint itself (`keepRelays`' `watch`), on the relays' check: a relay answering its ping says
+/// nothing of whether the endpoint is still reached through it (FB-38: an endpoint stuck, every relay answering, the
+/// station out of reach for hours), so the endpoint is probed end to end through one that answers (endpoint.ts
+/// `probeRelay`): every `everyHealthy` checks while all looks well, every check while its relays say it is not on any,
+/// held off one for another endpoint of its key (`conflict`), or a probe failed. After `failuresToRecover` probes in a
+/// row that found the endpoint at fault (`endpoint_failed`, or no answer), it is told unhealthy (`onUnhealthy`: the
+/// front restarted, or the endpoint closed and bound anew), never in the first `startupGraceMs`, and again only after a
+/// cooldown, `cooldownMs` first and doubled each time it comes back (to `cooldownMaxMs`: two stations on one key would
+/// otherwise take turns restarting), back to `cooldownMs` once a probe finds it well after the cooldown. A probe that
+/// finds the relay out of this machine's reach (`probe_offline`), or no relay answering at all, is the network's, not
+/// the endpoint's: it counts for nothing. A front or an addon from before that has no probe is not probed again.
+export const PROBE = {
+  startupGraceMs: 120_000,
+  everyHealthy: 4,
+  failuresToRecover: 3,
+  cooldownMs: 600_000,
+  cooldownMaxMs: 3_600_000,
+};
+export type ProbeParams = typeof PROBE;
+/// The longest a probe is waited for (the addon's own takes some 25 s at most): a deadline.
+const PROBE_DEADLINE = "60 seconds";
+
+/// What watches the endpoint (`PROBE`): told when it is found at fault, `params` for a test's.
+export type RelayWatch = { onUnhealthy: () => void; params?: Partial<ProbeParams> };
+
 /// Runs for good (until interrupted). `bound`: the relays the endpoint was bound with (still.fail's where not said):
-/// those wanted that it lacks are put in before it is kept on them, and those not wanted taken out.
-export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[]) =>
+/// those wanted that it lacks are put in before it is kept on them, and those not wanted taken out. `watch`: the
+/// endpoint probed end to end on the relays' check, and what is told when it is at fault (`PROBE`).
+export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watch?: RelayWatch) =>
   Effect.gen(function* () {
     const cloud = yield* ControlPlane;
     const ways = waysOf(cloud.state);
@@ -94,8 +120,63 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[]) =>
     const follow = cloud.changes.pipe(Stream.runForEach(() => Effect.promise(changed)));
     const stopWays = ways.listen(() => void changed());
 
-    const check = Effect.promise(async () => {
+    // The endpoint's watch (`PROBE`).
+    const p: ProbeParams = { ...PROBE, ...watch?.params };
+    const startedAt = yield* Clock.currentTimeMillis;
+    let failures = 0;
+    let healthyTicks = 0;
+    let unsupported = false;
+    let lastRecoverAt: number | null = null;
+    let cooldown = p.cooldownMs;
+    const probeTick = (up: boolean, reachable: string | null) =>
+      Effect.gen(function* () {
+        if (watch === undefined || endpoint.probeRelay === undefined || unsupported) return;
+        // (none of the relays answers: this machine's network or the relays', not the endpoint's)
+        if (!up) {
+          failures = 0;
+          return;
+        }
+        if (reachable === null) return;
+        const status = endpoint.relayStatus?.() ?? [];
+        const suspect = (status.length > 0 && status.every((s) => !s.connected)) || status.some((s) => s.conflict === true) || failures > 0;
+        if (!suspect && ++healthyTicks < p.everyHealthy) return;
+        healthyTicks = 0;
+        const probe = endpoint.probeRelay.bind(endpoint);
+        const answer = yield* Effect.timeoutOption(Effect.promise(() => probe(reachable).then((found) => ({ found }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }))), PROBE_DEADLINE); // timer: a deadline on the probe
+        const now = yield* Clock.currentTimeMillis;
+        const said = Option.isNone(answer) ? { error: `no answer in ${PROBE_DEADLINE}` } : answer.value;
+        if ("error" in said && /no operation|not a function/.test(said.error)) {
+          // (a front or an addon from before: never restarted for having no probe)
+          failures = 0;
+          unsupported = true;
+          log.info("mesh", "the endpoint cannot be probed through a relay; not probed again", { relay: reachable, error: said.error });
+          return;
+        }
+        if ("found" in said && said.found.ok) {
+          failures = 0;
+          if (lastRecoverAt !== null && now - lastRecoverAt >= cooldown) {
+            cooldown = p.cooldownMs;
+            lastRecoverAt = null;
+          }
+          return;
+        }
+        if ("found" in said && said.found.stage === "probe_offline") {
+          log.info("mesh", "a probe through a relay that answers did not get on it; the network's, not the endpoint's", { relay: reachable });
+          return;
+        }
+        failures++;
+        log.warn("mesh", "the endpoint was not reached through a relay that answers", { relay: reachable, ...("found" in said ? { stage: said.found.stage ?? "unknown" } : { error: said.error }), failures });
+        if (failures < p.failuresToRecover || now - startedAt < p.startupGraceMs || (lastRecoverAt !== null && now - lastRecoverAt < cooldown)) return;
+        cooldown = lastRecoverAt === null ? p.cooldownMs : Math.min(cooldown * 2, p.cooldownMaxMs);
+        lastRecoverAt = now;
+        log.error("mesh", "the endpoint failed its end-to-end probes through a relay that answers; recovering it", { relay: reachable, failures, cooldownMs: cooldown });
+        failures = 0;
+        watch.onUnhealthy();
+      });
+
+    const ping = Effect.promise(async () => {
       let up = false;
+      let reachable: string | null = null;
       const bare = (url: string) => url.replace(/\/+$/, "");
       const home = endpoint.home();
       const order = home === null ? ours : [...ours.filter((u) => bare(u) === bare(home)), ...ours.filter((u) => bare(u) !== bare(home))];
@@ -106,6 +187,7 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[]) =>
             const r = await fetch(`${bare(relay)}/ping`, { signal: AbortSignal.timeout(10_000) });
             if (r.ok) {
               up = true;
+              reachable = relay;
               if (net !== undefined) {
                 // Once more on the connection made (its body read, so it is free again): the time is the way there and
                 // back, not the handshakes.
@@ -138,6 +220,11 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[]) =>
         await endpoint.publicRelays(false);
         added = false;
       }
+      return { up, reachable };
+    });
+    const check = Effect.gen(function* () {
+      const { up, reachable } = yield* ping;
+      yield* probeTick(up, reachable);
     });
 
     yield* Effect.all([follow, Effect.repeat(check, Schedule.spaced(RELAY_CHECK))], { concurrency: "unbounded", discard: true }).pipe(Effect.ensuring(Effect.sync(stopWays))); // timer: a ping that measures the relays, which tell nothing by themselves
