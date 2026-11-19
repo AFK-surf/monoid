@@ -601,6 +601,19 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(starts(p.dump).length, 2, "a second app-server");
   });
 
+  test("an in-flight request lets go when its runner is taken over with the runner pid still alive", { skip: process.platform === "win32" }, async () => {
+    const d = driver();
+    const p = profile();
+    const unsub = gates(p.dump, "unsub");
+    const session = await d.open(options(p), () => {});
+    const host = (session as unknown as { host: { request: (m: string, x: Json) => Promise<Json>; proc: { closed_: (s?: string) => void } } }).host;
+    const pending = host.request("thread/unsubscribe", { threadId: session.id() });
+    await eventually(() => stdin(p.dump).some((m) => m.method === "thread/unsubscribe"));
+    host.proc.closed_();
+    await assert.rejects(pending, /handed over/);
+    await unsub.open("a");
+  });
+
   test("the app-server exiting fails the thread's turn as exited and closes every thread on it", async () => {
     const d = driver();
     const p = profile();

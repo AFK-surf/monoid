@@ -256,6 +256,7 @@ class Host {
       orphans,
       heard: (heard: Heard) => this.heard(heard),
       attached: () => this.attached(),
+      handed: () => this.freeze(),
       exit: (said: string, stderr: string) => this.onExit(said, stderr),
     };
   }
@@ -810,6 +811,7 @@ export class CodexDriver implements AgentDriver {
     // as left by a station before (`leftRunners`) by a host asked for meanwhile, and then killed under it.
     await this.serial(async () => {
       if (host.alive()) await host.proc.kill(5000);
+      else await host.proc.released();
       this.draining.delete(host);
     });
   }
@@ -993,6 +995,7 @@ export class CodexDriver implements AgentDriver {
     const result = await this.serial(async () => {
       await this.retireStale(key, installed);
       let replaced: Host | null = null;
+      let discarded = false;
       const current = this.hosts.get(key);
       // Signed in again or reinstalled with turns running on it (`retireStale` ends an idle one): those finish there,
       // a new caller starts on a new one. Waiting for it to be idle waited on every other chat of the profile: a turn
@@ -1005,10 +1008,15 @@ export class CodexDriver implements AgentDriver {
         else log.info("agents::codex", "login changed or codex reinstalled; new turns go to a new app-server, its own end there", { profile: current.profile, key, turns: current.turns.size, login: current.loginStale });
         current.draining = true;
         this.hosts.delete(key);
-        this.draining.add(current);
-        replaced = current;
+        discarded = true;
+        if (current.turns.size === 0 && current.threads.size === 0) {
+          await current.proc.kill(5000);
+        } else {
+          this.draining.add(current);
+          replaced = current;
+        }
       }
-      const kept = replaced ? undefined : current;
+      const kept = discarded ? undefined : current;
       if (kept && kept.alive()) await this.renewLent(kept, profile);
       if (kept && kept.alive() && kept.signature !== hostSignature(profile)) {
         // The profile (or the station's variables for its agents) changed. Replace the process once no turn runs on it,

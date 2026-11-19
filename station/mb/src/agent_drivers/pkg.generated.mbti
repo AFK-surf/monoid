@@ -798,6 +798,7 @@ pub struct HostedOptions {
   orphans : Bool
   heard : (Heard) -> HeardSaid
   attached : () -> Unit
+  handed : () -> Unit
   exit : (String, String) -> Later[Unit]
 }
 

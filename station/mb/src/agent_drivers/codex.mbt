@@ -425,6 +425,7 @@ pub fn Host::hosted_options(self : Host, label : String, orphans? : Bool = false
     orphans,
     heard: h => Took(self.heard(h)),
     attached: () => self.attached(),
+    handed: () => self.freeze(),
     exit: (said, stderr) => {
       self.on_exit(said, stderr)
       done(self.lp)
@@ -1388,7 +1389,7 @@ pub fn CodexDriver::drain(self : CodexDriver, host : Host) -> Later[Unit] {
       return done(lp)
     }
     self.serial(() => {
-      let killed = if host.alive() { (host.p().kill)(5000.0) } else { done(lp) }
+      let killed = if host.alive() { (host.p().kill)(5000.0) } else { (host.p().released)() }
       killed.map(_ => self.draining_delete(host))
     })
   })
@@ -1748,6 +1749,8 @@ pub fn CodexDriver::host(
       .retire_stale(key, installed)
       .bind(_ => {
         let mut replaced : Host? = None
+        let mut discarded = false
+        let mut retiring : Later[Unit] = done(lp)
         let current = self.host_at(key)
         // a thread of its could not reach the station's tools at the address this one is opened with (`host`)
         let unreachable = match (current, mcp_url) {
@@ -1780,18 +1783,23 @@ pub fn CodexDriver::host(
             }
             c.draining = true
             self.host_delete(key)
-            self.draining_add(c)
-            replaced = Some(c)
+            discarded = true
+            if c.turns.length() == 0 && c.threads.length() == 0 {
+              retiring = (c.p().kill)(5000.0)
+            } else {
+              self.draining_add(c)
+              replaced = Some(c)
+            }
           }
           _ => ()
         }
         let replaced = replaced
-        let kept = if replaced is Some(_) { None } else { current }
-        let renewing = match kept {
+        let kept = if discarded { None } else { current }
+        retiring
+        .bind(_ => match kept {
           Some(k) if k.alive() => self.renew_lent(k, profile)
           _ => done(lp)
-        }
-        renewing
+        })
         .bind(_ => match kept {
           Some(k) if k.alive() && k.signature != self.host_signature(profile) =>
             if k.turns.length() == 0 {

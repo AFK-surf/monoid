@@ -332,6 +332,7 @@ pub fn OwnSession::hosted_options(
     orphans: false,
     heard: h => self.heard_hosted(h),
     attached: () => (self.hooks.attached)(),
+    handed: () => (),
     exit: (said, stderr) => self.exited(said, stderr),
   }
 }

@@ -921,6 +921,7 @@ fn HostedProcess::closed_(self : HostedProcess, stderr : String) -> @agent_drive
     live_log("warn", "agents::process", "another station took the runner over; letting go", { "label": jstr(self.options.label) })
     self.frozen = true
     self.gone = true
+    (self.options.handed)()
     self.done()
     self.host.forget(self)
     @agent_drivers.done(lp)
@@ -1007,7 +1008,7 @@ async fn HostedProcess::kill(self : HostedProcess, grace_ms : Double) -> Unit {
   exited(1000)
   self.done()
   let mut j = 0
-  while j < 200 && pid_alive(self.info.runner()) {
+  while j < 1000 && pid_alive(self.info.runner()) {
     @effect.sleep(10) // timer: a wait on another process's end
     j += 1
   }
@@ -1049,7 +1050,7 @@ fn HostedProcess::proc(self : HostedProcess) -> @agent_drivers.Proc {
         return
       }
       let mut i = 0
-      while i < 200 && pid_alive(self.info.runner()) {
+      while i < 1000 && pid_alive(self.info.runner()) {
         @effect.sleep(10) // timer: a wait on another process's end
         i += 1
       }

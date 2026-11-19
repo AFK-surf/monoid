@@ -61,6 +61,8 @@ export type HostedOptions = {
   orphans?: boolean;
   /// Said to the program after each attach (again after it started again): what it has of the process (its threads).
   attached?: () => void;
+  /// Another station took its runner over: what waits on its answers lets go.
+  handed?: () => void;
   /// A promise: what it writes of its end is being written, what comes after held till then.
   exit: (said: string, stderr: string) => void | Promise<void>;
 };
@@ -550,6 +552,7 @@ export class HostedProcess {
       log.warn("agents::process", "another station took the runner over; letting go", { label: this.#options.label });
       this.#frozen = true;
       this.gone = true;
+      this.#options.handed?.();
       this.done();
       this.#host.forget(this);
       this.#leftNow();
@@ -645,7 +648,7 @@ export class HostedProcess {
 
   async released() {
     if (this.#frozen || this.#said === null) return;
-    for (let i = 0; i < 200 && pidAlive(this.info.runner); i++) await sleep(10);
+    for (let i = 0; i < 1000 && pidAlive(this.info.runner); i++) await sleep(10);
   }
 
   async kill(graceMs: number) {
@@ -663,6 +666,6 @@ export class HostedProcess {
     }
     await Promise.race([this.exited, sleep(1000)]);
     this.done();
-    for (let i = 0; i < 200 && pidAlive(this.info.runner); i++) await sleep(10);
+    for (let i = 0; i < 1000 && pidAlive(this.info.runner); i++) await sleep(10);
   }
 }
