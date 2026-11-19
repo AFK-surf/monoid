@@ -306,8 +306,8 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   store.insertSession({ key: "s1", connect: "c1", runtime: "claude", profile: "cc", workspace: data, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.insertSession({ key: "s2", connect: "f1", runtime: "claude", profile: "cc", workspace: data, token: "t2", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.close();
-  // the agents' tools on a stable station: the parts', station_move not among them
-  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_retire", "station_version"]);
+  // the agents' tools on a stable station: the parts', station_move not among them (station_retire is hidden from tools/list)
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_version"]);
   // station_version: the release as the agents see it; an action it does not know refused as the TypeScript's
   const version = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "station_version", arguments: { action: "list" } } }, "t1");
   assert.equal(version.result.isError, undefined, JSON.stringify(version));
@@ -339,13 +339,13 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "beta");
   await until("the beta feed read", () => feed.asked.includes("/releases/station-beta.json"), 20_000, () => a.err());
   // on the test channel: moving is offered, station_move an agent's tool
-  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_retire", "station_version"]);
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_version"]);
   // back to stable: off again
   writeFileSync(join(data, "run", "channel-ask"), "stable\n");
   rmSync(join(data, "run", "channel-answer"));
   a.tell({ op: "hup" });
   await until("the channel answered again", () => existsSync(join(data, "run", "channel-answer")), 20_000, () => a.err());
-  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_retire", "station_version"]);
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_version"]);
   // the copies' export: a process of its own (`--builder replica-export`), not in the station's, started as background
   // work: on macOS under `taskpolicy -b` (which execs it), its priority the background band's, under the station's
   if (process.platform !== "win32") {

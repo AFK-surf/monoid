@@ -123,6 +123,9 @@ async fn Harness::answer(self : Harness, s : Storage, op : String, a : Array[Jso
     // chat-archive.ts
     "chatArchive" => js(s.chat_archive(text(0), arg(1).unwrap_or(jo([]))))
     "archiveForPeer" => s.archive_for_peer(arg(0).unwrap_or(Json::null()), ws_at(1))
+    // chat-configure.ts
+    "chatConfigure" => js(s.chat_configure(text(0), arg(1).unwrap_or(jo([]))))
+    "configureForPeer" => s.configure_for_peer(arg(0).unwrap_or(Json::null()), ws_at(1))
     // clones.ts
     "cloneUrl" => js(clone_url(arg(0)))
     "safeUrl" => js(safe_url(text(0)))
@@ -171,6 +174,7 @@ async fn Harness::answer(self : Harness, s : Storage, op : String, a : Array[Jso
     "forPeer" => s.for_peer(text(0), arg(1).unwrap_or(Json::null()), ws_at(2))
     "chatsTouched" => ja(s.chats_touched(arg(0).unwrap_or(Json::null())).map(x => js(x)))
     "chatList" => js(s.chat_list(text(0), arg(1).unwrap_or(jo([]))))
+    "listForPeer" => s.list_for_peer(arg(0).unwrap_or(Json::null()), ws_at(1))
     "chatRead" => {
       let seen = []
       let t = s.chat_read(text(0), arg(1).unwrap_or(jo([])), if arg(2) is Some(True) { Some(seen) } else { None }, ws_at(3))

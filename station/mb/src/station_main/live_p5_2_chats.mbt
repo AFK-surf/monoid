@@ -194,6 +194,49 @@ async fn P52::storage_call(
       self.the_hub().archive_chat(a(0), a(1) is True)
       Json::null()
     }
+    "fn.configure" => {
+      let target = match a(0) { String(k) => k; _ => "" }
+      self.the_hub().configure(target, a(1), lang="en")
+      Json::null()
+    }
+    "fn.contextAsked" =>
+      match @session_hub.context_asked(self.words, match a(0) { Null => None; x => Some(x) }, "en") {
+        Some(Some(n)) => Json::number(n)
+        _ => Json::null()
+      }
+    "fn.inferRuntime" => {
+      let ws = match a(0) { String(w) => Some(w); _ => None }
+      let cur = match a(1) { String(r) => r; _ => "" }
+      let model = match a(2) { String(m) => m; _ => "" }
+      let available = self.the_hub().profiles_in(ws)
+      let rts_of = (p : Json) =>
+        match jfield(p, "runtimes") {
+          Array(xs) => xs.filter_map(x => match x { String(s) => Some(s); _ => None })
+          _ => []
+        }
+      let fits_cur = available.iter().any(p => rts_of(p).contains(cur) && @session_hub.runs(p, model))
+      if fits_cur {
+        Json::null()
+      } else {
+        let matched : Array[String] = []
+        for p in available {
+          if @session_hub.runs(p, model) {
+            for r in rts_of(p) {
+              if !matched.contains(r) {
+                matched.push(r)
+              }
+            }
+          }
+        }
+        if matched.length() == 1 {
+          Json::string(matched[0])
+        } else if matched.length() > 1 {
+          raise @session_storage.failed("model \{model} runs on multiple runtimes (\{matched.join(", ")}): pass runtime")
+        } else {
+          Json::null()
+        }
+      }
+    }
     "clones.changed" => {
       self.bus.notify_store({ "type": jstr("clones") })
       Json::null()
@@ -1565,6 +1608,10 @@ async fn P52::tools_call(
       run(async fn() {
         rjs(self.storage().chat_archive(s(1), @jsjson.JV::to_json(a(2))))
       })
+    "sessions/chat-configure.chatConfigure" =>
+      run(async fn() {
+        rjs(self.storage().chat_configure(s(1), @jsjson.JV::to_json(a(2))))
+      })
     "sessions/others.chatList" =>
       run(async fn() { rjs(self.storage().chat_list(s(1), @jsjson.JV::to_json(a(2)))) })
     "sessions/others.scopeOf" =>
@@ -1946,7 +1993,7 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
 ///|
 let tools_order : Array[String] = [
   "chat_post", "slack_api", "chat_state", "chat_leave", "chat_history", "chat_list", "chat_read", "session_send", "chat_create",
-  "chat_archive", "session_history", "archive_policy", "station_list", "station_task", "station_file", "workspace_limit",
+  "chat_archive", "chat_configure", "session_history", "archive_policy", "station_list", "station_task", "station_file", "workspace_limit",
   "job_start", "job_list", "job_log", "job_stop", "screen", "permissions", "computer", "peer_forward", "relays",
   "station_version", "sign_in", "secret_list", "secret_use", "secret_save", "secret_describe", "secret_delete", "secret_cancel",
   "secret_reask", "secret_run", "phone_use", "phone_send", "adb_devices", "browser", "feedback_send", "feedback_reply",

@@ -28,7 +28,7 @@ import { CHAT_CREATE } from "../src/tools/chat.ts";
 import { failureOf } from "../src/agents/runtime.ts";
 import { cannotStartWords } from "../src/sessions/actor.ts";
 import { testClock } from "./hub-fakes.ts";
-import { CORE, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
+import { CORE, HIDDEN, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
 import { stationTools } from "./station-tools.ts";
 
 const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "agy-") : "/tmp/agy-");
@@ -1638,7 +1638,7 @@ test("Antigravity CLI is declared the station's tools within what it keeps, chat
   // And the rest are still reached, through station_tool.
   assert.equal(names.at(-1), INDIRECT);
   const indirect: string[] = list.at(-1).inputSchema.properties.name.enum;
-  assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.map((t) => t.name).sort());
+  assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.filter((t) => !HIDDEN.includes(t.name)).map((t) => t.name).sort());
   // The 45,000 of before is what `agy` 1.5.8 dropped chat_post under (2026-11-16): over the ceiling, as this counts it.
   const before = await listed(45_000);
   assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);

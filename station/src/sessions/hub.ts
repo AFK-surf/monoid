@@ -38,7 +38,7 @@ import { comingWs, handedWs } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
 import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
-import type { RecentChatList } from "../store/chat-list.ts";
+import type { ChatListFilter, RecentChatList } from "../store/chat-list.ts";
 import { Accounts } from "./accounts.ts";
 import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
@@ -198,7 +198,7 @@ export class Hub {
   /// A recent, unfiltered chat_list, with details for its page alone.
   recentChatList: ((ws: string | null, home: string | null, limit: number, signal?: AbortSignal) => Promise<RecentChatList>) | null = null;
   /// The matching chats and count for a chat_list search.
-  searchChatList: ((ws: string | null, home: string | null, limit: number, query: string) => Promise<RecentChatList>) | null = null;
+  searchChatList: ((ws: string | null, home: string | null, limit: number, query: string, filter?: ChatListFilter) => Promise<RecentChatList>) | null = null;
   /// A thread's latest `limit` messages, oldest first, read by the readers (agents.ts sets it): the archive review's
   /// (review.ts), up to 400 of them through the merged view, 3 seconds held on a station. Unset (tests): the store.
   latestMessages: ((thread: number, limit: number) => Promise<MessageRow[]>) | null = null;

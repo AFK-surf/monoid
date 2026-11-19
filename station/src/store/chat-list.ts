@@ -3,9 +3,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { toThread, type Membership, type MessageRow, type SessionRow, type ThreadSummary } from "./rows.ts";
 
-export type ChatListSession = Pick<SessionRow, "key" | "title" | "archivedAt" | "ws">;
+export type ChatListSession = Pick<SessionRow, "key" | "title" | "archivedAt" | "ws" | "runtime" | "model" | "effort" | "running" | "createdBy">;
 export type ChatListThread = Pick<ThreadSummary, "thread" | "sessions" | "lastMessage" | "firstText">;
 export type RecentChatList = { threads: ChatListThread[]; sessions: ChatListSession[]; total: number };
+export type ChatListFilter = { model?: string; createdBy?: string; archived?: boolean };
 
 /// A chat with a home belongs there; otherwise it belongs to any of its sessions' workspaces, or the home workspace
 /// when it has none. Unknown sessions, and sessions with no workspace, belong to the home workspace too.
@@ -22,8 +23,9 @@ const SCOPED_CHATS = `FROM threads t
 const CHAT_ORDER = "ORDER BY COALESCE(e.at, t.created_at) DESC, COALESCE(e.at, 0) DESC, t.created_at DESC, t.id DESC";
 export const RECENT_CHAT_LIST = `SELECT t.id, COUNT(*) OVER () AS total ${SCOPED_CHATS} ${CHAT_ORDER} LIMIT ?3`;
 const SEARCH_CHAT_MEMBERS = `(SELECT json_group_array(json_object('session', x.session, 'connect', x.connect, 'joinedAt', x.joined_at,
-       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'present', x.present))
-     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.key IS NOT NULL AS present
+       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'runtime', x.runtime, 'model', x.model, 'effort', x.effort,
+       'running', x.running, 'createdBy', x.created_by, 'present', x.present))
+     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.runtime, a.model, a.effort, a.running, a.created_by, a.key IS NOT NULL AS present
        FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id
        ORDER BY m.joined_at, m.rowid) x) AS members`;
 export const SEARCH_CHAT_LIST = `SELECT t.*, e.at AS said_at,
@@ -41,13 +43,38 @@ export function recentChatIds(db: DatabaseSync, ws: string | null, home: string 
   return { ids: rows.map((r) => r.id), total: rows[0]?.total ?? 0 };
 }
 
-type SearchMember = { session: string; connect: string; joinedAt: number; title: string | null; archivedAt: number | null; ws: string | null; present: number };
+type SearchMember = {
+  session: string; connect: string; joinedAt: number; title: string | null; archivedAt: number | null; ws: string | null;
+  runtime: string | null; model: string | null; effort: string | null; running: number | null; createdBy: string | null; present: number;
+};
 type SearchSummary = { saidText: string | null; firstText: string | null };
+
+export function matchesChatFilter(
+  thread: { hiddenAt: number | null; home: string | null; createdBy: string | null },
+  members: readonly { session: string; archivedAt: number | null; model: string | null; createdBy: string | null }[],
+  filter?: ChatListFilter,
+): boolean {
+  if (!filter) return true;
+  if (filter.archived !== undefined) {
+    const archived = thread.hiddenAt !== null || (thread.home !== null && members.some((m) => m.session === thread.home && m.archivedAt !== null));
+    if (filter.archived !== archived) return false;
+  }
+  if (filter.model) {
+    const want = filter.model.toLowerCase();
+    if (!members.some((m) => (m.model ?? "").toLowerCase().includes(want))) return false;
+  }
+  if (filter.createdBy) {
+    const want = filter.createdBy.toLowerCase();
+    const creators = [thread.createdBy, ...members.map((m) => m.createdBy)].filter((c): c is string => c !== null && c !== "");
+    if (!creators.some((c) => c.toLowerCase().includes(want))) return false;
+  }
+  return true;
+}
 
 /// Search needs the titles and latest words of every chat in scope, but not its people, unread count or letters. Keep
 /// only matched chats for the page, and count the rest without sending all of their details back to the hub.
 export function searchChats(db: DatabaseSync, ws: string | null, home: string | null, limit: number, query: string,
-  last: (id: number) => MessageRow | null, summary?: (id: number) => SearchSummary): RecentChatList {
+  last: (id: number) => MessageRow | null, summary?: (id: number) => SearchSummary, filter?: ChatListFilter): RecentChatList {
   if (limit === 0) return { threads: [], sessions: [], total: 0 };
   const threads: ChatListThread[] = [];
   const sessions = new Map<string, ChatListSession>();
@@ -55,15 +82,30 @@ export function searchChats(db: DatabaseSync, ws: string | null, home: string | 
   for (const row of db.prepare(summary ? SEARCH_CHAT_LIST_KEYS : SEARCH_CHAT_LIST).iterate(ws, home)) {
     const thread = toThread(row);
     const members = JSON.parse(row.members as string) as SearchMember[];
-    const found = summary?.(thread.id);
-    const firstText = found === undefined ? row.first_text as string | null : found.firstText;
-    const titles = [thread.title, thread.autoTitle, firstText, ...members.map((m) => m.title ?? null)].filter((x): x is string => x !== null);
-    const saidText = found === undefined ? row.said_text : found.saidText;
-    const haystack = `${titles.join(" ")} ${saidText ?? ""} ${members.map((m) => m.session).join(" ")}`.toLowerCase();
-    if (!haystack.includes(query)) continue;
+    if (!matchesChatFilter(thread, members, filter)) continue;
+    let firstText: string | null = null;
+    if (query !== "") {
+      const found = summary?.(thread.id);
+      firstText = found === undefined ? row.first_text as string | null : found.firstText;
+      const titles = [thread.title, thread.autoTitle, firstText, ...members.map((m) => m.title ?? null)].filter((x): x is string => x !== null);
+      const saidText = found === undefined ? row.said_text : found.saidText;
+      const haystack = `${titles.join(" ")} ${saidText ?? ""} ${members.map((m) => m.session).join(" ")}`.toLowerCase();
+      if (!haystack.includes(query)) continue;
+    }
     total++;
     if (threads.length < limit) {
-      for (const m of members) if (m.present) sessions.set(m.session, { key: m.session, title: m.title, archivedAt: m.archivedAt, ws: m.ws });
+      if (query === "") {
+        const found = summary && thread.title === null && thread.autoTitle === null ? summary(thread.id) : undefined;
+        firstText = found === undefined ? (thread.title === null && thread.autoTitle === null ? row.first_text as string | null : null) : found.firstText;
+      }
+      for (const m of members) {
+        if (m.present) {
+          sessions.set(m.session, {
+            key: m.session, title: m.title, archivedAt: m.archivedAt, ws: m.ws,
+            runtime: m.runtime ?? "", model: m.model, effort: m.effort, running: Boolean(m.running), createdBy: m.createdBy,
+          });
+        }
+      }
       threads.push({ thread, sessions: members.map((m): Membership => ({ thread: thread.id, session: m.session, connect: m.connect, joinedAt: m.joinedAt })), lastMessage: last(thread.id), firstText });
     }
   }

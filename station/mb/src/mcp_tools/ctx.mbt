@@ -55,6 +55,7 @@ pub fn Ctx::decl(self : Ctx, name : String) -> JV {
     "session_send" => decl_session_send
     "chat_create" => decl_chat_create
     "chat_archive" => decl_chat_archive
+    "chat_configure" => decl_chat_configure
     "session_history" => decl_session_history
     "archive_policy" => decl_archive_policy
     "station_list" => decl_station_list
@@ -82,7 +83,7 @@ pub fn Ctx::decl(self : Ctx, name : String) -> JV {
     _ => "{}"
   }
   let v = try_parse(text).unwrap_or(jobj([]))
-  if name == "chat_create" {
+  if name == "chat_create" || name == "chat_configure" {
     put_runtimes(v, self.consts.runtime_kinds)
   } else {
     v

@@ -93,7 +93,8 @@ import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecy
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
-import { chatsTouched, forPeer, READ } from "./others.ts";
+import { CONFIGURE, configureForPeer } from "./chat-configure.ts";
+import { chatsTouched, forPeer, LIST, listForPeer, READ } from "./others.ts";
 import { FILE, fileForPeer, PUT, putForPeer } from "./peer-files.ts";
 import { reviewUndecided, startReview } from "./review.ts";
 import { readAgentEnvFrom } from "../ops/agent-env.ts";
@@ -481,6 +482,10 @@ export const AgentsLive = (control: Control) =>
             return createForPeer(hub, peer, request, ws);
           case ARCHIVE:
             return archiveForPeer(hub, request, ws);
+          case CONFIGURE:
+            return configureForPeer(hub, request, ws);
+          case LIST:
+            return listForPeer(hub, request, ws);
           case NOTICE:
             return noticeForPeer(hub, peer, request, ws);
           default:
@@ -700,7 +705,7 @@ export const AgentsLive = (control: Control) =>
       parts.carry("live.tails", async () => (await liveCarried()).tails, (what) => hub.live.takeTails(what));
       hub.threadList = async () => JSON.parse(await readers.read("threadList", {}, "zh"));
       hub.recentChatList = async (ws, home, limit, signal) => JSON.parse(await readers.read("recentChatList", { ws, home, limit }, "zh", { signal }));
-      hub.searchChatList = async (ws, home, limit, query) => JSON.parse(await readers.read("searchChatList", { ws, home, limit, query }, "zh"));
+      hub.searchChatList = async (ws, home, limit, query, filter) => JSON.parse(await readers.read("searchChatList", { ws, home, limit, query, ...(filter ?? {}) }, "zh"));
       hub.latestMessages = async (thread, limit) => JSON.parse(await readers.read("latestMessages", { thread, limit }, "zh"));
       hub.policyChecks = async (since, viewer) => JSON.parse(await readers.read("policyChecks", { since, viewer: { workspace: viewer.workspace, home: viewer.home } }, "zh"));
       hub.openedChatSaid = async (thread, author, agentOnly) => JSON.parse(await readers.read("openedChatSaid", { thread, author, agentOnly }, "zh"));

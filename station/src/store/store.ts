@@ -78,7 +78,7 @@ import { boundedCardEdit, boundedEditKey, LAST_MESSAGE_WITH_EDIT } from "./legac
 import { ensureRestateGuard, restateGuardSchema } from "./restate-guard.ts";
 import { ensureCardScanGuard } from "./card-scan-guard.ts";
 import { completeCardOutcome, saveWithCardOutcome, type CardEditScan, type CardOutcome } from "./card-outbox.ts";
-import { type RecentChatList, recentChatIds, searchChats } from "./chat-list.ts";
+import { type ChatListFilter, type RecentChatList, recentChatIds, searchChats } from "./chat-list.ts";
 import { dueChatShareRows, lapsedChatShareWorkspaces, liveChatShareRows } from "./chat-share-index.ts";
 
 /// One transcript's part for `recordUsageAll`: as `recordUsage` takes it.
@@ -2320,13 +2320,13 @@ export class Store {
     const keys = new Set(threads.flatMap((t) => t.sessions.map((m) => m.session)));
     const sessions = [...keys].flatMap((key) => {
       const s = this.getSession(key);
-      return s === null ? [] : [{ key: s.key, title: s.title, archivedAt: s.archivedAt, ws: s.ws }];
+      return s === null ? [] : [{ key: s.key, title: s.title, archivedAt: s.archivedAt, ws: s.ws, runtime: s.runtime, model: s.model, effort: s.effort, running: s.running, createdBy: s.createdBy }];
     });
     return { threads, sessions, total };
   }
 
-  searchChatList(ws: string | null, home: string | null, limit: number, query: string): RecentChatList {
-    return searchChats(this.db, ws, home, limit, query, (id) => this.#lastSaid(id));
+  searchChatList(ws: string | null, home: string | null, limit: number, query: string, filter?: ChatListFilter): RecentChatList {
+    return searchChats(this.db, ws, home, limit, query, (id) => this.#lastSaid(id), undefined, filter);
   }
 
   /// The thread's latest message as merged, for lists.

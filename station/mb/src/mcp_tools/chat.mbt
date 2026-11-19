@@ -201,6 +201,9 @@ pub fn chat_tools(c : Ctx, hub? : JV = jref("hub")) -> Array[Tool] {
     Tool::new(c.decl("chat_archive"), (key, args, _) => said_text(
       b.ask("sessions/chat-archive.chatArchive", [hub, js(key), args]),
     )),
+    Tool::new(c.decl("chat_configure"), (key, args, _) => said_text(
+      b.ask("sessions/chat-configure.chatConfigure", [hub, js(key), args]),
+    )),
     Tool::new(c.decl("session_history"), (key, args, _) => {
       match afar(c, hub, key, "session_history", args) {
         Some(v) => said_text(v)

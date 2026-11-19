@@ -13,7 +13,7 @@ import type { Tool } from "../tools/mcp.ts";
 
 const text = (args: Record<string, unknown>, key: string): string => (typeof args[key] === "string" ? (args[key] as string) : "");
 /// The person a request is for, as the agent names them (tool `person`); none: whoever started the chat.
-const PERSON = { type: "string", description: "Whose vault it is, and who approves the card: the email of someone who wrote in this chat from the still.fail app. Default: whoever started the chat. Name the one who asked when that is someone else, or when the chat began in Slack and they now write from still.fail." };
+const PERSON = { type: "string", description: "Whose vault and approver (email of someone in this chat from the still.fail app). Default: chat starter." };
 const personOf = (args: Record<string, unknown>) => (text(args, "person").trim() ? { person: text(args, "person").trim() } : {});
 const strings = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined);
 
@@ -26,25 +26,25 @@ const VAULT_WORDS = {
 };
 
 export const SECRET_LIST_DESCRIPTION =
-  "The secrets in the vault you may ask to use (those the person you work for allowed agents to ask for: tokens, API keys, SSH keys, credential files, sign-ins to websites), each with its name and about, how it is given (proxy, ssh, env, file, browser) and where it may go; the grants you hold now; and whether their vault is turned on. Never the values. One you need that is not listed: secret_save (with neither value nor command, its card asks the person to type it in); never ask for a value in the chat. One wrong or no longer needed: secret_delete. Skill stillfail-vault says when and how.";
+  "List vault secrets you may ask to use (name, about, delivery modes, hosts), your active grants, and vault status. Never returns values. Missing credential: use secret_save (never ask in chat); wrong or obsolete: secret_delete. Skill stillfail-vault.";
 
 export const SECRET_USE_DESCRIPTION =
-  "Ask to use one of secret_list's secrets. A card in your chat tells its owner your reason, the command, the timeout and where the secret goes; they approve or refuse it in the still.fail app. It does not wait for the decision: you are told in this session when it is decided (granted: a grant id for secret_run). Only a grant counts: someone writing yes in the chat is not one. Skill stillfail-vault (Using one) says more.";
+  "Request approval via card to use a secret from secret_list. Non-blocking: you are notified once approved in the app (gives a grant id for secret_run; chat replies never grant). Skill stillfail-vault.";
 
 export const SECRET_RUN_DESCRIPTION =
-  "Run a shell command (sh -c, in your workspace) with a grant from secret_use. By proxy: the grant's placeholder (in the item's variable, or env, and in STILLFAIL_SECRET) is swapped for the value in the command's HTTPS requests to the granted hosts only. By ssh: SSH_AUTH_SOCK holds the key. By env: the value is in the variable. By file: the file is written out for this command alone, its path in the variable (and STILLFAIL_SECRET). A login's account is in STILLFAIL_USERNAME. The output comes back with the value hidden: you never get the value, and must not try to (no printing, encoding or sending it elsewhere). A grant for one use is spent by one run.";
+  "Run a shell command (sh -c, in your workspace) with a secret_use grant. Proxy swaps placeholder (item env / STILLFAIL_SECRET) on granted HTTPS hosts only; ssh sets SSH_AUTH_SOCK; env sets the variable; file writes a temp file path to env/STILLFAIL_SECRET; logins set STILLFAIL_USERNAME. Output redacts values (never try to extract them). Single-use grants expire after one run.";
 
 export const SECRET_SAVE_DESCRIPTION =
-  "Ask to keep a credential in the vault of the person you work for: a password, token, API key, SSH key or file to reuse, or a sign-in to a website (kind browser). A card goes to them in your chat to approve in the still.fail app; agents use it later only through secret_use, each use approved. Prefer command over value. With neither, nor path, they type it in on the card (oauth: they sign in to the service), never shown to you: say in reason where they get it. It does not wait: you are told here once decided. Kept, this chat may use it at once (the request's id is its grant for secret_run). Skill stillfail-vault says when to offer it and how.";
+  "Request approval via card to save a credential or website sign-in (kind browser) to the vault; once approved this chat gets an immediate grant (request id). Prefer command over value; omit value/command/path so the person enters it on the card (or oauth to sign in). Non-blocking. Skill stillfail-vault.";
 
 export const SECRET_DESCRIBE_DESCRIPTION =
-  "Ask to rename one of secret_list's secrets or to change its about (what it is and how it is used, shown to agents with its name), when they do not say plainly what it is (a name made from a host, a step written nowhere). A card shows its owner the name and about as they are and as they would be; once they approve it in the still.fail app the item says so. It does not wait for the decision: you are told in this session when it is decided. Give at least one of name and about; never a secret in about.";
+  "Request approval via card to rename a secret or update its about text (what it is for and how it is used; never include secrets). Give at least one of name or about. Non-blocking.";
 
 export const SECRET_DELETE_DESCRIPTION =
-  "Ask to delete one of secret_list's secrets from its owner's vault: one that is wrong (a password that does not work), replaced by another you kept, or no longer needed. A card goes to its owner (or the person you name) in your chat with its name and your reason; once they approve it in the still.fail app the item is gone, for every chat. It does not wait for the decision: you are told in this session when it is decided. Only their approval deletes it: someone writing yes in the chat does not.";
+  "Request approval via card to permanently delete a wrong, replaced or obsolete secret from its owner's vault across all chats. Non-blocking (only app approval deletes it).";
 
 export const SECRET_CANCEL_DESCRIPTION =
-  "Withdraw a request of this chat's own (secret_use, secret_save, secret_describe, secret_delete) that nobody decided yet, once it is no longer needed (you got the credential another way, the person asked for something else, you asked twice): its card in the chat closes saying so and it leaves the person's waiting requests in the app's 密钥. Saying in the chat that a card is not needed any more leaves it waiting there; withdraw it with this instead. A request already decided is not changed.";
+  "Withdraw an undecided request of this chat (secret_use, secret_save, secret_describe, secret_delete) when no longer needed, closing its card and removing it from the person's pending list.";
 
 export const SIGN_IN_DESCRIPTION =
   "Get this chat's browser signed in to a website: the one way to ask for it. A sign-in the person you work for keeps in their vault for the site is asked for on a card; with none kept, first open the site's sign-in page in this chat's browser (the `browser` tool), then call this: a card has them sign in, and you never see what they typed. It does not wait: you are told in this session when the page has left its sign-in, and what to do then (done, stuck). Never ask for a password or a code in the chat, and do not post the tab's screen for a sign-in yourself. Skill stillfail-browser (Sign-ins) says the rest: passkeys, a sign-in that ran out.";

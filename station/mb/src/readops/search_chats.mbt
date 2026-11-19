@@ -9,8 +9,9 @@ let search_chat_list_sql : String =
   #|    CASE WHEN e.n IS NULL THEN NULL ELSE COALESCE((SELECT m.text FROM merged m WHERE m.thread = t.id AND m.n = s.said_n), '') END AS said_text,
   #|    (SELECT substr(m.text, 1, 300) FROM merged m WHERE m.thread = t.id AND m.n = s.person_n) AS first_text,
   #|    (SELECT json_group_array(json_object('session', x.session, 'connect', x.connect, 'joinedAt', x.joined_at,
-  #|       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'present', x.present))
-  #|     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.key IS NOT NULL AS present
+  #|       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'runtime', x.runtime, 'model', x.model, 'effort', x.effort,
+  #|       'running', x.running, 'createdBy', x.created_by, 'present', x.present))
+  #|     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.runtime, a.model, a.effort, a.running, a.created_by, a.key IS NOT NULL AS present
   #|       FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id
   #|       ORDER BY m.joined_at, m.rowid) x) AS members
   #|  FROM threads t
@@ -28,8 +29,9 @@ let search_chat_list_sql : String =
 /// store/chat-list.ts SEARCH_CHAT_LIST_KEYS.
 let search_chat_list_keys_sql : String =
   #|SELECT t.*, e.at AS said_at, (SELECT json_group_array(json_object('session', x.session, 'connect', x.connect, 'joinedAt', x.joined_at,
-  #|       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'present', x.present))
-  #|     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.key IS NOT NULL AS present
+  #|       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'runtime', x.runtime, 'model', x.model, 'effort', x.effort,
+  #|       'running', x.running, 'createdBy', x.created_by, 'present', x.present))
+  #|     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.runtime, a.model, a.effort, a.running, a.created_by, a.key IS NOT NULL AS present
   #|       FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id
   #|       ORDER BY m.joined_at, m.rowid) x) AS members
   #|  FROM threads t
@@ -92,6 +94,19 @@ pub fn search_chat_list(db : @sql.Db, args : Json) -> Json raise {
     return { "threads": [], "sessions": [], "total": 0 }
   }
   let query = js_text(args.value("query").unwrap_or(Json::string("undefined")))
+  let filter_model = match args.value("model") {
+    Some(String(s)) if s != "" => Some(@jscase.lower(s))
+    _ => None
+  }
+  let filter_creator = match args.value("createdBy") {
+    Some(String(s)) if s != "" => Some(@jscase.lower(s))
+    _ => None
+  }
+  let filter_archived = match args.value("archived") {
+    Some(True) => Some(true)
+    Some(False) => Some(false)
+    _ => None
+  }
   let scope = [args.value("ws").unwrap_or(Json::null()), args.value("home").unwrap_or(Json::null())]
   db.exec("SAVEPOINT search_chat_list_read")
   defer (db.exec("RELEASE search_chat_list_read") catch { _ => () })
@@ -109,25 +124,73 @@ pub fn search_chat_list(db : @sql.Db, args : Json) -> Json raise {
         }
       _ => []
     }
-    let (first_words, said) = if summarized {
-      (first_text(db, id), last_said_text(db, id))
-    } else {
-      (field(row, "first_text"), field(row, "said_text"))
-    }
     let member = (m : Json, k : String) => m.value(k).unwrap_or(Json::null())
-    let titles = [field(row, "title"), field(row, "auto_title"), first_words, ..members.map(m => member(m, "title"))].filter(t => !(t is Null))
-    let haystack = @jscase.lower(
-      titles.map(js_text).join(" ") + " " + js_text(said) + " " + members.map(m => js_text(member(m, "session"))).join(" "),
-    )
-    if !haystack.contains(query) {
-      continue
+    if filter_archived is Some(want_archived) {
+      let hidden = !(field(row, "hidden_at") is Null)
+      let home_archived = match field(row, "home") {
+        String(h) => members.iter().any(m => js_text(member(m, "session")) == h && !(member(m, "archivedAt") is Null))
+        _ => false
+      }
+      if (hidden || home_archived) != want_archived {
+        continue
+      }
+    }
+    if filter_model is Some(want_model) {
+      if !members.iter().any(m => @jscase.lower(js_text(member(m, "model"))).contains(want_model)) {
+        continue
+      }
+    }
+    if filter_creator is Some(want_creator) {
+      let thread_creator = @jscase.lower(js_text(field(row, "created_by")))
+      let matches_creator = (thread_creator != "" && thread_creator.contains(want_creator)) ||
+        members.iter().any(m => {
+          let c = @jscase.lower(js_text(member(m, "createdBy")))
+          c != "" && c.contains(want_creator)
+        })
+      if !matches_creator {
+        continue
+      }
+    }
+    let mut first_words = Json::null()
+    if query != "" {
+      let (fw, said) = if summarized {
+        (first_text(db, id), last_said_text(db, id))
+      } else {
+        (field(row, "first_text"), field(row, "said_text"))
+      }
+      first_words = fw
+      let titles = [field(row, "title"), field(row, "auto_title"), first_words, ..members.map(m => member(m, "title"))].filter(t => !(t is Null))
+      let haystack = @jscase.lower(
+        titles.map(js_text).join(" ") + " " + js_text(said) + " " + members.map(m => js_text(member(m, "session"))).join(" "),
+      )
+      if !haystack.contains(query) {
+        continue
+      }
     }
     total += 1
     if threads.length().to_double() < limit {
+      if query == "" && field(row, "title") is Null && field(row, "auto_title") is Null {
+        first_words = if summarized { first_text(db, id) } else { field(row, "first_text") }
+      }
       for m in members {
         if !(member(m, "present") is (Number(0.0, ..) | Null | False)) {
           let key = js_text(member(m, "session"))
-          sessions[key] = { "key": member(m, "session"), "title": member(m, "title"), "archivedAt": member(m, "archivedAt"), "ws": member(m, "ws") }
+          let running = match member(m, "running") {
+            Number(n, ..) => Json::boolean(n != 0.0)
+            True => Json::boolean(true)
+            _ => Json::boolean(false)
+          }
+          sessions[key] = {
+            "key": member(m, "session"),
+            "title": member(m, "title"),
+            "archivedAt": member(m, "archivedAt"),
+            "ws": member(m, "ws"),
+            "runtime": match member(m, "runtime") { String(s) => Json::string(s); _ => Json::string("") },
+            "model": member(m, "model"),
+            "effort": member(m, "effort"),
+            "running": running,
+            "createdBy": member(m, "createdBy"),
+          }
         }
       }
       threads.push(({

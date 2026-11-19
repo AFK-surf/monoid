@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
-import { CORE, type Tool, weight } from "../src/tools/mcp.ts";
+import { CORE, HIDDEN, type Tool, weight } from "../src/tools/mcp.ts";
 import { stationTools } from "./station-tools.ts";
 
 /// The factories the list (test/station-tools.ts `stationTools`) is made of, by the names their callers call them by.
@@ -28,9 +28,11 @@ const PARTS_GIVE = 14;
 // whole list's is 63,000 and not 61,000 for station_retire (1,827), which came the same day (#6084): 62,752 with it;
 // 64,000 for station_move, the migration's face that replaces station_retire's use (the owner, 2026-11-14), until
 // station_retire goes; 65,000 for station_version (445), the agents' way to put their station back to an earlier
-// release when the latest broke something (2026-11-18), which no tool did before.
+// release when the latest broke something (2026-11-18), which no tool did before; lowered back to 62,000 (2026-11-19:
+// 59,429 visible across 47 tools) after hiding superseded tools (adb_devices, phone_use, secret_reask, station_retire)
+// and trimming vault tool boilerplate while adding chat_configure and chat_list filters.
 // TOOLS_WEIGHT_TABLE=1 prints every tool's.
-const TOTAL = 65_000;
+const TOTAL = 62_000;
 const CORE_TOTAL = 14_000;
 const HEAVIEST = 5_000;
 // One tool's input schema, as compact JSON. Not a rounding: Codex 0.169.0 strips every description from an MCP tool's
@@ -62,14 +64,15 @@ test("the list here is the station's: every factory its tools are given by, and 
 });
 
 test("the tools a station declares stay under their ceilings: the whole list, the core ones, the heaviest, a schema", (t) => {
-  const tools = stationTools();
-  assert.equal(new Set(tools.map((x) => x.name)).size, tools.length, "no name twice");
+  const all = stationTools();
+  assert.equal(new Set(all.map((x) => x.name)).size, all.length, "no name twice");
+  const tools = all.filter((x) => !HIDDEN.includes(x.name));
   for (const name of CORE) assert.ok(tools.some((x) => x.name === name), `${name} is a core tool and is not in the list`);
   const total = tools.reduce((n, x) => n + weight(x), 0);
   const core = tools.filter((x) => CORE.includes(x.name)).reduce((n, x) => n + weight(x), 0);
   const heaviest = [...tools].sort((a, b) => weight(b) - weight(a))[0]!;
   const widest = [...tools].sort((a, b) => schemaBytes(b) - schemaBytes(a))[0]!;
-  t.diagnostic(`${tools.length} tools, ${total} bytes; core ${core}; heaviest ${heaviest.name} ${weight(heaviest)}; largest schema ${widest.name} ${schemaBytes(widest)}`);
+  t.diagnostic(`${tools.length} visible tools (${all.length} total), ${total} bytes; core ${core}; heaviest ${heaviest.name} ${weight(heaviest)}; largest schema ${widest.name} ${schemaBytes(widest)}`);
   if (process.env.TOOLS_WEIGHT_TABLE) t.diagnostic(`\n${table(tools)}`);
   assert.ok(total <= TOTAL, `the tools declare ${total} bytes, more than ${TOTAL}. ${TOLD}\n${table(tools)}`);
   assert.ok(core <= CORE_TOTAL, `the core tools declare ${core} bytes, more than ${CORE_TOTAL}. ${TOLD}\n${table(tools.filter((x) => CORE.includes(x.name)))}`);
