@@ -85,7 +85,7 @@ pub fn Background::now(self : Background) -> Double {
 pub fn Background::track(self : Background, f : async () -> Unit) -> Unit {
   self.active += 1
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("accounts background", on_error=e => (self.log)(message_of(e)), async fn() {
       f() catch {
         e => (self.log)(message_of(e))
       }
@@ -356,7 +356,7 @@ pub async fn Accounts::new(
   catalog : Catalog,
 ) -> Accounts {
   let background = Background::new(rt, clock, message => ignore(
-    rt.fork(async fn() {
+    rt.fork_quiet(name="accounts warn", async fn() {
       ignore(
         b.ask("log.warn", [
           js("accounts"),

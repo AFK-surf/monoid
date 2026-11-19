@@ -39,7 +39,7 @@ fn LineProgram::started(self : LineProgram) -> Proc raise {
   let p = spawn(self.host, self.argv0, self.args, stdin_piped=true, stdout=Piped)
   self.proc = Some(p)
   ignore(
-    self.host.rt.fork(name=self.name + "'s lines", async fn() {
+    self.host.rt.fork_daemon(self.name + "'s lines", on_error=e => @host.note((self.name + "'s lines") + " failed: \{e}"), async fn() {
       let held = @buffer.Buffer()
       let mut ended = false
       while !ended {
@@ -400,7 +400,7 @@ async fn P52::start_usage(self : P52) -> Unit {
     e => live_log("warn", "usage", "the usage counter did not start", { "error": jstr(said_of(e)) })
   }
   ignore(
-    self.host.rt.fork(name="usage after the station before", async fn() {
+    self.host.rt.fork_daemon("usage after the station before", on_error=e => @host.note("usage after the station before failed: \{e}"), async fn() {
       (self.bus.previous_gone)()
       ignore(@session_hub.hub_call(hub, "usageDrain", [])) catch {
         e => live_log("warn", "usage", "the chats of moved sessions are not counted again", { "error": jstr(said_of(e)) })

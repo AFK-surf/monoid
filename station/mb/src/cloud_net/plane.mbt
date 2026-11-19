@@ -107,7 +107,7 @@ pub async fn signed_post(
   let origin = (state.origin)().unwrap_or("")
   let body = value.stringify()
   let ts = now_secs
-  let signature = sign("\{tag}:\{origin}:\{station}:\{ts}:\{sha256_hex(body)}")
+  let signature = sign("\{tag}:\{origin}:\{station}:\{ts}:\{@hash.sha256_utf8_hex(body)}")
   let headers = Headers::new()
   headers.set("content-type", "application/json")
   headers.set("x-stillfail-station", station)
@@ -283,7 +283,7 @@ async fn ControlPlane::telemetry(
   let origin = (self.state.origin)().unwrap_or("")
   let body = made(station)
   let ts = (self.now_secs)()
-  let digest = sha256_hex(body)
+  let digest = @hash.sha256_utf8_hex(body)
   let headers = signed_headers(t.prefixes, station, ts, prefix => (self.sign)(
     "\{prefix}-station-telemetry-v1:\{origin}:\{station}:\{ts}:\{digest}",
   ))
@@ -337,4 +337,11 @@ pub fn ControlPlane::credential(self : ControlPlane) -> Accepted {
 pub async fn ControlPlane::signed(self : ControlPlane, path : String, tag : String, value : Json) -> Json? {
   let plane = self.spec()
   signed_post(self.state, self.sign, (self.now_secs)(), path, tag, value, plane.name, req => self.request(plane, req))
+}
+
+///|
+/// The SHA-256 of `text`'s UTF-8, hex (key.ts `sha256hex`): `@hash.sha256_utf8_hex`'s, kept here for what calls it by
+/// this package.
+pub fn sha256_hex(text : String) -> String {
+  @hash.sha256_utf8_hex(text)
 }

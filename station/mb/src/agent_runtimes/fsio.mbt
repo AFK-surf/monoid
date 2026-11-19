@@ -7,6 +7,14 @@ suberror FsError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for FsError with output(self, logger) {
+  match self {
+    FsError(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// What the shell answered, its `value` where it says one.
 fn answered(json : Json) -> Json {
   match json {

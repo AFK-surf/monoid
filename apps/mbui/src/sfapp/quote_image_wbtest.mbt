@@ -10,16 +10,11 @@ fn image_in_chat(
   platform? : Int = 2,
   w? : Double = 390.0,
   nodes? : Bool = false,
-  composed? : Bool = false,
 ) -> (@ui.Tester, Double, Double) {
   new_run()
-  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes; its composer too where
-  // `composed` says so, 试用新输入框: sfbase's composer_nodes)
+  // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
   if nodes {
     @sfbase.chat_page_nodes.set(true)
-  }
-  if composed {
-    @sfbase.composer_nodes.set(true)
   }
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

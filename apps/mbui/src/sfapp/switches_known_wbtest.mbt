@@ -68,7 +68,6 @@ let switches_known : Map[String, Int] = Map([
     ("小屏 chat-preview-step: toggle 「复制」", 2),
     ("小屏 chat-preview-swipe: toggle 「关闭（Esc）」", 2),
     ("小屏 chat-preview-swipe: toggle 「复制」", 2),
-    ("小屏 home-bars: tab 「对话」", 3),
     ("小屏 player-ended: toggle 「选集」", 2),
     ("小屏 player-failed: toggle 「上一个」", 2),
     ("小屏 player-opening: toggle 「上一个」", 2),

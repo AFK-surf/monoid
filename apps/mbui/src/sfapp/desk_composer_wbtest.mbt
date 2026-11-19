@@ -27,7 +27,7 @@ fn desk_composer_tester(
     },
   }
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
-  // (made as nodes where both_pages says, 试用新输入框: the chat's composer made as nodes (sfpages' chat_composer_node,
+  // (made as nodes where both_pages says: the chat's composer made as nodes (sfpages' chat_composer_node,
   // `spec_of`'s default: no test here gives another) drawn on its own in the window as the old one is below, over what
   // the presenters show)
   if both_nodes.val {

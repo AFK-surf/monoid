@@ -1183,6 +1183,19 @@ test("holds, workspaces, held chats, recovery, idle processes and the pages' com
   await pair.call("wsOf", null);
   await pair.call("profilesIn", null);
   await pair.call("profilesIn", "ws2");
+  // One archived going idle: what it left in the background ended, then its archive cleaned, one call after the other
+  // (the program once asked its actor for a call it has not, `evictThenCleanArchive`)
+  // (no process idle meanwhile: what else idleNow lets go comes in an order of each side's own scheduling)
+  await pair.set(() => {
+    pair.a.states = {};
+  });
+  pair.both((s) => s.setArchived("w2:C1:1100.000001", true, "manual"));
+  const compareLogs = pair.compareLogs.bind(pair);
+  const idleArchived: Json[] = [];
+  pair.compareLogs = (where) => (idleArchived.push(...pair.a.log), compareLogs(where));
+  await pair.call("idleNow", "w2:C1:1100.000001");
+  pair.compareLogs = compareLogs;
+  assert.deepEqual(idleArchived.filter((e) => e[0] === "actor" && e[1] === "w2:C1:1100.000001"), [["actor", "w2:C1:1100.000001", "evict", [true]], ["actor", "w2:C1:1100.000001", "cleanArchive", []]]);
   await pair.call("dropActor", "w2:C1:1100.000001");
   await pair.call("dropActor", "w2:C1:1100.000001");
   await pair.call("shutdown");
@@ -1517,7 +1530,8 @@ test("the agents' side takes the sessions up and follows its workspaces, as agen
   assert.deepEqual(started.answer, { result: { $undefined: true } });
   const url = "http://127.0.0.1:4750/mcp";
   const both2 = (call: string, args: Json[] = []) => [["actor", "cl:C1:1000.000001", call, args], ["actor", "w2:C1:1100.000001", call, args]];
-  assert.deepEqual(started.did, [["agents.openDoor"], ...both2("toolsAt", [url]), ...both2("release"), ...both2("kick"), ["agents.along", "taken"], ...both2("kick"), ["agents.jobsRelaunch", null]]);
+  // (what was cut off found while turns are held, then each session let go once: released, never kicked as well)
+  assert.deepEqual(started.did, [["agents.openDoor"], ...both2("toolsAt", [url]), ["agents.along", "taken"], ...both2("release"), ["agents.jobsRelaunch", null]]);
   // Out of a workspace it joined: its sessions end; back in it: they resume, and the parts are told each time.
   const left = await pair.callB("agents.follow", place({ joined: [] }));
   assert.deepEqual(left.did, [["actor", "w2:C1:1100.000001", "suspend", ["the station left its workspace"]], ["agents.along", "changed"]]);
@@ -1528,7 +1542,7 @@ test("the agents' side takes the sessions up and follows its workspaces, as agen
   assert.deepEqual(out.did, [["actor", "cl:C1:1000.000001", "suspend", []], ["actor", "w2:C1:1100.000001", "suspend", []], ["drivers", "shutdown", [true]], ["agents.along", "left"], ["agents.jobsStopAll", "the station was removed from its workspace"]]);
   assert.deepEqual((await pair.callB("held", "cl:C1:1000.000001")).answer, { result: true });
   const inAgain = await pair.callB("agents.follow", place());
-  assert.deepEqual(inAgain.did, [["agents.along", "joined"], ...both2("kick"), ["agents.jobsRelaunch", null], ...both2("release"), ...both2("kick")]);
+  assert.deepEqual(inAgain.did, [["agents.along", "joined"], ["agents.jobsRelaunch", null], ...both2("release")]);
   assert.deepEqual((await pair.callB("held", "cl:C1:1000.000001")).answer, { result: false });
   // A new home: one it had joined took over (the old home's chats said to be that one's).
   assert.deepEqual((await pair.callB("agents.follow", place({ home: "ws2", joined: [], first: "ws2" }))).did, [["live", "cl:C1:1000.000001", false]]);

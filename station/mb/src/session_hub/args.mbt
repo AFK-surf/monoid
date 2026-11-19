@@ -10,6 +10,14 @@ pub(all) suberror Refused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Refused with output(self, logger) {
+  match self {
+    Refused(m) => logger.write_string(m)
+  }
+}
+
+///|
 pub fn Refused::message(self : Refused) -> String {
   match self {
     Refused(m) => m

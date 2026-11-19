@@ -68,6 +68,8 @@ priv struct Config {
   // the framework's parts that read with no reader, an app's sources (scoped-computed, raw-effect)
   scoped_ok : Array[String]
   effect_ok : Array[String]
+  // when set, per-package bar shards live under this directory relative to root (`counts_dir`) instead of inline
+  counts_dir : String
 }
 
 ///|
@@ -130,6 +132,16 @@ fn Config::new(d : @rjson.Value) -> Config {
     app_words: strs(d.get("app_words"), []),
     scoped_ok: strs(sect(d, "signals").get("scoped_ok"), []),
     effect_ok: strs(sect(d, "signals").get("effect_ok"), []),
+    counts_dir: match d.get("counts_dir") {
+      Some(Str(s)) => {
+        let mut t = s
+        while t.has_suffix("/") && t.length() > 0 {
+          t = t.exact_view(end=t.length() - 1).to_owned()
+        }
+        t
+      }
+      _ => ""
+    },
   }
 }
 

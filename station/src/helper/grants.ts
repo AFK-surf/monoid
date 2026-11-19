@@ -6,7 +6,8 @@
 // old where it matters (a view opened, a grant asked for), looked at again when the helper says a grant changed or comes
 // back, and in the background once a page reads it SHOWN_MS after the last look, or after the last try where the
 // helper did not answer (a Mac with no one signed in to its desktop cannot start it: every page's read started it
-// again, 42,885 times in two hours on one station).
+// again, 42,885 times in two hours on one station). A refresh that may be fresh (not `force`) waits SHOWN_MS after such a
+// try too: the desktop's screens listed went on starting it every few seconds (2026-11-19).
 //
 // The helper's window asks for a grant on this Mac, once: not again (nor brought forward) while it is up asking for it,
 // nor for AGAIN_MS after it was shown for it, so an agent asking again, the drive retrying or a person refreshing never
@@ -151,8 +152,11 @@ export class HelperGrants {
 
   /// The grants as macOS has them now (at most FRESH_MS old, unless `force`); the helper started for it.
   refresh(force = false): Promise<void> {
-    if (!force && this.#now() - this.#checked < FRESH_MS) return Promise.resolve();
+    // (a look under way is waited for; the helper not answering: tried again SHOWN_MS after the last try, else FRESH_MS
+    // after the last look)
     if (this.#checking !== null) return this.#checking;
+    const [last, within] = this.#unanswered !== null ? [this.#attempted, SHOWN_MS] : [this.#checked, FRESH_MS];
+    if (!force && this.#now() - last < within) return Promise.resolve();
     this.#attempted = this.#now();
     this.#checking = Promise.all([
       this.#reach().then(

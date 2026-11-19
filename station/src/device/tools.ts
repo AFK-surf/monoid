@@ -433,10 +433,13 @@ export class DeviceTools {
         const env = await withShellCommand(kind, this.env);
         const found = await findCommandSoon(kind, env);
         if (found === null) continue;
-        const r = await platform.runnableSoon(found.real, ["--version"], env as NodeJS.ProcessEnv);
-        const said = await new Promise<string>((done) =>
-          execFile(r.file, r.args, { timeout: 10_000, env: env as NodeJS.ProcessEnv, windowsVerbatimArguments: r.windowsVerbatimArguments }, (_e, out) => done(String(out ?? ""))),
-        );
+        let said = "";
+        try {
+          const r = await platform.runnableSoon(found.real, ["--version"], env as NodeJS.ProcessEnv);
+          said = await new Promise<string>((done) =>
+            execFile(r.file, r.args, { timeout: 10_000, env: env as NodeJS.ProcessEnv, windowsVerbatimArguments: r.windowsVerbatimArguments }, (_e, out) => done(String(out ?? ""))),
+          );
+        } catch {}
         runtimes.push({ kind, path: found.onPath, version: versionIn(said), signed_in: await signedIn(kind, env) });
       }
       return { runtimes };

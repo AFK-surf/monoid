@@ -4,7 +4,8 @@
 // made it grow and shrink by a pixel; digits of words said to be one width (style.mbt style_tabular) are, in the
 // system's face and in a face given by its file (the first argument, as an app gives Inter: its tnum); and an ellipsis
 // that cuts Latin words in a CJK face (ui's shape_widths: the piece with it shaped narrow, style_proportional) leaves
-// the letters before it as wide as they were.
+// the letters before it as wide as they were; the glyphs of a page drawn ahead on the queues at every phase as they
+// are drawn on the frames' thread, the phases after their first a phase of every glyph in turn.
 //   cc -Wall -fobjc-arc -I src/host -I "$MOON_HOME/include" scripts/apple_text_test.m -framework Foundation \
 //     -framework AppKit -framework CoreText -framework CoreGraphics -framework ImageIO -o out/apple_text_test &&
 //     out/apple_text_test [face.ttf]
@@ -274,6 +275,74 @@ static void cut_cjk(NSString *family) {
   face_none(1);
 }
 
+// The rest of glyphs' phases in turn (ahead_rests): one more of every glyph before a third of any, each glyph's count
+// of them all the same.
+static void rests_in_turn(void) {
+  NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
+  uint8_t wants[] = {SUB_ALL, SUB_ALL, 0x6, SUB_ALL, 0x3};
+  uint8_t firsts[] = {0x1, 0x2, 0x0, SUB_ALL, 0x1};
+  for (int i = 0; i < 5; i++) {
+    MBAhead *a = [MBAhead new];
+    a.key = i;
+    a.want = wants[i];
+    a.first = firsts[i];
+    [asked addObject:a];
+  }
+  NSMutableString *got = [NSMutableString new];
+  for (MBAhead *a in ahead_rests(asked)) [got appendFormat:@"%d", a.key];
+  printf("rests in turn: %s\n", got.UTF8String);
+  // (0 and 1 three each, 2 two, 3 none, 4 one)
+  CHECK([got isEqualToString:@"0124" @"012" @"01"], "rests in the order %s", got.UTF8String);
+}
+
+// A page of glyphs drawn ahead on the queues at once (mb_host_glyphs_ahead, their first phase where their keys put
+// them, the rest after): each phase of each taken drawn there, as the frames' thread draws it, to the byte.
+static void ahead_page(void) {
+  NSString *page = @"文字渲染横向推入页面每个字形的四分之一像素相位Rendering every glyph's phases ahead 0123456789";
+  int sizes[] = {13, 15, 17};
+  int keys[3 * 128], n = 0;
+  NSMutableSet<NSNumber *> *seen = [NSMutableSet new];
+  for (int si = 0; si < 3; si++) {
+    double out[4 * 128];
+    int k = shape(page, sizes[si], 400, 0, out, 128);
+    for (int i = 0; i < k && n < 3 * 128; i++) {
+      int key = (int)out[i * 4 + 3];
+      // (each once, and none drawn by the tests before)
+      if (key < 0 || entries[key].subs_queued || [seen containsObject:@(key)]) continue;
+      [seen addObject:@(key)];
+      keys[n++] = key | ((i % SUB_COUNT) << 26);
+    }
+  }
+  CHECK(n > 100, "only %d glyphs to draw ahead", n);
+  mb_host_glyphs_ahead(keys, n);
+  // (both queues serial, each item of theirs a dispatch_apply over all it was handed: done when a block after it is)
+  dispatch_sync(ahead_q, ^{
+                });
+  dispatch_sync(ahead_rest_q, ^{
+                });
+  int ahead = 0, same = 0;
+  for (int i = 0; i < n; i++) {
+    int key = key_base(keys[i]);
+    glyph_entry *e = &entries[key];
+    for (int s = 0; s < SUB_COUNT; s++) {
+      MBDrawn *d = drawn_ahead(key, s);
+      if (!d) continue;
+      ahead++;
+      MBDrawn *r =
+          draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(s), text_scale);
+      BOOL eq = d.pw == r.pw && d.ph == r.ph && d.color == r.color && CGRectEqualToRect(d.b, r.b) &&
+                (!d.px || !r.px ? d.px == r.px : memcmp(d.px, r.px, (size_t)d.pw * d.ph * (d.color ? 4 : 1)) == 0);
+      if (eq) same++;
+      CHECK(eq, "glyph %d phase %d drawn ahead not as drawn here", key, s);
+    }
+  }
+  printf("ahead page: %d glyphs, %d of their %d phases drawn ahead, %d as drawn here\n", n, ahead, n * SUB_COUNT, same);
+  CHECK(ahead == n * SUB_COUNT, "%d of %d phases drawn ahead", ahead, n * SUB_COUNT);
+  int left = 0;
+  for (int i = 0; i < n; i++) left += ahead_of[@(key_base(keys[i]))] != nil;
+  CHECK(left == 0, "%d glyphs still asked ahead, all their phases taken", left);
+}
+
 int main(int argc, char **argv) {
   @autoreleasepool {
     text_scale = 2.0;
@@ -287,6 +356,8 @@ int main(int argc, char **argv) {
     moving();
     cut_cjk(@"PingFang SC");
     cut_cjk(@"Hiragino Sans");
+    rests_in_turn();
+    ahead_page();
   }
   if (failed) return 1;
   printf("apple_text_test: ok\n");

@@ -5,6 +5,8 @@
 //   #chatsOf), the window not read again and its days the same objects;
 // - one chat of one station starting its work read every station's counts again: each station's are read and kept by
 //   themselves (chat-reads.ts `counts`);
+// - a chat archived on one station counted every station's archive again: each station's archive is counted and kept by
+//   itself (chat-reads.ts `archivedCount`);
 // - a chat's outline read all of its entries (672 KB, its agents' replies most of them) for its people's few: it reads
 //   theirs and their edits alone (account.ts peopleEntries), and makes the outline the whole of them made.
 // HOT_PATHS_PRINT=1 prints what each took (bench/hot-paths.ts compares them with a core from before).
@@ -125,6 +127,26 @@ test("one_stations_chat_starting_its_work_reads_that_stations_counts_alone", asy
   assert.deepEqual(counted, [[`$chat-counts ${st}`, 1]], "only its station's counts read again");
   assert.equal([...runs].filter(([k]) => k.startsWith("$chat-window ")).length, 0, "the window not read again");
   assert.equal(value(t, LIST).glyph !== undefined, true);
+});
+
+test("one_stations_chat_archived_counts_that_stations_archive_alone", async () => {
+  const ids = ["a", "b", "c", "d", "e", "f"];
+  const { t, now } = await listed(ids, 4);
+  const archivedOf = (id: string, n: number) => Array.from({ length: n }, (_, i) => ({ ...row(`ws/${id}`, 100 + i, now - (i * ids.length + 1) * 60_000), archived: { at: now - i * 60_000, by: "manual" } }));
+  for (const id of ids) t.set({ topic: "archivedRows", station: `ws/${id}` }, archivedOf(id, 5));
+  const shown = ui();
+  const ARCHIVE = { topic: "archive", scope: "ws", limit: 10 };
+  t.subscribe(2, ARCHIVE);
+  await t.read(shown, 2);
+  assert.equal(value(t, ARCHIVE).total, 30);
+  const runs = statements(t, ids.map((id) => `ws/${id}`));
+  // One chat more archived on station c.
+  const st = "ws/c";
+  t.set({ topic: "archivedRows", station: st }, archivedOf("c", 6));
+  await t.read(shown, 2);
+  assert.equal(value(t, ARCHIVE).total, 31);
+  const counted = [...runs].filter(([k]) => k.startsWith("$chat-archived-count "));
+  assert.deepEqual(counted, [[`$chat-archived-count ${st}`, 1]], "only its station's archive counted again");
 });
 
 test("a_chats_outline_reads_its_peoples_messages_and_their_edits_alone_and_is_what_all_of_them_make", async () => {

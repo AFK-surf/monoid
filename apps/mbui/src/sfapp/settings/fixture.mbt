@@ -1912,13 +1912,15 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
 fn fx_connect_as(kind : String) -> Json {
   let feishu = kind == "feishu"
   let group = kind == "group"
-  match fx_connect("k1", if feishu { "飞书助手" } else if group { "Claude" } else { "Comma 助手" }, "online", "在线", "multi-session") {
+  // (a Feishu one's words as the core says them in the language shown: its English picture all English)
+  let feishu_name = if @sf.language() == "en" { "Feishu Assistant" } else { "飞书助手" }
+  match fx_connect("k1", if feishu { feishu_name } else if group { "Claude" } else { "Comma 助手" }, "online", "在线", "multi-session") {
     Object(o) => {
       o["kind"] = str(kind)
       o.remove("team")
       o.remove("slack")
       o["sessions"] = Json::number(0.0)
-      o["placeText"] = str(if feishu { "飞书" } else if group { "Group" } else { "Comma" })
+      o["placeText"] = str(if feishu { tr("web-pages.connect.feishu.name") } else if group { "Group" } else { "Comma" })
       if group {
         o["group"] = obj([
           ("server", str("3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c4b6d8a0f1e3c5b7d9a2f4e6c8b0d1a3f")),
@@ -1938,12 +1940,14 @@ fn fx_connect_as(kind : String) -> Json {
           ("appId", str("cli_a7f3e9b2c41d500e")),
           ("appSecret", str("…9c2b")),
           ("domain", str("feishu")),
+          ("directThreads", Json::boolean(false)),
           ("console", str("https://open.feishu.cn/app/cli_a7f3e9b2c41d500e")),
         ])
+        o["statusText"] = str(tr("core-logic.format.connection.connected"))
         o["modeWords"] = fx_mode_words(true)
-        o["modeText"] = str("每个群一个会话")
-        o["modeLabel"] = str("每个群一个会话")
-        o["modeSentence"] = str("在群里 @ 它开始，之后群里的消息都交给这个会话；@ 它说「新会话」另开一个，话题群的每个话题各一个会话")
+        o["modeText"] = str(tr("web-main.mode.feishu.multi.label"))
+        o["modeLabel"] = str(tr("web-main.mode.feishu.multi.label"))
+        o["modeSentence"] = str(tr("web-main.mode.feishu.multi.description"))
       }
       Json::object(o)
     }
@@ -2036,11 +2040,11 @@ fn fx_mode_words_group() -> Json {
 fn fx_mode_words(feishu : Bool) -> Json {
   if feishu {
     obj([
-      ("multi", obj([("label", str("每个群一个会话")), ("description", str("在群里 @ 它开始，之后群里的消息都交给这个会话；@ 它说「新会话」另开一个，话题群的每个话题各一个会话"))])),
-      ("threads", obj([("label", str("每个 thread 一个会话")), ("description", str("在群里 @ 它就开一个 thread，回复都留在 thread 里；每个 thread 一个会话，thread 里的后续消息无需再 @"))])),
-      ("single", obj([("label", str("所有群共用一个会话")), ("description", str("它所在的群和私聊都进入同一个会话，适合长期值守的助手"))])),
-      ("mentionOn", str("被 @ 后，同一个群里的后续消息无需再 @。")),
-      ("mentionOff", str("它所在的群里的每条消息都会进入会话。")),
+      ("multi", obj([("label", str(tr("web-main.mode.feishu.multi.label"))), ("description", str(tr("web-main.mode.feishu.multi.description")))])),
+      ("threads", obj([("label", str(tr("web-main.mode.feishu.threads.label"))), ("description", str(tr("web-main.mode.feishu.threads.description")))])),
+      ("single", obj([("label", str(tr("web-main.mode.feishu.single.label"))), ("description", str(tr("web-main.mode.feishu.single.description")))])),
+      ("mentionOn", str(tr("web-pages.connect.mentionOn.feishu"))),
+      ("mentionOff", str(tr("web-pages.connect.mentionOff.feishu"))),
     ])
   } else {
     obj([
@@ -4657,7 +4661,7 @@ fn fx_session_pick() -> Json {
     ("efforts", ["low", "medium", "high"]),
     ("was", ["Opus 5.5", "默认深度", "自动 · Claude 主账号"]),
     ("becomes", ["Opus 5.5", "high", "自动 · Claude 主账号"]),
-    ("accountText", str("自动分配")),
+    ("accountText", str(tr("core-logic.choose.account.auto"))),
     ("accountNote", str("Claude 主账号 · 5 小时窗口已用 62%")),
     ("repick", str("重新分配")),
     // (PickProfile: its kind, its runtime, its allowance as its chips draw it)

@@ -2249,12 +2249,17 @@ async function grantsStuckScenario(s: Play) {
   s.w.file(`${APP}/Contents/MacOS/stillfail-helper`, "release 2");
   for (let i = 0; i < 5; i++) await s.call("g", "view");
   await s.settle();
+  // (the desktop's screens listed refresh it, not forced: those wait SHOWN_MS after the last try too, as a page's read)
+  for (let i = 0; i < 3; i++) await s.call("g", "refresh", { force: false });
+  await s.settle();
   s.w.now += 29_999;
   await s.call("g", "view");
+  await s.call("g", "refresh", { force: false });
   await s.settle();
   s.w.now += 1;
   await s.call("g", "view");
   await s.call("g", "view");
+  await s.call("g", "refresh", { force: false });
   await s.settle();
   await s.call("g", "refresh", { force: true });
   await s.call("g", "request", { grant: "documents", words: {} });

@@ -298,7 +298,7 @@ fn Admin::accounts_routes(self : Admin) -> Array[Route] {
         manager(r)
         let body = input(r)
         let among = match body.get("among") {
-          None | Some(Null) => Null
+          None | Some(Null) => JV::Null
           v => station_ids(v)
         }
         self.backend.tell("sharing.shareProfile", [
@@ -545,6 +545,19 @@ fn Admin::logins_routes(self : Admin) -> Array[Route] {
         )
       })
     }),
+    // Started again from its card by the person, once it failed (ran out of time, say) → the new login.
+    route("POST", "^\\/machine-logins\\/+([^/]+)\\/+again\\/*$", async fn(
+      r,
+      m,
+    ) {
+      answer(async fn() {
+        if read_only(r.viewer) {
+          raise Refused(403, "read-only")
+        }
+        let id = uri_part(m[0].unwrap())
+        ok(seen(r, self.backend.ask("logins.again", [js(id), who_of(r)])))
+      })
+    }),
     // The browser's callback, from the client it came back to.
     route("POST", "^\\/machine-logins\\/+([^/]+)\\/+callback\\/*$", async fn(
       r,
@@ -554,8 +567,8 @@ fn Admin::logins_routes(self : Admin) -> Array[Route] {
         let id = uri_part(m[0].unwrap())
         let body = input(r)
         let headers = match body.get("headers") {
-          Some(Obj(f)) => Obj(f.filter(p => p.1 is Str(_)))
-          _ => Obj([])
+          Some(Obj(f)) => JV::Obj(f.filter(p => p.1 is Str(_)))
+          _ => JV::Obj([])
         }
         guard body.get("method") is Some(Str(method_)) &&
           body.get("path") is Some(Str(path)) else {

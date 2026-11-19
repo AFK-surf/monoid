@@ -443,6 +443,16 @@ class FrontStream implements Stream {
     }
   }
 
+  /// The front's shell sends the view's frames as datagrams (`istream.mediaDatagrams`); a front from before says no
+  /// such ask: on the stream.
+  async mediaDatagrams(token: number): Promise<boolean> {
+    try {
+      return (await this.#front.ask("mediaDatagrams", { stream: this.#id, token })) === true;
+    } catch {
+      return false;
+    }
+  }
+
   async reset(code: number): Promise<void> {
     this.#reset = true;
     const reader = this.#reader;

@@ -22,7 +22,8 @@ pub(all) enum SettingsLead {
 ///|
 /// A row of the settings' list: the page it opens, its key, what it is by, its name, the line under it (the account's
 /// and the workspace's), how things stand at its end (`bad` in red; `dot`, a red dot before it: something there is not
-/// right, nothing wrong to say).
+/// right, nothing wrong to say); `words`, what else it is found by (other names people call it, in both languages),
+/// read by the search alone, never shown.
 #derive(Eq)
 pub(all) struct SettingsRow {
   route : @settings.Route
@@ -33,6 +34,7 @@ pub(all) struct SettingsRow {
   value : String
   bad : Bool
   dot : Bool
+  words : String
 }
 
 ///|
@@ -54,8 +56,9 @@ fn settings_row(
   value? : String = "",
   bad? : Bool = false,
   dot? : Bool = false,
+  words? : String = "",
 ) -> SettingsRow {
-  { route, key, lead: Icon(icon), title, line: "", value, bad, dot }
+  { route, key, lead: Icon(icon), title, line: "", value, bad, dot, words }
 }
 
 ///|
@@ -87,7 +90,17 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
     key: "who",
     heading: "",
     rows: [
-      { route: Me, key: "me", lead: Person, title: me, line: here.email, value: "", bad: false, dot: false },
+      {
+        route: Me,
+        key: "me",
+        lead: Person,
+        title: me,
+        line: here.email,
+        value: "",
+        bad: false,
+        dot: false,
+        words: @sf.t("android-settings.me.title") + " 个人资料 头像 邮箱 account profile avatar email",
+      },
       {
         route: Workspace,
         key: "workspace",
@@ -99,6 +112,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
         value: "",
         bad: false,
         dot: false,
+        words: @sf.t("android-settings.workspace.title") + " 工作区 团队 组织 workspace team organization",
       },
     ],
   })
@@ -116,10 +130,10 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
     } else {
       @sf.t("web-mobile.settings.securityOn")
     }
-    access.push(settings_row(Security, "security", "shield-check", @sf.t("web-pages.security.title"), value=said, bad=attention > 0))
+    access.push(settings_row(Security, "security", "shield-check", @sf.t("web-pages.security.title"), value=said, bad=attention > 0, words=settings_words_security))
   }
   access.push(
-    settings_row(Vault, "vault", "key", @sf.t("android-settings.vault.title"), value=text(vaults, "statusText"), bad=flag(vaults, "statusBad")),
+    settings_row(Vault, "vault", "key", @sf.t("android-settings.vault.title"), value=text(vaults, "statusText"), bad=flag(vaults, "statusBad"), words=settings_words_vault),
   )
   parts.push({ key: "access", heading: "", rows: access })
   // where its agents run: its stations, the chats' ways in, the agents' accounts (as many as their list has, those
@@ -152,6 +166,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
           Some(a) => online < a.length()
           None => false
         },
+        words=settings_words_stations,
       ),
       settings_row(
         Connects(""),
@@ -166,6 +181,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
           @sf.t("android-settings.count", args=[("n", items(connects, "items").length().to_string())])
         },
         bad=failing > 0,
+        words=settings_words_connects,
       ),
       settings_row(
         Profiles(""),
@@ -180,6 +196,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
           @sf.t("android-settings.count", args=[("n", items(profiles, "items").length().to_string())])
         },
         bad=short > 0,
+        words=settings_words_profiles,
       ),
     ],
   })
@@ -188,10 +205,10 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
     key: "work",
     heading: "",
     rows: [
-      settings_row(AutoDecisions, "decisions", "check", @sf.t("web-pages.automaticDecisions.title")),
-      settings_row(Memories, "memory", "brain", @sf.t("android-settings.memory")),
-      settings_row(Archiving, "archiving", "archive", @sf.t("web-pages.archiving.title")),
-      settings_row(Usage, "usage", "chart", @sf.t("android-settings.home.usage")),
+      settings_row(AutoDecisions, "decisions", "check", @sf.t("web-pages.automaticDecisions.title"), words=settings_words_decisions),
+      settings_row(Memories, "memory", "brain", @sf.t("android-settings.memory"), words=settings_words_memory),
+      settings_row(Archiving, "archiving", "archive", @sf.t("web-pages.archiving.title"), words=settings_words_archiving),
+      settings_row(Usage, "usage", "chart", @sf.t("android-settings.home.usage"), words=settings_words_usage),
     ],
   })
   // this device's: what there is of it here (the bottom bar where the window has one, 2026-10-26: 「为啥中型屏会有这个
@@ -210,7 +227,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
   }
   let refused = text(notify, "permission") == "denied"
   let device : Array[SettingsRow] = [
-    settings_row(Appearance, "appearance", "sliders", @sf.t("android-settings.appearance.title"), value=theme),
+    settings_row(Appearance, "appearance", "sliders", @sf.t("android-settings.appearance.title"), value=theme, words=settings_words_appearance),
     settings_row(
       Notifications,
       "notifications",
@@ -224,25 +241,26 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
         @sf.t("web-pages.notifications.off")
       },
       bad=refused,
+      words=settings_words_notifications,
     ),
   ]
   if bars {
-    device.push(settings_row(BarSettings, "bars", "view-columns", @sf.t("android-misc.bar.title"), value=@settings.bars_value(core)))
+    device.push(settings_row(BarSettings, "bars", "view-columns", @sf.t("android-misc.bar.title"), value=@settings.bars_value(core), words=settings_words_bars))
   }
   let platform = @ui.platform()
   if platform == 0 || platform == 3 || platform == 5 {
-    device.push(settings_row(Shortcuts, "shortcuts", "keyboard", @sf.t("web-pages.settings.nav.shortcuts")))
+    device.push(settings_row(Shortcuts, "shortcuts", "keyboard", @sf.t("web-pages.settings.nav.shortcuts"), words=settings_words_shortcuts))
   }
   if @settings.local_station_managed() {
-    device.push(settings_row(LocalStation, "local-station", "monitor", @sf.t("web-pages.localStation.title")))
+    device.push(settings_row(LocalStation, "local-station", "monitor", @sf.t("web-pages.localStation.title"), words=settings_words_local))
   }
   // 共享调试: on a phone its switch and which chats it is lent to; on every app, which chats were allowed, how long a
   // grant lasts, and the devices that approve it (their own page under 安全 of before, gone: the user, 2026-11-10, to
   // people there is one safe mode). Not the web's: a page signs nothing
   if platform != 4 {
-    device.push(settings_row(AdbShare(""), "adb", "phone", @sf.t("android-misc.adb.title")))
+    device.push(settings_row(AdbShare(""), "adb", "phone", @sf.t("android-misc.adb.title"), words=settings_words_adb))
   }
-  device.push(settings_row(KeptFiles, "files", "disk", @sf.t("android-settings.files.title"), value=kept))
+  device.push(settings_row(KeptFiles, "files", "disk", @sf.t("android-settings.files.title"), value=kept, words=settings_words_files))
   let exp = @settings.experimental_items_from(prefs)
   if !exp.is_empty() {
     let exp_on = exp.filter(fn(i) { i.1 }).length()
@@ -257,6 +275,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
         } else {
           ""
         },
+        words=settings_words_experimental,
       ),
     )
   }
@@ -277,6 +296,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
         } else {
           @settings.build_version()
         },
+        words=settings_words_about,
       ),
     ],
   })
@@ -311,8 +331,48 @@ pub fn settings_row_of(r : @settings.Route) -> @settings.Route {
 let settings_search_field : @ui.Field = @ui.Field::new()
 
 ///|
+/// The result last opened from the search (a `find/` row's key; `""` a row of the list itself, or none): of the
+/// results that open the same page, the one the sidebar lights. Let go as the search's words change.
+// kept across runs: said as a result is opened, let go as the words change and as the search is reset
+let settings_search_picked : @signals.Signal[String] = @signals.signal("")
+
+///|
+/// The result ↑ and ↓ in the sidebar's field have come to (its key, `""` none): what Enter opens, lit meanwhile.
+// kept across runs: said by ↑ and ↓, let go as the words change, a result is opened and the search is reset
+let settings_search_active : @signals.Signal[String] = @signals.signal("")
+
+///|
 pub fn settings_search_reset() -> Unit {
   settings_search_field.set("")
+  settings_search_picked.set("")
+  settings_search_active.set("")
+}
+
+///|
+/// Result `r` of the settings' list (one pressed, or Enter's) opened by `open`: which of them it was kept
+/// (settings_search_picked: a `find/` row's key, a row of the list's none), so the sidebar lights it alone.
+pub fn settings_search_chose(r : SettingsRow, open : (@settings.Route) -> Unit) -> Unit {
+  settings_search_picked.set(if r.key.has_prefix("find/") { r.key } else { "" })
+  settings_search_active.set("")
+  open(r.route)
+}
+
+///|
+/// The search's words as they are typed apart (any run of spaces, the full-width space and tabs between them), lower
+/// case, none empty.
+fn settings_search_words(query : String) -> Array[String] {
+  let out : Array[String] = []
+  for w in query.to_lower().split(" ") {
+    for w in w.split("\u{3000}") {
+      for w in w.split("\t") {
+        let w = w.trim(chars="\n\r").to_owned()
+        if w != "" {
+          out.push(w)
+        }
+      }
+    }
+  }
+  out
 }
 
 ///|
@@ -330,9 +390,59 @@ let settings_search_side : @ui.Style = @ui.css("w=Full")
 /// another of it still leaves, the sidebar's old one), what it holds the list's words (settings_search_field: kept as a
 /// result is opened, the sidebar's the same), each told the other's as they change. Its words as far in as where its
 /// list stands (`at`) has them (band_pad_in); on a page (`page`), 12 under it, as its blocks are apart.
-pub fn settings_search_node(parent : @view.View, at? : @sf.ListAt = Whole, page? : Bool = true) -> Unit {
+/// `results`: what its words find now, in the list's order (read as a key is pressed, never as it is made); with them
+/// Enter opens by `choose` the one ↑ and ↓ came to, else the first, and Escape empties the field while it holds
+/// words. `steps`: ↑ and ↓ go along the results while it holds words and finds some (where the list lights the one they
+/// are at: the sidebar's); with no words they are left to what they were.
+pub fn settings_search_node(
+  parent : @view.View,
+  at? : @sf.ListAt = Whole,
+  page? : Bool = true,
+  results? : () -> Array[SettingsRow],
+  choose? : (SettingsRow) -> Unit,
+  steps? : Bool = false,
+) -> Unit {
   let own = @ui.Field::new(text=@signals.untracked(fn() { settings_search_field.text() }))
   let on_page = page
+  // (what the words find, as a key is pressed: none while it holds no words)
+  let found = fn() -> Array[SettingsRow] {
+    match results {
+      Some(f) if settings_search_words(own.text()).length() > 0 => @signals.untracked(f)
+      _ => []
+    }
+  }
+  let target = fn() -> SettingsRow? {
+    let all = found()
+    let active = settings_search_active.untracked()
+    for r in all {
+      if active != "" && r.key == active {
+        return Some(r)
+      }
+    }
+    all.get(0)
+  }
+  // (↑ ↓: the one before or after the one they are at, the first or the last to begin with, held at the ends)
+  let step = fn(by : Int) -> Bool {
+    let all = found()
+    if all.is_empty() {
+      return false
+    }
+    let active = settings_search_active.untracked()
+    let mut at_now = -1
+    for i, r in all {
+      if r.key == active {
+        at_now = i
+      }
+    }
+    let next = if at_now < 0 {
+      if by > 0 { 0 } else { all.length() - 1 }
+    } else {
+      let n = at_now + by
+      if n < 0 { 0 } else if n >= all.length() { all.length() - 1 } else { n }
+    }
+    settings_search_active.set(all[next].key)
+    true
+  }
   parent.box(fn(page) {
     @sf.style_node(page, fn() { if on_page { settings_search_page } else { settings_search_side } })
     page.reacts(fn() { own.text() }, fn(w) { settings_search_field.set(w) })
@@ -341,97 +451,249 @@ pub fn settings_search_node(parent : @view.View, at? : @sf.ListAt = Whole, page?
         own.set(w)
       }
     })
-    @sf.search_input_node(page, own, fn() { @sf.t("web-pages.settings.search") }, at~) |> ignore
+    let submitted = match choose {
+      Some(open) =>
+        Some(fn(_w : String) {
+          match target() {
+            Some(r) => open(r)
+            None => ()
+          }
+        })
+      None => None
+    }
+    @sf.search_input_node(
+      page,
+      own,
+      fn() { @sf.t("web-pages.settings.search") },
+      at~,
+      edited=fn(_) {
+        settings_search_picked.set("")
+        settings_search_active.set("")
+      },
+      submitted?,
+      // (↑ ↓ along the results, taken only while there is a result to go to)
+      step?=if steps { Some(step) } else { None },
+      step_can=fn() { !found().is_empty() },
+      escape=fn() {
+        if own.text() == "" {
+          false
+        } else {
+          own.set("")
+          settings_search_reset()
+          true
+        }
+      },
+      cleared=fn() {
+        settings_search_picked.set("")
+        settings_search_active.set("")
+      },
+    )
+    |> ignore
   })
   |> ignore
 }
 
 ///|
-/// Searchable settings below a list row. A result names its parent and opens the page that owns the setting; entries
-/// with their own page go there directly. Only children of rows actually offered in this frame are considered.
-fn settings_search_children(row : SettingsRow, core : Core) -> Array[SettingsRow] {
-  let entries : Array[(String, String, @settings.Route)] = match row.key {
-    "me" => [
-      ("account", @sf.t("android-settings.me.title"), Me),
-      ("devices", @sf.t("web-pages.settings.account.sessions"), Me),
-      ("sign-out", @sf.t("android-settings.me.signOutOnly"), Me),
-      ("delete-account", @sf.t("android-settings.me.delete"), Me),
-    ]
-    "workspace" => [
-      ("workspace", @sf.t("android-settings.workspace.title"), Workspace),
-      ("name", @sf.t("android-settings.workspace.name"), Workspace),
-      ("members", @sf.t("android-settings.members.title"), Workspace),
-    ]
-    "security" => [("signing", @sf.t("web-pages.security.signing"), Security)]
-    "vault" => [("all", @sf.t("web-pages.vault.all"), VaultItems)]
-    "decisions" => [("completion", @sf.t("web-pages.automaticDecisions.completion"), AutoCompletion)]
-    "archiving" => [
-      ("suggest", @sf.t("web-pages.appearance.archive.title"), Archiving),
-      ("automatic", @sf.t("web-pages.archiving.auto.title"), Archiving),
-    ]
+/// The settings found by name under a row of the list (its children): what each is called, the page that holds it, and
+/// what else it is found by. Only the children of rows offered now (a page this device has, a state the core says).
+fn settings_children_of(
+  row : SettingsRow,
+  core : Core,
+  here : @settings.Here,
+  wide : Bool,
+) -> Array[(String, String, @settings.Route, String)] {
+  match row.key {
+    "me" =>
+      [
+        ("devices", @sf.t("web-pages.settings.account.sessions"), Me, "登录设备 会话 session device"),
+        ("sign-out", @sf.t("android-settings.me.signOutOnly"), Me, "登出 切换账号 logout sign out"),
+        ("delete-account", @sf.t("android-settings.me.delete"), Me, "删除账号 销户 delete account"),
+      ]
+    "workspace" =>
+      [
+        ("name", @sf.t("android-settings.workspace.name"), Workspace, "工作区名称 重命名 图标 emoji rename icon"),
+        ("members", @sf.t("android-settings.members.title"), Workspace, "成员 邀请 角色 添加成员 移除 member invite role owner admin"),
+        ("relays", @sf.t("android-settings.ways.title"), Workspace, "中继 转发 网络 节点 relay iroh mesh"),
+      ]
+    "security" => {
+      let lock = (core.topic)("lock", { "workspace": Json::string(here.workspace) }).get().value
+      if flag(lock, "locked") {
+        [
+          ("my-devices", @sf.t("web-pages.security.myDevices"), Security, "受信任设备 我的设备 本机 续期 移除 trusted my device"),
+          ("other-members", @sf.t("web-pages.security.otherMembers"), Security, "其他成员 成员设备 member device"),
+          ("turn-off", @sf.t("web-pages.security.turnOff"), Security, "关闭安全模式 停用 turn off disable"),
+        ]
+      } else {
+        [
+          ("turn-on", @sf.t("web-pages.security.turnOn"), SecurityOpen, "开启安全模式 启用 turn on enable"),
+          ("signing", @sf.t("web-pages.security.signing"), Security, "受信任设备 签名设备 trusted signing device"),
+        ]
+      }
+    }
+    "vault" =>
+      [
+        ("all", @sf.t("web-pages.vault.all"), VaultItems, "全部密钥 密钥列表 查看 添加密钥 Slack all secrets items"),
+        ("timeout", @sf.t("android-settings.vault.lasts.title"), Vault, "授权时限 默认最长授权 有效期 自动锁 approval timeout duration"),
+      ]
+    "stations" => {
+      // (the workspace's stations by name, each straight to its page)
+      let a : Array[(String, String, @settings.Route, String)] = []
+      match @settings.stations_of(core, here).value {
+        Some(Array(list)) =>
+          for st in list {
+            let address = text(Some(st), "station")
+            let name = text(Some(st), "name")
+            if address != "" && name != "" {
+              a.push(("st/" + address, name, Station(address), "station 服务器 机器 " + address))
+            }
+          }
+        _ => ()
+      }
+      a.append([
+        ("devices", @sf.t("web-pages.devices.title"), Stations, "外设 硬件 串口 摄像头 开发板 手机 device usb serial tcp adb"),
+        ("agent-env", @sf.t("web-pages.stations.agentEnv"), Stations, "环境变量 Agent env environment variable"),
+        ("station-search", @sf.t("web-pages.stations.search.personal"), Stations, "搜索个人数据 Spotlight 邮件 备忘录 personal search"),
+        ("software", @sf.t("web-pages.stations.software"), Stations, "软件与更新 版本 回退 更新 channel software version update"),
+        ("move", @sf.t("web-pages.stations.move.title"), Stations, "迁移 搬迁 转移 废弃 station move migrate"),
+        ("add", @sf.t("web-pages.settings.stations.add"), Stations, "添加 station 新机器 Docker add join"),
+      ])
+      a
+    }
+    "connects" => {
+      // (the workspace's connects by name, each straight to its page)
+      let a : Array[(String, String, @settings.Route, String)] = []
+      let connects = (core.topic)("connects", { "scope": Json::string(here.workspace), "mine": Json::boolean(false) }).get().value
+      for x in items(connects, "items") {
+        let station = text(Some(x), "station")
+        let c = field(Some(x), "connect")
+        let id = text(c, "id")
+        let name = text(c, "name")
+        if station != "" && id != "" && name != "" {
+          a.push(("cn/" + station + "/" + id, name, Connect(station, id), text(c, "kind") + " 连接 机器人 connect bot"))
+        }
+      }
+      a.push(("add", @sf.t("android-settings.flow.title"), Connects(""), "添加连接 接入 Slack 飞书 Feishu Lark Comma 机器人 add connect bot"))
+      a
+    }
+    "profiles" =>
+      [
+        ("quota", @sf.t("android-settings.quota.title"), Profiles(""), "额度 配额 用量池 速率 概览 allowance quota pool overview"),
+        ("add", @sf.t("android-misc.bar.action.profiles"), Profiles(""), "添加账号 添加 Profile 登录 Claude Codex Gemini OpenAI Anthropic API"),
+      ]
+    "decisions" =>
+      [
+        ("completion", @sf.t("web-pages.automaticDecisions.completion"), AutoCompletion, "归档建议 归档策略 完成判断 模型判断 archive policy completion"),
+      ]
+    "archiving" =>
+      [
+        ("suggest", @sf.t("web-pages.appearance.archive.title"), Archiving, "提示归档 做完就提示 按模型判断 archive hint suggest"),
+        ("automatic", @sf.t("web-pages.archiving.auto.title"), Archiving, "自动归档 空闲天数 Slack 归档 idle days auto archive"),
+      ]
+    "usage" => [("prices", @sf.t("android-misc.usage.prices"), UsagePrices(7), "价目表 模型单价 价格 计费 Token price rate model cost")]
     "appearance" => {
-      let a : Array[(String, String, @settings.Route)] = [
-        ("theme", @sf.t("web-pages.appearance.theme.title"), Appearance),
-        ("accent", @sf.t("web-pages.appearance.accent.title"), Appearance),
-        ("fonts", @sf.t("web-pages.appearance.fonts.title"), Fonts),
-        ("motion", @sf.t("web-pages.appearance.motion.title"), Appearance),
-        ("haptics", @sf.t("web-pages.appearance.haptics.title"), Appearance),
-        ("language", @sf.t("common.language"), Appearance),
+      let a : Array[(String, String, @settings.Route, String)] = [
+        ("theme", @sf.t("web-pages.appearance.theme.title"), Appearance, "深色 浅色 跟随系统 暗黑 亮色 夜间 theme dark light system"),
+        ("accent", @sf.t("web-pages.appearance.accent.title"), Appearance, "强调色 主题色 颜色 配色 橙 蓝 绿 紫 粉 accent color hue"),
+        ("fonts", @sf.t("web-pages.appearance.fonts.title"), Fonts, "正文字体 代码字体 等宽 字号 字体大小 font typeface monospace size"),
+        ("motion", @sf.t("web-pages.appearance.motion.title"), Appearance, "动效 动画 减弱动态效果 过渡 animation motion reduce"),
+        ("haptics", @sf.t("web-pages.appearance.haptics.title"), Appearance, "触感 震动 振动 反馈 haptic vibration"),
+        ("language", @sf.t("common.language"), Appearance, "中文 英文 English 多语言 界面语言 language locale zh en"),
       ]
       if @ui.window_zoom_supported() {
-        a.push(("zoom", @sf.t("desktop.menu.zoom"), Appearance))
+        a.push(("zoom", @sf.t("desktop.menu.zoom"), Appearance, "界面缩放 窗口缩放 放大 缩小 比例 zoom scale"))
       }
       if @ui.takes_drops() {
-        a.push(("drop", @sf.t("web-pages.appearance.drop.title"), Appearance))
+        a.push(("drop", @sf.t("web-pages.appearance.drop.title"), Appearance, "拖拽 拖放 发送文件 引用路径 drag drop file path"))
+      }
+      // (the rail's own, beside the settings' sidebar alone)
+      if wide {
+        a.push(("rail", @sf.t("web-main.rail.title"), Appearance, "侧栏 侧边栏 导航条 自定义侧边条 rail sidebar customize"))
       }
       a
     }
     "experimental" =>
       @settings.experimental_items(core).map(fn(e) {
-        (e.0, @sf.t("web-pages.experimental." + e.0 + ".title"), Experimental)
+        (
+          e.0,
+          @sf.t("web-pages.experimental." + e.0 + ".title"),
+          Experimental,
+          @sf.t("web-pages.experimental." + e.0 + ".description") + " " + e.0,
+        )
       })
-    "notifications" => [
-      ("ways", @sf.t("web-pages.notifications.ways.title"), Notifications),
-      ("kinds", @sf.t("web-pages.notifications.kinds.title"), Notifications),
-      ("preview", @sf.t("web-pages.notifications.preview"), Notifications),
-      ("permissions", @sf.t("web-pages.settings.nav.permissions"), Permissions),
-    ]
-    "about" => {
-      let a : Array[(String, String, @settings.Route)] = [
-        ("version", @sf.t("web-pages.settings.nav.version"), About),
-        ("changelog", @sf.t("web-pages.settings.nav.changelog"), Changelog),
-        ("terms", @sf.t("common.legal.terms"), About),
-        ("privacy", @sf.t("common.legal.privacy"), About),
+    "notifications" =>
+      [
+        ("ways", @sf.t("web-pages.notifications.ways.title"), Notifications, "横幅 声音 角标 图标数字 提醒方式 banner sound badge"),
+        ("kinds", @sf.t("web-pages.notifications.kinds.title"), Notifications, "待处理 失败 完成 新消息 后台服务 通知类别 wait failed done message"),
+        ("preview", @sf.t("web-pages.notifications.preview"), Notifications, "显示消息内容 预览 隐藏内容 preview content"),
+        ("permissions", @sf.t("web-pages.settings.nav.permissions"), Permissions, "系统权限 通知权限 授权 允许 permission system"),
       ]
+    "shortcuts" =>
+      [
+        ("sending", @sf.t("web-main.shortcuts.sending"), Shortcuts, "回车发送 Enter ⌘Enter Ctrl+Enter 换行 发送消息 send message"),
+      ]
+    "files" =>
+      [
+        ("fill", @sf.t("android-settings.files.fill.title"), KeptFiles, "后台下载 自动下载 离线文件 background download fill"),
+        ("clear", @sf.t("android-settings.files.clearAll"), KeptFiles, "清除缓存 清理空间 删除缓存 clear cache storage"),
+      ]
+    "about" => {
+      let a : Array[(String, String, @settings.Route, String)] = [
+        ("version", @sf.t("web-pages.settings.nav.version"), About, "版本号 当前版本 version build"),
+      ]
+      if (core.version_now)().asks {
+        a.push(("auto-update", @sf.t("android-settings.version.auto"), About, "自动更新 自动升级 auto update"))
+        a.push(("check-update", @sf.t("android-settings.version.check"), About, "检查更新 检测新版本 升级 check update"))
+      }
+      a.append([
+        ("changelog", @sf.t("web-pages.settings.nav.changelog"), Changelog, "发版说明 更新记录 新功能 修复 release notes changelog"),
+        ("terms", @sf.t("common.legal.terms"), About, "用户协议 条款 terms of service"),
+        ("privacy", @sf.t("common.legal.privacy"), About, "隐私条款 数据保护 privacy policy"),
+      ])
       if (core.reporting)() is Some(_) {
-        a.push(("telemetry", @sf.t("common.telemetry.title"), About))
+        a.push(("telemetry", @sf.t("common.telemetry.title"), About, "崩溃报告 遥测 统计 匿名数据 telemetry crash report"))
+      }
+      if @hostapi.perf_state() >= 0 {
+        a.push(("perf", @sf.t("web-pages.about.perf.title"), About, "性能日志 诊断日志 打开日志文件夹 卡顿记录 performance log folder"))
       }
       a
     }
     _ => []
   }
-  entries.map(fn(e) {
-    let lead = match row.lead {
-      Person => Icon("user")
-      Space(_, _) => Icon("users")
-      lead => lead
+}
+
+///|
+/// Searchable settings below a list row (settings_children_of's) as rows of the list: each names its parent and opens
+/// the page that owns the setting; entries with their own page go there directly.
+fn settings_search_children(row : SettingsRow, core : Core, here : @settings.Here, wide : Bool) -> Array[SettingsRow] {
+  let lead = match row.lead {
+    Person => Icon("user")
+    Space(_, _) => Icon("users")
+    lead => lead
+  }
+  settings_children_of(row, core, here, wide).map(fn(e) {
+    {
+      route: e.2,
+      key: "find/" + row.key + "/" + e.0,
+      lead,
+      title: e.1,
+      line: row.title,
+      value: row.title,
+      bad: false,
+      dot: false,
+      words: e.3,
     }
-    { route: e.2, key: "find/" + row.key + "/" + e.0, lead, title: e.1, line: row.title, value: row.title, bad: false, dot: false }
   })
 }
 
 ///|
-/// Every word must be present, case independently. A child must match one word itself: searching a parent's name
-/// alone shows that row, not every setting under it. Its parent may supply the other words.
-fn settings_search_matches(row : SettingsRow, query : String, child : Bool) -> Bool {
-  let own = row.title.to_lower()
+/// Every word must be present, case independently, in what the row is called and found by, or its line. A child must
+/// match one word itself: searching a parent's name alone shows that row, not every setting under it. Its parent may
+/// supply the other words.
+fn settings_search_matches(row : SettingsRow, words : Array[String], child : Bool) -> Bool {
+  let own = (row.title + " " + row.words).to_lower()
   let all = (own + " " + row.line).to_lower()
   let mut own_match = false
-  for word in query.split(" ") {
-    let word = word.to_owned()
-    if word == "" {
-      continue
-    }
+  for word in words {
     if !all.contains(word) {
       return false
     }
@@ -443,19 +705,43 @@ fn settings_search_matches(row : SettingsRow, query : String, child : Bool) -> B
 }
 
 ///|
-fn settings_found(parts : Array[SettingsPart], core : Core, query : String) -> Array[SettingsPart] {
+/// What the search's words (`query`) find of the list's `parts`, in its order: each row they find, and under it the
+/// settings of its they find. A setting on its row's own page, its row found and named whole by the words already,
+/// is that row's (searching 通知 shows 通知, not each of its page's sections as well).
+fn settings_found(
+  parts : Array[SettingsPart],
+  core : Core,
+  here : @settings.Here,
+  query : String,
+  wide : Bool,
+) -> Array[SettingsPart] {
   if query == "" {
+    return parts
+  }
+  let words = settings_search_words(query)
+  if words.is_empty() {
     return parts
   }
   let found : Array[SettingsPart] = []
   for part in parts {
     let rows : Array[SettingsRow] = []
     for row in part.rows {
-      if settings_search_matches(row, query, false) {
+      let parent_matched = settings_search_matches(row, words, false)
+      if parent_matched {
         rows.push(row)
       }
-      for child in settings_search_children(row, core) {
-        if settings_search_matches(child, query, true) {
+      // (what the row is called: the account's and the workspace's rows by their own names and by what they are)
+      let own_names = match row.key {
+        "me" => row.title + " " + @sf.t("android-settings.me.title") + " 个人资料 account profile"
+        "workspace" => row.title + " " + @sf.t("android-settings.workspace.title") + " 工作区 workspace"
+        _ => row.title
+      }
+      let named = parent_matched && words.iter().all(fn(w) { own_names.to_lower().contains(w) })
+      for child in settings_search_children(row, core, here, wide) {
+        if named && child.route == row.route {
+          continue
+        }
+        if settings_search_matches(child, words, true) {
           rows.push(child)
         }
       }
@@ -468,11 +754,69 @@ fn settings_found(parts : Array[SettingsPart], core : Core, query : String) -> A
 }
 
 ///|
+/// What else the list's rows are found by (SettingsRow's `words`).
+let settings_words_security : String = "安全模式 个人锁 生物识别 指纹 面容 配对 批准 security safe mode lock biometric touch id face id pairing"
+
+///|
+let settings_words_vault : String = "密码 凭证 令牌 密钥库 vault secret token api key password credential"
+
+///|
+let settings_words_stations : String = "机器 服务器 节点 主机 算力 沙箱 station server host machine node rig sandbox"
+
+///|
+let settings_words_connects : String = "Slack 飞书 Feishu Lark Comma 机器人 频道 群 接入 connect bot integration channel"
+
+///|
+let settings_words_profiles : String = "模型 账号 额度 配额 订阅 Claude Codex Gemini OpenAI Anthropic API Cursor Devin profile model quota allowance subscription"
+
+///|
+let settings_words_decisions : String = "自动审批 自动决定 完结判断 automatic decision completion"
+
+///|
+let settings_words_memory : String = "技能 提示词 规则 知识库 memory skill MEMORY.md AGENTS.md prompt"
+
+///|
+let settings_words_archiving : String = "自动归档 归档会话 闲置 archive idle"
+
+///|
+let settings_words_usage : String = "费用 开销 花费 账单 统计 Token 成本 usage cost spend billing token"
+
+///|
+let settings_words_appearance : String = "深色 浅色 暗色 亮色 夜间 界面 样式 动效 玻璃 appearance dark light mode look ui style"
+
+///|
+let settings_words_notifications : String = "消息提醒 推送 横幅 角标 声音 勿扰 notification push banner badge sound alert"
+
+///|
+let settings_words_bars : String = "底栏 底部栏 导航栏 标签栏 bottom bar tab bar nav"
+
+///|
+let settings_words_shortcuts : String = "热键 按键 键盘 绑定 发送 回车 keymap hotkey keyboard shortcut keybinding"
+
+///|
+let settings_words_local : String = "本地 本机 服务 开机自启 守护进程 安装 卸载 local station daemon service install"
+
+///|
+let settings_words_adb : String = "手机 安卓 真机 无线调试 USB ADB Android phone wireless debug"
+
+///|
+let settings_words_files : String = "缓存 存储 空间 清理 磁盘 下载 文件 cache storage disk space clean clear download"
+
+///|
+let settings_words_experimental : String = "实验 预览 测试开关 Beta Labs experimental preview feature flag"
+
+///|
+let settings_words_about : String = "版本 更新 升级 日志 隐私 条款 诊断 about version update upgrade changelog privacy terms log"
+
+///|
 /// The list as a sidebar's (beside the settings' pages on a medium or large screen) made once as nodes in `v`: the same
 /// rows in the same groups, a sidebar's rows (the theme's side_row, as its other rows of one line), the room of a
 /// heading between two groups with none; what it finds as the search's words say now (settings_search_field), each as
 /// the core says it. `lit()`: the row of the page beside it, as that changes. `open`: a row pressed, its page. `at`:
-/// where the list stands (a side column, the tape's). `here`: who and where, as that changes.
+/// where the list stands (a side column, the tape's). `here`: who and where, as that changes. One row lit at most:
+/// while the search finds, the one ↑ and ↓ came to, else the result opened, else the row of the page beside it, else
+/// the one result alone that opens that page. What it finds now, its rows in its order, given back (for the
+/// search's keys: read as they are pressed).
 pub fn settings_side_rows_node(
   v : @view.View,
   core : Core,
@@ -480,13 +824,61 @@ pub fn settings_side_rows_node(
   lit : () -> @settings.Route?,
   open : (@settings.Route) -> Unit,
   at : @sf.ListAt,
-) -> Unit {
-  let query = fn() { settings_search_field.text().trim(chars=" \t\n\r").to_owned().to_lower() }
+) -> () -> Array[SettingsRow] {
+  let query = fn() { settings_search_field.text().trim(chars=" \t\n\r\u{3000}").to_owned().to_lower() }
   // (no bottom bar beside a sidebar: a medium or large screen's; what is kept asked of the core as it is asked to be
   // read again, as the page's list asks it)
   let parts = @signals.computed(fn(_) {
-    settings_found(settings_parts_of(core, here(), bars=false, kept=@settings.kept_told()), core, query())
+    settings_found(settings_parts_of(core, here(), bars=false, kept=@settings.kept_told()), core, here(), query(), true)
   })
+  let searching = fn() { query() != "" }
+  // (while the search finds: the one row lit, by its key (settings_side_rows_node's order of them); none at all with
+  // no words, each row then lit by the page beside it as ever)
+  let chosen = @signals.computed(fn(_) -> String {
+    let found = parts.get()
+    let now = lit()
+    let active = settings_search_active.get()
+    if active != "" {
+      return active
+    }
+    let picked = settings_search_picked.get()
+    if picked != "" {
+      for p in found {
+        for r in p.rows {
+          if r.key == picked && Some(r.route) == now {
+            return picked
+          }
+        }
+      }
+    }
+    let under = now.map(settings_row_of)
+    let mut only = ""
+    let mut alike = 0
+    for p in found {
+      for r in p.rows {
+        if !r.key.has_prefix("find/") {
+          if under == Some(r.route) {
+            return r.key
+          }
+        } else if Some(r.route) == now {
+          only = r.key
+          alike += 1
+        }
+      }
+    }
+    if alike == 1 {
+      only
+    } else {
+      ""
+    }
+  })
+  let lights = fn(r : SettingsRow) {
+    if searching() {
+      chosen.get() == r.key
+    } else {
+      lit().map(settings_row_of) == Some(r.route)
+    }
+  }
   v.reacts(fn() { @settings.kept_asked() }, fn(_) { @settings.kept_ask(core) })
   // (its lines in their order: a heading over a group, the room between two groups with none, the rows; none found)
   let lines = fn() -> Array[String] {
@@ -523,8 +915,9 @@ pub fn settings_side_rows_node(
   v.each(lines, fn(k) { k }, at_once=true, fn(line, k) {
     let k = k.untracked()
     if k == "empty" {
+      // (its words where the rows' and the field's start: the sidebar's hint, as far in as its rows' words)
       line.box(fn(e) {
-        @sf.style_node(e, fn() { settings_search_empty })
+        @sf.style_node(e, fn() { @sf.side_hint_at(at) })
         @sf.words_node(e, fn() { @sf.t("common.noMatch") }, fn() { @sf.secondary }) |> ignore
       })
       |> ignore
@@ -536,9 +929,16 @@ pub fn settings_side_rows_node(
     } else if k.has_prefix("apart/") {
       line.box(fn(a) { @sf.style_node(a, fn() { settings_side_apart }) }) |> ignore
     } else {
-      settings_side_row_node(line, k.unsafe_substring(start=4, end=k.length()), row_of, lit, open, at)
+      settings_side_row_node(line, k.unsafe_substring(start=4, end=k.length()), row_of, lights, open, at)
     }
   })
+  fn() {
+    let out : Array[SettingsRow] = []
+    for p in parts.untracked() {
+      out.append(p.rows)
+    }
+    out
+  }
 }
 
 ///|
@@ -549,13 +949,13 @@ let settings_side_apart : @ui.Style = @ui.css("w=Full h=S3_5")
 ///|
 /// A row of the sidebar's list (settings_side_rows_node's) by its `key` in `parent`, as row_of has it now: its mark, its
 /// words, how things stand at its end (left out where the row has not the room: its words whole till then, cut only
-/// where they alone have not); the pointer's ground on it, the selected one's while it is the page beside it (`lit()`);
+/// where they alone have not); the pointer's ground on it, the selected one's while `lights` says it is the one lit;
 /// the room of another under it while one is. Pressed, its page; read out a link named by its words.
 fn settings_side_row_node(
   parent : @view.View,
   key : String,
   row_of : (String) -> (SettingsRow, Bool)?,
-  lit : () -> @settings.Route?,
+  lights : (SettingsRow) -> Bool,
   open : (@settings.Route) -> Unit,
   at : @sf.ListAt,
 ) -> Unit {
@@ -566,12 +966,7 @@ fn settings_side_row_node(
   let said = fn(f : (SettingsRow) -> String) { fn() { row().map(f).unwrap_or("") } }
   let selected = fn() {
     match row() {
-      Some(r) =>
-        if r.key.has_prefix("find/") {
-          lit() == Some(r.route)
-        } else {
-          lit().map(settings_row_of) == Some(r.route)
-        }
+      Some(r) => lights(r)
       None => false
     }
   }
@@ -588,7 +983,7 @@ fn settings_side_row_node(
       r.fits(Is(true)) |> ignore
       @sf.presses_node(r, fn() {
         match @signals.untracked(row) {
-          Some(x) => open(x.route)
+          Some(x) => settings_search_chose(x, open)
           None => ()
         }
       })
@@ -638,9 +1033,6 @@ fn settings_side_row_node(
 // kept across runs: a value (no field of it changes)
 let settings_side_last : @ui.Style = @ui.css("w=Full")
 
-///|
-// kept across runs: a value (no field of it changes)
-let settings_search_empty : @ui.Style = @ui.css("w=Full px=S3 py=S4")
 
 ///|
 /// A sidebar row's mark's side (ICON's 16).
@@ -691,11 +1083,13 @@ pub fn settings_home_node(
 ) -> Unit {
   // (the bottom bar's row where the shell says the window has the bar, as that changes; what is kept asked of the core as
   // it is asked to be read again, not as the list is worked out)
-  let query = fn() { settings_search_field.text().trim(chars=" \t\n\r").to_owned().to_lower() }
+  let query = fn() { settings_search_field.text().trim(chars=" \t\n\r\u{3000}").to_owned().to_lower() }
   // (worked out again as what it reads changes, what reads it told only where its rows come out otherwise: a change of
   // a topic it reads that its rows do not say wakes nothing under it)
   let parts = @signals.computed(
-    fn(_) { settings_found(settings_parts_of(core, here(), bars=bars(), kept=@settings.kept_told()), core, query()) },
+    fn(_) {
+      settings_found(settings_parts_of(core, here(), bars=bars(), kept=@settings.kept_told()), core, here(), query(), false)
+    },
     same=fn(a, b) { a == b },
   )
   v.reacts(fn() { @settings.kept_asked() }, fn(_) { @settings.kept_ask(core) })
@@ -755,7 +1149,18 @@ pub fn settings_home_node(
     id,
   ) {
     if id == "settings-search" {
-      settings_search_node(block)
+      // (what it finds, as a key is pressed in it: Enter opens the first)
+      settings_search_node(
+        block,
+        results=fn() {
+          let out : Array[SettingsRow] = []
+          for p in parts.untracked() {
+            out.append(p.rows)
+          }
+          out
+        },
+        choose=fn(r) { settings_search_chose(r, open) },
+      )
     } else if id == "settings-search-empty" {
       @sf.page_note_node(block, fn() { @sf.t("common.noMatch") })
     } else {
@@ -807,7 +1212,7 @@ fn settings_row_node(
     said(fn(r) { r.title }),
     fn() {
       match @signals.untracked(row) {
-        Some(r) => open(r.route)
+        Some(r) => settings_search_chose(r, open)
         None => ()
       }
     },

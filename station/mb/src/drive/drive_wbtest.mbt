@@ -195,15 +195,15 @@ fn inflate_fixed(data : Bytes, start? : Int = 0) -> Bytes? {
 ///|
 test "SHA-256 as FIPS 180-4's examples have it" {
   assert_eq(
-    hex(sha256_bytes(b"abc")),
+    hex(@hash.sha256(b"abc")),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
   )
   assert_eq(
-    hex(sha256_bytes(@utf8.encode("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))),
+    hex(@hash.sha256(@utf8.encode("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))),
     "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
   )
   assert_eq(
-    hex(sha256_bytes(b"")),
+    hex(@hash.sha256(b"")),
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   )
 }
@@ -515,4 +515,43 @@ test "Windows' paths: drives and shares, either separator, case aside, as window
   })
   assert_true(path_mode.val is Posix)
   assert_eq(within("/A/b", "/a"), false)
+}
+
+///|
+test "the drive's errors are said as their words" {
+  let said = [
+    (drive_error("not_found", "no such file") : Error).to_string(),
+    (Refused("the grant is gone") : Error).to_string(),
+    (fs_error("ENOENT", "no such file or directory") : Error).to_string(),
+    (TooBig : Error).to_string(),
+  ]
+  assert_eq(said, [
+    "no such file", "the grant is gone", "no such file or directory", "zip archive exceeds size limit",
+  ])
+  for s in said {
+    assert_false(s.contains("station/"))
+    assert_false(s.contains("("))
+  }
+}
+
+///|
+test "a private write: beside its file under a name of its own each time, nothing left beside it, even where it fails" {
+  let dir = scratch("private")
+  let given = []
+  for i in 0..<5 {
+    given.push(tmp_beside(join([dir, "state.json"])))
+    write_private(join([dir, "state.json"]), "write \{i}")
+  }
+  assert_eq(Set::from_array(given).length(), 5)
+  assert_eq(@utf8.decode_lossy(read_all(join([dir, "state.json"]))), "write 4")
+  // (written beside, then not renamed over a folder that holds something: what was written beside is let go of)
+  mkdir(join([dir, "full", "inside"]), true)
+  let failed = try { write_private(join([dir, "full"]), "x"); false } catch { _ => true }
+  assert_true(failed)
+  let failed_bytes = try { write_private_bytes(join([dir, "full"]), b"x"); false } catch { _ => true }
+  assert_true(failed_bytes)
+  let left = names(dir)
+  left.sort()
+  assert_eq(left, ["full", "state.json"])
+  rm_force(dir)
 }

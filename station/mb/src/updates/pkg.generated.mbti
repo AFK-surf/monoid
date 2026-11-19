@@ -387,6 +387,7 @@ pub async fn write_whole(World, String, String) -> Unit
 pub(all) suberror Thrown {
   Thrown(String, @jsjson.JValue)
 }
+pub impl Show for Thrown
 
 // Types and methods
 pub struct AgyWatch {

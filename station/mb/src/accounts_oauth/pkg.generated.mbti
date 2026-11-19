@@ -410,7 +410,7 @@ pub async fn MachineLogins::refresh(Self) -> Unit
 pub struct ModelCatalog {
   // private fields
 }
-pub async fn ModelCatalog::open(Io, Catalog, String, () -> String?, asker? : async (Request) -> Response, added? : (Array[String]) -> Unit) -> Self
+pub async fn ModelCatalog::open(Io, Catalog, String, () -> String?, asker? : async (Request) -> Response, added? : (Array[String]) -> Unit, learned? : () -> Unit) -> Self
 pub async fn ModelCatalog::refresh(Self, etag? : String) -> Unit
 pub async fn ModelCatalog::written(Self) -> Unit
 

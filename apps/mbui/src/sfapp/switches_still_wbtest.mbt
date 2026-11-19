@@ -45,9 +45,23 @@ let switches_left_out : Map[String, String] = Map([])
 let switch_heard : Array[Int] = []
 
 ///|
+/// The ids of what the client asked the made-up core (a subscription, a call) since this was last emptied
+/// (switch_heard_of): what a frame running by itself asked, whose first answer is that frame's, not the press's.
+// kept across runs: emptied as each press is measured, read as each frame after it is
+let switch_asked : Array[Int] = []
+
+///|
 /// A message between the client and the made-up core (round_trip_again's `heard`): one told the client kept by its id,
 /// but for the answer of a call whose answer nobody reads.
 fn switch_heard_of(m : String) -> Unit {
+  if m.has_prefix("out ") {
+    let j = @json.parse(m.unsafe_substring(start=4, end=m.length())) catch { _ => return }
+    guard j is Object(o) && o.get("id") is Some(Number(n, ..)) else { return }
+    if o.contains("subscribe") || o.contains("call") {
+      switch_asked.push(n.to_int())
+    }
+    return
+  }
   guard m.has_prefix("in ") else { return }
   let j = @json.parse(m.unsafe_substring(start=3, end=m.length())) catch { _ => return }
   guard j is Object(o) && o.get("id") is Some(Number(n, ..)) else { return }
@@ -318,6 +332,7 @@ fn switch_measure(
   // (what was told since the press, by id: a later telling of one of them is no first answer)
   let told : Map[Int, Bool] = Map([])
   switch_heard.clear()
+  switch_asked.clear()
   t.clock_came(from) |> ignore
   press()
   let changes : Array[SwitchChange] = []
@@ -351,6 +366,14 @@ fn switch_measure(
     let came = t.clock_came(t.time())
     let clock = came || clock_before
     clock_before = came
+    // (what a running frame itself asked the core, as the next episode's stream and subtitles when an ended card's
+    // countdown runs out: its first answer belongs to that clock turn, not to the switch pressed before it)
+    if switch_running(pressed, first_told, later, clock) {
+      for id in switch_asked {
+        told[id] = true
+      }
+    }
+    switch_asked.clear()
     if switch_top() != top {
       break
     }

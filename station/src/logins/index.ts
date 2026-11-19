@@ -70,9 +70,16 @@ export type Login = {
   browser?: boolean;
   /// The screen of the tab its page is open in, in the station's browser, while it is.
   screen?: string;
+  /// The login started again from it (from its card, once it failed or ran out of time): what its card follows.
+  again?: string;
+  /// The login it was started again from.
+  from?: string;
 };
 
-type Entry = { run: LoginRun; starter: Starter; doneBy?: Person; screens: Set<(screen: Screen) => void> };
+/// A login started again by a person from its card: the one it was, the new one, whom it is for, who started it again.
+export type Again = { from: Login; login: Login; starter: Starter; by: Person };
+
+type Entry = { run: LoginRun; starter: Starter; doneBy?: Person; again?: string; from?: string; screens: Set<(screen: Screen) => void> };
 
 export type LoginsOptions = {
   data: string;
@@ -117,6 +124,7 @@ export class Logins {
   readonly #entries = new Map<string, Entry>();
   readonly #listeners = new Set<(change: { login: string }) => void>();
   readonly #ended = new Set<(login: Login, starter: Starter) => void>();
+  readonly #agains = new Set<(again: Again) => void>();
   /// The logins whose end was told (once each).
   readonly #endedOnce = new Set<string>();
   /// The logins their agent's call waits on now (how many calls), told what they ask by that call's answer.
@@ -156,6 +164,12 @@ export class Logins {
   onEnded(listener: (login: Login, starter: Starter) => void): () => void {
     this.#ended.add(listener);
     return () => this.#ended.delete(listener);
+  }
+
+  /// Hears each login a person started again from its card (`again`).
+  onAgain(listener: (again: Again) => void): () => void {
+    this.#agains.add(listener);
+    return () => this.#agains.delete(listener);
   }
 
   #tell(change: { login: string }) {
@@ -206,6 +220,7 @@ export class Logins {
       ...(login.chatTitle ? { chatTitle: login.chatTitle } : {}), ...(login.doneBy ? { doneBy: login.doneBy } : {}),
       startedAt: login.startedAt, expiresAt: login.expiresAt, ...(login.endedAt !== undefined ? { endedAt: login.endedAt } : {}),
       ...(login.timedOut ? { timedOut: true } : {}),
+      ...(login.again ? { again: login.again } : {}), ...(login.from ? { from: login.from } : {}),
     };
     this.#history = [kept, ...this.#history.filter((l) => l.id !== login.id)].slice(0, HISTORY_MOST);
     if (this.#loaded) this.#writeHistory();
@@ -324,6 +339,46 @@ export class Logins {
     if (e.run.active && by) e.doneBy = by;
     e.run.cancel();
     return this.#shown(e);
+  }
+
+  /// Started again by the person `by` from its card, once it ended without logging in (failed, out of time among
+  /// them): the same command for the same chat, its agent told (onAgain) to answer what it asks, its card following the
+  /// new one (`again`). Started again already: that one; one under way for the same command: that one (start).
+  async again(id: string, by: Person): Promise<Login> {
+    const lang = this.#lang();
+    const entry = this.#entries.get(id);
+    const was = entry ? this.#shown(entry) : this.history().find((h) => h.id === id);
+    if (!was) throw new Refused(404, tr(lang, "station.machineLogin.unknown"));
+    if (was.endedAt === undefined || was.state !== "failed") throw new Refused(409, tr(lang, "station.machineLogin.notAgain"));
+    if (was.again) {
+      const then = this.get(was.again);
+      if (then) return then;
+    }
+    // (whom it was for as it began: what its record kept of them once it was let go from memory)
+    const starter: Starter = entry?.starter ?? { by: was.by, workspace: was.workspace ?? null, chat: was.chat ?? null, chatTitle: was.chatTitle ?? null };
+    const started = await this.start(was.command, starter);
+    if (entry) entry.again = started.id;
+    this.#history = this.#history.map((h) => (h.id === id ? { ...h, again: started.id } : h));
+    if (this.#loaded) this.#writeHistory();
+    const next = this.#entries.get(started.id);
+    if (next && next.from === undefined) next.from = id;
+    this.#tell({ login: id });
+    this.#tell({ login: started.id });
+    const again: Again = { from: this.get(id) ?? was, login: next ? this.#shown(next) : started, starter, by };
+    for (const l of this.#agains) {
+      try {
+        l(again);
+      } catch (e) {
+        log.warn("logins", "a listener failed", { error: (e as Error).message });
+      }
+    }
+    return again.login;
+  }
+
+  /// When a login under way runs out of time (null: none such, or it ended).
+  deadline(id: string): number | null {
+    const e = this.#entries.get(id);
+    return e && e.run.active ? e.run.expiresAt : null;
   }
 
   /// Typed into its terminal by its agent (its `login` tool): `{text}`, or `{key}`. Never into a prompt that reads
@@ -462,6 +517,8 @@ export class Logins {
       expiresAt: r.expiresAt,
       ...(r.endedAt !== null ? { endedAt: r.endedAt } : {}),
       ...(r.timedOut ? { timedOut: true } : {}),
+      ...(e.again ? { again: e.again } : {}),
+      ...(e.from ? { from: e.from } : {}),
     };
     if (r.url) {
       const domain = domainOf(r.url);

@@ -8,6 +8,13 @@ pub(all) suberror MeshError {
 }
 
 ///|
+/// Its words for people (`message`), never its constructor.
+pub impl Show for MeshError with output(self, logger) {
+  let MeshError(message~, ..) = self
+  logger.write_string(message)
+}
+
+///|
 /// The code of what failed: a `MeshError`'s; "" of anything else.
 pub fn code_of(e : Error) -> String {
   match e {

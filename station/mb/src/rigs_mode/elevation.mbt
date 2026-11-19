@@ -80,6 +80,14 @@ pub(all) suberror ChangeRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ChangeRefused with output(self, logger) {
+  match self {
+    ChangeRefused(key) => logger.write_string(key)
+  }
+}
+
+///|
 pub struct Elevation {
   priv d : ElevationDeps
   priv mut probed : (Bool, Bool)?

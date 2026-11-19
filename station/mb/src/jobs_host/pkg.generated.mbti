@@ -293,10 +293,12 @@ pub(all) suberror PeerError {
   NoBytes(String)
   Unreached(String)
 }
+pub impl Show for PeerError
 
 pub(all) suberror SocketRefused {
   SocketRefused(Int32, String)
 }
+pub impl Show for SocketRefused
 
 // Types and methods
 pub(all) struct Answer {

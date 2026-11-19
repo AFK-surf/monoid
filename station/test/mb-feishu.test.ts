@@ -787,7 +787,7 @@ async function tsSurface(c: Json, dir: string) {
       return Effect.void;
     }
   }
-  const surface = new Probe({ connect: c.connect, appId: c.appId, appSecret: c.appSecret, domain: c.domain, threads, threadMode: c.threadMode === true, book: book as Json, client: new FeishuClient(c.appId, c.appSecret, c.domain, "https://fake.test"), clock: t.clock });
+  const surface = new Probe({ connect: c.connect, appId: c.appId, appSecret: c.appSecret, domain: c.domain, threads, threadMode: c.threadMode === true, directThreads: c.directThreads === true, book: book as Json, client: new FeishuClient(c.appId, c.appSecret, c.domain, "https://fake.test"), clock: t.clock });
   if (c.me) (surface as Json).me = { ...c.me };
   const events: Json[] = [];
   const handler = async (event: Json) => {
@@ -952,7 +952,7 @@ test("surface: each event heard on the socket, its thread, its acknowledgement a
   });
 });
 
-test("surface: which thread each message is in, by chat, topic group, thread mode and what was kept before", { skip }, async () => {
+test("surface: which thread each message is in, by chat, topic group, thread mode, a direct chat's threads and what was kept before", { skip }, async () => {
   await stationIn("zh");
   const chats = {
     "GET /open-apis/im/v1/chats/oc_topics": [{ json: { code: 0, data: { chat_mode: "topic", name: "Topics" } } }],
@@ -976,11 +976,14 @@ test("surface: which thread each message is in, by chat, topic group, thread mod
     { call: "take", envelope: received(text({ message_id: `${prefix}11`, chat_id: "oc_dm", chat_type: "p2p", thread_id: "omt_p" })) },
     { call: "take", envelope: received(text({ message_id: `${prefix}12`, chat_id: "oc_g", create_time: "1600000000000" })) },
     { call: "take", envelope: received(text({ message_id: `${prefix}13`, chat_id: "oc_g", create_time: "0" })) },
+    { call: "take", envelope: received(text({ message_id: `${prefix}14`, chat_id: "oc_dm", chat_type: "p2p" })) },
+    { call: "take", envelope: received(text({ message_id: `${prefix}15`, chat_id: "oc_dm", chat_type: "p2p" })) },
+    { call: "take", envelope: received(text({ message_id: `${prefix}16`, chat_id: "oc_dm", chat_type: "p2p", thread_id: "omt_d", root_id: `${prefix}14` })) },
   ];
-  for (const threadMode of [false, true]) {
-    await sameSurface(`threads ${threadMode}`, { threadMode, routes: chats, steps: steps("om_") });
-    await sameSurface(`threads kept ${threadMode}`, {
-      threadMode, routes: chats, steps: steps("om_k"),
+  for (const [threadMode, directThreads] of [[false, false], [true, false], [false, true], [true, true]]) {
+    await sameSurface(`threads ${threadMode} ${directThreads}`, { threadMode, directThreads, routes: chats, steps: steps("om_") });
+    await sameSurface(`threads kept ${threadMode} ${directThreads}`, {
+      threadMode, directThreads, routes: chats, steps: steps("om_k"),
       threadsFile: JSON.stringify({ fs: { chats: { oc_g: "om_old" }, topics: { om_old: "om_old" }, seen: { oc_g: 1800000000000 } }, other: { chats: {} } }),
     });
   }
@@ -1029,6 +1032,20 @@ test("surface: what it posts (rich text, a question's card, images and files), b
       { call: "platform" },
     ],
   });
+  for (const directThreads of [false, true]) {
+    await sameSurface(`begins in a direct chat ${directThreads}`, {
+      directThreads,
+      routes: {
+        "POST /open-apis/im/v1/messages": [{ json: { code: 0, data: { message_id: "om_b1" } } }, { json: { code: 0, data: { message_id: "om_b3" } } }],
+        "GET /open-apis/im/v1/chats/oc_dm": [{ json: { code: 0, data: { chat_mode: "p2p" } } }],
+        "POST /open-apis/im/v1/messages/om_b1/reply": [{ json: { code: 0, data: { message_id: "om_b2" } } }],
+      },
+      steps: [
+        { call: "begin", chat: "oc_dm", message: "a new conversation" },
+        { call: "post", thread: { channel: "oc_dm", threadTs: "om_b1" }, message: "after it", files: [] },
+      ],
+    });
+  }
   await sameSurface("lark", { domain: "lark", steps: [{ call: "permalink", thread: { channel: "oc_g", threadTs: "om_x" } }, { call: "platform" }] });
   await sameSurface("cards ended", {
     routes: { "POST /open-apis/im/v1/messages": [{ json: { code: 0, data: { message_id: "om_q1" } } }, { json: { code: 0, data: { message_id: "om_q2" } } }] },

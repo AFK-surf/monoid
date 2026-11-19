@@ -20,6 +20,7 @@ pub fn run(String, async (Shell) -> Unit, failed~ : (Error) -> Unit) -> Int32
 pub(all) suberror ShellError {
   ShellError(String)
 }
+pub impl Show for ShellError
 
 // Types and methods
 pub(all) struct Answer {

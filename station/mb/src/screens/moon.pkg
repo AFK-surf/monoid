@@ -6,6 +6,7 @@ import {
   "station/jobs_host",
   "station/wire",
   "mbui/effect",
+  "base/net",
   "moonbitlang/core/buffer",
   "moonbitlang/core/double",
   "moonbitlang/core/string",

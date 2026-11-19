@@ -413,6 +413,27 @@ fn cd_run_node(b : @view.View, src : Source, core : Core, here : () -> Here, sta
           text(cv(), "modeLabel")
         }, note=fn() { text(cv(), "modeSentence") })
       })
+      // a Feishu connect's direct chats in threads or not, switched where it stands (its groups' way is the mode's): only
+      // where its station says the switch (`feishu.directThreads`, false too), as one from before would take it and do
+      // nothing
+      g.show(fn() { field(field(cv(), "feishu"), "directThreads") is Some(True | False) }, fn(d) {
+        @sf.switch_row_node(
+          d,
+          fn() { @sf.t("web-pages.connect.feishu.directThreads") },
+          fn() { flag(field(cv(), "feishu"), "directThreads") },
+          fn(on) {
+            cd_put(
+              core,
+              station,
+              id,
+              obj([("feishu", obj([("directThreads", Json::boolean(on))]))]),
+              done=@sf.t(if on { "web-pages.connect.feishu.directThreadsOn" } else { "web-pages.connect.feishu.directThreadsOff" }),
+            )
+          },
+          note=fn() { @sf.t("web-pages.connect.feishu.directThreadsNote") },
+          busy=fn() { is_doing(core, ["connect.put"], [("station", station), ("id", id)]) },
+        )
+      })
       // the station its new conversations run on (a connect is its workspace's: its chats may run on any station of
       // it), picked in a dialog; a single-session connect's one session, and a station from before, say none
       g.show(fn() { text(cv(), "mode") != "single-session" && flag(cv(), "moves") && text(cv(), "kind") != "comma" && text(cv(), "kind") != "group" }, fn(s) {

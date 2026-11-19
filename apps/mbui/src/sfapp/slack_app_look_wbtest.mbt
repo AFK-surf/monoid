@@ -3,6 +3,12 @@
 // with the rest. On a phone's width with a finger.
 
 ///|
+fn init {
+  // The 1024×1024 JPEG preview handed to the host once icon_well_node draws it at full size.
+  @ui.host_image_bytes_known([("src/sfapp/slack_app_look_wbtest.mbt", 86954)])
+}
+
+///|
 /// A page of the settings' fixture (`mode` as MBUI_FIXTURE has it) at a phone's width with a finger, its calls kept in
 /// `calls` and answered.
 fn look_tester(route : @settings.Route, calls : Array[Made], mode? : String = "settings") -> @ui.Tester {
@@ -39,4 +45,16 @@ test "a new Slack app's look in the new connect's dialog, at a phone's width: it
   assert_true(t.query(Button, label="后端接口").unwrap().selected == Some(true))
   let edits = calls.filter(fn(m) { m.name == "connect.flow.edit" }).map(fn(m) { field(Some(m.params), "input") })
   assert_true(edits.iter().any(fn(i) { text(field(i, "settings"), "backgroundColor") == "#B582EB" }), msg=edits.map(fn(e) { Repr(e).to_string() }).join(" | "))
+  t.click(Button, label="Gemini")
+  for _ in 0..<3 {
+    t.draw()
+  }
+  assert_true(
+    t.drawlist_images().iter().any(fn(i) { i.1.has_prefix("mem:desk-slack-icon/") }),
+    msg="picked maker icon should be shown in the icon well",
+  )
+  assert_true(
+    t.drawn_images().iter().any(fn(r) { r[2] >= 120.0 && r[3] >= 120.0 }),
+    msg="icon well image collapsed instead of filling the 128×128 well",
+  )
 }

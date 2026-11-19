@@ -150,6 +150,9 @@ export class FakeSlack {
       if (body && typeof body === "object" && "__status" in body) return { status: body.__status, headers: body.__headers ?? {}, body: body.__body ?? {} };
       return { status: 200, headers: {}, body };
     }
+    // (Slack's own limit: chat.update refuses a `text` over 4,000 UTF-8 bytes, though chat.postMessage takes it)
+    if (method === "chat.update" && Buffer.byteLength(params.text ?? "", "utf8") > 4_000)
+      return { status: 200, headers: {}, body: { ok: false, error: "msg_too_long" } };
     if (method === "apps.connections.open") return { status: 200, headers: {}, body: { ok: true, url: this.socketUrl() } };
     if (method === "chat.postMessage") return { status: 200, headers: {}, body: { ok: true, ts: `${8_000_000 + this.ts++}.000100` } };
     return { status: 200, headers: {}, body: { ok: true } };

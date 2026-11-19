@@ -359,7 +359,7 @@ fn letter_column(v : @jsjson.JValue?) -> Json {
   }
   guard l is Some(Obj(_) as letter) else { return Json::null() }
   let way = match letter.get("way") {
-    Some(Str(w)) if @jsjson.text(w) == "in" || @jsjson.text(w) == "out" => Some(@jsjson.Str(w))
+    Some(Str(w)) if @jsjson.text(w) == "in" || @jsjson.text(w) == "out" => Some(@jsjson.JValue::Str(w))
     _ => None
   }
   guard way is Some(way) && letter.get("title") is Some(Str(_) as title) else { return Json::null() }
@@ -451,7 +451,7 @@ fn upgrade_from_12(db : @sql.Db, host : @host.Host, archive : String) -> Unit ra
           Some(Null) | None =>
             match e.get("options") {
               Some(Arr(_) as options) =>
-                Some(@jsjson.Obj([(units("type"), @jsjson.Str(units("options"))), (units("options"), options)]))
+                Some(@jsjson.JValue::Obj([(units("type"), @jsjson.JValue::Str(units("options"))), (units("options"), options)]))
               _ => None
             }
           other => other

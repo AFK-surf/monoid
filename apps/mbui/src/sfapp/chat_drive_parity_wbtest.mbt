@@ -422,10 +422,9 @@ fn pa_run(
   script : String,
 ) -> (Array[PaFrame], Array[String]) {
   new_run()
-  // (made as nodes: the page and its composer, 试用新输入框 as well)
+  // (made as nodes: the page, its composer and the new chat, 试用新对话页)
   if nodes {
     @sfbase.chat_page_nodes.set(true)
-    @sfbase.composer_nodes.set(true)
   }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
@@ -939,6 +938,12 @@ let pa_known : Array[(String, String)] = [
   // the old page's menu keeps none, the old composer not parked, its placeholder 发消息 drawn under the menu till the
   // cursor comes back)
   ("send-quote-video", "old alone 「发消息」"),
+  // (the new chat's scene centred in the pane's column on both, the same glyphs: the old page's words drawn from the
+  // column's start, as nodes from the start of the scene's own box: pa_why_newchat_scene)
+  ("wide-newchat", "old alone 「想让 agent 做什么？」"),
+  ("wide-newchat", "old alone 「描述要做的事。它会在 Willow 上使用所选模型新建会话。」"),
+  ("wide-newchat", "nodes alone 「想让 agent 做什么？」"),
+  ("wide-newchat", "nodes alone 「描述要做的事。它会在 Willow 上使用所选模型新建会话。」"),
 ]
 
 ///|
@@ -1121,6 +1126,12 @@ let pa_why_lines : String = "a line typed more: as nodes the list goes with the 
 let pa_why_newchat : String = "a new chat becoming its chat: as nodes its scene kept on one node while it fades over new_leave_ms and its first words set out after fresh's fly_after on sent_flight (distance-scaled); the old page carries them on its fixed-length flight"
 
 ///|
+let pa_why_newchat_scene : String = "the new chat's scene, centred in the pane's column on both pages, the same glyphs where they show: the old page's words drawn from the column's start, its centred words' box as wide as the column; as nodes from the start of the scene's own box, as wide as what it holds, centred in the column"
+
+///|
+let pa_why_newchat_nodes : String = "the new chat made as nodes with its composer (new_chat_node): its composer there and its placeholder drawn in the frame the page comes, the old a frame later; opened in the press's frame, its choices over it drawn with its ground's top on its own way, the old page's a frame later; become its chat, its composer away at once and the chat's own at rest under it (in place, narrow) or flown from where the new chat's stood (wide: fresh_composer_at, from its box after the words' flight, fresh_fly_after), as a chat's composer made as nodes lets go at once of what it held as what was in it flies from where it stood (SentFrom, View::flies_in), a picture sent alone too; the old page's held as tall as it was for sent_out_hold_ms and the chat's at its foot at once"
+
+///|
 let pa_why_read : String = "the list scrolled a little up while the agent answers: what is read held where it shows on both, what comes and goes under it on each page's own way (the list's read_from as nodes, the old list's anchor)"
 
 ///|
@@ -1139,7 +1150,7 @@ let pa_why_quote_flight : String = "a quote sent with its own picture: as nodes 
 let pa_why_old_ring : String = "an agent's line gone: the old page's ring left drawn where it was (its own layer); as nodes gone with its face"
 
 ///|
-/// Why the chat's composer made as nodes (试用新输入框, sfpages composer_node) moves otherwise than the old page's old view,
+/// Why the chat's composer made as nodes (sfpages composer_node) moves otherwise than the old page's old view,
 /// by its way and not by what it comes to: opened from a capsule or let go to one, laid out as the box or the capsule in
 /// the change that does it, drawn from the shape it had (its ground_drawn and its parts' offset, composer_shape_ms), the
 /// old page's measured a frame later; a line more, a quote or a file put in or taken out, its height on its way
@@ -1150,6 +1161,12 @@ let pa_why_old_ring : String = "an agent's line gone: the old page's ring left d
 /// on the page's way (@motion.moved()) with the rows over it, the old page on its own (composer_foot_in); its placeholder by those
 /// shapes and the rows a chat's first frame lays out over its foot as made, each where its own page has them then.
 let pa_why_composer_way : String = "the chat's composer made as nodes: opened and let go laid out at once and drawn from the shape it had, a line more or what waits put in or taken out on its way (View::resizes) with the list over it, words sent laid out at one line under its ground held, the side panel's room on the page's way; the old page's old view measured where it goes a frame later, its list on its own curve"
+
+///|
+let pa_why_float_frame : String = "the round buttons over the list's foot (跳到最新, 对话目录, the way to what waits on a decision): as nodes shown in the frame the list leaves its foot, at once (their foot's show); the old page's built a frame later"
+
+///|
+let pa_why_side_switch : String = "the side panel's switch in the chat's bar as nodes going along the row as the panel opens or shuts (View::show's along_row, its room with the panel's way from that cause), the tip over it and 详情 there from its frame; the old bar swaps it a frame or two later"
 
 ///|
 /// What differs on the way past pa_way_tol, known, each row's cause said (pa_compare fails on any other, and on a row
@@ -1313,9 +1330,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-notice-card-viewer", what: Key("nodes alone 「在 Willow 上登录 gh」"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "desk-notice-card-viewer", what: Key("nodes alone 「你 选择了「一起换」」"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "desk-notice-card-viewer", what: Key("nodes alone 「发送到」"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
-  { drive: "send", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
-  { drive: "send-lines", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-lines", what: Key("old alone 「发消息」"), from: 2167.0, to: 2200.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-lines", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
   { drive: "send-lines", what: Key("composer"), from: 1233.0, to: 1383.0, dx: 0.1, dy: 41.4, dw: 41.8, why: pa_why_composer_way },
@@ -1323,7 +1338,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-lines", what: Key("words 「发消息」"), from: 1983.0, to: 2150.0, dx: 0.1, dy: 49.4, dw: 0.1, why: pa_why_composer_way },
   { drive: "send-picture", what: Key("old alone 「发消息」"), from: 1517.0, to: 1667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-picture", what: Key("composer"), from: 1517.0, to: 1517.0, dx: 0.1, dy: 108.6, dw: 108.9, why: pa_why_composer_way },
-  { drive: "send-picture", what: Key("nodes alone 「发消息」"), from: 1783.0, to: 1783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-quote", what: Key("composer"), from: 1783.0, to: 1950.0, dx: 0.1, dy: 107.2, dw: 107.4, why: pa_why_composer_way },
   { drive: "send-quote", what: Key("composer"), from: 3000.0, to: 3000.0, dx: 0.1, dy: 71.9, dw: 72.1, why: pa_why_composer_way },
   { drive: "send-quote", what: Key("nodes alone 「添加说明（可选）」"), from: 1850.0, to: 1883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
@@ -1336,10 +1350,15 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote", what: Key("nodes alone 「发消息」"), from: 2083.0, to: 2083.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-quote", what: Key("words 「这一步写进文档」"), from: 3117.0, to: 3117.0, dx: 7.6, dy: 2.0, dw: 0.1, why: pa_why_composer_way },
   { drive: "send-quote", what: Key("words 「这一步写进文档」"), from: 3200.0, to: 3200.0, dx: 27.3, dy: 12.6, dw: 0.1, why: pa_why_composer_way },
-  { drive: "answer", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "answer", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
   { drive: "wide-newchat", what: Key("composer"), from: 617.0, to: 617.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
-  { drive: "wide-newchat", what: Key("composer"), from: 2750.0, to: 2750.0, dx: 42.1, dy: 212.1, dw: 84.1, why: pa_why_composer_way },
+  { drive: "wide-newchat", what: Key("composer"), from: 2750.0, to: 2883.0, dx: 42.1, dy: 212.1, dw: 84.1, why: pa_why_newchat_nodes },
+  { drive: "wide-newchat", what: Key("old alone 「想让 agent 做什么？」"), from: 633.0, to: 2733.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_scene },
+  { drive: "wide-newchat", what: Key("nodes alone 「想让 agent 做什么？」"), from: 633.0, to: 2883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_scene },
+  { drive: "wide-newchat", what: Key("old alone 「描述要做的事。它会在 Willow 上使用所选模型新建会话。」"), from: 633.0, to: 2733.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_scene },
+  { drive: "wide-newchat", what: Key("nodes alone 「描述要做的事。它会在 Willow 上使用所选模型新建会话。」"), from: 633.0, to: 2883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_scene },
+  { drive: "wide-newchat", what: Key("nodes alone 「做任何事」"), from: 617.0, to: 617.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_nodes },
+  { drive: "wide-newchat", what: Key("words 「发消息」"), from: 2767.0, to: 2867.0, dx: 61.6, dy: 7.4, dw: 207.0, why: pa_why_newchat_nodes },
   { drive: "wide-newchat", what: Key("old alone 「预设」"), from: 633.0, to: 700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "wide-newchat", what: Key("old alone 「预设」"), from: 2767.0, to: 2817.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "wide-newchat", what: Key("old alone 「Willow」"), from: 633.0, to: 700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
@@ -1364,7 +1383,20 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-newchat", what: Key("words 「Opus 5.5」"), from: 717.0, to: 833.0, dx: 16.4, dy: 82.4, dw: 0.1, why: pa_why_composer_way },
   { drive: "wide-newchat", what: Key("words 「高」"), from: 717.0, to: 833.0, dx: 16.4, dy: 82.4, dw: 0.1, why: pa_why_composer_way },
   { drive: "wide-newchat", what: Key("words 「自动分配」"), from: 717.0, to: 833.0, dx: 16.4, dy: 82.4, dw: 0.1, why: pa_why_composer_way },
-  { drive: "send-newchat-picture", what: Key("composer"), from: 1517.0, to: 1517.0, dx: 0.1, dy: 108.6, dw: 108.9, why: pa_why_composer_way },
+  { drive: "send-newchat-picture", what: Key("composer"), from: 1517.0, to: 1617.0, dx: 0.1, dy: 108.9, dw: 108.9, why: pa_why_newchat_nodes },
+  { drive: "send-newchat-picture", what: Key("old alone 「新对话」"), from: 1517.0, to: 1517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_nodes },
+  { drive: "send-newchat-picture", what: Key("old alone 「取消」"), from: 1517.0, to: 1517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_nodes },
+  { drive: "send-newchat-picture", what: Key("nodes alone 「新对话」"), from: 1517.0, to: 1517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_nodes },
+  { drive: "send-newchat-picture", what: Key("nodes alone 「照着这张截图把第二屏改一下」"), from: 1517.0, to: 1517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_nodes },
+  { drive: "send-newchat-picture", what: Key("composer"), from: 1633.0, to: 1650.0, dx: 0.1, dy: 42.8, dw: 42.9, why: pa_why_composer_way },
+  { drive: "newchat-send", what: Key("nodes alone 「做任何事」"), from: 250.0, to: 250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat_nodes },
+  { drive: "newchat-send", what: Key("composer"), from: 1217.0, to: 1217.0, dx: 0.1, dy: 42.8, dw: 42.9, why: pa_why_newchat_nodes },
+  { drive: "newchat-send", what: Key("words 「做任何事」"), from: 1217.0, to: 1217.0, dx: 29.1, dy: 40.5, dw: 66.1, why: pa_why_newchat_nodes },
+  { drive: "newchat-send", what: Key("words 「预设」"), from: 1267.0, to: 1283.0, dx: 0.1, dy: 6.5, dw: 0.1, why: pa_why_newchat_nodes },
+  { drive: "newchat-send", what: Key("words 「Willow」"), from: 1267.0, to: 1283.0, dx: 0.1, dy: 6.5, dw: 0.1, why: pa_why_newchat_nodes },
+  { drive: "newchat-send", what: Key("words 「Opus 5.5」"), from: 1267.0, to: 1283.0, dx: 0.1, dy: 6.5, dw: 0.1, why: pa_why_newchat_nodes },
+  { drive: "newchat-send", what: Key("words 「·」"), from: 1267.0, to: 1283.0, dx: 0.1, dy: 6.5, dw: 0.1, why: pa_why_newchat_nodes },
+  { drive: "newchat-send", what: Key("words 「高」"), from: 1267.0, to: 1283.0, dx: 0.1, dy: 6.5, dw: 0.1, why: pa_why_newchat_nodes },
   { drive: "send-newchat-picture", what: Key("words 「发消息」"), from: 1533.0, to: 1667.0, dx: 29.1, dy: 40.2, dw: 66.1, why: pa_why_composer_way },
   { drive: "send-newchat-picture", what: Key("nodes alone 「发消息」"), from: 1683.0, to: 1783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-lines-wide", what: Key("composer"), from: 1167.0, to: 1317.0, dx: 0.1, dy: 37.1, dw: 37.1, why: pa_why_composer_way },
@@ -1393,15 +1425,11 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-side-panel", what: Key("ground"), from: 3467.0, to: 3750.0, dx: 32.0, dy: 12.1, dw: 0.1, why: pa_why_composer_way },
   { drive: "wide-side-panel", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 1633.0, to: 1917.0, dx: 32.0, dy: 10.6, dw: 0.1, why: pa_why_composer_way },
   { drive: "wide-side-panel", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 3467.0, to: 3750.0, dx: 32.0, dy: 10.6, dw: 0.1, why: pa_why_composer_way },
-  { drive: "wide-side-panel", what: Key("alpha 「更多」"), from: 2600.0, to: 2617.0, dx: 0.1, dy: 0.1, dw: 0.4, why: pa_why_composer_way },
-  { drive: "wide-side-panel", what: Key("ground alpha"), from: 2650.0, to: 2667.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_composer_way },
-  { drive: "send-long", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-long", what: Key("old alone 「发消息」"), from: 2100.0, to: 2100.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-long", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
   { drive: "send-long", what: Key("composer"), from: 1217.0, to: 1300.0, dx: 0.1, dy: 23.1, dw: 23.2, why: pa_why_composer_way },
   { drive: "send-long", what: Key("composer"), from: 1917.0, to: 1917.0, dx: 0.1, dy: 24.6, dw: 24.9, why: pa_why_composer_way },
   { drive: "send-long", what: Key("words 「发消息」"), from: 1917.0, to: 2050.0, dx: 0.1, dy: 24.6, dw: 0.1, why: pa_why_composer_way },
-  { drive: "send-over-line", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-over-line", what: Key("old alone 「发消息」"), from: 3117.0, to: 3133.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-over-line", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
   { drive: "send-over-line", what: Key("composer"), from: 2650.0, to: 2733.0, dx: 0.1, dy: 23.1, dw: 23.2, why: pa_why_composer_way },
@@ -1409,7 +1437,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-over-line", what: Key("words 「发消息」"), from: 2950.0, to: 3100.0, dx: 0.1, dy: 24.6, dw: 0.1, why: pa_why_composer_way },
   { drive: "send-picture-only", what: Key("old alone 「发消息」"), from: 2550.0, to: 2700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-picture-only", what: Key("composer"), from: 2550.0, to: 2550.0, dx: 0.1, dy: 175.7, dw: 176.0, why: pa_why_composer_way },
-  { drive: "send-picture-only", what: Key("nodes alone 「发消息」"), from: 2817.0, to: 2817.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-quote-picture", what: Key("words 「Claude」"), from: 1633.0, to: 1633.0, dx: 0.1, dy: 20.6, dw: 0.1, why: pa_why_composer_way },
   { drive: "send-quote-picture", what: Key("old alone 「Claude」"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-quote-picture", what: Key("old alone 「Claude」"), from: 6117.0, to: 6117.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
@@ -1473,13 +1500,10 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote-picture", what: Key("old alone 「发送到」"), from: 6117.0, to: 6117.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-quote-picture", what: Key("nodes alone 「等 林 决定」"), from: 6117.0, to: 6117.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "send-quote-picture", what: Key("button 跳转到待决策的消息 old alone"), from: 6117.0, to: 6133.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
-  { drive: "scrolled-reply", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "scrolled-reply", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
   { drive: "scrolled-reply", what: Key("nodes alone 「Claude」"), from: 3167.0, to: 3167.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "scrolled-reply", what: Key("nodes alone 「30 分钟前」"), from: 3167.0, to: 3167.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
-  { drive: "scrolled-reply-near", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "scrolled-reply-near", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
-  { drive: "answer-leave", what: Key("old alone 「发消息」"), from: 683.0, to: 683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
   { drive: "answer-leave", what: Key("composer"), from: 683.0, to: 683.0, dx: 0.1, dy: 43.1, dw: 42.9, why: pa_why_composer_way },
   { drive: "desk-panel-picture-quote", what: Key("composer"), from: 617.0, to: 833.0, dx: 40.2, dy: 8.1, dw: 80.3, why: pa_why_composer_way },
   { drive: "desk-panel-picture-quote", what: Key("composer"), from: 2667.0, to: 2783.0, dx: 0.1, dy: 63.6, dw: 63.9, why: pa_why_composer_way },
@@ -1718,9 +1742,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-right-panel-toggle", what: Key("ground nodes alone"), from: 1217.0, to: 1317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
   { drive: "desk-right-panel-toggle", what: Key("nodes alone 「Esc」"), from: 1233.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
   { drive: "desk-right-panel-toggle", what: Key("nodes alone 「收起侧栏」"), from: 1233.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「详情」"), from: 1333.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("alpha 「Esc」"), from: 1350.0, to: 1367.0, dx: 0.2, dy: 0.2, dw: 0.7, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("alpha 「收起侧栏」"), from: 1350.0, to: 1367.0, dx: 0.2, dy: 0.2, dw: 0.7, why: pa_why_tip },
   { drive: "desk-right-panel-toggle", what: Key("nodes alone 「面板开着也发一条」"), from: 2967.0, to: 2967.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "desk-right-panel-toggle", what: Key("words 「面板开着也发一条」"), from: 3033.0, to: 3150.0, dx: 105.0, dy: 13.9, dw: 0.2, why: pa_why_send },
   { drive: "desk-right-panel-toggle", what: Key("old alone 「发消息」"), from: 3150.0, to: 3200.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
@@ -1782,16 +1803,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-right-panel-toggle", what: Key("nodes alone 「收到：「面板开着也发一条」。我先看一下，有结果再告诉你。」"), from: 5683.0, to: 5800.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "desk-right-panel-toggle", what: Key("words 「Claude」"), from: 5683.0, to: 5683.0, dx: 7.0, dy: 0.2, dw: 0.2, why: pa_why_float },
   { drive: "desk-right-panel-toggle", what: Key("words 「刚刚」"), from: 5683.0, to: 5683.0, dx: 7.0, dy: 0.2, dw: 0.2, why: pa_why_float },
-  { drive: "desk-right-panel-toggle", what: Key("ground nodes alone"), from: 5800.0, to: 5883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「⇧」"), from: 5817.0, to: 5900.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「⌘」"), from: 5817.0, to: 5900.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「H」"), from: 5817.0, to: 5900.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「打开侧栏」"), from: 5817.0, to: 5900.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("alpha 「⇧」"), from: 5917.0, to: 5933.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("alpha 「⌘」"), from: 5917.0, to: 5933.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("alpha 「H」"), from: 5917.0, to: 5933.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("ground old alone"), from: 5900.0, to: 5950.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-right-panel-toggle", what: Key("alpha 「打开侧栏」"), from: 5917.0, to: 5933.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_tip },
   { drive: "desk-right-panel-toggle", what: Key("words 「Claude」"), from: 650.0, to: 750.0, dx: 4.2, dy: 11.3, dw: 0.2, why: pa_why_room_way },
   { drive: "desk-right-panel-toggle", what: Key("words 「30 分钟前」"), from: 650.0, to: 750.0, dx: 4.2, dy: 11.3, dw: 0.2, why: pa_why_room_way },
   { drive: "desk-right-panel-toggle", what: Key("words 「高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？」"), from: 650.0, to: 750.0, dx: 4.2, dy: 11.3, dw: 0.2, why: pa_why_room_way },
@@ -2201,7 +2212,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-picture", what: Key("nodes alone 「等 林 决定」"), from: 1750.0, to: 1783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture", what: Key("nodes alone 「一起换」"), from: 1783.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture", what: Key("nodes alone 「先不换」"), from: 1783.0, to: 1800.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
-  { drive: "send-picture", what: Key("nodes alone 「发消息」"), from: 1800.0, to: 1800.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "send-picture", what: Key("nodes alone 「把首页和聊天页的截图都更新」"), from: 1800.0, to: 1883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "send-picture", what: Key("nodes alone 「这次只改列表，截图下次再说」"), from: 1817.0, to: 1817.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture", what: Key("old alone 「一起换」"), from: 1817.0, to: 1817.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
@@ -2368,7 +2378,9 @@ let pa_way_known : Array[PaWay] = [
   { drive: "answer", what: Key("ground"), from: 4217.0, to: 4533.0, dx: 0.2, dy: 36.2, dw: 0.2, why: pa_why_working },
   { drive: "answer", what: Key("nodes alone 「高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？」"), from: 4333.0, to: 4533.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
   { drive: "answer", what: Key("old alone 「等 林 决定」"), from: 4450.0, to: 4517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
-  { drive: "wide-newchat", what: Key("nodes alone 「把发布说明写一下」"), from: 2750.0, to: 2750.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "wide-newchat", what: Key("old alone 「做任何事」"), from: 2750.0, to: 2750.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "wide-newchat", what: Key("old alone 「想让 agent 做什么？」"), from: 2750.0, to: 2883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "wide-newchat", what: Key("old alone 「描述要做的事。它会在 Willow 上使用所选模型新建会话。」"), from: 2750.0, to: 2883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
   { drive: "wide-newchat", what: Key("words 「把发布说明写一下」"), from: 2767.0, to: 3117.0, dx: 73.2, dy: 13.1, dw: 576.2, why: pa_why_newchat },
   { drive: "wide-newchat", what: Key("ground"), from: 2933.0, to: 3117.0, dx: 73.2, dy: 13.2, dw: 0.2, why: pa_why_newchat },
   { drive: "wide-newchat", what: Key("ring old alone"), from: 3450.0, to: 3500.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
@@ -2390,7 +2402,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-newchat", what: Key("nodes alone 「收到：「把发布说明写一下」。我先看一下，有结果再告诉你。」"), from: 5467.0, to: 5583.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
   { drive: "wide-newchat", what: Key("words 「Claude」"), from: 5467.0, to: 5467.0, dx: 7.0, dy: 0.2, dw: 0.2, why: pa_why_newchat },
   { drive: "wide-newchat", what: Key("words 「刚刚」"), from: 5467.0, to: 5467.0, dx: 7.0, dy: 0.2, dw: 0.2, why: pa_why_newchat },
-  { drive: "wide-newchat", what: Key("nodes alone 「发消息」"), from: 2750.0, to: 2750.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "wide-newchat", what: Key("nodes alone 「发消息」"), from: 2883.0, to: 2933.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "wide-newchat", what: Key("words 「发消息」"), from: 2767.0, to: 2867.0, dx: 3.9, dy: 8.7, dw: 80.8, why: pa_why_send },
   { drive: "wide-newchat", what: Key("nodes alone 「刚刚」"), from: 2850.0, to: 2983.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_timein },
@@ -2400,6 +2411,12 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-newchat", what: Key("words 「刚刚」"), from: 5050.0, to: 5333.0, dx: 0.2, dy: 24.7, dw: 0.2, why: pa_why_timein },
   { drive: "newchat-send", what: Key("words 「把发布说明写一下」"), from: 2467.0, to: 2767.0, dx: 104.5, dy: 14.9, dw: 222.2, why: pa_why_newchat },
   { drive: "newchat-send", what: Key("ground"), from: 2733.0, to: 2933.0, dx: 54.7, dy: 52.3, dw: 0.2, why: pa_why_newchat },
+  { drive: "newchat-send", what: Key("old alone 「Opus 5.5」"), from: 2450.0, to: 2517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "newchat-send", what: Key("old alone 「Willow」"), from: 2450.0, to: 2517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "newchat-send", what: Key("old alone 「·」"), from: 2450.0, to: 2517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "newchat-send", what: Key("old alone 「做任何事」"), from: 2450.0, to: 2450.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "newchat-send", what: Key("old alone 「预设」"), from: 2450.0, to: 2517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "newchat-send", what: Key("old alone 「高」"), from: 2450.0, to: 2517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
   { drive: "newchat-send", what: Key("words 「把发布说明写一下」"), from: 2783.0, to: 2933.0, dx: 54.6, dy: 52.2, dw: 0.2, why: pa_why_newchat },
   { drive: "newchat-send", what: Key("ring old alone"), from: 3150.0, to: 3200.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "newchat-send", what: Key("old alone 「0s」"), from: 3167.0, to: 3200.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
@@ -2411,7 +2428,12 @@ let pa_way_known : Array[PaWay] = [
   { drive: "newchat-send", what: Key("nodes alone 「刚刚」"), from: 2633.0, to: 3067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_timein },
   { drive: "newchat-send", what: Key("ground alpha"), from: 2733.0, to: 2767.0, dx: 0.2, dy: 0.2, dw: 0.2, why: pa_why_send },
   { drive: "newchat-send", what: Key("nodes alone 「发消息」"), from: 2767.0, to: 2783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
-  { drive: "send-newchat-picture", what: Key("composer"), from: 1533.0, to: 1617.0, dx: 0.2, dy: 108.7, dw: 109.0, why: pa_why_newchat },
+  { drive: "send-newchat-picture", what: Key("old alone 「Opus 5.5」"), from: 1517.0, to: 1583.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "send-newchat-picture", what: Key("old alone 「Willow」"), from: 1517.0, to: 1583.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "send-newchat-picture", what: Key("old alone 「·」"), from: 1517.0, to: 1583.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "send-newchat-picture", what: Key("old alone 「做任何事」"), from: 1517.0, to: 1517.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "send-newchat-picture", what: Key("old alone 「预设」"), from: 1517.0, to: 1583.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
+  { drive: "send-newchat-picture", what: Key("old alone 「高」"), from: 1517.0, to: 1583.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
   { drive: "send-newchat-picture", what: Key("picture"), from: 1533.0, to: 2050.0, dx: 0.2, dy: 140.5, dw: 182.0, why: pa_why_newchat },
   { drive: "send-newchat-picture", what: Key("words 「照着这张截图把第二屏改一下」"), from: 1533.0, to: 2000.0, dx: 84.4, dy: 56.4, dw: 147.2, why: pa_why_newchat },
   { drive: "send-newchat-picture", what: Key("nodes alone 「发消息」"), from: 1800.0, to: 1883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
@@ -2530,9 +2552,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-side-panel", what: Key("ground nodes alone"), from: 1217.0, to: 1317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("nodes alone 「Esc」"), from: 1233.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("nodes alone 「收起侧栏」"), from: 1233.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
-  { drive: "wide-side-panel", what: Key("nodes alone 「详情」"), from: 1333.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
-  { drive: "wide-side-panel", what: Key("alpha 「Esc」"), from: 1350.0, to: 1367.0, dx: 0.2, dy: 0.2, dw: 0.7, why: pa_why_panel_mine },
-  { drive: "wide-side-panel", what: Key("alpha 「收起侧栏」"), from: 1350.0, to: 1367.0, dx: 0.2, dy: 0.2, dw: 0.7, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("button @outline nodes alone"), from: 1533.0, to: 1533.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("words 「做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。」"), from: 1533.0, to: 1533.0, dx: 0.2, dy: 0.2, dw: 181.2, why: pa_why_panel_first },
   { drive: "wide-side-panel", what: Key("words 「忽略」"), from: 1533.0, to: 1533.0, dx: 0.2, dy: 0.2, dw: 181.2, why: pa_why_panel_first },
@@ -2555,11 +2574,9 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-side-panel", what: Rows, from: 2500.0, to: 2550.0, dx: pa_way_tol, dy: 7.3, dw: pa_way_tol, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("ground nodes alone"), from: 2533.0, to: 2683.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("nodes alone 「40 分钟前」"), from: 2533.0, to: 2550.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
-  { drive: "wide-side-panel", what: Key("old alone 「更多」"), from: 2533.0, to: 2633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("words 「40 分钟前」"), from: 2567.0, to: 2683.0, dx: 54.2, dy: 5.7, dw: 0.2, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("nodes alone 「Esc」"), from: 2667.0, to: 2700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("nodes alone 「收起侧栏」"), from: 2667.0, to: 2700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
-  { drive: "wide-side-panel", what: Key("nodes alone 「详情」"), from: 2700.0, to: 2700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("alpha 「收起侧栏」"), from: 2717.0, to: 2733.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("button @outline nodes alone"), from: 3367.0, to: 3367.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("words 「做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。」"), from: 3367.0, to: 3367.0, dx: 0.2, dy: 0.2, dw: 181.2, why: pa_why_panel_first },
@@ -2606,7 +2623,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-side-panel", what: Key("ground"), from: 650.0, to: 717.0, dx: 56.0, dy: 11.3, dw: 0.2, why: pa_why_room_way },
   { drive: "wide-side-panel", what: Key("ground"), from: 1583.0, to: 1617.0, dx: 50.4, dy: 9.3, dw: 0.2, why: pa_why_room_way },
   { drive: "wide-side-panel", what: Key("ground"), from: 2483.0, to: 2550.0, dx: 56.0, dy: 11.3, dw: 0.2, why: pa_why_room_way },
-  { drive: "wide-side-panel", what: Key("ground"), from: 2667.0, to: 2733.0, dx: 59.8, dy: 0.2, dw: 14.8, why: pa_why_room_way },
   { drive: "wide-side-panel", what: Key("ground"), from: 3417.0, to: 3450.0, dx: 50.4, dy: 9.3, dw: 0.2, why: pa_why_room_way },
   { drive: "wide-side-panel", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 667.0, to: 717.0, dx: 68.2, dy: 9.0, dw: 0.2, why: pa_why_room_way },
   { drive: "wide-side-panel", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 1600.0, to: 1617.0, dx: 50.4, dy: 7.5, dw: 0.2, why: pa_why_room_way },
@@ -2619,11 +2635,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-side-panel", what: Key("old alone 「详情」"), from: 1233.0, to: 1233.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
   { drive: "wide-side-panel", what: Key("composer"), from: 1533.0, to: 1767.0, dx: 46.1, dy: 8.2, dw: 92.0, why: pa_why_room_way },
   { drive: "wide-side-panel", what: Key("composer"), from: 3367.0, to: 3600.0, dx: 46.1, dy: 8.2, dw: 92.0, why: pa_why_room_way },
-  { drive: "wide-side-panel", what: Key("nodes alone 「收起侧栏」"), from: 2650.0, to: 2650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "wide-side-panel", what: Key("nodes alone 「Esc」"), from: 2650.0, to: 2650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "wide-side-panel", what: Key("old alone 「·」"), from: 2667.0, to: 2667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "wide-side-panel", what: Key("words 「收起侧栏」"), from: 2717.0, to: 2733.0, dx: 26.7, dy: 0.2, dw: 0.2, why: pa_why_tip },
-  { drive: "wide-side-panel", what: Key("words 「Esc」"), from: 2717.0, to: 2733.0, dx: 26.7, dy: 0.2, dw: 0.2, why: pa_why_tip },
   { drive: "wide-side-panel", what: Key("alpha 「Esc」"), from: 2717.0, to: 2733.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_tip },
   { drive: "wide-side-panel", what: Key("words 「5 分钟前」"), from: 633.0, to: 717.0, dx: 19.5, dy: 4.5, dw: 0.2, why: pa_why_send },
   { drive: "wide-side-panel", what: Key("words 「5 分钟前」"), from: 1550.0, to: 1667.0, dx: 28.7, dy: 4.0, dw: 0.2, why: pa_why_send },
@@ -2756,7 +2767,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-picture-only", what: Key("nodes alone 「等 林 决定」"), from: 2783.0, to: 2783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture-only", what: Key("nodes alone 「一起换」"), from: 2800.0, to: 2867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture-only", what: Key("nodes alone 「把首页和聊天页的截图都更新」"), from: 2817.0, to: 2900.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
-  { drive: "send-picture-only", what: Key("nodes alone 「发消息」"), from: 2833.0, to: 2833.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture-only", what: Key("old alone 「把首页和聊天页的截图都更新」"), from: 2850.0, to: 2850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture-only", what: Key("nodes alone 「忽略」"), from: 2867.0, to: 2883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture-only", what: Key("old alone 「忽略」"), from: 2900.0, to: 2917.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
@@ -3173,9 +3183,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-panel-picture-quote", what: Key("ground nodes alone"), from: 1217.0, to: 1317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
   { drive: "desk-panel-picture-quote", what: Key("nodes alone 「Esc」"), from: 1233.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
   { drive: "desk-panel-picture-quote", what: Key("nodes alone 「收起侧栏」"), from: 1233.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-panel-picture-quote", what: Key("nodes alone 「详情」"), from: 1333.0, to: 1333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_tip },
-  { drive: "desk-panel-picture-quote", what: Key("alpha 「Esc」"), from: 1350.0, to: 1367.0, dx: 0.2, dy: 0.2, dw: 0.7, why: pa_why_tip },
-  { drive: "desk-panel-picture-quote", what: Key("alpha 「收起侧栏」"), from: 1350.0, to: 1367.0, dx: 0.2, dy: 0.2, dw: 0.7, why: pa_why_tip },
   { drive: "desk-panel-picture-quote", what: Key("old alone 「引用」"), from: 2650.0, to: 2650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
   { drive: "desk-panel-picture-quote", what: Key("button @asks.go nodes alone"), from: 4600.0, to: 6817.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "desk-panel-picture-quote", what: Key("old alone 「添加说明（可选）」"), from: 4600.0, to: 4783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
@@ -3526,8 +3533,46 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-over-line", what: Key("nodes alone 「一起换」"), from: 3900.0, to: 3933.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-picture-only", what: Key("words 「发消息」"), from: 2550.0, to: 2583.0, dx: 5.9, dy: 7.9, dw: 66.1, why: pa_why_composer_way },
   { drive: "desk-panel-picture-quote", what: Key("words 「Claude：先登录 gh。」"), from: 3700.0, to: 3733.0, dx: 0.1, dy: 12.0, dw: 0.1, why: pa_why_composer_way },
-  { drive: "desk-panel-picture-quote", what: Key("words 「添加说明（可选）」"), from: 3700.0, to: 3700.0, dx: 0.1, dy: 6.2, dw: 0.1, why: pa_why_composer_way },
-  { drive: "desk-panel-picture-quote", what: Key("ground"), from: 3700.0, to: 3700.0, dx: 0.1, dy: 6.2, dw: 0.1, why: pa_why_composer_way },
+  { drive: "send", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "send-lines", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "send-picture", what: Key("old alone 「发消息」"), from: 1817.0, to: 1817.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
+  { drive: "answer", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "send-long", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "send-over-line", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "send-picture-only", what: Key("old alone 「发消息」"), from: 2850.0, to: 2850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_composer_way },
+  { drive: "send-quote-picture", what: Key("button 跳到最新 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "send-quote-picture", what: Key("button 对话目录 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "send-quote-picture", what: Key("button 跳转到待决策的消息 nodes alone"), from: 1750.0, to: 1750.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "scrolled-reply", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "scrolled-reply", what: Key("button 跳到最新 nodes alone"), from: 3467.0, to: 3467.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "scrolled-reply", what: Key("button 对话目录 nodes alone"), from: 3467.0, to: 3467.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "scrolled-reply-near", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "answer-leave", what: Key("words 「发消息」"), from: 683.0, to: 683.0, dx: 0.1, dy: 0.3, dw: 66.2, why: pa_why_composer_way },
+  { drive: "viewer", what: Key("button 跳到最新 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "viewer", what: Key("button 对话目录 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "viewer", what: Key("button 跳转到待决策的消息 nodes alone"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "viewer-open", what: Key("button 跳到最新 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "viewer-open", what: Key("button 对话目录 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "viewer-open", what: Key("button 跳转到待决策的消息 nodes alone"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "picture-lift", what: Key("button 跳到最新 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "picture-lift", what: Key("button 对话目录 nodes alone"), from: 1633.0, to: 1633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "picture-lift", what: Key("button 跳转到待决策的消息 nodes alone"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float_frame },
+  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「详情」"), from: 1283.0, to: 1283.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "desk-right-panel-toggle", what: Key("alpha 「收起侧栏」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
+  { drive: "desk-right-panel-toggle", what: Key("alpha 「Esc」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("nodes alone 「详情」"), from: 1283.0, to: 1283.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("nodes alone 「详情」"), from: 2717.0, to: 2717.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("alpha 「收起侧栏」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("alpha 「收起侧栏」"), from: 2750.0, to: 2750.0, dx: 0.1, dy: 0.1, dw: 0.3, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("alpha 「Esc」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("alpha 「Esc」"), from: 2750.0, to: 2750.0, dx: 0.1, dy: 0.1, dw: 0.3, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("old alone 「详情」"), from: 2667.0, to: 2667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("ground nodes alone"), from: 2700.0, to: 2700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("nodes alone 「收起侧栏」"), from: 2717.0, to: 2717.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "wide-side-panel", what: Key("nodes alone 「Esc」"), from: 2717.0, to: 2717.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "desk-panel-picture-quote", what: Key("nodes alone 「详情」"), from: 1283.0, to: 1283.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_side_switch },
+  { drive: "desk-panel-picture-quote", what: Key("alpha 「收起侧栏」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
+  { drive: "desk-panel-picture-quote", what: Key("alpha 「Esc」"), from: 1300.0, to: 1317.0, dx: 0.1, dy: 0.1, dw: 0.5, why: pa_why_side_switch },
 ]
 
 ///|

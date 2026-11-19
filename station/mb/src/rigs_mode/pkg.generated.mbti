@@ -152,18 +152,22 @@ pub fn well_formed(String, @json.Json?) -> Bool
 pub(all) suberror ChangeRefused {
   ChangeRefused(String)
 }
+pub impl Show for ChangeRefused
 
 pub(all) suberror DeviceRefused {
   DeviceRefused(Int32, String)
 }
+pub impl Show for DeviceRefused
 
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 
 pub(all) suberror Thrown {
   Thrown(String, String)
 }
+pub impl Show for Thrown
 
 // Types and methods
 pub(all) struct Answer {

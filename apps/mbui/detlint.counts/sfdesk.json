@@ -1,0 +1,57 @@
+{
+  "counts": {
+    "page-hand": {
+      "src/sfdesk/frame.mbt": 2
+    },
+    "page-look": {
+      "src/sfdesk/frame.mbt": 2
+    },
+    "tier-outside-shell": {
+      "src/sfdesk/chat_page.mbt": 1,
+      "src/sfdesk/chat_talk.mbt": 1,
+      "src/sfdesk/lists.mbt": 6,
+      "src/sfdesk/settings_frame.mbt": 1
+    },
+    "built-by-hand": {
+      "src/sfdesk/rail_native.mbt": 1,
+      "src/sfdesk/tape_view.mbt": 1
+    },
+    "layout-read-back": {
+      "src/sfdesk/chat_layers.mbt": 2,
+      "src/sfdesk/pane_page.mbt": 1
+    },
+    "ui-current": {
+      "src/sfdesk/chats.mbt": 1,
+      "src/sfdesk/pane_view.mbt": 1,
+      "src/sfdesk/tape_view.mbt": 3
+    },
+    "build-motion": {
+      "src/sfdesk/pane_view.mbt": 1,
+      "src/sfdesk/tape_view.mbt": 1
+    },
+    "old-island": {
+      "src/sfdesk/tape_view.mbt": 1
+    },
+    "reused-untracked-key": {
+      "src/sfdesk/archive_side_node.mbt": 1
+    },
+    "page-at-moment": {
+      "src/sfdesk/page_wait.mbt": 1,
+      "src/sfdesk/panel_node.mbt": 1,
+      "src/sfdesk/rail_node.mbt": 2,
+      "src/sfdesk/tape_view.mbt": 1
+    },
+    "page-control-by-hand": {
+      "src/sfdesk/chat_bar_wide_node.mbt": 3,
+      "src/sfdesk/page_pane.mbt": 1,
+      "src/sfdesk/pane_view.mbt": 1,
+      "src/sfdesk/side_node.mbt": 2,
+      "src/sfdesk/tape_view.mbt": 1
+    }
+  },
+  "excused": {
+    "corners-each": {
+      "src/sfdesk/chat_page.mbt": 2
+    }
+  }
+}

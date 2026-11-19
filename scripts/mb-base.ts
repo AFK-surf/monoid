@@ -168,6 +168,28 @@ for (const file of files) {
 }
 for (const [file] of NAMED) if (!files.includes(file)) wrong.push(`NAMED names a file that is not there: ${file}: take its entries out`);
 
+// ── what it fails with says itself ──
+
+// Every suberror a package declares (in a file that is not a test) shows as words for people: derived (`derive(Show)`,
+// `#derive(Show)`) or written in the package (`impl Show for <Name>`), never left to print its package's path and
+// constructor where a program logs or shows it.
+const packages = new Set(files.filter((file) => file.startsWith("src/") && file.endsWith("/moon.pkg")).map((file) => file.slice(0, -"/moon.pkg".length)));
+for (const dir of packages) {
+  const sources = files.filter((file) => file.startsWith(`${dir}/`) && !file.slice(dir.length + 1).includes("/") && file.endsWith(".mbt") && !/_(wb)?test\.mbt$/.test(file));
+  const code = new Map(sources.map((file) => [file, text(file).replace(/^\s*\/\/.*$/gm, "")]));
+  const shown = new Set([...code.values()].flatMap((source) => [...source.matchAll(/\bimpl\s+Show\s+for\s+(\w+)/g)].map((found) => found[1]!)));
+  for (const [file, source] of code) {
+    for (const found of source.matchAll(/(#derive\(([^)]*)\)\s*)?\b(?:pub(?:\(\w+\))?\s+|priv\s+)?suberror\s+(\w+)/g)) {
+      const name = found[3]!;
+      // (or after it: `suberror Name derive(Show)`, `suberror Name { … } derive(Show)`)
+      const tail = source.slice(found.index + found[0].length);
+      const body = /^\s*\{/.test(tail) ? tail.slice(0, tail.search(/^\}/m) + 1) : "";
+      const derived = /\bShow\b/.test(found[2] ?? "") || /^\s*derive\([^)]*\bShow\b/.test(tail.slice(body.length));
+      if (!derived && !shown.has(name)) wrong.push(`${file}: suberror ${name} has no Show: derive it or write \`impl Show for ${name}\` in its package, its words for people, so that it never prints its package's path and constructor`);
+    }
+  }
+}
+
 if (wrong.length > 0) {
   console.log(wrong.join("\n"));
   console.log(`(the base in MoonBit stands without a program: what one needs of it is given it as a parameter, by the program; ${"libs/base/AGENTS.md"})`);

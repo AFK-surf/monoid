@@ -488,6 +488,16 @@ if part ts; then
   if touches '^libs/base/src/wire/|^client/core-ts/src/sse\.ts$|^scripts/mb-base-sse\.ts$'; then
     step "the base in MoonBit reads an event stream as the device base does" node scripts/mb-base-sse.ts --check
   fi
+  # The station in MoonBit says each of its errors as words, never as its type's name (station/<package>.<Type>);
+  # opens no more sockets by its shell's name than scripts/mb-station.ts's table lets each file, which only falls;
+  # lets go of no fiber whose failure would fail the whole program (`fork_quiet` or `fork_daemon`, never a bare
+  # `ignore(….fork(…))`); makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`); writes no file beside
+  # under a name another write of it takes too (`<path>.<pid>.tmp`, `<path>.tmp`: L13); waits on the disk on the
+  # program's thread in a whole station's slice (`station_main/live_*.mbt`) no more than MAIN_THREAD_SYNC_FS lets it,
+  # which only falls; and makes no JavaScript value JSON by writing it out and reading it again.
+  if touches '^station/mb/|^scripts/mb-station\.ts$'; then
+    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON" node scripts/mb-station.ts
+  fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
   # their JS dependencies and the real wasm package even when no TS file changed.
   core_tests=0
@@ -496,7 +506,7 @@ if part ts; then
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || [ $core_tests = 1 ]; then wasm_pkg; fi
   # The mbui app's budgets only fall (scripts/mbui-budgets.ts): a raise says why in its commit's message. A commit's own
   # is checked as its message is written (.githooks/commit-msg); a push's and CI's, here, by the range's messages.
-  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_wbtest\.mbt$|^scripts/mbui-budgets\.ts$'; then
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp(_realsize)?/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_(wb)?test\.mbt$|^scripts/mbui-budgets\.ts$'; then
     step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
   fi
   if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi
@@ -583,7 +593,7 @@ if [ $full = 1 ]; then
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n station/src/cloud/lock.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
-  station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/mbui/src/effect/|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
+  station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/mbui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
   # the Rust station's archive command and the launcher, which runs the whole station in mb-live-station.test.ts).
   station_natives="mesh runner reader"
@@ -592,7 +602,7 @@ if [ $full = 1 ]; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below),
     # in one moon test (a call a package checked their shared dependencies again each time).
-    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/accounts_oauth src/events src/api_routes src/vault_crypto src/jobs_host'
+    remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/accounts_oauth src/events src/api_routes src/vault_crypto src/jobs_host'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
     # Cursor and sandbox bridges run in processes of their own.
@@ -609,7 +619,7 @@ if [ $full = 1 ]; then
     # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell libs/mesh-transport vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
+    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell libs/mesh-transport vendor rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.

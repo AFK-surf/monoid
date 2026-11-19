@@ -1,6 +1,7 @@
 // What config.json must be before it is taken (the Rust station's config.rs `parse_config`'s refusals, and the shapes its
 // serde types insist on): `checkConfig` throws what is wrong, in the same words. Set as `ConfigFile.check`, so an edit
 // that does not pass is not written. What parse_config fills in is read elsewhere (sessions/config.ts `hubConfig`).
+import { AGY_LEVELS } from "../agents/agy.ts";
 import { checkSandboxes } from "../agents/sandbox.ts";
 import { accessKinds, needsKey, runtimesFor } from "./profiles.ts";
 import { cleanEndpoint, endpoints, find } from "../agents/providers.ts";
@@ -143,8 +144,12 @@ export function checkConfig(raw: any, _data: string): void {
     const effort = c.bind.effort;
     if (typeof effort === "string" && effort !== "") {
       // Codex reports an open set of levels per model, after sign-in: a newly advertised level is not refused.
-      const legacy = fallbackEfforts(runtime);
-      if (runtime !== "codex" && !legacy.includes(effort)) throw new Error(`connect ${c.id}: ${runtime} has no effort ${effort}; use ${legacy.join(", ")}`);
+      // Antigravity reports per-model thinking levels from ACP's availableModels (fallbackEfforts is empty for single-level models).
+      const allowed = runtime === "agy" ? AGY_LEVELS : fallbackEfforts(runtime);
+      if (runtime !== "codex" && !allowed.includes(effort)) {
+        const hint = allowed.length > 0 ? `; use ${allowed.join(", ")}` : "";
+        throw new Error(`connect ${c.id}: ${runtime} has no effort ${effort}${hint}`);
+      }
     }
     connectIds.push(c.id);
   }

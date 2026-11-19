@@ -119,14 +119,15 @@ fn Hub::evict_idle(self : Hub) -> Unit {
 ///|
 /// A process went idle: look again when it has idled past warmMs.
 pub fn Hub::idle_now(self : Hub, key : String) -> Unit {
-  match self.get_session(key) {
+  // (finished archive: what it left in the background ends with it, then its archive is cleaned, as `archive` asks
+  // them: the actor has no call of the two at once. Its clean asked last, as hub.ts asks it once the evict is answered)
+  let archived = match self.get_session(key) {
     Some(row) if field(row, "archivedAt") is Some(Number(_)) =>
-      // (finished archive: what it left in the background ends with it)
-      match (try { Some(self.actor(row)) } catch { _ => None }) {
-        Some(actor) => self.act(actor, "evictThenCleanArchive")
-        None => ()
-      }
-    _ => ()
+      try { Some(self.actor(row)) } catch { _ => None }
+    _ => None
+  }
+  if archived is Some(actor) {
+    self.act(actor, "evict", args=[Json::boolean(true)])
   }
   match self.deadlines.get(key) {
     Some(id) => self.cancel(id)
@@ -145,6 +146,9 @@ pub fn Hub::idle_now(self : Hub, key : String) -> Unit {
   })
   self.deadlines[key] = id
   self.evict_idle()
+  if archived is Some(actor) {
+    self.act(actor, "cleanArchive")
+  }
 }
 
 ///|

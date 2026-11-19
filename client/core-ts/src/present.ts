@@ -30,7 +30,7 @@ const arr = (v: unknown): J[] | undefined => arrU(v);
 const get = (v: unknown, k: string | number): J => getU(v, k);
 
 /// The time a value is put together for: now, and the viewer's offset from UTC.
-export type Clock = { now: number; offsetMin: number };
+export type Clock = { now: number; offsetMin: number; reached?: (at: number, later?: boolean) => boolean };
 
 /// The clock moved on to `c` (a value is put together for it): what reads a grain that changed is made again.
 export function clockAt(c: Clock): void {
@@ -1424,7 +1424,7 @@ export function decorate(topic: Topic, value: unknown, c: Clock): unknown {
     case "drive":
       return drive.shown(value, c);
     case "prefs":
-      return prefsMod.shown(value);
+      return prefsMod.shown(value, c);
   }
   if (!ticks(topic)) return value;
   const v = value as J;

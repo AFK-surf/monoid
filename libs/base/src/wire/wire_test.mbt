@@ -357,3 +357,8 @@ test "a reader told to keep the most an Int says reads as one with no bound in r
   assert_true(sse.feed(b"\n") == [{ name: "message", data: "b", id: None }])
   assert_true(sse.feed(b"") == [])
 }
+
+///|
+test "a block too long says its bound" {
+  assert_eq(Show::to_string(@wire.TooLong(most=16)), "event block exceeds 16 bytes")
+}

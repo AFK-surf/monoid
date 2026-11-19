@@ -1092,7 +1092,7 @@ async fn SessionAccounts::take_across(
   }
   let fast = if fast_runtimes.contains(target) {
     match row.raw.get("fast") {
-      None | Some(Null) => Null
+      None | Some(Null) => JV::Null
       Some(f) => f
     }
   } else {
@@ -1100,7 +1100,7 @@ async fn SessionAccounts::take_across(
   }
   let context = if context_runtimes.contains(target) {
     match row.raw.get("context") {
-      None | Some(Null) => Null
+      None | Some(Null) => JV::Null
       Some(c) => c
     }
   } else {

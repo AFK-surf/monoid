@@ -227,14 +227,14 @@ fn p54_vault_machine(bus : LiveBus) -> @vault_service.Machine {
       }
     },
     write_file: async fn(p, b, mode) {
-      @drive.write_private_bytes(p, b)
+      host.write_atomic(p, b, mode~, sync=true, mkdir=true, sep=sep())
       if mode != 0o600 {
         ignore(host.shell("fs.chmod", { "path": Json::string(p), "mode": Json::number(mode.to_double()) })) catch {
           _ => ()
         }
       }
     },
-    read_file: async fn(p) { (try { Some(@drive.read_all(p)) } catch { _ => None }) },
+    read_file: async fn(p) { host.read_bytes(p) catch { _ => None } },
     mkdir: async fn(p, mode) { @drive.mkdir(p, true, mode~) },
     shell_for: async fn(_env) {
       if is_windows() {
@@ -330,7 +330,7 @@ fn p54_vault_world(
     None => None
   }
   let hub_ask = async fn(op : String, args : Json) -> Json { (bus.hub_ask.val)(op, args) }
-  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
   ({
     hub: {
       store: p54_vault_store(bus, threads),
@@ -433,7 +433,7 @@ async fn p54_vault_live(
   db : @vault_crypto.Db,
 ) -> P54Vault {
   let host = bus.host
-  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
   let vault = @vault_service.Vault::new(world, db, crypto, {
     tell: (ev, data, key, to) => (bus.events_tell.val)(ev, data, key, to),
     tabs: session => p54_browser_tabs(session),
@@ -760,21 +760,19 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
 /// answers written back, the connection closed where it says so; what it gives stops it and removes the socket.
 async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, Bytes) -> (Bytes, Bool)) -> () -> Unit {
   @drive.rm_force(path)
-  let (opened, _) = host.shell("unix.listen", { "path": Json::string(path) })
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
+  let id = host.unix_listen(path).id
   let stopped = Ref(false)
   let next = Ref(0)
   let conns : Map[Int, P54Conn] = Map([])
   ignore(
-    host.rt.fork(name="unix serve", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
+    host.rt.fork_daemon("unix serve", on_error=e => @host.note("unix serve failed: \{e}"), async fn() {
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
         next.val += 1
         let n = next.val
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
+        let conn : P54Conn = { host, id: got.id, closed: false }
         conns[n] = conn
         ignore(
-          host.rt.fork(name="unix conn", async fn() {
+          host.rt.fork_daemon("unix conn", on_error=e => @host.note("unix conn failed: \{e}"), async fn() {
             while conn.read() is Some(chunk) {
               let (reply, close) = answer(n, chunk) catch { _ => (b"", true) }
               if reply.length() > 0 {
@@ -802,10 +800,8 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
       c.close()
     }
     ignore(
-      host.rt.fork(name="unix close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
+      host.rt.fork_daemon("unix close", on_error=e => @host.note("unix close failed: \{e}"), async fn() {
+        host.listen_close(id)
         @drive.rm_force(path)
       }),
     )
@@ -846,7 +842,7 @@ async fn p54_roots(host : @host.Host) -> Array[String] {
     if code == Some(0) {
       for name in @drive.names(dir) catch { _ => [] } {
         if name.has_suffix(".crt") || name.has_suffix(".cer") {
-          let der = @drive.read_all(path([dir, name])) catch { _ => continue }
+          guard (host.read_bytes(path([dir, name])) catch { _ => None }) is Some(der) else { continue }
           out.push(p54_pem("CERTIFICATE", der).trim().to_owned())
         }
       }
@@ -869,9 +865,9 @@ async fn p54_proxy_listen(
   connect : async (@vault_service.ConnectAsk) -> @vault_service.ConnectDecision,
   forward : async (@vault_service.ForwardAsk) -> @vault_service.ForwardDecision,
 ) -> Int {
-  let (opened, _) = host.shell("tcp.listen", { "port": Json::number(0.0) }) // 127.0.0.1 only: the shell binds no other address
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
-  let port = p54_num(p54_get(Some(opened), "port")).unwrap_or(0.0).to_int()
+  let listening = host.tcp_listen_local(0)
+  let id = listening.id
+  let port = listening.port
   let stopped = Ref(false)
   stop.val = () => {
     if stopped.val {
@@ -879,20 +875,17 @@ async fn p54_proxy_listen(
     }
     stopped.val = true
     ignore(
-      host.rt.fork(name="proxy close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
+      host.rt.fork_daemon("proxy close", on_error=e => @host.note("proxy close failed: \{e}"), async fn() {
+        host.listen_close(id)
       }),
     )
   }
   ignore(
-    host.rt.fork(name="vault proxy", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
+    host.rt.fork_daemon("vault proxy", on_error=e => @host.note("vault proxy failed: \{e}"), async fn() {
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
+        let conn : P54Conn = { host, id: got.id, closed: false }
         ignore(
-          host.rt.fork(name="proxy connection", async fn() {
+          host.rt.fork_quiet(name="proxy connection", async fn() {
             p54_proxy_connection(host, conn, connect, forward) catch {
               _ => ()
             }
@@ -971,7 +964,7 @@ async fn p54_proxy_connection(
             _ => break
           }
         }
-        ignore(host.shell("tcp.end", { "id": conn.id })) catch {
+        host.tcp_end(conn.id) catch {
           _ => ()
         }
       })
@@ -1041,7 +1034,7 @@ fn p54_vault_outcomes(bus : LiveBus, threads : @store_threads.Store, db : @vault
       }
       p54_told_threads(bus, threads)
       ignore(
-        bus.host.rt.fork(name="card outcome", async fn() {
+        bus.host.rt.fork_quiet(name="card outcome", async fn() {
           ignore((bus.hub_ask.val)("cardOutcomes.wake", Json::array([]))) catch {
             _ => ()
           }

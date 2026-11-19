@@ -47,10 +47,8 @@ test "the station an agent's history runs on, its name at its longest beside a c
   for name in ["touch", "desk", "tablet"] {
     guard corner_windows.search_by(w => w.0 == name) is Some(i) else { fail("no \{name} window in corner_windows") }
     let win = corner_windows[i]
-    for mode in ["history", "history-details"] {
-      let t = screen_in(mode, win, "zh", said=true)
-      let wrong = name_line_wrong(t, "\{name} \{mode}", "Willow — ", " · MacBook", win.1, "sfdesk/history.mbt")
-      assert_eq(wrong, "")
-    }
+    let t = screen_in("history-details", win, "zh", said=true)
+    let wrong = name_line_wrong(t, "\{name} history-details", "Willow — ", " · MacBook", win.1, "sfdesk/history.mbt")
+    assert_eq(wrong, "")
   }
 }

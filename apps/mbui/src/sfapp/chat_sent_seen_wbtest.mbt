@@ -284,7 +284,6 @@ fn ss_quoting(screen : (String, Double, Double, Int), file? : Json) -> (@ui.Test
   let (_, w, h, platform) = screen
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

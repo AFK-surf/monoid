@@ -226,6 +226,7 @@ pub(all) suberror MoveError {
   PeerStopped(String)
   Failed(String)
 }
+pub impl Show for MoveError
 
 // Types and methods
 pub struct Accounts {

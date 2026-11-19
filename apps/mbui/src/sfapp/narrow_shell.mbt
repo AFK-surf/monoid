@@ -396,6 +396,45 @@ fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
+/// What the Small stack gives a new chat's page (newchat.mbt): its bar (新对话 in the middle), the navigation bar's
+/// room under it (ChatHost.kt: windowInsetsPadding(keyboard.union(navigationBars))).
+fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
+  {
+    core: settings_core(src, w),
+    bar: fn(c) {
+      @sf.nav_bar(c, "new/cancel", tr("common.cancel"), tr("android-chat.new.title"), bg=@sf.theme().p.bg, top=status_top(), on_press=fn() {
+        @sfbase.close_page(NewChat) |> ignore
+      })
+    },
+    foot: nav_foot(),
+    in_place: true,
+    sent: fn(_) {  },
+  }
+}
+
+///|
+/// What the Small stack gives a new chat made as nodes in node `v` (sfpages' new_chat_node: new_frame's): its bar (取消
+/// back to where it was opened from, 新对话 in the middle) under the status bar as the window it is in is now, the
+/// navigation bar's room under it; the chat it becomes opens in its place.
+/// `width`: the window's, which the page is as wide as.
+fn new_frame_node(src : Source, w : Workspace, width : () -> Double) -> @sfpages.NewChatNodeFrame {
+  {
+    core: settings_core(src, w),
+    ground: fn(_) { @sf.theme().p.bg },
+    width,
+    bar: fn(b) {
+      @sf.nav_bar_node(b, fn() { tr("common.cancel") }, fn() { tr("android-chat.new.title") }, fn() {
+        @sfbase.close_page(NewChat) |> ignore
+      }, top=fn() { status_top_now(b.window().0) })
+    },
+    foot: fn() { nav_foot() },
+    over: fn(_, _) {  },
+    in_place: true,
+    sent: fn(_) {  },
+  }
+}
+
+///|
 /// The pages of the stack made once as nodes of the tree's in the narrow shell (nav_view's `made`), by their kind, the
 /// rest old views (narrow_page_held): the settings' list (the gear's), 关于, 记忆, 一台 station 的记忆 and 归档, an agent's history;
 /// a chat (and the new chat that becomes it), its old view in it as yet (chat_page_made). Each in the workspace in view, made
@@ -566,7 +605,7 @@ fn narrow_made_as(
               // (its bar the page's node's, over its old view: chat_bar_node)
               over=chat_bar_node,
               stint~,
-              // (with chat_page_nodes on: its messages nodes, its composer in their list's foot its old view)
+              // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
               body=fn(col, s, r, composer, shows) {
                 @sfpages.chat_page_body_node(
                   col,
@@ -585,11 +624,17 @@ fn narrow_made_as(
                   lead=unread_lead(),
                 )
               },
-              foot=chat_foot_nodes,
               foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) })) },
               leaving=fn(c, s, r) {
                 match workspace_in_view(s).0 {
                   Some(w) => new_chat_leaving(c, s, w, r)
+                  None => ()
+                }
+              },
+              // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node, under its bar of 取消)
+              new_node=fn(n, s) {
+                match @signals.untracked(fn() { workspace_in_view(s).0 }) {
+                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() { n.window().0 }), @sf.TipLayer::new(fn() { Some(v) }))
                   None => ()
                 }
               },

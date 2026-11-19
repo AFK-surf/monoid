@@ -191,6 +191,13 @@ fn tell_device() -> Unit {
   if version > 0 {
     facts["build"] = Json::string("0.1." + version.to_string())
   }
+  let built_at = @ui.env("MBUI_BUILT_AT")
+  if built_at != "" {
+    let parsed = try Some(@json.parse(built_at)) catch { _ => None }
+    if parsed is Some(Number(n, ..)) && n > 0.0 {
+      facts["builtAt"] = Json::number(n)
+    }
+  }
   // the device's language (its host's MBUI_LOCALE, a BCP 47 tag): the core's `lang` when none is chosen (prefs.ts)
   let locale = @ui.env("MBUI_LOCALE")
   if locale != "" {

@@ -15,6 +15,14 @@ let batch : Int = 64
 pub(all) suberror Fallback
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Fallback with output(self, logger) {
+  match self {
+    Fallback => logger.write_string("the store needs the writer's schema repair before its edits can be prepared")
+  }
+}
+
+///|
 fn first(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
   match db.all(sql, params) {
     [r, ..] => Some(r)

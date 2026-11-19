@@ -22,7 +22,8 @@ type Size = { width: number; height: number; scale: number };
 
 /// The viewport a tab is laid out at with no view saying one (a desktop's window).
 export const DEFAULT_SIZE: Size = { width: 1280, height: 800, scale: 1 };
-const JPEG_QUALITY = 70;
+/// JPEG quality of the frames asked for: 82, as at 70 small text's edges rang (as the browser's cast, view.ts).
+const JPEG_QUALITY = 82;
 
 /// One connection to a host's frame port: its lines heard, a picture asked for and its bytes read.
 export class FrameLink {

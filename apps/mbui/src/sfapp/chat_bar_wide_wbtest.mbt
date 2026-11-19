@@ -930,3 +930,28 @@ test "大屏, 中屏: a button of the bar coming or going as its chat changes (i
     assert_eq(told[1], x1, msg="\{win.0}: an answer's button in its place at once: \{Repr(told)}")
   }
 }
+
+///|
+test "大屏, the chat's page made as nodes: the side panel's switch pressed, the panel opening beside it, the bar's buttons go its way one way, the switch going along the row with it, none stepping aside first" {
+  let calls : Array[(String, Json)] = []
+  let (t, src) = chat_nodes_calling(1280.0, 800.0, 0, calls)
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  let archive = @sf.t("web-pages.chat.archive")
+  guard wide_bar_button(t, archive) is Some(_) else { fail("no 归档") }
+  guard wide_bar_button(t, @sf.t("web-pages.chat.openPanel")) is Some(_) else { fail("no switch of the side panel") }
+  let (xs, _) = wide_bar_way(
+    t,
+    archive,
+    fn() { @sfdesk.side_change(src, r, "open", Some("files")) },
+    @ui.move_most_ms + 200.0,
+  )
+  let back = []
+  for i in 1..<xs.length() {
+    if xs[i] - xs[i - 1] > 0.5 {
+      back.push("frame \{i}: \{xs[i - 1]} → \{xs[i]}")
+    }
+  }
+  assert_true(xs.length() > 3 && xs[xs.length() - 1] < xs[0], msg="归档 gone left with the panel: \{Repr(xs)}")
+  assert_eq(back, [], msg="归档 stepped right on the way: \{Repr(xs)}")
+}

@@ -238,6 +238,26 @@ pub fn station_version(build : String?) -> String? {
 }
 
 ///|
+/// version.ts `stationBuiltAt`: from the release's BUILT_AT file's text (Unix ms; None where absent or invalid).
+pub fn station_built_at(built_at : String?) -> Double? {
+  match built_at {
+    Some(text) => {
+      let raw = js_trim(text)
+      if raw != "" && digits(raw) {
+        let parsed = try Some(@string.parse_int64(raw[:])) catch { _ => None }
+        match parsed {
+          Some(ms) if ms > 0L && ms <= 9007199254740991L => Some(ms.to_double())
+          _ => None
+        }
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+///|
 /// version.ts `version`: the `--app` release's, else this code's, else 0.1.0.
 pub fn version_of(args : Array[String], app_build : String?, own_build : String?) -> String {
   let at = args.search_by(a => a == "--app")
@@ -252,6 +272,24 @@ pub fn version_of(args : Array[String], app_build : String?, own_build : String?
   match given {
     Some(v) => v
     None => station_version(own_build).unwrap_or("0.1.0")
+  }
+}
+
+///|
+/// version.ts `builtAt`: the `--app` release's BUILT_AT, else this code's, else None.
+pub fn built_at_of(args : Array[String], app_built_at : String?, own_built_at : String?) -> Double? {
+  let at = args.search_by(a => a == "--app")
+  let app = match at {
+    Some(i) => args.get(i + 1)
+    None => None
+  }
+  let given = match app {
+    Some(a) if a != "" => station_built_at(app_built_at)
+    _ => None
+  }
+  match given {
+    Some(ms) => Some(ms)
+    None => station_built_at(own_built_at)
   }
 }
 

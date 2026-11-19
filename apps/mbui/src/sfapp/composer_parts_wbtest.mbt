@@ -924,11 +924,13 @@ test "a picture restored in the composer opens in the viewer when tapped" {
     }
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
     t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
-    let tile = match thumb_of(t.ctx(), "ws1/st1//draft:kept-1") {
+    // (the old composer's tile where it noted it, the new chat's made as nodes the end of the viewer's flight that
+    // stays: waiting_tile_at)
+    let (x, y, w, h, _) = match waiting_tile_at(t, "ws1/st1//draft:kept-1") {
       Some(tile) => tile
       None => fail("the restored picture tile is not kept for the viewer to fly from")
     }
-    t.tap(tile.x + tile.w / 2.0, tile.y + tile.h / 2.0)
+    t.tap(x + w / 2.0, y + h / 2.0)
     match viewer.get() {
       Some(v) => {
         assert_eq(v.file.path, "draft:kept-1")
@@ -969,7 +971,6 @@ test "a video waiting in the composer made as nodes stands on a video's black in
 test "a picture restored in the composer made as nodes shows as the device reads it, and the viewer opens on it" {
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let base = fixture("chat")
   let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
   let src : Source = {
@@ -1010,14 +1011,12 @@ test "a picture restored in the composer made as nodes shows as the device reads
     None => fail("the viewer did not open")
   }
   @sfbase.chat_page_nodes.set(false)
-  @sfbase.composer_nodes.set(false)
 }
 
 ///|
 test "a message's picture quoted in the composer made as nodes shows as its station's comes, never a grey square for good" {
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let base = fixture("chat")
   let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
   let src : Source = {
@@ -1051,5 +1050,4 @@ test "a message's picture quoted in the composer made as nodes shows as its stat
   t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
   assert_true(t.locate("img:mem:test/quoted").length() > 0, msg="the quoted picture did not come to its tile")
   @sfbase.chat_page_nodes.set(false)
-  @sfbase.composer_nodes.set(false)
 }

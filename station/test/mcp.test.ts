@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AGY_TOOL_BUDGET } from "../src/agents/agy.ts";
 import { CLAUDE_TOOL_LOADED } from "../src/agents/claude.ts";
-import { CORE, EVERY_TURN, fitted, INDIRECT, type Listing, McpEndpoint, OUTWARD, type Tool, UNBOUND_REFUSAL, weight } from "../src/tools/mcp.ts";
+import { CORE, EVERY_TURN, fitted, HIDDEN, INDIRECT, type Listing, McpEndpoint, OUTWARD, PRIORITY, type Tool, UNBOUND_REFUSAL, weight } from "../src/tools/mcp.ts";
 
 const echo: Tool = {
   name: "echo",
@@ -160,4 +160,29 @@ test("station_tool reads an undeclared tool's parameters, runs it as any call, a
   // An outward one is refused through it as directly.
   out = true;
   assert.deepEqual([(await call({ name: "slack_api", arguments: {} })).content[0].text], [UNBOUND_REFUSAL]);
+});
+
+test("hidden tools are omitted from tools/list and station_tool, yet remain callable for older sessions", async () => {
+  const all = [sized("chat_post", 400), sized("chat_list", 400), ...HIDDEN.map((n) => sized(n, 300))];
+  const e = new McpEndpoint(() => "s", all);
+  const list: any[] = ((await rpc(e, "t", { jsonrpc: "2.0", id: 1, method: "tools/list" })).body as any).result.tools;
+  assert.deepEqual(list.map((t) => t.name), ["chat_post", "chat_list"]);
+  for (const name of HIDDEN) {
+    const res: any = ((await rpc(e, "t", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: { ok: true } } })).body as any).result;
+    assert.equal(res.content[0].text, `${name} ran {"ok":true}`);
+  }
+  const budgeted = fitted(all, 600);
+  assert.ok(budgeted.declared.every((t) => !HIDDEN.includes(t.name)));
+  assert.ok(budgeted.indirect.every((t) => !HIDDEN.includes(t.name)));
+});
+
+test("fitted prioritizes PRIORITY tools ahead of smaller non-priority tools within budget", () => {
+  const small = Array.from({ length: 10 }, (_, i) => sized(`tiny_${i}`, 250));
+  const prio = [sized("chat_create", 1400), sized("session_send", 1400), sized("chat_configure", 1400)];
+  const all = [sized("chat_post", 2000), ...small, ...prio];
+  assert.ok(prio.every((t) => PRIORITY.includes(t.name)));
+  const { declared, indirect } = fitted(all, 7500);
+  const names = declared.map((t) => t.name);
+  for (const t of prio) assert.ok(names.includes(t.name), `${t.name} should be declared directly ahead of tiny tools`);
+  assert.ok(indirect.length > 0 && indirect.every((t) => t.name.startsWith("tiny_")));
 });

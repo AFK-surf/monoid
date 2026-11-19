@@ -478,15 +478,22 @@ pub fn first_frame(c : @ui.Ctx, src : Source, station : String, key : String, a 
 /// its first frame (first_frame's, first_frame_node's).
 fn first_player(src : Source, station : String, key : String, a : Attachment) -> @ui.NativeView {
   let (_, mime, _) = preview_kind(a.name)
-  @ui.NativeView::video(mime, fn(offset, length, answer) {
+  let params = fn() -> Map[String, Json] {
     let p : Map[String, Json] = {
       "station": Json::string(station),
       "key": Json::string(key),
       "name": Json::string(base_name(a.path)),
-      "offset": Json::number(offset),
-      "length": Json::number(length.to_double()),
     }
     chat_keep(p, a.size)
+    p
+  }
+  // (its parts read by the host's own reader where it has one, as the viewer's are: through the app, each part's
+  // bytes were copied on the thread that draws, a frame held 75 ms on a phone, 2026-11-19)
+  let direct = direct_part("station.file.part", params(), a.size)
+  @ui.NativeView::video(mime, direct~, fn(offset, length, answer) {
+    let p = params()
+    p["offset"] = Json::number(offset)
+    p["length"] = Json::number(length.to_double())
     stream_part(src, "station.file.part", p, a.size, answer)
   })
 }

@@ -104,8 +104,10 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame: the reply com
   for screen in cr_screens {
     // (the line under what was sent from its delivery on, the reply 1400 ms after, the turn's end later)
     let t = cr_open(screen, (fix_deliver_ms, 1400.0, 1000.0), on_pixels=true)
+    // (its field opened first: what was sent goes from the press's moment)
+    cr_open_field(t)
     let sent = t.time()
-    cr_send(t, cr_sent)
+    cr_send(t, cr_sent, opened=true)
     let comes = sent + fix_deliver_ms + 1400.0
     let gap = comes - 50.0 - t.time()
     if gap > 0.0 {
@@ -136,9 +138,8 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame: the reply com
 fn mf_open(screen : (String, Double, Double, Int)) -> (@ui.Tester, Source) {
   let (_, w, h, platform) = screen
   new_run()
-  // (its composer made as nodes too: 试用新输入框, what these frames hold of it)
+  // (its composer made as nodes too: what these frames hold of it)
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

@@ -1,5 +1,6 @@
 // A screen view's frames on its stream (Wire): a kind byte, the payload's length (4 bytes,
-// big-endian), the payload. The station sends `config`, `video` and `state`; the client `input`, `ack`, `keyframe` and
+// big-endian), the payload. The station sends `config`, `video` and `state` (and `cursor`, the pointer in a few bytes,
+// to a view that asked `binaryCursor`); the client `input`, `ack`, `keyframe` and
 // `look` (the part of the screen it shows, zoomed in); the screen's clipboard goes both ways (`clipboard`) while the
 // view drives it.
 // Read as the stream's pieces come, however they are cut: each frame's bytes are copied once, into an array of its own
@@ -12,6 +13,7 @@ export const STATE = 3;
 export const CLIPBOARD = 4;
 export const AUDIO_CONFIG = 5;
 export const AUDIO = 6;
+export const CURSOR = 7;
 export const INPUT = 16;
 export const ACK = 17;
 export const KEYFRAME = 18;
@@ -20,6 +22,8 @@ export const LOOK = 20;
 export const SOUND = 21;
 /// A packet of sound: 20 ms of PCM16 (3840 bytes), or one Opus packet (at most 1275).
 const AUDIO_MAX = 3840;
+/// A `cursor` frame: x and y (16 bits each, of 65535), then the pointer's shape (UTF-8, at most this many bytes).
+const CURSOR_SHAPE_MAX = 64;
 
 /// A clip's type on the wire.
 export type ClipType = "text" | "png";
@@ -50,6 +54,8 @@ export type StationFrame =
   | { audio: { ts: number; data: Uint8Array } }
   /// The screen's clipboard, changed: its type and its bytes (text in UTF-8).
   | { clipboard: { type: ClipType; data: Uint8Array } }
+  /// The pointer moved (0..1 of the screen, to a ten-thousandth, and its shape where said), or none shown (null).
+  | { cursor: { x: number; y: number; shape?: string } | null }
   /// A kind this client does not know (a later station's): passed over.
   | { other: number };
 
@@ -106,6 +112,17 @@ export class FrameReader {
       }
       case STATE:
         return { state: json(this.#take(length)) };
+      case CURSOR: {
+        if (length === 0) return { cursor: null };
+        // (a length no station sends: passed over, as a kind not known)
+        if (length < 4 || length > 4 + CURSOR_SHAPE_MAX) {
+          this.#skip(length);
+          return { other: kind };
+        }
+        const b = this.#take(length);
+        const at = (hi: number) => Math.round((((b[hi]! << 8) | b[hi + 1]!) / 65535) * 10000) / 10000;
+        return { cursor: { x: at(0), y: at(2), ...(length > 4 ? { shape: fromUtf8(b.subarray(4)) } : {}) } };
+      }
       case CLIPBOARD: {
         const type = length > 0 ? CLIP_OF_BYTE[this.#peek(0)] : undefined;
         if (type === undefined) {
@@ -246,6 +263,20 @@ export function videoFrame(key: boolean, ts: number, data: Uint8Array): Uint8Arr
 
 export function stateFrame(state: J): Uint8Array {
   return frame(STATE, utf8(JSON.stringify(state)));
+}
+
+/// The pointer as a station's `cursor` frame says it (null: none shown); a shape of more than CURSOR_SHAPE_MAX bytes
+/// goes without it.
+export function cursorFrame(cursor: { x: number; y: number; shape?: string } | null): Uint8Array {
+  if (cursor === null) return frame(CURSOR, new Uint8Array(0));
+  const shape = typeof cursor.shape === "string" ? utf8(cursor.shape) : new Uint8Array(0);
+  const payload = new Uint8Array(4 + (shape.length <= CURSOR_SHAPE_MAX ? shape.length : 0));
+  const view = new DataView(payload.buffer);
+  const q = (v: number) => Math.round(Math.min(1, Math.max(0, Number.isFinite(v) ? v : 0)) * 65535);
+  view.setUint16(0, q(cursor.x));
+  view.setUint16(2, q(cursor.y));
+  if (payload.length > 4) payload.set(shape, 4);
+  return frame(CURSOR, payload);
 }
 
 export function copiedFrame(type: ClipType, data: Uint8Array): Uint8Array {

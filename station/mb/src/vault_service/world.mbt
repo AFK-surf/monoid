@@ -61,6 +61,14 @@ pub(all) struct SessionRow {
 pub suberror WriteBusy
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for WriteBusy with output(self, logger) {
+  match self {
+    WriteBusy => logger.write_string("the store's writer is busy: the message is tried again after a pause")
+  }
+}
+
+///|
 /// The station's store as the vault and its sign-ins read and write it (secrets.ts `hub.store`, signin.ts's).
 pub(all) struct Store {
   get_session : (String) -> SessionRow?

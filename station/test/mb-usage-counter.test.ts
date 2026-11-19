@@ -15,8 +15,8 @@ import { packFile } from "../src/sessions/archive.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
-import { UsageCounter } from "../src/usage/counter.ts";
-import { ReferenceUsageCounter, claudeProject } from "./usage-counter-reference.ts";
+import { TIMED_BACK_MS, UsageCounter } from "../src/usage/counter.ts";
+import { ReferenceUsageCounter, UNTIMED_SESSIONS, claudeProject } from "./usage-counter-reference.ts";
 import { keepUsage } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
 
@@ -300,6 +300,114 @@ test("what was read before calls were timed is timed once, from then on, as a co
   assert.equal(await mb.read(new Set(["chat:c-8"])), 1);
   assert.deepEqual(dump(w.mb), dump(w.ts), "read on alike");
   assert.deepEqual(timed(w.ts).at(-1), ["j3", 3_000, 30]);
+});
+
+test("as a counter starts it finds itself, off the station's thread, the sessions of the last TIMED_BACK_MS read before calls were timed: timed once, none found to time kept so", { skip }, async () => {
+  const w = await world();
+  const t0 = w.now();
+  const asked = (at: number) => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "user", message: { role: "user", content: "go" }, timestamp: iso(at) });
+  // c-7 asked, then answered (timed); c-6 a transcript of no call and nothing that asked one (nothing to time).
+  const ws7 = join(w.data, "sessions/ember/c-7/workspace");
+  const ws6 = join(w.data, "sessions/ember/c-6/workspace");
+  session(w, "chat:c-7", ws7, t0 - 1_000);
+  session(w, "chat:c-6", ws6, t0 - 1_000);
+  w.each((s) => {
+    s.startTurnFor("t7", "chat:c-7", "input", { profile: "cc", person: "a@x", thread: null });
+    s.startTurnFor("t6", "chat:c-6", "input", { profile: "cc", person: "a@x", thread: null });
+  });
+  const p7 = join(w.data, "transcripts/claude", claudeProject(ws7), "r7.jsonl");
+  const p6 = join(w.data, "transcripts/claude", claudeProject(ws6), "r6.jsonl");
+  append(p7, [asked(t0 + 1_000), claudeLine("h1", t0 + 3_000, "claude-opus-5-5", usage(1, 0, 0, 0, 10))]);
+  append(p6, [JSON.stringify({ type: "summary", summary: "s", leafUuid: "l" })]);
+  // Antigravity's calls are not timed: its transcript read before is not read again for it.
+  session(w, "agy-a", join(w.data, "w-agy"), t0 - 1_000, "agy", "agy");
+  runtimeSession(w, "agy-a", "agy-id", "agy");
+  w.each((s) => s.startTurn("ta", "agy-a", "input"));
+  append(join(w.data, "transcripts/agy", "agy-id.jsonl"), [
+    JSON.stringify({ type: "usage", run: "r1", time: t0 + 4, model: "agy-model", calls: 1, context: 9, window: 200000, usage: { inputTokens: 1, outputTokens: 2 } }),
+  ]);
+  assert.equal(await w.read(undefined, "read and timed"), 2);
+  assert.equal((w.mb.db.prepare("SELECT COUNT(*) AS n FROM usage_files WHERE speed IS NULL").get() as { n: number }).n, 0, "read now: none left as read before calls were timed");
+  w.each((s) => {
+    s.endTurn("t7", "completed", null, null, null);
+    s.endTurn("t6", "completed", null, null, null);
+    s.endTurn("ta", "completed", null, null, null);
+  });
+  await w.time.adjust(2 * 86_400_000);
+  // As a station from before the calls were timed left them, its last sweep after both turns ended: no session ran
+  // since that sweep.
+  w.each((s) => s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0; UPDATE usage_files SET speed = NULL"));
+  w.each((s) => s.db.prepare("UPDATE usage_counter SET through = ? WHERE id = 1").run(w.now()));
+  const profiles = [{ home: join(w.data, "homes/cc") }, { home: join(w.data, "homes/cx") }];
+  const speeds = (store: Store) => (store.db.prepare("SELECT path, speed FROM usage_files ORDER BY path").all() as { path: string; speed: string | null }[]).map((r) => [r.path, r.speed]);
+  const timed = (store: Store) => store.db.prepare("SELECT id, gen_ms, gen_output FROM usage ORDER BY id").all().map((r) => [r.id, r.gen_ms, r.gen_output]);
+  // Nothing of it asked on the station's thread.
+  w.mb.usageActiveSessions = () => assert.fail("the sessions to time back asked on the station's thread");
+  const starts = async () => {
+    const ts = new ReferenceUsageCounter({ store: w.ts, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock });
+    const mb = new UsageCounter({ store: w.mb, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock, mb: binary, settleMs: 20, safetyMs: 60 * 60_000 });
+    cleanup.unshift(() => ts.stop(), () => mb.stop());
+    await ts.read(undefined, w.now() - TIMED_BACK_MS);
+    const waits = w.time.asked();
+    mb.start();
+    // Its first wait: what it reads as it starts read.
+    await w.time.begun(waits + 1);
+    await mb.stop();
+  };
+  await starts();
+  assert.deepEqual(dump(w.mb), dump(w.ts), "timed back alike");
+  assert.deepEqual(timed(w.mb).filter(([id]) => id === "h1"), [["h1", 2_000, 10]]);
+  const kept = speeds(w.mb);
+  assert.equal(kept.length, 3);
+  assert.notEqual(new Map(kept as [string, string][]).get(p7) ?? null, null, "where its reading stands kept");
+  assert.equal(new Map(kept as [string, string][]).get(p6), ",,,", "nothing found to time: kept as none");
+  assert.deepEqual(w.mb.db.prepare(UNTIMED_SESSIONS).all(w.now() - TIMED_BACK_MS), [], "none left to time back");
+  // Read on with still nothing to time: kept so.
+  append(p6, [JSON.stringify({ type: "summary", summary: "t", leafUuid: "m" })]);
+  assert.equal(await w.read(["chat:c-6"], "read on, nothing to time"), 0);
+  assert.equal(new Map(speeds(w.mb) as [string, string][]).get(p6), ",,,", "read on: still kept as none");
+  // Started again: each timed already, none read again (its calls' times, lost since, not found again).
+  w.each((s) => s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0"));
+  await starts();
+  assert.deepEqual(dump(w.mb), dump(w.ts), "not timed again alike");
+  assert.deepEqual(timed(w.mb).filter(([id]) => id === "h1"), [["h1", 0, 0]], "not timed again");
+  assert.deepEqual(speeds(w.mb), kept);
+});
+
+test("a transcript's calls are timed again WRITE_BATCH a write: one that fails leaves those written before it, the rest timed the next time", { skip }, async () => {
+  const w = await world();
+  const t0 = w.now();
+  const workspace = join(w.data, "sessions/ember/c-5/workspace");
+  session(w, "chat:c-5", workspace, t0 - 1_000);
+  w.each((s) => s.startTurnFor("t5", "chat:c-5", "input", { profile: "cc", person: "a@x", thread: null }));
+  const main = join(w.data, "transcripts/claude", claudeProject(workspace), "r5.jsonl");
+  const asked = (at: number) => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "user", message: { role: "user", content: "go" }, timestamp: iso(at) });
+  const id = (i: number) => `c${String(i).padStart(3, "0")}`;
+  const lines: string[] = [];
+  for (let i = 0; i < 150; i++) lines.push(asked(t0 + 1_000 + i * 1_000), claudeLine(id(i), t0 + 1_500 + i * 1_000, "claude-opus-5-5", usage(1, 0, 0, 0, 1)));
+  append(main, lines);
+  assert.equal(await w.read(["chat:c-5"], "read and timed"), 150);
+  w.each((s) => s.db.exec(`UPDATE usage SET gen_ms = 0, gen_output = 0; UPDATE usage_files SET speed = NULL;
+    CREATE TRIGGER fails_at_c100 BEFORE UPDATE OF gen_ms ON usage WHEN NEW.id = 'c100' BEGIN SELECT RAISE(ABORT, 'fails at c100'); END;`));
+  const profiles = [{ home: join(w.data, "homes/cc") }, { home: join(w.data, "homes/cx") }];
+  const ts = new ReferenceUsageCounter({ store: w.ts, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock });
+  const mb = new UsageCounter({ store: w.mb, config: () => ({ dataDir: w.data, profiles }), clock: w.time.clock, mb: binary });
+  cleanup.unshift(() => ts.stop(), () => mb.stop());
+  const timed = (store: Store) => (store.db.prepare("SELECT COUNT(*) AS n FROM usage WHERE gen_ms > 0").get() as { n: number }).n;
+  const speed = (store: Store) => (store.db.prepare("SELECT speed FROM usage_files").get() as { speed: string | null }).speed;
+  await assert.rejects(ts.read(new Set(["chat:c-5"]), t0), /c100/);
+  await assert.rejects(mb.read(new Set(["chat:c-5"]), t0), /c100/);
+  // The first 64 written in their own write; the write holding c100 undone (c064..c127), its position not kept.
+  assert.equal(timed(w.ts), 64);
+  assert.equal(timed(w.mb), 64);
+  assert.equal(speed(w.mb), null);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "failed alike");
+  w.each((s) => s.db.exec("DROP TRIGGER fails_at_c100"));
+  assert.equal(await ts.read(new Set(["chat:c-5"]), t0), 0);
+  assert.equal(await mb.read(new Set(["chat:c-5"]), t0), 0);
+  assert.deepEqual(dump(w.mb), dump(w.ts), "timed again alike");
+  assert.equal(timed(w.mb), 150);
+  assert.notEqual(speed(w.mb), null);
 });
 
 test("a transcript cut short or replaced is read again from its start, its old calls not taken; put away, read from its frames", { skip }, async () => {

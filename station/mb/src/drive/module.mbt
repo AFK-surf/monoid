@@ -5,7 +5,13 @@
 /// A refusal over the station transport (mesh/bus.ts `Refused`): the other station is told why.
 pub(all) suberror Refused {
   Refused(String)
-} derive(Show)
+}
+
+///|
+pub impl Show for Refused with output(self, logger) {
+  let Refused(m) = self
+  logger.write_string(m)
+}
 
 ///|
 /// An answer over the station transport (bus.ts): its JSON, and the bytes that follow it on its stream (`withBytes`),

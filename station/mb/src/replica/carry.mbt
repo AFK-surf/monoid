@@ -712,6 +712,14 @@ priv struct Tally {
 priv suberror Cut
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for Cut with output(self, logger) {
+  match self {
+    Cut => logger.write_string("the sizing's walk passed its bound")
+  }
+}
+
+///|
 /// One entry more of a sizing's walk; past its bound, the walk of that session ends there (said at least).
 fn Gathering::step(self : Gathering) -> Unit raise {
   if self.most is Some(most) {

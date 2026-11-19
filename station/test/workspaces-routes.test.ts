@@ -211,6 +211,7 @@ test("a viewer's event streams carry only their workspace's changes", async () =
       read: async (op: string, args: any) => {
         if (op === "summary") return JSON.stringify({ key: args.key });
         if (op === "job") return JSON.stringify({ id: args.id });
+        if (op === "sharedOf") return JSON.stringify({ rows: [], scope: null });
         throw new Error(op);
       },
     };

@@ -537,13 +537,13 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
 ///|
 /// A JavaScript value (jsjson's) as JSON.
 fn to_core(v : @jsjson.JValue) -> Json {
-  attempt(() => @json.parse(@jsjson.stringify(v))).unwrap_or(Json::null())
+  v.to_json()
 }
 
 ///|
 /// JSON as a JavaScript value (jsjson's).
 fn of_core(j : Json) -> @jsjson.JValue {
-  attempt(() => @jsjson.parse(j.stringify())).unwrap_or(@jsjson.JValue::Null)
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
@@ -897,6 +897,14 @@ async fn redeem(
 /// workspace left as it is), as the admin API's route throws it.
 pub(all) suberror JoinRefused {
   JoinRefused(String, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for JoinRefused with output(self, logger) {
+  match self {
+    JoinRefused(_, m) => logger.write_string(m)
+  }
 }
 
 ///|

@@ -196,7 +196,10 @@ test("a helper that cannot start: tried again once SHOWN_MS went by as pages rea
   for (let i = 0; i < 5; i++) assert.equal(s.grants.view(), null);
   s.clock.now += 29_999;
   assert.equal(s.grants.view(), null);
+  // (nor refreshed by the desktop's screens listed, not forced: GET /api/screens started it every 5 s)
+  await s.grants.refresh();
   assert.equal(looks, 1);
+  assert.equal(s.fake.launches, 1);
   // SHOWN_MS after the last try: tried again, once.
   s.clock.now += 1;
   assert.equal(s.grants.view(), null);

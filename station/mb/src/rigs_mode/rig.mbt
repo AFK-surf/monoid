@@ -50,6 +50,14 @@ pub(all) suberror DeviceRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for DeviceRefused with output(self, logger) {
+  match self {
+    DeviceRefused(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 pub(all) struct RigDeps {
   data : String
   cloud : @cloud_lock.Cloud

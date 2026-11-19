@@ -28,6 +28,7 @@ import { DatabaseSync } from "node:sqlite";
 import { WebSocketServer, type WebSocket } from "ws";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
+import { keepUsage } from "../src/usage/module.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
@@ -223,9 +224,16 @@ test("a whole station: the plane's models read at once, config.json and cloud.js
   plane.peers.push({ id, name: "mac" }, { id: peer, name: "other" });
   writeFileSync(cloudFile, JSON.stringify({ ...readJson(cloudFile), peers: plane.peers }));
   // A session in two chats: which is its chat is the copy index's to say, not prepared on a store new to it.
+  // Also seed a Gemini call whose session_usage starts unpriced (no catalog yet), so the main process's catalog load
+  // and refresh are verified end to end through GET /admin-api/sessions/s1.
   const seed = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
   seed.insertSession({ key: "s1", connect: "local", runtime: "claude", profile: "cc", workspace: data, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
   for (const ts of ["t1", "t2"]) seed.joinThread(seed.openThread("ember", "local", ts, `chat ${ts}`, null).id, "s1", "local");
+  seed.recordUsage("/s1", { session: "s1", offset: 1, model: "gemini-4-carbon" }, "agy", [[{
+    id: "c-gem-1", at: Date.now(), model: "gemini-4-carbon", subagent: false, fast: false,
+    input: 1_000_000, cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 0, calls: 1, context: null, window: null,
+  }, { turn: null, thread: null, person: "p", profile: "agy" }]]);
+  keepUsage(seed, "s1", true);
   seed.close();
   const a = await launch(data, app, { STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_PARTS_DOOR: "1" });
   await a.next("ready", (m) => m.ready === true);
@@ -245,15 +253,24 @@ test("a whole station: the plane's models read at once, config.json and cloud.js
   await given("the catalog the plane named asked for", () => plane.asked.includes(`/v1/models?v=${encodeURIComponent('"m-2"')}`), () => `${JSON.stringify(plane.asked)}; ${a.err()}`);
   await given("model-catalog.json written anew", () => readJson(join(data, "model-catalog.json"))?.etag === '"m-2"', a.err);
   assert.deepEqual(Object.keys(readJson(join(data, "model-catalog.json")).models), ["m-2"]);
-  // ── the readers price by the catalog as well (read/pool.ts `give`): a price it says is the usage page's ──
+  // ── the readers and main-process session usage price by the catalog as well ──
   const prices = async () => (JSON.parse((await ask(door, "/admin-api/usage")).body)?.prices?.rows ?? []) as { model: string; input: number }[];
+  const sessionUsage = async () => JSON.parse((await ask(door, "/admin-api/sessions/s1")).body)?.session?.usage as { cost: number; unpricedCalls: number } | undefined;
   assert.equal((await prices()).find((p) => p.model === "claude-opus-5-5")?.input, 4, "the station's own table before the catalog names it");
+  const beforeSessionUsage = await sessionUsage();
+  assert.equal(beforeSessionUsage?.cost, 0, `s1 unpriced before catalog names Gemini: ${JSON.stringify(beforeSessionUsage)}`);
+  assert.equal(beforeSessionUsage?.unpricedCalls, 1, `s1 unpricedCalls before catalog names Gemini: ${JSON.stringify(beforeSessionUsage)}`);
   plane.catalog.etag = '"m-3"';
-  plane.catalog.models = { "claude-opus-5-5": { name: "Opus", cost: { input: 7, output: 35, cacheRead: 0.7 } } };
+  plane.catalog.models = {
+    "claude-opus-5-5": { name: "Opus", cost: { input: 7, output: 35, cacheRead: 0.7 } },
+    "gemini-4-carbon": { name: "Gemini 4 Carbon", cost: { input: 2, output: 10, cacheRead: 0.1 } },
+  };
   plane.push({ type: "models", etag: '"m-3"' });
   await given("model-catalog.json written with a price", () => readJson(join(data, "model-catalog.json"))?.etag === '"m-3"', a.err);
   let pricedNow: unknown = null;
   await given("the usage page priced by the catalog", async () => (pricedNow = await prices(), (pricedNow as { model: string; input: number }[]).find((p) => p.model === "claude-opus-5-5")?.input === 7), () => `${JSON.stringify(pricedNow)}; ${a.err()}`);
+  let sessionUsageNow: unknown = null;
+  await given("the chat's session_usage repriced by the main process's catalog", async () => (sessionUsageNow = await sessionUsage(), (sessionUsageNow as { cost: number; unpricedCalls: number } | undefined)?.cost === 2 && (sessionUsageNow as { unpricedCalls: number } | undefined)?.unpricedCalls === 0), () => `${JSON.stringify(sessionUsageNow)}; ${a.err()}`);
 
   // ── the event streams told the overview again as config.json and cloud.json change ──
   const stream = events(door, "/admin-api/events");

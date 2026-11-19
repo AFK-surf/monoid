@@ -688,3 +688,8 @@ test "share-in-files" {
 test "chat-login" {
   check("chat-login", @ui.move_most_ms)
 }
+
+///|
+test "chat-login-again" {
+  check("chat-login-again", @ui.move_most_ms)
+}

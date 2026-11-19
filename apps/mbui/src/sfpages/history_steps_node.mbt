@@ -92,7 +92,10 @@ fn steps_list_node(
   let fk = station + "\u{1}" + key
   // its rows by their keys, in order: its top, each item's by the item's, what is in flight, the phase
   let rows_epoch = Ref(0)
+  let only_io_was = Ref(steps_own.only_io.untracked())
+  let io_toggled = Ref(false)
   let rows : @signals.Computed[(Array[String], Map[String, StepsRow], Int)] = @signals.computed(fn(was) {
+    let io_now = steps_own.only_io.get()
     let (_, all) = steps_rows_of_topic(src, params, lkey)
     let keys : Array[String] = []
     let by : Map[String, StepsRow] = Map([])
@@ -114,6 +117,8 @@ fn steps_list_node(
       // (the same rows: the same, its epoch as it was, so nothing that reads it is told)
       Some(w) if w.0 == keys && w.1 == by => w
       _ => {
+        io_toggled.val = io_now != only_io_was.val
+        only_io_was.val = io_now
         rows_epoch.val = rows_epoch.val + 1
         (keys, by, rows_epoch.val)
       }
@@ -130,6 +135,44 @@ fn steps_list_node(
   let scroll = @view.Scroll::list()
   // (the item gone to: brought to the middle, its ground the accent's faint one till steps_marked_ms on)
   let place : @view.ListPlace[String] = @view.ListPlace::new()
+  let away : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+  let gliding : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+  place.on_sight(fn(s) {
+    let at_foot = s.at_foot || s.from_foot <= 0.5
+    if at_foot {
+      away.set(false)
+      gliding.set(false)
+      steps_own.kept_place.remove(lkey)
+      // Once the reader scrolls back to the bottom after jumping to an entry, resume auto-following new steps.
+      if !place.asking() && @signals.untracked(fn() { steps_own.focus.get(fk) }) is None && @signals.untracked(fn() { steps_own.went.contains(lkey) }) {
+        steps_own.went.remove(lkey)
+      }
+    } else {
+      if !place.asking() && s.from_foot > 24.0 {
+        steps_own.kept_place[lkey] = (s.first, s.into)
+      }
+      if gliding.untracked() && !place.asking() && scroll.glides_till() is None {
+        gliding.set(false)
+      }
+      away.set(!gliding.untracked() && s.from_foot > dmax(160.0, s.shows * 0.45))
+    }
+  })
+  // Preserve where the reader was scrolled when switching side tabs or remounting the history list.
+  v.owns(fn() {
+    match place.sight_live() {
+      Some(s) if !(s.at_foot || s.from_foot <= 0.5) && s.from_foot > 24.0 =>
+        steps_own.kept_place[lkey] = (s.first, s.into)
+      Some(_) => steps_own.kept_place.remove(lkey)
+      None => ()
+    }
+  })
+  |> ignore
+  if @signals.untracked(fn() { steps_own.focus.get(fk) }) is None {
+    match steps_own.kept_place.get(lkey) {
+      Some((saved_key, saved_into)) => place.bring(saved_key, offset=saved_into, glide=false)
+      None => ()
+    }
+  }
   let lit : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
   let unlit = Ref(fn() {  })
   // opened at an entry: the item that draws it brought to the middle, marked a moment; one before what is loaded, the
@@ -252,11 +295,12 @@ fn steps_list_node(
         foot=fn(f) { f.height(Is(Some(steps_foot_room))) |> ignore },
         // (its top, where it begins or the pages before come, stands over what comes in under it)
         holds=fn(k) { k != "edge" },
-        // (followed at its newest; not once gone to an entry)
+        // (followed at its newest; paused while viewing a jumped-to entry, resumed on returning to bottom)
         follows=fn() { !steps_own.went.contains(lkey) },
         place~,
-        // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
-        at_once=true,
+        // (new steps and phase rows glide in; filter switches and the top edge row settle at once)
+        comes=fn(k) { !io_toggled.val && k != "edge" },
+        goes=fn(k) { !io_toggled.val && k != "edge" },
         near_top=(0.5, wants_older, ask_older),
         reused=fn(k) { steps_row_shape(rows.untracked().1.get(k), station, key) },
         make_reused=fn(slot, row_key) {
@@ -270,6 +314,37 @@ fn steps_list_node(
         },
       )
       |> ignore
+    })
+    |> ignore
+    // Floating jump-to-bottom button when scrolled up away from the latest step.
+    b.box(fn(fl) {
+      fl
+      .over(Is(true))
+      .points(Is(false))
+      .lies_along(Is(End))
+      .lines_up(Is(Some(End)))
+      .padding(Is((0.0, 0.0, 12.0, 12.0)))
+      |> ignore
+      fl.show(fn() { away.get() && !gliding.get() }, at_once=true, leave=float_ms, fn(stand) {
+        stand
+        .points(Is(false))
+        .alpha(By(@motion.presence_in(stand, @motion.tween(float_ms, ease=Out), from=0.0)))
+        |> ignore
+        @sf.float_button_node(
+          stand,
+          "arrow-down",
+          fn() { @sf.t("web-main.chat.toLatest") },
+          fn() {
+            steps_own.went.remove(lkey)
+            steps_own.kept_place.remove(lkey)
+            gliding.set(true)
+            away.set(false)
+            place.to_end()
+          },
+          tips~,
+        )
+        |> ignore
+      })
     })
     |> ignore
   })
@@ -346,10 +421,14 @@ fn steps_press_box(
 
 ///|
 /// One of what the reader opens (a fold, a line, a group, a call), by its key, opened or shut (what was pressed
-/// staying where it was: mbui's press_stays.mbt).
+/// staying where it was: mbui's press_stays.mbt). Closing a failed detail clears its error so reopening retries.
 fn steps_flip(key : String) -> Unit {
   if steps_own.opened.contains(key) {
     steps_own.opened.remove(key)
+    match @signals.untracked(fn() { steps_own.detail.get(key) }) {
+      Some((-2.0, _)) => steps_own.detail.remove(key)
+      _ => ()
+    }
   } else {
     steps_own.opened[key] = true
   }
@@ -480,6 +559,36 @@ fn rail_shapes(head_h : Double, body_h : Double, rail_next : Bool, color : Int64
 }
 
 ///|
+/// The side rail as a `GroundShape` for a `1.25 × 1.0` overlay box anchored at `(0, 0)`, matching `rail_pts` so
+/// `View::shown_by` tracks an expanding or folding body frame-accurately without per-frame layout reads.
+fn rail_ground(head_h : Double, body_h : Double, rail_next : Bool) -> @view.GroundShape {
+  match rail_pts(head_h, body_h, rail_next) {
+    [_, y0, _, y1] if y1 > y0 => { dx: 3.375, dy: y0, dw: 0.0, dh: y1 - y0 - 1.0, corners: None }
+    _ => { dx: 3.375, dy: 20.0, dw: 0.0, dh: -1.0, corners: None }
+  }
+}
+
+///|
+/// Overlay side-rail box at `x = 4.0` in `v`; callers with animated bodies bind it via `View::shown_by`.
+fn steps_rail_box_node(
+  v : @view.View,
+  color : () -> Int64,
+  head_h : () -> Double,
+  rail_next : () -> Bool,
+) -> @view.View {
+  v.box(fn(rail) {
+    rail
+    .over(Is(true))
+    .points(Is(false))
+    .width(Is(Some(1.25)))
+    .height(Is(Some(1.0)))
+    .ground(By(color))
+    .ground_drawn(By(fn() { rail_ground(head_h(), 0.0, rail_next()) }))
+    |> ignore
+  })
+}
+
+///|
 /// Full-width event stack in `parent`: `head` renders the top event row (with its `20×20` `h_icon` centered at
 /// `x = 4.0`), `body` renders the subordinate block below it (indented by `pl = S5`, the column of the head's words), and an overlay rail runs
 /// straight down at `x = 4.0` from `(4.0, 20.0)` beside `body` and on to the next event (`+10.0`) when `rail_next` is
@@ -524,6 +633,50 @@ fn event_stack_node(
       rail_shapes(head_h(), body_h(), rail_next(), color)
     }))
     |> ignore
+  })
+  .fills_across(Is(true))
+  |> ignore
+}
+
+///|
+/// Full-width event stack whose subordinate body reveals and hides smoothly via `steps_reveal_node`, keeping the side
+/// rail synchronized with the reveal node's animated height on every frame (`View::shown_by`).
+fn event_reveal_stack_node(
+  parent : @view.View,
+  open : () -> Bool,
+  failed? : () -> Bool = fn() { false },
+  rail_next? : () -> Bool = fn() { false },
+  head : (@view.View) -> Unit,
+  body : (@view.View) -> Unit,
+) -> Unit {
+  parent.by_room(fn(v, room) {
+    @sf.style_node(v, fn() { h_group })
+    let head_ref : Ref[@view.View?] = Ref(None)
+    let head_h = fn() {
+      match head_ref.val {
+        Some(h) => dmax(20.0, room.tall(h))
+        None => 20.0
+      }
+    }
+    v.box(fn(h) {
+      h.fills_across(Is(true)) |> ignore
+      head_ref.val = Some(h)
+      head(h)
+    })
+    |> ignore
+    let rail = steps_rail_box_node(
+      v,
+      fn() { @ui.tree_theme().color(if failed() { Danger } else { Line }) },
+      head_h,
+      rail_next,
+    )
+    steps_reveal_node(v, open, fn(s) {
+      rail.shown_by(s, fn(s_tall) {
+        rail_ground(@signals.untracked(head_h), s_tall, @signals.untracked(rail_next))
+      })
+      |> ignore
+      body(s)
+    })
   })
   .fills_across(Is(true))
   |> ignore
@@ -719,6 +872,7 @@ fn item_node(
         failed=fn() { failed },
         rail_next=fn() { ends != "" || rail },
         extra_gap=fn() { gaps },
+        body_pad=24.0,
         wrap_label=true,
         post_lines,
         md_line,
@@ -884,8 +1038,9 @@ fn one_line_ev_node(
   }
   let make_expandable = fn(host : @view.View) {
     let open = fn() { steps_own.opened.contains(key) }
-    event_stack_node(
+    event_reveal_stack_node(
       host,
+      open,
       rail_next=fn() { rail_next },
       fn(ev) {
         ev_node(ev, icon, "", ev_tone, row=true, fn(b) {
@@ -915,11 +1070,8 @@ fn one_line_ev_node(
           |> ignore
         })
       },
-      fn(ev) {
-        // (opening and closing across its full width with a soft bottom cut)
-        steps_reveal_node(ev, open, fn(b) {
-          steps_box_node(b, h_post_body, fn(pb) { steps_box_node(pb, h_one_card, whole) })
-        })
+      fn(b) {
+        steps_box_node(b, h_post_body, fn(pb) { steps_box_node(pb, h_one_card, whole) })
       },
     )
   }
@@ -957,15 +1109,17 @@ fn one_line_ev_node(
 }
 
 ///|
-/// Clips a long block inside an already-expanded tool card or task card to `lines` lines (with `cuts_softly`) without
-/// adding a second nested fold button; the card's header bar provides `全屏查看` to read and copy the whole block.
+/// Clips a long block inside an already-expanded tool card or task card to `lines` lines (with `cuts_softly`),
+/// showing a bottom `查看完整内容` strip whenever the measured content actually overflows `lines` lines.
 fn clip_lines_node(
   v : @view.View,
   lines : Int,
   line : Double,
   body : (@view.View) -> Unit,
+  on_full? : (() -> Unit)? = None,
 ) -> Unit {
   v.by_room(fn(v, given) {
+    v.fills_across(Is(true)) |> ignore
     let line_h = fn() { @sf.node_sp(v, line) }
     let most = fn() { lines.to_double() * line_h() + 2.0 }
     let inner : Ref[@view.View?] = Ref(None)
@@ -989,32 +1143,78 @@ fn clip_lines_node(
       .max_height(By(fn() { if clipped() { Some(most()) } else { None } }))
       |> ignore
     })
+    match on_full {
+      Some(open_full) =>
+        v.show(at_once=true, clipped, fn(foot) {
+          foot.fills_across(Is(true)) |> ignore
+          steps_press_box(foot, open_full, label=fn() { "查看完整内容" }, fn(btn) {
+            @sf.style_node(btn, fn() { tool_clip_more })
+            let ink = fn() { if @sf.lit_node(btn) { @sf.theme().p.accent } else { @sf.theme().p.blue } }
+            @sf.icon_node(btn, "expand", 11.0, By(ink)) |> ignore
+            @sf.words_node(btn, fn() { "查看完整内容" }, fn() {
+              if @sf.lit_node(btn) {
+                tool_expand_words_hot
+              } else {
+                tool_expand_words
+              }
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+      None => ()
+    }
   })
+  .fills_across(Is(true))
   |> ignore
 }
 
 ///|
+/// Whether a block might wrap past 14 lines on a narrow side panel and should measure height with `clip_lines_node`.
+fn may_clip_block(words : String) -> Bool {
+  if is_long_block(words) || words.length() > 180 {
+    return true
+  }
+  let mut nl = 0
+  for ch in words {
+    if ch == '\n' {
+      nl = nl + 1
+      if nl >= 6 {
+        return true
+      }
+    }
+  }
+  false
+}
+
+///|
 /// Renders Markdown (with plain-words test fallback) inside an expanded card, clipping blocks longer than 14 lines and
-/// offering `全屏查看` in the card's top bar instead of a nested inline fold button.
+/// offering `复制` / `全屏查看` in the card's top bar and a bottom `查看完整内容` strip whenever actually clipped.
 fn card_md_or_clip_node(v : @view.View, title : String, words : String, md : Json?, small? : Bool = true) -> Unit {
+  let open_full = fn() {
+    open_tool_reader(title, words, fn(rb) { render_md_or_words(rb, words, md, small=false) })
+  }
   if is_long_block(words) {
     steps_box_node(v, tool_field_stack, fn(stack) {
       steps_box_node(stack, tool_block_bar, fn(bar) {
         steps_words(bar, fn() { title }, tool_key_words)
         steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+        tool_copy_btn_node(bar, words)
         tool_expand_btn_node(bar, title, words, fn(rb) {
           render_md_or_words(rb, words, md, small=false)
         })
       })
-      clip_lines_node(stack, 14, md_line, fn(f) { render_md_or_words(f, words, md, small~) })
+      clip_lines_node(stack, 14, md_line, fn(f) { render_md_or_words(f, words, md, small~) }, on_full=Some(open_full))
     })
+  } else if may_clip_block(words) {
+    clip_lines_node(v, 14, md_line, fn(f) { render_md_or_words(f, words, md, small~) }, on_full=Some(open_full))
   } else {
     render_md_or_words(v, words, md, small~)
   }
 }
 
 ///|
-/// Renders plain or monospace text inside an expanded card, clipping blocks longer than 14 lines with `全屏查看`.
+/// Renders plain or monospace text inside an expanded card, clipping blocks longer than 14 lines with `复制` / `全屏查看`.
 fn card_plain_or_clip_node(
   v : @view.View,
   title : String,
@@ -1029,15 +1229,19 @@ fn card_plain_or_clip_node(
       steps_words(host, fn() { words }, style)
     }
   }
+  let open_full = fn() { open_tool_reader(title, words, draw) }
   if is_long_block(words) {
     steps_box_node(v, tool_field_stack, fn(stack) {
       steps_box_node(stack, tool_block_bar, fn(bar) {
         steps_words(bar, fn() { title }, tool_key_words)
         steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+        tool_copy_btn_node(bar, words)
         tool_expand_btn_node(bar, title, words, draw)
       })
-      clip_lines_node(stack, 14, words_line, draw)
+      clip_lines_node(stack, 14, words_line, draw, on_full=Some(open_full))
     })
+  } else if may_clip_block(words) {
+    clip_lines_node(v, 14, words_line, draw, on_full=Some(open_full))
   } else {
     draw(v)
   }
@@ -1091,6 +1295,7 @@ fn message_fold_stack_node(
   failed? : () -> Bool = fn() { false },
   rail_next? : () -> Bool = fn() { false },
   extra_gap? : () -> Double = fn() { 0.0 },
+  body_pad? : Double = 6.0,
   wrap_label? : Bool = true,
   lines : Int,
   line : Double,
@@ -1108,7 +1313,14 @@ fn message_fold_stack_node(
     let stride = fn() { if extra_gap() > 0.0 { line_h() + 8.0 } else { line_h() } }
     let head_ref : Ref[@view.View?] = Ref(None)
     let body_ref : Ref[@view.View?] = Ref(None)
+    let room_ref : Ref[@view.View?] = Ref(None)
     let inner : Ref[@view.View?] = Ref(None)
+    let head_h = fn() {
+      match head_ref.val {
+        Some(h) => dmax(20.0, given.tall(h))
+        None => 20.0
+      }
+    }
     let tall = fn() {
       match inner.val {
         Some(i) => given.tall(i)
@@ -1134,50 +1346,57 @@ fn message_fold_stack_node(
       })
     })
     |> ignore
+    let rail_used = @signals.signal(@signals.untracked(open), same=fn(a, b) { a == b })
     wrap_body(vp, body_ref, fn(host) {
       steps_box_node(host, h_fold_room, fn(room) {
+        room_ref.val = Some(room)
         steps_box_node(room, h_fold_inner, fn(i) {
           i.shrink(Is(0.0)).offset(By(fn() { (0.0, 0.0) })) |> ignore
           inner.val = Some(i)
           body(i)
         })
-        let way = @motion.Way::new(if @signals.untracked(open) { 1.0 } else { 0.0 })
-        room.reacts(open, at_start=false, fn(o) {
-          let target = if o { 1.0 } else { 0.0 }
-          if @view.answering_now() {
-            way.put(target)
-          } else {
-            let past = dmax(0.0, @signals.untracked(tall) - most())
-            way.go(target, @motion.moved().per_unit(past), at=room.cause_at())
-          }
-        })
-        let shown = fn() {
-          way.said()
-          way.value_at(room.drawn_while(fn(t) { way.goes_at(t) }))
-        }
         room
         .holds_whole()
-        .cuts_softly(By(fn() { long() && shown() < 1.0 }))
+        .cuts_softly(By(long))
         .max_height(By(fn() {
-          let k = shown()
-          let m = most()
-          if k >= 1.0 {
+          if open() || !long() {
             None
-          } else if long() {
-            if k <= 0.0 {
-              Some(m)
-            } else {
-              Some(m + (tall() - m) * k)
-            }
-          } else if tall() <= m {
-            Some(m)
           } else {
-            None
+            Some(most())
           }
         }))
         |> ignore
       })
     })
+    vp.show(at_once=true, fn() { rail_used.get() }, fn(host) {
+      host.over(Is(true)).points(Is(false)) |> ignore
+      let rail = steps_rail_box_node(
+        host,
+        fn() { @ui.tree_theme().color(if failed() { Danger } else { Line }) },
+        head_h,
+        rail_next,
+      )
+      match room_ref.val {
+        Some(room) =>
+          rail.shown_by(room, fn(rt) {
+            rail_ground(@signals.untracked(head_h), dmax(0.0, rt) + body_pad, @signals.untracked(rail_next))
+          })
+          |> ignore
+        None => ()
+      }
+    })
+    vp.shapes(By(fn() {
+      if rail_used.get() {
+        return []
+      }
+      let bh = match body_ref.val {
+        Some(b) => dmax(0.0, given.tall(b))
+        None => 0.0
+      }
+      let color = @ui.tree_theme().color(if failed() { Danger } else { Line })
+      rail_shapes(head_h(), bh, rail_next(), color)
+    }))
+    |> ignore
     match head_slot.val {
       Some(head) =>
         head.show(at_once=true, long, fn(t) {
@@ -1197,7 +1416,14 @@ fn message_fold_stack_node(
           let words = fn() { words_sig.get() }
           // (the show's own node the button, by hand: a node of its own would be one more in every long message's head,
           // over the chat's page's bar)
-          @sf.presses_node(t, fn() { steps_flip(@signals.untracked(key_fn)) })
+          @sf.presses_node(t, fn() {
+            rail_used.set(true)
+            match room_ref.val {
+              Some(rm) => rm.resizes() |> ignore
+              None => ()
+            }
+            steps_flip(@signals.untracked(key_fn))
+          })
           t.says(By(fn() { Some(@view.said(Button, label=words(), expanded=open())) })) |> ignore
           @sf.words_node(t, words, fn() {
             if @sf.lit_node(t) { h_msg_toggle_hot } else { h_msg_toggle_words }
@@ -1213,19 +1439,6 @@ fn message_fold_stack_node(
         })
       None => ()
     }
-    vp.shapes(By(fn() {
-      let hh = match head_ref.val {
-        Some(h) => dmax(20.0, given.tall(h))
-        None => 20.0
-      }
-      let bh = match body_ref.val {
-        Some(b) => dmax(0.0, given.tall(b))
-        None => 0.0
-      }
-      let color = @ui.tree_theme().color(if failed() { Danger } else { Line })
-      rail_shapes(hh, bh, rail_next(), color)
-    }))
-    |> ignore
   })
   .fills_across(Is(true))
   |> ignore
@@ -1536,8 +1749,9 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
     return
   }
   let open = fn() { steps_own.opened.contains(key) }
-  event_stack_node(
+  event_reveal_stack_node(
     v,
+    open,
     failed=fn() { failed },
     rail_next=fn() { rail || rail_last },
     fn(ev) {
@@ -1563,19 +1777,17 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
         |> ignore
       })
     },
-    fn(ev) {
-      steps_reveal_node(ev, open, fn(b) {
-        steps_box_node(b, h_post_body, fn(pb) {
-          if agent {
-            steps_box_node(pb, h_one_card, fn(w) {
-              card_md_or_clip_node(w, first_title, answer, field(task, "md"), small=true)
-            })
-          } else {
-            steps_box_node(pb, if failed { tool_box_red } else { tool_box }, fn(bx) {
-              card_plain_or_clip_node(bx, "输出", answer, h_output, mono=true)
-            })
-          }
-        })
+    fn(b) {
+      steps_box_node(b, h_post_body, fn(pb) {
+        if agent {
+          steps_box_node(pb, h_one_card, fn(w) {
+            card_md_or_clip_node(w, first_title, answer, field(task, "md"), small=true)
+          })
+        } else {
+          steps_box_node(pb, if failed { tool_box_red } else { tool_box }, fn(bx) {
+            card_plain_or_clip_node(bx, "输出", answer, h_output, mono=true)
+          })
+        }
       })
     },
   )
@@ -1653,8 +1865,9 @@ fn mark_node(v : @view.View, src : Source, key : String, mark : Json?, rail : Bo
   }
   if long_what {
     let open = fn() { steps_own.opened.contains(key) }
-    event_stack_node(
+    event_reveal_stack_node(
       v,
+      open,
       rail_next=fn() { rail },
       fn(ev) {
         ev_node(ev, "wait", "waiting", "", fn(b) {
@@ -1662,12 +1875,10 @@ fn mark_node(v : @view.View, src : Source, key : String, mark : Json?, rail : Bo
           make_wait_line(b, tick, true, open)
         })
       },
-      fn(ev) {
-        steps_reveal_node(ev, open, fn(b) {
-          steps_box_node(b, h_post_body, fn(pb) {
-            steps_box_node(pb, h_one_card, fn(w) {
-              card_plain_or_clip_node(w, @sf.t("web-main.activity.waiting"), what_raw, h_note_plain)
-            })
+      fn(b) {
+        steps_box_node(b, h_post_body, fn(pb) {
+          steps_box_node(pb, h_one_card, fn(w) {
+            card_plain_or_clip_node(w, @sf.t("web-main.activity.waiting"), what_raw, h_note_plain)
           })
         })
       },
@@ -1759,8 +1970,9 @@ fn ended_node(v : @view.View, key : String, ends : String, words : String, rail 
   }
   let make_expandable = fn(host : @view.View) {
     let open = fn() { steps_own.opened.contains(key) }
-    event_stack_node(
+    event_reveal_stack_node(
       host,
+      open,
       rail_next=fn() { rail },
       fn(ev) {
         ev_node(ev, icon, state, "", row=true, fn(b) {
@@ -1776,16 +1988,14 @@ fn ended_node(v : @view.View, key : String, ends : String, words : String, rail 
           |> ignore
         })
       },
-      fn(ev) {
-        steps_reveal_node(ev, open, fn(b) {
-          steps_box_node(b, h_post_body, fn(pb) {
-            steps_box_node(pb, h_one_card, fn(w) {
-              if is_long_block(words) {
-                card_plain_or_clip_node(w, first, words, h_note_plain)
-              } else {
-                ended_words_node(w, state, fn() { words }, cut=false, fn() { false })
-              }
-            })
+      fn(b) {
+        steps_box_node(b, h_post_body, fn(pb) {
+          steps_box_node(pb, h_one_card, fn(w) {
+            if is_long_block(words) {
+              card_plain_or_clip_node(w, first, words, h_note_plain)
+            } else {
+              ended_words_node(w, state, fn() { words }, cut=false, fn() { false })
+            }
           })
         })
       },
@@ -1873,8 +2083,9 @@ fn group_node(
   let pending = number(g, "pending").to_int()
   let rows = items(g, "rows")
   let calls = rows.iter().any(fn(r) { text(Some(r), "kind") == "step" })
-  event_stack_node(
+  event_reveal_stack_node(
     v,
+    open,
     rail_next=fn() { rail },
     fn(gv) {
       steps_press_box(gv, fn() { steps_flip(gk) }, label=fn() { text(g, "summary") }, folds=true, open~, fn(h) {
@@ -1914,10 +2125,8 @@ fn group_node(
       })
       |> ignore
     },
-    fn(gv) {
-      steps_reveal_node(gv, open, fn(s) {
-        group_rows_node(s, src, station, key, gk, rows, calls)
-      })
+    fn(s) {
+      group_rows_node(s, src, station, key, gk, rows, calls)
     },
   )
 }
@@ -2385,10 +2594,14 @@ fn steps_reused_row_node(
                   let open = fn() { open_sig.get() }
                   let summary_sig = @signals.computed(fn(_) { text(content(), "summary") }, same=fn(a, b) { a == b })
                   let summary = fn() { summary_sig.get() }
-                  b.by_room(fn(gv, room) {
+                  b.box(fn(gv) {
                     @sf.style_node(gv, fn() { h_group })
-                    let body_ref : Ref[@view.View?] = Ref(None)
-                    steps_press_box(gv, fn() { steps_flip(@signals.untracked(gk)) }, label=summary, folds=true, open~, fn(h) {
+                    let rail_used = @signals.signal(@signals.untracked(open), same=fn(a, b) { a == b })
+                    let rail_ref : Ref[@view.View?] = Ref(None)
+                    steps_press_box(gv, fn() {
+                      rail_used.set(true)
+                      steps_flip(@signals.untracked(gk))
+                    }, label=summary, folds=true, open~, fn(h) {
                       @sf.style_node(h, fn() { h_group_head })
                       let hot = fn() { @sf.lit_node(h) }
                       @sf.hover_ground_node(h, lit=Some(fn() { @sf.lit_in_node(h) }))
@@ -2428,23 +2641,37 @@ fn steps_reused_row_node(
                       ignore(tips)
                     })
                     |> ignore
-                    gv.show(open, fn(s) {
-                      body_ref.val = Some(s)
-                      s.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
-                      group_rows_each_node(s, src, station, key, gk, fn() { items(content(), "rows") })
+                    gv.show(at_once=true, fn() { rail_used.get() }, fn(host) {
+                      host.over(Is(true)).points(Is(false)) |> ignore
+                      rail_ref.val = Some(
+                        steps_rail_box_node(
+                          host,
+                          fn() { @ui.tree_theme().color(Line) },
+                          fn() { 20.0 },
+                          has_rail,
+                        ),
+                      )
                     })
                     gv.shapes(By(fn() {
-                      let bh = if open() {
-                        match body_ref.val {
-                          Some(s) if s.alive() => dmax(0.0, room.tall(s))
-                          _ => 0.0
-                        }
+                      if rail_used.get() {
+                        []
                       } else {
-                        0.0
+                        rail_shapes(20.0, 0.0, has_rail(), @ui.tree_theme().color(Line))
                       }
-                      rail_shapes(20.0, bh, has_rail(), @ui.tree_theme().color(Line))
                     }))
                     |> ignore
+                    gv.show(open, fn(s) {
+                      s.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
+                      match rail_ref.val {
+                        Some(rail) =>
+                          rail.shown_by(s, fn(s_tall) {
+                            rail_ground(20.0, s_tall, @signals.untracked(has_rail))
+                          })
+                          |> ignore
+                        None => ()
+                      }
+                      group_rows_each_node(s, src, station, key, gk, fn() { items(content(), "rows") })
+                    })
                   })
                   .fills_across(Is(true))
                   |> ignore
@@ -2582,6 +2809,7 @@ fn steps_reused_row_node(
                     fn() { "accent" },
                     rail_next=has_rail,
                     extra_gap=fn() { md_preview_gaps(post_md_sig.get(), post_lines) },
+                    body_pad=24.0,
                     wrap_label=true,
                     post_lines,
                     md_line,
@@ -2829,7 +3057,35 @@ fn step_node(v : @view.View, src : Source, station : String, key : String, rk : 
     steps_box_node(v, h_step, fn(s) { steps_box_node(s, h_step_summary, render_summary) })
     return
   }
-  opened_node(v, src, station, key, rk, step, render_summary, fn(body) { tool_body_node(body, src, station, key, rk, step) })
+  let (ask, tk) = tool_ask_of(rk, step)
+  let before_open = Some(fn(open_now : () -> Unit) {
+    if flag(step, "brief") ||
+      @signals.untracked(fn() { steps_own.tools.contains(tk) }) ||
+      src.read_only ||
+      !(src.switches_ahead)() {
+      open_now()
+      return
+    }
+    tool_fetch(src, ask, tk)
+    @sfbase.press_wait(
+      fn() { steps_own.tools.contains(tk) || steps_own.tool_err.contains(tk) },
+      open_now,
+      most=@sf.open_hold_ms,
+    )
+    |> ignore
+  })
+  opened_node(
+    v,
+    src,
+    station,
+    key,
+    rk,
+    step,
+    render_summary,
+    fn(body) { tool_body_node(body, src, station, key, rk, step) },
+    before_open~,
+    on_close=fn() { steps_own.tool_err.remove(tk) },
+  )
 }
 
 ///|
@@ -2843,12 +3099,25 @@ fn opened_node(
   content : Json?,
   summary : (@view.View) -> Unit,
   body : (@view.View) -> Unit,
+  before_open? : ((() -> Unit) -> Unit)? = None,
+  on_close? : () -> Unit = fn() {  },
 ) -> Unit {
   let open = fn() { steps_own.opened.contains(rk) }
+  let toggle = fn() {
+    if @signals.untracked(open) {
+      steps_flip(rk)
+      on_close()
+    } else {
+      match before_open {
+        Some(prepare) => prepare(fn() { steps_flip(rk) })
+        None => steps_flip(rk)
+      }
+    }
+  }
   steps_box_node(v, h_step, fn(s) {
-    steps_press_box(s, fn() { steps_flip(rk) }, folds=true, open~, fn(line) {
+    steps_press_box(s, toggle, folds=true, open~, fn(line) {
       @sf.style_node(line, fn() { h_step_summary })
-      @sf.hover_ground_node(line, on=fn() { !open() }, lit=Some(fn() { @sf.lit_in_node(line) }))
+      @sf.hover_ground_node(line, lit=Some(fn() { @sf.lit_in_node(line) }))
       summary(line)
       steps_chevron_node(
         line,
@@ -2865,7 +3134,7 @@ fn opened_node(
 
 ///|
 /// What a step or thought holds as it shows in `v`: in brief, read whole now (`history.detail`), a line saying
-/// so till it comes (or why it did not).
+/// so till it comes (or why it did not, with a retry action).
 fn whole_node(
   v : @view.View,
   src : Source,
@@ -2885,9 +3154,13 @@ fn whole_node(
       _ => 0.0
     }
   })
-  // (asked once as it first shows)
+  // (asked once as it first shows, and again when cleared by retry or close+reopen)
   v.reacts(fn() { steps_own.detail.contains(rk) }, fn(has) {
-    guard !has && entries.length() > 0 else { return }
+    guard !has else { return }
+    if entries.is_empty() {
+      steps_own.detail[rk] = (-2.0, @sf.t("web-main.doing.failed"))
+      return
+    }
     steps_own.detail[rk] = (-1.0, "")
     let mut lo = entries[0]
     let mut hi = entries[0]
@@ -2906,7 +3179,7 @@ fn whole_node(
       },
     )
   })
-  v.pick(at_once=true, fn() {
+  v.pick(fn() {
     match steps_own.detail.get(rk) {
       Some((-2.0, why)) => why
       _ => "\u{0}"
@@ -2917,16 +3190,38 @@ fn whole_node(
       if why == "\u{0}" {
         @sf.wait_line_node(b, fn() { "" }) |> ignore
       } else {
-        steps_words(b, fn() { @sf.t("web-main.history.stepUnread", args=[("error", why)]) }, h_thinking_muted)
+        steps_box_node(b, tool_err_row, fn(er) {
+          er.box(fn(w) {
+            w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+            steps_words(w, fn() { @sf.t("web-main.history.stepUnread", args=[("error", why)]) }, h_thinking_muted)
+          })
+          |> ignore
+          if !entries.is_empty() {
+            steps_retry_btn_node(er, fn() { steps_own.detail.remove(rk) })
+          }
+        })
       }
     })
   })
 }
 
 ///|
-/// A call opened in `v`: what it asked for, then what came back, as the core reads them (`history.tool`),
-/// asked once as it is first shown.
-fn tool_body_node(v : @view.View, src : Source, station : String, key : String, rk : String, step : Json?) -> Unit {
+/// Compact inline retry action shown beside a failed `history.detail` or `history.tool` read.
+fn steps_retry_btn_node(parent : @view.View, on_retry : () -> Unit) -> Unit {
+  steps_press_box(parent, on_retry, label=fn() { "重试" }, fn(btn) {
+    @sf.style_node(btn, fn() { tool_expand_btn })
+    btn.shrink(Is(0.0)) |> ignore
+    @sf.words_node(btn, fn() { "重试" }, fn() {
+      if @sf.lit_node(btn) { tool_expand_words_hot } else { tool_expand_words }
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Builds the `history.tool` request object and cache key for `step`.
+fn tool_ask_of(rk : String, step : Json?) -> (Map[String, Json], String) {
   let ask : Map[String, Json] = {
     "name": Json::string(text(step, "name")),
     "call": Json::string(text(step, "call")),
@@ -2938,19 +3233,102 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
     _ => ()
   }
   let tk = rk + "\u{1}" + Json::object(ask).stringify()
-  v.reacts(fn() { steps_own.tools.contains(tk) }, fn(has) {
-    guard !has else { return }
-    (src.call)("history.tool", Json::object(ask), fn(res) {
-      match res {
-        Ok(got) => steps_own.tools[tk] = got
-        Err(_) => ()
+  (ask, tk)
+}
+
+///|
+/// Requests `history.tool` once for `tk`, recording either the parsed parts or the error message so callers never spin
+/// forever on failure.
+fn tool_fetch(src : Source, ask : Map[String, Json], tk : String) -> Unit {
+  if @signals.untracked(fn() { steps_own.tools.contains(tk) }) || steps_own.tool_asking.contains(tk) {
+    return
+  }
+  steps_own.tool_asking[tk] = true
+  steps_own.tool_err.remove(tk)
+  (src.call)("history.tool", Json::object(ask), fn(res) {
+    steps_own.tool_asking.remove(tk)
+    match res {
+      Ok(got) => {
+        steps_own.tool_err.remove(tk)
+        steps_own.tools[tk] = got
       }
-    })
+      Err(e) => steps_own.tool_err[tk] = error_words(e)
+    }
   })
-  v.pick(at_once=true, fn() { steps_own.tools.contains(tk) }, fn(p, has) {
+}
+
+///|
+/// Plain copyable text concatenated from a tool step's result parts (for the `返回` header copy button).
+fn tool_parts_copy_text(parts : Array[Json]) -> String {
+  let chunks : Array[String] = []
+  for part in parts {
+    let pv = Some(part)
+    match text(pv, "kind") {
+      "output" | "code" | "json" | "markdown" | "lead" => {
+        let t = text(pv, "text")
+        if t != "" {
+          chunks.push(t)
+        }
+      }
+      "diff" => {
+        let diff_rows = items(pv, "rows")
+        if !diff_rows.is_empty() {
+          chunks.push(
+            diff_rows
+            .map(fn(r) {
+              match r {
+                Array([String(m), String(l)]) => m + l
+                _ => ""
+              }
+            })
+            .join("\n"),
+          )
+        }
+      }
+      _ => ()
+    }
+  }
+  chunks.join("\n")
+}
+
+///|
+/// A call opened in `v`: what it asked for, then what came back, as the core reads them (`history.tool`),
+/// asked once as it is first shown (or pre-fetched before opening by `step_node`).
+fn tool_body_node(v : @view.View, src : Source, station : String, key : String, rk : String, step : Json?) -> Unit {
+  let (ask, tk) = tool_ask_of(rk, step)
+  v.reacts(fn() { steps_own.tools.contains(tk) || steps_own.tool_err.contains(tk) }, fn(settled) {
+    guard !settled else { return }
+    tool_fetch(src, ask, tk)
+  })
+  v.pick(fn() {
+    if steps_own.tools.contains(tk) {
+      2
+    } else if steps_own.tool_err.contains(tk) {
+      1
+    } else {
+      0
+    }
+  }, fn(p, state) {
     p.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
-    guard has else {
+    if state == 0 {
       steps_box_node(p, h_step_body, fn(b) { @sf.wait_line_node(b, fn() { "" }) |> ignore })
+      return
+    }
+    if state == 1 {
+      let why = @signals.untracked(fn() { steps_own.tool_err.get(tk).unwrap_or(@sf.t("web-main.doing.failed")) })
+      steps_box_node(p, h_step_body, fn(b) {
+        steps_box_node(b, tool_err_row, fn(er) {
+          er.box(fn(w) {
+            w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+            steps_words(w, fn() { @sf.t("web-main.history.stepUnread", args=[("error", why)]) }, h_thinking_muted)
+          })
+          |> ignore
+          steps_retry_btn_node(er, fn() {
+            steps_own.tool_err.remove(tk)
+            tool_fetch(src, ask, tk)
+          })
+        })
+      })
       return
     }
     let parts = @signals.untracked(fn() { steps_own.tools.get(tk) })
@@ -3040,6 +3418,8 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
       items(Some(call_parts[0]), "rows").length() <= 14
     let in_card = !standalone_short_diff
     let body_style = if in_card { tool_body_card } else { tool_body_box }
+    let has_result_head = in_card && (call_parts.length() > 0 || failed)
+    let result_copy = if has_result_head { tool_parts_copy_text(result_parts) } else { "" }
     steps_box_node(p, body_style, fn(b) {
       if call_parts.length() > 0 {
         steps_box_node(b, if in_card { tool_section_card } else { tool_section }, fn(s) {
@@ -3055,17 +3435,28 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
           tool_section
         }
         steps_box_node(b, res_style, fn(s) {
-          if in_card && (call_parts.length() > 0 || failed) {
+          if has_result_head {
             steps_box_node(s, tool_result_head, fn(h) {
               steps_words(
                 h,
                 fn() { if failed { "返回 · 失败" } else { "返回" } },
                 if failed { tool_result_head_red } else { tool_result_head_words },
               )
+              steps_box_node(h, h_grow, fn(_) {  }, in_row=true)
+              tool_copy_btn_node(h, result_copy)
             })
           }
           for idx, part in result_parts {
-            tool_part_node(s, Some(part), rk=rk + "/r" + idx.to_string(), src~, station~, key~, in_card~)
+            tool_part_node(
+              s,
+              Some(part),
+              rk=rk + "/r" + idx.to_string(),
+              src~,
+              station~,
+              key~,
+              in_card~,
+              has_bar=has_result_head,
+            )
           }
         })
       }
@@ -3214,6 +3605,7 @@ fn open_tool_reader(title : String, raw_copy : String, body : (@view.View) -> Un
       // (what it holds scrolling in itself past the panel's share of the window, its title and foot where they are: a
       // tall panel's body scrolls itself, panel_nodes' `tall`)
       p.box(fn(room) {
+        @ui.words_picked(room)
         room.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
           s.box(fn(b) {
             @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(tool_reader_body) })
@@ -3249,10 +3641,154 @@ fn open_tool_reader(title : String, raw_copy : String, body : (@view.View) -> Un
 }
 
 ///|
+fn tool_copy_trigger(
+  my_id : Int,
+  raw_copy : String,
+) -> Unit {
+  @ui.clipboard_set(raw_copy)
+  steps_own.copied_id.set(my_id)
+  @sfbase.toast_later(@sf.t("common.copied"))
+}
+
+///|
+/// Compact inline copy button (`复制` -> `已复制`) for tool block bars and result headers.
+fn tool_copy_btn_node(parent : @view.View, raw_copy : String) -> Unit {
+  guard raw_copy != "" else { return }
+  steps_own.copied_seq = steps_own.copied_seq + 1
+  let my_id = steps_own.copied_seq
+  let copied = fn() { steps_own.copied_id.get() == my_id }
+  steps_press_box(
+    parent,
+    fn() { tool_copy_trigger(my_id, raw_copy) },
+    label=fn() { if copied() { "已复制" } else { "复制" } },
+    fn(b) {
+      @sf.style_node(b, fn() { tool_copy_btn })
+      b.shrink(Is(0.0)) |> ignore
+      let ink = fn() {
+        if copied() {
+          @sf.theme().p.green_ink
+        } else if @sf.lit_node(b) {
+          @sf.theme().p.text
+        } else {
+          @sf.theme().p.muted
+        }
+      }
+      @sf.icon_node(
+        b,
+        "copy",
+        11.0,
+        By(ink),
+        name_now=fn() { if copied() { "check" } else { "copy" } },
+      )
+      |> ignore
+      @sf.words_node(b, fn() { if copied() { "已复制" } else { "复制" } }, fn() {
+        if copied() {
+          tool_copy_words_done
+        } else if @sf.lit_node(b) {
+          tool_copy_words_hot
+        } else {
+          tool_copy_words
+        }
+      })
+      |> ignore
+    },
+  )
+  |> ignore
+}
+
+///|
+/// Compact icon-only copy button aligned to the first line of a short command/code/output block.
+fn tool_copy_icon_node(parent : @view.View, raw_copy : String) -> Unit {
+  guard raw_copy != "" else { return }
+  steps_own.copied_seq = steps_own.copied_seq + 1
+  let my_id = steps_own.copied_seq
+  let copied = fn() { steps_own.copied_id.get() == my_id }
+  steps_press_box(
+    parent,
+    fn() { tool_copy_trigger(my_id, raw_copy) },
+    label=fn() { if copied() { "已复制" } else { "复制" } },
+    fn(b) {
+      @sf.style_node(b, fn() { tool_copy_icon })
+      b.shrink(Is(0.0)) |> ignore
+      let ink = fn() {
+        if copied() {
+          @sf.theme().p.green_ink
+        } else if @sf.lit_node(b) {
+          @sf.theme().p.text
+        } else {
+          @sf.theme().p.subtle
+        }
+      }
+      @sf.icon_node(
+        b,
+        "copy",
+        12.0,
+        By(ink),
+        name_now=fn() { if copied() { "check" } else { "copy" } },
+      )
+      |> ignore
+    },
+  )
+  |> ignore
+}
+
+///|
+/// Monospace block that preserves original lines and scrolls horizontally when wider than the card.
+fn steps_across_run(parent : @view.View, words : () -> String, style : @ui.TextStyle) -> Unit {
+  parent.box(fn(q) {
+    q.fills_across(Is(true)).min_width(Is(Some(0.0))) |> ignore
+    q.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(held) {
+      held.grow(Is(1.0)).lines_up(Is(Some(Start))) |> ignore
+      held.box(fn(w) {
+        w
+        .words_runs(By(fn() { [@ui.span(words(), mono=true)] }))
+        .words_look(By(fn() { @ui.style_words(style) }))
+        .ink(By(fn() { @ui.style_ink(style) }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Horizontally scrollable monospace block with a compact first-line-aligned copy icon on the right.
+fn steps_across_copy_row(parent : @view.View, raw : String, style : @ui.TextStyle) -> Unit {
+  parent.box(fn(r) {
+    r.row(Is(true)).fills_across(Is(true)).lines_up(Is(Some(Start))).gap(Is(4.0)) |> ignore
+    r.box(fn(q) {
+      q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+      steps_across_run(q, fn() { raw }, style)
+    })
+    |> ignore
+    tool_copy_icon_node(r, raw)
+  })
+  |> ignore
+}
+
+///|
+/// Wrapping monospace block with a compact first-line-aligned copy icon on the right.
+fn steps_wrap_copy_row(parent : @view.View, raw : String, style : @ui.TextStyle) -> Unit {
+  parent.box(fn(r) {
+    r.row(Is(true)).fills_across(Is(true)).lines_up(Is(Some(Start))).gap(Is(4.0)) |> ignore
+    r.box(fn(q) {
+      q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+      steps_run(q, fn() { raw }, style, mono=true)
+    })
+    |> ignore
+    tool_copy_icon_node(r, raw)
+  })
+  |> ignore
+}
+
+///|
 /// Compact action chip that opens `open_tool_reader` for a long field, dispatch card, or code/output block.
 fn tool_expand_btn_node(parent : @view.View, title : String, raw_copy : String, body : (@view.View) -> Unit) -> Unit {
   steps_press_box(parent, fn() { open_tool_reader(title, raw_copy, body) }, label=fn() { "全屏查看" }, fn(btn) {
     @sf.style_node(btn, fn() { tool_expand_btn })
+    btn.shrink(Is(0.0)) |> ignore
     let ink = fn() { if @sf.lit_node(btn) { @sf.theme().p.accent } else { @sf.theme().p.blue } }
     @sf.icon_node(btn, "expand", 11.0, By(ink)) |> ignore
     @sf.words_node(btn, fn() { "全屏查看" }, fn() {
@@ -3323,52 +3859,70 @@ fn jump_to_dispatch_target(src : Source, station : String, key : String, current
 }
 
 ///|
-/// Renders the diff lines of a `"diff"` tool part in `v`.
+/// Renders the diff lines of a `"diff"` tool part in `v`, preserving original line lengths with horizontal scrolling.
 fn tool_diff_node(v : @view.View, diff_rows : Array[Json]) -> Unit {
   let n = diff_rows.length()
   steps_box_node(v, tool_diff, fn(d) {
-    for i, r in diff_rows {
-      match r {
-        Array([String(mark), String(line)]) =>
-          d.box(fn(l) {
-            let is_first = i == 0
-            let is_last = i + 1 == n
-            @sf.style_node(l, fn() {
-              let base = match mark {
-                "-" => tool_diff_out
-                "+" => tool_diff_line.then(@ui.style(bg=Data(@sf.theme().p.green_bg)))
-                "@" => tool_diff_head
-                _ => tool_diff_line
+    d.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(held) {
+      held.grow(Is(1.0)).lines_up(Is(None)) |> ignore
+      for i, r in diff_rows {
+        match r {
+          Array([String(mark), String(line)]) =>
+            held.box(fn(l) {
+              let is_first = i == 0
+              let is_last = i + 1 == n
+              @sf.style_node(l, fn() {
+                let base = match mark {
+                  "-" => tool_diff_out
+                  "+" => tool_diff_line.then(@ui.style(bg=Data(@sf.theme().p.green_bg)))
+                  "@" => tool_diff_head
+                  _ => tool_diff_line
+                }
+                let with_top = if is_first { base.then(tool_diff_row_top) } else { base }
+                if is_last { with_top.then(tool_diff_row_bot) } else { with_top }
+              })
+              // (in the theme's inks as it is now: the dark one's where it is told to be dark)
+              let ink = fn() {
+                match mark {
+                  "-" => @sf.theme().p.red
+                  "+" => @sf.theme().p.green_ink
+                  _ => @sf.theme().p.subtle
+                }
               }
-              let with_top = if is_first { base.then(tool_diff_row_top) } else { base }
-              if is_last { with_top.then(tool_diff_row_bot) } else { with_top }
+              // (its mark in the gutter before its words, the line's ends as far in either side)
+              steps_box_node(l, tool_diff_mark, fn(m) {
+                m.shrink(Is(0.0)) |> ignore
+                if mark == "-" || mark == "+" {
+                  steps_run(m, fn() { mark }, tool_mono_nowrap, mono=true, ink~)
+                }
+              })
+              l.box(fn(w) {
+                w
+                .words_runs(By(fn() { [@ui.span(if line == "" { " " } else { line }, mono=true)] }))
+                .words_look(By(fn() {
+                  @ui.style_words(match mark {
+                    "@" => tool_mono_head_nowrap
+                    " " => tool_mono_muted_nowrap
+                    _ => tool_mono_nowrap
+                  })
+                }))
+                .ink(By(fn() {
+                  @ui.style_ink(match mark {
+                    "@" => tool_mono_head_nowrap
+                    " " => tool_mono_muted_nowrap
+                    _ => tool_mono_nowrap
+                  })
+                }))
+                |> ignore
+              })
+              |> ignore
             })
-            // (in the theme's inks as it is now: the dark one's where it is told to be dark)
-            let ink = fn() {
-              match mark {
-                "-" => @sf.theme().p.red
-                "+" => @sf.theme().p.green_ink
-                _ => @sf.theme().p.subtle
-              }
-            }
-            // (its mark in the gutter before its words, the line's ends as far in either side)
-            steps_box_node(l, tool_diff_mark, fn(m) {
-              if mark == "-" || mark == "+" {
-                steps_run(m, fn() { mark }, tool_mono, mono=true, ink~)
-              }
-            })
-            steps_box_node(l, tool_diff_words, fn(w) {
-              steps_run(w, fn() { if line == "" { " " } else { line } }, match mark {
-                "@" => tool_mono_head
-                " " => tool_mono_muted
-                _ => tool_mono
-              }, mono=true)
-            }, in_row=true)
-          })
-          |> ignore
-        _ => ()
+            |> ignore
+          _ => ()
+        }
       }
-    }
+    })
+    |> ignore
   })
 }
 
@@ -3392,14 +3946,29 @@ fn tool_part_node(
   station? : String = "",
   key? : String = "",
   in_card? : Bool = false,
+  has_bar? : Bool = false,
 ) -> Unit {
   match text(part, "kind") {
     "code" => {
       let code_text = text(part, "text")
       let lang = text(part, "lang")
-      let render_inline_code = fn(host : @view.View) {
+      let reader_title = if lang != "" { "代码 · " + lang } else { "代码" }
+      let open_full = fn() {
+        open_tool_reader(reader_title, code_text, fn(rb) { tool_code_block_node(rb, code_text, lang) })
+      }
+      let render_inline_code = fn(host : @view.View, show_copy : Bool) {
         if in_card {
-          steps_run(host, fn() { code_text }, tool_mono, mono=true)
+          if code_text.contains("\n") {
+            if show_copy {
+              steps_across_copy_row(host, code_text, tool_mono_nowrap)
+            } else {
+              steps_across_run(host, fn() { code_text }, tool_mono_nowrap)
+            }
+          } else if show_copy {
+            steps_wrap_copy_row(host, code_text, tool_mono)
+          } else {
+            steps_run(host, fn() { code_text }, tool_mono, mono=true)
+          }
         } else {
           tool_code_block_node(host, code_text, lang)
         }
@@ -3409,14 +3978,17 @@ fn tool_part_node(
           steps_box_node(stack, tool_block_bar, fn(bar) {
             steps_words(bar, fn() { if lang != "" { lang } else { "代码" } }, tool_key_words)
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
-            tool_expand_btn_node(bar, if lang != "" { "代码 · " + lang } else { "代码" }, code_text, fn(rb) {
+            tool_copy_btn_node(bar, code_text)
+            tool_expand_btn_node(bar, reader_title, code_text, fn(rb) {
               tool_code_block_node(rb, code_text, lang)
             })
           })
-          clip_lines_node(stack, 14, words_line, render_inline_code)
+          clip_lines_node(stack, 14, words_line, fn(f) { render_inline_code(f, false) }, on_full=Some(open_full))
         })
+      } else if in_card && may_clip_block(code_text) {
+        clip_lines_node(v, 14, words_line, fn(f) { render_inline_code(f, !has_bar) }, on_full=Some(open_full))
       } else {
-        render_inline_code(v)
+        render_inline_code(v, !has_bar)
       }
     }
     "facts" =>
@@ -3468,13 +4040,17 @@ fn tool_part_node(
             }
           })
           .join("\n")
+        let open_full = fn() {
+          open_tool_reader("变更对比", raw_diff, fn(rb) { tool_diff_node(rb, diff_rows) })
+        }
         steps_box_node(v, tool_field_stack, fn(stack) {
           steps_box_node(stack, tool_block_bar, fn(bar) {
             steps_words(bar, fn() { "变更对比" }, tool_key_words)
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+            tool_copy_btn_node(bar, raw_diff)
             tool_expand_btn_node(bar, "变更对比", raw_diff, fn(rb) { tool_diff_node(rb, diff_rows) })
           })
-          clip_lines_node(stack, 14, words_line, fn(f) { tool_diff_node(f, diff_rows) })
+          clip_lines_node(stack, 14, words_line, fn(f) { tool_diff_node(f, diff_rows) }, on_full=Some(open_full))
         })
       } else {
         tool_diff_node(v, diff_rows)
@@ -3488,9 +4064,13 @@ fn tool_part_node(
       let nav_target = if target_id != "" { target_id } else { target }
       let summary = text(part, "summary")
       let long = is_long_block(words)
+      let reader_title = if summary != "" { summary } else if target != "" { "→ " + target } else { "查看内容" }
+      let open_full = fn() {
+        open_tool_reader(reader_title, words, fn(rb) { render_md_or_words(rb, words, md, small=false) })
+      }
       let render_md_body = fn(host : @view.View) {
-        if long {
-          clip_lines_node(host, 14, md_line, fn(f) { render_md_or_words(f, words, md, small=true) })
+        if long || may_clip_block(words) {
+          clip_lines_node(host, 14, md_line, fn(f) { render_md_or_words(f, words, md, small=true) }, on_full=Some(open_full))
         } else {
           render_md_or_words(host, words, md, small=true)
         }
@@ -3515,10 +4095,11 @@ fn tool_part_node(
               |> ignore
             }
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+            tool_copy_btn_node(bar, words)
             if long {
               tool_expand_btn_node(
                 bar,
-                if summary != "" { summary } else if target != "" { "→ " + target } else { "查看内容" },
+                reader_title,
                 words,
                 fn(rb) { render_md_or_words(rb, words, md, small=false) },
               )
@@ -3543,13 +4124,18 @@ fn tool_part_node(
           }
           copy_buf.write_string(mark + text(iv, "text") + "\n")
         }
+        let copy_text = copy_buf.to_string()
+        let open_full = fn() {
+          open_tool_reader("计划", copy_text, fn(rb) { plan_node(rb, fn() { plan_items }) })
+        }
         steps_box_node(v, tool_field_stack, fn(stack) {
           steps_box_node(stack, tool_block_bar, fn(bar) {
             steps_words(bar, fn() { "计划" }, tool_key_words)
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
-            tool_expand_btn_node(bar, "计划", copy_buf.to_string(), fn(rb) { plan_node(rb, fn() { plan_items }) })
+            tool_copy_btn_node(bar, copy_text)
+            tool_expand_btn_node(bar, "计划", copy_text, fn(rb) { plan_node(rb, fn() { plan_items }) })
           })
-          clip_lines_node(stack, 12, words_line, fn(f) { plan_node(f, fn() { plan_items }) })
+          clip_lines_node(stack, 12, words_line, fn(f) { plan_node(f, fn() { plan_items }) }, on_full=Some(open_full))
         })
       } else {
         plan_node(v, fn() { plan_items })
@@ -3566,11 +4152,18 @@ fn tool_part_node(
           match form {
             "long" => {
               let long = is_long_block(val)
+              let open_full = fn() {
+                open_tool_reader(k, val, fn(rb) { render_md_or_words(rb, val, field(rv, "md"), small=false) })
+              }
               let render_long_val = fn(host : @view.View) {
-                if long {
-                  clip_lines_node(host, 14, md_line, fn(inner) {
-                    render_md_or_words(inner, val, field(rv, "md"), small=true)
-                  })
+                if long || may_clip_block(val) {
+                  clip_lines_node(
+                    host,
+                    14,
+                    md_line,
+                    fn(inner) { render_md_or_words(inner, val, field(rv, "md"), small=true) },
+                    on_full=Some(open_full),
+                  )
                 } else {
                   render_md_or_words(host, val, field(rv, "md"), small=true)
                 }
@@ -3579,6 +4172,7 @@ fn tool_part_node(
                 steps_box_node(f, tool_field_head, fn(head) {
                   steps_words(head, fn() { k }, tool_key_words)
                   steps_box_node(head, h_grow, fn(_) {  }, in_row=true)
+                  tool_copy_btn_node(head, val)
                   if long {
                     tool_expand_btn_node(head, k, val, fn(rb) {
                       render_md_or_words(rb, val, field(rv, "md"), small=false)
@@ -3590,22 +4184,30 @@ fn tool_part_node(
             }
             "json" => {
               let long = is_long_block(val)
+              let open_full = fn() {
+                open_tool_reader(k, val, fn(rb) { steps_across_run(rb, fn() { val }, tool_mono_nowrap) })
+              }
               let render_json_val = fn(host : @view.View) {
-                if long {
-                  clip_lines_node(host, 14, words_line, fn(inner) {
-                    steps_run(inner, fn() { val }, tool_mono, mono=true)
-                  })
+                if long || may_clip_block(val) {
+                  clip_lines_node(
+                    host,
+                    14,
+                    words_line,
+                    fn(inner) { steps_across_run(inner, fn() { val }, tool_mono_nowrap) },
+                    on_full=Some(open_full),
+                  )
                 } else {
-                  steps_run(host, fn() { val }, tool_mono, mono=true)
+                  steps_across_run(host, fn() { val }, tool_mono_nowrap)
                 }
               }
               steps_box_node(fs, tool_field_stack, fn(f) {
                 steps_box_node(f, tool_field_head, fn(head) {
                   steps_words(head, fn() { k }, tool_key_words)
                   steps_box_node(head, h_grow, fn(_) {  }, in_row=true)
+                  tool_copy_btn_node(head, val)
                   if long {
                     tool_expand_btn_node(head, k, val, fn(rb) {
-                      steps_run(rb, fn() { val }, tool_mono, mono=true)
+                      steps_across_run(rb, fn() { val }, tool_mono_nowrap)
                     })
                   }
                 })
@@ -3637,13 +4239,21 @@ fn tool_part_node(
       let is_failed = flag(part, "failed")
       let box_look = if is_failed { tool_box_red } else { tool_box }
       let text_look = if is_failed { tool_mono } else { tool_mono_muted }
-      let render_out = fn(host : @view.View) {
-        if is_long_block(out_text) {
-          clip_lines_node(host, 14, words_line, fn(f) {
-            steps_run(f, fn() { out_text }, text_look, mono=true)
-          })
+      let open_full = fn() {
+        open_tool_reader("输出", out_text, fn(rb) { steps_run(rb, fn() { out_text }, text_look, mono=true) })
+      }
+      let render_out = fn(host : @view.View, show_copy : Bool) {
+        let draw_line = fn(h : @view.View) {
+          if show_copy {
+            steps_wrap_copy_row(h, out_text, text_look)
+          } else {
+            steps_run(h, fn() { out_text }, text_look, mono=true)
+          }
+        }
+        if is_long_block(out_text) || may_clip_block(out_text) {
+          clip_lines_node(host, 14, words_line, draw_line, on_full=Some(open_full))
         } else {
-          steps_run(host, fn() { out_text }, text_look, mono=true)
+          draw_line(host)
         }
       }
       if is_long_block(out_text) {
@@ -3651,31 +4261,40 @@ fn tool_part_node(
           steps_box_node(stack, tool_block_bar, fn(bar) {
             steps_words(bar, fn() { "输出" }, tool_key_words)
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+            tool_copy_btn_node(bar, out_text)
             tool_expand_btn_node(bar, "输出", out_text, fn(rb) {
               steps_run(rb, fn() { out_text }, text_look, mono=true)
             })
           })
           if in_card && !is_failed {
-            render_out(stack)
+            render_out(stack, false)
           } else {
-            steps_box_node(stack, box_look, render_out)
+            steps_box_node(stack, box_look, fn(bx) { render_out(bx, false) })
           }
         })
       } else if in_card && !is_failed {
-        render_out(v)
+        render_out(v, !has_bar)
       } else {
-        steps_box_node(v, box_look, render_out)
+        steps_box_node(v, box_look, fn(bx) { render_out(bx, !has_bar) })
       }
     }
     "json" => {
       let json_text = text(part, "text")
-      let render_json = fn(host : @view.View) {
-        if is_long_block(json_text) {
-          clip_lines_node(host, 14, words_line, fn(f) {
-            steps_run(f, fn() { json_text }, tool_mono, mono=true)
-          })
+      let open_full = fn() {
+        open_tool_reader("JSON", json_text, fn(rb) { steps_across_run(rb, fn() { json_text }, tool_mono_nowrap) })
+      }
+      let render_json = fn(host : @view.View, show_copy : Bool) {
+        let draw_line = fn(h : @view.View) {
+          if show_copy {
+            steps_across_copy_row(h, json_text, tool_mono_nowrap)
+          } else {
+            steps_across_run(h, fn() { json_text }, tool_mono_nowrap)
+          }
+        }
+        if is_long_block(json_text) || may_clip_block(json_text) {
+          clip_lines_node(host, 14, words_line, draw_line, on_full=Some(open_full))
         } else {
-          steps_run(host, fn() { json_text }, tool_mono, mono=true)
+          draw_line(host)
         }
       }
       if is_long_block(json_text) {
@@ -3683,20 +4302,21 @@ fn tool_part_node(
           steps_box_node(stack, tool_block_bar, fn(bar) {
             steps_words(bar, fn() { "JSON" }, tool_key_words)
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+            tool_copy_btn_node(bar, json_text)
             tool_expand_btn_node(bar, "JSON", json_text, fn(rb) {
-              steps_run(rb, fn() { json_text }, tool_mono, mono=true)
+              steps_across_run(rb, fn() { json_text }, tool_mono_nowrap)
             })
           })
           if in_card {
-            render_json(stack)
+            render_json(stack, false)
           } else {
-            steps_box_node(stack, tool_box, render_json)
+            steps_box_node(stack, tool_box, fn(bx) { render_json(bx, false) })
           }
         })
       } else if in_card {
-        render_json(v)
+        render_json(v, !has_bar)
       } else {
-        steps_box_node(v, tool_box, render_json)
+        steps_box_node(v, tool_box, fn(bx) { render_json(bx, !has_bar) })
       }
     }
     _ => ()
@@ -3737,15 +4357,22 @@ priv struct StepsOwn {
   opened : @sf.LiveMap[String, Bool]
   detail : @sf.LiveMap[String, (Double, String)]
   tools : @sf.LiveMap[String, Json]
+  tool_err : @sf.LiveMap[String, String]
+  tool_asking : Map[String, Bool]
   /// an entry asked to be brought into view, by history (`<station>\u{1}<key>`); the item gone to, marked a moment
-  /// (its history's list, its key), and the histories gone to an entry, not following their newest since
+  /// (its history's list, its key), and the histories gone to an entry, not following their newest till back at foot
   focus : @sf.LiveMap[String, Int]
   marked : @signals.Signal[(String, String)]
-  went : Map[String, Bool]
+  went : @sf.LiveMap[String, Bool]
+  /// last non-bottom scroll place `(first_key, into)` by list key, restored when switching side tabs back
+  kept_place : Map[String, (String, Double)]
   /// each history's first item as its list was last built, by the list's key
   tops : Map[String, String]
   /// 只看收发, for every history (as the web keeps it): a signal, what each history's rows are worked out by
   only_io : @signals.Signal[Bool]
+  /// last copied tool block button id so copying another block resets the previous check mark
+  copied_id : @signals.Signal[Int]
+  mut copied_seq : Int
 }
 
 ///|
@@ -3753,11 +4380,16 @@ let steps_own : StepsOwn = {
   opened: @sf.LiveMap::new(),
   detail: @sf.LiveMap::new(),
   tools: @sf.LiveMap::new(),
+  tool_err: @sf.LiveMap::new(),
+  tool_asking: {},
   focus: @sf.LiveMap::new(),
   marked: @signals.signal(("", ""), same=fn(a, b) { a == b }),
-  went: {},
+  went: @sf.LiveMap::new(),
+  kept_place: {},
   tops: {},
   only_io: @signals.signal(false, same=fn(a, b) { a == b }),
+  copied_id: @signals.signal(0, same=fn(a, b) { a == b }),
+  copied_seq: 0,
 }
 
 ///|
@@ -3765,11 +4397,16 @@ fn steps_reset() -> Unit {
   steps_own.opened.clear()
   steps_own.detail.clear()
   steps_own.tools.clear()
+  steps_own.tool_err.clear()
+  steps_own.tool_asking.clear()
   steps_own.focus.clear()
   steps_own.marked.set(("", ""))
   steps_own.went.clear()
+  steps_own.kept_place.clear()
   steps_own.tops.clear()
   steps_own.only_io.set(false)
+  steps_own.copied_id.set(0)
+  steps_own.copied_seq = 0
 }
 
 ///|
@@ -4078,7 +4715,7 @@ let h_msg_label_grow : @ui.Style = @ui.style(row=true, w=@sf.grow, min_h=S5, gap
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_msg_fold_btn : @ui.Style = @ui.css("row h=S5 px=S1 gap=S1 align=ACenter radius=Md hovered{bg=Hover}")
+let h_msg_fold_btn : @ui.Style = @ui.css("row h=S5 px=S1_5 gap=S1 align=ACenter radius=Md hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4398,7 +5035,7 @@ let tool_reader_body : @ui.Style = @ui.css("w=Full py=S2 gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_expand_btn : @ui.Style = @ui.css("row py=S0_5 gap=S1 align=ACenter")
+let tool_expand_btn : @ui.Style = @ui.css("row py=S0_5 px=S1 gap=S1 align=ACenter radius=Md hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4407,6 +5044,34 @@ let tool_expand_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Link,
 ///|
 // kept across runs: a value (no field of it changes)
 let tool_expand_words_hot : @ui.TextStyle = @ui.text_style(size=Caption, color=Accent, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_copy_btn : @ui.Style = @ui.css("row py=S0_5 px=S1 gap=S1 align=ACenter radius=Md hovered{bg=Hover}")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_copy_icon : @ui.Style = @ui.css("row w=S5 h=S5 align=ACenter justify=JCenter radius=Md hovered{bg=Hover}")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_copy_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_copy_words_hot : @ui.TextStyle = @ui.text_style(size=Caption, color=Fg, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_copy_words_done : @ui.TextStyle = @ui.text_style(size=Caption, color=Positive, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_clip_more : @ui.Style = @ui.css("row w=Full pt=S1 pb=S0_5 px=S1 gap=S1 align=ACenter justify=JCenter radius=Md hovered{bg=Hover}")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_err_row : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4445,6 +5110,18 @@ let tool_mono_muted : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=F
 ///|
 // kept across runs: a value (no field of it changes)
 let tool_mono_head : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Link, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_mono_nowrap : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_mono_muted_nowrap : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_mono_head_nowrap : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Link, wrap=false)
 
 ///|
 /// The facts (facts): 4 by 10 apart, 11 subtle, a fact's value in mono, muted.

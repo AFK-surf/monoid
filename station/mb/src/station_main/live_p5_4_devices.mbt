@@ -57,8 +57,8 @@ fn p54_wire_of_conn(c : P54Conn) -> P54Wire {
   {
     read: async fn() { c.read() },
     write: async fn(b) { c.write(b) },
-    end: () => ignore(host.rt.fork(name="tcp end", async fn() {
-      ignore(host.shell("tcp.end", { "id": c.id })) catch {
+    end: () => ignore(host.rt.fork_quiet(name="tcp end", async fn() {
+      host.tcp_end(c.id) catch {
         _ => ()
       }
     })),
@@ -344,9 +344,13 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::null()
     }
     // the files
-    "fs.read" => Json::string(@utf8.decode_lossy(@drive.read_all(s(0))))
+    "fs.read" =>
+      match host.read_text(s(0)) {
+        Some(t) => Json::string(t)
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
+      }
     "fs.write" => {
-      @drive.write_private(s(0), s(1))
+      host.write_private(s(0), @utf8.encode(s(1)), sep=sep())
       Json::null()
     }
     "fs.rename" => {
@@ -379,7 +383,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       @drive.mkdir(dir, true, mode=0o700)
       Json::string(dir)
     }
-    "fs.sha256" => Json::string(@drive.hex(@drive.sha256_bytes(@drive.read_all(s(0)))))
+    "fs.sha256" =>
+      match host.file_sha256(s(0)) {
+        Some(h) => Json::string(h)
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
+      }
     // the processes
     "proc.signal" => {
       ignore(kill(p54_int(a(0)), s(1)))
@@ -468,27 +476,24 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       }
     // the sockets: this machine's own (127.0.0.1, a Unix socket's path)
     "net.freePort" => {
-      let (l, _) = host.shell("tcp.listen", { "port": Json::number(0.0) })
-      let port = p54_num(p54_get(Some(l), "port")).unwrap_or(0.0)
-      ignore(host.shell("listen.close", { "id": p54_get(Some(l), "id").unwrap_or(Json::null()) })) catch {
-        _ => ()
-      }
-      Json::number(port)
+      let l = host.tcp_listen_local(0)
+      host.listen_close(l.id)
+      Json::number(l.port.to_double())
     }
     "net.listen" => {
       let o = a(0)
-      let (l, _) = host.shell("tcp.listen", { "port": Json::number(p54_num(p54_get(o, "port")).unwrap_or(0.0)) })
+      let l = host.tcp_listen_local(p54_num(p54_get(o, "port")).unwrap_or(0.0).to_int())
       let id = self.id()
-      self.listeners[id] = p54_get(Some(l), "id").unwrap_or(Json::null())
-      { "id": Json::number(id.to_double()), "port": p54_get(Some(l), "port").unwrap_or(Json::null()) }
+      self.listeners[id] = l.id
+      { "id": Json::number(id.to_double()), "port": Json::number(l.port.to_double()) }
     }
     "net.accept" =>
       match self.listeners.get(p54_int(a(0))) {
         Some(lid) => {
-          let (got, _) = host.shell("tcp.accept", { "id": lid }) catch { _ => return @jsjson.JValue::Null }
+          let got = host.accept(lid) catch { _ => return @jsjson.JValue::Null }
           self.sock(
-            p54_wire_of_conn({ host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }),
-            remote_port=p54_peer_port(p54_text(Some(got), "peer")),
+            p54_wire_of_conn({ host, id: got.id, closed: false }),
+            remote_port=p54_peer_port(if got.peer == "" { None } else { Some(got.peer) }),
           )
         }
         None => Json::null()
@@ -497,9 +502,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       match self.listeners.get(p54_int(a(0))) {
         Some(lid) => {
           self.listeners.remove(p54_int(a(0)))
-          ignore(host.shell("listen.close", { "id": lid })) catch {
-            _ => ()
-          }
+          host.listen_close(lid)
         }
         None => ()
       }
@@ -543,7 +546,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       sk.kept = true
       sk.chunks.clear()
       ignore(
-        host.rt.fork(name="socket kept", async fn() {
+        host.rt.fork_daemon("socket kept", on_error=e => @host.note("socket kept failed: \{e}"), async fn() {
           while !sk.destroyed {
             self.fill(sk)
           }
@@ -629,8 +632,8 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         from.destroyed = true
         ignore(from.closed.succeed(()))
       }
-      ignore(host.rt.fork(name="join", async fn() { carry(one, two) }))
-      ignore(host.rt.fork(name="join", async fn() { carry(two, one) }))
+      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(one, two) }))
+      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(two, one) }))
       Json::null()
     }
     // a member's connection on the mesh and its streams (the shell's)
@@ -861,7 +864,7 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
       @jsjson.JValue::Obj([(@jsjson.units("$fn"), @jsjson.JValue::Num(id.to_double()))])
     },
     () => wall_ms().to_double(),
-    f => ignore(host.rt.fork(name="devices", async fn() { f() catch { _ => () } })),
+    f => ignore(host.rt.fork_quiet(name="devices", async fn() { f() catch { _ => () } })),
     @session_chats.Words::new(p54_jv(zh), p54_jv(en)),
   )
   world.set_lang((bus.lang.val)())
@@ -962,26 +965,24 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
   let wire = sock.conn
   w.socks.remove(n.to_int())
   // (a pair of the shell's own: one end given, the other carried to the device)
-  let (listening, _) = host.shell("tcp.listen", { "port": Json::number(0.0) })
-  let lid = p54_get(Some(listening), "id").unwrap_or(Json::null())
-  let port = p54_num(p54_get(Some(listening), "port")).unwrap_or(0.0).to_int()
+  let listening = host.tcp_listen_local(0)
+  let lid = listening.id
+  let port = listening.port
   let accepting : @effect.Deferred[Json] = @effect.Deferred::new()
   ignore(
-    host.rt.fork(name="device forward accept", async fn() {
-      let (accepted, _) = host.shell("tcp.accept", { "id": lid }) catch {
+    host.rt.fork_daemon("device forward accept", on_error=e => @host.note("device forward accept failed: \{e}"), async fn() {
+      let accepted = host.accept(lid) catch {
         _ => {
           ignore(accepting.succeed(Json::null()))
           return
         }
       }
-      ignore(accepting.succeed(p54_get(Some(accepted), "id").unwrap_or(Json::null())))
+      ignore(accepting.succeed(accepted.id))
     }),
   )
   let given = p54_tcp_open(host, port)
   let inner_id = accepting.wait()
-  ignore(host.shell("tcp.close", { "id": lid })) catch {
-    _ => ()
-  }
+  host.listen_close(lid)
   if inner_id is Null {
     given.close()
     (wire.close)()
@@ -989,7 +990,7 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
   }
   let inner : P54Conn = { host, id: inner_id, closed: false }
   ignore(
-    host.rt.fork(name="device forward in", async fn() {
+    host.rt.fork_daemon("device forward in", on_error=e => @host.note("device forward in failed: \{e}"), async fn() {
       let read = wire.read
       while true {
         let got = read() catch { _ => None }
@@ -1002,7 +1003,7 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
     }),
   )
   ignore(
-    host.rt.fork(name="device forward out", async fn() {
+    host.rt.fork_daemon("device forward out", on_error=e => @host.note("device forward out failed: \{e}"), async fn() {
       let write = wire.write
       while inner.read() is Some(b) {
         write(b) catch {
@@ -1066,7 +1067,7 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
         read: async fn() { c.read() },
         write: async fn(b) { c.write(b) },
         finish: async fn() {
-          ignore(d.world.bus.host.shell("tcp.end", { "id": c.id })) catch {
+          d.world.bus.host.tcp_end(c.id) catch {
             _ => ()
           }
         },
@@ -1113,29 +1114,46 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
 async fn p54_device_tunnel(w0 : P54DevWorld, sock_id : Json, carry : Bytes, stream : @terminals_logins.Stream) -> Unit {
   let host = w0.bus.host
   let sock = w0.sock_of(Some(sock_id))
-  if carry.length() > 0 {
-    (sock.conn.write)(carry)
+  // (either side reset or gone fails a read or a write: the tunnel's end as much as an end is, never the runtime's
+  // defect, and both are let go after it all the same)
+  let carried = try {
+    if carry.length() > 0 {
+      (sock.conn.write)(carry)
+    }
+    true
+  } catch {
+    _ => false
   }
   let down = host.rt.fork(name="device down", async fn() {
-    for c in sock.chunks {
-      match c {
-        Some(b) => (stream.write)(b) catch { _ => () }
-        None => ()
+    try {
+      for c in sock.chunks {
+        match c {
+          Some(b) => (stream.write)(b) catch { _ => () }
+          None => ()
+        }
       }
-    }
-    sock.chunks.clear()
-    while (sock.conn.read)() is Some(b) {
-      (stream.write)(b) catch {
-        _ => break
+      sock.chunks.clear()
+      while (sock.conn.read)() is Some(b) {
+        (stream.write)(b) catch {
+          _ => break
+        }
       }
+    } catch {
+      _ => ()
     }
     (stream.finish)() catch {
       _ => ()
     }
   })
-  while (stream.read)() is Some(b) {
-    (sock.conn.write)(b) catch {
-      _ => break
+  if carried {
+    try {
+      while (stream.read)() is Some(b) {
+        (sock.conn.write)(b) catch {
+          _ => break
+        }
+      }
+    } catch {
+      _ => ()
     }
   }
   (sock.conn.end)()

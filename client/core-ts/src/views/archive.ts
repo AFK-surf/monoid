@@ -131,7 +131,12 @@ export function archive(views: Views, local: Local, scope: string, host: Host, q
       const [station, , id, at, session, thread, title, lastLine, by, alone, ord] = f;
       put(String(station), String(id), Number(at), text(session), thread, text(title), text(lastLine), by, alone === 1, Number(ord));
     }
-    if (!needle) for (const r of data.chatCounted(CHAT_READS.archivedCount, { ...p, from: Number.MAX_SAFE_INTEGER, offset: 0, day: 1 })) if (r[1] === null) total += Number(r[2]);
+    // (each station's counted and kept by itself: a chat archived on one counts no other again)
+    if (!needle) {
+      for (const station of read) {
+        for (const r of data.chatCounted(CHAT_READS.archivedCount, { station, threads, sessions, from: Number.MAX_SAFE_INTEGER, offset: 0, day: 1 })) if (r[1] === null) total += Number(r[2]);
+      }
+    }
     if (threads.length > 0 || sessions.length > 0) {
       for (const f of data.chatFound(CHAT_READS.overlaid, { stations: read, archived: true, threads, sessions })) {
         const chat = f.record;

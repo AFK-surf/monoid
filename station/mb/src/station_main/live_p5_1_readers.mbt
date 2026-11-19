@@ -35,7 +35,7 @@ fn mb_spawn(host : @host.Host, program : String, args : Array[String], stderr? :
   let proc = spawn(host, program, args, stdin_piped=true, stdout=Piped, stderr~)
   let p : MbProc = { proc, said: @effect.Queue::unbounded(), ended: @effect.Deferred::new(), gone: false }
   ignore(
-    host.rt.fork(name="mb program", async fn() {
+    host.rt.fork_daemon("mb program", on_error=e => @host.note("mb program failed: \{e}"), async fn() {
       let carry = @buffer.new()
       let mut head : Json? = None
       let mut wanted = 0
@@ -320,7 +320,7 @@ fn Readers::start(self : Readers, line : Line) -> Slot? {
   let slot : Slot = { proc, held: None, idle_since: @host.now(), catalog_version: 0.0 }
   line.slots.push(slot)
   ignore(
-    self.host.rt.fork(name="reader", async fn() {
+    self.host.rt.fork_daemon("reader", on_error=e => @host.note("reader failed: \{e}"), async fn() {
       while proc.next() is Some((said, body)) {
         if said is { "ready": _, .. } {
           continue
@@ -491,7 +491,7 @@ fn Readers::checkpoint_soon(self : Readers) -> Unit {
   self.checkpointing = true
   self.again = false
   ignore(
-    self.host.rt.fork(name="checkpoint", async fn() {
+    self.host.rt.fork_quiet(name="checkpoint", async fn() {
       @effect.sleep(2000) // timer: a debounce of a burst (pool.ts CHECKPOINT_MS)
       ignore(self.read("checkpoint", Json::object({}), "en")) catch {
         e => p51_log("WARN", "readers", "the database's log not written into it", fields={ "error": Json::string("\{e}") })
@@ -668,7 +668,7 @@ fn Requested::run(self : Requested) -> Unit {
   self.running = true
   let host = self.readers.host
   ignore(
-    host.rt.fork(name="old-state builder", async fn() {
+    host.rt.fork_daemon("old-state builder", on_error=e => @host.note("old-state builder failed: \{e}"), async fn() {
       defer {
         self.running = false
       }
@@ -818,7 +818,7 @@ async fn p51_requested_close_in_flight(host : @host.Host, data : String, program
   )
   let answered : @effect.Deferred[String] = @effect.Deferred::new()
   ignore(
-    host.rt.fork(name="close-in-flight ask", async fn() {
+    host.rt.fork_quiet(name="close-in-flight ask", async fn() {
       let what = b.ready([Json::string("s1")]) catch { e => "\{e}" } noraise { _ => "ready" }
       ignore(answered.succeed(what))
     }),

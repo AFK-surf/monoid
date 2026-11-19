@@ -31,11 +31,26 @@ test "patterns match as JavaScript's" {
 }
 
 ///|
+test "single-unit repetitions match long inputs without recursing per character" {
+  let b64 = @api_routes.re("^[A-Za-z0-9+/]*={0,2}$")
+  let sb = StringBuilder::new()
+  for _ in 0..<50000 {
+    sb.write_string("AAAA")
+  }
+  let valid = sb.to_string()
+  assert_true(b64.matches(valid))
+  assert_true(b64.matches(valid + "=="))
+  assert_false(b64.matches(valid + "!"))
+  assert_true(@api_routes.re("^A.*?B$").matches(valid + "B"))
+  assert_true(@api_routes.re("^A.*B$").matches(valid + "B"))
+}
+
+///|
 test "values as JSON.stringify writes them, keys in JavaScript's order" {
   let o = @api_routes.jobj([
     ("b", @api_routes.jint(1)),
     ("2", @api_routes.js("x")),
-    ("a", @api_routes.Null),
+    ("a", @api_routes.JV::Null),
     ("1", @api_routes.jbool(true)),
   ])
   assert_eq(
@@ -54,7 +69,7 @@ test "values as JSON.stringify writes them, keys in JavaScript's order" {
       Some(
         @api_routes.jarr([
           @api_routes.jint(1),
-          @api_routes.Null,
+          @api_routes.JV::Null,
           @api_routes.js("a"),
         ]),
       ),

@@ -1759,6 +1759,169 @@ test "update, then pass, then more fails, less fails" {
 }
 
 ///|
+fn Tree::sharded(files : Array[(String, String)]) -> Tree {
+  let t = Tree::new(files)
+  let conf = conf_value().remove("counts").set("counts_dir", Str("detlint.counts"))
+  t.write("detlint.json", @rjson.dumps(conf, ensure_ascii=false, indent=2) + "\n")
+  t
+}
+
+///|
+fn Tree::read(self : Tree, rel : String) -> String? {
+  @sys.read_text(@sys.join(self.root, rel))
+}
+
+///|
+test "shard_of maps package and directory prefixes deterministically" {
+  assert_eq(shard_of("src/sfapp/chat.mbt"), "sfapp")
+  assert_eq(shard_of("src/sfapp/settings/core.mbt"), "sfapp")
+  assert_eq(shard_of("src/sfpages/board_node.mbt"), "sfpages")
+  assert_eq(shard_of("src/tokens.mbt"), "src")
+  assert_eq(shard_of("e2e/android-flow.sh"), "e2e")
+  assert_eq(shard_of("scripts/test.sh"), "scripts")
+  assert_eq(shard_of("top.sh"), "_root")
+}
+
+///|
+test "sharded counts: update, pass, raise fails, lower updates only its shard and removes empty shards" {
+  let t = Tree::sharded([
+    (
+      "src/app/view.mbt",
+      "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n  c.request_frame()\n}\n",
+    ),
+    (
+      "src/pages/home.mbt",
+      "fn h(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n",
+    ),
+    ("flows/01.drive", "tap send\nwait 500\n"),
+  ])
+  // no rules registered yet: fails
+  assert_eq(t.run([]).0, 1)
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  // each package/directory wrote its own shard; detlint.json holds rules, not inline counts
+  let conf_after = t.read("detlint.json").unwrap_or("")
+  assert_true(conf_after.contains("\"counts_dir\": \"detlint.counts\""))
+  assert_true(conf_after.contains("\"rules\":"))
+  assert_true(!conf_after.contains("\"counts\":"))
+  let app_shard = t.read("detlint.counts/app.json").unwrap_or("")
+  let pages_shard = t.read("detlint.counts/pages.json").unwrap_or("")
+  let flows_shard = t.read("detlint.counts/flows.json").unwrap_or("")
+  assert_has(app_shard, "\"src/app/view.mbt\": 2")
+  assert_has(pages_shard, "\"src/pages/home.mbt\": 1")
+  assert_has(flows_shard, "\"flows/01.drive\": 1")
+
+  // raising a count in one shard fails, and --update refuses to raise it
+  t.append("src/app/view.mbt", "fn w(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "src/app/view.mbt: 3 > 2")
+  assert_eq(t.run(["--update"]).0, 0)
+  assert_eq(t.run([]).0, 1)
+  assert_eq(t.read("detlint.counts/app.json").unwrap_or(""), app_shard)
+  assert_eq(t.read("detlint.counts/pages.json").unwrap_or(""), pages_shard)
+
+  // lowering src/app to 1 updates only app.json, leaving pages.json and detlint.json untouched
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "lower it")
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  assert_has(t.read("detlint.counts/app.json").unwrap_or(""), "\"src/app/view.mbt\": 1")
+  assert_eq(t.read("detlint.counts/pages.json").unwrap_or(""), pages_shard)
+  assert_eq(t.read("detlint.json").unwrap_or(""), conf_after)
+
+  // clearing src/app removes app.json completely while keeping pages.json
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.text(\"x\")\n}\n")
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  assert_true(t.read("detlint.counts/app.json") is None)
+  assert_eq(t.read("detlint.counts/pages.json").unwrap_or(""), pages_shard)
+  t.clear()
+}
+
+///|
+test "sharded counts: excused ratchet and empty counts_dir when all rules reach zero" {
+  let t = Tree::sharded([
+    (
+      "src/app/view.mbt",
+      "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame() // det-ok(frame-request): a\n}\n",
+    ),
+  ])
+  assert_eq(t.run(["--update"]).0, 0)
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  let shard = t.read("detlint.counts/app.json").unwrap_or("")
+  assert_has(shard, "\"excused\"")
+  assert_has(shard, "\"src/app/view.mbt\": 1")
+
+  // adding another det-ok fails
+  t.append(
+    "src/app/view.mbt",
+    "fn w(c : @ui.Ctx) -> Unit {\n  c.request_frame() // det-ok(frame-request): b\n}\n",
+  )
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "exceptions only go down")
+
+  // clearing the last excused entry deletes the shard; missing counts_dir still passes
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.text(\"ok\")\n}\n")
+  assert_eq(t.run(["--update"]).0, 0)
+  assert_true(t.read("detlint.counts/app.json") is None)
+  let _ = @sys.remove(@sys.join(t.root, "detlint.counts"))
+  let (code, out) = t.run([])
+  if code != 0 {
+    fail(out)
+  }
+  assert_has(out, "forbidden")
+  t.clear()
+}
+
+///|
+test "sharded counts: cross-shard move fails and misplaced file in wrong shard is rejected" {
+  let t = Tree::sharded([
+    ("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n"),
+  ])
+  assert_eq(t.run(["--update"]).0, 0)
+  // moving the finding from src/app to src/pages fails ratchet
+  t.write("src/app/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.text(\"ok\")\n}\n")
+  t.write("src/pages/view.mbt", "fn v(c : @ui.Ctx) -> Unit {\n  c.request_frame()\n}\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 1)
+  assert_has(out, "src/pages/view.mbt: 1 > 0")
+  assert_has(out, "lower it")
+
+  // placing src/pages/view.mbt inside app.json is rejected with exit 2
+  t.write(
+    "detlint.counts/app.json",
+    "{\"counts\": {\"frame-request\": {\"src/pages/view.mbt\": 1}}}\n",
+  )
+  let (code, out) = t.run([])
+  assert_eq(code, 2)
+  assert_has(out, "belongs in detlint.counts/pages.json")
+
+  // combining counts_dir with inline counts is rejected with exit 2
+  let bad_conf = conf_value().set("counts_dir", Str("detlint.counts"))
+  t.write("detlint.json", @rjson.dumps(bad_conf, ensure_ascii=false, indent=2) + "\n")
+  let (code, out) = t.run([])
+  assert_eq(code, 2)
+  assert_has(out, "cannot be combined with inline counts")
+  t.clear()
+}
+
+///|
 test "host-delay" {
   found(
     [

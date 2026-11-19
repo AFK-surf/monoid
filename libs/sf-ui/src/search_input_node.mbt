@@ -10,7 +10,9 @@
 /// the focus back in it.
 /// `placeholder_by`: what it says while empty (`shorter` ways where it has less room); `edited`: its words as the
 /// person changes them; `submitted`: its words at Enter or the keyboard's search key, once (none: Enter as the layer
-/// it is in has it); `escape`: Escape pressed in it, true where that was taken (none: Escape left to what holds it).
+/// it is in has it); `escape`: Escape pressed in it, true where that was taken (none: Escape left to what holds it);
+/// `step`: ↓ (1) and ↑ (-1) in it, as a combobox's keys come from its field (the keymap's actions), taken while
+/// `step_can` says so and where `step` says it took them (none: the arrows left to what holds it).
 /// `end`: what stands at its end after the clear key (a count, a filter). The field's node (what the focus is given
 /// to).
 #callsite(autofill(loc))
@@ -23,6 +25,8 @@ pub fn search_input_node(
   edited? : (String) -> Unit,
   submitted? : (String) -> Unit,
   escape? : () -> Bool,
+  step? : (Int) -> Bool,
+  step_can? : () -> Bool = fn() { true },
   cleared? : () -> Unit = fn() {  },
   end? : (@view.View) -> Unit,
   loc~ : SourceLoc,
@@ -48,6 +52,15 @@ pub fn search_input_node(
             false
           }
         })
+        |> ignore
+      None => ()
+    }
+    match step {
+      Some(s) =>
+        g
+        .key_context(@headless.combobox_context)
+        .on_action(@headless.combobox_next, fn(_) { s(1) }, can=step_can)
+        .on_action(@headless.combobox_prev, fn(_) { s(-1) }, can=step_can)
         |> ignore
       None => ()
     }

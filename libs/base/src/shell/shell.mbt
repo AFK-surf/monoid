@@ -23,6 +23,13 @@ pub(all) suberror ShellError {
 }
 
 ///|
+/// The shell's words, as it said them.
+pub impl Show for ShellError with output(self, logger) {
+  let ShellError(words) = self
+  logger.write_string(words)
+}
+
+///|
 /// What a call is answered: its JSON, and the bytes it carries where it carries any.
 pub(all) struct Answer {
   json : Json

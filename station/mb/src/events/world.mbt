@@ -473,7 +473,6 @@ fn play(script : J, data : J) -> J raise {
           brief: step.get("brief") is Some(Bool(true)),
           logins: strings_of(step.get("logins")),
           running: step.get("running") is Some(Bool(true)),
-          shared: step.get("shared") is Some(Bool(true)),
         }
         let h = { text: StringBuilder::new(), answer: Null, stream: None, }
         heard[name] = h

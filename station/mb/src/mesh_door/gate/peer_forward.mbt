@@ -326,8 +326,10 @@ fn Forwards::connection(self : Forwards, f : Forward, socket : Socket) -> Unit {
     off()
   }
   f.idle = None
-  ignore(self.rt.fork(name="forward socket closed", () => {
-    (socket.closed)()
+  ignore(self.rt.fork_daemon("forward socket closed", on_error=_ => (), () => {
+    (socket.closed)() catch {
+      _ => ()
+    }
     match f.sockets.search_by(s => physical_equal(s, socket)) {
       Some(i) => ignore(f.sockets.remove(i))
       None => ()
@@ -337,7 +339,7 @@ fn Forwards::connection(self : Forwards, f : Forward, socket : Socket) -> Unit {
     }
   }))
   if f.device is Some(device) {
-    ignore(self.rt.fork(name="forward device", () => self.device_connection(f, device, socket) catch {
+    ignore(self.rt.fork_daemon("forward device", on_error=_ => (socket.abort)(), () => self.device_connection(f, device, socket) catch {
       e => {
         f.failed = Some(words_of(e))
         (socket.abort)()
@@ -355,7 +357,10 @@ fn Forwards::connection(self : Forwards, f : Forward, socket : Socket) -> Unit {
     (socket.abort)()
     return
   }
-  ignore(self.rt.fork(name="forward tunnel", () => {
+  ignore(self.rt.fork_daemon("forward tunnel", on_error=e => {
+    f.failed = Some(words_of(e))
+    (socket.abort)()
+  }, () => {
     match (try { Ok((route.tunnel)(f.id, f.port, false)) } catch { e => Err(e) }) {
       Ok(tunnel) => {
         f.down_until = None

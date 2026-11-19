@@ -50,6 +50,9 @@ pub fn stations_list_node(
   let stations_by = v.keyed_by(fn() { stations().unwrap_or([]) }, fn(st) { text(Some(st), "station") })
   let rigs_now = @signals.computed(fn(_) { if stations() is Some(_) { @settings.rigs_listed(core, here()) } else { [] } }, same=jsons_same)
   let devices_now = @signals.computed(fn(_) { if stations() is Some(_) { @settings.devices_listed(core, here()) } else { [] } }, same=jsons_same)
+  // (the rigs and the devices kept by their keys once, so a row is told only as its own one changes: View::keyed_by)
+  let rigs_by = v.keyed_by(fn() { rigs_now.get() }, fn(x) { text(Some(x), "id") })
+  let devices_by = v.keyed_by(fn() { devices_now.get() }, fn(x) { "device/" + text(Some(x), "station") + "/" + text(Some(x), "id") })
   let add = fn() { @settings.place_action(core, here(), "stations") is Some(_) }
   let adding = fn(at : @view.View) {
     match @settings.place_action(core, @signals.untracked(here), "stations") {
@@ -129,26 +132,24 @@ pub fn stations_list_node(
           })
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
-          let r = @signals.computed(fn(_) { rigs_now.get().iter().find_first(fn(x) { text(Some(x), "id") == id }) }, same=json_opt_same)
+          let r = fn() { rigs_by.get(id) }
           @sf.summary_mark_card_node(
             b,
             fn(m) { @sf.icon_node(m, "boxes", @sf.summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
-            fn() { text(r.get(), "name") },
-            fn() { @settings.rig_said(r.get()) },
+            fn() { text(r(), "name") },
+            fn() { @settings.rig_said(r()) },
             fn() { (core.push)(Station(here().workspace + "/" + id)) },
           )
         }
         k if k.has_prefix("device/") => {
-          let d = @signals.computed(fn(_) {
-            devices_now.get().iter().find_first(fn(x) { "device/" + text(Some(x), "station") + "/" + text(Some(x), "id") == k })
-          }, same=json_opt_same)
+          let d = fn() { devices_by.get(k) }
           @sf.summary_mark_card_node(
             b,
-            fn(m) { @sf.icon_node(m, "", @sf.summary_mark_side, By(fn() { @sf.theme().p.text }), name_now=fn() { @settings.device_icon(d.get()) }) |> ignore },
-            fn() { text(d.get(), "name") },
-            fn() { @settings.device_said(d.get()) },
+            fn(m) { @sf.icon_node(m, "", @sf.summary_mark_side, By(fn() { @sf.theme().p.text }), name_now=fn() { @settings.device_icon(d()) }) |> ignore },
+            fn() { text(d(), "name") },
+            fn() { @settings.device_said(d()) },
             fn() {
-              let dv = @signals.untracked(fn() { d.get() })
+              let dv = @signals.untracked(fn() { d() })
               @settings.open_device(core, @signals.untracked(here), text(dv, "station"), text(dv, "id"), Unanchored)
             },
           )

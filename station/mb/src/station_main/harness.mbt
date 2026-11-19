@@ -374,17 +374,14 @@ async fn pipe_tcp_lost(host : @host.Host) -> Json {
   // (a bound only on what must come: one that never ends fails the test, saying so)
   let ended = @effect.timeout(10000, () => {
     while true {
-      let (said, bytes) = host.shell("tcp.read", { "id": theirs }) catch { _ => break }
-      match (said, bytes) {
-        ({ "end": True, .. }, _) | (_, None) => break
-        (_, Some(b)) => came.write_string(@utf8.decode_lossy(b))
+      match (host.tcp_read(theirs) catch { _ => break }) {
+        None => break
+        Some(b) => came.write_string(@utf8.decode_lossy(b))
       }
     }
   })
   let code = @effect.timeout(10000, () => reset.wait())
-  ignore(host.shell("tcp.close", { "id": theirs })) catch {
-    _ => ()
-  }
+  host.tcp_close(theirs)
   {
     "came": Json::string(came.to_string()),
     "ended": Json::boolean(ended is Some(_)),
@@ -403,8 +400,8 @@ fn driver_errors_said() -> Json {
     @accounts_oauth.Said("signed out"),
     @accounts_oauth.RenewRefused(Some(401), "refused by its server"),
     @accounts_pool.Thrown("RenewRefused", @accounts_pool.jobj([("message", @accounts_pool.js("refused in the pool"))])),
-    @api_routes.Thrown("RenewRefused", jv_of_json({ "message": "refused through the bus", "status": 400 })),
-    @api_routes.Thrown("Said", jv_of_json({ "message": "said through the bus" })),
+    @api_routes.Thrown("RenewRefused", @jsjson.JV::of_json({ "message": "refused through the bus", "status": 400 })),
+    @api_routes.Thrown("Said", @jsjson.JV::of_json({ "message": "said through the bus" })),
     @accounts_oauth.Failed("a plain failure"),
   ]
   Json::array(

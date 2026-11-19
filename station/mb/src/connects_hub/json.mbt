@@ -220,7 +220,7 @@ pub fn text_of(b : BytesView) -> String {
 ///|
 /// A text's UTF-8.
 pub fn utf8(s : String) -> Bytes {
-  @utf8.encode(s)
+  @jsjson.utf8(s)
 }
 
 ///|

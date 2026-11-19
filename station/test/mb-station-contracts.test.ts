@@ -387,3 +387,168 @@ test("every hook the TypeScript gives the event streams, the program gives them"
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
+
+// ── what one part of the program asks another by name ──
+
+/// The call of each argument of `f(` at `open` (its index just past the paren) in `text`: the arguments' text, split at
+/// the commas of its own level.
+function argsAt(text: string, open: number): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = open;
+  let quoted = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i]!;
+    if (quoted) {
+      if (c === "\\") i++;
+      else if (c === '"') quoted = false;
+      continue;
+    }
+    if (c === '"') quoted = true;
+    else if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) {
+        out.push(text.slice(start, i));
+        return out;
+      }
+      depth--;
+    } else if (c === "," && depth === 0) {
+      out.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+/// The names a dispatcher of `files` answers: every literal of a `match` arm (`"a" | "b" if … =>`), a P5-5 part's
+/// `op("…"`, and the prefixes it takes the rest of a name by (`op.has_prefix("…")`, `prefix_op("…"`).
+function dispatched(files: string[]): { arms: Set<string>; prefixes: string[] } {
+  const arms = new Set<string>();
+  const prefixes: string[] = [];
+  for (const f of files) {
+    const text = read(f);
+    for (const line of text.split("\n")) {
+      const arm = /^\s*("[^"\n]+"(?:\s*\|\s*"[^"\n]+")*)\s*(?:if\b.*)?=>/.exec(line);
+      if (arm) for (const m of arm[1]!.matchAll(/"([^"]+)"/g)) arms.add(m[1]!);
+    }
+    for (const m of text.matchAll(/\.op\(\s*"([^"]+)"|\b(?:op|name|what) == "([^"]+)"/g)) arms.add((m[1] ?? m[2])!);
+    for (const m of text.matchAll(/\b(?:op|name|what)\.has_prefix\("([^"]+)"\)|\.prefix_op\(\s*"([^"]+)"/g)) prefixes.push((m[1] ?? m[2])!);
+  }
+  return { arms, prefixes };
+}
+
+test("every method the hub asks of a session's actor is one the actors answer", () => {
+  // (session_hub's `Hub::act(key, method, args?)`, told the sessions' program, which runs it: reader/actor_run.mbt
+  // `Actors::called`; one it does not know raised there, in the program, long after the hub went on: `L10`'s
+  // `evictThenCleanArchive`)
+  const run = read(join(mb, "reader", "actor_run.mbt"));
+  const called = /\nasync fn Actors::called\([\s\S]*?\n\}\n/.exec(run)?.[0] ?? "";
+  assert.ok(called.length > 0, "reader/actor_run.mbt has no Actors::called");
+  const { arms } = dispatched([]);
+  for (const line of called.split("\n")) {
+    const arm = /^    ("[^"\n]+"(?:\s*\|\s*"[^"\n]+")*)\s*(?:if\b.*)?=>/.exec(line);
+    if (arm) for (const m of arm[1]!.matchAll(/"([^"]+)"/g)) arms.add(m[1]!);
+  }
+  assert.ok(arms.size >= 20, `the actors' methods read: ${[...arms].join(",")}`);
+  const results: Result[] = [];
+  for (const f of mbt(join(mb, "session_hub")).filter((f) => !/\/(?:hub_)?harness[^/]*\.mbt$/.test(f))) {
+    const text = read(f);
+    for (const m of text.matchAll(/\.act\(/g)) {
+      const args = argsAt(text, m.index! + m[0].length);
+      const where = `${relative(station, f)}:${text.slice(0, m.index).split("\n").length}`;
+      // (its literals, a condition's own taken out: `if is_true(x, "refill") { "takeRefill" } else { "takeWait" }`)
+      const methods = [...(args[1] ?? "").replace(/\w+\([^()]*\)/g, "").matchAll(/"([^"]+)"/g)].map((x) => x[1]!);
+      results.push({ name: `act ${where}`, ok: methods.length > 0, why: `the method asked is no literal: ${args[1]}` });
+      for (const method of methods) results.push({ name: `act ${method}`, ok: arms.has(method), why: `${where} asks a session's actor for "${method}", which reader/actor_run.mbt Actors::called does not answer` });
+    }
+  }
+  assert.ok(results.length >= 20, `the hub's asks of its actors read: ${results.length}`);
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+/// Where a slice answers what the others ask it on the bus (station_main/AGENTS.md: `hub_ask`, `jobs_ask`, `ui_ask`,
+/// `coord_ask`), by its files.
+const ASK_ANSWERED_IN: Record<string, RegExp> = {
+  // (and a station that only runs tasks gives its own, live_p5_1_rigs.mbt)
+  hub: /\/live_p5_2_[^/]*\.mbt$|\/live_p5_1_rigs\.mbt$/,
+  jobs: /\/live_p5_3[^/]*\.mbt$/,
+  ui: /\/live_p5_4[^/]*\.mbt$/,
+  coord: /\/live_p5_5[^/]*\.mbt$/,
+};
+
+/// What a slice's dispatcher hands on whole, what it does not answer itself: each with what answers there and a check
+/// that it is handed on.
+const ASK_HANDED_ON: { slice: string; answers: () => string; why: string; holds: () => boolean }[] = [
+  {
+    slice: "hub",
+    answers: () => /\npub async fn hub_call\([\s\S]*?\n\}\n/.exec(read(join(mb, "session_hub", "hub_harness.mbt")))?.[0] ?? "",
+    why: "P5-2's hub_bridge (live_p5_2_hubops.mbt) asks session_hub's hub_call what it does not answer",
+    holds: () => /@session_hub\.hub_call\(hub, name, args\)/.test(read(join(mb, "station_main", "live_p5_2_hubops.mbt"))),
+  },
+];
+
+/// Helpers that ask by the name of an `ask` they are given, not by the bus's: each with the slice it is given and a
+/// check that it is so.
+const ASKED_THROUGH: { file: string; fn: RegExp; slice: string; why: string; holds: () => boolean }[] = [
+  {
+    file: "live_bus.mbt",
+    fn: /^async fn asked_\w+\(\s*ask : /,
+    slice: "jobs",
+    why: "Claude's logins (live_p5_2_drivers.mbt p52_claude_logins) are given the bus's jobs_ask",
+    holds: () => /p52_claude_logins\(pump, host, \(op, arg\) => \(ctx\.bus\.jobs_ask\.val\)\(op, arg\)\)/.test(read(join(mb, "station_main", "live_p5_2_drivers.mbt"))),
+  },
+];
+
+test("every name a slice asks of another on the bus is one that slice answers", () => {
+  const files = programFiles();
+  const answers = Object.fromEntries(Object.entries(ASK_ANSWERED_IN).map(([slice, re]) => [slice, dispatched(files.filter((f) => re.test(f)))]));
+  for (const h of ASK_HANDED_ON) {
+    assert.ok(h.holds(), `${h.slice}: ${h.why}, no longer so: take it out of ASK_HANDED_ON`);
+    const text = h.answers();
+    assert.ok(text.length > 0, `${h.slice}: what it is handed on to is not there`);
+    for (const line of text.split("\n")) {
+      const arm = /^\s*("[^"\n]+"(?:\s*\|\s*"[^"\n]+")*)\s*(?:if\b.*)?=>/.exec(line);
+      if (arm) for (const m of arm[1]!.matchAll(/"([^"]+)"/g)) answers[h.slice]!.arms.add(m[1]!);
+    }
+  }
+  // (a prefix handed on whole, `store.` to the stores: what is left of the name answered anywhere a call by name is)
+  const anywhere = answered();
+  const asks: { slice: string; op: string; where: string }[] = [];
+  for (const f of files) {
+    const text = read(f);
+    const at = (i: number) => `${relative(station, f)}:${text.slice(0, i).split("\n").length}`;
+    // (by the bus's Ref: `(bus.hub_ask.val)("op", …)`, `asked(bus.jobs_ask.val, "op", …)`)
+    for (const m of text.matchAll(/\(\s*(?:[\w.()]+\.)?(hub|jobs|ui|coord)_ask\.val\s*\)\(\s*"([^"]*)"|\basked\(\s*(?:[\w.()]+\.)?(hub|jobs|ui|coord)_ask\.val\s*,\s*"([^"]*)"/g)) {
+      asks.push({ slice: (m[1] ?? m[3])!, op: (m[2] ?? m[4])!, where: at(m.index!) });
+    }
+    // (by a name given it: `let jobs = bus.jobs_ask.val` … `asked(jobs, "op", …)`, `jobs("op", …)`)
+    for (const alias of text.matchAll(/\blet (\w+) = (?:[\w.()]+\.)?(hub|jobs|ui|coord)_ask\.val\b/g)) {
+      for (const m of text.matchAll(new RegExp(`\\basked\\(\\s*${alias[1]}\\s*,\\s*"([^"]*)"|(?<![\\w.])${alias[1]}\\(\\s*"([^"]*)"`, "g"))) {
+        asks.push({ slice: alias[2]!, op: (m[1] ?? m[2])!, where: at(m.index!) });
+      }
+    }
+  }
+  for (const h of ASKED_THROUGH) {
+    assert.ok(h.holds(), `${h.file}: ${h.why}, no longer so: take it out of ASKED_THROUGH`);
+    const text = read(join(mb, "station_main", h.file));
+    const fns = text.split("\n///|\n").filter((b) => h.fn.test(b.replace(/^(?:\/\/\/[^\n]*\n)*/, "")));
+    assert.ok(fns.length > 0, `${h.file}: nothing of ${h.fn}`);
+    for (const b of fns) for (const m of b.matchAll(/\bask\(\s*"([^"]*)"/g)) asks.push({ slice: h.slice, op: m[1]!, where: `${h.file} (${h.slice}_ask)` });
+  }
+  assert.ok(asks.length >= 60, `the asks of the bus read: ${asks.length}`);
+  for (const s of Object.keys(ASK_ANSWERED_IN)) assert.ok(asks.some((a) => a.slice === s), `nothing asked of ${s}_ask: the reading is wrong`);
+  const results: Result[] = asks.map(({ slice, op, where }) => {
+    const { arms, prefixes } = answers[slice]!;
+    // (a name made at the call, `"chat." + what`, `"device.\{op}"`: answered by a prefix its slice takes, or arms of it)
+    const made = op.indexOf("\\{");
+    const name = made >= 0 ? op.slice(0, made) : op;
+    const open = made >= 0 || name.endsWith(".");
+    const ok = open
+      ? prefixes.some((p) => name.startsWith(p) || p.startsWith(name)) || [...arms].some((a) => a.startsWith(name))
+      : arms.has(name) || prefixes.some((p) => name.startsWith(p) && (arms.has(name.slice(p.length)) || anywhere.has(name.slice(p.length))));
+    return { name: `${slice}_ask ${op}`, ok, why: `${where} asks ${slice}_ask for "${op}", which no dispatcher of its slice answers` };
+  });
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});

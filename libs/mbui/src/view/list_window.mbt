@@ -3371,7 +3371,11 @@ fn View::scrolls_window_ids(
           i = i - 1
         }
         from
-      } else if pressed_holds || (all.top(ai) + all.h(ai) > top && all.top(ai) < top + vh) {
+      } else if pressed_holds ||
+        // (and a block asked for not measured yet, counted at `est` alone: its foot may reach past `top` once it is
+        // measured, as a long message brought deep into itself does, so it is made and measured in this pass first)
+        (asked && !to_end && !all.known(ai)) ||
+        (all.top(ai) + all.h(ai) > top && all.top(ai) < top + vh) {
         // (held by what was pressed in it, the block shows by that alone, where what is over that comes to now: what
         // shows goes out from it, never found by its place as counted at the last layout. As tall as it was then, what
         // it opened over the pressed grown since by more than a screen (no frame for 88 ms) put it off what shows: let
@@ -5200,9 +5204,14 @@ fn View::scrolls_window_ids(
         held.lies_along(Is(Lies::End)) |> ignore
       }
     }
-    // (its bands, under all its blocks (drawn first): each one ground from where its first block's top is to where its
-    // last's foot is, as the blocks are placed when it is drawn (Places, read where it is placed: View::shown_by),
-    // nothing laid out for it, nothing of it pressed; placed again as what it says or the column's blocks change)
+    // (its bands, under all its blocks (drawn first): each one ground from where its first block's top is drawn to where
+    // its last's foot is, worked out as it is drawn from where its blocks'
+    // slots are drawn then, as they draw themselves: placed by the layout (what the column's room over them takes, a
+    // short list's at its foot: `from_end`), drawn off on their way (`flips`), each top on the host's grid as the list
+    // puts a block's; drawn again as any of them is placed or drawn off (View::ground_by_placed), so it goes with them,
+    // never ahead of them to where they rest. A block with no slot (out of what shows, a screen past it) is where it is
+    // counted, as far off that as the slots are laid out off where they are counted. Nothing laid out for it, nothing of
+    // it pressed)
     match bands {
       Some((bs, look)) =>
         held.each(bs, fn(b) { b.from }, at_once=true, fn(v, b) {
@@ -5216,16 +5225,68 @@ fn View::scrolls_window_ids(
             fn(_) { if v.alive() { self.tree.place_marked_at(v.at) } },
             at_start=false,
           )
+          v.ground_by_placed(held) |> ignore
           v.shown_by(held, fn(tall) {
             let band = b.untracked()
             let all = places(laid.untracked())
             let n = all.length()
             match (laid_at.get(band.from), laid_at.get(band.upto)) {
               (Some(i), Some(j)) if i <= j && j < n => {
-                let g = all.col.grid
-                let on = fn(y : Double) { if g > 0.0 { (y * g + 0.5).floor() / g } else { y } }
-                let top = on(all.top(i) + band.top)
-                let foot = on(all.top(j) + all.h(j) + band.foot)
+                let g = self.tree.rows_grid_now()
+                let nodes = self.tree.nodes
+                // (where what holds the blocks is drawn down the window and how big, as the walk that draws them has it:
+                // each that holds them where it is placed, scrolled and drawn off, by whole pixels where it is not drawn
+                // off exactly; a row on the grid only where it is drawn as big as it is laid out)
+                let me = nodes[v.at]
+                let mut base = 0.0
+                let mut scale = 1.0
+                let mut up = me.parent
+                while up >= 0 {
+                  let m = nodes[up]
+                  if !m.slot {
+                    let oy = m.look.drawn_off.1
+                    let oy = if g > 0.0 && !m.look.drawn_exact { (oy * g).round() / g } else { oy }
+                    base = m.ls * base + m.ly + oy + self.tree.scroll_off_now(m).1
+                    scale = scale * m.ls
+                  }
+                  up = m.parent
+                }
+                let on = fn(y : Double) { if g > 0.0 && scale == 1.0 { row_on_grid(base + y, g) - base } else { y } }
+                // (how far the slots are laid out off where they are counted: the room over them a short list leaves)
+                let mut off = 0.0
+                for k, sv in slot_views {
+                  match laid_at.get(k) {
+                    Some(at) if sv.alive() && at < n => {
+                      off = nodes[sv.at].ly - all.top(at)
+                      break
+                    }
+                    _ => ()
+                  }
+                }
+                // (block `at`'s top as it is drawn now, in what holds them: its slot's place and how far it is drawn
+                // off, by whole pixels where it is not drawn off exactly, as the walk draws it)
+                let top_of = fn(at : Int) -> Double {
+                  match slot_views.get(all.key(at)) {
+                    Some(sv) if sv.alive() => {
+                      let m = nodes[sv.at]
+                      let oy = m.look.drawn_off.1
+                      let oy = if g > 0.0 && !m.look.drawn_exact { (oy * g).round() / g } else { oy }
+                      m.ly + oy
+                    }
+                    _ => all.top(at) + off
+                  }
+                }
+                // (block `at`'s foot as it is drawn now: its top and its height, on the grid as its top is: never the
+                // top of the block under it, which may be on a way of its own (one coming, drawn growing from its top))
+                let foot_of = fn(at : Int) -> Double {
+                  match slot_views.get(all.key(at)) {
+                    Some(sv) if sv.alive() => top_of(at) + nodes[sv.at].lh
+                    _ => top_of(at) + all.h(at)
+                  }
+                }
+                let drawn = on(me.ly)
+                let top = on(top_of(i) + band.top) - drawn
+                let foot = on(foot_of(j) + band.foot) - drawn
                 { dx: 0.0, dy: top, dw: 0.0, dh: foot - top - tall, corners: None }
               }
               // (one of its blocks not among the keys now: none drawn)

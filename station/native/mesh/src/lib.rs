@@ -7,6 +7,8 @@
 
 #[path = "../../../../client/shell/src/mesh.rs"]
 mod mesh;
+#[path = "../../../../client/shell/src/screen_dgram.rs"]
+mod screen_dgram;
 mod dscp;
 mod keep;
 mod log;
@@ -42,6 +44,9 @@ fn dht() -> n0_mainline::DhtBuilder {
     ]);
     dht
 }
+
+/// What screen_dgram.rs counts (the shell's `tally`): nothing kept here.
+pub(crate) fn tally(_what: &str) {}
 
 fn failed(error: impl std::fmt::Display) -> napi::Error {
     napi::Error::from_reason(error.to_string())
@@ -423,7 +428,7 @@ impl Endpoint {
             });
             rx
         });
-        done.recv().await.map(|inner| Connection { inner })
+        done.recv().await.map(|inner| Connection { inner, demux: Arc::default() })
     }
 
     /// A connection to another endpoint (a peer station; a station, from a client), offering `alpn` and, for one from
@@ -446,7 +451,7 @@ impl Endpoint {
             target.addrs.insert(self.mesh.address(scope, target.id).await.map_err(failed)?);
         }
         let conn = dial(&self.inner, target, &alpn, options, given_up).await.map_err(failed)?;
-        Ok(Connection { inner: conn })
+        Ok(Connection { inner: conn, demux: Arc::default() })
     }
 
     /// Tells it where an endpoint is without looking it up (tests, a LAN with no relay).
@@ -479,6 +484,13 @@ impl Endpoint {
     #[napi]
     pub fn relay_status(&self) -> Vec<RelayState> {
         self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string(), conflict: s.same_endpoint_id_connected() }).collect()
+    }
+
+    /// Whether its streams take a view's frames as datagrams (`Stream.receiveMediaDatagrams`): an addon from before has
+    /// no such call.
+    #[napi]
+    pub fn media_datagrams(&self) -> bool {
+        true
     }
 
     #[napi]
@@ -631,6 +643,8 @@ fn close_info(error: &iroh::endpoint::ConnectionError) -> CloseInfo {
 #[napi]
 pub struct Connection {
     inner: IrohConnection,
+    /// Its datagrams' reader while a view takes them (screen_dgram.rs `route`).
+    demux: Arc<StdMutex<std::sync::Weak<screen_dgram::Demux>>>,
 }
 
 #[napi]
@@ -659,13 +673,13 @@ impl Connection {
     #[napi]
     pub async fn accept_bi(&self) -> Option<Stream> {
         let (send, recv) = self.inner.accept_bi().await.ok()?;
-        Some(Stream::new(send, recv))
+        Some(Stream::new(send, recv, self))
     }
 
     #[napi]
     pub async fn open_bi(&self) -> napi::Result<Stream> {
         let (send, recv) = self.inner.open_bi().await.map_err(failed)?;
-        Ok(Stream::new(send, recv))
+        Ok(Stream::new(send, recv, self))
     }
 
     #[napi]
@@ -819,11 +833,75 @@ pub struct Stream {
     recv: Arc<Mutex<RecvStream>>,
     /// Set by `reset`: a read waiting on the other end gives up (it holds the receiving half meanwhile).
     reset: tokio::sync::watch::Sender<bool>,
+    conn: IrohConnection,
+    demux: Arc<StdMutex<std::sync::Weak<screen_dgram::Demux>>>,
+    /// A remote screen's view this end sends: its video and audio frames as datagrams (`mediaDatagrams`).
+    media_out: Arc<Mutex<Option<screen_dgram::MediaOut>>>,
+    /// One this end receives: its frames that come as datagrams, put back among the stream's (`receiveMediaDatagrams`).
+    media_in: Arc<Mutex<Option<screen_dgram::MediaRx>>>,
+    /// What a read took of the stream and of the datagrams and has not given yet (a frame of datagrams waits for the
+    /// stream to be between two frames).
+    pending: Arc<StdMutex<Vec<u8>>>,
 }
 
 impl Stream {
-    fn new(send: SendStream, recv: RecvStream) -> Stream {
-        Stream { send: Arc::new(Mutex::new(send)), recv: Arc::new(Mutex::new(recv)), reset: tokio::sync::watch::channel(false).0 }
+    fn new(send: SendStream, recv: RecvStream, conn: &Connection) -> Stream {
+        Stream {
+            send: Arc::new(Mutex::new(send)),
+            recv: Arc::new(Mutex::new(recv)),
+            reset: tokio::sync::watch::channel(false).0,
+            conn: conn.inner.clone(),
+            demux: conn.demux.clone(),
+            media_out: Arc::default(),
+            media_in: Arc::default(),
+            pending: Arc::default(),
+        }
+    }
+
+    /// `read` of a view's stream whose frames come as datagrams too (screen_dgram.rs): the stream's bytes, with the
+    /// frames made whole put in between two of its frames; the station asked for a key frame where one could not be had.
+    async fn read_with_datagrams(&self, media: &mut screen_dgram::MediaRx, mut reset: tokio::sync::watch::Receiver<bool>) -> napi::Result<Option<Buffer>> {
+        use tokio::time::Instant as Now;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut out = std::mem::take(&mut *self.pending.lock().unwrap());
+        loop {
+            if media.media.at_boundary() {
+                media.media.drain_into(&mut out);
+            }
+            if !out.is_empty() {
+                return Ok(Some(out.into()));
+            }
+            if media.media.take_keyframe(Now::now()) {
+                let send = self.send.clone();
+                tokio::spawn(async move {
+                    let _ = send.lock().await.write_all(&screen_dgram::KEYFRAME_FRAME).await;
+                });
+            }
+            let mut recv = self.recv.lock().await;
+            let deadline = media.media.deadline();
+            tokio::select! {
+                read = recv.read(&mut buf) => match read.map_err(failed)? {
+                    Some(n) => {
+                        let chunk = &buf[..n];
+                        match media.media.stream(chunk) {
+                            Some(b) => {
+                                out.extend_from_slice(&chunk[..b]);
+                                media.media.drain_into(&mut out);
+                                out.extend_from_slice(&chunk[b..]);
+                            }
+                            None => out.extend_from_slice(chunk),
+                        }
+                    }
+                    None => return Ok(None),
+                },
+                d = media.next() => media.take_waiting(d, Now::now()),
+                _ = screen_dgram::until(deadline) => media.media.tick(Now::now()),
+                _ = reset.changed() => {
+                    *self.pending.lock().unwrap() = out;
+                    return Ok(None);
+                }
+            }
+        }
     }
 }
 
@@ -835,6 +913,12 @@ impl Stream {
         let mut reset = self.reset.subscribe();
         if *reset.borrow() {
             return Ok(None);
+        }
+        {
+            let mut media = self.media_in.lock().await;
+            if let Some(media) = media.as_mut() {
+                return self.read_with_datagrams(media, reset).await;
+            }
         }
         let mut buf = vec![0u8; 64 * 1024];
         let mut recv = self.recv.lock().await;
@@ -853,7 +937,35 @@ impl Stream {
 
     #[napi]
     pub async fn write(&self, bytes: Buffer) -> napi::Result<()> {
-        self.send.lock().await.write_all(&bytes).await.map_err(failed)
+        let mut send = self.send.lock().await;
+        match self.media_out.lock().await.as_mut() {
+            Some(media) => media.write(&mut *send, &bytes).await.map_err(failed),
+            None => send.write_all(&bytes).await.map_err(failed),
+        }
+    }
+
+    /// A remote screen's view this end sends (a station's): its video and audio frames sent from now on as datagrams
+    /// on its connection under `token`, written before its reply's head line (screen_dgram.rs). False where the
+    /// connection's datagrams will not do: they go on the stream as before.
+    #[napi]
+    pub async fn media_datagrams(&self, token: u32) -> bool {
+        match screen_dgram::MediaOut::new(self.conn.clone(), token) {
+            Some(media) => {
+                *self.media_out.lock().await = Some(media);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A remote screen's view this end asks for (a client's), before its head goes: what comes as datagrams under
+    /// `token` on its connection given from now on among what `read` gives, as if it came on the stream. False where
+    /// another view on the connection has that token.
+    #[napi]
+    pub async fn receive_media_datagrams(&self, token: u32) -> bool {
+        let Some((route, rx)) = screen_dgram::route(&self.demux, &self.conn, token) else { return false };
+        *self.media_in.lock().await = Some(screen_dgram::MediaRx { media: screen_dgram::MediaIn::new(token, true), rx, rx_done: false, _route: route });
+        true
     }
 
     #[napi]

@@ -270,6 +270,20 @@ int64_t sfh_now(void) {
 #endif
 }
 
+/// The time since 1970, in ms: the system's wall clock, which may jump as the machine's time is set.
+int64_t sfh_wall_ms(void) {
+#ifdef _WIN32
+  FILETIME t;
+  GetSystemTimePreciseAsFileTime(&t);
+  uint64_t v = ((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime;
+  return (int64_t)((v - 116444736000000000ULL) / 10000ULL);
+#else
+  struct timespec t;
+  clock_gettime(CLOCK_REALTIME, &t);
+  return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+#endif
+}
+
 /// The shell's answer at once to `op` (NUL-terminated) with `json`: {"value": …} or {"error": …}.
 moonbit_bytes_t sfh_shell_sync(moonbit_bytes_t op, moonbit_bytes_t json) {
   if (shell == NULL) {

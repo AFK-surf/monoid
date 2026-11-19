@@ -515,6 +515,19 @@ fn screen_open(conf : Json, words : Map[String, String]) -> ScreenWorld {
         } else {
           None
         },
+        media_datagrams=match cfg(w, ["mediaDatagrams"]) {
+          Some(True) =>
+            Some(async fn(token) {
+              w.call([jstr("mediaDatagrams"), jnum(token)])
+              true
+            })
+          Some(False) =>
+            Some(async fn(token) {
+              w.call([jstr("mediaDatagrams"), jnum(token)])
+              false
+            })
+          _ => None
+        },
       ) catch {
         e => w.error = Some(message_of(e))
       }

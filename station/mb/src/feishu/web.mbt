@@ -12,6 +12,14 @@ pub(all) suberror ApiError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ApiError with output(self, logger) {
+  match self {
+    ApiError(m, _) => logger.write_string(m)
+  }
+}
+
+///|
 /// The code of a call's refusal, where Feishu said one.
 pub fn api_code(e : Error) -> Double? {
   match e {
@@ -326,7 +334,7 @@ pub fn multipart(body : JV?, files : Array[FilePart]) -> Bytes {
     Some(Str(s)) => {
       let parts = []
       for i in 0..<s.length() {
-        parts.push((i.to_string(), Str(s.unsafe_substring(start=i, end=i + 1))))
+        parts.push((i.to_string(), JV::Str(s.unsafe_substring(start=i, end=i + 1))))
       }
       parts
     }
@@ -567,7 +575,7 @@ async fn FeishuClient::raw(
     }
     let said = utf8_text(response.body, bom=true)
     let data = if said == "" {
-      Obj([])
+      JV::Obj([])
     } else {
       match try_parse(said) {
         Some(d) => d

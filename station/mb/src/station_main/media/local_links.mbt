@@ -32,6 +32,14 @@ pub(all) suberror LinkRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for LinkRefused with output(self, logger) {
+  match self {
+    LinkRefused(m) => logger.write_string(m)
+  }
+}
+
+///|
 fn ch(s : String, i : Int) -> Int {
   if i >= 0 && i < s.length() {
     s.unsafe_charcode_at(i)

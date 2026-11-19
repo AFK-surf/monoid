@@ -283,23 +283,23 @@ pub let zip_chunk : Int32
 pub fn zip_folder(String, String, Double, (String, String) -> Bool raise, Fs) -> Double raise
 
 // Errors
-#derive(Show)
 pub(all) suberror DriveError {
   DriveError(DriveFailure)
 }
+pub impl Show for DriveError
 
-#derive(Show)
 pub(all) suberror FsError {
   FsError(FsFailure)
 }
+pub impl Show for FsError
 
-#derive(Show)
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 
-#derive(Show)
 pub(all) suberror TooBig
+pub impl Show for TooBig
 
 // Types and methods
 pub(all) struct Answer {

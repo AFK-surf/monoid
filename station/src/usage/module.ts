@@ -27,6 +27,14 @@ export function keepUsage(store: StationStore, key: string, quiet = false): void
   if (usage !== null) store.setSessionUsage(key, usage, quiet);
 }
 
+/// Recomputes kept usage summaries that still had unpriced calls once the model catalog loads or changes.
+export function repriceUsage(store: StationStore, live: LiveHub): void {
+  const keys = store.unpricedUsageSessions();
+  if (keys.length === 0) return;
+  for (const key of keys) keepUsage(store, key);
+  live.usageCounted();
+}
+
 /// The live view reads each saved summary. Only sessions whose recorded usage changes are updated and told.
 export function keepCounted(store: StationStore, live: LiveHub, counter: UsageCounter): () => void {
   live.countWith({ of: (key) => store.sessionUsage(key), ask: (key) => counter.soon(key) });

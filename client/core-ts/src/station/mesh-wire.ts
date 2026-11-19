@@ -23,6 +23,10 @@ import { IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests
 import type { LinkNet, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
 import { RECHECKING } from "./words.ts";
 
+/// The header a station's reply to a screen's view says the token its frames go as datagrams under with
+/// (station/src/mesh/screens.ts `answerScreen`).
+const DGRAM_HEADER = "x-screen-dgram";
+
 // deno-lint-ignore no-explicit-any
 type J = any;
 
@@ -259,12 +263,17 @@ export class MeshWire implements StationWire {
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
       const link = yield* waiting(status, address, t("station.core.connecting"), mesh.link(key, credentials, theirs, off, "screen"));
       // (its own main id: the link it goes over may be one made for a LAN or a relay, under another; its sound as Opus
-      // where what taps the view decodes it, a twentieth of PCM's bytes)
-      const ask = (l: Link) =>
-        Effect.map(
-          l.duplex(head, { screen: { ...screen, ...(screen.audio && mesh.decodesOpus() ? { opus: true } : {}), self: mesh.deviceId() } }),
-          ([reply, send]) => [l, reply, send] as [Link, Reply, import("./wire.ts").SocketOut],
-        );
+      // where what taps the view decodes it, a twentieth of PCM's bytes; its picture and sound as datagrams where the
+      // host takes them, under a token of its own the stream takes them by before it asks: client/shell screen_dgram.rs)
+      const ask = (l: Link) => {
+        const token = screen.peek ? 0 : mesh.mediaToken();
+        const more = (taking: boolean) => ({ screen: { ...screen, ...(screen.audio && mesh.decodesOpus() ? { opus: true } : {}), ...(taking ? { datagrams: token } : {}), self: mesh.deviceId() } });
+        return Effect.map(l.duplex(head, more, token), ([reply, send]) => {
+          // (a station from before sends them on the stream: the stream's own frames, as before)
+          const datagrams = reply.datagrams === true && reply.headers.some(([k, v]) => k.toLowerCase() === DGRAM_HEADER && v === String(token));
+          return [l, { ...reply, datagrams }, send] as [Link, Reply, import("./wire.ts").SocketOut];
+        });
+      };
       const late = ([, reply]: [Link, Reply, import("./wire.ts").SocketOut]) => reply.cancel();
       const asked = yield* Effect.forkChild(Effect.result(ask(link)));
       const first = yield* Effect.raceFirst(
@@ -292,7 +301,7 @@ export class MeshWire implements StationWire {
       }
       const [l, reply, send] = answered;
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
-      return { reply: { status: reply.status, headers: reply.headers, body: reply.body, via: l.path() }, send, tap: reply.tap, replaced: () => mesh.replaced(key, l) };
+      return { reply: { status: reply.status, headers: reply.headers, body: reply.body, via: l.path() }, send, tap: reply.tap, replaced: () => mesh.replaced(key, l), ...(reply.datagrams ? { datagrams: true } : {}) };
     });
   }
   terminal(station: StationAddr, head: RequestHead, terminal: TerminalAsk): Effect.Effect<WireSocket, CoreError, import("effect").Scope.Scope> {

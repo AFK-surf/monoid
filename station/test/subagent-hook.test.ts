@@ -123,5 +123,5 @@ test("a command line from before it was told Slack's writes still refuses what i
 test("the tools a session speaks by are tools the station has", () => {
   const names = chatTools({} as any).map((t) => t.name);
   for (const tool of SPEAKS) assert.ok(names.includes(tool), tool);
-  assert.deepEqual(SPEAKS, ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive"]);
+  assert.deepEqual(SPEAKS, ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive", "chat_configure"]);
 });

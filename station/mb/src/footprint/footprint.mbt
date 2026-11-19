@@ -80,6 +80,14 @@ priv suberror Enough {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for Enough with output(self, logger) {
+  match self {
+    Enough(_) => logger.write_string("the measure passed its limit")
+  }
+}
+
+///|
 /// An error of the file system a strict measure does not pass over: its code and Node's message.
 pub suberror Failed {
   Failed(String, String)

@@ -18,6 +18,14 @@ let scans : Int = 4
 priv suberror Aborted
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for Aborted with output(self, logger) {
+  match self {
+    Aborted => logger.write_string("the worker was closed while a scan read")
+  }
+}
+
+///|
 pub struct Worker {
   store : Store
   rt : @effect.Runtime
@@ -202,7 +210,7 @@ fn Worker::tick(self : Worker) -> Unit {
 fn Worker::start_scan(self : Worker, key : String, item : CardOutcome) -> Unit {
   self.scanning[key] = true
   ignore(
-    self.rt.fork(
+    self.rt.fork_quiet(
       async fn() noraise {
         let done = try self.scan(item) catch {
           e => {

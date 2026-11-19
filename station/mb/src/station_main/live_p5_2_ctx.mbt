@@ -125,7 +125,7 @@ fn P52::outcomes_start(self : P52) -> Unit {
   )
   self.card_outcomes = Some(worker)
   ignore(
-    self.host.rt.fork(name="card outcomes", async fn() {
+    self.host.rt.fork_daemon("card outcomes", on_error=e => @host.note("card outcomes failed: \{e}"), async fn() {
       match (try { Ok((self.bus.previous_gone)()) } catch { e => Err(e) }) {
         Ok(_) => {
           worker.previous_exited()
@@ -139,7 +139,7 @@ fn P52::outcomes_start(self : P52) -> Unit {
     }),
   )
   ignore(
-    self.host.rt.fork(name="card outcomes stop", async fn() {
+    self.host.rt.fork_daemon("card outcomes stop", on_error=e => @host.note("card outcomes stop failed: \{e}"), async fn() {
       ignore(self.bus.stopped.wait())
       worker.close()
     }),
@@ -1032,7 +1032,7 @@ fn P52::working(self : P52, key : String, working : Array[Json], status : Json) 
       continue
     }
     ignore(
-      self.host.rt.fork(name="working", async fn() {
+      self.host.rt.fork_daemon("working", on_error=e => @host.note("working failed: \{e}"), async fn() {
         ignore((self.bus.coord_ask.val)("chat.working", {
           "connect": jstr(connect),
           "thread": { "channel": jfield(w, "channel"), "threadTs": jfield(w, "threadTs") },
@@ -1052,7 +1052,7 @@ fn P52::stands_at(self : P52, connect : Json, channel : Json, thread_ts : Json, 
     return
   }
   ignore(
-    self.host.rt.fork(name="stands at", async fn() {
+    self.host.rt.fork_daemon("stands at", on_error=e => @host.note("stands at failed: \{e}"), async fn() {
       ignore((self.bus.coord_ask.val)("chat.standsAt", {
         "connect": connect,
         "thread": { "channel": channel, "threadTs": thread_ts },
@@ -1179,13 +1179,13 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
     "settled" => (self.bus.hub_ask.val)("settled", { "key": a(0), "state": a(1), "words": a(2) })
     "stopJobs" => {
       for id in jitems(self.store("runningWaitJobIds", [a(0)]) catch { _ => Json::array([]) }) {
-        ignore((self.bus.jobs_ask.val)("jobs.stop", { "id": id }))
+        self.bus.jobs_stop(id)
       }
       Json::null()
     }
     "endJobs" => {
       for id in jitems(self.store("upJobIds", [a(0), jb(false)]) catch { _ => Json::array([]) }) {
-        ignore((self.bus.jobs_ask.val)("jobs.stop", { "id": id }))
+        self.bus.jobs_stop(id)
       }
       Json::null()
     }
@@ -1198,17 +1198,10 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
 }
 
 ///|
-/// An archived session's files put in cold storage (cold.ts `pack`): the packed builder's, under its room's lock.
+/// An archived session's files put in cold storage (cold.ts `pack`): its room found, its strays stopped, what can be
+/// made again cleaned, the room marked cold, then its workspace and history packed, under the room's lock.
 async fn P52::cold_pack(self : P52, key : String) -> Unit {
-  let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
-  match jtext(row, "workspace") {
-    Some(ws) if jfield(row, "archivedAt") != Json::null() =>
-      self.files.pack_workspace_if(ws, async fn() {
-        let now = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
-        jfield(now, "archivedAt") != Json::null()
-      }) catch {
-        e => live_log("warn", "cold", "an archived session's files not put away", { "session": jstr(key), "error": jstr(said_of(e)) })
-      }
-    _ => ()
+  self.storage().cold_pack(key) catch {
+    e => live_log("warn", "cold", "an archived session's files not put away", { "session": jstr(key), "error": jstr(said_of(e)) })
   }
 }

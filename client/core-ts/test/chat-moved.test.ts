@@ -618,7 +618,9 @@ test("a_chat_whose_row_on_another_station_says_it_came_lets_go_of_a_not_there_ke
   const row = { id: "k1", thread: 21, title: "在 mini", at: 6000, from: "st" };
   w.rows.st2 = [row];
   s.host.takeEmitted();
-  s.pushOn([AT, "st2"], "session", (chatsOf([rowOf(row)])["GET /sessions"] as J[])[0]);
+  const of = chatsOf([rowOf(row)]);
+  s.pushOn([AT, "st2"], "session", (of["GET /sessions"] as J[])[0]);
+  s.pushOn([AT, "st2"], "chat-shared", (of["GET /chats?shared=1"] as J[])[0]);
   s.pushOn([AT, "st2"], "chat-changed", { thread: 21 });
   const sent = await sentOf(s.host, 1);
   const data = s.core.inner.data;
@@ -643,7 +645,9 @@ test("a_chat_whose_row_comes_before_its_summary_says_it_came_is_taken_as_come_th
   await settle(s.host);
   const row = { id: "k1", thread: 21, title: "在 mini", at: 6000, from: "st" };
   w.rows.st2 = [{ ...row, from: undefined }];
-  s.pushOn([AT, "st2"], "session", (chatsOf([rowOf({ ...row, from: undefined })])["GET /sessions"] as J[])[0]);
+  const first = chatsOf([rowOf({ ...row, from: undefined })]);
+  s.pushOn([AT, "st2"], "session", (first["GET /sessions"] as J[])[0]);
+  s.pushOn([AT, "st2"], "chat-shared", (first["GET /chats?shared=1"] as J[])[0]);
   s.pushOn([AT, "st2"], "chat-changed", { thread: 21 });
   await settle(s.host);
   const data = s.core.inner.data;

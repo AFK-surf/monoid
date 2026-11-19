@@ -95,6 +95,9 @@ export type FeishuSurfaceOptions = {
   /// In a group, one conversation for each thread, begun by an @ and answered in it (「会话怎么分」); else
   /// one for the group.
   threadMode?: boolean;
+  /// In a direct chat, one conversation for each thread, as a group's in thread mode: each message outside a thread
+  /// begins one, answered in it; else one for the chat.
+  directThreads?: boolean;
   /// Keeps names across restarts and lets the admin API ask without waiting (knownPerson, knownChannel).
   book?: NameBook | null;
   /// The client (tests: one pointed at a stand-in).
@@ -121,6 +124,7 @@ export class FeishuSurface extends ConnectedSurface {
   readonly domain: Domain;
   private threads: FeishuThreads;
   private readonly threadMode: boolean;
+  private readonly directThreads: boolean;
   /// The messages that called it, the latest kept: a turn for one of them shows its status card at once.
   private called = new Set<string>();
   /// Chats as Feishu says: their name, whether they are a topic group (each topic its own conversation), a direct one.
@@ -139,6 +143,7 @@ export class FeishuSurface extends ConnectedSurface {
     this.client = options.client ?? new FeishuClient(options.appId, options.appSecret, options.domain);
     this.threads = options.threads;
     this.threadMode = options.threadMode === true;
+    this.directThreads = options.directThreads === true;
   }
 
   protected identify() {
@@ -269,7 +274,8 @@ export class FeishuSurface extends ConnectedSurface {
   }
 
   /// Which thread a message is in (「会话怎么分」): a topic group's topic is its own; in thread mode a
-  /// group's thread is, by its first message (one that @s the bot outside a thread begins one); anything else said in
+  /// group's thread is, by its first message (one that @s the bot outside a thread begins one), and so a direct chat's
+  /// with its threads on (each message there calls the bot); anything else said in
   /// the chat is the chat's conversation now, begun by the first message that @s the bot (or a new one asked for).
   private async heard(m: FeishuMessage, handler: Handler) {
     this.heardIn.set(m.user, m.chat);
@@ -280,7 +286,7 @@ export class FeishuSurface extends ConnectedSurface {
     if (topics) {
       threadTs = m.topic!;
       this.threads.heardTopic(this.connect, m.topic!, m.root ?? m.id);
-    } else if (this.threadMode && !m.p2p) {
+    } else if (m.p2p ? this.directThreads : this.threadMode) {
       threadTs = m.root ?? m.id;
       if (m.topic !== null || m.addressed) this.threads.heardTopic(this.connect, threadTs, threadTs);
     } else {
@@ -412,7 +418,7 @@ export class FeishuSurface extends ConnectedSurface {
   /// A new message in the chat, as the agent's words are (rich text): in a topic group a topic of its own; elsewhere the
   /// chat's conversation from now on, as a new one asked for in it begins (「会话怎么分」).
   async begin(chat: string, message: string): Promise<{ thread: ThreadRef; ts: string }> {
-    const { topics } = await this.chatInfo(chat);
+    const { topics, p2p } = await this.chatInfo(chat);
     let first: Json = null;
     let thread: ThreadRef | null = null;
     for (const content of textPosts(message)) {
@@ -430,7 +436,7 @@ export class FeishuSurface extends ConnectedSurface {
         this.threads.heardTopic(this.connect, topic, id);
         thread = { channel: chat, threadTs: topic };
       } else {
-        if (this.threadMode) this.threads.heardTopic(this.connect, id, id);
+        if (p2p ? this.directThreads : this.threadMode) this.threads.heardTopic(this.connect, id, id);
         else this.threads.begin(this.connect, chat, id);
         thread = { channel: chat, threadTs: id };
       }

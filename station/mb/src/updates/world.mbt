@@ -12,6 +12,14 @@ pub(all) suberror Thrown {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Thrown with output(self, logger) {
+  match self {
+    Thrown(kind, f) => logger.write_string(text(get(Some(f), "message")).unwrap_or(kind))
+  }
+}
+
+///|
 pub fn thrown(kind : String, message : String, more? : Array[(String, J)] = []) -> Error {
   Thrown(kind, jo([("message", js(message))] + more))
 }
@@ -133,7 +141,7 @@ pub fn World::now(self : World, name : String, args : Array[J]) -> Unit {
 /// Runs `f` apart, what it throws let go (a promise nobody awaits: `void (async () => …)()`).
 pub fn World::go(self : World, f : async () -> Unit) -> Unit {
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("updates", on_error=_ => (), async fn() {
       f() catch {
         _ => ()
       }
@@ -236,7 +244,7 @@ async fn Fibers::guarded(self : Fibers, f : async () -> Unit) -> Unit {
 async fn Fibers::promise(self : Fibers, f : async () -> Unit) -> Unit {
   let done : @effect.Deferred[Unit] = @effect.Deferred::new()
   ignore(
-    self.w.rt.fork(async fn() {
+    self.w.rt.fork_daemon("updates promise", on_error=_ => ignore(done.succeed(())), async fn() {
       self.guarded(f)
       ignore(done.succeed(()))
     }),
@@ -246,7 +254,7 @@ async fn Fibers::promise(self : Fibers, f : async () -> Unit) -> Unit {
 
 ///|
 fn Fibers::run(self : Fibers, f : async () -> Unit) -> @effect.Fiber[Unit] {
-  let fiber = self.w.rt.fork(async fn() {
+  let fiber = self.w.rt.fork_quiet(name="updates", async fn() {
     f() catch {
       _ => ()
     }

@@ -7,120 +7,82 @@ pub type J = @jsjson.JValue
 
 ///|
 pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 pub fn jn(d : Double) -> J {
-  Num(d)
+  @jsjson.JValue::of_double(d)
 }
 
 ///|
 pub fn ji(i : Int) -> J {
-  Num(i.to_double())
+  @jsjson.JValue::of_int(i)
 }
 
 ///|
 pub fn jb(b : Bool) -> J {
-  Bool(b)
+  @jsjson.JValue::of_bool(b)
 }
 
 ///|
 pub fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
+  @jsjson.JValue::of_object(pairs)
 }
 
 ///|
 pub fn ja(items : Array[J]) -> J {
-  Arr(items)
+  @jsjson.JValue::of_array(items)
 }
 
 ///|
 pub fn jstrs(items : Array[String]) -> J {
-  Arr(items.map(js))
+  @jsjson.JValue::of_strings(items)
 }
 
 ///|
 /// A string or none as JSON (null where none).
 fn jopt(s : String?) -> J {
-  match s {
-    Some(v) => js(v)
-    None => Null
-  }
+  @jsjson.JValue::of_opt_string(s)
 }
 
 ///|
 /// `o[k]` where `o` is an object.
 pub fn get(o : J?, k : String) -> J? {
-  match o {
-    Some(Obj(_) as obj) => obj.get(k)
-    _ => None
-  }
+  @jsjson.jval_at(o, k)
 }
 
 ///|
 pub fn text(j : J?) -> String? {
-  match j {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  @jsjson.jval_str_of(j)
 }
 
 ///|
 pub fn num(j : J?) -> Double? {
-  match j {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(j)
 }
 
 ///|
 pub fn keys_of(o : J) -> Array[String] {
-  match o {
-    Obj(ps) => ps.map(p => @jsjson.text(p.0))
-    _ => []
-  }
+  @jsjson.jval_keys_of(o)
 }
 
 ///|
 /// `o[k] = v` on a copy: in its place where `o` has it, else last.
 pub fn set(o : J, k : String, v : J) -> J {
-  let u = @jsjson.units(k)
-  match o {
-    Obj(ps) => {
-      let out = ps.copy()
-      match out.search_by(p => p.0 == u) {
-        Some(i) => out[i] = (u, v)
-        None => out.push((u, v))
-      }
-      Obj(out)
-    }
-    _ => Obj([(u, v)])
-  }
+  @jsjson.jval_set_or_new(o, k, v)
 }
 
 ///|
 /// `delete o[k]` on a copy.
 pub fn del(o : J, k : String) -> J {
-  let u = @jsjson.units(k)
-  match o {
-    Obj(ps) => Obj(ps.filter(p => p.0 != u))
-    _ => o
-  }
+  @jsjson.jval_del(o, k)
 }
 
 ///|
 /// `{ ...a, ...b }`.
 pub fn spread(a : J, b : J) -> J {
-  let mut out = match a {
-    Obj(_) => a
-    _ => Obj([])
-  }
-  match b {
-    Obj(ps) => for p in ps { out = set(out, @jsjson.text(p.0), p.1) }
-    _ => ()
-  }
-  out
+  @jsjson.jval_spread(a, b)
 }
 
 ///|
@@ -297,10 +259,7 @@ pub fn is_sha(s : String) -> Bool {
 ///|
 /// JavaScript's `Number.isSafeInteger`.
 pub fn is_safe_integer(j : J?) -> Bool {
-  match j {
-    Some(Num(d)) => d == d.floor() && d.abs() <= 9007199254740991.0
-    _ => false
-  }
+  j is Some(Num(d)) && @jsjson.is_safe_integer(d)
 }
 
 ///|
@@ -414,7 +373,7 @@ pub fn bytes_of(j : J?) -> Bytes {
 ///|
 /// UTF-8 decoded as Node's `toString("utf8")` does (what is not UTF-8 replaced).
 pub fn utf8_text(b : Bytes) -> String {
-  @utf8.decode_lossy(b)
+  @jsjson.utf8_text(b)
 }
 
 ///|

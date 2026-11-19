@@ -13,7 +13,7 @@ import { log } from "../ops/log.ts";
 import { Agents } from "../sessions/agents.ts";
 import { sender } from "../sessions/messages.ts";
 import { ControlPlane, Events, Parts, Paths, Peers, Readers, ScreenRegistry, Store } from "../services.ts";
-import { act, endedNotice, loginTools, promptNotice, type Where } from "./tool.ts";
+import { act, againNotice, endedNotice, loginTools, promptNotice, type Where } from "./tool.ts";
 import { Logins, slackPage, type Starter } from "./index.ts";
 import { LoginPages } from "./pages.ts";
 
@@ -83,6 +83,16 @@ export const LoginsLive = Layer.effectDiscard(
         if (asks) asking.add(login.id);
         else asking.delete(login.id);
       }),
+      // Started again by a person from its card: the agent it is for answers what it asks, its card already following it.
+      logins.onAgain(({ from, login, starter, by }) => {
+        if (starter.peer) return tellPeer(starter, login.id, againNotice(from, login, by, here()), false);
+        if (!starter.chat) return;
+        try {
+          hub.notify(starter.chat, againNotice(from, login, by));
+        } catch (error) {
+          log.warn("logins", "an agent was not told its login was started again", { login: login.id, error: (error as Error).message });
+        }
+      }),
       // Told: the agent that started it, and each that posted its card (one may post a card for a login under way).
       logins.onEnded((login, starter) => {
         // Another station's agent started it: told there, where its cards are.
@@ -110,6 +120,7 @@ export const LoginsLive = Layer.effectDiscard(
         return login ? slackPage(login) : null;
       },
       answer: (id, code, by) => void logins.answer(id, code, by),
+      deadline: (id) => logins.deadline(id),
     };
     yield* Effect.addFinalizer(() => Effect.sync(() => {
       unlisten.forEach((stop) => stop());

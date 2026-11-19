@@ -103,6 +103,7 @@ pub let typical_bytes : Int32
 pub(all) suberror MeshError {
   MeshError(code~ : String, message~ : String, cause~ : String)
 }
+pub impl Show for MeshError
 
 // Types and methods
 pub struct Backoff {

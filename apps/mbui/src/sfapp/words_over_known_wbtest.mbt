@@ -15,6 +15,8 @@ fn init {
     ("src/sfapp/model_pop_wbtest.mbt", "描述要做的事。它会在 Willow 上使用所选模型新建会话。", "GPT-6 Astra"),
     ("src/sfapp/model_pop_wbtest.mbt", "描述要做的事。它会在 Willow 上使用所选模型新建会话。", "中"),
     ("src/sfapp/model_pop_wbtest.mbt", "描述要做的事。它会在 Willow 上使用所选模型新建会话。", "Opus 5.5"),
+    ("src/sfapp/model_pop_wbtest.mbt", "描述要做的事。它会在 Willow 上使用所选模型新建会话。", "200K"),
+    ("src/sfapp/presets_wbtest.mbt", "取消", "300K"),
     // (the card to share's stage fading as it closes, the picture a line higher since its looks are in sets: a day's
     // date under its bar over the new chat's words)
     ("src/sfapp/stations_now_wbtest.mbt", "描述要做的事。它会在 Willow 上使用所选模型新建会话。", "10/26"),

@@ -1,0 +1,35 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "base/net"
+
+import {
+  "mbui/effect",
+}
+
+// Values
+pub async fn pipe_duplex(Socket, Socket) -> Unit noraise
+
+// Errors
+pub(all) suberror SocketClosed
+pub impl Show for SocketClosed
+
+// Types and methods
+pub struct Listener[C] {
+  // private fields
+}
+pub async fn[C] Listener::close(Self[C]) -> Unit noraise
+pub fn[C] Listener::new(accept~ : async () -> C?, close~ : async () -> Unit, is_fatal? : (Error) -> Bool, retry_ms? : Int32) -> Self[C]
+pub async fn[C] Listener::serve(Self[C], @effect.Scope, async (C) -> Unit, on_error? : (Error) -> Unit) -> Unit
+
+pub struct Socket {
+  // private fields
+}
+pub async fn Socket::destroy(Self) -> Unit noraise
+pub async fn Socket::end_write(Self) -> Unit
+pub fn Socket::is_closed(Self) -> Bool
+pub fn Socket::new(read~ : async () -> Bytes?, write~ : async (Bytes) -> Unit, end_write~ : async () -> Unit, close~ : async () -> Unit) -> Self
+pub async fn Socket::read(Self) -> Bytes?
+pub async fn Socket::write(Self, Bytes) -> Unit
+
+// Type aliases
+
+// Traits

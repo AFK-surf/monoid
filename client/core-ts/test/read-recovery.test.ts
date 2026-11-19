@@ -52,7 +52,7 @@ test("an explicit read repairs a stale cached position and leaves unrelated read
 });
 
 test("after an interrupted read and restart, showing the chat retries the read", async () => {
-  const s = await started(answers(), 0, undefined, (st) => { st.gate.shared = true; st.gate.marks = true; st.gate.resumes = true; });
+  const s = await started(answers(), 0, undefined, (st) => { st.gate.marks = true; st.gate.resumes = true; });
   const { host, core } = s;
   let next: Core | undefined;
   try {

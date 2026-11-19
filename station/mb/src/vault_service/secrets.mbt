@@ -194,7 +194,23 @@ struct LostSaves {
 priv suberror DecisionChanged
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for DecisionChanged with output(self, logger) {
+  match self {
+    DecisionChanged => logger.write_string("another connection changed the decision meanwhile")
+  }
+}
+
+///|
 priv suberror DecisionCardMoved
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for DecisionCardMoved with output(self, logger) {
+  match self {
+    DecisionCardMoved => logger.write_string("the decision's card moved meanwhile")
+  }
+}
 
 ///|
 /// A plain grant's record as `vault_grants` keeps it.

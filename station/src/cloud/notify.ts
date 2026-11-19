@@ -5,7 +5,7 @@
 // pushes them to people's devices. Only what happens from now on is noticed. A batch that cannot be
 // sent is dropped; an older cloud (404) has no pushes.
 import { Clock, Effect, Exit, FiberSet, Scope } from "effect";
-import { stationLang } from "../ops/i18n.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import type { Readers } from "../read/pool.ts";
 import type { Notice } from "../read/notices.ts";
@@ -36,8 +36,13 @@ export class Notifier {
   /// workspace's batch (its sessions' notices); absent, the home one's.
   post: (notices: Notice[], workspace?: string) => Promise<void>;
 
-  /// `send`: a batch to the control plane; `clock`: the clock a batch gathers on (a TestClock in tests).
-  constructor(store: Store, readers: Readers, cloud: Cloud, send: (notices: Notice[], workspace?: string) => Promise<void>, options: { clock?: Clock.Clock } = {}) {
+  /// When a login under way runs out of time (logins/module.ts, through the hub): what a notice of its card says.
+  private deadline: (login: string) => number | null;
+  private now: () => number;
+
+  /// `send`: a batch to the control plane; `clock`: the clock a batch gathers on (a TestClock in tests); `deadline`:
+  /// when a login of this station's under way runs out of time; `now`, the time it is told by (the hub's clock).
+  constructor(store: Store, readers: Readers, cloud: Cloud, send: (notices: Notice[], workspace?: string) => Promise<void>, options: { clock?: Clock.Clock; now?: () => number; deadline?: (login: string) => number | null } = {}) {
     this.scope = Effect.runSync(Scope.make());
     const runtime = Scope.provide(FiberSet.makeRuntimePromise<never, void, never>(), this.scope);
     this.run = Effect.runSync(options.clock ? runtime.pipe(Effect.provideService(Clock.Clock, options.clock)) : runtime);
@@ -46,6 +51,9 @@ export class Notifier {
     this.readers = readers;
     this.cloud = cloud;
     this.post = send;
+    this.deadline = options.deadline ?? (() => null);
+    const clock = options.clock ?? liveClock;
+    this.now = options.now ?? (() => clock.currentTimeMillisUnsafe());
     this.stop = store.subscribe((change) => {
       if (change.type === "session") this.sessionChanged(change.key);
       else if (change.type === "thread") this.said(change.id, change.entries);
@@ -78,10 +86,29 @@ export class Notifier {
     void this.readers.read(op, args, stationLang(), { told: true }).then(
       (text) => {
         const answer = JSON.parse(text);
-        this.queue(Array.isArray(answer) ? answer : answer.notices);
+        this.queue((Array.isArray(answer) ? answer : answer.notices).map((n: Notice) => this.timed(n)));
       },
       (error) => log.warn("notify", "a notice could not be made", { error: (error as Error).message }),
     );
+  }
+
+  /// What a chat asks of its person by a login's card, said with how long is left to log in (需要你登录 gh（14 分钟内）):
+  /// it ends by itself, after which it has to be started again.
+  private timed(n: Notice): Notice {
+    if (n.kind !== "block") return n;
+    let card: unknown = null;
+    try {
+      card = this.store.pendingCardHeader(n.thread)?.[1] ?? null;
+    } catch {
+      return n;
+    }
+    const c = card as { type?: unknown; login?: unknown; station?: unknown } | null;
+    if (c?.type !== "login" || typeof c.login !== "string" || c.station !== undefined) return n;
+    const ends = this.deadline(c.login);
+    if (ends === null) return n;
+    const minutes = Math.ceil((ends - this.now()) / 60_000);
+    if (minutes <= 0) return n;
+    return { ...n, text: tr(stationLang(), "station.notice.loginWithin", { text: n.text, minutes: String(minutes) }) };
   }
 
   private queue(notices: Notice[]) {

@@ -82,6 +82,14 @@ pub suberror NotALog {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for NotALog with output(self, logger) {
+  match self {
+    NotALog => logger.write_string("not an event log")
+  }
+}
+
+///|
 /// event-log.ts `EventLog.from`: the log `kept` says (another process's), at `now`; raises on what is no log.
 pub fn EventLog::from(
   kept : J,

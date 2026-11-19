@@ -44,7 +44,7 @@ async fn Admin::uploaded(self : Admin, key : String, name : String) -> Found {
   }
   // Packed with its archived workspace: the route reads it out of the archive, under its lock.
   let room = match self.setup.data {
-    None => Null
+    None => JV::Null
     Some(data) =>
       self.backend.ask("sessions/footprint.roomOfSoon", [
         js(data),

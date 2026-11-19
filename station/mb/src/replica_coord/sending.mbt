@@ -345,7 +345,7 @@ pub async fn receive_file(fs : Fs, files : String, hash : String, body : Body, f
   }
   fs.mkdirs(files)
   let tmp = "\{path}.\{fs.random_hex(4)}.tmp"
-  let h = Sha256::new()
+  let h = @hash.Sha256::new()
   let mut at = 0.0
   try {
     fs.files.write(tmp, b"")

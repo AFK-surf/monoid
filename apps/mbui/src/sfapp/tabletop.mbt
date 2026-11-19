@@ -175,35 +175,12 @@ fn open_in_place(p : Page) -> Unit {
 }
 
 ///|
-/// A chat's composer in its messages' list's foot where its page is made with its inside nodes (sfbase's
-/// chat_page_nodes: chat_page_made's `foot`), at its own height, never less than it takes opened with one line (its
-/// being opened or let go moves none of the messages, as chat_foot_room keeps), over the navigation bar (the
-/// keyboard's top under it); nothing of a device half open yet.
-fn chat_foot_nodes(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
-  let foot = c.box(style=chat_foot_under, fn() {
-    c.box(style=@ui.style(w=Full, min_h=Fixed(@sfpages.composer_open_room(c, c.width))), fn() {
-      c.spacer()
-      match workspace_in_view(src).0 {
-        Some(w) => @sfpages.chat_composer(c, src, w, r, @sfbase.chat_view_now(src, r))
-        None => ()
-      }
-    })
-    |> ignore
-    bar_room_box(c, nav_foot())
-  })
-  @motion.scope(c, foot, bottom=true)
-}
-
-///|
-/// chat_foot_nodes' with its composer made as nodes (sfbase's composer_nodes) in `n`: over the navigation bar (the
-/// keyboard's top under it), its tips in `tips`; `shows`, whether its page shows (chat_composer_node's).
+/// A chat's composer made as nodes in its messages' list's foot (chat_page_made's `foot_node`), in `n`, at its own
+/// height: over the navigation bar (the keyboard's top under it), its tips in `tips`; `shows`, whether its page shows
+/// (chat_composer_node's).
 fn chat_foot_node(n : @view.View, src : Source, r : ChatRef, shows : () -> Bool, tips : @sf.TipLayer) -> Unit {
   n.row(Is(false)) |> ignore
   @sfpages.chat_composer_node(n, src, r, shows~, tips~)
   n.box(fn(bar) { bar.height(By(fn() { Some(nav_foot()) })) |> ignore }) |> ignore
 }
 
-///|
-/// A chat's foot under its messages made as nodes (chat_foot_nodes): as wide as the page, as tall as what it holds.
-// kept across runs: a value (no field of it changes)
-let chat_foot_under : @ui.Style = @ui.css("w=Full")

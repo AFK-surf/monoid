@@ -11,19 +11,12 @@
 let kept_switch_over_ms : Double = 1000.0
 
 ///|
-/// What a finger's drag up or down a list glides for after it is let go, over by then (two seconds; three for a long one).
+/// What a finger's drag up or down a list glides for after it is let go, over by then (two seconds).
 let kept_glide_over_ms : Double = 2000.0
-
-///|
-let kept_glide_long_ms : Double = 3000.0
 
 ///|
 /// A few frames: what a change told, or a Tab, takes to be drawn.
 let kept_few_frames_ms : Double = 100.0
-
-///|
-/// Between two Tabs, a frame or so drawn after each.
-let kept_tab_gap_ms : Double = 50.0
 
 ///|
 /// The bar the switches are made on: the three places made as nodes (对话, 连接, 用量) and one old view's (额度).

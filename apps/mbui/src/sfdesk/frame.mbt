@@ -1134,7 +1134,7 @@ fn main_page(
 ) -> Unit {
   match page {
     // (its bar the page node's: chat_bar_wide_node)
-    Chat(r) => chat_page(c, src, w, r)
+    Chat(r) => chat_page(c, src, w, r, tape=wide.tape.get())
     // an agent's history, asked as a page (a link's `?history=…&entry=…`), and a visualization: never on top here,
     // their chat put in their place with them beside it as they come on top (service_tab.mbt beside_follow)
     History(_, _, _) | PreviewFile(_, _, _, _) => ()
@@ -1151,7 +1151,7 @@ fn main_page(
     // 文件 and a station's drive: made once as nodes (pane_made, tape_made: sfpages' files_page_node.mbt)
     Files | Drive(_) => ()
     // a new chat (newchat.mbt)
-    NewChat => new_chat_page(c, src, w)
+    NewChat => new_chat_page(c, src, w, tape=wide.tape.get())
     // a station's screen, a drive's text read, a film played are over the whole window (sfapp's signed_in), not in
     // the pane
     Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_) => ()

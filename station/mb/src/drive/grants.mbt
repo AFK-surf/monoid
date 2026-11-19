@@ -89,24 +89,9 @@ fn unhex(s : String) -> Bytes {
 }
 
 ///|
-fn sha256(b : Bytes) -> Bytes {
-  sha256_bytes(b)
-}
-
-///|
 /// HMAC-SHA256 (RFC 2104).
 pub fn hmac_sha256(key : Bytes, data : Bytes) -> Bytes {
-  let k = if key.length() > 64 { sha256(key) } else { key }
-  let inner = @buffer.new()
-  let outer = @buffer.new()
-  for i = 0; i < 64; i = i + 1 {
-    let kb = if i < k.length() { k[i].to_int() } else { 0 }
-    inner.write_byte((kb ^ 0x36).to_byte())
-    outer.write_byte((kb ^ 0x5c).to_byte())
-  }
-  inner.write_bytes(data)
-  outer.write_bytes(sha256(inner.to_bytes()))
-  sha256(outer.to_bytes())
+  @hash.hmac_sha256(key[:], data[:])
 }
 
 ///|

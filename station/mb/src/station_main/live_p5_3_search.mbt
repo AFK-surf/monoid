@@ -140,7 +140,7 @@ fn P53Search::looker(self : P53Search) -> Proc raise P53Error {
   }
   self.proc = Some(proc)
   ignore(
-    self.bus.host.rt.fork(name="the search's answers", async fn() {
+    self.bus.host.rt.fork_daemon("the search's answers", on_error=e => @host.note("the search's answers failed: \{e}"), async fn() {
       let line = @buffer.Buffer()
       while true {
         match proc.events.take() {
@@ -169,7 +169,7 @@ fn P53Search::looker(self : P53Search) -> Proc raise P53Error {
   )
   // (let go once none was asked for IDLE_MS)
   ignore(
-    self.bus.host.rt.fork(name="the search's idle", async fn() {
+    self.bus.host.rt.fork_daemon("the search's idle", on_error=e => @host.note("the search's idle failed: \{e}"), async fn() {
       while self.proc is Some(p) && physical_equal(p, proc) {
         @effect.sleep(p53_search_idle_ms / 4) // timer: a deadline (an idle program's process let go)
         if self.waiting.length() == 0 && p53_clock() - self.asked_at >= p53_search_idle_ms.to_double() {
@@ -216,7 +216,7 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
   self.preparing[builder] = true
   let bus = self.bus
   ignore(
-    bus.host.rt.fork(name="search's builder", async fn() {
+    bus.host.rt.fork_daemon("search's builder", on_error=e => @host.note("search's builder failed: \{e}"), async fn() {
       defer self.preparing.remove(builder)
       let proc = spawn(
         bus.host,

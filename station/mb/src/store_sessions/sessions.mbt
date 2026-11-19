@@ -921,6 +921,14 @@ pub fn Store::session_usage(self : Store, key : String) -> Json raise {
 }
 
 ///|
+/// Keys of sessions whose kept usage summary still has calls of an unpriced model, so a catalog update can price them.
+pub fn Store::unpriced_usage_sessions(self : Store) -> Array[String] raise {
+  self
+  .all("SELECT session FROM session_usage WHERE json_extract(usage, '$.unpricedCalls') > 0", [])
+  .map(r => js_string(col(r, "session")))
+}
+
+///|
 pub fn Store::session_keys(self : Store) -> Array[Json] raise {
   self.all("SELECT key FROM sessions", []).map(r => col(r, "key"))
 }

@@ -432,6 +432,18 @@ priv suberror Restate {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for Restate with output(self, logger) {
+  match self {
+    Retry => logger.write_string("the outbox's write is to be tried again")
+    Repair => logger.write_string("the outbox is to be repaired first")
+    Missing => logger.write_string("the outbox's entry is missing")
+    Stale => logger.write_string("the outbox's entry is stale")
+    Pending => logger.write_string("the outbox's entry is still pending")
+  }
+}
+
+///|
 /// What a restatement read of its post: the message as merged, its card as last restated (None: none that parses),
 /// and whether the merged lookup must be repaired first.
 priv struct Current {

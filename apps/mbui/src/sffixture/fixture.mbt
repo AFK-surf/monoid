@@ -1491,6 +1491,9 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
       }
       // the board's (board_fixture.mbt)
       board_prefs_into(o)
+      if f.mode == "home-stale-build" {
+        o["staleBuild"] = Json::boolean(true)
+      }
       // the drive's ways, the files' page's tabs and favourites (browse_fixture.mbt)
       fix_browse_prefs_into(o)
       // whether what was opened and let go is brought, up to how big (downloads_fixture.mbt)
@@ -1503,7 +1506,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "shareIn" => fixture_share_topic(params)
     "imageNear" => fixture_image_near(params)
     // (待处理 open, Maple offline: decide_fixture.mbt)
-    "chats" if f.mode == "home-attention" || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
+    "chats" if f.mode.has_prefix("home-attention") || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
     "chats" if f.mode == "home-syncing" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_syncing(v)) })
     "chats" => fixture_chats(f, params).map(listed_chats)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
@@ -1530,9 +1533,36 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "archive" => @settings.fixture_topic(f.mode, name, params)
     // (the web's demo has none)
     "workspaceMarks" if f.mode == "webdemo" => Some({ "workspaces": { "ws1": {} } })
+    // home-attention-login: and another chat's login card waiting for the viewer, first, in its own words
+    "workspaceMarks" if f.mode == "home-attention-login" => Some(fix_attention_marks(login=true))
     "workspaceMarks" if f.mode == "home-attention" || f.mode.has_prefix("home-shared") =>
       Some(fix_attention_marks())
     "workspaceMarks" if board_mode(f.mode) => Some(board_marks())
+    // chat-login-ask: another chat's login card waiting for the viewer (sfbase's login_asks.mbt: a toast)
+    "workspaceMarks" if f.mode == "chat-login-ask" =>
+      Some({
+        "workspaces": {
+          "ws1": {
+            "wait": 1,
+            "tone": "wait",
+            "items": [
+              {
+                "kind": "wait",
+                "workspace": "ws1",
+                "station": "ws1/st1",
+                "stationName": "Willow",
+                "session": "s-c2",
+                "title": "部署到测试环境",
+                "what": "要你登录 gh",
+                "login": "login-9",
+                "loginEnds": 750000,
+                "at": 0,
+              },
+            ],
+          },
+        },
+        "badgeKinds": { "on": true, "wait": true, "failed": true, "done": true, "message": true, "services": true },
+      })
     "workspaceMarks" =>
       Some({
         "workspaces": {
@@ -2021,7 +2051,6 @@ pub fn fixture_stable_mode(mode : String) -> Bool {
 /// each with its `betaOnly`: what this made-up core says of them (scripts/features-check.ts holds it to the core's).
 let fixture_experimental_features : Array[(String, Bool)] = [
   ("chatPage", true),
-  ("composerNodes", true),
   ("farviewNative", true),
   ("board", false),
 ]
@@ -3151,14 +3180,25 @@ fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
       if state == "failed" {
         item["detail"] = Json::string(text(Some(u), "message"))
       }
+      if f.mode == "station-updates-stale" && state == "offered" && listed.is_empty() {
+        item["stale"] = Json::boolean(true)
+        item["detail"] = Json::string("版本已超过 7 天，请尽快升级")
+      }
       listed.push(Json::object(item))
     }
   }
   let n = listed.filter(fn(i) { text(Some(i), "state") != "updating" }).length()
+  let any_stale = listed.iter().any(fn(i) { text(Some(i), "state") != "updating" && flag(Some(i), "stale") })
   {
     "items": Json::array(listed),
     "offered": Json::number(n.to_double()),
-    "labelText": Json::string(if n > 0 { "\{n} 台 station 有新版本" } else { "" }),
+    "labelText": Json::string(
+      if n > 0 {
+        if any_stale { "\{n} 台 station 需要更新" } else { "\{n} 台 station 有新版本" }
+      } else {
+        ""
+      },
+    ),
     "titleText": "Station 更新",
   }
 }

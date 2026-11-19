@@ -838,7 +838,11 @@ export class Remote {
   /// Where messages from other stations' sessions go (session.message): any station of the workspace may send them,
   /// trusted for tasks or not.
   setInbox(inbox: Inbox): void {
-    this.bus.on(["session.message", "session.read", "session.file", "session.put", "session.create", "session.create.preset", "session.archive", "session.notice"], inbox);
+    this.bus.on([
+      "session.message", "session.read", "session.file", "session.put",
+      "session.create", "session.create.preset", "session.create.speed", "session.create.preset.speed", "session.create.preset.tui",
+      "session.archive", "session.configure", "session.list", "session.notice",
+    ], inbox);
   }
 
   /// Where requests about what stations share go (share.*, share/index.ts): any station of the workspace may ask;

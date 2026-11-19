@@ -7,12 +7,11 @@
 // as the station answers it (sfbase's chat_list, paged_in).
 
 ///|
-/// The fixture's chat s-c1 on 大屏 at rest, its page made as nodes where `nodes` says, the old composer, its frames a
+/// The fixture's chat s-c1 on 大屏 at rest, its page made as nodes where `nodes` says, its frames a
 /// display's at 60 a second; the fixture's source as `over` makes it.
 fn ms_open(nodes : Bool, over? : (String, Map[String, Json], Topic) -> Topic = fn(_, _, t) { t }) -> @ui.Tester {
   new_run()
   @sfbase.chat_page_nodes.set(nodes)
-  @sfbase.composer_nodes.set(false)
   let base = fixture("chat")
   let src : Source = {
     ..base,

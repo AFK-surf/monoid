@@ -712,6 +712,9 @@ function slackFor(more: (r: Req, slack: Stand, n: number) => Answer | null = () 
     let n = 0;
     return (r, slack) => {
       n += 1;
+      // (Slack's own limit: chat.update refuses a `text` over 4,000 UTF-8 bytes, though chat.postMessage takes it)
+      if (r.m === "chat.update" && Buffer.byteLength(r.p?.find((p) => p[0] === "text")?.[1] ?? "", "utf8") > 4_000)
+        return { body: { ok: false, error: "msg_too_long" } };
       const said = more(r, slack, n);
       if (said !== null) return said;
       switch (r.m) {
@@ -1056,6 +1059,55 @@ test("cards pressed and closed, the /sf form, a login's code, status lines and w
   await s.both("knownChannel", () => s.surface.knownChannel("C1"), "C1");
   await s.both("knownPerson", () => s.surface.knownPerson("U2"), "U2");
   s.same("what each asked of Slack");
+  await s.close();
+});
+
+test("a message over chat.update's 4,000 bytes of text changed in place: a card answered, a login's code, a card closed, an edit, where the thread stands", { skip }, async () => {
+  // 2,600 characters of Chinese, 7,800 bytes: one message as posted, and its text cut at a whole character (the rocket
+  // after the first 3,996 bytes would cross the 3,997 the cut keeps)
+  const long = `${"长".repeat(1332)}🚀${"长".repeat(1267)}`;
+  const s = await surfaces(slackFor(), { handler: () => {} });
+  const T = { channel: "C1", threadTs: "10.0" };
+  const interact = async (payload: Json, count: number, what: string) => {
+    for (const side of [s.a, s.b]) side.send({ type: "interactive", envelope_id: `i-${what}`, payload });
+    await until(what, () => s.a.log.length === count && s.b.log.length === count);
+  };
+  await s.both("post", () => s.surface.post(T, long, [], OPTIONS), T, long, [], OPTIONS);
+  await interact(
+    {
+      type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts: "100.000001", thread_ts: "10.0", text: long },
+      actions: [{ action_id: "sf_answer", value: JSON.stringify({ l: OPTIONS.options.map((o: Json) => o.label) }), action_ts: "100.5" }],
+      state: { values: { b: { sf_pick: { selected_option: { value: "0" } } } } },
+    },
+    s.a.log.length + 2,
+    "answered",
+  );
+  await s.both("post", () => s.surface.post(T, long, [], { type: "login" }), T, long, [], { type: "login" });
+  await interact(
+    { type: "block_actions", user: { id: "U2" }, container: { channel_id: "C1", message_ts: "100.000002", thread_ts: "10.0" }, actions: [{ action_id: "sf_login" }], state: { values: { sf_code: { sf_code: { value: "123" } } } } },
+    s.a.log.length + 2,
+    "code entered",
+  );
+  await s.both("post", () => s.surface.post(T, long, [], { type: "text" }), T, long, [], { type: "text" });
+  await s.both("cardEnded", () => s.surface.cardEnded(T, "100.000003", long, { type: "text" }, { why: "closed" }), T, "100.000003", long, { type: "text" }, { why: "closed" });
+  await s.both("post", () => s.surface.post(T, long, []), T, long, []);
+  const stands = async (st: Json, count: number) => {
+    s.surface.standsAt(T, st);
+    await s.mb("standsAt", T, st);
+    await until(`stands ${JSON.stringify(st)}`, () => s.a.log.length === count && s.b.log.length === count);
+  };
+  await stands({ kind: "done", words: "all set" }, s.a.log.length + 1);
+  await s.both("edit", () => s.surface.edit(T, "100.000004", `${long}。`), T, "100.000004", `${long}。`);
+  await stands(null, s.a.log.length + 1);
+  s.same("what each asked of Slack");
+  const updates = s.a.log.filter((r) => r.m === "chat.update");
+  assert.equal(updates.length, 6);
+  for (const u of updates) {
+    const text = u.p!.find((p) => p[0] === "text")![1];
+    assert.equal(text, `${"长".repeat(1332)}…`);
+    assert.ok(Buffer.byteLength(text, "utf8") <= 4_000);
+    assert.ok(JSON.parse(u.p!.find((p) => p[0] === "blocks")![1])[0].text.startsWith(long), "the message itself whole");
+  }
   await s.close();
 });
 

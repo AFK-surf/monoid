@@ -287,3 +287,11 @@ test "the fiber that closes the mesh interrupted as it waits on the shell: whoev
   assert_eq(ended_as(closing), "interrupted")
   assert_eq(stood.times("iroh.close 1"), 1)
 }
+
+///|
+test "a mesh's failures say their words, not their constructors" {
+  let e = MeshError(code="no_answer", message="the peer did not answer", cause="timed out")
+  assert_eq(Show::to_string(e), "the peer did not answer")
+  assert_eq(Show::to_string(OpeningTimeout(true)), "opening timed out (direct)")
+  assert_eq(Show::to_string(OpeningTimeout(false)), "opening timed out")
+}

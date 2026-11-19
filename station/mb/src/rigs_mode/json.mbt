@@ -311,9 +311,25 @@ pub(all) suberror Refused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Refused with output(self, logger) {
+  match self {
+    Refused(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// What a part the station gives threw (an Error of its, by its class's name, and its message).
 pub(all) suberror Thrown {
   Thrown(String, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Thrown with output(self, logger) {
+  match self {
+    Thrown(_, m) => logger.write_string(m)
+  }
 }
 
 ///|

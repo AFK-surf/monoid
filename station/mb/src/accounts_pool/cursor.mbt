@@ -102,7 +102,7 @@ pub async fn write_cursor(io : Io, home : String, login : CursorLogin) -> Unit {
 /// `cursorHandshake`: a sign-in to make: the page to confirm it on, and what only this station holds to redeem it.
 pub async fn cursor_handshake(io : Io, urls : CursorUrls) -> JV {
   let verifier = base64url(hex_bytes(io.random_hex(32)))
-  let challenge = base64url(hex_bytes(sha256_hex(verifier)))
+  let challenge = base64url(hex_bytes(@hash.sha256_utf8_hex(verifier)))
   let uuid = io.uuid()
   jobj([
     ("uuid", js(uuid)),
@@ -302,4 +302,10 @@ pub async fn cursor_models(
   run() catch {
     _ => None
   }
+}
+
+///|
+/// The SHA-256 of `text`'s UTF-8, hex: `@hash.sha256_utf8_hex`'s, kept here for what calls it by this package.
+pub fn sha256_hex(text : String) -> String {
+  @hash.sha256_utf8_hex(text)
 }

@@ -43,6 +43,7 @@ pub fn update_reset() -> Unit {
   update.said.set(Unsaid)
   update.dialog = 0
   update_version.val = 0
+  stale_build.set(false)
 }
 
 ///|
@@ -92,6 +93,72 @@ pub let update : Update = {
 ///|
 /// This build's version code as tests have it (0: the host's).
 pub let update_version : Ref[Int] = Ref(0)
+
+///|
+/// Whether this app build is older than 7 days (the core's `prefs.staleBuild`), so the app prompts the user to upgrade
+/// even when auto-update is off, no self-update feed exists (iOS TestFlight / Web), or the app stayed open past 7 days.
+// kept across runs: put back by update_reset
+pub let stale_build : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether this app build is older than 7 days.
+pub fn stale_build_now() -> Bool {
+  stale_build.get()
+}
+
+///|
+/// Updates `stale_build` from the core's `prefs` topic.
+pub fn stale_build_from_prefs(prefs : Json?) -> Unit {
+  stale_build.set(flag(prefs, "staleBuild"))
+}
+
+///|
+/// Which upgrade path this platform takes when the build is older than 7 days: "web" (reload page), "feed" (desktop or
+/// Android with an update source), "ios" (TestFlight), or "download" (fallback native build without an update feed).
+pub fn stale_build_kind() -> String {
+  if @ui.platform() == 4 {
+    "web"
+  } else if update_asks() {
+    "feed"
+  } else if @ui.platform() == 1 {
+    "ios"
+  } else {
+    "download"
+  }
+}
+
+///|
+/// Runs the upgrade action for an over-7-day-old build on this platform (zero dead ends on Desktop/Android/iOS/Web).
+pub fn stale_build_action(src : Source) -> Unit {
+  match stale_build_kind() {
+    "web" => @ui.update_apply("")
+    "ios" => @ui.open_url("itms-beta://") |> ignore
+    "feed" =>
+      match update_now() {
+        Coming(_, _) | Installing(_) => update_dialog(src)
+        Ready(_, ..) | Allow(_) | Offered(_, ..) | Failed(_, _) => update_go(src)
+        _ => {
+          if update.checking.get() {
+            update_dialog(src)
+            return
+          }
+          update.checking.set(true)
+          update_check(src, true, done=fn(_) {
+            update.checking.set(false)
+            match update_now() {
+              Offered(v, ..) | Failed(v, _) => update_fetch_found(v, true)
+              Ready(v, ..) | Allow(v) =>
+                @ui.update_apply(
+                  @sf.t("android-misc.updates.updated", args=[("app", "still.fail"), ("version", text(Some(v), "versionName"))]),
+                )
+              _ => update_dialog(src)
+            }
+          })
+        }
+      }
+    _ => @ui.open_url("https://still.fail/download") |> ignore
+  }
+}
 
 ///|
 /// A newer build heard of while the host is still downloading another. The current build stays visible until that
@@ -935,6 +1002,13 @@ pub fn update_as_row() -> (String, Double??, String)? {
     Ready(_, ..) => Some((said(), None, ""))
     Allow(_) => Some((said(), None, @sf.t("web-main.versions.update")))
     Installing(_) => Some((said(), None, ""))
+    _ if stale_build_now() =>
+      match stale_build_kind() {
+        "web" => Some((@sf.t("web-main.staleBuild.web"), None, @sf.t("web-main.staleBuild.reloadPage")))
+        "ios" => Some((@sf.t("web-main.staleBuild.ios"), None, @sf.t("web-main.staleBuild.openTestFlight")))
+        "feed" => Some((@sf.t("web-main.staleBuild.body"), None, @sf.t("web-main.staleBuild.updateNow")))
+        _ => Some((@sf.t("web-main.staleBuild.downloadBody"), None, @sf.t("web-main.staleBuild.download")))
+      }
     _ => None
   }
 }

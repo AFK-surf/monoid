@@ -311,10 +311,174 @@ fn ScreenUi::in_sight_at(self : ScreenUi, at : Double) -> Part? {
 }
 
 ///|
-/// How far the pointer goes for a finger's move of 1 px, by how fast it moves (dp per ms): slowly, less than the
-/// finger, to land on something small; fast, further, to cross the screen in a stroke.
+/// How far the pointer goes for a finger's move of 1 px, by how fast it moves (dp per ms, smoothed: pad_speed), as a
+/// desktop's trackpad does: slowly (up to 0.08) a steady 0.42 of the finger, to land on a 12 px close button; at the
+/// pace of most moves (to 0.9) eased up to 1.75; fast eased on to 2.75 (by 2.1), to cross a 4K screen in a stroke.
+/// Smooth throughout (no step in it, nor in how fast it grows where its parts meet), so speeding up never jolts it.
 fn pad_gain(dp_per_ms : Double) -> Double {
-  0.55 + 1.6 * clamp01((dp_per_ms - 0.1) / 1.4)
+  let ease = fn(t : Double) {
+    let t = clamp01(t)
+    t * t * (3.0 - 2.0 * t)
+  }
+  if dp_per_ms <= pad_fine_speed {
+    pad_fine_gain
+  } else if dp_per_ms <= pad_usual_speed {
+    pad_fine_gain + (pad_usual_gain - pad_fine_gain) * ease((dp_per_ms - pad_fine_speed) / (pad_usual_speed - pad_fine_speed))
+  } else {
+    pad_usual_gain + (pad_most_gain - pad_usual_gain) * ease((dp_per_ms - pad_usual_speed) / pad_fast_span)
+  }
+}
+
+///|
+/// pad_gain's parts: how fast a finger goes (dp per ms) to its end of each, and the gain there.
+let pad_fine_speed : Double = 0.08
+
+///|
+let pad_usual_speed : Double = 0.9
+
+///|
+let pad_fast_span : Double = 1.2
+
+///|
+let pad_fine_gain : Double = 0.42
+
+///|
+let pad_usual_gain : Double = 1.75
+
+///|
+let pad_most_gain : Double = 2.75
+
+///|
+/// How long a trackpad's finger's pace is smoothed over (ms): a touch screen's samples come unevenly, one quick and the
+/// next slow, and the pointer would jerk with each.
+let pad_speed_tau : Double = 24.0
+
+///|
+/// The pace `was` (dp per ms) smoothed with a move of `dist` dp over `dt` ms: each move counts by how long it took
+/// (1 - e^(-dt/τ)), so as many samples a second as come give the same pace. None before: the move's own.
+fn pad_speed(was : Double?, dist : Double, dt : Double, tau? : Double = pad_speed_tau) -> Double {
+  let now = dist / dt
+  match was {
+    None => now
+    Some(v) => v + (now - v) * (1.0 - @dmath.exp(-dt / tau))
+  }
+}
+
+///|
+/// Two fingers' scroll let go of still moving, going on by itself as a desktop's trackpad's does: their pace (stage px
+/// per ms) as they let go dying away by e^(-t/τ), so the way gone by `t` ms is v·τ·(1 - e^(-t/τ)) — worked out from
+/// when it began, not stepped frame by frame, so it goes as far at any frame rate — till its pace is under
+/// `fling_least`; sent as the wheel at `where` (0..1) each frame drawn meanwhile, what was not sent yet. A press, a
+/// wheel, or not driving any more stops it where it is.
+priv struct ScrollFling {
+  mut from : Double
+  mut until : Double
+  mut vx : Double
+  mut vy : Double
+  mut where_ : (Double, Double)
+  mut sent_x : Double
+  mut sent_y : Double
+  /// each start or stop of it (what sends it reads it, its end followed as it is drawn: View::drawn_while)
+  told : @signals.Signal[Int]
+}
+
+///|
+/// How fast two fingers let go of must be going for their scroll to go on (stage px per ms), the most it goes on at,
+/// how fast it dies away (ms) and the pace it stops at.
+let fling_start : Double = 0.18
+
+///|
+let fling_most : Double = 4.5
+
+///|
+let fling_tau : Double = 260.0
+
+///|
+let fling_least : Double = 0.02
+
+///|
+/// How long two fingers' pace is smoothed over (ms), and how long they may have been still before they are let go of
+/// for none to go on (they had stopped).
+let fling_speed_tau : Double = 32.0
+
+///|
+let fling_still_ms : Double = 60.0
+
+///|
+fn scroll_fling_new() -> ScrollFling {
+  {
+    from: 0.0,
+    until: -@double.infinity,
+    vx: 0.0,
+    vy: 0.0,
+    where_: (0.5, 0.5),
+    sent_x: 0.0,
+    sent_y: 0.0,
+    told: @signals.signal(0),
+  }
+}
+
+///|
+/// Whether it goes at `t`.
+fn ScrollFling::goes_at(self : ScrollFling, t : Double) -> Bool {
+  t >= self.from && t < self.until
+}
+
+///|
+/// The way gone by `t` (stage px each way), as far as its end at most.
+fn ScrollFling::gone_at(self : ScrollFling, t : Double) -> (Double, Double) {
+  let k = fling_tau * (1.0 - @dmath.exp(-(dmin(t, self.until) - self.from) / fling_tau))
+  (self.vx * k, self.vy * k)
+}
+
+///|
+/// Started at `at`, two fingers let go going (vx, vy) stage px per ms, the wheel at `where_`: only where that is fast
+/// enough (fling_start), as fast as fling_most at most. Whether it started.
+fn ScrollFling::start(
+  self : ScrollFling,
+  at : Double,
+  vx : Double,
+  vy : Double,
+  where_ : (Double, Double),
+) -> Bool {
+  let speed = (vx * vx + vy * vy).sqrt()
+  if speed < fling_start {
+    return false
+  }
+  let k = if speed > fling_most { fling_most / speed } else { 1.0 }
+  self.from = at
+  self.vx = vx * k
+  self.vy = vy * k
+  // (its pace under fling_least from then: v·e^(-t/τ) < least)
+  self.until = at + fling_tau * @dmath.ln(speed * k / fling_least)
+  self.where_ = where_
+  self.sent_x = 0.0
+  self.sent_y = 0.0
+  self.told.set(self.told.untracked() + 1)
+  true
+}
+
+///|
+/// Stopped where it is (nothing more sent), if it goes.
+fn ScrollFling::stop(self : ScrollFling) -> Unit {
+  if self.until == -@double.infinity {
+    return
+  }
+  self.until = -@double.infinity
+  self.told.set(self.told.untracked() + 1)
+}
+
+///|
+/// What of its way is not sent yet by `t` (stage px each way), taken as sent.
+fn ScrollFling::take_at(self : ScrollFling, t : Double) -> (Double, Double) {
+  if self.until == -@double.infinity || t < self.from {
+    return (0.0, 0.0)
+  }
+  let (x, y) = self.gone_at(t)
+  let d = (x - self.sent_x, y - self.sent_y)
+  self.sent_x = x
+  self.sent_y = y
+  d
 }
 
 ///|

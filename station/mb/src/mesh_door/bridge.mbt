@@ -47,7 +47,7 @@ fn Bridge::pump(self : Bridge, c : Carried, sid : String, s : @door.Stream) -> U
     self.say(Json::object(m))
   }
   ignore(
-    self.rt.fork(name="bridge read", () => {
+    self.rt.fork_daemon("bridge read", on_error=e => @door.log("info", "mesh", "a bridged stream was not read", { "error": Json::string(@door.message_of(e)) }), () => {
       while true {
         let got = try { Ok((s.read)()) } catch { e => Err(e) }
         match got {
@@ -68,7 +68,7 @@ fn Bridge::pump(self : Bridge, c : Carried, sid : String, s : @door.Stream) -> U
     }),
   )
   ignore(
-    self.rt.fork(name="bridge stopped", () => {
+    self.rt.fork_daemon("bridge stopped", on_error=_ => (), () => {
       let code = (s.stopped)() catch { _ => None }
       ev("stopped", {
         "code": match code {
@@ -98,7 +98,7 @@ fn Bridge::carry(self : Bridge, id : Int, local_id : String, remote_id : String,
   self.conns[id] = c
   // What this program opens, carried; its close, said.
   ignore(
-    self.rt.fork(name="bridge accept", () => {
+    self.rt.fork_daemon("bridge accept", on_error=e => @door.log("info", "mesh", "a bridged connection stopped accepting", { "error": Json::string(@door.message_of(e)) }), () => {
       while (c.far.accept_bi)() is Some(s) {
         c.opened += 1
         let sid = "m\{c.opened}"
@@ -108,7 +108,7 @@ fn Bridge::carry(self : Bridge, id : Int, local_id : String, remote_id : String,
     }),
   )
   ignore(
-    self.rt.fork(name="bridge closed", () => {
+    self.rt.fork_daemon("bridge closed", on_error=_ => (), () => {
       ignore((c.far.closed)()) catch {
         _ => ()
       }

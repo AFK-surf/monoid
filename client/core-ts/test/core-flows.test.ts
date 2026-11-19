@@ -850,6 +850,7 @@ test("sending_to_an_archived_session_without_a_thread_restores_it_after_making_i
     "GET /sessions": [archived],
     "GET /sessions/k1": { session: archived, threads: [], turns: [], jobs: [] },
     "GET /threads": [],
+    "GET /chats?shared=1": [],
     "GET /chats": [],
   });
   const steps: string[] = [];
@@ -1945,9 +1946,8 @@ test("the_chats_a_few_words_find_are_a_view_of_the_list", async () => {
 // menu, reached from its opener's info and found by a search (the user, 2026-11-17). One opened for its person is
 // theirs and listed as any other.
 test("a_chat_an_agent_leads_is_in_no_list_but_a_search_and_one_it_opened_for_its_person_is_listed", async () => {
-  const row = (id: string, title: string, at: number) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null });
-  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3), row("theirs", "部署 给你的", 2)]) };
-  answers["GET /chats?marks=1"] = { ...answers["GET /chats?marks=1"], openers: { part: { session: "lead", title: "部署", led: true }, theirs: { session: "lead", title: "部署", led: false } } };
+  const row = (id: string, title: string, at: number, opener?: J) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null, ...(opener ? { opener } : {}) });
+  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3, { session: "lead", title: "部署", led: true }), row("theirs", "部署 给你的", 2, { session: "lead", title: "部署", led: false })]) };
   const { host, core } = await started(answers);
   const ui = core.connect();
   subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
@@ -2466,7 +2466,12 @@ test("a_chat_made_here_is_a_new_chat_all_along_until_it_is_named", async () => {
   // in it) what the station called a chat with nothing said in it, then by the words again as the station had them:
   // the bar's title went and came. It is a new chat, as its station calls it, until people or its agent name it.
   const made = { ...threadView(7, 0), createdBy: "a@x.com" };
-  const { host, core } = await started({ ...base(), "GET /threads": [made], "GET /chats": [{ id: "7", thread: 7, session: "k1", title: "新对话", agents: [], lastActiveAt: 1 }], "GET /threads/7/entries?limit=50": { first: 1, last: 0, entries: [] } });
+  const { host, core } = await started({
+    ...base(),
+    "GET /threads": [made],
+    "GET /chats?shared=1": chatsOf([{ id: "k1", thread: 7, session: "k1", title: null, agents: [], lastActiveAt: 1 }])["GET /chats?shared=1"],
+    "GET /threads/7/entries?limit=50": { first: 1, last: 0, entries: [] },
+  });
   stationReplies(host, (req) => {
     const path = req.url.replace("https://stillfail.test/admin/api", "");
     if (req.method === "POST" && path === "/sessions") return { key: "k1", thread: made };
@@ -2500,19 +2505,17 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   const made = { ...threadView(9, 0), createdBy: "a@x.com", sessions: [{ thread: 9, session: "chat:c-1", connect: "ember", joinedAt: 1 }] };
   const atRest = session("chat:c-1");
   const working = { ...atRest, process: "running", running: true, turns: 1, lastTurn: { id: "t1", kind: "input", startedAt: 5, endedAt: null } };
-  const row = (id: string, session: string, thread: number, agents: J[]) => ({ id, session, thread, title: "新对话", agents, last: null, unread: false, mine: true, lastActiveAt: thread, connect: null, origin: null });
-  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [] };
-  const answers: J = { ...base(), "GET /chats": [row("7", "k1", 7, [])], "GET /chats?marks=1": marks };
+  const row = (id: string, session: string, thread: number, agents: J[]) => ({ id, session, thread, title: "新对话", agents, last: null, unread: false, mine: true, lastActiveAt: thread, connect: null, origin: null, ws: null, mineOf: [{ id: "a@x.com", email: "a@x.com", via: "cloud" }], said: null, pinned: null });
+  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [], dismissed: [], reads: {} };
+  const answers: J = { ...base(), "GET /chats?shared=1": [row("k1", "k1", 7, [])], "GET /chats?marks=1": marks };
   const s = await started(answers);
   const { host, core } = s;
-  // A station that keeps the marks: the sidebar made here of the summaries held.
-  s.push("made", { rows: true, marks: true });
   await host.settle();
   // The station as it is at each moment: what a read is answered with is what it had as it was asked.
   const now = (agent: J) => {
     answers["GET /sessions"] = [session("k1"), agent];
     answers["GET /sessions/chat%3Ac-1"] = { session: agent, threads: [], turns: agent.lastTurn ? [agent.lastTurn] : [], jobs: [] };
-    answers["GET /chats"] = [row("7", "k1", 7, []), row("9", "chat:c-1", 9, [agent])];
+    answers["GET /chats?shared=1"] = [row("k1", "k1", 7, []), row("chat:c-1", "chat:c-1", 9, [agent])];
   };
   answers["GET /threads/9"] = { ...made, last: 1 };
   stationReplies(host, (req) => {
@@ -2526,7 +2529,7 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
   await host.settle();
   // A slow link: the lists, asked as the chat is made, come long after.
-  const release = [host.hold("/admin/api/changed/sessions"), host.hold("/admin/api/changed/chats")];
+  const release = [host.hold("/admin/api/changed/sessions"), host.hold("/admin/api/chats?shared=1")];
   now(atRest);
   const key = String((await ask(host, core, ui, 2, "chat.create", { station: "ws/st", runtime: "claude", model: "opus" })).key);
   call(core, ui, 3, "chat.send", { station: "ws/st", session: key, text: "修一下登录" });
@@ -2535,6 +2538,7 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   // Its agent begins: the station tells it, and has it so from now.
   now(working);
   s.push("session", working);
+  s.push("chat-shared", row("chat:c-1", "chat:c-1", 9, [working]));
   await host.settle();
   subscribe(core, ui, 4, { topic: "chat", station: "ws/st", thread: 9 });
   await host.settle();
@@ -2808,7 +2812,7 @@ test("undo holds the row while a station's shared-list events catch up", async (
     named: { thread: { surface: "ember", title: id }, firstText: null, channelName: null }, mineOf: [], said: null,
   });
   const rows = [shared("k1", 7, 8), shared("k2", 8, 7)];
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [rows[0]], scope: ["k1"] };
@@ -2859,7 +2863,7 @@ test("a restored chat removed again before it is listed does not remain in the l
     named: { thread: { surface: "ember", title: id }, firstText: null, channelName: null }, mineOf: [], said: null,
   });
   const rows = [shared("k1", 7, 8), shared("k2", 8, 7)];
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -2897,7 +2901,7 @@ test("a late removal from the original archive does not end a completed undo", a
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [row], scope: ["k1"] };
@@ -2931,7 +2935,7 @@ test("a rearchive coalesced before the shared list can tell it settles the resto
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -2967,7 +2971,7 @@ test("an unrelated row cannot settle an undo before a delayed archive removal", 
   });
   const row = shared("k1", 7);
   const other = shared("k2", 8);
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row, other] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row, other] });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [row], scope: ["k1"] };
@@ -3000,7 +3004,7 @@ test("a newer tell wins over a restore read already on its way", async () => {
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -3034,7 +3038,7 @@ test("a failed restore reconciliation is retried after the station answers with 
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   let fail = false;
   stationReplies(host, (req) => {
@@ -3072,7 +3076,7 @@ test("a confirmed restore is reconciled after restart when it was archived elsew
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };

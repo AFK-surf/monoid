@@ -340,6 +340,7 @@ pub fn words_answer(Words, String, Array[@json.Json]) -> @json.Json raise Refuse
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 pub fn Refused::message(Self) -> String
 
 // Types and methods
@@ -468,6 +469,7 @@ pub async fn Hub::receive(Self, String, @json.Json) -> Unit
 pub fn Hub::recover(Self) -> Unit raise
 pub fn Hub::release(Self, String) -> Unit raise Refused
 pub fn Hub::release_chat(Self, String) -> Bool raise Refused
+pub fn Hub::reprice_usage(Self) -> Unit
 pub async fn Hub::relieve_archived(Self) -> Unit
 pub async fn Hub::retire_after_previous(Self) -> Bool
 pub async fn Hub::retire_usage(Self) -> Unit

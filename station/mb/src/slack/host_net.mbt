@@ -181,7 +181,7 @@ pub fn host_ws(host : @host.Host) -> WsIO {
         },
         send: t => if !closed.val {
           ignore(
-            host.rt.fork(async fn() {
+            host.rt.fork_quiet(name="slack ws send", async fn() {
               ignore(host.shell("ws.send", Json::object({ "id": Json::number(id), "text": Json::string(t) }))) catch {
                 _ => ()
               }
@@ -191,7 +191,7 @@ pub fn host_ws(host : @host.Host) -> WsIO {
         close: () => if !closed.val {
           closed.val = true
           ignore(
-            host.rt.fork(async fn() {
+            host.rt.fork_quiet(name="slack ws close", async fn() {
               ignore(host.shell("ws.close", Json::object({ "id": Json::number(id) }))) catch {
                 _ => ()
               }

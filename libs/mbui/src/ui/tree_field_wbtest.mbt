@@ -1203,6 +1203,44 @@ test "a field of the tree's of a size and colours followed: as each changes alon
 }
 
 ///|
+test "a field of the tree's colours read off the clock (a way that ends, drawn_while): painted in them as each frame is, no frame more asked at the same moment as it ends" {
+  let f = Field::new(text="abc")
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  let until = @signals.signal(-1.0, same=fn(a, b) { a == b })
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(h, f, label="字", max_lines=1, font_size=10.0, colors_by=fn() {
+        let u = until.get()
+        let k = if h.drawn_while(fn(at) { at < u }) < u { 0xFF0000FFL } else { 0x00FF00FFL }
+        (k, k, k)
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let inks = fn() { t.drawn_glyphs().map(fn(gl) { gl.2 }) }
+  // (red till 100 from now, then green: told so in a change, as words sent from a composer tell its caret)
+  let end = t.time() + 100.0
+  until.set(end)
+  let seen : Array[(Double, Array[Int64])] = []
+  t.each_frame(Some(fn() { seen.push((t.time(), inks())) }))
+  t.run_shown(200.0)
+  t.each_frame(None)
+  let times = seen.map(fn(s) { s.0 })
+  for i in 1..<times.length() {
+    assert_true(times[i] > times[i - 1], msg="two frames at one moment: \{Repr(times)}")
+  }
+  guard seen.last() is Some((_, last)) else { fail("no frame drawn: \{Repr(times)}") }
+  assert_eq(last, [0x00FF00FFL, 0x00FF00FFL, 0x00FF00FFL])
+  assert_true(
+    seen.iter().all(fn(s) { s.0 >= end || s.1.iter().all(fn(k) { k == 0xFF0000FFL }) }),
+    msg="red before its end: \{Repr(seen)}",
+  )
+}
+
+///|
 test "a field of the tree's focus asked before its node is made: given it as the node is, words typed in the first frame its; the tree's focus and the window's one" {
   let on = @signals.signal(false, same=fn(a, b) { a == b })
   let f = Field::new()
@@ -1696,4 +1734,37 @@ test "whether a field has the focus, read before its field of the tree is made, 
   f.let_go()
   t.draw()
   assert_eq(seen, [true, false])
+}
+
+///|
+test "a field of the tree's placeholder measured by gaps_steady as faded as it is painted: by its colour's alpha, none of it with words in the field" {
+  let f = Field::new()
+  let hint_alpha = @signals.signal(0xFFL, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))) |> ignore
+      field(h, f, label="字", max_lines=1, font_size=10.0, placeholder="写点什么", colors_by=fn() {
+        (0x000000FFL, 0x88888800L | hint_alpha.get(), 0x000000FFL)
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let said = fn() {
+    t.gaps_words().filter(fn(w) { w.0 == "写点什么" }).map(fn(w) { (w.5 * 100.0).round() / 100.0 })
+  }
+  let whole = said()
+  hint_alpha.set(0L)
+  t.frame()
+  let clear = said()
+  // (found all the same, as faded as its node is drawn: Tester::words, for what finds it and follows it frame by frame)
+  let found = t.words().filter(fn(w) { w.0 == "写点什么" }).map(fn(w) { w.5 })
+  hint_alpha.set(0xFFL)
+  t.frame()
+  f.set("ab")
+  t.frame()
+  let written = said()
+  assert_eq((whole, clear, written, found), ([1.0], [0.0], [0.0], [1.0]))
 }

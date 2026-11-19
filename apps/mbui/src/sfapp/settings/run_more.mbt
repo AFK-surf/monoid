@@ -52,6 +52,46 @@ pub fn machine_sessions_offer(c : @ui.Ctx, core : Core, station : String, name :
 }
 
 ///|
+/// The offer (machine_sessions_offer's) as nodes in `parent`, of the station `station()` names (`name()` its name, ""
+/// this machine): the sessions its machine kept asked once a station, as it is first made for it; shown once it has
+/// any, its mark and words quiet till the hand is on it; pressed, their list (open_machine_sessions).
+#callsite(autofill(loc))
+pub fn machine_sessions_offer_node(
+  parent : @view.View,
+  core : Core,
+  station : () -> String,
+  name : () -> String,
+  loc~ : SourceLoc,
+) -> Unit {
+  // (asked once a station, as the page is first made on it: as the answer comes, it shows)
+  parent.reacts(station, fn(st) {
+    guard st != "" && !machine_sessions_asked.contains(st) else { return }
+    machine_sessions_asked[st] = true
+    (core.call)("machineSessions.list", obj([("station", str(st))]), fn(r) {
+      match r {
+        Ok(v) => machine_sessions.set(st, items(Some(v), "sessions"))
+        Err(_) => ()
+      }
+    })
+  })
+  let words = fn() {
+    fill("android-chat.new.machine.offer", [("station", if name() == "" { tr("android-chat.new.machine.here") } else { name() })])
+  }
+  parent.show(fn() { machine_sessions.get(station()).unwrap_or([]).length() > 0 }, fn(o) {
+    @sf.ripple_button_node(loc~, o, words, fn() { open_machine_sessions(core, station(), name()) }, fn(b, state) {
+      let lit = fn() { state.hovered() || state.pressed() || state.focus_shown() }
+      @sf.style_node(b, fn() { machine_offer_box })
+      @sf.hover_ground_node(b, lit=Some(lit))
+      @sf.icon_node(b, "monitor", machine_offer_mark, By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
+      |> ignore
+      @sf.words_node(b, words, fn() { if lit() { machine_offer_words_lit } else { machine_offer_words } }) |> ignore
+      Is(@sf.small_corner)
+    })
+    |> ignore
+  })
+}
+
+///|
 /// The offer (offer: 4 by 10 in, its parts 6 apart, the hover's ground; 13 on 20, muted) and its mark (Monitor 14).
 // kept across runs: a value (no field of it changes)
 let machine_offer_box : @ui.Style = @ui.css("row px=S2_5 py=S1 gap=S1_5 align=ACenter hovered{bg=Hover}").then(

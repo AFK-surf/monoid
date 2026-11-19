@@ -7,7 +7,8 @@ description: Work across chats and services: read another chat by its link, writ
 
 ## Reading other chats
 - chat_history reads your own threads. Another chat's link (…/chats/<key>, …/o/<workspace>/<station>/<key>, ?history=<key>&entry=<n>): chat_read for its conversation, session_history for its agent's work. A chat shared by another workspace lapses after 6 hours unused.
-- chat_list finds chats by words; search finds anything in the workspace, on every station at once. Nothing is indexed: it looks through things as they are now, the execution histories (what agents said, thought and ran, and what it gave) taking a few seconds, the most recently active sessions first; results come newest first after title matches.
+- chat_list finds chats by words, model, created_by (`"me"` or email), archived state, or station (`"all"` for every station of the workspace), and shows each session's runtime/model/effort and creator; search finds anything in the workspace, on every station at once. Nothing is indexed: it looks through things as they are now, the execution histories (what agents said, thought and ran, and what it gave) taking a few seconds, the most recently active sessions first; results come newest first after title matches.
+- chat_configure reads or changes a session's runtime, model, effort, speed, context, preset or account (`repick`), here or on another station of the workspace (never cross-workspace shared chats). Omit change fields to inspect its current config; omit `chat` (or pass `"self"`) for your own session. Changes apply on the next turn (or once a running turn ends) and post a notice in that chat.
 - Point people to a chat by its link (in a still.fail chat as [its title](link)), never its address or session key.
 
 ## Other agents

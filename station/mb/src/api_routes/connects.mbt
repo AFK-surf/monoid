@@ -324,7 +324,7 @@ async fn ConnectEdits::put_connect(
       Some(e) => {
         let o = (e.edit)(i.get(added_kind).unwrap_or(jundef), Null)
         if nullish(o) {
-          Null
+          JV::Null
         } else {
           o
         }
@@ -636,7 +636,7 @@ async fn ConnectEdits::put_connect(
       let old = old_bind.unwrap()
       let profile_change = () => {
         match profiles {
-          None => [("profile", Null), ("profiles", Null)]
+          None => [("profile", JV::Null), ("profiles", JV::Null)]
           Some([p]) => [("profile", js(p)), ("profiles", jstrs([p]))]
           Some(l) => [("profiles", jstrs(l))]
         }

@@ -64,7 +64,7 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
   }
   self.waiting.clear()
   ignore(
-    self.host.rt.fork(name="sessions' program", async fn() {
+    self.host.rt.fork_daemon("sessions' program", on_error=e => @host.note("sessions' program failed: \{e}"), async fn() {
       let carry = @buffer.Buffer()
       let mut head : Json? = None
       let mut wanted = 0
@@ -218,6 +218,14 @@ fn SessionsProgram::kill_now(self : SessionsProgram) -> Unit {
 /// A program named by its command (not a path) that the environment's PATH does not have (runner.ts `CommandMissing`).
 pub(all) suberror CommandMissing {
   CommandMissing(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for CommandMissing with output(self, logger) {
+  match self {
+    CommandMissing(command) => logger.write_string("the runner did not start: \{command} is not on PATH")
+  }
 }
 
 ///|
@@ -443,7 +451,7 @@ fn AgentsHost::exited(self : AgentsHost, code : Int) -> Unit {
   self.settle()
   let again = self.sessions.values().to_array()
   ignore(
-    self.pump.host.rt.fork(name="agents' program again", async fn() {
+    self.pump.host.rt.fork_daemon("agents' program again", on_error=e => @host.note("agents' program again failed: \{e}"), async fn() {
       // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
       @effect.sleep(1000)
       if self.closed {

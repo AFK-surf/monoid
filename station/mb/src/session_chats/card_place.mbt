@@ -43,6 +43,15 @@ priv suberror CardFlow {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for CardFlow with output(self, logger) {
+  match self {
+    PreparationNeeded => logger.write_string("the card is to be prepared again")
+    NoLongerNeeded => logger.write_string("the card is no longer needed")
+  }
+}
+
+///|
 /// Once the surface has given the post its timestamp, records it only while the request and card are still valid: the
 /// second check inside the insert's write. `occupied`: what refuses it when another card came (None: no card to keep
 /// apart); `needed`: whether the request still wants it.

@@ -257,6 +257,7 @@ const MOCKED: [string, string][] = [
   ["sessions/messages.ts", "sessions/messages"],
   ["sessions/opened.ts", "sessions/opened"],
   ["sessions/chat-archive.ts", "sessions/chat-archive"],
+  ["sessions/chat-configure.ts", "sessions/chat-configure"],
   ["sessions/others.ts", "sessions/others"],
   ["sessions/review.ts", "sessions/review"],
   ["sessions/archive-policy.ts", "sessions/archive-policy"],
@@ -641,6 +642,7 @@ function baseWorld(): World {
     .on("sessions/messages.sessionSend", ([, , a]) => `sent ${JSON.stringify(a)}`)
     .on("sessions/opened.chatCreate", ([, , a]) => `created ${JSON.stringify(a)}`)
     .on("sessions/chat-archive.chatArchive", () => "archived")
+    .on("sessions/chat-configure.chatConfigure", ([, , a]) => `configured ${JSON.stringify(a)}`)
     .on("sessions/review.policyWs", () => "w1")
     .on("sessions/archive-policy.currentPolicy", () => ({ policy: "Archive what is done.", options: [{ id: "done", name: "Done", rubric: "finished", archive: true }] }))
     .on("sessions/archive-policy.savePolicy", () => "policy, options")
@@ -856,6 +858,7 @@ function defineCases() {
   call("session_send, staged", "session_send", { to: "s2", text: "hi", files: ["/Users/a/Documents/b"] }, "t1", (w) => w.is("sessions/conversations.mayStage", true).on("sessions/conversations.staged", ([, , a]) => ({ args: a, done: { $ref: "stagedDone" } })));
   call("chat_create", "chat_create", { for: "me", key: "k1", text: "go", speed: "ultrafast", fast: "true", context: "200000" });
   call("chat_archive", "chat_archive", { chat: "s2" });
+  call("chat_configure", "chat_configure", { chat: "s2", model: "opus", effort: "high", fast: "true", context: "200000" });
   call("session_history", "session_history", { chat: "s2", before: "4", max_chars: 200 });
   call("session_history afar", "session_history", { chat: "https://app.example/o/w1/st2/s7?history=s7&entry=3" }, "t1", (w) => w.is("sessions/others.elsewhere", "st2"));
 

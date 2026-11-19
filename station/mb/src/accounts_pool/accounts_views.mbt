@@ -275,11 +275,11 @@ pub async fn Accounts::automatic_decisions_view(
       continue
     }
     let d = match row.get("detail") {
-      None | Some(Null) => Obj([])
+      None | Some(Null) => JV::Obj([])
       Some(x) => x
     }
     let or_null = (k : String) => match d.get(k) {
-      None | Some(Null) => Null
+      None | Some(Null) => JV::Null
       Some(x) => x
     }
     recent.push(

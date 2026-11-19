@@ -842,6 +842,10 @@ function baseWorld(): World {
   on("logins.get", ([id]) => (id === "l1" ? { id: "l1", command: "gh", url: "https://x", callback: "c", state: "waiting" } : null));
   on("logins.cancel", ([id]) => ({ id, cancelled: true }));
   on("logins.answer", ([id]) => ({ id, url: "u", state: "ok" }));
+  on("logins.again", ([id]) => {
+    if (id !== "l1") throw thrown("Refused", { status: 409, message: "not again" });
+    return { id: "l3", from: id, url: "u", code: "c", state: "starting" };
+  });
   on("logins.callback", () => ({ status: 200, headers: {}, body: "" }));
   on("logins.openPage", ([id]) => {
     if (id !== "l1") throw thrown("Error", { message: "no page" });
@@ -1398,7 +1402,7 @@ function defineCases() {
   add("closed card a part's", { method: "PUT", path: "/threads/7/closed-card", body: { n: 4, option: "go" }, viewer: MEMBER }, { world: (w) => w.handlers.set("store.entriesBetween", () => [{ n: 4, ts: "9.1", card: { retire: { at: 1 } } }]) });
   add("mark unknown thread", { method: "PUT", path: "/threads/99/read", body: { n: 1 } });
   // events.ts
-  add("events", { method: "GET", path: "/events", query: [["live", "s1"], ["from", " 3.7 "], ["last", "5"], ["live", "s9"], ["live", "zz"], ["job", "j1"], ["lines", "5000"], ["job", "j9"], ["login", "abc"], ["login", "BAD"], ["host", "1"], ["since", "e9"], ["running", "1"]] });
+  add("events", { method: "GET", path: "/events", query: [["live", "s1"], ["from", " 3.7 "], ["last", "5"], ["live", "s9"], ["live", "zz"], ["job", "j1"], ["lines", "5000"], ["job", "j9"], ["login", "abc"], ["login", "BAD"], ["host", "1"], ["since", "e9"], ["running", "1"], ["shared", "1"]] });
   add("events for a client from before", { method: "GET", path: "/events", headers: { "stillfail-runtimes": "claude, codex,BAD" } }, {
     world: (w) => {
       const frames = [
@@ -1533,6 +1537,9 @@ function defineCases() {
   add("machine login malformed", { method: "GET", path: "/machine-logins/%E0%A4%A" });
   add("machine login cancelled", { method: "DELETE", path: "/machine-logins/l1" });
   add("machine login answered", { method: "POST", path: "/machine-logins/l1/answer", body: { text: "code" } });
+  add("machine login again", { method: "POST", path: "/machine-logins/l1/again" });
+  add("machine login again refused", { method: "POST", path: "/machine-logins/l2/again" });
+  add("machine login again read-only", { method: "POST", path: "/machine-logins/l1/again", viewer: VIEWER });
   add("machine login callback", { method: "POST", path: "/machine-logins/l1/callback", body: { method: "GET", path: "/cb", headers: { a: "1", b: 2 }, body: "eA==" } });
   add("machine login callback bad", { method: "POST", path: "/machine-logins/l1/callback", body: { path: "/cb" } });
   add("machine login page", { method: "POST", path: "/machine-logins/l1/browser" });
@@ -1736,6 +1743,7 @@ function defineCases() {
   add("slack connect not installed", { method: "POST", path: "/connects", body: { slack: { install: "st6" } } });
   add("slack connect with app", { method: "POST", path: "/connects", body: { slack: { appId: "A7" }, bind: { runtime: "claude" } } });
   add("slack app made", { method: "POST", path: "/slack/apps", body: { settings: { name: " Bot ", backgroundColor: "#abcdef" }, icon: "data:image/jpeg;base64,AAAA" } });
+  add("slack app made large icon", { method: "POST", path: "/slack/apps", body: { settings: { name: " Bot ", backgroundColor: "#abcdef" }, icon: `data:image/jpeg;base64,${"AAAA".repeat(30000)}` } });
   add("slack app made icon refused", { method: "POST", path: "/slack/apps", body: { icon: "nope" } });
   add("slack app made bad color", { method: "POST", path: "/slack/apps", body: { settings: { backgroundColor: "red" } } });
   add("slack app made other team", { method: "POST", path: "/slack/apps", body: { team: "T9" } });
