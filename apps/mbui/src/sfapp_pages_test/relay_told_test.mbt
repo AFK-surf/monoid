@@ -84,7 +84,7 @@ test "wide: the relay's @ menu dismissed by Escape: closed for that @ as the key
   seen.push(mentions_closed())
   t.draw()
   seen.push(mentions_closed())
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq(seen, [false, true, true])
   assert_true(t.find("可以 @ 的人") is None)
   assert_true(t.find("开头附一句（可选）") is Some(_), msg="the dialog went with the menu")
@@ -120,7 +120,7 @@ fn relay_picked_then_escape(frames : Bool) -> (String, Int, Bool) raise {
   let note = relaying.note.text()
   t.key_told(@ui.key_escape, 0, t.time())
   t.draw()
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   (note, named(calls, "chat.relay").length(), t.find("开头附一句（可选）") is Some(_))
 }
 
@@ -146,7 +146,7 @@ fn relay_keyed_then_escape(key : Int, frames : Bool) -> (String, Int, Bool) rais
   let note = relaying.note.text()
   t.key_told(@ui.key_escape, 0, t.time())
   t.draw()
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   (note, named(calls, "chat.relay").length(), t.find("开头附一句（可选）") is Some(_))
 }
 
@@ -169,7 +169,7 @@ fn relay_then_enter(first : (@ui.Tester) -> Unit) -> (String, Int) raise {
   first(t)
   t.key_told(@ui.key_code_enter, 0, t.time())
   t.draw()
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   (relaying.note.text(), named(calls, "chat.relay").length())
 }
 
@@ -196,7 +196,7 @@ test "wide: the relay's @ menu, a letter typed, Enter and Escape before a frame:
   let note = relaying.note.text()
   t.key_told(@ui.key_escape, 0, t.time())
   t.draw()
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq((note, named(calls, "chat.relay").length(), t.find("开头附一句（可选）") is Some(_)), ("看下 @pengxiao ", 0, false))
 }
 
@@ -211,7 +211,7 @@ test "wide: the relay's @ menu, a letter typed, Enter and Escape before a frame,
   let note = relaying.note.text()
   t.key_told(@ui.key_escape, 0, t.time())
   t.draw()
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq((note, named(calls, "chat.relay").length(), t.find("开头附一句（可选）") is Some(_)), ("看下 @pengxiao ", 0, false))
 }
 

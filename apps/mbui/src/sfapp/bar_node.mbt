@@ -557,7 +557,7 @@ fn bar_ball_at(t : Double) -> BallAt {
   // (its way a frame at 60, as fast as it goes then: none at rest. Not cut to none within half a point of where it goes,
   // as the old view's was: a spring passing it there went on stretched the frame after, a jump each frame drew)
   let v = xv / 60.0
-  let (stretch, lower) = @kit.speed_stretch(v)
+  let (stretch, lower) = @motion.speed_stretch(v)
   let bw = ball_size + stretch
   let bh = ball_size - lower
   let left = x - ball_size / 2.0 - (if v < 0.0 { stretch } else { 0.0 })

@@ -219,3 +219,15 @@ pub fn tooltip_bubble(
     v.presses(Is(false)).says(By(fn() { Some(@view.said(Tooltip, label=label())) })) |> ignore
   })
 }
+
+///|
+/// How long a mouse rests on a tooltip's trigger before it shows (ms), and how soon after another tooltip closed one
+/// shows at once: the old controls' (`mbui/kit`'s `tooltip`) defaults, which still.fail's tips go by.
+pub let tooltip_delay_ms : Double = 700.0
+
+///|
+pub let tooltip_skip_ms : Double = 300.0
+
+///|
+/// How long a tooltip a finger held open stays once it is lifted (Android's: 1500 ms).
+pub let tooltip_lifted_ms : Double = 1500.0

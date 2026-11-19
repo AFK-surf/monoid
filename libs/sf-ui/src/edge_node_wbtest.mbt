@@ -57,7 +57,7 @@ fn edge_tip_rects(
   if away {
     // (the pointer off the edge: its tip going, a moment into it)
     t.move_to(300.0, 250.0)
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
   } else {
     shift.set(by)
     t.frame()

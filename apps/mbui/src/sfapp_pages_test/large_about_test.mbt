@@ -507,7 +507,7 @@ test "大屏 一台 station 的记忆 made once: what it is for by one mark afte
   guard marks is [m] else { fail("its mark read out \{marks.length()} times") }
   let mark = m.rect
   t.move_to(mark.0 + mark.2 / 2.0, mark.1 + mark.3 / 2.0)
-  t.run_for(@kit.tooltip_delay_ms + @ui.move_most_ms)
+  t.run_for(@headless.tooltip_delay_ms + @ui.move_most_ms)
   let words = words_where(t)
   assert_true(words.iter().any(fn(w) { w.has_prefix(@sf.t("web-pages.settings.memory.lead")) }), msg="its tip: \{Repr(words)}")
 }

@@ -13,11 +13,11 @@ test "52-drive-sheet-closing" {
     f.run_for(@ui.move_most_ms)
     f.see("说明.txt")
     f.right_click("说明.txt")
-    f.run_for(@kit.presence_in_ms)
+    f.run_for(@motion.presence_in_ms)
     f.see("重命名")
     // pressed beside it: the menu goes
     f.tap_at(195.0, 100.0)
-    f.run_for(@kit.presence_out_ms)
+    f.run_for(@motion.presence_out_ms)
     f.gone("=保存")
     f.gone("重命名")
     f.end()

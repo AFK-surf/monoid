@@ -314,7 +314,7 @@ fn menu_panel(
 
 ///|
 /// How long letters typed one after another find an entry together (Radix's typeahead: a second).
-pub let typeahead_ms : Double = 1000.0
+pub let typeahead_ms : Double = @headless.typeahead_ms
 
 ///|
 /// Letters typed with the focus in panel `pid`: the focus to the first live entry after it whose words start with

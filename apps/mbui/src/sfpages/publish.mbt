@@ -458,7 +458,7 @@ fn publish_view(r : ChatRef) -> ChatView {
 ///|
 /// The page that shares it, while it is open, over the shells' pages (narrow_shell, tape_shell), in node `v`: made as it
 /// is opened, let go as it has gone. It comes in faded in as a file opened over the window does, and goes as a dialog
-/// does (@sf.window_page_in, @kit.pop_out), drawn as it was while it goes, the pages under it theirs again from then.
+/// does (@sf.window_page_in, @motion.pop_out), drawn as it was while it goes, the pages under it theirs again from then.
 pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
   // (which opening is drawn: the one open, and once closed the one going till it has gone, at its declared end)
   let drawn = @signals.signal(0)
@@ -471,7 +471,7 @@ pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
       drawn.set(open)
     } else if drawn.untracked() > 0 {
       publishing.leaving.set(true)
-      ends.val = v.at_moment(v.cause_at() + @kit.pop_out_ms, fn() {
+      ends.val = v.at_moment(v.cause_at() + @motion.pop_out_ms, fn() {
         drawn.set(0)
         publishing.leaving.set(false)
       })
@@ -524,7 +524,7 @@ fn publish_node(n : @view.View, src : Source) -> Unit {
   let gone = @motion.NodeWay::new(0.0)
   n.reacts(fn() { publishing.leaving.get() }, fn(going) {
     if going {
-      gone.go_ms(n, 1.0, @kit.pop_out_ms, ease=Leave)
+      gone.go_ms(n, 1.0, @motion.pop_out_ms, ease=Leave)
     }
   })
   // (how far in it is as `v` is drawn: its ground's share of it, and what is on it)

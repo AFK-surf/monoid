@@ -2,6 +2,7 @@ import {
   "mbui/codec",
   "mbui/dmath",
   "mbui/halt",
+  "mbui/headless",
   "mbui/hostapi",
   "mbui/kit",
   "mbui/motion",

@@ -48,7 +48,7 @@ fn to_sheet_rest(t : @ui.Tester) -> Unit {
 /// What is presented over the screen closed (Escape), and gone.
 fn shut(r : ScreenRig) -> Unit {
   r.t.press("Escape")
-  r.t.run_for(@kit.presence_out_ms + @sf.later_ms)
+  r.t.run_for(@motion.presence_out_ms + @sf.later_ms)
   to_sheet_rest(r.t)
   // (a segmented choice's thumb gone on its spring to the one chosen: run to its rest)
   let rest = r.t.rest_of("spring")

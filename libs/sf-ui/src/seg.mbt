@@ -194,7 +194,7 @@ let stops_lens_grow : Double = 0.18
 ///
 /// Its thumb is the bottom bar's ball in small (the user, 2026-11-10: 「选择条需要能滑动」「手感跟小屏下边栏差不多」
 /// 「玻璃效果也要重做」): a finger takes it along the track, to the stop under the finger and leaning a quarter of the
-/// way on toward the finger itself, on the ball's spring (@kit.follow_spring), each stop come to under the finger
+/// way on toward the finger itself, on the ball's spring (@motion.follow_spring), each stop come to under the finger
 /// felt; let go, the level under the finger is picked. At
 /// rest it is no glass, a lifted capsule (「按下边栏做，平时应该不是玻璃，按住才是玻璃，然后效果也按下边栏来，不要乱画」,
 /// of a thumb of frosted glass with a lit rim at rest and a knob's lens held); held it is a little larger and the
@@ -326,7 +326,7 @@ pub fn stops(
     Some(fp) => dclamp(at.to_double() + (fp - at.to_double()) * stops_lean, 0.0, last)
     None => dmax(0.0, at.to_double())
   }
-  let pa = @motion.told(c, "sf-stops-p/" + key, goal, spec=@kit.follow_spring)
+  let pa = @motion.told(c, "sf-stops-p/" + key, goal, spec=@motion.follow_spring)
   let ha = @motion.told(c, "sf-stops-held/" + key, if finger is Some(_) { 1.0 } else { 0.0 }, spec=@motion.lift_spring)
   let cell = if n > 0 && rw > 2.0 * pad { (rw - 2.0 * pad) / n.to_double() } else { 0.0 }
   let thumb_h = high - 2.0 * pad

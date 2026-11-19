@@ -136,7 +136,7 @@ test "复制 puts the passage on the clipboard and lets go; 全选 takes all of 
   if own_bar {
     // (said at once, read out: seen as it has come in, toast_said)
     assert_true(toast_said(t, "已复制"))
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_true(t.find("已复制") is Some(_))
     // (its toast gone: it says 已复制 over the composer, where the bar of the next passage picked stands)
     t.run_for(@sf.toast_ms)

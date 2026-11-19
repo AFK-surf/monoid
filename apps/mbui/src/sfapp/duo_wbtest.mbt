@@ -859,7 +859,7 @@ test "Duo workspace heading opens the existing panel without a duplicate menu" {
   t.frame()
   assert_true(t.nav_said().contains("workspace-switch"))
   assert_true(t.nav_said().contains("sidebar/search"))
-  t.run_for(@kit.pop_ms / 2.0)
+  t.run_for(@motion.pop_ms / 2.0)
   assert_true(t.nav_said().contains("workspace-switch"))
   assert_true(t.nav_said().contains("sidebar/search"))
   t.run_for(@ui.move_most_ms)
@@ -877,7 +877,7 @@ test "Duo workspace heading opens the existing panel without a duplicate menu" {
   assert_true(t.nav_said().contains("\"blocked\":true"))
   @sf.close_all_presented()
   t.frame()
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   for id in ["workspace-switch", "sidebar/search", "sidebar/filter/mine"] {
     assert_true(t.nav_said().contains(id), msg="missing during panel exit: \{id}")
   }
@@ -1060,7 +1060,7 @@ test "Duo chat menu covers sidebar glass until its exit finishes" {
   }
   t.post(@hostapi.system_channel, "{\"nav\":\"page/chat/info\",\"at\":[270,0,44,44]}")
   t.frame()
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   for id in ["workspace-switch", "sidebar/search", "sidebar/filter"] {
     assert_false(t.nav_said().contains(id), msg="control returned during exit: \{id}")
   }

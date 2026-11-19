@@ -17,7 +17,7 @@ pub fn progress_node(
   track : () -> Int64,
   fill : () -> Int64,
   h? : Double = 3.0,
-  period? : Double = @kit.progress_sweep_ms,
+  period? : Double = @motion.progress_sweep_ms,
   finishing? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -54,13 +54,13 @@ pub fn progress_node(
           // (known, told anew: from where it is drawn; coming from not known, there at once, what ran along it drawn
           // into it, as the old one's part come is laid out as told and reshaped only while known)
           if @signals.untracked(fn() { known.target() }) >= 1.0 {
-            at.go_ms(bar, k, @kit.progress_ms, ease=Out)
+            at.go_ms(bar, k, @motion.progress_ms, ease=Out)
           } else {
             at.put(k)
           }
-          known.go_ms(bar, 1.0, @kit.progress_known_ms, ease=InOut)
+          known.go_ms(bar, 1.0, @motion.progress_known_ms, ease=InOut)
         }
-        None => known.go_ms(bar, 0.0, @kit.progress_known_ms, ease=InOut)
+        None => known.go_ms(bar, 0.0, @motion.progress_known_ms, ease=InOut)
       }
     })
     // (the part drawn, from `lo` to `hi` of the track, as of when it is drawn)

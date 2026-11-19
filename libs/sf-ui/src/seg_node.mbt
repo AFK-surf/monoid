@@ -311,7 +311,7 @@ pub fn SegThumb::new(owner : @view.View, chosen : () -> Int) -> SegThumb {
   let goal = fn() { fingered.get().unwrap_or(chosen().to_double()) }
   let position = @motion.NodeWay::new(@signals.untracked(goal))
   owner.reacts(at_start=false, goal, fn(p) {
-    let spring = if fingered.untracked() is Some(_) { @kit.follow_spring } else { @motion.cover_damped_spring }
+    let spring = if fingered.untracked() is Some(_) { @motion.follow_spring } else { @motion.cover_damped_spring }
     position.go(owner, p, spring)
   })
   { held, position, fingered }

@@ -135,7 +135,7 @@ test "a failure the viewer may report: 上报 asks first, then reports it and sa
     assert_true(@sf.presenting(), msg="asked first")
     assert_true(named(calls, "chat.report").length() == 0)
     // (with a mouse: the web's confirm, come in)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     // the confirm's own 上报: the last of the buttons so named (the notice's own is the page's, under it), where it is
     // drawn (on 小屏 a sheet of the window's tree, rising)
     let reports = t.all(Button, label="上报")

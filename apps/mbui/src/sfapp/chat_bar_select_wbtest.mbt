@@ -21,9 +21,9 @@ test "chat bar over messages: pressing and dragging from its buttons picks no wo
           t.move_to(cx - 80.0, cy + 3.0)
           assert_eq(t.ctx().selected_text(), "", msg="\{label} at scroll \{d}")
           t.release(cx - 80.0, cy + 3.0)
-          t.run_for(@kit.presence_out_ms)
+          t.run_for(@motion.presence_out_ms)
           t.key(@ui.key_escape)
-          t.run_for(@kit.presence_out_ms)
+          t.run_for(@motion.presence_out_ms)
           probed = probed + 1
         }
         None => ()

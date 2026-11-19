@@ -414,7 +414,7 @@ fn slider_node(
   let span = if max > min { max - min } else { 1.0 }
   let at = fn() { dmin(desk_whole, dmax(desk_none, (now() - min) / span)) }
   let held = @signals.signal(false)
-  let snap = fn(v : Double) { @kit.snap(v, min, max, step) }
+  let snap = fn(v : Double) { @headless.slider_snap(v, min, max, step) }
   let along = fn(d : @view.Drag) {
     if d.w > slider_thumb_room {
       moved(snap(min + dmin(desk_whole, dmax(desk_none, (d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room))) * span))

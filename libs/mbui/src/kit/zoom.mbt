@@ -136,7 +136,7 @@ fn ZPath::shown(self : ZPath, c : @ui.Ctx) -> Double {
 ///|
 /// How a picture let go slows: as e^(−t / this) (ms), Motion's inertia's own time constant (about the desktop's coasting,
 /// 0.997 a ms), setting out as fast as the finger went.
-pub let zoom_fling_ms : Double = 325.0
+pub let zoom_fling_ms : Double = @motion.zoom_fling_ms
 
 ///|
 /// A picture's zoom, as Zoom.kt's: fitted within a margin (12, or 32 on a stage 640 wide or more), never enlarged;

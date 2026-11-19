@@ -146,7 +146,7 @@ fn menu_node_by(
       let t = theme()
       // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
       // as panel_node's)
-      let look = @motion.presence_look(layer, @kit.pop_in, exit=@kit.pop_out)
+      let look = @motion.presence_look(layer, @motion.pop_in, exit=@motion.pop_out)
       let live = fn() { !layer.leaving() }
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
       let words_in = fn() { look().words }
@@ -311,7 +311,7 @@ fn menu_node_by(
           match (if k.mods == 0 || k.mods == @ui.mod_shift_key { typed_char(k.code) } else { None }) {
             Some(ch) => {
               // (a second's worth together: the same letter again moves on to the next it starts)
-              let s = if k.at < typed_at.val + @kit.typeahead_ms { typed.val + ch.to_string() } else { ch.to_string() }
+              let s = if k.at < typed_at.val + @headless.typeahead_ms { typed.val + ch.to_string() } else { ch.to_string() }
               typed.val = s
               typed_at.val = k.at
               match typeahead_to(items, s, now) {
@@ -458,7 +458,7 @@ fn menu_node_by(
       })
       |> ignore
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }
 

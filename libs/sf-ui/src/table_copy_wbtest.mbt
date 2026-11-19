@@ -146,13 +146,13 @@ test "a table's copy key with a mouse: shown as the table is pointed at, its men
   assert_eq(keys(), 1)
   // its menu open, the pointer gone into it: still there
   t.click(Button, label="web-main.prose.copyTable")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.move_to(lx, 780.0)
   t.run_for(dur_ms)
   assert_eq(keys(), 1)
   // the menu closed by a press outside it, the pointer off the table: gone
   t.tap(lx, 780.0)
-  t.run_for(@kit.presence_in_ms + dur_ms)
+  t.run_for(@motion.presence_in_ms + dur_ms)
   assert_eq(keys(), 0)
 }
 
@@ -165,7 +165,7 @@ test "a table's copy key with a mouse: its picture copied whole, the key not in 
   t.move_to(lx, ly)
   t.run_for(dur_ms)
   t.click(Button, label="web-main.prose.copyTable")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("desktop.contextMenu.copyImage")
   t.frame()
   t.frame()
@@ -209,7 +209,7 @@ test "two messages' tables: the picture copied is of the table whose key was pre
   t.move_to(lx, ly)
   t.run_for(dur_ms)
   t.click(Button, label="web-main.prose.copyTable")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("desktop.contextMenu.copyImage")
   t.frame()
   t.frame()

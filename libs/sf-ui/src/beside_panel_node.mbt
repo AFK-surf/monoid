@@ -28,7 +28,7 @@ pub fn beside_panel_node(
   parent.show(
     open,
     fn(layer) {
-      let look = @motion.presence_look(layer, @kit.pop_in, exit=@kit.pop_out)
+      let look = @motion.presence_look(layer, @motion.pop_in, exit=@motion.pop_out)
       let live = fn() { !layer.leaving() }
       let panel : Ref[@view.View?] = Ref(None)
       layer
@@ -111,6 +111,6 @@ pub fn beside_panel_node(
       })
       |> ignore
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }

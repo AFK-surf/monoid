@@ -55,7 +55,7 @@ test "the update dialog with a newer build: what it brings (its first five, 还�
   t.draw()
   t.post(@hostapi.system_channel, "{\"menu\":\"update.check\"}")
   t.draw()
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   // known already: offered, not asked again
   assert_eq(asked.length(), 0)
   assert_true(t.find("有新版本 0.1.3") is Some(_))
@@ -107,7 +107,7 @@ test "the update dialog as tall in every stage of a newer build: offered, the pe
   t.draw()
   t.post(@hostapi.system_channel, "{\"menu\":\"update.check\"}")
   t.draw()
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   // (the dialog in the window's middle: as tall, its head where it was)
   let head = fn() { t.find("当前版本 0.1.2").unwrap().1 }
   let first = head()

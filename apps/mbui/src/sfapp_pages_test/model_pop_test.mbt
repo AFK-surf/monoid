@@ -100,7 +100,7 @@ test "choosing a frequent model fades the model words with the panel" {
   assert_true(!before.is_empty(), msg="those used most are titled")
   let ink = before.last().unwrap().2
   t.click(Button, label="GPT-6 Astra · 中")
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   let faded = t.drawn_rects().filter(fn(r) {
     r.4 >> 8 == original.4 >> 8 &&
     (r.0 - original.0).abs() < 10.0 && (r.1 - original.1).abs() < 10.0 &&
@@ -129,7 +129,7 @@ test "a frequent model with a different runtime is applied as its panel leaves w
   assert_eq(new_fix.model, "gpt-6-astra")
   assert_eq(t.find("常用搭配"), Some(before), msg="the model rows stay where they were as the panel starts to close")
   assert_true(t.find("DeepSeek Harness") is Some(_), msg="the leaving panel keeps the runtime that was shown")
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   // The rows' layout stays fixed while the panel fades and shrinks: drawn smaller with it, all alike (as much smaller
   // as its words are), never laid out anew.
   let heading_out = words("常用搭配")
@@ -141,7 +141,7 @@ test "a frequent model with a different runtime is applied as its panel leaves w
   assert_true(t.find("DeepSeek Harness") is Some(_), msg="the runtime stays with the leaving panel")
   // Open it again while the first panel is still leaving: the new one has its own, current contents.
   t.tap_text("GPT-6 Astra")
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the panel opens again")
   assert_true(t.query(Button, label="DeepSeek Harness") is None, msg="the reopened panel shows the new model")
 }
@@ -242,7 +242,7 @@ test "wide, crowded, the panel gone up from its control: the configuration used 
   assert_true(wholly_in_view(t, first), msg="\{Repr(first)}")
   assert_true(first.1 + first.3 <= foot.1, msg="\{Repr(first)} over the foot's \{Repr(foot)}")
   t.click(Button, label="GPT-6 Astra · 中")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let saves = calls.filter(fn(c) { c.0 == "pick.save" })
   assert_eq(saves.length(), 1, msg="\{Repr(saves)}")
   let p = Some(saves[0].1)
@@ -297,7 +297,7 @@ test "wide, few models: the configurations used most under 常用搭配, one mod
   assert_true(words_in(t, off, "高 · 300K") is Some(_), msg="Opus 5.5's 高 · 300K")
   // pressed: all of it made what it runs on in one save, the panel closed
   t.click(Button, label="Opus 5.5 · 高 · 300K")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(@ui.Role::Dialog) is None, msg="its panel closed")
   let saves = calls.filter(fn(c) { c.0 == "pick.save" })
   assert_eq(saves.length(), 1, msg="\{Repr(saves)}")
@@ -364,12 +364,12 @@ test "wide, few models: the configuration it runs on pressed sends nothing; anot
   let calls = []
   let t = model_pop_calls("newchat-model", calls)
   t.click(Button, label="Opus 5.5 · 高")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(@ui.Role::Dialog) is None, msg="its panel closed")
   assert_eq(calls.filter(fn(c) { c.0 == "pick.save" }).length(), 0, msg="\{Repr(calls)}")
   let t = model_pop_calls("newchat-model", calls)
   t.click(Button, label="GPT-6 · 中")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq((new_fix.model, new_fix.runtime, new_fix.effort, new_fix.context), ("gpt-6", "codex", "medium", ""))
   let p = Some(calls.filter(fn(c) { c.0 == "pick.save" })[0].1)
   assert_eq(field(p, "context"), Some(Json::null()))
@@ -381,16 +381,16 @@ test "wide, many models: those used most, the way to all of them; there, a maker
   let t = model_pop("newchat-providers-model")
   assert_true(t.query(Button, label="Sonnet 5") is None, msg="neither used most nor starred: a step further")
   t.click(Button, label="全部模型")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   // the makers beside a maker's models
   assert_true(t.query(Button, label="Anthropic") is Some(_) && t.query(Button, label="OpenAI") is Some(_))
   t.click(Button, label="Anthropic")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Opus 5.5") is Some(_) && t.query(Button, label="Gemini 3 Pro") is None, msg="Anthropic's alone")
   // its star pressed: starred (the same star on every row of the panel, in place of a box before a maker's models;
   // the user, 2026-11-10, of a ticked box read as the model picked)
   t.click(Button, label="喜欢 Sonnet 5")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(new_fix.liked, ["claude-sonnet-5"])
   assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the panel stays open")
   // back: Sonnet among the starred, over the configurations used most (none of them starred: a configuration is not)
@@ -400,7 +400,7 @@ test "wide, many models: those used most, the way to all of them; there, a maker
   assert_true(sonnet < used, msg="\{sonnet} \{used}")
   // its star pressed there: starred no more, its row where it was while the panel is open
   t.click(Button, label="喜欢 Sonnet 5")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(new_fix.liked, [])
   assert_eq(t.get(Button, label="Sonnet 5").rect.1, sonnet, msg="its row gone from under the hand")
 }
@@ -409,12 +409,12 @@ test "wide, many models: those used most, the way to all of them; there, a maker
 test "wide, models of many makers: each a row of its own in the list of them, none cut short" {
   let t = model_pop("newchat-providers-model")
   t.click(Button, label="全部模型")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   for k in ["Anthropic", "OpenAI", "DeepSeek", "Google"] {
     assert_true(t.query(Button, label=k) is Some(_), msg=k)
   }
   t.click(Button, label="Google")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Gemini 3 Pro") is Some(_) && t.query(Button, label="Opus 5.5") is None)
   assert_eq(t.squeeze_faults(), [])
 }
@@ -676,7 +676,7 @@ test "wide, search: matches maker and runtime tokens, Escape clears before closi
   t.key(@ui.key_code_down)
   t.run_for(squeeze_opening)
   t.key(@ui.key_code_enter)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(@ui.Role::Dialog) is None, msg="Enter closed the panel after picking")
   assert_eq(new_fix.model, "gpt-oss-2")
 }

@@ -147,7 +147,7 @@ test "the history's details: its turns' line says its work after it, none withou
   assert_eq(word("后台进行中").length(), 0)
   // pressed: all of it beside it
   t.tap(mark[0].1 + 4.0, mark[0].2 + mark[0].4 / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(word("后台进行中").length() == 1 && word("4").length() >= 1)
   assert_eq(word("vite --config web/vite.demo.config.ts").length(), 1)
   assert_eq(word("4m 12s").length(), 1)
@@ -170,7 +170,7 @@ test "the history's details: its turns' line says its work after it, none withou
   assert_true(word("后台进行中")[0].2 > mark[0].2, msg="under it")
   // Escape: gone
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_eq(word("后台进行中").length(), 0)
 }
 
@@ -190,7 +190,7 @@ test "on a phone, its details' turns say its work after them, its head as it was
   assert_true((mark[0].2 + mark[0].4 / 2.0 - turns[0].2 - turns[0].4 / 2.0).abs() < 2.0, msg="\{Repr((mark, turns))}")
   assert_eq(word("后台进行中").length(), 0)
   t.tap(mark[0].1 + 4.0, mark[0].2 + mark[0].4 / 2.0)
-  t.run_for(@kit.presence_in_ms * 2.0)
+  t.run_for(@motion.presence_in_ms * 2.0)
   assert_eq(word("后台进行中").length(), 1)
   assert_eq(word("跑检查并提交").length(), 1)
   // from the foot: its lists low in the window

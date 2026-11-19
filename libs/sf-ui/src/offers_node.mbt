@@ -266,7 +266,7 @@ pub fn offers_node(
     let shown_keys = @signals.signal(@signals.untracked(keys), same=fn(a, b) { a == b })
     o.reacts(open, fn(on) { @view.transition(within=o, fn() { shown_open.set(on) }) }, at_start=false)
     o.reacts(keys, fn(ks) { @view.transition(within=o, fn() { shown_keys.set(ks) }) }, at_start=false)
-    o.show(fn() { shown_open.get() }, leave=@kit.pop_out_ms, fn(shown) {
+    o.show(fn() { shown_open.get() }, leave=@motion.pop_out_ms, fn(shown) {
       shown.over(Is(true)) |> ignore
       live.val = true
       shown.owns(fn() { live.val = false }) |> ignore
@@ -275,18 +275,18 @@ pub fn offers_node(
       shown.reacts(fn() { shown.leaving() }, fn(going) {
         if going {
           live.val = false
-          way.go_ms(shown, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(shown, 0.0, @motion.pop_out_ms, ease=Leave)
         } else {
           live.val = true
-          way.go_ms(shown, 1.0, @kit.pop_ms)
+          way.go_ms(shown, 1.0, @motion.pop_ms)
         }
       })
       let look = fn() {
         let p = way.shown(shown)
         if shown.leaving() {
-          @kit.pop_out.at(p, p)
+          @motion.pop_out.at(p, p)
         } else {
-          @kit.pop_in.at(p, p)
+          @motion.pop_in.at(p, p)
         }
       }
       let panel : Ref[@view.View?] = Ref(None)

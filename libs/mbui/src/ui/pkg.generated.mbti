@@ -43,6 +43,8 @@ pub fn badge_shown() -> Bool
 
 pub let bench_app : Int32
 
+pub fn blend(Int64, Int64, Double) -> Int64
+
 pub fn bold(String) -> @text.Run
 
 pub let bone_share : Double

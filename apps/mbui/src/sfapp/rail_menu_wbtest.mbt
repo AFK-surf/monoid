@@ -7,7 +7,7 @@ test "the rail's menu keeps its contents and place while it closes" {
     t.host_says_finger(Some(false))
     let (x, y, w, h) = t.query(Button, label="文件").unwrap().rect
     t.right_click(x + w / 2.0, y + h / 2.0)
-    t.run_for(@kit.pop_ms)
+    t.run_for(@motion.pop_ms)
     let before = t.rect_of("自定义侧边条").unwrap()
     // (drawn back into its corner beside the place as it goes, kit's pop_out: its words no further from where they were
     // than its 3% shrink toward that corner carries them, a pixel more)
@@ -20,7 +20,7 @@ test "the rail's menu keeps its contents and place while it closes" {
       t.key_told(@ui.key_escape, 0, t.time())
     }
     for step in 0..<3 {
-      t.run_for(@kit.pop_out_ms / 4.0)
+      t.run_for(@motion.pop_out_ms / 4.0)
       // (its words fade before its ground as it goes, kit's pop_out: drawn where they were for as long as they show)
       guard t.rect_of("自定义侧边条") is Some(during) else {
         if step == 0 {
@@ -34,7 +34,7 @@ test "the rail's menu keeps its contents and place while it closes" {
       )
       assert_true(t.query(MenuItem, label="自定义侧边条") is None, msg="the closing menu cannot be chosen")
     }
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     assert_true(t.rect_of("自定义侧边条") is None, msg="the menu is gone after its exit")
   }
 }
@@ -55,7 +55,7 @@ test "right clicking a workspace opens the rail's menu beside it and inside the 
       let held = t.audit()
       let (x, y, w, h) = rail_workspace_shown(t, name)
       t.right_click(x + w / 2.0, y + h / 2.0)
-      t.run_for(@kit.pop_ms)
+      t.run_for(@motion.pop_ms)
       let (mx, my, mw, mh) = t.query(Menu).unwrap().rect
       assert_true(mx >= x + w && my <= y + h && my + mh >= y, msg="\{name} \{Repr(size)}: workspace \{Repr((x, y, w, h))}, menu \{Repr((mx, my, mw, mh))}")
       assert_true(mx >= 0.0 && my >= 0.0 && mx + mw <= size.0 && my + mh <= size.1, msg="\{name} \{Repr(size)}: menu outside window \{Repr((mx, my, mw, mh))}")
@@ -71,7 +71,7 @@ test "a workspace's menu in a short window scrolls to its last action" {
   t.host_says_finger(Some(false))
   let (x, y, w, h) = rail_workspace_shown(t, "个人")
   t.right_click(x + w / 2.0, y + h / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   let (mx, my, mw, mh) = t.query(Menu).unwrap().rect
   for _ in 0..<5 {
     t.wheel(mx + mw / 2.0, my + mh / 2.0, 120.0)
@@ -89,12 +89,12 @@ test "the rail's menu can reopen beside another workspace while its previous exi
   t.host_says_finger(Some(false))
   let (x, y, w, h) = t.query(Button, label="文件").unwrap().rect
   t.right_click(x + w / 2.0, y + h / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   t.key_told(@ui.key_escape, 0, t.time())
   t.draw()
   let (wx, wy, ww, wh) = t.query(Button, label="个人").unwrap().rect
   t.right_click(wx + ww / 2.0, wy + wh / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   let (mx, my, _, mh) = t.query(Menu).unwrap().rect
   assert_true(mx >= wx + ww && my <= wy + wh && my + mh >= wy, msg="workspace \{Repr((wx, wy, ww, wh))}, menu \{Repr((mx, my, mh))}")
   assert_true(t.query(MenuItem, label="从侧边条移除文件") is None)
@@ -108,10 +108,10 @@ test "choosing a rail action keeps the menu's old contents in place during its e
   t.host_says_finger(Some(false))
   let (x, y, w, h) = t.query(Button, label="文件").unwrap().rect
   t.right_click(x + w / 2.0, y + h / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   let before = t.rect_of("从侧边条移除文件").unwrap()
   t.tap_text("从侧边条移除文件")
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   guard t.rect_of("从侧边条移除文件") is Some(during) else { fail("the chosen row disappeared while its menu closed") }
   assert_true((during.0 - before.0).abs() < 2.0 && (during.1 - before.1).abs() < 2.0)
   assert_eq(named(calls, "prefs.set").length(), 1)
@@ -124,7 +124,7 @@ test "customizing the rail replaces its menu immediately, leaving the new panel 
   t.host_says_finger(Some(false))
   let (x, y, w, h) = t.query(Button, label="文件").unwrap().rect
   t.right_click(x + w / 2.0, y + h / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   t.tap_text("自定义侧边条")
   assert_true(t.rect_of("从侧边条移除文件") is None, msg="the old menu is not over the new panel")
   t.frame()

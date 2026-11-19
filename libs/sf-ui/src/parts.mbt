@@ -4296,7 +4296,7 @@ let update_ring_at : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JC
 ///|
 /// What comes (a download), drawn as an icon in an icon's place, as a node of the window's tree in `parent`: the
 /// download's mark `size` across in `color`, the ring round it the accent from its top as far round as `coming` says it
-/// has come (0 to 1), going to a part told anew over @kit.progress_ms, eased out (progress_spinner's).
+/// has come (0 to 1), going to a part told anew over @motion.progress_ms, eased out (progress_spinner's).
 #callsite(autofill(loc))
 pub fn coming_mark_node(
   parent : @view.View,
@@ -4325,7 +4325,7 @@ pub fn coming_mark_node(
   let look = coming_mark_box(size)
   parent.box(made_for=loc, fn(m) {
     style_node(m, fn() { look })
-    m.reacts(part, fn(k) { way.go_ms(m, k, @kit.progress_ms) })
+    m.reacts(part, fn(k) { way.go_ms(m, k, @motion.progress_ms) })
     m.box(fn(l) {
       l
       .width(Is(Some(side)))

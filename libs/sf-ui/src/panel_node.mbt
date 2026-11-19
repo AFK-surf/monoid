@@ -39,7 +39,7 @@ fn panel_node(
       // (how far in it is, from the moment it opened; out from the moment it closed)
       let way = @motion.NodeWay::new(0.0)
       let leave_from = Ref(0.0)
-      let leave_look = Ref(@kit.pop_in.at(0.0, 0.0))
+      let leave_look = Ref(@motion.pop_in.at(0.0, 0.0))
       // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
       let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
@@ -49,11 +49,11 @@ fn panel_node(
             // Keep the appearance reached if it is closed before its entrance finishes.
             let p = way.value_at(layer.cause_at())
             leave_from.val = p
-            leave_look.val = @kit.pop_in.at(p, p)
+            leave_look.val = @motion.pop_in.at(p, p)
           }
-          way.go_ms(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(layer, 0.0, @motion.pop_out_ms, ease=Leave)
         } else {
-          gate.go(layer, fn() { way.go_ms(layer, 1.0, @kit.pop_ms) })
+          gate.go(layer, fn() { way.go_ms(layer, 1.0, @motion.pop_ms) })
         }
       })
       let look = fn() {
@@ -61,11 +61,11 @@ fn panel_node(
         if layer.leaving() && x.fade_out_together {
           // Fade the whole panel from that appearance, retaining the popover's scale and curve.
           let fade = if leave_from.val > 0.0 { dmin(1.0, dmax(0.0, p / leave_from.val)) } else { 0.0 }
-          { ..@kit.pop_out.at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
+          { ..@motion.pop_out.at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
         } else if layer.leaving() {
-          @kit.pop_out.at(p, p)
+          @motion.pop_out.at(p, p)
         } else {
-          @kit.pop_in.at(p, p)
+          @motion.pop_in.at(p, p)
         }
       }
       let live = fn() { !layer.leaving() }
@@ -314,7 +314,7 @@ fn panel_node(
       })
       gate.seal(layer)
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }
 

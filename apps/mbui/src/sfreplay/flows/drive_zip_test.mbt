@@ -11,7 +11,7 @@ test "92-drive-zip" {
     f.tap("=e2e-105609")
     f.run_to(@ui.nav_rest)
     f.right_click("子文件夹")
-    f.run_for(@kit.presence_in_ms)
+    f.run_for(@motion.presence_in_ms)
     f.tap("下载为 zip")
     // kept, said at once (its toast's time its own: looked at as it shows)
     f.see("已保存到「下载」")

@@ -1880,7 +1880,7 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @kit.blend(backdrop_track_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
+          @ui.blend(backdrop_track_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }

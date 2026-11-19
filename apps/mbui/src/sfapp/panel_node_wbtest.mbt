@@ -32,7 +32,7 @@ test "a panel's words, controls and surface fade out together" {
   t.key(@ui.key_escape)
   let mut previous = 255L
   for _ in 0..<5 {
-    t.run_for(@kit.pop_out_ms / 6.0)
+    t.run_for(@motion.pop_out_ms / 6.0)
     let surface = t.drawn_rects().filter(fn(r) {
       r.4 >> 8 == original.4 >> 8 &&
       (r.0 - original.0).abs() < 10.0 && (r.1 - original.1).abs() < 10.0 &&
@@ -49,7 +49,7 @@ test "a panel's words, controls and surface fade out together" {
     assert_true(glyphs.iter().all(fn(g) { (g.2 & 0xFFL) == alpha }), msg="the words and surface fade together")
     previous = alpha
   }
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_false(@sf.presenter_visible())
 }
 
@@ -57,7 +57,7 @@ test "a panel's words, controls and surface fade out together" {
 test "a panel closed while opening fades from its current appearance" {
   let t = menu_tester(1280.0, 800.0, 0)
   @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, panel_marked_body())
-  t.run_for(@kit.pop_ms / 2.0)
+  t.run_for(@motion.pop_ms / 2.0)
   let painted = fn() {
     (t.drawn_rects().filter(fn(r) { r.4 >> 8 == 0x23A1DFL }), t.drawn_glyphs().filter(fn(g) { g.2 >> 8 == 0xB45A29L }))
   }
@@ -65,7 +65,7 @@ test "a panel closed while opening fades from its current appearance" {
   assert_true(!before.0.is_empty() && !before.1.is_empty())
   t.key(@ui.key_escape)
   assert_eq(painted(), before, msg="closing does not change the current appearance")
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_false(@sf.presenter_visible())
 }
 
@@ -150,12 +150,12 @@ test "panel, 大屏 keyboard and mouse: its way out, closed by Escape, by a pres
       _ => t.tap(bx + bw / 2.0, by + bh / 2.0)
     }
     let at_once = panel_out_said(t, gone, said)
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let mid = panel_out_said(t, gone, said)
     // (pressed midway where its button was: what that does)
     t.tap(bx + bw / 2.0, by + bh / 2.0)
     let mid_pressed = panel_out_said(t, gone, said)
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     let end = panel_out_said(t, gone, said)
     out.push("\{how}: once {\{at_once}} mid {\{mid}} pressed {\{mid_pressed}} end {\{end}}")
   }
@@ -208,11 +208,11 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out as it was beside
     // (its button's words as they are drawn: there, and how opaque)
     let drawn = fn() { t.words().filter(fn(w) { w.0 == "好的" }).length() }
     let once = (@sf.presenting(), @sf.presenter_visible(), t.query(Dialog, label="面板") is Some(_), gone.val, said.copy(), drawn())
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let mid = (@sf.presenting(), @sf.presenter_visible(), gone.val, drawn())
     t.tap(bx + bw / 2.0, by + bh / 2.0)
     let pressed = (said.copy(), gone.val)
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     out.push((once, mid, pressed, (@sf.presenter_visible(), gone.val, drawn())))
   }
   debug_inspect(out, content=(
@@ -285,7 +285,7 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was 
     }
     let seen = [panel_out_drawn(t)]
     for _ in 0..<4 {
-      t.run_for(@kit.pop_out_ms / 4.0)
+      t.run_for(@motion.pop_out_ms / 4.0)
       seen.push(panel_out_drawn(t))
     }
     out.push(seen)
@@ -400,13 +400,13 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   // (the frame it opens in, and those after it of its own: then its way in, the clock alone, past its end)
   t.frames_owed()
   let opened = built.val
-  let way_in = frames_till(open_at + @kit.pop_ms + 2.0 * t.frame_period())
+  let way_in = frames_till(open_at + @motion.pop_ms + 2.0 * t.frame_period())
   let after_in = built.val
   let close_at = t.time()
   t.key(@ui.key_escape)
   t.frames_owed()
   let closed = built.val
-  let way_out = frames_till(close_at + @kit.pop_out_ms + 2.0 * t.frame_period())
+  let way_out = frames_till(close_at + @motion.pop_out_ms + 2.0 * t.frame_period())
   println("PANELBUILT in \{Repr(way_in)} out \{Repr(way_out)}")
   let alphas = fn(frames : Array[(Double, Bool, (Int, Int))]) { frames.map(fn(f) { f.2 }) }
   // (its way in: some frame of it drawn part way, its words whole by its end)
@@ -427,7 +427,7 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   // (its words faded out by the time half its way out is over, before its ground (kit's pop_out), the frame at or
   // after that the first they are gone in)
   let in_time = match gone_at {
-    Some(ms) => ms >= @kit.pop_out_ms / 2.0 && ms < @kit.pop_out_ms / 2.0 + t.frame_period()
+    Some(ms) => ms >= @motion.pop_out_ms / 2.0 && ms < @motion.pop_out_ms / 2.0 + t.frame_period()
     None => false
   }
   // (what is built meanwhile, the page under it as what it reads says (its own motions), built none of it)

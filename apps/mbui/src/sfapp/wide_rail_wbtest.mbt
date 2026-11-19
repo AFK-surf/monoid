@@ -503,7 +503,7 @@ test "wide: with the bell in the rail, the stations' trouble is in 待处理's p
   assert_true(t.find("忽略") is None)
   t.key(@ui.key_escape)
   // (the panel closed gone its way out)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.frame()
   assert_true(t.find("Maple 连不上了") is None, msg="looked at")
@@ -875,7 +875,7 @@ test "wide: a downloading update shows its progress where restart will be offere
   t.run_for(@sf.tip_delay_ms * 2.0)
   assert_true(t.find("正在下载 0.1.9999 · 40% · 22.4 MB") is Some(_), msg="the download's progress in its tip")
   t.click(Button, label="正在下载 0.1.9999")
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   assert_true(t.find("正在下载 0.1.9999 · 40% · 22.4 MB") is Some(_), msg="the download's details")
   // The release notes also contain 关闭; choose the button's exact words, not that substring in the notes.
   let close = t.words().filter(fn(w) { w.0 == "关闭" })

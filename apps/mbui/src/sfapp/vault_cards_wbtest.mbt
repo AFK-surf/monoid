@@ -297,7 +297,7 @@ test "a file the person picks: 选择文件 over 存入, which waits for one; pi
   t.tap_text("选择文件")
   t.draw()
   t.draw()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("sa.json · 3 B") is Some(_))
   t.tap(x, y)
   t.draw()

@@ -17,17 +17,7 @@ pub(all) struct SliderState {
 ///|
 /// `v` held between `min` and `max`, on the nearest step from `min`.
 pub fn snap(v : Double, min : Double, max : Double, step : Double) -> Double {
-  let x = if v < min { min } else if v > max { max } else { v }
-  if step <= 0.0 {
-    return x
-  }
-  let n = ((x - min) / step).round()
-  let y = min + n * step
-  if y > max {
-    max
-  } else {
-    y
-  }
+  @headless.slider_snap(v, min, max, step)
 }
 
 ///|

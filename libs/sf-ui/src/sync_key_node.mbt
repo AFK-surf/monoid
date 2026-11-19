@@ -7,7 +7,7 @@
 /// says nothing of it) turning evenly, a turn each sync_turn_ms, by the clock as each frame is drawn. Once
 /// all is here, from that moment: the mark goes on from where it is and as fast as it turns, slowing to rest where it
 /// looks as upright (sync_rest), its arrows drawn back along their strokes, then the tick drawn as a hand ticks; there
-/// sync_done_ms, then it fades (sync_out_ms). Faded in over @kit.presence_in_ms as it comes; laid nowhere, nothing of it
+/// sync_done_ms, then it fades (sync_out_ms). Faded in over @motion.presence_in_ms as it comes; laid nowhere, nothing of it
 /// made, once it has faded out.
 #callsite(autofill(loc))
 pub fn sync_key_node(
@@ -87,7 +87,7 @@ pub fn sync_key_node(
       off_there.val = fn() {  }
       if on {
         there.set(true)
-        fade.go_ms(k, 1.0, @kit.presence_in_ms)
+        fade.go_ms(k, 1.0, @motion.presence_in_ms)
       } else if @signals.untracked(fn() { there.get() }) {
         // (fading out only from where it showed: nothing waited for where it never did)
         fade.go(k, 0.0, @motion.tween(sync_out_ms, ease=Leave))

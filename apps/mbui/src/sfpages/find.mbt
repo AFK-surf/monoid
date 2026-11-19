@@ -473,7 +473,7 @@ pub fn find_bar(c : @ui.Ctx, src : Source, r : ChatRef, thread : Double, list : 
     })
     |> ignore
   })
-  @motion.entering(c, bar, "find-bar/" + key, @kit.tip_in)
+  @motion.entering(c, bar, "find-bar/" + key, @motion.tip_in)
 }
 
 ///|

@@ -43,7 +43,7 @@ fn body_and_foot(
   let close = if close { t.query(Button, label=@sf.t("common.close")).map(fn(b) { tenth4(b.rect) }) } else { None }
   let at = (painted_at(t, body_ink), painted_at(t, foot_ink), words, "\{@ui.some_text(close.map(@ui.rect_text))}")
   t.key(@ui.key_escape)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_false(@sf.presenter_visible(), msg="gone")
   at
 }
@@ -364,13 +364,13 @@ test "大屏: a panel whose body is nodes: drawn by the window's tree, read out 
   assert_true(tree_said(Dialog, "节点面板") is Some(_), msg="the tree's")
   assert_true(@sf.presenting())
   (close_it.val)()
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq((@sf.presenting(), @sf.presenter_visible(), gone.val), (false, false, 0))
   @sf.panel_nodes("节点面板", from=Unanchored, gone=fn() { gone.val += 1 }, fn(v, _) { ink_node(v, 40.0, 36.0, body_ink) })
   t.run_for(@ui.move_most_ms)
   assert_true(tree_said(Dialog, "节点面板") is Some(_), msg="the tree's, in the middle")
   t.key(@ui.key_escape)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq((@sf.presenting(), @sf.presenter_visible(), gone.val), (false, false, 1))
 }
 
@@ -577,7 +577,7 @@ test "大屏: a panel of nodes in steps: a step in slides in within the same dia
   t.run_for(@ui.move_most_ms)
   assert_eq((t.find("下一步") is Some(_), left.val, @sf.presenting()), (true, 2, true))
   t.key(@ui.key_escape)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_false(@sf.presenting())
 }
 

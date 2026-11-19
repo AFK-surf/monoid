@@ -21,19 +21,19 @@ pub(all) struct DialogState {
 /// clear, to itself over 200 ms on the ease-out; the page under it dimmed over 180 ms (parts.css.ts overlay). Both go
 /// at once, as the web's (unmounted) do.
 // kept across runs: a value (no field of it changes)
-pub let dialog_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.98, dy=6.0, spec=@motion.tween(dialog_ms, ease=Out), ground_first=true)
+pub let dialog_in : @motion.Trans = @motion.dialog_in
 
 ///|
-pub let dialog_ms : Double = 200.0
+pub let dialog_ms : Double = @motion.dialog_ms
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let ground_in : @motion.Trans = @motion.trans(fade=0.0, spec=@motion.tween(180.0, ease=Out))
+pub let ground_in : @motion.Trans = @motion.ground_in
 
 ///|
 /// A dialog's ground going: as what it held goes (pop_out), faded as one, no words of its own.
 // kept across runs: a value (no field of it changes)
-pub let ground_out : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, spec=@motion.tween(pop_out_ms, ease=Leave))
+pub let ground_out : @motion.Trans = @motion.ground_out
 
 ///|
 /// `key`'s dialog as it shows now, `open` or not (coming or there; none once it has gone): its panel's look and how

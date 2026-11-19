@@ -38,10 +38,10 @@ pub fn pick_node(
       let th = theme()
       // (how far in it is, from the moment it opened)
       let way = @motion.NodeWay::new(0.0)
-      way.go_ms(layer, 1.0, @kit.pop_ms)
+      way.go_ms(layer, 1.0, @motion.pop_ms)
       let look = fn() {
         let p = way.shown(layer)
-        @kit.pop_in.at(p, p)
+        @motion.pop_in.at(p, p)
       }
       let words_in = fn() { look().words }
       // (what is found by the words typed, as they are now)

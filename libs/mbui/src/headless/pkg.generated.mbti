@@ -72,6 +72,8 @@ pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@vie
 #callsite(autofill(loc))
 pub fn slider(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Slider) -> Unit, thumb_room? : Double, disabled? : () -> Bool, value_text? : (Double) -> String, drag? : (@view.Drag) -> Unit, vertical? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+pub fn slider_snap(Double, Double, Double, Double) -> Double
+
 #callsite(autofill(loc))
 pub fn split(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Split) -> Unit, axis? : SplitAxis, span? : () -> Double, reset? : () -> Unit, said_value? : (Double) -> String, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
@@ -95,7 +97,15 @@ pub fn tooltip_bubble(@view.View, () -> String, (@view.View) -> Unit, made_for? 
 
 pub let tooltip_close : String
 
+pub let tooltip_delay_ms : Double
+
 pub let tooltip_keys : Array[@view.Binding]
+
+pub let tooltip_lifted_ms : Double
+
+pub let tooltip_skip_ms : Double
+
+pub let typeahead_ms : Double
 
 // Errors
 

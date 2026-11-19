@@ -97,10 +97,10 @@ pub fn toaster_node(
         gone,
         key~,
         label~,
-        leave=@kit.presence_out_ms,
+        leave=@motion.presence_out_ms,
       )
       |> ignore
-    }, leave=@kit.presence_out_ms)
+    }, leave=@motion.presence_out_ms)
   })
 }
 
@@ -120,13 +120,13 @@ fn toast_look(
   let id = @signals.untracked(fn() { s.toast().id })
   // (how far in it is: in as it is made, out as it is no longer given, in again as it is given again as it goes)
   let shown = ToastWay::new(0.0, key + "/" + id)
-  shown.go(row, 1.0, @motion.tween(@kit.presence_in_ms, ease=Out))
+  shown.go(row, 1.0, @motion.tween(@motion.presence_in_ms, ease=Out))
   let was_leaving = Ref(false)
   row.reacts(fn() { row.leaving() }, fn(l) {
     if l && !was_leaving.val {
-      shown.go(row, 0.0, @motion.tween(@kit.presence_out_ms, ease=Leave))
+      shown.go(row, 0.0, @motion.tween(@motion.presence_out_ms, ease=Leave))
     } else if !l && was_leaving.val {
-      shown.go(row, 1.0, @motion.tween(@kit.presence_in_ms, ease=Out))
+      shown.go(row, 1.0, @motion.tween(@motion.presence_in_ms, ease=Out))
     }
     was_leaving.val = l
   })

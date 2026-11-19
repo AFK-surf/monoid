@@ -133,10 +133,10 @@ pub fn Presence::leaving(self : Presence) -> Bool {
 
 ///|
 /// How long `presence` takes by default to come in (ms), and to go out: a tween each.
-pub let presence_in_ms : Double = 150.0
+pub let presence_in_ms : Double = @motion.presence_in_ms
 
 ///|
-pub let presence_out_ms : Double = 100.0
+pub let presence_out_ms : Double = @motion.presence_out_ms
 
 ///|
 /// Motion's AnimatePresence for one thing (see the file's head): `shown` comes in by `enter`, goes out by `exit`

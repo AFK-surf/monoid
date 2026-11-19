@@ -168,7 +168,7 @@ test "offers: Tab takes the one chosen, the focus staying; closed, Tab moves the
   x.t.key(@ui.key_tab)
   assert_eq(x.taken, [1])
   assert_true(offers_in_field(x.t))
-  x.t.run_for(@kit.pop_out_ms)
+  x.t.run_for(@motion.pop_out_ms)
   x.t.key(@ui.key_tab)
   assert_eq(x.taken, [1])
   assert_true(x.t.focused().map(fn(s) { s.label }) == Some("下面"), msg="\{Repr(x.t.focused().map(fn(s) { s.label }))}")
@@ -182,7 +182,7 @@ test "offers: the pointer moving onto a row chooses it; a press on one takes it"
   assert_eq(x.current.get(), 2)
   x.t.tap(rx + rw / 2.0, ry + rh / 2.0)
   assert_eq(x.taken, [2])
-  x.t.run_for(@kit.pop_out_ms)
+  x.t.run_for(@motion.pop_out_ms)
   assert_true(x.t.find("可以选的") is None)
 }
 
@@ -191,7 +191,7 @@ test "offers: Escape closes it alone, the next Escape the window's; one taken, a
   let x = offers_tester()
   x.t.key(@ui.key_escape)
   assert_eq((x.closes.val, x.escapes.val), (1, 0))
-  x.t.run_for(@kit.pop_out_ms)
+  x.t.run_for(@motion.pop_out_ms)
   x.t.key(@ui.key_escape)
   assert_eq((x.closes.val, x.escapes.val), (1, 1))
   for frames in [false, true] {
@@ -217,7 +217,7 @@ test "offers: a press outside it and its field closes it, the press what it land
   let (bx, by, bw, bh) = x.t.get(Button, label="下面").rect
   x.t.tap(bx + bw / 2.0, by + bh / 2.0)
   assert_eq((x.closes.val, x.under.val), (1, 1))
-  x.t.run_for(@kit.pop_out_ms)
+  x.t.run_for(@motion.pop_out_ms)
   assert_true(x.t.find("可以选的") is None)
 }
 

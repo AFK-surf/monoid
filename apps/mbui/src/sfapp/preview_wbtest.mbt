@@ -674,7 +674,7 @@ test "an APK without the leave to install apps: the system's page, and said to t
   t.frame()
   // (said at once, read out: seen as it has come in, toast_said)
   assert_true(toast_said(t, "允许 still.fail 安装应用后，再次点击安装"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("允许 still.fail 安装应用后，再次点击安装") is Some(_))
   t.run_for(toast_ms)
   // what the installer says, later (the host's system channel)
@@ -682,7 +682,7 @@ test "an APK without the leave to install apps: the system's page, and said to t
   t.frame()
   // (said at once, read out: seen as it has come in, toast_said)
   assert_true(toast_said(t, "无法安装：签名不一致"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("无法安装：签名不一致") is Some(_))
 }
 
@@ -978,7 +978,7 @@ test "zoomed in, let go moving it goes on that way, slowing, to its edge; a fing
   let held = shown_x(t, z)
   t.touch(2, 195.0, 422.0)
   t.draw()
-  t.run_for(@kit.zoom_fling_ms)
+  t.run_for(@motion.zoom_fling_ms)
   assert_eq(shown_x(t, z), held)
   assert_eq(v.awake, awake)
   // flung harder: it stops at its edge (its right edge at the stage's), when its way said it ends
@@ -986,7 +986,7 @@ test "zoomed in, let go moving it goes on that way, slowing, to its edge; a fing
   t.run_for(z.fling_ends() - t.time())
   let (x, _, w, _) = z.rect(t.ctx()).unwrap()
   assert_true((x + w - 390.0).abs() < 0.001)
-  t.run_for(@kit.zoom_fling_ms)
+  t.run_for(@motion.zoom_fling_ms)
   assert_true((z.rect(t.ctx()).unwrap().0 - x).abs() < 0.001)
 }
 

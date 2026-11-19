@@ -1,7 +1,7 @@
 // One of a few levels in order as nodes of the window's tree (stops' made-once form, seg.mbt: how hard a model thinks
 // on a sheet): a narrow track with interior detents, filled to the current level, and a capsule naming that level. A
 // finger takes the thumb along the track, to the stop under it and leaning a quarter of the way on toward the finger,
-// on the ball's spring (@kit.follow_spring), each stop come to under it felt; let go, the level under it is picked (a
+// on the ball's spring (@motion.follow_spring), each stop come to under it felt; let go, the level under it is picked (a
 // tap is a press let go there). Held, the thumb grows into a lens; where glass is solid, the capsule alone. Read out a slider
 // of its levels, stepped by a screen reader and by the arrows with the keyboard's focus.
 
@@ -186,7 +186,7 @@ pub fn stops_node(
       }
       let thumb_h = fn() { high() - 2.0 * pad }
       let p = @motion.NodeWay::new(@signals.untracked(goal))
-      inner.reacts(at_start=false, goal, fn(g) { p.go(inner, g, @kit.follow_spring) })
+      inner.reacts(at_start=false, goal, fn(g) { p.go(inner, g, @motion.follow_spring) })
       let rail_h = 10.0
       inner.box(fn(r) {
         let span = fn() { dmax(0.0, room.width() - cell()) }

@@ -16,7 +16,7 @@ fn mouse_rig() -> ScreenRig {
 /// lit still lit), the frame round the screen at rest.
 fn mouse_done(r : ScreenRig) -> Unit {
   r.t.leave()
-  r.t.run_for(@kit.tooltip_delay_ms)
+  r.t.run_for(@headless.tooltip_delay_ms)
   let rest = r.t.rest_of("Anim")
   if rest > r.t.time() {
     r.t.run_for(rest - r.t.time())
@@ -277,7 +277,7 @@ test "全屏 in 控制中心 fills the screen with the window, the bar kept; clo
   r.tap_label(tr("web-pages.screen.panel"))
   r.t.run_for(@sf.later_ms)
   r.t.tap_text("全屏")
-  r.t.run_for(@kit.presence_out_ms + @sf.later_ms)
+  r.t.run_for(@motion.presence_out_ms + @sf.later_ms)
   assert_true(@ui.full_screen())
   assert_true(!r.ui().full.get())
   assert_true(r.labelled(tr("common.back")) is Some(_))
@@ -377,7 +377,7 @@ test "a round button says its name when the pointer has rested on it: a device's
   assert_true(r.t.find(home) is None)
   let (x, y) = r.labelled(home).unwrap()
   r.t.move_to(x, y)
-  r.t.run_for(@kit.tooltip_delay_ms)
+  r.t.run_for(@headless.tooltip_delay_ms)
   r.t.draw()
   assert_true(r.t.find(home) is Some(_))
   mouse_done(r)

@@ -1,10 +1,10 @@
 // A confirm (confirm_dialog's) as nodes of the window's tree, made as it opens and let go once it has gone: a modal layer
 // over the whole window (at its place in the window's stack of layers as what holds it says: presented_nodes), what is
-// under it dimmed by the theme's scrim as far as its ground has come (@kit.ground_in, ground_out), taking presses (a
+// under it dimmed by the theme's scrim as far as its ground has come (@motion.ground_in, ground_out), taking presses (a
 // press outside an alert does not close it: confirm_dialog's outside=false); in its middle the panel as confirm_dialog
 // draws it (confirm_w wide at most, the window less dialog_margin; dialog_r round, the panel's ground, its line, its
-// shadow; its title, its words, then cancel and the action at its foot's end), coming in by @kit.dialog_in and going
-// by @kit.pop_out from the moments it opens and closes; read out a dialog named by its title. Escape, back and cancel
+// shadow; its title, its words, then cancel and the action at its foot's end), coming in by @motion.dialog_in and going
+// by @motion.pop_out from the moments it opens and closes; read out a dialog named by its title. Escape, back and cancel
 // close it (`cancel`); the action does `confirm`, and so does Enter where it can be undone (its default: not where
 // `danger`). The focus on its own ground as it opens (confirm_dialog's: a layer that traps it with no stop of its
 // own), back to what had it as it goes.
@@ -43,7 +43,7 @@ pub fn confirm_node(
 /// A dialog of the presenters' as nodes of the window's tree in `parent` while `open()` (going over pop_out_ms once not):
 /// a modal layer over the whole window, what is under it dimmed as far as its ground has come, its panel (`panel`: built
 /// in the row across the window's middle, looking as the look it is given says; the node given the focus as it opens)
-/// in its middle, coming in by @kit.dialog_in and going by @kit.pop_out; Escape and back close it (`cancel`), and a
+/// in its middle, coming in by @motion.dialog_in and going by @motion.pop_out; Escape and back close it (`cancel`), and a
 /// press outside its panel where `outside` (a dialog's; an alert's not). `shown` as its layer is made, `gone` once its
 /// way out is over. Escape and back offered to `within` first (a step back within it: true where it took them so). What
 /// is under it dimmed only while `dims` (read as it changes: one presented under it that dims
@@ -72,10 +72,10 @@ fn dialog_layer_node(
   ground_ms? : Double = confirm_ground_ms,
   night_with_ground? : Bool = false,
   top_share? : Double = 0.0,
-  come? : @motion.Trans = @kit.dialog_in,
-  come_ms? : Double = @kit.dialog_ms,
-  go? : @motion.Trans = @kit.pop_out,
-  go_ms? : Double = @kit.pop_out_ms,
+  come? : @motion.Trans = @motion.dialog_in,
+  come_ms? : Double = @motion.dialog_ms,
+  go? : @motion.Trans = @motion.pop_out,
+  go_ms? : Double = @motion.pop_out_ms,
 ) -> Unit {
   parent.show(
     open,
@@ -217,11 +217,11 @@ pub fn over_panel_node(
   within? : () -> Bool = fn() { false },
   back_within? : () -> Bool,
   top_share? : Double = 0.0,
-  come? : @motion.Trans = @kit.dialog_in,
-  come_ms? : Double = @kit.dialog_ms,
+  come? : @motion.Trans = @motion.dialog_in,
+  come_ms? : Double = @motion.dialog_ms,
   ground_ms? : Double = confirm_ground_ms,
-  go? : @motion.Trans = @kit.pop_out,
-  go_ms? : Double = @kit.pop_out_ms,
+  go? : @motion.Trans = @motion.pop_out,
+  go_ms? : Double = @motion.pop_out_ms,
 ) -> Unit {
   // (its layer over all else in `parent` itself: dialog_layer_node's; nothing made while it is closed but that)
   dialog_layer_node(parent, open, cancel, fn(across, layer, look, _) { panel(across, layer, look) }, outside=true, within~, back_within?, top_share~, come~, come_ms~, ground_ms~, go~, go_ms~)
@@ -325,7 +325,7 @@ fn confirm_panel(
 }
 
 ///|
-/// How long a confirm's ground takes to come (@kit.ground_in's).
+/// How long a confirm's ground takes to come (@motion.ground_in's).
 let confirm_ground_ms : Double = 180.0
 
 ///|

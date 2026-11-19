@@ -825,6 +825,18 @@ pub fn over(under : Int64, top : Int64) -> Int64 {
 }
 
 ///|
+/// `a` going to `b` as `t` goes from 0 to 1, channel by channel (alpha too).
+pub fn blend(a : Int64, b : Int64, t : Double) -> Int64 {
+  let k = if t < 0.0 { 0.0 } else if t > 1.0 { 1.0 } else { t }
+  let ch = fn(sh : Int) -> Int64 {
+    let x = ((a >> sh) & 0xFFL).to_double()
+    let y = ((b >> sh) & 0xFFL).to_double()
+    (x + (y - x) * k).round().to_int64() << sh
+  }
+  ch(24) | ch(16) | ch(8) | ch(0)
+}
+
+///|
 /// The colour of OKLCH lightness `l` (0 … 1), chroma `c` and hue `h` (degrees), at `alpha` (0 … 1, 1 by default), as
 /// 0xRRGGBBAA: at that lightness and hue, as saturated as sRGB has it up to `c` (less by 0.005 at a time till it does).
 pub fn oklch(l : Double, c : Double, h : Double, alpha? : Double = 1.0) -> Int64 {

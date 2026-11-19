@@ -1,6 +1,6 @@
 // A panel whose body and foot are nodes (panel_nodes) as a sheet from the foot of the window (小屏's: @kit.sheet's, the
 // host's present_sheet), as nodes of the window's tree: a modal layer over the window, what is under it dimmed by the
-// sheet's scrim (black at 28%, in and out over @kit.sheet_scrim_ms, CSS's ease), the sheet in the window's foot as
+// sheet's scrim (black at 28%, in and out over @motion.sheet_scrim_ms, CSS's ease), the sheet in the window's foot as
 // tall as what it holds (sheet_most of the window at most, what it holds scrolling in it past that; one a share of the
 // window tall, `tall`, that share, what it holds filling the room it leaves and laid out in it), its top corners
 // the pane's, on the frosted glass of a sheet; its grabber over its title (none where what it holds heads itself,
@@ -363,7 +363,7 @@ fn sheet_node(
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
           gate.stop()
-          dim.go_ms(layer, 0.0, @kit.sheet_scrim_ms, ease=Out)
+          dim.go_ms(layer, 0.0, @motion.sheet_scrim_ms, ease=Out)
           // (closed on its way from as tall as it stood: it sinks away from where it is seen then, as fast as it went)
           let carried_off = carried()
           let inset = if had_ime.val { @signals.untracked(fn() { layer.keyboard_inset() }) } else { 0.0 }
@@ -374,7 +374,7 @@ fn sheet_node(
           let rise = fn() {
             // (how tall it rises, for a sheet under it to step back out of its way: covered_by's there)
             rises(own_now())
-            dim.go_ms(layer, 1.0, @kit.sheet_scrim_ms, ease=Out)
+            dim.go_ms(layer, 1.0, @motion.sheet_scrim_ms, ease=Out)
             below.go(sheet_box, layer, 0.0, reach.untracked(), late=false)
           }
           if in_place is Some(_) {
@@ -748,12 +748,12 @@ fn sheet_node(
                       let (lo, hi) = (sheet_grows_to[0], sheet_grows_to[1])
                       tall.go(sheet, if at > (lo + hi) / 2.0 * total { lo * total } else { hi * total }, @motion.moved())
                     }
-                  } else if @kit.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below) is None {
+                  } else if @motion.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below) is None {
                     // (sinking away from where it is, as fast as it was going down)
                     let_go_speed.val = Some(dmax(0.0, speed))
                     cancel()
                   } else {
-                    let f = @kit.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below).unwrap_or(sheet_grows_to[0])
+                    let f = @motion.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below).unwrap_or(sheet_grows_to[0])
                     // (its height, up: its speed the other way, a second's)
                     tall.go(sheet, f * total, @motion.moved(), velocity=-speed * 1000.0)
                   }
@@ -769,7 +769,7 @@ fn sheet_node(
                 Up | Off => {
                   held.set(None)
                   back.put(down)
-                  if d.kind == Up && @kit.sheet_drag_closes(down, speed, sheet_drag_close) {
+                  if d.kind == Up && @motion.sheet_drag_closes(down, speed, sheet_drag_close) {
                     // (closed from where it is: it sinks away from there, as fast as it was going down)
                     let_go_speed.val = Some(dmax(0.0, speed))
                     cancel()
@@ -1142,7 +1142,7 @@ fn sheet_node(
       }
     },
     // (its scrim's fade; and its sinking away, which holds it: View::moved_by)
-    leave=@kit.sheet_scrim_ms,
+    leave=@motion.sheet_scrim_ms,
   )
 }
 

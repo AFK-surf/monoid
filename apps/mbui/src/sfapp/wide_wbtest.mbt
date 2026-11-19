@@ -159,7 +159,7 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
   t.key(@ui.key_escape)
   // (closed: nothing of it read out at once, drawn back over pop_out_ms)
   assert_true(t.query(Menu) is None)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("分享") is None)
 }
 
@@ -624,10 +624,10 @@ test "wide: a new chat as the web's: its scene and the composer in the pane's mi
   let station = t.query(Button, label="Willow")
   assert_true(station is Some(_))
   t.click(Button, label="Willow")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Maple") is Some(_))
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Maple") is None)
 }
 
@@ -777,9 +777,9 @@ test "wide: a new chat's composer stays where it is as another station is picked
   let (bx, by, _, _) = composer_glass(t)
   let pick = fn(from : String, to : String) raise {
     t.click(Button, label=from)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     t.click(Button, label=to)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
   }
   // Maple: no session of its own; what is wrong for now and what it waits for in its place
   pick("Willow", "Maple")
@@ -1112,7 +1112,7 @@ test "wide: a right click in a chat as the desktop app's: a link's 在浏览器�
   t.frame()
   assert_eq(t.clipboard(), "https://example.com/review/42")
   // (its menu, the presenters', gone as it goes)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_true(t.find("在浏览器中打开链接") is None)
   // the words before it with nothing picked: its turn shared alone (a message of the chat's list)
   let (px, py, pw, ph) = words_rect(t, "第二屏的插画")
@@ -1121,7 +1121,7 @@ test "wide: a right click in a chat as the desktop app's: a link's 在浏览器�
   assert_true(t.find("多选") is Some(_))
   assert_true(@sfdesk.context.share is Some(_) && @sfdesk.context.link == "" && @sfdesk.context.words == "")
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   // words picked with the pointer: 复制 alone, and what is picked copied
   t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
   t.frame()
@@ -1240,7 +1240,7 @@ test "wide: a right click on a message's image: 复制图片, the picture on the
   t.right_click(x, y)
   t.frame()
   // (its menu, the presenters': a small panel at the pointer with a mouse, in)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(@sfpages.offered_image() != "", msg="its picture's source")
   t.add_pixels(@sfpages.offered_image(), 2, 2, FixedArray::make(16, b'\xff'))
   t.tap_text("复制图片")
@@ -1476,12 +1476,12 @@ test "wide: 文件 shows favorites and stations; files can be chosen, opened, an
   assert_eq(more.length(), 1)
   let (mx, my, mw, mh) = more[0].rect
   t.tap(mx + mw / 2.0, my + mh / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("把「旧版」加入个人收藏")
   t.frame()
   assert_eq(named(calls, "prefs.set").length(), before + 1)
   t.tap(mx + mw / 2.0, my + mh / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("从个人收藏移除「旧版」") is Some(_))
 }
 
@@ -1752,7 +1752,7 @@ test "wide: 快捷键 changed by pressing new ones (keys.set), and the new keys 
   t.key(@ui.key_escape)
   t.post(@hostapi.system_channel, "{\"menu\":\"update.check\"}")
   t.frame()
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   assert_true(app.nav.top() == Setting(@settings.Route::Shortcuts))
   assert_true(update_dialog_open())
   assert_true(t.find("检查更新失败") is Some(_))
@@ -2843,7 +2843,7 @@ test "wide: 文件's rows as the core says them (driveBrowse, drive.browse): a p
   t.frame()
   assert_true(t.find("重命名") is Some(_), msg="its menu")
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   // (the menu gone: the page's rows to be asked of again)
   assert_true(files_row_chosen(t, "发布清单.md"), msg="chosen by its right click")
   assert_false(files_row_chosen(t, "设计稿"))
@@ -3050,7 +3050,7 @@ test "wide: Esc goes to what the frame opened first (a row's menu), then to the 
   t.key(@ui.key_escape)
   t.frame()
   assert_true(t.query(Menu) is None)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("分享") is None)
   assert_true(@sfpages.find_chat() != "")
   // then the bar

@@ -69,7 +69,7 @@ test "panel centred, 大屏 keyboard and mouse: closed by its close button, by E
     }
     // (the frame it is closed in, and midway through its way out)
     let at_close = t.focused().map(fn(s) { "\{s.role} \{s.label}" })
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let midway = t.focused().map(fn(s) { "\{s.role} \{s.label}" })
     t.run_for(@ui.move_most_ms)
     out.push("\{how}: focus closed \{@ui.some_text(at_close)} midway \{@ui.some_text(midway)} then presenting \{@sf.presenting()} gone \{gone.val} said \{@ui.list_text(said)} focus \{@ui.some_text(t.focused().map(fn(s) { "\{s.role} \{s.label}" }))}")

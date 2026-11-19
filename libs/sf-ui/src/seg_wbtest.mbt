@@ -199,7 +199,7 @@ test "segmented whose options do not fit side by side even at the system's own s
   assert_eq(presented_how, [AsSheet])
   t.tap_text("Settings")
   assert_true(!presenting())
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_eq(chosen.val, 2)
   assert_true(t.query(@ui.Role::Button, label="Settings") is Some(_))
 }
@@ -264,7 +264,7 @@ fn open_choice(t : @ui.Tester, words : String) -> Unit raise {
   if presented_how == [AsSheet] {
     t.run_for(presented_rest() - t.time())
   } else {
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
   }
 }
 

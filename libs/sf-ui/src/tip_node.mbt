@@ -21,7 +21,7 @@ pub struct TipLayer {
 ///|
 /// The tips' layer of a window, drawn in what `layer` gives (the node it is first shown in).
 pub fn TipLayer::new(layer : () -> @view.View?) -> TipLayer {
-  { layer, went_at: -1.0e18, hands: @motion.Handoff::new(within=@kit.tooltip_skip_ms) }
+  { layer, went_at: -1.0e18, hands: @motion.Handoff::new(within=@headless.tooltip_skip_ms) }
 }
 
 ///|
@@ -121,7 +121,7 @@ pub fn tip_node(
       }
     })
     |> ignore
-    holder.show(fn() { open.get() }, leave=@kit.pop_out_ms, fn(t) {
+    holder.show(fn() { open.get() }, leave=@motion.pop_out_ms, fn(t) {
       tip_look_node(t, anchor_id, side, label, shortcut, fade, glide, gap, at_pointer, owner)
     })
     true
@@ -161,7 +161,7 @@ pub fn tip_node(
       }
     } else {
       // (out, as pop_out: from where it is at this moment, eased to leave, over as long as it is kept going)
-      fade.go(anchor, 0.0, at, @kit.pop_out_ms, Leave)
+      fade.go(anchor, 0.0, at, @motion.pop_out_ms, Leave)
       tips.went_at = at
       glide.left(at)
     }
@@ -244,7 +244,7 @@ pub fn tip_node(
       set_open(false)
     } else if focused || open.untracked() {
       set_open(true)
-    } else if skip && (at < tips.went_at + @kit.tooltip_skip_ms || glide.other_near(at)) {
+    } else if skip && (at < tips.went_at + @headless.tooltip_skip_ms || glide.other_near(at)) {
       // (another of the layer's went a moment ago, or shows still (the hand come from it to this one, that one told it
       // left after this one is told it came): at once)
       set_open(true)
@@ -295,7 +295,7 @@ pub fn tip_node(
     lift: fn() {
       if hand.untracked() == Held {
         hand.set(Lifted)
-        lifted_end.val = anchor.at_moment(anchor.cause_at() + @kit.tooltip_lifted_ms, fn() { hand.set(Free) })
+        lifted_end.val = anchor.at_moment(anchor.cause_at() + @headless.tooltip_lifted_ms, fn() { hand.set(Free) })
       }
     },
   }

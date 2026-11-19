@@ -53,6 +53,10 @@ pub fn default_easing(Int32, easing? : (Double) -> Double) -> Array[(Double) -> 
 
 pub fn default_offset(Int32) -> Array[Double]
 
+pub let dialog_in : Trans
+
+pub let dialog_ms : Double
+
 pub let digit_spring : Spec
 
 pub let drawer_spring : Spec
@@ -81,9 +85,15 @@ pub fn fly_by(@ui.Ctx, Int32, () -> (Double, Double, Double, Double, Double, Dou
 
 pub fn flying_placed(@ui.Ctx, Int32) -> Unit
 
+pub let follow_spring : Spec
+
 pub fn generator_duration(Generator) -> Double
 
 pub fn generator_easing((Double, Double, Double) -> Generator, Double, Double, velocity? : Double, scale? : Double) -> ((Double) -> Double, Double)
+
+pub let ground_in : Trans
+
+pub let ground_out : Trans
 
 pub fn grown_shown(@ui.Ctx, String) -> Double?
 
@@ -186,12 +196,24 @@ pub fn pointer_veil(Int64) -> Int64
 
 pub let pointer_veil_part : Double
 
+pub let pop_in : Trans
+
+pub let pop_ms : Double
+
+pub let pop_out : Trans
+
+pub let pop_out_ms : Double
+
 pub fn pregenerate_keyframes(Generator) -> (Array[Double], Double)
 
 pub fn presence(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double) -> @ui.Look?
 
 #callsite(autofill(loc))
 pub fn presence_by(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double, loc~ : SourceLoc) -> Showing?
+
+pub let presence_in_ms : Double
+
+pub let presence_out_ms : Double
 
 #callsite(autofill(loc))
 pub fn press_feel(@view.View, live? : () -> Bool, sink_px? : Double, sink_most? : Double, hover_ms? : Double, hovers? : Bool, scale_node? : Bool, size? : (Double, Double), loc~ : SourceLoc) -> PressFeel
@@ -201,6 +223,12 @@ pub let press_sink : Double
 pub fn pressing(@ui.Ctx, Int32) -> Double
 
 pub fn progress(Double, Double, Double) -> Double
+
+pub let progress_known_ms : Double
+
+pub let progress_ms : Double
+
+pub let progress_sweep_ms : Double
 
 pub fn project_landing(Double, Double, decel_rate? : Double) -> Double
 
@@ -245,9 +273,17 @@ pub fn seconds_to_ms(Double) -> Double
 #callsite(autofill(loc))
 pub fn shared(@view.View, String, spec? : Spec, loc~ : SourceLoc) -> @view.View
 
+pub fn sheet_drag_closes(Double, Double, Double) -> Bool
+
+pub fn sheet_goes_to(Array[Double], Double, Double, Double, Double) -> Double?
+
+pub let sheet_scrim_ms : Double
+
 pub let sheet_spring : Spec
 
 pub fn snap_detent(Double, Double, Array[Double], close_past? : Double, decel_rate? : Double) -> Int32?
+
+pub fn speed_stretch(Double) -> (Double, Double)
 
 pub fn spring(ratio? : Double, stiffness? : Double, threshold? : Double, delay? : Double) -> Spec
 
@@ -264,6 +300,8 @@ pub fn spring_visual(visual_duration? : Double, bounce? : Double) -> Generator
 pub fn steps(Int32, direction? : StepsAt) -> (Double) -> Double
 
 pub fn stop_for(@ui.Ctx, String, Double) -> Unit
+
+pub let tip_in : Trans
 
 #callsite(autofill(loc))
 pub fn told(@ui.Ctx, String, Double, spec? : Spec, loc~ : SourceLoc) -> Anim
@@ -283,6 +321,8 @@ pub fn visual_to_compose(Double, Double) -> (Double, Double)
 pub fn ways_said() -> Int32
 
 pub fn wrap(Double, Double, Double) -> Double
+
+pub let zoom_fling_ms : Double
 
 // Errors
 
