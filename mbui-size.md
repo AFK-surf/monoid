@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.43 | 97.44 | 112.7 |
 | [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.42 | 97.52 | 127.45 |
 | [7cc00a60a](https://github.com/AFK-surf/monoid/commit/7cc00a60abb50e24f50cef751dd43189fca6b426) refactor(mb): unify live_wire state helpers, intra | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.47 | 122.81 |
 | [cc8eb937e](https://github.com/AFK-surf/monoid/commit/cc8eb937e8b3a43fb8fa69ad55abb888880def47) fix(mbui): an effect writing what it reads keeps l | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.49 | 115.86 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d88c8b63f](https://github.com/AFK-surf/monoid/commit/d88c8b63f7f61c50c79526f6a17b33b8cfd869a0) refactor(station-mb): deduplicate shared JS/JSON a | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.67 | 119.2 |
 | [0dd687991](https://github.com/AFK-surf/monoid/commit/0dd68799112a53d8e8a1660e1ed4b6e16ca6717a) refactor(mbui): move Zoom to mbui/motion and Media | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.34 | 119.5 |
 | [6cf291ea5](https://github.com/AFK-surf/monoid/commit/6cf291ea545b22f158fe80ee246f662251c72a03) fix(mbui): carry a child's edge through its holder | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.34 | 119.5 |
-| [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.45 | 125.81 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.23 |
 | [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.5 | 54.13 |
 | [7cc00a60a](https://github.com/AFK-surf/monoid/commit/7cc00a60abb50e24f50cef751dd43189fca6b426) refactor(mb): unify live_wire state helpers, intra | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.48 | 54.28 |
 | [cc8eb937e](https://github.com/AFK-surf/monoid/commit/cc8eb937e8b3a43fb8fa69ad55abb888880def47) fix(mbui): an effect writing what it reads keeps l | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.48 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d88c8b63f](https://github.com/AFK-surf/monoid/commit/d88c8b63f7f61c50c79526f6a17b33b8cfd869a0) refactor(station-mb): deduplicate shared JS/JSON a | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 53.68 |
 | [0dd687991](https://github.com/AFK-surf/monoid/commit/0dd68799112a53d8e8a1660e1ed4b6e16ca6717a) refactor(mbui): move Zoom to mbui/motion and Media | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 53.68 |
 | [6cf291ea5](https://github.com/AFK-surf/monoid/commit/6cf291ea545b22f158fe80ee246f662251c72a03) fix(mbui): carry a child's edge through its holder | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
-| [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
