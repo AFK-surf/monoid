@@ -141,6 +141,8 @@ pub fn Runtime::after(Self, Int32, () -> Unit, later? : Bool, who? : String) -> 
 pub fn Runtime::awaited(Self) -> Array[(String, Int64)]
 pub fn Runtime::awaiting(Self) -> Int32
 pub fn[X] Runtime::fork(Self, async () -> X, name? : String) -> Fiber[X]
+pub fn Runtime::fork_daemon(Self, String, async () -> Unit, on_error~ : (Error) -> Unit) -> Fiber[Unit]
+pub fn[X] Runtime::fork_quiet(Self, async () -> X, name? : String) -> Fiber[X]
 pub fn Runtime::frame(Self, Int64) -> Unit
 pub fn Runtime::holding(Self) -> (Int32, Int32, Int32, Int32, Int32, Int32)
 pub fn Runtime::idle(Self) -> Bool
@@ -179,6 +181,8 @@ pub fn Scope::child(Self) -> Self
 pub async fn Scope::close(Self) -> Unit noraise
 pub fn Scope::close_now(Self) -> Unit
 pub fn[X] Scope::fork(Self, async () -> X, name? : String) -> Fiber[X]
+pub fn Scope::fork_daemon(Self, String, async () -> Unit, on_error~ : (Error) -> Unit) -> Fiber[Unit]
+pub fn[X] Scope::fork_quiet(Self, async () -> X, name? : String) -> Fiber[X]
 pub fn Scope::is_closed(Self) -> Bool
 pub fn Scope::running(Self) -> Int32
 
