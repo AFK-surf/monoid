@@ -27,7 +27,6 @@ fn init {
     // (the agent's row over words sent opens 81→102 and closes to 98: the user's 「距离能突变三次」, back with #5231 taken
     // out by #5256 till the list's motion is made again)
     ("src/sfapp/send_steady_wbtest.mbt", 1),
-    ("src/sfapp/station_peek_wbtest.mbt", 1),
     // (send_steady_wbtest's, 94→117→115: emit_kept_wbtest's 大屏 sends, both, on a Tester wide_wbtest's wide_tester
     // makes)
     ("src/sfapp/wide_wbtest.mbt", 2),

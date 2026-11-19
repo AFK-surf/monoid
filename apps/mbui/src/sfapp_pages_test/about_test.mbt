@@ -41,17 +41,6 @@ fn one_page_tester(
 }
 
 ///|
-/// Each width and hand the pages are drawn at: a phone with a finger, a narrow window with a mouse, a window between,
-/// a tablet with a finger, a desktop's window with a mouse; and whether the page is as wide as the web's narrow app.
-let one_page_cases : Array[(Double, Int, Bool, Bool)] = [
-  (390.0, 2, false, true),
-  (390.0, 0, false, true),
-  (720.0, 0, false, false),
-  (1100.0, 2, true, false),
-  (1280.0, 0, false, false),
-]
-
-///|
 test "the update dialog with a newer build: what it brings (its first five, 还有 n 项); 下载 asks still.fail cloud now, then hands the newest to the host, how it comes under them, 关闭 beside it; ready, 重启更新 asks again, then puts it in place" {
   let t = one_page_tester(@settings.Route::About, 1280.0)
   let asked : Array[(Result[Json, String]) -> Unit] = []

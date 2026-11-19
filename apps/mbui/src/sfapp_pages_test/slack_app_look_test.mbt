@@ -5,7 +5,7 @@
 ///|
 fn init {
   // The 1024×1024 JPEG preview handed to the host once icon_well_node draws it at full size.
-  @ui.host_image_bytes_known([("src/sfapp/slack_app_look_wbtest.mbt", 86954)])
+  @ui.host_image_bytes_known([("src/sfapp_pages_test/slack_app_look_test.mbt", 86954)])
 }
 
 ///|

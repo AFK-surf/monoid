@@ -46,7 +46,7 @@ for t in $targets; do
   # MBC_LTO says (its link is 30-40 s a test; main's run has it on: mbui-check.yml).)
   mode="--target $t"
   # (mbui's scripts/env.sh native_tests: the C split by mbui's scripts/mbc, units kept by content in MBC_STORE)
-  if [ $t = native ] && [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ] && [ -z "${REALSIZE_EXE:-}" ]; then native_tests "$A"; mode=$NATIVE; fi
+  if [ $t = native ] && [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ] && [ -z "${REALSIZE_EXE:-}" ] && [ -z "${PAGES_TEST_EXE:-}" ]; then native_tests "$A"; mode=$NATIVE; fi
   # (wasm-gc: --release, as native's; wasm-gc rather than classic Wasm, whose memory is freed by counting alone: what
   # holds itself is never freed, 3.7 MB a screen opened in a Tester, and the corner and contrast sweeps outgrew its
   # 4 GiB (2026-11-03))
@@ -57,7 +57,7 @@ for t in $targets; do
   # 194 s with them apart and 140 s together, 2026-10-22; sfreplay's own two tests there too: its whitebox test was
   # one more program of the whole app, linked with ThinLTO on main in 120 s beside the flows' 118, 2026-10-23)
   pkgs=""
-  if [[ " ${PARTS:-app realsize replay} " = *" app "* ]]; then
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" app "* ]]; then
     # (the screens' tests in sfapp's own, screens_wbtest.mbt: a package of their own was a second program of the whole
     # app, compiled again on every change, 88 s of a branch's app part with sfapp's own 92, 2026-10-23)
     # (sfpages' own tests too: the pages moved there from sfapp brought theirs, run by nothing until 2026-10-25)
@@ -76,10 +76,13 @@ for t in $targets; do
     # links a part side by side, 35-69 s each after a change, 2026-10-23, 40022031382; their tests run without it)
     [ "${MBC_LTO:-0}" = thin ] && pkgs="-p stillfail/sfapp"
   fi
-  if [[ " ${PARTS:-app realsize replay} " = *" realsize "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" realsize "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
     pkgs="$pkgs -p stillfail/sfapp_realsize"
   fi
-  if [[ " ${PARTS:-app realsize replay} " = *" replay "* ]]; then
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" pages_test "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
+    pkgs="$pkgs -p stillfail/sfapp_pages_test"
+  fi
+  if [[ " ${PARTS:-app realsize pages_test replay} " = *" replay "* ]]; then
     if [ "${MBC_LTO:-0}" = thin ]; then pkgs="$pkgs -p stillfail/sfreplay/flows"; else
     # (not sfreplay: no test of its own is left there, and its package was two empty programs of the whole app, 29 s
     # of the replay part's compile, 2026-10-24)
@@ -115,7 +118,7 @@ for t in $targets; do
       # (sfapp's program and the flows' at their own level, a branch's as main's: a branch's built at -O0, its 409 units
       # of sfpages, sfdesk, sfbase and sfapp were none of them main's once merged, which compiled them again at -O2
       # past its app build's budget, 44452414116, 2026-11-19. Their tests' units are test.<unit>, at MBC_TEST_OPT below)
-      -p | stillfail/core | stillfail/sfreplay/* | stillfail/sfapp | stillfail/sfapp_realsize) continue ;;
+      -p | stillfail/core | stillfail/sfreplay/* | stillfail/sfapp | stillfail/sfapp_realsize | stillfail/sfapp_pages_test) continue ;;
     esac
     n=$(basename "$p")
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
@@ -131,13 +134,13 @@ for t in $targets; do
   # Built first on its own (TIMES=1, as CI's: each said with how long it took; its errors shown by the run), then run.
   s=$(date +%s)
   # (a build that fails fails the run: the programs a build before it left in _build are not run in their place)
-  if [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ] && [ -z "${REALSIZE_EXE:-}" ] && ! moon test $mode $pkgs --build-only > "$out.build" 2>&1; then
+  if [ -z "${APP_EXE:-}" ] && [ -z "${REPLAY_EXE:-}" ] && [ -z "${REALSIZE_EXE:-}" ] && [ -z "${PAGES_TEST_EXE:-}" ] && ! moon test $mode $pkgs --build-only > "$out.build" 2>&1; then
     grep -v "$F" "$out.build" | tail -40
     rm -f "$out.build"
     exit 1
   fi
   rm -f "$out.build"
-  [ -z "${TIMES:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}${REALSIZE_EXE:-}" ] || echo "test.sh: built in $(( $(date +%s) - s )) s"
+  [ -z "${TIMES:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}${REALSIZE_EXE:-}${PAGES_TEST_EXE:-}" ] || echo "test.sh: built in $(( $(date +%s) - s )) s"
   # (wasm-gc: the whole app's programs (sfapp's, the flows') run as a native one built elsewhere is (APP_EXE, exe_run),
   # their files side by side, each part a moonrun of the program (scripts/wasmtest.mjs): moon test runs a program's
   # tests one after another. UPDATE's are moon test's own, to write the snapshots)
@@ -175,6 +178,17 @@ for t in $targets; do
     [ -z "${MBUI_BUILT_MARK:-}" ] || touch "$MBUI_BUILT_MARK"
     exit 0
   fi
+  # (sfapp_pages_test's test program and its tests' list put where PAGES_TEST_BUILD_OUT says, for the jobs that run it: nothing run)
+  if [ -n "${PAGES_TEST_BUILD_OUT:-}" ]; then
+    b=_build/native/release/test/stillfail/sfapp_pages_test
+    [ -f $b/sfapp_pages_test.blackbox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
+    mkdir -p "$PAGES_TEST_BUILD_OUT" && cp $b/sfapp_pages_test.blackbox_test.exe $b/__blackbox_test_info.json "$PAGES_TEST_BUILD_OUT/" &&
+      cp "$(bash "$D/testexe" path)" "$PAGES_TEST_BUILD_OUT/testexe" || exit 1
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PAGES_TEST_BUILD_OUT/sfapp_pages_test.blackbox_test.exe" "$PAGES_TEST_BUILD_OUT/testexe" || true
+    echo "test.sh: sfapp_pages_test's test program put in $PAGES_TEST_BUILD_OUT ($(du -h "$PAGES_TEST_BUILD_OUT/sfapp_pages_test.blackbox_test.exe" | cut -f1))"
+    [ -z "${MBUI_BUILT_MARK:-}" ] || touch "$MBUI_BUILT_MARK"
+    exit 0
+  fi
   # (the flows' test program and its tests' list put where REPLAY_BUILD_OUT says, the same way)
   if [ -n "${REPLAY_BUILD_OUT:-}" ]; then
     b=_build/native/release/test/stillfail/sfreplay/flows
@@ -209,7 +223,7 @@ for t in $targets; do
   # (MBUI_BUILT_MARK: that file written once every program this run builds is built and put where it goes, whatever
   # their tests say after: check-mbui keeps a branch's units only from a build that came to its end, never one cut or
   # failed half way. APP_BUILD_OUT's, above, before its exit)
-  [ -z "${MBUI_BUILT_MARK:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}${REALSIZE_EXE:-}" ] || touch "$MBUI_BUILT_MARK"
+  [ -z "${MBUI_BUILT_MARK:-}" ] || [ -n "${APP_EXE:-}${REPLAY_EXE:-}${REALSIZE_EXE:-}${PAGES_TEST_EXE:-}" ] || touch "$MBUI_BUILT_MARK"
   s=$(date +%s)
   # The page files FILE... dealt to the runners SPECS (each "programs,cores,others,times": its programs for the pages,
   # its cores, the seconds its other runs take of them, and how many times it runs each page, two where it runs two
@@ -621,6 +635,37 @@ for t in $targets; do
       fi
     fi
   fi
+  # Pages, settings, stations, files and viewer blackbox tests (src/sfapp_pages_test): built apart from sfapp so
+  # sfapp's whitebox C stays smaller and faster to compile.
+  if [[ " $pkgs " = *" -p stillfail/sfapp_pages_test "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
+    rest=()
+    for r in "${runs[@]}"; do rest+=("$(echo " $r " | sed 's| -p stillfail/sfapp_pages_test | |')"); done
+    runs=("${rest[@]}")
+    px=${PAGES_TEST_EXE:-_build/native/release/test/stillfail/sfapp_pages_test/sfapp_pages_test.blackbox_test.exe}
+    [ $t = wasm-gc ] && px=$(wasm_exe sfapp_pages_test blackbox)
+    pt_files=(src/sfapp_pages_test/*_test.mbt)
+    [ -z "${PAGES_TEST_FILES:-}" ] || read -r -a pt_files <<< "$PAGES_TEST_FILES"
+    pt_other=()
+    while IFS= read -r f; do
+      pt_other+=("$f")
+    done < <(grep -l '^test "' "${pt_files[@]}" </dev/null 2>/dev/null)
+    if [ -n "${PAGES_TEST_PART:-}" ] && [ ${#pt_other[@]} -gt 0 ]; then
+      pt_k=${PAGES_TEST_PART%/*} pt_n=${PAGES_TEST_PART#*/}
+      pt_mine=()
+      for ((idx = 0; idx < ${#pt_other[@]}; idx++)); do
+        [ $((idx % pt_n + 1)) -eq "$pt_k" ] && pt_mine+=("${pt_other[idx]}")
+      done
+      pt_other=("${pt_mine[@]}")
+    fi
+    if [ ${#pt_other[@]} -gt 0 ]; then
+      if [ $t != js ] && [ -z "${UPDATE:-}" ] && [ -n "$px" ] && [ -f "$px" ]; then
+        pt_j=${PAGES_TEST_JOBS:-4}
+        runs+=("@pages_test_pages $pt_j ${pt_other[*]}")
+      else
+        runs+=("${pt_other[*]}")
+      fi
+    fi
+  fi
   # The flows seen again (src/sfreplay/flows, one program): their files in REPLAY_SHARDS moon tests side by side (3),
   # the core's tests in another. One moon test ran them one after another, 83 s of the replay part's run on CI's four
   # cores, the part the pipeline's longest on a branch (mbui-parts-nodes, 40573326799, 2026-10-28).
@@ -827,6 +872,7 @@ for t in $targets; do
     [ "$1" = @flows ] && shift
     [ "$1" = @realsize_sweep ] && shift
     [ "$1" = @realsize_pages ] && shift 2
+    [ "$1" = @pages_test_pages ] && shift 2
     [ "$1" = @pages ] && shift 3
     case " $* " in
       *" -p "*) echo "the packages$(echo " $* " | sed 's| -p stillfail/| |g')" ;;
@@ -922,7 +968,7 @@ for t in $targets; do
     return $c
   }
   # (the tool, built before the runs side by side, not by each: TESTEXE, or scripts/testexe's)
-  if [ -n "${APP_EXE:-}" ] || [ -n "${REALSIZE_EXE:-}" ] || [[ " ${runs[*]} " = *" @flows "* ]] || [[ " ${runs[*]} " = *" @pkgs "* ]] || [[ " ${runs[*]} " = *" @realsize_"* ]]; then
+  if [ -n "${APP_EXE:-}" ] || [ -n "${REALSIZE_EXE:-}" ] || [ -n "${PAGES_TEST_EXE:-}" ] || [[ " ${runs[*]} " = *" @flows "* ]] || [[ " ${runs[*]} " = *" @pkgs "* ]] || [[ " ${runs[*]} " = *" @realsize_"* ]] || [[ " ${runs[*]} " = *" @pages_test_"* ]]; then
     # (in development the script itself: its program is Wasm, run by node)
     if [ -n "${GITHUB_ACTIONS:-}" ]; then [ -n "${TESTEXE:-}" ] || TESTEXE=$(bash "$D/testexe" path) || exit 1
     else TESTEXE=${TESTEXE:-$D/testexe}; fi
@@ -944,6 +990,11 @@ for t in $targets; do
         set -- ${runs[i]}
         f=_build/$t/release/test/stillfail/sfapp_realsize
         exe_run "$rx" "${REALSIZE_INFO:-$f/__blackbox_test_info.json}" "${2}each" stillfail/sfapp_realsize \
+          "${@:3}" > "$out.$i" 2>&1
+      elif [ "${runs[i]%% *}" = @pages_test_pages ]; then
+        set -- ${runs[i]}
+        f=_build/$t/release/test/stillfail/sfapp_pages_test
+        exe_run "$px" "${PAGES_TEST_INFO:-$f/__blackbox_test_info.json}" "${2}each" stillfail/sfapp_pages_test \
           "${@:3}" > "$out.$i" 2>&1
       # (the packages' programs where PKGS_EXE says: built elsewhere, at a rate; put there by this run's build on their
       # own runner, APP_GROUP=pkgs)
