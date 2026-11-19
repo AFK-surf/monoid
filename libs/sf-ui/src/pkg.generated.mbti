@@ -1903,6 +1903,9 @@ pub fn roving_hover_node(RovingHover, @view.View, () -> Bool, () -> Int64, @view
 
 pub fn round_key_node(@view.View, String, () -> String, () -> Unit, side? : Double, icon_size? : Double, ink? : () -> Int64) -> Unit
 
+#callsite(autofill(loc))
+pub fn row_box_node(@view.View, () -> String, press? : () -> Unit, busy? : () -> Bool, (RowScope) -> Unit, loc~ : SourceLoc) -> Unit
+
 pub fn row_chevron_node(@view.View) -> Unit
 
 pub let row_corner : Double
@@ -3393,12 +3396,49 @@ pub(all) struct Round {
   glyph : Double
 }
 
+pub(all) enum RowChevron {
+  ChevronRight
+  ChevronOut
+  ChevronFold(() -> Bool)
+  ChevronRoom
+}
+
 pub(all) enum RowLead {
   NoLead
   LeadIcon(String)
   LeadLine((@view.View) -> Unit)
   LeadMade((@view.View) -> Unit)
   LeadTile((@view.View) -> Unit)
+}
+
+#derive(Eq)
+pub(all) enum RowNoteTone {
+  NoteMuted
+  NoteWarn
+  NoteBad
+}
+
+pub struct RowScope {
+  narrow : Bool
+  busy : () -> Bool
+  // private fields
+}
+pub fn RowScope::below(Self, (@view.View) -> Unit, open? : () -> Double) -> Unit
+pub fn RowScope::chevron(Self, kind? : RowChevron) -> Unit
+pub fn RowScope::has_under(Self) -> Bool
+pub fn RowScope::icon(Self, String) -> Unit
+pub fn RowScope::lead(Self, (@view.View) -> Unit, icon_line? : Bool) -> Unit
+pub fn RowScope::note(Self, () -> String, tone? : RowNoteTone, cut? : Bool) -> Unit
+pub fn RowScope::tail(Self, (@view.View) -> Unit, shown? : () -> Bool) -> Unit
+pub fn RowScope::title(Self, tone? : RowTone, cut? : Bool, after? : (@view.View) -> Unit) -> Unit
+pub fn RowScope::value(Self, () -> String, tone? : RowNoteTone, dot? : () -> Bool, cut? : Bool) -> Unit
+
+#derive(Eq)
+pub(all) enum RowTone {
+  RowNormal
+  RowStrong
+  RowAccent
+  RowDanger
 }
 
 pub struct RovingHover {
