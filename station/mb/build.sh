@@ -45,6 +45,14 @@ if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "${GITHUB_REF:-}" != refs/
   opt=-O0
 fi
 opt=${STATION_READER_OPT:-$opt}
+if [ -z "${MBC_STORE:-}" ]; then
+  if [ -d "$HOME/stillfail-ci" ]; then
+    export MBC_STORE="$HOME/stillfail-ci/reader-mbc-store"
+  else
+    export MBC_STORE="${XDG_CACHE_HOME:-$HOME/.cache}/stillfail-reader-mbc"
+  fi
+fi
+mkdir -p "$MBC_STORE"
 # A first link for Windows makes zig build MinGW's CRT, its import libraries, libunwind and compiler_rt from source
 # (~85 s on a hosted runner with ~/.cache/zig cold, the final link's 4 s otherwise): an empty program linked so in the
 # background puts them in zig's cache while moon, cprep and mbc's split run here, mostly on one core; the final link
@@ -87,6 +95,26 @@ echo "$$" > "$lock/pid"
     echo "build.sh: reader.c as prepared for $gen_key" >&2
     exit 0
   fi
+  # cprep compiled for this machine, kept in MBC_STORE by what it is made of (moon, the machine, its sources): made
+  # only where none is kept, beside the reader's moon build (src/cprep reads only moonbitlang/core, in a target
+  # directory of its own in $work), not after it (~70 s of one core on a hosted Mac, 2026-11-19).
+  cprep_key=$({
+    moon version --all
+    uname -sm
+    if [ -d "$D/src/cprep" ]; then
+      find "$D/src/cprep" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
+        | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
+    fi
+  } | shasum | awk '{print $1}')
+  cprep_bin="$MBC_STORE/cprep-$cprep_key.exe"
+  cprep_pid=
+  trap '[ -z "${cprep_pid:-}" ] || kill "$cprep_pid" 2>/dev/null || true; rm -rf "$lock"' EXIT
+  if [ ! -x "$cprep_bin" ]; then
+    env -u MOON_CC -u MOON_AR moon build --target native --release --target-dir "$work/cprep" src/cprep >"$work/cprep-build.log" 2>&1 &
+    cprep_pid=$!
+  else
+    touch -c "$cprep_bin" 2>/dev/null || true
+  fi
   # moon writes to a file of its own, shown only where it failed: the targets build at once on one stderr, which
   # another build leaves non-blocking, and moon aborts on the EAGAIN a full pipe gives as it writes a warning
   # (2026-11-15, CI's win32-x64 reader: "internal rendering error: Os { code: 35 }").
@@ -95,13 +123,16 @@ echo "$$" > "$lock/pid"
     cat "$work/moon.log" >&2
     exit 1
   fi
-  # (cprep compiled for this machine, in a build directory of its own: the reader's is moon's with the stand-ins)
-  if ! env -u MOON_CC -u MOON_AR moon build --target native --release --target-dir "$D/_build/cprep" src/cprep >"$work/cprep-build.log" 2>&1; then
-    cat "$work/cprep-build.log" >&2
-    exit 1
+  if [ -n "$cprep_pid" ]; then
+    if ! wait "$cprep_pid"; then
+      cat "$work/cprep-build.log" >&2
+      exit 1
+    fi
+    cprep_pid=
+    cp "$work/cprep/native/release/build/station/cprep/cprep.exe" "$cprep_bin.$$" \
+      && mv -f "$cprep_bin.$$" "$cprep_bin"
   fi
-  "$D/_build/cprep/native/release/build/station/cprep/cprep.exe" \
-    "$D/_build/native/release/build/station/reader/reader.c" "$prepped.tmp.$$" >&2
+  "$cprep_bin" "$D/_build/native/release/build/station/reader/reader.c" "$prepped.tmp.$$" >&2
   rm -f "$D/_build/prepped-reader.key"
   mv "$prepped.tmp.$$" "$prepped"
   echo "$gen_key" > "$D/_build/prepped-reader.key"
@@ -109,15 +140,6 @@ echo "$$" > "$lock/pid"
 )
 
 moon_home=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
-
-if [ -z "${MBC_STORE:-}" ]; then
-  if [ -d "$HOME/stillfail-ci" ]; then
-    export MBC_STORE="$HOME/stillfail-ci/reader-mbc-store"
-  else
-    export MBC_STORE="${XDG_CACHE_HOME:-$HOME/.cache}/stillfail-reader-mbc"
-  fi
-fi
-mkdir -p "$MBC_STORE"
 
 # moonbit.h from a directory of the store named by its content, not moon's: each runner of a machine has a moon of its
 # own (CI's ci-1: actions-runner-<n>/_tool/moon-ci), and a unit's command and the headers it read are its key in the
@@ -191,10 +213,13 @@ rt_key=$({
 } | cksum | tr ' ' -)
 rt_cache="$MBC_STORE/libruntime-$target-$rt_key.a"
 if [ ! -s "$rt_cache" ]; then
+  # (each waited for by its own pid: a bare wait would take the Windows warm-up's too)
+  rt_pids=()
   for c in "$moon_home"/lib/runtime/*.c; do
     "${cc[@]}" "${flags[@]}" -c "$c" -o "$work/runtime/$(basename "$c" .c).o" 2> /dev/null &
+    rt_pids+=($!)
   done
-  wait
+  for p in ${rt_pids[@]+"${rt_pids[@]}"}; do wait "$p" || true; done
   "${ar[@]}" rcs "$work/libruntime.a" "$work"/runtime/*.o
   cp "$work/libruntime.a" "$rt_cache.$$" && mv "$rt_cache.$$" "$rt_cache"
 fi
