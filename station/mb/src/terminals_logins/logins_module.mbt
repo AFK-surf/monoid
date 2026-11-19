@@ -50,23 +50,7 @@ pub(all) struct LoginsHost {
 ///|
 /// encodeURIComponent.
 pub fn encode_uri_component(s : String) -> String {
-  let out = StringBuilder::new()
-  let keep = (c : Int) => (c >= 'A'.to_int() && c <= 'Z'.to_int()) ||
-    (c >= 'a'.to_int() && c <= 'z'.to_int()) ||
-    (c >= '0'.to_int() && c <= '9'.to_int()) ||
-    "-_.!~*'()".contains_char(Int::unsafe_to_char(c))
-  let hex = "0123456789ABCDEF"
-  for b in utf8_of(s) {
-    let c = b.to_int()
-    if c < 0x80 && keep(c) {
-      out.write_char(Int::unsafe_to_char(c))
-    } else {
-      out.write_char('%')
-      out.write_char(hex.get_char(c >> 4).unwrap())
-      out.write_char(hex.get_char(c & 15).unwrap())
-    }
-  }
-  out.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|

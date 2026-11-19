@@ -8,39 +8,6 @@
 let outflow_chats_pending : String = "outflow chat order is still being prepared"
 
 ///|
-/// JavaScript's `encodeURIComponent`.
-fn encode_uri_component(s : String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  let byte = (b : Int) => {
-    out.write_char('%')
-    out.write_char(hex.unsafe_get(b >> 4).to_int().unsafe_to_char())
-    out.write_char(hex.unsafe_get(b & 15).to_int().unsafe_to_char())
-  }
-  for c in s {
-    let u = c.to_int()
-    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || "-_.!~*'()".contains_char(c) {
-      out.write_char(c)
-    } else if u < 0x80 {
-      byte(u)
-    } else if u < 0x800 {
-      byte(0xc0 | (u >> 6))
-      byte(0x80 | (u & 63))
-    } else if u < 0x10000 {
-      byte(0xe0 | (u >> 12))
-      byte(0x80 | ((u >> 6) & 63))
-      byte(0x80 | (u & 63))
-    } else {
-      byte(0xf0 | (u >> 18))
-      byte(0x80 | ((u >> 12) & 63))
-      byte(0x80 | ((u >> 6) & 63))
-      byte(0x80 | (u & 63))
-    }
-  }
-  out.to_string()
-}
-
-///|
 /// outflow.ts `state`: how a chat stands by its agents' latest turn.
 fn outflow_state(turn : Json) -> Json {
   guard turn is Object(_) else { return Json::null() }
@@ -265,7 +232,7 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     let url = match pages {
       Some((origin, workspace, station)) => {
         let ws = match session_of(lead) { Some(s) if field(s, "ws") is String(w) => w; _ => workspace }
-        Some("\{origin}/o/\{ws}/\{station}/\{encode_uri_component(lead)}")
+        Some("\{origin}/o/\{ws}/\{station}/\{@url.encode_uri_component(lead)}")
       }
       None => None
     }

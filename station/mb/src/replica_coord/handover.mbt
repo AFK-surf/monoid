@@ -403,7 +403,7 @@ pub fn moved_here(fs : Fs, from : String, workspace : String, from_data : String
 /// The hand-over's id: of when, its sessions and the station it goes to, and a part of its own.
 pub async fn handover_id(fs : Fs, keys : Array[String], to : String, at_ms : Double) -> String {
   let first = keys.get(0).unwrap_or("")
-  let hex = @hex.encode(@utf8.encode(first))
+  let hex = @codec.hex_encode(@utf8.encode(first))
   "\{base36(at_ms)}-\{head_of(hex, 24)}-\{head_of(to, 8)}-\{fs.random_hex(4)}"
 }
 

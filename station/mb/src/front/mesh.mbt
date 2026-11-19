@@ -667,26 +667,12 @@ fn asked_args(arg : (String) -> Json) -> Json {
 
 ///|
 fn hex(b : Bytes) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for x in b {
-    out.write_char(digits[x.to_int() >> 4].unsafe_to_char())
-    out.write_char(digits[x.to_int() & 15].unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|
 fn unhex(s : String) -> Bytes {
-  let nibble = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int()
-  } else if c >= 'a'.to_int() && c <= 'f'.to_int() {
-    c - 'a'.to_int() + 10
-  } else if c >= 'A'.to_int() && c <= 'F'.to_int() {
-    c - 'A'.to_int() + 10
-  } else {
-    0
-  }
+  let nibble = (c : Int) => @codec.hex_digit(c).unwrap_or(0)
   let out = FixedArray::make(s.length() / 2, b'\x00')
   for i = 0; i < out.length(); i = i + 1 {
     out[i] = (nibble(s[2 * i].to_int()) * 16 + nibble(s[2 * i + 1].to_int())).to_byte()

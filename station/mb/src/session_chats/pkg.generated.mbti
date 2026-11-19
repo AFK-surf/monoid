@@ -82,6 +82,8 @@ pub let create_preset_method : String
 
 pub let create_preset_speed_method : String
 
+pub let create_preset_tui_method : String
+
 pub let create_speed_method : String
 
 pub async fn decide(World, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
@@ -109,6 +111,8 @@ pub fn ends(String, String) -> Bool
 pub fn exif_turned(BytesView) -> Bool?
 
 pub fn facts_of(Bytes) -> Facts?
+
+pub fn facts_of_src(Src) -> Facts?
 
 pub fn fail_(String) -> Thrown
 
@@ -473,7 +477,7 @@ pub struct Found {
 }
 pub fn Found::to_j(Self) -> @jsjson.JValue
 
-pub struct Held {
+pub(all) struct Held {
   id : String?
   args : @jsjson.JValue
 }
@@ -497,6 +501,12 @@ pub fn RepoIndex::new() -> Self
 pub async fn RepoIndex::repos(Self, World) -> (Array[@jsjson.JValue], Bool)
 pub async fn RepoIndex::walk(Self, World) -> Unit
 
+pub(all) struct Src {
+  size : Double
+  read : (Double, Int32) -> Bytes
+}
+pub fn Src::of_bytes(Bytes) -> Self
+
 pub struct Words {
   zh : @jsjson.JValue
   en : @jsjson.JValue
@@ -506,7 +516,7 @@ pub fn Words::empty() -> Self
 pub fn Words::new(@jsjson.JValue, @jsjson.JValue, product? : String) -> Self
 pub fn Words::tr(Self, String, String, args? : Array[(String, String)]) -> String
 
-pub struct World {
+pub(all) struct World {
   call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
   callback : (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue
   words : Words

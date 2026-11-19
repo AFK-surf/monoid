@@ -36,47 +36,6 @@ fn b64_text(b : Bytes, url : Bool) -> String {
 }
 
 ///|
-/// `encodeURIComponent(s)`; None where `s` holds a lone surrogate (where JS throws).
-fn encode_uri_component(s : String) -> String? {
-  let out = StringBuilder()
-  let hexs = "0123456789ABCDEF"
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.code_unit_at(i).to_int()
-    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (c < 128 && "-_.!~*'()".contains_char(c.unsafe_to_char())) {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    let mut cp = c
-    if c >= 0xd800 && c <= 0xdbff {
-      if i + 1 < n {
-        let d = s.code_unit_at(i + 1).to_int()
-        if d >= 0xdc00 && d <= 0xdfff {
-          cp = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)
-          i += 1
-        } else {
-          return None
-        }
-      } else {
-        return None
-      }
-    } else if c >= 0xdc00 && c <= 0xdfff {
-      return None
-    }
-    let bytes = utf8_of(cp.unsafe_to_char().to_string())
-    for x in bytes {
-      out.write_char('%')
-      out.write_char(hexs.code_unit_at(x.to_int() >> 4).to_int().unsafe_to_char())
-      out.write_char(hexs.code_unit_at(x.to_int() & 15).to_int().unsafe_to_char())
-    }
-    i += 1
-  }
-  Some(out.to_string())
-}
-
-///|
 /// The forms of `value` hidden: the value as it is and as it is often written, the shortest worth hiding 4 bytes long.
 pub fn forms_of(value : String) -> Array[Bytes] {
   let raw = utf8_of(value)
@@ -85,7 +44,7 @@ pub fn forms_of(value : String) -> Array[Bytes] {
     ascii(b64_text(raw, false)),
     ascii(b64_text(raw, true)),
   ]
-  match encode_uri_component(value) {
+  match @url.encode_uri_component_strict(value) {
     Some(e) => forms.push(ascii(e))
     // (JS throws there: scrub.ts would fail; the value's own form kept)
     None => ()

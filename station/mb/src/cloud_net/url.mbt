@@ -56,9 +56,6 @@ fn lower_ascii(c : Char) -> Char {
 }
 
 ///|
-let hex_digits : String = "0123456789ABCDEF"
-
-///|
 fn utf8_of(c : Char) -> Array[Int] {
   let n = c.to_int()
   if n < 0x80 {
@@ -75,13 +72,6 @@ fn utf8_of(c : Char) -> Array[Int] {
       0x80 | (n & 0x3F),
     ]
   }
-}
-
-///|
-fn pct_byte(sb : StringBuilder, b : Int) -> Unit {
-  sb.write_char('%')
-  sb.write_char(hex_digits.get_char(b >> 4).unwrap())
-  sb.write_char(hex_digits.get_char(b & 0xF).unwrap())
 }
 
 ///|
@@ -125,9 +115,7 @@ fn in_set(set : EncodeSet, c : Char) -> Bool {
 ///|
 fn encode_char(sb : StringBuilder, set : EncodeSet, c : Char) -> Unit {
   if in_set(set, c) {
-    for b in utf8_of(c) {
-      pct_byte(sb, b)
-    }
+    sb.write_string(@url.percent_encode(c.to_string(), _ => false))
   } else {
     sb.write_char(c)
   }
@@ -135,24 +123,7 @@ fn encode_char(sb : StringBuilder, set : EncodeSet, c : Char) -> Unit {
 
 ///|
 fn encode_chars(cs : ArrayView[Char], set : EncodeSet) -> String {
-  let sb = StringBuilder()
-  for c in cs {
-    encode_char(sb, set, c)
-  }
-  sb.to_string()
-}
-
-///|
-fn hex_value(c : Char) -> Int? {
-  if c >= '0' && c <= '9' {
-    Some(c.to_int() - '0'.to_int())
-  } else if c >= 'a' && c <= 'f' {
-    Some(c.to_int() - 'a'.to_int() + 10)
-  } else if c >= 'A' && c <= 'F' {
-    Some(c.to_int() - 'A'.to_int() + 10)
-  } else {
-    None
-  }
+  @url.percent_encode(String::from_array(cs), n => !in_set(set, n.unsafe_to_char()))
 }
 
 ///|
@@ -163,7 +134,7 @@ fn pct_decode(cs : ArrayView[Char]) -> Array[Int] {
   while i < cs.length() {
     let c = cs[i]
     if c == '%' && i + 2 < cs.length() {
-      match (hex_value(cs[i + 1]), hex_value(cs[i + 2])) {
+      match (@codec.hex_digit(cs[i + 1].to_int()), @codec.hex_digit(cs[i + 2].to_int())) {
         (Some(a), Some(b)) => {
           out.push(a * 16 + b)
           i += 3
@@ -291,7 +262,7 @@ fn ipv4_number(s : ArrayView[Char]) -> Int64? {
   let mut v = 0L
   for i in start..<s.length() {
     let c = s[i]
-    let d = match hex_value(c) {
+    let d = match @codec.hex_digit(c.to_int()) {
       Some(d) if d < radix => d
       _ => return None
     }
@@ -400,8 +371,8 @@ fn ipv6_parse(s : ArrayView[Char]) -> String? {
     }
     let mut value = 0
     let mut len = 0
-    while len < 4 && i < n && hex_value(s[i]) is Some(_) {
-      value = value * 16 + hex_value(s[i]).unwrap()
+    while len < 4 && i < n && @codec.hex_digit(s[i].to_int()) is Some(_) {
+      value = value * 16 + @codec.hex_digit(s[i].to_int()).unwrap()
       i += 1
       len += 1
     }
@@ -506,29 +477,13 @@ fn ipv6_parse(s : ArrayView[Char]) -> String? {
       ignore0 = true
       continue
     }
-    sb.write_string(hex4(a[p]))
+    sb.write_string(a[p].to_string(radix=16))
     if p != 7 {
       sb.write_char(':')
     }
   }
   sb.write_char(']')
   Some(sb.to_string())
-}
-
-///|
-fn hex4(v : Int) -> String {
-  let digits = "0123456789abcdef"
-  if v == 0 {
-    return "0"
-  }
-  let sb = []
-  let mut x = v
-  while x > 0 {
-    sb.push(digits.get_char(x & 0xF).unwrap())
-    x = x >> 4
-  }
-  sb.rev_in_place()
-  String::from_array(sb)
 }
 
 ///|

@@ -252,62 +252,7 @@ fn upper(s : String) -> String {
 ///|
 /// `decodeURIComponent(s)`; None where it throws (a `%` not of two hex digits, bytes that are no UTF-8).
 pub fn decode_uri_component(s : String) -> String? {
-  let out = StringBuilder()
-  let n = s.length()
-  let mut i = 0
-  let hexv = (c : Int) => digit_of(c, 16)
-  let byte_at = (at : Int) => {
-    if at + 2 > n - 1 {
-      return None
-    }
-    if s.code_unit_at(at).to_int() != 0x25 {
-      return None
-    }
-    match (hexv(s.code_unit_at(at + 1).to_int()), hexv(s.code_unit_at(at + 2).to_int())) {
-      (Some(h), Some(l)) => Some(h * 16 + l)
-      _ => None
-    }
-  }
-  while i < n {
-    let c = s.code_unit_at(i).to_int()
-    if c != 0x25 {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    guard byte_at(i) is Some(b) else { return None }
-    i += 3
-    if b < 0x80 {
-      out.write_char(b.unsafe_to_char())
-      continue
-    }
-    let (more, least, first) = if b >= 0xc2 && b <= 0xdf {
-      (1, 0x80, b & 0x1f)
-    } else if b >= 0xe0 && b <= 0xef {
-      (2, 0x800, b & 0x0f)
-    } else if b >= 0xf0 && b <= 0xf4 {
-      (3, 0x10000, b & 0x07)
-    } else {
-      return None
-    }
-    let mut point = first
-    for _ in 0..<more {
-      guard byte_at(i) is Some(k) && (k & 0xc0) == 0x80 else { return None }
-      point = (point << 6) | (k & 0x3f)
-      i += 3
-    }
-    if point < least || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff) {
-      return None
-    }
-    if point >= 0x10000 {
-      let p = point - 0x10000
-      out.write_char((0xd800 + (p >> 10)).unsafe_to_char())
-      out.write_char((0xdc00 + (p & 0x3ff)).unsafe_to_char())
-    } else {
-      out.write_char(point.unsafe_to_char())
-    }
-  }
-  Some(out.to_string())
+  @url.decode_uri_component(s)
 }
 
 ///|

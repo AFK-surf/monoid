@@ -67,7 +67,6 @@ pub fn moon_order(a : String, b : String) -> Int {
 
 ///|
 fn canon_string(s : String, out : StringBuilder) -> Unit {
-  let digits = "0123456789abcdef"
   out.write_char('"')
   for c in s {
     let v = c.to_int()
@@ -80,8 +79,7 @@ fn canon_string(s : String, out : StringBuilder) -> Unit {
       _ =>
         if v < 0x20 {
           out.write_string("\\u00")
-          out.write_char(digits.get_char(v >> 4).unwrap())
-          out.write_char(digits.get_char(v & 15).unwrap())
+          out.write_string(@codec.hex_encode(Bytes::make(1, v.to_byte())))
         } else {
           out.write_char(c)
         }

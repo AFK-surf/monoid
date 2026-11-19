@@ -13,6 +13,8 @@ import {
 // Values
 pub fn archive_look(@sql.Db, @json.Json) -> @json.Json raise
 
+pub fn asks_waiting(@sql.Db, @json.Json) -> Array[@json.Json] raise
+
 pub fn card_edit_page(@sql.Db, @json.Json) -> @json.Json raise
 
 pub fn card_message_page(@sql.Db, @json.Json) -> @json.Json raise
@@ -41,6 +43,8 @@ pub fn machine_sessions(@sql.Db, @host.Host, String, @json.Json) -> @json.Json r
 
 pub fn memory(@host.Host, String, String, @json.Json) -> @json.Json raise
 
+pub fn mesh_control_read(@sql.Db, @json.Json) -> @json.Json raise
+
 pub let model_catalog : @ref.Ref[Map[String, @json.Json]]
 
 pub fn model_key(String) -> String
@@ -64,6 +68,8 @@ pub fn policy_checks(@sql.Db, @json.Json) -> @json.Json raise
 pub let prepare_up_jobs : @ref.Ref[String?]
 
 pub let prepare_workspace_up_jobs : @ref.Ref[Bool]
+
+pub fn real_outside_of(@host.Host, String, home~ : String, mac~ : Bool) -> String?
 
 pub fn recent_chat_list(@sql.Db, @json.Json) -> @json.Json raise
 

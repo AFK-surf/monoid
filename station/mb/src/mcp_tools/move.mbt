@@ -145,15 +145,7 @@ async fn MoveAsks::station(self : MoveAsks, ws : String, v : JV?) -> (String, St
 ///|
 async fn random_hex(b : ToolsBackend, n : Int) -> String {
   let got = b.ask("crypto.randomBytes", [jint(n)])
-  let bytes = @api_routes.bytes_of(got).unwrap_or(b"")
-  let hex = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for x in bytes {
-    let v = x.to_int()
-    out.write_char(hex.unsafe_charcode_at(v >> 4).unsafe_to_char())
-    out.write_char(hex.unsafe_charcode_at(v & 15).unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(@api_routes.bytes_of(got).unwrap_or(b""))
 }
 
 ///|
