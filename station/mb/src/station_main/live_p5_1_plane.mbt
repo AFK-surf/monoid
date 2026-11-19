@@ -249,7 +249,7 @@ fn P51::plane_live(self : P51) -> Plane {
   // feedback/module.ts `plane.told("release", …)`; models/module.ts `plane.told("models", …)`).
   control.told("release", _ => bus.told_release())
   control.told("models", ev => ignore(
-    host.rt.fork(name="models refresh", async fn() {
+    host.rt.fork_quiet(name="models refresh", async fn() {
       let etag = match ev {
         @cloud_net.Models(Some(e)) => Json::string(e)
         _ => Json::null()

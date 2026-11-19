@@ -313,7 +313,7 @@ fn LiveLocator::started(self : LiveLocator) -> Unit raise {
   )
   self.proc = Some(p)
   ignore(
-    self.host.rt.fork(name="live locator's lines", async fn() {
+    self.host.rt.fork_daemon("live locator's lines", on_error=e => @host.note("live locator's lines failed: \{e}"), async fn() {
       let held = @buffer.Buffer()
       let mut ended = false
       while !ended {

@@ -273,7 +273,7 @@ fn Pump::kick(self : Pump) -> Unit {
           let seq = self.armed_seq
           let wait = at - wall_ms().to_double()
           ignore(
-            self.host.rt.fork(name="drivers' timer", async fn() {
+            self.host.rt.fork_daemon("drivers' timer", on_error=e => @host.note("drivers' timer failed: \{e}"), async fn() {
               // timer: a wait of the drivers' own (their timeouts, their retries' backoff, a grace), at its time
               @effect.sleep(if wait < 1.0 { 1 } else { wait.ceil().to_int() })
               if self.armed_seq == seq {
@@ -304,7 +304,7 @@ async fn[T] Pump::wait(self : Pump, l : @agent_drivers.Later[T]) -> T {
 fn[T] Pump::later(self : Pump, name : String, f : async () -> T) -> @agent_drivers.Later[T] {
   let l : @agent_drivers.Later[T] = @agent_drivers.Later::new(self.lp)
   ignore(
-    self.host.rt.fork(name~, async fn() {
+    self.host.rt.fork_quiet(name~, async fn() {
       let r = try {
         Ok(f())
       } catch {
@@ -499,7 +499,7 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
     self.kick()
   }
   ignore(
-    host.rt.fork(name="runner socket", async fn() {
+    host.rt.fork_daemon("runner socket", on_error=e => @host.note("runner socket failed: \{e}"), async fn() {
       match (try { Ok(host.unix_open(path)) } catch { e => Err(e) }) {
         Ok(c) => {
           let id = c.id

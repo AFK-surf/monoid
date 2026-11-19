@@ -417,7 +417,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     missing_host: (command, env) => pump.later("codex host", async fn() {
       @updates.find_missing_codex_host(station_updates_world(ctx.bus), command, env.pairs) is Some(_)
     }),
-    incomplete_installation: () => ignore(host.rt.fork(name="codex check", async fn() { ignore((ctx.bus.coord_ask.val)("updates.check", Json::null())) })),
+    incomplete_installation: () => ignore(host.rt.fork_daemon("codex check", on_error=e => @host.note("codex check failed: \{e}"), async fn() { ignore((ctx.bus.coord_ask.val)("updates.check", Json::null())) })),
     link_auth: dir => pump.later("codex auth", async fn() {
       let fields = @agent_runtimes.Fields::new()
       for kv in env_all() {

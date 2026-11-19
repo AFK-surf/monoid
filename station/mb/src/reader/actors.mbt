@@ -230,7 +230,7 @@ fn Actors::after(self : Actors, ms : Double, then : () -> Unit, on? : String) ->
 fn Actors::spawn(self : Actors, work : async () -> Unit) -> Unit {
   self.active += 1
   ignore(
-    self.host.rt.fork(name="actor work", () => {
+    self.host.rt.fork_daemon("actor work", on_error=e => @host.note("actor work failed: \{e}"), () => {
       work()
       self.active -= 1
       self.quiet()
@@ -309,7 +309,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
       self.actors[key] = a
       // (its queue: one task at a time, in order)
       ignore(
-        self.host.rt.fork(name="actor", () => {
+        self.host.rt.fork_daemon("actor", on_error=e => @host.note("actor failed: \{e}"), () => {
           while (try { Some(a.tasks.take()) } catch { _ => None }) is Some(task) {
             task()
           }

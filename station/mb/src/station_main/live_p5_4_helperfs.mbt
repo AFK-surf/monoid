@@ -176,7 +176,7 @@ fn p54_helper_protected(bus : LiveBus, screens : P54Screens) -> @drive.Protected
     known: top => files.known(top),
     check: tops => files.check(tops),
     ask: (grant, top) => {
-      ignore(bus.host.rt.fork(name="helper window", async fn() { ignore(files.ask(grant, top)) catch { _ => () } }))
+      ignore(bus.host.rt.fork_quiet(name="helper window", async fn() { ignore(files.ask(grant, top)) catch { _ => () } }))
       "asking"
     },
   })

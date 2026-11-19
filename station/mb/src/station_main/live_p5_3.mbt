@@ -390,7 +390,7 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
   }
   // (the station stops: the jobs go on, what follows them here ends; the parts' programs and timers let go)
   ignore(
-    bus.host.rt.fork(name="p5-3 stop", async fn() {
+    bus.host.rt.fork_daemon("p5-3 stop", on_error=e => @host.note("p5-3 stop failed: \{e}"), async fn() {
       ignore(bus.stopped.wait())
       p.jobs.shutdown()
       ignore(p.program.call(p53_remote_key, "close", [])) catch { _ => () }
@@ -403,7 +403,7 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
   )
   // (what waits for the agents' door: a job's notify place, the jobs taken up)
   ignore(
-    bus.host.rt.fork(name="p5-3 door", async fn() {
+    bus.host.rt.fork_daemon("p5-3 door", on_error=e => @host.note("p5-3 door failed: \{e}"), async fn() {
       let url = bus.door_ready.wait()
       p.jobs.door_open(url)
     }),
@@ -593,7 +593,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     "resources.watch.follow" => {
       let f = at(0, "told")
       let bus = self.bus
-      let stop = self.resources.follow(() => ignore(bus.host.rt.fork(name="resources told", async fn() {
+      let stop = self.resources.follow(() => ignore(bus.host.rt.fork_quiet(name="resources told", async fn() {
         ignore(bus.call_peer("self", None, "$admin.called", { "id": p53_get(f, "$fn"), "args": [] })) catch { _ => () }
       })))
       p53_follows_next.val += 1

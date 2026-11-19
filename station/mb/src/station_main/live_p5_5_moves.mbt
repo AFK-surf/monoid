@@ -574,7 +574,7 @@ async fn P55::start_moves(self : P55) -> Unit {
   // (the card's choice, in the app: an owner or admin of the chat's workspace confirms it or declines)
   bus.parts.card_choice("move", {
     may: (viewer, card, at) => asks.may(@jsjson.JV::of_json(viewer), @jsjson.JV::of_json(card), @jsjson.JV::of_json(at)),
-    chosen: (viewer, card, option, at) => ignore(host.rt.fork(name="move card chosen", async fn() {
+    chosen: (viewer, card, option, at) => ignore(host.rt.fork_quiet(name="move card chosen", async fn() {
       asks.chosen(@jsjson.JV::of_json(viewer), @jsjson.JV::of_json(card), option, @jsjson.JV::of_json(at)) catch {
         e => self.warn("move", "the card's choice was not taken", e)
       }

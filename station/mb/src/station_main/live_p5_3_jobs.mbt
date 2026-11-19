@@ -255,7 +255,7 @@ fn P53Jobs::told(self : P53Jobs, f : String, args : Array[Json]) -> Unit {
     "log" => p53_log(p53_as(args, 0), "jobs", p53_as(args, 1), fields=p53_a(args, 2))
     "node.endGroup" => {
       let pgid = p53_ai(args, 0)
-      ignore(self.bus.host.rt.fork(name="a group left behind", async fn() { self.machine.end_group(pgid, @jobs_host.stop_grace_ms) }))
+      ignore(self.bus.host.rt.fork_daemon("a group left behind", on_error=e => @host.note("a group left behind failed: \{e}"), async fn() { self.machine.end_group(pgid, @jobs_host.stop_grace_ms) }))
     }
     _ => ()
   }
@@ -434,7 +434,7 @@ fn P53Jobs::attach(self : P53Jobs) -> Unit {
   // (a web service on this machine, through its preview's path: any method, its answer as it comes)
   bus.parts.door({ prefix: "preview", request: async fn(r, conn) { self.preview(r, conn) } })
   bus.parts.session_ended(session => {
-    ignore(bus.host.rt.fork(name="jobs of a session ended", async fn() { self.session_ended(session) }))
+    ignore(bus.host.rt.fork_daemon("jobs of a session ended", on_error=e => @host.note("jobs of a session ended failed: \{e}"), async fn() { self.session_ended(session) }))
   })
   bus.parts.routes([
     {
@@ -865,7 +865,7 @@ async fn P53Jobs::launch(
   }
   self.machine.follow(job.id, proc.pid, self.now())
   // (what the child says of its end is the follower's to read: its exit file, its group gone)
-  ignore(host.rt.fork(name="job's shell", async fn() { ignore(proc.finished()) }))
+  ignore(host.rt.fork_daemon("job's shell", on_error=e => @host.note("job's shell failed: \{e}"), async fn() { ignore(proc.finished()) }))
   proc.pid
 }
 
@@ -883,7 +883,7 @@ async fn p53_file_is(host : @host.Host, path : String) -> Bool {
 fn P53Jobs::watch_ready(self : P53Jobs, id : String, pgid : Int, port : Int) -> Unit {
   let host = self.bus.host
   ignore(
-    host.rt.fork(name="service ready", async fn() {
+    host.rt.fork_daemon("service ready", on_error=e => @host.note("service ready failed: \{e}"), async fn() {
       let mut waited = 0
       while waited < p53_ready_ms && !self.closing {
         if self.groups.get(id) != Some(pgid) {

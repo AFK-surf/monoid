@@ -232,7 +232,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       Some(pid) => {
         let front = bus.restart_front
         ignore(
-          self.host.rt.fork(name="restart", async fn() {
+          self.host.rt.fork_daemon("restart", on_error=e => @host.note("restart failed: \{e}"), async fn() {
             @effect.sleep(150) // timer: a deadline (the answer's time to leave before the process ends)
             match front {
               Some(f) => f()
@@ -849,7 +849,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       Some({
         // (accounts/index.ts `homesReadSoon`: the profiles' homes read again before the view is made)
         homes_read_soon: Some(k => ignore(
-          host.rt.fork(name="homes read soon", async fn() {
+          host.rt.fork_daemon("homes read soon", on_error=e => @host.note("homes read soon failed: \{e}"), async fn() {
             ignore(asked(jobs, "accounts.homesReadSoon", []))
             k()
           }),
@@ -946,7 +946,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     // (agents.ts `waitForSessionCounts`: the sessions' counts built where a store from before has none yet)
     wait_for_session_counts: Some(k => ignore(
-      host.rt.fork(name="session counts", async fn() {
+      host.rt.fork_quiet(name="session counts", async fn() {
         match (try { Ok((bus.reader_ask.val)("$sessionCounts", Json::null(), lang)) } catch { e => Err(e) }) {
           Ok(_) => k(true)
           Err(_) => k(false)
@@ -971,7 +971,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     data_dir: bus.data,
     group_memory: (pgids, k) => ignore(
-      host.rt.fork(name="group memory", async fn() {
+      host.rt.fork_daemon("group memory", on_error=e => @host.note("group memory failed: \{e}"), async fn() {
         let wanted = pgids.filter_map(p => match of_jv(p) { Number(n, ..) => Some(n); _ => None })
         let out : Map[String, Double] = {}
         if wanted.length() > 0 && !is_windows() {
@@ -1053,7 +1053,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     prepare_decision_sessions: k => k(),
     // (hub.ts `prepareSessionChatNames`: the cc index's chat names of these sessions, built before they are shown)
     prepare_session_chat_names: Some((keys, k) => ignore(
-      host.rt.fork(name="session chat names", async fn() {
+      host.rt.fork_quiet(name="session chat names", async fn() {
         ignore((bus.reader_ask.val)("$sessionChatNames", Json::array(keys.map(Json::string(_))), lang)) catch {
           _ => ()
         }

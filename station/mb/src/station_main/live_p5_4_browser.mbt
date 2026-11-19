@@ -210,14 +210,14 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
   }
   let upstream : @browser.WsEnd = {
     send_text: t => ignore(
-      host.rt.fork(name="devtools send", async fn() {
+      host.rt.fork_quiet(name="devtools send", async fn() {
         ignore(host.shell("ws.send", { "id": up_id, "text": Json::string(t) })) catch {
           _ => ()
         }
       }),
     ),
     send_raw: (b, _) => ignore(
-      host.rt.fork(name="devtools send", async fn() {
+      host.rt.fork_quiet(name="devtools send", async fn() {
         ignore(host.shell("ws.send", { "id": up_id, "text": Json::string(@utf8.decode_lossy(b)) })) catch {
           _ => ()
         }
@@ -229,7 +229,7 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
       if up_open.val {
         up_open.val = false
         ignore(
-          host.rt.fork(name="devtools close", async fn() {
+          host.rt.fork_quiet(name="devtools close", async fn() {
             ignore(host.shell("ws.close", { "id": up_id })) catch {
               _ => ()
             }
@@ -242,7 +242,7 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
   let p = @browser.pass(client, upstream, @browser.Gate::new(gate_parts))
   // (what goes to the client, in its order)
   ignore(
-    host.rt.fork(name="browser door out", async fn() {
+    host.rt.fork_daemon("browser door out", on_error=e => @host.note("browser door out failed: \{e}"), async fn() {
       while true {
         let b = writes.take()
         if !write_on(host, conn, b) {
@@ -255,7 +255,7 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
   )
   // (what Chrome says)
   ignore(
-    host.rt.fork(name="browser door in", async fn() {
+    host.rt.fork_daemon("browser door in", on_error=e => @host.note("browser door in failed: \{e}"), async fn() {
       while up_open.val {
         let (frame, _) = host.shell("ws.next", { "id": up_id }) catch { _ => break }
         match p54_text(Some(frame), "text") {

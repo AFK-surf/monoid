@@ -397,7 +397,7 @@ pub fn LiveBus::drain_thread_requests(self : LiveBus, threads : @store_threads.S
   }
   let prepare = (op : String, prefix : String, keys : Array[Json]) => if !keys.is_empty() {
     ignore(
-      self.host.rt.fork(name="threads prepared", async fn() {
+      self.host.rt.fork_quiet(name="threads prepared", async fn() {
         ignore((self.reader_ask.val)(op, Json::array(keys), "")) catch {
           _ => ()
         }

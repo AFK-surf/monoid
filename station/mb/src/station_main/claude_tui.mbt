@@ -290,7 +290,7 @@ async fn tui_serve_mcp(host : @host.Host, url : String) -> Int {
     }
     running.val += 1
     ignore(
-      host.rt.fork(name="a tool call through the TUI's bridge", async fn() {
+      host.rt.fork_quiet(name="a tool call through the TUI's bridge", async fn() {
         forward(request, line) catch {
           e => @host.note(tui_error_message(e))
         }
@@ -620,7 +620,7 @@ async fn tui_run(host : @host.Host, script : String, given : Array[String]) -> I
   terminal.val = Some(child)
   let finished : @effect.Deferred[Unit] = @effect.Deferred::new()
   ignore(
-    host.rt.fork(name="the TUI's terminal", async fn() {
+    host.rt.fork_daemon("the TUI's terminal", on_error=e => @host.note("the TUI's terminal failed: \{e}"), async fn() {
       while true {
         match child.events.take() {
           Out(_) => () // (the terminal's bytes are the PTY's: read and let go)
@@ -642,7 +642,7 @@ async fn tui_run(host : @host.Host, script : String, given : Array[String]) -> I
     }),
   )
   ignore(
-    host.rt.fork(name="the TUI's turns", async fn() {
+    host.rt.fork_daemon("the TUI's turns", on_error=e => @host.note("the TUI's turns failed: \{e}"), async fn() {
       while host.line() is Some(line) {
         if closing.val {
           continue

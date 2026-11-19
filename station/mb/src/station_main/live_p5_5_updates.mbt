@@ -201,7 +201,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   })
   // The cloud said a release is out (its presence socket's `release`, the plane's `told`): read again, a rig too.
   bus.on_release(() => ignore(
-    bus.host.rt.fork(name="release check", async fn() { u.check() catch { e => self.warn("updates", "the release not read", e) } }),
+    bus.host.rt.fork_quiet(name="release check", async fn() { u.check() catch { e => self.warn("updates", "the release not read", e) } }),
   ))
   self.op("updates.check", async fn(_arg) {
     u.check()
@@ -218,7 +218,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   // A runtime installed or updated from the pages (agents.ts `onRuntimeChanged`): the machine's logins read again, and
   // the agents' side told (what waited for it started, its processes on the new one).
   u.on_runtime_changed((kind, installed, replaced) => ignore(
-    bus.host.rt.fork(name="runtime changed", async fn() {
+    bus.host.rt.fork_quiet(name="runtime changed", async fn() {
       bus.jobs_machine_refresh() catch {
         _ => ()
       }
@@ -357,7 +357,7 @@ fn p55_watch_dir(bus : LiveBus, dir : String, told : (String?) -> Unit) -> async
     now
   }
   ignore(
-    host.rt.fork(name="a watched directory", async fn() {
+    host.rt.fork_daemon("a watched directory", on_error=e => @host.note("a watched directory failed: \{e}"), async fn() {
       let mut before = look()
       while going.val && !bus.stopped.is_done() {
         @effect.sleep(p55_watch_ms) // timer: an outside system that offers no push (another process's files; the shell keeps no watch)
@@ -488,7 +488,7 @@ pub async fn start_rig_updates(bus : LiveBus) -> Unit {
     e => err_write("station: the updates part is not made: \{p55_said_of(e)}\n")
   }
   ignore(
-    bus.host.rt.fork(name="rig updates close", async fn() {
+    bus.host.rt.fork_daemon("rig updates close", on_error=e => @host.note("rig updates close failed: \{e}"), async fn() {
       ignore(bus.stopped.wait())
       for c in p.closers.rev() {
         c() catch {

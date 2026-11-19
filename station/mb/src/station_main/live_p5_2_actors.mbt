@@ -248,7 +248,7 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
       let seq = self.timer_seq
       self.timers[id.to_int()] = seq
       ignore(
-        self.ctx.host.rt.fork(name="actor's wait", async fn() {
+        self.ctx.host.rt.fork_daemon("actor's wait", on_error=e => @host.note("actor's wait failed: \{e}"), async fn() {
           // timer: a wait of an actor's (its wait, a refill), on the hub's clock
           @effect.sleep(if ms < 1.0 { 0 } else { ms.ceil().to_int() })
           if self.timers.get(id.to_int()) == Some(seq) {
@@ -310,7 +310,7 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
           let f = jtext(said, "fn").unwrap_or("")
           let args = jitems(jfield(said, "args"))
           ignore(
-            self.ctx.host.rt.fork(name="shell's rpc", async fn() {
+            self.ctx.host.rt.fork_daemon("shell's rpc", on_error=e => @host.note("shell's rpc failed: \{e}"), async fn() {
               let answer = Ok(asked(f, args)) catch { e => Err(e) }
               self.answering -= counted
               match answer {
@@ -343,7 +343,7 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
     let f = jtext(said, "fn").unwrap_or("")
     let args = jitems(jfield(said, "args"))
     ignore(
-      self.ctx.host.rt.fork(name="actor's rpc", async fn() {
+      self.ctx.host.rt.fork_daemon("actor's rpc", on_error=e => @host.note("actor's rpc failed: \{e}"), async fn() {
         let answer = Ok(actor.asked(f, args)) catch { e => Err(e) }
         self.answering -= 1
         match answer {
@@ -652,7 +652,7 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
     let ctx = self.program.ctx
     let key = self.key
     ignore(
-      ctx.host.rt.fork(name="turn's last read", async fn() {
+      ctx.host.rt.fork_daemon("turn's last read", on_error=e => @host.note("turn's last read failed: \{e}"), async fn() {
         ctx.live_turn_ended(key)
         ignore(d.succeed(()))
       }),
@@ -866,7 +866,7 @@ async fn MbActor::hub_asked(
     }
     "close" => {
       ignore(
-        self.program.ctx.host.rt.fork(name="actor closed", async fn() {
+        self.program.ctx.host.rt.fork_daemon("actor closed", on_error=e => @host.note("actor closed failed: \{e}"), async fn() {
           ignore(self.call("close", []))
         }),
       )
@@ -1339,7 +1339,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       let before = self.codex.get(id).unwrap_or(None)
       self.codex.remove(id)
       ignore(
-        ctx.host.rt.fork(name="codex updated", async fn() {
+        ctx.host.rt.fork_daemon("codex updated", on_error=e => @host.note("codex updated failed: \{e}"), async fn() {
           let why = try {
             ctx.update_codex(before)
             None

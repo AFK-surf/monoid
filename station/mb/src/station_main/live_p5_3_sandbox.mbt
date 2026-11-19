@@ -479,7 +479,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
   let done = Ref(false)
   // (until the far side is first heard, SILENT_MS at the least: a shortened silence is for a connection once made)
   ignore(
-    host.rt.fork(name="the bridge's pings", async fn() {
+    host.rt.fork_daemon("the bridge's pings", on_error=e => @host.note("the bridge's pings failed: \{e}"), async fn() {
       let every = if silent / 3 < p53_ping_ms { silent / 3 } else { p53_ping_ms }
       while !done.val {
         @effect.sleep(if every < 1 { 1 } else { every }) // timer: a heartbeat that keeps the connection, and measures it
@@ -595,7 +595,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
                     }
                     sockets[stream] = id
                     ignore(
-                      host.rt.fork(name="a connection through the bridge", async fn() {
+                      host.rt.fork_daemon("a connection through the bridge", on_error=e => @host.note("a connection through the bridge failed: \{e}"), async fn() {
                         while true {
                           match (try { Ok(host.tcp_read(Json::number(id.to_double()))) } catch { e => Err(e) }) {
                             Ok(Some(b)) if b.length() > 0 => send(p53_t_data, stream, b)

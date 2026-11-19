@@ -246,7 +246,7 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
     now: () => wall_ms().to_double(),
     after: fork_after,
     cpu_ticks: k => k(cpu_ticks()),
-    sample: k => ignore(host.rt.fork(name="host sample", async fn() { k(jv(host_sample(host))) })),
+    sample: k => ignore(host.rt.fork_daemon("host sample", on_error=e => @host.note("host sample failed: \{e}"), async fn() { k(jv(host_sample(host))) })),
     statfs: (p, k) => match disk_of(p) {
       // (statfs's fields: blocks of one byte each, as the disk's sizes say them)
       Some((free, total)) => k(Some(jv({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })))
@@ -264,7 +264,7 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
     arch: if arch() == "x86_64" { "x64" } else { arch() },
     os: () => platform(),
     gpus_read: k => ignore(
-      host.rt.fork(name="gpus", async fn() {
+      host.rt.fork_daemon("gpus", on_error=e => @host.note("gpus failed: \{e}"), async fn() {
         let g = gpus_now(host)
         match live.val {
           Some(l) => l.gpus = Some((@host.now(), g))
@@ -430,7 +430,7 @@ fn P51::events_live(self : P51) -> EventsLive {
   let seen = self.seen_store()
   let deps : @events.Deps = {
     read: (op, args, k) => ignore(
-      host.rt.fork(name="events read", async fn() {
+      host.rt.fork_quiet(name="events read", async fn() {
         match (try { Ok(readers.read_bytes(op, of_jv(args), "zh")) } catch { e => Err(e) }) {
           Ok(b) => k(Ok(@utf8.decode_lossy(b)))
           Err(e) => k(Err("\{e}"))
@@ -444,7 +444,7 @@ fn P51::events_live(self : P51) -> EventsLive {
       _ => None
     },
     log_now: (id, lines, k) => ignore(
-      host.rt.fork(name="events log", async fn() {
+      host.rt.fork_quiet(name="events log", async fn() {
         match (try { Ok(readers.read("jobLog", { "id": Json::string(id), "lines": Json::string(lines.to_string()) }, "zh")) } catch { e => Err(e) }) {
           Ok({ "text": text, .. } as r) =>
             k(Some(jv({ "text": text, "outputAt": match r { Object(m) => m.get("outputAt").unwrap_or(Json::null()); _ => Json::null() } })))
@@ -477,14 +477,14 @@ fn P51::events_live(self : P51) -> EventsLive {
       })
       () => fiber.interrupt()
     },
-    immediate: f => ignore(host.rt.fork(name="events now", async fn() { f() })),
+    immediate: f => ignore(host.rt.fork_daemon("events now", on_error=e => @host.note("events now failed: \{e}"), async fn() { f() })),
     // (fs.watch of a file, as a job's log is followed: the shell keeps no watch, so its size and time are looked at
     // every EVENTS_WATCH_MS while it is followed; none where it is not there yet)
     watch: (file, changed) => {
       guard attempt(() => @drive.stat(file)) is Ok(first) else { return None }
       let going = Ref(true)
       ignore(
-        host.rt.fork(name="a file followed", async fn() {
+        host.rt.fork_daemon("a file followed", on_error=e => @host.note("a file followed failed: \{e}"), async fn() {
           let mut before = "\{first.size}:\{first.mtime_ms}"
           while going.val && !bus.stopped.is_done() {
             @effect.sleep(events_watch_ms) // timer: an outside system that offers no push (a file another process writes)
@@ -511,7 +511,7 @@ fn P51::events_live(self : P51) -> EventsLive {
   live_events.val = Some(events)
   // The overview as the agents' side and the parts make it (`agents.overview`), for the streams that follow it.
   events.follow(overview=(viewer, lang, k) => ignore(
-    host.rt.fork(name="events overview", async fn() {
+    host.rt.fork_quiet(name="events overview", async fn() {
       match (try { Ok(self.overview(of_jv(viewer.raw), lang)) } catch { e => Err(e) }) {
         Ok(v) => k(Ok(jv(v)))
         Err(err) => k(Err("\{err}"))

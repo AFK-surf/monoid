@@ -587,15 +587,15 @@ fn Station::told(self : Station, line : String) -> Unit {
       // inside a task", at the handover from 0.1.9977 to 0.1.9984, so the next process started over as after a crash.
       match what {
         Object(kept) =>
-          ignore(self.host.rt.fork(name="carried", async fn() { self.parts.take_up(kept) }))
+          ignore(self.host.rt.fork_daemon("carried", on_error=e => @host.note("carried failed: \{e}"), async fn() { self.parts.take_up(kept) }))
         _ => ()
       }
     }
     { "op": String("stop"), .. } => self.stop("asked to stop")
-    { "op": String("handover"), .. } => ignore(self.host.rt.fork(name="handover", async fn() { self.hand_over() }))
+    { "op": String("handover"), .. } => ignore(self.host.rt.fork_daemon("handover", on_error=e => @host.note("handover failed: \{e}"), async fn() { self.hand_over() }))
     { "op": String("drain"), .. } =>
       ignore(
-        self.host.rt.fork(name="drain", async fn() {
+        self.host.rt.fork_daemon("drain", on_error=e => @host.note("drain failed: \{e}"), async fn() {
           let d = match self.bus {
             Some(b) => (b.drain_wait.val)()
             None => "idle"
@@ -610,7 +610,7 @@ fn Station::told(self : Station, line : String) -> Unit {
       match self.bus {
         Some(b) =>
           ignore(
-            self.host.rt.fork(name="channel ask", async fn() {
+            self.host.rt.fork_quiet(name="channel ask", async fn() {
               b.coord_updates_hup() catch {
                 _ => ()
               }
@@ -725,7 +725,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   match pipe_conn.val {
     Some(conn) => {
       ignore(
-        host.rt.fork(name="launcher pipe out", async fn() {
+        host.rt.fork_daemon("launcher pipe out", on_error=e => @host.note("launcher pipe out failed: \{e}"), async fn() {
           while true {
             let line = writes.take()
             conn.socket.write(@utf8.encode(line)) catch {
@@ -735,7 +735,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
         }),
       )
       ignore(
-        host.rt.fork(name="launcher pipe in", async fn() {
+        host.rt.fork_daemon("launcher pipe in", on_error=e => @host.note("launcher pipe in failed: \{e}"), async fn() {
           let carry = StringBuilder()
           while true {
             let bytes = conn.socket.read() catch { _ => break }
@@ -881,7 +881,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
       write_whole(path([data, "run", "ports.json"]), "{\"admin\":\{shown}}\n")
       control.say({ "serving": Json::string("admin"), "port": Json::number(port.to_double()) })
       ignore(
-        host.rt.fork(name="loopback", async fn() {
+        host.rt.fork_daemon("loopback", on_error=e => @host.note("loopback failed: \{e}"), async fn() {
           serve_http(host, id, async fn(r, _conn) {
             Some(loopback_answer(r.path(), r.query(), s.up && !s.stopped.is_done(), s.place, lang_of_browser(r)))
           })
@@ -896,14 +896,14 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     match (try { Ok(host.unix_listen(sock)) } catch { e => Err(e) }) {
       Ok(listening) =>
         ignore(
-          host.rt.fork(name="status", async fn() { serve_http(host, listening.id, async fn(r, conn) { s.status_reply(r, conn) }) }),
+          host.rt.fork_daemon("status", on_error=e => @host.note("status failed: \{e}"), async fn() { serve_http(host, listening.id, async fn(r, conn) { s.status_reply(r, conn) }) }),
         )
       Err(_) => err_write("station: the local status's socket is not had\n")
     }
   }
   // The agents' door, once the process before is gone (the one handing over writes its handover first).
   ignore(
-    host.rt.fork(name="agents' door", async fn() {
+    host.rt.fork_daemon("agents' door", on_error=e => @host.note("agents' door failed: \{e}"), async fn() {
       let mut waited = 0
       // (as the bus's `previous_gone`: the process before gone by its pid, PREVIOUS_LIMIT_MS at most)
       while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 200 && !s.stopped.is_done() {
@@ -955,7 +955,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
           write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")
           control.say({ "serving": Json::string("mcp"), "port": Json::number(port.to_double()) })
           ignore(bus.door_ready.succeed(url))
-          ignore(host.rt.fork(name="take handover", async fn() { (bus.take_handover.val)(handed_over) }))
+          ignore(host.rt.fork_daemon("take handover", on_error=e => @host.note("take handover failed: \{e}"), async fn() { (bus.take_handover.val)(handed_over) }))
           serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
         }
         None => {
@@ -967,7 +967,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   )
   // How it is, said every HELD_EVERY_MS from its loop: health.json, the launcher's heartbeat, `stillfail heap`.
   ignore(
-    host.rt.fork(name="heartbeat", async fn() {
+    host.rt.fork_daemon("heartbeat", on_error=e => @host.note("heartbeat failed: \{e}"), async fn() {
       let every = held_every_ms()
       while !s.stopped.is_done() {
         let started = @host.now()

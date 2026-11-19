@@ -151,7 +151,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       h.codex.orphans = Some(Map([]))
     }
     self.sessions[h.n] = h
-    ignore(self.host.rt.fork(name="agent", () => self.attach(h, socket)))
+    ignore(self.host.rt.fork_daemon("agent", on_error=e => @host.note("agent failed: \{e}"), () => self.attach(h, socket)))
   }
   if num("freeze") is Some(id) {
     let states : Map[String, Json] = {}
@@ -184,7 +184,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     let at = num("at").unwrap_or(0.0).to_int64()
     let path = text("path").unwrap_or("")
     let kind = text("kind").unwrap_or("claude")
-    ignore(self.host.rt.fork(name="agent replay", () => self.own_replay(id.to_int(), kind, path, at, m)))
+    ignore(self.host.rt.fork_daemon("agent replay", on_error=e => @host.note("agent replay failed: \{e}"), () => self.own_replay(id.to_int(), kind, path, at, m)))
     return
   }
   let ops = [
@@ -749,7 +749,7 @@ fn Agents::soon(self : Agents, h : Hosted) -> Unit {
   }
   h.later = true
   ignore(
-    self.host.rt.fork(name="agent deltas", () => {
+    self.host.rt.fork_daemon("agent deltas", on_error=e => @host.note("agent deltas failed: \{e}"), () => {
       @effect.sleep(DELTAS_MS)
       h.later = false
       self.flush(h)

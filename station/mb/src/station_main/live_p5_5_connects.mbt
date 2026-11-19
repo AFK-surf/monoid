@@ -484,7 +484,7 @@ async fn P55::start_connects(self : P55) -> Unit {
       }
     }
     ignore(
-      bus.host.rt.fork(name="connects' surfaces told", async fn() {
+      bus.host.rt.fork_quiet(name="connects' surfaces told", async fn() {
         ignore((bus.hub_ask.val)("surfaces", Json::object(all))) catch {
           _ => ()
         }
