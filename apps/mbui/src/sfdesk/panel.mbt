@@ -75,9 +75,9 @@ pub fn side_front_pressed(src : Source, r : ChatRef, tab : String) -> Unit {
   // (what it asked handed to the tab as it is first built, its reads then the tab's own: side_tab_shown_at)
   let at = side_tab_shown_at(r, tab)
   let front = fn() { side_change(src, r, "front", Some(tab)) }
-  // (an agent's history its transcript's place too, as it is opened (history_side_open): its line there from its
-  // first frame, nothing pushed down under its head after it came)
-  let w = if side_history_tab(tab) {
+  // (an agent's history its transcript's place only while 详情 is unfolded: when folded, opening does not wait on a
+  // station RPC for a hidden line)
+  let w = if side_history_tab(tab) && @signals.untracked(fn() { !history_own.shut.get() }) {
     // (a replay of a run from before asks nothing ahead: shown at once, as history_side_open)
     let path = if !src.read_only && (src.switches_ahead)() { Some(wh_transcript(src, r.station, tab)) } else { None }
     let placed = fn() {

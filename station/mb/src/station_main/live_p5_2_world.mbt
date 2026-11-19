@@ -264,7 +264,14 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     "hub.pid" => Json::number(@drive.pid().to_double())
     "hub.outsideChats" => (self.bus.jobs_ask.val)("xshare.borrowed", Json::array([a(0)]))
     "hub.recentChatList" => reader("recentChatList", { "ws": a(0), "home": a(1), "limit": a(2) }, "zh")
-    "hub.searchChatList" => reader("searchChatList", { "ws": a(0), "home": a(1), "limit": a(2), "query": a(3) }, "zh")
+    "hub.searchChatList" => {
+      let req : Map[String, Json] = { "ws": a(0), "home": a(1), "limit": a(2), "query": a(3) }
+      match a(4) {
+        Object(f) => for k, v in f { req[k] = v }
+        _ => ()
+      }
+      reader("searchChatList", Json::object(req), "zh")
+    }
     "hub.threadList" => reader("threadList", Json::object({}), "zh")
     "hub.workspaces" => Json::array(self.workspaces().map(Json::string))
     "hub.wsOf" => jopt(hub.ws_of(opt(0)))

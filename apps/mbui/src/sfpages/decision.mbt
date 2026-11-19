@@ -20,8 +20,9 @@ fn message_decision(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
       }
       // (on the chat's station, or another of its workspace: the card's)
       let station = @sfbase.card_login_station(here.station, card.station)
-      let l = login_of(core, station, card.login)
-      let active = flag(l, "active")
+      let l = login_followed(core, station, card.login)
+      // (its card stands under way, and ended where it may be started again)
+      let active = login_carded(l)
       let was = login_card_last(station, card.login, l)
       let key = "login/" + here.station + "/" + m.ts
       c.box(style=decision_box, fn() {

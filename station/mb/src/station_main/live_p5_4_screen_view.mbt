@@ -239,5 +239,9 @@ async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
     words,
     (level, part, said, with_) => slice_log(level, part, said, with_),
     host_now=Some(() => wall_ms().to_double()),
+    media_datagrams=Some(async fn(token) {
+      let (said, _) = p54_stream_call(host, stream_handle, "mediaDatagrams", token=Json::number(token))
+      said is True
+    }),
   )
 }

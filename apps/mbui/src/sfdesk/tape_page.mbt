@@ -701,6 +701,7 @@ fn tape_made(
                 // (on the panel's ground, a step darker while it is behind the one in use, going with the tape's move:
                 // tape_page_ground, as the island's own was, in the place of the page's ground chat_page_made gives it)
                 col.ground(By(fn() { tape_page_ground(col) })) |> ignore
+                context_node(col)
                 chat_body_nodes(col, s, r, tips, stint, composer, shows, in_pane=true)
               },
               // (its composer made as nodes in the list's foot, in the page's panel: what stands in its corners concentric

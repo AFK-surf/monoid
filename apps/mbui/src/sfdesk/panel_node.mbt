@@ -406,6 +406,7 @@ fn history_in_front(src : Source, r : ChatRef) -> String {
 /// Agent `agent`'s history in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node): its
 /// head (history_head_node) and its steps the rest (sfpages' history_steps_node), nodes.
 fn side_history_node(q : @view.View, src : Source, r : ChatRef, agent : String, tips : @sf.TipLayer) -> Unit {
+  context_node(q)
   history_head_node(q, src, r, agent, tips)
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore

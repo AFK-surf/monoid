@@ -31,7 +31,7 @@ pub let accents : Array[AccentTone]
 
 pub fn action(@ui.Ctx, String, String, icon? : String, busy? : Bool, disabled? : Bool, bad? : Bool) -> Bool
 
-pub fn action_box_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, selected? : () -> Bool, expanded? : () -> Bool, on? : () -> Bool, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
+pub fn action_box_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, selected? : () -> Bool, expanded? : () -> Bool, on? : () -> Bool, disabled? : () -> Bool, label_is? : String, in_node? : Bool, on_hold? : () -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn action_box_while_node(@view.View, () -> Bool, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, expanded? : () -> Bool, loc~ : SourceLoc) -> Unit
 

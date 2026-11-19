@@ -187,7 +187,7 @@ test "wide history details runtime and evict wrap without room or squeeze faults
   guard corner_windows.search_by(w => w.0 == "desk") is Some(i) else { fail("no desk window in corner_windows") }
   let win = corner_windows[i]
   for scale in [1.0, 1.3] {
-    let t = screen_in("history", win, "zh", said=true, font_scale=scale)
+    let t = screen_in("history-details", win, "zh", said=true, font_scale=scale)
     let room = t.room_faults().filter(fn(f) { f.contains("sfdesk/history.mbt") })
     assert_eq(room, [])
     let squeeze = t.squeeze_faults().filter(fn(f) { f.contains("sfdesk/history.mbt") })
@@ -695,6 +695,7 @@ test "wide history details keeps non-warm runtime status on one line and renders
   }
   // 1. Wide desktop (1280x800)
   open_chat(r)
+  @sfdesk.set_history_shut(false)
   let tw = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   tw.run_for(@ui.move_most_ms)
   app.nav.push(History(r, "s-c1", None))
@@ -736,4 +737,55 @@ test "wide history details keeps non-warm runtime status on one line and renders
   tp.run_for(@ui.move_most_ms)
   assert_eq(tp.corner_faults(), [])
   assert_eq(tp.lit_all_faults(), [])
+}
+
+///|
+test "wide history starts with details folded, does not block on transcript, and keeps scroll across side tabs" {
+  new_run()
+  let base = fixture("chat")
+  let long_hist = fling_history(18)
+  let transcript_calls = Ref(0)
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "history" {
+        { value: Some(long_hist), error: None, version: 1 }
+      } else {
+        base.topic(name, params).get().snapshot()
+      }
+    },
+    call: fn(name, params, reply) {
+      if name == "session.transcript" {
+        // Deliberately never reply: opening history with folded details must not block on it.
+        transcript_calls.val = transcript_calls.val + 1
+      } else {
+        (base.call)(name, params, reply)
+      }
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  // Open tasks then history side panel (matching kept chat.tabs fixtures) and verify details start folded without transcript RPC.
+  @sfdesk.side_change(src, r, "open", Some("jobs"))
+  t.frame()
+  @sfdesk.side_change(src, r, "open", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(transcript_calls.val, 0, msg="opening history with folded details must not wait on session.transcript")
+  assert_true(t.rect_of("Profile 详情") is None, msg="details start folded by default on wide screens")
+  assert_true(t.rect_of("改动已经提交") is Some(_), msg="history steps are immediately visible")
+  // Scroll up well past the viewport + overscan away from the bottom.
+  for _ in 0..<45 {
+    t.wheel(1100.0, 500.0, -40.0)
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.rect_of("改动已经提交") is None, msg="scrolled up away from the bottom row")
+  // Close history tab (switching panel to tasks) and reopen it: must not block on transcript and must keep scroll.
+  @sfdesk.side_change(src, r, "close", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  @sfdesk.side_change(src, r, "open", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(transcript_calls.val, 0, msg="reopening folded history tab must not call session.transcript")
+  assert_true(t.rect_of("改动已经提交") is None, msg="switching away and back to history tab must preserve scroll position")
 }

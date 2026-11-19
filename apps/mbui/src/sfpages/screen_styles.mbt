@@ -51,6 +51,12 @@ let take_over_place : @ui.Style = @ui.css("w=Full px=S3 py=S1 align=ACenter")
 let round_icon : Double = 20.0
 
 ///|
+/// 左键 floating over the picture (mouse_left_round_node): as round and as large as @sf.tool_round_node's Floating
+/// look, 44 (a press's least), its mark in the middle; its ground and shadow said by whether it is held.
+// kept across runs: a value (no field of it changes)
+let mouse_round : @ui.Style = @ui.css("w=S11 h=S11 radius=Full align=ACenter justify=JCenter")
+
+///|
 /// A round button's icon in a pane's own bar (screen_round_node's, ScreenPage's `tab_pads`): a bar's key's, 16.
 let round_bar_icon : Double = 16.0
 

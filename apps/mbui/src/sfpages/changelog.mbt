@@ -34,9 +34,16 @@ pub fn news_of(src : Source) -> Json? {
 let news_lines_most : Int = 3
 
 ///|
+/// Whether this build is over 7 days old and shows its upgrade card over the chat list (stale_build_card_node).
+pub fn stale_build_card_shown() -> Bool {
+  @sfbase.stale_build_now()
+}
+
+///|
 /// Whether the update wants the person over a small screen's list (update_card_node): the leave to install apps it waits
-/// for (sfbase updates.mbt: a build ready that Android puts in place by itself once given it).
+/// for (sfbase updates.mbt: a build ready that Android puts in place by itself once given it). Suppressed while
+/// stale_build_card_shown is already offering the same action over the list.
 pub fn update_card_shown() -> Bool {
-  @sfbase.update_now() is Allow(_)
+  !stale_build_card_shown() && @sfbase.update_now() is Allow(_)
 }
 

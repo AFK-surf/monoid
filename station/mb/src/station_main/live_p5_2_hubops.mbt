@@ -205,7 +205,7 @@ fn shown_facts(host : @host.Host, file : String) -> Json {
         return bytes[a:a + n].to_bytes()
       }
       let want = if n > chunk_most { n } else { chunk_most }
-      let got = p51_file_piece(host, file, at, want) catch { _ => b"" }
+      let got = p51_file_piece_now(host, file, at, want) catch { _ => b"" }
       held.val = (at, got)
       got[0:if got.length() < n { got.length() } else { n }].to_bytes()
     },
@@ -284,7 +284,7 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
 ///|
 /// What the repository index's world asks (hub.ts `repoIndex`'s options): the home walked, its file in the data
 /// directory, which it never looks into.
-fn P52::repo_index_answer(self : P52, meth : String, args : Array[Json]) -> Json raise {
+async fn P52::repo_index_answer(self : P52, meth : String, args : Array[Json]) -> Json raise {
   match meth {
     "file" => Json::string(path([self.data, "repo-index.json"]))
     "now" => Json::number(wall_ms().to_double())

@@ -215,7 +215,6 @@ pub fn asked_of(
       brief: param(query, "brief") == Some("1"),
       logins,
       running: param(query, "running") == Some("1"),
-      shared: param(query, "shared") == Some("1"),
     },
     None,
   )

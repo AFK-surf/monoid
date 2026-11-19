@@ -278,6 +278,8 @@ pub fn field(
     }))
     // (a press on it: taken as it goes down where the field takes it so, else a tap's as it is let go: tree_field_down)
     .on_press(fn() { tree_field_tapped(id) })
+    // (a secondary press on it: the focus its and its editing menu asked at the pointer, as an old view's field's)
+    .on_menu(fn(m) { tree_field_right_clicked(id, m.wx, m.wy) })
     // (the wheel over it: its words scrolled while they can go that way, else what holds it's, sideways_wheel)
     .on_wheel_moves(fn(w) { tree_field_wheel(id, w) })
     // (its editor no longer the window's as it is let go, whatever lets it go)
@@ -463,6 +465,114 @@ pub fn field_has_focus() -> Bool {
   hand.focus_id.get() |> ignore
   let c = g()
   c.focus != 0 && c.editors.contains(c.focus)
+}
+
+///|
+/// Nodes whose `on_menu` opens a field's desktop editing menu (e.g. a composer's I-beam backdrop beside its field):
+/// skipped by Android/touch long press (tree_finger_menu) just as tree_fields are.
+// kept across runs: cleared by view_forget; each entry removed as its node is let go
+let tree_field_menu_areas : Map[@view.NodeId, Unit] = Map([])
+
+///|
+/// Connects secondary-button menu presses on `v` (an I-beam backdrop beside `field`) to `field.open_menu`, while
+/// skipping touch long-press so mobile fingers never open a desktop editing menu or trigger long-press haptics there.
+pub fn field_menu_on(v : @view.View, field : Field, enabled? : () -> Bool = fn() { true }) -> Unit {
+  let id = v.id()
+  tree_field_menu_areas[id] = ()
+  v.owns(fn() { tree_field_menu_areas.remove(id) }) |> ignore
+  v.on_menu(fn(m) {
+    if enabled() {
+      field.open_menu(m.wx, m.wy)
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Listeners told at once when a field (of the window's tree or an old view's) is right clicked: (field id, x, y, can).
+// kept across runs: cleared by view_forget; each entry removed as its node is let go
+let field_menu_asked : Array[(Int, (Int, Double, Double, Int) -> Unit)] = []
+
+///|
+// kept across runs: only counted on
+let field_menu_seq : Ref[Int] = Ref(0)
+
+///|
+/// Told at once whenever any field of this window is right clicked (its id, where in the window, what can be done to it
+/// now: hostapi text_menu_*), while node `v` is alive.
+pub fn on_field_menu(v : @view.View, f : (Int, Double, Double, Int) -> Unit) -> Unit {
+  field_menu_seq.val = field_menu_seq.val + 1
+  let seq = field_menu_seq.val
+  field_menu_asked.push((seq, f))
+  v.owns(fn() {
+    match field_menu_asked.search_by(fn(e) { e.0 == seq }) {
+      Some(i) => field_menu_asked.remove(i) |> ignore
+      None => ()
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Tells the window's field-menu listeners of a right click on field `id` at (`x`, `y`) with actions `can`.
+fn notify_field_menu(id : Int, x : Double, y : Double, can : Int) -> Unit {
+  if field_menu_asked.is_empty() {
+    return
+  }
+  let list = field_menu_asked.copy()
+  for e in list {
+    (e.1)(id, x, y, can)
+  }
+}
+
+///|
+/// A secondary press on field node `id` at (`x`, `y`): the focus given it where it is not focused yet, recorded for old
+/// callers (Ctx::field_right_clicked) and told at once to the window's field-menu listeners (on_field_menu).
+fn tree_field_right_clicked(id : @view.NodeId, x : Double, y : Double) -> Unit {
+  guard tree_fields.get(id) is Some(tf) else { return }
+  let said = tree_said_id(id)
+  let c = g()
+  if c.focus != said {
+    tree_field_focus(id)
+  }
+  desk.mutable_menus.push(([said], x, y))
+  notify_field_menu(said, x, y, tf.st.can())
+}
+
+///|
+/// Opens this field's editing menu at (`x`, `y`) (for an enclosing I-beam area beside its text, such as a composer's
+/// box padding), focusing it if needed. Nothing when the field is not live or cannot take focus (disabled, covered).
+pub fn Field::open_menu(self : Field, x : Double, y : Double) -> Unit {
+  match self.st.tree_node {
+    Some(id) if tree_fields.contains(id) => {
+      guard view_app.val is Some(tree) && tree.can_focus(id) else { return }
+      tree_field_right_clicked(id, x, y)
+    }
+    _ => {
+      let id = self.st.built_id
+      let c = g()
+      guard id != 0 && c.editors.get(id).map_or(false, fn(e) { physical_equal(e, self.st) }) else { return }
+      if c.focus != id {
+        c.focus_field(self)
+      }
+      desk.mutable_menus.push(([id], x, y))
+      notify_field_menu(id, x, y, self.st.can())
+    }
+  }
+}
+
+///|
+/// Performs an editing-menu action (`what`: hostapi text_menu_*) on field `id` at once (without waiting for an old
+/// frame's build): Paste reads the clipboard as ⌘V does (files, picture, or text); Cut, Copy and Select All act on the
+/// editor directly and repaint it.
+pub fn field_edit_now(id : Int, what : Int) -> Unit {
+  let c = g()
+  if what == @hostapi.text_menu_paste {
+    c.field_paste(id)
+    h_frame_owed()
+  } else {
+    c.field_edit(id, what)
+  }
 }
 
 ///|

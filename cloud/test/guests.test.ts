@@ -53,6 +53,25 @@ test("signing in on a guest's origin goes by its Google client and calls back th
   }
 });
 
+test("an enrollment's command is its product's: monoid's on monoid's cloud, still.fail's on a guest's origin", async () => {
+  const h = await harness({ origin: "https://app.monoid.build", guests, forwardSecret: SECRET });
+  try {
+    const tokens = await h.login("alice");
+    const auth = { "content-type": "application/json", authorization: `Bearer ${tokens.access_token}` };
+    const made = async (path: string, headers: Record<string, string> = {}) => (await (await h.fetch(path, { method: "POST", headers: { ...auth, ...headers }, body: JSON.stringify({ name: "tokyo" }) })).json()) as { token: string; command: string };
+    const own = (await (await h.fetch("/v1/workspaces", { method: "POST", headers: auth, body: JSON.stringify({ name: "Own" }) })).json()) as { id: string };
+    for (const path of [`/v1/workspaces/${own.id}/enrollments`, `/v1/workspaces/${own.id}/rigs/enrollments`]) {
+      const enrollment = await made(path);
+      assert.equal(enrollment.command, `monoid station enroll https://app.monoid.build ${enrollment.token}`, path);
+    }
+    const theirs = (await (await h.fetch("/v1/workspaces", { method: "POST", headers: { ...auth, ...forwarded() }, body: JSON.stringify({ name: "Theirs" }) })).json()) as { id: string };
+    const enrollment = await made(`/v1/workspaces/${theirs.id}/enrollments`, forwarded());
+    assert.equal(enrollment.command, `stillfail station enroll ${GUEST} ${enrollment.token}`);
+  } finally {
+    await h.close();
+  }
+});
+
 test("devices and stations asking on a guest's origin are handed this cloud's own relay, matching the stations' state frames", async () => {
   const HOST = "https://app.monoid.build";
   const HK = "https://47.76.247.168";

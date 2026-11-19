@@ -338,3 +338,45 @@ test "the floating head as nodes never narrower once open: tools added, then tak
   assert_eq(framed[2].2, framed[1].2, msg="fewer, a frame between: as wide as with them")
   assert_eq(unframed[unframed.length() - 1].2, framed[2].2, msg="fewer, no frame between: the same")
 }
+
+///|
+test "the floating head as nodes: its meta on its name's baseline (a Body line at 600 beside a Meta one), lines as the web's or the host's, the system's size of words 1 or 1.3" {
+  for web in [true, false] {
+    @ui.set_web_lines(web)
+    for scale in [1.0, 1.3] {
+      let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=300.0, platform=if web { 0 } else { 2 })
+      t.check_looks(false)
+      @ui.set_view_app(fn(root) {
+        viewer_head_node(
+          root,
+          fn() { "deploy-plan.md" },
+          fn() { "Markdown · 12 KB" },
+          fn() { true },
+          fn(_) { 1.0 },
+          fn() { 0.0 },
+          fn() { 800.0 },
+          fn() { page_viewer_ink() },
+          fn() { viewer_page_glass() },
+          fn(_) {  },
+          fn() { "" },
+          fn() {  },
+        )
+        |> ignore
+      })
+      if scale != 1.0 {
+        t.set_font_scale(scale)
+      }
+      t.draw()
+      let runs = t.text_runs()
+      let n = runs.filter(fn(r) { r.text == "deploy-plan.md" })
+      let m = runs.filter(fn(r) { r.text == "Markdown · 12 KB" })
+      assert_true(n.length() > 0 && m.length() > 0, msg="web=\{web} scale=\{scale}: name or meta not drawn")
+      assert_true(
+        (n[0].base - m[0].base).abs() <= 0.01,
+        msg="web=\{web} scale=\{scale}: name base=\{n[0].base} meta base=\{m[0].base}",
+      )
+      assert_eq(t.audit(), [])
+    }
+  }
+  @ui.set_web_lines(false)
+}

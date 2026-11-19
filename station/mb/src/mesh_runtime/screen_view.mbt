@@ -341,9 +341,11 @@ fn config_bytes(c : FrameConfig) -> Bytes {
 /// A stream whose head says `screen` (`answerScreen`): a view of a screen, for as long as both sides keep it. `carry`:
 /// what came after the head line; `viewer`: who (`{name, email, role, device}`); `up`: whether the station has started;
 /// `paths`: the ways of the connection it came on, whose counters say what of the view's link was lost (None: nothing
-/// said of it); `rt`: the view's clock (ms); `host_now`: the clock a frame's capture time is on (screen-pace.ts `hostNow`, the
-/// helpers' monotonic one; by default the view's); `stall`: how long the station's loop stood still, and its end (the
-/// live clock's alone).
+/// said of it) and where it goes (what the view starts at: `start_rate_of`); `rt`: the view's clock (ms); `host_now`:
+/// the clock a frame's capture time is on (screen-pace.ts `hostNow`, the helpers' monotonic one; by default the view's);
+/// `stall`: how long the station's loop stood still, and its end (the live clock's alone); `media_datagrams`: the
+/// stream's frames of picture and sound sent as datagrams under the client's token from now on (the shell's
+/// `istream.mediaDatagrams`), whether they are (None: a stream that cannot, on as before).
 pub async fn answer_screen(
   hub : ScreenHubPort,
   stream : @door.Stream,
@@ -357,6 +359,7 @@ pub async fn answer_screen(
   paths? : (() -> Array[LinkPath])? = None,
   host_now? : (() -> Double)? = None,
   stall? : (() -> Double, () -> Unit) = (() => 0.0, () => ()),
+  media_datagrams? : (async (Double) -> Bool)? = None,
 ) -> Unit {
   let headers = match field(head, "headers") {
     Some(Object(m)) => {
@@ -423,8 +426,14 @@ pub async fn answer_screen(
   }
   // (asked once before the view opens: a front's connection reads its paths anew as it is asked, so the loss is
   // counted from the link as the view begins)
-  if paths is Some(f) {
-    ignore(f())
+  let initial_paths = match paths {
+    Some(f) => Some(f())
+    None => None
+  }
+  // (a preview's at START_RATE: two pictures a second, no higher than the source's own)
+  let initial_rate = match initial_paths {
+    Some(ways) if !peek => start_rate_of(ways)
+    _ => start_rate
   }
   let options = [
     ("maxWidth", field(ask, "maxWidth").unwrap()),
@@ -437,7 +446,7 @@ pub async fn answer_screen(
       options.push(("opus", Json::boolean(true)))
     }
   }
-  options.push(("bitrate", jnum(start_rate)))
+  options.push(("bitrate", jnum(initial_rate)))
   if field(ask, "fps") is Some(f) {
     options.push(("fps", f))
   }
@@ -477,8 +486,20 @@ pub async fn answer_screen(
     (view.close)()
     return refuse(404, tr(lang, "station.screen.notFound", none), [])
   }
+  // its picture and sound as datagrams where the client takes them under its token and the link carries them (the
+  // reply says so), else on the stream as before
+  let reply_headers = [("content-type", jstr(screen_type))]
+  match (field(ask, "datagrams"), media_datagrams) {
+    (Some(Number(token, ..)), Some(send)) => {
+      let sent = send(token) catch { _ => false }
+      if sent {
+        reply_headers.push((dgram_header, jstr(token.to_int64().to_string())))
+      }
+    }
+    _ => ()
+  }
   let wrote = (async fn() -> Bool {
-    js_line(stream, jobj([("status", jnum(200.0)), ("headers", jobj([("content-type", jstr(screen_type))]))]))
+    js_line(stream, jobj([("status", jnum(200.0)), ("headers", jobj(reply_headers))]))
     true
   })() catch {
     _ => false
@@ -499,7 +520,7 @@ pub async fn answer_screen(
   let max_width = num_of(field(ask, "maxWidth")).unwrap_or(1920.0)
   let max_height = num_of(field(ask, "maxHeight")).unwrap_or(1080.0)
   let quality = str_of(field(ask, "quality"))
-  let pacer = Pacer::new(now, start=Some(start_rate), fps=num_of(field(ask, "fps")), stalled~)
+  let pacer = Pacer::new(now, start=Some(initial_rate), fps=num_of(field(ask, "fps")), stalled~)
   let sizer = Sizer::new(now, { max_width, max_height }, quality~)
   let session = ViewSession::new(
     hub,
@@ -529,6 +550,8 @@ pub async fn answer_screen(
     tr,
     said,
     paths,
+    initial_rate,
+    field(ask, "binaryCursor") is Some(True),
   )
   session.run() catch {
     e => {
@@ -589,6 +612,10 @@ priv struct ViewSession {
   loss : LinkLoss
   paths : (() -> Array[LinkPath])?
   sharpen : Sharpener
+  /// The rate the source was opened at.
+  start_rate : Double
+  /// The client reads the pointer as `cursor` frames (asked `binaryCursor`), not a state's JSON.
+  binary_cursor : Bool
   mut closed : Bool
   over : @effect.Deferred[Unit]
   /// The writes, in order: each waits for the one before.
@@ -658,6 +685,8 @@ fn ViewSession::new(
   tr : Tr,
   said : Said,
   paths : (() -> Array[LinkPath])?,
+  start_rate : Double,
+  binary_cursor : Bool,
 ) -> ViewSession {
   let loss = LinkLoss::new(now)
   // (its counters as the view begins: what went before is no part of it)
@@ -694,6 +723,8 @@ fn ViewSession::new(
     said,
     latency: FrameLatency::new(host_now),
     sharpen: Sharpener::new(),
+    start_rate,
+    binary_cursor,
     closed: false,
     over: @effect.Deferred::new(),
     writes: done_now(),
@@ -885,13 +916,13 @@ fn with_fields(v : Json, fields : Array[(String, Json)]) -> Json {
 
 ///|
 /// A frame went (`#still`): once the screen has been still for STILL_MS, the picture again sharper where the rate went
-/// up since.
-fn ViewSession::still(self : ViewSession) -> Unit {
+/// up since. `key`: the frame was a key frame.
+fn ViewSession::still(self : ViewSession, key : Bool) -> Unit {
   let rate = match self.view.rate {
-    Some(_) => Some(self.rate.unwrap_or(start_rate))
+    Some(_) => Some(self.rate.unwrap_or(self.start_rate))
     None => None
   }
-  self.sharpen.sent((self.now)(), rate)
+  self.sharpen.sent((self.now)(), rate, key~)
   if self.still_wait {
     return
   }
@@ -1041,7 +1072,11 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
     self.pacer.sent(f.ts, f.data.length().to_double())
     self.latency.sent(f.ts)
     self.send(kind_video, video_payload(f.key, f.ts, f.data)).wait() catch { _ => () }
-    self.still()
+    self.still(f.key)
+    // (a screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's)
+    if !self.closed && self.view.rate is Some(_) && self.sharpen.due_moving((self.now)(), self.rate) {
+      (self.view.keyframe)()
+    }
   }
 }
 
@@ -1350,7 +1385,13 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
     self.unchild = watch(s => told("childScreen")(jstr(s)))
   }
   if self.view.watch_cursor is Some(watch) {
-    self.unpoint = watch(told("cursor"))
+    self.unpoint = watch(cursor => if !self.closed {
+      if self.binary_cursor {
+        ignore(self.send(kind_cursor, cursor_payload(cursor)))
+      } else {
+        ignore(self.state(jobj([("cursor", cursor)])))
+      }
+    })
   }
   if self.view.watch_windows is Some(watch) {
     self.unwindows = watch(w => if !self.closed {

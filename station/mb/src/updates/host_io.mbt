@@ -244,46 +244,24 @@ pub fn host_world(
       "fetch" => {
         let init = jarg(a, 1)
         let headers = match get(Some(init), "headers") {
-          Some(Obj(ps)) => Json::array(ps.map(p => Json::array([sj(@jsjson.text(p.0)), sj(js_string(p.1))])))
-          _ => Json::array([])
+          Some(Obj(ps)) => ps.map(p => (@jsjson.text(p.0), js_string(p.1)))
+          _ => []
         }
         // The TypeScript's signals are a deadline of 15 s to a read (`AbortSignal.timeout(15_000)`) and a minute with
         // nothing coming in to a download: none reaches the shell, so it is told them here (an answer's head within
         // `fetch_head_ms`, its body never silent `fetch_stall_ms`), else a network that never answers held a reading
         // of the updates for good.
-        let args : Json = {
-          "url": sj(sarg(a, 0)),
-          "method": sj(text(get(Some(init), "method")).unwrap_or("GET")),
-          "headers": headers,
-          "timeoutMs": Json::number(fetch_head_ms),
-          "stallMs": Json::number(fetch_stall_ms),
-        }
-        let (answer, bytes) = host.shell("fetch", args) catch {
+        let r = host.fetch(
+          sarg(a, 0),
+          method_=text(get(Some(init), "method")).unwrap_or("GET"),
+          headers~,
+          head_ms=fetch_head_ms.to_int(),
+          stall_ms=fetch_stall_ms.to_int(),
+        ) catch {
           e => raise thrown("TypeError", "fetch failed", more=[("cause", js(shell_error(e)))])
         }
-        let status = match answer {
-          Object(m) =>
-            match m.get("status") {
-              Some(Number(n, ..)) => n
-              _ => 0.0
-            }
-          _ => 0.0
-        }
-        let hs = match answer {
-          Object(m) =>
-            match m.get("headers") {
-              Some(Array(xs)) =>
-                jo(
-                  xs.filter_map(x => match x {
-                    Array([String(k), String(v)]) => Some((@jscase.lower(k), js(v)))
-                    _ => None
-                  }),
-                )
-              _ => jo([])
-            }
-          _ => jo([])
-        }
-        jo([("status", jn(status)), ("headers", hs), ("chunks", ja([jbytes(bytes.unwrap_or(b""))]))])
+        let hs = jo(r.headers.map(h => (@jscase.lower(h.0), js(h.1))))
+        jo([("status", jn(r.status.to_double())), ("headers", hs), ("chunks", ja([jbytes(r.body)]))])
       }
       "fs.createWriteStream" => Null
       "fs.writeStream.end" => {

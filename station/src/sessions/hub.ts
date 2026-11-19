@@ -38,7 +38,7 @@ import { comingWs, handedWs } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
 import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
-import type { RecentChatList } from "../store/chat-list.ts";
+import type { ChatListFilter, RecentChatList } from "../store/chat-list.ts";
 import { Accounts } from "./accounts.ts";
 import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
@@ -198,7 +198,7 @@ export class Hub {
   /// A recent, unfiltered chat_list, with details for its page alone.
   recentChatList: ((ws: string | null, home: string | null, limit: number, signal?: AbortSignal) => Promise<RecentChatList>) | null = null;
   /// The matching chats and count for a chat_list search.
-  searchChatList: ((ws: string | null, home: string | null, limit: number, query: string) => Promise<RecentChatList>) | null = null;
+  searchChatList: ((ws: string | null, home: string | null, limit: number, query: string, filter?: ChatListFilter) => Promise<RecentChatList>) | null = null;
   /// A thread's latest `limit` messages, oldest first, read by the readers (agents.ts sets it): the archive review's
   /// (review.ts), up to 400 of them through the merged view, 3 seconds held on a station. Unset (tests): the store.
   latestMessages: ((thread: number, limit: number) => Promise<MessageRow[]>) | null = null;
@@ -229,8 +229,8 @@ export class Hub {
   prepareSessionUpJobs: ((session: string) => Promise<void>) | null = null;
   /// The station's logins (logins/module.ts sets it): the page a Slack login card opens for one (null: no card there,
   /// as for a loopback login), and the code from that page handed to it, entered by `by` on its card. Unset: no logins
-  /// here.
-  logins: { page(id: string): CardPage | null; answer(id: string, code: string, by?: Person): void } | null = null;
+  /// here. `deadline`: when one under way runs out of time (its ask's push says so).
+  logins: { page(id: string): CardPage | null; answer(id: string, code: string, by?: Person): void; deadline?(id: string): number | null } | null = null;
   /// Stops following the store's sessions starting and stopping (live.ts `running`).
   private unlistenRunning: () => void = () => {};
   readonly actors = new Map<string, Actor>();
@@ -391,8 +391,12 @@ export class Hub {
   /// Takes back `reason` to hold turns; once none is left, turns start again and what waited meanwhile goes on.
   release(reason: Hold) {
     if (!this.holdsNow.delete(reason) || this.holdsNow.size > 0) return;
+    // (an actor released goes on with what waits for it itself, a recovery it put off or its messages: kicked as well,
+    // it would start a turn on them again after one that failed to start, 2026-11-19)
+    const released = new Set(this.actors.keys());
     for (const actor of this.actors.values()) void actor.release();
     for (const key of this.store.sessionsWithPending()) {
+      if (released.has(key)) continue;
       const row = this.store.getSession(key);
       if (row) void this.actor(row).kick();
     }
@@ -1117,15 +1121,21 @@ export class Hub {
   /// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is still
   /// pending.
   recover() {
+    const recovering = new Set<string>();
     for (const row of this.store.runningSessions()) {
       // Taken up from the previous station: its turn runs on.
       if (this.adopted.has(row.key) || !this.online(row)) continue;
       log.info("hub", "recovering a turn cut off by restart", { session: row.key });
+      recovering.add(row.key);
       void this.actor(row).recover();
     }
-    for (const key of this.store.sessionsWithPending()) {
-      const row = this.store.getSession(key);
-      if (row && this.online(row)) void this.actor(row).kick();
+    // A turn resumed takes what waits for it with it; while turns are held, `release` gives the rest theirs.
+    if ((this.holdsNow?.size ?? 0) === 0) {
+      for (const key of this.store.sessionsWithPending()) {
+        if (recovering.has(key)) continue;
+        const row = this.store.getSession(key);
+        if (row && this.online(row)) void this.actor(row).kick();
+      }
     }
     // Waits on record that were not handed over: taken up so each asks again when it would have, or put right by the
     // actor. An old store retains its original recovery path until its lookup has been prepared.

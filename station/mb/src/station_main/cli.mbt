@@ -537,13 +537,13 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
 ///|
 /// A JavaScript value (jsjson's) as JSON.
 fn to_core(v : @jsjson.JValue) -> Json {
-  attempt(() => @json.parse(@jsjson.stringify(v))).unwrap_or(Json::null())
+  v.to_json()
 }
 
 ///|
 /// JSON as a JavaScript value (jsjson's).
 fn of_core(j : Json) -> @jsjson.JValue {
-  attempt(() => @jsjson.parse(j.stringify())).unwrap_or(@jsjson.JValue::Null)
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
@@ -865,19 +865,16 @@ async fn redeem(
     if rig {
       fields["rig"] = Json::boolean(true)
     }
-    let asked : Json = {
-      "url": Json::string(origin + at),
-      "method": Json::string("POST"),
-      "headers": Json::array([Json::array([Json::string("content-type"), Json::string("application/json")])]),
-    }
-    let (said, bytes) = host.shell("fetch", asked, bytes=@utf8.encode(Json::object(fields).stringify())) catch {
+    let r = host.fetch(
+      origin + at,
+      method_="POST",
+      headers=[("content-type", "application/json")],
+      body=@utf8.encode(Json::object(fields).stringify()),
+    ) catch {
       e => fail("\{plane_name} did not answer: \{e}")
     }
-    let status = match said {
-      { "status": Number(n, ..), .. } => n.to_int()
-      _ => 0
-    }
-    answered = (status, @utf8.decode_lossy(bytes.unwrap_or(b"")))
+    let status = r.status
+    answered = (status, r.text())
     if prefix == prefixes[prefixes.length() - 1] || status != 401 {
       break
     }

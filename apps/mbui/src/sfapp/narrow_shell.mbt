@@ -252,6 +252,9 @@ fn narrow_page_held(c : @ui.Ctx, src : Source, w : Workspace, page : Page, barre
       let (now, _, _, _) = workspace_in_view(src)
       page_view(c, src, now.unwrap_or(w), page, barred~)
     })
+    if !stack_by_finger() {
+      @sfdesk.context_page(c, whole)
+    }
     @motion.scope(c, whole, bottom=true)
   }
   c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), built)
@@ -607,6 +610,9 @@ fn narrow_made_as(
               stint~,
               // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
               body=fn(col, s, r, composer, shows) {
+                if @sf.native_input() is Mouse {
+                  @sfdesk.context_node(col)
+                }
                 @sfpages.chat_page_body_node(
                   col,
                   s,

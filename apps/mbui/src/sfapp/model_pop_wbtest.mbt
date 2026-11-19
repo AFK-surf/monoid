@@ -395,7 +395,7 @@ test "wide, many models: those used most, the way to all of them; there, a maker
   assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the panel stays open")
   // back: Sonnet among the starred, over the configurations used most (none of them starred: a configuration is not)
   t.click(Button, label="全部模型")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@ui.move_most_ms)
   let (sonnet, used) = (t.get(Button, label="Sonnet 5").rect.1, t.find("常用搭配").unwrap().1)
   assert_true(sonnet < used, msg="\{sonnet} \{used}")
   // its star pressed there: starred no more, its row where it was while the panel is open
@@ -435,7 +435,7 @@ test "wide, all models: the open panel makes room for a model and how it runs on
 }
 
 ///|
-test "wide, many models and Codex's efforts and speeds: the models, how hard it thinks a column beside them, the runtime and how fast at the foot" {
+test "wide, many models and Codex's efforts and speeds: the models, how hard it thinks and how fast in the right column, the runtime at the foot" {
   let t = model_pop("newchat-tall-model")
   let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
   let all = t.get(Button, label="SWE-2").rect
@@ -447,16 +447,17 @@ test "wide, many models and Codex's efforts and speeds: the models, how hard it 
     assert_true(i == 0 || r.1 > levels[i - 1].1, msg="\{Repr(levels)}")
     assert_true(r.0 + r.2 <= px + pw && r.1 + r.3 <= py + ph, msg="\{Repr(r)} past the panel")
   }
-  // the runtime and how fast at the foot, by who runs it, how fast saying how fast it runs (its account's standard: no
-  // 跟随订阅), pressed the two ways in a pick (「速度放在面板下面，跟账号差不多的位置」「运行时不应该放那个位置吧」)
+  // speed sits directly under effort in the right column (1-click radio rows, no 跟随订阅), runtime stays in the foot
   let runtime = t.get(Button, label="DeepSeek Harness").rect
-  let speed = t.get(Button, label="标准").rect
-  assert_true(runtime.1 == speed.1, msg="\{Repr(runtime)} \{Repr(speed)}")
-  assert_true(speed.1 >= levels[levels.length() - 1].1 + levels[levels.length() - 1].3, msg="\{Repr(speed)}")
+  let standard = t.get(Radio, label="标准").rect
+  let fast = t.get(Radio, label="Fast").rect
+  assert_true(standard.0 == levels[0].0 && fast.0 == standard.0, msg="\{Repr(standard)} \{Repr(fast)} beside \{Repr(levels[0])}")
+  assert_true(standard.1 > levels[levels.length() - 1].1 + levels[levels.length() - 1].3, msg="\{Repr(standard)}")
+  assert_true(fast.1 > standard.1 && fast.1 + fast.3 <= runtime.1, msg="\{Repr(fast)} above foot \{Repr(runtime)}")
   assert_true(t.words().iter().all(fn(w) { w.0 != "跟随订阅" }), msg="跟随订阅 said")
-  t.click(Button, label="标准")
+  t.click(Radio, label="Fast")
   t.run_for(squeeze_opening)
-  assert_true(t.words().iter().any(fn(w) { w.0 == "Fast" }), msg="no pick of how fast")
+  assert_eq(t.get(Radio, label="Fast").check, Some(On))
 }
 
 ///|
@@ -473,22 +474,20 @@ test "wide: how hard it thinks picked in the panel is made what it runs on at on
 }
 
 ///|
-test "wide: how much context at the foot after who runs it, as how fast is; its steps in a pick, one picked made what it runs on at once" {
+test "wide: how much context sits in the right column under effort; one click applies it at once" {
   let t = model_pop("newchat-model")
   let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
   let high = t.get(Radio, label="高").rect
-  // (at the foot, with who runs it: 2026-11-03 用户「直接放最下面跟速度一样吧」)
-  let context = t.get(Button, label="完整 · 1M").rect
-  assert_true(context.1 > high.1 + high.3 && context.1 + context.3 <= py + ph && context.0 + context.2 <= px + pw, msg="\{Repr(context)}, the panel \{Repr((px, py, pw, ph))}")
+  let context = t.get(Radio, label="完整 · 1M").rect
+  assert_true(context.0 == high.0 && context.1 > high.1 + high.3 && context.1 + context.3 <= py + ph && context.0 + context.2 <= px + pw, msg="\{Repr(context)}, effort \{Repr(high)}, the panel \{Repr((px, py, pw, ph))}")
   assert_true(t.words().iter().any(fn(w) { w.0 == "上下文" }), msg="no name before it")
-  t.click(Button, label="完整 · 1M")
-  t.run_for(@ui.move_most_ms)
-  let steps = t.all(MenuItemRadio).map(fn(s) { (s.label, s.check) })
+  let steps = ["完整 · 1M", "500K", "300K", "200K"].map(fn(l) raise { (l, t.get(Radio, label=l).check) })
   assert_eq(steps, [("完整 · 1M", Some(On)), ("500K", Some(Off)), ("300K", Some(Off)), ("200K", Some(Off))])
-  t.click(MenuItemRadio, label="300K")
+  t.click(Radio, label="300K")
   t.run_for(squeeze_opening)
   assert_eq(new_fix.context, "300000")
-  assert_true(t.query(Button, label="300K") is Some(_), msg="the foot says the step picked")
+  assert_eq(t.get(Radio, label="300K").check, Some(On))
+  assert_eq(t.get(Radio, label="完整 · 1M").check, Some(Off))
 }
 
 ///|
@@ -558,21 +557,32 @@ test "Ultrafast can be selected and cleared on small and large screens with larg
       // (what is wrong already, wherever it is drawn: what opening the speeds moves keeps its fault)
       let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
       let held = t.audit().map(bare)
-      t.click(Button, label="标准")
-      t.run_for(squeeze_opening)
-      assert_true(t.words().iter().any(fn(w) { w.0 == "Ultrafast" }))
-      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
-      // (on a phone a sheet of buttons, each named with its note; on a wide screen a menu, named by its title)
       let phone = win.0 == "phone"
-      let item : @view.Role = if phone { Button } else { MenuItemRadio }
-      t.click(item, label=if phone { "Ultrafast " + @sf.t("web-main.model.ultrafastNote") } else { "Ultrafast" })
-      t.run_for(squeeze_opening)
-      assert_eq(new_fix.speed, "ultrafast")
-      t.click(Button, label="Ultrafast")
-      t.run_for(squeeze_opening)
-      t.click(item, label="标准")
-      t.run_for(squeeze_opening)
-      assert_eq(new_fix.speed, "standard")
+      if phone {
+        t.click(Button, label="标准")
+        t.run_for(squeeze_opening)
+        assert_true(t.words().iter().any(fn(w) { w.0 == "Ultrafast" }))
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+        t.click(Button, label="Ultrafast " + @sf.t("web-main.model.ultrafastNote"))
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "ultrafast")
+        t.click(Button, label="Ultrafast")
+        t.run_for(squeeze_opening)
+        t.click(Button, label="标准")
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "standard")
+      } else {
+        assert_eq(t.get(Radio, label="标准").check, Some(On))
+        assert_eq(t.get(Radio, label="Ultrafast").check, Some(Off))
+        t.click(Radio, label="Ultrafast")
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "ultrafast")
+        assert_eq(t.get(Radio, label="Ultrafast").check, Some(On))
+        t.click(Radio, label="标准")
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "standard")
+        assert_eq(t.get(Radio, label="标准").check, Some(On))
+      }
       assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
     }
   }
@@ -632,4 +642,41 @@ test "a model row's usualText shares the first-line baseline of its model name" 
       msg="GPT-6 Astra baseline \{astra.base} vs \{usual[0].text} baseline \{usual[0].base} at scale \{scale}",
     )
   }
+}
+
+///|
+test "wide, first level: when a frequent combination is selected, no duplicate current model row appears above 常用搭配" {
+  let t = model_pop("newchat-providers-model")
+  assert_true(t.query(Button, label="DeepSeek V4.1 Flash · DSH · 高") is Some(_))
+  assert_true(t.query(Button, label="DeepSeek V4.1 Flash") is None, msg="current model duplicated above 常用搭配")
+  // natural height: panel stays compact instead of stretching to a fixed 360pt list void
+  let (_, _, _, ph) = t.get(@ui.Role::Dialog).rect
+  assert_true(ph < 380.0, msg="panel stretched with empty void: \{ph}")
+}
+
+///|
+test "wide, search: matches maker and runtime tokens, Escape clears before closing, and arrows plus Enter pick a model" {
+  let t = model_pop("newchat-providers-model")
+  t.click(TextField, label="搜索模型")
+  t.run_for(squeeze_opening)
+  // multi-token search across maker and runtime
+  t.type_text("openai codex")
+  t.run_for(squeeze_opening)
+  assert_true(t.query(Button, label="GPT-6 Astra") is Some(_), msg="maker + runtime search finds GPT-6 Astra")
+  assert_true(t.query(Button, label="Opus 5.5") is None)
+  // Escape with query clears text and keeps the panel open
+  t.key(@ui.key_escape)
+  t.run_for(squeeze_opening)
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="Escape cleared query instead of closing panel")
+  assert_true(t.query(Button, label="全部模型") is Some(_), msg="returned to first level after clearing query")
+  // search OpenAI (2 models: GPT-6 Astra, gpt-oss 2), step down to second result, Enter picks it and closes
+  t.type_text("openai")
+  t.run_for(squeeze_opening)
+  assert_true(t.query(Button, label="GPT-6 Astra") is Some(_) && t.query(Button, label="gpt-oss 2") is Some(_))
+  t.key(@ui.key_code_down)
+  t.run_for(squeeze_opening)
+  t.key(@ui.key_code_enter)
+  t.run_for(@kit.presence_in_ms)
+  assert_true(t.query(@ui.Role::Dialog) is None, msg="Enter closed the panel after picking")
+  assert_eq(new_fix.model, "gpt-oss-2")
 }

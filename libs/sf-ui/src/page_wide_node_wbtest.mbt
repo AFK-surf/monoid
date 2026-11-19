@@ -77,7 +77,7 @@ fn about_blocks_drawn(node : Bool, scale : Double) -> Array[String] raise {
   if node {
     @ui.set_view_app(fn(root) {
       root.box(fn(b) {
-        b.lends(part_at, { look: Wide, section: false, list: false }) |> ignore
+        b.lends(part_at, { look: Wide, section: false, list: false, card: false }) |> ignore
         section_node(b, fn() { "版本" }, heads=false, fn(s) {
           group_node(s, fn(g) {
             link_row_node(g, fn() { "still.fail 1.0" }, fn() {  }, goes=false)

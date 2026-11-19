@@ -58,3 +58,46 @@ test "a disabled switch is read out as disabled and Tab passes it over" {
     assert_true(!on.get())
   }
 }
+
+///|
+/// A switch row with a note under its title on a group's card (`words`: among the words of a page's card,
+/// page_card_node's), `look` (narrow or wide) at the system's size of words `scale`: how far the middle of its switch
+/// is from that of its title's line; no corner of it out of its card's.
+fn switch_off_title_line(look : Look, scale : Double, platform : Int, words? : Bool = false) -> Double raise {
+  let t = @ui.Tester::new(fn(_c) {  }, w=if look is Wide { 760.0 } else { 390.0 }, h=400.0, platform~)
+  t.set_font_scale(scale)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.lends(part_at, { look, section: false, list: false, card: false }) |> ignore
+      let note = fn() { "保存在本机，只在你分享时才发出去，分享前可以先看一遍里面记了什么" }
+      if words {
+        page_card_node(b, fn(k) { switch_row_node(k, fn() { "性能记录" }, fn() { true }, fn(_) {  }, note~, in_words=true) })
+      } else {
+        group_node(b, card=true, fn(g) { switch_row_node(g, fn() { "性能记录" }, fn() { true }, fn(_) {  }, note~) })
+      }
+    })
+    |> ignore
+  })
+  t.draw()
+  let (_, sy, _, sh) = t.get(Switch, label="性能记录").rect
+  let title = t.words().filter(fn(w) { w.0 == "性能记录" })
+  assert_eq(title.length(), 1)
+  let (_, _, ty, _, th, _) = title[0]
+  assert_eq(t.first_line_faults(), [])
+  assert_eq(t.corner_faults(), [])
+  (sy + sh / 2.0 - (ty + th / 2.0)).abs()
+}
+
+///|
+test "a switch row with a note under its title has its switch on the title's line, not across their middle, out of its card's corners: on a group's card and among a page card's words, narrow and wide, with a mouse and a finger, at text sizes 1 and 1.3" {
+  for words in [false, true] {
+    for look in [Narrow, Wide] {
+      for platform in [0, 2] {
+        for scale in [1.0, 1.3] {
+          let off = switch_off_title_line(look, scale, platform, words~)
+          assert_true(off <= 0.5, msg="words \{words} wide \{look is Wide} on \{platform} at \{scale}: \{off} off its title's line")
+        }
+      }
+    }
+  }
+}

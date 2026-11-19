@@ -557,6 +557,8 @@ fn view_forget() -> Unit {
   tree_said_ids.clear()
   tree_said_of.clear()
   layer_focus_open.clear()
+  tree_field_menu_areas.clear()
+  field_menu_asked.clear()
   leaving_ime_nodes.clear()
   old_hits_rects.clear()
   old_hits_clips.clear()

@@ -491,9 +491,12 @@ if part ts; then
   # The station in MoonBit says each of its errors as words, never as its type's name (station/<package>.<Type>);
   # opens no more sockets by its shell's name than scripts/mb-station.ts's table lets each file, which only falls;
   # lets go of no fiber whose failure would fail the whole program (`fork_quiet` or `fork_daemon`, never a bare
-  # `ignore(….fork(…))`); and makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`).
+  # `ignore(….fork(…))`); makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`); writes no file beside
+  # under a name another write of it takes too (`<path>.<pid>.tmp`, `<path>.tmp`: L13); waits on the disk on the
+  # program's thread in a whole station's slice (`station_main/live_*.mbt`) no more than MAIN_THREAD_SYNC_FS lets it,
+  # which only falls; and makes no JavaScript value JSON by writing it out and reading it again.
   if touches '^station/mb/|^scripts/mb-station\.ts$'; then
-    step "the station in MoonBit: errors shown, raw shell sockets only fall, no bare fork, no monotonic wall" node scripts/mb-station.ts
+    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON" node scripts/mb-station.ts
   fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
   # their JS dependencies and the real wasm package even when no TS file changed.
@@ -503,7 +506,7 @@ if part ts; then
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || [ $core_tests = 1 ]; then wasm_pkg; fi
   # The mbui app's budgets only fall (scripts/mbui-budgets.ts): a raise says why in its commit's message. A commit's own
   # is checked as its message is written (.githooks/commit-msg); a push's and CI's, here, by the range's messages.
-  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_wbtest\.mbt$|^scripts/mbui-budgets\.ts$'; then
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp(_realsize)?/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_(wb)?test\.mbt$|^scripts/mbui-budgets\.ts$'; then
     step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
   fi
   if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi

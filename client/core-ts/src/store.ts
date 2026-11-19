@@ -16,6 +16,7 @@ import { Effect } from "effect";
 import { computed, observe, signal, tracking, untracked, type Derived, type Source as ReactiveSource } from "./reactive.ts";
 import { type AnyOp, diffKeyed, heavier, type Kept, share, specOf } from "./collections.ts";
 import { diff, largerThan, type Op } from "./delta.ts";
+import { Moments } from "./clock.ts";
 import { Output } from "./output.ts";
 import { CoreError } from "./error.ts";
 import type { Host } from "./host.ts";
@@ -198,11 +199,13 @@ export class Store {
   #heldRounds: { from: number; rounds: number; ms: number; worst: { ms: number; topics: number; slowest: string; slowestMs: number; parts: [string, number][] } | null } | null = null;
 
   readonly #tracer: Tracer | null;
+  readonly #moments: Moments;
 
   constructor(host: Host, runner: Runner, tracer: Tracer | null = null) {
     this.host = host;
     this.runner = runner;
     this.#tracer = tracer;
+    this.#moments = new Moments(() => host.nowMs(), runner);
   }
 
   setSource(source: Source): void {
@@ -309,6 +312,7 @@ export class Store {
     if (on === this.#inView) return;
     this.#inView = on;
     if (!on) return;
+    this.#moments.check();
     for (const entry of this.#topics.values()) {
       if (!entry.unseen) continue;
       entry.unseen = false;
@@ -316,6 +320,11 @@ export class Store {
       entry.emitScheduled = true;
       this.#scheduleEmit(entry.topic);
     }
+  }
+
+  /// Re-checks waiting deadline moments against the wall clock (e.g. after wake/reconnect).
+  checkMoments(): void {
+    this.#moments.check();
   }
 
   /// Sends every value through its shape.
@@ -860,7 +869,8 @@ export class Store {
       return;
     }
     now.outputDirty = false;
-    const c: present.Clock = { now: this.host.nowMs(), offsetMin: this.host.utcOffsetMin(this.host.nowMs()) };
+    const nowMs = this.host.nowMs();
+    const c: present.Clock = { now: nowMs, offsetMin: this.host.utcOffsetMin(nowMs), reached: (at, later) => this.#moments.reached(at, later) };
     let value: Value = now.value;
     if ("ok" in value) {
       // What is decorated is a copy (output.ts): not what is kept.

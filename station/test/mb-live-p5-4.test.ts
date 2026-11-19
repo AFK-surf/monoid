@@ -128,8 +128,11 @@ test("run: the vault, the drive, the screens, the browser, the devices, the term
   store.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: root, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.close();
   const listed = (await mcp(door, "t1", "tools/list")).result.tools.map((t: any) => t.name).sort();
-  for (const name of ["secret_list", "secret_use", "secret_run", "secret_save", "secret_describe", "secret_delete", "secret_cancel", "secret_reask", "sign_in", "browser", "device_list", "device_use", "phone_use", "phone_send", "adb_devices", "login", "screen", "computer"]) {
+  for (const name of ["secret_list", "secret_use", "secret_run", "secret_save", "secret_describe", "secret_delete", "secret_cancel", "sign_in", "browser", "device_list", "device_use", "phone_send", "login", "screen", "computer"]) {
     assert.ok(listed.includes(name), `${name} among the tools (${listed.join(", ")})`);
+  }
+  for (const hidden of ["secret_reask", "phone_use", "adb_devices"]) {
+    assert.ok(!listed.includes(hidden), `${hidden} hidden from tools/list`);
   }
   assert.equal(new Set(listed).size, listed.length, "each tool once");
   const secrets = (await mcp(door, "t1", "tools/call", { name: "secret_list", arguments: {} })).result;

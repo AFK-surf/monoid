@@ -82,6 +82,43 @@ fn build_version(app : String) -> String? {
 }
 
 ///|
+/// A release's build timestamp (Unix ms) from its `<app>/BUILT_AT`, none where absent or invalid (ops/version.ts
+/// `stationBuiltAt`).
+fn build_built_at(app : String) -> Double? {
+  guard read_text(path([app, "BUILT_AT"])) is Some(t) else { None }
+  let raw = t.trim().to_owned()
+  if raw != "" && raw.iter().all(c => c >= '0' && c <= '9') {
+    match attempt(() => @string.parse_int64(raw[:])) {
+      Ok(ms) if ms > 0L && ms <= 9007199254740991L => Some(ms.to_double())
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+/// This station's build timestamp (ops/version.ts `builtAt`): the release `--app` names, else the one this program is
+/// in (`<app>/station/stillfail-reader`: two up from it), else None in development.
+pub fn station_built_at(args : Array[String], argv0 : String) -> Double? {
+  let given = match flag(args, "--app") {
+    Some(app) => build_built_at(app)
+    None => None
+  }
+  match given {
+    Some(ms) => Some(ms)
+    None => {
+      if argv0 == "" {
+        return None
+      }
+      let s = sep()
+      let real = attempt(() => @drive.realpath(argv0)).unwrap_or(argv0)
+      build_built_at(@nodepath.dirname(s, @nodepath.dirname(s, real)))
+    }
+  }
+}
+
+///|
 /// This station's version (ops/version.ts `version`): the release `--app` names, else the one this program is in
 /// (`<app>/station/stillfail-reader`: two up from it), else 0.1.0.
 pub fn station_version(args : Array[String], argv0 : String) -> String {

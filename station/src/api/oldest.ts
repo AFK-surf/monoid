@@ -9,9 +9,10 @@ import { version } from "../ops/version.ts";
 export const BUILD_HEADER = "stillfail-build";
 
 /// The oldest core build answered; 0: any. 6968 said its build first (#3612), and made its sidebar and a thread's
-/// summary itself (`rows=1`, `views=1`): api/events.ts makes them for no stream since. 7917 says in its own words what
-/// a station's reads leave to it (#4920: a chat with no name, the local page and its admin, a refusal by its key, a
-/// call's result in its script's output): a station's reads say none since.
+/// summary itself (`rows=1`, `views=1`): api/events.ts makes them for no stream since. 7143 (#3794) makes its sidebar
+/// of the shared chat list (`shared=1`): api/events.ts runs the shared chat list for every stream since. 7917 says in
+/// its own words what a station's reads leave to it (#4920: a chat with no name, the local page and its admin, a
+/// refusal by its key, a call's result in its script's output): a station's reads say none since.
 export const OLDEST_CORE = 7917;
 
 /// A build under this is no release's count of commits, and is not held to the floor: a development build's (`0.1.0`,

@@ -15,6 +15,10 @@ export type Stream = {
   /// 2026-10-28: nothing).
   stopped(): Promise<number | null | void>;
   reset(code: number): Promise<void>;
+  /// A view's video and audio frames written on it from now on sent as datagrams on its connection under `token`
+  /// (client/shell screen_dgram.rs), asked before its reply's head is written: false where its connection's datagrams
+  /// will not do (they go on it as before). An addon or a front from before has none.
+  mediaDatagrams?(token: number): Promise<boolean>;
 };
 /// What went over a connection since it opened (native/mesh `Stats`): bytes; and from the addon of 2026-10-19 on,
 /// packets and the frames in them, those that carry nothing (pings, ACK requests, ACKs) and those that carry data.

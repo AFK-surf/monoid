@@ -868,6 +868,48 @@ test("a login not finished in time ends, its command with it; one that cannot ru
   }
 });
 
+test("a login out of time started again from its card: the same command for the same chat, its agent told, the card following the new one; once, and only one that did not log in", { skip: skipped }, async () => {
+  const m = machine();
+  script(join(m.bin, "fakeslow"), `#!/bin/sh\necho "Visit https://example.com/activate"\nread forever\n`);
+  script(join(m.bin, "fakeok"), `#!/bin/sh\necho done\n`);
+  const agains: { from: string; login: string; chat: string | null | undefined; by: string }[] = [];
+  m.logins.onAgain((a) => agains.push({ from: a.from.id, login: a.login.id, chat: a.starter.chat, by: a.by.email }));
+  try {
+    const slow = await m.logins.start(["fakeslow"], { ...m.by, chat: "chat:c-1", chatTitle: "部署" });
+    await m.until(slow.id, (l) => l.step === "open", "open");
+    assert.equal(m.logins.deadline(slow.id), slow.startedAt + TIMEOUT_MS);
+    // Not while it is under way.
+    await assert.rejects(m.logins.again(slow.id, { email: "b@x.com", name: "李四" }), (e: unknown) => e instanceof Refused && e.status === 409);
+    await m.time.adjust(TIMEOUT_MS);
+    await m.until(slow.id, (l) => l.state === "failed" && l.timedOut === true, "timed out");
+    assert.equal(m.logins.deadline(slow.id), null);
+    const next = await m.logins.again(slow.id, { email: "b@x.com", name: "李四" });
+    assert.notEqual(next.id, slow.id);
+    assert.deepEqual([next.command, next.chat, next.chatTitle, next.from, next.endedAt], [["fakeslow"], "chat:c-1", "部署", slow.id, undefined]);
+    assert.equal(m.logins.get(slow.id)!.again, next.id, "its card follows the new one");
+    assert.deepEqual(agains, [{ from: slow.id, login: next.id, chat: "chat:c-1", by: "b@x.com" }]);
+    // Pressed again (another device, a press twice): the same one, nobody told again.
+    assert.equal((await m.logins.again(slow.id, { email: "b@x.com", name: "李四" })).id, next.id);
+    assert.equal(agains.length, 1);
+    // One that logged in is not started again.
+    const ok = await m.logins.start("fakeok", m.by);
+    await m.until(ok.id, (l) => l.state === "done", "done");
+    await assert.rejects(m.logins.again(ok.id, m.by.by), (e: unknown) => e instanceof Refused && e.status === 409);
+    m.logins.cancel(next.id);
+    await m.until(next.id, (l) => l.endedAt !== undefined, "cancelled");
+    await m.logins.written();
+    // A station started again: what was started again from what is kept, and one let go from memory started again
+    // from its record, for the same chat.
+    const later = new Logins({ data: join(m.home, "data"), env: () => m.env, clock: m.time.clock, lang: () => "zh" });
+    await later.ready();
+    assert.deepEqual([later.get(slow.id)!.again, later.get(next.id)!.from], [next.id, slow.id]);
+    await assert.rejects(later.again(next.id, m.by.by), (e: unknown) => e instanceof Refused && e.status === 409, "cancelled: not started again");
+    await later.close();
+  } finally {
+    await m.logins.close();
+  }
+});
+
 test("the logins done here are kept: command, who, when and how each ended, without its page, code or output; each named by its program, one kept before that too", { skip: skipped }, async () => {
   const m = machine();
   script(join(m.bin, "fakeok"), `#!/bin/sh\necho "Open https://example.com/device and enter WXYZ-1234"\necho done\n`);
@@ -901,7 +943,7 @@ test("the routes: a read-only member's list has no pages or codes; no route star
   const m = machine();
   script(join(m.bin, "fakecode"), `#!/bin/sh\necho "Open https://example.com/device and enter WXYZ-1234"\nread forever\n`);
   const all = routes(() => m.logins);
-  assert.deepEqual(all.map((r) => r.method), ["GET", "GET", "DELETE", "POST", "POST"], "list, one, cancel, a page's code, callback: starting one is an agent's");
+  assert.deepEqual(all.map((r) => r.method), ["GET", "GET", "DELETE", "POST", "POST", "POST"], "list, one, cancel, a page's code, again, callback: starting one is an agent's (again: one an agent started)");
   const [list, , cancel, answer] = all;
   const ask = (route: (typeof list), role: string, body: Json = {}, args: string[] = []) =>
     route!.handle({ method: route!.method, path: "/machine-logins", query: [], headers: {}, body: Buffer.from(JSON.stringify(body)), viewer: { sub: "s", email: "a@x.com", name: "张三", role, workspace: "w1", device: "d" }, lang: "zh" }, args);

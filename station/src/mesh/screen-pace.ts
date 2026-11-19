@@ -11,7 +11,8 @@
 // large picture of a still screen) lowers nothing. It goes up again a step at a time while nothing
 // is lowered, to the source's own. A view starts at START_RATE (its first frame, a whole picture, is its largest: on a
 // narrow link one at the source's own rate held the view up for a second) and goes up by START_UP each step until it
-// is first lowered.
+// is first lowered; a link known to carry more as the view opens (`startRate`: a direct way of a short round trip, a
+// near relay) starts higher, its first picture sharp at once.
 import { wall } from "../ops/fibers.ts";
 
 /// Frames sent and not acknowledged, at most: before the link's round trip is known, and however short it is.
@@ -36,12 +37,37 @@ export const MIN_RATE = 300_000;
 export const DOWN = 0.85;
 export const CUT = 0.5;
 export const HOLD_MS = 200;
-export const UP = 1.15;
+export const UP = 1.2;
 export const UP_FAST = 1.3;
 export const UP_FAST_AFTER_MS = 2000;
 export const UP_EVERY_MS = 500;
 export const UP_AFTER_MS = 1000;
 export const START_RATE = 1_500_000;
+/// Where the view's link is known as it opens (its connection's selected way, else its first direct one, else its
+/// first): a direct way within LAN_RTT_MS starts at LAN_RATE (a LAN, a near direct link), within NEAR_RTT_MS at
+/// NEAR_RATE, within FAR_RTT_MS (or not measured yet) at DIRECT_RATE; a relay within RELAY_RTT_MS at RELAY_RATE; else
+/// START_RATE. A link that carries less lowers it as before (the pace's `#queuing`), a few round trips on.
+export const LAN_RTT_MS = 12;
+export const LAN_RATE = 12_000_000;
+export const NEAR_RTT_MS = 40;
+export const NEAR_RATE = 6_000_000;
+export const FAR_RTT_MS = 100;
+export const DIRECT_RATE = 4_000_000;
+export const RELAY_RTT_MS = 35;
+export const RELAY_RATE = 4_000_000;
+export type StartPath = { selected?: boolean; relay?: string | null; ip?: string | null; rttMs?: number | null };
+const directPath = (p: StartPath) => !p.relay && typeof p.ip === "string" && p.ip !== "";
+export function startRate(paths?: readonly StartPath[]): number {
+  if (!paths || paths.length === 0) return START_RATE;
+  const p = paths.find((w) => w.selected === true) ?? paths.find(directPath) ?? paths[0]!;
+  const rtt = typeof p.rttMs === "number" && Number.isFinite(p.rttMs) && p.rttMs > 0 ? p.rttMs : null;
+  if (directPath(p)) {
+    if (rtt !== null && rtt <= LAN_RTT_MS) return LAN_RATE;
+    if (rtt !== null && rtt <= NEAR_RTT_MS) return NEAR_RATE;
+    return rtt === null || rtt <= FAR_RTT_MS ? DIRECT_RATE : START_RATE;
+  }
+  return rtt !== null && rtt <= RELAY_RTT_MS ? RELAY_RATE : START_RATE;
+}
 /// What went through is counted only once acknowledgements have come for this long.
 export const MEASURED_MS = 500;
 export const START_UP = 1.5;
@@ -288,35 +314,65 @@ export class Pacer {
 }
 
 /// A still screen sends nothing (a source makes a picture only when the screen changed), so what is shown is the last
-/// frame's picture, encoded at the rate asked then: a view's first at START_RATE, a whole screen in a few kilobytes,
+/// frame's picture, encoded at the rate asked then: a view's first at its start rate, a whole screen in a few kilobytes,
 /// stays a blur while nothing on it moves (on a Mac's desktop left alone, for minutes). Once no frame has gone for
 /// STILL_MS and the rate the pace asks has gone up past SHARPER times the one the last frame was encoded at, the same
 /// picture goes again as a key frame at it (the source's `keyframe`); its acknowledgement lets the rate go up again,
 /// and so on to the source's own: the picture gets as sharp as the link carries a few steps after the screen stopped,
-/// as a still image is refined. A screen that keeps changing never waits STILL_MS; a link that cannot carry it lowers
-/// the rate, and nothing more is sent.
-export const STILL_MS = 500;
+/// as a still image is refined. After a key frame (a picture whole, as each of those steps is) the next waits
+/// UP_EVERY_MS where that is longer: the pace goes up no more often, and a step's acknowledgement that came before it
+/// could go up again would leave the rate as it was, the picture not sent again, and nothing more come to go on from.
+/// A screen that keeps changing (a page scrolled on and on) never waits STILL_MS, and its
+/// pictures, each a change on the last key frame, stay as soft as that key frame: once MOVING_SHARPEN_MS went since
+/// the last key frame and the rate is MOVING_SHARPEN_UP times what it was encoded at, a key frame is asked at the rate
+/// now (`dueMoving`). A link that cannot carry it lowers the rate, and nothing more is sent.
+export const STILL_MS = 250;
 export const SHARPER = 1.1;
+export const MOVING_SHARPEN_MS = 1500;
+export const MOVING_SHARPEN_UP = 2.0;
 
-/// When a still screen's picture is sent again sharper (STILL_MS, SHARPER).
+/// When a still screen's picture is sent again sharper (STILL_MS, SHARPER), and a moving one's key frame asked again
+/// (MOVING_SHARPEN_MS, MOVING_SHARPEN_UP).
 export class Sharpener {
   #at = -Infinity;
   #rate: number | null = null;
+  /// Whether the last frame was a key frame.
+  #key = false;
+  /// The last key frame (or the first frame with a rate, standing for it): when, and at what rate.
+  #keyAt = -Infinity;
+  #keyRate: number | null = null;
 
-  /// A frame went at `now`, encoded at `rate` (null: a source with no rate of its own, a JPEG's).
-  sent(now: number, rate: number | null) {
+  /// A frame went at `now`, encoded at `rate` (null: a source with no rate of its own, a JPEG's); `key`: a key frame.
+  sent(now: number, rate: number | null, key = false) {
     this.#at = now;
     this.#rate = rate;
+    this.#key = key;
+    if (rate === null) {
+      this.#keyAt = -Infinity;
+      this.#keyRate = null;
+    } else if (key || this.#keyRate === null) {
+      this.#keyAt = now;
+      this.#keyRate = rate;
+    }
   }
 
-  /// How long until the screen has been still for STILL_MS (0: it has).
+  /// How long until the screen has been still for STILL_MS, or UP_EVERY_MS after a key frame (0: it has).
   left(now: number): number {
-    return Math.max(0, this.#at + STILL_MS - now);
+    return Math.max(0, this.#at + (this.#key ? Math.max(STILL_MS, UP_EVERY_MS) : STILL_MS) - now);
   }
 
   /// Whether the last frame's picture is to go again now, the pace asking `rate`.
   due(now: number, rate: number | null): boolean {
     return rate !== null && this.#rate !== null && this.left(now) === 0 && rate > this.#rate * SHARPER;
+  }
+
+  /// Whether a moving screen's key frame is to be asked now, the pace asking `rate`: taken as asked (none asked again
+  /// before MOVING_SHARPEN_MS more, however long the key frame takes to come).
+  dueMoving(now: number, rate: number | null): boolean {
+    if (rate === null || this.#keyRate === null || now - this.#keyAt < MOVING_SHARPEN_MS || rate < this.#keyRate * MOVING_SHARPEN_UP) return false;
+    this.#keyAt = now;
+    this.#keyRate = rate;
+    return true;
   }
 }
 
@@ -456,7 +512,7 @@ export const LOSS_EVERY_MS = 1000;
 export const LOSS_WINDOW_MS = 60_000;
 export const LOSS_MIN_PACKETS = 20;
 export const LOSS_MIN_LOST = 3;
-export type LinkPath = { id?: string; selected: boolean; relay?: string | null; ip?: string | null; txPackets: number; lostPackets: number };
+export type LinkPath = { id?: string; selected: boolean; relay?: string | null; ip?: string | null; rttMs?: number | null; txPackets: number; lostPackets: number };
 
 export class LinkLoss {
   readonly #now: () => number;

@@ -859,3 +859,151 @@ test "a record stays open on its own output when an earlier step is inserted" {
   assert_true(t.rect_of("配置存在") is None, msg="the preceding step stays closed")
   steps_reset()
 }
+
+///|
+test "tool step failure shows retry, copy works, and brief detail retries after close" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("history")
+  let tool_calls = Ref(0)
+  let detail_calls = Ref(0)
+  let src : @sfbase.Source = {
+    ..base,
+    call: fn(n, _params, reply) {
+      if n == "history.tool" {
+        tool_calls.val = tool_calls.val + 1
+        if tool_calls.val == 1 {
+          reply(Err({ "message": "parse timeout" }))
+        } else {
+          reply(Ok({
+            "call": [{ "kind": "code", "text": "echo hello_world", "lang": "sh" }],
+            "result": [{ "kind": "output", "text": "hello_world_out" }],
+          }))
+        }
+      } else if n == "history.detail" {
+        detail_calls.val = detail_calls.val + 1
+        if detail_calls.val == 1 {
+          reply(Err({ "message": "offline" }))
+        } else {
+          reply(Ok(Json::null()))
+        }
+      } else {
+        (base.call)(n, _params, reply)
+      }
+    },
+  }
+  let rows : Array[Json] = [
+    {
+      "kind": "step",
+      "content": {
+        "name": "Bash",
+        "said": "测试工具失败",
+        "call": "{\"command\":\"echo hello_world\"}",
+        "result": "hello_world_out",
+        "entries": [1, 2],
+      },
+    },
+    {
+      "kind": "step",
+      "content": {
+        "name": "Read",
+        "said": "测试摘要重开",
+        "brief": true,
+        "entries": [3, 4],
+      },
+    },
+  ]
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    group_rows_each_node(root, src, "ws/st1", "s1", fn() { "retry-grp" }, fn() { rows })
+  }, w=390.0, h=600.0, platform=2)
+  t.draw()
+  // 1. Non-brief step: first history.tool fails -> shows 重试 -> tap 重试 -> renders result + 复制 button
+  t.tap_text("测试工具失败")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(tool_calls.val, 1)
+  assert_true(t.query(Button, label="重试") is Some(_), msg="failed history.tool must show retry button instead of infinite spinner")
+  t.click(Button, label="重试")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(tool_calls.val, 2)
+  assert_true(t.rect_of("hello_world_out") is Some(_), msg="retried history.tool renders result")
+  let copy_btns = t.all(Button, label="复制")
+  assert_true(copy_btns.length() >= 1, msg="tool step offers quick copy")
+  let cr = copy_btns[0].rect
+  t.tap(cr.0 + cr.2 / 2.0, cr.1 + cr.3 / 2.0)
+  t.frame()
+  assert_true(t.query(Button, label="已复制") is Some(_), msg="quick copy button flips to 已复制")
+  // 2. Brief step: first history.detail fails -> closing clears error -> reopening retries
+  t.tap_text("测试摘要重开")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(detail_calls.val, 1)
+  assert_true(t.query(Button, label="重试") is Some(_), msg="failed history.detail shows retry")
+  t.tap_text("测试摘要重开")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("测试摘要重开")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(detail_calls.val, 2, msg="reopening a failed brief step retries history.detail")
+  steps_reset()
+}
+
+///|
+test "clip_lines_node shows bottom 查看完整内容 affordance when overflowing 14 lines" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let lines = Array::makei(24, fn(i) { "line \{i + 1}: overflow verification text for clip_lines_node" }).join("\n")
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    card_plain_or_clip_node(root, "长输出", lines, h_output, mono=true)
+  }, w=340.0, h=600.0, platform=0)
+  t.draw()
+  t.frame()
+  assert_true(t.rect_of("查看完整内容") is Some(_), msg="clipped 24-line block must show bottom 查看完整内容 strip")
+  steps_reset()
+}
+
+///|
+test "floating jump-to-bottom button restores auto-follow after entry jump" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("history")
+  let hist_items : Array[Json] = Array::makei(25, fn(i) {
+    {
+      "key": Json::string("item-\{i}"),
+      "entries": [Json::number((i * 2 + 1).to_double()), Json::number((i * 2 + 2).to_double())],
+      "body": {
+        "kind": "received",
+        "content": {
+          "note": "",
+          "tasks": [],
+          "messages": [{ "from": { "name": "林", "bound": false }, "text": Json::string("第 \{i} 轮消息内容用于填充足够高度以触发滚动与回底按钮") }],
+        },
+      },
+    }
+  })
+  let history : Json = { "items": Json::array(hist_items), "edge": "开始", "loaded": true, "more": false }
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(n, params) {
+      if n == "history" { { value: Some(history), error: None, version: 1 } } else { (base.topic_read)(n, params) }
+    },
+    topic_keyed: fn(_, _, _, _) { None },
+  }
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    let tips = @sf.TipLayer::new(fn() { Some(root) })
+    history_steps_node(root, src, "ws/st1", "s-jump", tips)
+  }, w=360.0, h=420.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let lkey = "history-steps/ws/st1/s-jump"
+  // Jump to the earliest entry: sets went[lkey] and shows floating jump-to-bottom button.
+  history_focus("ws/st1", "s-jump", 1)
+  t.run_for(@ui.move_most_ms + 300.0)
+  assert_true(steps_own.went.contains(lkey), msg="entry jump pauses auto-follow")
+  let jump_btn = t.query(Button, label=@sf.t("web-main.chat.toLatest"))
+  assert_true(jump_btn is Some(_), msg="floating jump-to-bottom button appears when away from foot")
+  let r = jump_btn.unwrap().rect
+  t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  t.run_for(@ui.move_most_ms + 400.0)
+  assert_true(!steps_own.went.contains(lkey), msg="jumping back to bottom resumes auto-follow")
+  steps_reset()
+}

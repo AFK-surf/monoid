@@ -187,7 +187,7 @@ async function playTs(script: Json[], data: Json): Promise<Json> {
         const since = typeof step.since === "string" ? step.since : step.since?.heard !== undefined ? lastId(heard.get(step.since.heard)?.text ?? "") : null;
         heard.set(step.name, h);
         const lang = (step.lang ?? "zh").trim();
-        void events.open(step.viewer, lang, step.host === true, step.live ?? [], step.logs ?? [], since, step.brief === true, step.logins ?? [], step.running === true, step.shared === true).then(
+        void events.open(step.viewer, lang, step.host === true, step.live ?? [], step.logs ?? [], since, step.brief === true, step.logins ?? [], step.running === true).then(
           (answer) => {
             h.answer = { headers: answer.headers };
             const body = answer.body as Json;
@@ -323,8 +323,8 @@ const WORLD = {
 
 test("a workspace's streams, frame for frame: shared rows, the sessions at work, what each viewer sees", { skip }, async () => {
   await same([
-    { do: "open", name: "a1", viewer: A, shared: true, running: true, host: true, logs: [["j1", 10], ["nope", 5]], logins: ["lg1"] },
-    { do: "open", name: "b1", viewer: B, shared: true, running: true, logs: [["j2", 3]], runtimes: "claude,codex,dsh,grok,cursor,devin,hermes,agy,pi" },
+    { do: "open", name: "a1", viewer: A, running: true, host: true, logs: [["j1", 10], ["nope", 5]], logins: ["lg1"] },
+    { do: "open", name: "b1", viewer: B, running: true, logs: [["j2", 3]], runtimes: "claude,codex,dsh,grok,cursor,devin,hermes,agy,pi" },
     { do: "open", name: "c1", viewer: C, runtimes: "claude, codex,BAD", live: [["s1", 0, null], ["s3", 4, 2]] },
     { do: "open", name: "a-en", viewer: A2, lang: "en", running: true },
     // What the sessions at work did while each was read as it is now, after it, in order.
@@ -392,8 +392,8 @@ test("a workspace's streams, frame for frame: shared rows, the sessions at work,
 
 test("a stream that comes back is told what it missed; a shared row moves and goes", { skip }, async () => {
   await same([
-    { do: "open", name: "a1", viewer: A, shared: true },
-    { do: "open", name: "b1", viewer: B, shared: true },
+    { do: "open", name: "a1", viewer: A },
+    { do: "open", name: "b1", viewer: B },
     { do: "open", name: "old", viewer: C },
     { do: "change", change: { type: "session", key: "s1" } },
     { do: "close", name: "a1" },
@@ -403,8 +403,8 @@ test("a stream that comes back is told what it missed; a shared row moves and go
     { do: "change", change: { type: "usage", from: 50 } },
     { do: "change", change: { type: "usage" } },
     { do: "advance", ms: 30000 },
-    { do: "open", name: "a2", viewer: A, shared: true, since: { heard: "a1" } },
-    { do: "open", name: "a3", viewer: A, shared: true, since: "5eed01.1" },
+    { do: "open", name: "a2", viewer: A, since: { heard: "a1" } },
+    { do: "open", name: "a3", viewer: A, since: "5eed01.1" },
     { do: "open", name: "a4", viewer: A, since: "another.3" },
     { do: "open", name: "a5", viewer: A, since: "5eed01.99999" },
     { do: "advance", ms: 31000 },
@@ -438,15 +438,15 @@ test("a stream that comes back is told what it missed; a shared row moves and go
 
 test("the shared list unread ends its streams and what was told; a summary read across a taking is read again", { skip }, async () => {
   await same([
-    { do: "open", name: "a1", viewer: A, shared: true },
+    { do: "open", name: "a1", viewer: A },
     { do: "open", name: "c1", viewer: C },
     { do: "world", set: { duringSummary: { s1: { type: "session", key: "s1", pending: 4 } } } },
     { do: "change", change: { type: "session", key: "s1" } },
     { do: "world", set: { sharedFails: true } },
     { do: "change", change: { type: "session", key: "s3" } },
-    { do: "open", name: "a2", viewer: A, shared: true, since: { heard: "a1" } },
+    { do: "open", name: "a2", viewer: A, since: { heard: "a1" } },
     { do: "world", set: { sharedFails: false, summaries: { s3: "fail" } } },
-    { do: "open", name: "a3", viewer: A, shared: true, since: { heard: "c1" } },
+    { do: "open", name: "a3", viewer: A, since: { heard: "c1" } },
     { do: "change", change: { type: "session", key: "s3" } },
     { do: "heldNow", now: {} },
     { do: "close", name: "c1" },
@@ -472,7 +472,7 @@ test("the sessions at work: a failed look, a viewer who sees none, a stream from
 
 test("a station process replaced: what it told goes on in the next, streams resumed, what came meanwhile after", { skip }, async () => {
   await same([
-    { do: "open", name: "a1", viewer: A2, shared: true },
+    { do: "open", name: "a1", viewer: A2 },
     { do: "open", name: "b1", viewer: B },
     { do: "change", change: { type: "session", key: "s1", pending: 1 } },
     { do: "change", change: { type: "processes" } },
@@ -481,7 +481,7 @@ test("a station process replaced: what it told goes on in the next, streams resu
     { do: "handover", pid: process.pid },
     { do: "change", change: { type: "session", key: "s2" } },
     { do: "restart", from: process.pid, run: "0ff1ce" },
-    { do: "open", name: "a2", viewer: A, shared: true, since: { heard: "a1" } },
+    { do: "open", name: "a2", viewer: A, since: { heard: "a1" } },
     { do: "change", change: { type: "thread", id: 1, entries: [{ n: 5, text: "meanwhile" }] } },
     { do: "change", change: { type: "session", key: "s1" } },
     { do: "gone" },
@@ -629,8 +629,8 @@ test("what GET /events asks for, of the viewer's workspace only; what seen.ts sa
       const events = { open: async (...args: Json[]) => { asked = args; return { status: 200, headers: {}, body: Buffer.alloc(0) }; } };
       const [route] = eventRoutes({ events, sessionExists: (k: string) => k in world.sessions, store } as never);
       await route!.handle({ method: "GET", path: "/events", query, headers: {}, body: Buffer.alloc(0), viewer: v, lang: "zh" } as never, []);
-      const [, , host, live, logs, since, brief, logins, running, shared] = asked;
-      assert.deepEqual(await mb({ op: "query", world, viewer: v, query }), { host, live, logs, since, brief, logins, running, shared }, `${v.email} ${JSON.stringify(query)}`);
+      const [, , host, live, logs, since, brief, logins, running] = asked;
+      assert.deepEqual(await mb({ op: "query", world, viewer: v, query }), { host, live, logs, since, brief, logins, running }, `${v.email} ${JSON.stringify(query)}`);
     }
     const paths = ["/sessions/s1", "//sessions//s2/x", "/sessions/a%20b", "/sessions/a+b", "/sessions/%C3%A9%2B", "/sessions/%C3", "/sessions/%E2%82", "/sessions/nope", "/threads/1", "/threads/+2", "/threads/-3", "/threads/2x", "/threads/5", "/threads/99999999999999999999", "/jobs/j1", "/jobs/j2", "/jobs/none", "/other/x", "/sessions/", "/sessions/s4", "sessions/s2"];
     assert.deepEqual(await mb({ op: "seen", world, viewer: v, paths }), { elsewhere: paths.map((p) => elsewhere(store, p, v)), went: paths.map((p) => went(store, p, v)) }, v.email);

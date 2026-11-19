@@ -227,14 +227,14 @@ fn p54_vault_machine(bus : LiveBus) -> @vault_service.Machine {
       }
     },
     write_file: async fn(p, b, mode) {
-      @drive.write_private_bytes(p, b)
+      host.write_atomic(p, b, mode~, sync=true, mkdir=true, sep=sep())
       if mode != 0o600 {
         ignore(host.shell("fs.chmod", { "path": Json::string(p), "mode": Json::number(mode.to_double()) })) catch {
           _ => ()
         }
       }
     },
-    read_file: async fn(p) { (try { Some(@drive.read_all(p)) } catch { _ => None }) },
+    read_file: async fn(p) { host.read_bytes(p) catch { _ => None } },
     mkdir: async fn(p, mode) { @drive.mkdir(p, true, mode~) },
     shell_for: async fn(_env) {
       if is_windows() {
@@ -842,7 +842,7 @@ async fn p54_roots(host : @host.Host) -> Array[String] {
     if code == Some(0) {
       for name in @drive.names(dir) catch { _ => [] } {
         if name.has_suffix(".crt") || name.has_suffix(".cer") {
-          let der = @drive.read_all(path([dir, name])) catch { _ => continue }
+          guard (host.read_bytes(path([dir, name])) catch { _ => None }) is Some(der) else { continue }
           out.push(p54_pem("CERTIFICATE", der).trim().to_owned())
         }
       }

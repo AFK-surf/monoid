@@ -42,3 +42,23 @@ test "small with a mouse: Enter sends what is typed (a keyboard at hand), as in 
   assert_eq(sent.length(), 1)
   assert_eq(text(Some(sent[0].params), "text"), "第一行")
 }
+
+///|
+test "small with a mouse: node composer right click opens edit menu and edits words" {
+  let calls : Array[Made] = []
+  let t = fake_core(calls, composed=true, platform=0)
+  assert_false(@sfdesk.is_wide(t.ctx()))
+  t.type_text("第一行")
+  t.frame()
+  let (fx, fy, _, fh) = t.ime_rect()
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("全选") is Some(_) && t.find("剪切") is Some(_), msg="narrow window composer edit menu opened")
+  t.tap_text("全选")
+  t.run_for(@ui.move_most_ms)
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("复制")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.clipboard(), "第一行")
+}

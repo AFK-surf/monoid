@@ -378,6 +378,7 @@ fn overview_harness(ask : J) -> J {
       },
       rooted: p => p.has_prefix("/"),
       clean: unix_clean,
+      built_at: num_prop(w.data, "builtAt"),
     }
     d
   }

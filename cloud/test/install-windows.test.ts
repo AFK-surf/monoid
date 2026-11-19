@@ -6,6 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { bundledWindowsInstallScript, windowsInstallScript } from "../src/install-windows.ts";
 
+/** PowerShell here, if any: Windows' own, or pwsh (STILLFAIL_PWSH names one elsewhere). */
+const powershell = [process.env.STILLFAIL_PWSH, "powershell", "pwsh"].find((p) => p && spawnSync(p, ["-NoProfile", "-Command", "exit 0"]).status === 0);
+
 test("the Windows installer has every placeholder filled, in both languages and channels", () => {
   for (const lang of ["zh", "en"] as const) {
     for (const channel of ["stable", "beta"] as const) {
@@ -80,6 +83,50 @@ test("the stillfail command the installer writes runs the release under a home w
   }
 });
 
+test("another product's command sets its own data directory only where none is set, named as its release is", () => {
+  const fn = windowsInstallScript("https://app.monoid.build").match(/^function WriteCmd\(.*?^}$/ms)![0];
+  // As bin/stillfail's ${STILLFAIL_DATA:-...}: one the caller set is kept.
+  assert.match(fn, /'@if not defined STILLFAIL_DATA set "STILLFAIL_DATA=' \+ \$dir \+ '"'/);
+  assert.doesNotMatch(fn, /'@set "STILLFAIL_DATA=/);
+  // The data directory through the variable it is under too, so a home with other than ASCII in its path does not
+  // send another product's command to the code page still.fail's never needs.
+  assert.match(fn, /\$namedData = if \(\$product -ne 'stillfail'\) \{ CmdPath \$data \}/);
+  assert.match(fn, /if \(\$named -and \$null -ne \$namedData\) \{ Set-Content -Path \$file -Encoding ASCII /);
+});
+
+test("another product's command the installer writes runs its release on its own data under a home no code page can say", { skip: !powershell && "no PowerShell" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "install-cmd-"));
+  try {
+    // (an emoji: in no OEM code page, so the file is ASCII or refused whatever the system's)
+    const home = join(dir, "张😀");
+    const release = join(home, ".monoid", "app", "bin");
+    mkdirSync(release, { recursive: true });
+    writeFileSync(join(release, "stillfail.cmd"), '@if "%STILLFAIL_DATA%"=="%USERPROFILE%\\.monoid" (echo own data %*) else (echo data %STILLFAIL_DATA% %*)\r\n');
+    const script = windowsInstallScript("https://app.monoid.build");
+    const fn = (name: string) => script.match(new RegExp(`^function ${name}\\(.*?^}$`, "ms"))![0];
+    const file = join(dir, "write.ps1");
+    // (the paths as Windows has them, joined by hand so that PowerShell elsewhere joins them the same)
+    writeFileSync(file, "﻿" + ["function Fail([string]$t) { throw $t }", "$product = 'monoid'", "$data = $env:USERPROFILE + '\\.monoid'", fn("CmdPath"), fn("WriteCmd"),
+      `WriteCmd (Join-Path $env:TEST_DIR 'monoid.cmd') ($env:USERPROFILE + '\\.monoid\\app\\bin\\stillfail.cmd')`].join("\n"));
+    const env: NodeJS.ProcessEnv = { ...process.env, USERPROFILE: home, TEST_DIR: dir };
+    delete env.STILLFAIL_DATA;
+    const wrote = spawnSync(powershell!, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file], { env, encoding: "utf8" });
+    assert.equal(wrote.status, 0, wrote.stdout + wrote.stderr);
+    const written = readFileSync(join(dir, "monoid.cmd"));
+    assert.ok(written.every((b) => b < 0x80), "ASCII");
+    assert.deepEqual(written.toString("ascii").trim().split(/\r?\n/), ["@setlocal", '@if not defined STILLFAIL_DATA set "STILLFAIL_DATA=%USERPROFILE%\\.monoid"', '@"%USERPROFILE%\\.monoid\\app\\bin\\stillfail.cmd" %*']);
+    // What uninstalling takes for its command (bin/stillfail.ps1).
+    assert.ok(written.toString("ascii").includes("%USERPROFILE%\\.monoid\\app"));
+    if (spawnSync("cmd", ["/d", "/c", "exit 0"]).status !== 0) return; // (run only where there is cmd)
+    const ran = spawnSync("cmd", ["/d", "/c", join(dir, "monoid.cmd"), "status"], { env, encoding: "utf8" });
+    assert.equal(ran.stdout.trim(), "own data status", ran.stderr);
+    const told = spawnSync("cmd", ["/d", "/c", join(dir, "monoid.cmd"), "status"], { env: { ...env, STILLFAIL_DATA: "C:\\elsewhere" }, encoding: "utf8" });
+    assert.equal(told.stdout.trim(), "data C:\\elsewhere status", told.stderr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the Windows installer is one PowerShell parses", { skip: spawnSync("powershell", ["-NoProfile", "-Command", "exit 0"]).status !== 0 && "no PowerShell" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "install-ps1-"));
   try {
@@ -97,9 +144,6 @@ test("the Windows installer is one PowerShell parses", { skip: spawnSync("powers
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
-/** PowerShell here, if any: Windows' own, or pwsh (STILLFAIL_PWSH names one elsewhere). */
-const powershell = [process.env.STILLFAIL_PWSH, "powershell", "pwsh"].find((p) => p && spawnSync(p, ["-NoProfile", "-Command", "exit 0"]).status === 0);
 
 test("the Windows installer reports the new process's handover reason, falling back to the launcher", { skip: !powershell && "no PowerShell" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "handoff-why-"));

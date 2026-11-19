@@ -763,7 +763,12 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
     // what apps/android's MbuiCompareTest pictures beside it)
     // chat-login-station: the same, where the station's own browser can open it too
     // login-link: a loopback login opened from its Slack link (/w/<ws>/s/<station>/login/<id>) in a standalone sheet
-    "machineLogins" if f.mode == "chat-login" || f.mode == "chat-login-station" || f.mode == "login-link" =>
+    // chat-login-again: its login out of time, offered again from its card (重新发起)
+    // chat-login-ask: the chat open, another chat's login card waiting for the viewer, told in a toast
+    "machineLogins" if f.mode == "chat-login" ||
+      f.mode == "chat-login-station" ||
+      f.mode == "login-link" ||
+      f.mode == "chat-login-again" =>
       Some({ "canLogin": true, "canRelay": true })
     "machineLogin" if f.mode == "login-link" =>
       Some({
@@ -778,6 +783,16 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
         "browserText": "在 Willow 的浏览器中打开",
         "statusText": "在浏览器里完成登录",
       })
+    "machineLogin" if f.mode == "chat-login-again" =>
+      Some({
+        "id": "login-1",
+        "title": "在 Willow 上登录 gh",
+        "state": "failed",
+        "active": false,
+        "canAgain": true,
+        "statusText": "超时了，没等到浏览器回来",
+        "endedText": "在 Willow 上登录 gh 超时了",
+      })
     "machineLogin" if f.mode == "chat-login" || f.mode == "chat-login-station" => {
       let l : Map[String, Json] = {
         "id": "login-1",
@@ -788,6 +803,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
         "domain": "github.com",
         "active": true,
         "statusText": "在浏览器里完成登录",
+        // (the fixture's now is 0: 12 and a half minutes left of its 15)
+        "expiresAt": 750000.0,
       }
       if f.mode == "chat-login-station" {
         l["browser"] = Json::boolean(true)

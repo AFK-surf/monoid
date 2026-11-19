@@ -92,8 +92,13 @@ runs:
         # cancelled as they uploaded what they had built (#5550's, #5572's, 5 min 4 s), the rest took 4:09 to 4:36.
         # (the mirror: the first the runner's list names, or the sources' own where they name one, arm64's; none found,
         # apt is asked as before)
-        mirror=$(awk 'NF { print $1; exit }' /etc/apt/apt-mirrors.txt 2>/dev/null || true)
-        [ -n "$mirror" ] || mirror=$(sed -n 's/^URIs: *\(https\{0,1\}:[^ ]*\).*/\1/p' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null | head -1 || true)
+        first_mirror() {
+          local m
+          m=$(awk 'NF { print $1; exit }' /etc/apt/apt-mirrors.txt 2>/dev/null || true)
+          [ -n "$m" ] || m=$(sed -n 's/^URIs: *\(https\{0,1\}:[^ ]*\).*/\1/p' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null | head -1 || true)
+          echo "$m"
+        }
+        mirror=$(first_mirror)
         answers() {
           [ -n "$mirror" ] || return 0
           curl -fsS -m 5 -o /dev/null "${mirror%/}/dists/$(. /etc/os-release && echo "$VERSION_CODENAME")/InRelease" && echo "apt: $mirror answers" ||
@@ -101,32 +106,73 @@ runs:
         }
         # (each connection given 15 s and two tries, beside update's and install's own limits)
         apt_opts=(-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=2)
-        # A mirror that did not answer, with no .debs kept to install instead, is put out of the runner's list and
-        # Ubuntu's own archive put first: apt went on asking it, 8 of 125 .debs in install's 120 s (side 44457653376's
-        # x11, us-east-2.ec2.archive.ubuntu.com, 2026-11-19).
+        # A mirror that did not answer, or did not give the .debs in time, is put out of the runner's list, Ubuntu's own
+        # archive and then the runner's Azure one first, each mirror left out once: apt went on asking it, 8 of 125 .debs
+        # in install's 120 s (side 44457653376's x11, us-east-2.ec2.archive.ubuntu.com, 2026-11-19). Where the runner
+        # has no list (arm64's ports.ubuntu.com, named in the sources alone) nothing is rewritten.
+        dropped=" "
+        drop_mirror() {
+          local bad="$1" m rest tab=$'\t'
+          [ -f /etc/apt/apt-mirrors.txt ] || return 1
+          dropped="$dropped${bad%/} "
+          {
+            for m in 'http://archive.ubuntu.com/ubuntu/' 'http://azure.archive.ubuntu.com/ubuntu/'; do
+              case "$dropped" in *" ${m%/} "*) ;; *) echo "$m" ;; esac
+            done
+            while read -r m rest; do
+              [ -n "$m" ] || continue
+              case "$dropped" in *" ${m%/} "*) ;; *) printf '%s\n' "$m${rest:+$tab$rest}" ;; esac
+            done < /etc/apt/apt-mirrors.txt
+          } | awk '!seen[$1]++' > "$RUNNER_TEMP/apt-mirrors.txt"
+          [ -s "$RUNNER_TEMP/apt-mirrors.txt" ] || return 1
+          sudo cp "$RUNNER_TEMP/apt-mirrors.txt" /etc/apt/apt-mirrors.txt
+          mirror=$(first_mirror)
+          echo "apt: $bad left out of /etc/apt/apt-mirrors.txt; trying $mirror next"
+        }
+        # Only Ubuntu's own lists where the image names them apart (the packages are all Ubuntu's): the third parties'
+        # lists the image adds are most of update's time, and asking them after Ubuntu's failed waited a second limit.
+        update() {
+          local secs="${1:-60}" u=/etc/apt/sources.list.d/ubuntu.sources
+          if [ -f "$u" ]; then
+            sudo timeout -k 5 "$secs" apt-get "${apt_opts[@]}" update -q -o APT::Update::Error-Mode=any \
+              -o Dir::Etc::sourcelist="$u" -o Dir::Etc::sourceparts=-
+          else
+            sudo timeout -k 5 "$secs" apt-get "${apt_opts[@]}" update -q -o APT::Update::Error-Mode=any
+          fi
+        }
+        # The .debs are fetched apart from installing them, so that a mirror that answers its release file at once and
+        # then gives the .debs at 93 kB/s (side 44487092966's x11, us-east-2.ec2.archive.ubuntu.com: 9 of 125 .debs in
+        # install's 120 s, then dpkg on those nine) is left for the next within the time, what came of it kept in $d.
+        # shellcheck disable=SC2086 # the packages are words, split on purpose
+        download_debs() {
+          local secs="$1"
+          sudo timeout -k 5 "$secs" apt-get "${apt_opts[@]}" install --download-only -f -y -q --no-install-recommends \
+            -o Dir::Cache::Archives="$d" $want
+        }
+        have_debs=0
+        ls "$d"/*.deb > /dev/null 2>&1 && have_debs=1
         mirror_ok=0
         answers && mirror_ok=1
-        if [ "$mirror_ok" != 1 ] && ! ls "$d"/*.deb > /dev/null 2>&1 && [ -f /etc/apt/apt-mirrors.txt ]; then
-          {
-            printf '%s\n' 'http://archive.ubuntu.com/ubuntu/' 'http://security.ubuntu.com/ubuntu/'
-            if [ -z "$mirror" ]; then cat /etc/apt/apt-mirrors.txt; else grep -vF "$mirror" /etc/apt/apt-mirrors.txt || true; fi
-          } | awk '!seen[$0]++' > "$RUNNER_TEMP/apt-mirrors.txt"
-          sudo cp "$RUNNER_TEMP/apt-mirrors.txt" /etc/apt/apt-mirrors.txt
-          echo "apt: $mirror left out of /etc/apt/apt-mirrors.txt, Ubuntu's own archive first"
-        fi
-        # Only Ubuntu's own lists where the image names them apart (the packages are all Ubuntu's): the third parties'
-        # lists the image adds are most of update's time. Where that fails, every list as before.
-        update() {
-          u=/etc/apt/sources.list.d/ubuntu.sources
-          if [ -f "$u" ] && sudo timeout 60 apt-get "${apt_opts[@]}" update -q -o APT::Update::Error-Mode=any \
-            -o Dir::Etc::sourcelist="$u" -o Dir::Etc::sourceparts=-; then
-            return 0
+        if [ "$mirror_ok" != 1 ] && [ "$have_debs" != 1 ]; then drop_mirror "$mirror" || true; fi
+        # Three mirrors at most, 45 s and then 55 s each for the .debs (the next asked for its release file first);
+        # with no list to rewrite, the one mirror its minute and two as before.
+        fetch() {
+          local attempt dl_secs
+          if [ ! -f /etc/apt/apt-mirrors.txt ]; then
+            update 60 && download_debs 120
+            return
           fi
-          sudo timeout 60 apt-get "${apt_opts[@]}" update -q -o APT::Update::Error-Mode=any
+          for attempt in 0 1 2; do
+            dl_secs=55
+            [ "$attempt" != 0 ] || dl_secs=45
+            if { [ "$attempt" = 0 ] || answers; } && update 30 && download_debs "$dl_secs"; then return 0; fi
+            if [ "$attempt" -lt 2 ]; then drop_mirror "$mirror" || return 1; fi
+          done
+          return 1
         }
         # shellcheck disable=SC2086 # the packages are words, split on purpose
-        if { [ "$mirror_ok" = 1 ] || ! ls "$d"/*.deb > /dev/null 2>&1; } && update &&
-          sudo timeout 120 apt-get "${apt_opts[@]}" install -f -y -q --no-install-recommends -o Dir::Cache::Archives="$d" $want; then
+        if { [ "$mirror_ok" = 1 ] || [ "$have_debs" != 1 ]; } && fetch &&
+          sudo apt-get install --no-download -f -y -q --no-install-recommends -o Dir::Cache::Archives="$d" $want; then
           sudo apt-get autoclean -q -o Dir::Cache::Archives="$d"
           # Only what is installed now, at that version, is kept: a .deb of a cache from before that this run did not
           # install (an upgrade of the image's own packages) would be unpacked by every run that installs the cache.

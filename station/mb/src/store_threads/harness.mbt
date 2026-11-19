@@ -156,7 +156,7 @@ fn Harness::call(self : Harness, op : String, args : Array[@jsjson.JValue]) -> J
     "listThreads" => s.list_threads(a(0), a(1), a(2), a(3))
     "recentConnectPeople" => s.recent_connect_people(a(0), a(1))
     "recentChatList" => s.recent_chat_list(a(0), a(1), a(2))
-    "searchChatList" => s.search_chat_list(a(0), a(1), a(2), a(3))
+    "searchChatList" => s.search_chat_list(a(0), a(1), a(2), a(3), filter=a(4))
     "firstText" => s.first_text(a(0))
     "lastMessage" => s.last_message(a(0))
     "lastMessageAtForArchive" => s.last_message_at_for_archive(a(0))

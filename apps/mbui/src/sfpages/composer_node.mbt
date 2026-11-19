@@ -996,7 +996,8 @@ fn composer_box_node(
       // (a press on its words' row beside its field is its field's, the cursor put in it; one on what waits to go over
       // it is that one's, as the old composer's cards took theirs, never the field's. Taken by what lies under the row,
       // not the row itself: what is drawn small on it (send) reached from round it as far as its press's room holds,
-      // over the row's own, as the old composer's (reach.mbt's `cut` is only by what holds it))
+      // over the row's own, as the old composer's (reach.mbt's `cut` is only by what holds it). Secondary click on that
+      // backdrop opens the field's editing menu via field_menu_on, which skips touch long-press.)
       // (with what stands between ＋ and send (a station choice, as tall as a row's press room, past the row's foot):
       // the box's own, under all it holds, as nothing it holds overlaps it; none while it is locked)
       let focus = fn() {
@@ -1007,10 +1008,16 @@ fn composer_box_node(
       if spec.tools is None {
         line.box(fn(under) {
           under.over(Is(true)).on_press(focus) |> ignore
+          @ui.field_menu_on(under, w.field, enabled=fn() { !locked() })
         })
         |> ignore
       } else {
         box.on_press(focus) |> ignore
+        line.box(fn(under) {
+          under.over(Is(true)) |> ignore
+          @ui.field_menu_on(under, w.field, enabled=fn() { !locked() })
+        })
+        |> ignore
       }
       line
       .row(Is(true))
@@ -1107,7 +1114,7 @@ fn composer_box_node(
               @view.transition(opened)
             }
           }
-        }, regrow, placeholder?=own.map(fn(m) { m.placeholder }), locked~)
+        }, regrow, placeholder?=own.map(fn(m) { m.placeholder }), locked~, no_files~)
       })
       |> ignore
       // (a new chat's choices in its row, after ＋, as far in as ＋ leaves them (＋ concentric with the box's foot corner,
@@ -1406,6 +1413,7 @@ fn composer_field_node(
   regrow : (Double) -> Unit,
   placeholder? : () -> String,
   locked? : () -> Bool = fn() { false },
+  no_files? : () -> Bool = fn() { false },
 ) -> Unit {
   let prefs = fn() { src.topic("prefs", {}).get().value }
   let by_command = fn() { @settings.sends_by_command(prefs()) }
@@ -1433,7 +1441,7 @@ fn composer_field_node(
     }
   }
   let wl = @signals.untracked(fn() { @ui.style_words(@sf.theme().t.words) })
-  let max_lines = @signals.untracked(fn() { node_text_lines(scale(), words.window().1) })
+  let live_max_lines = fn() { node_text_lines(scale(), words.window().1) }
   // (whether the cursor is in it, as it was last told: what it had as it is let go, the focus let go with it then
   // unsaid)
   let had_focus = Ref(@signals.untracked(fn() { w.field.focused() }))
@@ -1444,11 +1452,11 @@ fn composer_field_node(
     font_size=wl.size,
     line=wl.line,
     trim=true,
-    max_lines~,
+    max_lines_by=live_max_lines,
     words=true,
-    // (the core's bound, asked as it is made, followed as it answers: refs.mbt's paste_threshold_now)
-    paste_limit_by=fn() { @sfbase.paste_threshold_now(src) },
-    look=@sfbase.refs_look(w.key, @signals.untracked(fn() { @sf.theme().p.accent })),
+    // (the core's bound, asked as it is made, followed as it answers; 0 while files are refused or starting: composer.mbt)
+    paste_limit_by=fn() { if no_files() || w.starting.get() { 0 } else { @sfbase.paste_threshold_now(src) } },
+    look=@sfbase.refs_look_by(w.key, fn() { @sf.theme().p.accent }),
     colors_by=fn() {
       let p = @sf.theme().p
       // (its caret away while what was sent from it leaves it: composer_box_node's `away`)
@@ -1458,6 +1466,7 @@ fn composer_field_node(
     edited=fn(now) {
       // (a line more or fewer: its height its way; the same lines, nothing said, so nothing coming in its column in
       // the same change is set off with it)
+      let max_lines = @signals.untracked(live_max_lines)
       match field_comes_other(w.field, wl, max_lines, @signals.untracked(fn() { w.text.get() }), now) {
         Some(by) => regrow(by)
         None => ()
@@ -1481,8 +1490,17 @@ fn composer_field_node(
       @sfbase.writing_paste(src, w, r.station, now)
     },
     files=fn(files) {
-      for f in files {
-        writing_add(src, w, r.station, f.0, f.1)
+      if @signals.untracked(no_files) {
+        let why = if @signals.untracked(locked) {
+          @sf.t("web-main.composer.filesLocked")
+        } else {
+          @sf.t("web-main.composer.filesOffline")
+        }
+        toast_later(why)
+      } else {
+        for f in files {
+          writing_add(src, w, r.station, f.0, f.1)
+        }
       }
     },
   )

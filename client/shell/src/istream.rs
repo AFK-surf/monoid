@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net::{SocketRead, SocketWrite, open_unix, tell_unix};
+use crate::screen_dgram::{KEYFRAME_FRAME, MediaIn, MediaOut, MediaRx};
 use crate::screen_tap::ScreenTap;
 use crate::{Answer, Done, Handle, Inner, err, id_of, str_of, tally};
 
@@ -25,6 +26,21 @@ pub(crate) struct Halves {
     /// A remote screen's view, tapped (`istream.tap`): its frames read here, the picture's and the sound's said to the
     /// app as they come, the rest left for the core to read.
     pub(crate) tap: Mutex<Option<ScreenTap>>,
+    /// A remote screen's view this end sends: its video and audio frames go as datagrams (`istream.mediaDatagrams`).
+    pub(crate) media_out: tokio::sync::Mutex<Option<MediaOut>>,
+    /// A remote screen's view this end receives: its frames that come as datagrams, put back among the stream's
+    /// (`istream.receiveMediaDatagrams`).
+    pub(crate) media_in: tokio::sync::Mutex<Option<MediaRx>>,
+}
+
+impl Halves {
+    /// `bytes` written on its sending half: as they are, or through its view's datagrams where it has them.
+    pub(crate) async fn write_out(&self, send: &mut SendStream, bytes: &[u8]) -> Result<(), String> {
+        match self.media_out.lock().await.as_mut() {
+            Some(media) => media.write(send, bytes).await,
+            None => send.write_all(bytes).await.map_err(err),
+        }
+    }
 }
 
 /// A stream carried whole into a socket (`istream.pipe`): each piece of it as a frame, its length (4 bytes, big-endian)
@@ -188,7 +204,7 @@ impl Inner {
                 let mut send = halves.send.lock().await;
                 let Some(send) = send.as_mut() else { break false };
                 let sent = tokio::select! {
-                    r = send.write_all(&buf) => r.is_ok(),
+                    r = halves.write_out(send, &buf) => r.is_ok(),
                     _ = reset.changed() => false,
                 };
                 if !sent {
@@ -216,6 +232,96 @@ impl Inner {
         }
     }
 
+    /// `istream.read` of a stream whose view's frames come as datagrams too: what the stream gives, with the frames made
+    /// whole put in between two of its frames (or, tapped, said or kept by its tap as the stream's are), the station
+    /// asked for a key frame where one could not be had.
+    async fn read_with_datagrams(&self, id: u64, halves: &Arc<Halves>, media: &mut MediaRx, reset: &mut tokio::sync::watch::Receiver<bool>) -> Done {
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut out = Vec::new();
+        loop {
+            {
+                let mut tap = halves.tap.lock().unwrap();
+                if let Some(tap) = tap.as_mut() {
+                    if !out.is_empty() {
+                        // (what was read before it was tapped)
+                        tap.take(&std::mem::take(&mut out), self);
+                    }
+                    while let Some((kind, body)) = media.media.ready.pop_front() {
+                        tap.whole(kind, &body, self);
+                    }
+                    if !tap.out.is_empty() {
+                        return Ok(Answer::bytes(json!({}), std::mem::take(&mut tap.out)));
+                    }
+                } else {
+                    if media.media.at_boundary() {
+                        media.media.drain_into(&mut out);
+                    }
+                    if !out.is_empty() {
+                        return Ok(Answer::bytes(json!({}), out));
+                    }
+                }
+            }
+            if media.media.take_keyframe(tokio::time::Instant::now()) {
+                let halves = halves.clone();
+                tokio::spawn(async move {
+                    if let Some(send) = halves.send.lock().await.as_mut() {
+                        let _ = send.write_all(&KEYFRAME_FRAME).await;
+                    }
+                });
+                tally("dgram.keyframe");
+            }
+            let mut recv = halves.recv.lock().await;
+            let Some(recv) = recv.as_mut() else { return Ok(Answer::json(json!({ "end": true }))) };
+            let deadline = media.media.deadline();
+            tokio::select! {
+                read = recv.read(&mut buf) => match read.map_err(err)? {
+                    Some(n) => {
+                        let chunk = &buf[..n];
+                        let boundary = media.media.stream(chunk);
+                        let mut tap = halves.tap.lock().unwrap();
+                        match (tap.as_mut(), boundary) {
+                            (Some(tap), _) => tap.take(chunk, self),
+                            (None, Some(b)) => {
+                                out.extend_from_slice(&chunk[..b]);
+                                media.media.drain_into(&mut out);
+                                out.extend_from_slice(&chunk[b..]);
+                            }
+                            (None, None) => out.extend_from_slice(chunk),
+                        }
+                    }
+                    None => {
+                        // what is left (a frame cut short) the core's, which says so
+                        let left = {
+                            let mut tap = halves.tap.lock().unwrap();
+                            match tap.as_mut() {
+                                Some(tap) => {
+                                    let mut left = std::mem::take(&mut tap.out);
+                                    left.append(&mut tap.pending);
+                                    left
+                                }
+                                None => std::mem::take(&mut out),
+                            }
+                        };
+                        if !left.is_empty() {
+                            return Ok(Answer::bytes(json!({}), left));
+                        }
+                        halves.ended.store(true, Ordering::Relaxed);
+                        self.istream_done(id, halves);
+                        return Ok(Answer::json(json!({ "end": true })));
+                    }
+                },
+                d = media.next() => media.take_waiting(d, tokio::time::Instant::now()),
+                _ = crate::screen_dgram::until(deadline) => media.media.tick(tokio::time::Instant::now()),
+                _ = reset.changed() => {
+                    if !out.is_empty() {
+                        return Ok(Answer::bytes(json!({}), out));
+                    }
+                    return Ok(Answer::json(json!({ "end": true })));
+                }
+            }
+        }
+    }
+
     pub(crate) async fn run_istream(self: &Arc<Self>, op: &str, a: &Value, bytes: Option<Vec<u8>>) -> Done {
         match op {
             "istream.tap" => {
@@ -226,11 +332,43 @@ impl Inner {
                 if self.say.lock().unwrap().is_none() {
                     return Ok(Answer::json(json!({ "tapped": false })));
                 }
-                let mut tap = ScreenTap::new(call);
+                // `cursor`: the page takes the pointer alone (ScreenTap `cursor_updates`), said to it from here
+                let cursor = a.get("cursor").and_then(Value::as_bool) == Some(true);
+                let mut tap = ScreenTap::new(call, cursor);
                 tap.take(&bytes.unwrap_or_default(), &**self);
                 *halves.tap.lock().unwrap() = Some(tap);
                 tally("tap.views");
-                Ok(Answer::json(json!({ "tapped": true })))
+                Ok(Answer::json(json!({ "tapped": true, "cursor": cursor })))
+            }
+            // A remote screen's view this end sends (a station's): its video and audio frames sent from now on as
+            // datagrams on its connection under `token` (screen_dgram.rs). False where the connection's datagrams will not
+            // do (none, too small): its frames go on the stream as before.
+            "istream.mediaDatagrams" => {
+                let Handle::IStream(halves) = self.handle(id_of(a)?)? else { return Err("not a stream".into()) };
+                let token = a.get("token").and_then(Value::as_u64).filter(|t| *t > 0 && *t <= u32::MAX as u64).ok_or("token: a u32, not 0")? as u32;
+                let Handle::Conn(conn) = self.handle(halves.conn)? else { return Ok(Answer::json(json!(false))) };
+                let Some(media) = MediaOut::new(conn, token) else { return Ok(Answer::json(json!(false))) };
+                *halves.media_out.lock().await = Some(media);
+                tally("dgram.views.sent");
+                Ok(Answer::json(json!(true)))
+            }
+            // A remote screen's view this end asks for (a device's), before its head goes: what comes as datagrams under
+            // `token` on its connection taken from now on, made whole and put among what `istream.read` gives (or what
+            // its tap says) as if it came on the stream. False where another view on the connection has that token.
+            "istream.receiveMediaDatagrams" => {
+                let Handle::IStream(halves) = self.handle(id_of(a)?)? else { return Err("not a stream".into()) };
+                let token = a.get("token").and_then(Value::as_u64).filter(|t| *t > 0 && *t <= u32::MAX as u64).ok_or("token: a u32, not 0")? as u32;
+                let Handle::Conn(conn) = self.handle(halves.conn)? else { return Ok(Answer::json(json!(false))) };
+                let slot = {
+                    let mut demuxes = self.demuxes.lock().unwrap();
+                    // (those of connections no view takes datagrams of any more let go)
+                    demuxes.retain(|_, slot| slot.lock().unwrap().strong_count() > 0);
+                    demuxes.entry(halves.conn).or_default().clone()
+                };
+                let Some((route, rx)) = crate::screen_dgram::route(&slot, &conn, token) else { return Ok(Answer::json(json!(false))) };
+                *halves.media_in.lock().await = Some(MediaRx { media: MediaIn::new(token, true), rx, rx_done: false, _route: route });
+                tally("dgram.views.received");
+                Ok(Answer::json(json!(true)))
             }
             "istream.read" => {
                 let id = id_of(a)?;
@@ -238,6 +376,13 @@ impl Inner {
                 let mut reset = halves.reset.subscribe();
                 if *reset.borrow() {
                     return Ok(Answer::json(json!({ "end": true })));
+                }
+                // its frames coming as datagrams too
+                {
+                    let mut media = halves.media_in.lock().await;
+                    if let Some(media) = media.as_mut() {
+                        return self.read_with_datagrams(id, &halves, media, &mut reset).await;
+                    }
                 }
                 // tapped: read on here, saying what is the app's, until something is the core's (or the end)
                 if halves.tap.lock().unwrap().is_some() {
@@ -306,7 +451,7 @@ impl Inner {
             "istream.write" => {
                 let Handle::IStream(halves) = self.handle(id_of(a)?)? else { return Err("not a stream".into()) };
                 let mut send = halves.send.lock().await;
-                send.as_mut().ok_or("no sending half")?.write_all(&bytes.unwrap_or_default()).await.map_err(err)?;
+                halves.write_out(send.as_mut().ok_or("no sending half")?, &bytes.unwrap_or_default()).await?;
                 Ok(Answer::json(json!({})))
             }
             "istream.finish" => {
@@ -414,6 +559,8 @@ impl Inner {
                         recv: tokio::sync::Mutex::new(Some(recv)),
                         reset: tokio::sync::watch::channel(false).0,
                         tap: Mutex::default(),
+                        media_out: Default::default(),
+                        media_in: Default::default(),
                     });
                     let id = self.keep(Handle::IStream(halves.clone()));
                     let mut head = on.to_be_bytes().to_vec();

@@ -1,71 +1,23 @@
 // What the Feishu code asks of the machine, on a station's program: the shell's (`@host.Host::shell`, client/shell's
-// `run`). HTTP by `fetch` (its deadline the program's, as AbortSignal.timeout was), a file by `fs.bytes`, `fs.put`,
-// `fs.mkdir` and `fs.rename`, the machine's time by `@host.now`, a sleep on the program's runtime.
-
-///|
-fn shell_hex(j : Json) -> Bytes? {
-  let hex = match j {
-    String(h) => h
-    Object(m) =>
-      match m.get("value") {
-        Some(String(h)) => h
-        _ => return None
-      }
-    _ => return None
-  }
-  let n = hex.length() / 2
-  let out = FixedArray::make(n, b'\x00')
-  for i in 0..<n {
-    let hi = hex_digit(hex.unsafe_charcode_at(2 * i)).unwrap_or(0)
-    let lo = hex_digit(hex.unsafe_charcode_at(2 * i + 1)).unwrap_or(0)
-    out[i] = (hi * 16 + lo).to_byte()
-  }
-  Some(Bytes::from_array(out))
-}
+// `run`). HTTP by `@host.Host::fetch` (its deadline the program's, as AbortSignal.timeout was), a file by
+// `@host.Host::read_bytes`, `fs.put`, `fs.mkdir` and `fs.rename`, the machine's time by `@host.now`, a sleep on the program's runtime.
 
 ///|
 /// HTTP and time on the shell; `stand_in`: $STILLFAIL_FEISHU_API, where a test gives one.
 pub fn host_net(host : @host.Host, stand_in? : String? = None) -> Net {
   {
     fetch: async fn(req) {
-      let args : Json = {
-        "url": Json::string(req.url),
-        "method": Json::string(req.verb),
-        "headers": Json::array(
-          req.headers.map(h => Json::array([Json::string(h.0), Json::string(h.1)])),
-        ),
+      let r = host.fetch(
+        req.url,
+        method_=req.verb,
+        headers=req.headers,
+        body?=req.body,
+        timeout_ms=req.timeout_ms,
+      ) catch {
+        @host.FetchTimeout => raise FeishuError(@host.fetch_timed_out)
+        e => raise e
       }
-      let call = async fn() {
-        let (answer, body) = match req.body {
-          Some(b) => host.shell("fetch", args, bytes=b)
-          None => host.shell("fetch", args)
-        }
-        let status = match answer {
-          Object(m) =>
-            match m.get("status") {
-              Some(Number(n, ..)) => n.to_int()
-              _ => 0
-            }
-          _ => 0
-        }
-        let headers = match answer {
-          Object(m) =>
-            match m.get("headers") {
-              Some(Array(pairs)) =>
-                pairs.filter_map(p => match p {
-                  Array([String(k), String(v)]) => Some((@jscase.lower(k), v))
-                  _ => None
-                })
-              _ => []
-            }
-          _ => []
-        }
-        { status, headers, body: body.unwrap_or(b"") }
-      }
-      match @effect.timeout(req.timeout_ms, call) {
-        Some(r) => r
-        None => raise FeishuError("The operation was aborted due to timeout")
-      }
+      { status: r.status, headers: r.headers.map(h => (@jscase.lower(h.0), h.1)), body: r.body }
     },
     now: () => @host.epoch_ms(),
     sleep: async fn(ms) { @effect.sleep(ms) },
@@ -84,9 +36,7 @@ pub fn host_disk(host : @host.Host, sep? : String = "/") -> Disk {
     json
   }
   {
-    read: async fn(path) {
-      shell_hex(fs("fs.bytes", { "path": Json::string(path) }, None))
-    },
+    read: async fn(path) { host.read_bytes(path) },
     write_private: async fn(path, bytes) { host.write_private(path, bytes, sep~) },
     mkdir: async fn(path) {
       ignore(fs("fs.mkdir", { "path": Json::string(path) }, None))

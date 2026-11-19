@@ -50,7 +50,10 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         }
         ignore(self.deps(a, "cleanArchive", [jstr(a.key)]))
       })
-    "kick" => self.enqueue(a, async fn() { self.pump(a) })
+    "kick" => {
+      let before = a.start_failures
+      self.enqueue(a, async fn() { self.pump(a, before_failures=before) })
+    }
     "notify" => {
       // (not told where it is archived: Node's to see, as it asks)
       a.notices.push(str_of(Some(arg(0))).unwrap_or(""))
@@ -609,6 +612,7 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
       return self.recover(a)
     }
   }
+  let before = a.start_failures
   self.enqueue(a, async fn() {
     if a.waiting is Some(_) && a.waiting_until <= self.now {
       self.wait_ms(a, a.waiting_seconds, 0.0)
@@ -616,7 +620,7 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
     if a.refill is Some(_) && a.refill_at <= self.now {
       self.await_refill(a, self.now)
     }
-    self.pump(a)
+    self.pump(a, before_failures=before)
     if a.notices.length() > 0 {
       self.give_notices(a)
     }
@@ -1018,7 +1022,17 @@ fn Actors::interrupted(self : Actors, a : Actor) -> Bool {
 }
 
 ///|
-async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
+/// What `pending` hands over, as one key: the same messages waiting again say the same.
+fn handed_ids(pending : Array[Json]) -> String {
+  pending.map(m => m.value("handed").unwrap_or(Json::null()).stringify()).join(",")
+}
+
+///|
+/// `before_failures`: how many turns had failed to start as it was asked (a kick, a release queued behind a start
+/// that then failed); -1, now. Asked before a failure, with the same messages still waiting and none since, it starts
+/// no turn on them again: the hub's kicks at a start came three at once, each waiting 120 s on a runtime that could not
+/// start (2026-11-19). What comes after the failure, a message or a wake of its own, starts one.
+async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> Unit raise {
   // (stopped by a move and spoken to: said once in this stop what it waits for and what to do; what was said is kept:
   // actor.ts `pump`, SessionDeps `stoppedNotice`)
   let held = self.held(a)
@@ -1049,6 +1063,14 @@ async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
   }
   let was = a.agent
   let busy = self.busy_of(a, was)
+  let hkey = handed_ids(d.pending)
+  if !busy &&
+    before_failures >= 0 &&
+    before_failures < a.start_failures &&
+    hkey != "" &&
+    hkey == a.failed_handed {
+    return
+  }
   // (let go of meanwhile: its turn's end pumps again)
   guard still(a, was) else { return }
   if busy && was is Some(agent) {
@@ -1080,7 +1102,14 @@ async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
     Some(i) => ({ "person": d.pending[i].value("person").unwrap_or(Json::null()), "thread": d.pending[i].value("thread").unwrap_or(Json::null()), "profile": Json::null() } : Json)
     None => turn_for_nobody()
   }
-  self.start_turn(a, "input", d.text, by~)
+  self.start_turn(a, "input", d.text, by~) catch {
+    e => {
+      a.start_failures += 1
+      a.failed_handed = hkey
+      raise e
+    }
+  }
+  a.failed_handed = ""
   self.delivered(a, d)
 }
 

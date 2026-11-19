@@ -78,7 +78,7 @@ else
   echo '::warning::no POSTHOG_JSON in the ios-testflight environment: this build sends no crash reports'
 fi
 export APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=$IOS_BUNDLE_ID MBUI_IOS_PRODUCT=$RELEASE_PRODUCT
-export MBUI_IOS_BUILD=$RELEASE_BUILD MBUI_IOS_VERSION=$RELEASE_VERSION SF_SRC=$PWD
+export MBUI_BUILD=$RELEASE_BUILD MBUI_IOS_BUILD=$RELEASE_BUILD MBUI_IOS_VERSION=$RELEASE_VERSION SF_SRC=$PWD
 bash "$D/ios.sh" build
 APPDIR=$PWD/apps/mbui/out/ios-device/MBUI.app
 SHARE=$APPDIR/PlugIns/Share.appex

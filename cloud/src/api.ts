@@ -50,7 +50,8 @@ const DOCKER_IMAGE = "ghcr.io/afk-surf/stillfail-station";
 /**
  * An enrollment with what to run for it. A machine without still.fail installs it and joins at once; one with it joins.
  * On the test channel the installer is the test channel's, which gets its release (index.ts): from its host, or, with
- * no such host, ?channel=beta. The station joins PUBLIC_ORIGIN either way.
+ * no such host, ?channel=beta. The station joins PUBLIC_ORIGIN either way, by the command its product's installer
+ * puts on the PATH (monoid's `monoid`, install.sh and install.ps1).
  */
 function withCommands<T extends { token: string }>(env: Env, made: T, ofBeta: boolean): T & { install: string; installWindows: string; installDocker: string; command: string } {
   const beta = betaOrigin(env);
@@ -61,7 +62,7 @@ function withCommands<T extends { token: string }>(env: Env, made: T, ofBeta: bo
   // channel it is told, with the same arguments after the image.
   const told = [`-e STILLFAIL_ORIGIN=${env.PUBLIC_ORIGIN}`, ...(ofBeta ? ["-e STILLFAIL_CHANNEL=beta"] : [])];
   const installDocker = ["docker run -d --restart unless-stopped -v stillfail:/home/stillfail", ...told, DOCKER_IMAGE, made.token].join(" ");
-  return { ...made, install: `curl -fsSL ${sh} | sh -s -- ${made.token}`, installWindows: `& ([scriptblock]::Create((irm ${installer("install.ps1")}))) ${made.token}`, installDocker, command: `stillfail station enroll ${env.PUBLIC_ORIGIN} ${made.token}` };
+  return { ...made, install: `curl -fsSL ${sh} | sh -s -- ${made.token}`, installWindows: `& ([scriptblock]::Create((irm ${installer("install.ps1")}))) ${made.token}`, installDocker, command: `${productOf(env.PUBLIC_ORIGIN).id} station enroll ${env.PUBLIC_ORIGIN} ${made.token}` };
 }
 
 /**

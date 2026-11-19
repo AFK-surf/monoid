@@ -6,7 +6,8 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/host.js', import.meta.url), 'utf8');
 
-function browser() {
+/// A browser whose VideoDecoder takes the H.264 configs `takes` says it does.
+function browser(takes = () => true) {
   const element = () => ({
     style: {}, listeners: new Map(),
     addEventListener(name, f) { this.listeners.set(name, [...(this.listeners.get(name) || []), f]); },
@@ -28,7 +29,7 @@ function browser() {
   const document = { createElement: () => ({ ...element(), getContext: () => ({}) }),
     getElementById: id => id === 'c' ? canvas : ime, addEventListener() {} };
   class VideoDecoder {
-    static isConfigSupported() { return Promise.resolve({ supported: true }); }
+    static isConfigSupported(config) { return Promise.resolve({ supported: takes(config) }); }
     constructor({ output }) { this.output = output; }
     configure() {}
     decode(chunk) { const frame = videos.shift(); frame.timestamp = chunk.timestamp; this.output(frame); }
@@ -117,4 +118,14 @@ test('the restore test driver reports each new loss until it is restored', () =>
   assert.equal(b.host.drive(11), false);
   b.canvas.dispatch('webglcontextrestored');
   assert.equal(b.host.drive(11), true);
+});
+
+test('H.264 is had only where the decoder takes High, as stations send', async () => {
+  const high = (config) => /^avc1\.64/i.test(config.codec);
+  const b = browser(high);
+  await tick();
+  assert.equal(b.host.h264Here(), 1);
+  const baselineAlone = browser((config) => /^avc1\.42/i.test(config.codec));
+  await tick();
+  assert.equal(baselineAlone.host.h264Here(), 0, 'a decoder of Baseline alone shows no High stream');
 });

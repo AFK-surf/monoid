@@ -170,3 +170,62 @@ test "words in the code face on one line follow the theme's size" {
   assert_true(t.rect_of("12") is Some(_))
   assert_eq(t.audit(), [])
 }
+
+///|
+test "a use: when (Meta, L5) on the baseline of what used it's first line (Ui, L6), on one line or two, lines as the web's or the host's, the system's size of words 1 or 1.3" {
+  let short = "部署对话"
+  let long = "一个很长名字的对话它的名字要折到下一行去还要再长一些才行"
+  let name_look = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
+  for web in [true, false] {
+    @ui.set_web_lines(web)
+    for scale in [1.0, 1.3] {
+      for name in [short, long] {
+        let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=400.0, platform=if web { 0 } else { 2 })
+        t.check_looks(false)
+        @ui.set_view_app(fn(root) {
+          root.box(fn(b) {
+            b.width(Is(Some(260.0))) |> ignore
+            record_rows_node(b, fn(l) {
+              l.box(fn(row) {
+                record_row_node(
+                  row,
+                  fn(n) {
+                    words_node(n, fn() { name }, fn() { name_look }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                  },
+                  fn(h) { record_how_node(h, fn() { "gh auth status" }, fn() { true }) },
+                  fn() { "3 分钟前" },
+                )
+              })
+              |> ignore
+            })
+          })
+          |> ignore
+        })
+        if scale != 1.0 {
+          t.set_font_scale(scale)
+        }
+        t.draw()
+        let runs = t.text_runs()
+        let lines = runs.filter(fn(r) { r.text != "" && name.contains(r.text) })
+        assert_true(lines.length() > 0, msg="web=\{web} scale=\{scale}: name not drawn")
+        let mut first = lines[0]
+        for r in lines {
+          if r.top < first.top {
+            first = r
+          }
+        }
+        if name == long {
+          assert_true(lines.iter().any(fn(r) { r.top > first.top + 1.0 }), msg="web=\{web} scale=\{scale}: name on one line")
+        }
+        let w = runs.filter(fn(r) { r.text == "3 分钟前" })
+        assert_true(w.length() > 0, msg="web=\{web} scale=\{scale}: when not drawn")
+        assert_true(
+          (first.base - w[0].base).abs() <= 0.01,
+          msg="web=\{web} scale=\{scale} name=\{name}: name base=\{first.base} when base=\{w[0].base}",
+        )
+        assert_eq(t.audit(), [])
+      }
+    }
+  }
+  @ui.set_web_lines(false)
+}

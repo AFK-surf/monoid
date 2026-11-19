@@ -53,45 +53,13 @@ pub fn host_net(host : @host.Host, wall : Wall) -> Net {
     body : Bytes?,
     timeout_ms : Int,
   ) -> HttpAnswer {
-    let args : Map[String, Json] = {
-      "url": Json::string(url),
-      "method": Json::string(meth),
-      "headers": Json::array(headers.map(h => Json::array([Json::string(h.0), Json::string(h.1)]))),
+    let r = host.fetch(url, method_=meth, headers~, body?=body, timeout_ms~) catch {
+      @host.FetchTimeout => raise Unanswered(@host.fetch_timed_out)
+      e => raise Unanswered(shell_words(e))
     }
-    let call = async fn() -> HttpAnswer {
-      let (answer, bytes) = shell_fetch(host, args, body)
-      let status = match json_field(answer, "status") {
-        Some(Number(n, ..)) => n.to_int()
-        _ => 0
-      }
-      let pairs = match json_field(answer, "headers") {
-        Some(Array(xs)) =>
-          xs.filter_map(x => match x {
-            Array([String(k), String(v)]) => Some((k, v))
-            _ => None
-          })
-        _ => []
-      }
-      { status, headers: pairs, body: bytes.unwrap_or(b""), redirected: false }
-    }
-    match @effect.timeout(timeout_ms, call) {
-      Some(r) => r
-      None => raise Unanswered("The operation was aborted due to timeout")
-    }
+    { status: r.status, headers: r.headers, body: r.body, redirected: false }
   }
   { fetch, now: () => wall.now(), sleep: async fn(ms : Int) { @effect.sleep(ms) } }
-}
-
-///|
-async fn shell_fetch(host : @host.Host, args : Map[String, Json], body : Bytes?) -> (Json, Bytes?) {
-  try {
-    match body {
-      Some(b) => host.shell("fetch", Json::object(args), bytes=b)
-      None => host.shell("fetch", Json::object(args))
-    }
-  } catch {
-    e => raise Unanswered(shell_words(e))
-  }
 }
 
 ///|

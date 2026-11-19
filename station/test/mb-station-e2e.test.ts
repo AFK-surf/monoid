@@ -724,7 +724,8 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   const init = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }), "t1")).body);
   assert.equal(init.result.serverInfo.name, "still.fail");
   const tools = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }), "t1")).body).result.tools.map((t: { name: string }) => t.name);
-  for (const core of ["chat_post", "chat_state", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "job_start", "job_list", "job_log", "job_stop", "station_list", "station_task", "station_file", "search", "skill_read", "workspace_limit", "secret_list", "feishu_api", "slack_api", "station_retire"]) assert.ok(tools.includes(core), `${core} listed: ${tools.join(",")}`);
+  for (const core of ["chat_post", "chat_state", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "chat_configure", "job_start", "job_list", "job_log", "job_stop", "station_list", "station_task", "station_file", "search", "skill_read", "workspace_limit", "secret_list", "feishu_api", "slack_api"]) assert.ok(tools.includes(core), `${core} listed: ${tools.join(",")}`);
+  for (const hidden of ["station_retire", "adb_devices", "phone_use", "secret_reask"]) assert.ok(!tools.includes(hidden), `${hidden} hidden: ${tools.join(",")}`);
   const running = store.runningSessions();
   const status = JSON.parse((await get({ socket: join(data, "run", "status.sock") }, "/v1/status")).body);
   assert.equal(status.version, "0.1.9400");

@@ -46,12 +46,36 @@ fn slice_of(name : String) -> String {
 }
 
 ///|
-/// `length` bytes of `file` from `from` (fewer at its end), read by the shell.
-fn p51_file_piece(host : @host.Host, file : String, from : Double, length : Int) -> Bytes raise {
+/// `length` bytes of `file` from `from` (fewer at its end), read by the shell off the program's thread (`from` a
+/// Double: a file past 2 GiB is read where it is asked, which `Host::read_bytes`'s Int would not reach).
+async fn p51_file_piece(host : @host.Host, file : String, from : Double, length : Int) -> Bytes raise {
   if length <= 0 {
     return b""
   }
-  match host.shell_sync("fs.bytes", { "path": Json::string(file), "from": Json::number(from), "length": Json::number(length.to_double()) }) {
+  let args : Json = { "path": Json::string(file), "from": Json::number(from), "length": Json::number(length.to_double()) }
+  let (said, _) = host.shell("fs.bytes", args) catch {
+    @wire.ShellError(e) => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(e) }))
+    e => raise e
+  }
+  p51_piece_answered(file, said)
+}
+
+///|
+/// `p51_file_piece` on the program's thread, for a reading that cannot wait (`shown_facts`' `Src`).
+fn p51_file_piece_now(host : @host.Host, file : String, from : Double, length : Int) -> Bytes raise {
+  if length <= 0 {
+    return b""
+  }
+  p51_piece_answered(
+    file,
+    host.shell_sync("fs.bytes", { "path": Json::string(file), "from": Json::number(from), "length": Json::number(length.to_double()) }),
+  )
+}
+
+///|
+/// What `fs.bytes` answered of `file`: its bytes, or Node's ENOENT where it did not open.
+fn p51_piece_answered(file : String, said : Json) -> Bytes raise {
+  match said {
     String(hex) => @cloud_lock.hex_bytes(hex)
     { "error": String(e), .. } => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(e) }))
     _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, open '\{file}'", "code": "ENOENT" }))
@@ -335,7 +359,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           _ => []
         },
         running: arg(8) is True,
-        shared: arg(9) is True,
       }
       let (headers, id) = events.open(arg(0), text(1), asked)
       a.next_stream += 1
@@ -433,7 +456,11 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, stat '\{p}'", "code": "ENOENT" }))
       }
     }
-    "fs.readFile" => @api_routes.jbytes(@drive.read_all(text(0)) catch { e => raise p51_fs_thrown(e) })
+    "fs.readFile" =>
+      match self.host.read_bytes(text(0)) {
+        Some(b) => @api_routes.jbytes(b)
+        None => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, open '\{text(0)}'", "code": "ENOENT" }))
+      }
     "fs.writeFile" => {
       let data = @api_routes.bytes_of(args.get(1).unwrap_or(Null)).unwrap_or_else(() => @utf8.encode(text(1)))
       let (excl, mode) = match arg(2) {
@@ -1099,6 +1126,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     rooted: p => p.has_prefix("/") || (p.length() > 2 && p[1] == ':'),
     clean: p => p,
+    built_at: bus.built_at,
   }
   let d : @effect.Deferred[Json] = @effect.Deferred::new()
   @events.overview(deps, self.overview_kept, @events.Viewer::of(jv(viewer)), lang, r => match r {
@@ -1116,8 +1144,8 @@ async fn P51::admin_live(self : P51) -> AdminLive {
   // (drive/grants.ts `grantKey`: the data directory's own, made the first time)
   let key_file = path([bus.data, "drive-grant.key"])
   let kept = try {
-    match self.host.shell_sync("fs.bytes", { "path": Json::string(key_file) }) {
-      String(hex) if hex.length() >= 64 => Some(@cloud_lock.hex_bytes(hex))
+    match self.host.read_bytes(key_file) {
+      Some(b) if b.length() >= 32 => Some(b)
       _ => None
     }
   } catch {

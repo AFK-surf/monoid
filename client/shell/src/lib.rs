@@ -29,6 +29,7 @@ mod keep;
 mod log;
 mod mesh;
 mod net;
+mod screen_dgram;
 mod screen_tap;
 mod sql;
 mod tar;
@@ -155,6 +156,8 @@ pub(crate) struct Inner {
     /// Where a tapped view's records are offered first (`sf_shell_set_media`): none, all are said.
     pub(crate) media: Mutex<Option<(Media, Ctx)>>,
     pub(crate) adb: adb::Adb,
+    /// Each connection's datagrams' reader, by its handle, while a view takes them (screen_dgram.rs `route`).
+    pub(crate) demuxes: Mutex<HashMap<u64, Arc<Mutex<std::sync::Weak<screen_dgram::Demux>>>>>,
 }
 
 pub struct Shell {
@@ -324,6 +327,8 @@ impl Inner {
             | "conn.answers" => self.run_iroh(op, &a, bytes).await,
             "conn.hand"
             | "istream.tap"
+            | "istream.mediaDatagrams"
+            | "istream.receiveMediaDatagrams"
             | "istream.read"
             | "istream.write"
             | "istream.finish"
@@ -347,6 +352,11 @@ impl Inner {
         // core asks the station for Opus only then (client/core-ts hosts/bridge.ts `opus`), else PCM.
         if op == "tap.opus" {
             return Ok(json!(self.say.lock().unwrap().is_some()));
+        }
+        // Whether a view's frames may come as datagrams here (`istream.receiveMediaDatagrams`): a shell from before says
+        // no such op (client/core-ts hosts/bridge.ts `mediaDatagrams`).
+        if op == "istream.datagrams" {
+            return Ok(json!(true));
         }
         if op == "fetch.cancel" {
             let pending = self.fetches.lock().unwrap().remove(&id_of(a)?);
@@ -383,7 +393,7 @@ impl Shell {
         let http = Mutex::new(http_client(&tls));
         let db = Arc::new(Mutex::new(DbHandle { path: dir.join("core.db"), conn: None }));
         let adb = adb::Adb::new(dir.clone());
-        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb });
+        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb, demuxes: Mutex::default() });
         STATS.lock().unwrap().shells.push(Arc::downgrade(&inner));
         Ok(Shell { runtime, inner })
     }

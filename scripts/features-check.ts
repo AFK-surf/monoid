@@ -30,7 +30,7 @@ else {
 }
 
 // The code the product is made of: TypeScript and MoonBit tracked, but tests, checks and the registries themselves.
-const SKIP = /(^|\/)test\/|_wbtest\.mbt$|_test\.mbt$|\.test\.ts$|(^|\/)scripts\/features-check\.ts$|^client\/core-ts\/src\/features\.ts$|^apps\/mbui\/src\/sffixture\/|\/pkg\.generated\.mbti$|^apps\/mbui\/src\/sfrealsize\/|^apps\/mbui\/src\/sfkept\//;
+const SKIP = /(^|\/)test\/|_wbtest\.mbt$|_test\.mbt$|\.test\.ts$|(^|\/)scripts\/features-check\.ts$|^client\/core-ts\/src\/features\.ts$|^apps\/mbui\/src\/sffixture\/|\/pkg\.generated\.mbti$|^apps\/mbui\/src\/sfrealsize\/|^apps\/mbui\/src\/sfkept\/|^apps\/mbui\/src\/sfapptest\//;
 const files = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "*.ts", "*.mbt"], { cwd: root, encoding: "utf8" })
   .split("\0")
   .filter((f) => f !== "" && !f.startsWith("apps/mbui/deps/") && !f.includes("node_modules/") && !SKIP.test(f));

@@ -9,10 +9,20 @@
 let screen_slop : Double = 8.0
 
 ///|
+/// How far a finger driving it directly goes before it is a drag: further than the slop, since a finger pressing a small
+/// button at a screen's edge slides 8–11 dp without meaning to, and a drag sent then selects the words under it.
+let screen_direct_slop : Double = 12.0
+
+///|
+/// How near a tap a finger down again is to drag from it on the trackpad (44: a thumb's second press lands that far
+/// from its first one-handed).
+let screen_again_near : Double = screen_slop * 5.5
+
+///|
 let screen_hold_ms : Double = 400.0
 
 ///|
-let screen_double_tap_ms : Double = 300.0
+let screen_double_tap_ms : Double = 340.0
 
 ///|
 /// How far from the stage's edges the pointer is kept while zoomed in (40).
@@ -188,12 +198,10 @@ fn pad_points(s : ScreenSess, u : ScreenUi) -> Bool {
 }
 
 ///|
-/// The station's pointer's shape (a CSS cursor's name, `none` hidden), the arrow's where it says none.
+/// The station's pointer's shape (a CSS cursor's name, `none` hidden), the arrow's where it says none: as last said, in
+/// a state or alone (ScreenSess::cursor_is; what reads it follows `said` and `cursor_said`).
 fn pointer_shape(s : ScreenSess) -> String {
-  match text(field(s.state, "cursor"), "shape") {
-    "" => "default"
-    shape => shape
-  }
+  s.cursor_shape_now
 }
 
 ///|
@@ -239,6 +247,7 @@ fn screen_stage_node(p : @view.View, pg : ScreenPage, pair? : () -> Bool = fn() 
         screen_stage_room(stage, pg, room, size, over)
         screen_stage_gestures(stage, pg)
         screen_stage_picture(stage, pg, size, over)
+        screen_tap_ripple_node(stage, pg)
         screen_stage_said(stage, pg, phase, over)
       })
       |> ignore
@@ -421,6 +430,60 @@ fn screen_stage_picture(stage : @view.View, pg : ScreenPage, size : () -> (Int, 
 }
 
 ///|
+/// How long the ring where a tap clicked shows (a control answering the hand, as long as what comes into a list), how
+/// large it is as it begins and ends (its radius), and how clear at first.
+let ripple_ms : Double = @sf.enter_ms
+
+///|
+let ripple_from_r : Double = 6.0
+
+///|
+let ripple_to_r : Double = 20.0
+
+///|
+let ripple_alpha : Double = 0.32
+
+///|
+/// Where a tap driving it directly clicked, shown under the finger in `stage` (u.ripple, set as it clicks): a ring in
+/// the ink round the floating ground (seen over a light picture and a dark one) spreading from 6 to 20 on the ease-out
+/// as it fades from 0.32 to nothing over ripple_ms, worked out from the tap's moment (as far on at any frame rate),
+/// nothing asked of a frame after. It takes no press, nothing under it is covered.
+fn screen_tap_ripple_node(stage : @view.View, pg : ScreenPage) -> Unit {
+  let u = pg.u
+  stage.box(fn(ring) {
+    // how far through its time it is as it is drawn: 1 at its end and after, none tapped
+    let through = fn() {
+      match u.ripple.get() {
+        Some((_, _, t0)) => clamp01((ring.drawn_while(fn(now) { now < t0 + ripple_ms }) - t0) / ripple_ms)
+        None => 1.0
+      }
+    }
+    let d = ripple_to_r * 2.0
+    ring
+    .over(Is(true))
+    .width(Is(Some(d)))
+    .height(Is(Some(d)))
+    .radius(Is(ripple_to_r))
+    .offset(By(fn() {
+      match u.ripple.get() {
+        Some((x, y, _)) => (x - ripple_to_r, y - ripple_to_r)
+        None => (0.0, 0.0)
+      }
+    }))
+    .scale(By(fn() {
+      let k = ripple_from_r / ripple_to_r
+      let p = through()
+      k + (1.0 - k) * (1.0 - (1.0 - p) * (1.0 - p) * (1.0 - p))
+    }))
+    .alpha(By(fn() { ripple_alpha * (1.0 - through()) }))
+    .ground(By(fn() { @ui.tree_theme().color(Floating) }))
+    .ring(By(fn() { (1.5, 0.0, @ui.tree_theme().color(Fg)) }))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
 /// Whether a frame of it was shown since it opened, followed (a frame kept on screen through a reconnect or an end).
 fn ScreenSess::shown_seen(self : ScreenSess) -> Bool {
   self.part_told.get() |> ignore
@@ -479,6 +542,7 @@ fn screen_pointer_node(o : @view.View, pg : ScreenPage, over : () -> Bool) -> Un
     q.box(fn(ptr) {
       let shape = fn() {
         s.said.get() |> ignore
+        s.cursor_said.get() |> ignore
         match pointer_shape(s) {
           "none" => "default"
           sh => sh
@@ -944,14 +1008,24 @@ priv struct Gesture {
   mut sy : Double
   mut lx : Double
   mut ly : Double
-  /// the moment of the last event of the press (how fast the trackpad's finger goes)
+  /// the moment of the last event of the press (how fast the trackpad's finger goes), and its pace smoothed (dp per
+  /// ms, pad_speed; none before its first move)
   mut last_at : Double
+  mut speed : Double?
   /// down again soon after a tap, near it: a move (or holding still) drags from where it points
   mut again : Bool
   mut two : TwoFingers?
   mut two_moved : Bool
   /// the two fingers have been down a hold's length (no right click then)
   mut two_held : Bool
+  /// moving together sent as the wheel (not panned here): their pace smoothed (stage px per ms, ScrollFling's), when
+  /// and where their middle was as it was last measured (each finger's move of one moment taken together: a host says
+  /// them one by one), and where the wheel was
+  mut two_scrolls : Bool
+  mut two_v : (Double, Double)?
+  mut two_at : Double
+  mut two_c : (Double, Double)
+  mut two_where : (Double, Double)
   /// a tap's end on the trackpad, and where: the wait after it its own
   mut tap_open : Bool
   mut tx : Double
@@ -979,10 +1053,16 @@ fn gesture_new() -> Gesture {
     lx: 0.0,
     ly: 0.0,
     last_at: 0.0,
+    speed: None,
     again: false,
     two: None,
     two_moved: false,
     two_held: false,
+    two_scrolls: false,
+    two_v: None,
+    two_at: 0.0,
+    two_c: (0.0, 0.0),
+    two_where: (0.5, 0.5),
     tap_open: false,
     tx: 0.0,
     ty: 0.0,
@@ -1060,13 +1140,49 @@ fn screen_stage_gestures(stage : @view.View, pg : ScreenPage) -> Unit {
     if u.mouse.over.get() {
       s.cursor_said.get() |> ignore
       s.said.get() |> ignore
-      Some(cursor_of_shape(text(field(s.state, "cursor"), "shape")))
+      Some(cursor_of_shape(pointer_shape(s)))
     } else if !s.driving_now() && s.taking_over_now() {
       Some(@ui.Cursor::NotAllowed)
     } else {
       None
     }
   }))
+  |> ignore
+  // (what is drawn of the pointer follows the station's word of it, or not: this device's mouse over the picture, the
+  // trackpad's own; a word of it alone that changes nothing drawn is taken quietly, ScreenSess::cursor_quiet)
+  stage.reacts(
+    fn() { !u.mouse.over.get() && !(s.driving_now() && s.pad(s.src) && u.pad.placed_said().1) },
+    fn(drawn) { s.cursor_drawn = drawn },
+  )
+  stage.owns(fn() { s.cursor_drawn = true }) |> ignore
+  // two fingers' scroll going on by itself: what of its way is not sent yet sent as the wheel as each frame is drawn
+  // while it goes (worked out from when it began: as far at any rate), the rest at its end; nothing once it is stopped
+  stage.reacts(
+    fn() {
+      u.fling.told.get() |> ignore
+      stage.drawn_while(fn(t) { u.fling.goes_at(t) })
+    },
+    fn(at) {
+      let (dx, dy) = u.fling.take_at(at)
+      if dx != 0.0 || dy != 0.0 {
+        let shown = u.shown_at(stage.logic_at())
+        scroll_by(fn(j) { s.input(s.src, j) }, dx, dy, u.fling.where_, shown, s.frame_size())
+      }
+    },
+    at_start=false,
+  )
+  // not driving it any more (only looking, ended, taken by another): 左键 held from its button let go of, the scroll
+  // going on stopped; the stage let go of, the same
+  stage.reacts(fn() { s.driving_now() }, fn(driving) {
+    if !driving {
+      u.fling.stop()
+      left_let_go(s, u, None)
+    }
+  })
+  stage.owns(fn() {
+    u.fling.stop()
+    left_let_go(s, u, None)
+  })
   |> ignore
   // (the pointer gone off the stage: this device's mouse over the picture no more)
   stage.reacts(fn() { stage.pointer_within() }, fn(within) {
@@ -1090,7 +1206,8 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
   match d.kind {
     Down =>
       if g.fingers.is_empty() {
-        // the press begins
+        // the press begins: a scroll going on by itself stops where it is
+        u.fling.stop()
         g.fingers[d.finger] = (x, y)
         g.drives = s.driving()
         g.pad = g.drives && s.pad(s.src)
@@ -1103,11 +1220,14 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
         g.lx = x
         g.ly = y
         g.last_at = at
+        g.speed = None
         g.two = None
         g.two_moved = false
         g.two_held = false
+        g.two_scrolls = false
+        g.two_v = None
         g.moved_to = None
-        let near = ((g.sx - g.tx) * (g.sx - g.tx) + (g.sy - g.ty) * (g.sy - g.ty)).sqrt() < screen_slop * 4.0
+        let near = ((g.sx - g.tx) * (g.sx - g.tx) + (g.sy - g.ty) * (g.sy - g.ty)).sqrt() < screen_again_near
         g.again = g.pad && g.tap_open && near
         // held still: the trackpad's button down where it points; directly, a right click where it is
         (g.hold_off)()
@@ -1121,7 +1241,7 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
           if g.pad && g.mode == 2 {
             send(pointer_input("up", u.pad.at(), btn_primary))
           }
-          if !g.pad && g.mode == 1 {
+          if !g.pad && g.mode == 1 && !u.left_locked.untracked() {
             match screen_frame_at(g.lx, g.ly, shown(), true) {
               Some(p) => {
                 send(pointer_input("up", p, btn_primary))
@@ -1134,6 +1254,8 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
           g.mode = 3
           let (ax, ay) = g.fingers.get(0).unwrap_or((g.lx, g.ly))
           g.two = Some(TwoFingers::new(ax, ay, x, y))
+          g.two_at = at
+          g.two_c = ((ax + x) / 2.0, (ay + y) / 2.0)
           // the two fingers' tap is quick while they have been down less than a hold (from the second's coming)
           (g.two_off)()
           g.two_off = stage.at_moment(at + screen_hold_ms, fn() { g.two_held = true }, later=true)
@@ -1156,16 +1278,43 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
                   u.zoom.transform(cx, cy, k, cx - t.fx, cy - t.fy, at~)
                 }
               } else if t.kind == 2 {
-                if g.pad {
-                  scroll_by(send, cx - t.fx, cy - t.fy, u.pad.at(), shown(), s.frame_size())
+                let wheel_at = if g.pad {
+                  Some(u.pad.at())
                 } else if u.zoom.zoomed_at(at) {
                   if fitted() {
                     u.zoom.pan(cx - t.fx, cy - t.fy, at~)
                   }
+                  None
                 } else if g.drives {
-                  match screen_frame_at(cx, cy, shown(), true) {
-                    Some(p) => scroll_by(send, cx - t.fx, cy - t.fy, p, shown(), s.frame_size())
-                    None => ()
+                  screen_frame_at(cx, cy, shown(), true)
+                } else {
+                  None
+                }
+                match wheel_at {
+                  Some(p) => {
+                    let (dx, dy) = (cx - t.fx, cy - t.fy)
+                    scroll_by(send, dx, dy, p, shown(), s.frame_size())
+                    // (their pace, for the scroll to go on as they let go: measured once a moment has passed)
+                    let dt = at - g.two_at
+                    if dt >= 1.0 {
+                      let (ux, uy) = ((cx - g.two_c.0) / dt, (cy - g.two_c.1) / dt)
+                      g.two_v = Some(match g.two_v {
+                        None => (ux, uy)
+                        Some((vx, vy)) => {
+                          let k = 1.0 - @dmath.exp(-dt / fling_speed_tau)
+                          (vx + (ux - vx) * k, vy + (uy - vy) * k)
+                        }
+                      })
+                      g.two_at = at
+                      g.two_c = (cx, cy)
+                    }
+                    g.two_scrolls = true
+                    g.two_where = p
+                  }
+                  None => {
+                    g.two_scrolls = false
+                    g.two_at = at
+                    g.two_c = (cx, cy)
                   }
                 }
               }
@@ -1199,7 +1348,18 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
         g.ly = y
       }
       let called_off = d.kind is Off
+      let locked = u.left_locked.untracked()
       match g.mode {
+        // 左键 held from its button: a tap lets it go (where the trackpad points, or where it is)
+        0 if !called_off && locked && g.drives =>
+          if g.pad {
+            left_let_go(s, u, Some(u.pad.at()))
+            @ui.haptic(KeyboardTap)
+          } else {
+            left_let_go(s, u, screen_frame_at(g.sx, g.sy, shown(), true))
+            u.ripple.set(Some((g.sx, g.sy, at)))
+            @ui.haptic(KeyboardTap)
+          }
         0 if !called_off =>
           if g.pad {
             g.mods_take(u.held, send)
@@ -1215,6 +1375,8 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
                 send(pointer_input("down", p, btn_primary))
                 send(pointer_input("up", p, btn_primary))
                 u.tapped_at = Some(p)
+                // (where it clicked shown under the finger a moment: screen_tap_ripple_node)
+                u.ripple.set(Some((g.sx, g.sy, at)))
                 @ui.haptic(KeyboardTap)
               }
               None => ()
@@ -1233,10 +1395,13 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
               }
             }
           }
+        // (左键 held from its button stays held: the drag goes on with the next finger)
         1 if !g.pad =>
           match screen_frame_at(g.lx, g.ly, shown(), true) {
             Some(p) => {
-              send(pointer_input("up", p, btn_primary))
+              if !locked {
+                send(pointer_input("up", p, btn_primary))
+              }
               u.tapped_at = Some(p)
             }
             None => ()
@@ -1248,6 +1413,12 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
           send(pointer_input("up", u.pad.at(), btn_secondary))
           @ui.haptic(ContextClick)
         }
+        // two fingers scrolling let go still moving (not stopped first): the scroll goes on by itself
+        3 if !called_off && g.two_scrolls && g.two_moved && at - g.two_at <= fling_still_ms =>
+          match g.two_v {
+            Some((vx, vy)) => u.fling.start(at, vx, vy, g.two_where) |> ignore
+            None => ()
+          }
         _ => ()
       }
       g.mods_give(send)
@@ -1274,6 +1445,8 @@ fn screen_held(stage : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
   let g = u.gesture
   g.hold_off = fn() {  }
   guard g.mode == 0 && g.fingers.length() == 1 else { return }
+  // (左键 held from its button: a press held is no more than a press, its move drags with it)
+  guard !u.left_locked.untracked() else { return }
   let send = fn(j : Json) { s.input(s.src, j) }
   if g.pad {
     g.mods_take(u.held, send)
@@ -1311,14 +1484,15 @@ fn screen_one_finger(
 ) -> Unit {
   let g = u.gesture
   let shown = u.shown_at(at)
+  let locked = u.left_locked.untracked()
   match g.mode {
     0 => {
       let moved = ((x - g.sx) * (x - g.sx) + (y - g.sy) * (y - g.sy)).sqrt()
-      if moved > screen_slop {
+      if moved > (if !g.pad && g.drives { screen_direct_slop } else { screen_slop }) {
         (g.hold_off)()
         g.hold_off = fn() {  }
         if g.pad {
-          if g.again {
+          if g.again && !locked {
             g.mods_take(u.held, send)
             send(pointer_input("down", u.pad.at(), btn_primary))
             g.mode = 2
@@ -1326,15 +1500,22 @@ fn screen_one_finger(
             g.mode = 1
           }
         } else if g.drives {
-          match screen_frame_at(g.sx, g.sy, shown, false) {
+          match screen_frame_at(g.sx, g.sy, shown, if locked { true } else { false }) {
             Some(p) => {
-              g.mods_take(u.held, send)
-              send(pointer_input("down", p, btn_primary))
+              // (左键 held from its button: already down, the finger drags with it from where it went down)
+              if !locked {
+                g.mods_take(u.held, send)
+                send(pointer_input("down", p, btn_primary))
+              }
               g.mode = 1
               match screen_frame_at(x, y, shown, true) {
                 Some(p2) => {
                   g.moved_to = Some(p2)
                   send(pointer_input("move", p2, btn_primary))
+                  // (左键 held from its button: let go of where the drag has got to)
+                  if locked {
+                    u.lock_at = p2
+                  }
                 }
                 None => ()
               }
@@ -1353,9 +1534,14 @@ fn screen_one_finger(
       let dy = y - g.ly
       if shown.w > 0.0 && (dx != 0.0 || dy != 0.0) {
         let dt = dmax(1.0, at - g.last_at)
-        let gain = pad_gain((dx * dx + dy * dy).sqrt() / dt)
+        let speed = pad_speed(g.speed, (dx * dx + dy * dy).sqrt(), dt)
+        g.speed = Some(speed)
+        let gain = pad_gain(speed)
         u.pad.by(dx * gain / shown.w, dy * gain / shown.h)
-        send(pointer_input("move", u.pad.at(), if g.mode == 2 { btn_primary } else { 0 }))
+        send(pointer_input("move", u.pad.at(), if g.mode == 2 || locked { btn_primary } else { 0 }))
+        if locked {
+          u.lock_at = u.pad.at()
+        }
         if u.zoom.zoomed_at(at) {
           u.zoom.keep(u.pad.at(), screen_keep_margin, when=at)
         }
@@ -1367,6 +1553,9 @@ fn screen_one_finger(
         Some(p) if g.moved_to != Some(p) => {
           g.moved_to = Some(p)
           send(pointer_input("move", p, btn_primary))
+          if locked {
+            u.lock_at = p
+          }
         }
         _ => ()
       }
@@ -1448,6 +1637,7 @@ fn screen_mouse_drag(stage : @view.View, pg : ScreenPage, d : @view.Drag) -> Uni
   let shown = u.shown_at(d.at)
   match d.kind {
     Down => {
+      u.fling.stop()
       m.down = true
       m.sent_down = false
       if s.driving() {
@@ -1556,6 +1746,7 @@ fn screen_mouse_wheel(pg : ScreenPage, w : @view.Wheel) -> Unit {
   let u = pg.u
   let m = u.mouse
   guard s.driving() && (w.dx != 0.0 || w.dy != 0.0) && (w.mods & @ui.wheel_mod_pinch) == 0 else { return }
+  u.fling.stop()
   let send = fn(j : Json) { s.input(s.src, j) }
   match screen_frame_at(w.x, w.y, u.shown_at(w.at), false) {
     Some(at) => {

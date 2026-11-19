@@ -24,3 +24,7 @@
 - Owners and admins set it via `PUT /station-mark`. Peer stations keep and sync copies, devices read `GET /station-marks`, and changes push via `stationMarks`.
 - Unset stations fall back to the cloud listing. Devices still mirror updates to the cloud for older apps. Images stay in the cloud image store while the record holds the address.
 - A rig (task-only station) keeps no station-mark record and keeps its cloud name.
+
+## Screen frames as datagrams
+
+- A view's video and audio frames go as QUIC datagrams with Reed-Solomon parity where the client offers a token (`datagrams`) and the stream can send them (`Stream.mediaDatagrams`, asked before the reply's head; the reply says `x-screen-dgram`). The sending and receiving engine is `client/shell/src/screen_dgram.rs`, shared by the shell and `station/native/mesh`. A wrapper of a member's stream (`serve.ts` `counted`) must pass `mediaDatagrams` on, or every view silently stays on the stream.

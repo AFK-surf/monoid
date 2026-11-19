@@ -116,6 +116,16 @@ priv struct ScreenUi {
   mut mouse_pair : @view.View?
   /// bumped when the person presses on the picture while another operates it, shaking the 接管 capsule
   held_nudge : @signals.Signal[Int]
+  /// 左键 held down from its button (a press of it held: left_hold_node), a finger dragging with it till a tap on the
+  /// stage or the button lets it go; where it is (where it went down, then as far as a finger dragged it) and the
+  /// modifiers held round it
+  left_locked : @signals.Signal[Bool]
+  mut lock_at : (Double, Double)
+  mut lock_mods : Int
+  /// two fingers' scroll going on by itself once let go (ScrollFling)
+  fling : ScrollFling
+  /// where the last tap driving it directly clicked on the stage, and when (screen_tap_ripple_node draws it)
+  ripple : @signals.Signal[(Double, Double, Double)?]
 }
 
 ///|
@@ -144,6 +154,11 @@ fn screen_ui(key : String) -> ScreenUi {
         case_y: 0.0,
         over_seen: false,
         gesture: gesture_new(),
+        left_locked: @signals.signal(false),
+        lock_at: (0.5, 0.5),
+        lock_mods: 0,
+        fling: scroll_fling_new(),
+        ripple: @signals.signal(None),
         tapped_at: None,
         at: None,
         covered: @signals.signal(false, same=fn(a, b) { a == b }),

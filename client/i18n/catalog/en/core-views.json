@@ -235,6 +235,8 @@
   "core-views.marks.others": "Other workspaces: {label}",
   "core-views.marks.unread": "{n} unread",
   "core-views.marks.wait": "{n} waiting for you",
+  "core-views.marks.login": "Needs you to log in to {name}",
+  "core-views.marks.loginAny": "Needs you to log in",
   "core-views.memberships.joined": "Joined",
   "core-views.memberships.home": "Home workspace",
   "core-views.named_error": "{name}: {error}",
@@ -845,6 +847,11 @@
     "one": "1 station has an update",
     "other": "{n} stations have updates"
   },
+  "core-views.stationUpdates.staleOffered": {
+    "one": "1 station needs an update",
+    "other": "{n} stations need updates"
+  },
+  "core-views.stationUpdates.stale": "Over 7 days old, please update",
   "core-views.stationUpdates.going": {
     "one": "1 station is updating",
     "other": "{n} stations are updating"

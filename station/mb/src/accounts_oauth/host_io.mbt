@@ -53,38 +53,17 @@ pub fn host_io(host : @host.Host) -> Io {
       rt.fork_daemon("accounts_oauth", f, on_error=e => @host.note("accounts_oauth: background work failed: \{e}")),
     ),
     fetch: req => {
-      let args : Map[String, Json] = {
-        "url": Json::string(req.url),
-        "method": Json::string(req.method_),
-        "headers": Json::array(req.headers.map(p => Json::array([Json::string(p.0), Json::string(p.1)]))),
+      let r = host.fetch(
+        req.url,
+        method_=req.method_,
+        headers=req.headers,
+        body?=req.body.map(utf8_of),
+        timeout_ms=req.timeout_ms,
+      ) catch {
+        @host.FetchTimeout => raise Failed(@host.fetch_timed_out)
+        e => raise e
       }
-      let call = async fn() {
-        let (answer, body) = match req.body {
-          Some(b) => host.shell("fetch", Json::object(args), bytes=utf8_of(b))
-          None => host.shell("fetch", Json::object(args))
-        }
-        let headers = match get(Some(answer), "headers") {
-          Some(Array(hs)) =>
-            hs.filter_map(h => match h {
-              Array([String(k), String(v), ..]) => Some((k, v))
-              _ => None
-            })
-          Some(Object(m)) => m.to_array().filter_map(p => str_of(Some(p.1)).map(v => (p.0, v)))
-          _ => []
-        }
-        {
-          status: num_of(get(Some(answer), "status")).unwrap_or(0.0).to_int(),
-          headers,
-          body: match body {
-            Some(b) => @utf8.decode_lossy(b)
-            None => ""
-          },
-        }
-      }
-      match @effect.timeout(req.timeout_ms, call) {
-        Some(r) => r
-        None => raise Failed("The operation was aborted due to timeout")
-      }
+      { status: r.status, headers: r.headers, body: r.text() }
     },
     read: path => match sh(host, "fs.read", { "path": Json::string(path) }) {
       String(s) => s

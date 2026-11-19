@@ -41,7 +41,7 @@ pub let cut : Double = 0.5
 pub let hold_ms : Double = 200.0
 
 ///|
-pub let up : Double = 1.15
+pub let up : Double = 1.2
 
 ///|
 pub let up_fast : Double = 1.3
@@ -57,6 +57,79 @@ pub let up_after_ms : Double = 1000.0
 
 ///|
 pub let start_rate : Double = 1_500_000.0
+
+///|
+/// Where the view's link is known as it opens, a higher start (`startRate`).
+pub let lan_rtt_ms : Double = 12.0
+
+///|
+pub let lan_rate : Double = 12_000_000.0
+
+///|
+pub let near_rtt_ms : Double = 40.0
+
+///|
+pub let near_rate : Double = 6_000_000.0
+
+///|
+pub let far_rtt_ms : Double = 100.0
+
+///|
+pub let direct_rate : Double = 4_000_000.0
+
+///|
+pub let relay_rtt_ms : Double = 35.0
+
+///|
+pub let relay_rate : Double = 4_000_000.0
+
+///|
+fn direct_path(p : LinkPath) -> Bool {
+  (p.relay is None || p.relay is Some("")) && p.ip is Some(ip) && ip != ""
+}
+
+///|
+/// The rate a view starts at by its connection's ways as it opens (`startRate`): the selected way, else the first
+/// direct one, else the first.
+pub fn start_rate_of(paths : Array[LinkPath]) -> Double {
+  if paths.length() == 0 {
+    return start_rate
+  }
+  let p = match paths.search_by(w => w.selected) {
+    Some(i) => paths[i]
+    None =>
+      match paths.search_by(direct_path) {
+        Some(i) => paths[i]
+        None => paths[0]
+      }
+  }
+  let rtt = match p.rtt_ms {
+    Some(ms) if !ms.is_nan() && !ms.is_inf() && ms > 0.0 => Some(ms)
+    _ => None
+  }
+  if direct_path(p) {
+    match rtt {
+      Some(ms) if ms <= lan_rtt_ms => lan_rate
+      Some(ms) if ms <= near_rtt_ms => near_rate
+      Some(ms) if ms > far_rtt_ms => start_rate
+      _ => direct_rate
+    }
+  } else {
+    match rtt {
+      Some(ms) if ms <= relay_rtt_ms => relay_rate
+      _ => start_rate
+    }
+  }
+}
+
+///|
+/// `start_rate_of` of the ways as JSON says them (`[{selected, relay?, ip?, rttMs?}]`; none: START_RATE).
+pub fn start_rate_for(paths : Json?) -> Double {
+  match paths {
+    Some(Array(xs)) => start_rate_of(xs.map(LinkPath::of_json))
+    _ => start_rate
+  }
+}
 
 ///|
 pub let measured_ms : Double = 500.0
@@ -427,34 +500,64 @@ fn Pacer::steady(self : Pacer, now : Double) -> Unit {
 }
 
 ///|
-pub let still_ms : Double = 500.0
+pub let still_ms : Double = 250.0
 
 ///|
 pub let sharper : Double = 1.1
 
 ///|
-/// When a still screen's picture is sent again sharper (`Sharpener`).
+pub let moving_sharpen_ms : Double = 1500.0
+
+///|
+pub let moving_sharpen_up : Double = 2.0
+
+///|
+/// When a still screen's picture is sent again sharper, and a moving one's key frame asked again (`Sharpener`).
 pub struct Sharpener {
   mut at : Double
   mut rate : Double?
+  mut key : Bool
+  mut key_at : Double
+  mut key_rate : Double?
 }
 
 ///|
 pub fn Sharpener::new() -> Sharpener {
-  { at: @double.neg_infinity, rate: None }
+  { at: @double.neg_infinity, rate: None, key: false, key_at: @double.neg_infinity, key_rate: None }
 }
 
 ///|
-/// A frame went at `now`, encoded at `rate` (None: a source with no rate of its own).
-pub fn Sharpener::sent(self : Sharpener, now : Double, rate : Double?) -> Unit {
+/// A frame went at `now`, encoded at `rate` (None: a source with no rate of its own); `key`: a key frame.
+pub fn Sharpener::sent(self : Sharpener, now : Double, rate : Double?, key? : Bool = false) -> Unit {
   self.at = now
   self.rate = rate
+  self.key = key
+  if rate is None {
+    self.key_at = @double.neg_infinity
+    self.key_rate = None
+  } else if key || self.key_rate is None {
+    self.key_at = now
+    self.key_rate = rate
+  }
 }
 
 ///|
-/// How long until the screen has been still for STILL_MS.
+/// Whether a moving screen's key frame is to be asked now, the pace asking `rate` (`dueMoving`): taken as asked.
+pub fn Sharpener::due_moving(self : Sharpener, now : Double, rate : Double?) -> Bool {
+  match (rate, self.key_rate) {
+    (Some(r), Some(was)) if now - self.key_at >= moving_sharpen_ms && r >= was * moving_sharpen_up => {
+      self.key_at = now
+      self.key_rate = Some(r)
+      true
+    }
+    _ => false
+  }
+}
+
+///|
+/// How long until the screen has been still for STILL_MS, or UP_EVERY_MS after a key frame.
 pub fn Sharpener::left(self : Sharpener, now : Double) -> Double {
-  dmax(0.0, self.at + still_ms - now)
+  dmax(0.0, self.at + (if self.key { dmax(still_ms, up_every_ms) } else { still_ms }) - now)
 }
 
 ///|
@@ -679,18 +782,20 @@ pub(all) struct LinkPath {
   selected : Bool
   relay : String?
   ip : String?
+  rtt_ms : Double?
   tx_packets : Double
   lost_packets : Double
 }
 
 ///|
-/// A way as JSON says it (`{id?, selected, relay?, ip?, txPackets, lostPackets}`).
+/// A way as JSON says it (`{id?, selected, relay?, ip?, rttMs?, txPackets, lostPackets}`).
 pub fn LinkPath::of_json(v : Json) -> LinkPath {
   {
     id: str_of(field(v, "id")),
     selected: field(v, "selected") is Some(True),
     relay: str_of(field(v, "relay")),
     ip: str_of(field(v, "ip")),
+    rtt_ms: num_of(field(v, "rttMs")),
     tx_packets: num_of(field(v, "txPackets")).unwrap_or(0.0),
     lost_packets: num_of(field(v, "lostPackets")).unwrap_or(0.0),
   }

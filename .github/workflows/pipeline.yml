@@ -148,10 +148,13 @@ jobs:
             echo "missing_win_list=$missing_win" >> "$GITHUB_OUTPUT"
           fi
           # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
-          # mesh or shell-apple (cold builds there took 228 and 323 s before packing). A branch's reader goes on
-          # macos-26: station/mb/build.sh compiles it -O0 there (about 25 s), its units kept by mbui-reader-mac-. The
-          # lighter parts and every run while vars.MINI1 is 'off' use macos-26.
-          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple):darwin-arm64$'; }; then
+          # mesh, shell-apple or the reader (cold builds of the first two there took 228 and 323 s before packing; with
+          # station/mb at 71 thousand functions the reader's cold build on macos-26, 8 MB units at -O0, came to
+          # 248-260 s, moon 120, mbc's split 32, its C 91, cut at the job's five minutes, #7390, and a branch's units
+          # there were evicted from the Actions cache within 17 minutes; Mini1's MBC_STORE stays on its disk, main's
+          # whole build 111 s). The lighter parts use macos-26, and every run while vars.MINI1 is 'off' (a branch's
+          # reader then in 8 MB units with moonbit_init one unit, kept by mbui-reader-mac-branch-v2-).
+          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple|reader):darwin-arm64$'; }; then
             echo 'natives_mac_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_mac_runner="macos-26"' >> "$GITHUB_OUTPUT"
@@ -246,8 +249,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-linux-branch-${{ github.sha }}
-          restore-keys: mbui-reader-linux-branch-
+          key: mbui-reader-linux-branch-v2-${{ github.sha }}
+          restore-keys: mbui-reader-linux-branch-v2-
       - name: Get or build the native parts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -258,10 +261,12 @@ jobs:
           # (ci-1's: mbc's own 768 KB units by package and moonbit_init's data by layout (MBC_DATA_LAYOUTS), so that a
           # change recompiles only its units. MBC_INIT_SPLIT=0 made moonbit_init one unit and took the layouts off with it:
           # every change of a type compiled all of data_*.c and init.c again)
-          # (GitHub's: -O0 in units of 2 MB on every core, kept in ~/.cache/stillfail-reader-mbc by the branch)
+          # (a branch's on GitHub's: -O0 in units of 8 MB with moonbit_init one unit on every core, kept in
+          # ~/.cache/stillfail-reader-mbc by the branch: a branch's first push finds none of them, and its 209 units
+          # compiled cold in 71 s where 2 MB's 489 took 105 s, cut on macos-26 with #7417's)
           if [ "$GITHUB_RUNNER" != self-hosted ]; then
             limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
-            export MBC_UNIT_KB=2048
+            export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0
           fi
           r=$(printf '%s\n' $MISSING | grep -c '^reader:' || true)
           [ "$r" -ge 1 ] || r=1
@@ -292,7 +297,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-linux-branch-${{ github.sha }}
+          key: mbui-reader-linux-branch-v2-${{ github.sha }}
 
   # Windows' reader (plan's missing_win_list), main's and a branch's, on ci-1 one after natives (the concurrency group
   # both take there), so that the readers' C does not share its cores and each has a job's five minutes, and beside it
@@ -359,8 +364,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-win-branch-${{ github.sha }}
-          restore-keys: mbui-reader-win-branch-
+          key: mbui-reader-win-branch-v2-${{ github.sha }}
+          restore-keys: mbui-reader-win-branch-v2-
       - name: Get or build Windows' reader
         env:
           GH_TOKEN: ${{ github.token }}
@@ -370,10 +375,11 @@ jobs:
           MISSING_WIN: ${{ needs.plan.outputs.missing_win_list }}
         run: |
           limit=()
-          # (as natives': mbc's 768 KB units and data layouts on ci-1, -O0 in units of 2 MB kept by the branch on GitHub's)
+          # (as natives': mbc's 768 KB units and data layouts on ci-1, a branch's -O0 in units of 8 MB with moonbit_init
+          # one unit kept by the branch on GitHub's)
           if [ "$GITHUB_RUNNER" != self-hosted ]; then
             limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
-            export MBC_UNIT_KB=2048
+            export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0
           fi
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             node scripts/native.ts ensure --publish $MISSING_WIN
@@ -400,7 +406,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-win-branch-${{ github.sha }}
+          key: mbui-reader-win-branch-v2-${{ github.sha }}
 
   # A branch's the rest of what main builds on ci-1 (linux-arm64, shell-station), into ci-1's cache,
   # which main's natives job takes them from without holding main's jobs back.
@@ -467,8 +473,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/stillfail-reader-mbc
-          key: ${{ github.ref == 'refs/heads/main' && format('mbui-reader-mac-{0}', github.sha) || format('mbui-reader-mac-branch-{0}', github.sha) }}
-          restore-keys: ${{ github.ref == 'refs/heads/main' && 'mbui-reader-mac-' || 'mbui-reader-mac-branch-' }}
+          key: ${{ github.ref == 'refs/heads/main' && format('mbui-reader-mac-{0}', github.sha) || format('mbui-reader-mac-branch-v2-{0}', github.sha) }}
+          restore-keys: ${{ github.ref == 'refs/heads/main' && 'mbui-reader-mac-' || 'mbui-reader-mac-branch-v2-' }}
       # STILLFAIL_NATIVE_READERS: the one reader of the Apple parts, every core its (3 readers' share gave -j 1 on
       # macos-26's 3 cores, 134032580996 cut at its 5 minutes; a branch's compiles -O0 there, station/mb/build.sh).
       - name: Get or build the Apple native parts
@@ -479,10 +485,16 @@ jobs:
           MISSING_MAC: ${{ needs.plan.outputs.missing_mac_list }}
         run: |
           limit=()
-          # (GitHub's: a branch's -O0 in units of 2 MB, main's mbc's own 768 KB, both kept in ~/.cache/stillfail-reader-mbc)
+          # (GitHub's: a branch's -O0 in units of 8 MB with moonbit_init one unit, as natives', main's mbc's own 768 KB,
+          # both kept in ~/.cache/stillfail-reader-mbc. A branch's steps after the build took 6-12 s: cut 18 s before
+          # the job, main's 25 as before)
           if [ "$GITHUB_RUNNER" != self-hosted ]; then
-            limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
-            [ "$GITHUB_REF" = refs/heads/main ] || export MBC_UNIT_KB=2048
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
+            else
+              limit=(bash scripts/with-timeout.sh @$((JOB_END - 18)))
+              export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0
+            fi
           fi
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
@@ -504,7 +516,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/stillfail-reader-mbc
-          key: ${{ github.ref == 'refs/heads/main' && format('mbui-reader-mac-{0}', github.sha) || format('mbui-reader-mac-branch-{0}', github.sha) }}
+          key: ${{ github.ref == 'refs/heads/main' && format('mbui-reader-mac-{0}', github.sha) || format('mbui-reader-mac-branch-v2-{0}', github.sha) }}
 
   # A branch's the rest of main's Apple parts, into macos-ci's cache, only while vars.MINI1 is 'on': a job queued for
   # macos-ci with Mini1 away held the branch's run in progress, its concurrency group with it (2026-11-17), and a

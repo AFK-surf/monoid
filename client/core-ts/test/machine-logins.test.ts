@@ -338,3 +338,43 @@ test("only the callback a login waits for is taken: its Host, method, path and s
   assert.ok(!isCallback(post, ask("POST", "/", "localhost:8085", "code=1&state=t")));
   assert.ok(!isCallback(post, ask("GET", "/?state=s", "localhost:8085")));
 });
+
+test("a login out of time offered again from its card while it is recent, started again by the station, its card then the new one's", async () => {
+  const { host, core, push } = await started(listed());
+  const asked: { method: string; path: string }[] = [];
+  const next = { ...device, id: "l9", state: "starting", step: undefined, code: undefined, from: "l1", startedAt: host.nowMs(), expiresAt: host.nowMs() + 15 * 60_000 };
+  stationReplies(host, (req) => {
+    const path = req.url.replace("https://stillfail.test/admin/api", "");
+    if (!path.startsWith("/machine-logins/")) return undefined;
+    asked.push({ method: req.method, path });
+    return next;
+  });
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "machineLogin", station: ST, id: "l1" });
+  subscribe(core, ui, 2, { topic: "machineLogin", station: ST, id: "l0" });
+  await host.settle();
+  drain(host, values);
+  assert.equal(v(values, 1).canAgain, undefined, "under way: not offered again");
+  assert.equal(v(values, 2).canAgain, undefined, "logged in: not offered again");
+  push("machine-logins", { login: { ...device, state: "failed", step: undefined, code: undefined, timedOut: true, error: "15 分钟内没有完成登录，已结束", endedAt: host.nowMs() - 1000 } });
+  await host.settle();
+  drain(host, values);
+  assert.deepEqual([v(values, 1).active, v(values, 1).canAgain, v(values, 1).statusText], [false, true, "超时了，没等到浏览器回来"]);
+  call(core, ui, 3, "machineLogin.again", { station: ST, id: "l1" });
+  await host.settle();
+  drain(host, values);
+  assert.deepEqual(asked, [{ method: "POST", path: "/machine-logins/l1/again" }]);
+  // The station tells the old one started again: its card follows the new one, offered again no more.
+  push("machine-logins", { login: { ...device, state: "failed", step: undefined, code: undefined, timedOut: true, endedAt: host.nowMs() - 1000, again: "l9" } });
+  await host.settle();
+  drain(host, values);
+  assert.deepEqual([v(values, 1).again, v(values, 1).canAgain], ["l9", undefined]);
+  // One of long ago stays a quiet line.
+  push("machine-logins", { login: { ...past, id: "l8", state: "failed", doneBy: undefined, timedOut: true, endedAt: host.nowMs() - 7 * 60 * 60_000 } });
+  subscribe(core, ui, 4, { topic: "machineLogin", station: ST, id: "l8" });
+  await host.settle();
+  drain(host, values);
+  assert.equal(v(values, 4).canAgain, undefined);
+  core.close();
+});

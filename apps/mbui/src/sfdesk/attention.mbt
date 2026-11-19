@@ -441,6 +441,8 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
 /// its note its tip. Pressed, `go`.
 fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -> Unit) -> Unit {
   let v = fn() { Some(i()) }
+  // the time, said again as each minute of a login's time left goes (attention_left's)
+  let now = @sf.countdown_now_node(row, src.now, fn() { number(v(), "loginEnds") })
   let title = fn() {
     match text(v(), "title") {
       "" => @sf.t("web-main.attention.untitled")
@@ -507,14 +509,14 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
       )
     })
     |> ignore
-    r.show(at_once=true, fn() { attention_line(v()) != "" }, fn(l) {
+    r.show(at_once=true, fn() { attention_line(v(), now()) != "" }, fn(l) {
       l.box(fn(u) {
         @sf.style_node(u, fn() { att_under })
         // (the dot's column, empty: the line starts where the title does)
         u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
         u.box(fn(words) {
           @sf.style_node(words, fn() { att_text }, in_row=true)
-          @sf.words_node(words, fn() { attention_line(v()) }, fn() { att_line }) |> ignore
+          @sf.words_node(words, fn() { attention_line(v(), now()) }, fn() { att_line }) |> ignore
         })
         |> ignore
       })
@@ -660,10 +662,31 @@ let att_link_on : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4
 ///|
 /// A wanting chat's line without its lead (the core's `what`: 要你帮忙：, 出问题：, 待处理 · taken off; the dot before it
 /// says that), else its station's name.
-fn attention_line(v : Json?) -> String {
-  match text(v, "what") {
+/// A login's (`loginEnds`: when it runs out of time) with how long is left as of `now`: 需要你登录 gh · 剩 12 分钟.
+fn attention_line(v : Json?, now : Double) -> String {
+  let line = match text(v, "what") {
     "" => text(v, "stationName")
     s => s
+  }
+  match attention_left(v, now) {
+    "" => line
+    left => line + " · " + left
+  }
+}
+
+///|
+/// How long is left of a login waiting for the viewer (`loginEnds`), in whole minutes rounded up, as of `now`: 剩 12
+/// 分钟, 不到 1 分钟; "" where it is not known or has gone by.
+fn attention_left(v : Json?, now : Double) -> String {
+  let ends = number(v, "loginEnds")
+  guard ends > 0.0 else { return "" }
+  let minutes = ((ends - now + 59999.0) / 60000.0).floor().to_int()
+  if minutes <= 0 {
+    ""
+  } else if minutes <= 1 {
+    @sf.t("web-main.attention.loginLast")
+  } else {
+    @sf.t("web-main.attention.loginLeft", args=[("minutes", minutes.to_string())])
   }
 }
 

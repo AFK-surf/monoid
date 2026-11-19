@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { holdLanguage } from "../src/i18n.ts";
+import { STALE_BUILD_MS } from "../src/station/oldest.ts";
 import { link, overview, prefs, setup, ui, workspace } from "./views-rig.ts";
 
 holdLanguage();
@@ -108,4 +109,41 @@ test("a version let be on a chat's notice is not offered; the next one is", asyn
   t.set(overview("ws/a"), overviewWith(own({ latest: "0.1.130" })));
   await t.read(u, 1);
   assert.deepEqual(u.value.items.map((i: J) => i.versionText), ["0.1.100 → 0.1.130"]);
+});
+
+test("a station older than 7 days surfaces even when auto-update is on, newer is false, or dismissed; flips reactively on TestClock", async () => {
+  const { t, u } = await rig();
+  const now = t.host.nowMs();
+  // Station b has auto: true and newer: false, but its builtAt is 8 days ago -> surfaced as stale
+  t.set(overview("ws/a"), overviewWith(own({ newer: false })));
+  t.set(overview("ws/b"), { ...overviewWith(own({ auto: true, newer: false })), builtAt: now - STALE_BUILD_MS - 1000 });
+  await t.read(u, 1);
+  assert.deepEqual(
+    u.value.items.map((i: J) => [i.station, i.state, i.stale, i.detail, i.canUpdate]),
+    [["ws/b", "offered", true, "版本已超过 7 天，请尽快升级", true]],
+  );
+  assert.equal(u.value.labelText, "1 台 station 需要更新");
+
+  // Dismissed version does NOT suppress a stale (>7d) station
+  t.set(prefs(), { stationUpdatesDismissed: { "ws/b": "stable:0.1.120" } });
+  await t.read(u, 1);
+  assert.equal(u.value.items.length, 1);
+  assert.equal(u.value.items[0].stale, true);
+
+  // Fresh build (built 6 days ago, 1 day left) with auto: true is NOT shown yet; advancing TestClock past 7 days flips it reactively
+  const freshBuiltAt = t.host.nowMs() - STALE_BUILD_MS + 60_000;
+  t.set(overview("ws/b"), { ...overviewWith(own({ auto: true, newer: false })), builtAt: freshBuiltAt });
+  await t.read(u, 1);
+  assert.deepEqual(u.value.items, []);
+
+  await t.host.time.pass(60_000);
+  await t.read(u, 1);
+  assert.equal(u.value.items.length, 1);
+  assert.equal(u.value.items[0].station, "ws/b");
+  assert.equal(u.value.items[0].stale, true);
+
+  // Dev / unknown build (builtAt absent or 0) never flags stale
+  t.set(overview("ws/b"), { ...overviewWith(own({ auto: true, newer: false })), builtAt: 0 });
+  await t.read(u, 1);
+  assert.deepEqual(u.value.items, []);
 });

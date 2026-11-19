@@ -864,16 +864,24 @@ pub fn Hub::tools_at(self : Hub, url : String) -> Unit {
 ///|
 /// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is pending.
 pub fn Hub::recover(self : Hub) -> Unit raise {
+  let recovering : Array[String] = []
   for row in self.running_sessions() {
     if self.adopted.contains(row_key(row)) || !self.online(row) {
       continue
     }
+    recovering.push(row_key(row))
     self.recover_one(row)
   }
-  for key in self.sessions_with_pending() {
-    match self.get_session(key) {
-      Some(row) => if self.online(row) { self.kick(row) }
-      None => ()
+  // (a turn resumed takes what waits for it with it; while turns are held, `release` gives the rest theirs)
+  if self.holds_now.length() == 0 {
+    for key in self.sessions_with_pending() {
+      if recovering.contains(key) {
+        continue
+      }
+      match self.get_session(key) {
+        Some(row) => if self.online(row) { self.kick(row) }
+        None => ()
+      }
     }
   }
   let indexed = self.store.recovery_waits()

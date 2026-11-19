@@ -8,7 +8,7 @@ import { Deferred, Effect, Queue } from "effect";
 import { linkTarget } from "../src/asks.ts";
 import { parseCall } from "../src/core/calls.ts";
 import { CoreError } from "../src/error.ts";
-import { CLIP_PNG_MAX, CLIP_TEXT_MAX, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, inputFrame, keyframeFrame, lookFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
+import { CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR, FrameReader, ackFrame, clipboardFrame, configFrame, copiedFrame, cursorFrame, inputFrame, keyframeFrame, lookFrame, readClientFrames, stateFrame, videoFrame, type ClientFrame, type StationFrame } from "../src/screen-frames.ts";
 import { LOOK_MS, accessOf, checkInput, othersOf, personShown } from "../src/screens.ts";
 import { HostWire, type RequestHead, type ScreenAsk, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
@@ -173,16 +173,45 @@ test("a_screen_link_opens_the_screen", () => {
 
 // ── a station's views, faked ──
 
+each("the_pointer_in_a_cursor_frame_is_read_to_a_ten_thousandth_with_its_shape_or_as_none", (seed) => {
+  assert.equal(CURSOR, 7);
+  const frames = [
+    cursorFrame({ x: 0.123456, y: 0.987654, shape: "pointer" }),
+    cursorFrame(null),
+    cursorFrame({ x: -2, y: 7 }),
+    cursorFrame({ x: 1, y: 0, shape: "中".repeat(22) }),
+    // a length no station sends: passed over
+    new Uint8Array([CURSOR, 0, 0, 0, 2, 1, 2]),
+    cursorFrame({ x: 0.5, y: 0.5, shape: "text" }),
+  ];
+  assert.equal(frames[0]!.length, 5 + 4 + 7, "a whole frame of 16 bytes");
+  const reader = new FrameReader();
+  const read: StationFrame[] = [];
+  for (const piece of cut(join(frames), random(seed))) {
+    reader.push(piece);
+    for (let f = reader.next(); f !== null; f = reader.next()) read.push(f);
+  }
+  assert.deepEqual(read, [
+    { cursor: { x: 0.1235, y: 0.9877, shape: "pointer" } },
+    { cursor: null },
+    { cursor: { x: 0, y: 1 } },
+    { cursor: { x: 1, y: 0 } },
+    { other: CURSOR },
+    { cursor: { x: 0.5, y: 0.5, shape: "text" } },
+  ]);
+});
+
 /// One view the fake station has open: what the client asked, what it sent, and the station's side of the stream.
 /// `alongside`: how many of the others were still open as it opened.
-type Viewing = { head: RequestHead; ask: ScreenAsk; got: ClientFrame[]; closed: boolean; alongside: number; tapped?: number; send(bytes: Uint8Array): void; end(): void };
+type Viewing = { head: RequestHead; ask: ScreenAsk; got: ClientFrame[]; closed: boolean; alongside: number; tapped?: number; tappedCursor?: boolean; send(bytes: Uint8Array): void; end(): void };
 
 /// A wire whose requests go over the host's fetch (station-fixture.ts) and whose screen views a test drives: `answer`
 /// says how the station answers each (200, or a status and its error).
 function screenWire(seed: number) {
   const views: Viewing[] = [];
-  // `tap`: the host reads the picture and sound itself (IrohStream.tap, Apple's shell), the core only the rest
-  const opts: { answer: (v: Viewing) => number | [number, string]; tap?: boolean } = { answer: () => 200 };
+  // `tap`: the host reads the picture and sound itself (IrohStream.tap, Apple's shell), the core only the rest;
+  // "cursor": the pointer too, where the page takes it alone (a shell from before: `true`, the pointer the core's)
+  const opts: { answer: (v: Viewing) => number | [number, string]; tap?: boolean | "cursor" } = { answer: () => 200 };
   const draw = random(seed);
   // The way to the station as the mesh has it: `replace` puts another in its place (mesh.ts `#switch`).
   let way = Deferred.makeUnsafe<void>();
@@ -228,7 +257,7 @@ function screenWire(seed: number) {
                 }),
               finish: () => {},
             },
-            ...(opts.tap ? { tap: (call: number) => Effect.sync(() => ((v.tapped = call), true)) } : {}),
+            ...(opts.tap ? { tap: (call: number, cursor?: boolean) => Effect.sync(() => ((v.tapped = call), (v.tappedCursor = cursor === true), opts.tap === "cursor" && cursor === true ? ("cursor" as const) : true)) } : {}),
           };
         }),
     };
@@ -497,6 +526,73 @@ each("a_view_its_host_reads_says_none_of_its_picture_and_is_live_by_the_head_it_
   await host.settle();
   assert.deepEqual(v!.got, [{ ack: 1_000 }]);
   core.close();
+});
+
+each("a_page_that_takes_the_pointer_alone_is_told_it_alone_as_it_moves_and_every_state_after_has_it", async (seed) => {
+  const { host, core, ui, views } = await viewing(seed);
+  const log: J[] = [];
+  call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"], cursorUpdates: true });
+  // a page from before (none asked): as it was
+  call(core, ui, 2, "screen.view", { station: "ws/st", screen: "browser:T1", view: "w", maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+  await host.settle();
+  assert.equal(views.length, 2);
+  const [v, w] = views;
+  assert.deepEqual(v!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true, binaryCursor: true }, "the station asked for cursor frames");
+  assert.deepEqual(w!.ask, { maxWidth: 1280, maxHeight: 720, codecs: ["h264"], control: true }, "nothing new asked");
+  for (const x of [v!, w!]) x.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, bytesOf(100, seed))]));
+  await host.settle();
+  said(host, log);
+  const before = { v: states(log, 1).length, w: states(log, 2).length };
+  // the pointer moving: a cursor frame (this station's), a state of it alone (a station from before them)
+  v!.send(join([cursorFrame({ x: 0.25, y: 0.5, shape: "text" }), stateFrame({ cursor: { x: 0.75, y: 0.125, shape: "pointer" } }), cursorFrame(null), cursorFrame({ x: 0.5, y: 0.5 })]));
+  w!.send(join([cursorFrame({ x: 0.25, y: 0.5, shape: "text" }), stateFrame({ cursor: { x: 0.75, y: 0.125, shape: "pointer" } })]));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual(log.filter((m) => m.id === 1 && m.value && "cursor" in m.value).map((m) => m.value), [
+    { cursor: { x: 0.25, y: 0.5, shape: "text" } }, { cursor: { x: 0.75, y: 0.125, shape: "pointer" } }, { cursor: null }, { cursor: { x: 0.5, y: 0.5 } },
+  ]);
+  assert.equal(states(log, 1).length, before.v, "no whole state made for the pointer");
+  // a page from before: a whole state each time, the pointer in it
+  assert.equal(log.filter((m) => m.id === 2 && m.value && "cursor" in m.value).length, 0);
+  assert.deepEqual(states(log, 2).slice(before.w).map((s) => s.cursor), [{ x: 0.25, y: 0.5, shape: "text" }, { x: 0.75, y: 0.125, shape: "pointer" }]);
+  // the next state said for anything else has the pointer as it is now
+  v!.send(stateFrame({ latency: { frame: 40, before: 8 } }));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual([lastState(log, 1).latency, lastState(log, 1).cursor], [{ frame: 40, before: 8 }, { x: 0.5, y: 0.5 }]);
+  // a state with the pointer and more: a whole state, as before
+  v!.send(stateFrame({ cursor: { x: 0.1, y: 0.2 }, viewers: ["a@x.com", "Bob"] }));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual([lastState(log, 1).cursor, lastState(log, 1).others], [{ x: 0.1, y: 0.2 }, ["Bob"]]);
+  core.close();
+});
+
+each("a_pointer_its_host_says_to_the_page_is_not_said_again_and_the_next_state_has_where_it_is_now", async (seed) => {
+  for (const shell of ["cursor", true] as const) {
+    const { host, core, ui, views, opts } = await viewing(seed);
+    opts.tap = shell;
+    const log: J[] = [];
+    call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1280, maxHeight: 720, codecs: ["h264"], cursorUpdates: true });
+    await host.settle();
+    const [v] = views;
+    assert.deepEqual([v!.tapped, v!.tappedCursor], [1, true], "the host asked to say the pointer");
+    v!.send(join([stateFrame({ title: "t", control: true }), configFrame({ codec: "h264", width: 1280, height: 720 }), videoFrame(true, 1, new Uint8Array(0))]));
+    await host.settle();
+    said(host, log);
+    const before = states(log, 1).length;
+    // what the host leaves the core of the pointer moving 120 times: the newest alone, given just before a state
+    v!.send(join([cursorFrame({ x: 0.75, y: 0.25, shape: "text" }), stateFrame({ latency: { frame: 30, before: 6 } })]));
+    await host.settle();
+    said(host, log);
+    const cursors = log.filter((m) => m.id === 1 && m.value && "cursor" in m.value).map((m) => m.value);
+    // said by the host already: not again (a shell from before says none of it, so the core does)
+    assert.deepEqual(cursors, shell === "cursor" ? [] : [{ cursor: { x: 0.75, y: 0.25, shape: "text" } }]);
+    // the state after it has the pointer where it is now, not where it was before
+    assert.equal(states(log, 1).length, before + 1);
+    assert.deepEqual([lastState(log, 1).latency, lastState(log, 1).cursor], [{ frame: 30, before: 6 }, { x: 0.75, y: 0.25, shape: "text" }]);
+    core.close();
+  }
 });
 
 each("a_view_brings_its_frames_with_their_bytes_and_takes_acks_key_frames_and_input", async (seed) => {

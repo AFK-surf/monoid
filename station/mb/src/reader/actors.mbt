@@ -107,6 +107,10 @@ priv struct Actor {
   mut delivery_interruptions : Int
   mut recoveries : Int
   mut recovery_deferred : Bool
+  /// how many times a turn on what waited for it failed to start
+  mut start_failures : Int
+  /// what was handed to the last of those (`handed_ids`); "" once one started
+  mut failed_handed : String
   /// its waits on Node's clock, by name
   timers : Map[String, () -> Unit]
   /// what it last told Node of itself
@@ -303,6 +307,8 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         delivery_interruptions: 0,
         recoveries: 0,
         recovery_deferred: false,
+        start_failures: 0,
+        failed_handed: "",
         timers: Map([]),
         mirrored: "",
       }
@@ -400,7 +406,7 @@ fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, 
   guard self.agents is Some(agents) else { return }
   guard agents.take(n, k) is Some((events, _)) else { return }
   for e in events {
-    let event = @json.parse(@jsjson.stringify(e)) catch { _ => continue }
+    let event = e.to_json()
     // (the live view takes each first, as it is: live.mbt)
     let mut read = Json::null()
     match str_of(event.value("type")) {

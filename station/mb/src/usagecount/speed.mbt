@@ -37,6 +37,13 @@ fn speed_text(s : Speed) -> String? {
 }
 
 ///|
+/// usage_files.speed as this counter keeps it (reference `keptSpeed`): none known kept as `,,,` (`speed_of`: none), so
+/// that NULL is only ever a transcript read before calls were timed, timed again as a counter starts.
+fn kept_speed(s : Speed) -> String {
+  speed_text(s).unwrap_or(",,,")
+}
+
+///|
 /// reference `speedOf`.
 fn speed_of(text : String?) -> Speed {
   guard text is Some(t) else { return no_speed() }

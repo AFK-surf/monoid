@@ -17,11 +17,17 @@ priv struct HistoryOwn {
 
 ///|
 // kept across runs: put back as a run begins (history_reset)
-let history_own : HistoryOwn = { shut: @signals.signal(false, same=fn(a, b) { a == b }), transcripts: {}, opening: {} }
+let history_own : HistoryOwn = { shut: @signals.signal(true, same=fn(a, b) { a == b }), transcripts: {}, opening: {} }
+
+///|
+/// Sets whether the wide history's details start folded (used by fixtures and tests inspecting unfolded details).
+pub fn set_history_shut(shut : Bool) -> Unit {
+  history_own.shut.set(shut)
+}
 
 ///|
 fn history_reset() -> Unit {
-  history_own.shut.set(false)
+  history_own.shut.set(true)
   history_own.transcripts.clear()
   history_own.opening.clear()
 }
@@ -117,6 +123,9 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
                 return
               }
               pressed.set(true)
+              if !src.read_only && (src.switches_ahead)() {
+                wh_transcript(src, station, key) |> ignore
+              }
               waiting.val = Some(
                 @sfpages.history_details_open(
                   src,
@@ -398,7 +407,8 @@ fn history_side_open(src : Source, r : ChatRef, key : String, open : () -> Unit)
     }
     None => ()
   }
-  if src.read_only || !(src.switches_ahead)() {
+  // When details are folded (the default), the transcript line is not on screen, so open immediately.
+  if history_own.shut.untracked() || src.read_only || !(src.switches_ahead)() {
     open()
     return
   }

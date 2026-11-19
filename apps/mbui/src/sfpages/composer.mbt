@@ -464,6 +464,10 @@ pub fn composer(
   if !spec.locked {
     // (its words' field given the focus: the field itself, as a press finds no editor built then)
     c.on_press(cap, fn() { c.focus_field(w.field) })
+    match c.right_clicked_own(cap) {
+      Some((mx, my)) => w.field.open_menu(mx, my)
+      None => ()
+    }
   }
   // words dragged in from another app and let go on it beside its field (its ＋, send, its edge: on the field they go
   // where they were let go): into its field at its caret, as a paste's

@@ -195,6 +195,26 @@ posthog_define() {
     echo undefined
   fi
 }
+# When this release build was made (Unix ms, client/core-ts/src/station/oldest.ts `__STILLFAIL_BUILT_AT__`): MBUI_BUILT_AT
+# when given; else for a numbered release (MBUI_BUILD >= 1000) the HEAD commit's timestamp in ms; 0 in local dev so dev
+# builds never prompt to upgrade. Part of core.hbc's key and stamp.
+built_at_define() {
+  if [ -n "${MBUI_BUILT_AT:-}" ]; then
+    case "$MBUI_BUILT_AT" in
+      *[!0-9]*) echo "hermes: MBUI_BUILT_AT ($MBUI_BUILT_AT) is no integer ms" >&2; return 1 ;;
+    esac
+    echo "$MBUI_BUILT_AT"
+  elif [ -n "${MBUI_BUILD:-}" ] && case "$MBUI_BUILD" in ''|*[!0-9]*) false ;; *) [ "$MBUI_BUILD" -ge 1000 ] ;; esac; then
+    local ct
+    ct=$(git -C "$SF_SRC" show -s --format=%ct HEAD 2>/dev/null || true)
+    case "$ct" in
+      ''|*[!0-9]*) echo 0 ;;
+      *) printf '%s000\n' "$ct" ;;
+    esac
+  else
+    echo 0
+  fi
+}
 hbc_key() {
   [ -n "${HBC_CACHE:-}" ] || return 1
   local trees changed paths
@@ -214,6 +234,7 @@ hbc_key() {
     $SHA < "$D/core.sh"
     echo "${ENTRY#"$ROOT"/}"
     echo "posthog $(posthog_define | $SHA)"
+    echo "built_at $(built_at_define)"
     $SHA < "$1"; } | $SHA | cut -c1-24
 }
 
@@ -348,9 +369,10 @@ hermes() {
   have_deps
   # With a clean Git tree the content key decides reuse; a missing key cannot fall back to an older timestamp stamp.
   # Without a content key, use the last build only when its checkout and inputs still match.
-  local posthog
+  local posthog built_at
   posthog=$(posthog_define) || { echo "hermes: STILLFAIL_POSTHOG ($STILLFAIL_POSTHOG) is no {host, key}"; return 1; }
-  if [ -z "$key" ] && [ -f $OUT/core.hbc ] && [ -f $OUT/core.hbc.stamp ] && [ "$(hbc_stamp "$hc" 2>/dev/null) posthog $(echo "$posthog" | $SHA)" = "$(cat $OUT/core.hbc.stamp)" ]; then
+  built_at=$(built_at_define) || return 1
+  if [ -z "$key" ] && [ -f $OUT/core.hbc ] && [ -f $OUT/core.hbc.stamp ] && [ "$(hbc_stamp "$hc" 2>/dev/null) posthog $(echo "$posthog" | $SHA) built_at $built_at" = "$(cat $OUT/core.hbc.stamp)" ]; then
     echo "hermes: core.hbc as it was (its inputs unchanged)"
     return 0
   fi
@@ -361,6 +383,7 @@ hermes() {
     --format=iife --platform=neutral --main-fields=module,main --conditions=hermes --target=es2020 --supported:async-await=false --supported:async-generator=false --minify --legal-comments=none \
     --alias:@core=$CORE_TS/src --alias:@stillfail=$SF_SRC --resolve-extensions=.ts,.js,.mjs \
     "--define:__STILLFAIL_POSTHOG__=$posthog" \
+    "--define:__STILLFAIL_BUILT_AT__=$built_at" \
     --outfile=$OUT/core-hermes.js --metafile=$OUT/core-hermes.meta.json --log-level=warning \
     || { echo "hermes: bundle failed"; return 1; }
   hbc_inputs "$key" || { rm -f $OUT/core-hermes.js; return 1; }
@@ -374,7 +397,7 @@ if (!out || !out.code) throw new Error('babel made nothing');
 writeFileSync(f, out.code);" $OUT/core-hermes.js) || { echo "hermes: class transform failed"; return 1; }
   "$hc" -emit-binary -O -block-scoping -out $OUT/core.hbc $OUT/core-hermes.js \
     || { echo "hermes: hermesc failed"; rm -f $OUT/core.hbc; return 1; }
-  { stamp=$(hbc_stamp "$hc") && echo "$stamp posthog $(echo "$posthog" | $SHA)" > $OUT/core.hbc.stamp; } || rm -f $OUT/core.hbc.stamp
+  { stamp=$(hbc_stamp "$hc") && echo "$stamp posthog $(echo "$posthog" | $SHA) built_at $built_at" > $OUT/core.hbc.stamp; } || rm -f $OUT/core.hbc.stamp
   echo "hermes in $(since $t0) s: $(wc -c < $OUT/core-hermes.js | tr -d ' ') bytes of script, $(wc -c < $OUT/core.hbc | tr -d ' ') of bytecode${key:+ (kept as $key)}"
   if [ -n "$key" ]; then
     mkdir -p "$HBC_CACHE" && cp -p $OUT/core.hbc "$HBC_CACHE/$key.hbc.tmp" && mv "$HBC_CACHE/$key.hbc.tmp" "$HBC_CACHE/$key.hbc"

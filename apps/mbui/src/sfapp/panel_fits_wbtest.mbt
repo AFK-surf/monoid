@@ -94,11 +94,11 @@ test "panel fits, the model's (model_pop): where it is, its models and how hard 
   }
   debug_inspect(out, content=(
     #|[
-    #|  "newchat-model: dialog Some((650, 139, 313, 387)) opus Some((656, 175, 188, 36)) high Some((885, 250, 72, 36))",
-    #|  "newchat-tall-model: dialog Some((650, 65, 520, 461)) opus Some((656, -47, 394.5, 36)) high Some((1091.5, 213, 72.5, 36))",
-    #|  "newchat-crowded-model: dialog Some((650, 75, 379, 451)) opus Some((656, 27, 254, 36)) high Some((951, 186, 72, 36))",
-    #|  "newchat-crowded-model 低: dialog Some((650, 75, 379, 451)) high Some((951, 186, 72, 36))",
-    #|  "newchat-crowded-model 最高: dialog Some((650, 75, 379, 451)) high Some((951, 186, 72, 36))",
+    #|  "newchat-model: dialog Some((650, 136, 340, 390)) opus Some((656, 172, 188, 36)) high Some((885, 246, 99, 36))",
+    #|  "newchat-tall-model: dialog Some((650, 62, 520, 464)) opus Some((656, -50, 381, 36)) high Some((1078, 209, 86, 36))",
+    #|  "newchat-crowded-model: dialog Some((650, 75, 379, 451)) opus Some((656, 27, 254, 36)) high Some((951, 185, 72, 36))",
+    #|  "newchat-crowded-model 低: dialog Some((650, 75, 379, 451)) high Some((951, 185, 72, 36))",
+    #|  "newchat-crowded-model 最高: dialog Some((650, 75, 379, 451)) high Some((951, 185, 72, 36))",
     #|]
   ))
   assert_eq(drawn, [true, true, true])

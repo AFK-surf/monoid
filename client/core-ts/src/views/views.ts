@@ -46,6 +46,7 @@ import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, 
 import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
+import * as logins from "../station/machine-logins.ts";
 import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
 import { lineForViewer, noTurnBegun, stageFields } from "../chat-stage.ts";
@@ -54,6 +55,7 @@ import { usageSummary } from "./usage-summary.ts";
 import { agentRates } from "./agent-rates.ts";
 import { fleetView } from "./fleet.ts";
 import { stationUpdates } from "./station-updates.ts";
+import { STALE_BUILD_MS } from "../station/oldest.ts";
 import { chatsCard, usageCard } from "./rail-cards.ts";
 import { resourcesView } from "./resources.ts";
 import { stationProfileSummary, workspaceProfiles } from "./profiles.ts";
@@ -877,6 +879,9 @@ export type ViewsEnv = {
   resume?: (topic: Topic) => void;
   /// How much of a chat is on the device (station/topics.ts `held`); none where not given.
   held?: (station: string, thread: number) => { held: number; of: number; whole: boolean };
+  /// A login of a station's as its station last told it (station/machine-logins.ts): the program it is to (gh, gcloud)
+  /// and, under way, when it runs out of time; null where it has not been told. What 待处理 says of a login's card.
+  loginOf?: (station: string, id: string) => { name: string; ends: number | null } | null;
   /// How agents' requests about vault items are answered on this device, from the vault as the core holds it
   /// (views/vault.ts askAnswers): each `{answer, lasts?}`, in the order asked.
   vaultAnswers?: (workspace: string, asks: VaultAskOf[]) => J[];
@@ -909,6 +914,12 @@ export function envOf(core: Inner): ViewsEnv {
     data: core.data,
     waits: (topic) => core.stationTopics.waits(topic),
     held: (station, thread) => core.stationTopics.held(station, thread),
+    loginOf: (station, id) => {
+      const l = logins.held(core.stations.link(station)).logins.find((x) => x.id === id);
+      if (!l || typeof l.name !== "string" || l.name === "") return null;
+      const active = l.endedAt === undefined || l.endedAt === null;
+      return { name: l.name, ends: active && typeof l.expiresAt === "number" && l.expiresAt > 0 ? l.expiresAt : null };
+    },
     emailOf: (workspace) => {
       const sub = owner(workspace);
       return sub === null ? null : (core.accounts.list().find((a) => a.sub === sub)?.email ?? null);
@@ -1569,6 +1580,11 @@ export class Views implements Owner {
   /// offline to connecting made both workspaces' marks again, 4-7 ms in Hermes on a Mac Studio at a workspace of real
   /// size (2026-11-11).
   readonly #stationsNamed = new Map<string, Derived<{ address: string; name: string }[]>>();
+  /// A login of a station's, as its station last told it (null: not told): its program, when it runs out of time.
+  loginOf(station: string, id: string): { name: string; ends: number | null } | null {
+    return this.#core.loginOf?.(station, id) ?? null;
+  }
+
   stationsNamed(scope: string): { address: string; name: string }[] {
     let kept = this.#stationsNamed.get(scope);
     if (kept === undefined) {
@@ -2106,9 +2122,22 @@ export class Views implements Owner {
         const role = get(this.ok({ topic: "workspace", workspace: scope }), "role");
         const manages = role === "owner" || role === "admin";
         const data = this.#core.data;
-        // (a version let be on a chat's notice of it, 不再提醒此版本, is not offered here either)
+        // (a version let be on a chat's notice of it, 不再提醒此版本, is not offered here either unless stale > 7d)
         const dismissed = this.prefsPart(updatesDismissedIn);
-        return { ok: stationUpdates(manages ? stations.map((s) => ({ station: s.address, name: s.name, online: s.online && !down(this.link(s.address)), software: data.overviewSoftware(s.address), dismissed: str(get(dismissed, s.address)) })) : []) };
+        const now = untracked(() => this.#core.host.nowMs());
+        const list = manages
+          ? stations.map((s) => {
+              const software = data.overviewSoftware(s.address);
+              if (isObject(software) && get(software, "updatable") === true) {
+                const builtAt = get(software, "builtAt");
+                if (typeof builtAt === "number" && Number.isFinite(builtAt) && builtAt > 0) {
+                  this.#moments.reached(builtAt + STALE_BUILD_MS, true);
+                }
+              }
+              return { station: s.address, name: s.name, online: s.online && !down(this.link(s.address)), software, dismissed: str(get(dismissed, s.address)) };
+            })
+          : [];
+        return { ok: stationUpdates(list, now) };
       }
       case "railCard": {
         const scope = view.scope as string;
@@ -2241,6 +2270,11 @@ export class Views implements Owner {
   /// Has what is being computed made again in `ms` (clock.ts `reached`).
   #againIn(ms: number): void {
     if (Number.isFinite(ms)) this.#moments.reached(untracked(() => this.#core.host.nowMs()) + Math.ceil(ms));
+  }
+
+  /// Re-checks waiting deadline moments against the wall clock (e.g. after wake/reconnect).
+  checkMoments(): void {
+    this.#moments.check();
   }
 
   // ── the chat list ──

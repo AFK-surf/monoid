@@ -28,7 +28,7 @@ import { CHAT_CREATE } from "../src/tools/chat.ts";
 import { failureOf } from "../src/agents/runtime.ts";
 import { cannotStartWords } from "../src/sessions/actor.ts";
 import { testClock } from "./hub-fakes.ts";
-import { CORE, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
+import { CORE, HIDDEN, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
 import { stationTools } from "./station-tools.ts";
 
 const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "agy-") : "/tmp/agy-");
@@ -501,6 +501,27 @@ for (const crashed of [false, true]) {
     }
   });
 }
+
+test("a process whose station went before it was open (initialize never answered) is not taken up after a crash", async () => {
+  const { options, driver, dump } = setup({ FAKE_AGY_SILENT: "1" });
+  const opening = driver.open(options, () => {});
+  opening.catch(() => {});
+  await until(() => existsSync(dump + ".rpc") && rpc(dump).some((m) => m.method === "initialize"));
+  const [stuck] = [...(driver as unknown as { live: Set<unknown> }).live] as { runner(): string | undefined }[];
+  const runner = stuck!.runner()!;
+  driver.detach();
+  await allLeft();
+  const next = new AgyDriver({ data });
+  drivers.push(next);
+  // (refused before it is held: the hub's `endOrphans` ends its runner, and the session opens again the usual way)
+  await assert.rejects(next.adopt(options, null, () => {}), new RegExp(`agy process for ${options.key} had not opened a session`));
+  assert.equal(next.ownedRunners().size, 0);
+  const { endRunner, findRunner } = await import("../src/agents/process.ts");
+  assert.notEqual(await findRunner(data, runner), undefined);
+  await endRunner(data, runner, "test");
+  (stuck as unknown as { waiting: { failAll(e: Error): void } }).waiting.failAll(new Error("ended"));
+  await assert.rejects(opening, /ended/);
+});
 
 test("a warm Antigravity session whose CLI lacks its trajectory recovers across handover and on a live prompt without an error notice", async () => {
   const { Hub } = await import("../src/sessions/hub.ts");
@@ -1638,7 +1659,7 @@ test("Antigravity CLI is declared the station's tools within what it keeps, chat
   // And the rest are still reached, through station_tool.
   assert.equal(names.at(-1), INDIRECT);
   const indirect: string[] = list.at(-1).inputSchema.properties.name.enum;
-  assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.map((t) => t.name).sort());
+  assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.filter((t) => !HIDDEN.includes(t.name)).map((t) => t.name).sort());
   // The 45,000 of before is what `agy` 1.5.8 dropped chat_post under (2026-11-16): over the ceiling, as this counts it.
   const before = await listed(45_000);
   assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);

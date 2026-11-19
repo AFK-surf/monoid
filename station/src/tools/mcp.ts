@@ -39,17 +39,29 @@ export const weight = (t: Tool) => Buffer.byteLength(JSON.stringify(declared(t))
 /// sent elsewhere.
 export const CORE = ["chat_post", "chat_state", "chat_history", "chat_read", "job_start", "job_log", "job_list", "job_stop", "station_task", "station_file", "skill_read"];
 
+/// Declared next when a runtime budgets its tools (`fitted`), in this order, before sorting the remaining tools by size:
+/// everyday collaboration, discovery and session/device tools that should not pay an extra station_tool round-trip.
+export const PRIORITY = [
+  "chat_list", "chat_create", "session_send", "chat_configure", "chat_archive", "session_history",
+  "search", "station_list", "device_list", "device_use", "browser", "screen", "secret_list", "secret_use", "secret_run",
+];
+
+/// Superseded tools kept callable for sessions begun before they were retired, but omitted from tools/list and
+/// station_tool so new sessions pay nothing for them (device_list/device_use replace adb_devices/phone_use; persistent
+/// system cards replace secret_reask; station_move replaces station_retire).
+export const HIDDEN = ["adb_devices", "phone_use", "secret_reask", "station_retire"];
+
 /// What every turn calls: an agent's answer reaches people only through chat_post, and a turn ends with chat_state.
 export const EVERY_TURN = ["chat_post", "chat_state"];
 
 /// By which a session speaks or acts in chats as itself: it posts, ends its turn, writes to another chat's agent, opens
-/// a chat, leaves one, archives one. They are for the session's own agent alone (the user, 2026-11-14: 「subagent
+/// a chat, leaves one, archives or configures one. They are for the session's own agent alone (the user, 2026-11-14: 「subagent
 /// 不应该能自己发消息」): one it started hands its result back to it and says nothing itself. The endpoint cannot hold
 /// that: a subagent's call comes with its session's token, as its parent's does, so each runtime's driver keeps its
 /// subagents from these (agents/claude.ts `SILENT_SUBAGENTS`). Not OUTWARD, which is where a call lands whoever makes
 /// it: a subagent starts a job or a task as its parent would, and chat_state lands nowhere outside the station.
 /// A new tool is sorted into these or out of them in test/speaks.test.ts.
-export const SPEAKS = ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive"];
+export const SPEAKS = ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive", "chat_configure"];
 /// The one that speaks only where its method writes (a post, an edit, a reaction, a direct message, as the session's
 /// Slack bot): its own agent's alone as those above are, while a subagent reads Slack as its parent does, so a driver
 /// keeps its subagents from the writes and lets the rest through.
@@ -94,16 +106,23 @@ export const INDIRECT = "station_tool";
 /// The tools to declare within `budget` bytes, and the rest, reached through INDIRECT. A runtime that budgets its tools
 /// drops the largest beyond it and gives the model no way to call them (Antigravity CLI 1.5.6 in ACP: chat_post,
 /// the largest, went first, and a session could no longer post). So the list is fitted here, deterministically: the
-/// CORE tools, then the others from the lightest while they fit, and INDIRECT naming the rest.
+/// CORE tools, then PRIORITY tools in order, then the others from the lightest while they fit, and INDIRECT naming the
+/// rest. HIDDEN tools are omitted from both lists.
 export function fitted(tools: readonly Tool[], budget: number): { declared: Tool[]; indirect: Tool[] } {
-  const core = CORE.flatMap((name) => tools.filter((t) => t.name === name));
-  const others = tools.filter((t) => !CORE.includes(t.name)).sort((a, b) => weight(a) - weight(b) || (a.name < b.name ? -1 : 1));
-  const fits = (list: readonly Tool[], rest: readonly Tool[]) => list.reduce((n, t) => n + weight(t), 0) + (rest.length === 0 ? 0 : weight(indirectTool(rest)));
+  const visible = tools.filter((t) => !HIDDEN.includes(t.name));
+  const core = CORE.flatMap((name) => visible.filter((t) => t.name === name));
+  const priority = PRIORITY.flatMap((name) => visible.filter((t) => t.name === name && !CORE.includes(t.name)));
+  const rest = visible.filter((t) => !CORE.includes(t.name) && !PRIORITY.includes(t.name)).sort((a, b) => weight(a) - weight(b) || (a.name < b.name ? -1 : 1));
+  const queue = [...priority, ...rest];
+  const fits = (list: readonly Tool[], left: readonly Tool[]) => list.reduce((n, t) => n + weight(t), 0) + (left.length === 0 ? 0 : weight(indirectTool(left)));
   const out = [...core];
-  let i = 0;
-  while (i < others.length && fits([...out, others[i]!], others.slice(i + 1)) <= budget) out.push(others[i++]!);
-  const indirect = others.slice(i);
-  return { declared: tools.filter((t) => out.includes(t)), indirect };
+  const indirect: Tool[] = [];
+  for (let i = 0; i < queue.length; i++) {
+    const t = queue[i]!;
+    if (fits([...out, t], [...indirect, ...queue.slice(i + 1)]) <= budget) out.push(t);
+    else indirect.push(t);
+  }
+  return { declared: visible.filter((t) => out.includes(t)), indirect };
 }
 
 /// The tool that calls one left undeclared by name: given only `name`, it answers that tool's description and
@@ -175,12 +194,12 @@ export class McpEndpoint {
   /// the EVERY_TURN ones with its runtime's `loaded`, whose bytes its budget counts. A runtime that needs nothing is
   /// declared them byte for byte as before there was any of this: some validate or weigh what they are given.
   private listed(session: string): Declared[] {
-    const all = this.tools();
+    const visible = this.tools().filter((t) => !HIDDEN.includes(t.name));
     const { budget, loaded } = this.listing?.(session) ?? {};
     const say = (t: Tool): Declared => (loaded !== undefined && EVERY_TURN.includes(t.name) ? { ...declared(t), _meta: loaded } : declared(t));
-    if (budget === undefined) return all.map(say);
-    const marks = all.reduce((n, t) => n + Buffer.byteLength(JSON.stringify(say(t))) - weight(t), 0);
-    const { declared: fit, indirect } = fitted(all, budget - marks);
+    if (budget === undefined) return visible.map(say);
+    const marks = visible.reduce((n, t) => n + Buffer.byteLength(JSON.stringify(say(t))) - weight(t), 0);
+    const { declared: fit, indirect } = fitted(visible, budget - marks);
     return (indirect.length === 0 ? fit : [...fit, indirectTool(indirect)]).map(say);
   }
 

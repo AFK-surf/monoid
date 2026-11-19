@@ -708,3 +708,71 @@ test "triggers without a mouse press (丙 and 丁) do not light lit_within_node 
     assert_true(@signals.untracked(hands[name].open), msg="\{name} uncovered: card open")
   }
 }
+
+///|
+/// A card of a button that is action_box_node's (a bar's tile: its press the button's, a finger's hold its `on_hold`,
+/// the pointer on it said by `pointed`): in a window 800 by 500 (`platform` 0 a mouse's, 1 a touch screen's), 甲 120 by
+/// 44 at (40, 0); its hand, how many times it was pressed.
+fn hover_box_rig(platform : Int) -> (@ui.Tester, Ref[HoverHand?], Ref[Int]) {
+  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=500.0, platform~)
+  t.check_looks(false)
+  let hand : Ref[HoverHand?] = Ref(None)
+  let pressed = Ref(0)
+  @ui.set_view_app(fn(root) {
+    root.row(Is(true)) |> ignore
+    let layer : Ref[@view.View?] = Ref(None)
+    let tips = TipLayer::new(fn() { layer.val })
+    root.box(fn(g) { g.width(Is(Some(40.0))) |> ignore }) |> ignore
+    action_box_node(root, fn() { "甲" }, fn(_) { pressed.val += 1 }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(
+      k,
+    ) {
+      k.width(Is(Some(120.0))).height(Is(Some(44.0))) |> ignore
+      hand.val = Some(
+        hover_card_node(tips, k, fn(b) { hover_card_body(b, "甲", Map([])) }, pointed=fn() { k.pointed_in() }),
+      )
+    })
+    |> ignore
+    layer.val = Some(root.box(fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
+  })
+  t.draw()
+  (t, hand, pressed)
+}
+
+///|
+test "a button's card (action_box_node's on_hold, `pointed`): a finger's tap its press, no card; held, its card and no press, a tap on it then its press; a mouse's rest its card, a click and a long press each its press" {
+  let (t, hand, pressed) = hover_box_rig(1)
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  let (x, y) = (100.0, 22.0)
+  t.touch(0, x, y)
+  t.touch(2, x, y)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_eq((pressed.val, open()), (1, false), msg="a tap")
+  t.touch(0, x, y)
+  t.run_for(@ui.long_press_ms + hover_settled_ms)
+  assert_true(open(), msg="held: open")
+  t.touch(2, x, y)
+  t.run_for(hover_card_close_ms + hover_settled_ms)
+  assert_eq((pressed.val, open()), (1, true), msg="let go: still open, the hold no press")
+  t.touch(0, x, y)
+  t.touch(2, x, y)
+  t.run_for(hover_settled_ms)
+  assert_eq(pressed.val, 2, msg="a tap on it while open: its press")
+  t.touch(0, hover_away.0, hover_away.1)
+  t.touch(2, hover_away.0, hover_away.1)
+  t.run_for(hover_settled_ms)
+  assert_false(open(), msg="a press elsewhere: closed")
+  assert_eq(t.audit(), [])
+  let (t, hand, pressed) = hover_box_rig(0)
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  t.move_to(x, y)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(open(), msg="a mouse's rest: open")
+  t.click(Button, label="甲")
+  assert_eq(pressed.val, 1, msg="a click")
+  t.press_at(x, y)
+  t.run_for(@ui.long_press_ms + hover_settled_ms)
+  t.release(x, y)
+  t.run_for(hover_settled_ms)
+  assert_eq(pressed.val, 2, msg="a mouse's long press: a click")
+  assert_eq(t.audit(), [])
+}
