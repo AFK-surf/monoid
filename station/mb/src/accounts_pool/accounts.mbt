@@ -304,7 +304,7 @@ pub struct Accounts {
   pending : Map[String, Pending]
   making : Map[String, Unit]
   codex_accounts : Map[String, (String, String?)]
-  codex_account_reads : Map[String, @effect.Deferred[Unit]]
+  codex_account_reads : Map[String, (String, @effect.Deferred[Unit])]
   homes : Map[String, (String, HomeSays)]
   mut homes_read : Double
   mut homes_reading : Bool
@@ -681,7 +681,8 @@ fn Accounts::codex_account(self : Accounts, profile : Profile) -> String? {
 }
 
 ///|
-/// `codexAccountRead`: `again`: its login just changed, so a read after any under way, kept last.
+/// `codexAccountRead`: `again`: its login just changed, so a read after any under way, kept last. A read under way of
+/// another home (the profile's home changed) is not this one's: a read after it too.
 async fn Accounts::codex_account_read(
   self : Accounts,
   profile : Profile,
@@ -689,16 +690,16 @@ async fn Accounts::codex_account_read(
 ) -> Unit {
   let under = self.codex_account_reads.get(profile.id)
   match under {
-    Some(u) if !again => {
+    Some((home, u)) if home == profile.home && !again => {
       u.wait()
       return
     }
     _ => ()
   }
   let read = @effect.Deferred::new()
-  self.codex_account_reads[profile.id] = read
+  self.codex_account_reads[profile.id] = (profile.home, read)
   match under {
-    Some(u) => u.wait() catch { _ => () }
+    Some((_, u)) => u.wait() catch { _ => () }
     None => ()
   }
   let account = self.ask("codex.accountIdentity", [js(profile.home)]) catch {
@@ -714,7 +715,7 @@ async fn Accounts::codex_account_read(
     )
   }
   match self.codex_account_reads.get(profile.id) {
-    Some(r) if physical_equal(r, read) => self.codex_account_reads.remove(profile.id)
+    Some((_, r)) if physical_equal(r, read) => self.codex_account_reads.remove(profile.id)
     _ => ()
   }
   ignore(read.succeed(()))

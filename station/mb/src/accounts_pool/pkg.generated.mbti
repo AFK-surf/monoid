@@ -431,7 +431,7 @@ pub struct Accounts {
   pending : Map[String, Pending]
   making : Map[String, Unit]
   codex_accounts : Map[String, (String, String?)]
-  codex_account_reads : Map[String, @effect.Deferred[Unit]]
+  codex_account_reads : Map[String, (String, @effect.Deferred[Unit])]
   homes : Map[String, (String, HomeSays)]
   mut homes_read : Double
   mut homes_reading : Bool
