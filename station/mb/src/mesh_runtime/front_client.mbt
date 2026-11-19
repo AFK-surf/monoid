@@ -95,7 +95,8 @@ pub fn shell_sockets(host : @host.Host) -> Sockets {
 ///|
 /// A socket as the front's link keeps it: whether it was let go, or its sending half ended. The shell keeps a socket
 /// until it is told to close it (`tcp.close`), even when both halves are over, so the socket is let go once its read
-/// side has ended and its sending half has been ended, as Node closes a half-open socket then by itself.
+/// side has ended and its sending half has been ended, as Node closes a half-open socket then by itself. Until then it
+/// stays counted as open (`on_close`, as Node's `close`), so a connection's close or the front's end still lets it go.
 priv struct Held {
   sock : Sock
   mut destroyed : Bool
@@ -133,13 +134,11 @@ fn Held::closed_now(self : Held) -> Unit {
 }
 
 ///|
-/// Its read side ended: let go once its sending half is over too, else only no longer counted as open.
+/// Its read side ended: let go once its sending half is over too.
 fn Held::read_ended(self : Held) -> Unit {
   self.read_over = true
   if self.sent_end {
     self.destroy()
-  } else {
-    self.closed_now()
   }
 }
 
