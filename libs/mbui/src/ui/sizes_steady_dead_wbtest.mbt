@@ -139,4 +139,16 @@ test "stopped dead: a sub-half-frame sliver under one device pixel is not a dead
   ]
   let (jump_said, _) = sizes_steady_fault(real_jump, p60, turned=-1.0, px=0.5)
   assert_true(jump_said is Some(_), msg="real jump must still be caught")
+  // n == 3 (first-frame step then stood): 0.06 ms sliver at 120 fps is quantization, not a step-and-stop;
+  // standing still through the next real frame still fires
+  let sliver_n3 = [
+    (2983.333333333333, 2985.0846354166665, 375.5),
+    (2991.666666666667, 2995.7989908854165, 343.0),
+    (2995.8585611979165, 2995.8585611979165, 343.0),
+  ]
+  assert_eq(sizes_steady_fault(sliver_n3, p120, turned=-1.0, px=0.5).0, None)
+  let stood_n3 = sliver_n3.copy()
+  stood_n3[2] = (2995.8585611979165, 3000.0, 343.0)
+  let (stood_said, _) = sizes_steady_fault(stood_n3, p120, turned=-1.0, px=0.5)
+  assert_true(stood_said is Some(s) && s.contains("stepped"), msg="\{Repr(stood_said)}")
 }
