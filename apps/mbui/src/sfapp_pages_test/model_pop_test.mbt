@@ -721,3 +721,133 @@ test "wide, keys and mouse: the model's panel opened over the focused composer h
   assert_eq(focus(), had)
   assert_eq(t.semantics().filter(fn(s) { s.role is TextField })[0].value, "", msg="nothing typed went to the composer")
 }
+
+///|
+/// The panel's lines (`A(Line, O60)`, a hairline thick) drawn inside its dialog: those across (h) and those down (v), and the
+/// dialog's rect.
+fn panel_lines(
+  t : @ui.Tester,
+) -> (
+  Array[(Double, Double, Double, Double)],
+  Array[(Double, Double, Double, Double)],
+  (Double, Double, Double, Double),
+) raise {
+  let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
+  let line = @ui.alpha(@sf.theme().p.line, 0.6)
+  let inside = t
+    .drawn_rects()
+    .filter(fn(r) {
+      r.4 >> 8 == line >> 8 && ((r.4 & 0xFFL) - (line & 0xFFL)).abs() <= 1L && r.0 >= px - 0.5 && r.0 + r.2 <= px + pw + 0.5 && r.1 >= py - 0.5 && r.1 + r.3 <= py + ph + 0.5
+    })
+    .map(fn(r) { (r.0, r.1, r.2, r.3) })
+  let h = inside.filter(fn(r) { (r.3 - 0.5).abs() < 0.01 && r.2 > 2.0 })
+  let v = inside.filter(fn(r) { (r.2 - 0.5).abs() < 0.01 && r.3 > 2.0 })
+  (h, v, (px, py, pw, ph))
+}
+
+///|
+fn near(a : Double, b : Double) -> Bool {
+  (a - b).abs() < 0.05
+}
+
+///|
+/// Every line of the panel's first level ends on another line or on the panel's edge: the foot's across it, the one
+/// between the models and how they run from the top to the foot's, the one over 全部模型 from the left edge to that one,
+/// those between how it runs from that one to the right edge; none crossing another (each a hairline of `Line`, which is
+/// faded, seen through: two over each other drawn darker where they meet).
+fn first_level_lines_meet(t : @ui.Tester, what : String) -> Unit raise {
+  let (h, v, (px, py, pw, _)) = panel_lines(t)
+  let msg = "\{what}: across \{Repr(h)}, down \{Repr(v)}, panel \{Repr((px, py, pw))}"
+  assert_eq(v.length(), 1, msg~)
+  let rv = v[0]
+  let foot = h.fold(init=h[0], fn(a, r) { if r.1 > a.1 { r } else { a } })
+  assert_true(near(foot.0, px) && near(foot.0 + foot.2, px + pw), msg="the foot's line across the panel: \{msg}")
+  assert_true(near(rv.1, py) && near(rv.1 + rv.3, foot.1), msg="the line down from the top to the foot's: \{msg}")
+  for r in h {
+    if r == foot {
+      continue
+    }
+    if r.0 < rv.0 {
+      // (over 全部模型: from the panel's left edge to the line down, not over it)
+      assert_true(near(r.0, px) && near(r.0 + r.2, rv.0), msg="a line left of the one down: \{Repr(r)} \{msg}")
+    } else {
+      // (between how it runs: from the line down, not over it, to the panel's right edge)
+      assert_true(near(r.0, rv.0 + rv.2) && near(r.0 + r.2, px + pw), msg="a line right of the one down: \{Repr(r)} \{msg}")
+    }
+  }
+}
+
+///|
+/// The level of all models, browsing a maker: the line under ‹ 全部模型 from the left edge to the line down between
+/// the models and how they run; the one between the makers and their models from that line's foot to the panel foot's.
+fn all_level_lines_meet(t : @ui.Tester, what : String) -> Unit raise {
+  let (h, v, (px, py, pw, _)) = panel_lines(t)
+  let msg = "\{what}: across \{Repr(h)}, down \{Repr(v)}, panel \{Repr((px, py, pw))}"
+  assert_eq(v.length(), 2, msg~)
+  let (mv, rv) = if v[0].0 < v[1].0 { (v[0], v[1]) } else { (v[1], v[0]) }
+  let foot = h.fold(init=h[0], fn(a, r) { if r.1 > a.1 { r } else { a } })
+  assert_true(near(foot.0, px) && near(foot.0 + foot.2, px + pw), msg="the foot's line across the panel: \{msg}")
+  assert_true(near(rv.1, py) && near(rv.1 + rv.3, foot.1), msg="the line down from the top to the foot's: \{msg}")
+  let back = h.filter(fn(r) { r != foot && r.0 < rv.0 })
+  assert_eq(back.length(), 1, msg="one line under ‹ 全部模型: \{msg}")
+  let b = back[0]
+  assert_true(near(b.0, px) && near(b.0 + b.2, rv.0), msg="the line under ‹ 全部模型 to the line down: \{msg}")
+  assert_true(
+    near(mv.1, b.1 + b.3) && near(mv.1 + mv.3, foot.1),
+    msg="the line between makers and models from that line to the foot's: \{msg}",
+  )
+  for r in h {
+    if r != foot && r.0 >= rv.0 {
+      assert_true(near(r.0, rv.0 + rv.2) && near(r.0 + r.2, px + pw), msg="a line right of the one down: \{Repr(r)} \{msg}")
+    }
+  }
+}
+
+///|
+test "wide: the model panel's lines meet each other and its edges, at its first level and at all models, none over another" {
+  let wide = corner_windows[5]
+  for lang in ["zh", "en"] {
+    for scale in [1.0, 1.3] {
+      let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+      let held = screen_in("newchat", wide, lang, font_scale=scale).audit().map(bare)
+      let new_faults = fn(t : @ui.Tester, what : String) raise {
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{what}: \{t.audit().join("\n")}")
+      }
+      for mode in ["newchat-tall-model", "newchat-providers-model", "newchat-model"] {
+        let t = screen_in(mode, wide, lang, font_scale=scale)
+        t.run_for(@ui.move_most_ms)
+        let what = "\{mode} \{lang} \{scale}"
+        first_level_lines_meet(t, what)
+        new_faults(t, what)
+      }
+      let t = screen_in("newchat-providers-model", wide, lang, font_scale=scale)
+      t.click(Button, label=@sf.t("web-main.model.allModels"))
+      t.run_for(@ui.move_most_ms)
+      for maker in ["DeepSeek", "Anthropic"] {
+        t.click(Button, label=maker)
+        t.run_for(@ui.move_most_ms)
+        let what = "all models, \{maker} \{lang} \{scale}"
+        all_level_lines_meet(t, what)
+        new_faults(t, what)
+      }
+    }
+  }
+}
+
+///|
+test "small: in the model sheet the line over 全部模型 runs as far as the sheet foot's line, side to side" {
+  for lang in ["zh", "en"] {
+    for scale in [1.0, 1.3] {
+      let t = screen_in("newchat-providers-model", corner_windows[0], lang, font_scale=scale)
+      t.run_for(@ui.move_most_ms)
+      let (h, _, _) = panel_lines(t)
+      let to_all = t.get(Button, label=@sf.t("web-main.model.allModels")).rect
+      let foot = h.fold(init=h[0], fn(a, r) { if r.1 > a.1 { r } else { a } })
+      let over = h.filter(fn(r) { r.1 + r.3 <= to_all.1 + 0.5 })
+      let msg = "\{lang} \{scale}: across \{Repr(h)}, 全部模型 \{Repr(to_all)}"
+      assert_true(!over.is_empty() && foot.1 > to_all.1, msg~)
+      let line = over.fold(init=over[0], fn(a, r) { if r.1 > a.1 { r } else { a } })
+      assert_true(near(line.0, foot.0) && near(line.0 + line.2, foot.0 + foot.2), msg="the line over 全部模型 and the foot's: \{msg}")
+    }
+  }
+}

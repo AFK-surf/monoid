@@ -133,7 +133,7 @@ test "大屏: an untitled panel beside what opened it whose body is nodes, ruled
   debug_inspect(body_and_foot(t), content=(
     #|(
     #|  (606, 312, 40, 36),
-    #|  (830, 361, 60, 36),
+    #|  (830, 360.5, 60, 36),
     #|  [
     #|    "A (440, 18, 4, 8)",
     #|    "A (241, 435, 4, 8)",

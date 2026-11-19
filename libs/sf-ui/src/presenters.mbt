@@ -1679,14 +1679,14 @@ let sheet_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S6 pb=S6 gap=S2 jus
 let sheet_ruled_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S3 pb=S4 gap=S2 justify=JEnd")
 
 ///|
-/// The line over a ruled panel's foot (`panel`'s `ruled`), across the panel.
+/// The line over a ruled panel's foot (`panel`'s `ruled`), across the panel: a hairline, the line's colour faded.
 // kept across runs: a value (no field of it changes)
-let foot_rule : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+let foot_rule : @ui.Style = @ui.style(w=Full, h=hairline, bg=A(Line, O60))
 
 ///|
 /// The same in a sheet: as far under what it holds as its rows are in from its sides (sheet_held_sides: 12).
 // kept across runs: a value (no field of it changes)
-let sheet_foot_rule : @ui.Style = @ui.style(w=Full, h=SPx, mt=room(sheet_rule_over), bg=Line)
+let sheet_foot_rule : @ui.Style = @ui.style(w=Full, h=hairline, mt=room(sheet_rule_over), bg=A(Line, O60))
 
 ///|
 let sheet_rule_over : Double = 12.0
