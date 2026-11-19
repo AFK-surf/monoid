@@ -159,6 +159,9 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   /// The windows said last, and what looks at them again each second while the view lasts.
   var windowsSaid: [[String: Any]] = []
   var windowsTimer: DispatchSourceTimer?
+  /// The windows as Core Graphics listed them when the said ones were last asked of ScreenCaptureKit (nil: to be
+  /// asked at the next look), on `queue`.
+  var windowsSeen: [WindowSeen]?
 
   init(channel: Channel, options: [String: Any]) {
     self.channel = channel
@@ -594,6 +597,15 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   // MARK: encoding
 
+  /// The profiles a session of `kind` asks for, best first (the first the encoder takes is kept).
+  static func profiles(_ kind: String) -> [CFString] {
+    if kind == "h265" { return [kVTProfileLevel_HEVC_Main_AutoLevel] }
+    return [
+      kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel,
+      kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel, kVTProfileLevel_H264_Baseline_AutoLevel,
+    ]
+  }
+
   func makeSession(_ width: Int, _ height: Int) -> Bool {
     if let session { VTCompressionSessionInvalidate(session) }
     session = nil
@@ -616,10 +628,11 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       let set = { (key: CFString, value: Any) in VTSessionSetProperty(made, key: key, value: value as CFTypeRef) }
       _ = set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue!)
       _ = set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse!)
-      // H.264: Baseline, as every decoder takes it (constrained where the system has it); Main if neither is taken.
-      // H.265: Main.
+      // H.264: High first (CABAC and 8×8 transforms: small text finer at the same rate), still with no frames
+      // reordered (no B-frames, above); Constrained High where the low-latency encoder takes only that; then Main, then
+      // Baseline (constrained where the system has it). H.265: Main.
       var profile = "default"
-      let profiles = kind == "h265" ? [kVTProfileLevel_HEVC_Main_AutoLevel] : [kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel, kVTProfileLevel_H264_Baseline_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel]
+      let profiles = ScreenView.profiles(kind)
       for p in profiles
       where set(kVTCompressionPropertyKey_ProfileLevel, p) == noErr {
         profile = p as String
@@ -830,40 +843,84 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   /// The windows looked at each second while the view lasts (macOS tells nothing of them coming, going or moving): said
   /// as they change (message 4 `windows`); the one shown alone followed where it moves or is resized (its capture's
-  /// size with it), the whole display again where it closed. Called on `queue` (from `start`'s `queue.sync`): a
-  /// `queue.sync` here again would trap.
+  /// size with it), the whole display again where it closed. Each look is Core Graphics' list of the windows on screen
+  /// (`look`: in the process, no WindowServer round trip of ScreenCaptureKit's); ScreenCaptureKit is asked for the
+  /// windows said only when that list's windows, apps or titles changed, so a still desktop wakes neither the
+  /// WindowServer nor replayd. Called on `queue` (from `start`'s `queue.sync`): a `queue.sync` here again would trap.
   func followWindows() {
     dispatchPrecondition(condition: .onQueue(queue))
     let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
     timer.schedule(deadline: .now() + 1, repeating: 1)
     timer.setEventHandler { [weak self] in
-      guard let self else { return }
+      guard let self,
+        let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+      else { return }
+      let (shown, frame) = self.shownWindow()
+      // nil: the view ended (`stop`), its channel closed or closing
+      guard let look = self.queue.sync(execute: { () -> WindowsLook? in
+        if self.ended { return nil }
+        let look = ScreenView.look(infos, own: getpid(), shown: shown, frame: frame, seen: self.windowsSeen)
+        self.windowsSeen = look.seen
+        return look
+      }) else { return }
+      switch look.shown {
+      case .gone: self.show(nil)
+      case .moved(let now, let resized):
+        self.moved(now)
+        if resized { self.bounds(self.maxWidth, self.maxHeight, region: self.region) }
+      case .same: break
+      }
+      guard look.ask else { return }
       Task {
-        guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
-        let windows = ScreenView.windows(content)
-        let said = ScreenView.said(windows)
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else {
+          // asked again at the next look
+          self.queue.sync { self.windowsSeen = nil }
+          return
+        }
+        let said = ScreenView.said(ScreenView.windows(content))
         let changed = self.queue.sync { () -> Bool in
-          if NSArray(array: said).isEqual(to: self.windowsSaid) { return false }
+          if self.ended || NSArray(array: said).isEqual(to: self.windowsSaid) { return false }
           self.windowsSaid = said
           return true
         }
         if changed { self.channel.sendJSON(4, ["windows": said]) }
-        let (shown, frame) = self.shownWindow()
-        guard let shown else { return }
-        guard let w = windows.first(where: { $0.windowID == shown }) else {
-          self.show(nil)
-          return
-        }
-        if w.frame != frame {
-          self.moved(w.frame)
-          if frame?.size != w.frame.size { self.bounds(self.maxWidth, self.maxHeight, region: self.region) }
-        }
       }
     }
     timer.resume()
     windowsTimer = timer
   }
 
+  /// What a look at Core Graphics' list of the windows on screen (`infos`) asks of the view: whether the windows said
+  /// are to be asked of ScreenCaptureKit again (the windows `ScreenView.windows` could say, by id, app and title, are
+  /// not those `seen` when they were asked last: none yet, one came or went, an app or a title changed; where they
+  /// are or how big is not said, so a window dragged asks nothing), and what became of window `shown` (its frame last
+  /// `frame`): gone from the screen, or moved or resized.
+  static func look(_ infos: [[String: Any]], own: pid_t, shown: CGWindowID?, frame: CGRect?, seen: [WindowSeen]?) -> WindowsLook {
+    var now: [WindowSeen] = []
+    var shownAt: CGRect?
+    for info in infos {
+      guard let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+        let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+        let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+      else { continue }
+      if id == shown { shownAt = rect }
+      let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+      // As ScreenView.windows picks them (a superset: a window of no app there is here), so nothing said is missed.
+      guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0, pid != own, rect.width >= 80, rect.height >= 60 else { continue }
+      now.append(WindowSeen(
+        id: id, pid: pid, title: info[kCGWindowName as String] as? String ?? "", app: info[kCGWindowOwnerName as String] as? String ?? ""))
+    }
+    now.sort { $0.id < $1.id }
+    var step = ShownStep.same
+    if shown != nil {
+      if let shownAt {
+        if shownAt != frame { step = .moved(shownAt, resized: shownAt.size != frame?.size) }
+      } else {
+        step = .gone
+      }
+    }
+    return WindowsLook(seen: now, ask: now != seen, shown: step)
+  }
   /// The pictures from now on fitted into `width`×`height`, of `region` of the display alone (nil: the whole): the
   /// capture asked for the size that takes (its next picture is that size, and the encoder is made anew for it, from a
   /// key frame); another part sent at once, the screen still or not.
@@ -924,6 +981,31 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       self.pump()
     }
   }
+}
+
+/// A window as Core Graphics lists it, by what is said of it (`ScreenView.said`): no frame, as where it is is not said.
+struct WindowSeen: Equatable {
+  let id: CGWindowID
+  let pid: pid_t
+  let title: String
+  let app: String
+}
+
+/// What became of the window shown alone at a look (`ScreenView.look`).
+enum ShownStep: Equatable {
+  case same
+  /// No longer on screen: the whole display again.
+  case gone
+  /// At this frame now; `resized`: its size changed too (the capture's with it).
+  case moved(CGRect, resized: Bool)
+}
+
+/// A look at the windows (`ScreenView.look`): those seen, whether ScreenCaptureKit is asked for the windows said, what
+/// became of the one shown alone.
+struct WindowsLook: Equatable {
+  let seen: [WindowSeen]
+  let ask: Bool
+  let shown: ShownStep
 }
 
 /// The system's standard cursors by the CSS names a client shows them with, told apart by their hot spots and pixels
