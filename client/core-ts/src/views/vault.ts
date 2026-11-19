@@ -1165,7 +1165,7 @@ function autoBox(inner: Inner, ws: string): void {
 /// Re-check all owned workspaces once this device's signer or box key finishes loading at cold start: if `readStation`
 /// and `vaultCome` ran before `Signer.load()`, `autoBox` returned early and would otherwise never retry.
 export function vaultReady(inner: Inner): void {
-  if (!able(inner) || signerOf(inner) === null) return;
+  if (!able(inner) || signerOf(inner) === null || !inner.scheduler || !inner.runner || !inner.workspaces) return;
   for (const [ws] of inner.workspaces.owned()) {
     const lock = lockOf(inner, ws);
     if (lock instanceof CoreError) continue;
