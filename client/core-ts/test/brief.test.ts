@@ -60,6 +60,11 @@ test("the_card_says_what_it_did_cost_and_used", () => {
   assert.deepEqual(lowered.attention, [{ text: "本轮结束后压缩到 300K", level: "amber" }]);
   const whole = card({ ...agent, attention: [], session: { context: 300_000, contextBefore: 0 } }, { usage: { ...live.usage, contextTokens: 627_800, contextWindow: 1_000_000 } });
   assert.equal(whole.context.text, "627.8K / 1M");
+  // Compacted by its runtime session: how often, beside how full it is now; never yet, not said.
+  const compacted = card({ ...agent, session: { compactions: 3 } }, live);
+  assert.deepEqual(compacted.context, { percent: 95, text: "190K / 200K", level: "red", compacted: "当前会话已压缩 3 次" });
+  assert.equal(card({ ...agent, session: { compactions: 1 } }, live).context.compacted, "当前会话已压缩 1 次");
+  assert.equal(card({ ...agent, session: { compactions: 0 } }, live).context.compacted, undefined);
   // Before its first turn and its usage is read: nothing.
   const none = card({ turns: [], attention: [], jobs: [] }, null);
   assert.deepEqual([none.work, none.cost, none.cache, none.context, none.jobs, none.latest, none.attention], [null, undefined, undefined, undefined, null, [], []]);

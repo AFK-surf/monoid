@@ -515,8 +515,8 @@ fn conn(base : String, key : String, provider : String, session_header : Bool) -
 }
 
 ///|
-/// What a capability was found for: the profile as it reaches its models, hashed.
-pub async fn fingerprint(w : World, profile : J) -> String {
+/// What a capability was found for: the profile as it reaches its models, hashed, alongside the resolved connection.
+async fn fingerprint_with_conn(w : World, profile : J) -> (String, J?) {
   let c = decision_connection(w, profile)
   let value = ja([
     at(Some(profile), "id").unwrap_or(Null),
@@ -529,7 +529,13 @@ pub async fn fingerprint(w : World, profile : J) -> String {
       None => J::Null
     },
   ])
-  @memory.sha256_hex(utf8(stringify(value)))
+  (@memory.sha256_hex(utf8(stringify(value))), c)
+}
+
+///|
+/// What a capability was found for: the profile as it reaches its models, hashed.
+pub async fn fingerprint(w : World, profile : J) -> String {
+  fingerprint_with_conn(w, profile).0
 }
 
 ///|
@@ -554,11 +560,13 @@ pub fn decision_transport(connection : J, model : String) -> J {
 ///|
 /// The transport for `chosen` on this profile, when its capability is current and verified that model.
 pub async fn resolved_model(w : World, profile : J, capability : J, chosen : J) -> J? {
-  if str_of(at(Some(capability), "state")) != Some("ready") ||
-    str_of(at(Some(capability), "fingerprint")) != Some(fingerprint(w, profile)) {
+  if str_of(at(Some(capability), "state")) != Some("ready") {
     return None
   }
-  let c = decision_connection(w, profile)
+  let (fp, c) = fingerprint_with_conn(w, profile)
+  if str_of(at(Some(capability), "fingerprint")) != Some(fp) {
+    return None
+  }
   guard c is Some(c) else { return None }
   if !jeq(at(Some(c), "provider").unwrap_or(Null), at(Some(capability), "provider").unwrap_or(Null)) {
     return None

@@ -105,10 +105,6 @@ export function ChevronUp(props: IconProps) {
   return <Svg {...props}><path d="M6 15L12 9L18 15" /></Svg>;
 }
 
-export function ChevronsDown(props: IconProps) {
-  return <Svg {...props}><path d="M7 6L12 11L17 6 M7 13L12 18L17 13" /></Svg>;
-}
-
 export function ChevronsUpDown(props: IconProps) {
   return <Svg {...props}><path d="M8 8L12 4L16 8 M8 16L12 20L16 16" /></Svg>;
 }
@@ -678,7 +674,6 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
   "chevron-up": ChevronUp,
-  "chevrons-down": ChevronsDown,
   "chevrons-up-down": ChevronsUpDown,
   "clips": Clips,
   "close": Close,

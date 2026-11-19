@@ -81,6 +81,32 @@ let context_corners_known : Array[String] = [
 ]
 
 ///|
+test "an agent's context: how often its runtime session compacted it said over what can be done to it, the tile as it was; never yet, nothing" {
+  let said = "当前会话已压缩 3 次"
+  for mode in ["chat-agent-compacted", "chat-agent-context"] {
+    let calls : Array[Made] = []
+    let t = decide_core(calls, mode)
+    let before = t.audit()
+    assert_true(t.find(said) is None, msg="\{mode}: not on its tile")
+    t.tap_text("上下文")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg="\{mode}: what can be done to it")
+    assert_true(t.find("清空上下文") is Some(_), msg=mode)
+    if mode == "chat-agent-compacted" {
+      guard t.words().iter().find_first(fn(w) { w.0 == said && w.5 > 0.5 }) is Some(note) else {
+        fail("\{mode}: not said: \{Repr(t.words())}")
+      }
+      guard t.words().iter().find_first(fn(w) { w.0 == "清空上下文" && w.5 > 0.5 }) is Some(row) else { fail(mode) }
+      assert_true(note.2 < row.2, msg="\{mode}: over the rows")
+      assert_eq(note.1, row.1, msg="\{mode}: at the rows' words' start")
+    } else {
+      assert_true(t.find(said) is None, msg="\{mode}: never compacted, nothing said")
+    }
+    assert_eq(t.audit(), before, msg=mode)
+  }
+}
+
+///|
 /// The fixture's agent card (decide_core's `chat-agent-unsaid`, its context compactable and clearable) on a window of
 /// `platform`, 390×844, or 1200×800 where `wide`; its context's tile pressed, the panel come to rest (with `rest`, else
 /// at the frame it opened in).

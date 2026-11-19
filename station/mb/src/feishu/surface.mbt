@@ -459,18 +459,23 @@ pub fn FeishuSurface::new(
 ///|
 /// Who its bot is, as Feishu says now.
 pub async fn FeishuSurface::identify(self : FeishuSurface) -> BotIdentity {
-  identity_of(self.client)
+  let me = identity_of(self.client)
+  if me.bot_user_id != "" {
+    self.me = Some(me)
+  }
+  me
 }
 
 ///|
 /// An identity it cannot work as: a Feishu app without a bot.
 pub fn FeishuSurface::usable(
-  _self : FeishuSurface,
+  self : FeishuSurface,
   identity : BotIdentity,
 ) -> Unit raise FeishuError {
   if identity.bot_user_id == "" {
     raise FeishuError("this Feishu app has no bot: turn on its bot capability")
   }
+  self.me = Some(identity)
 }
 
 ///|

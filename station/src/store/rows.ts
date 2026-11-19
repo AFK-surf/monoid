@@ -83,6 +83,9 @@ export type SessionRow = {
   /// The most it ran with while what it holds is over `context`, lowered meanwhile, until compacted (0: the model's
   /// whole window; null: none over).
   contextBefore: number | null;
+  /// Times its runtime session compacted its context (on its own or by hand), counted afresh with each runtime session
+  /// (none: never yet).
+  compactions?: number;
   runtimeSessionId: string | null; workspace: string; cwd: string | null;
   /// Which of the station's workspaces its chat is in: null is its home workspace (sessions
   /// from before, and those made outside any workspace's request). Not the `workspace` above, its directory.
@@ -457,6 +460,7 @@ export function toSession(r: Json): SessionRow {
     ...(typeof r.speed === "string" ? { speed: r.speed as ModelSpeed } : {}),
     fast: r.fast === null || r.fast === undefined ? null : r.fast !== 0,
     afresh: r.afresh === null || r.afresh === undefined ? null : r.afresh !== 0, context: typeof r.context === "number" ? r.context : null, contextBefore: typeof r.context_before === "number" ? r.context_before : null,
+    ...(typeof r.compactions === "number" && r.compactions > 0 ? { compactions: r.compactions } : {}),
     runtimeSessionId: r.runtime_session_id,
     workspace: r.workspace, cwd: r.cwd ?? null, ws: r.ws ?? null, token: r.token, running: r.running === 1, createdAt: r.created_at,
     lastActiveAt: r.last_active_at, archivedAt: r.archived_at, archivedBy: r.archived_by, shownAt: r.shown_at,

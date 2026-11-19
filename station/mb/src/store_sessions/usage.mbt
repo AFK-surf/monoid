@@ -73,9 +73,10 @@ pub fn Store::begin_usage_counter_file(
 }
 
 ///|
-pub fn Store::usage_files(self : Store) -> Json raise {
+fn usage_files_of(rows : Array[Map[String, Json]]) -> Json {
   let out : Array[(String, Json)] = []
-  for r in self.all("SELECT path, session, offset, model, speed FROM usage_files", []) {
+  let idx : Map[String, Int] = Map([])
+  for r in rows {
     let k = js_string(col(r, "path"))
     let v : Json = {
       "session": col(r, "session"),
@@ -83,19 +84,20 @@ pub fn Store::usage_files(self : Store) -> Json raise {
       "model": col(r, "model"),
       "speed": col(r, "speed"),
     }
-    let mut at = -1
-    for i, e in out {
-      if e.0 == k {
-        at = i
+    match idx.get(k) {
+      None => {
+        idx[k] = out.length()
+        out.push((k, v))
       }
-    }
-    if at < 0 {
-      out.push((k, v))
-    } else {
-      out[at] = (k, v)
+      Some(at) => out[at] = (k, v)
     }
   }
   entries(out)
+}
+
+///|
+pub fn Store::usage_files(self : Store) -> Json raise {
+  usage_files_of(self.all("SELECT path, session, offset, model, speed FROM usage_files", []))
 }
 
 ///|

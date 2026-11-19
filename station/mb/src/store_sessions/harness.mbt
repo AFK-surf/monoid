@@ -126,6 +126,7 @@ pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
     "codexSessionSpeed" => self.codex_session_speed(s(x, 0))
     "codexSessionFast" => self.codex_session_fast(s(x, 0))
     "setTitle" => unit(self.set_title(s(x, 0), a(x, 1)))
+    "noteCompacted" => unit(self.note_compacted(s(x, 0)))
     "setRuntimeSessionId" => unit(self.set_runtime_session_id(s(x, 0), a(x, 1)))
     "conversationSince" => self.conversation_since(s(x, 0))
     "setTranscriptLength" => unit(self.set_transcript_length(s(x, 0), a(x, 1)))

@@ -99,6 +99,8 @@ function sessionJson(r: SessionRow): Json {
   if (r.context !== null) v.context = r.context;
   // Held over it until compacted: what it ran with till now (0: the model's whole window).
   if (r.contextBefore !== null) v.contextBefore = r.contextBefore;
+  // Times its runtime session compacted its context: none, never yet.
+  if (r.compactions !== undefined) v.compactions = r.compactions;
   Object.assign(v, { running: r.running, createdAt: r.createdAt, lastActiveAt: r.lastActiveAt, archivedAt: r.archivedAt, archivedBy: r.archivedBy, shownAt: r.shownAt });
   // Handed here from another station (replica/handover.ts): that station, so that a device drops the row it kept of
   // it there, as that station may never tell it.

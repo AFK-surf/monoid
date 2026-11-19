@@ -11,9 +11,10 @@
 // right under the bar, 320 wide, the text kept clear of it (the layout's the window's tree's own: reader_layout_nodes).
 // On 小屏 its own bars that a tap on the text brings (and takes away), coming in 140 ms and going in 240, a step up or
 // down as they fade; the contents and the search sheets from the window's foot (sheet_node), the layout's half as tall.
-// In a tab beside a chat (`host` Tab or PanelTab) no bar of its own (the tab's tools open its panels:
-// reader_panel_toggle), the column from the tab's top (wider in PanelTab: panel_column_ems), the panel over the text
-// where the tab has not room for both.
+// In a tab beside a chat (`host` Tab or PanelTab) the tab's tools open its panels (reader_panel_toggle), while
+// scroll-to-bottom floats at the tab's bottom-right (reader_beside_chrome, matching a chat's float); the column starts
+// at the tab's top (wider in PanelTab: panel_column_ems), and an open panel sits over the text where the tab has not
+// room for both.
 //
 // ⌘F finds, ← → go from chapter to chapter, Esc closes what is open over the text (else goes back): the keymap's
 // reader.* (reader_bindings), at their key's moment; none of a tab's (the window's keys are the chat's).
@@ -386,7 +387,16 @@ fn reader_column_node(
   // shown waiting for it); a desktop's bar gone as it is read on down, back as it is read back up, near its top)
   let keeps : Ref[() -> Unit] = Ref(fn() {  })
   r.list.on_sight(fn(s) {
+    if r.sight_from == @double.infinity {
+      r.sight_from = parent.cause_at()
+    }
     r.long.set(s.from_top + s.from_foot > s.shows)
+    let away_now = s.from_foot > reader_end_away
+    if parent.cause_at() > r.sight_from {
+      @view.transition(fn() { r.away.set(away_now) })
+    } else {
+      r.away.set(away_now)
+    }
     let (first, within) = reader_held_place(r, s.first, s.into, if s.tall > 0.0 { dmin(1.0, dmax(0.0, s.into / s.tall)) } else { 0.0 })
     let (chunk, was) = r.place.untracked()
     if first != chunk || (within - was).abs() > 0.002 {
@@ -1155,17 +1165,23 @@ fn reader_find_node(col : @view.View, r : Reading, paper : () -> ReaderPaper, do
 }
 
 ///|
-/// What floats over the paper in a tab beside a chat (reader_node's `beside`) in `parent`: what was found, 10 under the
-/// tab's top over the text's middle; the hairline; the contents' or the search's panel at its right from its top, over
-/// the text where the tab is narrower than beside_both_least (as wide as the tab, 320 at most). No bar (the tab's tools
-/// are its) and no keys: the window's are the chat's.
+/// What floats over the paper in a tab beside a chat (reader_node's `beside`) in `parent`: the hairline; the
+/// scroll-to-bottom round button (shown when taller than two screens and further than reader_end_away from its end) at
+/// the tab's bottom-right (under the panel when narrow so an open panel covers it, shifted left of the docked panel
+/// when wide); the contents' or search's panel at its right from its top (as wide as the tab, 320 at most); what was
+/// found, 10 under the tab's top over the text's middle; and the tips layer over all of it. The tab's tools open the
+/// panels; no keys (the window's are the chat's).
+#callsite(autofill(loc))
 fn reader_beside_chrome(
   parent : @view.View,
   r : Reading,
   paper : () -> ReaderPaper,
   wide : () -> Bool,
   tab : () -> Double,
+  loc~ : SourceLoc,
 ) -> Unit {
+  let tips_at : Ref[@view.View?] = Ref(None)
+  let tips = TipLayer::new(fn() { tips_at.val })
   let share = fn() {
     match r.book.get() {
       Some(b) => reader_fraction(b, r.place.get())
@@ -1173,6 +1189,35 @@ fn reader_beside_chrome(
     }
   }
   reader_hairline(parent, paper, share, fn(_) { 1.0 })
+  // (floating scroll-to-bottom key at bottom-right; no ground on the over box so wheel and text selection pass
+  // straight through to the column underneath)
+  parent.box(made_for=loc, fn(o) {
+    let reach = float_button_reach
+    o
+    .over(Is(true))
+    .lies_along(Is(End))
+    .lines_up(Is(Some(End)))
+    .padding(By(fn() {
+      (0.0, 0.0, reader_panel_room(r, wide) + beside_float_in - reach, beside_float_lift - reach)
+    }))
+    |> ignore
+    o.show(fn() { r.long.get() && r.away.get() }, at_once=true, leave=beside_float_ms, fn(stand) {
+      let settled = stand.cause_at() <= r.sight_from || @view.answering_now()
+      stand.alpha(
+        By(@motion.presence_in(stand, @motion.tween(beside_float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 })),
+      )
+      |> ignore
+      float_button_node(
+        stand,
+        "arrow-down",
+        fn() { t("web-pages.drive.reader.toEnd") },
+        fn() { reader_to_end(r) },
+        tips~,
+      )
+      |> ignore
+    })
+  })
+  |> ignore
   parent.show(fn() { r.panel.get() == Contents || r.panel.get() == Find }, fn(o) {
     o.over(Is(true)) |> ignore
     reader_panel_docked(o, r, paper, Some(tab))
@@ -1182,6 +1227,7 @@ fn reader_beside_chrome(
     o.box(fn(top) { top.height(Is(Some(desk_found_gap))) |> ignore }) |> ignore
     reader_found_row(o, r, paper, wide)
   })
+  tips_at.val = Some(parent.box(made_for=loc, fn(l) { l.over(Is(true)) |> ignore }))
 }
 
 // ── a phone's ───────────────────────────────────────────────────────────
