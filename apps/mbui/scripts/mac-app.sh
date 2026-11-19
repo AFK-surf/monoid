@@ -74,8 +74,11 @@ sign() {
   # (the hardened runtime keeps the microphone from the app unless it says it takes it: a screen's 麦克风, apple_core.mm)
   local app=("${how[@]}")
   case "${MAC_SIGN_IDENTITY:-}" in "Developer ID Application:"*)
-    plutil -create xml1 "$OUT/entitlements.plist"
-    plutil -insert com.apple.security.device.audio-input -bool YES "$OUT/entitlements.plist"
+    # (plistlib writes the dotted entitlement key literally; plutil -insert splits dots into a nested key path)
+    python3 -c 'import plistlib, sys
+with open(sys.argv[1], "wb") as f:
+    plistlib.dump({"com.apple.security.device.audio-input": True}, f)
+' "$OUT/entitlements.plist"
     app+=(--entitlements "$OUT/entitlements.plist") ;;
   esac
   codesign --force --sign "${MAC_SIGN_IDENTITY:--}" "${app[@]}" "$APPDIR"
