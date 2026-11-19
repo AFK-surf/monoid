@@ -357,6 +357,29 @@ test("the release's installer started as an update asks it, the copy an update b
   assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
 });
 
+test("what the admin API asks of another slice in a restart's first seconds waits for every slice to start, not answered by a stand-in or a slice half made", { skip }, async () => {
+  const { data, app, id } = station({ updateChannel: "stable" });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(cloudOf(id, "http://127.0.0.1:9")));
+  const h = harness();
+  // (the bus as run.mbt makes it before P5-1: P5-1 serves members from here on, P5-5 not yet started)
+  assert.deepEqual(await h.ok({ step: "start", data, app, held: true }), { station: id });
+  // read straight off the bus now, it is LiveBus::new's stand-in (null), not P5-5's tokens
+  assert.equal(await h.ok({ step: "coord", name: "slack/index.configTokens", arg: [{ slackConfigTokens: [] }] }), null);
+  const { ticket } = await h.ok({ step: "sliceAsk", name: "slack/index.configTokens", arg: [{ slackConfigTokens: [] }] });
+  // the harness answers what comes after it meanwhile (nothing else waits on it): the ask is still held
+  assert.ok(Array.isArray((await h.ok({ step: "peers" })).methods));
+  assert.deepEqual(await h.ok({ step: "ticket", ticket }), { answered: false });
+  await h.ok({ step: "release" });
+  // (its answer, once every slice started: P5-5's, not `coord: no such op slack/index.configTokens`)
+  assert.deepEqual(await h.ok({ step: "ticket", ticket, wait: true }), { answered: true, said: { ok: [] } });
+  // and once started, an ask is answered as it comes
+  const next = await h.ok({ step: "sliceAsk", name: "slack.connects", arg: [] });
+  assert.deepEqual(await h.ok({ step: "ticket", ticket: next.ticket, wait: true }), { answered: true, said: { ok: [] } });
+  await h.ok({ step: "stop" });
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});
+
 test("the parts as the admin API asks them: the overview's features, updates, move and copies; the routes of the updates, the moves and the copies; what the admin API's own routes ask of Slack, Feishu, Comma and the updates; the mesh's methods answered", { skip }, async () => {
   const feed = await feedStandIn();
   const { data, app, id } = station({ updateChannel: "stable" });

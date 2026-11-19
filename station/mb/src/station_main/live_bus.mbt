@@ -30,6 +30,11 @@ pub(all) struct LiveBus {
   stopped : @effect.Deferred[String]
   /// Resolved to `http://127.0.0.1:<port>/mcp` once the previous station released `run/hub.json` and the agents' door is listening.
   door_ready : @effect.Deferred[String]
+  /// Done once every slice of the station has started (run.mbt sets it before P5-1 and gives it after the last slice, or
+  /// as the station stops): P5-1's admin API serves from the moment the mesh opens, seconds before the other slices
+  /// answer their names on the bus or add their routes, and what it asks of them waits for it (`wait_slices_ready`),
+  /// never its own reads. None where a slice runs alone (a test's harness): nothing to wait for.
+  slices_ready : Ref[@effect.Deferred[Unit]?]
   handed : Bool
   mcp_token : String
   previous_pid : Int?
@@ -187,6 +192,7 @@ pub fn LiveBus::new(
     parts,
     stopped,
     door_ready: @effect.Deferred::new(),
+    slices_ready: Ref(None),
     handed,
     mcp_token,
     previous_pid,
@@ -573,3 +579,25 @@ async fn asked_lent_token(ask : async (String, Json) -> Json, profile : Json, re
   ask("sharing.lendClaude", { "profile": profile, "rejected": jopt(rejected) })
 }
 
+///|
+/// Waits until every slice has started (`slices_ready`): at once where they have, or where nothing set it.
+async fn LiveBus::wait_slices_ready(self : LiveBus) -> Unit {
+  match self.slices_ready.val {
+    Some(d) if !d.is_done() => ignore(d.wait())
+    _ => ()
+  }
+}
+
+///|
+/// The ask of the slice `slice_of` names (`jobs`, `ui`, `coord`, else the hub's), once every slice has started: read
+/// before, it would be LiveBus::new's stand-in or a slice's half made (`coord: no such op slack/index.configTokens` as a
+/// device reconnecting asked `/slack/apps` in a restart's first second).
+async fn LiveBus::slice_ask(self : LiveBus, slice : String) -> async (String, Json) -> Json {
+  self.wait_slices_ready()
+  match slice {
+    "jobs" => self.jobs_ask.val
+    "ui" => self.ui_ask.val
+    "coord" => self.coord_ask.val
+    _ => self.hub_ask.val
+  }
+}

@@ -755,13 +755,9 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
     _ => {
       // Another slice's: asked through the bus with the arguments as JSON; what it refuses thrown as its kind.
+      // (only once every slice has started: the platform's own calls above never wait for them)
       let asked = Json::array(args.map(@jsjson.JV::to_json))
-      let ask = match slice_of(name) {
-        "jobs" => bus.jobs_ask.val
-        "ui" => bus.ui_ask.val
-        "coord" => bus.coord_ask.val
-        _ => bus.hub_ask.val
-      }
+      let ask = bus.slice_ask(slice_of(name))
       match (try { Ok(ask(name, asked)) } catch { e => Err(e) }) {
         Ok(v) => @jsjson.JV::of_json(v)
         Err(@api_routes.Thrown(_, _) as t) => raise t
@@ -791,6 +787,8 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
 /// (api/overview.ts), with the fields the station's parts add (parts.ts `overviewOf`).
 async fn P51::overview(self : P51, viewer : Json, lang : String) -> Json {
   let bus = self.bus
+  // (the agents' side's and the parts' fields, once every slice has started: not half an overview in a restart's first seconds)
+  bus.wait_slices_ready()
   let made = (bus.hub_ask.val)("overview", { "viewer": viewer, "lang": Json::string(lang) }) catch { _ => Json::null() }
   let base : Map[String, Json] = match made {
     Object(m) => m.copy()
@@ -1253,7 +1251,9 @@ async fn P51::admin_answer(self : P51, a : AdminLive, r : @api_routes.Request) -
   if answer.status != 404 || !answer.text().contains("no route") {
     return answer
   }
-  // The parts' routes (parts.ts), made with what the admin API's routes are given.
+  // The parts' routes (parts.ts), made with what the admin API's routes are given: once every slice has started and
+  // added its own, so none is answered `no route` in a restart's first seconds.
+  self.bus.wait_slices_ready()
   let tools : Json = { "data": Json::string(self.bus.data) }
   for route in self.bus.parts.all_routes(tools) {
     if route.meth != r.verb {

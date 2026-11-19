@@ -11,6 +11,11 @@
 //   with what the test gives, what was asked kept; {step: "asked"}: what was asked of them since; {step: "heard",
 //   hub}: answered once the agents' side was asked that (what a choice set going comes to);
 // - {step: "card", key, call: "may"|"chosen", viewer, card, option, at}: a part's card choice, as the admin API asks it;
+// - {step: "start", data, app, held: true}: the bus made as `run` makes it before P5-1 (its `slices_ready` not yet
+//   given) and P5-5 not started; {step: "sliceAsk", name, arg}: an op asked as the admin API asks another slice's
+//   (`LiveBus::slice_ask`), answered later ({ticket}); {step: "ticket", ticket, wait?}: whether it was answered yet,
+//   and what (with wait, once it is);
+//   {step: "release"}: P5-5 started and `slices_ready` given, as `run` does once its last slice started;
 // - {step: "stop"}.
 
 ///|
@@ -18,6 +23,10 @@ let p5_5_harnessed : Ref[LiveBus?] = Ref(None)
 
 ///|
 let p5_5_stood_asked : Array[Json] = []
+
+///|
+/// What `sliceAsk` asked, by its ticket: its answer once it came (`{"ok"}` or `{"error"}`).
+let p5_5_tickets : Array[@effect.Deferred[Json]] = []
 
 ///|
 let p5_5_stood_waits : Array[(String, @effect.Deferred[Unit])] = []
@@ -48,6 +57,10 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
       let stopped : @effect.Deferred[String] = @effect.Deferred::new()
       let bus = LiveBus::new(host, "", [], data, app, "0.1.0", key, db, st, parts, stopped, false, "", None, _ => (), why => ignore(stopped.succeed(why)))
       p5_5_harnessed.val = Some(bus)
+      if p55_jfield(ask, "held") is True {
+        bus.slices_ready.val = Some(@effect.Deferred::new())
+        return { "station": Json::string(key.id) }
+      }
       start_live_p5_5(bus)
       ignore(bus.door_ready.succeed("http://127.0.0.1:0/mcp"))
       { "station": Json::string(key.id) }
@@ -128,6 +141,42 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
               Json::null()
             }
           }
+        }
+        "sliceAsk" => {
+          let ticket = p5_5_tickets.length()
+          let answer : @effect.Deferred[Json] = @effect.Deferred::new()
+          p5_5_tickets.push(answer)
+          let name = p55_jtext(ask, "name")
+          let arg = p55_jfield(ask, "arg")
+          ignore(
+            host.rt.fork(name="slice ask", async fn() {
+              let said : Json = try {
+                { "ok": (bus.slice_ask(slice_of(name)))(name, arg) }
+              } catch {
+                e => { "error": Json::string(said_of(e)) }
+              }
+              ignore(answer.succeed(said))
+            }),
+          )
+          { "ticket": Json::number(ticket.to_double()) }
+        }
+        "ticket" => {
+          let ticket = match p55_jfield(ask, "ticket") { Number(n, ..) => n.to_int(); _ => -1 }
+          guard p5_5_tickets.get(ticket) is Some(answer) else { raise BusError("no such ticket") }
+          if p55_jfield(ask, "wait") is True {
+            return { "answered": Json::boolean(true), "said": answer.wait() }
+          }
+          match answer.poll() {
+            Some(v) => { "answered": Json::boolean(true), "said": v }
+            None => { "answered": Json::boolean(false) }
+          }
+        }
+        "release" => {
+          guard bus.slices_ready.val is Some(ready) else { raise BusError("not started held") }
+          start_live_p5_5(bus)
+          ignore(bus.door_ready.succeed("http://127.0.0.1:0/mcp"))
+          ignore(ready.succeed(()))
+          Json::null()
         }
         "stop" => {
           ignore(bus.stopped.succeed("the test stops"))

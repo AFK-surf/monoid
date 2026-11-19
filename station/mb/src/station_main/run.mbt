@@ -827,8 +827,20 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     },
   )
   s.bus = Some(bus)
+  // What the admin API asks of the other slices waits for them all to have started (live_bus.mbt `slices_ready`): P5-1
+  // serves members from the moment its mesh opens, before P5-2 to P5-5 answer on the bus. Given as the station stops
+  // too, so nothing waits on a start that never comes.
+  let slices_ready : @effect.Deferred[Unit] = @effect.Deferred::new()
+  bus.slices_ready.val = Some(slices_ready)
+  ignore(
+    host.rt.fork(name="slices ready on stop", async fn() {
+      ignore(bus.stopped.wait())
+      ignore(slices_ready.succeed(()))
+    }),
+  )
   start_live_p5_1(bus) catch {
     e => {
+      ignore(slices_ready.succeed(()))
       err_write("the station's platform did not start: \{e}\n")
       control.say({ "failed": Json::string("the station's platform did not start: \{e}") })
       return 1
@@ -858,6 +870,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     start_live_p5_4(bus)
     start_live_p5_5(bus)
   }
+  ignore(slices_ready.succeed(()))
   s.say_health()
   s.up = true
   control.say({ "ready": Json::boolean(true), "version": Json::string(s.version) })
