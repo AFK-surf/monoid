@@ -20,8 +20,8 @@ let bar_place_icon_room : Double = 44.0
 let bar_place_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=Fg, center=true, wrap=false)
 
 ///|
-/// How faint a dim place's name is (the words' ink at this, as the idle icon's grey is to the lit one's).
-let bar_place_dim_words : Double = 0.6
+/// How faint a dim place's name is (the words' ink at this: as grey as the idle icon, still 4.5:1 on the bar).
+let bar_place_dim_words : Double = 0.7
 
 ///|
 /// Place `at` (a box its slot's size) of icon `icon` (the stations' glyph of `glance`, where it is given) over its name
