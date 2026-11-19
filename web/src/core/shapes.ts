@@ -2015,6 +2015,11 @@ export interface NoticeShown {
 	 */
 	linkAt?: number;
 	/**
+	 * One about a profile the station says what to do of: that, as the short action at the end of the pill
+	 * (重新登录, 设置代理), which opens that profile's page; `words` then say what went wrong alone. Absent otherwise.
+	 */
+	profileAction?: string;
+	/**
 	 * A failure's own words, as what failed said them (a provider's, a process's): shown when the notice is
 	 * opened, under `words`. Absent otherwise.
 	 */

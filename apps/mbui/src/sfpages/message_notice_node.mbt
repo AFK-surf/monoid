@@ -10,9 +10,9 @@
 /// What still.fail said (system_notice's) in its row's room (message_row_frame_node: `key`, its list's Entry::id; `side`,
 /// `top`; `over`), as `m` says it as it changes: its pill across the chat, its words on one line, a failure's in red;
 /// pressed, open (`opened`, by its ts: all its words, what failed said of it with 复制, its time under it) or closed again.
-/// One about a profile, what went wrong leads to the profile's page; one saying the station lacks the chat's runtime
-/// ends in · 安装; a failure the station takes reports of in · 上报 (asked first); one whose agent waits to retry, 取消
-/// after the pill.
+/// One about a profile, what to do of it at its end (· 重新登录, · 设置代理), else what went wrong, leads to the profile's
+/// page; one saying the station lacks the chat's runtime ends in · 安装; a failure the station takes reports of in
+/// · 上报 (asked first); one whose agent waits to retry, 取消 after the pill.
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn notice_said_node(
@@ -93,11 +93,13 @@ fn notice_words_of(m : Message, open : Bool) -> NoticeWords {
 
 ///|
 /// What a notice's pill ends in (system_notice's): · 安装 where the station lacks the chat's runtime, else its 取消, 重试
-/// or 重新分配账号 while offered (notice_after), else · 上报 where the failure is reportable, else nothing.
+/// or 重新分配账号 while offered (notice_after), else what to do of the profile it is about (· 重新登录, · 设置代理:
+/// its page), else · 上报 where the failure is reportable, else nothing.
 #derive(Eq)
 priv enum NoticeEnd {
   Install
   Act
+  ProfileAction
   Report
   NoEnd
 }
@@ -124,6 +126,8 @@ fn notice_pill_node(
       _ =>
         if notice_after(now) is Some(_) {
           Act
+        } else if now.profile != "" && now.notice_profile_action != "" {
+          ProfileAction
         } else if now.reportable {
           Report
         } else {
@@ -188,6 +192,10 @@ fn notice_pill_node(
               }
             })
           }
+          ProfileAction =>
+            notice_action_node(e, fn() { m().notice_profile_action }, ink, fn() { false }, strut~, fn() {
+              open_page(Setting(@settings.Route::Profile(here.station, @signals.untracked(m).profile)))
+            })
           Report => notice_report_node(e, src, here, m, ink, strut~)
           NoEnd => ()
         }

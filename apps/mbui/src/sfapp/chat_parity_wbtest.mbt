@@ -1,6 +1,7 @@
 // What a chat offers as Android's does, over the fixture's chat with its views edited for each case: its station's tag
 // opens the station's card, a notice's word installs a runtime or reports a failure,
-// one about a profile leads to it, one saying a chat was opened links to it, a waiting message's
+// one about a profile leads to it (its link, or what to do of it at its end),
+// one saying a chat was opened links to it, a waiting message's
 // line installs (BlockedLine), a link to an archived chat reads as its title and its card says so, a
 // Slack user's name in a history offers 这是我, and the chat's sheet opens it in Slack or Feishu.
 
@@ -252,6 +253,32 @@ test "a notice about a profile: what went wrong (after its ：) leads to the pro
     // (the words after the ：, the pill's last: tapped at its right end)
     let (x, y, w, h) = t.rect_of("登录已失效").unwrap()
     t.tap(x + w - 20.0, y + h / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p1")))
+  })
+}
+
+///|
+test "a notice about a profile the station says what to do of: · 重新登录 at its end leads to the profile's page" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = edited_core(calls, "chat", fn(name, v) {
+      if name == "chat" {
+        with_chat_message(v, 9.0, [
+          ("profile", "p1"),
+          ("notice", { "failed": true, "words": "「Gemini-Pro」认证失败", "profileAction": "重新登录" }),
+        ])
+      } else {
+        v
+      }
+    })
+    for _ in 0..<6 {
+      if t.find("「Gemini-Pro」认证失败") is Some(_) {
+        break
+      }
+      t.wheel(195.0, 400.0, -300.0)
+    }
+    t.tap_text("重新登录")
     t.run_for(@ui.move_most_ms)
     assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p1")))
   })

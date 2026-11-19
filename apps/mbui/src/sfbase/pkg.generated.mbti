@@ -2879,6 +2879,7 @@ pub(all) struct Message {
   notice_failed : Bool
   notice_words : String
   notice_link : Int32
+  notice_profile_action : String
   notice_md : @json.Json?
   notice_retry_session : String
   notice_again_session : String

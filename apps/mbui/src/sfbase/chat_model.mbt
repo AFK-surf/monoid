@@ -446,6 +446,9 @@ pub(all) struct Message {
   notice_failed : Bool
   notice_words : String
   notice_link : Int
+  /// one about `profile` the station says what to do of: that, at the pill's end (重新登录, 设置代理), opening the
+  /// profile's page; "" otherwise
+  notice_profile_action : String
   notice_md : Json?
   /// the agent whose capacity retry this notice can cancel, while that retry waits
   notice_retry_session : String
@@ -659,6 +662,7 @@ pub fn message_of(m : Json) -> Message {
       Some(n) => n.to_int()
       None => -1
     },
+    notice_profile_action: text(field(s, "notice"), "profileAction"),
     notice_md: field(field(s, "notice"), "md"),
     notice_retry_session: text(field(s, "notice"), "retrySession"),
     notice_again_session: text(field(s, "notice"), "againSession"),

@@ -2418,6 +2418,29 @@ test("a_failure_notice_is_offered_to_report_where_the_station_takes_bug_reports"
   assert.deepEqual(reportable(), [[1, false], [2, true], [3, false]]);
 });
 
+test("a_profiles_notice_names_its_profile_as_its_station_names_it_and_ends_in_what_to_do", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember" })]);
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  const ember = (n: number, text: string, profile: string): J => ({ ...entry(n, text), authorKind: "ember", author: "ember", profile });
+  t.set(pageOf("ws/a", 7), { first: 1, last: 3, entries: [entry(1, "开始吧"), ember(2, "⚠️ 账号认证失败：在 Profile 中重新登录\n\n```\n401 UNAUTHENTICATED\n```", "p1"), ember(3, "⚠️ 模型服务不支持此 station 所在地区：设置代理", "p2")], thread: null });
+  t.set(overview("ws/a"), overviewOf([], [profile("p1", { name: "Gemini-Pro" }), profile("p2", { name: "" })]));
+  await t.read(u, 1);
+  const notices = () => u.value.messages.flatMap((m: J) => (m.notice ? [[m.seq, m.notice.words, m.notice.profileAction ?? null, m.notice.linkAt ?? null, m.notice.detail ?? null]] : []));
+  assert.deepEqual(notices(), [[2, "「Gemini-Pro」认证失败", "重新登录", null, "401 UNAUTHENTICATED"], [3, "模型服务不支持此 station 所在地区", "设置代理", null, null]]);
+  // Renamed: said with its name now.
+  t.set(overview("ws/a"), overviewOf([], [profile("p1", { name: "Work" }), profile("p2", { name: "" })]));
+  await t.read(u, 1);
+  assert.deepEqual(notices()[0], [2, "「Work」认证失败", "重新登录", null, "401 UNAUTHENTICATED"]);
+  // Gone from the station's profiles: unnamed.
+  t.set(overview("ws/a"), overviewOf([], []));
+  await t.read(u, 1);
+  assert.deepEqual(notices()[0], [2, "账号认证失败", "重新登录", null, "401 UNAUTHENTICATED"]);
+});
+
 test("a_notice_comes_with_its_words_read_as_markdown_a_chat_it_opened_a_link_to_it", async () => {
   const t = setup();
   const u = ui();
@@ -4104,9 +4127,35 @@ test("still.fail's notice is shown as a line: a failure's mark taken off, no clo
   assert.deepEqual(noticeOf("登录失败", true), { failed: false, words: "登录失败" });
   // What failed said, under what it means: apart, shown when opened.
   assert.deepEqual(noticeOf("⚠️ 模型服务拒绝了请求（403），未说明原因\n\n```\nunexpected status 403 Forbidden: Unknown error\n```", false), { failed: true, words: "模型服务拒绝了请求（403），未说明原因", detail: "unexpected status 403 Forbidden: Unknown error" });
-  assert.deepEqual(noticeOf("⚠️ 账号认证失败：在 Profile 中重新登录\n\n```\n401 Missing API key\n```", true), { failed: true, words: "账号认证失败：在 Profile 中重新登录", linkAt: 7, detail: "401 Missing API key" });
+  // English ones link after their ": " too.
+  assert.deepEqual(noticeOf("⚠️ Willow's codex sign-in expired: sign in again in Settings", true), { failed: true, words: "Willow's codex sign-in expired: sign in again in Settings", linkAt: 32 });
+  assert.deepEqual(noticeOf("Sign-in failed", false), { failed: false, words: "Sign-in failed" });
   const m = shownMessage({ authorKind: "stillfail", author: "stillfail", text: "⚠️ 出错了。", seq: 3 }, [], {}, [], [], [], null);
   assert.deepEqual(m.notice, { failed: true, words: "出错了" });
+});
+
+test("a profile's notice the station says what to do of says what went wrong, its profile named, and ends in that action", () => {
+  const detail = "\n\n```\n401 Missing API key\n```";
+  // As stations before 2026-11-19 said them, as they say them now, and bare; Chinese and English.
+  for (const said of ["账号认证失败：在 Profile 中重新登录", "账号认证失败：重新登录", "账号认证失败"]) {
+    assert.deepEqual(noticeOf(`⚠️ ${said}${detail}`, true), { failed: true, words: "账号认证失败", profileAction: "重新登录", detail: "401 Missing API key" }, said);
+    assert.deepEqual(noticeOf(`⚠️ ${said}${detail}`, true, "Gemini-Pro"), { failed: true, words: "「Gemini-Pro」认证失败", profileAction: "重新登录", detail: "401 Missing API key" }, said);
+    assert.deepEqual(noticeOf(`⚠️ ${said}`, true, ""), { failed: true, words: "账号认证失败", profileAction: "重新登录" }, said);
+  }
+  for (const said of ["Sign-in failed: sign in again in the profile", "Sign-in failed: sign in again", "Sign-in failed"]) {
+    assert.deepEqual(noticeOf(`⚠️ ${said}${detail}`, true), { failed: true, words: "Sign-in failed", profileAction: "Sign in again", detail: "401 Missing API key" }, said);
+    assert.deepEqual(noticeOf(`⚠️ ${said}`, true, "Gemini-Pro"), { failed: true, words: "Gemini-Pro sign-in failed", profileAction: "Sign in again" }, said);
+  }
+  for (const said of ["模型服务不支持此 station 所在地区：在 Profile 中设置代理", "模型服务不支持此 station 所在地区：设置代理", "模型服务不支持此 station 所在地区"]) {
+    assert.deepEqual(noticeOf(`⚠️ ${said}`, true, "Gemini-Pro"), { failed: true, words: "模型服务不支持此 station 所在地区", profileAction: "设置代理" }, said);
+  }
+  for (const said of ["The provider doesn't serve this station's region: set a proxy in the profile", "The provider doesn't serve this station's region: set a proxy", "The provider doesn't serve this station's region"]) {
+    assert.deepEqual(noticeOf(`⚠️ ${said}`, true), { failed: true, words: "The provider doesn't serve this station's region", profileAction: "Set proxy" }, said);
+  }
+  // No profile's: as it says.
+  assert.deepEqual(noticeOf("⚠️ 账号认证失败：在 Profile 中重新登录", false), { failed: true, words: "账号认证失败：在 Profile 中重新登录" });
+  const m = shownMessage({ authorKind: "stillfail", author: "stillfail", text: "⚠️ 账号认证失败：重新登录", profile: "p1", seq: 3 }, [], {}, [], [], [], null, "Gemini-Pro");
+  assert.deepEqual(m.notice, { failed: true, words: "「Gemini-Pro」认证失败", profileAction: "重新登录" });
 });
 
 test("a_slack_threads_row_has_its_link_there_as_its_page_does_for_its_menu", async () => {

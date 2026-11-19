@@ -690,7 +690,8 @@ export function elsewhereSenderName(s: Said, bots: [string, string][], members_:
 }
 
 /// A message as a chat shows it: whether it is the viewer's, still.fail's own notice, who said it, mentions named.
-export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: string[], members_: J[], bots: [string, string][], creator: J): J {
+/// (`profileName`: the name of the profile a notice is about, where it is known: said in its words)
+export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: string[], members_: J[], bots: [string, string][], creator: J, profileName: string | null = null): J {
   const m: J = { ...message };
   const card = decisions.ofMessage(message);
   if (card !== null) m.card = decisions.labelAssignee(card, viewer, members_, creator);
@@ -724,7 +725,7 @@ export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: str
     }
   } else if (isStationAuthor(kind)) {
     m.by = { name: brandName() };
-    m.notice = noticeOf(str(m.text) ?? "", str(m.profile) !== null);
+    m.notice = noticeOf(str(m.text) ?? "", str(m.profile) !== null, profileName);
     // Its run changed: what changed as the viewer reads it, in place of the station's words.
     const change = runChangeOf(m.change);
     if (change !== null) m.notice = { ...m.notice, ...change };
@@ -4074,13 +4075,16 @@ export class Views implements Owner {
     // this is as it was, a message made before is the one shown, so a new message costs that message.
     // (of its agents, what shownMessage reads of them: who each is, not what each did since)
     const who = agents.map((a) => [get(a.session, "key"), get(a.session, "runtime"), get(a.session, "agentText"), get(a.session, "maker")]);
-    const by = this.#steady(`shown\u0001${station}\u0001${String(thread.id)}`, [who, viewer, slackUsers, members_, bots, thread.creator, updates, manages, reports]);
+    // (the names of the profiles its notices are about, each read alone (data.ts overviewProfile), as they say them)
+    const named = this.#profileNames(station, said);
+    const by = this.#steady(`shown\u0001${station}\u0001${String(thread.id)}`, [who, viewer, slackUsers, members_, bots, thread.creator, updates, manages, reports, named]);
     const messages = said.map((raw) => {
       const waiting = u64(raw.seq) !== null && waits.includes(raw.seq as number);
       const was = this.#shownMade.get(raw);
       if (was !== undefined && was.by === by && was.waiting === waiting) return was.out;
       work.messages++;
-      const m = shownMessage(raw, agents, viewer, slackUsers, members_, bots, thread.creator);
+      const profile = str(raw.profile);
+      const m = shownMessage(raw, agents, viewer, slackUsers, members_, bots, thread.creator, profile !== null ? (named[profile] ?? null) : null);
       const out: J = { ...m, waiting };
       const install = m.system === true && typeof m.runtime === "string" ? present.installView(m.runtime, updates, manages) : null;
       if (install !== null) out.install = install;
@@ -4089,6 +4093,21 @@ export class Views implements Owner {
       return out;
     });
     return blockedUnder(messages);
+  }
+
+  /// The names of the station's profiles still.fail's notices among `said` are about (their `profile`), by id: each
+  /// profile read alone (data.ts overviewProfile), never the whole overview; one not known, or unnamed, left out.
+  #profileNames(station: string, said: J[]): Record<string, string> {
+    const out: Record<string, string> = {};
+    const asked = new Set<string>();
+    for (const m of said) {
+      const id = str(m.profile);
+      if (id === null || id === "" || asked.has(id) || !isStationAuthor(m.authorKind)) continue;
+      asked.add(id);
+      const name = str(get(this.#core.data.overviewProfile(station, id), "name"));
+      if (name !== null && name !== "") out[id] = name;
+    }
+    return out;
   }
 
   /// `value` as it was for `key` the last time, when it is equal to it: what is made of it can be kept by its identity.

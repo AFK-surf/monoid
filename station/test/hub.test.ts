@@ -788,7 +788,7 @@ test("claude auth retries once, then reports the profile and does not loop", asy
   await settle();
   assert.equal(r.claude.count(), 2, "a persistent auth failure must stop, not loop");
   // Said as what it means and what to do, not in the runtime's words (those go with the turn, for a report).
-  assert.equal(r.chat.lastText(), "⚠️ 账号认证失败：在 Profile 中重新登录\n\n```\n401 Missing API key\n```");
+  assert.equal(r.chat.lastText(), "⚠️ 账号认证失败：重新登录\n\n```\n401 Missing API key\n```");
   assert.equal(r.claude.last().prompts.length, 1);
   // The notice says whose sign-in failed, for the clients to link that profile's page; another failure is no profile's.
   const thread = r.thread("C1", m.threadTs);
